@@ -42,6 +42,10 @@ import {
   renewSharedWorkspaceLease,
 } from "./shared-workspace-registry.mjs";
 import {
+  setIgnoreFlag,
+  clearIgnoreFlag,
+} from "./shared-state-manager.mjs";
+import {
   initPresence,
   listActiveInstances,
   selectCoordinator,
@@ -3666,6 +3670,85 @@ async function handleApi(req, res, url) {
         "invalidate",
         { reason: "task-retried", taskId },
       );
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/ignore") {
+    try {
+      const body = await readJsonBody(req);
+      const taskId = body?.taskId || body?.id;
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId is required" });
+        return;
+      }
+      const result = await setIgnoreFlag(taskId, "manual", repoRoot);
+      if (!result.success) {
+        const status = result.reason?.startsWith("error:") ? 500 : 409;
+        jsonResponse(res, status, { ok: false, error: result.reason || "ignore_failed" });
+        return;
+      }
+      let kanbanIgnored = null;
+      try {
+        const adapter = getKanbanAdapter();
+        if (typeof adapter?.markTaskIgnored === "function") {
+          kanbanIgnored = await adapter.markTaskIgnored(taskId, "manual");
+        }
+      } catch (err) {
+        kanbanIgnored = false;
+        console.warn(
+          `[telegram-ui] failed to mark kanban task ignored for ${taskId}: ${err.message}`,
+        );
+      }
+      jsonResponse(res, 200, {
+        ok: true,
+        taskId,
+        sharedState: { ignored: true, reason: "manual" },
+        kanbanIgnored,
+      });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", {
+        reason: "task-ignored",
+        taskId,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/unignore") {
+    try {
+      const body = await readJsonBody(req);
+      const taskId = body?.taskId || body?.id;
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId is required" });
+        return;
+      }
+      const result = await clearIgnoreFlag(taskId, repoRoot);
+      if (!result.success) {
+        if (result.reason === "task_not_found") {
+          jsonResponse(res, 404, { ok: false, error: result.reason });
+          return;
+        }
+        if (result.reason === "not_ignored") {
+          jsonResponse(res, 409, { ok: false, error: result.reason });
+          return;
+        }
+        const status = result.reason?.startsWith("error:") ? 500 : 409;
+        jsonResponse(res, status, { ok: false, error: result.reason || "unignore_failed" });
+        return;
+      }
+      jsonResponse(res, 200, {
+        ok: true,
+        taskId,
+        sharedState: { ignored: false },
+      });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", {
+        reason: "task-unignored",
+        taskId,
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

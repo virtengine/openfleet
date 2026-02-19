@@ -67,6 +67,7 @@ function showHelp() {
   COMMANDS
     --setup                     Run the interactive setup wizard
     --doctor                    Validate bosun .env/config setup
+    --portal, --desktop         Launch the desktop portal (Electron)
     --help                      Show this help
     --version                   Show version
     --update                    Check for and install latest version
@@ -542,6 +543,27 @@ async function main() {
     const result = runConfigDoctor();
     console.log(formatConfigDoctorReport(result));
     process.exit(result.ok ? 0 : 1);
+  }
+
+  if (args.includes("--portal") || args.includes("--desktop")) {
+    const launchPath = fileURLToPath(
+      new URL("./desktop/launch.mjs", import.meta.url),
+    );
+    const portalArgs = args.filter(
+      (arg) => arg !== "--portal" && arg !== "--desktop",
+    );
+    const child = spawn(process.execPath, [launchPath, ...portalArgs], {
+      stdio: "inherit",
+    });
+    child.on("exit", (code, signal) => {
+      const exitCode = code ?? (signal ? 1 : 0);
+      process.exit(exitCode);
+    });
+    child.on("error", (err) => {
+      console.error(`\n  Error: Failed to launch desktop portal: ${err.message}`);
+      process.exit(1);
+    });
+    return;
   }
 
   // Handle sentinel controls
