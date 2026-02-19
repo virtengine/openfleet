@@ -224,10 +224,8 @@ function main() {
     const status = run(NPM_BIN, publishArgs, env);
     if (status === 0 && !dryRun) {
       console.log(
-        "\n[publish] REMINDER: deprecate the legacy npm package to redirect users:\n" +
-        "  npm deprecate bosun@'*' \"Renamed to bosun. Install: npm install -g bosun\"\n" +
-        "  # If a scoped legacy package exists:\n" +
-        "  npm deprecate bosun@'*' \"Renamed to bosun. Install: npm install -g bosun\"\n",
+        "\n[publish]  :\n" +
+        "  npm deprecate openfleet@'*' \"⚠️ openfleet has been renamed to bosun. Install the latest: npm install -g bosun\"\n",
       );
     }
     process.exit(status);

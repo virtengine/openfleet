@@ -26,5 +26,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Prepublish check (files array + import validation)
+        run: node prepublish-check.mjs
+
       - name: Run tests
         run: npm test
