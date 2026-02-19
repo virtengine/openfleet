@@ -8,6 +8,7 @@ const ENV_KEYS = [
   "TELEGRAM_INTERVAL_MIN",
   "INTERNAL_EXECUTOR_PARALLEL",
   "DEPENDABOT_MERGE_METHOD",
+  "OPENFLEET_CONFIG_PATH",
   "TELEGRAM_BOT_TOKEN",
   "TELEGRAM_CHAT_ID",
   "INTERNAL_EXECUTOR_SDK",
@@ -35,6 +36,7 @@ describe("loadConfig validation and edge cases", () => {
     originalEnv = Object.fromEntries(
       ENV_KEYS.map((key) => [key, process.env[key]]),
     );
+    delete process.env.OPENFLEET_CONFIG_PATH;
   });
 
   afterEach(async () => {
@@ -60,6 +62,8 @@ describe("loadConfig validation and edge cases", () => {
       "openfleet",
       "--config-dir",
       tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
     ]);
 
     expect(config.telegramIntervalMin).toBe(10);
@@ -76,6 +80,8 @@ describe("loadConfig validation and edge cases", () => {
       "node",
       "openfleet",
       "--config-dir",
+      tempConfigDir,
+      "--repo-root",
       tempConfigDir,
     ]);
 
@@ -97,6 +103,8 @@ describe("loadConfig validation and edge cases", () => {
       "openfleet",
       "--config-dir",
       tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
     ]);
 
     expect(config).toBeDefined();
@@ -108,6 +116,8 @@ describe("loadConfig validation and edge cases", () => {
       "node",
       "openfleet",
       "--config-dir",
+      tempConfigDir,
+      "--repo-root",
       tempConfigDir,
     ]);
 
@@ -136,6 +146,8 @@ describe("loadConfig validation and edge cases", () => {
       "openfleet",
       "--config-dir",
       tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
     ]);
 
     expect(config.telegramToken).toBeFalsy();
@@ -153,6 +165,8 @@ describe("loadConfig validation and edge cases", () => {
       "node",
       "openfleet",
       "--config-dir",
+      tempConfigDir,
+      "--repo-root",
       tempConfigDir,
     ]);
 

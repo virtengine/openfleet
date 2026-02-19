@@ -3807,8 +3807,9 @@ async function handleStatic(req, res, url) {
 export async function startTelegramUiServer(options = {}) {
   if (uiServer) return uiServer;
 
-  const port = Number(options.port || getDefaultPort());
-  if (!port) return null;
+  const rawPort = options.port ?? getDefaultPort();
+  const port = Number(rawPort);
+  if (!Number.isFinite(port) || port < 0) return null;
 
   injectUiDependencies(options.dependencies || {});
 

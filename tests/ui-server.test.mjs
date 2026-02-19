@@ -1,5 +1,4 @@
 import { createHmac } from "node:crypto";
-import { createServer as createNetServer } from "node:net";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,11 +53,7 @@ describe("ui-server mini app", () => {
   });
 
   async function getFreePort() {
-    const server = createNetServer();
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const { port } = server.address();
-    await new Promise((resolve) => server.close(resolve));
-    return port;
+    return 0;
   }
 
   function signBody(secret, body) {

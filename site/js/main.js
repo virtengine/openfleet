@@ -168,6 +168,33 @@
     termObserver.observe(terminalBody);
   }
 
+  /* ── MiniApp fullscreen toggle ───────────────────────────────────────── */
+  const miniappExpandBtn = document.querySelector('.miniapp-demo-window__expand');
+  const miniappPhone = document.querySelector('.miniapp-demo-window__phone');
+  const miniappOverlay = document.querySelector('.miniapp-demo-window__overlay');
+  if (miniappExpandBtn && miniappPhone) {
+    const setFullscreen = (enabled) => {
+      miniappPhone.classList.toggle('is-fullscreen', enabled);
+      miniappExpandBtn.classList.toggle('is-fullscreen', enabled);
+      miniappExpandBtn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+      miniappExpandBtn.setAttribute('aria-label', enabled ? 'Exit fullscreen' : 'Enter fullscreen');
+      if (miniappOverlay) miniappOverlay.classList.toggle('is-visible', enabled);
+      document.body.classList.toggle('is-miniapp-fullscreen', enabled);
+    };
+
+    miniappExpandBtn.addEventListener('click', () => {
+      setFullscreen(!miniappPhone.classList.contains('is-fullscreen'));
+    });
+
+    if (miniappOverlay) {
+      miniappOverlay.addEventListener('click', () => setFullscreen(false));
+    }
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') setFullscreen(false);
+    });
+  }
+
   /* ── Demo Tab Switching ──────────────────────────────────────────────── */
   var demoTabs = document.querySelectorAll('.demo-tab');
   var demoPanels = document.querySelectorAll('.demo-panel');
