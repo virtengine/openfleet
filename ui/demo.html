@@ -196,8 +196,48 @@
     ];
 
     const SEED_AGENTS = [
-      { id: 'agent-001', name: 'copilot-claude', type: 'copilot', model: 'claude-opus-4-6', status: 'busy', currentTask: 've-ghi789', lastHeartbeat: now - 30000 },
-      { id: 'agent-002', name: 'codex-default', type: 'codex', model: 'o4-mini', status: 'busy', currentTask: 've-jkl012', lastHeartbeat: now - 15000 },
+      {
+        id: 'agent-001',
+        name: 'copilot-claude',
+        type: 'copilot',
+        model: 'claude-opus-4-6',
+        status: 'running',
+        taskId: 've-ghi789',
+        taskTitle: 'Escrow batch settlement pipeline',
+        branch: 've/ghi789-escrow-batch',
+        sessionId: 'ses-001',
+        index: 0,
+        startedAt: now - 80 * min,
+        lastHeartbeat: now - 30000,
+      },
+      {
+        id: 'agent-002',
+        name: 'codex-default',
+        type: 'codex',
+        model: 'o4-mini',
+        status: 'running',
+        taskId: 've-jkl012',
+        taskTitle: 'GPU resource metering',
+        branch: 've/jkl012-hpc-gpu-metering',
+        sessionId: 'ses-002',
+        index: 1,
+        startedAt: now - 52 * min,
+        lastHeartbeat: now - 15000,
+      },
+      {
+        id: 'agent-003',
+        name: 'review-agent',
+        type: 'codex',
+        model: 'o4-mini',
+        status: 'idle',
+        taskId: 've-vwx234',
+        taskTitle: 'Review MFA integration tests',
+        branch: 've/vwx234-mfa-tests',
+        sessionId: 'ses-003',
+        index: 2,
+        startedAt: now - 4 * hr,
+        lastHeartbeat: now - 240000,
+      },
     ];
 
     const SEED_LOGS = [
@@ -248,6 +288,211 @@
       activePRs: 3,
     };
 
+    const formatTimestamp = (ts) => new Date(ts).toISOString();
+    let msgCounter = 0;
+    function makeMsg(role, content, ts, type) {
+      msgCounter += 1;
+      const msg = {
+        id: `msg-${msgCounter}`,
+        role,
+        content,
+        timestamp: formatTimestamp(ts || Date.now()),
+      };
+      if (type) msg.type = type;
+      return msg;
+    }
+
+    const SESSION_MESSAGES = {
+      'ses-001': [
+        makeMsg('system', 'Session started for ve-ghi789 (escrow batch settlement).', now - 2 * hr, 'system'),
+        makeMsg('assistant', 'Mapping batch settlement flow and scanning keeper wiring.', now - 110 * min),
+        makeMsg('assistant', 'Found stubs in `x/escrow/keeper/batch.go` and `msg_server.go`.', now - 95 * min),
+        makeMsg('assistant', 'Drafted batch iterator and retry guard — running tests next.', now - 70 * min),
+        makeMsg('assistant', 'CI queued. Awaiting results.', now - 18 * min),
+      ],
+      'ses-002': [
+        makeMsg('system', 'Session started for ve-jkl012 (GPU resource metering).', now - 1 * hr, 'system'),
+        makeMsg('assistant', 'Reviewing resource meter hooks in `x/hpc`.', now - 52 * min),
+        makeMsg('assistant', 'Adding metering sample + config toggle for GPU pods.', now - 28 * min),
+        makeMsg('assistant', 'Drafted docs update for GPU metering flags.', now - 8 * min),
+      ],
+      'ses-003': [
+        makeMsg('system', 'Review session: ve-vwx234 integration tests.', now - 4 * hr, 'system'),
+        makeMsg('assistant', 'Two small nits: table-driven name clarity + lint import order.', now - 3 * hr),
+        makeMsg('assistant', 'Approved after updates. Merged to main.', now - 2 * hr),
+      ],
+      'ses-004': [
+        makeMsg('system', 'Provider health endpoint planning.', now - 90 * min, 'system'),
+        makeMsg('assistant', 'Queued backlog items, waiting on API approval.', now - 60 * min),
+      ],
+      'ses-005': [
+        makeMsg('system', 'Release checklist follow-up.', now - 6 * hr, 'system'),
+        makeMsg('assistant', 'Release checklist completed. Archived for later.', now - 5 * hr),
+      ],
+    };
+
+    const SEED_SESSIONS = [
+      {
+        id: 'ses-001',
+        title: 'Escrow Batch Settlement',
+        type: 'task',
+        status: 'running',
+        taskId: 've-ghi789',
+        branch: 've/ghi789-escrow-batch',
+        createdAt: now - 2 * hr,
+        updatedAt: now - 12 * min,
+        lastMessage: 'CI queued. Awaiting results.',
+        messages: SESSION_MESSAGES['ses-001'],
+      },
+      {
+        id: 'ses-002',
+        title: 'GPU Metering Rollout',
+        type: 'task',
+        status: 'running',
+        taskId: 've-jkl012',
+        branch: 've/jkl012-hpc-gpu-metering',
+        createdAt: now - 1 * hr,
+        updatedAt: now - 6 * min,
+        lastMessage: 'Drafted docs update for GPU metering flags.',
+        messages: SESSION_MESSAGES['ses-002'],
+      },
+      {
+        id: 'ses-003',
+        title: 'PR Review: MFA Tests',
+        type: 'review',
+        status: 'completed',
+        taskId: 've-vwx234',
+        branch: 've/vwx234-mfa-tests',
+        createdAt: now - 4 * hr,
+        updatedAt: now - 2 * hr,
+        lastMessage: 'Approved after updates. Merged to main.',
+        messages: SESSION_MESSAGES['ses-003'],
+      },
+      {
+        id: 'ses-004',
+        title: 'Provider Health Endpoint',
+        type: 'task',
+        status: 'paused',
+        taskId: 've-pqr678',
+        branch: 've/pqr678-provider-health',
+        createdAt: now - 90 * min,
+        updatedAt: now - 60 * min,
+        lastMessage: 'Queued backlog items, waiting on API approval.',
+        messages: SESSION_MESSAGES['ses-004'],
+      },
+      {
+        id: 'ses-005',
+        title: 'Release Checklist',
+        type: 'manual',
+        status: 'archived',
+        taskId: 've-rel001',
+        branch: 've/release-checklist',
+        createdAt: now - 6 * hr,
+        updatedAt: now - 5 * hr,
+        lastMessage: 'Release checklist completed. Archived for later.',
+        messages: SESSION_MESSAGES['ses-005'],
+      },
+    ];
+
+    const SESSION_DIFFS = {
+      'ses-001': {
+        files: [
+          {
+            filename: 'x/escrow/keeper/batch.go',
+            status: 'added',
+            additions: 42,
+            deletions: 0,
+            patch: [
+              '@@ -0,0 +1,42 @@',
+              '+package keeper',
+              '+',
+              '+// BatchSettle processes pending settlements in batch.',
+              '+func (k Keeper) BatchSettle(ctx sdk.Context) error {',
+              '+    iter := k.store.Iterator(ctx, k.settlementPrefix)',
+              '+    defer iter.Close()',
+              '+',
+              '+    for ; iter.Valid(); iter.Next() {',
+              '+        // settle',
+              '+    }',
+              '+    return nil',
+              '+}',
+            ].join('\n'),
+          },
+          {
+            filename: 'x/escrow/keeper/msg_server.go',
+            status: 'modified',
+            additions: 9,
+            deletions: 2,
+            patch: [
+              '@@ -118,6 +118,13 @@',
+              ' func (s msgServer) TriggerSettlement(...) {',
+              '+    if err := s.Keeper.BatchSettle(ctx); err != nil {',
+              '+        return nil, err',
+              '+    }',
+              '     return &types.MsgTriggerSettlementResponse{}, nil',
+              ' }',
+            ].join('\n'),
+          },
+        ],
+      },
+      'ses-002': {
+        files: [
+          {
+            filename: 'x/hpc/keeper/metering.go',
+            status: 'modified',
+            additions: 18,
+            deletions: 4,
+            patch: [
+              '@@ -44,8 +44,22 @@',
+              '-func (k Keeper) TrackCPU(...) {',
+              '+func (k Keeper) TrackGPU(ctx sdk.Context, pod Pod) error {',
+              '+    if !k.cfg.GPUMeteringEnabled {',
+              '+        return nil',
+              '+    }',
+              '+    // ... record usage',
+              '+    return nil',
+              '+}',
+            ].join('\n'),
+          },
+          {
+            filename: 'docs/hpc/gpu-metering.md',
+            status: 'added',
+            additions: 26,
+            deletions: 0,
+            patch: [
+              '@@ -0,0 +1,26 @@',
+              '+# GPU Metering',
+              '+',
+              '+Enable with `HPC_GPU_METERING=true` in bosun config.',
+              '+',
+              '+Usage is tracked per workload minute.',
+            ].join('\n'),
+          },
+        ],
+      },
+      'ses-003': {
+        files: [
+          {
+            filename: 'tests/mfa/integration.test.ts',
+            status: 'modified',
+            additions: 5,
+            deletions: 2,
+            patch: [
+              '@@ -88,7 +88,10 @@',
+              '-describe("MFA integration", () => {',
+              '+describe("MFA integration flow", () => {',
+              '   it("rejects invalid token", async () => {',
+              '     ...',
+              '   });',
+              ' });',
+            ].join('\n'),
+          },
+        ],
+      },
+      'ses-004': { files: [] },
+      'ses-005': { files: [] },
+    };
+
     /* ── Internal State (mutable — actions modify this in-place) ──── */
     const STATE = {
       tasks: SEED_TASKS,
@@ -270,17 +515,8 @@
         sdk: 'auto',
         region: 'auto',
       },
-      sessions: [
-        { id: 'ses-001', name: 'copilot-claude #42', agentType: 'copilot', status: 'active', taskId: 've-ghi789', created: now - 2*hr, messages: [
-          { role: 'system', text: 'Session started for ve-ghi789', ts: now - 2*hr },
-          { role: 'assistant', text: 'Analyzing escrow batch settlement pipeline...', ts: now - 110*min },
-          { role: 'assistant', text: 'Implementing batch processor in x/escrow/keeper/batch.go', ts: now - 90*min },
-        ]},
-        { id: 'ses-002', name: 'codex-default #43', agentType: 'codex', status: 'active', taskId: 've-jkl012', created: now - 1*hr, messages: [
-          { role: 'system', text: 'Session started for ve-jkl012', ts: now - 1*hr },
-          { role: 'assistant', text: 'Reading GPU metering requirements...', ts: now - 50*min },
-        ]},
-      ],
+      sessions: SEED_SESSIONS,
+      sessionDiffs: SESSION_DIFFS,
       worktrees: [
         { branch: 've/abc123-market-order-expiry', path: '/worktrees/abc123', active: false, taskId: 've-abc123' },
         { branch: 've/ghi789-escrow-batch', path: '/worktrees/ghi789', active: true, taskId: 've-ghi789' },
@@ -304,6 +540,56 @@
     function addLog(level, source, msg) {
       STATE.logs.unshift({ ts: Date.now(), level, source, msg });
       if (STATE.logs.length > 100) STATE.logs.length = 100;
+    }
+    function formatLogLine(entry) {
+      return `[${formatTimestamp(entry.ts)}] [${entry.level}] ${entry.source}: ${entry.msg}`;
+    }
+
+    let replyCursor = 0;
+    const RESPONSE_SETS = [
+      [
+        { type: 'tool_call', content: 'rg "BatchSettle" x/escrow -n' },
+        { type: 'tool_result', content: 'x/escrow/keeper/batch.go:12 BatchSettle\nx/escrow/types/msgs.go:87 MsgTriggerSettlement' },
+        { role: 'assistant', content: 'I found a stubbed `BatchSettle` entry point. I can wire the iterator and add a guard in the msg server. Want me to push the patch?' },
+      ],
+      [
+        { type: 'tool_call', content: 'rg "GPU" x/hpc -n' },
+        { type: 'tool_result', content: 'x/hpc/keeper/metering.go:44 TrackGPU\nx/hpc/types/config.go:18 GPUMeteringEnabled' },
+        { role: 'assistant', content: 'GPU metering hooks are already scaffolded. I can add the config toggle + emit usage events, plus a short docs note.' },
+      ],
+      [
+        { type: 'tool_call', content: 'git status --short' },
+        { type: 'tool_result', content: ' M tests/mfa/integration.test.ts\n M docs/mfa/README.md' },
+        { role: 'assistant', content: 'Updated the MFA test names and added a short docs note. Ready for review.' },
+      ],
+    ];
+
+    function appendMessage(session, msg) {
+      session.messages.push(msg);
+      session.updatedAt = Date.now();
+      if (msg.content && msg.role !== 'system' && msg.type !== 'tool_call' && msg.type !== 'tool_result') {
+        session.lastMessage = msg.content;
+      }
+    }
+
+    function scheduleResponses(session) {
+      const set = RESPONSE_SETS[replyCursor % RESPONSE_SETS.length];
+      replyCursor += 1;
+      let delay = 600 + Math.random() * 600;
+      set.forEach((item) => {
+        const msg = makeMsg(
+          item.role || 'assistant',
+          item.content,
+          Date.now() + delay,
+          item.type,
+        );
+        const weight = Math.min(2200, Math.max(700, item.content.length * 18));
+        delay += weight + Math.random() * 500;
+        setTimeout(() => {
+          appendMessage(session, msg);
+          addLog('info', 'agent', `${session.title}: ${item.type ? item.type.replace('_', ' ') : 'message'} queued`);
+        }, delay);
+      });
     }
 
     /* ── API Route Handler (comprehensive — catches ALL /api/* calls) */
@@ -398,18 +684,19 @@
       // ── Logs ──
       if (route === '/api/logs') {
         const lines = parseInt(params.get('lines')) || 50;
-        return { data: STATE.logs.slice(0, lines), logs: STATE.logs.slice(0, lines) };
+        const entries = STATE.logs.slice(0, lines);
+        return { data: { lines: entries.map(formatLogLine) }, lines: entries.map(formatLogLine) };
       }
       if (route === '/api/agent-logs')
         return { data: STATE.agentLogFiles };
       if (route === '/api/agent-logs/tail') {
-        const file = params.get('file') || '';
+        const file = params.get('file') || params.get('query') || '';
         const n = parseInt(params.get('lines')) || 100;
         const lines = Array.from({ length: Math.min(n, 20) }, (_, i) => {
           const ts = new Date(now - (20 - i) * 30000).toISOString();
           return `[${ts}] [info] Demo log line ${i + 1} from ${file || 'agent'}`;
         });
-        return { data: lines.join('\n') };
+        return { data: lines.join('\n'), lines };
       }
       if (route === '/api/agent-context') {
         const q = params.get('query') || '';
@@ -463,34 +750,71 @@
 
       // ── Sessions ──
       if (route === '/api/sessions' && method === 'GET') {
-        return { data: STATE.sessions.map(s => ({ id: s.id, name: s.name, agentType: s.agentType, status: s.status, taskId: s.taskId, created: s.created })) };
+        return {
+          sessions: STATE.sessions.map((s) => ({
+            id: s.id,
+            title: s.title,
+            type: s.type,
+            status: s.status,
+            taskId: s.taskId,
+            branch: s.branch,
+            createdAt: s.createdAt,
+            updatedAt: s.updatedAt,
+            lastMessage: s.lastMessage,
+          })),
+        };
       }
       if (route.match(/^\/api\/sessions\/[^/]+\/diff$/)) {
-        return { data: STATE.gitDiff };
+        const sid = route.split('/')[3];
+        return { diff: STATE.sessionDiffs[sid] || { files: [] } };
       }
       if (route.match(/^\/api\/sessions\/[^/]+\/message$/)) {
         const sid = route.split('/')[3];
         const ses = STATE.sessions.find(s => s.id === sid);
-        if (ses) ses.messages.push({ role: 'user', text: body?.text || body?.message || '', ts: Date.now() });
-        return { ok: true };
+        const content = String(body?.content || body?.text || body?.message || '');
+        if (ses && content) {
+          appendMessage(ses, makeMsg('user', content, Date.now()));
+          ses.status = ses.status === 'archived' ? 'active' : ses.status;
+          scheduleResponses(ses);
+        }
+        return { ok: true, session: ses || null };
       }
       if (route.match(/^\/api\/sessions\/[^/]+\/resume$/)) {
-        return { ok: true };
+        const sid = route.split('/')[3];
+        const ses = STATE.sessions.find(s => s.id === sid);
+        if (ses) ses.status = 'active';
+        return { ok: true, session: ses || null };
       }
       if (route.match(/^\/api\/sessions\/[^/]+\/archive$/)) {
         const sid = route.split('/')[3];
         const ses = STATE.sessions.find(s => s.id === sid);
         if (ses) ses.status = 'archived';
-        return { ok: true };
+        return { ok: true, session: ses || null };
       }
       if (route === '/api/sessions/create') {
-        const s = { id: 'ses-' + Math.random().toString(36).slice(2, 5), name: body?.name || 'New session', agentType: body?.agentType || 'copilot', status: 'active', taskId: body?.taskId || null, created: Date.now(), messages: [] };
-        STATE.sessions.push(s);
-        return { ok: true, data: s };
+        const id = 'ses-' + Math.random().toString(36).slice(2, 6);
+        const s = {
+          id,
+          title: body?.title || 'New Session',
+          type: body?.type || 'manual',
+          status: 'active',
+          taskId: body?.taskId || null,
+          branch: body?.branch || null,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          lastMessage: 'Session created.',
+          messages: [
+            makeMsg('system', 'Session initialized in demo mode.', Date.now(), 'system'),
+          ],
+        };
+        STATE.sessions.unshift(s);
+        STATE.sessionDiffs[id] = { files: [] };
+        return { ok: true, session: s };
       }
       if (route.match(/^\/api\/sessions\/[^/]+$/) && method === 'GET') {
         const sid = route.split('/')[3];
-        return { data: STATE.sessions.find(s => s.id === sid) || null };
+        const ses = STATE.sessions.find(s => s.id === sid) || null;
+        return { session: ses };
       }
 
       // ── Settings & Config ──

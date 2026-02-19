@@ -235,6 +235,7 @@ section {
   place-items: center;
   font-size: 0.9rem;
   font-weight: 900;
+  object-fit: contain;
 }
 
 .nav__links {
@@ -2162,8 +2163,10 @@ body.is-miniapp-fullscreen {
 }
 
 .miniapp-demo-window__phone {
-  width: 375px;
-  height: 700px;
+  width: clamp(340px, 70vw, 450px);
+  aspect-ratio: 375 / 700;
+  height: auto;
+  max-width: 100%;
   margin: 0 auto;
   border-radius: 40px;
   background: #000;
@@ -2635,8 +2638,9 @@ body.is-miniapp-fullscreen {
     height: 440px;
   }
   .miniapp-demo-window__phone {
-    width: 320px;
-    height: 600px;
+    width: clamp(300px, 82vw, 400px);
+    aspect-ratio: 375 / 700;
+    height: auto;
     border-radius: 32px;
     padding: 10px;
   }
