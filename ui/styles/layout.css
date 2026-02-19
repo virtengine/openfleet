@@ -20,7 +20,20 @@
 }
 
 .app-header::after {
-  content: none;
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(96, 204, 93, 0.4) 30%,
+    rgba(76, 201, 240, 0.35) 60%,
+    transparent 100%
+  );
+  pointer-events: none;
 }
 
 .app-header-left {
