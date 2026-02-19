@@ -4,7 +4,7 @@ Bosun is a production-grade supervisor for AI coding agents. It routes tasks acr
 
 [Website](https://bosun.virtengine.com) · [Docs](https://bosun.virtengine.com/docs/) · [GitHub](https://github.com/virtengine/bosun#virtenginebosun) · [npm](https://www.npmjs.com/package/bosun) · [Issues](https://github.com/virtengine/bosun/issues)
 
-[![CI](https://github.com/virtengine/bosun/actions/workflows/ci.yaml/badge.svg)](https://github.com/virtengine/bosun/actions/workflows/ci.yaml)
+[![CI](https://github.com/virtengine/bosun/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/virtengine/bosun/actions/workflows/ci.yaml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![npm](https://img.shields.io/npm/v/bosun.svg)](https://www.npmjs.com/package/bosun)
 
