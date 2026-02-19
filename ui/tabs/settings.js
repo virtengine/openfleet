@@ -1517,19 +1517,19 @@ function AppPreferencesMode() {
             Telegram Mini App for Bosun task orchestration
           </div>
           <div class="meta-text mt-sm">
-            Built with Preact +https://github.com/virtengine/bosun#virtenginebosun"
+            Built with Preact +https://github.com/virtengine/bosun?tab=readme-ov-file#bosun"
           </div>
           <div class="btn-row mt-md" style="justify-content:center">
-            <buttonhttps://github.com/virtengine/bosun#virtenginebosun"
+            <buttonhttps://github.com/virtengine/bosun?tab=readme-ov-file#bosun"
               class="btn btn-ghost btn-sm"
               onClick=${() => {
                 haptic();
                 const tg = globalThis.Telegram?.WebApp;
                 if (tg?.openLink)
-                  tg.openLink("https://github.com/virtengine/bosun#virtenginebosun");
+                  tg.openLink("https://github.com/virtengine/bosun?tab=readme-ov-file#bosun");
                 else
                   globalThis.open(
-                    "https://github.com/virtengine/bosun#virtenginebosun",
+                    "https://github.com/virtengine/bosun?tab=readme-ov-file#bosun",
                     "_blank",
                   );
               }}

@@ -2,7 +2,7 @@
 
 Bosun is a production-grade supervisor for AI coding agents. It routes tasks across executors, automates PR lifecycles, and keeps operators in control through Telegram, the Mini App dashboard, and optional WhatsApp notifications.
 
-[Website](https://bosun.virtengine.com) · [Docs](https://bosun.virtengine.com/docs/) · [GitHub](https://github.com/virtengine/bosun#virtenginebosun) · [npm](https://www.npmjs.com/package/bosun) · [Issues](https://github.com/virtengine/bosun/issues)
+[Website](https://bosun.virtengine.com) · [Docs](https://bosun.virtengine.com/docs/) · [GitHub](https://github.com/virtengine/bosun?tab=readme-ov-file#bosun) · [npm](https://www.npmjs.com/package/bosun) · [Issues](https://github.com/virtengine/bosun/issues)
 
 [![CI](https://github.com/virtengine/bosun/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/virtengine/bosun/actions/workflows/ci.yaml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
