@@ -44,7 +44,7 @@
 
       <ul class="nav__links">
         <li><a href="#features">Features</a></li>
-        <li><a href="#terminal">Demo</a></li>
+        <li><a href="#demo">Demo</a></li>
         <li><a href="#architecture">Architecture</a></li>
         <li><a href="#integrations">Integrations</a></li>
         <li><a href="docs/">Docs</a></li>
@@ -85,26 +85,197 @@
           and ship production code — without human intervention.
         </p>
 
-        <div class="hero__actions">
-          <a href="#quickstart" class="btn btn--primary btn--shine">
-            Get Started
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-          </a>
-          <a href="#terminal" class="btn btn--ghost">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-            Live Demo
-          </a>
-          <a href="docs/" class="btn btn--ghost">
+        <div class="hero__install">
+          <div class="install-cmd" title="Click to copy">
+            <span class="install-cmd__prompt">$</span>
+            <span class="install-cmd__text">npm install -g @virtengine/openfleet</span>
+            <span class="install-cmd__copy">📋</span>
+            <span class="install-cmd__tooltip">Copied!</span>
+          </div>
+          <a href="docs/" class="btn btn--ghost btn--sm">
             Documentation
           </a>
         </div>
+      </div>
 
-        <div class="install-cmd" title="Click to copy">
-          <span class="install-cmd__prompt">$</span>
-          <span class="install-cmd__text">npm install -g @virtengine/openfleet</span>
-          <span class="install-cmd__copy">📋</span>
-          <span class="install-cmd__tooltip">Copied!</span>
+        <div class="hero__demo" id="demo">
+          <div class="miniapp-demo-window__overlay" aria-hidden="true"></div>
+        <div class="section-header reveal">
+          <span class="section-header__label">Interactive Demo</span>
+          <h2 class="section-header__title">Every way to <span class="gradient-text">control your fleet</span></h2>
+          <p class="section-header__desc">
+            CLI, Telegram, MiniApp, or WhatsApp — choose your interface.
+            These are real, functional prototypes you can interact with.
+          </p>
         </div>
+
+        <!-- ── Channel Tabs ──────────────────────────────────────────── -->
+        <div class="demo-tabs reveal">
+          <button class="demo-tab demo-tab--active" data-demo="cli">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+            CLI Terminal
+          </button>
+          <button class="demo-tab" data-demo="telegram">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+            Telegram Chat
+          </button>
+          <button class="demo-tab" data-demo="miniapp">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+            MiniApp
+          </button>
+          <button class="demo-tab" data-demo="whatsapp">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
+            WhatsApp
+          </button>
+        </div>
+
+        <!-- ── CLI Panel (existing terminal) ─────────────────────────── -->
+        <div class="demo-panel demo-panel--active" id="demo-panel-cli">
+          <div class="terminal-window reveal">
+            <div class="terminal-window__titlebar">
+              <div class="terminal-window__dots">
+                <div class="terminal-window__dot terminal-window__dot--red"></div>
+                <div class="terminal-window__dot terminal-window__dot--yellow"></div>
+                <div class="terminal-window__dot terminal-window__dot--green"></div>
+              </div>
+              <div class="terminal-window__title">openfleet — bash — 120×35</div>
+            </div>
+            <div class="terminal-window__body" id="demo-terminal"></div>
+          </div>
+        </div>
+
+        <!-- ── Telegram Chat Panel ───────────────────────────────────── -->
+        <div class="demo-panel" id="demo-panel-telegram">
+          <div class="telegram-demo-window reveal">
+            <div class="telegram-demo-window__chrome">
+              <div class="telegram-demo-window__top">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                <span class="telegram-demo-window__app-name">Telegram</span>
+                <div class="telegram-demo-window__dots">
+                  <div class="terminal-window__dot terminal-window__dot--red"></div>
+                  <div class="terminal-window__dot terminal-window__dot--yellow"></div>
+                  <div class="terminal-window__dot terminal-window__dot--green"></div>
+                </div>
+              </div>
+            </div>
+            <div id="telegram-chat-container"></div>
+          </div>
+        </div>
+
+        <!-- ── MiniApp Panel ─────────────────────────────────────────── -->
+        <div class="demo-panel" id="demo-panel-miniapp">
+          <div class="miniapp-demo-window reveal">
+            <div class="miniapp-demo-window__phone">
+              <div class="miniapp-demo-window__notch"></div>
+              <div class="miniapp-demo-window__screen">
+                <div class="miniapp-demo-window__tg-header">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                  <span>OpenFleet</span>
+                  <button class="miniapp-demo-window__expand" type="button" aria-label="Enter fullscreen" aria-pressed="false">
+                    <svg class="miniapp-demo-window__expand-icon miniapp-demo-window__expand-icon--enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H3v5"/><path d="M16 3h5v5"/><path d="M8 21H3v-5"/><path d="M16 21h5v-5"/></svg>
+                    <svg class="miniapp-demo-window__expand-icon miniapp-demo-window__expand-icon--exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H3v6"/><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M15 21h6v-6"/></svg>
+                  </button>
+                  <div class="miniapp-demo-window__tg-dots">⋮</div>
+                </div>
+                <iframe
+                  id="miniapp-iframe"
+                  src="ui/demo.html"
+                  class="miniapp-demo-window__iframe"
+                  loading="lazy"
+                  title="OpenFleet MiniApp Demo"
+                ></iframe>
+              </div>
+            </div>
+            <p class="miniapp-demo-window__caption">
+              <span class="miniapp-demo-window__live-dot"></span>
+              Live from source — auto-updates when the real MiniApp changes
+            </p>
+          </div>
+        </div>
+
+        <!-- ── WhatsApp Panel ────────────────────────────────────────── -->
+        <div class="demo-panel" id="demo-panel-whatsapp">
+          <div class="whatsapp-demo-window reveal">
+            <div class="whatsapp-demo-window__header">
+              <div class="whatsapp-demo-window__avatar">⚡</div>
+              <div class="whatsapp-demo-window__header-info">
+                <div class="whatsapp-demo-window__name">OpenFleet Alerts</div>
+                <div class="whatsapp-demo-window__status">online</div>
+              </div>
+            </div>
+            <div class="whatsapp-demo-window__messages">
+              <div class="whatsapp-demo-window__date">Today</div>
+
+              <div class="wa-msg wa-msg--bot">
+                <div class="wa-msg__bubble">
+                  <div class="wa-msg__text">🚀 <b>Fleet Started</b><br>OpenFleet v0.26.2 is running<br>Board: github | Agents: 2 | Max Parallel: 6</div>
+                  <div class="wa-msg__time">14:28</div>
+                </div>
+              </div>
+
+              <div class="wa-msg wa-msg--bot">
+                <div class="wa-msg__bubble">
+                  <div class="wa-msg__text">📋 <b>Task Dispatched</b><br>#42 feat(market): add order expiry<br>→ copilot-claude</div>
+                  <div class="wa-msg__time">14:32</div>
+                </div>
+              </div>
+
+              <div class="wa-msg wa-msg--bot">
+                <div class="wa-msg__bubble">
+                  <div class="wa-msg__text">📋 <b>Task Dispatched</b><br>#43 fix(veid): token validation<br>→ codex-default</div>
+                  <div class="wa-msg__time">14:32</div>
+                </div>
+              </div>
+
+              <div class="wa-msg wa-msg--bot">
+                <div class="wa-msg__bubble">
+                  <div class="wa-msg__text">✅ <b>PR Merged</b><br>#43 fix(veid): token validation<br>PR #188 → main ✓<br><span style="color:#8696a0">All CI checks passed</span></div>
+                  <div class="wa-msg__time">14:44</div>
+                </div>
+              </div>
+
+              <div class="wa-msg wa-msg--bot">
+                <div class="wa-msg__bubble">
+                  <div class="wa-msg__text">✅ <b>PR Merged</b><br>#42 feat(market): add order expiry<br>PR #187 → main ✓<br><span style="color:#8696a0">All CI checks passed</span></div>
+                  <div class="wa-msg__time">14:46</div>
+                </div>
+              </div>
+
+              <div class="wa-msg wa-msg--bot">
+                <div class="wa-msg__bubble">
+                  <div class="wa-msg__text">📊 <b>Hourly Digest</b><br>✅ 2 tasks completed<br>🔀 2 PRs merged<br>🤖 2 agents active<br>💚 All systems healthy</div>
+                  <div class="wa-msg__time">15:00</div>
+                </div>
+              </div>
+
+              <div class="wa-msg wa-msg--user">
+                <div class="wa-msg__bubble">
+                  <div class="wa-msg__text">What's the status?</div>
+                  <div class="wa-msg__time">15:02 ✓✓</div>
+                </div>
+              </div>
+
+              <div class="wa-msg wa-msg--bot">
+                <div class="wa-msg__bubble">
+                  <div class="wa-msg__text">📊 <b>Fleet Status</b> — Running<br><br>⏱ Uptime: 2h 34m<br>✅ 13 tasks done today<br>🔀 11 PRs merged<br>⏳ 2 PRs pending<br><br>Executors: 2/2 active</div>
+                  <div class="wa-msg__time">15:02</div>
+                </div>
+              </div>
+            </div>
+            <div class="whatsapp-demo-window__footer">
+              <div class="whatsapp-demo-window__input-placeholder">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8696a0" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/></svg>
+                <span>Type a message</span>
+              </div>
+              <div class="whatsapp-demo-window__mic">🎤</div>
+            </div>
+            <p class="whatsapp-demo-window__caption">
+              WhatsApp channel delivers push notifications for task events, PR merges, and fleet digests.
+              <br><span style="color:var(--text-muted);">Enable with: <code>openfleet --whatsapp-auth</code></span>
+            </p>
+          </div>
+        </div>
+
       </div>
     </div>
   </section>
@@ -229,184 +400,6 @@
           </p>
         </div>
       </div>
-    </div>
-  </section>
-
-  <!-- ═══ Interactive Demo — Tabbed Multi-Channel ═══════════════════════ -->
-  <section class="terminal-section" id="terminal">
-    <div class="container">
-      <div class="section-header reveal">
-        <span class="section-header__label">Interactive Demo</span>
-        <h2 class="section-header__title">Every way to <span class="gradient-text">control your fleet</span></h2>
-        <p class="section-header__desc">
-          CLI, Telegram, MiniApp, or WhatsApp — choose your interface.
-          These are real, functional prototypes you can interact with.
-        </p>
-      </div>
-
-      <!-- ── Channel Tabs ──────────────────────────────────────────── -->
-      <div class="demo-tabs reveal">
-        <button class="demo-tab demo-tab--active" data-demo="cli">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-          CLI Terminal
-        </button>
-        <button class="demo-tab" data-demo="telegram">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
-          Telegram Chat
-        </button>
-        <button class="demo-tab" data-demo="miniapp">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
-          MiniApp
-        </button>
-        <button class="demo-tab" data-demo="whatsapp">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
-          WhatsApp
-        </button>
-      </div>
-
-      <!-- ── CLI Panel (existing terminal) ─────────────────────────── -->
-      <div class="demo-panel demo-panel--active" id="demo-panel-cli">
-        <div class="terminal-window reveal">
-          <div class="terminal-window__titlebar">
-            <div class="terminal-window__dots">
-              <div class="terminal-window__dot terminal-window__dot--red"></div>
-              <div class="terminal-window__dot terminal-window__dot--yellow"></div>
-              <div class="terminal-window__dot terminal-window__dot--green"></div>
-            </div>
-            <div class="terminal-window__title">openfleet — bash — 120×35</div>
-          </div>
-          <div class="terminal-window__body" id="demo-terminal"></div>
-        </div>
-      </div>
-
-      <!-- ── Telegram Chat Panel ───────────────────────────────────── -->
-      <div class="demo-panel" id="demo-panel-telegram">
-        <div class="telegram-demo-window reveal">
-          <div class="telegram-demo-window__chrome">
-            <div class="telegram-demo-window__top">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-              <span class="telegram-demo-window__app-name">Telegram</span>
-              <div class="telegram-demo-window__dots">
-                <div class="terminal-window__dot terminal-window__dot--red"></div>
-                <div class="terminal-window__dot terminal-window__dot--yellow"></div>
-                <div class="terminal-window__dot terminal-window__dot--green"></div>
-              </div>
-            </div>
-          </div>
-          <div id="telegram-chat-container"></div>
-        </div>
-      </div>
-
-      <!-- ── MiniApp Panel ─────────────────────────────────────────── -->
-      <div class="demo-panel" id="demo-panel-miniapp">
-        <div class="miniapp-demo-window reveal">
-          <div class="miniapp-demo-window__phone">
-            <div class="miniapp-demo-window__notch"></div>
-            <div class="miniapp-demo-window__screen">
-              <div class="miniapp-demo-window__tg-header">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-                <span>OpenFleet</span>
-                <div class="miniapp-demo-window__tg-dots">⋮</div>
-              </div>
-              <iframe
-                id="miniapp-iframe"
-                src="ui/demo.html"
-                class="miniapp-demo-window__iframe"
-                loading="lazy"
-                title="OpenFleet MiniApp Demo"
-              ></iframe>
-            </div>
-          </div>
-          <p class="miniapp-demo-window__caption">
-            <span class="miniapp-demo-window__live-dot"></span>
-            Live from source — auto-updates when the real MiniApp changes
-          </p>
-        </div>
-      </div>
-
-      <!-- ── WhatsApp Panel ────────────────────────────────────────── -->
-      <div class="demo-panel" id="demo-panel-whatsapp">
-        <div class="whatsapp-demo-window reveal">
-          <div class="whatsapp-demo-window__header">
-            <div class="whatsapp-demo-window__avatar">⚡</div>
-            <div class="whatsapp-demo-window__header-info">
-              <div class="whatsapp-demo-window__name">OpenFleet Alerts</div>
-              <div class="whatsapp-demo-window__status">online</div>
-            </div>
-          </div>
-          <div class="whatsapp-demo-window__messages">
-            <div class="whatsapp-demo-window__date">Today</div>
-
-            <div class="wa-msg wa-msg--bot">
-              <div class="wa-msg__bubble">
-                <div class="wa-msg__text">🚀 <b>Fleet Started</b><br>OpenFleet v0.26.2 is running<br>Board: github | Agents: 2 | Max Parallel: 6</div>
-                <div class="wa-msg__time">14:28</div>
-              </div>
-            </div>
-
-            <div class="wa-msg wa-msg--bot">
-              <div class="wa-msg__bubble">
-                <div class="wa-msg__text">📋 <b>Task Dispatched</b><br>#42 feat(market): add order expiry<br>→ copilot-claude</div>
-                <div class="wa-msg__time">14:32</div>
-              </div>
-            </div>
-
-            <div class="wa-msg wa-msg--bot">
-              <div class="wa-msg__bubble">
-                <div class="wa-msg__text">📋 <b>Task Dispatched</b><br>#43 fix(veid): token validation<br>→ codex-default</div>
-                <div class="wa-msg__time">14:32</div>
-              </div>
-            </div>
-
-            <div class="wa-msg wa-msg--bot">
-              <div class="wa-msg__bubble">
-                <div class="wa-msg__text">✅ <b>PR Merged</b><br>#43 fix(veid): token validation<br>PR #188 → main ✓<br><span style="color:#8696a0">All CI checks passed</span></div>
-                <div class="wa-msg__time">14:44</div>
-              </div>
-            </div>
-
-            <div class="wa-msg wa-msg--bot">
-              <div class="wa-msg__bubble">
-                <div class="wa-msg__text">✅ <b>PR Merged</b><br>#42 feat(market): add order expiry<br>PR #187 → main ✓<br><span style="color:#8696a0">All CI checks passed</span></div>
-                <div class="wa-msg__time">14:46</div>
-              </div>
-            </div>
-
-            <div class="wa-msg wa-msg--bot">
-              <div class="wa-msg__bubble">
-                <div class="wa-msg__text">📊 <b>Hourly Digest</b><br>✅ 2 tasks completed<br>🔀 2 PRs merged<br>🤖 2 agents active<br>💚 All systems healthy</div>
-                <div class="wa-msg__time">15:00</div>
-              </div>
-            </div>
-
-            <div class="wa-msg wa-msg--user">
-              <div class="wa-msg__bubble">
-                <div class="wa-msg__text">What's the status?</div>
-                <div class="wa-msg__time">15:02 ✓✓</div>
-              </div>
-            </div>
-
-            <div class="wa-msg wa-msg--bot">
-              <div class="wa-msg__bubble">
-                <div class="wa-msg__text">📊 <b>Fleet Status</b> — Running<br><br>⏱ Uptime: 2h 34m<br>✅ 13 tasks done today<br>🔀 11 PRs merged<br>⏳ 2 PRs pending<br><br>Executors: 2/2 active</div>
-                <div class="wa-msg__time">15:02</div>
-              </div>
-            </div>
-          </div>
-          <div class="whatsapp-demo-window__footer">
-            <div class="whatsapp-demo-window__input-placeholder">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8696a0" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/></svg>
-              <span>Type a message</span>
-            </div>
-            <div class="whatsapp-demo-window__mic">🎤</div>
-          </div>
-          <p class="whatsapp-demo-window__caption">
-            WhatsApp channel delivers push notifications for task events, PR merges, and fleet digests.
-            <br><span style="color:var(--text-muted);">Enable with: <code>openfleet --whatsapp-auth</code></span>
-          </p>
-        </div>
-      </div>
-
     </div>
   </section>
 

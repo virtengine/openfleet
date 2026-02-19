@@ -422,6 +422,30 @@ section {
   margin-bottom: 3rem;
 }
 
+.hero__install {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 3rem;
+}
+
+.hero__demo {
+  margin-top: 4rem;
+}
+
+.hero__demo .section-header {
+  max-width: 820px;
+  margin: 0 auto 2rem;
+  text-align: center;
+}
+
+.hero__demo .section-header__desc {
+  margin-left: auto;
+  margin-right: auto;
+}
+
 /* ── Buttons ───────────────────────────────────────────────────────────── */
 .btn {
   display: inline-flex;
@@ -807,6 +831,102 @@ section {
 
 .terminal-window__body .terminal-cursor {
   background: var(--cyan) !important;
+}
+
+.miniapp-demo-window__expand {
+  border: 1px solid transparent;
+  background: rgba(9, 15, 21, 0.65);
+  color: #4cc9f0;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  margin-left: auto;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.miniapp-demo-window__expand:hover {
+  border-color: rgba(76, 201, 240, 0.5);
+  color: #60cc5d;
+}
+
+.miniapp-demo-window__expand-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.miniapp-demo-window__expand-icon--exit {
+  display: none;
+}
+
+.miniapp-demo-window__expand.is-fullscreen .miniapp-demo-window__expand-icon--enter {
+  display: none;
+}
+
+.miniapp-demo-window__expand.is-fullscreen .miniapp-demo-window__expand-icon--exit {
+  display: block;
+}
+
+.miniapp-demo-window__phone.is-fullscreen {
+  position: fixed;
+  inset: 2rem;
+  width: auto;
+  height: auto;
+  z-index: 60;
+  border-radius: 24px;
+  padding: 14px;
+  box-shadow:
+    0 40px 120px rgba(0,0,0,0.7),
+    0 0 0 1px rgba(255,255,255,0.08),
+    inset 0 0 0 1px rgba(255,255,255,0.06);
+}
+
+.miniapp-demo-window__phone.is-fullscreen .miniapp-demo-window__tg-dots {
+  display: none;
+}
+
+.miniapp-demo-window__phone.is-fullscreen .miniapp-demo-window__expand {
+  margin-left: auto;
+}
+
+.miniapp-demo-window__phone.is-fullscreen .miniapp-demo-window__tg-header {
+  gap: 0.75rem;
+}
+
+.miniapp-demo-window__phone.is-fullscreen .miniapp-demo-window__tg-header span {
+  flex: 1;
+  text-align: center;
+}
+
+.miniapp-demo-window__phone.is-fullscreen .miniapp-demo-window__notch {
+  top: 10px;
+}
+
+.miniapp-demo-window__phone.is-fullscreen .miniapp-demo-window__screen {
+  border-radius: 18px;
+}
+
+.miniapp-demo-window__overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 9, 12, 0.65);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  z-index: 50;
+}
+
+.miniapp-demo-window__overlay.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+body.is-miniapp-fullscreen {
+  overflow: hidden;
 }
 
 /* ── Architecture Section ──────────────────────────────────────────────── */
@@ -1975,7 +2095,7 @@ section {
 }
 
 .miniapp-demo-window__tg-dots {
-  margin-left: auto;
+  margin-left: 0.5rem;
   color: #6c7883;
   font-size: 1.2rem;
 }
@@ -2348,6 +2468,12 @@ section {
 }
 
 @media (max-width: 768px) {
+  .hero__install {
+    margin-bottom: 2rem;
+  }
+  .hero__demo {
+    margin-top: 2.5rem;
+  }
   .demo-tabs {
     flex-wrap: wrap;
     gap: 0.35rem;
@@ -2371,6 +2497,9 @@ section {
   .miniapp-demo-window__notch {
     width: 100px;
     height: 20px;
+  }
+  .miniapp-demo-window__phone.is-fullscreen {
+    inset: 1rem;
   }
   .security-flow__steps {
     gap: 0.25rem;
