@@ -65,6 +65,7 @@ import {
   selectedSessionId,
   sessionsData,
 } from "./components/session-list.js";
+import { WorkspaceSwitcher, loadWorkspaces } from "./components/workspace-switcher.js";
 import { DiffViewer } from "./components/diff-viewer.js";
 import {
   CommandPalette,
@@ -112,15 +113,16 @@ if (typeof document !== "undefined" && !document.getElementById("offline-banner-
   gap: 12px;
   padding: 12px 16px;
   margin: 8px 16px;
-  background: rgba(239, 68, 68, 0.15);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  border-radius: 12px;
-  backdrop-filter: blur(8px);
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(6px);
   animation: slideDown 0.3s ease-out;
 }
-.offline-banner-icon { font-size: 24px; }
+.offline-banner-icon { font-size: 20px; }
 .offline-banner-content { flex: 1; }
-.offline-banner-title { font-weight: 600; font-size: 14px; color: #ef4444; }
+.offline-banner-title { font-weight: 600; font-size: 13px; color: #ef4444; }
 .offline-banner-meta { font-size: 12px; opacity: 0.7; margin-top: 2px; }
 `;
   document.head.appendChild(style);
@@ -257,15 +259,18 @@ function Header() {
             ? html`<div class="app-header-hint">${navHint}</div>`
             : null}
         </div>
+        <${WorkspaceSwitcher} />
       </div>
       <div class="header-actions">
-        <div class="connection-pill ${connClass}">
-          <span class="connection-dot"></span>
-          ${connLabel}
+        <div class="header-status">
+          <div class="connection-pill ${connClass}">
+            <span class="connection-dot"></span>
+            ${connLabel}
+          </div>
+          ${freshnessLabel
+            ? html`<div class="header-freshness">${freshnessLabel}</div>`
+            : null}
         </div>
-        ${freshnessLabel
-          ? html`<div class="header-freshness" style="font-size:11px;opacity:0.55;margin-top:2px">${freshnessLabel}</div>`
-          : null}
         ${user
           ? html`<div class="app-header-user">@${user.username || user.first_name}</div>`
           : null}

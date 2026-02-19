@@ -131,6 +131,30 @@
     });
   });
 
+  /* ── Inject package version in hero tag ──────────────────────────────── */
+  const versionTarget = document.querySelector('[data-version]');
+  if (versionTarget) {
+    const sources = [
+      './package.json',
+      'https://raw.githubusercontent.com/virtengine/bosun/main/package.json',
+    ];
+    const tryNext = () => {
+      const next = sources.shift();
+      if (!next) return;
+      fetch(next, { cache: 'no-store' })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((pkg) => {
+          if (pkg?.version) {
+            versionTarget.textContent = `v${pkg.version}`;
+          } else {
+            tryNext();
+          }
+        })
+        .catch(() => tryNext());
+    };
+    tryNext();
+  }
+
   /* ── Intersection Observer for scroll reveals ────────────────────────── */
   const reveals = document.querySelectorAll('.reveal');
   if (reveals.length && 'IntersectionObserver' in window) {

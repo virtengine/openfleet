@@ -33,7 +33,6 @@ import { cloneValue, formatRelative, truncate } from "../modules/utils.js";
 import {
   Card,
   Badge,
-  StatCard,
   SkeletonCard,
   Modal,
   EmptyState,
@@ -205,14 +204,90 @@ export function DashboardTab() {
   const done = Number(counts.done || 0);
   const backlog = Number(status?.backlog_remaining || counts.todo || 0);
   const totalTasks = running + review + blocked + backlog + done;
-  const errorRate =
-    totalTasks > 0 ? ((blocked / totalTasks) * 100).toFixed(1) : "0.0";
+  const errorRateValue = totalTasks > 0 ? (blocked / totalTasks) * 100 : 0;
+  const errorRate = errorRateValue.toFixed(1);
 
   const totalActive = running + review + blocked;
   const progressPct =
     backlog + totalActive > 0
       ? Math.round((totalActive / (backlog + totalActive)) * 100)
       : 0;
+  const slotPct = execData?.maxParallel
+    ? ((execData.activeSlots || 0) / execData.maxParallel) * 100
+    : 0;
+  const headerLine = `${totalActive} active · ${backlog} backlog · ${done} done${
+    blocked ? ` · ${blocked} blocked` : ""
+  }`;
+
+  const overviewMetrics = [
+    {
+      label: "Total tasks",
+      value: totalTasks,
+      color: "var(--text-primary)",
+      trend: getTrend("total"),
+      spark: "total",
+    },
+    {
+      label: "In progress",
+      value: running,
+      color: "var(--color-inprogress)",
+      trend: getTrend("running"),
+      spark: "running",
+    },
+    {
+      label: "Done",
+      value: done,
+      color: "var(--color-done)",
+      trend: getTrend("done"),
+      spark: "done",
+    },
+    {
+      label: "Error rate",
+      value: `${errorRate}%`,
+      color: "var(--color-error)",
+      trend: -getTrend("errors"),
+      spark: "errors",
+    },
+  ];
+
+  const workItems = [
+    { label: "Running", value: running, color: "var(--color-inprogress)" },
+    { label: "Review", value: review, color: "var(--color-inreview)" },
+    { label: "Backlog", value: backlog, color: "var(--color-todo)" },
+    { label: "Done", value: done, color: "var(--color-done)" },
+  ];
+
+  const alertItems = [
+    {
+      label: "Blocked tasks",
+      value: blocked,
+      tone: blocked > 0 ? "error" : "ok",
+    },
+    {
+      label: "Error rate",
+      value: `${errorRate}%`,
+      tone: errorRateValue > 0 ? "warning" : "ok",
+    },
+  ];
+  const hasAlerts = alertItems.some((item) => item.tone !== "ok");
+
+  const qualityItems = [
+    {
+      label: "First-shot",
+      value: `${summary.first_shot_rate ?? 0}%`,
+      tone: "good",
+    },
+    {
+      label: "Needed Fix",
+      value: summary.needed_fix ?? 0,
+      tone: "warn",
+    },
+    {
+      label: "Failed",
+      value: summary.failed ?? 0,
+      tone: "error",
+    },
+  ];
 
   /* Trend indicator helper */
   const trend = (val) =>
@@ -342,174 +417,299 @@ export function DashboardTab() {
     return html`<${Card} title="Loading…"><${SkeletonCard} count=${4} /><//>`;
 
   return html`
-    <!-- Stats Grid -->
-    <${Card} title="Today at a Glance">
-      <div class="stats-grid">
-        <${StatCard}
-          value=${totalTasks}
-          label="Total Tasks"
-          color="var(--text-primary)"
-        >
-          ${trend(getTrend('total'))}
-          <${MiniSparkline} data=${sparkData('total')} color="var(--text-primary)" />
-        <//>
-        <${StatCard}
-          value=${running}
-          label="In Progress"
-          color="var(--color-inprogress)"
-        >
-          ${trend(getTrend('running'))}
-          <${MiniSparkline} data=${sparkData('running')} color="var(--color-inprogress)" />
-        <//>
-        <${StatCard} value=${done} label="Done" color="var(--color-done)">
-          ${trend(getTrend('done'))}
-          <${MiniSparkline} data=${sparkData('done')} color="var(--color-done)" />
-        <//>
-        <${StatCard}
-          value="${errorRate}%"
-          label="Error Rate"
-          color="var(--color-error)"
-        >
-          ${trend(-getTrend('errors'))}
-          <${MiniSparkline} data=${sparkData('errors')} color="var(--color-error)" />
-        <//>
-      </div>
-    <//>
-
-    <!-- Task Distribution -->
-    <${Card} title="Task Distribution">
-      <${DonutChart} segments=${segments} />
-      <div class="meta-text text-center mt-sm">
-        Active progress · ${progressPct}% engaged
-      </div>
-      <${ProgressBar} percent=${progressPct} />
-    <//>
-
-    <!-- Project Summary -->
-    ${project &&
-    html`
-      <${Card} title="Project Summary" className="project-summary-card">
-        <div class="meta-text mb-sm">
-          ${project.name || project.id || "Current Project"}
+    <div class="dashboard-shell">
+      <div class="dashboard-header">
+        <div class="dashboard-header-text">
+          <div class="dashboard-eyebrow">Pulse</div>
+          <div class="dashboard-title">Calm system overview</div>
+          <div class="dashboard-subtitle">${headerLine}</div>
         </div>
-        ${project.description &&
-        html`<div class="meta-text">
-          ${truncate(project.description, 160)}
-        </div>`}
-        ${project.taskCount != null &&
-        html`
-          <div class="stats-grid mt-sm">
-            <${StatCard} value=${project.taskCount} label="Tasks" />
-            <${StatCard}
-              value=${project.completedCount ?? 0}
-              label="Completed"
-              color="var(--color-done)"
-            />
+        <div class="dashboard-header-meta">
+          <span class="dashboard-chip">Mode ${mode}</span>
+          <span class="dashboard-chip">SDK ${defaultSdk}</span>
+          ${executor
+            ? executor.paused
+              ? html`<${Badge} status="error" text="Paused" />`
+              : html`<${Badge} status="done" text="Running" />`
+            : html`<span class="dashboard-chip">Executor · —</span>`}
+        </div>
+      </div>
+
+      <div class="dashboard-grid">
+        <${Card}
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.shield}</span>Health
+            Summary</span
+          >`}
+          className="dashboard-card dashboard-health"
+        >
+          <div class="dashboard-status-row">
+            <div class="dashboard-status-label">Executor status</div>
+            <div class="dashboard-status-value">
+              ${executor?.paused ? "Paused" : "Running"}
+            </div>
           </div>
-        `}
-      <//>
-    `}
-
-    <!-- Executor -->
-    <${Card} title="Executor">
-      <div class="meta-text mb-sm">
-        Mode: <strong>${mode}</strong> · Slots:
-        ${execData?.activeSlots ?? 0}/${execData?.maxParallel ?? "—"} ·
-        ${executor?.paused
-          ? html`<${Badge} status="error" text="Paused" />`
-          : html`<${Badge} status="done" text="Running" />`}
-      </div>
-      <${ProgressBar}
-        percent=${execData?.maxParallel
-          ? ((execData.activeSlots || 0) / execData.maxParallel) * 100
-          : 0}
-      />
-      <div class="btn-row mt-sm">
-        <button class="btn btn-primary btn-sm" onClick=${handlePause}>
-          Pause Executor
-        </button>
-        <button class="btn btn-secondary btn-sm" onClick=${handleResume}>
-          Resume Executor
-        </button>
-      </div>
-    <//>
-
-    <!-- Quick Actions -->
-    <${Card} title="Quick Actions">
-      <div class="quick-actions-grid">
-        ${QUICK_ACTIONS.map(
-          (a) => html`
+          <div class="dashboard-health-grid">
+            <div class="dashboard-health-item">
+              <div class="dashboard-health-label">Slots</div>
+              <div class="dashboard-health-value">
+                ${execData?.activeSlots ?? 0}/${execData?.maxParallel ?? "—"}
+              </div>
+            </div>
+            <div class="dashboard-health-item">
+              <div class="dashboard-health-label">Error rate</div>
+              <div class="dashboard-health-value">${errorRate}%</div>
+            </div>
+            <div class="dashboard-health-item">
+              <div class="dashboard-health-label">Active</div>
+              <div class="dashboard-health-value">${totalActive}</div>
+            </div>
+            <div class="dashboard-health-item">
+              <div class="dashboard-health-label">Total tasks</div>
+              <div class="dashboard-health-value">${totalTasks}</div>
+            </div>
+          </div>
+          <div class="dashboard-health-progress">
+            <div class="dashboard-progress-meta">
+              <span>Slot utilization</span>
+              <span>${Math.round(slotPct)}%</span>
+            </div>
+            <${ProgressBar} percent=${slotPct} />
+          </div>
+          <div class="dashboard-inline-actions">
             <button
-              key=${a.label}
-              class="quick-action-btn"
-              style="--qa-color: ${a.color}"
-              onClick=${(e) => handleQuickAction(a, e)}
+              class="btn btn-secondary btn-sm dashboard-btn"
+              onClick=${handlePause}
             >
-              <span class="quick-action-icon">${a.icon}</span>
-              <span class="quick-action-label">${a.label}</span>
+              Pause
             </button>
-          `,
-        )}
-      </div>
-    <//>
+            <button
+              class="btn btn-secondary btn-sm dashboard-btn"
+              onClick=${handleResume}
+            >
+              Resume
+            </button>
+          </div>
+        <//>
 
-    <!-- Quality -->
-    <${Card} title="Quality">
-      <div class="stats-grid">
-        <${StatCard}
-          value="${summary.first_shot_rate ?? 0}%"
-          label="First-shot"
-          color="var(--color-done)"
-        />
-        <${StatCard}
-          value=${summary.needed_fix ?? 0}
-          label="Needed Fix"
-          color="var(--color-inreview)"
-        />
-        <${StatCard}
-          value=${summary.failed ?? 0}
-          label="Failed"
-          color="var(--color-error)"
-        />
-      </div>
-    <//>
-
-    <!-- Recent Activity -->
-    <${Card} title="Recent Activity">
-      ${recentTasks.length
-        ? recentTasks.map(
-            (task) => html`
-              <div key=${task.id} class="list-item">
-                <div class="list-item-content">
-                  <div class="list-item-title">
-                    ${truncate(task.title || "(untitled)", 50)}
+        <${Card}
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.grid}</span>Overview</span
+          >`}
+          className="dashboard-card dashboard-overview"
+        >
+          <div class="dashboard-metric-grid">
+            ${overviewMetrics.map(
+              (metric) => html`
+                <div class="dashboard-metric">
+                  <div class="dashboard-metric-label">${metric.label}</div>
+                  <div
+                    class="dashboard-metric-value"
+                    style="color: ${metric.color}"
+                  >
+                    ${metric.value} ${trend(metric.trend)}
                   </div>
-                  <div class="meta-text">
-                    ${task.id}${task.updated_at
-                      ? ` · ${formatRelative(task.updated_at)}`
-                      : ""}
+                  <div class="dashboard-metric-spark">
+                    <${MiniSparkline}
+                      data=${sparkData(metric.spark)}
+                      color=${metric.color}
+                      height=${20}
+                      width=${90}
+                    />
                   </div>
                 </div>
-                <${Badge} status=${task.status} text=${task.status} />
+              `,
+            )}
+          </div>
+        <//>
+
+        <${Card}
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.zap}</span>Active Work</span
+          >`}
+          className="dashboard-card dashboard-active"
+        >
+          <div class="dashboard-work-layout">
+            <div class="dashboard-work-list">
+              ${workItems.map(
+                (item) => html`
+                  <div class="dashboard-work-item">
+                    <div class="dashboard-work-left">
+                      <span
+                        class="dashboard-work-dot"
+                        style="background: ${item.color}"
+                      ></span>
+                      <span class="dashboard-work-label">${item.label}</span>
+                    </div>
+                    <span class="dashboard-work-value">${item.value}</span>
+                  </div>
+                `,
+              )}
+            </div>
+            <div class="dashboard-work-chart">
+              <${DonutChart} segments=${segments} size=${110} strokeWidth=${10} />
+              <div class="dashboard-work-meta">
+                Active progress · ${progressPct}% engaged
               </div>
-            `,
-          )
-        : html`<${EmptyState} message="No recent tasks" />`}
-    <//>
+              <${ProgressBar} percent=${progressPct} />
+            </div>
+          </div>
+        <//>
 
-    <!-- Create Task Modal -->
-    ${showCreate &&
-    html`<${CreateTaskModal} onClose=${() => setShowCreate(false)} />`}
+        <${Card}
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.bell}</span>Alerts</span
+          >`}
+          className="dashboard-card dashboard-alerts"
+        >
+          <div class="dashboard-alerts-wrap">
+            ${alertItems.map(
+              (alert) => html`
+                <div class="dashboard-alert-item">
+                  <div class="dashboard-alert-left">
+                    <span class="dashboard-alert-dot ${alert.tone}"></span>
+                    <div class="dashboard-alert-text">
+                      <div class="dashboard-alert-title">${alert.label}</div>
+                      <div class="dashboard-alert-meta">
+                        ${alert.tone === "ok"
+                          ? hasAlerts
+                            ? "Stable"
+                            : "All clear"
+                          : "Needs attention"}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="dashboard-alert-value">${alert.value}</div>
+                </div>
+              `,
+            )}
+          </div>
+        <//>
 
-    ${showStartModal &&
-    html`
-      <${StartTaskModal}
-        task=${null}
-        defaultSdk=${defaultSdk}
-        allowTaskIdInput=${true}
-        onClose=${() => setShowStartModal(false)}
-        onStart=${handleModalStart}
-      />
-    `}
+        <${Card}
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.bosun}</span>Quick
+            Actions</span
+          >`}
+          className="dashboard-card dashboard-actions"
+        >
+          <div class="dashboard-actions-grid">
+            ${QUICK_ACTIONS.map(
+              (a) => html`
+                <button
+                  key=${a.label}
+                  class="dashboard-action-btn"
+                  style="--qa-color: ${a.color}"
+                  onClick=${(e) => handleQuickAction(a, e)}
+                >
+                  <span class="dashboard-action-icon">${a.icon}</span>
+                  <span class="dashboard-action-label">${a.label}</span>
+                </button>
+              `,
+            )}
+          </div>
+        <//>
+
+        ${project &&
+        html`
+          <${Card}
+            title=${html`<span class="dashboard-card-title"
+              ><span class="dashboard-title-icon">${ICONS.server}</span>Project</span
+            >`}
+            className="dashboard-card dashboard-project"
+          >
+            <div class="dashboard-project-name">
+              ${project.name || project.id || "Current Project"}
+            </div>
+            ${project.description &&
+            html`<div class="dashboard-project-desc">
+              ${truncate(project.description, 160)}
+            </div>`}
+            ${project.taskCount != null &&
+            html`
+              <div class="dashboard-project-grid">
+                <div class="dashboard-project-item">
+                  <div class="dashboard-project-label">Tasks</div>
+                  <div class="dashboard-project-value">
+                    ${project.taskCount}
+                  </div>
+                </div>
+                <div class="dashboard-project-item">
+                  <div class="dashboard-project-label">Completed</div>
+                  <div
+                    class="dashboard-project-value"
+                    style="color: var(--color-done)"
+                  >
+                    ${project.completedCount ?? 0}
+                  </div>
+                </div>
+              </div>
+            `}
+          <//>
+        `}
+
+        <${Card}
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.star}</span>Quality</span
+          >`}
+          className="dashboard-card dashboard-quality"
+        >
+          <div class="dashboard-quality-grid">
+            ${qualityItems.map(
+              (item) => html`
+                <div class="dashboard-quality-item tone-${item.tone}">
+                  <div class="dashboard-quality-value">${item.value}</div>
+                  <div class="dashboard-quality-label">${item.label}</div>
+                </div>
+              `,
+            )}
+          </div>
+        <//>
+
+        <${Card}
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.clock}</span>Recent
+            Activity</span
+          >`}
+          className="dashboard-card dashboard-activity"
+        >
+          <div class="dashboard-activity-list">
+            ${recentTasks.length
+              ? recentTasks.map(
+                  (task) => html`
+                    <div key=${task.id} class="list-item">
+                      <div class="list-item-content">
+                        <div class="list-item-title">
+                          ${truncate(task.title || "(untitled)", 50)}
+                        </div>
+                        <div class="meta-text">
+                          ${task.id}${task.updated_at
+                            ? ` · ${formatRelative(task.updated_at)}`
+                            : ""}
+                        </div>
+                      </div>
+                      <${Badge} status=${task.status} text=${task.status} />
+                    </div>
+                  `,
+                )
+              : html`<${EmptyState} message="No recent tasks" />`}
+          </div>
+        <//>
+      </div>
+
+      ${showCreate &&
+      html`<${CreateTaskModal} onClose=${() => setShowCreate(false)} />`}
+
+      ${showStartModal &&
+      html`
+        <${StartTaskModal}
+          task=${null}
+          defaultSdk=${defaultSdk}
+          allowTaskIdInput=${true}
+          onClose=${() => setShowStartModal(false)}
+          onStart=${handleModalStart}
+        />
+      `}
+    </div>
   `;
 }

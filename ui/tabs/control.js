@@ -20,7 +20,7 @@ import {
 import { ICONS } from "../modules/icons.js";
 import { cloneValue, truncate } from "../modules/utils.js";
 import { Card, Badge, SkeletonCard, Spinner } from "../components/shared.js";
-import { SegmentedControl } from "../components/forms.js";
+import { SegmentedControl, Collapsible } from "../components/forms.js";
 
 /* ─── Command registry for autocomplete ─── */
 const CMD_REGISTRY = [
@@ -74,6 +74,10 @@ export function ControlTab() {
   const [maxParallel, setMaxParallel] = useState(execData?.maxParallel ?? 0);
   const [cmdHistory, setCmdHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [isCompact, setIsCompact] = useState(() => {
+    try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
+    catch { return false; }
+  });
   const [backlogTasks, setBacklogTasks] = useState([]);
   const [retryTasks, setRetryTasks] = useState([]);
   const [tasksLoading, setTasksLoading] = useState(false);
@@ -105,6 +109,11 @@ export function ControlTab() {
   const timeoutLabel = execData?.taskTimeoutMs
     ? `${Math.round(execData.taskTimeoutMs / 60000)}m`
     : "—";
+  const controlMeta = [
+    { label: "Slots", value: slotsLabel },
+    { label: "Poll", value: pollLabel },
+    { label: "Timeout", value: timeoutLabel },
+  ];
 
   /* ── Load persistent history on mount ── */
   useEffect(() => {
@@ -116,6 +125,21 @@ export function ControlTab() {
       }
     } catch (_) { /* ignore corrupt data */ }
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
+
+  useEffect(() => {
+    let mq;
+    try { mq = globalThis.matchMedia?.("(max-width: 768px)"); }
+    catch { mq = null; }
+    if (!mq) return undefined;
+    const handler = (event) => setIsCompact(event.matches);
+    handler(mq);
+    if (mq.addEventListener) mq.addEventListener("change", handler);
+    else mq.addListener(handler);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", handler);
+      else mq.removeListener(handler);
+    };
   }, []);
 
   useEffect(() => {
@@ -491,406 +515,429 @@ export function ControlTab() {
   }, [retryTaskId, retryReason, refreshTaskOptions]);
 
   return html`
-    <!-- Loading skeleton -->
     ${!executor && !config && html`<${Card} title="Loading…"><${SkeletonCard} /><//>`}
 
-    <!-- ── Control Unit ── -->
-    <${Card}
-      title="Control Unit"
-      subtitle="Executor status and quick actions"
-      className="control-unit-card"
-    >
-      <div class="control-unit-body">
-        <div class="control-unit-meta">
-          <span>Mode <strong>${mode}</strong></span>
-          <span>Slots <strong>${slotsLabel}</strong></span>
-          <span>Poll <strong>${pollLabel}</strong></span>
-          <span>Timeout <strong>${timeoutLabel}</strong></span>
-          <span>Status ${
-            isPaused
-              ? html`<${Badge} status="error" text="Paused" />`
-              : html`<${Badge} status="done" text="Running" />`
-          }</span>
-        </div>
-        <div class="control-unit-actions">
-          <button class="btn btn-primary btn-sm" onClick=${handlePause}>
-            Pause Executor
-          </button>
-          <button class="btn btn-secondary btn-sm" onClick=${handleResume}>
-            Resume Executor
-          </button>
-          <button
-            class="btn btn-ghost btn-sm"
-            onClick=${() => sendCmd("/executor")}
-            title="Open executor menu"
-          >
-            /executor
-          </button>
-        </div>
-      </div>
-
-      <div class="form-label mt-sm">Max parallel tasks</div>
-      <div class="range-row mb-md">
-        <input
-          type="range"
-          min="0"
-          max="20"
-          step="1"
-          value=${maxParallel}
-          aria-label="Max parallel tasks"
-          onInput=${(e) => setMaxParallel(Number(e.target.value))}
-          onChange=${(e) => handleMaxParallel(Number(e.target.value))}
-        />
-        <span class="pill">Max ${maxParallel}</span>
-      </div>
-    <//>
-
-    <!-- ── Command Console ── -->
-    <${Card} title="Command Console">
-      <div class="input-row mb-sm">
-        <div style="position:relative;flex:1">
-          <input
-            class="input"
-            placeholder="/status"
-            value=${commandInput}
-            onInput=${(e) => {
-              setCommandInput(e.target.value);
-              setHistoryIndex(-1);
-            }}
-            onFocus=${() => setShowHistory(true)}
-            onBlur=${() => setTimeout(() => { setShowHistory(false); setShowAc(false); }, 200)}
-            onKeyDown=${handleConsoleKeyDown}
-          />
-          <!-- Autocomplete dropdown (above input) -->
-          ${showAc && acItems.length > 0 && html`
-            <div class="cmd-dropdown">
-              ${acItems.map((item, i) => html`
-                <div
-                  key=${item.cmd}
-                  class="cmd-dropdown-item${i === acIndex ? ' selected' : ''}"
-                  onMouseDown=${(e) => { e.preventDefault(); selectAcItem(item); }}
-                  onMouseEnter=${() => setAcIndex(i)}
-                >
-                  <div>
-                    <span style="font-weight:600;color:#e2e8f0">${item.cmd}</span>
-                    <span style="margin-left:8px;color:#94a3b8;font-size:0.85em">${item.desc}</span>
-                  </div>
-                  <span style=${{
-                    fontSize: '0.7rem', padding: '2px 8px', borderRadius: '9999px',
-                    background: (CAT_COLORS[item.cat] || '#6366f1') + '33',
-                    color: CAT_COLORS[item.cat] || '#6366f1', fontWeight: 600,
-                  }}>${item.cat}</span>
-                </div>
-              `)}
+    <div class="control-layout">
+      <div class="control-main">
+        <${Card}
+          title="Control Unit"
+          subtitle="Executor health and rapid actions"
+          className="control-unit-card control-hero"
+        >
+          <div class="control-hero-header">
+            <div class="control-hero-title">
+              <div class="control-hero-label">Executor</div>
+              <div class="control-hero-status">
+                <span class="control-hero-mode">${mode}</span>
+                ${isPaused
+                  ? html`<${Badge} status="error" text="Paused" />`
+                  : html`<${Badge} status="done" text="Running" />`}
+              </div>
             </div>
-          `}
-          <!-- Command history dropdown (legacy, when no autocomplete) -->
-          ${!showAc && showHistory &&
-          cmdHistory.length > 0 &&
-          html`
-            <div class="cmd-history-dropdown">
-              ${cmdHistory.map(
-                (c, i) => html`
+            <div class="control-hero-actions">
+              <button class="btn btn-primary btn-sm" onClick=${handlePause}>
+                Pause Executor
+              </button>
+              <button class="btn btn-secondary btn-sm" onClick=${handleResume}>
+                Resume Executor
+              </button>
+              <button
+                class="btn btn-ghost btn-sm"
+                onClick=${() => sendCmd("/executor")}
+                title="Open executor menu"
+              >
+                /executor
+              </button>
+            </div>
+          </div>
+
+          <div class="control-meta-grid">
+            ${controlMeta.map(
+              (item) => html`
+                <div class="control-meta-item" key=${item.label}>
+                  <span class="control-meta-label">${item.label}</span>
+                  <span class="control-meta-value">${item.value}</span>
+                </div>
+              `,
+            )}
+            <div class="control-meta-item">
+              <span class="control-meta-label">Capacity</span>
+              <span class="control-meta-value">Max ${maxParallel}</span>
+            </div>
+          </div>
+
+          <div class="control-range">
+            <div class="form-label mt-sm">Max parallel tasks</div>
+            <div class="range-row mb-md">
+              <input
+                type="range"
+                min="0"
+                max="20"
+                step="1"
+                value=${maxParallel}
+                aria-label="Max parallel tasks"
+                onInput=${(e) => setMaxParallel(Number(e.target.value))}
+                onChange=${(e) => handleMaxParallel(Number(e.target.value))}
+              />
+              <span class="pill">Max ${maxParallel}</span>
+            </div>
+          </div>
+        <//>
+
+        <${Card} className="command-console-card">
+          <${Collapsible} title="Command Console" defaultOpen=${true}>
+            <div class="meta-text mb-sm">Send commands with autocomplete and quick actions.</div>
+            <div class="cmd-input-row mb-sm">
+              <div class="cmd-input-wrap">
+                <input
+                  class="input cmd-input"
+                  placeholder="/status"
+                  value=${commandInput}
+                  onInput=${(e) => {
+                    setCommandInput(e.target.value);
+                    setHistoryIndex(-1);
+                  }}
+                  onFocus=${() => setShowHistory(true)}
+                  onBlur=${() => setTimeout(() => { setShowHistory(false); setShowAc(false); }, 200)}
+                  onKeyDown=${handleConsoleKeyDown}
+                />
+                ${showAc && acItems.length > 0 && html`
+                  <div class="cmd-dropdown">
+                    ${acItems.map((item, i) => html`
+                      <div
+                        key=${item.cmd}
+                        class="cmd-dropdown-item${i === acIndex ? ' selected' : ''}"
+                        onMouseDown=${(e) => { e.preventDefault(); selectAcItem(item); }}
+                        onMouseEnter=${() => setAcIndex(i)}
+                      >
+                        <div>
+                          <span class="cmd-item-title">${item.cmd}</span>
+                          <span class="cmd-item-desc">${item.desc}</span>
+                        </div>
+                        <span style=${{
+                          fontSize: '0.7rem', padding: '2px 8px', borderRadius: '9999px',
+                          background: (CAT_COLORS[item.cat] || '#6366f1') + '33',
+                          color: CAT_COLORS[item.cat] || '#6366f1', fontWeight: 600,
+                        }}>${item.cat}</span>
+                      </div>
+                    `)}
+                  </div>
+                `}
+                ${!showAc && showHistory &&
+                cmdHistory.length > 0 &&
+                html`
+                  <div class="cmd-history-dropdown">
+                    ${cmdHistory.map(
+                      (c, i) => html`
+                        <button
+                          key=${i}
+                          class="cmd-history-item"
+                          onMouseDown=${(e) => {
+                            e.preventDefault();
+                            setCommandInput(c);
+                            setShowHistory(false);
+                          }}
+                        >
+                          ${c}
+                        </button>
+                      `,
+                    )}
+                  </div>
+                `}
+              </div>
+              <button
+                class=${`btn btn-primary btn-sm ${sendingCmd ? 'btn-loading' : ''}`}
+                disabled=${sendingCmd}
+                onClick=${() => {
+                  if (commandInput.trim()) {
+                    sendCmd(commandInput.trim());
+                    setCommandInput("");
+                  }
+                }}
+              >
+                ${sendingCmd ? html`<${Spinner} size=${14} />` : ICONS.send}
+              </button>
+            </div>
+
+            <div class="cmd-quick-actions">
+              ${["/status", "/health", "/menu", "/helpfull"].map(
+                (cmd) => html`
                   <button
-                    key=${i}
-                    class="cmd-history-item"
-                    onMouseDown=${(e) => {
-                      e.preventDefault();
-                      setCommandInput(c);
-                      setShowHistory(false);
-                    }}
+                    key=${cmd}
+                    class="btn btn-ghost btn-sm"
+                    onClick=${() => sendCmd(cmd)}
                   >
-                    ${c}
+                    ${cmd}
                   </button>
                 `,
               )}
             </div>
-          `}
-        </div>
-        <button
-          class=${`btn btn-primary btn-sm ${sendingCmd ? 'btn-loading' : ''}`}
-          disabled=${sendingCmd}
-          onClick=${() => {
-            if (commandInput.trim()) {
-              sendCmd(commandInput.trim());
-              setCommandInput("");
-            }
-          }}
-        >
-          ${sendingCmd ? html`<${Spinner} size=${14} />` : ICONS.send}
-        </button>
-      </div>
 
-      <!-- Quick command chips -->
-      <div class="btn-row">
-        ${["/status", "/health", "/menu", "/helpfull"].map(
-          (cmd) => html`
-            <button
-              key=${cmd}
-              class="btn btn-ghost btn-sm"
-              onClick=${() => sendCmd(cmd)}
-            >
-              ${cmd}
-            </button>
-          `,
-        )}
-      </div>
+            ${runningCmd && html`
+              <div class="cmd-running-indicator">
+                <span class="cmd-running-dot"></span>
+                Running: <code>${runningCmd}</code>
+              </div>
+            `}
 
-      <!-- Running indicator -->
-      ${runningCmd && html`
-        <div style="margin-top:8px;display:flex;align-items:center;gap:8px;color:#94a3b8;font-size:0.85rem">
-          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#facc15;animation:pulse 1s infinite"></span>
-          Running: <code style="color:#e2e8f0">${runningCmd}</code>
-        </div>
-      `}
+            ${cmdOutputs.length > 0 && html`
+              <div class="cmd-output-list">
+                ${cmdOutputs.map((entry, idx) => html`
+                  <div key=${idx} class="cmd-output-item">
+                    <button
+                      class="cmd-output-toggle"
+                      onClick=${() => toggleOutput(idx)}
+                    >
+                      <span class="cmd-output-title">
+                        <code>${entry.cmd}</code>
+                      </span>
+                      <span class="cmd-output-time">
+                        ${new Date(entry.ts).toLocaleTimeString()} ${expandedOutputs[idx] ? '▲' : '▼'}
+                      </span>
+                    </button>
+                    ${expandedOutputs[idx] && html`
+                      <div class="cmd-output-panel">${entry.output}</div>
+                    `}
+                  </div>
+                `)}
+              </div>
+            `}
+          <//>
+        <//>
 
-      <!-- Inline command outputs accordion -->
-      ${cmdOutputs.length > 0 && html`
-        <div style="margin-top:12px">
-          ${cmdOutputs.map((entry, idx) => html`
-            <div key=${idx} style="margin-bottom:6px;border:1px solid rgba(255,255,255,0.06);border-radius:8px;overflow:hidden">
-              <button
-                style="width:100%;text-align:left;padding:6px 12px;background:rgba(255,255,255,0.03);border:none;color:#cbd5e1;cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:0.8rem"
-                onClick=${() => toggleOutput(idx)}
-              >
-                <span><code style="color:#818cf8">${entry.cmd}</code></span>
-                <span style="color:#64748b;font-size:0.75rem">${new Date(entry.ts).toLocaleTimeString()} ${expandedOutputs[idx] ? '▲' : '▼'}</span>
-              </button>
-              ${expandedOutputs[idx] && html`
-                <div class="cmd-output-panel">${entry.output}</div>
-              `}
+        <${Card} className="agent-control-card">
+          <${Collapsible} title="Agent Control" defaultOpen=${!isCompact}>
+            <div class="meta-text mb-sm">Ask or steer the active agent.</div>
+            <div class="agent-control-grid">
+              <div>
+                <div class="form-label">Ask agent</div>
+                <textarea
+                  class="input mb-sm"
+                  rows="2"
+                  placeholder="Ask the agent…"
+                  value=${askInput}
+                  onInput=${(e) => setAskInput(e.target.value)}
+                ></textarea>
+                <div class="btn-row">
+                  <button
+                    class="btn btn-primary btn-sm"
+                    onClick=${() => {
+                      if (askInput.trim()) {
+                        sendCmd(`/ask ${askInput.trim()}`);
+                        setAskInput("");
+                      }
+                    }}
+                  >
+                    💬 Ask
+                  </button>
+                </div>
+              </div>
+              <div>
+                <div class="form-label">Steer prompt</div>
+                <div class="input-row mb-sm">
+                  <input
+                    class="input"
+                    placeholder="Steer prompt (focus on…)"
+                    value=${steerInput}
+                    onInput=${(e) => setSteerInput(e.target.value)}
+                  />
+                  <button
+                    class="btn btn-secondary btn-sm"
+                    onClick=${() => {
+                      if (steerInput.trim()) {
+                        sendCmd(`/steer ${steerInput.trim()}`);
+                        setSteerInput("");
+                      }
+                    }}
+                  >
+                    🎯 Steer
+                  </button>
+                </div>
+              </div>
             </div>
-          `)}
-        </div>
-      `}
-    <//>
+          <//>
+        <//>
+      </div>
 
-    <!-- ── Task Ops ── -->
-    <${Card} title="Task Ops">
-      <div class="field-group">
-        <div class="form-label">Backlog task</div>
-        <div class="input-row">
-          <select
-            class=${startTaskError ? "input input-error" : "input"}
-            value=${startTaskId}
-            aria-label="Backlog task"
-            onChange=${(e) => {
-              setStartTaskId(e.target.value);
-              setStartTaskError("");
-            }}
-          >
-            <option value="">Select backlog task…</option>
-            ${backlogTasks.map(
-              (task) => html`
-                <option key=${task.id} value=${task.id}>
-                  ${truncate(task.title || "(untitled)", 48)} · ${task.id}
-                </option>
-              `,
-            )}
-          </select>
-          <button
-            class="btn btn-secondary btn-sm"
-            disabled=${!startTaskId}
-            onClick=${handleStartTask}
-          >
-            Start Task
-          </button>
-          <button
-            class="btn btn-ghost btn-sm"
-            onClick=${refreshTaskOptions}
-            title="Refresh task list"
-          >
-            ↻
-          </button>
-        </div>
-        ${startTaskError
-          ? html`<div class="form-hint error">${startTaskError}</div>`
-          : null}
-      </div>
-      <div class="meta-text mb-sm">
-        ${tasksLoading
-          ? "Loading tasks…"
-          : `${backlogTasks.length} backlog · ${retryTasks.length} retryable`}
-      </div>
-      <div class="field-group">
-        <div class="form-label">Retry task</div>
-        <div class="input-row">
-          <select
-            class=${retryTaskError ? "input input-error" : "input"}
-            value=${retryTaskId}
-            aria-label="Retry task"
-            onChange=${(e) => {
-              setRetryTaskId(e.target.value);
-              setRetryTaskError("");
-            }}
-          >
-            <option value="">Select task to retry…</option>
-            ${retryTasks.map(
-              (task) => html`
-                <option key=${task.id} value=${task.id}>
-                  ${truncate(task.title || "(untitled)", 48)} · ${task.id}
-                </option>
-              `,
-            )}
-          </select>
-          <input
-            class="input"
-            placeholder="Retry reason (optional)"
-            value=${retryReason}
-            onInput=${(e) => setRetryReason(e.target.value)}
-          />
-          <button
-            class="btn btn-secondary btn-sm"
-            disabled=${!retryTaskId}
-            onClick=${handleRetryTask}
-          >
-            Retry Task
-          </button>
-          <button class="btn btn-ghost btn-sm" onClick=${() => sendCmd("/plan")}>
-            📋 Plan
-          </button>
-        </div>
-        ${retryTaskError
-          ? html`<div class="form-hint error">${retryTaskError}</div>`
-          : null}
-      </div>
-    <//>
+      <div class="control-side">
+        <${Card} className="task-ops-card">
+          <${Collapsible} title="Task Ops" defaultOpen=${!isCompact}>
+            <div class="meta-text mb-sm">Start or retry work.</div>
+            <div class="field-group">
+              <div class="form-label">Backlog task</div>
+              <div class="input-row">
+                <select
+                  class=${startTaskError ? "input input-error" : "input"}
+                  value=${startTaskId}
+                  aria-label="Backlog task"
+                  onChange=${(e) => {
+                    setStartTaskId(e.target.value);
+                    setStartTaskError("");
+                  }}
+                >
+                  <option value="">Select backlog task…</option>
+                  ${backlogTasks.map(
+                    (task) => html`
+                      <option key=${task.id} value=${task.id}>
+                        ${truncate(task.title || "(untitled)", 48)} · ${task.id}
+                      </option>
+                    `,
+                  )}
+                </select>
+                <button
+                  class="btn btn-secondary btn-sm"
+                  disabled=${!startTaskId}
+                  onClick=${handleStartTask}
+                >
+                  Start Task
+                </button>
+                <button
+                  class="btn btn-ghost btn-sm"
+                  onClick=${refreshTaskOptions}
+                  title="Refresh task list"
+                >
+                  ↻
+                </button>
+              </div>
+              ${startTaskError
+                ? html`<div class="form-hint error">${startTaskError}</div>`
+                : null}
+            </div>
+            <div class="meta-text mb-sm">
+              ${tasksLoading
+                ? "Loading tasks…"
+                : `${backlogTasks.length} backlog · ${retryTasks.length} retryable`}
+            </div>
+            <div class="field-group">
+              <div class="form-label">Retry task</div>
+              <div class="input-row">
+                <select
+                  class=${retryTaskError ? "input input-error" : "input"}
+                  value=${retryTaskId}
+                  aria-label="Retry task"
+                  onChange=${(e) => {
+                    setRetryTaskId(e.target.value);
+                    setRetryTaskError("");
+                  }}
+                >
+                  <option value="">Select task to retry…</option>
+                  ${retryTasks.map(
+                    (task) => html`
+                      <option key=${task.id} value=${task.id}>
+                        ${truncate(task.title || "(untitled)", 48)} · ${task.id}
+                      </option>
+                    `,
+                  )}
+                </select>
+                <input
+                  class="input"
+                  placeholder="Retry reason (optional)"
+                  value=${retryReason}
+                  onInput=${(e) => setRetryReason(e.target.value)}
+                />
+                <button
+                  class="btn btn-secondary btn-sm"
+                  disabled=${!retryTaskId}
+                  onClick=${handleRetryTask}
+                >
+                  Retry Task
+                </button>
+                <button class="btn btn-ghost btn-sm" onClick=${() => sendCmd("/plan")}>
+                  📋 Plan
+                </button>
+              </div>
+              ${retryTaskError
+                ? html`<div class="form-hint error">${retryTaskError}</div>`
+                : null}
+            </div>
+          <//>
+        <//>
 
-    <!-- ── Agent Control ── -->
-    <${Card} title="Agent Control">
-      <div class="form-label">Ask agent</div>
-      <textarea
-        class="input mb-sm"
-        rows="2"
-        placeholder="Ask the agent…"
-        value=${askInput}
-        onInput=${(e) => setAskInput(e.target.value)}
-      ></textarea>
-      <div class="btn-row mb-md">
-        <button
-          class="btn btn-primary btn-sm"
-          onClick=${() => {
-            if (askInput.trim()) {
-              sendCmd(`/ask ${askInput.trim()}`);
-              setAskInput("");
-            }
-          }}
-        >
-          💬 Ask
-        </button>
-      </div>
-      <div class="form-label">Steer prompt</div>
-      <div class="input-row mb-sm">
-        <input
-          class="input"
-          placeholder="Steer prompt (focus on…)"
-          value=${steerInput}
-          onInput=${(e) => setSteerInput(e.target.value)}
-        />
-        <button
-          class="btn btn-secondary btn-sm"
-          onClick=${() => {
-            if (steerInput.trim()) {
-              sendCmd(`/steer ${steerInput.trim()}`);
-              setSteerInput("");
-            }
-          }}
-        >
-          🎯 Steer
-        </button>
-      </div>
-    <//>
+        <${Card} className="routing-card">
+          <${Collapsible} title="Routing" defaultOpen=${!isCompact}>
+            <div class="meta-text mb-sm">Executor routing and region.</div>
+            <div class="card-subtitle">SDK</div>
+            <${SegmentedControl}
+              options=${[
+                { value: "codex", label: "Codex" },
+                { value: "copilot", label: "Copilot" },
+                { value: "claude", label: "Claude" },
+                { value: "auto", label: "Auto" },
+              ]}
+              value=${config?.sdk || "auto"}
+              onChange=${(v) => updateConfig("sdk", v)}
+            />
+            <div class="card-subtitle mt-sm">Kanban</div>
+            <${SegmentedControl}
+              options=${[
+                { value: "vk", label: "VK" },
+                { value: "github", label: "GitHub" },
+                { value: "jira", label: "Jira" },
+              ]}
+              value=${config?.kanbanBackend || "github"}
+              onChange=${(v) => updateConfig("kanban", v)}
+            />
+            ${regions.length > 1 && html`
+              <div class="card-subtitle mt-sm">Region</div>
+              <${SegmentedControl}
+                options=${regionOptions}
+                value=${regions[0]}
+                onChange=${(v) => updateConfig("region", v)}
+              />
+            `}
+          <//>
+        <//>
 
-    <!-- ── Routing ── -->
-    <${Card} title="Routing">
-      <div class="card-subtitle">SDK</div>
-      <${SegmentedControl}
-        options=${[
-          { value: "codex", label: "Codex" },
-          { value: "copilot", label: "Copilot" },
-          { value: "claude", label: "Claude" },
-          { value: "auto", label: "Auto" },
-        ]}
-        value=${config?.sdk || "auto"}
-        onChange=${(v) => updateConfig("sdk", v)}
-      />
-      <div class="card-subtitle mt-sm">Kanban</div>
-      <${SegmentedControl}
-        options=${[
-          { value: "vk", label: "VK" },
-          { value: "github", label: "GitHub" },
-          { value: "jira", label: "Jira" },
-        ]}
-        value=${config?.kanbanBackend || "github"}
-        onChange=${(v) => updateConfig("kanban", v)}
-      />
-      ${regions.length > 1 && html`
-        <div class="card-subtitle mt-sm">Region</div>
-        <${SegmentedControl}
-          options=${regionOptions}
-          value=${regions[0]}
-          onChange=${(v) => updateConfig("region", v)}
-        />
-      `}
-    <//>
-
-    <!-- ── Quick Commands ── -->
-    <${Card} title="Quick Commands">
-      <div class="form-label">Command</div>
-      <div class="input-row mb-sm">
-        <select
-          class="input"
-          style="flex:0 0 auto;width:80px"
-          value=${quickCmdPrefix}
-          onChange=${(e) => setQuickCmdPrefix(e.target.value)}
-        >
-          <option value="shell">Shell</option>
-          <option value="git">Git</option>
-        </select>
-        <input
-          class="input"
-          placeholder=${quickCmdPrefix === "shell" ? "ls -la" : "status --short"}
-          value=${quickCmdInput}
-          onInput=${(e) => {
-            setQuickCmdInput(e.target.value);
-            if (quickCmdFeedbackTone === "error") setQuickCmdFeedback("");
-          }}
-          onKeyDown=${(e) => {
-            if (e.key === "Enter") handleQuickCmd();
-          }}
-          style="flex:1"
-        />
-        <button class="btn btn-secondary btn-sm" onClick=${handleQuickCmd}>
-          ▶ Run
-        </button>
+        <${Card} className="quick-commands-card">
+          <${Collapsible} title="Quick Commands" defaultOpen=${!isCompact}>
+            <div class="meta-text mb-sm">Run a shell or git command.</div>
+            <div class="form-label">Command</div>
+            <div class="input-row mb-sm">
+              <select
+                class="input"
+                style="flex:0 0 auto;width:80px"
+                value=${quickCmdPrefix}
+                onChange=${(e) => setQuickCmdPrefix(e.target.value)}
+              >
+                <option value="shell">Shell</option>
+                <option value="git">Git</option>
+              </select>
+              <input
+                class="input"
+                placeholder=${quickCmdPrefix === "shell" ? "ls -la" : "status --short"}
+                value=${quickCmdInput}
+                onInput=${(e) => {
+                  setQuickCmdInput(e.target.value);
+                  if (quickCmdFeedbackTone === "error") setQuickCmdFeedback("");
+                }}
+                onKeyDown=${(e) => {
+                  if (e.key === "Enter") handleQuickCmd();
+                }}
+                style="flex:1"
+              />
+              <button class="btn btn-secondary btn-sm" onClick=${handleQuickCmd}>
+                ▶ Run
+              </button>
+            </div>
+            ${quickCmdFeedback && html`
+              <div class="form-hint ${quickCmdFeedbackTone === "error" ? "error" : "success"} mb-sm">
+                ${quickCmdFeedback}
+              </div>
+            `}
+            <div class="meta-text">
+              Output appears in agent logs. ${""}
+              <a
+                href="#"
+                class="quick-commands-link"
+                onClick=${(e) => {
+                  e.preventDefault();
+                  import("../modules/router.js").then(({ navigateTo }) => navigateTo("logs"));
+                }}
+              >Open Logs tab →</a>
+            </div>
+          <//>
+        <//>
       </div>
-      ${quickCmdFeedback && html`
-        <div class="form-hint ${quickCmdFeedbackTone === "error" ? "error" : "success"} mb-sm">
-          ${quickCmdFeedback}
-        </div>
-      `}
-      <div class="meta-text">
-        Output appears in agent logs. ${""}
-        <a
-          href="#"
-          style="color:var(--tg-theme-link-color,#4ea8d6);text-decoration:underline;cursor:pointer"
-          onClick=${(e) => {
-            e.preventDefault();
-            import("../modules/router.js").then(({ navigateTo }) => navigateTo("logs"));
-          }}
-        >Open Logs tab →</a>
-      </div>
-    <//>
-
-    <!-- Inline styles for new elements -->
-    <style>
-      .cmd-dropdown { position: absolute; bottom: 100%; left: 0; right: 0; background: var(--glass-bg, rgba(15,23,42,0.9)); border: 1px solid var(--glass-border, rgba(255,255,255,0.08)); border-radius: 12px; max-height: 240px; overflow-y: auto; z-index: 50; backdrop-filter: blur(12px); }
-      .cmd-dropdown-item { padding: 8px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
-      .cmd-dropdown-item.selected { background: rgba(99,102,241,0.2); }
-      .cmd-dropdown-item:hover { background: rgba(99,102,241,0.15); }
-      .cmd-output-panel { margin-top: 0; background: rgba(0,0,0,0.4); border-radius: 0 0 8px 8px; padding: 8px 12px; font-family: monospace; font-size: 0.8rem; color: #4ade80; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
-      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-    </style>
-
+    </div>
   `;
 }

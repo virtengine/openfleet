@@ -51,6 +51,17 @@ import {
   getLocalWorkspace,
 } from "./workspace-registry.mjs";
 import {
+  listWorkspaces as listManagedWorkspaces,
+  getWorkspace as getManagedWorkspace,
+  getActiveWorkspace as getActiveManagedWorkspace,
+  createWorkspace as createManagedWorkspace,
+  removeWorkspace as removeManagedWorkspace,
+  setActiveWorkspace as setActiveManagedWorkspace,
+  addRepoToWorkspace,
+  removeRepoFromWorkspace,
+  pullWorkspaceRepos,
+} from "./workspace-manager.mjs";
+import {
   getSessionTracker,
 } from "./session-tracker.mjs";
 import {
@@ -2463,6 +2474,147 @@ async function handleApi(req, res, url) {
     try {
       const threads = getActiveThreads();
       jsonResponse(res, 200, { ok: true, data: threads });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // ── Workspace Management API ──────────────────────────────────────────────
+  if (path === "/api/workspaces") {
+    try {
+      const configDir = uiDeps.configDir || process.env.BOSUN_DIR || "";
+      if (!configDir) {
+        jsonResponse(res, 400, { ok: false, error: "Config directory not set" });
+        return;
+      }
+      const workspaces = listManagedWorkspaces(configDir);
+      const active = getActiveManagedWorkspace(configDir);
+      jsonResponse(res, 200, { ok: true, data: workspaces, activeId: active?.id || null });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workspaces/active") {
+    try {
+      const configDir = uiDeps.configDir || process.env.BOSUN_DIR || "";
+      if (req.method === "POST") {
+        const body = await readJsonBody(req);
+        const wsId = body?.workspaceId || body?.id;
+        if (!wsId) {
+          jsonResponse(res, 400, { ok: false, error: "workspaceId required" });
+          return;
+        }
+        setActiveManagedWorkspace(configDir, wsId);
+        jsonResponse(res, 200, { ok: true, activeId: wsId });
+        broadcastUiEvent(["workspaces", "tasks", "overview"], "invalidate", {
+          reason: "workspace-switched",
+          workspaceId: wsId,
+        });
+      } else {
+        const active = getActiveManagedWorkspace(configDir);
+        jsonResponse(res, 200, { ok: true, data: active });
+      }
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workspaces/create") {
+    try {
+      const configDir = uiDeps.configDir || process.env.BOSUN_DIR || "";
+      const body = await readJsonBody(req);
+      const name = body?.name;
+      if (!name || !String(name).trim()) {
+        jsonResponse(res, 400, { ok: false, error: "name is required" });
+        return;
+      }
+      const ws = createManagedWorkspace(configDir, { name: String(name).trim(), id: body?.id });
+      jsonResponse(res, 200, { ok: true, data: ws });
+      broadcastUiEvent(["workspaces"], "invalidate", { reason: "workspace-created", workspaceId: ws.id });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workspaces/delete") {
+    try {
+      const configDir = uiDeps.configDir || process.env.BOSUN_DIR || "";
+      const body = await readJsonBody(req);
+      const wsId = body?.workspaceId || body?.id;
+      if (!wsId) {
+        jsonResponse(res, 400, { ok: false, error: "workspaceId required" });
+        return;
+      }
+      const deleted = removeManagedWorkspace(configDir, wsId, { deleteFiles: Boolean(body?.deleteFiles) });
+      jsonResponse(res, 200, { ok: true, deleted });
+      broadcastUiEvent(["workspaces"], "invalidate", { reason: "workspace-deleted" });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workspaces/repos/add") {
+    try {
+      const configDir = uiDeps.configDir || process.env.BOSUN_DIR || "";
+      const body = await readJsonBody(req);
+      const wsId = body?.workspaceId;
+      const repoUrl = body?.url;
+      if (!wsId || !repoUrl) {
+        jsonResponse(res, 400, { ok: false, error: "workspaceId and url required" });
+        return;
+      }
+      const repo = addRepoToWorkspace(configDir, wsId, {
+        url: repoUrl,
+        name: body?.name,
+        branch: body?.branch,
+        primary: Boolean(body?.primary),
+      });
+      jsonResponse(res, 200, { ok: true, data: repo });
+      broadcastUiEvent(["workspaces"], "invalidate", { reason: "repo-added", workspaceId: wsId });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workspaces/repos/remove") {
+    try {
+      const configDir = uiDeps.configDir || process.env.BOSUN_DIR || "";
+      const body = await readJsonBody(req);
+      const wsId = body?.workspaceId;
+      const repoName = body?.repoName || body?.name;
+      if (!wsId || !repoName) {
+        jsonResponse(res, 400, { ok: false, error: "workspaceId and repoName required" });
+        return;
+      }
+      const removed = removeRepoFromWorkspace(configDir, wsId, repoName, {
+        deleteFiles: Boolean(body?.deleteFiles),
+      });
+      jsonResponse(res, 200, { ok: true, removed });
+      broadcastUiEvent(["workspaces"], "invalidate", { reason: "repo-removed", workspaceId: wsId });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workspaces/pull") {
+    try {
+      const configDir = uiDeps.configDir || process.env.BOSUN_DIR || "";
+      const body = await readJsonBody(req);
+      const wsId = body?.workspaceId || body?.id;
+      if (!wsId) {
+        jsonResponse(res, 400, { ok: false, error: "workspaceId required" });
+        return;
+      }
+      const results = pullWorkspaceRepos(configDir, wsId);
+      jsonResponse(res, 200, { ok: true, data: results });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

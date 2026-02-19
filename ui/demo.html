@@ -32,75 +32,77 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
 
   <style>
-    /* ═══ DEMO LAYOUT — Two views: Telegram Chat + MiniApp ═══════════ */
+    /* ═══ DEMO LAYOUT — Telegram MiniApp (single view) ═══════════════ */
     *, *::before, *::after { box-sizing: border-box; }
     html { height: 100%; margin: 0; }
-    body { height: 100%; margin: 0; font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', 'Inter', sans-serif; background: #0e1621; color: #e8edf2; overflow: hidden; }
+    body { height: 100%; margin: 0; font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', 'Inter', sans-serif; background: #0b0f14; color: #e8edf2; overflow: hidden; }
 
     /* Demo banner */
     .demo-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 99999; background: linear-gradient(135deg, #60cc5d, #4caf50); color: #000; text-align: center; font-size: 11px; font-weight: 700; padding: 3px 8px; letter-spacing: 0.05em; text-transform: uppercase; }
 
-    /* ── VIEW CONTAINER ── */
-    .demo-views { position: fixed; top: 22px; left: 0; right: 0; bottom: 0; }
-
-    /* ── TELEGRAM CHAT VIEW ── */
-    .tg-view { position: absolute; inset: 0; display: flex; flex-direction: column; background: #0e1621; transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s; }
-    .tg-view.hidden { transform: translateY(100%); opacity: 0; pointer-events: none; }
-
-    /* Chat header */
-    .tg-header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: #17212b; border-bottom: 1px solid #1b2838; flex-shrink: 0; }
-    .tg-header-avatar { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #4cc9f0, #60cc5d); display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
-    .tg-header-info { flex: 1; min-width: 0; }
-    .tg-header-name { font-size: 15px; font-weight: 600; color: #fff; }
-    .tg-header-status { font-size: 12px; color: #4cc9f0; }
-
-    /* Chat messages area */
-    .tg-messages { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 0; display: flex; flex-direction: column; -webkit-overflow-scrolling: touch; }
-    .tg-messages-spacer { flex: 1; } /* pushes messages to bottom initially */
-
-    /* Message bubble */
-    .tg-msg { padding: 2px 10px; max-width: 92%; animation: msgIn 0.2s ease-out; }
-    .tg-msg-name { font-size: 12px; font-weight: 600; color: #4cc9f0; margin-bottom: 1px; }
-    .tg-msg-bubble { background: #182533; border-radius: 4px 12px 12px 12px; padding: 7px 11px; font-size: 14px; line-height: 1.45; word-break: break-word; }
-    .tg-msg-bubble strong { color: #fff; }
-    .tg-msg-bubble code { background: #0e1621; padding: 1px 4px; border-radius: 3px; font-size: 12px; font-family: 'JetBrains Mono', monospace; }
-    .tg-msg-bubble pre { background: #0e1621; padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 12px; margin: 4px 0; font-family: 'JetBrains Mono', monospace; white-space: pre-wrap; }
-    .tg-msg-time { font-size: 10px; color: #5b7083; text-align: right; margin-top: 1px; }
-    @keyframes msgIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-
-    /* Sticky inline keyboard (bot menu) — ALWAYS at bottom of messages area, above input */
-    .tg-sticky-menu { flex-shrink: 0; background: #0e1621; border-top: 1px solid #1b2838; padding: 4px 8px 4px; }
-    .tg-inline-row { display: flex; gap: 1px; margin-bottom: 1px; }
-    .tg-inline-btn { flex: 1; background: #2b5278; border: none; border-radius: 4px; color: #fff; font-size: 12.5px; font-weight: 500; padding: 7px 2px; cursor: pointer; transition: background 0.12s; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .tg-inline-btn:hover { background: #3a6da0; }
-    .tg-inline-btn:active { background: #1d3f5e; transform: scale(0.97); }
-    .tg-inline-btn.close-btn { background: transparent; color: #5b7083; font-size: 11px; }
-    .tg-inline-btn.close-btn:hover { color: #ef5350; background: rgba(239, 83, 80, 0.08); }
-    .tg-inline-btn.highlight { background: #4cc9f0; color: #000; }
-
-    /* Chat input bar */
-    .tg-input-bar { display: flex; align-items: center; gap: 8px; background: #17212b; border-top: 1px solid #1b2838; padding: 6px 10px; flex-shrink: 0; }
-    .tg-input { flex: 1; background: #242f3d; border: none; border-radius: 18px; padding: 8px 14px; font-size: 14px; color: #e8edf2; outline: none; }
-    .tg-input::placeholder { color: #5b7083; }
-    .tg-input-btn { background: none; border: none; font-size: 20px; cursor: pointer; padding: 4px; color: #5b7083; transition: color 0.15s; }
-    .tg-input-btn:hover { color: #4cc9f0; }
-
-    /* ── MINIAPP VIEW ── */
-    .miniapp-view { position: absolute; inset: 0; display: flex; flex-direction: column; background: #0b0f14; transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s; transform: translateY(100%); opacity: 0; pointer-events: none; }
-    .miniapp-view.active { transform: translateY(0); opacity: 1; pointer-events: auto; }
+    /* ── MAIN CONTAINER ── */
+    .demo-container { position: fixed; top: 22px; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; background: #0b0f14; }
 
     /* MiniApp header (Telegram-style) */
-    .miniapp-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #17212b; border-bottom: 1px solid #1b2838; flex-shrink: 0; z-index: 10; }
-    .miniapp-back-btn { background: none; border: none; color: #4cc9f0; font-size: 22px; cursor: pointer; padding: 4px 8px; border-radius: 6px; transition: background 0.15s; display: flex; align-items: center; gap: 6px; font-weight: 600; }
-    .miniapp-back-btn:hover { background: rgba(76, 201, 240, 0.1); }
-    .miniapp-back-btn span { font-size: 14px; }
-    .miniapp-header-title { flex: 1; font-size: 15px; font-weight: 600; color: #fff; text-align: center; }
-    .miniapp-close-btn { background: none; border: none; color: #5b7083; font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 6px; transition: color 0.15s; }
-    .miniapp-close-btn:hover { color: #ef5350; }
+    .miniapp-header { display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: #17212b; border-bottom: 1px solid #1b2838; flex-shrink: 0; z-index: 10; }
+    .miniapp-header-icon { width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg, #4cc9f0, #60cc5d); display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+    .miniapp-header-title { flex: 1; font-size: 15px; font-weight: 600; color: #fff; }
+    .miniapp-header-badge { font-size: 10px; color: #64748b; background: #1e293b; padding: 2px 7px; border-radius: 10px; }
 
     /* MiniApp content — wraps #app, MUST allow scrolling */
     .miniapp-content { flex: 1; min-height: 0; overflow: hidden; position: relative; }
     .miniapp-content #app { position: absolute; inset: 0; display: flex; flex-direction: column; }
+
+    /* ── BOT MENU FAB (Floating Action Button) ── */
+    .bot-fab { position: fixed; bottom: 90px; right: 16px; z-index: 9000; width: 48px; height: 48px; border-radius: 50%; border: none; background: linear-gradient(135deg, #4cc9f0, #3a9ec7); color: #fff; font-size: 22px; cursor: pointer; box-shadow: 0 4px 16px rgba(76, 201, 240, 0.35), 0 2px 4px rgba(0,0,0,0.3); transition: transform 0.2s, box-shadow 0.2s, background 0.2s; display: flex; align-items: center; justify-content: center; }
+    .bot-fab:hover { transform: scale(1.08); box-shadow: 0 6px 24px rgba(76, 201, 240, 0.45), 0 3px 8px rgba(0,0,0,0.3); }
+    .bot-fab:active { transform: scale(0.95); }
+    .bot-fab.panel-open { background: #ef5350; transform: rotate(45deg); }
+    .bot-fab.panel-open:hover { background: #f44336; }
+
+    /* ── BOT MENU PANEL (slide-up, multi-layer) ── */
+    .bot-panel { position: fixed; bottom: 0; left: 0; right: 0; z-index: 8999; background: #0e1621; border-top: 1px solid #1b2838; border-radius: 16px 16px 0 0; box-shadow: 0 -8px 32px rgba(0,0,0,0.5); max-height: 65vh; display: flex; flex-direction: column; transform: translateY(100%); opacity: 0; pointer-events: none; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s; }
+    .bot-panel.open { transform: translateY(0); opacity: 1; pointer-events: auto; }
+
+    /* Panel header */
+    .bot-panel-header { display: flex; align-items: center; gap: 8px; padding: 10px 14px 6px; flex-shrink: 0; }
+    .bot-panel-back { background: none; border: none; color: #4cc9f0; font-size: 18px; cursor: pointer; padding: 4px 6px; border-radius: 6px; transition: background 0.15s; display: none; }
+    .bot-panel-back:hover { background: rgba(76, 201, 240, 0.1); }
+    .bot-panel-back.visible { display: block; }
+    .bot-panel-title { flex: 1; font-size: 14px; font-weight: 600; color: #fff; }
+    .bot-panel-home { background: none; border: none; color: #5b7083; font-size: 16px; cursor: pointer; padding: 4px 6px; border-radius: 6px; transition: color 0.15s; display: none; }
+    .bot-panel-home:hover { color: #4cc9f0; }
+    .bot-panel-home.visible { display: block; }
+    .bot-panel-close { background: none; border: none; color: #5b7083; font-size: 16px; cursor: pointer; padding: 4px 6px; border-radius: 6px; transition: color 0.15s; }
+    .bot-panel-close:hover { color: #ef5350; }
+
+    /* Panel body (scrollable text output) */
+    .bot-panel-body { padding: 4px 14px 8px; font-size: 13px; line-height: 1.5; color: #94a3b8; overflow-y: auto; flex-shrink: 1; min-height: 0; }
+    .bot-panel-body strong { color: #e8edf2; }
+    .bot-panel-body code { background: #182533; padding: 1px 4px; border-radius: 3px; font-size: 11.5px; font-family: 'JetBrains Mono', monospace; color: #4cc9f0; }
+    .bot-panel-body pre { background: #182533; padding: 8px; border-radius: 6px; font-size: 11px; margin: 6px 0; font-family: 'JetBrains Mono', monospace; overflow-x: auto; white-space: pre-wrap; color: #e8edf2; }
+
+    /* Panel keyboard (inline buttons) */
+    .bot-panel-keyboard { padding: 4px 8px 10px; flex-shrink: 0; }
+    .bot-kb-row { display: flex; gap: 2px; margin-bottom: 2px; }
+    .bot-kb-btn { flex: 1; background: #2b5278; border: none; border-radius: 5px; color: #fff; font-size: 12px; font-weight: 500; padding: 8px 3px; cursor: pointer; transition: background 0.12s, transform 0.1s; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .bot-kb-btn:hover { background: #3a6da0; }
+    .bot-kb-btn:active { background: #1d3f5e; transform: scale(0.97); }
+    .bot-kb-btn.nav-btn { background: #1e293b; color: #94a3b8; font-size: 11px; }
+    .bot-kb-btn.nav-btn:hover { background: #2d3a4d; color: #e8edf2; }
+    .bot-kb-btn.close-btn { background: transparent; color: #5b7083; font-size: 11px; }
+    .bot-kb-btn.close-btn:hover { color: #ef5350; background: rgba(239, 83, 80, 0.08); }
+    .bot-kb-btn.action-btn { background: #4cc9f0; color: #000; font-weight: 600; }
+    .bot-kb-btn.action-btn:hover { background: #5dd8ff; }
+    .bot-kb-btn.cmd-flash { background: #4cc9f0 !important; color: #000 !important; transition: none; }
+
+    /* Panel result area (shows command output) */
+    .bot-panel-result { display: none; padding: 4px 14px 8px; font-size: 13px; line-height: 1.5; color: #e8edf2; overflow-y: auto; max-height: 200px; border-top: 1px solid #1b2838; animation: resultIn 0.2s ease-out; }
+    .bot-panel-result.visible { display: block; }
+    .bot-panel-result strong { color: #fff; }
+    .bot-panel-result code { background: #182533; padding: 1px 4px; border-radius: 3px; font-size: 11.5px; font-family: 'JetBrains Mono', monospace; color: #4cc9f0; }
+    .bot-panel-result pre { background: #182533; padding: 8px; border-radius: 6px; font-size: 11px; margin: 6px 0; font-family: 'JetBrains Mono', monospace; overflow-x: auto; white-space: pre-wrap; }
+    @keyframes resultIn { from { opacity: 0; } to { opacity: 1; } }
 
     /* Force dark theme */
     :root:not([data-theme="light"]) { color-scheme: dark; }
@@ -976,450 +978,628 @@
   </script>
 </head>
 <body>
-  <!-- Demo mode banner (always on top) -->
+  <!-- Demo mode banner -->
   <div class="demo-banner">⚡ Bosun Demo Mode — Seed Data</div>
 
-  <!-- ═══ Two-View Container ═══════════════════════════════════════════
-       View A: Telegram Chat (default) — chat messages + sticky bot menu
-       View B: MiniApp (overlay) — opened from "Open Control Center"
-       ═══════════════════════════════════════════════════════════════════ -->
-  <div class="demo-views">
-
-    <!-- ──────────────────── VIEW A: TELEGRAM CHAT ──────────────────── -->
-    <div class="tg-view" id="tg-view">
-      <!-- Chat header -->
-      <div class="tg-header">
-        <div class="tg-header-avatar">🤖</div>
-        <div class="tg-header-info">
-          <div class="tg-header-name">Bosun Bot</div>
-          <div class="tg-header-status">online</div>
-        </div>
-      </div>
-
-      <!-- Chat messages (scrollable) -->
-      <div class="tg-messages" id="tg-messages">
-        <div class="tg-messages-spacer"></div>
-        <!-- Initial welcome message -->
-        <div class="tg-msg">
-          <div class="tg-msg-name">Bosun Bot</div>
-          <div class="tg-msg-bubble">
-            <strong>🤖 Bosun Control Center</strong><br/>
-            Pick a section below to manage your automation pipeline.<br/><br/>
-            <strong>Status:</strong> Executor running • Slots 2/4<br/>
-            <strong>Tasks:</strong> 8 total • 2 running • 3 queued
-          </div>
-          <div class="tg-msg-time" id="tg-init-time"></div>
-        </div>
-      </div>
-
-      <!-- Sticky bot menu (inline keyboard) — ALWAYS visible above input -->
-      <div class="tg-sticky-menu" id="tg-sticky-menu">
-        <div class="tg-inline-row">
-          <button class="tg-inline-btn highlight" data-cmd="miniapp">📱 Open Control Center</button>
-        </div>
-        <div class="tg-inline-row">
-          <button class="tg-inline-btn" data-cmd="overview">📊 Overview</button>
-          <button class="tg-inline-btn" data-cmd="tasks">🧭 Tasks</button>
-          <button class="tg-inline-btn" data-cmd="agents">🤖 Agents</button>
-        </div>
-        <div class="tg-inline-row">
-          <button class="tg-inline-btn" data-cmd="executor">⚙️ Executor</button>
-          <button class="tg-inline-btn" data-cmd="workspaces">🌳 Workspaces</button>
-          <button class="tg-inline-btn" data-cmd="routing">🛰 Routing</button>
-        </div>
-        <div class="tg-inline-row">
-          <button class="tg-inline-btn" data-cmd="logs">📁 Logs & Git</button>
-          <button class="tg-inline-btn" data-cmd="integrations">🔌 Integrations</button>
-          <button class="tg-inline-btn" data-cmd="session">🧠 Session</button>
-        </div>
-        <div class="tg-inline-row">
-          <button class="tg-inline-btn" data-cmd="ask">💬 Ask Agent</button>
-          <button class="tg-inline-btn" data-cmd="commands">📖 All Commands</button>
-        </div>
-        <div class="tg-inline-row">
-          <button class="tg-inline-btn" data-cmd="refresh">🔄 Refresh</button>
-          <button class="tg-inline-btn close-btn" data-cmd="close">✖ Close Menu</button>
-        </div>
-      </div>
-
-      <!-- Chat input bar -->
-      <div class="tg-input-bar">
-        <button class="tg-input-btn" id="tg-menu-toggle" title="Toggle Bot Menu">☰</button>
-        <input class="tg-input" id="tg-chat-input" placeholder="Message Bosun Bot..." />
-        <button class="tg-input-btn" id="tg-send-btn" title="Send">➤</button>
-      </div>
+  <!-- ═══ Telegram MiniApp (single view — loads immediately) ═══════════ -->
+  <div class="demo-container">
+    <!-- Header -->
+    <div class="miniapp-header">
+      <div class="miniapp-header-icon">🤖</div>
+      <div class="miniapp-header-title">Telegram MiniApp</div>
+      <div class="miniapp-header-badge">DEMO</div>
     </div>
 
-    <!-- ──────────────────── VIEW B: MINIAPP ────────────────────────── -->
-    <div class="miniapp-view" id="miniapp-view">
-      <!-- MiniApp header (Telegram-style with back button) -->
-      <div class="miniapp-header">
-        <button class="miniapp-back-btn" id="miniapp-back" title="Back to Chat">
-          ← <span>Bosun</span>
-        </button>
-        <div class="miniapp-header-title">Control Center</div>
-        <button class="miniapp-close-btn" id="miniapp-close" title="Close">✕</button>
-      </div>
-
-      <!-- MiniApp content (wraps #app) -->
-      <div class="miniapp-content">
-        <div id="app">
-          <div id="boot-loader" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;font-family:'Inter',sans-serif;color:#9aa3b8;background:#0b0f14;overflow:hidden">
-            <style>
-              .boot-ring{position:absolute;inset:0;border-radius:50%;border:2px solid rgba(76,201,240,.15);animation:boot-spin 3s linear infinite}
-              .boot-ring-inner{position:absolute;inset:8px;border-radius:50%;border:2px solid transparent;border-top-color:#4cc9f0;border-right-color:rgba(76,201,240,.4);animation:boot-spin 1.5s linear infinite reverse}
-              .boot-dot{position:absolute;top:50%;left:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:linear-gradient(135deg,#4cc9f0,#60cc5d);box-shadow:0 0 20px rgba(76,201,240,.5);animation:boot-pulse 2s ease-in-out infinite}
-              @keyframes boot-spin{to{transform:rotate(360deg)}}
-              @keyframes boot-pulse{0%,100%{transform:scale(1);opacity:.8}50%{transform:scale(1.2);opacity:1}}
-            </style>
-            <div style="position:relative;width:60px;height:60px;margin-bottom:16px">
-              <div class="boot-ring"></div>
-              <div class="boot-ring-inner"></div>
-              <div class="boot-dot"></div>
-            </div>
-            <div style="font-size:13px;color:#64748b">Loading Control Center...</div>
+    <!-- MiniApp content (wraps #app) -->
+    <div class="miniapp-content">
+      <div id="app">
+        <div id="boot-loader" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;font-family:'Inter',sans-serif;color:#9aa3b8;background:#0b0f14;overflow:hidden">
+          <style>
+            .boot-ring{position:absolute;inset:0;border-radius:50%;border:2px solid rgba(76,201,240,.15);animation:boot-spin 3s linear infinite}
+            .boot-ring-inner{position:absolute;inset:8px;border-radius:50%;border:2px solid transparent;border-top-color:#4cc9f0;border-right-color:rgba(76,201,240,.4);animation:boot-spin 1.5s linear infinite reverse}
+            .boot-dot{position:absolute;top:50%;left:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:linear-gradient(135deg,#4cc9f0,#60cc5d);box-shadow:0 0 20px rgba(76,201,240,.5);animation:boot-pulse 2s ease-in-out infinite}
+            @keyframes boot-spin{to{transform:rotate(360deg)}}
+            @keyframes boot-pulse{0%,100%{transform:scale(1);opacity:.8}50%{transform:scale(1.2);opacity:1}}
+          </style>
+          <div style="position:relative;width:60px;height:60px;margin-bottom:16px">
+            <div class="boot-ring"></div>
+            <div class="boot-ring-inner"></div>
+            <div class="boot-dot"></div>
           </div>
+          <div style="font-size:13px;color:#64748b">Loading Telegram MiniApp...</div>
         </div>
       </div>
     </div>
+  </div>
 
-  </div><!-- /.demo-views -->
+  <!-- Bot Menu FAB -->
+  <button class="bot-fab" id="bot-fab" title="Bot Menu">🤖</button>
 
-  <!-- ═══ CHAT INTERACTION ENGINE ═══════════════════════════════════ -->
+  <!-- Bot Menu Panel (multi-layer navigation) -->
+  <div class="bot-panel" id="bot-panel">
+    <div class="bot-panel-header">
+      <button class="bot-panel-back" id="bot-panel-back" title="Back">←</button>
+      <div class="bot-panel-title" id="bot-panel-title">Bosun Control Center</div>
+      <button class="bot-panel-home" id="bot-panel-home" title="Home">🏠</button>
+      <button class="bot-panel-close" id="bot-panel-close" title="Close">✕</button>
+    </div>
+    <div class="bot-panel-body" id="bot-panel-body"></div>
+    <div class="bot-panel-result" id="bot-panel-result"></div>
+    <div class="bot-panel-keyboard" id="bot-panel-keyboard"></div>
+  </div>
+
+  <!-- Load the real app.js immediately -->
+  <script type="module" src="app.js"></script>
+
+  <!-- ═══ BOT MENU ENGINE (multi-layer screen navigation) ═══════════ -->
   <script>
   (function() {
     'use strict';
 
-    const tgView     = document.getElementById('tg-view');
-    const miniView   = document.getElementById('miniapp-view');
-    const msgArea    = document.getElementById('tg-messages');
-    const stickyMenu = document.getElementById('tg-sticky-menu');
-    const inputField = document.getElementById('tg-chat-input');
-    const sendBtn    = document.getElementById('tg-send-btn');
-    const menuToggle = document.getElementById('tg-menu-toggle');
-    const backBtn    = document.getElementById('miniapp-back');
-    const closeBtn   = document.getElementById('miniapp-close');
+    const fab       = document.getElementById('bot-fab');
+    const panel     = document.getElementById('bot-panel');
+    const backBtn   = document.getElementById('bot-panel-back');
+    const homeBtn   = document.getElementById('bot-panel-home');
+    const closeBtn  = document.getElementById('bot-panel-close');
+    const titleEl   = document.getElementById('bot-panel-title');
+    const bodyEl    = document.getElementById('bot-panel-body');
+    const resultEl  = document.getElementById('bot-panel-result');
+    const kbEl      = document.getElementById('bot-panel-keyboard');
 
-    let menuVisible = true;
-    let miniAppLoaded = false;
+    let panelOpen = false;
+    let currentScreen = 'home';
+    const navStack = [];
 
-    // ── Time helpers ──
-    function nowTime() {
-      const d = new Date();
-      return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
-    }
-    // Set initial message time
-    const initTime = document.getElementById('tg-init-time');
-    if (initTime) initTime.textContent = nowTime();
+    // ── Expose seed data references ──
+    const TASKS    = window.SEED_TASKS    || [];
+    const AGENTS   = window.SEED_AGENTS   || [];
+    const LOGS     = window.SEED_LOGS     || [];
+    const SESSIONS = window.SEED_SESSIONS || [];
+    const INFRA    = window.SEED_INFRA    || {};
 
-    // ── Add a bot message to the chat ──
-    function addBotMessage(html) {
-      const msg = document.createElement('div');
-      msg.className = 'tg-msg';
-      msg.innerHTML = `
-        <div class="tg-msg-name">Bosun Bot</div>
-        <div class="tg-msg-bubble">${html}</div>
-        <div class="tg-msg-time">${nowTime()}</div>
-      `;
-      msgArea.appendChild(msg);
-      // Scroll to bottom
-      requestAnimationFrame(() => { msgArea.scrollTop = msgArea.scrollHeight; });
-    }
+    // ══════════════════════════════════════════════════════════════════
+    //  MULTI-LAYER SCREEN DEFINITIONS
+    //  Mirrors the real telegram-bot.mjs UI_SCREENS hierarchy
+    // ══════════════════════════════════════════════════════════════════
 
-    // ── Add a user message to the chat ──
-    function addUserMessage(text) {
-      const msg = document.createElement('div');
-      msg.className = 'tg-msg';
-      msg.style.cssText = 'align-self:flex-end;';
-      msg.innerHTML = `
-        <div class="tg-msg-bubble" style="background:#2b5278;border-radius:12px 4px 12px 12px;">${text}</div>
-        <div class="tg-msg-time">${nowTime()}</div>
-      `;
-      msgArea.appendChild(msg);
-      requestAnimationFrame(() => { msgArea.scrollTop = msgArea.scrollHeight; });
-    }
+    const SCREENS = {
+      // ─── HOME ───
+      home: {
+        title: '🎛️ Bosun Control Center',
+        body: 'Choose a section to manage your automation fleet.',
+        keyboard: [
+          [{ text: '📊 Overview', go: 'overview' }, { text: '🧭 Tasks', go: 'tasks' }, { text: '🤖 Agents', go: 'agents' }],
+          [{ text: '⚙️ Executor', go: 'executor' }, { text: '🛰 Routing', go: 'routing' }, { text: '🌳 Workspaces', go: 'workspaces' }],
+          [{ text: '📁 Logs & Git', go: 'logs_menu' }, { text: '🔌 Integrations', go: 'integrations' }],
+          [{ text: '🔄 Refresh', cmd: 'status' }, { text: '✖ Close', action: 'close' }],
+        ],
+      },
 
-    // ── COMMAND RESPONSE GENERATORS ──
-    // These produce HTML responses for each menu button, using the seed data from the mock layer
+      // ─── OVERVIEW (sub-menu) ───
+      overview: {
+        title: '📊 Overview',
+        parent: 'home',
+        body: 'Live status, health, and presence dashboards.',
+        keyboard: [
+          [{ text: '📊 Status', cmd: 'status' }, { text: '📋 Tasks', cmd: 'tasks' }, { text: '🤖 Agents', cmd: 'agents' }],
+          [{ text: '🏥 Health', cmd: 'health' }, { text: '⚠️ Anomalies', cmd: 'anomalies' }, { text: '👁 Presence', cmd: 'presence' }],
+          [{ text: '📝 Logs', cmd: 'logs' }, { text: '📈 Metrics', cmd: 'metrics' }],
+        ],
+      },
 
-    function cmdOverview() {
-      return `<strong>📊 System Overview</strong><br/><br/>` +
-        `<strong>Executor:</strong> running<br/>` +
-        `<strong>Slots:</strong> 2 / 4 active<br/>` +
-        `<strong>Tasks:</strong> 8 total — 2 running, 3 queued, 1 done, 1 failed, 1 cancelled<br/>` +
-        `<strong>Agents:</strong> 3 configured (copilot-claude, codex-mini, local-gpt4)<br/>` +
-        `<strong>Health:</strong> ✅ All systems nominal<br/>` +
-        `<strong>Uptime:</strong> 4h 23m`;
-    }
+      // ─── TASKS (sub-menu with deeper levels) ───
+      tasks: {
+        title: '🧭 Task Operations',
+        parent: 'home',
+        body: 'Pause/resume, plan, retry, cleanup, and guided starts.',
+        keyboard: [
+          [{ text: '⏸ Pause', cmd: 'pause' }, { text: '▶️ Resume', cmd: 'resume' }, { text: '🔄 Restart', cmd: 'restart' }],
+          [{ text: '📋 List Tasks', cmd: 'tasks' }, { text: '🧹 Cleanup', cmd: 'cleanup' }, { text: '📊 Status', cmd: 'status' }],
+          [{ text: '🗺️ Planner', go: 'planner' }, { text: '🔁 Retry', go: 'retry' }, { text: '⚙️ Executor', go: 'executor' }],
+          [{ text: '🗂 Task Lists', go: 'task_lists' }, { text: '▶️ Start Task', cmd: 'starttask' }],
+        ],
+      },
+      task_lists: {
+        title: '🗂 Task Lists',
+        parent: 'tasks',
+        body: 'Browse tasks by kanban status.',
+        keyboard: [
+          [{ text: '📥 Backlog', cmd: 'tasks_backlog' }, { text: '📝 Draft', cmd: 'tasks_draft' }],
+          [{ text: '✅ Todo', cmd: 'tasks_todo' }, { text: '🚧 Active', cmd: 'tasks_active' }],
+          [{ text: '🔍 Review', cmd: 'tasks_review' }, { text: '⛔ Blocked', cmd: 'tasks_blocked' }],
+          [{ text: '🏁 Done', cmd: 'tasks_done' }],
+        ],
+      },
+      planner: {
+        title: '🗺️ Task Planner',
+        parent: 'tasks',
+        body: 'Trigger the planner to seed new tasks from the backlog.',
+        keyboard: [
+          [{ text: 'Plan 3', cmd: 'plan3' }, { text: 'Plan 5', cmd: 'plan5' }, { text: 'Plan 10', cmd: 'plan10' }],
+        ],
+      },
+      retry: {
+        title: '🔁 Fresh Retry',
+        parent: 'tasks',
+        body: 'Start a fresh session retry for the active task.',
+        keyboard: [
+          [{ text: 'Manual', cmd: 'retry_manual' }, { text: 'Stuck', cmd: 'retry_stuck' }, { text: 'Rate Limit', cmd: 'retry_ratelimit' }],
+        ],
+      },
 
-    function cmdTasks() {
-      // Use global SEED_TASKS if available
-      const tasks = window.SEED_TASKS || [];
-      if (!tasks.length) return '<strong>🧭 Tasks</strong><br/><br/>No tasks found.';
-      let html = '<strong>🧭 Task Queue</strong><br/><br/>';
+      // ─── AGENTS (sub-menu with deeper levels) ───
+      agents: {
+        title: '🤖 Agents',
+        parent: 'home',
+        body: 'Monitor and steer running agents.',
+        keyboard: [
+          [{ text: '🤖 Agents', cmd: 'agents' }, { text: '📋 Tasks', cmd: 'tasks' }, { text: '📊 Status', cmd: 'status' }],
+          [{ text: '📂 Agent Logs', go: 'agent_logs' }, { text: '🧵 Threads', go: 'threads' }, { text: '🧠 History', cmd: 'history' }],
+          [{ text: '🧭 Steer', cmd: 'steer' }, { text: '🛑 Stop', cmd: 'stop' }, { text: '🛰 Background', go: 'background' }],
+        ],
+      },
+      agent_logs: {
+        title: '📂 Agent Logs',
+        parent: 'agents',
+        body: 'View logs from specific worktree agent sessions.',
+        keyboard: [
+          [{ text: 've/44-escrow-batch', cmd: 'agentlogs_escrow' }, { text: 've/45-hpc-gpu', cmd: 'agentlogs_hpc' }],
+          [{ text: 've/46-docs-guide', cmd: 'agentlogs_docs' }],
+        ],
+      },
+      threads: {
+        title: '🧵 Threads',
+        parent: 'agents',
+        body: 'Manage persistent agent threads.',
+        keyboard: [
+          [{ text: 'List Threads', cmd: 'threads' }, { text: 'Clear Registry', cmd: 'threads_clear' }],
+          [{ text: 'Kill Thread', go: 'threads_kill' }],
+        ],
+      },
+      threads_kill: {
+        title: '🗑 Kill Thread',
+        parent: 'threads',
+        body: 'Select a thread to invalidate.',
+        keyboard: [
+          [{ text: 've/44-escrow-batch', cmd: 'kill_thread_44' }, { text: 've/45-hpc-gpu', cmd: 'kill_thread_45' }],
+        ],
+      },
+      background: {
+        title: '🛰 Background Mode',
+        parent: 'agents',
+        body: 'Run tasks silently or background the active agent.',
+        keyboard: [
+          [{ text: 'Background Active', cmd: 'background_active' }, { text: 'New Background Task', cmd: 'background_new' }],
+          [{ text: '🧭 Steer', cmd: 'steer' }, { text: '🛑 Stop', cmd: 'stop' }],
+        ],
+      },
+
+      // ─── EXECUTOR (sub-menu) ───
+      executor: {
+        title: '⚙️ Executor',
+        parent: 'home',
+        body: 'Executor status, slots, and tuning.',
+        keyboard: [
+          [{ text: 'Status', cmd: 'executor' }, { text: 'Slots', cmd: 'executor_slots' }, { text: 'Mode', cmd: 'executor_mode' }],
+          [{ text: '📊 Max Parallel', go: 'maxparallel' }, { text: '⏸ Pause', cmd: 'pause' }, { text: '▶️ Resume', cmd: 'resume' }],
+        ],
+      },
+      maxparallel: {
+        title: '📊 Max Parallel',
+        parent: 'executor',
+        body: 'Set the max concurrent task slots.',
+        keyboard: [
+          [{ text: '0 (Pause)', cmd: 'mp_0' }, { text: '1', cmd: 'mp_1' }, { text: '2', cmd: 'mp_2' }],
+          [{ text: '3', cmd: 'mp_3' }, { text: '4', cmd: 'mp_4' }, { text: '6', cmd: 'mp_6' }],
+          [{ text: '8', cmd: 'mp_8' }, { text: '12', cmd: 'mp_12' }, { text: '16', cmd: 'mp_16' }],
+        ],
+      },
+
+      // ─── ROUTING (sub-menu with deeper levels) ───
+      routing: {
+        title: '🛰 Routing & Models',
+        parent: 'home',
+        body: 'Control model routing, SDKs, and workspace routing.',
+        keyboard: [
+          [{ text: '🤖 Model', go: 'model' }, { text: '📦 SDK', go: 'sdk' }, { text: '📋 Kanban', cmd: 'kanban' }],
+          [{ text: '🌍 Region', go: 'region' }, { text: '♻️ Auto Backlog', cmd: 'autobacklog' }, { text: '📐 Requirements', cmd: 'requirements' }],
+          [{ text: '🎯 Route Task', cmd: 'route_task' }, { text: '🏥 Health', cmd: 'health' }],
+        ],
+      },
+      model: {
+        title: '🤖 Model Override',
+        parent: 'routing',
+        body: 'Override the executor model for the next run.',
+        keyboard: [
+          [{ text: 'claude-opus-4-6', cmd: 'model_opus' }, { text: 'o4-mini', cmd: 'model_o4' }],
+          [{ text: 'gpt-5.2-codex', cmd: 'model_gpt5' }, { text: 'Default', cmd: 'model_default' }],
+        ],
+      },
+      sdk: {
+        title: '📦 SDK Selection',
+        parent: 'routing',
+        body: 'Choose which SDK backend to use.',
+        keyboard: [
+          [{ text: 'Copilot', cmd: 'sdk_copilot' }, { text: 'Codex', cmd: 'sdk_codex' }],
+          [{ text: 'Auto (default)', cmd: 'sdk_auto' }],
+        ],
+      },
+      region: {
+        title: '🌍 Region',
+        parent: 'routing',
+        body: 'Set the execution region for Codex.',
+        keyboard: [
+          [{ text: '🇺🇸 US East', cmd: 'region_us' }, { text: '🇸🇪 EU North', cmd: 'region_eu' }],
+          [{ text: '🌐 Auto (default)', cmd: 'region_auto' }],
+        ],
+      },
+
+      // ─── WORKSPACES ───
+      workspaces: {
+        title: '🌳 Workspaces',
+        parent: 'home',
+        body: 'Manage git worktrees and workspaces.',
+        keyboard: [
+          [{ text: '🌳 Worktrees', cmd: 'worktrees' }, { text: '🌿 Branches', cmd: 'branches' }],
+          [{ text: '📝 Git Diff', cmd: 'diff' }, { text: '📖 Git Log', cmd: 'git_log' }],
+          [{ text: '🧹 Cleanup', cmd: 'cleanup' }],
+        ],
+      },
+
+      // ─── LOGS & GIT ───
+      logs_menu: {
+        title: '📁 Logs & Git',
+        parent: 'home',
+        body: 'System logs, agent logs, and git operations.',
+        keyboard: [
+          [{ text: '📜 Recent Logs', cmd: 'logs' }, { text: '📂 Agent Logs', go: 'agent_logs' }],
+          [{ text: '📝 Git Diff', cmd: 'diff' }, { text: '📖 Git Log', cmd: 'git_log' }],
+          [{ text: '💻 Shell', cmd: 'shell' }],
+        ],
+      },
+
+      // ─── INTEGRATIONS ───
+      integrations: {
+        title: '🔌 Integrations',
+        parent: 'home',
+        body: 'Connected services and configuration.',
+        keyboard: [
+          [{ text: '🐙 GitHub', cmd: 'integration_github' }, { text: '📱 Telegram', cmd: 'integration_telegram' }],
+          [{ text: '💻 VS Code', cmd: 'integration_vscode' }, { text: '📱 WhatsApp', cmd: 'integration_whatsapp' }],
+          [{ text: '📦 Container', cmd: 'container' }, { text: '🔧 SDK Status', cmd: 'sdk_status' }],
+        ],
+      },
+    };
+
+    // ══════════════════════════════════════════════════════════════════
+    //  COMMAND RESPONSE GENERATORS
+    // ══════════════════════════════════════════════════════════════════
+
+    const CMDS = {
+      status: () => `<strong>📊 Fleet Status</strong> — <code>● RUNNING</code><br/><br/>`+
+        `⏱ Uptime: <code>2h 34m 12s</code><br/>`+
+        `🔧 Mode: <code>internal</code><br/>`+
+        `⚡ Max Parallel: <code>6</code><br/><br/>`+
+        `<strong>Today</strong><br/>`+
+        `✅ Completed: <strong>13</strong> · 🔀 PRs merged: <strong>11</strong> · ❌ Failures: <strong>1</strong> (auto-retried)<br/><br/>`+
+        `<strong>Executors</strong><br/>`+
+        `├─ <code>copilot-claude</code> 🟢 load: 67% tasks: 8<br/>`+
+        `└─ <code>codex-default</code> 🟢 load: 42% tasks: 5`,
+
+      tasks: () => {
+        if (!TASKS.length) return '<strong>📋 Tasks</strong><br/>No tasks found.';
+        const icons = { running: '🔵', queued: '⏳', done: '✅', failed: '❌', cancelled: '⚪' };
+        return '<strong>📋 Active Tasks</strong><br/><br/>' +
+          TASKS.map(t => `${icons[t.status]||'·'} <strong>${t.title}</strong> — <code>${t.status}</code>`).join('<br/>');
+      },
+
+      agents: () => {
+        if (!AGENTS.length) return '<strong>🤖 Agents</strong><br/>No agents configured.';
+        return '<strong>🤖 Agent Pool</strong><br/><br/>' +
+          AGENTS.map(a => {
+            const s = a.healthy === false ? '🔴' : '🟢';
+            return `${s} <strong>${a.name}</strong> — ${a.provider||'?'} · <code>${a.model||'?'}</code>`;
+          }).join('<br/>');
+      },
+
+      health: () => `<strong>💚 System Health</strong> — All Clear<br/><br/>`+
+        `✅ GitHub API <code>142ms</code><br/>`+
+        `✅ Telegram Bot <code>89ms</code><br/>`+
+        `✅ Codex SDK <code>234ms</code><br/>`+
+        `✅ Copilot SDK <code>178ms</code><br/>`+
+        `✅ Shared State <code>12ms</code><br/>`+
+        `✅ Worktree Manager <code>45ms</code>`,
+
+      anomalies: () => `<strong>🔍 Anomaly Detector</strong> — <code>All Clear</code><br/><br/>`+
+        `✅ No stuck agents<br/>✅ No repeated lint failures<br/>✅ No push loop detected<br/>✅ No memory pressure<br/><br/>`+
+        `Streak: <code>14</code> clean checks<br/>Last anomaly: <em>none today</em>`,
+
+      presence: () => `<strong>👥 Agent Presence</strong><br/><br/>`+
+        `🟢 <strong>workstation-1</strong> (this machine)<br/>`+
+        `   ├─ copilot-claude: busy (#44)<br/>`+
+        `   └─ codex-default: busy (#45)<br/><br/>`+
+        `Fleet: 1 workstation, 2 agents online`,
+
+      metrics: () => `<strong>📈 Fleet Metrics</strong> (24h)<br/><br/>`+
+        `<strong>Tasks</strong><br/>▓▓▓▓▓▓▓▓▓▓░░ 89% — 47 completed<br/>▓░░░░░░░░░░░  6% — 3 failed<br/><br/>`+
+        `<strong>PRs</strong><br/>Created: 52 | Merged: 44 | CI failures: 8 (auto-fixed: 6)`,
+
+      logs: () => {
+        if (!LOGS.length) return '<strong>📜 Logs</strong><br/>No recent logs.';
+        let html = '<strong>📜 Recent Logs</strong><br/><br/><pre>';
+        LOGS.slice(-8).forEach(l => {
+          html += `[${(l.level||'info').toUpperCase().padEnd(5)}] ${(l.source||'?').padEnd(10)} ${l.msg}\n`;
+        });
+        return html + '</pre>';
+      },
+
+      executor: () => `<strong>⚙️ Executor Pool</strong><br/><br/>`+
+        `Mode: <code>internal</code><br/>Max parallel: <code>6</code><br/><br/>`+
+        `1. copilot-claude (50%) — COPILOT:CLAUDE_OPUS_4_6<br/>`+
+        `2. codex-default (50%) — CODEX:DEFAULT`,
+
+      executor_slots: () => `<strong>⚙️ Executor Slots</strong><br/><br/>Active: <strong>2</strong> / 6<br/>Queued: <strong>3</strong><br/>Free: <strong>4</strong>`,
+      executor_mode: () => `<strong>⚙️ Mode:</strong> <code>internal</code><br/><br/>Available: internal, container, remote`,
+
+      worktrees: () => {
+        const wt = INFRA.worktrees || [];
+        if (!wt.length) return '<strong>🌳 Worktrees</strong><br/>No worktrees found.';
+        return '<strong>🌳 Git Worktrees</strong><br/><br/>' +
+          wt.map(w => `📁 <strong>${w.branch||w.path}</strong> — ${w.path}`).join('<br/>') +
+          `<br/><br/>Total: ${wt.length} worktrees`;
+      },
+
+      branches: () => `<strong>🌿 Active Branches</strong><br/><br/>`+
+        `├─ <code>ve/abc123-market-order-expiry</code> (merged)<br/>`+
+        `├─ <code>ve/def456-veid-token-fix</code> (merged)<br/>`+
+        `├─ <code>ve/ghi789-escrow-batch</code> 🔵 active<br/>`+
+        `├─ <code>ve/jkl012-hpc-gpu-metering</code> 🔵 active<br/>`+
+        `└─ <code>ve/vwx234-mfa-tests</code> 📝 in review`,
+
+      diff: () => `<strong>📝 Git Diff Summary</strong> (staged)<br/><br/>`+
+        `<code>x/market/keeper/order.go</code>  +47 -12<br/>`+
+        `<code>x/market/types/msgs.go</code>     +23 -0<br/>`+
+        `<code>x/market/keeper/keeper.go</code>  +8  -2<br/><br/>`+
+        `3 files changed, 78 insertions(+), 14 deletions(-)`,
+
+      git_log: () => `<strong>📖 Git Log</strong><br/><br/>`+
+        `<code>a3f8e91</code> feat(market): add order expiry (#187)<br/>`+
+        `<code>7bc2d44</code> fix(veid): token validation (#188)<br/>`+
+        `<code>1e9f077</code> refactor(escrow): batch settlement (#189)<br/>`+
+        `<code>4da8b33</code> chore(deps): bump cosmos-sdk v0.53.2<br/>`+
+        `<code>9cd0e51</code> ci: fix lint on portal workflow`,
+
+      shell: () => `<strong>💻 Shell</strong> — <code>ls logs/</code><br/><br/>`+
+        `<code>daemon.log  monitor.log  agent-42.log  agent-43.log  agent-44.log  telegram.log</code>`,
+
+      history: () => `<strong>🧠 Session History</strong><br/><br/>`+
+        `├─ Session #14: feat(market) order expiry — 23 turns<br/>`+
+        `├─ Session #15: fix(veid) token validation — 11 turns<br/>`+
+        `├─ Session #16: refactor(escrow) batch settle — 31 turns<br/>`+
+        `└─ Session #17: feat(hpc) GPU metering — <em>in progress</em><br/><br/>`+
+        `Total: 4 sessions today, 65 turns`,
+
+      threads: () => `<strong>🧵 Active Threads</strong><br/><br/>`+
+        `├─ Thread #1: <code>ve/44-escrow-batch</code> 🟢 (31 turns)<br/>`+
+        `├─ Thread #2: <code>ve/45-hpc-gpu</code> 🟢 (8 turns)<br/>`+
+        `└─ Thread #3: <code>primary-agent</code> 🟡 idle<br/><br/>`+
+        `Total: 3 threads (2 active)`,
+      threads_clear: () => `<strong>🧵 Registry cleared.</strong> All idle threads removed.`,
+
+      steer: () => `<strong>🧭 Steer Agent</strong><br/><br/>Use: <code>/steer &lt;directive&gt;</code><br/><br/>Example:<br/><code>/steer focus on adding tests first</code><br/><code>/steer skip the CLI and focus on keeper only</code>`,
+      stop: () => `<strong>🛑 Stop Agent</strong><br/><br/>No active agents running right now.`,
+
+      kanban: () => `<strong>📊 Kanban Board</strong><br/><br/>📝 Draft: 1<br/>📋 Todo: 2<br/>🔵 In Progress: 2<br/>📝 In Review: 1<br/>✅ Done: 2<br/><br/>Total: 8 tasks`,
+
+      pause: () => `<strong>⏸ Task processing paused.</strong><br/><br/>No new tasks will be dispatched. Active tasks continue.<br/>Use Resume to restart.`,
+      resume: () => `<strong>▶️ Task processing resumed.</strong><br/><br/>Fleet is picking up tasks from the backlog.`,
+      restart: () => `<strong>🔄 Restarting...</strong><br/><br/>No failed tasks to restart. All tasks healthy.`,
+      cleanup: () => `<strong>🧹 Cleanup Results</strong><br/><br/>✅ 0 stale orchestrators removed<br/>✅ 0 stuck pushes cleared<br/>✅ 1 worktree pruned<br/>✅ 0 orphaned branches cleaned`,
+      starttask: () => `<strong>▶️ Starting task #46</strong>...<br/><br/>📋 docs: update provider guide<br/>🤖 Assigned to: <code>codex-default</code><br/>🌿 Branch: <code>ve/46-docs-provider-guide</code><br/><br/>✅ Task dispatched.`,
+
+      plan3: () => `<strong>🗺️ Planning 3 tasks...</strong><br/><br/>1. feat(hpc): GPU resource metering<br/>2. fix(provider): health check endpoint<br/>3. docs: update provider guide<br/><br/>✅ 3 tasks queued.`,
+      plan5: () => `<strong>🗺️ Planning 5 tasks...</strong><br/><br/>1. feat(hpc): GPU resource metering<br/>2. fix(provider): health check<br/>3. docs: update provider guide<br/>4. refactor(roles): simplify permissions<br/>5. test(escrow): settlement edge cases<br/><br/>✅ 5 tasks queued.`,
+      plan10: () => `<strong>🗺️ Planning 10 tasks...</strong><br/><br/>✅ 10 tasks seeded from backlog and queued.`,
+
+      retry_manual: () => `<strong>🔁 Manual Retry</strong><br/><br/>Retrying active task with clean context... ✅ retry dispatched.`,
+      retry_stuck: () => `<strong>🔁 Stuck Retry</strong><br/><br/>Detecting stuck state... No stuck agents found.`,
+      retry_ratelimit: () => `<strong>🔁 Rate Limit Retry</strong><br/><br/>Waiting for rate limit cooldown... ✅ Retrying in 30s.`,
+
+      // Task list statuses
+      tasks_backlog: () => tasksByStatus('Backlog', ['queued']),
+      tasks_draft: () => '<strong>📝 Draft Tasks</strong><br/><br/>No draft tasks.',
+      tasks_todo: () => tasksByStatus('Todo', ['queued']),
+      tasks_active: () => tasksByStatus('Active', ['running']),
+      tasks_review: () => '<strong>🔍 Review</strong><br/><br/>No tasks in review.',
+      tasks_blocked: () => '<strong>⛔ Blocked</strong><br/><br/>No blocked tasks.',
+      tasks_done: () => tasksByStatus('Done', ['done']),
+
+      agentlogs_escrow: () => `<strong>📂 Agent Logs — ve/44-escrow-batch</strong><br/><br/><pre>[14:32] Starting session...\n[14:33] Reading x/escrow/keeper/keeper.go\n[14:35] Implementing batch settlement\n[14:41] PR #189 created\n[14:44] CI checks passing</pre>`,
+      agentlogs_hpc: () => `<strong>📂 Agent Logs — ve/45-hpc-gpu</strong><br/><br/><pre>[14:35] Starting session...\n[14:36] Reading x/hpc/types/resource.go\n[14:38] Adding GPU metering struct\n[14:40] Writing tests...</pre>`,
+      agentlogs_docs: () => `<strong>📂 Agent Logs — ve/46-docs-guide</strong><br/><br/><pre>[Queued — not yet started]</pre>`,
+
+      kill_thread_44: () => `<strong>🗑 Thread Invalidated</strong><br/><br/>Thread <code>ve/44-escrow-batch</code> has been invalidated. Session will restart on next dispatch.`,
+      kill_thread_45: () => `<strong>🗑 Thread Invalidated</strong><br/><br/>Thread <code>ve/45-hpc-gpu</code> has been invalidated.`,
+
+      background_active: () => `<strong>🛰 Backgrounded</strong><br/><br/>Active agent moved to background mode. It will continue working silently.`,
+      background_new: () => `<strong>🛰 New Background Task</strong><br/><br/>Describe the task to run in background mode.`,
+
+      mp_0: () => mpSet(0), mp_1: () => mpSet(1), mp_2: () => mpSet(2),
+      mp_3: () => mpSet(3), mp_4: () => mpSet(4), mp_6: () => mpSet(6),
+      mp_8: () => mpSet(8), mp_12: () => mpSet(12), mp_16: () => mpSet(16),
+
+      model_opus: () => `<strong>🤖 Model set:</strong> <code>claude-opus-4-6</code><br/>Next tasks will use this model.`,
+      model_o4: () => `<strong>🤖 Model set:</strong> <code>o4-mini</code>`,
+      model_gpt5: () => `<strong>🤖 Model set:</strong> <code>gpt-5.2-codex</code>`,
+      model_default: () => `<strong>🤖 Model reset to default</strong> routing policy.`,
+
+      sdk_copilot: () => `<strong>📦 SDK:</strong> <code>COPILOT</code> selected.`,
+      sdk_codex: () => `<strong>📦 SDK:</strong> <code>CODEX</code> selected.`,
+      sdk_auto: () => `<strong>📦 SDK:</strong> <code>AUTO</code> — round-robin.`,
+      sdk_status: () => `<strong>🔧 SDK Status</strong><br/><br/>✅ Copilot SDK: loaded<br/>✅ Codex SDK: loaded<br/>✅ GitHub CLI: authenticated<br/>✅ Telegram API: connected`,
+
+      region_us: () => `<strong>🌍 Region:</strong> <code>US East</code> selected.`,
+      region_eu: () => `<strong>🌍 Region:</strong> <code>EU North (Sweden)</code> selected.`,
+      region_auto: () => `<strong>🌍 Region:</strong> <code>Auto</code> — lowest latency.`,
+
+      autobacklog: () => `<strong>♻️ Auto Backlog:</strong> Enabled<br/><br/>New GitHub issues matching label filters will be auto-added to the kanban backlog.`,
+      requirements: () => `<strong>📐 Requirements:</strong><br/><br/>Task requirements are parsed from issue descriptions. Acceptance criteria extracted via LLM.`,
+      route_task: () => `<strong>🎯 Route Task</strong><br/><br/>Next queued task will be routed using weighted random policy across online executors.`,
+      container: () => `<strong>📦 Container Status</strong><br/><br/>Container Mode: <code>disabled</code><br/>Available: Docker, Podman<br/><br/>Enable with <code>CONTAINER_MODE=docker</code>`,
+
+      integration_github: () => `<strong>🐙 GitHub</strong> — ✅ Connected<br/><br/>Org: <code>virtengine-gh</code><br/>Repo: <code>virtengine</code><br/>Kanban: bidirectional sync`,
+      integration_telegram: () => `<strong>📱 Telegram</strong> — ✅ Bot active<br/><br/>Bot: <code>@bosun_bot</code><br/>MiniApp: enabled<br/>Sticky menu: active`,
+      integration_vscode: () => `<strong>💻 VS Code</strong> — ✅ Copilot extension linked<br/><br/>Agent: copilot-claude<br/>MCP servers: connected`,
+      integration_whatsapp: () => `<strong>📱 WhatsApp</strong> — Not configured<br/><br/>Run <code>bosun --whatsapp-auth</code> to set up.`,
+    };
+
+    function tasksByStatus(label, statuses) {
       const icons = { running: '🔵', queued: '⏳', done: '✅', failed: '❌', cancelled: '⚪' };
-      tasks.forEach(t => {
-        html += `${icons[t.status] || '·'} <strong>${t.title}</strong> — <code>${t.status}</code><br/>`;
-      });
-      return html;
+      const filtered = TASKS.filter(t => statuses.includes(t.status));
+      if (!filtered.length) return `<strong>${label}</strong><br/><br/>No tasks with this status.`;
+      return `<strong>${label} Tasks</strong> (${filtered.length})<br/><br/>` +
+        filtered.map(t => `${icons[t.status]||'·'} <strong>${t.title}</strong> — <code>${t.status}</code>`).join('<br/>');
     }
 
-    function cmdAgents() {
-      const agents = window.SEED_AGENTS || [];
-      if (!agents.length) return '<strong>🤖 Agents</strong><br/><br/>No agents configured.';
-      let html = '<strong>🤖 Agents</strong><br/><br/>';
-      agents.forEach(a => {
-        const status = a.healthy === false ? '🔴' : '🟢';
-        html += `${status} <strong>${a.name}</strong> — ${a.provider || 'unknown'} · model: <code>${a.model || '?'}</code><br/>`;
-      });
-      return html;
+    function mpSet(n) {
+      return `<strong>⚡ Max Parallel set to <code>${n}</code></strong><br/><br/>${n === 0 ? 'Task processing effectively paused.' : `Up to ${n} tasks will run concurrently.`}`;
     }
 
-    function cmdExecutor() {
-      return `<strong>⚙️ Executor Status</strong><br/><br/>` +
-        `<strong>State:</strong> 🟢 running<br/>` +
-        `<strong>Concurrency:</strong> 4 slots<br/>` +
-        `<strong>Active:</strong> 2 tasks executing<br/>` +
-        `<strong>Queued:</strong> 3 tasks waiting<br/>` +
-        `<strong>Paused:</strong> No<br/><br/>` +
-        `Commands:<br/>` +
-        `<code>/pause</code> — Pause executor<br/>` +
-        `<code>/resume</code> — Resume executor<br/>` +
-        `<code>/run &lt;task&gt;</code> — Force-dispatch a task`;
-    }
+    // ══════════════════════════════════════════════════════════════════
+    //  PANEL NAVIGATION ENGINE
+    // ══════════════════════════════════════════════════════════════════
 
-    function cmdWorkspaces() {
-      const infra = window.SEED_INFRA || {};
-      const wt = infra.worktrees || [];
-      if (!wt.length) return '<strong>🌳 Workspaces</strong><br/><br/>No worktrees found.';
-      let html = '<strong>🌳 Worktrees / Workspaces</strong><br/><br/>';
-      wt.forEach(w => {
-        html += `📁 <strong>${w.branch || w.path}</strong> — ${w.path}<br/>`;
-      });
-      return html;
-    }
+    function renderScreen(screenId) {
+      const screen = SCREENS[screenId];
+      if (!screen) return;
 
-    function cmdRouting() {
-      return `<strong>🛰 Agent Routing</strong><br/><br/>` +
-        `<strong>Strategy:</strong> round-robin with fallback<br/>` +
-        `<strong>Primary:</strong> copilot-claude (healthy ✅)<br/>` +
-        `<strong>Fallback:</strong> codex-mini (healthy ✅)<br/>` +
-        `<strong>Local:</strong> local-gpt4 (offline 🔴)<br/><br/>` +
-        `Tasks are routed to the primary agent first. If it fails or times out, fallback engages automatically.`;
-    }
+      currentScreen = screenId;
+      titleEl.textContent = screen.title;
+      bodyEl.innerHTML = screen.body;
 
-    function cmdLogs() {
-      const logs = window.SEED_LOGS || [];
-      if (!logs.length) return '<strong>📁 Logs</strong><br/><br/>No recent logs.';
-      let html = '<strong>📁 Recent Logs</strong><br/><br/><pre>';
-      logs.slice(-8).forEach(l => {
-        const lvl = (l.level || 'info').toUpperCase().padEnd(5);
-        const src = (l.source || '?').padEnd(10);
-        html += `[${lvl}] ${src} ${l.msg}\n`;
-      });
-      html += '</pre>';
-      return html;
-    }
+      // Hide result when navigating
+      resultEl.classList.remove('visible');
+      resultEl.innerHTML = '';
 
-    function cmdIntegrations() {
-      return `<strong>🔌 Integrations</strong><br/><br/>` +
-        `✅ <strong>GitHub</strong> — Connected (virtengine-gh)<br/>` +
-        `✅ <strong>Telegram</strong> — Bot active (this chat)<br/>` +
-        `✅ <strong>VS Code</strong> — Copilot extension linked<br/>` +
-        `⬚ <strong>Slack</strong> — Not configured<br/>` +
-        `⬚ <strong>Discord</strong> — Not configured<br/><br/>` +
-        `Use <code>/integrations setup &lt;name&gt;</code> to configure.`;
-    }
-
-    function cmdSession() {
-      const sessions = window.SEED_SESSIONS || [];
-      if (!sessions.length) return '<strong>🧠 Sessions</strong><br/><br/>No active sessions.';
-      let html = '<strong>🧠 Active Sessions</strong><br/><br/>';
-      sessions.forEach(s => {
-        const icon = s.status === 'active' ? '🟢' : s.status === 'completed' ? '✅' : '🔴';
-        html += `${icon} <strong>${s.title || s.id}</strong> — ${s.agent || '?'} · ${s.status}<br/>`;
-      });
-      return html;
-    }
-
-    function cmdAsk() {
-      return `<strong>💬 Ask Agent</strong><br/><br/>` +
-        `Type your question in the input box below and press Send.<br/><br/>` +
-        `The active agent (<strong>copilot-claude</strong>) will respond.<br/><br/>` +
-        `<em>Tip: Prefix with <code>/ask</code> for explicit agent routing.</em>`;
-    }
-
-    function cmdCommands() {
-      return `<strong>📖 All Commands</strong><br/><br/>` +
-        `<code>/status</code> — System overview<br/>` +
-        `<code>/tasks</code> — List task queue<br/>` +
-        `<code>/agents</code> — List configured agents<br/>` +
-        `<code>/logs</code> — Recent log entries<br/>` +
-        `<code>/pause</code> — Pause executor<br/>` +
-        `<code>/resume</code> — Resume executor<br/>` +
-        `<code>/run &lt;id&gt;</code> — Force-dispatch a task<br/>` +
-        `<code>/cancel &lt;id&gt;</code> — Cancel a running task<br/>` +
-        `<code>/sessions</code> — List active sessions<br/>` +
-        `<code>/worktrees</code> — List git worktrees<br/>` +
-        `<code>/health</code> — Health check<br/>` +
-        `<code>/ask &lt;query&gt;</code> — Ask the active agent<br/>` +
-        `<code>/help</code> — Show this list`;
-    }
-
-    // Map commands to their handler functions
-    const CMD_MAP = {
-      overview:      cmdOverview,
-      tasks:         cmdTasks,
-      agents:        cmdAgents,
-      executor:      cmdExecutor,
-      workspaces:    cmdWorkspaces,
-      routing:       cmdRouting,
-      logs:          cmdLogs,
-      integrations:  cmdIntegrations,
-      session:       cmdSession,
-      ask:           cmdAsk,
-      commands:      cmdCommands,
-    };
-
-    // ── Text input command handling ──
-    const TEXT_CMD_MAP = {
-      '/status':     'overview',
-      '/overview':   'overview',
-      '/tasks':      'tasks',
-      '/agents':     'agents',
-      '/executor':   'executor',
-      '/workspaces': 'workspaces',
-      '/worktrees':  'workspaces',
-      '/routing':    'routing',
-      '/logs':       'logs',
-      '/integrations': 'integrations',
-      '/sessions':   'session',
-      '/session':    'session',
-      '/commands':   'commands',
-      '/help':       'commands',
-      '/health':     'overview',
-    };
-
-    function handleTextInput() {
-      const val = inputField.value.trim();
-      if (!val) return;
-
-      addUserMessage(val);
-      inputField.value = '';
-
-      // Check for slash commands
-      const cmdKey = TEXT_CMD_MAP[val.toLowerCase()];
-      if (cmdKey && CMD_MAP[cmdKey]) {
-        setTimeout(() => addBotMessage(CMD_MAP[cmdKey]()), 300 + Math.random() * 400);
-        return;
+      // Back / Home buttons
+      if (screen.parent) {
+        backBtn.classList.add('visible');
+        homeBtn.classList.add('visible');
+      } else {
+        backBtn.classList.remove('visible');
+        homeBtn.classList.remove('visible');
       }
 
-      // Handle /ask <query> or just freeform text
-      if (val.startsWith('/ask ') || !val.startsWith('/')) {
-        const query = val.startsWith('/ask ') ? val.slice(5) : val;
-        setTimeout(() => {
-          addBotMessage(
-            `<strong>🤖 Agent Response</strong><br/><br/>` +
-            `Processing: "<em>${query}</em>"<br/><br/>` +
-            `I understand your request. In a live environment, this would be routed to the active agent ` +
-            `(<strong>copilot-claude</strong>) for processing.<br/><br/>` +
-            `<em>This is a demo — agent responses are simulated.</em>`
-          );
-        }, 500 + Math.random() * 800);
-        return;
-      }
+      // Render keyboard
+      kbEl.innerHTML = '';
+      if (screen.keyboard) {
+        screen.keyboard.forEach(row => {
+          const rowEl = document.createElement('div');
+          rowEl.className = 'bot-kb-row';
+          row.forEach(btn => {
+            const b = document.createElement('button');
+            b.className = 'bot-kb-btn';
+            b.textContent = btn.text;
 
-      // Unknown command
-      setTimeout(() => {
-        addBotMessage(`⚠️ Unknown command: <code>${val}</code><br/>Type <code>/help</code> to see available commands.`);
-      }, 300);
-    }
+            if (btn.go) {
+              // Navigate to sub-screen
+              b.addEventListener('click', () => {
+                navStack.push(currentScreen);
+                renderScreen(btn.go);
+              });
+            } else if (btn.cmd) {
+              // Execute command → show result
+              b.addEventListener('click', () => {
+                b.classList.add('cmd-flash');
+                setTimeout(() => b.classList.remove('cmd-flash'), 200);
+                const handler = CMDS[btn.cmd];
+                if (handler) {
+                  resultEl.innerHTML = handler();
+                  resultEl.classList.add('visible');
+                  // Also navigate to the tab if it maps
+                  const tabMap = { status: 'dashboard', tasks: 'tasks', agents: 'agents', logs: 'logs', executor: 'control', health: 'dashboard' };
+                  if (tabMap[btn.cmd] && window.__bosunSetTab) {
+                    window.__bosunSetTab(tabMap[btn.cmd]);
+                  }
+                }
+              });
+            } else if (btn.action === 'close') {
+              b.className = 'bot-kb-btn close-btn';
+              b.addEventListener('click', closePanel);
+            }
 
-    // ── VIEW SWITCHING ──
+            rowEl.appendChild(b);
+          });
+          kbEl.appendChild(rowEl);
+        });
 
-    function openMiniApp() {
-      tgView.classList.add('hidden');
-      miniView.classList.add('active');
+        // Auto-add nav row for non-home screens
+        if (screen.parent) {
+          const navRow = document.createElement('div');
+          navRow.className = 'bot-kb-row';
 
-      // Load the real app.js on first open
-      if (!miniAppLoaded) {
-        miniAppLoaded = true;
-        const s = document.createElement('script');
-        s.type = 'module';
-        s.src = 'app.js';
-        document.body.appendChild(s);
+          const backB = document.createElement('button');
+          backB.className = 'bot-kb-btn nav-btn';
+          backB.textContent = '⬅️ Back';
+          backB.addEventListener('click', goBack);
+
+          const homeB = document.createElement('button');
+          homeB.className = 'bot-kb-btn nav-btn';
+          homeB.textContent = '🏠 Home';
+          homeB.addEventListener('click', goHome);
+
+          const closeB = document.createElement('button');
+          closeB.className = 'bot-kb-btn close-btn';
+          closeB.textContent = '✖ Close';
+          closeB.addEventListener('click', closePanel);
+
+          navRow.appendChild(backB);
+          navRow.appendChild(homeB);
+          navRow.appendChild(closeB);
+          kbEl.appendChild(navRow);
+        }
       }
     }
 
-    function closeMiniApp() {
-      miniView.classList.remove('active');
-      tgView.classList.remove('hidden');
-      // Scroll chat to bottom
-      requestAnimationFrame(() => { msgArea.scrollTop = msgArea.scrollHeight; });
+    function goBack() {
+      const screen = SCREENS[currentScreen];
+      if (navStack.length > 0) {
+        renderScreen(navStack.pop());
+      } else if (screen && screen.parent) {
+        renderScreen(screen.parent);
+      }
     }
 
-    // ── MENU TOGGLE ──
-
-    function toggleMenu() {
-      menuVisible = !menuVisible;
-      stickyMenu.style.display = menuVisible ? '' : 'none';
-      menuToggle.textContent = menuVisible ? '☰' : '☰';
+    function goHome() {
+      navStack.length = 0;
+      renderScreen('home');
     }
 
-    // ── EVENT LISTENERS ──
+    function openPanel() {
+      panelOpen = true;
+      panel.classList.add('open');
+      fab.classList.add('panel-open');
+      fab.textContent = '✕';
+      renderScreen('home');
+    }
 
-    // Inline keyboard button clicks
-    document.querySelectorAll('.tg-inline-btn[data-cmd]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const cmd = btn.dataset.cmd;
+    function closePanel() {
+      panelOpen = false;
+      panel.classList.remove('open');
+      fab.classList.remove('panel-open');
+      fab.textContent = '🤖';
+      navStack.length = 0;
+    }
 
-        // Open MiniApp
-        if (cmd === 'miniapp') {
-          addBotMessage('📱 <strong>Opening Control Center...</strong>');
-          setTimeout(openMiniApp, 400);
-          return;
-        }
+    // ── Event listeners ──
+    fab.addEventListener('click', () => panelOpen ? closePanel() : openPanel());
+    backBtn.addEventListener('click', goBack);
+    homeBtn.addEventListener('click', goHome);
+    closeBtn.addEventListener('click', closePanel);
 
-        // Close menu
-        if (cmd === 'close') {
-          toggleMenu();
-          return;
-        }
-
-        // Refresh
-        if (cmd === 'refresh') {
-          btn.style.background = '#4cc9f0';
-          btn.style.color = '#000';
-          setTimeout(() => { btn.style.background = ''; btn.style.color = ''; }, 300);
-          addBotMessage(cmdOverview());
-          return;
-        }
-
-        // All other commands — produce chat output
-        const handler = CMD_MAP[cmd];
-        if (handler) {
-          // Flash the button
-          btn.style.background = '#3a6da0';
-          setTimeout(() => { btn.style.background = ''; }, 200);
-          // Add response after a short "typing" delay
-          setTimeout(() => addBotMessage(handler()), 200 + Math.random() * 300);
-        }
-      });
-    });
-
-    // Back / Close buttons on MiniApp header
-    backBtn.addEventListener('click', closeMiniApp);
-    closeBtn.addEventListener('click', closeMiniApp);
-
-    // Menu toggle (hamburger in input bar)
-    menuToggle.addEventListener('click', toggleMenu);
-
-    // Send button
-    sendBtn.addEventListener('click', handleTextInput);
-
-    // Enter key in input
-    inputField.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); handleTextInput(); }
+    // Close panel on Escape
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && panelOpen) closePanel();
     });
 
     // Fallback: if ES modules fail to load within 12s, show an error
@@ -1427,14 +1607,6 @@
       var el = document.getElementById('boot-loader');
       if (el) el.innerHTML = '<div style="text-align:center;padding:40px;font-family:Inter,sans-serif;color:#94a3b8"><div style="font-size:18px;margin-bottom:8px">⚠️ Failed to load</div><div style="font-size:12px;color:#64748b">Check connection (CDN: esm.sh) or refresh</div></div>';
     }, 12000);
-
-    // Expose seed data globally for command handlers
-    // (They're already global from the script block in <head>, but just in case)
-    window.SEED_TASKS    = window.SEED_TASKS    || [];
-    window.SEED_AGENTS   = window.SEED_AGENTS   || [];
-    window.SEED_LOGS     = window.SEED_LOGS     || [];
-    window.SEED_SESSIONS = window.SEED_SESSIONS || [];
-    window.SEED_INFRA    = window.SEED_INFRA    || {};
 
   })();
   </script>

@@ -1,0 +1,527 @@
+/**
+ * workspace-manager.mjs — Multi-repo workspace management for Bosun
+ *
+ * Manages workspace directories under ~/bosun/workspaces/<name>/
+ * Each workspace contains 1..N git repositories cloned from remote URLs.
+ *
+ * Config schema in bosun.config.json:
+ *   "workspaces": [
+ *     {
+ *       "id": "virtengine",
+ *       "name": "VirtEngine",
+ *       "repos": [
+ *         { "name": "virtengine", "url": "git@github.com:virtengine/virtengine.git", "slug": "virtengine/virtengine", "primary": true },
+ *         { "name": "bosun", "url": "git@github.com:virtengine/bosun.git", "slug": "virtengine/bosun" }
+ *       ],
+ *       "createdAt": "2025-01-01T00:00:00.000Z",
+ *       "activeRepo": "virtengine"
+ *     }
+ *   ],
+ *   "activeWorkspace": "virtengine"
+ */
+
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync } from "node:fs";
+import { resolve, basename, join } from "node:path";
+import { execSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+
+const TAG = "[workspace-manager]";
+
+// ── Path Helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Get the base workspaces directory.
+ * @param {string} configDir - The bosun config directory (e.g. ~/bosun)
+ * @returns {string} Path to workspaces directory
+ */
+export function getWorkspacesDir(configDir) {
+  return resolve(configDir, "workspaces");
+}
+
+/**
+ * Get the path for a specific workspace.
+ * @param {string} configDir
+ * @param {string} workspaceId
+ * @returns {string}
+ */
+export function getWorkspacePath(configDir, workspaceId) {
+  return resolve(getWorkspacesDir(configDir), workspaceId);
+}
+
+/**
+ * Get the path for a repo within a workspace.
+ * @param {string} configDir
+ * @param {string} workspaceId
+ * @param {string} repoName
+ * @returns {string}
+ */
+export function getRepoPath(configDir, workspaceId, repoName) {
+  return resolve(getWorkspacePath(configDir, workspaceId), repoName);
+}
+
+// ── ID/Slug Helpers ──────────────────────────────────────────────────────────
+
+function normalizeId(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function extractRepoName(url) {
+  if (!url) return "";
+  // Handle SSH: git@github.com:org/repo.git
+  const sshMatch = url.match(/[/:]([^/]+)\.git$/);
+  if (sshMatch) return sshMatch[1];
+  // Handle HTTPS: https://github.com/org/repo.git or https://github.com/org/repo
+  const httpsMatch = url.match(/\/([^/]+?)(?:\.git)?$/);
+  if (httpsMatch) return httpsMatch[1];
+  return basename(url).replace(/\.git$/, "");
+}
+
+function extractSlug(url) {
+  if (!url) return "";
+  // git@github.com:org/repo.git → org/repo
+  const sshMatch = url.match(/[/:]([^/]+\/[^/]+?)(?:\.git)?$/);
+  if (sshMatch) return sshMatch[1];
+  // https://github.com/org/repo.git → org/repo
+  const httpsMatch = url.match(/([^/]+\/[^/]+?)(?:\.git)?$/);
+  if (httpsMatch) return httpsMatch[1];
+  return "";
+}
+
+// ── Config Management ────────────────────────────────────────────────────────
+
+const CONFIG_FILE = "bosun.config.json";
+
+function loadBosunConfig(configDir) {
+  const configPath = resolve(configDir, CONFIG_FILE);
+  if (!existsSync(configPath)) return {};
+  try {
+    return JSON.parse(readFileSync(configPath, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function saveBosunConfig(configDir, config) {
+  const configPath = resolve(configDir, CONFIG_FILE);
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
+}
+
+function getWorkspacesFromConfig(configDir) {
+  const config = loadBosunConfig(configDir);
+  return Array.isArray(config.workspaces) ? config.workspaces : [];
+}
+
+function saveWorkspacesToConfig(configDir, workspaces, activeWorkspace) {
+  const config = loadBosunConfig(configDir);
+  config.workspaces = workspaces;
+  if (activeWorkspace !== undefined) {
+    config.activeWorkspace = activeWorkspace;
+  }
+  saveBosunConfig(configDir, config);
+}
+
+// ── Workspace CRUD ───────────────────────────────────────────────────────────
+
+/**
+ * List all workspaces with their repos.
+ * @param {string} configDir
+ * @returns {Array<{id: string, name: string, path: string, repos: Array, createdAt: string, activeRepo: string}>}
+ */
+export function listWorkspaces(configDir) {
+  const workspaces = getWorkspacesFromConfig(configDir);
+  const wsDir = getWorkspacesDir(configDir);
+
+  return workspaces.map((ws) => {
+    const wsPath = resolve(wsDir, ws.id);
+    const repos = (ws.repos || []).map((repo) => ({
+      ...repo,
+      path: resolve(wsPath, repo.name),
+      exists: existsSync(resolve(wsPath, repo.name)),
+    }));
+    return {
+      ...ws,
+      path: wsPath,
+      exists: existsSync(wsPath),
+      repos,
+    };
+  });
+}
+
+/**
+ * Get a workspace by ID.
+ * @param {string} configDir
+ * @param {string} workspaceId
+ * @returns {Object|null}
+ */
+export function getWorkspace(configDir, workspaceId) {
+  const all = listWorkspaces(configDir);
+  const id = normalizeId(workspaceId);
+  return all.find((ws) => ws.id === id) || null;
+}
+
+/**
+ * Get the currently active workspace.
+ * @param {string} configDir
+ * @returns {Object|null}
+ */
+export function getActiveWorkspace(configDir) {
+  const config = loadBosunConfig(configDir);
+  const activeId = config.activeWorkspace || "";
+  if (!activeId) {
+    const workspaces = listWorkspaces(configDir);
+    return workspaces[0] || null;
+  }
+  return getWorkspace(configDir, activeId);
+}
+
+/**
+ * Create a new workspace.
+ * @param {string} configDir
+ * @param {{name: string, id?: string}} options
+ * @returns {{id: string, name: string, path: string, repos: Array}}
+ */
+export function createWorkspace(configDir, { name, id }) {
+  const wsId = normalizeId(id || name);
+  if (!wsId) throw new Error("Workspace name is required");
+
+  const workspaces = getWorkspacesFromConfig(configDir);
+  if (workspaces.some((ws) => normalizeId(ws.id) === wsId)) {
+    throw new Error(`Workspace "${wsId}" already exists`);
+  }
+
+  const wsPath = getWorkspacePath(configDir, wsId);
+  mkdirSync(wsPath, { recursive: true });
+
+  const workspace = {
+    id: wsId,
+    name: name || wsId,
+    repos: [],
+    createdAt: new Date().toISOString(),
+    activeRepo: null,
+  };
+
+  workspaces.push(workspace);
+
+  // If this is the first workspace, make it active
+  const config = loadBosunConfig(configDir);
+  const isFirst = workspaces.length === 1;
+  saveWorkspacesToConfig(configDir, workspaces, isFirst ? wsId : config.activeWorkspace);
+
+  console.log(TAG, `Created workspace "${name}" at ${wsPath}`);
+  return { ...workspace, path: wsPath, exists: true, repos: [] };
+}
+
+/**
+ * Remove a workspace and optionally delete its directory.
+ * @param {string} configDir
+ * @param {string} workspaceId
+ * @param {{deleteFiles?: boolean}} options
+ * @returns {boolean}
+ */
+export function removeWorkspace(configDir, workspaceId, { deleteFiles = false } = {}) {
+  const wsId = normalizeId(workspaceId);
+  const workspaces = getWorkspacesFromConfig(configDir);
+  const idx = workspaces.findIndex((ws) => normalizeId(ws.id) === wsId);
+  if (idx === -1) return false;
+
+  workspaces.splice(idx, 1);
+
+  const config = loadBosunConfig(configDir);
+  const activeWs = config.activeWorkspace === wsId
+    ? (workspaces[0]?.id || "")
+    : config.activeWorkspace;
+  saveWorkspacesToConfig(configDir, workspaces, activeWs);
+
+  if (deleteFiles) {
+    const wsPath = getWorkspacePath(configDir, wsId);
+    if (existsSync(wsPath)) {
+      rmSync(wsPath, { recursive: true, force: true });
+      console.log(TAG, `Deleted workspace directory: ${wsPath}`);
+    }
+  }
+
+  console.log(TAG, `Removed workspace "${wsId}"`);
+  return true;
+}
+
+/**
+ * Set the active workspace.
+ * @param {string} configDir
+ * @param {string} workspaceId
+ * @returns {boolean}
+ */
+export function setActiveWorkspace(configDir, workspaceId) {
+  const wsId = normalizeId(workspaceId);
+  const workspaces = getWorkspacesFromConfig(configDir);
+  if (!workspaces.some((ws) => normalizeId(ws.id) === wsId)) {
+    throw new Error(`Workspace "${wsId}" not found`);
+  }
+  const config = loadBosunConfig(configDir);
+  config.activeWorkspace = wsId;
+  saveBosunConfig(configDir, config);
+  console.log(TAG, `Active workspace set to "${wsId}"`);
+  return true;
+}
+
+// ── Repo Management ──────────────────────────────────────────────────────────
+
+/**
+ * Add a repo to a workspace by cloning from a URL.
+ * @param {string} configDir
+ * @param {string} workspaceId
+ * @param {{url: string, name?: string, branch?: string, primary?: boolean}} options
+ * @returns {{name: string, path: string, slug: string, url: string, cloned: boolean}}
+ */
+export function addRepoToWorkspace(configDir, workspaceId, { url, name, branch, primary = false }) {
+  const wsId = normalizeId(workspaceId);
+  const workspaces = getWorkspacesFromConfig(configDir);
+  const wsIdx = workspaces.findIndex((ws) => normalizeId(ws.id) === wsId);
+  if (wsIdx === -1) throw new Error(`Workspace "${wsId}" not found`);
+
+  const repoName = name || extractRepoName(url);
+  if (!repoName) throw new Error("Could not determine repository name from URL");
+
+  const ws = workspaces[wsIdx];
+  if ((ws.repos || []).some((r) => r.name === repoName)) {
+    throw new Error(`Repository "${repoName}" already exists in workspace "${wsId}"`);
+  }
+
+  const wsPath = getWorkspacePath(configDir, wsId);
+  const repoPath = resolve(wsPath, repoName);
+  let cloned = false;
+
+  if (!existsSync(repoPath)) {
+    mkdirSync(wsPath, { recursive: true });
+    console.log(TAG, `Cloning ${url} into ${repoPath}...`);
+    const cloneArgs = ["clone"];
+    if (branch) cloneArgs.push("--branch", branch);
+    cloneArgs.push(url, repoPath);
+
+    const result = spawnSync("git", cloneArgs, {
+      encoding: "utf8",
+      timeout: 300000, // 5 minutes
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    if (result.status !== 0) {
+      throw new Error(`git clone failed: ${result.stderr || result.error?.message || "unknown error"}`);
+    }
+    cloned = true;
+    console.log(TAG, `Cloned ${repoName} successfully`);
+  } else {
+    console.log(TAG, `Repository ${repoName} already exists at ${repoPath}`);
+  }
+
+  const slug = extractSlug(url);
+  const repoEntry = {
+    name: repoName,
+    url,
+    slug,
+    primary: primary || (ws.repos || []).length === 0,
+  };
+
+  if (!ws.repos) ws.repos = [];
+  ws.repos.push(repoEntry);
+
+  // If this is primary or first repo, set as activeRepo
+  if (repoEntry.primary || !ws.activeRepo) {
+    ws.activeRepo = repoName;
+  }
+
+  saveWorkspacesToConfig(configDir, workspaces);
+
+  return {
+    ...repoEntry,
+    path: repoPath,
+    cloned,
+    exists: existsSync(repoPath),
+  };
+}
+
+/**
+ * Remove a repo from a workspace.
+ * @param {string} configDir
+ * @param {string} workspaceId
+ * @param {string} repoName
+ * @param {{deleteFiles?: boolean}} options
+ * @returns {boolean}
+ */
+export function removeRepoFromWorkspace(configDir, workspaceId, repoName, { deleteFiles = false } = {}) {
+  const wsId = normalizeId(workspaceId);
+  const workspaces = getWorkspacesFromConfig(configDir);
+  const wsIdx = workspaces.findIndex((ws) => normalizeId(ws.id) === wsId);
+  if (wsIdx === -1) return false;
+
+  const ws = workspaces[wsIdx];
+  const repoIdx = (ws.repos || []).findIndex((r) => r.name === repoName);
+  if (repoIdx === -1) return false;
+
+  ws.repos.splice(repoIdx, 1);
+
+  if (ws.activeRepo === repoName) {
+    ws.activeRepo = ws.repos[0]?.name || null;
+  }
+
+  saveWorkspacesToConfig(configDir, workspaces);
+
+  if (deleteFiles) {
+    const repoPath = getRepoPath(configDir, wsId, repoName);
+    if (existsSync(repoPath)) {
+      rmSync(repoPath, { recursive: true, force: true });
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Set the active repo within a workspace.
+ * @param {string} configDir
+ * @param {string} workspaceId
+ * @param {string} repoName
+ * @returns {boolean}
+ */
+export function setActiveRepo(configDir, workspaceId, repoName) {
+  const wsId = normalizeId(workspaceId);
+  const workspaces = getWorkspacesFromConfig(configDir);
+  const ws = workspaces.find((w) => normalizeId(w.id) === wsId);
+  if (!ws) return false;
+  if (!(ws.repos || []).some((r) => r.name === repoName)) return false;
+
+  ws.activeRepo = repoName;
+  saveWorkspacesToConfig(configDir, workspaces);
+  return true;
+}
+
+/**
+ * Pull latest changes for all repos in a workspace.
+ * @param {string} configDir
+ * @param {string} workspaceId
+ * @returns {Array<{name: string, success: boolean, error?: string}>}
+ */
+export function pullWorkspaceRepos(configDir, workspaceId) {
+  const ws = getWorkspace(configDir, workspaceId);
+  if (!ws) throw new Error(`Workspace "${workspaceId}" not found`);
+
+  const results = [];
+  for (const repo of ws.repos || []) {
+    const repoPath = resolve(ws.path, repo.name);
+    if (!existsSync(repoPath)) {
+      results.push({ name: repo.name, success: false, error: "Directory not found" });
+      continue;
+    }
+    try {
+      execSync("git pull --rebase", {
+        cwd: repoPath,
+        encoding: "utf8",
+        timeout: 120000,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      results.push({ name: repo.name, success: true });
+    } catch (err) {
+      results.push({ name: repo.name, success: false, error: err.message });
+    }
+  }
+  return results;
+}
+
+/**
+ * Get workspace-scoped repositories in the format expected by loadRepoConfig.
+ * Returns config.repositories-compatible array for the active workspace.
+ * @param {string} configDir
+ * @returns {Array}
+ */
+export function getWorkspaceRepositories(configDir) {
+  const ws = getActiveWorkspace(configDir);
+  if (!ws || !ws.repos?.length) return [];
+
+  return ws.repos.map((repo) => ({
+    name: repo.name,
+    id: normalizeId(repo.name),
+    path: resolve(ws.path, repo.name),
+    slug: repo.slug || "",
+    url: repo.url || "",
+    primary: repo.primary || false,
+    workspace: ws.id,
+  }));
+}
+
+/**
+ * Auto-detect workspaces from existing directory structure.
+ * Useful for initial setup when workspaces/ dir already has cloned repos.
+ * @param {string} configDir
+ * @returns {Array<{id: string, name: string, repos: Array}>}
+ */
+export function detectWorkspaces(configDir) {
+  const wsDir = getWorkspacesDir(configDir);
+  if (!existsSync(wsDir)) return [];
+
+  const detected = [];
+  for (const entry of readdirSync(wsDir)) {
+    const entryPath = resolve(wsDir, entry);
+    if (!statSync(entryPath).isDirectory()) continue;
+
+    const repos = [];
+    for (const sub of readdirSync(entryPath)) {
+      const subPath = resolve(entryPath, sub);
+      if (!statSync(subPath).isDirectory()) continue;
+      if (existsSync(resolve(subPath, ".git"))) {
+        let slug = "";
+        try {
+          const remote = execSync("git remote get-url origin", {
+            cwd: subPath,
+            encoding: "utf8",
+            stdio: ["pipe", "pipe", "ignore"],
+          }).trim();
+          slug = extractSlug(remote);
+        } catch { /* no remote */ }
+        repos.push({
+          name: sub,
+          slug,
+          url: "",
+          primary: repos.length === 0,
+        });
+      }
+    }
+
+    if (repos.length > 0) {
+      detected.push({
+        id: normalizeId(entry),
+        name: entry,
+        repos,
+        createdAt: new Date().toISOString(),
+        activeRepo: repos[0]?.name || null,
+      });
+    }
+  }
+
+  return detected;
+}
+
+/**
+ * Initialize workspaces from detection or existing config.
+ * Called during setup or first run.
+ * @param {string} configDir
+ * @returns {{workspaces: Array, isNew: boolean}}
+ */
+export function initializeWorkspaces(configDir) {
+  const existing = getWorkspacesFromConfig(configDir);
+  if (existing.length > 0) {
+    return { workspaces: listWorkspaces(configDir), isNew: false };
+  }
+
+  // Try auto-detection
+  const detected = detectWorkspaces(configDir);
+  if (detected.length > 0) {
+    saveWorkspacesToConfig(configDir, detected, detected[0].id);
+    return { workspaces: listWorkspaces(configDir), isNew: true };
+  }
+
+  return { workspaces: [], isNew: true };
+}

@@ -11,7 +11,7 @@
  * should be imported as early as possible in the startup path.
  */
 
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from "node:fs";
 import { resolve, join } from "node:path";
 
 // ── Legacy config file names accepted from old codex-monitor installations ───
@@ -255,12 +255,29 @@ function rewriteEnvContent(content) {
 }
 
 /**
- * If BOSUN_DIR is not set but CODEX_MONITOR_DIR is (or legacy dir exists),
- * transparently set BOSUN_DIR to point at the legacy dir so bosun reads
- * from it without requiring a migration step.
+ * Remove the legacy codex-monitor config directory after successful migration.
+ * Runs in a deferred setTimeout so it doesn't block startup.
+ */
+function scheduleLegacyCleanup(legacyDir) {
+  if (!legacyDir || !existsSync(legacyDir)) return;
+  setTimeout(() => {
+    try {
+      rmSync(legacyDir, { recursive: true, force: true });
+      console.log(`[compat] Cleaned up legacy config directory: ${legacyDir}`);
+    } catch (err) {
+      console.warn(
+        `[compat] Could not remove legacy directory ${legacyDir}: ${err.message}`,
+      );
+    }
+  }, 5000);
+}
+
+/**
+ * If BOSUN_DIR is not set but a legacy codex-monitor dir exists,
+ * automatically migrate config to ~/bosun and set BOSUN_DIR to the new location.
+ * After successful migration, schedule legacy directory removal.
  *
- * This is the "zero-friction" path: existing users just upgrade the package and
- * it works. Migration is optional (improves going forward).
+ * Returns true if legacy dir was detected and migration was performed.
  */
 export function autoApplyLegacyDir() {
   // Already set — nothing to do
@@ -269,10 +286,39 @@ export function autoApplyLegacyDir() {
   const legacyDir = getLegacyConfigDir();
   if (!legacyDir) return false;
 
-  process.env.BOSUN_DIR = legacyDir;
+  const newDir = getNewConfigDir();
+
+  // If new dir already has config, just use it (already migrated)
+  if (hasLegacyMarkers(newDir)) {
+    // Legacy dir still exists but new dir is set up — clean up legacy
+    scheduleLegacyCleanup(legacyDir);
+    return false;
+  }
+
+  // Perform migration
   console.log(
-    `[compat] Legacy codex-monitor config detected at ${legacyDir} — using it as BOSUN_DIR.`,
+    `[compat] Legacy codex-monitor config detected at ${legacyDir} — migrating to ${newDir}...`,
   );
+  const result = migrateFromLegacy(legacyDir, newDir);
+
+  if (result.errors.length > 0) {
+    console.warn(
+      `[compat] Migration had errors: ${result.errors.join(", ")}`,
+    );
+    // Fall back to legacy dir if migration failed
+    process.env.BOSUN_DIR = legacyDir;
+    return true;
+  }
+
+  if (result.migrated.length > 0) {
+    console.log(
+      `[compat] Migrated ${result.migrated.length} files to ${newDir}: ${result.migrated.join(", ")}`,
+    );
+  }
+
+  // Schedule cleanup of legacy directory
+  scheduleLegacyCleanup(legacyDir);
+
   return true;
 }
 

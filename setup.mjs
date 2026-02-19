@@ -1815,52 +1815,130 @@ async function main() {
     );
     configJson.projectName = env.PROJECT_NAME;
 
-    // ── Step 3: Repository ─────────────────────────────────
-    heading("Step 3 of 9 — Repository Configuration");
-    const multiRepo = isAdvancedSetup
-      ? await prompt.confirm(
-          "Do you have multiple repositories (e.g. separate backend/frontend)?",
-          false,
-        )
-      : false;
+    // ── Step 3: Workspace & Repository ─────────────────────
+    heading("Step 3 of 9 — Workspace & Repository Configuration");
 
-    if (multiRepo) {
-      info("Configure each repository. The first is the primary.\n");
-      let addMore = true;
-      let repoIdx = 0;
-      while (addMore) {
-        const repoName = await prompt.ask(
-          `  Repo ${repoIdx + 1} — name`,
-          repoIdx === 0 ? basename(repoRoot) : "",
+    const useWorkspaces = await prompt.confirm(
+      "Set up multi-repo workspaces? (organizes repos into ~/bosun/workspaces/)",
+      isAdvancedSetup,
+    );
+
+    if (useWorkspaces) {
+      info("Workspaces group related repositories together.\n");
+      info(`Repositories will be cloned into: ${resolve(configDir, "workspaces")}\n`);
+
+      configJson.workspaces = [];
+      let addMoreWs = true;
+      let wsIdx = 0;
+
+      while (addMoreWs) {
+        const wsName = await prompt.ask(
+          `  Workspace ${wsIdx + 1} — name`,
+          wsIdx === 0 ? projectName : "",
         );
-        const repoPath = await prompt.ask(
-          `  Repo ${repoIdx + 1} — local path`,
-          repoIdx === 0 ? repoRoot : "",
-        );
-        const repoSlug = await prompt.ask(
-          `  Repo ${repoIdx + 1} — GitHub slug`,
-          repoIdx === 0 ? env.GITHUB_REPO : "",
-        );
-        configJson.repositories.push({
-          name: repoName,
-          path: repoPath,
-          slug: repoSlug,
-          primary: repoIdx === 0,
+        const wsId = wsName.toLowerCase().replace(/[^a-z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+
+        const wsRepos = [];
+        let addMoreRepos = true;
+        let repoIdx = 0;
+
+        while (addMoreRepos) {
+          const repoUrl = await prompt.ask(
+            `    Repo ${repoIdx + 1} — git URL (SSH or HTTPS)`,
+            repoIdx === 0 ? (env.GITHUB_REPO ? `git@github.com:${env.GITHUB_REPO}.git` : "") : "",
+          );
+          const defaultName = repoUrl
+            ? (repoUrl.match(/[/:]([^/]+?)(?:\.git)?$/) || [])[1] || ""
+            : "";
+          const repoName = await prompt.ask(
+            `    Repo ${repoIdx + 1} — directory name`,
+            defaultName || (repoIdx === 0 ? basename(repoRoot) : ""),
+          );
+          const repoSlug = await prompt.ask(
+            `    Repo ${repoIdx + 1} — GitHub slug (org/repo)`,
+            repoIdx === 0 ? env.GITHUB_REPO : "",
+          );
+
+          wsRepos.push({
+            name: repoName,
+            url: repoUrl,
+            slug: repoSlug,
+            primary: repoIdx === 0,
+          });
+          repoIdx++;
+          addMoreRepos = await prompt.confirm("    Add another repo to this workspace?", false);
+        }
+
+        configJson.workspaces.push({
+          id: wsId,
+          name: wsName,
+          repos: wsRepos,
+          createdAt: new Date().toISOString(),
+          activeRepo: wsRepos[0]?.name || null,
         });
-        repoIdx++;
-        addMore = await prompt.confirm("Add another repository?", false);
+
+        // Also populate legacy repositories array for backward compat
+        for (const repo of wsRepos) {
+          configJson.repositories.push({
+            name: repo.name,
+            slug: repo.slug,
+            primary: repo.primary,
+          });
+        }
+
+        wsIdx++;
+        addMoreWs = await prompt.confirm("Add another workspace?", false);
+      }
+
+      if (configJson.workspaces.length > 0) {
+        configJson.activeWorkspace = configJson.workspaces[0].id;
       }
     } else {
-      // Single-repo: omit path — config.mjs auto-detects via git
-      configJson.repositories.push({
-        name: basename(repoRoot),
-        slug: env.GITHUB_REPO,
-        primary: true,
-      });
-      if (!isAdvancedSetup) {
-        info(
-          "Using single-repo defaults (recommended mode). Re-run setup in Advanced mode for multi-repo config.",
-        );
+      // Single-repo mode (classic) — still works as before
+      const multiRepo = isAdvancedSetup
+        ? await prompt.confirm(
+            "Do you have multiple repositories (e.g. separate backend/frontend)?",
+            false,
+          )
+        : false;
+
+      if (multiRepo) {
+        info("Configure each repository. The first is the primary.\n");
+        let addMore = true;
+        let repoIdx = 0;
+        while (addMore) {
+          const repoName = await prompt.ask(
+            `  Repo ${repoIdx + 1} — name`,
+            repoIdx === 0 ? basename(repoRoot) : "",
+          );
+          const repoPath = await prompt.ask(
+            `  Repo ${repoIdx + 1} — local path`,
+            repoIdx === 0 ? repoRoot : "",
+          );
+          const repoSlug = await prompt.ask(
+            `  Repo ${repoIdx + 1} — GitHub slug`,
+            repoIdx === 0 ? env.GITHUB_REPO : "",
+          );
+          configJson.repositories.push({
+            name: repoName,
+            path: repoPath,
+            slug: repoSlug,
+            primary: repoIdx === 0,
+          });
+          repoIdx++;
+          addMore = await prompt.confirm("Add another repository?", false);
+        }
+      } else {
+        configJson.repositories.push({
+          name: basename(repoRoot),
+          slug: env.GITHUB_REPO,
+          primary: true,
+        });
+        if (!isAdvancedSetup) {
+          info(
+            "Using single-repo defaults (recommended mode). Re-run setup in Advanced mode for multi-repo config.",
+          );
+        }
       }
     }
 

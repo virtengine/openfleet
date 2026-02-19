@@ -775,7 +775,7 @@ function WorkspaceViewer({ agent, onClose }) {
 }
 
 /* ─── Dispatch Section ─── */
-function DispatchSection({ freeSlots }) {
+function DispatchSection({ freeSlots, inputRef, className = "" }) {
   const [taskId, setTaskId] = useState("");
   const [prompt, setPrompt] = useState("");
   const [dispatching, setDispatching] = useState(false);
@@ -808,7 +808,11 @@ function DispatchSection({ freeSlots }) {
   };
 
   return html`
-    <${Card} title="Dispatch Agent">
+    <${Card}
+      title="Dispatch"
+      subtitle="Start a slot with a task ID or a focused prompt"
+      className=${className}
+    >
       <div class="dispatch-section">
         <div class="meta-text mb-sm">
           ${freeSlots > 0
@@ -820,6 +824,7 @@ function DispatchSection({ freeSlots }) {
             class="input"
             placeholder="Task ID"
             value=${taskId}
+            ref=${inputRef}
             onInput=${(e) => { setTaskId(e.target.value); if (e.target.value) setPrompt(""); }}
           />
         </div>
@@ -854,6 +859,11 @@ export function AgentsTab() {
 
   const [expandedSlot, setExpandedSlot] = useState(null);
   const [selectedAgent, setSelectedAgent] = useState(null);
+  const [isCompact, setIsCompact] = useState(() => {
+    try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
+    catch { return false; }
+  });
+  const dispatchInputRef = useRef(null);
   const workspaceTarget = agentWorkspaceTarget.value;
 
   useEffect(() => {
@@ -891,6 +901,21 @@ export function AgentsTab() {
     }
     agentWorkspaceTarget.value = null;
   }, [workspaceTarget, slots]);
+
+  useEffect(() => {
+    let mq;
+    try { mq = globalThis.matchMedia?.("(max-width: 768px)"); }
+    catch { mq = null; }
+    if (!mq) return undefined;
+    const handler = (event) => setIsCompact(event.matches);
+    handler(mq);
+    if (mq.addEventListener) mq.addEventListener("change", handler);
+    else mq.addListener(handler);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", handler);
+      else mq.removeListener(handler);
+    };
+  }, []);
 
   /* Navigate to logs tab with agent query pre-filled */
   const viewAgentLogs = (query) => {
@@ -943,209 +968,329 @@ export function AgentsTab() {
     : 0;
   const avgTimeStr = avgTimeMs > 0 ? `${Math.round(avgTimeMs / 1000)}s` : "—";
 
+  /* Status counts and health summary */
+  const statusCounts = slots.reduce(
+    (acc, slot) => {
+      const status = String(slot.status || "busy").toLowerCase();
+      if (status === "busy" || status === "running") acc.running += 1;
+      else if (status === "error") acc.error += 1;
+      else if (status === "done") acc.done += 1;
+      else if (status === "idle") acc.idle += 1;
+      else acc.other += 1;
+      return acc;
+    },
+    { running: 0, error: 0, done: 0, idle: 0, other: 0 },
+  );
+  const idleSlots = Math.max(0, maxParallel - activeSlots);
+  const healthLabel =
+    statusCounts.error > 0
+      ? "Needs Attention"
+      : activeSlots > 0
+        ? "Healthy"
+        : "Idle";
+  const healthColor =
+    statusCounts.error > 0
+      ? "var(--color-error)"
+      : activeSlots > 0
+        ? "var(--color-done)"
+        : "var(--text-secondary)";
+  const healthSubtext =
+    statusCounts.error > 0
+      ? `${statusCounts.error} slot${statusCounts.error === 1 ? "" : "s"} reporting errors`
+      : activeSlots > 0
+        ? `${statusCounts.running || activeSlots} active · ${idleSlots} idle`
+        : "No active workloads";
+  const lastErrorSlot = slots.find((slot) => slot.lastError);
+  const fleetMetrics = [
+    { label: "Active", value: activeSlots },
+    { label: "Idle", value: idleSlots },
+    { label: "Errors", value: statusCounts.error },
+    { label: "Completed", value: totalCompleted },
+    { label: "Avg Time", value: avgTimeStr },
+  ];
+
+  const handleFleetRefresh = () => {
+    haptic();
+    refreshTab("agents", { force: true });
+  };
+
+  const handleFocusDispatch = () => {
+    haptic();
+    if (dispatchInputRef.current) {
+      dispatchInputRef.current.focus();
+      dispatchInputRef.current.select?.();
+    }
+  };
+
   /* Loading state */
   if (!executor && !agents.length)
     return html`<${Card} title="Loading…"><${SkeletonCard} count=${3} /><//>`;
 
   return html`
-    <!-- Dispatch section -->
-    <${DispatchSection} freeSlots=${freeSlots} />
-
-    <!-- Capacity overview -->
-    <${Card} title="Agent Capacity">
-      <div class="stats-grid mb-sm">
-        <${StatCard}
-          value=${activeSlots}
-          label="Active"
-          color="var(--color-inprogress)"
-        />
-        <${StatCard} value=${maxParallel} label="Max" />
-        <${StatCard}
-          value=${totalCompleted}
-          label="Completed"
-          color="var(--color-done)"
-        />
-        <${StatCard} value=${avgTimeStr} label="Avg Time" />
-      </div>
-      <${ProgressBar} percent=${capacityPct} />
-      <div class="meta-text text-center mt-xs">
-        ${capacityPct}% capacity used
-      </div>
-    <//>
-
-    <!-- Visual slot grid -->
-    <${Card} title="Slot Grid">
-      <div class="slot-grid">
-        ${Array.from(
-          { length: Math.max(maxParallel, slots.length, 1) },
-          (_, i) => {
-            const slot = slots[i];
-            const st = slot ? slot.status || "busy" : "idle";
-            return html`
-              <div
-                key=${i}
-                class="slot-cell slot-${st}"
-                title=${slot
-                  ? `${slot.taskTitle || slot.taskId} (${st})`
-                  : `Slot ${i + 1} idle`}
-                onClick=${() => slot && openWorkspace(slot, i)}
-              >
-                <${StatusDot} status=${st} />
-                <span class="slot-label">${i + 1}</span>
+    <div class="fleet-layout">
+      <div class="fleet-span">
+        <${Card}
+          title="Fleet Overview"
+          subtitle="Capacity, health, and quick actions"
+          className="fleet-overview-card"
+        >
+          <div class="fleet-hero">
+            <div class="fleet-health">
+              <div class="fleet-label">Health</div>
+              <div class="fleet-health-value">
+                <span
+                  class="fleet-health-dot"
+                  style=${`background:${healthColor}`}
+                ></span>
+                <span>${healthLabel}</span>
               </div>
-            `;
-          },
-        )}
-      </div>
-    <//>
+              <div class="fleet-subtext">${healthSubtext}</div>
+              ${lastErrorSlot && statusCounts.error > 0 &&
+              html`<div class="fleet-alert">
+                Last error: ${truncate(lastErrorSlot.lastError || "Unknown error", 90)}
+              </div>`}
+            </div>
 
-    <!-- Active agents / slots -->
-    <${Card} title="Active Agents">
-      ${slots.length
-        ? slots.map(
-            (slot, i) => html`
-              <div
-                key=${i}
-                class="task-card ${expandedSlot === i
-                  ? "task-card-expanded"
-                  : ""}"
-              >
-                <div
-                  class="task-card-header"
-                  onClick=${() => toggleExpand(i)}
-                  style="cursor:pointer"
-                >
-                  <div>
-                    <div class="task-card-title">
-                      <${StatusDot} status=${slot.status || "busy"} />
-                      ${slot.taskTitle || "(no title)"}
-                    </div>
-                    <div class="task-card-meta">
-                      ${slot.taskId || "?"} · Agent
-                      ${slot.agentInstanceId || "n/a"} · ${slot.sdk || "?"}${slot.model ? ` · ${slot.model}` : ""}
-                    </div>
-                  </div>
-                  <${Badge}
-                    status=${slot.status || "busy"}
-                    text=${slot.status || "busy"}
-                  />
-                </div>
-                <div class="flex-between">
-                  <div class="meta-text">Attempt ${slot.attempt || 1}</div>
-                  ${slot.startedAt && html`
-                    <div class="agent-duration">${formatDuration(slot.startedAt)}</div>
-                  `}
-                </div>
-
-                <!-- Progress indicator for active tasks -->
-                ${(slot.status === "running" || slot.status === "busy") &&
-                html`
-                  <div class="agent-progress-bar mt-sm">
-                    <div
-                      class="agent-progress-bar-fill agent-progress-pulse"
-                    ></div>
-                  </div>
-                `}
-
-                <!-- Expanded detail -->
-                ${expandedSlot === i &&
-                html`
-                  <div class="agent-detail mt-sm">
-                    ${slot.branch &&
-                    html`<div class="meta-text">Branch: ${slot.branch}</div>`}
-                    ${slot.startedAt &&
-                    html`<div class="meta-text">
-                      Started: ${formatRelative(slot.startedAt)}
-                    </div>`}
-                    ${slot.completedCount != null &&
-                    html`<div class="meta-text">
-                      Completed: ${slot.completedCount} tasks
-                    </div>`}
-                    ${slot.avgDurationMs &&
-                    html`<div class="meta-text">
-                      Avg: ${Math.round(slot.avgDurationMs / 1000)}s
-                    </div>`}
-                    ${slot.model &&
-                    html`<div class="meta-text">Model: ${slot.model}</div>`}
-                    ${slot.lastError &&
-                    html`<div
-                      class="meta-text"
-                      style="color:var(--color-error)"
-                    >
-                      Last error: ${truncate(slot.lastError, 100)}
-                    </div>`}
-                  </div>
-                `}
-
-                <div class="btn-row mt-sm">
-                  <button
-                    class="btn btn-ghost btn-sm"
-                    onClick=${() =>
-                      viewAgentLogs(
-                        (slot.taskId || slot.branch || "").slice(0, 12),
-                      )}
-                  >
-                    📄 Logs
-                  </button>
-                  <button
-                    class="btn btn-ghost btn-sm"
-                    onClick=${() =>
-                      sendCommandToChat(
-                        `/steer focus on ${slot.taskTitle || slot.taskId}`,
-                      )}
-                  >
-                    🎯 Steer
-                  </button>
-                  <button
-                    class="btn btn-ghost btn-sm"
-                    onClick=${() => openWorkspace(slot, i)}
-                  >
-                    🔍 View
-                  </button>
-                  <button
-                    class="btn btn-danger btn-sm"
-                    onClick=${() => handleForceStop({ ...slot, index: i })}
-                  >
-                    ⛔ Stop
-                  </button>
-                </div>
+            <div class="fleet-capacity">
+              <div class="fleet-label">Capacity</div>
+              <div class="fleet-capacity-value">
+                ${activeSlots}
+                <span class="fleet-capacity-divider">/</span>
+                ${maxParallel}
               </div>
-            `,
-          )
-        : html`<${EmptyState} message="No active agents." />`}
-    <//>
+              <div class="fleet-subtext">
+                ${capacityPct}% used · ${freeSlots} free
+              </div>
+              <div class="fleet-capacity-bar">
+                <${ProgressBar} percent=${capacityPct} />
+              </div>
+            </div>
+          </div>
 
-    <!-- Agent threads (if separate from slots) -->
-    ${agents.length > 0 &&
-    html`
-      <${Collapsible} title="Agent Threads" defaultOpen=${false}>
-        <${Card}>
-          <div class="stats-grid">
-            ${agents.map(
-              (t, i) => html`
-                <${StatCard}
-                  key=${i}
-                  value=${t.turnCount || 0}
-                  label="${truncate(t.taskKey || `Thread ${i}`, 20)} (${t.sdk ||
-                  "?"})"
-                />
+          <div class="fleet-metrics">
+            ${fleetMetrics.map(
+              (metric) => html`
+                <div class="fleet-metric" key=${metric.label}>
+                  <div class="fleet-metric-label">${metric.label}</div>
+                  <div class="fleet-metric-value">${metric.value}</div>
+                </div>
               `,
             )}
           </div>
+
+          <div class="fleet-quick-actions">
+            <button class="btn btn-primary btn-sm" onClick=${handleFocusDispatch}>
+              🚀 Dispatch
+            </button>
+            <button class="btn btn-secondary btn-sm" onClick=${handleFleetRefresh}>
+              ↻ Refresh
+            </button>
+            <button
+              class="btn btn-ghost btn-sm"
+              onClick=${() => navigateTo("logs")}
+            >
+              📄 Logs
+            </button>
+          </div>
+        <//>
+      </div>
+
+      <div class="fleet-column">
+        <${DispatchSection}
+          freeSlots=${freeSlots}
+          inputRef=${dispatchInputRef}
+          className="fleet-dispatch-card"
+        />
+
+        <${Card} className="fleet-slotmap-card">
+          <${Collapsible} title="Slot Map" defaultOpen=${!isCompact}>
+            <div class="meta-text mb-sm">Tap a slot to open the workspace.</div>
+            <div class="slot-grid">
+              ${Array.from(
+                { length: Math.max(maxParallel, slots.length, 1) },
+                (_, i) => {
+                  const slot = slots[i];
+                  const st = slot ? slot.status || "busy" : "idle";
+                  return html`
+                    <div
+                      key=${i}
+                      class="slot-cell slot-${st}"
+                      title=${slot
+                        ? `${slot.taskTitle || slot.taskId} (${st})`
+                        : `Slot ${i + 1} idle`}
+                      onClick=${() => slot && openWorkspace(slot, i)}
+                    >
+                      <${StatusDot} status=${st} />
+                      <span class="slot-label">${i + 1}</span>
+                    </div>
+                  `;
+                },
+              )}
+            </div>
+          <//>
+        <//>
+      </div>
+
+      <div class="fleet-column">
+        <${Card} className="fleet-active-card">
+          <${Collapsible}
+            title=${activeSlots > 0
+              ? `Active Slots · ${activeSlots} active`
+              : "Active Slots"}
+            defaultOpen=${!isCompact}
+          >
+            <div class="meta-text mb-sm">
+              ${activeSlots > 0
+                ? `${activeSlots} active · ${freeSlots} free`
+                : "No active slots"}
+            </div>
+            ${slots.length
+              ? slots.map(
+                  (slot, i) => html`
+                    <div
+                      key=${i}
+                      class="task-card fleet-agent-card ${expandedSlot === i
+                        ? "task-card-expanded"
+                        : ""}"
+                    >
+                      <div
+                        class="task-card-header"
+                        onClick=${() => toggleExpand(i)}
+                        style="cursor:pointer"
+                      >
+                        <div>
+                          <div class="task-card-title">
+                            <${StatusDot} status=${slot.status || "busy"} />
+                            ${slot.taskTitle || "(no title)"}
+                          </div>
+                          <div class="task-card-meta">
+                            ${slot.taskId || "?"} · Agent
+                            ${slot.agentInstanceId || "n/a"} · ${slot.sdk || "?"}${slot.model ? ` · ${slot.model}` : ""}
+                          </div>
+                        </div>
+                        <${Badge}
+                          status=${slot.status || "busy"}
+                          text=${slot.status || "busy"}
+                        />
+                      </div>
+                      <div class="flex-between">
+                        <div class="meta-text">Attempt ${slot.attempt || 1}</div>
+                        ${slot.startedAt && html`
+                          <div class="agent-duration">${formatDuration(slot.startedAt)}</div>
+                        `}
+                      </div>
+
+                      ${(slot.status === "running" || slot.status === "busy") &&
+                    html`
+                      <div class="agent-progress-bar mt-sm">
+                        <div
+                          class="agent-progress-bar-fill agent-progress-pulse"
+                        ></div>
+                      </div>
+                    `}
+
+                    ${expandedSlot === i &&
+                    html`
+                      <div class="agent-detail mt-sm">
+                        ${slot.branch &&
+                        html`<div class="meta-text">Branch: ${slot.branch}</div>`}
+                        ${slot.startedAt &&
+                        html`<div class="meta-text">
+                          Started: ${formatRelative(slot.startedAt)}
+                        </div>`}
+                        ${slot.completedCount != null &&
+                        html`<div class="meta-text">
+                          Completed: ${slot.completedCount} tasks
+                        </div>`}
+                        ${slot.avgDurationMs &&
+                        html`<div class="meta-text">
+                          Avg: ${Math.round(slot.avgDurationMs / 1000)}s
+                        </div>`}
+                        ${slot.model &&
+                        html`<div class="meta-text">Model: ${slot.model}</div>`}
+                        ${slot.lastError &&
+                        html`<div
+                          class="meta-text"
+                          style="color:var(--color-error)"
+                        >
+                          Last error: ${truncate(slot.lastError, 100)}
+                        </div>`}
+                      </div>
+                    `}
+
+                    <div class="btn-row mt-sm">
+                      <button
+                        class="btn btn-ghost btn-sm"
+                        onClick=${() =>
+                          viewAgentLogs(
+                            (slot.taskId || slot.branch || "").slice(0, 12),
+                          )}
+                      >
+                        📄 Logs
+                      </button>
+                      <button
+                        class="btn btn-ghost btn-sm"
+                        onClick=${() =>
+                          sendCommandToChat(
+                            `/steer focus on ${slot.taskTitle || slot.taskId}`,
+                          )}
+                      >
+                        🎯 Steer
+                      </button>
+                      <button
+                        class="btn btn-ghost btn-sm"
+                        onClick=${() => openWorkspace(slot, i)}
+                      >
+                        🔍 View
+                      </button>
+                      <button
+                        class="btn btn-danger btn-sm"
+                        onClick=${() => handleForceStop({ ...slot, index: i })}
+                      >
+                        ⛔ Stop
+                      </button>
+                    </div>
+                  </div>
+                `,
+              )
+            : html`<${EmptyState} message="No active agents." />`}
         <//>
       <//>
-    `}
+      </div>
 
-    <!-- Workspace viewer modal -->
+      ${agents.length > 0 &&
+      html`
+        <div class="fleet-span">
+          <${Collapsible} title="Agent Threads" defaultOpen=${false}>
+            <${Card} className="fleet-threads-card">
+              <div class="stats-grid">
+                ${agents.map(
+                  (t, i) => html`
+                    <${StatCard}
+                      key=${i}
+                      value=${t.turnCount || 0}
+                      label="${truncate(t.taskKey || `Thread ${i}`, 20)} (${t.sdk ||
+                      "?"})"
+                    />
+                  `,
+                )}
+              </div>
+            <//>
+          <//>
+        </div>
+      `}
+
+      <div class="fleet-span">
+        <${SessionsPanel} />
+      </div>
+    </div>
+
     ${selectedAgent && html`
       <${WorkspaceViewer}
         agent=${selectedAgent}
         onClose=${() => setSelectedAgent(null)}
       />
     `}
-
-    <!-- Sessions panel -->
-    <${SessionsPanel} />
   `;
 }
 

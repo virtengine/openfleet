@@ -59,11 +59,6 @@ function isWslInteropRuntime() {
 }
 
 function resolveConfigDir(repoRoot) {
-  const repoPath = resolve(repoRoot || process.cwd());
-  const packageDir = resolve(__dirname);
-  if (isPathInside(repoPath, packageDir) || hasConfigFiles(packageDir)) {
-    return packageDir;
-  }
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();
   const baseDir = preferWindowsDirs
@@ -737,6 +732,15 @@ export function loadConfig(argv = process.argv, options = {}) {
   let configData = configFile.data || {};
 
   const repoRootOverride = cli["repo-root"] || process.env.REPO_ROOT || "";
+
+  // Load workspace configuration
+  const workspacesDir = resolve(configDir, "workspaces");
+  const activeWorkspace = cli["workspace"] ||
+    process.env.BOSUN_WORKSPACE ||
+    configData.activeWorkspace ||
+    configData.defaultWorkspace ||
+    "";
+
   let repositories = loadRepoConfig(configDir, configData, {
     repoRootOverride,
   });
@@ -1626,9 +1630,11 @@ export function loadConfig(argv = process.argv, options = {}) {
     executorConfig,
     scheduler,
 
-    // Multi-repo
+    // Multi-repo / Workspaces
     repositories,
     selectedRepository,
+    workspacesDir,
+    activeWorkspace,
 
     // Agent prompts
     agentPrompts,

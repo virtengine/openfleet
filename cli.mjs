@@ -109,6 +109,12 @@ function showHelp() {
       CONTAINER_ENABLED=1       Enable container isolation for agent execution
       CONTAINER_RUNTIME=docker  Runtime to use (docker|podman|container)
 
+  WORKSPACES
+    --workspace-list            List configured workspaces
+    --workspace-add <name>      Create a new workspace
+    --workspace-switch <id>     Switch active workspace
+    --workspace-add-repo        Add repo to workspace (interactive)
+
   VIBE-KANBAN
     --no-vk-spawn               Don't auto-spawn Vibe-Kanban
     --vk-ensure-interval <ms>   VK health check interval (default: 60000)
@@ -666,6 +672,97 @@ async function main() {
   // The agent-hook-bridge checks this to avoid firing hooks for standalone
   // agent sessions that happen to have hook config files in their tree.
   process.env.VE_MANAGED = "1";
+
+  // Handle workspace commands
+  if (args.includes("--workspace-list") || args.includes("workspace-list")) {
+    const { listWorkspaces, getActiveWorkspace } = await import("./workspace-manager.mjs");
+    const configDirArg = getArgValue("--config-dir");
+    const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
+    const workspaces = listWorkspaces(configDir);
+    const active = getActiveWorkspace(configDir);
+    if (workspaces.length === 0) {
+      console.log("\n  No workspaces configured. Run 'bosun --setup' to create one.\n");
+    } else {
+      console.log("\n  Workspaces:");
+      for (const ws of workspaces) {
+        const marker = ws.id === active?.id ? " ← active" : "";
+        console.log(`    ${ws.name} (${ws.id})${marker}`);
+        for (const repo of ws.repos || []) {
+          const primary = repo.primary ? " [primary]" : "";
+          const exists = repo.exists ? "✓" : "✗";
+          console.log(`      ${exists} ${repo.name} — ${repo.slug || repo.url || "local"}${primary}`);
+        }
+      }
+      console.log("");
+    }
+    process.exit(0);
+  }
+
+  if (args.includes("--workspace-add")) {
+    const { createWorkspace } = await import("./workspace-manager.mjs");
+    const configDirArg = getArgValue("--config-dir");
+    const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
+    const name = getArgValue("--workspace-add");
+    if (!name) {
+      console.error("  Error: workspace name is required. Usage: bosun --workspace-add <name>");
+      process.exit(1);
+    }
+    try {
+      const ws = createWorkspace(configDir, { name });
+      console.log(`\n  ✓ Workspace "${ws.name}" created at ${ws.path}\n`);
+    } catch (err) {
+      console.error(`  Error: ${err.message}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
+  if (args.includes("--workspace-switch")) {
+    const { setActiveWorkspace, getWorkspace } = await import("./workspace-manager.mjs");
+    const configDirArg = getArgValue("--config-dir");
+    const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
+    const wsId = getArgValue("--workspace-switch");
+    if (!wsId) {
+      console.error("  Error: workspace ID required. Usage: bosun --workspace-switch <id>");
+      process.exit(1);
+    }
+    try {
+      setActiveWorkspace(configDir, wsId);
+      const ws = getWorkspace(configDir, wsId);
+      console.log(`\n  ✓ Switched to workspace "${ws?.name || wsId}"\n`);
+    } catch (err) {
+      console.error(`  Error: ${err.message}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
+  if (args.includes("--workspace-add-repo")) {
+    const { addRepoToWorkspace, getActiveWorkspace, listWorkspaces } = await import("./workspace-manager.mjs");
+    const configDirArg = getArgValue("--config-dir");
+    const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
+    const active = getActiveWorkspace(configDir);
+    if (!active) {
+      console.error("  No active workspace. Create one first: bosun --workspace-add <name>");
+      process.exit(1);
+    }
+    const url = getArgValue("--workspace-add-repo");
+    if (!url) {
+      console.error("  Error: repo URL required. Usage: bosun --workspace-add-repo <git-url>");
+      process.exit(1);
+    }
+    try {
+      console.log(`  Cloning into workspace "${active.name}"...`);
+      const repo = addRepoToWorkspace(configDir, active.id, { url });
+      console.log(`\n  ✓ Added repo "${repo.name}" to workspace "${active.name}"`);
+      if (repo.cloned) console.log(`    Cloned to: ${repo.path}`);
+      console.log("");
+    } catch (err) {
+      console.error(`  Error: ${err.message}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
 
   // Handle --setup
   if (args.includes("--setup") || args.includes("setup")) {

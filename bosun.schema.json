@@ -221,6 +221,53 @@
       "type": "string",
       "enum": ["codex-sdk", "kanban", "disabled"]
     },
+    "activeWorkspace": {
+      "type": "string",
+      "description": "ID of the currently active workspace"
+    },
+    "workspaces": {
+      "type": "array",
+      "description": "Multi-repo workspace definitions",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "name"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique workspace identifier (lowercase, alphanumeric, dashes)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Human-readable workspace name"
+          },
+          "repos": {
+            "type": "array",
+            "description": "Repositories in this workspace",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": ["name"],
+              "properties": {
+                "name": { "type": "string", "description": "Repository directory name" },
+                "url": { "type": "string", "description": "Git clone URL" },
+                "slug": { "type": "string", "description": "GitHub slug (org/repo)" },
+                "primary": { "type": "boolean", "description": "Whether this is the primary repo" },
+                "branch": { "type": "string", "description": "Default branch to track" }
+              }
+            }
+          },
+          "activeRepo": {
+            "type": ["string", "null"],
+            "description": "Currently active repository name within the workspace"
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "ISO 8601 creation timestamp"
+          }
+        }
+      }
+    },
     "defaultRepository": { "type": "string" },
     "repositoryDefaults": { "$ref": "#/$defs/repositoryDefaults" },
     "repositories": {
