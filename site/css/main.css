@@ -66,6 +66,9 @@ html {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-size: 16px;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
 }
 
 body {
@@ -74,6 +77,9 @@ body {
   color: var(--text-primary);
   line-height: 1.7;
   overflow-x: hidden;
+  overflow-x: clip;
+  width: 100%;
+  max-width: 100%;
   min-height: 100vh;
 }
 
@@ -164,6 +170,7 @@ code {
 /* ── Layout ────────────────────────────────────────────────────────────── */
 .container {
   max-width: var(--content-width);
+  width: 100%;
   margin: 0 auto;
   padding: 0 2rem;
   position: relative;
@@ -444,6 +451,10 @@ section {
   width: 100%;
 }
 
+.hero__layout > * {
+  min-width: 0;
+}
+
 @media (max-width: 1100px) {
   .hero__layout {
     grid-template-columns: 1fr;
@@ -587,6 +598,7 @@ section {
 .install-cmd {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.75rem;
   background: var(--bg-card);
   border: 1px solid var(--border-default);
@@ -597,6 +609,7 @@ section {
   cursor: pointer;
   transition: all 0.2s ease;
   position: relative;
+  max-width: 100%;
 }
 
 .install-cmd:hover {
@@ -611,6 +624,7 @@ section {
 
 .install-cmd__text {
   color: var(--cyan);
+  word-break: break-word;
 }
 
 .install-cmd__copy {
@@ -1220,6 +1234,7 @@ body.is-miniapp-fullscreen {
 .footer__links {
   display: flex;
   gap: 2rem;
+  flex-wrap: wrap;
   list-style: none;
 }
 
@@ -1447,10 +1462,14 @@ body.is-miniapp-fullscreen {
 /* ── Quick-start steps ─────────────────────────────────────────────────── */
 .steps {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 2rem;
   max-width: 960px;
   margin: 0 auto;
+}
+
+.steps > * {
+  min-width: 0;
 }
 
 .step {
@@ -1502,6 +1521,9 @@ body.is-miniapp-fullscreen {
   font-family: var(--font-mono);
   font-size: 0.8rem;
   color: var(--cyan);
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 @media (max-width: 768px) {
@@ -1524,6 +1546,7 @@ body.is-miniapp-fullscreen {
 
 .code-showcase__tabs {
   display: flex;
+  flex-wrap: wrap;
   background: #1a1a28;
   border-bottom: 1px solid var(--border-subtle);
   gap: 0;
@@ -1569,6 +1592,9 @@ body.is-miniapp-fullscreen {
   font-size: 0.85rem;
   line-height: 1.7;
   color: var(--text-secondary);
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
   animation: fadeSlideIn 0.25s ease;
 }
 
@@ -2542,6 +2568,34 @@ body.is-miniapp-fullscreen {
   .hero__demo {
     margin-top: 2.5rem;
   }
+  .code-showcase__tabs {
+    justify-content: center;
+    gap: 0.25rem;
+  }
+  .code-tab {
+    flex: 1 1 auto;
+  }
+  .code-showcase__panel {
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .install-cmd {
+    justify-content: center;
+    width: 100%;
+  }
+  .footer__inner {
+    justify-content: center;
+    text-align: center;
+  }
+  .footer__left {
+    justify-content: center;
+    width: 100%;
+  }
+  .footer__links {
+    justify-content: center;
+    width: 100%;
+    gap: 1rem;
+  }
   .demo-tabs {
     flex-wrap: wrap;
     gap: 0.35rem;
@@ -2578,5 +2632,31 @@ body.is-miniapp-fullscreen {
   .security-flow__step-label {
     font-size: 0.65rem;
     max-width: 60px;
+  }
+}
+
+@media (max-width: 480px) {
+  .btn {
+    white-space: normal;
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+  }
+  .hero__ctas,
+  .hero__actions {
+    width: 100%;
+  }
+  .code-showcase__tabs {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .code-tab {
+    width: 100%;
+    text-align: center;
+  }
+  .pr-showcase__loading {
+    flex-wrap: wrap;
+    text-align: center;
+    padding: 2rem 1.5rem;
   }
 }

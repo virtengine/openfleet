@@ -35,3 +35,4 @@ workspaces.json
 *.config.json
 !openfleet.config.example.json
 !openfleet.schema.json
+/.codex-monitor/
