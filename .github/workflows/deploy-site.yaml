@@ -1,14 +1,14 @@
-# Deploy OpenFleet landing page to GitHub Pages
+# Deploy Bosun landing page to GitHub Pages
 #
-# Runs in the virtengine/openfleet repo (or triggered via submodule push).
+# Runs in the virtengine/bosun repo (or triggered via submodule push).
 # No cross-repo token needed — uses the built-in GITHUB_TOKEN.
 #
-# GitHub Pages settings for virtengine/openfleet:
+# GitHub Pages settings for virtengine/bosun:
 #   Settings → Pages → Source: GitHub Actions
 #
-# The CNAME file in site/ keeps openfleet.virtengine.com wired up.
+# The CNAME file in site/ keeps bosun.virtengine.com wired up.
 
-name: "OpenFleet: Deploy Site"
+name: "Bosun: Deploy Site"
 
 on:
   push:
@@ -36,6 +36,6 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
           publish_dir: site
-          cname: openfleet.virtengine.com
+          cname: bosun.virtengine.com
           commit_message: "chore(site): deploy ${{ github.sha }}"
           force_orphan: false

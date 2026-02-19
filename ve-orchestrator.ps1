@@ -969,7 +969,7 @@ function Initialize-CISweepConfig {
     $script:CopilotCloudDisableOnRateLimit = Get-EnvBool -Name "COPILOT_CLOUD_DISABLE_ON_RATE_LIMIT" -Default $true
     $envCopilotLocalResolution = Get-EnvFallback -Name "COPILOT_LOCAL_RESOLUTION"
     $script:CopilotLocalResolution = if ($envCopilotLocalResolution) { $envCopilotLocalResolution } else { "agent" }
-    $script:OpenFleetTaskUpstream = Get-EnvString -Name "OPENFLEET_TASK_UPSTREAM" -Default "origin/ve/openfleet-generic"
+    $script:BosunTaskUpstream = Get-EnvString -Name "BOSUN_TASK_UPSTREAM" -Default "origin/ve/bosun-generic"
 
     # Branch routing scope map (v0.8) — maps conventional commit scopes to upstream branches
     $script:BranchRoutingScopeMap = @{}
@@ -1530,17 +1530,17 @@ function Extract-UpstreamFromText {
     return Normalize-BranchName -Branch $match.Groups[1].Value
 }
 
-function Test-IsOpenFleetTask {
+function Test-IsBosunTask {
     param([Parameter(Mandatory)][object]$Task)
     $text = (Get-TaskTextBlob -Task $Task).ToLowerInvariant()
-    if ($text -match "openfleet|OpenFleet|@virtengine/openfleet|scripts/openfleet") { return $true }
+    if ($text -match "bosun|Bosun|@virtengine/bosun|scripts/bosun") { return $true }
     return $false
 }
 
 function Extract-ScopeFromTitle {
     <#
     .SYNOPSIS Extract conventional commit scope from task title.
-    .DESCRIPTION E.g. "feat(openfleet): add caching" → "openfleet"
+    .DESCRIPTION E.g. "feat(bosun): add caching" → "bosun"
                       "[P1] fix(veid): broken flow" → "veid"
     #>
     param([string]$Title)
@@ -1637,8 +1637,8 @@ function Get-TaskUpstreamBranch {
     $fromScope = Resolve-BranchFromScopeMap -Task $Task
     if ($fromScope) { return $fromScope }
 
-    if (Test-IsOpenFleetTask -Task $Task) {
-        return $script:OpenFleetTaskUpstream
+    if (Test-IsBosunTask -Task $Task) {
+        return $script:BosunTaskUpstream
     }
 
     return $script:VK_TARGET_BRANCH
@@ -5926,7 +5926,7 @@ function Test-DirtyPRFileOverlap {
         'ci'           = @('.github/', 'Makefile', 'make/')
         'ml'           = @('ml/')
         'deps'         = @('go.mod', 'go.sum', 'vendor/')
-        'OpenFleet' = @('scripts/openfleet/')
+        'Bosun' = @('scripts/bosun/')
     }
 
     $titleLower = $TaskTitle.ToLower()
