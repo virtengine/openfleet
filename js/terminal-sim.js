@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   OpenFleet Terminal Simulator
+   Bosun Terminal Simulator
    Uses jQuery Terminal for a rich interactive + auto-demo terminal.
-   Realistic logging structure matching actual openfleet output.
+   Realistic logging structure matching actual bosun output.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 (function () {
@@ -21,12 +21,12 @@
     blue: (t) => `[[;#3b82f6;]${t}]`,
   };
 
-  /* ── Realistic boot sequence matching actual openfleet logs ──────────── */
+  /* ── Realistic boot sequence matching actual bosun logs ──────────── */
   const DEMO_SEQUENCE = [
-    { cmd: 'openfleet --echo-logs', delay: 700 },
+    { cmd: 'bosun --echo-logs', delay: 700 },
     { log: '', delay: 100 },
     { log: `  ${C.dim('╭──────────────────────────────────────────────────────────╮')}`, delay: 60 },
-    { log: `  ${C.dim('│')} ${C.cyan('>_')} ${C.bold('openfleet')} ${C.dim('v0.26.2')}                                 ${C.dim('│')}`, delay: 60 },
+    { log: `  ${C.dim('│')} ${C.cyan('>_')} ${C.bold('bosun')} ${C.dim('v0.26.2')}                                 ${C.dim('│')}`, delay: 60 },
     { log: `  ${C.dim('╰──────────────────────────────────────────────────────────╯')}`, delay: 150 },
     { log: `${C.dim('[telegram-bot]')} agent timeout set to 90 min`, delay: 120 },
     { log: `${C.dim('[kanban]')} switched to ${C.cyan('internal')} backend`, delay: 100 },
@@ -113,37 +113,37 @@
   const COMMANDS = {
     help: () => [
       '',
-      `  ${C.bold('OpenFleet')} ${C.dim('v0.26.2')} — Available Commands`,
+      `  ${C.bold('Bosun')} ${C.dim('v0.26.2')} — Available Commands`,
       '',
-      `  ${C.cyan('openfleet')}              Start the supervisor`,
-      `  ${C.cyan('openfleet --setup')}      Run interactive setup wizard`,
-      `  ${C.cyan('openfleet --doctor')}     Validate configuration`,
-      `  ${C.cyan('openfleet --help')}       Show full CLI help`,
-      `  ${C.cyan('openfleet --status')}     Show fleet status`,
-      `  ${C.cyan('openfleet --tasks')}      List current tasks`,
-      `  ${C.cyan('openfleet --agents')}     Show agent pool`,
-      `  ${C.cyan('openfleet --daemon')}     Run as background daemon`,
-      `  ${C.cyan('openfleet --shell')}      Interactive shell mode`,
-      `  ${C.cyan('openfleet --metrics')}    Show fleet metrics (24h)`,
-      `  ${C.cyan('openfleet --logs')}       Tail recent logs`,
-      `  ${C.cyan('openfleet --version')}    Show version`,
+      `  ${C.cyan('bosun')}              Start the supervisor`,
+      `  ${C.cyan('bosun --setup')}      Run interactive setup wizard`,
+      `  ${C.cyan('bosun --doctor')}     Validate configuration`,
+      `  ${C.cyan('bosun --help')}       Show full CLI help`,
+      `  ${C.cyan('bosun --status')}     Show fleet status`,
+      `  ${C.cyan('bosun --tasks')}      List current tasks`,
+      `  ${C.cyan('bosun --agents')}     Show agent pool`,
+      `  ${C.cyan('bosun --daemon')}     Run as background daemon`,
+      `  ${C.cyan('bosun --shell')}      Interactive shell mode`,
+      `  ${C.cyan('bosun --metrics')}    Show fleet metrics (24h)`,
+      `  ${C.cyan('bosun --logs')}       Tail recent logs`,
+      `  ${C.cyan('bosun --version')}    Show version`,
       '',
       `  ${C.dim('This demo terminal responds to common commands.')}`,
-      `  ${C.dim('For the full reference, try')} ${C.cyan('openfleet --help')} ${C.dim('(it\'s a real command).')}`,
+      `  ${C.dim('For the full reference, try')} ${C.cyan('bosun --help')} ${C.dim('(it\'s a real command).')}`,
       '',
     ],
 
-    'openfleet --help': () => [
+    'bosun --help': () => [
       '',
-      `  ${C.bold('openfleet')} ${C.dim('v0.26.2')}`,
+      `  ${C.bold('bosun')} ${C.dim('v0.26.2')}`,
       `  ${C.dim('AI-powered orchestrator supervisor with executor failover, smart PR flow, and Telegram notifications.')}`,
       '',
       `  ${C.bold('USAGE')}`,
-      `    openfleet [options]`,
+      `    bosun [options]`,
       '',
       `  ${C.bold('COMMANDS')}`,
       `    ${C.cyan('--setup')}                     Run the interactive setup wizard`,
-      `    ${C.cyan('--doctor')}                    Validate openfleet .env/config setup`,
+      `    ${C.cyan('--doctor')}                    Validate bosun .env/config setup`,
       `    ${C.cyan('--help')}                      Show this help`,
       `    ${C.cyan('--version')}                   Show version`,
       `    ${C.cyan('--update')}                    Check for and install latest version`,
@@ -196,11 +196,11 @@
       `    ${C.cyan('--startup-status')}            Check if startup service is installed`,
       '',
     ],
-    '--help': () => COMMANDS['openfleet --help'](),
+    '--help': () => COMMANDS['bosun --help'](),
 
-    'openfleet --setup': () => [
+    'bosun --setup': () => [
       '',
-      `  ${C.bold('OpenFleet Setup Wizard')}`,
+      `  ${C.bold('Bosun Setup Wizard')}`,
       '',
       `  ${C.cyan('?')} Setup mode: ${C.bold('Recommended')} ${C.dim('(press Enter for default)')}`,
       `    ${C.green('❯')} ${C.bold('Recommended')} ${C.dim('— Prompts only for important decisions')}`,
@@ -222,22 +222,22 @@
       `  ${C.cyan('?')} Kanban backend: ${C.bold('Internal')} ${C.dim('(recommended primary)')}`,
       '',
       `  ${C.green('✓')} .env written with inline documentation`,
-      `  ${C.green('✓')} openfleet.config.json generated`,
+      `  ${C.green('✓')} bosun.config.json generated`,
       `  ${C.green('✓')} VS Code Copilot settings configured`,
       `  ${C.green('✓')} .codex/hooks.json scaffolded`,
       '',
-      `  ${C.bold('Setup complete!')} Run ${C.cyan('openfleet')} to start.`,
+      `  ${C.bold('Setup complete!')} Run ${C.cyan('bosun')} to start.`,
       '',
     ],
-    '--setup': () => COMMANDS['openfleet --setup'](),
+    '--setup': () => COMMANDS['bosun --setup'](),
 
-    'openfleet --version': () => [
-      `@virtengine/openfleet v0.26.2`,
+    'bosun --version': () => [
+      `@virtengine/bosun v0.26.2`,
     ],
-    '--version': () => COMMANDS['openfleet --version'](),
-    version: () => COMMANDS['openfleet --version'](),
+    '--version': () => COMMANDS['bosun --version'](),
+    version: () => COMMANDS['bosun --version'](),
 
-    'openfleet --status': () => [
+    'bosun --status': () => [
       '',
       `  ${C.bold('Fleet Status')}  ${C.green('● RUNNING')}`,
       '',
@@ -257,10 +257,10 @@
       `  ${C.dim('  Failures:')}        ${C.red('1')} ${C.dim('(auto-retried)')}`,
       '',
     ],
-    '--status': () => COMMANDS['openfleet --status'](),
-    status: () => COMMANDS['openfleet --status'](),
+    '--status': () => COMMANDS['bosun --status'](),
+    status: () => COMMANDS['bosun --status'](),
 
-    'openfleet --tasks': () => [
+    'bosun --tasks': () => [
       '',
       `  ${C.bold('Active Tasks')}`,
       '',
@@ -272,10 +272,10 @@
       `  ${C.bold('46')}  ${C.dim('queued')}     docs: update provider guide           —`,
       '',
     ],
-    '--tasks': () => COMMANDS['openfleet --tasks'](),
-    tasks: () => COMMANDS['openfleet --tasks'](),
+    '--tasks': () => COMMANDS['bosun --tasks'](),
+    tasks: () => COMMANDS['bosun --tasks'](),
 
-    'openfleet --agents': () => [
+    'bosun --agents': () => [
       '',
       `  ${C.bold('Agent Pool')}`,
       '',
@@ -290,15 +290,15 @@
       `  ${C.dim('  └─ Uptime:')}  2h 34m`,
       '',
     ],
-    '--agents': () => COMMANDS['openfleet --agents'](),
-    agents: () => COMMANDS['openfleet --agents'](),
+    '--agents': () => COMMANDS['bosun --agents'](),
+    agents: () => COMMANDS['bosun --agents'](),
 
-    'openfleet --doctor': () => [
+    'bosun --doctor': () => [
       '',
       `  ${C.bold('Config Doctor')} ${C.dim('— checking your setup...')}`,
       '',
       `  ${C.green('✓')} .env file found`,
-      `  ${C.green('✓')} openfleet.config.json valid`,
+      `  ${C.green('✓')} bosun.config.json valid`,
       `  ${C.green('✓')} GitHub CLI authenticated`,
       `  ${C.green('✓')} Telegram bot token valid`,
       `  ${C.green('✓')} Executor pool configured (2 executors)`,
@@ -308,48 +308,48 @@
       `  ${C.green('All checks passed.')} Your setup is ready.`,
       '',
     ],
-    '--doctor': () => COMMANDS['openfleet --doctor'](),
-    doctor: () => COMMANDS['openfleet --doctor'](),
+    '--doctor': () => COMMANDS['bosun --doctor'](),
+    doctor: () => COMMANDS['bosun --doctor'](),
 
-    'openfleet --daemon': () => [
-      `${C.dim('[daemon]')} Starting openfleet in background...`,
-      `${C.dim('[daemon]')} PID file: .cache/openfleet.pid`,
+    'bosun --daemon': () => [
+      `${C.dim('[daemon]')} Starting bosun in background...`,
+      `${C.dim('[daemon]')} PID file: .cache/bosun.pid`,
       `${C.dim('[daemon]')} Log file: logs/daemon.log`,
       `${C.green('✓')} Daemon started (PID: 28451)`,
     ],
-    '--daemon': () => COMMANDS['openfleet --daemon'](),
+    '--daemon': () => COMMANDS['bosun --daemon'](),
 
-    'openfleet --daemon-status': () => [
-      `${C.green('●')} openfleet daemon is running (PID: 28451, uptime: 2h 34m)`,
+    'bosun --daemon-status': () => [
+      `${C.green('●')} bosun daemon is running (PID: 28451, uptime: 2h 34m)`,
     ],
-    '--daemon-status': () => COMMANDS['openfleet --daemon-status'](),
+    '--daemon-status': () => COMMANDS['bosun --daemon-status'](),
 
-    'openfleet --sentinel': () => [
+    'bosun --sentinel': () => [
       `${C.dim('[sentinel]')} Starting Telegram sentinel in companion mode...`,
       `${C.dim('[sentinel]')} Watchdog enabled — auto-restart on crash loop`,
       `${C.dim('[sentinel]')} Listening for Telegram commands`,
       `${C.green('✓')} Sentinel started`,
     ],
-    '--sentinel': () => COMMANDS['openfleet --sentinel'](),
+    '--sentinel': () => COMMANDS['bosun --sentinel'](),
 
-    'openfleet --update': () => [
+    'bosun --update': () => [
       `${C.dim('[update]')} Checking for updates...`,
       `${C.dim('[update]')} Current: v0.26.2`,
       `${C.dim('[update]')} Latest:  v0.26.2`,
       `${C.green('✓')} Already on the latest version.`,
     ],
-    '--update': () => COMMANDS['openfleet --update'](),
+    '--update': () => COMMANDS['bosun --update'](),
 
     clear: () => '__CLEAR__',
 
     ls: () => [
       `${C.cyan('cli.mjs')}  ${C.cyan('monitor.mjs')}  ${C.cyan('config.mjs')}  ${C.cyan('setup.mjs')}  ${C.cyan('ve-orchestrator.mjs')}  ${C.dim('.env')}  ${C.dim('package.json')}`,
     ],
-    pwd: () => [`/home/user/virtengine/scripts/openfleet`],
-    whoami: () => [`openfleet-agent`],
+    pwd: () => [`/home/user/virtengine/scripts/bosun`],
+    whoami: () => [`bosun-agent`],
 
     'cat .env': () => [
-      `${C.dim('# ─── OpenFleet Environment Configuration ───')}`,
+      `${C.dim('# ─── Bosun Environment Configuration ───')}`,
       `${C.dim('PROJECT_NAME=')}${C.green('virtengine')}`,
       `${C.dim('KANBAN_BACKEND=')}${C.green('internal')}`,
       `${C.dim('EXECUTOR_MODE=')}${C.green('internal')}`,
@@ -361,7 +361,7 @@
       `${C.dim('...')}`,
     ],
 
-    'openfleet --metrics': () => [
+    'bosun --metrics': () => [
       '',
       `  ${C.bold('Fleet Metrics')} ${C.dim('(last 24h)')}`,
       '',
@@ -380,10 +380,10 @@
       `    codex-default   ${C.dim('uptime:')} ${C.green('98.2%')}  ${C.dim('avg task:')} 18m`,
       '',
     ],
-    '--metrics': () => COMMANDS['openfleet --metrics'](),
-    metrics: () => COMMANDS['openfleet --metrics'](),
+    '--metrics': () => COMMANDS['bosun --metrics'](),
+    metrics: () => COMMANDS['bosun --metrics'](),
 
-    'openfleet --logs': () => [
+    'bosun --logs': () => [
       `${C.dim('[14:32:01]')} ${C.dim('[monitor]')} polling github for new tasks...`,
       `${C.dim('[14:32:03]')} ${C.dim('[kanban]')} found 2 new tasks in backlog`,
       `${C.dim('[14:32:04]')} ${C.dim('[TASK]')}  ${C.bold('#47')} feat(provider): add health check → ${C.cyan('copilot-claude')}`,
@@ -395,24 +395,24 @@
       `${C.dim('[14:44:02]')} ${C.dim('[  ✓ ]')}  ${C.bold('#48')} PR #201 — ${C.green('all checks passed')}`,
       `${C.dim('[14:44:05]')} ${C.dim('[MERGE]')} ${C.bold('#48')} PR #201 merged to main ${C.green('✓')}`,
     ],
-    '--logs': () => COMMANDS['openfleet --logs'](),
-    logs: () => COMMANDS['openfleet --logs'](),
+    '--logs': () => COMMANDS['bosun --logs'](),
+    logs: () => COMMANDS['bosun --logs'](),
 
     neofetch: () => [
       '',
-      `  ${C.cyan('   ___  _____ ')}   ${C.bold('openfleet')}@virtengine`,
+      `  ${C.cyan('   ___  _____ ')}   ${C.bold('bosun')}@virtengine`,
       `  ${C.cyan('  / _ \\|  ___|')}   ${C.dim('─────────────────────')}`,
       `  ${C.cyan(' | | | | |_   ')}   ${C.dim('OS:')}      Linux x86_64`,
       `  ${C.cyan(' | |_| |  _|  ')}   ${C.dim('Runtime:')} Node.js 22.0`,
       `  ${C.cyan('  \\___/|_|    ')}   ${C.dim('Agents:')}  2 active`,
       `  ${C.cyan('              ')}   ${C.dim('Uptime:')}  2h 34m`,
-      `  ${C.cyan('  openfleet   ')}   ${C.dim('Tasks:')}   13 completed`,
+      `  ${C.cyan('  bosun   ')}   ${C.dim('Tasks:')}   13 completed`,
       '',
     ],
   };
 
   /* ── Initialize terminal ─────────────────────────────────────────────── */
-  window.initOpenFleetTerminal = function (selector, options = {}) {
+  window.initBosunTerminal = function (selector, options = {}) {
     const { autoDemo = true, greeting = true } = options;
 
     const term = $(selector).terminal(
@@ -423,15 +423,15 @@
         // Check for exact match first
         let handler = COMMANDS[command] || COMMANDS[command.toLowerCase()];
 
-        // Try normalized matching: "openfleet --flag" ↔ "--flag"
+        // Try normalized matching: "bosun --flag" ↔ "--flag"
         if (!handler) {
           const lower = command.toLowerCase().trim();
-          // If user typed "openfleet --something", try as-is and stripped
-          const stripped = lower.replace(/^openfleet\s+/, '');
+          // If user typed "bosun --something", try as-is and stripped
+          const stripped = lower.replace(/^bosun\s+/, '');
           handler =
             COMMANDS[lower] ||
             COMMANDS[stripped] ||
-            COMMANDS['openfleet ' + stripped];
+            COMMANDS['bosun ' + stripped];
         }
 
         // Case-insensitive fallback
@@ -461,7 +461,7 @@
       {
         greetings: false,
         prompt: `${C.cyan('❯')} `,
-        name: 'openfleet-demo',
+        name: 'bosun-demo',
         height: 420,
         outputLimit: 300,
         checkArity: false,
@@ -473,7 +473,7 @@
     if (greeting) {
       term.echo('');
       term.echo(`  ${C.dim('┌──────────────────────────────────────────────────┐')}`);
-      term.echo(`  ${C.dim('│')}  ${C.cyan('⚡')} ${C.bold('OpenFleet Interactive Demo')}                    ${C.dim('│')}`);
+      term.echo(`  ${C.dim('│')}  ${C.cyan('⚡')} ${C.bold('Bosun Interactive Demo')}                    ${C.dim('│')}`);
       term.echo(`  ${C.dim('│')}  ${C.dim('Type')} ${C.cyan('help')} ${C.dim('for commands, or watch the auto-demo')}  ${C.dim('│')}`);
       term.echo(`  ${C.dim('└──────────────────────────────────────────────────┘')}`);
       term.echo('');

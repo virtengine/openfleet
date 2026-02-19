@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   OpenFleet Landing Page — Main Stylesheet
+   Bosun Landing Page — Main Stylesheet
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /* ── CSS Custom Properties ─────────────────────────────────────────────── */
@@ -1394,7 +1394,7 @@ body.is-miniapp-fullscreen {
   animation: gradient-shift 6s ease infinite;
 }
 
-/* ── Comparison table (Why OpenFleet) ──────────────────────────────────── */
+/* ── Comparison table (Why Bosun) ──────────────────────────────────── */
 .comparison-table {
   width: 100%;
   border-collapse: collapse;

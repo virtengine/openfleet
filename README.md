@@ -1,11 +1,11 @@
-# OpenFleet Site
+# Bosun Site
 
-Static landing page and documentation for OpenFleet — the autonomous AI fleet supervisor.
+Static landing page and documentation for Bosun — the autonomous AI fleet supervisor.
 
 ## Local Development
 
 ```bash
-cd scripts/openfleet/site
+cd scripts/bosun/site
 npx http-server -p 8080 -c-1
 # Open http://localhost:8080
 ```

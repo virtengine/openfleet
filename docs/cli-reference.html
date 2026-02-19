@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CLI Reference — OpenFleet Docs</title>
+  <title>CLI Reference — Bosun Docs</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -20,7 +20,7 @@
     <aside class="docs-sidebar">
       <a href="../" class="sidebar-brand">
         <div class="sidebar-brand__icon">⚡</div>
-        OpenFleet
+        Bosun
       </a>
       <span class="sidebar-version">v0.26.2</span>
       <div class="docs-search">
@@ -46,8 +46,8 @@
       <div class="sidebar-section">
         <div class="sidebar-section__title">Links</div>
         <ul class="sidebar-nav">
-          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/openfleet#virtengineopenfleet" target="_blank" rel="noopener"><span class="nav-icon">🐙</span> GitHub</a></li>
-          <li><a href="https://www.npmjs.com/package/@virtengine/openfleet" target="_blank"><span class="nav-icon">📦</span> npm</a></li>
+          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/bosun#virtenginebosun" target="_blank" rel="noopener"><span class="nav-icon">🐙</span> GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/@virtengine/bosun" target="_blank"><span class="nav-icon">📦</span> npm</a></li>
           <li><a href="../"><span class="nav-icon">🏠</span> Home</a></li>
         </ul>
       </div>
@@ -57,8 +57,8 @@
       <h1>CLI Reference</h1>
 
       <p>
-        Complete reference for the <code>openfleet</code> command-line interface.
-        All flags can be combined. Run <code>openfleet --help</code> for a quick summary.
+        Complete reference for the <code>bosun</code> command-line interface.
+        All flags can be combined. Run <code>bosun --help</code> for a quick summary.
       </p>
 
       <h2 id="commands">Core Commands</h2>
@@ -68,7 +68,7 @@
           <tr><th>Flag</th><th>Description</th></tr>
         </thead>
         <tbody>
-          <tr><td><code>openfleet</code></td><td>Start supervisor in foreground mode</td></tr>
+          <tr><td><code>bosun</code></td><td>Start supervisor in foreground mode</td></tr>
           <tr><td><code>--setup</code></td><td>Run the interactive setup wizard</td></tr>
           <tr><td><code>--doctor</code></td><td>Validate config (.env + JSON + env overrides)</td></tr>
           <tr><td><code>--help</code></td><td>Show CLI help text</td></tr>
@@ -92,14 +92,14 @@
 
       <h3>Example</h3>
       <pre><code># Start daemon
-openfleet --daemon
+bosun --daemon
 
 # Check status
-openfleet --daemon-status
-# → openfleet daemon is running (PID: 12345)
+bosun --daemon-status
+# → bosun daemon is running (PID: 12345)
 
 # Stop
-openfleet --stop-daemon</code></pre>
+bosun --stop-daemon</code></pre>
 
       <h2 id="startup">Startup Service</h2>
 
@@ -221,16 +221,16 @@ openfleet --stop-daemon</code></pre>
 
       <h2 id="companion-tools">Companion CLI Tools</h2>
 
-      <p>OpenFleet also installs these companion binaries:</p>
+      <p>Bosun also installs these companion binaries:</p>
 
       <table>
         <thead>
           <tr><th>Command</th><th>Description</th></tr>
         </thead>
         <tbody>
-          <tr><td><code>openfleet-setup</code></td><td>Direct setup wizard launcher</td></tr>
-          <tr><td><code>openfleet-chat-id</code></td><td>Discover your Telegram chat ID</td></tr>
-          <tr><td><code>openfleet-shared-workspaces</code></td><td>Manage shared workspace registry</td></tr>
+          <tr><td><code>bosun-setup</code></td><td>Direct setup wizard launcher</td></tr>
+          <tr><td><code>bosun-chat-id</code></td><td>Discover your Telegram chat ID</td></tr>
+          <tr><td><code>bosun-shared-workspaces</code></td><td>Manage shared workspace registry</td></tr>
           <tr><td><code>vibe-kanban</code></td><td>Standalone Vibe-Kanban CLI wrapper</td></tr>
           <tr><td><code>telegram-sentinel</code></td><td>Standalone sentinel launcher</td></tr>
         </tbody>
@@ -238,7 +238,7 @@ openfleet --stop-daemon</code></pre>
 
       <div class="callout callout--info">
         <span class="callout__icon">ℹ️</span>
-        <p>Legacy aliases <code>openfleet</code> and <code>openfleet-setup</code> still work for backwards compatibility.</p>
+        <p>Legacy aliases <code>bosun</code> and <code>bosun-setup</code> still work for backwards compatibility.</p>
       </div>
 
       <div class="docs-nav-footer">

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Architecture — OpenFleet Docs</title>
+  <title>Architecture — Bosun Docs</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -20,7 +20,7 @@
     <aside class="docs-sidebar">
       <a href="../" class="sidebar-brand">
         <div class="sidebar-brand__icon">⚡</div>
-        OpenFleet
+        Bosun
       </a>
       <span class="sidebar-version">v0.26.2</span>
       <div class="docs-search">
@@ -46,8 +46,8 @@
       <div class="sidebar-section">
         <div class="sidebar-section__title">Links</div>
         <ul class="sidebar-nav">
-          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/openfleet#virtengineopenfleet" target="_blank" rel="noopener"><span class="nav-icon">🐙</span> GitHub</a></li>
-          <li><a href="https://www.npmjs.com/package/@virtengine/openfleet" target="_blank"><span class="nav-icon">📦</span> npm</a></li>
+          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/bosun#virtenginebosun" target="_blank" rel="noopener"><span class="nav-icon">🐙</span> GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/@virtengine/bosun" target="_blank"><span class="nav-icon">📦</span> npm</a></li>
           <li><a href="../"><span class="nav-icon">🏠</span> Home</a></li>
         </ul>
       </div>
@@ -57,7 +57,7 @@
       <h1>Architecture</h1>
 
       <p>
-        OpenFleet is organized as a modular Node.js application with clear component boundaries.
+        Bosun is organized as a modular Node.js application with clear component boundaries.
         Each module has a single responsibility and communicates through well-defined interfaces.
       </p>
 
@@ -168,7 +168,7 @@
 
       <h2 id="error-recovery">Error Recovery</h2>
 
-      <p>OpenFleet uses multiple layers of error recovery:</p>
+      <p>Bosun uses multiple layers of error recovery:</p>
 
       <ul>
         <li><strong>Autofix</strong> — Pattern matching on error signatures with guarded fix execution</li>
@@ -180,7 +180,7 @@
 
       <h2 id="data-persistence">Data Persistence</h2>
 
-      <p>State is persisted in <code>.cache/openfleet/</code>:</p>
+      <p>State is persisted in <code>.cache/bosun/</code>:</p>
 
       <table>
         <thead>

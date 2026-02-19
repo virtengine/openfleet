@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   OpenFleet Security Visualizer
-   Interactive visualization of OpenFleet's security architecture.
+   Bosun Security Visualizer
+   Interactive visualization of Bosun's security architecture.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 (function () {
@@ -48,9 +48,9 @@
       id: 'cloudflare-tunnel',
       title: 'Automatic Cloudflare Tunnel',
       icon: '🌐',
-      desc: 'OpenFleet auto-provisions a Cloudflare tunnel for HTTPS access to the MiniApp. No port forwarding, no SSL cert management — the tunnel creates a persistent, secure endpoint automatically.',
+      desc: 'Bosun auto-provisions a Cloudflare tunnel for HTTPS access to the MiniApp. No port forwarding, no SSL cert management — the tunnel creates a persistent, secure endpoint automatically.',
       steps: [
-        { label: 'openfleet starts', icon: '⚡', color: '#60cc5d' },
+        { label: 'bosun starts', icon: '⚡', color: '#60cc5d' },
         { label: 'cloudflared tunnel', icon: '🌐', color: '#f59e0b' },
         { label: 'HTTPS endpoint live', icon: '🔒', color: '#10b981' },
         { label: 'Telegram webhook set', icon: '📡', color: '#3b82f6' },

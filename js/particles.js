@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   OpenFleet Hero Particle / Constellation Canvas
+   Bosun Hero Particle / Constellation Canvas
    Lightweight, performant, no dependencies.
    ═══════════════════════════════════════════════════════════════════════════ */
 

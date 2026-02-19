@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   OpenFleet Telegram Chat Simulator
+   Bosun Telegram Chat Simulator
    Realistic Telegram-style chat UI with real bot command responses.
    ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -7,8 +7,8 @@
   'use strict';
 
   /* ── Bot Info ─────────────────────────────────────────────────────────── */
-  const BOT_NAME = 'OpenFleet Bot';
-  const BOT_USERNAME = '@openfleet_bot';
+  const BOT_NAME = 'Bosun Bot';
+  const BOT_USERNAME = '@bosun_bot';
   const BOT_AVATAR = '🤖';
 
   /* ── Fake timestamps ─────────────────────────────────────────────────── */
@@ -20,14 +20,14 @@
   /* ── Command Responses (matching real telegram-bot.mjs COMMANDS) ──── */
   const BOT_COMMANDS = {
     '/start': {
-      text: '🤖 <b>OpenFleet Primary Agent</b>\n\nI\'m your autonomous AI fleet supervisor with full repo + MCP access.\n\nUse /menu for the control center, /help for commands, or just type your request.\n\n<i>⚡ Ready to ship code autonomously.</i>',
+      text: '🤖 <b>Bosun Primary Agent</b>\n\nI\'m your autonomous AI fleet supervisor with full repo + MCP access.\n\nUse /menu for the control center, /help for commands, or just type your request.\n\n<i>⚡ Ready to ship code autonomously.</i>',
       keyboard: [
         [{ text: '🎛 Open Control Center', cmd: '/menu' }, { text: '📊 Status', cmd: '/status' }],
       ],
     },
 
     '/menu': {
-      text: '🎛️ <b>OpenFleet Control Center</b>\n\nChoose an action:',
+      text: '🎛️ <b>Bosun Control Center</b>\n\nChoose an action:',
       keyboard: [
         [{ text: '📊 Status', cmd: '/status' }, { text: '📋 Tasks', cmd: '/tasks' }, { text: '🤖 Agents', cmd: '/agents' }, { text: '📜 Logs', cmd: '/logs' }],
         [{ text: '💚 Health', cmd: '/health' }, { text: '⚡ Executor', cmd: '/executor' }, { text: '🧵 Threads', cmd: '/threads' }, { text: '🌿 Branches', cmd: '/branches' }],
@@ -183,7 +183,7 @@
     },
 
     '/app': {
-      text: '📱 Opening MiniApp...\n\n<i>In a real Telegram chat, this opens the full OpenFleet Mini App with Dashboard, Tasks, Agents, Infra, Logs, and more.</i>',
+      text: '📱 Opening MiniApp...\n\n<i>In a real Telegram chat, this opens the full Bosun Mini App with Dashboard, Tasks, Agents, Infra, Logs, and more.</i>',
     },
 
     '/starttask': {
@@ -255,7 +255,7 @@
     '/whatsapp': {
       text: '📱 <b>WhatsApp Integration</b>\n\n' +
         'Status: <code>not configured</code>\n\n' +
-        '<i>Run</i> <code>openfleet --whatsapp-auth</code> <i>to set up WhatsApp notifications.</i>',
+        '<i>Run</i> <code>bosun --whatsapp-auth</code> <i>to set up WhatsApp notifications.</i>',
     },
 
     '/helpfull': {
@@ -369,7 +369,7 @@
     },
 
     '/repos': {
-      text: '📁 <b>Repositories</b>\n\nActive: <code>virtengine/virtengine</code>\n\n├─ <code>virtengine/virtengine</code> ✅ primary\n└─ <code>virtengine/openfleet</code> 📦 package\n\nSwitch with: /repos virtengine/openfleet',
+      text: '📁 <b>Repositories</b>\n\nActive: <code>virtengine/virtengine</code>\n\n├─ <code>virtengine/virtengine</code> ✅ primary\n└─ <code>virtengine/bosun</code> 📦 package\n\nSwitch with: /repos virtengine/bosun',
     },
 
     '/coordinator': {
@@ -387,7 +387,7 @@
         '✅ Conventional Commits\n' +
         '✅ Pre-push hooks (lint + build + test)\n' +
         '✅ golangci-lint strict mode\n\n' +
-        'Edit: openfleet.config.json → requirements',
+        'Edit: bosun.config.json → requirements',
     },
   };
 

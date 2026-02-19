@@ -384,7 +384,7 @@ export function LogsTab() {
     const a = document.createElement("a");
     const d = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     a.href = url;
-    a.download = `openfleet-logs-${d}.log`;
+    a.download = `bosun-logs-${d}.log`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

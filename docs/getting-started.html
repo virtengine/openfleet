@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Quick Start — OpenFleet Docs</title>
+  <title>Quick Start — Bosun Docs</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -20,7 +20,7 @@
     <aside class="docs-sidebar">
       <a href="../" class="sidebar-brand">
         <div class="sidebar-brand__icon">⚡</div>
-        OpenFleet
+        Bosun
       </a>
       <span class="sidebar-version">v0.26.2</span>
       <div class="docs-search">
@@ -46,8 +46,8 @@
       <div class="sidebar-section">
         <div class="sidebar-section__title">Links</div>
         <ul class="sidebar-nav">
-          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/openfleet#virtengineopenfleet" target="_blank" rel="noopener"><span class="nav-icon">🐙</span> GitHub</a></li>
-          <li><a href="https://www.npmjs.com/package/@virtengine/openfleet" target="_blank"><span class="nav-icon">📦</span> npm</a></li>
+          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/bosun#virtenginebosun" target="_blank" rel="noopener"><span class="nav-icon">🐙</span> GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/@virtengine/bosun" target="_blank"><span class="nav-icon">📦</span> npm</a></li>
           <li><a href="../"><span class="nav-icon">🏠</span> Home</a></li>
         </ul>
       </div>
@@ -57,7 +57,7 @@
       <h1>Quick Start</h1>
 
       <p>
-        Get OpenFleet running in under 5 minutes. This guide covers install, setup, and your first supervised run.
+        Get Bosun running in under 5 minutes. This guide covers install, setup, and your first supervised run.
       </p>
 
       <h2 id="prerequisites">Prerequisites</h2>
@@ -70,23 +70,23 @@
 
       <div class="callout callout--tip">
         <span class="callout__icon">💡</span>
-        <p>Run <code>gh auth status</code> to verify your GitHub CLI is authenticated before setting up OpenFleet.</p>
+        <p>Run <code>gh auth status</code> to verify your GitHub CLI is authenticated before setting up Bosun.</p>
       </div>
 
       <h2 id="install">Step 1: Install</h2>
 
-      <pre><code>npm install -g @virtengine/openfleet</code></pre>
+      <pre><code>npm install -g @virtengine/bosun</code></pre>
 
       <p>Verify the installation:</p>
-      <pre><code>openfleet --version
-# @virtengine/openfleet v0.26.2</code></pre>
+      <pre><code>bosun --version
+# @virtengine/bosun v0.26.2</code></pre>
 
       <h2 id="setup">Step 2: Run Setup</h2>
 
       <p>Navigate to your project directory and run the setup wizard:</p>
 
       <pre><code>cd your-project
-openfleet --setup</code></pre>
+bosun --setup</code></pre>
 
       <p>The wizard starts with two modes:</p>
 
@@ -118,49 +118,49 @@ openfleet --setup</code></pre>
 
       <h2 id="launch">Step 3: Launch</h2>
 
-      <pre><code>openfleet</code></pre>
+      <pre><code>bosun</code></pre>
 
-      <p>That's it! OpenFleet connects to your configured board, initializes the agent pool, and starts the supervisor loop.</p>
+      <p>That's it! Bosun connects to your configured board, initializes the agent pool, and starts the supervisor loop.</p>
 
       <h2 id="run-modes">Run Modes</h2>
 
       <h3>Foreground (default)</h3>
-      <pre><code>openfleet</code></pre>
+      <pre><code>bosun</code></pre>
       <p>Runs in your terminal with live log output. Press <kbd>Ctrl+C</kbd> to stop.</p>
 
       <h3>Daemon Mode</h3>
       <pre><code># Start as background daemon
-openfleet --daemon
+bosun --daemon
 
 # Check status
-openfleet --daemon-status
+bosun --daemon-status
 
 # Stop
-openfleet --stop-daemon</code></pre>
+bosun --stop-daemon</code></pre>
 
       <h3>Startup Service</h3>
       <pre><code># Auto-start on login
-openfleet --enable-startup
+bosun --enable-startup
 
 # Check status
-openfleet --startup-status
+bosun --startup-status
 
 # Remove
-openfleet --disable-startup</code></pre>
+bosun --disable-startup</code></pre>
 
       <h3>Interactive Shell</h3>
-      <pre><code>openfleet --shell</code></pre>
+      <pre><code>bosun --shell</code></pre>
       <p>Opens an interactive session inside the running monitor for live debugging.</p>
 
       <h2 id="validate">Step 4: Validate</h2>
 
       <p>After setup, validate your configuration:</p>
-      <pre><code>openfleet --doctor</code></pre>
+      <pre><code>bosun --doctor</code></pre>
 
       <p>This checks:</p>
       <ul>
         <li><code>.env</code> file presence and validity</li>
-        <li><code>openfleet.config.json</code> schema compliance</li>
+        <li><code>bosun.config.json</code> schema compliance</li>
         <li>GitHub CLI authentication</li>
         <li>Telegram bot token validity</li>
         <li>Executor pool configuration</li>

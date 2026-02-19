@@ -104,12 +104,12 @@ export const SETTINGS_SCHEMA = [
   // ── Kanban / Tasks ─────────────────────────────────────────
   { key: "KANBAN_BACKEND",                 label: "Kanban Backend",             category: "kanban", type: "select", defaultVal: "internal", options: ["internal", "vk", "github", "jira"], description: "Task management backend. 'internal' uses built-in store, 'github' syncs with GitHub Issues/Projects." },
   { key: "KANBAN_SYNC_POLICY",             label: "Sync Policy",                category: "kanban", type: "select", defaultVal: "internal-primary", options: ["internal-primary", "bidirectional"], description: "How tasks sync between internal store and external backend." },
-  { key: "OPENFLEET_TASK_LABEL",       label: "Task Label",                 category: "kanban", type: "string", defaultVal: "openfleet", description: "GitHub label used to scope which issues are managed by OpenFleet." },
-  { key: "OPENFLEET_ENFORCE_TASK_LABEL", label: "Enforce Task Label",       category: "kanban", type: "boolean", defaultVal: true, description: "Only pick up issues that have the task label. Prevents processing unrelated issues." },
+  { key: "BOSUN_TASK_LABEL",       label: "Task Label",                 category: "kanban", type: "string", defaultVal: "bosun", description: "GitHub label used to scope which issues are managed by Bosun." },
+  { key: "BOSUN_ENFORCE_TASK_LABEL", label: "Enforce Task Label",       category: "kanban", type: "boolean", defaultVal: true, description: "Only pick up issues that have the task label. Prevents processing unrelated issues." },
   { key: "STALE_TASK_AGE_HOURS",           label: "Stale Task Age",             category: "kanban", type: "number", defaultVal: 3, min: 1, max: 168, unit: "hours", description: "Hours before an in-progress task with no activity is considered stale and eligible for recovery." },
   { key: "TASK_PLANNER_MODE",              label: "Task Planner Mode",          category: "kanban", type: "select", defaultVal: "kanban", options: ["kanban", "codex-sdk", "disabled"], description: "How the autonomous task planner operates. 'disabled' turns off automatic task generation." },
   { key: "TASK_PLANNER_DEDUP_HOURS",       label: "Planner Dedup Window",       category: "kanban", type: "number", defaultVal: 6, min: 1, max: 72, unit: "hours", description: "Hours to look back for duplicate task detection.", advanced: true },
-  { key: "OPENFLEET_PROMPT_PLANNER",  label: "Planner Prompt Path",         category: "advanced", type: "string", description: "Override the task planner prompt file path.", advanced: true },
+  { key: "BOSUN_PROMPT_PLANNER",  label: "Planner Prompt Path",         category: "advanced", type: "string", description: "Override the task planner prompt file path.", advanced: true },
 
   // ── GitHub / Git ─────────────────────────────────────────
   { key: "GITHUB_TOKEN",                   label: "GitHub Token",               category: "github", type: "secret", sensitive: true, description: "Personal access token or fine-grained token for GitHub API. Required for GitHub kanban backend." },
@@ -157,7 +157,7 @@ export const SETTINGS_SCHEMA = [
   { key: "CONTAINER_CPU_LIMIT",            label: "CPU Limit",                  category: "security", type: "string", description: "Container CPU limit (e.g., '2', '1.5'). Leave empty for no limit.", validate: "^\\d+\\.?\\d*$" },
 
   // ── Sentinel / Reliability ─────────────────────────────────
-  { key: "OPENFLEET_SENTINEL_AUTO_START", label: "Auto-Start Sentinel",     category: "sentinel", type: "boolean", defaultVal: false, description: "Automatically start the sentinel watchdog on boot." },
+  { key: "BOSUN_SENTINEL_AUTO_START", label: "Auto-Start Sentinel",     category: "sentinel", type: "boolean", defaultVal: false, description: "Automatically start the sentinel watchdog on boot." },
   { key: "SENTINEL_AUTO_RESTART_MONITOR",  label: "Auto-Restart on Crash",      category: "sentinel", type: "boolean", defaultVal: true, description: "Automatically restart the monitor process if it crashes." },
   { key: "SENTINEL_CRASH_LOOP_THRESHOLD",  label: "Crash Loop Threshold",       category: "sentinel", type: "number", defaultVal: 3, min: 2, max: 20, description: "Number of crashes within the window before declaring a crash loop." },
   { key: "SENTINEL_CRASH_LOOP_WINDOW_MIN", label: "Crash Loop Window",          category: "sentinel", type: "number", defaultVal: 10, min: 2, max: 60, unit: "min", description: "Rolling time window for crash loop detection." },
@@ -165,11 +165,11 @@ export const SETTINGS_SCHEMA = [
   { key: "SENTINEL_REPAIR_TIMEOUT_MIN",    label: "Repair Timeout",             category: "sentinel", type: "number", defaultVal: 20, min: 5, max: 120, unit: "min", description: "Maximum time the repair agent can run." },
 
   // ── Agent Hooks ────────────────────────────────────────────
-  { key: "OPENFLEET_HOOK_PROFILE",     label: "Hook Profile",               category: "hooks", type: "select", defaultVal: "strict", options: ["strict", "balanced", "lightweight", "none"], description: "Pre-configured hook intensity. 'strict' runs all checks, 'none' disables hooks." },
-  { key: "OPENFLEET_HOOK_TARGETS",     label: "Hook Targets",               category: "hooks", type: "string", defaultVal: "codex,claude,copilot", description: "Comma-separated list of agent SDKs to install hooks for.", validate: "^[a-z,]+$" },
-  { key: "OPENFLEET_HOOKS_ENABLED",    label: "Enable Hooks",               category: "hooks", type: "boolean", defaultVal: true, description: "Enable agent lifecycle hook scaffolding." },
-  { key: "OPENFLEET_HOOKS_OVERWRITE",  label: "Overwrite Existing",         category: "hooks", type: "boolean", defaultVal: false, description: "Overwrite existing hook files when installing. Use with caution." },
-  { key: "OPENFLEET_HOOKS_BUILTINS_MODE", label: "Built-ins Mode",          category: "hooks", type: "select", defaultVal: "force", options: ["force", "auto", "off"], description: "How built-in hooks are managed. 'force' always installs, 'auto' only if missing." },
+  { key: "BOSUN_HOOK_PROFILE",     label: "Hook Profile",               category: "hooks", type: "select", defaultVal: "strict", options: ["strict", "balanced", "lightweight", "none"], description: "Pre-configured hook intensity. 'strict' runs all checks, 'none' disables hooks." },
+  { key: "BOSUN_HOOK_TARGETS",     label: "Hook Targets",               category: "hooks", type: "string", defaultVal: "codex,claude,copilot", description: "Comma-separated list of agent SDKs to install hooks for.", validate: "^[a-z,]+$" },
+  { key: "BOSUN_HOOKS_ENABLED",    label: "Enable Hooks",               category: "hooks", type: "boolean", defaultVal: true, description: "Enable agent lifecycle hook scaffolding." },
+  { key: "BOSUN_HOOKS_OVERWRITE",  label: "Overwrite Existing",         category: "hooks", type: "boolean", defaultVal: false, description: "Overwrite existing hook files when installing. Use with caution." },
+  { key: "BOSUN_HOOKS_BUILTINS_MODE", label: "Built-ins Mode",          category: "hooks", type: "select", defaultVal: "force", options: ["force", "auto", "off"], description: "How built-in hooks are managed. 'force' always installs, 'auto' only if missing." },
 
   // ── Logging / Monitoring ────────────────────────────────────
   { key: "AGENT_WORK_LOGGING_ENABLED",     label: "Work Logging",               category: "logging", type: "boolean", defaultVal: true, description: "Enable structured agent work logging with transcripts." },
@@ -213,7 +213,7 @@ export function getGroupedSettings(includeAdvanced = false) {
  */
 export function validateSetting(def, value) {
   if (value === "" || value == null) return { valid: true };
-  if (def.key === "OPENFLEET_HOOK_TARGETS") {
+  if (def.key === "BOSUN_HOOK_TARGETS") {
     const targets = String(value || "")
       .split(",")
       .map((entry) => entry.trim().toLowerCase())

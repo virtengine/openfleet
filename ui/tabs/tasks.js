@@ -102,7 +102,7 @@ const SYSTEM_TAGS = new Set([
   "codex:claimed",
   "codex:working",
   "codex:stale",
-  "openfleet",
+  "bosun",
   "codex-mointor",
 ]);
 
