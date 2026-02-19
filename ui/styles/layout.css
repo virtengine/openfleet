@@ -551,7 +551,11 @@
 
 /* ─── Desktop Shell: Sidebar + Session Rail ─── */
 .app-shell {
-  min-height: 100%;
+  /* flex:1 + min-height:0 constrains the shell to the bounded #app height.
+     Avoids the min-height:100% trap where children grow past the viewport
+     and .main-content never gets a finite height to scroll within. */
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   position: relative;
