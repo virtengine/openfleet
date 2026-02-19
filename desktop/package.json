@@ -1,0 +1,15 @@
+{
+  "name": "bosun-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "main.mjs",
+  "description": "Electron wrapper for the Bosun Telegram UI",
+  "scripts": {
+    "start": "electron .",
+    "start:dev": "ELECTRON_ENABLE_LOGGING=1 ELECTRON_ENABLE_STACK_DUMPING=1 electron ."
+  },
+  "devDependencies": {
+    "electron": "^30.0.0"
+  }
+}
