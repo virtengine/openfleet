@@ -2948,7 +2948,18 @@ function buildActionConfirmKeyboard(confirmId, confirmLabel, backAction) {
 
 function appendRefreshRow(keyboard, screenId, params = {}) {
   if (!keyboard || !keyboard.inline_keyboard) return keyboard;
-  const action = uiGoAction(screenId, params.page);
+  const hasExtraParams =
+    params &&
+    Object.keys(params).some((key) => key !== "page" && params[key] !== undefined);
+  const action = hasExtraParams
+    ? uiTokenAction(
+        issueUiToken({
+          type: "go",
+          screenId,
+          params,
+        }),
+      )
+    : uiGoAction(screenId, params.page);
   const rows = keyboard.inline_keyboard || [];
   const hasRefresh = rows.some((row) =>
     row.some((btn) => btn?.text === "🔄 Refresh"),
@@ -3412,6 +3423,8 @@ function normalizeTaskListStatus(value) {
 }
 
 function taskStatusLabel(status) {
+  const raw = String(status || "").trim().toLowerCase();
+  if (TASK_LIST_LABELS[raw]) return TASK_LIST_LABELS[raw];
   const normalized = normalizeTaskListStatus(status) || "todo";
   return TASK_LIST_LABELS[normalized] || normalized;
 }
@@ -3658,9 +3671,207 @@ Object.assign(UI_SCREENS, {
           uiButton("🔁 Retry", uiGoAction("retry")),
           uiButton("⚙️ Executor", uiGoAction("executor")),
         ],
-        [uiButton("▶️ Start Task (guided)", uiInputAction("starttask"))],
+        [
+          uiButton("🗂 Task Lists", uiGoAction("task_lists")),
+          uiButton("▶️ Start Task (guided)", uiInputAction("starttask")),
+        ],
         uiNavRow("home"),
       ]),
+  },
+  task_lists: {
+    title: "Task Lists",
+    parent: "tasks",
+    body: () =>
+      `Browse kanban tasks by status.\nBackend: ${getKanbanBackendName() || "unknown"}`,
+    keyboard: () => {
+      const rows = [
+        [
+          uiButton(
+            "📥 Backlog",
+            uiTokenAction(
+              issueUiToken({
+                type: "go",
+                screenId: "task_list",
+                params: { status: "backlog", page: 0 },
+              }),
+            ),
+          ),
+          uiButton(
+            "📝 Draft",
+            uiTokenAction(
+              issueUiToken({
+                type: "go",
+                screenId: "task_list",
+                params: { status: "draft", page: 0 },
+              }),
+            ),
+          ),
+        ],
+        [
+          uiButton(
+            "✅ Todo",
+            uiTokenAction(
+              issueUiToken({
+                type: "go",
+                screenId: "task_list",
+                params: { status: "todo", page: 0 },
+              }),
+            ),
+          ),
+          uiButton(
+            "🚧 Active",
+            uiTokenAction(
+              issueUiToken({
+                type: "go",
+                screenId: "task_list",
+                params: { status: "inprogress", page: 0 },
+              }),
+            ),
+          ),
+        ],
+        [
+          uiButton(
+            "🔍 Review",
+            uiTokenAction(
+              issueUiToken({
+                type: "go",
+                screenId: "task_list",
+                params: { status: "inreview", page: 0 },
+              }),
+            ),
+          ),
+          uiButton(
+            "⛔ Blocked",
+            uiTokenAction(
+              issueUiToken({
+                type: "go",
+                screenId: "task_list",
+                params: { status: "blocked", page: 0 },
+              }),
+            ),
+          ),
+        ],
+        [
+          uiButton(
+            "🏁 Done",
+            uiTokenAction(
+              issueUiToken({
+                type: "go",
+                screenId: "task_list",
+                params: { status: "done", page: 0 },
+              }),
+            ),
+          ),
+        ],
+        uiNavRow("tasks"),
+      ];
+      return buildKeyboard(rows);
+    },
+  },
+  task_list: {
+    title: "Tasks",
+    parent: "task_lists",
+    body: async (ctx) => {
+      const status = ctx.params?.status || "todo";
+      const page = parsePageParam(ctx.params?.page);
+      const adapter = getKanbanAdapter();
+      const projectId = await resolveKanbanProjectId(adapter);
+      if (!projectId) {
+        return "No kanban project available.";
+      }
+      const normalizedStatus = normalizeTaskListStatus(status);
+      const tasks = await adapter.listTasks(
+        projectId,
+        normalizedStatus ? { status: normalizedStatus } : {},
+      );
+      if (!tasks || tasks.length === 0) {
+        return `No tasks found for ${taskStatusLabel(status)}.`;
+      }
+      const total = tasks.length;
+      const start = page * TASK_LIST_PAGE_SIZE;
+      const slice = tasks.slice(start, start + TASK_LIST_PAGE_SIZE);
+      const lines = [
+        `${taskStatusLabel(status)} Tasks · ${total} total`,
+        "",
+        ...slice.map((task, idx) => formatTaskLine(task, start + idx)),
+      ];
+      return lines.join("\n");
+    },
+    keyboard: async (ctx) => {
+      const status = ctx.params?.status || "todo";
+      const page = parsePageParam(ctx.params?.page);
+      const adapter = getKanbanAdapter();
+      const projectId = await resolveKanbanProjectId(adapter);
+      if (!projectId) {
+        return buildKeyboard([uiNavRow("task_lists")]);
+      }
+      const normalizedStatus = normalizeTaskListStatus(status);
+      const tasks = await adapter.listTasks(
+        projectId,
+        normalizedStatus ? { status: normalizedStatus } : {},
+      );
+      const total = tasks.length;
+      const totalPages = Math.max(1, Math.ceil(total / TASK_LIST_PAGE_SIZE));
+      const safePage = Math.min(page, totalPages - 1);
+      const slice = tasks.slice(
+        safePage * TASK_LIST_PAGE_SIZE,
+        safePage * TASK_LIST_PAGE_SIZE + TASK_LIST_PAGE_SIZE,
+      );
+      const rows = [];
+      const startable = slice.filter((task) => task?.id);
+      if (startable.length > 0) {
+        rows.push(
+          ...startable.map((task) => {
+            const token = issueUiToken({
+              type: "starttask_executor",
+              taskId: task.id,
+            });
+            const label = `▶ ${shortenLabel(task.id || task.title || "Task", 28)}`;
+            return [uiButton(label, uiTokenAction(token))];
+          }),
+        );
+      }
+      if (totalPages > 1) {
+        const pager = [];
+        if (safePage > 0) {
+          pager.push(
+            uiButton(
+              "⬅️ Prev",
+              uiTokenAction(
+                issueUiToken({
+                  type: "go",
+                  screenId: "task_list",
+                  params: { status, page: safePage - 1 },
+                }),
+              ),
+            ),
+          );
+        }
+        if (safePage < totalPages - 1) {
+          pager.push(
+            uiButton(
+              "Next ➡️",
+              uiTokenAction(
+                issueUiToken({
+                  type: "go",
+                  screenId: "task_list",
+                  params: { status, page: safePage + 1 },
+                }),
+              ),
+            ),
+          );
+        }
+        if (pager.length) rows.push(pager);
+      }
+      rows.push(
+        [
+          uiButton("🔁 Change Status", uiGoAction("task_lists")),
+          uiButton("▶️ Start Task", uiInputAction("starttask")),
+        ],
+      );
+      rows.push(uiNavRow("task_lists"));
+      return buildKeyboard(rows);
+    },
   },
   plan: {
     title: "Task Planner",

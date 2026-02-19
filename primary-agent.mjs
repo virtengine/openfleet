@@ -210,21 +210,29 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   if (!initialized) {
     await initPrimaryAgent();
   }
-  const sessionId = `primary-${activeAdapter.name}`;
+  const sessionId =
+    (options && options.sessionId ? String(options.sessionId) : "") ||
+    `primary-${activeAdapter.name}`;
+  const sessionType =
+    (options && options.sessionType ? String(options.sessionType) : "") ||
+    "primary";
   const tracker = getSessionTracker();
   tracker.recordEvent(sessionId, {
     role: "user",
     content: userMessage,
     timestamp: new Date().toISOString(),
-    _sessionType: "primary",
+    _sessionType: sessionType,
   });
-  const result = await activeAdapter.exec(userMessage, options);
+  const result = await activeAdapter.exec(userMessage, {
+    ...options,
+    sessionId,
+  });
   if (result) {
     tracker.recordEvent(sessionId, {
       role: "assistant",
       content: typeof result === "string" ? result : JSON.stringify(result),
       timestamp: new Date().toISOString(),
-      _sessionType: "primary",
+      _sessionType: sessionType,
     });
   }
   return result;

@@ -67,16 +67,17 @@
   const cursorEl = document.getElementById('typed-cursor');
   if (typedEl) {
     const phrases = [
-      'Fully autonomous.',
-      'Self-healing.',
-      'Zero intervention.',
-      'Production ready.',
-      'Always shipping.',
+      'Command Center.',
+      'Task Orchestration.',
+      'PR Automation.',
+      'Fleet Ops.',
+      'Always Shipping.',
     ];
     let phraseIdx = 0;
     let charIdx = 0;
     let deleting = false;
-    let pauseTimer = 0;
+    let pauseUntil = 0;
+    const pauseDurationMs = 6666;
 
     function typeLoop() {
       var phrase = phrases[phraseIdx];
@@ -84,12 +85,11 @@
         charIdx++;
         typedEl.textContent = phrase.substring(0, charIdx);
         if (charIdx === phrase.length) {
-          pauseTimer = 2200;
+          pauseUntil = Date.now() + pauseDurationMs;
           deleting = true;
         }
       } else {
-        if (pauseTimer > 0) {
-          pauseTimer -= 60;
+        if (Date.now() < pauseUntil) {
           requestAnimationFrame(function () { setTimeout(typeLoop, 60); });
           return;
         }
@@ -101,7 +101,7 @@
         }
       }
 
-      var speed = deleting ? 35 : 70 + Math.random() * 40;
+      var speed = deleting ? 80 : 100 + Math.random() * 50;
       setTimeout(typeLoop, speed);
     }
 
@@ -182,17 +182,49 @@
       document.body.classList.toggle('is-miniapp-fullscreen', enabled);
     };
 
+    const syncFullscreenState = () => {
+      const isFs = document.fullscreenElement === miniappPhone;
+      setFullscreen(isFs);
+    };
+
     miniappExpandBtn.addEventListener('click', () => {
-      setFullscreen(!miniappPhone.classList.contains('is-fullscreen'));
+      const wantsFullscreen = !miniappPhone.classList.contains('is-fullscreen');
+      if (wantsFullscreen && document.fullscreenEnabled && miniappPhone.requestFullscreen) {
+        miniappPhone.requestFullscreen().catch(() => {
+          setFullscreen(true);
+        });
+        return;
+      }
+      if (!wantsFullscreen && document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {
+          setFullscreen(false);
+        });
+        return;
+      }
+      setFullscreen(wantsFullscreen);
     });
 
     if (miniappOverlay) {
-      miniappOverlay.addEventListener('click', () => setFullscreen(false));
+      miniappOverlay.addEventListener('click', () => {
+        if (document.fullscreenElement && document.exitFullscreen) {
+          document.exitFullscreen().catch(() => setFullscreen(false));
+        } else {
+          setFullscreen(false);
+        }
+      });
     }
 
     document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') setFullscreen(false);
+      if (event.key === 'Escape') {
+        if (document.fullscreenElement && document.exitFullscreen) {
+          document.exitFullscreen().catch(() => setFullscreen(false));
+        } else {
+          setFullscreen(false);
+        }
+      }
     });
+
+    document.addEventListener('fullscreenchange', syncFullscreenState);
   }
 
   /* ── Demo Tab Switching ──────────────────────────────────────────────── */

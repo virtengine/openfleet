@@ -455,6 +455,15 @@ section {
   min-width: 0;
 }
 
+.hero__title-block {
+  text-align: center;
+  margin-bottom: 2.5rem;
+  min-height: 5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 @media (max-width: 1100px) {
   .hero__layout {
     grid-template-columns: 1fr;
@@ -468,7 +477,7 @@ section {
 
 /* ── Hero headline (replaces the old hero__title + typed combo) ──────── */
 .hero__headline {
-  font-size: clamp(2.2rem, 4vw, 3.2rem);
+  font-size: clamp(2.2rem, 4vw, 2.85rem);
   font-weight: 800;
   line-height: 1.15;
   letter-spacing: -0.03em;
