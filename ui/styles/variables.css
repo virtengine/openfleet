@@ -6,25 +6,30 @@
   --font-ui: "Sora", "Space Grotesk", "IBM Plex Sans", "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "IBM Plex Mono", "Fira Code", "SF Mono", monospace;
 
-  /* Core colors (dark, with Telegram fallbacks) */
-  --bg-primary: var(--tg-theme-bg-color, #0b0f14);
-  --bg-secondary: var(--tg-theme-secondary-bg-color, #121823);
-  --bg-card: var(--tg-theme-section-bg-color, #141c27);
-  --bg-surface: #0f141d;
-  --bg-input: #0f141d;
-  --bg-card-hover: rgba(255, 255, 255, 0.06);
-  --bg-elevated: #192232;
+  /* Bosun Brand Colors */
+  --color-primary: #60cc5d;
+  --color-primary-dim: #4caf50;
+  --gradient-primary: linear-gradient(135deg, #60cc5dd6, #07f21087);
 
-  --text-primary: var(--tg-theme-text-color, #e4e9f0);
+  /* Core colors (dark, with Telegram fallbacks) */
+  --bg-primary: var(--tg-theme-bg-color, #06060b);
+  --bg-secondary: var(--tg-theme-secondary-bg-color, #0d0d14);
+  --bg-card: var(--tg-theme-section-bg-color, #12121c);
+  --bg-surface: #0d0d14;
+  --bg-input: #0d0d14;
+  --bg-card-hover: rgba(255, 255, 255, 0.06);
+  --bg-elevated: #1a1a28;
+
+  --text-primary: var(--tg-theme-text-color, #f1f5f9);
   --text-secondary: var(
     --tg-theme-subtitle-text-color,
-    var(--tg-theme-hint-color, #9aa3b2)
+    var(--tg-theme-hint-color, #94a3b8)
   );
   --text-hint: var(--tg-theme-hint-color, #7f8898);
   --text-bright: #f5f8fb;
 
-  --accent: var(--tg-theme-button-color, #4cc9f0);
-  --accent-text: var(--tg-theme-button-text-color, #051018);
+  --accent: var(--tg-theme-button-color, #60cc5d);
+  --accent-text: var(--tg-theme-button-text-color, #fff);
   --accent-hover: var(--tg-theme-accent-text-color, #7bdff6);
 
   --link-color: var(--tg-theme-link-color, #7bdff6);

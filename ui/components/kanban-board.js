@@ -187,8 +187,10 @@ async function _handleTouchDrop(colId) {
       },
     );
     showToast(`Moved to ${col ? col.title : colId}`, "success");
-  } catch {
-    /* toast via apiFetch */
+    // Force refresh from server to ensure consistency
+    setTimeout(() => loadTasks(), 500);
+  } catch (err) {
+    showToast(err?.message || "Failed to move task", "error");
   }
 }
 
@@ -374,8 +376,10 @@ function KanbanColumn({ col, tasks, onOpen }) {
         },
       );
       showToast(`Moved to ${col.title}`, "success");
-    } catch {
-      /* toast via apiFetch */
+      // Force refresh from server to ensure consistency
+      setTimeout(() => loadTasks(), 500);
+    } catch (err) {
+      showToast(err?.message || "Failed to move task", "error");
     }
   }, [col.id, col.title]);
 

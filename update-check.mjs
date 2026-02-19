@@ -112,7 +112,7 @@ async function fetchLatestVersion() {
   }
 
   try {
-    const out = runNpmCommand(["view", PKG_NAME, "version"], {
+    const out = runNpmCommand(["view", PKG_NAME, "version", "--registry", "https://registry.npmjs.org"], {
       encoding: "utf8",
       timeout: 15000,
       stdio: ["pipe", "pipe", "ignore"],
@@ -163,11 +163,23 @@ export async function forceUpdate(currentVersion) {
   console.log(`\n  Current version: v${currentVersion}`);
   console.log("  Checking npm registry...\n");
 
-  const latest = await fetchLatestVersion();
+  let latest = await fetchLatestVersion();
 
   if (!latest) {
-    console.log("  ❌ Could not reach npm registry. Check your connection.\n");
-    return;
+    console.log("  ⚠️  Could not reach npm registry.");
+    console.log("  ℹ️  This can happen if:");
+    console.log("     • You're offline or behind a firewall");
+    console.log("     • The npm registry is temporarily unavailable");
+    console.log("     • The package hasn't been published yet");
+    console.log("");
+    console.log("  Retrying in 3 seconds...\n");
+    await new Promise(r => setTimeout(r, 3000));
+    latest = await fetchLatestVersion();
+    if (!latest) {
+      console.log("  ❌ Still unable to reach registry. Try manually:");
+      console.log(`     npm install -g ${PKG_NAME}@latest\n`);
+      return;
+    }
   }
 
   if (!isNewer(latest, currentVersion)) {

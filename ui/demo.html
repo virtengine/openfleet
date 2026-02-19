@@ -32,204 +32,78 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
 
   <style>
-    /* Demo mode indicator */
-    .demo-banner {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      z-index: 99999;
-      background: linear-gradient(135deg, #60cc5d, #4caf50);
-      color: #000;
-      text-align: center;
-      font-size: 11px;
-      font-weight: 700;
-      padding: 3px 8px;
-      font-family: 'Inter', -apple-system, sans-serif;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-    }
-    /* Push content down */
-    body { padding-top: 22px !important; }
-    /* Contain layout — inner panels scroll via overflow-y: auto */
-    html { height: 100%; margin: 0; overflow: hidden; }
-    body { height: 100%; margin: 0; overflow-x: hidden; }
-    #app { height: 100%; display: flex; flex-direction: column; }
-    /* Force dark theme (demo default, overridable via settings toggle) */
-    :root:not([data-theme="light"]) {
-      color-scheme: dark;
-    }
-    /* Reserve space at bottom for the Telegram chat overlay */
-    body { padding-bottom: 44px !important; } /* collapsed peek-bar height */
-    body.tg-chat-expanded { padding-bottom: 360px !important; } /* expanded chat height */
+    /* ═══ DEMO LAYOUT — Two views: Telegram Chat + MiniApp ═══════════ */
+    *, *::before, *::after { box-sizing: border-box; }
+    html { height: 100%; margin: 0; }
+    body { height: 100%; margin: 0; font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', 'Inter', sans-serif; background: #0e1621; color: #e8edf2; overflow: hidden; }
 
-    /* ── Telegram Chat Simulation (sticky bot menu at bottom) ── */
-    .tg-chat-overlay {
-      position: fixed;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      z-index: 99998;
-      font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif;
-      pointer-events: none;
-      transition: transform 0.3s ease-out, opacity 0.3s ease-out;
-    }
-    .tg-chat-overlay.collapsed {
-      transform: translateY(calc(100% - 44px));
-    }
-    /* The chat area: simulates bottom of a Telegram chat */
-    .tg-chat-area {
-      pointer-events: auto;
-      background: #0e1621;
-      border-top: 1px solid #1b2838;
-      max-height: 70vh;
-      overflow-y: auto;
-    }
-    /* Bot message bubble */
-    .tg-msg {
-      padding: 6px 10px 4px;
-      max-width: 90%;
-      margin: 8px 8px 2px;
-    }
-    .tg-msg-name {
-      font-size: 13px;
-      font-weight: 600;
-      color: #4cc9f0;
-      margin-bottom: 2px;
-    }
-    .tg-msg-bubble {
-      background: #182533;
-      border-radius: 4px 12px 12px 12px;
-      padding: 8px 12px;
-      color: #e8edf2;
-      font-size: 14px;
-      line-height: 1.4;
-    }
-    .tg-msg-bubble strong {
-      color: #fff;
-    }
-    .tg-msg-time {
-      font-size: 11px;
-      color: #5b7083;
-      text-align: right;
-      margin-top: 2px;
-      padding-right: 4px;
-    }
-    /* Inline keyboard buttons — matches Telegram style */
-    .tg-inline-kb {
-      display: flex;
-      flex-direction: column;
-      gap: 1px;
-      padding: 4px 8px 6px;
-      max-width: 90%;
-      margin-left: 8px;
-    }
-    .tg-inline-row {
-      display: flex;
-      gap: 1px;
-    }
-    .tg-inline-btn {
-      flex: 1;
-      background: #2b5278;
-      border: none;
-      border-radius: 4px;
-      color: #fff;
-      font-size: 13px;
-      font-weight: 500;
-      padding: 8px 4px;
-      cursor: pointer;
-      transition: background 0.12s;
-      text-align: center;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      pointer-events: auto;
-    }
-    .tg-inline-btn:hover {
-      background: #3a6da0;
-    }
-    .tg-inline-btn:active {
-      background: #1d3f5e;
-    }
-    .tg-inline-btn.close-btn {
-      background: transparent;
-      color: #5b7083;
-      font-size: 12px;
-    }
-    .tg-inline-btn.close-btn:hover {
-      color: #ef5350;
-      background: rgba(239, 83, 80, 0.08);
-    }
-    /* Chat input bar at very bottom */
-    .tg-chat-input-bar {
-      pointer-events: auto;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      background: #17212b;
-      border-top: 1px solid #1b2838;
-      padding: 6px 10px;
-    }
-    .tg-chat-input {
-      flex: 1;
-      background: #242f3d;
-      border: none;
-      border-radius: 18px;
-      padding: 8px 14px;
-      font-size: 14px;
-      color: #e8edf2;
-      outline: none;
-    }
-    .tg-chat-input::placeholder {
-      color: #5b7083;
-    }
-    .tg-chat-input-btn {
-      background: none;
-      border: none;
-      font-size: 20px;
-      cursor: pointer;
-      padding: 4px;
-      color: #5b7083;
-      transition: color 0.15s;
-    }
-    .tg-chat-input-btn:hover {
-      color: #4cc9f0;
-    }
-    .tg-chat-input-btn.menu-toggle {
-      font-size: 22px;
-    }
-    /* Toggle bar when collapsed — peek strip */
-    .tg-peek-bar {
-      pointer-events: auto;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      background: #17212b;
-      border-top: 1px solid #1b2838;
-      padding: 10px;
-      cursor: pointer;
-      transition: background 0.15s;
-    }
-    .tg-peek-bar:hover {
-      background: #1e2c3a;
-    }
-    .tg-peek-bar-text {
-      font-size: 13px;
-      font-weight: 600;
-      color: #4cc9f0;
-    }
-    .tg-peek-bar-icon {
-      font-size: 14px;
-      color: #5b7083;
-      transition: transform 0.3s;
-    }
-    .tg-chat-overlay.collapsed .tg-peek-bar-icon {
-      transform: rotate(180deg);
-    }
-    .tg-chat-overlay.collapsed .tg-chat-area {
-      display: none;
-    }
+    /* Demo banner */
+    .demo-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 99999; background: linear-gradient(135deg, #60cc5d, #4caf50); color: #000; text-align: center; font-size: 11px; font-weight: 700; padding: 3px 8px; letter-spacing: 0.05em; text-transform: uppercase; }
+
+    /* ── VIEW CONTAINER ── */
+    .demo-views { position: fixed; top: 22px; left: 0; right: 0; bottom: 0; }
+
+    /* ── TELEGRAM CHAT VIEW ── */
+    .tg-view { position: absolute; inset: 0; display: flex; flex-direction: column; background: #0e1621; transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s; }
+    .tg-view.hidden { transform: translateY(100%); opacity: 0; pointer-events: none; }
+
+    /* Chat header */
+    .tg-header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: #17212b; border-bottom: 1px solid #1b2838; flex-shrink: 0; }
+    .tg-header-avatar { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #4cc9f0, #60cc5d); display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+    .tg-header-info { flex: 1; min-width: 0; }
+    .tg-header-name { font-size: 15px; font-weight: 600; color: #fff; }
+    .tg-header-status { font-size: 12px; color: #4cc9f0; }
+
+    /* Chat messages area */
+    .tg-messages { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 0; display: flex; flex-direction: column; -webkit-overflow-scrolling: touch; }
+    .tg-messages-spacer { flex: 1; } /* pushes messages to bottom initially */
+
+    /* Message bubble */
+    .tg-msg { padding: 2px 10px; max-width: 92%; animation: msgIn 0.2s ease-out; }
+    .tg-msg-name { font-size: 12px; font-weight: 600; color: #4cc9f0; margin-bottom: 1px; }
+    .tg-msg-bubble { background: #182533; border-radius: 4px 12px 12px 12px; padding: 7px 11px; font-size: 14px; line-height: 1.45; word-break: break-word; }
+    .tg-msg-bubble strong { color: #fff; }
+    .tg-msg-bubble code { background: #0e1621; padding: 1px 4px; border-radius: 3px; font-size: 12px; font-family: 'JetBrains Mono', monospace; }
+    .tg-msg-bubble pre { background: #0e1621; padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 12px; margin: 4px 0; font-family: 'JetBrains Mono', monospace; white-space: pre-wrap; }
+    .tg-msg-time { font-size: 10px; color: #5b7083; text-align: right; margin-top: 1px; }
+    @keyframes msgIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* Sticky inline keyboard (bot menu) — ALWAYS at bottom of messages area, above input */
+    .tg-sticky-menu { flex-shrink: 0; background: #0e1621; border-top: 1px solid #1b2838; padding: 4px 8px 4px; }
+    .tg-inline-row { display: flex; gap: 1px; margin-bottom: 1px; }
+    .tg-inline-btn { flex: 1; background: #2b5278; border: none; border-radius: 4px; color: #fff; font-size: 12.5px; font-weight: 500; padding: 7px 2px; cursor: pointer; transition: background 0.12s; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tg-inline-btn:hover { background: #3a6da0; }
+    .tg-inline-btn:active { background: #1d3f5e; transform: scale(0.97); }
+    .tg-inline-btn.close-btn { background: transparent; color: #5b7083; font-size: 11px; }
+    .tg-inline-btn.close-btn:hover { color: #ef5350; background: rgba(239, 83, 80, 0.08); }
+    .tg-inline-btn.highlight { background: #4cc9f0; color: #000; }
+
+    /* Chat input bar */
+    .tg-input-bar { display: flex; align-items: center; gap: 8px; background: #17212b; border-top: 1px solid #1b2838; padding: 6px 10px; flex-shrink: 0; }
+    .tg-input { flex: 1; background: #242f3d; border: none; border-radius: 18px; padding: 8px 14px; font-size: 14px; color: #e8edf2; outline: none; }
+    .tg-input::placeholder { color: #5b7083; }
+    .tg-input-btn { background: none; border: none; font-size: 20px; cursor: pointer; padding: 4px; color: #5b7083; transition: color 0.15s; }
+    .tg-input-btn:hover { color: #4cc9f0; }
+
+    /* ── MINIAPP VIEW ── */
+    .miniapp-view { position: absolute; inset: 0; display: flex; flex-direction: column; background: #0b0f14; transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.35s; transform: translateY(100%); opacity: 0; pointer-events: none; }
+    .miniapp-view.active { transform: translateY(0); opacity: 1; pointer-events: auto; }
+
+    /* MiniApp header (Telegram-style) */
+    .miniapp-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #17212b; border-bottom: 1px solid #1b2838; flex-shrink: 0; z-index: 10; }
+    .miniapp-back-btn { background: none; border: none; color: #4cc9f0; font-size: 22px; cursor: pointer; padding: 4px 8px; border-radius: 6px; transition: background 0.15s; display: flex; align-items: center; gap: 6px; font-weight: 600; }
+    .miniapp-back-btn:hover { background: rgba(76, 201, 240, 0.1); }
+    .miniapp-back-btn span { font-size: 14px; }
+    .miniapp-header-title { flex: 1; font-size: 15px; font-weight: 600; color: #fff; text-align: center; }
+    .miniapp-close-btn { background: none; border: none; color: #5b7083; font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 6px; transition: color 0.15s; }
+    .miniapp-close-btn:hover { color: #ef5350; }
+
+    /* MiniApp content — wraps #app, MUST allow scrolling */
+    .miniapp-content { flex: 1; min-height: 0; overflow: hidden; position: relative; }
+    .miniapp-content #app { position: absolute; inset: 0; display: flex; flex-direction: column; }
+
+    /* Force dark theme */
+    :root:not([data-theme="light"]) { color-scheme: dark; }
   </style>
 
   <!-- ═══ DEMO MOCK LAYER ═══════════════════════════════════════════════
@@ -1102,177 +976,467 @@
   </script>
 </head>
 <body>
-  <!-- ═══ Telegram Chat Simulation ═══════════════════════════════════
-       Simulates the bottom of a Telegram chat with the Bosun bot's
-       sticky inline keyboard menu — exactly as it appears in real TG.
-       The MiniApp (#app) sits ABOVE this, like a half-sheet overlay.
-       ═════════════════════════════════════════════════════════════════ -->
-  <div class="tg-chat-overlay" id="tg-chat-overlay">
-    <!-- Peek bar (always visible — click to expand/collapse) -->
-    <div class="tg-peek-bar" id="tg-peek-bar">
-      <span class="tg-peek-bar-icon">▼</span>
-      <span class="tg-peek-bar-text">Telegram Chat — Bosun Bot</span>
-      <span class="tg-peek-bar-icon">▼</span>
-    </div>
-
-    <!-- Chat message area -->
-    <div class="tg-chat-area">
-      <!-- Bot message -->
-      <div class="tg-msg">
-        <div class="tg-msg-name">Bosun Bot</div>
-        <div class="tg-msg-bubble">
-          <strong>🤖 Bosun Control Center</strong><br/>
-          Pick a section below to manage Bosun.<br/><br/>
-          Executor: running • Slots 2/4
-        </div>
-        <div class="tg-msg-time">12:42</div>
-      </div>
-
-      <!-- Inline keyboard (the actual "bot menu") -->
-      <div class="tg-inline-kb">
-        <div class="tg-inline-row">
-          <button class="tg-inline-btn" data-screen="miniapp">📱 Open Control Center</button>
-        </div>
-        <div class="tg-inline-row">
-          <button class="tg-inline-btn" data-screen="overview">📊 Overview</button>
-          <button class="tg-inline-btn" data-screen="tasks">🧭 Tasks</button>
-          <button class="tg-inline-btn" data-screen="agents">🤖 Agents</button>
-        </div>
-        <div class="tg-inline-row">
-          <button class="tg-inline-btn" data-screen="executor">⚙️ Executor</button>
-          <button class="tg-inline-btn" data-screen="workspaces">🌳 Workspaces</button>
-          <button class="tg-inline-btn" data-screen="routing">🛰 Routing</button>
-        </div>
-        <div class="tg-inline-row">
-          <button class="tg-inline-btn" data-screen="logs">📁 Logs & Git</button>
-          <button class="tg-inline-btn" data-screen="integrations">🔌 Integrations</button>
-          <button class="tg-inline-btn" data-screen="session">🧠 Session</button>
-        </div>
-        <div class="tg-inline-row">
-          <button class="tg-inline-btn" data-screen="ask">💬 Ask Agent</button>
-          <button class="tg-inline-btn" data-screen="commands">📖 All Commands</button>
-        </div>
-        <div class="tg-inline-row">
-          <button class="tg-inline-btn" data-screen="refresh">🔄 Refresh</button>
-          <button class="tg-inline-btn close-btn" data-screen="close">✖ Close Menu</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Chat input bar -->
-    <div class="tg-chat-input-bar">
-      <button class="tg-chat-input-btn menu-toggle" id="tg-menu-toggle" title="Toggle Bot Menu">☰</button>
-      <input class="tg-chat-input" placeholder="Message Bosun Bot..." readonly />
-      <button class="tg-chat-input-btn" title="Attach">📎</button>
-    </div>
-  </div>
-
-  <script>
-    // Telegram chat simulation — toggle & interaction logic
-    (function() {
-      const overlay = document.getElementById('tg-chat-overlay');
-      const peekBar = document.getElementById('tg-peek-bar');
-      const menuToggle = document.getElementById('tg-menu-toggle');
-      let expanded = true;
-
-      function toggle() {
-        expanded = !expanded;
-        overlay.classList.toggle('collapsed', !expanded);
-        document.body.classList.toggle('tg-chat-expanded', expanded);
-      }
-      peekBar.addEventListener('click', toggle);
-      menuToggle.addEventListener('click', toggle);
-
-      // Inline keyboard button clicks
-      overlay.querySelectorAll('.tg-inline-btn[data-screen]').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const screen = btn.dataset.screen;
-
-          // "Open Control Center" scrolls up to the MiniApp
-          if (screen === 'miniapp') {
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-            return;
-          }
-          // "Close Menu" collapses the chat
-          if (screen === 'close') {
-            expanded = false;
-            overlay.classList.add('collapsed');
-            document.body.classList.remove('tg-chat-expanded');
-            return;
-          }
-          // "Refresh" re-renders the message time
-          if (screen === 'refresh') {
-            const timeEl = overlay.querySelector('.tg-msg-time');
-            if (timeEl) {
-              const now = new Date();
-              timeEl.textContent = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
-            }
-            // Brief flash effect
-            btn.style.background = '#4cc9f0';
-            btn.style.color = '#000';
-            setTimeout(() => { btn.style.background = ''; btn.style.color = ''; }, 300);
-            return;
-          }
-          // Map inline keyboard screens to MiniApp tabs where possible
-          const screenToTab = {
-            overview: 'dashboard',
-            tasks: 'tasks',
-            agents: 'agents',
-            executor: 'control',
-            workspaces: 'infra',
-            routing: 'control',
-            logs: 'logs',
-            integrations: 'settings',
-            session: 'chat',
-            ask: 'chat',
-            commands: 'control',
-          };
-          const tab = screenToTab[screen];
-          if (tab && window.__bosunSetTab) {
-            window.__bosunSetTab(tab);
-            // Brief highlight
-            btn.style.background = '#3a6da0';
-            setTimeout(() => { btn.style.background = ''; }, 200);
-          }
-        });
-      });
-
-      // Start expanded
-      overlay.classList.remove('collapsed');
-      document.body.classList.add('tg-chat-expanded');
-    })();
-  </script>
-
-  <!-- Demo mode banner -->
+  <!-- Demo mode banner (always on top) -->
   <div class="demo-banner">⚡ Bosun Demo Mode — Seed Data</div>
 
-  <!-- App root — boot loader lives INSIDE #app so Preact's render() replaces it -->
-  <div id="app">
-    <div id="boot-loader" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:'Inter',sans-serif;color:#9aa3b8;background:#0b0f14;overflow:hidden">
-      <style>
-        .boot-ring{position:absolute;inset:0;border-radius:50%;border:2px solid rgba(76,201,240,.15);animation:boot-spin 3s linear infinite}
-        .boot-ring-inner{position:absolute;inset:8px;border-radius:50%;border:2px solid transparent;border-top-color:#4cc9f0;border-right-color:rgba(76,201,240,.4);animation:boot-spin 1.5s linear infinite reverse}
-        .boot-dot{position:absolute;top:50%;left:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:linear-gradient(135deg,#4cc9f0,#60cc5d);box-shadow:0 0 20px rgba(76,201,240,.5);animation:boot-pulse 2s ease-in-out infinite}
-        @keyframes boot-spin{to{transform:rotate(360deg)}}
-        @keyframes boot-pulse{0%,100%{transform:scale(1);opacity:.8}50%{transform:scale(1.2);opacity:1}}
-      </style>
-      <div style="position:relative;width:60px;height:60px;margin-bottom:16px">
-        <div class="boot-ring"></div>
-        <div class="boot-ring-inner"></div>
-        <div class="boot-dot"></div>
-      </div>
-      <div style="font-size:13px;color:#64748b">Loading demo...</div>
-    </div>
-  </div>
+  <!-- ═══ Two-View Container ═══════════════════════════════════════════
+       View A: Telegram Chat (default) — chat messages + sticky bot menu
+       View B: MiniApp (overlay) — opened from "Open Control Center"
+       ═══════════════════════════════════════════════════════════════════ -->
+  <div class="demo-views">
 
-  <!-- Load the REAL app.js (it uses ES modules + importmap) -->
-  <script type="module" src="app.js"></script>
+    <!-- ──────────────────── VIEW A: TELEGRAM CHAT ──────────────────── -->
+    <div class="tg-view" id="tg-view">
+      <!-- Chat header -->
+      <div class="tg-header">
+        <div class="tg-header-avatar">🤖</div>
+        <div class="tg-header-info">
+          <div class="tg-header-name">Bosun Bot</div>
+          <div class="tg-header-status">online</div>
+        </div>
+      </div>
+
+      <!-- Chat messages (scrollable) -->
+      <div class="tg-messages" id="tg-messages">
+        <div class="tg-messages-spacer"></div>
+        <!-- Initial welcome message -->
+        <div class="tg-msg">
+          <div class="tg-msg-name">Bosun Bot</div>
+          <div class="tg-msg-bubble">
+            <strong>🤖 Bosun Control Center</strong><br/>
+            Pick a section below to manage your automation pipeline.<br/><br/>
+            <strong>Status:</strong> Executor running • Slots 2/4<br/>
+            <strong>Tasks:</strong> 8 total • 2 running • 3 queued
+          </div>
+          <div class="tg-msg-time" id="tg-init-time"></div>
+        </div>
+      </div>
+
+      <!-- Sticky bot menu (inline keyboard) — ALWAYS visible above input -->
+      <div class="tg-sticky-menu" id="tg-sticky-menu">
+        <div class="tg-inline-row">
+          <button class="tg-inline-btn highlight" data-cmd="miniapp">📱 Open Control Center</button>
+        </div>
+        <div class="tg-inline-row">
+          <button class="tg-inline-btn" data-cmd="overview">📊 Overview</button>
+          <button class="tg-inline-btn" data-cmd="tasks">🧭 Tasks</button>
+          <button class="tg-inline-btn" data-cmd="agents">🤖 Agents</button>
+        </div>
+        <div class="tg-inline-row">
+          <button class="tg-inline-btn" data-cmd="executor">⚙️ Executor</button>
+          <button class="tg-inline-btn" data-cmd="workspaces">🌳 Workspaces</button>
+          <button class="tg-inline-btn" data-cmd="routing">🛰 Routing</button>
+        </div>
+        <div class="tg-inline-row">
+          <button class="tg-inline-btn" data-cmd="logs">📁 Logs & Git</button>
+          <button class="tg-inline-btn" data-cmd="integrations">🔌 Integrations</button>
+          <button class="tg-inline-btn" data-cmd="session">🧠 Session</button>
+        </div>
+        <div class="tg-inline-row">
+          <button class="tg-inline-btn" data-cmd="ask">💬 Ask Agent</button>
+          <button class="tg-inline-btn" data-cmd="commands">📖 All Commands</button>
+        </div>
+        <div class="tg-inline-row">
+          <button class="tg-inline-btn" data-cmd="refresh">🔄 Refresh</button>
+          <button class="tg-inline-btn close-btn" data-cmd="close">✖ Close Menu</button>
+        </div>
+      </div>
+
+      <!-- Chat input bar -->
+      <div class="tg-input-bar">
+        <button class="tg-input-btn" id="tg-menu-toggle" title="Toggle Bot Menu">☰</button>
+        <input class="tg-input" id="tg-chat-input" placeholder="Message Bosun Bot..." />
+        <button class="tg-input-btn" id="tg-send-btn" title="Send">➤</button>
+      </div>
+    </div>
+
+    <!-- ──────────────────── VIEW B: MINIAPP ────────────────────────── -->
+    <div class="miniapp-view" id="miniapp-view">
+      <!-- MiniApp header (Telegram-style with back button) -->
+      <div class="miniapp-header">
+        <button class="miniapp-back-btn" id="miniapp-back" title="Back to Chat">
+          ← <span>Bosun</span>
+        </button>
+        <div class="miniapp-header-title">Control Center</div>
+        <button class="miniapp-close-btn" id="miniapp-close" title="Close">✕</button>
+      </div>
+
+      <!-- MiniApp content (wraps #app) -->
+      <div class="miniapp-content">
+        <div id="app">
+          <div id="boot-loader" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;font-family:'Inter',sans-serif;color:#9aa3b8;background:#0b0f14;overflow:hidden">
+            <style>
+              .boot-ring{position:absolute;inset:0;border-radius:50%;border:2px solid rgba(76,201,240,.15);animation:boot-spin 3s linear infinite}
+              .boot-ring-inner{position:absolute;inset:8px;border-radius:50%;border:2px solid transparent;border-top-color:#4cc9f0;border-right-color:rgba(76,201,240,.4);animation:boot-spin 1.5s linear infinite reverse}
+              .boot-dot{position:absolute;top:50%;left:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:linear-gradient(135deg,#4cc9f0,#60cc5d);box-shadow:0 0 20px rgba(76,201,240,.5);animation:boot-pulse 2s ease-in-out infinite}
+              @keyframes boot-spin{to{transform:rotate(360deg)}}
+              @keyframes boot-pulse{0%,100%{transform:scale(1);opacity:.8}50%{transform:scale(1.2);opacity:1}}
+            </style>
+            <div style="position:relative;width:60px;height:60px;margin-bottom:16px">
+              <div class="boot-ring"></div>
+              <div class="boot-ring-inner"></div>
+              <div class="boot-dot"></div>
+            </div>
+            <div style="font-size:13px;color:#64748b">Loading Control Center...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /.demo-views -->
+
+  <!-- ═══ CHAT INTERACTION ENGINE ═══════════════════════════════════ -->
   <script>
+  (function() {
+    'use strict';
+
+    const tgView     = document.getElementById('tg-view');
+    const miniView   = document.getElementById('miniapp-view');
+    const msgArea    = document.getElementById('tg-messages');
+    const stickyMenu = document.getElementById('tg-sticky-menu');
+    const inputField = document.getElementById('tg-chat-input');
+    const sendBtn    = document.getElementById('tg-send-btn');
+    const menuToggle = document.getElementById('tg-menu-toggle');
+    const backBtn    = document.getElementById('miniapp-back');
+    const closeBtn   = document.getElementById('miniapp-close');
+
+    let menuVisible = true;
+    let miniAppLoaded = false;
+
+    // ── Time helpers ──
+    function nowTime() {
+      const d = new Date();
+      return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+    }
+    // Set initial message time
+    const initTime = document.getElementById('tg-init-time');
+    if (initTime) initTime.textContent = nowTime();
+
+    // ── Add a bot message to the chat ──
+    function addBotMessage(html) {
+      const msg = document.createElement('div');
+      msg.className = 'tg-msg';
+      msg.innerHTML = `
+        <div class="tg-msg-name">Bosun Bot</div>
+        <div class="tg-msg-bubble">${html}</div>
+        <div class="tg-msg-time">${nowTime()}</div>
+      `;
+      msgArea.appendChild(msg);
+      // Scroll to bottom
+      requestAnimationFrame(() => { msgArea.scrollTop = msgArea.scrollHeight; });
+    }
+
+    // ── Add a user message to the chat ──
+    function addUserMessage(text) {
+      const msg = document.createElement('div');
+      msg.className = 'tg-msg';
+      msg.style.cssText = 'align-self:flex-end;';
+      msg.innerHTML = `
+        <div class="tg-msg-bubble" style="background:#2b5278;border-radius:12px 4px 12px 12px;">${text}</div>
+        <div class="tg-msg-time">${nowTime()}</div>
+      `;
+      msgArea.appendChild(msg);
+      requestAnimationFrame(() => { msgArea.scrollTop = msgArea.scrollHeight; });
+    }
+
+    // ── COMMAND RESPONSE GENERATORS ──
+    // These produce HTML responses for each menu button, using the seed data from the mock layer
+
+    function cmdOverview() {
+      return `<strong>📊 System Overview</strong><br/><br/>` +
+        `<strong>Executor:</strong> running<br/>` +
+        `<strong>Slots:</strong> 2 / 4 active<br/>` +
+        `<strong>Tasks:</strong> 8 total — 2 running, 3 queued, 1 done, 1 failed, 1 cancelled<br/>` +
+        `<strong>Agents:</strong> 3 configured (copilot-claude, codex-mini, local-gpt4)<br/>` +
+        `<strong>Health:</strong> ✅ All systems nominal<br/>` +
+        `<strong>Uptime:</strong> 4h 23m`;
+    }
+
+    function cmdTasks() {
+      // Use global SEED_TASKS if available
+      const tasks = window.SEED_TASKS || [];
+      if (!tasks.length) return '<strong>🧭 Tasks</strong><br/><br/>No tasks found.';
+      let html = '<strong>🧭 Task Queue</strong><br/><br/>';
+      const icons = { running: '🔵', queued: '⏳', done: '✅', failed: '❌', cancelled: '⚪' };
+      tasks.forEach(t => {
+        html += `${icons[t.status] || '·'} <strong>${t.title}</strong> — <code>${t.status}</code><br/>`;
+      });
+      return html;
+    }
+
+    function cmdAgents() {
+      const agents = window.SEED_AGENTS || [];
+      if (!agents.length) return '<strong>🤖 Agents</strong><br/><br/>No agents configured.';
+      let html = '<strong>🤖 Agents</strong><br/><br/>';
+      agents.forEach(a => {
+        const status = a.healthy === false ? '🔴' : '🟢';
+        html += `${status} <strong>${a.name}</strong> — ${a.provider || 'unknown'} · model: <code>${a.model || '?'}</code><br/>`;
+      });
+      return html;
+    }
+
+    function cmdExecutor() {
+      return `<strong>⚙️ Executor Status</strong><br/><br/>` +
+        `<strong>State:</strong> 🟢 running<br/>` +
+        `<strong>Concurrency:</strong> 4 slots<br/>` +
+        `<strong>Active:</strong> 2 tasks executing<br/>` +
+        `<strong>Queued:</strong> 3 tasks waiting<br/>` +
+        `<strong>Paused:</strong> No<br/><br/>` +
+        `Commands:<br/>` +
+        `<code>/pause</code> — Pause executor<br/>` +
+        `<code>/resume</code> — Resume executor<br/>` +
+        `<code>/run &lt;task&gt;</code> — Force-dispatch a task`;
+    }
+
+    function cmdWorkspaces() {
+      const infra = window.SEED_INFRA || {};
+      const wt = infra.worktrees || [];
+      if (!wt.length) return '<strong>🌳 Workspaces</strong><br/><br/>No worktrees found.';
+      let html = '<strong>🌳 Worktrees / Workspaces</strong><br/><br/>';
+      wt.forEach(w => {
+        html += `📁 <strong>${w.branch || w.path}</strong> — ${w.path}<br/>`;
+      });
+      return html;
+    }
+
+    function cmdRouting() {
+      return `<strong>🛰 Agent Routing</strong><br/><br/>` +
+        `<strong>Strategy:</strong> round-robin with fallback<br/>` +
+        `<strong>Primary:</strong> copilot-claude (healthy ✅)<br/>` +
+        `<strong>Fallback:</strong> codex-mini (healthy ✅)<br/>` +
+        `<strong>Local:</strong> local-gpt4 (offline 🔴)<br/><br/>` +
+        `Tasks are routed to the primary agent first. If it fails or times out, fallback engages automatically.`;
+    }
+
+    function cmdLogs() {
+      const logs = window.SEED_LOGS || [];
+      if (!logs.length) return '<strong>📁 Logs</strong><br/><br/>No recent logs.';
+      let html = '<strong>📁 Recent Logs</strong><br/><br/><pre>';
+      logs.slice(-8).forEach(l => {
+        const lvl = (l.level || 'info').toUpperCase().padEnd(5);
+        const src = (l.source || '?').padEnd(10);
+        html += `[${lvl}] ${src} ${l.msg}\n`;
+      });
+      html += '</pre>';
+      return html;
+    }
+
+    function cmdIntegrations() {
+      return `<strong>🔌 Integrations</strong><br/><br/>` +
+        `✅ <strong>GitHub</strong> — Connected (virtengine-gh)<br/>` +
+        `✅ <strong>Telegram</strong> — Bot active (this chat)<br/>` +
+        `✅ <strong>VS Code</strong> — Copilot extension linked<br/>` +
+        `⬚ <strong>Slack</strong> — Not configured<br/>` +
+        `⬚ <strong>Discord</strong> — Not configured<br/><br/>` +
+        `Use <code>/integrations setup &lt;name&gt;</code> to configure.`;
+    }
+
+    function cmdSession() {
+      const sessions = window.SEED_SESSIONS || [];
+      if (!sessions.length) return '<strong>🧠 Sessions</strong><br/><br/>No active sessions.';
+      let html = '<strong>🧠 Active Sessions</strong><br/><br/>';
+      sessions.forEach(s => {
+        const icon = s.status === 'active' ? '🟢' : s.status === 'completed' ? '✅' : '🔴';
+        html += `${icon} <strong>${s.title || s.id}</strong> — ${s.agent || '?'} · ${s.status}<br/>`;
+      });
+      return html;
+    }
+
+    function cmdAsk() {
+      return `<strong>💬 Ask Agent</strong><br/><br/>` +
+        `Type your question in the input box below and press Send.<br/><br/>` +
+        `The active agent (<strong>copilot-claude</strong>) will respond.<br/><br/>` +
+        `<em>Tip: Prefix with <code>/ask</code> for explicit agent routing.</em>`;
+    }
+
+    function cmdCommands() {
+      return `<strong>📖 All Commands</strong><br/><br/>` +
+        `<code>/status</code> — System overview<br/>` +
+        `<code>/tasks</code> — List task queue<br/>` +
+        `<code>/agents</code> — List configured agents<br/>` +
+        `<code>/logs</code> — Recent log entries<br/>` +
+        `<code>/pause</code> — Pause executor<br/>` +
+        `<code>/resume</code> — Resume executor<br/>` +
+        `<code>/run &lt;id&gt;</code> — Force-dispatch a task<br/>` +
+        `<code>/cancel &lt;id&gt;</code> — Cancel a running task<br/>` +
+        `<code>/sessions</code> — List active sessions<br/>` +
+        `<code>/worktrees</code> — List git worktrees<br/>` +
+        `<code>/health</code> — Health check<br/>` +
+        `<code>/ask &lt;query&gt;</code> — Ask the active agent<br/>` +
+        `<code>/help</code> — Show this list`;
+    }
+
+    // Map commands to their handler functions
+    const CMD_MAP = {
+      overview:      cmdOverview,
+      tasks:         cmdTasks,
+      agents:        cmdAgents,
+      executor:      cmdExecutor,
+      workspaces:    cmdWorkspaces,
+      routing:       cmdRouting,
+      logs:          cmdLogs,
+      integrations:  cmdIntegrations,
+      session:       cmdSession,
+      ask:           cmdAsk,
+      commands:      cmdCommands,
+    };
+
+    // ── Text input command handling ──
+    const TEXT_CMD_MAP = {
+      '/status':     'overview',
+      '/overview':   'overview',
+      '/tasks':      'tasks',
+      '/agents':     'agents',
+      '/executor':   'executor',
+      '/workspaces': 'workspaces',
+      '/worktrees':  'workspaces',
+      '/routing':    'routing',
+      '/logs':       'logs',
+      '/integrations': 'integrations',
+      '/sessions':   'session',
+      '/session':    'session',
+      '/commands':   'commands',
+      '/help':       'commands',
+      '/health':     'overview',
+    };
+
+    function handleTextInput() {
+      const val = inputField.value.trim();
+      if (!val) return;
+
+      addUserMessage(val);
+      inputField.value = '';
+
+      // Check for slash commands
+      const cmdKey = TEXT_CMD_MAP[val.toLowerCase()];
+      if (cmdKey && CMD_MAP[cmdKey]) {
+        setTimeout(() => addBotMessage(CMD_MAP[cmdKey]()), 300 + Math.random() * 400);
+        return;
+      }
+
+      // Handle /ask <query> or just freeform text
+      if (val.startsWith('/ask ') || !val.startsWith('/')) {
+        const query = val.startsWith('/ask ') ? val.slice(5) : val;
+        setTimeout(() => {
+          addBotMessage(
+            `<strong>🤖 Agent Response</strong><br/><br/>` +
+            `Processing: "<em>${query}</em>"<br/><br/>` +
+            `I understand your request. In a live environment, this would be routed to the active agent ` +
+            `(<strong>copilot-claude</strong>) for processing.<br/><br/>` +
+            `<em>This is a demo — agent responses are simulated.</em>`
+          );
+        }, 500 + Math.random() * 800);
+        return;
+      }
+
+      // Unknown command
+      setTimeout(() => {
+        addBotMessage(`⚠️ Unknown command: <code>${val}</code><br/>Type <code>/help</code> to see available commands.`);
+      }, 300);
+    }
+
+    // ── VIEW SWITCHING ──
+
+    function openMiniApp() {
+      tgView.classList.add('hidden');
+      miniView.classList.add('active');
+
+      // Load the real app.js on first open
+      if (!miniAppLoaded) {
+        miniAppLoaded = true;
+        const s = document.createElement('script');
+        s.type = 'module';
+        s.src = 'app.js';
+        document.body.appendChild(s);
+      }
+    }
+
+    function closeMiniApp() {
+      miniView.classList.remove('active');
+      tgView.classList.remove('hidden');
+      // Scroll chat to bottom
+      requestAnimationFrame(() => { msgArea.scrollTop = msgArea.scrollHeight; });
+    }
+
+    // ── MENU TOGGLE ──
+
+    function toggleMenu() {
+      menuVisible = !menuVisible;
+      stickyMenu.style.display = menuVisible ? '' : 'none';
+      menuToggle.textContent = menuVisible ? '☰' : '☰';
+    }
+
+    // ── EVENT LISTENERS ──
+
+    // Inline keyboard button clicks
+    document.querySelectorAll('.tg-inline-btn[data-cmd]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const cmd = btn.dataset.cmd;
+
+        // Open MiniApp
+        if (cmd === 'miniapp') {
+          addBotMessage('📱 <strong>Opening Control Center...</strong>');
+          setTimeout(openMiniApp, 400);
+          return;
+        }
+
+        // Close menu
+        if (cmd === 'close') {
+          toggleMenu();
+          return;
+        }
+
+        // Refresh
+        if (cmd === 'refresh') {
+          btn.style.background = '#4cc9f0';
+          btn.style.color = '#000';
+          setTimeout(() => { btn.style.background = ''; btn.style.color = ''; }, 300);
+          addBotMessage(cmdOverview());
+          return;
+        }
+
+        // All other commands — produce chat output
+        const handler = CMD_MAP[cmd];
+        if (handler) {
+          // Flash the button
+          btn.style.background = '#3a6da0';
+          setTimeout(() => { btn.style.background = ''; }, 200);
+          // Add response after a short "typing" delay
+          setTimeout(() => addBotMessage(handler()), 200 + Math.random() * 300);
+        }
+      });
+    });
+
+    // Back / Close buttons on MiniApp header
+    backBtn.addEventListener('click', closeMiniApp);
+    closeBtn.addEventListener('click', closeMiniApp);
+
+    // Menu toggle (hamburger in input bar)
+    menuToggle.addEventListener('click', toggleMenu);
+
+    // Send button
+    sendBtn.addEventListener('click', handleTextInput);
+
+    // Enter key in input
+    inputField.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); handleTextInput(); }
+    });
+
     // Fallback: if ES modules fail to load within 12s, show an error
     setTimeout(function() {
       var el = document.getElementById('boot-loader');
       if (el) el.innerHTML = '<div style="text-align:center;padding:40px;font-family:Inter,sans-serif;color:#94a3b8"><div style="font-size:18px;margin-bottom:8px">⚠️ Failed to load</div><div style="font-size:12px;color:#64748b">Check connection (CDN: esm.sh) or refresh</div></div>';
     }, 12000);
+
+    // Expose seed data globally for command handlers
+    // (They're already global from the script block in <head>, but just in case)
+    window.SEED_TASKS    = window.SEED_TASKS    || [];
+    window.SEED_AGENTS   = window.SEED_AGENTS   || [];
+    window.SEED_LOGS     = window.SEED_LOGS     || [];
+    window.SEED_SESSIONS = window.SEED_SESSIONS || [];
+    window.SEED_INFRA    = window.SEED_INFRA    || {};
+
+  })();
   </script>
 </body>
 </html>

@@ -3442,6 +3442,11 @@ async function handleApi(req, res, url) {
         "/sentinel",
         "/hooks",
         "/version",
+        "/ask",
+        "/compact",
+        "/context",
+        "/mcp",
+        "/helpfull",
       ];
       const cmdBase = command.split(/\s/)[0].toLowerCase();
       if (!ALLOWED_CMD_PREFIXES.some(p => cmdBase === p || cmdBase.startsWith(p + " "))) {
@@ -3749,6 +3754,29 @@ async function handleApi(req, res, url) {
         tracker.updateSessionStatus(sessionId, "active");
         jsonResponse(res, 200, { ok: true });
         broadcastUiEvent(["sessions"], "invalidate", { reason: "session-resumed", sessionId });
+      } catch (err) {
+        jsonResponse(res, 500, { ok: false, error: err.message });
+      }
+      return;
+    }
+
+    if (action === "rename" && req.method === "POST") {
+      try {
+        const tracker = getSessionTracker();
+        const session = tracker.getSessionById(sessionId);
+        if (!session) {
+          jsonResponse(res, 404, { ok: false, error: "Session not found" });
+          return;
+        }
+        const body = await readJsonBody(req);
+        const title = (body?.title || "").trim();
+        if (!title) {
+          jsonResponse(res, 400, { ok: false, error: "title is required" });
+          return;
+        }
+        tracker.renameSession(sessionId, title);
+        jsonResponse(res, 200, { ok: true });
+        broadcastUiEvent(["sessions"], "invalidate", { reason: "session-renamed", sessionId });
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }

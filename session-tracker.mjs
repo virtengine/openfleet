@@ -507,6 +507,19 @@ export class SessionTracker {
   }
 
   /**
+   * Rename a session (update its title).
+   * @param {string} sessionId
+   * @param {string} newTitle
+   */
+  renameSession(sessionId, newTitle) {
+    const session = this.#sessions.get(sessionId);
+    if (!session) return;
+    session.taskTitle = newTitle;
+    session.title = newTitle;
+    this.#markDirty(sessionId);
+  }
+
+  /**
    * Flush all dirty sessions to disk immediately.
    */
   flush() {

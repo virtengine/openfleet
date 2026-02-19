@@ -136,7 +136,7 @@
   overflow-x: hidden;
   scrollbar-gutter: stable;
   padding: 16px 16px 20px;
-  padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 80px);
+  padding-bottom: calc(var(--nav-height, 60px) + var(--safe-bottom, 0px) + 24px);
   -webkit-overflow-scrolling: touch;
   scroll-behavior: smooth;
   touch-action: pan-y;
@@ -514,8 +514,6 @@
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
-  /* Ensure children can scroll within the panel */
-  contain: layout;
 }
 
 .sidebar,
