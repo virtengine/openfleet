@@ -67,17 +67,17 @@
   const cursorEl = document.getElementById('typed-cursor');
   if (typedEl) {
     const phrases = [
-      'Command Center.',
-      'Task Orchestration.',
-      'PR Automation.',
+      'Task Ops.',
+      'PR Orchestration.',
+      'Release Ops.',
+      'Agent Ops.',
       'Fleet Ops.',
-      'Always Shipping.',
     ];
     let phraseIdx = 0;
     let charIdx = 0;
     let deleting = false;
     let pauseUntil = 0;
-    const pauseDurationMs = 6666;
+    const pauseDurationMs = 20000;
 
     function typeLoop() {
       var phrase = phrases[phraseIdx];
@@ -90,7 +90,7 @@
         }
       } else {
         if (Date.now() < pauseUntil) {
-          requestAnimationFrame(function () { setTimeout(typeLoop, 60); });
+          requestAnimationFrame(function () { setTimeout(typeLoop, 120); });
           return;
         }
         charIdx--;
@@ -101,7 +101,7 @@
         }
       }
 
-      var speed = deleting ? 80 : 100 + Math.random() * 50;
+      var speed = deleting ? 120 + Math.random() * 60 : 140 + Math.random() * 80;
       setTimeout(typeLoop, speed);
     }
 
