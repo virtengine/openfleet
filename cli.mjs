@@ -24,7 +24,7 @@ import {
   mkdirSync,
 } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { fork, spawn } from "node:child_process";
+import { execFileSync, fork, spawn } from "node:child_process";
 import os from "node:os";
 import { createDaemonCrashTracker } from "./daemon-restart-policy.mjs";
 import {
@@ -335,7 +335,6 @@ function getDaemonPid() {
     if (!existsSync(PID_FILE)) return null;
     const pid = parseInt(readFileSync(PID_FILE, "utf8").trim(), 10);
     if (isNaN(pid)) return null;
-    // Check if process is alive
     try {
       process.kill(pid, 0);
       return pid;
@@ -344,6 +343,28 @@ function getDaemonPid() {
     }
   } catch {
     return null;
+  }
+}
+
+/**
+ * Scan for ghost bosun daemon-child processes that are alive but have no PID
+ * file (e.g. PID file was removed by compat migration). Uses pgrep on Linux/Mac.
+ * Returns an array of PIDs (may be empty).
+ */
+function findGhostDaemonPids() {
+  if (process.platform === "win32") return [];
+  try {
+    const out = execFileSync(
+      "pgrep",
+      ["-f", "bosun.*--daemon-child|cli\.mjs.*--daemon-child"],
+      { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 3000 },
+    ).trim();
+    return out
+      .split("\n")
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => Number.isFinite(n) && n > 0 && n !== process.pid);
+  } catch {
+    return [];
   }
 }
 
@@ -370,6 +391,28 @@ function startDaemon() {
     console.log(`  bosun daemon is already running (PID ${existing})`);
     console.log(`  Use --stop-daemon to stop it first.`);
     process.exit(1);
+  }
+
+  // Check for ghost processes that have no PID file (e.g. after compat migration
+  // deleted the old codex-monitor directory and its PID file with it).
+  const ghosts = findGhostDaemonPids();
+  if (ghosts.length > 0) {
+    console.log(`  ⚠️  Found ${ghosts.length} ghost bosun daemon process(es) with no PID file: ${ghosts.join(", ")}`);
+    console.log(`  Stopping ghost process(es) before starting fresh...`);
+    for (const gpid of ghosts) {
+      try { process.kill(gpid, "SIGTERM"); } catch { /* already dead */ }
+    }
+    // Give them a moment to exit
+    const deadline = Date.now() + 3000;
+    let alive = ghosts.filter((p) => isProcessAlive(p));
+    while (alive.length > 0 && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+      alive = alive.filter((p) => isProcessAlive(p));
+    }
+    for (const gpid of alive) {
+      try { process.kill(gpid, "SIGKILL"); } catch { /* ok */ }
+    }
+    console.log(`  ✅ Ghost process(es) stopped.`);
   }
 
   // Ensure log directory exists
@@ -462,8 +505,16 @@ function daemonStatus() {
   if (pid) {
     console.log(`  bosun daemon is running (PID ${pid})`);
   } else {
-    console.log("  bosun daemon is not running.");
-    removePidFile();
+    // Check for ghost processes (alive but no PID file)
+    const ghosts = findGhostDaemonPids();
+    if (ghosts.length > 0) {
+      console.log(`  ⚠️  bosun daemon is NOT tracked (no PID file), but ${ghosts.length} ghost process(es) found: ${ghosts.join(", ")}`);
+      console.log(`  The daemon is likely running but its PID file was lost.`);
+      console.log(`  Run --stop-daemon to clean up, then --daemon to restart.`);
+    } else {
+      console.log("  bosun daemon is not running.");
+      removePidFile();
+    }
   }
   process.exit(0);
 }

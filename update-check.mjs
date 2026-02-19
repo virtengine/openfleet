@@ -51,6 +51,12 @@ function runNpmCommand(args, options = {}) {
 
   for (const candidate of candidates) {
     if (existsSync(candidate)) {
+      // On Unix, npm is a shell script with #!/usr/bin/env node which fails
+      // when running inside a detached daemon where nvm node is not on PATH.
+      // Invoke it directly through process.execPath to bypass the shebang.
+      if (process.platform !== "win32") {
+        return execFileSync(process.execPath, [candidate, ...args], safeOptions);
+      }
       return execFileSync(candidate, args, safeOptions);
     }
   }
