@@ -780,7 +780,7 @@ let agentChatId = null; // chat where agent is running
 // ── Sticky UI menu state (keep /menu accessible at bottom) ─────────────────
 const stickyMenuState = new Map();
 const stickyMenuTimers = new Map();
-const STICKY_MENU_BUMP_MS = 1200;
+const STICKY_MENU_BUMP_MS = 200;
 
 // ── Queues ──────────────────────────────────────────────────────────────────
 
@@ -1874,6 +1874,48 @@ async function handleCallbackQuery(query) {
   }
   if (data === "cb:confirm_resume") {
     enqueueCommand(() => cmdResumeTasks(chatId));
+    return;
+  }
+  if (data === "cb:close_menu") {
+    // Close and disable sticky menu
+    const state = stickyMenuState.get(chatId);
+    if (state?.enabled) {
+      // Cancel any pending bump timer
+      const timer = stickyMenuTimers.get(chatId);
+      if (timer) {
+        clearTimeout(timer);
+        stickyMenuTimers.delete(chatId);
+      }
+      // Delete the sticky menu message
+      if (state.messageId) {
+        await deleteDirect(chatId, state.messageId).catch(() => {});
+      }
+      // Disable sticky state
+      stickyMenuState.delete(chatId);
+    } else if (query.message?.message_id) {
+      // Not sticky — just delete the message
+      await deleteDirect(chatId, query.message.message_id).catch(() => {});
+    }
+    return;
+  }
+  if (data === "cb:toggle_menu") {
+    // Toggle sticky menu on/off
+    const state = stickyMenuState.get(chatId);
+    if (state?.enabled) {
+      // Menu is open → close it
+      const timer = stickyMenuTimers.get(chatId);
+      if (timer) {
+        clearTimeout(timer);
+        stickyMenuTimers.delete(chatId);
+      }
+      if (state.messageId) {
+        await deleteDirect(chatId, state.messageId).catch(() => {});
+      }
+      stickyMenuState.delete(chatId);
+    } else {
+      // Menu is closed → open it
+      enqueueCommand(() => cmdMenu(chatId));
+    }
     return;
   }
   if (data === "cb:confirm_restart") {
@@ -3385,11 +3427,15 @@ async function showStartTaskModelPicker(chatId, taskId, sdk, executor) {
 
 function uiNavRow(parent) {
   if (!parent) {
-    return [uiButton("🏠 Home", uiGoAction("home"))];
+    return [
+      uiButton("🏠 Home", uiGoAction("home")),
+      uiButton("✖ Close", "cb:close_menu"),
+    ];
   }
   return [
     uiButton("⬅️ Back", uiGoAction(parent)),
     uiButton("🏠 Home", uiGoAction("home")),
+    uiButton("✖ Close", "cb:close_menu"),
   ];
 }
 
@@ -3623,6 +3669,7 @@ Object.assign(UI_SCREENS, {
       } else if (telegramUiUrl) {
         rows.unshift([{ text: "🌐 Open Control Center", url: getBrowserUiUrl() || telegramUiUrl }]);
       }
+      rows.push([uiButton("✖ Close Menu", "cb:close_menu")]);
       return buildKeyboard(rows);
     },
   },

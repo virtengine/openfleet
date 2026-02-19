@@ -2710,11 +2710,16 @@ class TaskExecutor {
   async executeTask(task, options = {}) {
     const taskId = task.id || task.task_id;
     const taskTitle = task.title || "(untitled)";
-    if (this._paused) {
+    if (this._paused && !options?.force) {
       console.log(
         `${TAG} executor paused — skipping task "${taskTitle}" (${taskId})`,
       );
-      return;
+      return { skipped: true, reason: "paused" };
+    }
+    if (this._paused && options?.force) {
+      console.log(
+        `${TAG} executor paused but force=true — executing task "${taskTitle}" (${taskId})`,
+      );
     }
     if (this._isBaseBranchLimitReached(task)) {
       const baseBranch = this._resolveTaskBaseBranch(task);

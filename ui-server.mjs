@@ -2267,15 +2267,17 @@ async function handleApi(req, res, url) {
           `[telegram-ui] failed to mark task ${taskId} inprogress: ${err.message}`,
         );
       }
+      const wasPaused = executor.isPaused?.();
       executor.executeTask(task, {
         ...(sdk ? { sdk } : {}),
         ...(model ? { model } : {}),
+        force: true,
       }).catch((error) => {
         console.warn(
           `[telegram-ui] failed to execute task ${taskId}: ${error.message}`,
         );
       });
-      jsonResponse(res, 200, { ok: true, taskId });
+      jsonResponse(res, 200, { ok: true, taskId, wasPaused });
       broadcastUiEvent(
         ["tasks", "overview", "executor", "agents"],
         "invalidate",

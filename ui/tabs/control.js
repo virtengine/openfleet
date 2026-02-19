@@ -448,11 +448,15 @@ export function ControlTab() {
     setStartTaskError("");
     haptic("medium");
     try {
-      await apiFetch("/api/tasks/start", {
+      const res = await apiFetch("/api/tasks/start", {
         method: "POST",
         body: JSON.stringify({ taskId }),
       });
-      showToast("Task started", "success");
+      if (res?.wasPaused) {
+        showToast("Task started (executor was paused — force-dispatched)", "warning");
+      } else {
+        showToast("Task started", "success");
+      }
       refreshTaskOptions();
       scheduleRefresh(150);
     } catch {

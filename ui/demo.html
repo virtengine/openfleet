@@ -59,6 +59,119 @@
     :root:not([data-theme="light"]) {
       color-scheme: dark;
     }
+
+    /* ── Sticky Bot Menu (simulates Telegram inline keyboard at bottom) ── */
+    .demo-bot-menu {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 99998;
+      background: var(--tg-theme-secondary-bg-color, #131a24);
+      border-top: 1px solid var(--tg-theme-section-separator-color, #1e293b);
+      font-family: 'Inter', -apple-system, sans-serif;
+      transition: transform 0.25s ease-out, opacity 0.25s ease-out;
+    }
+    .demo-bot-menu.collapsed {
+      transform: translateY(100%);
+      opacity: 0;
+      pointer-events: none;
+    }
+    .demo-bot-menu-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px 4px;
+    }
+    .demo-bot-menu-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--tg-theme-accent-text-color, #4cc9f0);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .demo-bot-menu-close {
+      background: none;
+      border: none;
+      color: var(--tg-theme-hint-color, #64748b);
+      cursor: pointer;
+      font-size: 16px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      transition: color 0.15s, background 0.15s;
+    }
+    .demo-bot-menu-close:hover {
+      color: var(--tg-theme-destructive-text-color, #ef4444);
+      background: rgba(239, 68, 68, 0.1);
+    }
+    .demo-bot-menu-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      padding: 4px 8px 8px;
+    }
+    .demo-bot-menu-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      padding: 8px 4px;
+      border-radius: 6px;
+      border: none;
+      background: rgba(76, 201, 240, 0.08);
+      color: var(--tg-theme-button-color, #4cc9f0);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .demo-bot-menu-btn:hover {
+      background: rgba(76, 201, 240, 0.18);
+    }
+    .demo-bot-menu-btn.full-width {
+      grid-column: 1 / -1;
+    }
+    .demo-bot-menu-btn.half-width {
+      grid-column: span 1;
+    }
+    .demo-bot-menu-row-2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 4px;
+      padding: 0 8px 8px;
+    }
+    /* Floating toggle button for collapsed state */
+    .demo-bot-menu-fab {
+      position: fixed;
+      bottom: 68px; /* above BottomNav */
+      right: 12px;
+      z-index: 99997;
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: none;
+      background: var(--tg-theme-button-color, #4cc9f0);
+      color: var(--tg-theme-button-text-color, #000);
+      font-size: 18px;
+      cursor: pointer;
+      box-shadow: 0 2px 12px rgba(76, 201, 240, 0.3);
+      transition: transform 0.2s, opacity 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .demo-bot-menu-fab.hidden {
+      transform: scale(0);
+      opacity: 0;
+      pointer-events: none;
+    }
+    /* Push app content up when menu is open */
+    body.bot-menu-open #app {
+      padding-bottom: 140px;
+    }
   </style>
 
   <!-- ═══ DEMO MOCK LAYER ═══════════════════════════════════════════════
@@ -931,6 +1044,60 @@
   </script>
 </head>
 <body>
+  <!-- Sticky Bot Menu (simulates Telegram inline keyboard) -->
+  <div class="demo-bot-menu" id="demo-bot-menu">
+    <div class="demo-bot-menu-header">
+      <span class="demo-bot-menu-title">🤖 Bosun Control Center</span>
+      <button class="demo-bot-menu-close" id="demo-bot-menu-close" title="Close menu">✖</button>
+    </div>
+    <div class="demo-bot-menu-grid">
+      <button class="demo-bot-menu-btn" data-tab="dashboard">📊 Overview</button>
+      <button class="demo-bot-menu-btn" data-tab="tasks">🧭 Tasks</button>
+      <button class="demo-bot-menu-btn" data-tab="agents">🤖 Agents</button>
+      <button class="demo-bot-menu-btn" data-tab="control">⚙️ Control</button>
+      <button class="demo-bot-menu-btn" data-tab="infra">🌳 Infra</button>
+      <button class="demo-bot-menu-btn" data-tab="logs">📁 Logs</button>
+    </div>
+    <div class="demo-bot-menu-row-2">
+      <button class="demo-bot-menu-btn" data-tab="chat">💬 Chat</button>
+      <button class="demo-bot-menu-btn" data-tab="settings">⚙️ Settings</button>
+    </div>
+  </div>
+  <button class="demo-bot-menu-fab hidden" id="demo-bot-menu-fab" title="Open Bot Menu">☰</button>
+
+  <script>
+    // Bot menu toggle logic
+    (function() {
+      const menu = document.getElementById('demo-bot-menu');
+      const closeBtn = document.getElementById('demo-bot-menu-close');
+      const fab = document.getElementById('demo-bot-menu-fab');
+      function closeMenu() {
+        menu.classList.add('collapsed');
+        fab.classList.remove('hidden');
+        document.body.classList.remove('bot-menu-open');
+      }
+      function openMenu() {
+        menu.classList.remove('collapsed');
+        fab.classList.add('hidden');
+        document.body.classList.add('bot-menu-open');
+      }
+      closeBtn.addEventListener('click', closeMenu);
+      fab.addEventListener('click', openMenu);
+      // Bot menu navigation buttons — dispatch custom event for the app
+      menu.querySelectorAll('.demo-bot-menu-btn[data-tab]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tab = btn.dataset.tab;
+          // Dispatch a custom navigation event that the app can listen to
+          window.dispatchEvent(new CustomEvent('demo-bot-menu-nav', { detail: { tab } }));
+          // Also try to trigger tab change via app's global navigation
+          if (window.__bosunSetTab) window.__bosunSetTab(tab);
+        });
+      });
+      // Start with menu open
+      openMenu();
+    })();
+  </script>
+
   <!-- Demo mode banner -->
   <div class="demo-banner">⚡ Bosun Demo Mode — Seed Data</div>
 
