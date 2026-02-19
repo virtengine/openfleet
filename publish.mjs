@@ -225,9 +225,9 @@ function main() {
     if (status === 0 && !dryRun) {
       console.log(
         "\n[publish] REMINDER: deprecate the legacy npm package to redirect users:\n" +
-        "  npm deprecate bosun@'*' \"Renamed to @virtengine/bosun. Install: npm install -g @virtengine/bosun\"\n" +
+        "  npm deprecate bosun@'*' \"Renamed to bosun. Install: npm install -g bosun\"\n" +
         "  # If a scoped legacy package exists:\n" +
-        "  npm deprecate @virtengine/bosun@'*' \"Renamed to @virtengine/bosun. Install: npm install -g @virtengine/bosun\"\n",
+        "  npm deprecate bosun@'*' \"Renamed to bosun. Install: npm install -g bosun\"\n",
       );
     }
     process.exit(status);

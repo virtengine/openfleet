@@ -16,7 +16,7 @@
  * Usage:
  *   bosun --setup              # interactive wizard
  *   bosun-setup                # same (bin alias)
- *   npx @virtengine/bosun setup
+ *   npx bosun setup
  *   node setup.mjs --non-interactive   # use env vars, skip prompts
  */
 
@@ -1724,7 +1724,7 @@ async function main() {
   const hasVk = check(
     "Vibe-Kanban CLI",
     commandExists("vibe-kanban") || bundledBinExists("vibe-kanban"),
-    "Bundled with @virtengine/bosun as a dependency",
+    "Bundled with bosun as a dependency",
   );
 
   if (!hasVk) {
@@ -1732,8 +1732,8 @@ async function main() {
       "vibe-kanban not found. This is bundled with bosun, so this is unexpected.",
     );
     info("Try reinstalling:");
-    console.log("     npm uninstall -g @virtengine/bosun");
-    console.log("     npm install -g @virtengine/bosun\n");
+    console.log("     npm uninstall -g bosun");
+    console.log("     npm install -g bosun\n");
   }
 
   if (!hasNode) {

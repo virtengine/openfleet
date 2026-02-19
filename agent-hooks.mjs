@@ -817,6 +817,15 @@ function _buildEnv(ctx) {
     VE_SDK: ctx.sdk ?? "",
     VE_REPO_ROOT: ctx.repoRoot ?? REPO_ROOT,
     VE_HOOK_BLOCKING: "false", // Overridden per-hook in execution
+    // ── Bosun canonical aliases (always set so agents see a consistent set) ──
+    BOSUN_TASK_ID: ctx.taskId ?? "",
+    BOSUN_TASK_TITLE: ctx.taskTitle ?? "",
+    BOSUN_TASK_DESCRIPTION: ctx.taskDescription ?? "",
+    BOSUN_BRANCH_NAME: ctx.branch ?? "",
+    BOSUN_WORKTREE_PATH: ctx.worktreePath ?? "",
+    BOSUN_SDK: ctx.sdk ?? "",
+    BOSUN_MANAGED: "1",
+    VE_MANAGED: "1",
   };
 
   // Merge any extra context values as env vars

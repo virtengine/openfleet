@@ -178,7 +178,7 @@ function showHelp() {
     bosun --no-codex --no-autofix                  # minimal mode
 
   DOCS
-    https://www.npmjs.com/package/@virtengine/bosun
+    https://www.npmjs.com/package/bosun
 `);
 }
 

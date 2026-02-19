@@ -226,16 +226,19 @@ section {
   letter-spacing: -0.03em;
 }
 
+
 .nav__brand-icon {
-  width: 96px;
-  height: 96px;
-  border-radius: 0;
-  background: none;
-  display: grid;
-  place-items: center;
-  font-size: 0.9rem;
-  font-weight: 900;
-  object-fit: contain;
+    width: 66.6px;
+    height: 66.6px;
+    margin-right: 6.66px;
+    padding: 0.666px;
+    border-radius: 0;
+    background: none;
+    display: grid;
+    place-items: center;
+    font-size: 0.9rem;
+    font-weight: 900;
+    object-fit: contain;
 }
 
 .nav__links {
@@ -357,6 +360,25 @@ section {
   animation: glow-drift 15s ease-in-out infinite alternate-reverse;
 }
 
+@media (max-width: 768px) {
+  .hero__glow {
+    width: 90vw;
+    height: 90vw;
+    filter: blur(90px);
+  }
+
+  .hero__glow--cyan {
+    top: -45vw;
+    left: 0;
+    right: auto;
+  }
+
+  .hero__glow--purple {
+    bottom: -45vw;
+    left: 0;
+  }
+}
+
 @keyframes glow-drift {
   0% { transform: translate(0, 0); }
   100% { transform: translate(40px, -30px); }
@@ -463,6 +485,8 @@ section {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
 @media (max-width: 1100px) {
@@ -482,12 +506,24 @@ section {
   font-weight: 800;
   line-height: 1.15;
   letter-spacing: -0.03em;
-  margin-bottom: 1.5rem;
+  margin-bottom: 0;
   color: var(--text-primary);
 }
 
 .hero__headline .gradient-text {
   display: inline-block;
+}
+
+.hero__typed {
+  font-size: clamp(1rem, 2vw, 1.25rem);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  min-height: 1.4em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
 }
 
 /* ── Hero feature bullets ────────────────────────────────────────────── */
@@ -1190,6 +1226,7 @@ body.is-miniapp-fullscreen {
   text-align: center;
   padding: 8rem 0 6rem;
   position: relative;
+  overflow: hidden;
 }
 
 .cta-section::before {
@@ -1202,6 +1239,13 @@ body.is-miniapp-fullscreen {
   height: 400px;
   background: radial-gradient(ellipse, rgba(96,204,93,0.1), transparent 60%);
   pointer-events: none;
+}
+
+@media (max-width: 768px) {
+  .cta-section::before {
+    width: 90vw;
+    height: 70vw;
+  }
 }
 
 .cta-section h2 {

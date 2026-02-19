@@ -56,7 +56,13 @@ export async function createSession(options = {}) {
 
 /* ─── Helpers ─── */
 const TYPE_ICONS = { primary: "🤖", task: "🔨", review: "👀", manual: "💬" };
-const STATUS_ICONS = { active: "🟢", paused: "⏸️", completed: "✅", error: "🔴" };
+const STATUS_ICONS = {
+  active: "🟢",
+  running: "🟢",
+  paused: "⏸️",
+  completed: "✅",
+  error: "🔴",
+};
 
 function sessionIcon(type) {
   return TYPE_ICONS[(type || "").toLowerCase()] || "💬";

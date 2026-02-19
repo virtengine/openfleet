@@ -136,7 +136,7 @@
   overflow-x: hidden;
   scrollbar-gutter: stable;
   padding: 16px 16px 20px;
-  padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 40px);
+  padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 80px);
   -webkit-overflow-scrolling: touch;
   scroll-behavior: smooth;
   touch-action: pan-y;
@@ -191,6 +191,13 @@
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+.bottom-nav.compact {
+  height: calc(var(--nav-height) - 8px);
+  padding: 4px 8px;
+  justify-content: space-between;
+  gap: 4px;
+}
+
 @keyframes navSlideUp {
   from { opacity: 0; transform: translateY(20px); }
   to { opacity: 1; transform: translateY(0); }
@@ -215,6 +222,15 @@
   -webkit-tap-highlight-color: transparent;
   position: relative;
   border-radius: var(--radius-md);
+}
+
+.bottom-nav.compact .nav-item {
+  min-width: 56px;
+  padding: 6px 0;
+}
+
+.nav-item-more {
+  color: var(--text-secondary);
 }
 
 .nav-item:active {
@@ -253,6 +269,69 @@
 
 .nav-label {
   line-height: 1;
+}
+
+/* ─── More Menu (Modal Sheet) ─── */
+.more-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px 4px 12px;
+}
+
+.more-menu-section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-hint);
+  margin-bottom: 8px;
+}
+
+.more-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.more-menu-item {
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border-radius: 14px;
+  padding: 12px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-height: 68px;
+  font-size: 11px;
+  font-weight: 600;
+  transition: transform 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.more-menu-item.active {
+  color: var(--accent);
+  border-color: rgba(88, 166, 255, 0.4);
+  box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.25) inset;
+}
+
+.more-menu-item:active {
+  transform: scale(0.97);
+}
+
+.more-menu-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.more-menu-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.more-menu-label {
+  line-height: 1.1;
+  text-align: center;
 }
 
 /* ─── FAB ─── */
@@ -318,11 +397,56 @@
   .nav-label {
     font-size: 9px;
   }
+
+  .more-menu-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .bottom-nav.compact {
+    left: 12px;
+    right: 12px;
+    height: calc(var(--nav-height) - 12px);
+    gap: 2px;
+    padding: 4px 6px;
+  }
+
+  .bottom-nav.compact .nav-item {
+    min-width: 52px;
+    padding: 4px 0;
+    gap: 2px;
+  }
+
+  .bottom-nav.compact .nav-item svg {
+    width: 20px;
+    height: 20px;
+  }
 }
 
 @media (max-width: 360px) {
   .app-header-hint {
     display: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .app-header {
+    padding: 0 14px;
+  }
+
+  .header-actions {
+    gap: 6px;
+  }
+
+  .app-header-user,
+  .header-freshness {
+    display: none;
+  }
+
+  .connection-pill {
+    padding: 4px 8px;
+    font-size: 10px;
   }
 }
 
@@ -390,6 +514,8 @@
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
+  /* Ensure children can scroll within the panel */
+  contain: layout;
 }
 
 .sidebar,
@@ -453,6 +579,8 @@
     padding: 12px;
     min-height: 0;
     box-shadow: var(--shadow-md);
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 
   .app-main {
@@ -473,6 +601,8 @@
     gap: 12px;
     min-height: 0;
     box-shadow: var(--shadow-md);
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 
   .app-header {
@@ -490,9 +620,17 @@
     padding-bottom: 32px;
     max-width: var(--content-max);
     margin: 0 auto;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-gutter: stable;
   }
 
   .bottom-nav {
+    display: none;
+  }
+
+  .more-sheet {
     display: none;
   }
 

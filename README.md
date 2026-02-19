@@ -1,19 +1,19 @@
-# @virtengine/bosun
+# bosun
 
-**Bosun** is a production-grade supervisor for AI coding agents. It routes tasks across executors, manages retries and failover, automates PR lifecycle, and keeps you in control through Telegram (with optional WhatsApp and container isolation).
+Bosun is a production-grade supervisor for AI coding agents. It routes tasks across executors, automates PR lifecycles, and keeps operators in control through Telegram, the Mini App dashboard, and optional WhatsApp notifications.
 
-[Website](https://bosun.virtengine.com) · [Docs](https://bosun.virtengine.com/docs/) · [GitHub](https://github.com/virtengine/virtengine/tree/main/scripts/bosun) · [npm](https://www.npmjs.com/package/@virtengine/bosun) · [Issues](https://github.com/virtengine/virtengine/issues)
+[Website](https://bosun.virtengine.com) · [Docs](https://bosun.virtengine.com/docs/) · [GitHub](https://github.com/virtengine/bosun#virtenginebosun) · [npm](https://www.npmjs.com/package/bosun) · [Issues](https://github.com/virtengine/bosun/issues)
 
-![CI](https://github.com/virtengine/virtengine/actions/workflows/ci.yaml/badge.svg)
-![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)
-![npm](https://img.shields.io/npm/v/@virtengine/bosun.svg)
+[![CI](https://github.com/virtengine/bosun/actions/workflows/ci.yaml/badge.svg)](https://github.com/virtengine/bosun/actions/workflows/ci.yaml)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/bosun.svg)](https://www.npmjs.com/package/bosun)
 
 ---
 
 ## Quick start
 
 ```bash
-npm install -g @virtengine/bosun
+npm install -g bosun
 cd your-repo
 bosun
 ```
@@ -46,7 +46,7 @@ Requires:
 
 **Published docs (website):** https://bosun.virtengine.com/docs/
 
-**Source docs (markdown):** `_docs/` is the source of truth for long-form documentation. Keep `site/docs` in sync with these markdown files so the website mirrors the same content.
+**Source docs (markdown):** `_docs/` is the source of truth for long-form documentation. The website should be generated from the same markdown content so docs stay in sync.
 
 Key references:
 - [GitHub adapter enhancements](_docs/KANBAN_GITHUB_ENHANCEMENT.md)

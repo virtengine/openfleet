@@ -699,7 +699,7 @@ function generateSystemdUnit({ daemon = false } = {}) {
 
   return `[Unit]
 Description=bosun — AI Orchestrator Supervisor
-Documentation=https://www.npmjs.com/package/@virtengine/bosun
+Documentation=https://www.npmjs.com/package/bosun
 After=network-online.target
 Wants=network-online.target
 

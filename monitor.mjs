@@ -6315,7 +6315,7 @@ function resolveUpstreamFromTask(task) {
   if (
     text.includes("bosun") ||
     text.includes("codex monitor") ||
-    text.includes("@virtengine/bosun") ||
+    text.includes("bosun") ||
     text.includes("scripts/bosun")
   ) {
     return DEFAULT_BOSUN_UPSTREAM;

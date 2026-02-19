@@ -51,10 +51,12 @@
     }
     /* Push content down */
     body { padding-top: 22px !important; }
-    /* Ensure no scrollbar leaks */
-    html, body { overflow: hidden; height: 100%; margin: 0; }
-    /* Force dark theme */
-    :root {
+    /* Contain layout — inner panels scroll via overflow-y: auto */
+    html { height: 100%; margin: 0; overflow: hidden; }
+    body { height: 100%; margin: 0; overflow-x: hidden; }
+    #app { height: 100%; display: flex; flex-direction: column; }
+    /* Force dark theme (demo default, overridable via settings toggle) */
+    :root:not([data-theme="light"]) {
       color-scheme: dark;
     }
   </style>
@@ -696,7 +698,7 @@
           const ts = new Date(now - (20 - i) * 30000).toISOString();
           return `[${ts}] [info] Demo log line ${i + 1} from ${file || 'agent'}`;
         });
-        return { data: lines.join('\n'), lines };
+        return { data: { lines } };
       }
       if (route === '/api/agent-context') {
         const q = params.get('query') || '';

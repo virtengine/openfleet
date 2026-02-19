@@ -1533,7 +1533,7 @@ function Extract-UpstreamFromText {
 function Test-IsBosunTask {
     param([Parameter(Mandatory)][object]$Task)
     $text = (Get-TaskTextBlob -Task $Task).ToLowerInvariant()
-    if ($text -match "bosun|Bosun|@virtengine/bosun|scripts/bosun") { return $true }
+    if ($text -match "bosun|Bosun|bosun|scripts/bosun") { return $true }
     return $false
 }
 

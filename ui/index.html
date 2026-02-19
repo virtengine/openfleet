@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="color-scheme" content="dark light" />
-  <title>VirtEngine Control Center</title>
+  <title>Bosun — Task Orchestrator</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="preconnect" href="https://esm.sh" crossorigin />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -13,6 +13,13 @@
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="styles/kanban.css" />
   <link rel="stylesheet" href="styles/sessions.css" />
+  <!-- Apply stored colour theme before paint to prevent flash -->
+  <script>
+    try {
+      var t = JSON.parse(localStorage.getItem('ve_settings_colorTheme'));
+      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+    } catch(e) {}
+  </script>
   <!-- Import map: ensures all modules share a single Preact instance
        (required for @preact/signals auto-subscription to work) -->
   <script type="importmap">
@@ -48,8 +55,8 @@
         <div class="boot-ring-inner"></div>
         <div class="boot-dot"></div>
       </div>
-      <div class="boot-title">VirtEngine</div>
-      <div class="boot-subtitle" id="boot-status">Initializing Control Center…</div>
+      <div class="boot-title">Bosun</div>
+      <div class="boot-subtitle" id="boot-status">Initializing Task Orchestrator…</div>
       <div class="boot-progress"><div class="boot-progress-bar"></div></div>
     </div>
   </div>

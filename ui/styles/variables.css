@@ -184,5 +184,65 @@
     --gradient-mesh: radial-gradient(circle at 10% 20%, rgba(14, 165, 233, 0.14), transparent 55%),
       radial-gradient(circle at 90% 10%, rgba(37, 99, 235, 0.1), transparent 45%),
       radial-gradient(circle at 50% 100%, rgba(59, 130, 246, 0.08), transparent 60%);
+
+    --gradient-surface: linear-gradient(180deg, rgba(244, 247, 251, 0.95) 0%, rgba(237, 242, 247, 0.98) 100%);
+    --gradient-radial-glow: radial-gradient(circle at 50% 20%, rgba(37, 99, 235, 0.12), transparent 60%);
+
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.08);
+    --shadow-md: 0 8px 20px rgba(15, 23, 42, 0.08);
+    --shadow-lg: 0 18px 36px rgba(15, 23, 42, 0.1);
+    --shadow-xl: 0 28px 64px rgba(15, 23, 42, 0.12);
+    --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    --shadow-glow: 0 0 18px rgba(37, 99, 235, 0.15);
+    --shadow-glow-sm: 0 0 8px rgba(37, 99, 235, 0.15);
+
+    --backdrop: rgba(255, 255, 255, 0.7);
   }
+}
+
+/* Manual light theme override (toggle in settings) */
+:root[data-theme="light"] {
+  --bg-primary: #f4f7fb;
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --bg-surface: #edf2f7;
+  --bg-input: #ffffff;
+  --bg-card-hover: rgba(15, 23, 42, 0.04);
+  --bg-elevated: #ffffff;
+
+  --text-primary: #1b2430;
+  --text-secondary: #5b6474;
+  --text-hint: #7b8598;
+  --text-bright: #0f172a;
+
+  --border: rgba(15, 23, 42, 0.12);
+  --border-strong: rgba(15, 23, 42, 0.18);
+
+  --glass-bg: rgba(255, 255, 255, 0.92);
+  --glass-border: rgba(15, 23, 42, 0.12);
+  --glass-highlight: rgba(15, 23, 42, 0.04);
+
+  --accent-glow: rgba(37, 99, 235, 0.18);
+  --accent-subtle: rgba(37, 99, 235, 0.12);
+  --gradient-hero: radial-gradient(circle at 20% 0%, rgba(37, 99, 235, 0.16), transparent 55%),
+    radial-gradient(circle at 80% 5%, rgba(14, 165, 233, 0.12), transparent 50%),
+    radial-gradient(circle at 50% 95%, rgba(59, 130, 246, 0.1), transparent 60%);
+  --gradient-mesh: radial-gradient(circle at 10% 20%, rgba(14, 165, 233, 0.14), transparent 55%),
+    radial-gradient(circle at 90% 10%, rgba(37, 99, 235, 0.1), transparent 45%),
+    radial-gradient(circle at 50% 100%, rgba(59, 130, 246, 0.08), transparent 60%);
+
+  --gradient-surface: linear-gradient(180deg, rgba(244, 247, 251, 0.95) 0%, rgba(237, 242, 247, 0.98) 100%);
+  --gradient-radial-glow: radial-gradient(circle at 50% 20%, rgba(37, 99, 235, 0.12), transparent 60%);
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.08);
+  --shadow-md: 0 8px 20px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 18px 36px rgba(15, 23, 42, 0.1);
+  --shadow-xl: 0 28px 64px rgba(15, 23, 42, 0.12);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  --shadow-glow: 0 0 18px rgba(37, 99, 235, 0.15);
+  --shadow-glow-sm: 0 0 8px rgba(37, 99, 235, 0.15);
+
+  --backdrop: rgba(255, 255, 255, 0.7);
+
+  color-scheme: light;
 }

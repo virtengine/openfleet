@@ -3,7 +3,7 @@
  * vibe-kanban-wrapper.mjs - Wrapper to expose bundled vibe-kanban CLI
  *
  * This wrapper ensures the bundled vibe-kanban CLI is available when
- * @virtengine/bosun is installed globally. npm doesn't expose
+ * bosun is installed globally. npm doesn't expose
  * bins from transitive dependencies, so we need this proxy.
  */
 

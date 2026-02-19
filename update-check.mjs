@@ -23,7 +23,7 @@ import { createInterface } from "node:readline";
 import os from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PKG_NAME = "@virtengine/bosun";
+const PKG_NAME = "bosun";
 const CACHE_FILE = resolve(__dirname, "logs", ".update-check-cache.json");
 const STARTUP_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour (startup notice)
 const AUTO_UPDATE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes (polling loop)
@@ -228,7 +228,7 @@ let cleanupHandlersRegistered = false;
 /**
  * Start a background polling loop that checks for updates every `intervalMs`
  * (default 10 min). When a newer version is found, it:
- *   1. Runs `npm install -g @virtengine/bosun@<version>`
+ *   1. Runs `npm install -g bosun@<version>`
  *   2. Calls `onRestart()` (or `process.exit(0)` if not provided)
  *
  * This is fully autonomous — no user interaction required.

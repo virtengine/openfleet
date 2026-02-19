@@ -187,14 +187,17 @@ async function run() {
   for (const item of mapped) {
     const context = {
       sdk: agent,
-      taskId: process.env.VE_TASK_ID || "",
-      taskTitle: process.env.VE_TASK_TITLE || "",
+      taskId: process.env.VE_TASK_ID || process.env.BOSUN_TASK_ID || "",
+      taskTitle:
+        process.env.VE_TASK_TITLE || process.env.BOSUN_TASK_TITLE || "",
       taskDescription:
         process.env.VE_TASK_DESCRIPTION ||
+        process.env.BOSUN_TASK_DESCRIPTION ||
         process.env.VE_DESCRIPTION ||
         process.env.VK_DESCRIPTION ||
         "",
-      branch: process.env.VE_BRANCH_NAME || "",
+      branch:
+        process.env.VE_BRANCH_NAME || process.env.BOSUN_BRANCH_NAME || "",
       worktreePath: process.cwd(),
       extra: {
         source_event: sourceEvent,

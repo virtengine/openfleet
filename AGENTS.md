@@ -173,6 +173,36 @@ console.log('Swept', result.sweptCount, 'stale tasks');
   - Vibe-Kanban: `VK_BASE_URL`, `VK_TARGET_BRANCH` (`scripts/bosun/.env.example:87`)
   - Executor routing: `EXECUTORS`, `EXECUTOR_DISTRIBUTION` (`scripts/bosun/.env.example:66`)
 - VK workspace PATH propagation: `scripts/bosun/setup.mjs:487`
+
+### Task-Context Environment Variables (injected by bosun)
+
+When bosun launches an agent for a task it injects **both** naming conventions
+so any agent instruction set (VirtEngine AGENTS.md, custom copilot-instructions,
+vibe-kanban task files, etc.) can detect the Bosun context:
+
+| Variable | Alias(es) | Value |
+|---|---|---|
+| `BOSUN_TASK_ID` | `VE_TASK_ID` | Kanban task ID |
+| `BOSUN_TASK_TITLE` | `VE_TASK_TITLE`, `VK_TITLE` | Task title |
+| `BOSUN_TASK_DESCRIPTION` | `VE_TASK_DESCRIPTION`, `VK_DESCRIPTION` | Task description/body |
+| `BOSUN_BRANCH_NAME` | `VE_BRANCH_NAME` | Git branch for the task |
+| `BOSUN_WORKTREE_PATH` | `VE_WORKTREE_PATH` | Absolute path to worktree |
+| `BOSUN_SDK` | `VE_SDK` | SDK in use (codex / copilot / claude) |
+| `BOSUN_MANAGED` | `VE_MANAGED` | Always `"1"` inside a Bosun session |
+
+These are set in `scripts/bosun/task-executor.mjs` before `execWithRetry` and
+are also forwarded to all hook subprocesses via `scripts/bosun/agent-hooks.mjs`.
+
+**Safe instruction appending:** bosun only injects task context env vars and
+appends a "Bosun Task Agent" section to the built-in prompt templates.  It does
+**not** override or clear any user-supplied `BOSUN_PROMPT_*` env vars or custom
+`bosun.config.json` `agentPrompts` keys.  If a user has a custom
+`task-executor.md` in `.bosun/agents/` that file takes full precedence; bosun's
+defaults only apply when no custom file exists.  References:
+`scripts/bosun/agent-prompts.mjs:resolveAgentPrompts`.
+
+### Shared state configuration
+
 - **Shared state configuration**:
   - `SHARED_STATE_ENABLED` (default: `true`) — Enable/disable distributed coordination (`scripts/bosun/.env.example:15`)
   - `SHARED_STATE_HEARTBEAT_INTERVAL_MS` (default: `60000` = 1 min) — How often to renew heartbeat (`scripts/bosun/.env.example:17`)

@@ -3073,7 +3073,39 @@ class TaskExecutor {
         `${TAG} executing task "${taskTitle}" in ${wt.path} on branch ${branch} (sdk=${resolvedSdk})`,
       );
 
-      // 6a. Start session tracking for review handoff
+      // 6a. Inject task context env vars so spawned agents (Codex/Copilot/Claude)
+      // inherit the full Bosun task context regardless of which env-var naming
+      // convention they read (VE_*, VK_*, or BOSUN_*).  We save and restore to
+      // avoid polluting the parent process when running multiple parallel tasks.
+      const _savedEnvKeys = [
+        "VE_TASK_ID", "VE_TASK_TITLE", "VE_TASK_DESCRIPTION",
+        "VE_BRANCH_NAME", "VE_WORKTREE_PATH", "VE_SDK", "VE_MANAGED",
+        "VK_TITLE", "VK_DESCRIPTION",
+        "BOSUN_TASK_ID", "BOSUN_TASK_TITLE", "BOSUN_TASK_DESCRIPTION",
+        "BOSUN_BRANCH_NAME", "BOSUN_WORKTREE_PATH", "BOSUN_SDK", "BOSUN_MANAGED",
+      ];
+      const _savedEnv = {};
+      for (const k of _savedEnvKeys) _savedEnv[k] = process.env[k];
+
+      // Set both naming conventions so any agent instruction set detects them.
+      process.env.VE_TASK_ID            = taskId;
+      process.env.VE_TASK_TITLE         = taskTitle;
+      process.env.VE_TASK_DESCRIPTION   = String(task.description || task.body || "");
+      process.env.VE_BRANCH_NAME        = branch;
+      process.env.VE_WORKTREE_PATH      = wt.path;
+      process.env.VE_SDK                = resolvedSdk;
+      process.env.VE_MANAGED            = "1";
+      process.env.VK_TITLE              = taskTitle;
+      process.env.VK_DESCRIPTION        = String(task.description || task.body || "");
+      process.env.BOSUN_TASK_ID         = taskId;
+      process.env.BOSUN_TASK_TITLE      = taskTitle;
+      process.env.BOSUN_TASK_DESCRIPTION = String(task.description || task.body || "");
+      process.env.BOSUN_BRANCH_NAME     = branch;
+      process.env.BOSUN_WORKTREE_PATH   = wt.path;
+      process.env.BOSUN_SDK             = resolvedSdk;
+      process.env.BOSUN_MANAGED         = "1";
+
+      // 6b. Start session tracking for review handoff
       const sessionTracker = getSessionTracker();
       sessionTracker.startSession(taskId, taskTitle);
 
@@ -3096,6 +3128,16 @@ class TaskExecutor {
           this._slotAbortControllers.set(taskId, newAC);
         },
       });
+
+      // Restore env vars that were injected for this task slot so parallel
+      // tasks running in the same process don't see stale values.
+      for (const k of _savedEnvKeys) {
+        if (_savedEnv[k] === undefined) {
+          delete process.env[k];
+        } else {
+          process.env[k] = _savedEnv[k];
+        }
+      }
 
       // Track attempts on task for PR body
       task._executionResult = result;

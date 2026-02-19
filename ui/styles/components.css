@@ -1711,6 +1711,108 @@ select.input {
   flex-wrap: wrap;
 }
 
+.tasks-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tasks-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tasks-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.filter-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-toggle svg {
+  width: 14px;
+  height: 14px;
+}
+
+.filter-toggle.active {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-glow-sm);
+}
+
+.filter-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.tasks-filter-panel {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: max-height 0.25s ease, opacity 0.2s ease, transform 0.2s ease;
+  pointer-events: none;
+}
+
+.tasks-filter-panel.open {
+  max-height: 2000px;
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.tasks-filter-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.tasks-filter-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tasks-filter-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-hint);
+}
+
+.tasks-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tasks-filter-panel .chip-group {
+  margin-bottom: 0;
+}
+
 .sticky-search-main {
   flex: 1;
   min-width: 200px;
@@ -1746,6 +1848,58 @@ select.input {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+@media (min-width: 769px) {
+  .tasks-filter-panel {
+    max-height: none;
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+}
+
+@media (max-width: 768px) {
+  .tasks-toolbar-row {
+    align-items: stretch;
+  }
+
+  .tasks-toolbar-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .filter-toggle {
+    flex: 1;
+    justify-content: center;
+  }
+
+  .view-toggle {
+    flex: 1;
+    justify-content: center;
+  }
+
+  .tasks-filter-row {
+    width: 100%;
+  }
+
+  .tasks-filter-row .input {
+    flex: 1;
+  }
+
+  .sticky-search-main {
+    min-width: 0;
+  }
+
+  .chip-group {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .chip {
+    white-space: nowrap;
+  }
 }
 
 /* ─── Sticky Controls ─── */

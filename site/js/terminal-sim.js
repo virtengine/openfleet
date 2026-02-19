@@ -232,7 +232,7 @@
     '--setup': () => COMMANDS['bosun --setup'](),
 
     'bosun --version': () => [
-      `@virtengine/bosun v0.26.2`,
+      `bosun v0.26.2`,
     ],
     '--version': () => COMMANDS['bosun --version'](),
     version: () => COMMANDS['bosun --version'](),
