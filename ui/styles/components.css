@@ -633,7 +633,7 @@ select.input {
   background: var(--backdrop);
   backdrop-filter: var(--backdrop-blur);
   -webkit-backdrop-filter: var(--backdrop-blur);
-  z-index: 200;
+  z-index: 2000;
   display: flex;
   align-items: flex-end;
   justify-content: center;
@@ -670,43 +670,102 @@ select.input {
   letter-spacing: -0.02em;
 }
 
+/* ─── Modal header with close button ─── */
+.modal-header {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.modal-header .modal-handle {
+  margin-bottom: 12px;
+}
+
+.modal-header .modal-title {
+  width: 100%;
+  padding-right: 36px;
+  text-align: left;
+}
+
+.modal-close-btn {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--glass-bg, rgba(255,255,255,0.06));
+  border-radius: var(--radius-full, 50%);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  padding: 0;
+}
+
+.modal-close-btn:hover {
+  background: var(--bg-card-hover, rgba(255,255,255,0.12));
+  color: var(--text-bright);
+}
+
+.modal-close-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
 /* ─── Toast ─── */
 .toast-container {
   position: fixed;
   top: 12px;
-  left: 16px;
-  right: 16px;
-  z-index: 300;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10000;
   display: flex;
   flex-direction: column;
   gap: 8px;
   pointer-events: none;
+  max-width: calc(100vw - 32px);
 }
 
 .toast {
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-  border-radius: var(--radius-md);
-  padding: 12px 16px;
+  pointer-events: auto;
+  padding: 10px 16px;
+  border-radius: 10px;
   font-size: 13px;
   font-weight: 500;
-  box-shadow: var(--shadow-lg);
-  border: 1px solid var(--border);
-  animation: slideDown 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-  pointer-events: auto;
+  color: #fff;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  animation: toastIn 0.3s ease, toastOut 0.3s ease 2.7s forwards;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
 }
 
 .toast-success {
-  border-left: 3px solid var(--color-done);
-  box-shadow: var(--shadow-lg);
+  background: rgba(46,204,113,0.9);
 }
 .toast-error {
-  border-left: 3px solid var(--color-error);
-  box-shadow: var(--shadow-lg);
+  background: rgba(231,76,60,0.9);
 }
 .toast-info {
-  border-left: 3px solid var(--color-inprogress);
-  box-shadow: var(--shadow-lg);
+  background: rgba(91,110,174,0.9);
+}
+.toast-warning {
+  background: rgba(245,166,35,0.9);
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(-20px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes toastOut {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(-10px); }
 }
 
 /* ─── Collapsible Section ─── */
@@ -770,6 +829,53 @@ select.input {
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
+}
+
+/* ─── Desktop Refresh Button ─── */
+.ptr-desktop-refresh {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  border-radius: var(--radius-full, 50%);
+  color: var(--text-secondary);
+  cursor: pointer;
+  z-index: 10;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.2s ease;
+  padding: 0;
+}
+
+.ptr-desktop-refresh:hover {
+  background: var(--bg-card-hover);
+  color: var(--accent);
+}
+
+.ptr-desktop-refresh:active {
+  transform: scale(0.9);
+}
+
+.ptr-desktop-refresh svg {
+  width: 16px;
+  height: 16px;
+}
+
+.ptr-desktop-refresh.spinning svg {
+  animation: spin 0.8s linear infinite;
+}
+
+.pull-to-refresh-container {
+  position: relative;
+}
+
+/* ─── Cards need breathing room ─── */
+.card + .card {
+  margin-top: 12px;
 }
 
 /* ─── Misc ─── */
@@ -935,30 +1041,17 @@ select.input {
 /* ─── Toggle Switch ─── */
 .toggle {
   position: relative;
-  display: inline-flex;
-  align-items: center;
-  cursor: pointer;
-}
-
-.toggle-track {
   width: 44px;
   height: 24px;
   border-radius: 12px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  transition:
-    background var(--transition-fast),
-    border-color var(--transition-fast),
-    box-shadow var(--transition-fast);
-  position: relative;
+  background: var(--border, rgba(255,255,255,0.15));
+  transition: background 0.2s ease;
+  cursor: pointer;
+  flex-shrink: 0;
 }
-
-.toggle.active .toggle-track {
-  background: var(--accent);
-  border-color: transparent;
-  box-shadow: var(--shadow-sm);
+.toggle-on {
+  background: var(--accent, #5b6eae) !important;
 }
-
 .toggle-thumb {
   position: absolute;
   top: 2px;
@@ -966,13 +1059,26 @@ select.input {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: white;
-  box-shadow: var(--shadow-sm);
-  transition: transform var(--transition-fast);
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  transition: transform 0.2s ease;
 }
-
-.toggle.active .toggle-thumb {
+.toggle-on .toggle-thumb {
   transform: translateX(20px);
+}
+.toggle-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.toggle-wrap.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.toggle-label {
+  font-size: 14px;
+  color: var(--text-primary, #fff);
 }
 
 /* ─── Stepper ─── */
@@ -1767,17 +1873,28 @@ select.input {
 .toast-close {
   border: none;
   background: none;
-  color: var(--text-hint);
+  color: rgba(255,255,255,0.7);
   font-size: 18px;
   cursor: pointer;
-  padding: 0 0 0 var(--space-sm, 8px);
+  padding: 0 0 0 8px;
   line-height: 1;
 }
 
-.toast {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm, 8px);
+.toast-close:hover {
+  color: #fff;
+}
+
+/* ─── Spinner ─── */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { animation: spin 0.8s linear infinite; }
+.btn-loading {
+  position: relative;
+  pointer-events: none;
+  opacity: 0.7;
+}
+.btn-loading .spinner {
+  display: inline-block;
+  vertical-align: middle;
 }
 
 /* ─── Stat trend colors ─── */

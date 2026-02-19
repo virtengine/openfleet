@@ -19,7 +19,7 @@ import {
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
 import { cloneValue, truncate } from "../modules/utils.js";
-import { Card, Badge, SkeletonCard } from "../components/shared.js";
+import { Card, Badge, SkeletonCard, Spinner } from "../components/shared.js";
 import { SegmentedControl } from "../components/forms.js";
 
 /* ─── Command registry for autocomplete ─── */
@@ -94,6 +94,7 @@ export function ControlTab() {
   /* ── Inline output state ── */
   const [cmdOutputs, setCmdOutputs] = useState([]);
   const [runningCmd, setRunningCmd] = useState(null);
+  const [sendingCmd, setSendingCmd] = useState(false);
   const [expandedOutputs, setExpandedOutputs] = useState({});
   const pollRef = useRef(null);
   const isPaused = Boolean(executor?.paused || execData?.paused);
@@ -189,10 +190,13 @@ export function ControlTab() {
   const sendCmd = useCallback(
     (cmd) => {
       if (!cmd.trim()) return;
+      setSendingCmd(true);
       sendCommandToChat(cmd.trim());
       pushHistory(cmd.trim());
       setHistoryIndex(-1);
       startOutputPolling(cmd.trim());
+      // Reset sending state after a brief delay (command is fire-and-forget)
+      setTimeout(() => setSendingCmd(false), 600);
     },
     [pushHistory, startOutputPolling],
   );
@@ -600,7 +604,8 @@ export function ControlTab() {
           `}
         </div>
         <button
-          class="btn btn-primary btn-sm"
+          class=${`btn btn-primary btn-sm ${sendingCmd ? 'btn-loading' : ''}`}
+          disabled=${sendingCmd}
           onClick=${() => {
             if (commandInput.trim()) {
               sendCmd(commandInput.trim());
@@ -608,7 +613,7 @@ export function ControlTab() {
             }
           }}
         >
-          ${ICONS.send}
+          ${sendingCmd ? html`<${Spinner} size=${14} />` : ICONS.send}
         </button>
       </div>
 

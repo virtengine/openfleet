@@ -31,6 +31,7 @@ import {
   SkeletonCard,
   Modal,
   ConfirmDialog,
+  Spinner,
 } from "../components/shared.js";
 import {
   SegmentedControl,
@@ -89,15 +90,16 @@ const SETTINGS_STYLES = `
 /* Floating save bar */
 .settings-save-bar {
   position: fixed;
-  bottom: 72px;
+  bottom: 0;
   left: 0; right: 0;
-  z-index: 100;
+  z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 12px 16px;
-  background: var(--glass-bg, rgba(30,30,46,0.85));
+  padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
+  background: var(--glass-bg, rgba(30,30,46,0.95));
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-top: 1px solid var(--border, rgba(255,255,255,0.08));
@@ -123,6 +125,8 @@ const SETTINGS_STYLES = `
 .setting-row {
   padding: 12px 0;
   border-bottom: 1px solid var(--border, rgba(255,255,255,0.05));
+  overflow: hidden;
+  max-width: 100%;
 }
 .setting-row:last-child { border-bottom: none; }
 .setting-row-header {
@@ -210,6 +214,8 @@ const SETTINGS_STYLES = `
   display: flex;
   align-items: center;
   gap: 8px;
+  overflow: visible;
+  max-width: 100%;
 }
 .setting-input-wrap input[type="text"],
 .setting-input-wrap input[type="number"],
@@ -311,6 +317,10 @@ const SETTINGS_STYLES = `
   color: var(--text-tertiary, #666);
   margin-bottom: 8px;
   padding: 0 2px;
+}
+/* Settings tab needs extra bottom padding for save bar + nav */
+.settings-content-scroll {
+  padding-bottom: 160px;
 }
 `;
 
@@ -716,22 +726,22 @@ function ServerConfigMode() {
         }
 
         case "secret": {
-          const displayValue =
-            secretVisible ? value : (value ? maskValue(value) : "");
           control = html`
             <div class="setting-input-wrap">
               <input
                 type=${secretVisible ? "text" : "password"}
-                value=${secretVisible ? value : ""}
-                placeholder=${value && !secretVisible ? displayValue : "Enter value…"}
+                value=${value}
+                placeholder="Enter value…"
                 onInput=${(e) => handleChange(def.key, e.target.value)}
-                onFocus=${() => {
-                  if (!secretVisible) toggleSecret(def.key);
-                }}
               />
               <button
                 class="setting-secret-toggle"
-                onClick=${() => toggleSecret(def.key)}
+                onClick=${(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  toggleSecret(def.key);
+                }}
+                type="button"
                 title=${secretVisible ? "Hide" : "Show"}
               >
                 ${secretVisible ? "🙈" : "👁️"}
@@ -1000,11 +1010,11 @@ function ServerConfigMode() {
             Discard
           </button>
           <button
-            class="btn btn-primary btn-sm"
+            class=${`btn btn-primary btn-sm ${saving ? 'btn-loading' : ''}`}
             onClick=${handleSaveClick}
             disabled=${saving}
           >
-            ${saving ? "Saving…" : "Save Changes"}
+            ${saving ? html`<${Spinner} size=${14} /> Saving…` : "Save Changes"}
           </button>
         </div>
       </div>
@@ -1041,7 +1051,7 @@ function ServerConfigMode() {
           <div class="btn-row mt-md" style="justify-content:flex-end;gap:8px">
             <button class="btn btn-ghost" onClick=${handleCancelSave}>Cancel</button>
             <button class="btn btn-primary" onClick=${handleConfirmSave} disabled=${saving}>
-              ${saving ? "Saving…" : "Confirm & Save"}
+              ${saving ? html`<${Spinner} size=${14} /> Saving…` : "Confirm & Save"}
             </button>
           </div>
         </div>
@@ -1069,6 +1079,18 @@ function AppPreferencesMode() {
   const [showRawJson, setShowRawJson] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
+  /* Apply font size to the document */
+  function applyFontSize(size) {
+    if (!size) return;
+    const map = { small: "13px", medium: "15px", large: "17px" };
+    const px = map[size] || map.medium;
+    document.documentElement.style.setProperty("--base-font-size", px);
+    const numSize = parseInt(px, 10);
+    if (numSize >= 10 && numSize <= 24) {
+      document.documentElement.style.fontSize = `${numSize}px`;
+    }
+  }
+
   /* Load prefs from CloudStorage on mount */
   useEffect(() => {
     (async () => {
@@ -1082,7 +1104,10 @@ function AppPreferencesMode() {
         cloudGet("defaultSdk"),
         cloudGet("defaultRegion"),
       ]);
-      if (fs) setFontSize(fs);
+      if (fs) {
+        setFontSize(fs);
+        applyFontSize(fs);
+      }
       if (nu != null) setNotifyUpdates(nu);
       if (ne != null) setNotifyErrors(ne);
       if (nc != null) setNotifyComplete(nc);
@@ -1106,11 +1131,7 @@ function AppPreferencesMode() {
     setFontSize(v);
     cloudSet("fontSize", v);
     haptic();
-    const map = { small: "13px", medium: "15px", large: "17px" };
-    document.documentElement.style.setProperty(
-      "--base-font-size",
-      map[v] || "15px",
-    );
+    applyFontSize(v);
   };
 
   const handleDefaultMaxParallel = (v) => {
@@ -1176,6 +1197,7 @@ function AppPreferencesMode() {
     setDefaultSdk("auto");
     setDefaultRegion("auto");
     document.documentElement.style.removeProperty("--base-font-size");
+    document.documentElement.style.removeProperty("font-size");
     showToast("Settings reset", "success");
   };
 

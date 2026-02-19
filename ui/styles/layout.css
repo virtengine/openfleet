@@ -136,7 +136,7 @@
   overflow-x: hidden;
   scrollbar-gutter: stable;
   padding: 16px 16px 20px;
-  padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 20px);
+  padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 40px);
   -webkit-overflow-scrolling: touch;
   scroll-behavior: smooth;
   touch-action: pan-y;
@@ -185,9 +185,10 @@
   display: flex;
   align-items: center;
   justify-content: space-around;
-  z-index: 100;
+  z-index: 500;
   box-shadow: var(--shadow-md);
   animation: navSlideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) 0.2s both;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 @keyframes navSlideUp {

@@ -9,6 +9,20 @@
   gap: var(--space-md);
 }
 
+.session-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+.session-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
 @media (min-width: 769px) {
   .session-split {
     display: grid;

@@ -138,6 +138,14 @@ export function Modal({ title, open = true, onClose, children }) {
     requestAnimationFrame(() => setVisible(open));
   }, [open]);
 
+  // Escape key to close (desktop support)
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => { if (e.key === 'Escape' && onClose) onClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [open, onClose]);
+
   // BackButton integration
   useEffect(() => {
     const tg = getTg();
@@ -233,8 +241,13 @@ export function Modal({ title, open = true, onClose, children }) {
         onTouchEnd=${handleTouchEnd}
         onTouchCancel=${handleTouchCancel}
       >
-        <div class="modal-handle"></div>
-        ${title ? html`<div class="modal-title">${title}</div>` : null}
+        <div class="modal-header">
+          <div class="modal-handle"></div>
+          ${title ? html`<div class="modal-title">${title}</div>` : null}
+          <button class="modal-close-btn" onClick=${onClose} aria-label="Close">
+            ${ICONS.close}
+          </button>
+        </div>
         ${children}
       </div>
     </div>
@@ -259,6 +272,13 @@ export function ConfirmDialog({
   destructive = false,
 }) {
   const [tried, setTried] = useState(false);
+
+  // Escape key to cancel (desktop support)
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape' && onCancel) onCancel(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onCancel]);
 
   // Try Telegram native confirm first
   useEffect(() => {
@@ -320,6 +340,38 @@ export function confirmAction(message) {
     return new Promise((resolve) => tg.showConfirm(message, resolve));
   }
   return Promise.resolve(window.confirm(message));
+}
+
+/* ═══════════════════════════════════════════════
+ *  Spinner
+ * ═══════════════════════════════════════════════ */
+
+/**
+ * Inline SVG spinner for loading indicators.
+ * @param {{size?: number, color?: string}} props
+ */
+export function Spinner({ size = 16, color = "currentColor" }) {
+  return html`<svg class="spinner" width=${size} height=${size} viewBox="0 0 24 24" fill="none" stroke=${color} stroke-width="2.5" stroke-linecap="round">
+    <circle cx="12" cy="12" r="10" opacity="0.25" />
+    <path d="M12 2a10 10 0 0 1 10 10" />
+  </svg>`;
+}
+
+/* ═══════════════════════════════════════════════
+ *  LoadingButton
+ * ═══════════════════════════════════════════════ */
+
+/**
+ * Button that shows a spinner when loading.
+ * @param {{loading?: boolean, onClick?: () => void, children?: any, class?: string, disabled?: boolean}} props
+ */
+export function LoadingButton({ loading = false, onClick, children, class: cls = "", disabled = false, ...rest }) {
+  return html`<button
+    class=${`btn ${cls} ${loading ? "btn-loading" : ""}`}
+    onClick=${!loading && !disabled ? onClick : undefined}
+    disabled=${loading || disabled}
+    ...${rest}
+  >${loading ? html`<${Spinner} size=${14} /> ` : ""}${children}</button>`;
 }
 
 /* ═══════════════════════════════════════════════

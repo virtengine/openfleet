@@ -7,7 +7,6 @@ import htm from "htm";
 
 const html = htm.bind(h);
 
-import { Card } from "../components/shared.js";
 import {
   SessionList,
   loadSessions,
@@ -46,13 +45,15 @@ export function ChatTab() {
   }, []);
 
   return html`
-    <${Card} title="Chat Sessions">
+    <div class="session-panel">
       <div class="session-split">
-        <${SessionList}
-          showArchived=${showArchived}
-          onToggleArchived=${setShowArchived}
-          defaultType="primary"
-        />
+        <div class="session-pane">
+          <${SessionList}
+            showArchived=${showArchived}
+            onToggleArchived=${setShowArchived}
+            defaultType="primary"
+          />
+        </div>
         <div class="session-detail">
           ${sessionId && html`
             <button class="session-back-btn" onClick=${handleBack}>
@@ -69,6 +70,6 @@ export function ChatTab() {
               `}
         </div>
       </div>
-    <//>
+    </div>
   `;
 }
