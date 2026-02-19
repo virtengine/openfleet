@@ -92,13 +92,14 @@
     "sentinel:stop": "node -e \"import('./telegram-sentinel.mjs').then(m => m.stopSentinel())\"",
     "sentinel:status": "node -e \"import('./telegram-sentinel.mjs').then(m => console.log(JSON.stringify(m.getSentinelStatus(), null, 2)))\"",
     "prepush:check": "npm run syntax:check && npm test",
-    "prepublishOnly": "node prepublish-check.mjs",
+    "prepublishOnly": "npm run prepush:check && node prepublish-check.mjs",
     "publish:env": "node publish.mjs",
     "publish:dry-run": "node publish.mjs --dry-run",
     "publish:minor": "node publish.mjs --bump minor",
     "publish:major": "node publish.mjs --bump major",
     "publish:minor:dry": "node publish.mjs --bump minor --dry-run",
-    "publish:major:dry": "node publish.mjs --bump major --dry-run"
+    "publish:major:dry": "node publish.mjs --bump major --dry-run",
+    "hooks:install": "node install-git-hooks.mjs"
   },
   "files": [
     ".env.example",
@@ -186,7 +187,9 @@
     "whatsapp-channel.mjs",
     "container-runner.mjs",
     "daemon-restart-policy.mjs",
-    "publish.mjs"
+    "publish.mjs",
+    "install-git-hooks.mjs",
+    ".githooks/"
   ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$ROOT" ]; then
+  exit 0
+fi
+
+if [ ! -f "$ROOT/package.json" ]; then
+  exit 0
+fi
+
+cd "$ROOT"
+echo "[hooks] bosun pre-commit checks"
+npm run syntax:check

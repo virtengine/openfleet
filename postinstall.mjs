@@ -12,6 +12,8 @@
  */
 
 import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 
 const isWin = process.platform === "win32";
 
@@ -182,6 +184,18 @@ function main() {
   console.log("    bosun             Start with existing config");
   console.log("    bosun --help       See all options");
   console.log("");
+
+  // Auto-install git hooks when inside the repo and hooks are present.
+  try {
+    if (process.env.BOSUN_SKIP_GIT_HOOKS) return;
+    const cwd = process.cwd();
+    const hooksDir = resolve(cwd, ".githooks");
+    if (existsSync(resolve(cwd, ".git")) && existsSync(hooksDir)) {
+      execSync("git config core.hooksPath .githooks", { stdio: "ignore" });
+    }
+  } catch {
+    // Non-blocking; hooks can be installed via `npm run hooks:install`
+  }
 }
 
 main();

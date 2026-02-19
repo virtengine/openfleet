@@ -78,6 +78,9 @@ npm -C scripts/bosun test
 
 # Prepublish safety checks
 npm -C scripts/bosun run prepublishOnly
+
+# Install local git hooks (pre-commit + pre-push)
+npm -C scripts/bosun run hooks:install
 ```
 
 ---

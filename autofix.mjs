@@ -348,12 +348,36 @@ export function isDevMode() {
     return false;
   }
 
-  // Check for monorepo markers (source repo)
-  const repoRoot = resolve(__dirname, "..", "..");
+  // Check for bosun repo markers (standalone repo)
+  let repoCursor = resolve(__dirname);
+  for (let i = 0; i < 5; i += 1) {
+    const pkgPath = resolve(repoCursor, "package.json");
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+        if (pkg?.name === "bosun" && existsSync(resolve(repoCursor, "monitor.mjs"))) {
+          _devModeCache = true;
+          return true;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    repoCursor = resolve(repoCursor, "..");
+  }
+
+  // Check for monorepo markers (source repo). Walk up a few levels to
+  // handle scripts/bosun -> repo root layout.
   const monoRepoMarkers = ["go.mod", "Makefile", "AGENTS.md", "x"];
-  const isMonoRepo = monoRepoMarkers.some((m) =>
-    existsSync(resolve(repoRoot, m)),
-  );
+  let cursor = resolve(__dirname);
+  let isMonoRepo = false;
+  for (let i = 0; i < 5; i += 1) {
+    if (monoRepoMarkers.some((m) => existsSync(resolve(cursor, m)))) {
+      isMonoRepo = true;
+      break;
+    }
+    cursor = resolve(cursor, "..");
+  }
 
   _devModeCache = isMonoRepo;
   return isMonoRepo;
