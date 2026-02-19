@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Integrations — OpenFleet Docs</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../css/main.css" />
+  <link rel="stylesheet" href="../css/docs.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='80'>⚡</text></svg>" />
+</head>
+<body>
+
+  <div class="docs-sidebar-backdrop"></div>
+  <button class="docs-sidebar-toggle" aria-label="Toggle sidebar">☰</button>
+
+  <div class="docs-layout">
+    <aside class="docs-sidebar">
+      <a href="../" class="sidebar-brand">
+        <div class="sidebar-brand__icon">⚡</div>
+        OpenFleet
+      </a>
+      <span class="sidebar-version">v0.26.2</span>
+      <div class="docs-search">
+        <span class="docs-search__icon">🔍</span>
+        <input class="docs-search__input" type="text" placeholder="Search docs..." />
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Getting Started</div>
+        <ul class="sidebar-nav">
+          <li><a href="./"><span class="nav-icon">📖</span> Overview</a></li>
+          <li><a href="getting-started.html"><span class="nav-icon">🚀</span> Quick Start</a></li>
+          <li><a href="configuration.html"><span class="nav-icon">⚙️</span> Configuration</a></li>
+        </ul>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Reference</div>
+        <ul class="sidebar-nav">
+          <li><a href="cli-reference.html"><span class="nav-icon">💻</span> CLI Reference</a></li>
+          <li><a href="architecture.html"><span class="nav-icon">🏗️</span> Architecture</a></li>
+          <li><a href="integrations.html" class="active"><span class="nav-icon">🔗</span> Integrations</a></li>
+        </ul>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Links</div>
+        <ul class="sidebar-nav">
+          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/openfleet#virtengineopenfleet" target="_blank" rel="noopener"><span class="nav-icon">🐙</span> GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/@virtengine/openfleet" target="_blank"><span class="nav-icon">📦</span> npm</a></li>
+          <li><a href="../"><span class="nav-icon">🏠</span> Home</a></li>
+        </ul>
+      </div>
+    </aside>
+
+    <main class="docs-content">
+      <h1>Integrations</h1>
+
+      <p>
+        OpenFleet integrates with multiple platforms for task management, notifications, and agent execution.
+        All integrations are configured through environment variables and the JSON config file.
+      </p>
+
+      <h2 id="github">GitHub</h2>
+
+      <p>Full GitHub integration for issues, projects, and PR automation.</p>
+
+      <h3>GitHub Issues (Default)</h3>
+      <pre><code>KANBAN_BACKEND=github
+GITHUB_REPO=your-org/your-repo</code></pre>
+
+      <p>Features:</p>
+      <ul>
+        <li>Task listing from open issues</li>
+        <li>Claim tracking with <code>codex:claimed</code>, <code>codex:working</code>, <code>codex:stale</code> labels</li>
+        <li>Task exclusion via <code>codex:ignore</code> label</li>
+        <li>Structured comments with JSON state for agent coordination</li>
+        <li>Shared state persistence via issue labels and comments</li>
+      </ul>
+
+      <h3>GitHub Projects v2</h3>
+      <pre><code>KANBAN_BACKEND=github
+GITHUB_PROJECT_MODE=kanban
+GITHUB_PROJECT_OWNER=your-org
+GITHUB_PROJECT_NUMBER=3
+GITHUB_PROJECT_AUTO_SYNC=true</code></pre>
+
+      <p>Features:</p>
+      <ul>
+        <li><strong>Phase 1 (Read)</strong> — Read tasks directly from Projects v2 boards</li>
+        <li><strong>Phase 2 (Write)</strong> — Sync task status back to the board <code>Status</code> field</li>
+        <li>Bidirectional mapping between codex statuses and project status options</li>
+        <li>Safe fallback to issues mode when project metadata is unavailable</li>
+      </ul>
+
+      <h4>Custom Status Mapping</h4>
+      <pre><code>GITHUB_PROJECT_STATUS_TODO=Todo
+GITHUB_PROJECT_STATUS_INPROGRESS=In Progress
+GITHUB_PROJECT_STATUS_INREVIEW=In Review
+GITHUB_PROJECT_STATUS_DONE=Done
+GITHUB_PROJECT_STATUS_CANCELLED=Cancelled</code></pre>
+
+      <h2 id="telegram">Telegram</h2>
+
+      <p>Primary control channel with rich bot features and a full web UI.</p>
+
+      <h3>Bot Setup</h3>
+      <ol>
+        <li>Create a bot via <a href="https://t.me/BotFather" target="_blank">@BotFather</a> on Telegram</li>
+        <li>Copy the bot token to <code>TELEGRAM_BOT_TOKEN</code></li>
+        <li>Run <code>openfleet-chat-id</code> to find your chat ID</li>
+        <li>Set <code>TELEGRAM_CHAT_ID</code></li>
+      </ol>
+
+      <h3>Bot Commands</h3>
+      <table>
+        <thead>
+          <tr><th>Command</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>/help</code></td><td>Show help with inline keyboard</td></tr>
+          <tr><td><code>/status</code></td><td>Fleet status overview</td></tr>
+          <tr><td><code>/tasks</code></td><td>Active task list</td></tr>
+          <tr><td><code>/agents</code></td><td>Agent pool status</td></tr>
+          <tr><td><code>/threads</code></td><td>Active execution threads</td></tr>
+          <tr><td><code>/worktrees</code></td><td>Git worktree status</td></tr>
+          <tr><td><code>/pause</code></td><td>Pause supervisor</td></tr>
+          <tr><td><code>/resume</code></td><td>Resume supervisor</td></tr>
+          <tr><td><code>/restart</code></td><td>Restart supervisor</td></tr>
+          <tr><td><code>/retry</code></td><td>Retry last failed task</td></tr>
+          <tr><td><code>/executor</code></td><td>Switch executor</td></tr>
+          <tr><td><code>/sdk</code></td><td>SDK shell commands</td></tr>
+          <tr><td><code>/kanban</code></td><td>Board management</td></tr>
+          <tr><td><code>/maxparallel</code></td><td>Adjust concurrency</td></tr>
+          <tr><td><code>/app</code></td><td>Open Control Center Mini App</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Mini App (Control Center)</h3>
+      <pre><code>TELEGRAM_MINIAPP_ENABLED=true
+TELEGRAM_UI_PORT=3080</code></pre>
+
+      <p>
+        A full interactive web UI that runs inside Telegram as a Mini App with 7 tabs:
+        <strong>Dashboard</strong>, <strong>Tasks</strong>, <strong>Agents</strong>,
+        <strong>Infra</strong>, <strong>Control</strong>, <strong>Logs</strong>, and <strong>Settings</strong>.
+      </p>
+      <p>Features: real-time WebSocket updates, haptic feedback, native Telegram theming, dark/light mode.</p>
+
+      <h4>HTTPS via Cloudflare Tunnel</h4>
+      <p>Telegram requires HTTPS. Two options:</p>
+      <ul>
+        <li><strong>Quick tunnel</strong> (default) — random <code>*.trycloudflare.com</code> URL, zero config</li>
+        <li><strong>Named tunnel</strong> — persistent custom domain that never changes</li>
+      </ul>
+      <pre><code># Named tunnel (persistent)
+CLOUDFLARE_TUNNEL_NAME=my-tunnel
+CLOUDFLARE_TUNNEL_CREDENTIALS=/home/user/.cloudflared/tunnel-id.json
+TELEGRAM_UI_BASE_URL=https://fleet.yourdomain.com</code></pre>
+
+      <h3>Sentinel (Independent Watchdog)</h3>
+      <pre><code>OPENFLEET_SENTINEL_AUTO_START=true
+SENTINEL_AUTO_RESTART_MONITOR=true</code></pre>
+      <p>
+        Keeps Telegram command availability even when the main monitor is down.
+        Detects crash loops and can auto-restart the monitor or run a repair agent.
+      </p>
+
+      <h2 id="jira">Jira</h2>
+
+      <pre><code>KANBAN_BACKEND=jira
+JIRA_BASE_URL=https://your-domain.atlassian.net
+JIRA_EMAIL=you@example.com
+JIRA_API_TOKEN=your-token</code></pre>
+
+      <p>Features:</p>
+      <ul>
+        <li>Full status vocabulary mapping (same as GitHub adapter)</li>
+        <li>Shared state via custom fields</li>
+        <li>Interactive setup with project/issue type selection</li>
+      </ul>
+
+      <h4>Status and Custom Field Mapping</h4>
+      <pre><code># Status mapping
+JIRA_STATUS_TODO=To Do
+JIRA_STATUS_INPROGRESS=In Progress
+JIRA_STATUS_INREVIEW=In Review
+JIRA_STATUS_DONE=Done
+JIRA_STATUS_CANCELLED=Cancelled
+
+# Shared state custom fields
+JIRA_CUSTOM_FIELD_OWNER_ID=customfield_10042
+JIRA_CUSTOM_FIELD_ATTEMPT_TOKEN=customfield_10043
+JIRA_CUSTOM_FIELD_HEARTBEAT=customfield_10045
+JIRA_CUSTOM_FIELD_RETRY_COUNT=customfield_10046</code></pre>
+
+      <h2 id="whatsapp">WhatsApp</h2>
+
+      <p>Optional notification channel alongside Telegram.</p>
+
+      <pre><code># Authenticate
+openfleet --whatsapp-auth
+
+# Or use pairing code instead of QR
+openfleet --whatsapp-auth --pairing-code</code></pre>
+
+      <p>
+        Once authenticated, WhatsApp receives the same status updates and alerts as Telegram.
+        Controlled via <code>/whatsapp</code> Telegram command.
+      </p>
+
+      <h2 id="containers">Container Isolation</h2>
+
+      <p>Optionally run agent executions inside containers for sandboxed isolation.</p>
+
+      <pre><code>CONTAINER_ENABLED=1
+CONTAINER_RUNTIME=auto    # auto | docker | podman | container
+CONTAINER_IMAGE=node:22-slim
+MAX_CONCURRENT_CONTAINERS=3</code></pre>
+
+      <table>
+        <thead>
+          <tr><th>Runtime</th><th>Platform</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Docker</td><td>All</td><td>Most common, best compatibility</td></tr>
+          <tr><td>Podman</td><td>Linux, macOS</td><td>Rootless, daemon-less</td></tr>
+          <tr><td>Apple Container</td><td>macOS</td><td>Native macOS containerization</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="ai-agents">AI Agent Executors</h2>
+
+      <table>
+        <thead>
+          <tr><th>Executor</th><th>Transport</th><th>Models</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Copilot</strong></td><td><code>sdk</code>, <code>cli</code>, <code>url</code></td><td>Claude Opus 4.6, GPT-4.1, Claude Sonnet 4</td></tr>
+          <tr><td><strong>Codex</strong></td><td><code>sdk</code>, <code>cli</code></td><td>o4-mini, o3, gpt-4.1</td></tr>
+          <tr><td><strong>Claude</strong></td><td><code>sdk</code>, <code>cli</code></td><td>Claude Opus 4.6, Sonnet 4</td></tr>
+        </tbody>
+      </table>
+
+      <p>
+        All executors support persistent sessions via SDK transport (recommended).
+        The agent pool manages selection, weighted distribution, and automatic failover.
+      </p>
+
+      <h2 id="cloudflare">Cloudflare Tunnel</h2>
+
+      <p>For persistent HTTPS access to the Mini App:</p>
+
+      <pre><code># Create tunnel
+cloudflared tunnel create my-fleet-tunnel
+
+# Add DNS
+cloudflared tunnel route dns my-fleet-tunnel fleet.yourdomain.com
+
+# Configure in .env
+CLOUDFLARE_TUNNEL_NAME=my-fleet-tunnel
+CLOUDFLARE_TUNNEL_CREDENTIALS=/home/user/.cloudflared/tunnel-id.json
+TELEGRAM_UI_BASE_URL=https://fleet.yourdomain.com</code></pre>
+
+      <div class="docs-nav-footer">
+        <a href="architecture.html" class="docs-nav-link">
+          <div class="docs-nav-link__label">← Previous</div>
+          <div class="docs-nav-link__title">Architecture</div>
+        </a>
+        <div></div>
+      </div>
+    </main>
+  </div>
+
+  <script src="../js/main.js"></script>
+</body>
+</html>

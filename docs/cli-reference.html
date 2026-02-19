@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CLI Reference — OpenFleet Docs</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../css/main.css" />
+  <link rel="stylesheet" href="../css/docs.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='80'>⚡</text></svg>" />
+</head>
+<body>
+
+  <div class="docs-sidebar-backdrop"></div>
+  <button class="docs-sidebar-toggle" aria-label="Toggle sidebar">☰</button>
+
+  <div class="docs-layout">
+    <aside class="docs-sidebar">
+      <a href="../" class="sidebar-brand">
+        <div class="sidebar-brand__icon">⚡</div>
+        OpenFleet
+      </a>
+      <span class="sidebar-version">v0.26.2</span>
+      <div class="docs-search">
+        <span class="docs-search__icon">🔍</span>
+        <input class="docs-search__input" type="text" placeholder="Search docs..." />
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Getting Started</div>
+        <ul class="sidebar-nav">
+          <li><a href="./"><span class="nav-icon">📖</span> Overview</a></li>
+          <li><a href="getting-started.html"><span class="nav-icon">🚀</span> Quick Start</a></li>
+          <li><a href="configuration.html"><span class="nav-icon">⚙️</span> Configuration</a></li>
+        </ul>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Reference</div>
+        <ul class="sidebar-nav">
+          <li><a href="cli-reference.html" class="active"><span class="nav-icon">💻</span> CLI Reference</a></li>
+          <li><a href="architecture.html"><span class="nav-icon">🏗️</span> Architecture</a></li>
+          <li><a href="integrations.html"><span class="nav-icon">🔗</span> Integrations</a></li>
+        </ul>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Links</div>
+        <ul class="sidebar-nav">
+          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/openfleet#virtengineopenfleet" target="_blank" rel="noopener"><span class="nav-icon">🐙</span> GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/@virtengine/openfleet" target="_blank"><span class="nav-icon">📦</span> npm</a></li>
+          <li><a href="../"><span class="nav-icon">🏠</span> Home</a></li>
+        </ul>
+      </div>
+    </aside>
+
+    <main class="docs-content">
+      <h1>CLI Reference</h1>
+
+      <p>
+        Complete reference for the <code>openfleet</code> command-line interface.
+        All flags can be combined. Run <code>openfleet --help</code> for a quick summary.
+      </p>
+
+      <h2 id="commands">Core Commands</h2>
+
+      <table>
+        <thead>
+          <tr><th>Flag</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>openfleet</code></td><td>Start supervisor in foreground mode</td></tr>
+          <tr><td><code>--setup</code></td><td>Run the interactive setup wizard</td></tr>
+          <tr><td><code>--doctor</code></td><td>Validate config (.env + JSON + env overrides)</td></tr>
+          <tr><td><code>--help</code></td><td>Show CLI help text</td></tr>
+          <tr><td><code>--version</code></td><td>Print current version</td></tr>
+          <tr><td><code>--update</code></td><td>Check for and install latest version</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="daemon">Daemon Mode</h2>
+
+      <table>
+        <thead>
+          <tr><th>Flag</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>--daemon</code>, <code>-d</code></td><td>Run as a background daemon (detached, PID file)</td></tr>
+          <tr><td><code>--stop-daemon</code></td><td>Stop a running daemon process</td></tr>
+          <tr><td><code>--daemon-status</code></td><td>Check if daemon is running</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Example</h3>
+      <pre><code># Start daemon
+openfleet --daemon
+
+# Check status
+openfleet --daemon-status
+# → openfleet daemon is running (PID: 12345)
+
+# Stop
+openfleet --stop-daemon</code></pre>
+
+      <h2 id="startup">Startup Service</h2>
+
+      <table>
+        <thead>
+          <tr><th>Flag</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>--enable-startup</code></td><td>Register auto-start on login</td></tr>
+          <tr><td><code>--disable-startup</code></td><td>Remove from startup services</td></tr>
+          <tr><td><code>--startup-status</code></td><td>Check if startup service is installed</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="orchestrator">Orchestrator Options</h2>
+
+      <table>
+        <thead>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>--script &lt;path&gt;</code></td><td>auto</td><td>Path to the orchestrator script</td></tr>
+          <tr><td><code>--args "&lt;args&gt;"</code></td><td><code>-MaxParallel 6</code></td><td>Arguments passed to the orchestrator</td></tr>
+          <tr><td><code>--restart-delay &lt;ms&gt;</code></td><td><code>10000</code></td><td>Delay before restart on crash</td></tr>
+          <tr><td><code>--max-restarts &lt;n&gt;</code></td><td><code>0</code> (unlimited)</td><td>Max restarts (0 = unlimited)</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="logging">Logging Options</h2>
+
+      <table>
+        <thead>
+          <tr><th>Flag</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>--log-dir &lt;path&gt;</code></td><td>Log file directory (default: <code>./logs</code>)</td></tr>
+          <tr><td><code>--echo-logs</code></td><td>Echo raw orchestrator output to console</td></tr>
+          <tr><td><code>--quiet</code>, <code>-q</code></td><td>Only show warnings and errors</td></tr>
+          <tr><td><code>--verbose</code>, <code>-V</code></td><td>Show debug-level messages</td></tr>
+          <tr><td><code>--trace</code></td><td>Show all messages including trace-level</td></tr>
+          <tr><td><code>--log-level &lt;level&gt;</code></td><td>Explicit level: <code>trace|debug|info|warn|error|silent</code></td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="ai">AI / Agent Options</h2>
+
+      <table>
+        <thead>
+          <tr><th>Flag</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>--no-codex</code></td><td>Disable Codex SDK analysis</td></tr>
+          <tr><td><code>--no-autofix</code></td><td>Disable automatic error fixing</td></tr>
+          <tr><td><code>--primary-agent &lt;name&gt;</code></td><td>Override primary agent: <code>codex</code>, <code>copilot</code>, <code>claude</code></td></tr>
+          <tr><td><code>--shell</code>, <code>--interactive</code></td><td>Enable interactive shell mode in monitor</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="telegram-flags">Telegram Flags</h2>
+
+      <table>
+        <thead>
+          <tr><th>Flag</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>--no-telegram-bot</code></td><td>Disable the interactive Telegram bot</td></tr>
+          <tr><td><code>--telegram-commands</code></td><td>Enable monitor-side Telegram polling (advanced)</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="whatsapp">WhatsApp Flags</h2>
+
+      <table>
+        <thead>
+          <tr><th>Flag</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>--whatsapp-auth</code></td><td>Run WhatsApp authentication (QR code)</td></tr>
+          <tr><td><code>--whatsapp-auth --pairing-code</code></td><td>Authenticate via pairing code instead</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="vk">Vibe-Kanban Flags</h2>
+
+      <table>
+        <thead>
+          <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>--no-vk-spawn</code></td><td>—</td><td>Don't auto-spawn Vibe-Kanban</td></tr>
+          <tr><td><code>--vk-ensure-interval &lt;ms&gt;</code></td><td><code>60000</code></td><td>VK health check interval</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="sentinel">Sentinel Flags</h2>
+
+      <table>
+        <thead>
+          <tr><th>Flag</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>--sentinel</code></td><td>Start Telegram sentinel in companion mode</td></tr>
+          <tr><td><code>--sentinel-stop</code></td><td>Stop a running sentinel</td></tr>
+          <tr><td><code>--sentinel-status</code></td><td>Check sentinel status</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="update-flags">Update Flags</h2>
+
+      <table>
+        <thead>
+          <tr><th>Flag</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>--no-update-check</code></td><td>Skip automatic update check on startup</td></tr>
+          <tr><td><code>--no-auto-update</code></td><td>Disable background auto-update polling</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="companion-tools">Companion CLI Tools</h2>
+
+      <p>OpenFleet also installs these companion binaries:</p>
+
+      <table>
+        <thead>
+          <tr><th>Command</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>openfleet-setup</code></td><td>Direct setup wizard launcher</td></tr>
+          <tr><td><code>openfleet-chat-id</code></td><td>Discover your Telegram chat ID</td></tr>
+          <tr><td><code>openfleet-shared-workspaces</code></td><td>Manage shared workspace registry</td></tr>
+          <tr><td><code>vibe-kanban</code></td><td>Standalone Vibe-Kanban CLI wrapper</td></tr>
+          <tr><td><code>telegram-sentinel</code></td><td>Standalone sentinel launcher</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout callout--info">
+        <span class="callout__icon">ℹ️</span>
+        <p>Legacy aliases <code>openfleet</code> and <code>openfleet-setup</code> still work for backwards compatibility.</p>
+      </div>
+
+      <div class="docs-nav-footer">
+        <a href="configuration.html" class="docs-nav-link">
+          <div class="docs-nav-link__label">← Previous</div>
+          <div class="docs-nav-link__title">Configuration</div>
+        </a>
+        <a href="architecture.html" class="docs-nav-link docs-nav-link--next">
+          <div class="docs-nav-link__label">Next →</div>
+          <div class="docs-nav-link__title">Architecture</div>
+        </a>
+      </div>
+    </main>
+  </div>
+
+  <script src="../js/main.js"></script>
+</body>
+</html>

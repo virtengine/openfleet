@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quick Start — OpenFleet Docs</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../css/main.css" />
+  <link rel="stylesheet" href="../css/docs.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='80'>⚡</text></svg>" />
+</head>
+<body>
+
+  <div class="docs-sidebar-backdrop"></div>
+  <button class="docs-sidebar-toggle" aria-label="Toggle sidebar">☰</button>
+
+  <div class="docs-layout">
+    <aside class="docs-sidebar">
+      <a href="../" class="sidebar-brand">
+        <div class="sidebar-brand__icon">⚡</div>
+        OpenFleet
+      </a>
+      <span class="sidebar-version">v0.26.2</span>
+      <div class="docs-search">
+        <span class="docs-search__icon">🔍</span>
+        <input class="docs-search__input" type="text" placeholder="Search docs..." />
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Getting Started</div>
+        <ul class="sidebar-nav">
+          <li><a href="./"><span class="nav-icon">📖</span> Overview</a></li>
+          <li><a href="getting-started.html" class="active"><span class="nav-icon">🚀</span> Quick Start</a></li>
+          <li><a href="configuration.html"><span class="nav-icon">⚙️</span> Configuration</a></li>
+        </ul>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Reference</div>
+        <ul class="sidebar-nav">
+          <li><a href="cli-reference.html"><span class="nav-icon">💻</span> CLI Reference</a></li>
+          <li><a href="architecture.html"><span class="nav-icon">🏗️</span> Architecture</a></li>
+          <li><a href="integrations.html"><span class="nav-icon">🔗</span> Integrations</a></li>
+        </ul>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Links</div>
+        <ul class="sidebar-nav">
+          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/openfleet#virtengineopenfleet" target="_blank" rel="noopener"><span class="nav-icon">🐙</span> GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/@virtengine/openfleet" target="_blank"><span class="nav-icon">📦</span> npm</a></li>
+          <li><a href="../"><span class="nav-icon">🏠</span> Home</a></li>
+        </ul>
+      </div>
+    </aside>
+
+    <main class="docs-content">
+      <h1>Quick Start</h1>
+
+      <p>
+        Get OpenFleet running in under 5 minutes. This guide covers install, setup, and your first supervised run.
+      </p>
+
+      <h2 id="prerequisites">Prerequisites</h2>
+
+      <ul>
+        <li><strong>Node.js 18+</strong> — <a href="https://nodejs.org/" target="_blank">Download</a> (v22 recommended)</li>
+        <li><strong>git</strong> — installed and on your PATH</li>
+        <li><strong>GitHub CLI</strong> (<code>gh</code>) — <a href="https://cli.github.com/" target="_blank">Install</a> (recommended for PR operations)</li>
+      </ul>
+
+      <div class="callout callout--tip">
+        <span class="callout__icon">💡</span>
+        <p>Run <code>gh auth status</code> to verify your GitHub CLI is authenticated before setting up OpenFleet.</p>
+      </div>
+
+      <h2 id="install">Step 1: Install</h2>
+
+      <pre><code>npm install -g @virtengine/openfleet</code></pre>
+
+      <p>Verify the installation:</p>
+      <pre><code>openfleet --version
+# @virtengine/openfleet v0.26.2</code></pre>
+
+      <h2 id="setup">Step 2: Run Setup</h2>
+
+      <p>Navigate to your project directory and run the setup wizard:</p>
+
+      <pre><code>cd your-project
+openfleet --setup</code></pre>
+
+      <p>The wizard starts with two modes:</p>
+
+      <h3>Recommended Mode (default)</h3>
+      <ul>
+        <li>Prompts only for important decisions</li>
+        <li>Auto-generates <code>.env</code> based on <code>.env.example</code> with inline docs</li>
+        <li>Auto-configures VS Code settings for Copilot agent defaults</li>
+        <li>Sets up proven defaults for hooks, orchestrator, and failover</li>
+      </ul>
+
+      <h3>Advanced Mode</h3>
+      <ul>
+        <li>Full control over repository layout and failover strategy</li>
+        <li>Custom hook targets and event overrides</li>
+        <li>Explicit VK URL/port wiring</li>
+        <li>Optional channel and runtime tuning</li>
+      </ul>
+
+      <h4>Key decisions in setup:</h4>
+      <ol>
+        <li><strong>Project identity</strong> — name and GitHub repo</li>
+        <li><strong>Executor preset</strong> — which AI agents to use and their weights</li>
+        <li><strong>AI provider credentials</strong> — API tokens for your chosen executors</li>
+        <li><strong>Telegram</strong> — bot token and chat ID (optional but recommended)</li>
+        <li><strong>Board backend</strong> — Internal, GitHub Issues, GitHub Projects v2, or Jira</li>
+        <li><strong>Execution mode</strong> — Internal, VK, or Hybrid</li>
+      </ol>
+
+      <h2 id="launch">Step 3: Launch</h2>
+
+      <pre><code>openfleet</code></pre>
+
+      <p>That's it! OpenFleet connects to your configured board, initializes the agent pool, and starts the supervisor loop.</p>
+
+      <h2 id="run-modes">Run Modes</h2>
+
+      <h3>Foreground (default)</h3>
+      <pre><code>openfleet</code></pre>
+      <p>Runs in your terminal with live log output. Press <kbd>Ctrl+C</kbd> to stop.</p>
+
+      <h3>Daemon Mode</h3>
+      <pre><code># Start as background daemon
+openfleet --daemon
+
+# Check status
+openfleet --daemon-status
+
+# Stop
+openfleet --stop-daemon</code></pre>
+
+      <h3>Startup Service</h3>
+      <pre><code># Auto-start on login
+openfleet --enable-startup
+
+# Check status
+openfleet --startup-status
+
+# Remove
+openfleet --disable-startup</code></pre>
+
+      <h3>Interactive Shell</h3>
+      <pre><code>openfleet --shell</code></pre>
+      <p>Opens an interactive session inside the running monitor for live debugging.</p>
+
+      <h2 id="validate">Step 4: Validate</h2>
+
+      <p>After setup, validate your configuration:</p>
+      <pre><code>openfleet --doctor</code></pre>
+
+      <p>This checks:</p>
+      <ul>
+        <li><code>.env</code> file presence and validity</li>
+        <li><code>openfleet.config.json</code> schema compliance</li>
+        <li>GitHub CLI authentication</li>
+        <li>Telegram bot token validity</li>
+        <li>Executor pool configuration</li>
+        <li>Kanban backend reachability</li>
+      </ul>
+
+      <h2 id="whats-next">What's Next?</h2>
+
+      <ul>
+        <li><a href="configuration.html">Configuration Reference</a> — deep dive into all settings</li>
+        <li><a href="cli-reference.html">CLI Reference</a> — every flag and command</li>
+        <li><a href="integrations.html">Integrations</a> — connect Telegram, GitHub Projects, Jira</li>
+        <li><a href="architecture.html">Architecture</a> — understand how it all fits together</li>
+      </ul>
+
+      <div class="docs-nav-footer">
+        <a href="./" class="docs-nav-link">
+          <div class="docs-nav-link__label">← Previous</div>
+          <div class="docs-nav-link__title">Overview</div>
+        </a>
+        <a href="configuration.html" class="docs-nav-link docs-nav-link--next">
+          <div class="docs-nav-link__label">Next →</div>
+          <div class="docs-nav-link__title">Configuration</div>
+        </a>
+      </div>
+    </main>
+  </div>
+
+  <script src="../js/main.js"></script>
+</body>
+</html>

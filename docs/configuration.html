@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Configuration — OpenFleet Docs</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../css/main.css" />
+  <link rel="stylesheet" href="../css/docs.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='80'>⚡</text></svg>" />
+</head>
+<body>
+
+  <div class="docs-sidebar-backdrop"></div>
+  <button class="docs-sidebar-toggle" aria-label="Toggle sidebar">☰</button>
+
+  <div class="docs-layout">
+    <aside class="docs-sidebar">
+      <a href="../" class="sidebar-brand">
+        <div class="sidebar-brand__icon">⚡</div>
+        OpenFleet
+      </a>
+      <span class="sidebar-version">v0.26.2</span>
+      <div class="docs-search">
+        <span class="docs-search__icon">🔍</span>
+        <input class="docs-search__input" type="text" placeholder="Search docs..." />
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Getting Started</div>
+        <ul class="sidebar-nav">
+          <li><a href="./"><span class="nav-icon">📖</span> Overview</a></li>
+          <li><a href="getting-started.html"><span class="nav-icon">🚀</span> Quick Start</a></li>
+          <li><a href="configuration.html" class="active"><span class="nav-icon">⚙️</span> Configuration</a></li>
+        </ul>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Reference</div>
+        <ul class="sidebar-nav">
+          <li><a href="cli-reference.html"><span class="nav-icon">💻</span> CLI Reference</a></li>
+          <li><a href="architecture.html"><span class="nav-icon">🏗️</span> Architecture</a></li>
+          <li><a href="integrations.html"><span class="nav-icon">🔗</span> Integrations</a></li>
+        </ul>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">On This Page</div>
+        <ul class="sidebar-nav sidebar-nav--dense">
+          <li><a href="#load-order">Load Order</a></li>
+          <li><a href="#task-claims">Task Claims</a></li>
+          <li><a href="#project-identity">Project Identity</a></li>
+          <li><a href="#executor-config">Executors</a></li>
+          <li><a href="#failover">Failover</a></li>
+          <li><a href="#internal-executor">Internal Executor</a></li>
+          <li><a href="#kanban">Kanban</a></li>
+          <li><a href="#telegram">Telegram Bot</a></li>
+          <li><a href="#telegram-miniapp">Mini App</a></li>
+          <li><a href="#sentinel">Sentinel</a></li>
+          <li><a href="#presence">Presence</a></li>
+          <li><a href="#whatsapp">WhatsApp</a></li>
+          <li><a href="#container">Containers</a></li>
+          <li><a href="#codex-sdk">Codex SDK</a></li>
+          <li><a href="#copilot-sdk">Copilot SDK</a></li>
+          <li><a href="#claude-sdk">Claude SDK</a></li>
+          <li><a href="#agent-pool">Agent Pool</a></li>
+          <li><a href="#agent-hooks">Hooks</a></li>
+          <li><a href="#daemon">Daemon Mode</a></li>
+          <li><a href="#vibe-kanban">Vibe-Kanban</a></li>
+          <li><a href="#merge-strategy">Merge Strategy</a></li>
+          <li><a href="#complexity-routing">Complexity Routing</a></li>
+          <li><a href="#agent-logging">Logging</a></li>
+          <li><a href="#advanced">Advanced</a></li>
+        </ul>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Links</div>
+        <ul class="sidebar-nav">
+          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/openfleet#virtengineopenfleet" target="_blank" rel="noopener"><span class="nav-icon">🐙</span> GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/@virtengine/openfleet" target="_blank"><span class="nav-icon">📦</span> npm</a></li>
+          <li><a href="../"><span class="nav-icon">🏠</span> Home</a></li>
+        </ul>
+      </div>
+    </aside>
+
+    <main class="docs-content">
+      <h1>Configuration</h1>
+
+      <p>
+        OpenFleet uses a layered configuration model with multiple sources.
+        Higher-priority sources override lower ones. There are 200+ configuration variables
+        across 30+ categories — all of them optional unless marked <strong>[REQUIRED]</strong>.
+      </p>
+
+      <h2 id="load-order">Load Order (Highest Priority First)</h2>
+
+      <ol>
+        <li><strong>CLI flags</strong> — <code>--arg value</code></li>
+        <li><strong>Environment variables</strong> — <code>export VAR=value</code></li>
+        <li><strong><code>.env</code> file</strong> — dotenv format in your project root</li>
+        <li><strong><code>openfleet.config.json</code></strong> — structured JSON config</li>
+        <li><strong>Built-in defaults</strong> — sensible zero-config values</li>
+      </ol>
+
+      <h2 id="config-files">Configuration Files</h2>
+
+      <h3><code>.env</code> — Environment Settings</h3>
+      <p>
+        The primary configuration file. Generated by <code>openfleet --setup</code> with inline documentation.
+        All variables are optional unless marked <strong>[REQUIRED]</strong>.
+      </p>
+
+      <div class="callout callout--tip">
+        <span class="callout__icon">💡</span>
+        <p>Boolean flags accept <code>true</code>/<code>false</code> (preferred). Legacy <code>1</code>/<code>0</code> is still supported.</p>
+      </div>
+
+      <h3><code>openfleet.config.json</code> — Structured Config</h3>
+      <p>For complex executor routing, failover, and multi-repo setups:</p>
+
+      <pre><code>{
+  "$schema": "./openfleet.schema.json",
+  "projectName": "my-project",
+  "executors": [
+    {
+      "name": "copilot-claude",
+      "executor": "COPILOT",
+      "variant": "CLAUDE_OPUS_4_6",
+      "weight": 50,
+      "role": "primary",
+      "enabled": true
+    },
+    {
+      "name": "codex-default",
+      "executor": "CODEX",
+      "variant": "DEFAULT",
+      "weight": 50,
+      "role": "backup",
+      "enabled": true
+    }
+  ],
+  "failover": {
+    "strategy": "next-in-line",
+    "maxRetries": 3,
+    "cooldownMinutes": 5,
+    "disableOnConsecutiveFailures": 3
+  },
+  "distribution": "weighted"
+}</code></pre>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="task-claims">Task Claims &amp; Coordination</h2>
+      <p>Shared state enables distributed task coordination across multiple agents and workstations with atomic claims, heartbeat liveness, and conflict resolution.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>SHARED_STATE_ENABLED</code></td><td><code>true</code></td><td>Enable distributed task coordination</td></tr>
+          <tr><td><code>SHARED_STATE_HEARTBEAT_INTERVAL_MS</code></td><td><code>60000</code></td><td>Heartbeat renewal interval (1 min)</td></tr>
+          <tr><td><code>SHARED_STATE_STALE_THRESHOLD_MS</code></td><td><code>300000</code></td><td>When to consider claims stale (5 min)</td></tr>
+          <tr><td><code>SHARED_STATE_MAX_RETRIES</code></td><td><code>3</code></td><td>Max retries before permanently ignoring a task</td></tr>
+          <tr><td><code>TASK_CLAIM_OWNER_STALE_TTL_MS</code></td><td><code>600000</code></td><td>Stale local claim detection threshold (10 min)</td></tr>
+          <tr><td><code>TASK_CLAIM_RENEW_INTERVAL_MS</code></td><td><code>300000</code></td><td>Renew active claim while agent is running</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="project-identity">Project Identity</h2>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>PROJECT_NAME</code></td><td>auto-detected</td><td>Project name shown in logs and Telegram</td></tr>
+          <tr><td><code>GITHUB_REPO</code></td><td>auto-detected</td><td>GitHub repo in <code>owner/repo</code> format</td></tr>
+          <tr><td><code>REPO_ROOT</code></td><td>auto-detected</td><td>Repository root path (written by setup)</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="executor-config">Executor Configuration</h2>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>EXECUTORS</code></td><td>—</td><td>Shorthand: <code>ENGINE:VARIANT:WEIGHT,...</code></td></tr>
+          <tr><td><code>EXECUTOR_MODE</code></td><td><code>vk</code></td><td><code>vk</code>, <code>internal</code>, or <code>hybrid</code></td></tr>
+          <tr><td><code>EXECUTOR_DISTRIBUTION</code></td><td><code>weighted</code></td><td><code>weighted</code>, <code>round-robin</code>, or <code>primary-only</code></td></tr>
+          <tr><td><code>MAX_PARALLEL</code></td><td><code>6</code></td><td>Max concurrent agent executions</td></tr>
+          <tr><td><code>PRIMARY_AGENT</code></td><td>auto</td><td>Override primary: <code>codex-sdk</code>, <code>copilot-sdk</code>, or <code>claude-sdk</code></td></tr>
+          <tr><td><code>PRIMARY_AGENT_DISABLED</code></td><td><code>false</code></td><td>Disable the primary agent adapter</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Executor Shorthand Syntax</h3>
+      <pre><code>EXECUTORS=ENGINE:VARIANT:WEIGHT,ENGINE:VARIANT:WEIGHT
+
+# Examples:
+EXECUTORS=COPILOT:CLAUDE_OPUS_4_6:50,CODEX:DEFAULT:50
+EXECUTORS=CODEX:DEFAULT:100
+EXECUTORS=COPILOT:GPT_4_1:30,COPILOT:CLAUDE_OPUS_4_6:40,CODEX:DEFAULT:30</code></pre>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="failover">Failover Configuration</h2>
+      <p>Controls what happens when an executor fails repeatedly.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>FAILOVER_STRATEGY</code></td><td><code>next-in-line</code></td><td><code>next-in-line</code>, <code>weighted-random</code>, or <code>round-robin</code></td></tr>
+          <tr><td><code>FAILOVER_MAX_RETRIES</code></td><td><code>3</code></td><td>Max retries before switching executor</td></tr>
+          <tr><td><code>FAILOVER_COOLDOWN_MIN</code></td><td><code>5</code></td><td>Minutes to disable an executor after failure</td></tr>
+          <tr><td><code>FAILOVER_DISABLE_AFTER</code></td><td><code>3</code></td><td>Disable executor after N consecutive failures</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="internal-executor">Internal Executor</h2>
+      <p>Controls local task execution via agent-pool instead of (or alongside) VK's cloud executor.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>INTERNAL_EXECUTOR_PARALLEL</code></td><td><code>3</code></td><td>Max concurrent agent slots</td></tr>
+          <tr><td><code>INTERNAL_EXECUTOR_POLL_MS</code></td><td><code>30000</code></td><td>How often to poll kanban for new tasks</td></tr>
+          <tr><td><code>INTERNAL_EXECUTOR_SDK</code></td><td><code>auto</code></td><td>SDK: <code>auto</code>, <code>codex</code>, <code>copilot</code>, or <code>claude</code></td></tr>
+          <tr><td><code>INTERNAL_EXECUTOR_TIMEOUT_MS</code></td><td><code>5400000</code></td><td>Timeout per task execution (90 min)</td></tr>
+          <tr><td><code>INTERNAL_EXECUTOR_MAX_RETRIES</code></td><td><code>2</code></td><td>Max retries per task</td></tr>
+          <tr><td><code>INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED</code></td><td><code>true</code></td><td>Enable review handoff agent for completed PRs</td></tr>
+          <tr><td><code>INTERNAL_EXECUTOR_REVIEW_MAX_CONCURRENT</code></td><td><code>2</code></td><td>Max concurrent reviews</td></tr>
+          <tr><td><code>INTERNAL_EXECUTOR_REVIEW_TIMEOUT_MS</code></td><td><code>300000</code></td><td>Review timeout per run (5 min)</td></tr>
+          <tr><td><code>INTERNAL_EXECUTOR_REPLENISH_ENABLED</code></td><td><code>false</code></td><td>Auto-create new tasks when backlog is low</td></tr>
+          <tr><td><code>INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS</code></td><td><code>1</code></td><td>Minimum tasks to generate per cycle</td></tr>
+          <tr><td><code>INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS</code></td><td><code>2</code></td><td>Maximum tasks to generate per cycle</td></tr>
+          <tr><td><code>PROJECT_REQUIREMENTS_PROFILE</code></td><td>—</td><td><code>simple-feature</code>, <code>feature</code>, <code>large-feature</code>, <code>system</code>, <code>multi-system</code></td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="sdk-transport">SDK Transport</h2>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>CODEX_TRANSPORT</code></td><td><code>sdk</code></td><td><code>sdk</code>, <code>auto</code>, or <code>cli</code></td></tr>
+          <tr><td><code>COPILOT_TRANSPORT</code></td><td><code>sdk</code></td><td><code>sdk</code>, <code>auto</code>, <code>cli</code>, or <code>url</code></td></tr>
+          <tr><td><code>CLAUDE_TRANSPORT</code></td><td><code>sdk</code></td><td><code>sdk</code>, <code>auto</code>, or <code>cli</code></td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="kanban">Kanban / Task Board</h2>
+      <p>Task-board backend selection and sync policy. Supports internal store, GitHub Issues, GitHub Projects v2, and Jira.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>KANBAN_BACKEND</code></td><td><code>internal</code></td><td><code>internal</code>, <code>vk</code>, <code>github</code>, or <code>jira</code></td></tr>
+          <tr><td><code>KANBAN_SYNC_POLICY</code></td><td><code>internal-primary</code></td><td><code>internal-primary</code> or <code>bidirectional</code></td></tr>
+          <tr><td><code>KANBAN_PROJECT_ID</code></td><td>—</td><td>Explicit kanban project ID (overrides auto-detection)</td></tr>
+        </tbody>
+      </table>
+
+      <h3>GitHub Issues Backend</h3>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>GITHUB_PROJECT_MODE</code></td><td><code>issues</code></td><td><code>issues</code> or <code>kanban</code> (Projects v2)</td></tr>
+          <tr><td><code>GITHUB_PROJECT_OWNER</code></td><td>—</td><td>Org or user for Projects v2</td></tr>
+          <tr><td><code>GITHUB_PROJECT_NUMBER</code></td><td>—</td><td>Project board number</td></tr>
+          <tr><td><code>GITHUB_PROJECT_TITLE</code></td><td>—</td><td>Project title for display</td></tr>
+          <tr><td><code>GITHUB_PROJECT_AUTO_SYNC</code></td><td><code>true</code></td><td>Auto-sync task status to project board</td></tr>
+          <tr><td><code>GITHUB_DEFAULT_ASSIGNEE</code></td><td>—</td><td>Default assignee for new tasks</td></tr>
+          <tr><td><code>GITHUB_AUTO_ASSIGN_CREATOR</code></td><td><code>true</code></td><td>Auto-assign task creator when creating issues</td></tr>
+          <tr><td><code>OPENFLEET_TASK_LABEL</code></td><td><code>openfleet</code></td><td>Label used to scope tasks (only matching labels picked up)</td></tr>
+          <tr><td><code>OPENFLEET_ENFORCE_TASK_LABEL</code></td><td><code>true</code></td><td>Only process issues with the scoping label</td></tr>
+          <tr><td><code>GITHUB_ISSUES_LIST_LIMIT</code></td><td><code>1000</code></td><td>Max issues per sync/poll cycle</td></tr>
+        </tbody>
+      </table>
+
+      <h4>GitHub Projects v2 Status Mapping</h4>
+      <pre><code>GITHUB_PROJECT_STATUS_TODO=Todo
+GITHUB_PROJECT_STATUS_INPROGRESS=In Progress
+GITHUB_PROJECT_STATUS_INREVIEW=In Review
+GITHUB_PROJECT_STATUS_DONE=Done
+GITHUB_PROJECT_STATUS_CANCELLED=Cancelled</code></pre>
+
+      <h4>GitHub Projects v2 Webhooks</h4>
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>GITHUB_PROJECT_WEBHOOK_PATH</code></td><td><code>/api/webhooks/github/project-sync</code></td><td>Webhook endpoint served by ui-server</td></tr>
+          <tr><td><code>GITHUB_PROJECT_WEBHOOK_SECRET</code></td><td>—</td><td>Secret for X-Hub-Signature-256 validation</td></tr>
+          <tr><td><code>GITHUB_PROJECT_WEBHOOK_REQUIRE_SIGNATURE</code></td><td><code>true</code></td><td>Require webhook signature validation</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Jira Backend</h3>
+      <p>Full Jira Cloud integration with status mapping, custom fields, and ADF comments.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>JIRA_BASE_URL</code></td><td>—</td><td>Jira Cloud site URL (no trailing slash)</td></tr>
+          <tr><td><code>JIRA_EMAIL</code></td><td>—</td><td>Jira user email for Basic auth</td></tr>
+          <tr><td><code>JIRA_API_TOKEN</code></td><td>—</td><td>Jira API token</td></tr>
+          <tr><td><code>JIRA_PROJECT_KEY</code></td><td>—</td><td>Default project key (e.g., <code>ENG</code>)</td></tr>
+          <tr><td><code>JIRA_ISSUE_TYPE</code></td><td><code>Task</code></td><td>Issue type for task creation</td></tr>
+          <tr><td><code>JIRA_DEFAULT_ASSIGNEE</code></td><td>—</td><td>Default assignee account ID</td></tr>
+          <tr><td><code>JIRA_USE_ADF_COMMENTS</code></td><td><code>true</code></td><td>Use Atlassian Document Format for comments</td></tr>
+          <tr><td><code>JIRA_ENFORCE_TASK_LABEL</code></td><td><code>true</code></td><td>Only process issues with scoping labels</td></tr>
+          <tr><td><code>JIRA_ISSUES_LIST_LIMIT</code></td><td><code>250</code></td><td>Max issues per sync/poll cycle</td></tr>
+        </tbody>
+      </table>
+
+      <h4>Jira Status Mapping</h4>
+      <pre><code>JIRA_STATUS_TODO=To Do
+JIRA_STATUS_INPROGRESS=In Progress
+JIRA_STATUS_INREVIEW=In Review
+JIRA_STATUS_DONE=Done
+JIRA_STATUS_CANCELLED=Cancelled</code></pre>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="telegram">Telegram Bot</h2>
+      <p>Full bot with 30+ commands, inline keyboards, and rich notification system.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>TELEGRAM_BOT_TOKEN</code></td><td>—</td><td>Bot token from @BotFather</td></tr>
+          <tr><td><code>TELEGRAM_CHAT_ID</code></td><td>—</td><td>Your chat ID (use <code>openfleet-chat-id</code>)</td></tr>
+          <tr><td><code>TELEGRAM_ALLOWED_CHAT_IDS</code></td><td>—</td><td>Additional allow-list entries (comma-separated)</td></tr>
+          <tr><td><code>TELEGRAM_INTERVAL_MIN</code></td><td><code>10</code></td><td>Status summary interval in minutes</td></tr>
+          <tr><td><code>TELEGRAM_COMMAND_POLL_TIMEOUT_SEC</code></td><td><code>20</code></td><td>Long-poll timeout for getUpdates</td></tr>
+          <tr><td><code>TELEGRAM_AGENT_TIMEOUT_MS</code></td><td><code>5400000</code></td><td>Agent timeout for Telegram-triggered runs (90 min)</td></tr>
+          <tr><td><code>TELEGRAM_COMMAND_CONCURRENCY</code></td><td><code>2</code></td><td>Max concurrent command handlers</td></tr>
+          <tr><td><code>TELEGRAM_API_BASE_URL</code></td><td>—</td><td>Override API base URL for proxy/gateway</td></tr>
+          <tr><td><code>TELEGRAM_HTTP_TIMEOUT_MS</code></td><td><code>15000</code></td><td>HTTP timeout per request</td></tr>
+          <tr><td><code>TELEGRAM_RETRY_ATTEMPTS</code></td><td><code>4</code></td><td>Max retries for transient failures</td></tr>
+          <tr><td><code>TELEGRAM_RETRY_BASE_MS</code></td><td><code>600</code></td><td>Base retry backoff (exponential with jitter)</td></tr>
+          <tr><td><code>TELEGRAM_CURL_FALLBACK</code></td><td><code>true</code></td><td>Curl fallback when Node fetch fails (Linux/macOS)</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Notification Batching</h3>
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>TELEGRAM_BATCH_NOTIFICATIONS</code></td><td><code>true</code></td><td>Batch into periodic summaries</td></tr>
+          <tr><td><code>TELEGRAM_BATCH_INTERVAL_SEC</code></td><td><code>300</code></td><td>Batch summary interval (5 min)</td></tr>
+          <tr><td><code>TELEGRAM_BATCH_MAX_SIZE</code></td><td><code>50</code></td><td>Max messages before forcing a flush</td></tr>
+          <tr><td><code>TELEGRAM_IMMEDIATE_PRIORITY</code></td><td><code>1</code></td><td>Priority threshold for immediate delivery (1=critical)</td></tr>
+          <tr><td><code>TELEGRAM_VERBOSITY</code></td><td><code>summary</code></td><td><code>minimal</code>, <code>summary</code>, or <code>detailed</code></td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="telegram-miniapp">Telegram Mini App</h2>
+      <p>7-tab web dashboard: Dashboard, Tasks, Agents, Infra, Control, Logs, Settings.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>TELEGRAM_MINIAPP_ENABLED</code></td><td><code>false</code></td><td>Enable the Mini App server</td></tr>
+          <tr><td><code>TELEGRAM_UI_PORT</code></td><td>—</td><td>HTTP port for Mini App (required when enabled)</td></tr>
+          <tr><td><code>TELEGRAM_UI_HOST</code></td><td><code>0.0.0.0</code></td><td>Bind address</td></tr>
+          <tr><td><code>TELEGRAM_UI_PUBLIC_HOST</code></td><td>auto-detect</td><td>Public hostname override (for tunnels)</td></tr>
+          <tr><td><code>TELEGRAM_UI_BASE_URL</code></td><td>—</td><td>Full public URL override (HTTPS)</td></tr>
+          <tr><td><code>TELEGRAM_UI_ALLOW_UNSAFE</code></td><td><code>false</code></td><td>Skip initData auth (local testing only)</td></tr>
+          <tr><td><code>TELEGRAM_UI_AUTH_MAX_AGE_SEC</code></td><td><code>86400</code></td><td>Auth token max age (24h)</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Cloudflare Tunnel</h3>
+      <p>Provides persistent HTTPS for the Mini App. Two modes:</p>
+      <ul>
+        <li><strong>Quick tunnel</strong> (default): Random <code>*.trycloudflare.com</code> URL, no setup required. URL changes on restart.</li>
+        <li><strong>Named tunnel</strong>: Custom domain that never changes. Requires Cloudflare account.</li>
+      </ul>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>TELEGRAM_UI_TUNNEL</code></td><td><code>auto</code></td><td><code>auto</code>, <code>cloudflared</code>, or <code>disabled</code></td></tr>
+          <tr><td><code>CLOUDFLARE_TUNNEL_NAME</code></td><td>—</td><td>Named tunnel name (leave blank for quick)</td></tr>
+          <tr><td><code>CLOUDFLARE_TUNNEL_CREDENTIALS</code></td><td>—</td><td>Path to tunnel credentials JSON</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="sentinel">Telegram Sentinel</h2>
+      <p>Independent watchdog that maintains Telegram command availability even when openfleet is down. Can auto-restart, detect crash loops, and run repair-agent.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>OPENFLEET_SENTINEL_AUTO_START</code></td><td><code>false</code></td><td>Auto-start sentinel with openfleet</td></tr>
+          <tr><td><code>SENTINEL_AUTO_RESTART_MONITOR</code></td><td><code>true</code></td><td>Auto-restart monitor when down</td></tr>
+          <tr><td><code>SENTINEL_CRASH_LOOP_THRESHOLD</code></td><td><code>3</code></td><td>Crash-loop threshold</td></tr>
+          <tr><td><code>SENTINEL_CRASH_LOOP_WINDOW_MIN</code></td><td><code>10</code></td><td>Crash-loop rolling window (min)</td></tr>
+          <tr><td><code>SENTINEL_REPAIR_AGENT_ENABLED</code></td><td><code>true</code></td><td>Run repair-agent on crash-loop</td></tr>
+          <tr><td><code>SENTINEL_REPAIR_COOLDOWN_MIN</code></td><td><code>15</code></td><td>Cooldown between repair runs</td></tr>
+          <tr><td><code>SENTINEL_REPAIR_TIMEOUT_MIN</code></td><td><code>20</code></td><td>Repair agent timeout</td></tr>
+          <tr><td><code>SENTINEL_PRIMARY_AGENT_FALLBACK_ENABLED</code></td><td><code>true</code></td><td>Fallback to primary agent while monitor is down</td></tr>
+          <tr><td><code>SENTINEL_RESTART_BACKOFF_SEC</code></td><td><code>5</code></td><td>Backoff before restart attempts</td></tr>
+          <tr><td><code>SENTINEL_MANUAL_STOP_HOLD_MIN</code></td><td><code>10</code></td><td>Suppress auto-restart after manual /stop</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="presence">Presence &amp; Multi-Instance</h2>
+      <p>Discover multiple openfleet instances across machines.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>TELEGRAM_PRESENCE_INTERVAL_SEC</code></td><td><code>60</code></td><td>Heartbeat interval</td></tr>
+          <tr><td><code>TELEGRAM_PRESENCE_TTL_SEC</code></td><td><code>180</code></td><td>Offline threshold</td></tr>
+          <tr><td><code>TELEGRAM_PRESENCE_DISABLED</code></td><td><code>false</code></td><td>Disable heartbeats entirely</td></tr>
+          <tr><td><code>VE_INSTANCE_ID</code></td><td>auto-generated</td><td>Stable instance ID across restarts</td></tr>
+          <tr><td><code>VE_INSTANCE_LABEL</code></td><td>workspace name</td><td>Human-friendly label in /presence</td></tr>
+          <tr><td><code>VE_COORDINATOR_PRIORITY</code></td><td><code>10</code>/<code>100</code></td><td>Election priority (lower wins)</td></tr>
+          <tr><td><code>VE_COORDINATOR_ELIGIBLE</code></td><td><code>true</code></td><td>Opt into coordinator election</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="whatsapp">WhatsApp Channel</h2>
+      <p>Optional notification/command channel using <code>@whiskeysockets/baileys</code>.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>WHATSAPP_ENABLED</code></td><td><code>false</code></td><td>Enable WhatsApp channel</td></tr>
+          <tr><td><code>WHATSAPP_CHAT_ID</code></td><td>—</td><td>Restrict to a specific chat JID</td></tr>
+          <tr><td><code>WHATSAPP_ASSISTANT_NAME</code></td><td>project name</td><td>Bot name prefix for outbound messages</td></tr>
+          <tr><td><code>WHATSAPP_STORE_DIR</code></td><td><code>.cache/whatsapp-store</code></td><td>Auth/session data directory</td></tr>
+          <tr><td><code>WHATSAPP_PHONE_NUMBER</code></td><td>—</td><td>Phone number for pairing code auth</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="container">Container Isolation</h2>
+      <p>Run agent tasks inside Docker, Podman, or Apple Container for security isolation.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>CONTAINER_ENABLED</code></td><td><code>false</code></td><td>Enable container isolation</td></tr>
+          <tr><td><code>CONTAINER_RUNTIME</code></td><td><code>docker</code></td><td><code>docker</code>, <code>podman</code>, or <code>container</code> (macOS)</td></tr>
+          <tr><td><code>CONTAINER_IMAGE</code></td><td><code>node:22-slim</code></td><td>Container image for execution</td></tr>
+          <tr><td><code>CONTAINER_TIMEOUT_MS</code></td><td><code>1800000</code></td><td>Timeout per container (30 min)</td></tr>
+          <tr><td><code>CONTAINER_MAX_OUTPUT_SIZE</code></td><td><code>10485760</code></td><td>Max output size (10 MB)</td></tr>
+          <tr><td><code>MAX_CONCURRENT_CONTAINERS</code></td><td><code>3</code></td><td>Max concurrent containers</td></tr>
+          <tr><td><code>CONTAINER_MEMORY_LIMIT</code></td><td>—</td><td>Docker/Podman memory limit (e.g., <code>4g</code>)</td></tr>
+          <tr><td><code>CONTAINER_CPU_LIMIT</code></td><td>—</td><td>Docker/Podman CPU limit (e.g., <code>2</code>)</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="codex-sdk">Codex SDK</h2>
+
+      <h3>Sandbox Policy</h3>
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>CODEX_SANDBOX</code></td><td><code>workspace-write</code></td><td><code>workspace-write</code>, <code>danger-full-access</code>, or <code>read-only</code></td></tr>
+          <tr><td><code>CODEX_SANDBOX_PERMISSIONS</code></td><td><code>disk-full-write-access</code></td><td>Comma-separated sandbox permission entries</td></tr>
+          <tr><td><code>CODEX_SANDBOX_WRITABLE_ROOTS</code></td><td>repo root</td><td>Comma-separated writable root paths</td></tr>
+          <tr><td><code>CODEX_SHELL_ENV_POLICY</code></td><td><code>all</code></td><td><code>all</code>, <code>none</code>, or custom policy</td></tr>
+          <tr><td><code>CODEX_AGENT_MAX_THREADS</code></td><td><code>6</code></td><td>Max concurrent agent threads per session</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Feature Flags</h3>
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>CODEX_FEATURES_CHILD_AGENTS_MD</code></td><td><code>true</code></td><td>Sub-agent discovery via CODEX.md</td></tr>
+          <tr><td><code>CODEX_FEATURES_MEMORY_TOOL</code></td><td><code>true</code></td><td>Persistent memory across sessions</td></tr>
+          <tr><td><code>CODEX_FEATURES_UNDO</code></td><td><code>true</code></td><td>Undo/rollback support</td></tr>
+          <tr><td><code>CODEX_FEATURES_COLLAB</code></td><td><code>true</code></td><td>Collaboration mode</td></tr>
+          <tr><td><code>CODEX_FEATURES_BWRAP</code></td><td><code>true</code></td><td>Bubblewrap sandbox (disable if userns blocked)</td></tr>
+          <tr><td><code>CODEX_FEATURES_SHELL_TOOL</code></td><td><code>true</code></td><td>Shell tool access</td></tr>
+          <tr><td><code>CODEX_SDK_DISABLED</code></td><td><code>false</code></td><td>Disable all Codex/AI features</td></tr>
+        </tbody>
+      </table>
+
+      <h3>AI Provider / Model</h3>
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>OPENAI_API_KEY</code></td><td>—</td><td>OpenAI API key</td></tr>
+          <tr><td><code>OPENAI_BASE_URL</code></td><td><code>https://api.openai.com/v1</code></td><td>API base URL</td></tr>
+          <tr><td><code>CODEX_MODEL</code></td><td><code>gpt-4o</code></td><td>Default Codex model</td></tr>
+          <tr><td><code>CODEX_SUBAGENT_MODEL</code></td><td>—</td><td>Model for sub-agents</td></tr>
+          <tr><td><code>CODEX_MODEL_PROFILE</code></td><td>—</td><td>Named profile for model switching</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="copilot-sdk">Copilot SDK</h2>
+      <p>GitHub Copilot CLI integration with full model access, MCP tools, and sub-agents.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>COPILOT_SDK_DISABLED</code></td><td><code>false</code></td><td>Disable Copilot SDK usage</td></tr>
+          <tr><td><code>COPILOT_MODEL</code></td><td>—</td><td>Model override (e.g., <code>gpt-5</code>)</td></tr>
+          <tr><td><code>COPILOT_SESSION_MODE</code></td><td><code>local</code></td><td><code>local</code>, <code>remote</code>, or <code>auto</code></td></tr>
+          <tr><td><code>COPILOT_AUTO_APPROVE_PERMISSIONS</code></td><td><code>true</code></td><td>Auto-approve SDK permission requests</td></tr>
+          <tr><td><code>COPILOT_ALLOW_ALL</code></td><td><code>true</code></td><td>Allow all tools/paths/URLs</td></tr>
+          <tr><td><code>COPILOT_CLI_PATH</code></td><td><code>copilot</code></td><td>Path to Copilot CLI binary</td></tr>
+          <tr><td><code>COPILOT_MCP_CONFIG</code></td><td>—</td><td>MCP server config path (e.g., <code>.vscode/mcp.json</code>)</td></tr>
+          <tr><td><code>COPILOT_REASONING_EFFORT</code></td><td><code>high</code></td><td><code>low</code>, <code>medium</code>, <code>high</code>, or <code>xhigh</code></td></tr>
+          <tr><td><code>COPILOT_AGENT_MAX_REQUESTS</code></td><td><code>500</code></td><td>Max requests per agent session</td></tr>
+          <tr><td><code>COPILOT_NO_EXPERIMENTAL</code></td><td><code>false</code></td><td>Disable experimental features (/fleet, autopilot)</td></tr>
+          <tr><td><code>COPILOT_ENABLE_ASK_USER</code></td><td><code>false</code></td><td>Re-enable ask_user tool (blocks for input)</td></tr>
+          <tr><td><code>COPILOT_DISABLE_PARALLEL_TOOLS</code></td><td><code>false</code></td><td>Disable parallel tool execution</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="claude-sdk">Claude SDK</h2>
+      <p>Claude Code integration for autonomous agent operations.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>CLAUDE_SDK_DISABLED</code></td><td><code>false</code></td><td>Disable Claude SDK features</td></tr>
+          <tr><td><code>CLAUDE_MODEL</code></td><td><code>claude-opus-4-6</code></td><td>Claude model</td></tr>
+          <tr><td><code>CLAUDE_PERMISSION_MODE</code></td><td><code>bypassPermissions</code></td><td>Permission handling mode</td></tr>
+          <tr><td><code>CLAUDE_MAX_TURNS</code></td><td><code>0</code></td><td>Max turns (0 = unlimited)</td></tr>
+          <tr><td><code>CLAUDE_ALLOWED_TOOLS</code></td><td>all</td><td>Comma-separated allowed tools</td></tr>
+          <tr><td><code>ANTHROPIC_API_KEY</code></td><td>—</td><td>Anthropic API key</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="agent-pool">Agent Pool</h2>
+      <p>Ephemeral agent pool for concurrent operations.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>AGENT_POOL_SDK</code></td><td>auto</td><td><code>codex</code>, <code>copilot</code>, or <code>claude</code></td></tr>
+          <tr><td><code>AGENT_POOL_MODEL</code></td><td>—</td><td>Default model for agent pool threads</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="agent-hooks">Agent Hooks</h2>
+      <p>Lifecycle hooks scaffolded across Codex, Claude, and Copilot agents. Configured in <code>.codex/hooks.json</code>, <code>.claude/settings.local.json</code>, and <code>.github/hooks/openfleet.hooks.json</code>.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>OPENFLEET_HOOK_PROFILE</code></td><td><code>strict</code></td><td><code>strict</code>, <code>balanced</code>, <code>lightweight</code>, or <code>none</code></td></tr>
+          <tr><td><code>OPENFLEET_HOOK_TARGETS</code></td><td><code>codex,claude,copilot</code></td><td>Which agents receive hook files</td></tr>
+          <tr><td><code>OPENFLEET_HOOKS_ENABLED</code></td><td><code>true</code></td><td>Enable hook scaffolding during setup</td></tr>
+          <tr><td><code>OPENFLEET_HOOKS_OVERWRITE</code></td><td><code>false</code></td><td>Overwrite existing hook files</td></tr>
+          <tr><td><code>OPENFLEET_HOOKS_BUILTINS_MODE</code></td><td><code>force</code></td><td><code>force</code>, <code>auto</code>, or <code>off</code></td></tr>
+        </tbody>
+      </table>
+
+      <h3>Per-Event Command Overrides</h3>
+      <pre><code>OPENFLEET_HOOK_PREPUSH=go vet ./...;;go build ./...
+OPENFLEET_HOOK_PRECOMMIT=gofmt -l .
+OPENFLEET_HOOK_TASK_COMPLETE=echo "task completed"
+OPENFLEET_HOOK_SESSION_START=echo "session start"
+OPENFLEET_HOOK_SESSION_STOP=echo "session stop"</code></pre>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="daemon">Daemon Mode</h2>
+      <p>Run openfleet as a background daemon with crash supervision.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>OPENFLEET_DAEMON_RESTART_DELAY_MS</code></td><td><code>5000</code></td><td>Delay before child restart</td></tr>
+          <tr><td><code>OPENFLEET_DAEMON_MAX_RESTARTS</code></td><td><code>0</code></td><td>Max restarts (0 = unlimited)</td></tr>
+          <tr><td><code>OPENFLEET_DAEMON_INSTANT_CRASH_WINDOW_MS</code></td><td><code>15000</code></td><td>Instant startup failure window</td></tr>
+          <tr><td><code>OPENFLEET_DAEMON_MAX_INSTANT_RESTARTS</code></td><td><code>3</code></td><td>Stop after N instant failures</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="vibe-kanban">Vibe-Kanban</h2>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>VK_BASE_URL</code></td><td><code>http://127.0.0.1:54089</code></td><td>VK API base URL</td></tr>
+          <tr><td><code>VK_RECOVERY_PORT</code></td><td><code>54089</code></td><td>VK recovery port</td></tr>
+          <tr><td><code>VK_NO_SPAWN</code></td><td><code>false</code></td><td>Prevent auto-spawning VK</td></tr>
+          <tr><td><code>VK_RECOVERY_COOLDOWN_MIN</code></td><td><code>10</code></td><td>Cooldown between recovery attempts</td></tr>
+          <tr><td><code>VK_ENSURE_INTERVAL</code></td><td><code>60000</code></td><td>VK health check interval (ms)</td></tr>
+          <tr><td><code>VK_PUBLIC_URL</code></td><td>—</td><td>Public URL shown in Telegram links</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="github">GitHub</h2>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>GITHUB_REPO</code></td><td>auto-detected</td><td><code>owner/repo</code> slug</td></tr>
+          <tr><td><code>GITHUB_TOKEN</code></td><td>—</td><td>GitHub API token for PR lookups</td></tr>
+          <tr><td><code>GH_TOKEN</code></td><td>—</td><td>Alternative token env var</td></tr>
+          <tr><td><code>OPENfleet_TASK_UPSTREAM</code></td><td>—</td><td>Default base branch for tasks</td></tr>
+          <tr><td><code>VK_TARGET_BRANCH</code></td><td><code>origin/main</code></td><td>Target branch for PR checks/merge</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="merge-strategy">Merge Strategy</h2>
+      <p>Codex-powered PR decision engine analyzing agent output to decide: merge, prompt, close, re-attempt, review, or wait.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>CODEX_ANALYZE_MERGE_STRATEGY</code></td><td><code>true</code></td><td>Enable merge strategy analysis</td></tr>
+          <tr><td><code>MERGE_STRATEGY_TIMEOUT_MS</code></td><td><code>600000</code></td><td>Analysis timeout (10 min)</td></tr>
+          <tr><td><code>MERGE_STRATEGY_MODE</code></td><td><code>smart</code></td><td><code>smart</code> or <code>smart+codexsdk</code></td></tr>
+          <tr><td><code>MERGE_CONFLICT_RESOLUTION_TIMEOUT_MS</code></td><td><code>600000</code></td><td>Conflict resolution timeout</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="autofix">Autofix Mode</h2>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>AUTOFIX_MODE</code></td><td><code>auto</code></td><td><code>auto</code> (detect), <code>execute</code> (apply fixes), or <code>analyze</code> (suggestions only)</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="task-planner">Task Planner</h2>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>TASK_PLANNER_MODE</code></td><td><code>kanban</code></td><td><code>kanban</code>, <code>codex-sdk</code>, or <code>disabled</code></td></tr>
+          <tr><td><code>TASK_PLANNER_PER_CAPITA_THRESHOLD</code></td><td><code>1</code></td><td>Trigger planner when backlog-per-slot drops below</td></tr>
+          <tr><td><code>TASK_PLANNER_IDLE_SLOT_THRESHOLD</code></td><td><code>1</code></td><td>Trigger when idle slots meet threshold</td></tr>
+          <tr><td><code>TASK_PLANNER_DEDUP_HOURS</code></td><td><code>6</code></td><td>De-duplication window</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="complexity-routing">Complexity Routing</h2>
+      <p>Automatically select AI models based on task size labels: <code>[xs]</code>, <code>[s]</code>, <code>[m]</code>, <code>[l]</code>, <code>[xl]</code>, <code>[xxl]</code>.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>COMPLEXITY_ROUTING_ENABLED</code></td><td><code>true</code></td><td>Enable size-based model selection</td></tr>
+          <tr><td><code>COMPLEXITY_ROUTING_CODEX_LOW_MODEL</code></td><td>—</td><td>Codex model for [xs]/[s] tasks</td></tr>
+          <tr><td><code>COMPLEXITY_ROUTING_CODEX_MEDIUM_MODEL</code></td><td>—</td><td>Codex model for [m] tasks</td></tr>
+          <tr><td><code>COMPLEXITY_ROUTING_CODEX_HIGH_MODEL</code></td><td>—</td><td>Codex model for [l]/[xl]/[xxl] tasks</td></tr>
+          <tr><td><code>COMPLEXITY_ROUTING_COPILOT_LOW_MODEL</code></td><td>—</td><td>Copilot model for small tasks</td></tr>
+          <tr><td><code>COMPLEXITY_ROUTING_COPILOT_MEDIUM_MODEL</code></td><td>—</td><td>Copilot model for medium tasks</td></tr>
+          <tr><td><code>COMPLEXITY_ROUTING_COPILOT_HIGH_MODEL</code></td><td>—</td><td>Copilot model for large tasks</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="ci-sweep">CI Sweep</h2>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>VE_CI_SWEEP_EVERY</code></td><td><code>15</code></td><td>Trigger CI sweep after N completed tasks (0 disables)</td></tr>
+          <tr><td><code>VE_CI_SWEEP_PR_EVERY</code></td><td><code>15</code></td><td>Backup trigger after N merged PRs</td></tr>
+          <tr><td><code>VE_CI_SWEEP_PR_BACKUP</code></td><td><code>true</code></td><td>Enable PR-based backup trigger</td></tr>
+          <tr><td><code>COPILOT_CLOUD_DISABLED</code></td><td><code>true</code></td><td>Disable Copilot cloud triggers (PR comments)</td></tr>
+          <tr><td><code>COPILOT_LOCAL_RESOLUTION</code></td><td><code>agent</code></td><td><code>agent</code> or <code>codex</code> when cloud is disabled</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="dependabot">Dependabot Auto-Merge</h2>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>DEPENDABOT_AUTO_MERGE</code></td><td><code>true</code></td><td>Auto-merge bot PRs after CI passes</td></tr>
+          <tr><td><code>DEPENDABOT_AUTO_MERGE_INTERVAL_MIN</code></td><td><code>10</code></td><td>Check frequency (minutes)</td></tr>
+          <tr><td><code>DEPENDABOT_MERGE_METHOD</code></td><td><code>squash</code></td><td><code>squash</code>, <code>merge</code>, or <code>rebase</code></td></tr>
+          <tr><td><code>DEPENDABOT_AUTHORS</code></td><td><code>dependabot[bot],app/dependabot</code></td><td>Comma-separated PR authors to auto-merge</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="stale-recovery">Stale Task Recovery</h2>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>STALE_TASK_AGE_HOURS</code></td><td><code>3</code></td><td>Immediate recovery threshold (hours)</td></tr>
+          <tr><td><code>RECOVERY_CACHE_ENABLED</code></td><td><code>true</code></td><td>Persistent recovery cache (reduce scan spam)</td></tr>
+          <tr><td><code>RECOVERY_CACHE_MAX</code></td><td><code>2000</code></td><td>Max entries per cache section</td></tr>
+          <tr><td><code>RECOVERY_LOG_DEDUP_MINUTES</code></td><td><code>30</code></td><td>Suppress repeated "no attempt" logs (min)</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="issue-reconciler">GitHub Issue Reconciler</h2>
+      <p>Periodically reconciles open GitHub issues against open/merged PRs with hybrid close policy.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>GH_RECONCILE_ENABLED</code></td><td><code>true</code></td><td>Enable reconciliation</td></tr>
+          <tr><td><code>GH_RECONCILE_INTERVAL_MS</code></td><td><code>300000</code></td><td>Reconciliation interval (5 min)</td></tr>
+          <tr><td><code>GH_RECONCILE_MERGED_LOOKBACK_HOURS</code></td><td><code>72</code></td><td>Merged PR lookback window</td></tr>
+          <tr><td><code>GH_RECONCILE_TRACKING_LABELS</code></td><td><code>tracking</code></td><td>Labels for tracking/meta issues (kept open)</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="archive">Completed Task Archive</h2>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>VE_COMPLETED_TASK_ARCHIVE_ENABLED</code></td><td><code>true</code></td><td>Enable automatic archival</td></tr>
+          <tr><td><code>VE_COMPLETED_TASK_ARCHIVE_AGE_HOURS</code></td><td><code>24</code></td><td>Only archive tasks older than (hours)</td></tr>
+          <tr><td><code>VE_COMPLETED_TASK_ARCHIVE_INTERVAL_MIN</code></td><td><code>30</code></td><td>Min minutes between archive runs</td></tr>
+          <tr><td><code>VE_COMPLETED_TASK_ARCHIVE_MAX</code></td><td><code>200</code></td><td>Max tasks per run</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="git-identity">Git Identity</h2>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>VE_GIT_AUTHOR_NAME</code></td><td>—</td><td>Override git author name for automated commits</td></tr>
+          <tr><td><code>VE_GIT_AUTHOR_EMAIL</code></td><td>—</td><td>Override git author email for automated commits</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="agent-logging">Agent Work Logging &amp; Analytics</h2>
+      <p>Structured logging for real-time monitoring and offline analysis, with error loop detection and stuck agent alerts.</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>AGENT_WORK_LOGGING_ENABLED</code></td><td><code>true</code></td><td>Enable agent work logging</td></tr>
+          <tr><td><code>AGENT_WORK_ANALYZER_ENABLED</code></td><td><code>true</code></td><td>Enable live stream analyzer</td></tr>
+          <tr><td><code>AGENT_WORK_LOG_DIR</code></td><td><code>.cache/agent-work-logs</code></td><td>Log directory</td></tr>
+          <tr><td><code>AGENT_SESSION_LOG_RETENTION</code></td><td><code>100</code></td><td>Keep last N session transcripts</td></tr>
+          <tr><td><code>AGENT_WORK_LOG_MAX_SIZE_MB</code></td><td><code>500</code></td><td>Max log size before rotation</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Detection Thresholds</h3>
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>AGENT_ERROR_LOOP_THRESHOLD</code></td><td><code>4</code></td><td>Alert after N repeated errors in 10-min window</td></tr>
+          <tr><td><code>AGENT_TOOL_LOOP_THRESHOLD</code></td><td><code>10</code></td><td>Alert after N rapid tool calls in 1-min window</td></tr>
+          <tr><td><code>AGENT_STUCK_THRESHOLD_MS</code></td><td><code>300000</code></td><td>Idle agent alert threshold (5 min)</td></tr>
+          <tr><td><code>AGENT_COST_ANOMALY_THRESHOLD</code></td><td><code>1.0</code></td><td>Alert if session costs more than $N</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="prompt-overrides">Prompt Overrides</h2>
+      <p>OpenFleet scaffolds generic prompt templates under <code>.openfleet/agents/*.md</code>. Override paths:</p>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>OPENFLEET_PROMPT_PLANNER</code></td><td><code>.openfleet/agents/task-planner.md</code></td><td>Task planner prompt</td></tr>
+          <tr><td><code>OPENFLEET_PROMPT_MONITOR_MONITOR</code></td><td><code>.openfleet/agents/monitor-monitor.md</code></td><td>Monitor-monitor prompt</td></tr>
+          <tr><td><code>OPENFLEET_PROMPT_TASK_EXECUTOR</code></td><td><code>.openfleet/agents/task-executor.md</code></td><td>Task executor prompt</td></tr>
+          <tr><td><code>OPENFLEET_PROMPT_REVIEWER</code></td><td><code>.openfleet/agents/reviewer.md</code></td><td>PR reviewer prompt</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="advanced">Advanced Settings</h2>
+
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>OPENFLEET_DIR</code></td><td>auto-detected</td><td>Config directory path</td></tr>
+          <tr><td><code>MAX_RESTARTS</code></td><td><code>0</code></td><td>Max orchestrator restarts (0 = unlimited)</td></tr>
+          <tr><td><code>RESTART_DELAY_MS</code></td><td><code>10000</code></td><td>Delay before restart</td></tr>
+          <tr><td><code>LOG_DIR</code></td><td><code>./logs</code></td><td>Log directory</td></tr>
+          <tr><td><code>LOG_MAX_SIZE_MB</code></td><td><code>500</code></td><td>Max log folder size (MB). 0 = unlimited</td></tr>
+          <tr><td><code>LOG_CLEANUP_INTERVAL_MIN</code></td><td><code>30</code></td><td>How often to check folder size</td></tr>
+          <tr><td><code>SELF_RESTART_WATCH_ENABLED</code></td><td>devmode</td><td>Monitor source hot-reload watcher</td></tr>
+          <tr><td><code>DEVMODE</code></td><td><code>false</code></td><td>Enable development mode</td></tr>
+        </tbody>
+      </table>
+
+      <!-- ═══════════════════════════════════════════════════════════════════ -->
+      <h2 id="profiles">Recommended Profiles</h2>
+
+      <h3>Local Development</h3>
+      <pre><code>DEVMODE=true
+DEVMODE_MONITOR_MONITOR_ENABLED=true
+CODEX_TRANSPORT=sdk
+COPILOT_TRANSPORT=sdk
+CLAUDE_TRANSPORT=sdk
+EXECUTOR_MODE=internal
+KANBAN_BACKEND=internal</code></pre>
+
+      <h3>Production / End-User</h3>
+      <pre><code>DEVMODE=false
+DEVMODE_MONITOR_MONITOR_ENABLED=false
+CODEX_TRANSPORT=sdk
+COPILOT_TRANSPORT=sdk
+CLAUDE_TRANSPORT=sdk
+EXECUTOR_MODE=internal
+KANBAN_BACKEND=github
+KANBAN_SYNC_POLICY=bidirectional</code></pre>
+
+      <div class="callout callout--info">
+        <span class="callout__icon">ℹ️</span>
+        <p>See <a href="https://github.com/virtengine/virtengine/tree/main/scripts/openfleet#virtengineopenfleet" target="_blank" rel="noopener"><code>.env.example</code></a> in the repository for the complete list of all documented variables with inline comments.</p>
+      </div>
+
+      <div class="docs-nav-footer">
+        <a href="getting-started.html" class="docs-nav-link">
+          <div class="docs-nav-link__label">← Previous</div>
+          <div class="docs-nav-link__title">Quick Start</div>
+        </a>
+        <a href="cli-reference.html" class="docs-nav-link docs-nav-link--next">
+          <div class="docs-nav-link__label">Next →</div>
+          <div class="docs-nav-link__title">CLI Reference</div>
+        </a>
+      </div>
+    </main>
+  </div>
+
+  <script src="../js/main.js"></script>
+</body>
+</html>
