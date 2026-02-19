@@ -86,6 +86,7 @@
     "pretest": "npm run syntax:check",
     "test": "vitest run --config vitest.config.mjs",
     "test:watch": "vitest",
+    "preinstall": "node preinstall.mjs",
     "postinstall": "node postinstall.mjs",
     "sentinel": "node telegram-sentinel.mjs",
     "sentinel:stop": "node -e \"import('./telegram-sentinel.mjs').then(m => m.stopSentinel())\"",
