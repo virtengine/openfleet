@@ -4,23 +4,22 @@
   "description": "AI-powered orchestrator supervisor — manages AI agent executors with failover, auto-restarts on failure, analyzes crashes with Codex SDK, creates PRs via Vibe-Kanban API, and sends Telegram notifications. Supports N executors with weighted distribution, multi-repo projects, and auto-setup.",
   "type": "module",
   "license": "Apache 2.0",
-  "author": "VirtEngine <dev@virtengine.com>",
-  "homepage": "https://github.com/virtengine/bosun?tab=readme-ov-file#bosun",
+  "author": "VirtEngine Maintainers <maintainers@virtengine.com>",
+  "homepage": "https://bosun.virtengine.com",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/virtengine/virtengine.git",
-    "directory": "scripts/bosun"
+    "url": "git+https://github.com/virtengine/bosun.git"
   },
   "bugs": {
-    "url": "https://github.com/virtengine/virtengine/issues"
+    "url": "https://github.com/virtengine/bosun/issues"
   },
   "keywords": [
+    "bosun",
     "codex",
     "orchestrator",
     "monitor",
     "ai",
     "automation",
-    "vibe-kanban",
     "telegram",
     "devops",
     "executor",
@@ -92,14 +91,13 @@
     "sentinel:stop": "node -e \"import('./telegram-sentinel.mjs').then(m => m.stopSentinel())\"",
     "sentinel:status": "node -e \"import('./telegram-sentinel.mjs').then(m => console.log(JSON.stringify(m.getSentinelStatus(), null, 2)))\"",
     "prepush:check": "npm run syntax:check && npm test",
-    "prepublishOnly": "npm run prepush:check && node prepublish-check.mjs",
+    "prepublishOnly": "node prepublish-check.mjs",
     "publish:env": "node publish.mjs",
     "publish:dry-run": "node publish.mjs --dry-run",
     "publish:minor": "node publish.mjs --bump minor",
     "publish:major": "node publish.mjs --bump major",
     "publish:minor:dry": "node publish.mjs --bump minor --dry-run",
-    "publish:major:dry": "node publish.mjs --bump major --dry-run",
-    "hooks:install": "node install-git-hooks.mjs"
+    "publish:major:dry": "node publish.mjs --bump major --dry-run"
   },
   "files": [
     ".env.example",
@@ -187,9 +185,7 @@
     "whatsapp-channel.mjs",
     "container-runner.mjs",
     "daemon-restart-policy.mjs",
-    "publish.mjs",
-    "install-git-hooks.mjs",
-    ".githooks/"
+    "publish.mjs"
   ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",

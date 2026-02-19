@@ -75,12 +75,12 @@ export function goBack() {
  * The `icon` key maps to a property on the ICONS object in modules/icons.js.
  */
 export const TAB_CONFIG = [
-  { id: "dashboard", label: "Home", icon: "grid" },
-  { id: "tasks", label: "Tasks", icon: "check" },
-  { id: "chat", label: "Chat", icon: "chat" },
-  { id: "agents", label: "Agents", icon: "cpu" },
-  { id: "infra", label: "Infra", icon: "server" },
+  { id: "dashboard", label: "Pulse", icon: "grid" },
+  { id: "tasks", label: "Work", icon: "check" },
+  { id: "agents", label: "Fleet", icon: "cpu" },
   { id: "control", label: "Control", icon: "sliders" },
+  { id: "chat", label: "Chat", icon: "chat" },
+  { id: "infra", label: "Infra", icon: "server" },
   { id: "logs", label: "Logs", icon: "terminal" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
