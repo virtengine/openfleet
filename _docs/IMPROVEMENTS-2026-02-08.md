@@ -1,4 +1,4 @@
-# OpenFleet Improvements - 2026-02-08
+# Bosun Improvements - 2026-02-08
 
 ## Summary
 Fixed three critical bugs causing API spam, wasted retries, and zombie processes. Added task archiving system to keep VK database clean.
@@ -247,17 +247,17 @@ setInterval(async () => {
 ## Files Modified
 
 ### Core Fixes
-- `scripts/openfleet/update-check.mjs` - Zombie process prevention
-- `scripts/openfleet/tests/update-check.test.mjs` - NEW: 6 comprehensive tests
-- `scripts/openfleet/ve-orchestrator.ps1` - Fresh task retry logic
-- `scripts/openfleet/monitor.mjs` - Rebase spam fix
+- `scripts/bosun/update-check.mjs` - Zombie process prevention
+- `scripts/bosun/tests/update-check.test.mjs` - NEW: 6 comprehensive tests
+- `scripts/bosun/ve-orchestrator.ps1` - Fresh task retry logic
+- `scripts/bosun/monitor.mjs` - Rebase spam fix
 
 ### New Features
-- `scripts/openfleet/task-archiver.mjs` - NEW: Task archiving system
-- `scripts/openfleet/maintenance.mjs` - Updated for async archiving
+- `scripts/bosun/task-archiver.mjs` - NEW: Task archiving system
+- `scripts/bosun/maintenance.mjs` - Updated for async archiving
 
 ### Configuration
-- `scripts/openfleet/package.json` - Added task-archiver exports
+- `scripts/bosun/package.json` - Added task-archiver exports
 - `C:\Users\jON\.claude\projects\...\memory\MEMORY.md` - Documented all bugs
 
 ---
@@ -276,7 +276,7 @@ All bug patterns documented in [MEMORY.md](C:\Users\jON\.claude\projects\c--User
 1. **Review and Commit:**
    ```bash
    git status
-   git add scripts/openfleet/
+   git add scripts/bosun/
    git commit -m "fix: prevent zombie processes, fresh task retries, and rebase spam
 
    - Add parent process monitoring to auto-update loop

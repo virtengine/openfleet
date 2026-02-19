@@ -1,5 +1,5 @@
 /**
- * fleet-coordinator.mjs — Multi-workstation coordination for openfleet.
+ * fleet-coordinator.mjs — Multi-workstation coordination for bosun.
  *
  * Provides:
  *   - Repo fingerprinting: detect identical repos across workstations
@@ -744,7 +744,7 @@ export function resetAutoGenCooldown() {
 }
 // ── Fleet State Persistence ──────────────────────────────────────────────────
 
-const FLEET_STATE_DIR = ".cache/openfleet";
+const FLEET_STATE_DIR = ".cache/bosun";
 
 async function getFleetStatePath(repoRoot) {
   const dir = resolve(repoRoot || process.cwd(), FLEET_STATE_DIR);

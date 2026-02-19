@@ -12,7 +12,7 @@
  *
  * Configuration:
  *   - `KANBAN_BACKEND` env var: "internal" | "vk" | "github" | "jira" (default: "internal")
- *   - `openfleet.config.json` → `kanban.backend` field
+ *   - `bosun.config.json` → `kanban.backend` field
  *
  * EXPORTS:
  *   getKanbanAdapter()                       → Returns the configured adapter instance
@@ -156,7 +156,7 @@ const CODEX_LABEL_KEYS = new Set([
   "codex:claimed",
   "codex:working",
   "codex:stale",
-  "openfleet",
+  "bosun",
   "codex-mointor",
 ]);
 
@@ -853,7 +853,7 @@ class GitHubIssuesAdapter {
     this._owner = process.env.GITHUB_REPO_OWNER || slugInfo?.owner || "unknown";
     this._repo = process.env.GITHUB_REPO_NAME || slugInfo?.repo || "unknown";
 
-    // openfleet label scheme
+    // bosun label scheme
     this._codexLabels = {
       claimed: "codex:claimed",
       working: "codex:working",
@@ -862,13 +862,13 @@ class GitHubIssuesAdapter {
     };
 
     this._canonicalTaskLabel =
-      process.env.OPENFLEET_TASK_LABEL || "openfleet";
+      process.env.BOSUN_TASK_LABEL || "bosun";
     this._taskScopeLabels = normalizeLabels(
-      process.env.OPENFLEET_TASK_LABELS ||
+      process.env.BOSUN_TASK_LABELS ||
         `${this._canonicalTaskLabel},codex-mointor`,
     );
     this._enforceTaskLabel = parseBooleanEnv(
-      process.env.OPENFLEET_ENFORCE_TASK_LABEL,
+      process.env.BOSUN_ENFORCE_TASK_LABEL,
       true,
     );
 
@@ -886,7 +886,7 @@ class GitHubIssuesAdapter {
     this._projectTitle =
       process.env.GITHUB_PROJECT_TITLE ||
       process.env.PROJECT_NAME ||
-      "OpenFleet";
+      "Bosun";
     this._projectNumber =
       process.env.GITHUB_PROJECT_NUMBER ||
       process.env.GITHUB_PROJECT_ID ||
@@ -1750,7 +1750,7 @@ class GitHubIssuesAdapter {
           "--color",
           color,
           "--description",
-          `openfleet status: ${name}`,
+          `bosun status: ${name}`,
         ],
         { parseJson: false },
       );
@@ -2306,7 +2306,7 @@ class GitHubIssuesAdapter {
     const baseBranch = resolveBaseBranchInput(taskData);
     const labelsToApply = new Set(requestedLabels);
     labelsToApply.add(
-      String(this._canonicalTaskLabel || "openfleet").toLowerCase(),
+      String(this._canonicalTaskLabel || "bosun").toLowerCase(),
     );
     if (requestedStatus === "draft") labelsToApply.add("draft");
     if (requestedStatus === "inprogress") labelsToApply.add("inprogress");
@@ -2343,7 +2343,7 @@ class GitHubIssuesAdapter {
     const baseBranch = resolveBaseBranchInput(taskData);
     const labelsToApply = new Set(requestedLabels);
     labelsToApply.add(
-      String(this._canonicalTaskLabel || "openfleet").toLowerCase(),
+      String(this._canonicalTaskLabel || "bosun").toLowerCase(),
     );
 
     if (requestedStatus === "draft") labelsToApply.add("draft");
@@ -2464,7 +2464,7 @@ class GitHubIssuesAdapter {
   /**
    * Persist shared state to a GitHub issue using structured comments and labels.
    *
-   * Creates or updates a openfleet-state comment with JSON state and applies
+   * Creates or updates a bosun-state comment with JSON state and applies
    * appropriate labels (codex:claimed, codex:working, codex:stale).
    *
    * Error handling: Retries once on failure, logs and continues on second failure.
@@ -2571,17 +2571,17 @@ class GitHubIssuesAdapter {
     const commentSuccess = await attemptWithRetry(async () => {
       const comments = await this._getIssueComments(num);
       const stateCommentIndex = comments.findIndex((c) =>
-        c.body?.includes("<!-- openfleet-state"),
+        c.body?.includes("<!-- bosun-state"),
       );
 
       const [agentId, workstationId] = normalizedState.ownerId
         .split("/")
         .reverse();
       const stateJson = JSON.stringify(normalizedState, null, 2);
-      const commentBody = `<!-- openfleet-state
+      const commentBody = `<!-- bosun-state
 ${stateJson}
 -->
-**OpenFleet Status**: Agent \`${agentId}\` on \`${workstationId}\` is ${normalizedState.status === "working" ? "working on" : normalizedState.status === "claimed" ? "claiming" : "stale for"} this task.
+**Bosun Status**: Agent \`${agentId}\` on \`${workstationId}\` is ${normalizedState.status === "working" ? "working on" : normalizedState.status === "claimed" ? "claiming" : "stale for"} this task.
 *Last heartbeat: ${normalizedState.heartbeat || normalizedState.ownerHeartbeat}*`;
 
       if (stateCommentIndex >= 0) {
@@ -2609,7 +2609,7 @@ ${stateJson}
   }
 
   /**
-   * Read shared state from a GitHub issue by parsing openfleet-state comments.
+   * Read shared state from a GitHub issue by parsing bosun-state comments.
    *
    * Searches for the latest comment containing the structured state JSON and
    * returns the parsed SharedState object, or null if not found.
@@ -2633,7 +2633,7 @@ ${stateJson}
       const comments = await this._getIssueComments(num);
       const stateComment = comments
         .reverse()
-        .find((c) => c.body?.includes("<!-- openfleet-state"));
+        .find((c) => c.body?.includes("<!-- bosun-state"));
 
       if (!stateComment) {
         return null;
@@ -2641,7 +2641,7 @@ ${stateJson}
 
       // Extract JSON from comment
       const match = stateComment.body.match(
-        /<!-- openfleet-state\s*\n([\s\S]*?)\n-->/,
+        /<!-- bosun-state\s*\n([\s\S]*?)\n-->/,
       );
       if (!match) {
         return null;
@@ -2674,10 +2674,10 @@ ${stateJson}
   }
 
   /**
-   * Mark a task as ignored by openfleet.
+   * Mark a task as ignored by bosun.
    *
    * Adds the `codex:ignore` label and posts a comment explaining why the task
-   * is being ignored. This prevents openfleet from repeatedly attempting
+   * is being ignored. This prevents bosun from repeatedly attempting
    * to claim or work on tasks that are not suitable for automation.
    *
    * @param {string|number} issueNumber - GitHub issue number
@@ -2709,11 +2709,11 @@ ${stateJson}
       );
 
       // Add comment explaining why
-      const commentBody = `**OpenFleet**: This task has been marked as ignored.
+      const commentBody = `**Bosun**: This task has been marked as ignored.
 
 **Reason**: ${reason}
 
-To re-enable openfleet for this task, remove the \`${this._codexLabels.ignore}\` label.`;
+To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` label.`;
 
       await this.addComment(num, commentBody);
 
@@ -2807,7 +2807,7 @@ To re-enable openfleet for this task, remove the \`${this._codexLabels.ignore}\`
           "-f",
           "color=1D76DB",
           "-f",
-          "description=Managed by openfleet",
+          "description=Managed by bosun",
         ],
         { parseJson: false },
       );
@@ -2838,7 +2838,7 @@ To re-enable openfleet for this task, remove the \`${this._codexLabels.ignore}\`
   async _resolveProjectNumber() {
     if (this._cachedProjectNumber) return this._cachedProjectNumber;
     const owner = String(this._projectOwner || "").trim();
-    const title = String(this._projectTitle || "OpenFleet").trim();
+    const title = String(this._projectTitle || "Bosun").trim();
     if (!owner || !title) return null;
 
     try {
@@ -2938,7 +2938,7 @@ To re-enable openfleet for this task, remove the \`${this._codexLabels.ignore}\`
     }
     if (labelSet.has("draft")) status = "draft";
 
-    // Check for openfleet labels
+    // Check for bosun labels
     const codexMeta = {
       isIgnored: labelSet.has("codex:ignore"),
       isClaimed: labelSet.has("codex:claimed"),
@@ -3010,17 +3010,17 @@ class JiraAdapter {
       process.env.JIRA_SUBTASK_PARENT_KEY || "",
     ).trim();
     this._canonicalTaskLabel = String(
-      process.env.OPENFLEET_TASK_LABEL || "openfleet",
+      process.env.BOSUN_TASK_LABEL || "bosun",
     )
       .trim()
       .toLowerCase();
     this._taskScopeLabels = normalizeLabels(
       process.env.JIRA_TASK_LABELS ||
-        process.env.OPENFLEET_TASK_LABELS ||
-        `${this._canonicalTaskLabel},openfleet`,
+        process.env.BOSUN_TASK_LABELS ||
+        `${this._canonicalTaskLabel},bosun`,
     ).map((label) => this._sanitizeJiraLabel(label));
     this._enforceTaskLabel = parseBooleanEnv(
-      process.env.JIRA_ENFORCE_TASK_LABEL ?? process.env.OPENFLEET_ENFORCE_TASK_LABEL,
+      process.env.JIRA_ENFORCE_TASK_LABEL ?? process.env.BOSUN_ENFORCE_TASK_LABEL,
       true,
     );
     this._codexLabels = {
@@ -3524,7 +3524,7 @@ class JiraAdapter {
 
   _extractSharedStateFromText(text) {
     const match = String(text || "").match(
-      /<!-- openfleet-state\s*\n([\s\S]*?)\n-->/,
+      /<!-- bosun-state\s*\n([\s\S]*?)\n-->/,
     );
     if (!match) return null;
     try {
@@ -3580,8 +3580,8 @@ class JiraAdapter {
     const agentId = ownerParts[1] || "unknown-agent";
     const json = JSON.stringify(normalized, null, 2);
     return (
-      `<!-- openfleet-state\n${json}\n-->\n` +
-      `OpenFleet Status: Agent ${agentId} on ${workstationId} is ${normalized?.status} this task.\n` +
+      `<!-- bosun-state\n${json}\n-->\n` +
+      `Bosun Status: Agent ${agentId} on ${workstationId} is ${normalized?.status} this task.\n` +
       `Last heartbeat: ${normalized?.heartbeat || normalized?.ownerHeartbeat || ""}`
     );
   }
@@ -3591,7 +3591,7 @@ class JiraAdapter {
     const comments = await this._listIssueComments(issueKey);
     const existing = [...comments].reverse().find((comment) => {
       const text = this._commentToText(comment?.body);
-      return text.includes("<!-- openfleet-state");
+      return text.includes("<!-- bosun-state");
     });
     if (existing?.id) {
       await this._jira(
@@ -3957,7 +3957,7 @@ class JiraAdapter {
    * mechanisms. The implementation should use a combination of:
    *
    * 1. **Jira Custom Fields** (preferred if available):
-   *    - Create custom fields for openfleet state (e.g., "Codex Owner ID", "Codex Attempt Token")
+   *    - Create custom fields for bosun state (e.g., "Codex Owner ID", "Codex Attempt Token")
    *    - Store structured data as JSON in a text custom field
    *    - Use Jira API v3: `PUT /rest/api/3/issue/{issueKey}`
    *    - Custom field IDs are like `customfield_10042`
@@ -3969,7 +3969,7 @@ class JiraAdapter {
    *
    * 3. **Structured Comments** (fallback if custom fields unavailable):
    *    - Similar to GitHub: embed JSON in HTML comment markers
-   *    - Format: `<!-- openfleet-state\n{json}\n-->`
+   *    - Format: `<!-- bosun-state\n{json}\n-->`
    *    - Comments API: `POST /rest/api/3/issue/{issueKey}/comment`
    *    - Update via `PUT /rest/api/3/issue/{issueKey}/comment/{commentId}`
    *
@@ -4097,7 +4097,7 @@ class JiraAdapter {
    *
    * 2. **Structured Comments** (fallback):
    *    - Fetch comments via `GET /rest/api/3/issue/{issueKey}/comment`
-   *    - Search for latest comment containing `<!-- openfleet-state`
+   *    - Search for latest comment containing `<!-- bosun-state`
    *    - Extract and parse JSON from HTML comment markers
    *    - Return most recent valid state
    *
@@ -4198,7 +4198,7 @@ class JiraAdapter {
       const comments = await this._listIssueComments(key);
       const stateComment = [...comments].reverse().find((comment) => {
         const text = this._commentToText(comment?.body);
-        return text.includes("<!-- openfleet-state");
+        return text.includes("<!-- bosun-state");
       });
       if (!stateComment) return null;
       const parsed = normalizeSharedStatePayload(
@@ -4214,9 +4214,9 @@ class JiraAdapter {
   }
 
   /**
-   * Mark a Jira issue as ignored by openfleet.
+   * Mark a Jira issue as ignored by bosun.
    *
-   * Prevents openfleet from repeatedly attempting to claim or work on tasks
+   * Prevents bosun from repeatedly attempting to claim or work on tasks
    * that are not suitable for automation. Uses Jira-specific mechanisms:
    *
    * 1. **Add Label**: `codex:ignore`
@@ -4245,7 +4245,7 @@ class JiraAdapter {
    *       {
    *         "type": "paragraph",
    *         "content": [
-   *           {"type": "text", "text": "OpenFleet: Task marked as ignored."}
+   *           {"type": "text", "text": "Bosun: Task marked as ignored."}
    *         ]
    *       }
    *     ]
@@ -4268,7 +4268,7 @@ class JiraAdapter {
    *
    * @example
    * await adapter.markTaskIgnored("PROJ-456", "Task dependencies not in automation scope");
-   * // Prevents openfleet from claiming this task in future iterations
+   * // Prevents bosun from claiming this task in future iterations
    *
    * @see {@link https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/}
    * @see {@link https://developer.atlassian.com/cloud/jira/platform/apis/document/structure/}
@@ -4294,9 +4294,9 @@ class JiraAdapter {
         });
       }
       const commentBody =
-        `OpenFleet: This task has been marked as ignored.\n\n` +
+        `Bosun: This task has been marked as ignored.\n\n` +
         `Reason: ${ignoreReason}\n\n` +
-        `To re-enable openfleet for this task, remove the ${this._codexLabels.ignore} label.`;
+        `To re-enable bosun for this task, remove the ${this._codexLabels.ignore} label.`;
       await this.addComment(key, commentBody);
       return true;
     } catch (err) {
@@ -4328,7 +4328,7 @@ let activeBackendName = null;
  * Resolution order:
  *   1. Runtime override via setKanbanBackend()
  *   2. KANBAN_BACKEND env var
- *   3. openfleet.config.json → kanban.backend field
+ *   3. bosun.config.json → kanban.backend field
  *   4. Default: "internal"
  *
  * @returns {string}
@@ -4474,7 +4474,7 @@ export async function readSharedStateFromIssue(taskId) {
 }
 
 /**
- * Mark a task as ignored by openfleet (GitHub adapter only).
+ * Mark a task as ignored by bosun (GitHub adapter only).
  * @param {string} taskId - Task identifier (issue number for GitHub)
  * @param {string} reason - Human-readable reason for ignoring
  * @returns {Promise<boolean>} Success status

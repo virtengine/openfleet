@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 /**
- * telegram-sentinel.mjs — Always-on Telegram command listener for openfleet.
+ * telegram-sentinel.mjs — Always-on Telegram command listener for bosun.
  *
- * Runs independently of the main openfleet process, ensuring Telegram
- * commands are always handled even when openfleet is down.
+ * Runs independently of the main bosun process, ensuring Telegram
+ * commands are always handled even when bosun is down.
  *
  * Architecture:
  *   ┌─────────────────┐
@@ -12,18 +12,18 @@
  *   │  (this file)     │                                                   │
  *   └────────┬─────────┘                                                   │
  *            │                                                             │
- *            ├─ Standalone Mode (openfleet DOWN)                       │
+ *            ├─ Standalone Mode (bosun DOWN)                       │
  *            │   ├─ Polls Telegram directly                                │
  *            │   ├─ Handles simple commands (/ping, /status, /sentinel)    │
- *            │   └─ Auto-starts openfleet for complex commands         │
+ *            │   └─ Auto-starts bosun for complex commands         │
  *            │                                                             │
- *            └─ Companion Mode (openfleet UP)                          │
+ *            └─ Companion Mode (bosun UP)                          │
  *                ├─ Does NOT poll (lets telegram-bot.mjs handle it)        │
- *                ├─ Monitors openfleet health via PID file             │
- *                └─ Transitions to Standalone if openfleet dies        │
+ *                ├─ Monitors bosun health via PID file             │
+ *                └─ Transitions to Standalone if bosun dies        │
  *                                                                          │
  *   ┌─────────────────┐                                                    │
- *   │  openfleet   │ ← started/stopped by sentinel as needed ─────────┘
+ *   │  bosun   │ ← started/stopped by sentinel as needed ─────────┘
  *   │  (cli.mjs fork)  │
  *   └─────────────────┘
  *
@@ -59,7 +59,7 @@ const __dirname = dirname(__filename);
 const repoRoot = resolveRepoRoot();
 const cacheDir = resolve(repoRoot, ".cache");
 
-const MONITOR_PID_FILE = resolve(__dirname, ".cache", "openfleet.pid");
+const MONITOR_PID_FILE = resolve(__dirname, ".cache", "bosun.pid");
 const SENTINEL_PID_FILE = resolve(cacheDir, "telegram-sentinel.pid");
 const SENTINEL_HEARTBEAT_FILE = resolve(cacheDir, "sentinel-heartbeat.json");
 const SENTINEL_LOCK_FILE = resolve(cacheDir, "telegram-sentinel.lock");
@@ -209,7 +209,7 @@ function initEnv() {
   const fileVars = loadEnvCredentials();
   telegramToken = getEnvValue(fileVars, "TELEGRAM_BOT_TOKEN", "");
   telegramChatId = getEnvValue(fileVars, "TELEGRAM_CHAT_ID", "");
-  projectName = getEnvValue(fileVars, "PROJECT_NAME", "openfleet");
+  projectName = getEnvValue(fileVars, "PROJECT_NAME", "bosun");
 
   sentinelConfig.autoRestartMonitor = parseBool(
     getEnvValue(fileVars, "SENTINEL_AUTO_RESTART_MONITOR", "1"),
@@ -458,7 +458,7 @@ async function runRepairAgent(triggerReason, details = "") {
     const agentInfo = getPrimaryAgentInfo();
     const mmHealth = await assessMonitorMonitorHealth();
     const prompt = [
-      "openfleet sentinel autonomous repair request.",
+      "bosun sentinel autonomous repair request.",
       "",
       `Trigger: ${triggerReason}`,
       `Project: ${projectName}`,
@@ -510,11 +510,11 @@ async function runPrimaryAgentFallback(chatId, text, command) {
     const agentInfo = getPrimaryAgentInfo();
     await sendTelegram(
       chatId,
-      `🤖 openfleet is down. Running via sentinel fallback (${agentInfo.adapter})...`,
+      `🤖 bosun is down. Running via sentinel fallback (${agentInfo.adapter})...`,
     );
 
     const prompt = [
-      "Telegram fallback request while openfleet is offline.",
+      "Telegram fallback request while bosun is offline.",
       "",
       `Project: ${projectName}`,
       `Host: ${os.hostname()}`,
@@ -575,12 +575,12 @@ async function attemptMonitorRecovery(triggerReason) {
     const pidSuffix = pid ? ` (PID ${pid})` : "";
     await sendTelegram(
       telegramChatId,
-      `✅ openfleet recovered${pidSuffix}.`,
+      `✅ bosun recovered${pidSuffix}.`,
     );
   } catch (err) {
     await sendTelegram(
       telegramChatId,
-      `❌ openfleet auto-restart failed: ${err?.message || err}`,
+      `❌ bosun auto-restart failed: ${err?.message || err}`,
     );
   }
 }
@@ -885,7 +885,7 @@ async function pollLoop() {
 
 // ── Update Handler ───────────────────────────────────────────────────────────
 
-/** Commands that the sentinel can handle without openfleet. */
+/** Commands that the sentinel can handle without bosun. */
 const STANDALONE_COMMANDS = new Set([
   "/ping",
   "/status",
@@ -895,7 +895,7 @@ const STANDALONE_COMMANDS = new Set([
   "/help",
 ]);
 
-/** Commands that require openfleet to be running. */
+/** Commands that require bosun to be running. */
 const MONITOR_REQUIRED_COMMANDS = new Set([
   "/resumetask",
   "/resume",
@@ -943,16 +943,16 @@ async function handleUpdate(update) {
     return;
   }
 
-  // ── Commands requiring openfleet ─────────────────────────────────────
+  // ── Commands requiring bosun ─────────────────────────────────────
   // Either a known monitor command, free-text message, or unknown command
-  log("info", `command "${bareCommand}" requires openfleet`);
+  log("info", `command "${bareCommand}" requires bosun`);
   await handleMonitorCommand(chatId, text, bareCommand);
 }
 
 // ── Standalone Command Handlers ──────────────────────────────────────────────
 
 /**
- * Handle commands that the sentinel can process without openfleet.
+ * Handle commands that the sentinel can process without bosun.
  * @param {string} chatId
  * @param {string} command
  * @param {string} fullText
@@ -1013,7 +1013,7 @@ async function handleStatus(chatId) {
     if (!existsSync(STATUS_FILE)) {
       await sendTelegram(
         chatId,
-        "📊 No status file found. openfleet may not have run yet.",
+        "📊 No status file found. bosun may not have run yet.",
       );
       return;
     }
@@ -1079,7 +1079,7 @@ async function handleSentinelInfo(chatId) {
 }
 
 /**
- * /start — Manually start openfleet.
+ * /start — Manually start bosun.
  * @param {string} chatId
  */
 async function handleStartMonitor(chatId) {
@@ -1087,37 +1087,37 @@ async function handleStartMonitor(chatId) {
   if (monPid) {
     await sendTelegram(
       chatId,
-      `✅ openfleet is already running (PID ${monPid}).`,
+      `✅ bosun is already running (PID ${monPid}).`,
     );
     return;
   }
-  await sendTelegram(chatId, "🚀 Starting openfleet...");
+  await sendTelegram(chatId, "🚀 Starting bosun...");
   try {
     await ensureMonitorRunning("manual /start command");
     const pid = readAlivePid(MONITOR_PID_FILE);
     await sendTelegram(
       chatId,
-      `✅ openfleet started${pid ? ` (PID ${pid})` : ""}.`,
+      `✅ bosun started${pid ? ` (PID ${pid})` : ""}.`,
     );
   } catch (err) {
     await sendTelegram(
       chatId,
-      `❌ Failed to start openfleet: ${err.message}`,
+      `❌ Failed to start bosun: ${err.message}`,
     );
   }
 }
 
 /**
- * /stop — Manually stop openfleet.
+ * /stop — Manually stop bosun.
  * @param {string} chatId
  */
 async function handleStopMonitor(chatId) {
   const monPid = readAlivePid(MONITOR_PID_FILE);
   if (!monPid) {
-    await sendTelegram(chatId, "ℹ️ openfleet is not running.");
+    await sendTelegram(chatId, "ℹ️ bosun is not running.");
     return;
   }
-  await sendTelegram(chatId, `🛑 Stopping openfleet (PID ${monPid})...`);
+  await sendTelegram(chatId, `🛑 Stopping bosun (PID ${monPid})...`);
   try {
     process.kill(monPid, "SIGTERM");
     // Wait for process to die
@@ -1137,7 +1137,7 @@ async function handleStopMonitor(chatId) {
       }
     }
     removePidFile(MONITOR_PID_FILE);
-    await sendTelegram(chatId, "✅ openfleet stopped.");
+    await sendTelegram(chatId, "✅ bosun stopped.");
     monitorManualStopUntil = Date.now() + sentinelConfig.manualStopHoldMs;
     saveRecoveryState();
     // Transition to standalone mode after stopping monitor
@@ -1161,11 +1161,11 @@ async function handleHelp(chatId) {
     "/ping — Check sentinel + monitor liveness",
     "/status — Show cached orchestrator status",
     "/sentinel — Show sentinel details",
-    "/start — Start openfleet",
-    "/stop — Stop openfleet",
+    "/start — Start bosun",
+    "/stop — Stop bosun",
     "/help — This message",
     "",
-    `Monitor is *${monStatus}*. All other commands will ${monPid ? "be forwarded to" : "auto-start"} openfleet.`,
+    `Monitor is *${monStatus}*. All other commands will ${monPid ? "be forwarded to" : "auto-start"} bosun.`,
   ];
 
   await sendTelegram(chatId, lines.join("\n"), { parseMode: "Markdown" });
@@ -1174,7 +1174,7 @@ async function handleHelp(chatId) {
 // ── Monitor-Required Command Handling ────────────────────────────────────────
 
 /**
- * Handle commands that need openfleet. Starts the monitor if not running
+ * Handle commands that need bosun. Starts the monitor if not running
  * and queues the command for replay once it's healthy.
  * @param {string} chatId
  * @param {string} text
@@ -1207,7 +1207,7 @@ async function handleMonitorCommand(chatId, text, command) {
     return;
   }
 
-  await sendTelegram(chatId, "⏳ Starting openfleet in the background...");
+  await sendTelegram(chatId, "⏳ Starting bosun in the background...");
 
   try {
     await ensureMonitorRunning(`command: ${command}`);
@@ -1222,7 +1222,7 @@ async function handleMonitorCommand(chatId, text, command) {
     if (!fallbackHandled) {
       await sendTelegram(
         chatId,
-        `❌ Failed to start openfleet: ${err.message}\n\nYour command was not processed.`,
+        `❌ Failed to start bosun: ${err.message}\n\nYour command was not processed.`,
       );
     }
     // Clear the failed commands
@@ -1257,7 +1257,7 @@ function queueCommand(chatId, text) {
 }
 
 /**
- * Write the command queue to a JSON file for openfleet to read.
+ * Write the command queue to a JSON file for bosun to read.
  * @returns {Promise<void>}
  */
 async function writeCommandQueueFile() {
@@ -1284,7 +1284,7 @@ export function getQueuedCommands() {
 // ── Monitor Lifecycle ────────────────────────────────────────────────────────
 
 /**
- * Check if the openfleet process is running.
+ * Check if the bosun process is running.
  * @returns {boolean}
  */
 export function isMonitorRunning() {
@@ -1292,7 +1292,7 @@ export function isMonitorRunning() {
 }
 
 /**
- * Ensure openfleet is running. If not, start it and wait until it's healthy.
+ * Ensure bosun is running. If not, start it and wait until it's healthy.
  * Returns immediately if monitor is already running. Coalesces concurrent calls
  * so only one monitor start happens at a time.
  * @param {string} reason - Human-readable reason for starting the monitor.
@@ -1322,13 +1322,13 @@ export async function ensureMonitorRunning(reason) {
 }
 
 /**
- * Start openfleet as a detached background process and wait for it to
+ * Start bosun as a detached background process and wait for it to
  * become healthy (PID file written and process alive).
  * @param {string} reason
  * @returns {Promise<void>}
  */
 async function startAndWaitForMonitor(reason) {
-  log("info", `starting openfleet (reason: ${reason})`);
+  log("info", `starting bosun (reason: ${reason})`);
 
   // If sentinel is currently polling, release the sentinel lock.
   // The monitor's telegram-bot.mjs will acquire its own poll lock.
@@ -1365,7 +1365,7 @@ async function startAndWaitForMonitor(reason) {
     {
       detached: true,
       stdio: "ignore",
-      env: { ...process.env, OPENFLEET_DAEMON: "1" },
+      env: { ...process.env, BOSUN_DAEMON: "1" },
       cwd: repoRoot,
     },
   );
@@ -1378,7 +1378,7 @@ async function startAndWaitForMonitor(reason) {
 
   const spawnedPid = child.pid;
   if (!spawnedPid) {
-    throw new Error("openfleet failed to spawn (no PID)");
+    throw new Error("bosun failed to spawn (no PID)");
   }
 
   log("info", `monitor spawned (PID ${spawnedPid}), waiting for health...`);
@@ -1401,13 +1401,13 @@ async function startAndWaitForMonitor(reason) {
     // Check if spawned process died prematurely
     if (!isProcessAlive(spawnedPid)) {
       throw new Error(
-        `openfleet process died during startup (PID ${spawnedPid})`,
+        `bosun process died during startup (PID ${spawnedPid})`,
       );
     }
   }
 
   throw new Error(
-    `openfleet did not become healthy within ${MONITOR_START_TIMEOUT_MS / 1000}s`,
+    `bosun did not become healthy within ${MONITOR_START_TIMEOUT_MS / 1000}s`,
   );
 }
 
@@ -1510,7 +1510,7 @@ async function isMainBotPolling() {
 // ── Health Monitoring ────────────────────────────────────────────────────────
 
 /**
- * Periodic health check for openfleet. Runs every HEALTH_CHECK_INTERVAL_MS.
+ * Periodic health check for bosun. Runs every HEALTH_CHECK_INTERVAL_MS.
  */
 async function healthCheck() {
   const monPid = readAlivePid(MONITOR_PID_FILE);
@@ -1534,7 +1534,7 @@ async function healthCheck() {
       await sendTelegram(
         telegramChatId,
         [
-          `🔥 ${tag} openfleet crashed`,
+          `🔥 ${tag} bosun crashed`,
           "",
           `Host: \`${host}\``,
           `Time: ${new Date().toISOString()}`,
@@ -1684,11 +1684,11 @@ export async function startSentinel(options = {}) {
   if (monPid) {
     log(
       "info",
-      `openfleet already running (PID ${monPid}) — starting in companion mode`,
+      `bosun already running (PID ${monPid}) — starting in companion mode`,
     );
     await transitionToCompanion(monPid);
   } else {
-    log("info", "openfleet not running — starting in standalone mode");
+    log("info", "bosun not running — starting in standalone mode");
     await transitionToStandalone("initial startup");
   }
 
@@ -1925,7 +1925,7 @@ if (isDirectExecution) {
 
   if (args.includes("--help") || args.includes("-h")) {
     console.log(`
-  telegram-sentinel — Always-on Telegram command listener for openfleet
+  telegram-sentinel — Always-on Telegram command listener for bosun
 
   USAGE
     node telegram-sentinel.mjs [options]
@@ -1940,7 +1940,7 @@ if (isDirectExecution) {
     TELEGRAM_CHAT_ID      Authorized chat ID (or set in .env)
     SENTINEL_DEBUG=1      Enable debug logging
 
-  The sentinel monitors openfleet and handles Telegram commands
+  The sentinel monitors bosun and handles Telegram commands
   even when the main process is not running.
     `);
     process.exit(0);

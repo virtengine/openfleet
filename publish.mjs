@@ -11,7 +11,7 @@
 //   # or inline:
 //   NPM_ACCESS_TOKEN=npm_xxxx npm run publish:minor
 //
-// Terminology matches the openfleet convention (not semver):
+// Terminology matches the bosun convention (not semver):
 //   minor = last digit (semver patch)
 //   major = middle digit (semver minor)
 
@@ -40,7 +40,7 @@ function getRegistryUrl() {
 }
 
 function createEphemeralNpmrc(registryUrl, token) {
-  const folder = mkdtempSync(join(tmpdir(), "openfleet-npmrc-"));
+  const folder = mkdtempSync(join(tmpdir(), "bosun-npmrc-"));
   const npmrcPath = join(folder, ".npmrc");
   const parsed = new URL(registryUrl);
   const authPath = parsed.pathname || "/";
@@ -225,9 +225,9 @@ function main() {
     if (status === 0 && !dryRun) {
       console.log(
         "\n[publish] REMINDER: deprecate the legacy npm package to redirect users:\n" +
-        "  npm deprecate openfleet@'*' \"Renamed to @virtengine/openfleet. Install: npm install -g @virtengine/openfleet\"\n" +
+        "  npm deprecate bosun@'*' \"Renamed to @virtengine/bosun. Install: npm install -g @virtengine/bosun\"\n" +
         "  # If a scoped legacy package exists:\n" +
-        "  npm deprecate @virtengine/openfleet@'*' \"Renamed to @virtengine/openfleet. Install: npm install -g @virtengine/openfleet\"\n",
+        "  npm deprecate @virtengine/bosun@'*' \"Renamed to @virtengine/bosun. Install: npm install -g @virtengine/bosun\"\n",
       );
     }
     process.exit(status);

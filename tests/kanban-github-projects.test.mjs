@@ -47,8 +47,8 @@ const ENV_KEYS = [
   "GITHUB_PROJECT_STATUS_INREVIEW",
   "GITHUB_PROJECT_STATUS_DONE",
   "GITHUB_PROJECT_STATUS_CANCELLED",
-  "OPENFLEET_ENFORCE_TASK_LABEL",
-  "OPENFLEET_TASK_LABEL",
+  "BOSUN_ENFORCE_TASK_LABEL",
+  "BOSUN_TASK_LABEL",
 ];
 
 function snapshotEnv() {
@@ -80,7 +80,7 @@ describe("GitHub Projects v2 integration", () => {
     delete process.env.GITHUB_REPO_NAME;
     process.env.GITHUB_PROJECT_MODE = "kanban";
     process.env.GITHUB_PROJECT_NUMBER = "7";
-    process.env.OPENFLEET_ENFORCE_TASK_LABEL = "false";
+    process.env.BOSUN_ENFORCE_TASK_LABEL = "false";
     delete process.env.GITHUB_PROJECT_AUTO_SYNC;
     delete process.env.GITHUB_PROJECT_STATUS_TODO;
     delete process.env.GITHUB_PROJECT_STATUS_INPROGRESS;
@@ -238,7 +238,7 @@ describe("GitHub Projects v2 integration", () => {
           body: "Branch: `ve/42-fix-auth`\nPR: #99",
           url: "https://github.com/acme/widgets/issues/42",
           state: "open",
-          labels: [{ name: "openfleet" }, { name: "high" }],
+          labels: [{ name: "bosun" }, { name: "high" }],
           assignees: [{ login: "alice" }],
         },
       });
@@ -499,7 +499,7 @@ describe("GitHub Projects v2 integration", () => {
       // Mock comments
       mockGh("[]");
       // Mock _resolveProjectNumber - project list
-      mockGh([{ title: "OpenFleet", number: 7 }]);
+      mockGh([{ title: "Bosun", number: 7 }]);
       // Mock issue view (second call in sync path)
       mockGh({
         number: 42,
@@ -985,7 +985,7 @@ describe("GitHub Projects v2 integration", () => {
             body: "",
             url: "https://github.com/acme/widgets/issues/10",
             state: "open",
-            labels: [{ name: "openfleet" }],
+            labels: [{ name: "bosun" }],
             assignees: [{ login: "bob" }],
           },
         },
@@ -1072,7 +1072,7 @@ describe("GitHub Projects v2 integration", () => {
             body: "",
             url: "https://github.com/acme/widgets/issues/10",
             state: "open",
-            labels: [{ name: "openfleet" }],
+            labels: [{ name: "bosun" }],
             assignees: [],
           },
         },
@@ -1086,7 +1086,7 @@ describe("GitHub Projects v2 integration", () => {
             body: "",
             url: "https://github.com/acme/widgets/issues/11",
             state: "open",
-            labels: [{ name: "openfleet" }],
+            labels: [{ name: "bosun" }],
             assignees: [],
           },
         },
@@ -1185,7 +1185,7 @@ describe("GitHub Projects v2 integration", () => {
             body: "",
             url: "https://github.com/acme/widgets/issues/10",
             state: "open",
-            labels: [{ name: "openfleet" }],
+            labels: [{ name: "bosun" }],
             assignees: [],
           },
         },
@@ -1199,7 +1199,7 @@ describe("GitHub Projects v2 integration", () => {
             body: "",
             url: "https://github.com/acme/widgets/issues/11",
             state: "open",
-            labels: [{ name: "openfleet" }],
+            labels: [{ name: "bosun" }],
             assignees: [],
           },
         },

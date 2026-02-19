@@ -1,7 +1,7 @@
 # VK Session Log Failure Pattern Catalog
 
 > **Source**: 30 VK session log files from `2026-02-09T14:17–15:40 UTC`
-> **Purpose**: Plaintext patterns for real-time openfleet detection
+> **Purpose**: Plaintext patterns for real-time bosun detection
 > **Log formats**: Copilot/VK (JSON-line `{"ToolCall":...}`) and Codex (JSON-RPC `{"method":"codex/event/..."}`)
 
 ---

@@ -1,5 +1,5 @@
 /**
- * autofix.mjs — Self-healing engine for openfleet.
+ * autofix.mjs — Self-healing engine for bosun.
  *
  * Two operating modes determined by `isDevMode()`:
  *
@@ -42,7 +42,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // ── Dev mode detection ──────────────────────────────────────────────────────
 
 /**
- * Detect whether openfleet is running from its source repo (dev mode)
+ * Detect whether bosun is running from its source repo (dev mode)
  * or from an npm install (npm mode).
  *
  * Dev mode indicators:
@@ -320,7 +320,7 @@ async function readSourceContext(filePath, errorLine, contextLines = 30) {
 // ── Dev mode detection ───────────────────────────────────────────────────────
 
 /**
- * Detect whether openfleet is running from its source repo (dev mode)
+ * Detect whether bosun is running from its source repo (dev mode)
  * or from an npm install (npm mode).
  *
  * Dev mode: AUTOFIX_MODE=dev/execute, or monorepo markers present
@@ -757,7 +757,7 @@ export async function attemptAutoFix(opts) {
               .join("\n")
           : "(no explicit error lines — possible SIGKILL/OOM)") +
         `\n\n**Suggested action:** Review the error indicators above. ` +
-        `The main orchestrator script is \`scripts/openfleet/ve-orchestrator.ps1\`. ` +
+        `The main orchestrator script is \`scripts/bosun/ve-orchestrator.ps1\`. ` +
         `Check for PowerShell syntax errors, null references, or infinite retry loops.`;
 
       await writeFile(
@@ -1091,7 +1091,7 @@ ${fallback.tail}
 ${messagesCtx}
 ## Instructions
 1. Analyze the log for the root cause of the crash
-2. The main orchestrator script is: scripts/openfleet/ve-orchestrator.ps1
+2. The main orchestrator script is: scripts/bosun/ve-orchestrator.ps1
 3. If you can identify a fixable bug, apply a minimal fix to the file
 4. Common crash causes:
    - PowerShell syntax errors (\$Var: treated as scope, missing brackets)
@@ -1182,7 +1182,7 @@ indicating an infinite retry loop that needs to be fixed:
 ${messagesCtx}
 
 ## Instructions
-1. The main script is: scripts/openfleet/ve-orchestrator.ps1
+1. The main script is: scripts/bosun/ve-orchestrator.ps1
 2. Search for the code that produces this error message
 3. Identify why it loops (missing break/continue/return, no state change between iterations, etc.)
 4. Fix the loop by adding proper exit conditions, error handling, or state tracking
@@ -1236,7 +1236,7 @@ ${messagesCtx}
       `• No break/continue/return after the error condition\n` +
       `• Status not updated after failure → retries the same operation\n` +
       `• Missing backoff or give-up logic after repeated failures\n\n` +
-      `**Suggested fix:** Check \`scripts/openfleet/ve-orchestrator.ps1\` for the code ` +
+      `**Suggested fix:** Check \`scripts/bosun/ve-orchestrator.ps1\` for the code ` +
       `that produces this error message and add proper exit conditions.`;
 
     await writeFile(

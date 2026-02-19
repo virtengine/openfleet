@@ -162,11 +162,11 @@ function mapEvents(sourceEvent, payload) {
 
 async function run() {
   // ── VE_MANAGED guard ──────────────────────────────────────────────────────
-  // Only execute hooks for sessions managed by openfleet.
-  // openfleet sets VE_MANAGED=1 in all spawned agent environments.
+  // Only execute hooks for sessions managed by bosun.
+  // bosun sets VE_MANAGED=1 in all spawned agent environments.
   // If this env var is missing, we're running inside a standalone agent session
   // that just happens to have the hook files in its config — exit silently.
-  if (!process.env.VE_MANAGED && !process.env.OPENFLEET_HOOKS_FORCE) {
+  if (!process.env.VE_MANAGED && !process.env.BOSUN_HOOKS_FORCE) {
     process.exit(0);
   }
 

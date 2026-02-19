@@ -6,7 +6,7 @@ You now have a **comprehensive agent work logging and analysis system** that:
 
 1. ✅ **Efficiently extracts ALL agent work** into structured JSONL logs
 2. ✅ **Streams data into `.cache/agent-work-logs/`** for real-time and offline analysis
-3. ✅ **Live monitoring** via openfleet for error detection and intervention
+3. ✅ **Live monitoring** via bosun for error detection and intervention
 4. ✅ **Backlog analysis** to improve prompts and task planning
 5. ✅ **Success metrics** to optimize executor selection and strategy
 6. ✅ **Future-ready** for ML-based insights and predictive analytics
@@ -26,7 +26,7 @@ You now have a **comprehensive agent work logging and analysis system** that:
 2. **[agent-work-analyzer.mjs](../agent-work-analyzer.mjs)**
    - Real-time log stream analyzer
    - Pattern detection: error loops, tool loops, stuck agents, cost anomalies
-   - Emits alerts to `agent-alerts.jsonl` for openfleet consumption
+   - Emits alerts to `agent-alerts.jsonl` for bosun consumption
    - Runs in background alongside monitor.mjs
 
 3. **[analyze-agent-work.mjs](../analyze-agent-work.mjs)**
@@ -229,7 +229,7 @@ AGENT_WORK_LOGGING_ENABLED=true
 AGENT_WORK_ANALYZER_ENABLED=true
 ```
 
-### 5. Restart openfleet
+### 5. Restart bosun
 
 ```bash
 npm run start
@@ -244,7 +244,7 @@ npm run start
 ### View Recent Activity
 
 ```powershell
-Import-Module scripts/openfleet/lib/agent-work-logger.ps1
+Import-Module scripts/bosun/lib/agent-work-logger.ps1
 Show-AgentWorkSummary -LastNDays 7
 ```
 
@@ -271,7 +271,7 @@ Top Errors:
 ### Analyze Failed Tasks
 
 ```bash
-node scripts/openfleet/analyze-agent-work.mjs --task-planning --failed-only
+node scripts/bosun/analyze-agent-work.mjs --task-planning --failed-only
 ```
 
 **Output:**
@@ -291,7 +291,7 @@ Root Cause Categories:
 ### Compare Executors
 
 ```bash
-node scripts/openfleet/analyze-agent-work.mjs --executor-comparison CODEX COPILOT
+node scripts/bosun/analyze-agent-work.mjs --executor-comparison CODEX COPILOT
 ```
 
 **Output:**
@@ -307,7 +307,7 @@ node scripts/openfleet/analyze-agent-work.mjs --executor-comparison CODEX COPILO
 ### Cluster Common Errors
 
 ```bash
-node scripts/openfleet/analyze-agent-work.mjs --error-clustering --days 30
+node scripts/bosun/analyze-agent-work.mjs --error-clustering --days 30
 ```
 
 **Output:**
@@ -325,7 +325,7 @@ context_window_exceeded: 12 occurrences across 8 tasks
 ### Weekly Report
 
 ```bash
-node scripts/openfleet/analyze-agent-work.mjs --weekly-report
+node scripts/bosun/analyze-agent-work.mjs --weekly-report
 ```
 
 ---
@@ -365,7 +365,7 @@ Recommendation: review_prompt_efficiency
 ### Rotate Logs (Weekly)
 
 ```bash
-bash scripts/openfleet/rotate-agent-logs.sh
+bash scripts/bosun/rotate-agent-logs.sh
 ```
 
 ### Clean Old Sessions
@@ -580,7 +580,7 @@ You now have a **production-ready agent work logging and analysis system** that:
 3. ✅ Enables **deep offline analysis** for continuous improvement
 4. ✅ Provides **actionable insights** to optimize task planning and executor selection
 5. ✅ Scales to **thousands of tasks** with efficient log rotation
-6. ✅ Integrates seamlessly with **existing openfleet infrastructure**
+6. ✅ Integrates seamlessly with **existing bosun infrastructure**
 
 **Next Steps:**
 1. Integrate logging calls into ve-orchestrator.ps1 (see quickstart guide)

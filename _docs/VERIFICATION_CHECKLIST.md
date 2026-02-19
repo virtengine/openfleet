@@ -14,7 +14,7 @@
 
 ### 2. Structured Comment Format
 
-- [x] HTML comment wrapper `<!-- openfleet-state ... -->`
+- [x] HTML comment wrapper `<!-- bosun-state ... -->`
 - [x] JSON state embedded in comment
 - [x] Human-readable text visible in GitHub UI
 - [x] Required fields: ownerId, attemptToken, attemptStarted, heartbeat, status, retryCount
@@ -37,7 +37,7 @@
 
 - [x] Accepts issueNumber parameter
 - [x] Fetches issue comments
-- [x] Finds latest openfleet-state comment
+- [x] Finds latest bosun-state comment
 - [x] Parses JSON from HTML comment
 - [x] Validates required fields
 - [x] Returns SharedState object or null
@@ -181,16 +181,16 @@
 
 ## Files Modified ✅
 
-- [x] scripts/openfleet/kanban-adapter.mjs
+- [x] scripts/bosun/kanban-adapter.mjs
 
 ## Files Created ✅
 
-- [x] scripts/openfleet/KANBAN_GITHUB_ENHANCEMENT.md
-- [x] scripts/openfleet/IMPLEMENTATION_SUMMARY.md
-- [x] scripts/openfleet/CHANGELOG_ENTRY.md
-- [x] scripts/openfleet/test-kanban-enhancement.mjs
-- [x] scripts/openfleet/example-multi-agent.mjs
-- [x] scripts/openfleet/VERIFICATION_CHECKLIST.md (this file)
+- [x] scripts/bosun/KANBAN_GITHUB_ENHANCEMENT.md
+- [x] scripts/bosun/IMPLEMENTATION_SUMMARY.md
+- [x] scripts/bosun/CHANGELOG_ENTRY.md
+- [x] scripts/bosun/test-kanban-enhancement.mjs
+- [x] scripts/bosun/example-multi-agent.mjs
+- [x] scripts/bosun/VERIFICATION_CHECKLIST.md (this file)
 
 ## Summary
 

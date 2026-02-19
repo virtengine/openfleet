@@ -1003,7 +1003,7 @@ let allCompleteNotified = false;
 let backlogLowNotified = false;
 let idleAgentsNotified = false;
 let plannerTriggered = false;
-const monitorStateCacheDir = resolve(repoRoot, ".openfleet", ".cache");
+const monitorStateCacheDir = resolve(repoRoot, ".bosun", ".cache");
 const plannerStatePath = resolve(
   monitorStateCacheDir,
   "task-planner-state.json",
@@ -1218,10 +1218,10 @@ async function attemptMonitorFix({ error, logText }) {
   }
 
   const attemptNum = recordMonitorFixAttempt(signature);
-  const fallbackPrompt = `You are debugging the ${projectName} openfleet.
+  const fallbackPrompt = `You are debugging the ${projectName} bosun.
 
 The monitor process hit an unexpected exception and needs a fix.
-Please inspect and fix code in the openfleet directory:
+Please inspect and fix code in the bosun directory:
 - monitor.mjs
 - autofix.mjs
 - maintenance.mjs
@@ -1233,7 +1233,7 @@ Recent log context:
 ${logText.slice(-4000)}
 
 Instructions:
-1) Identify the root cause of the crash in openfleet.
+1) Identify the root cause of the crash in bosun.
 2) Apply a minimal fix.
 3) Do not refactor unrelated code.
 4) Keep behavior stable and production-safe.`;
@@ -1319,7 +1319,7 @@ async function handleMonitorFailure(reason, err) {
 
   // Hard cap: exit the process to break the loop for good
   if (failureCount >= MONITOR_FAILURE_HARD_CAP) {
-    const msg = `🛑 openfleet hit hard failure cap (${failureCount}). Exiting to break crash loop.`;
+    const msg = `🛑 bosun hit hard failure cap (${failureCount}). Exiting to break crash loop.`;
     console.error(`[monitor] ${msg}`);
     if (telegramToken && telegramChatId) {
       try {
@@ -1358,7 +1358,7 @@ async function handleMonitorFailure(reason, err) {
     if (telegramToken && telegramChatId) {
       try {
         await sendTelegramMessage(
-          `⚠️ openfleet exception (${reason}). Attempting recovery (count=${failureCount}).`,
+          `⚠️ bosun exception (${reason}). Attempting recovery (count=${failureCount}).`,
         );
       } catch {
         /* suppress Telegram errors during failure handling */
@@ -1374,7 +1374,7 @@ async function handleMonitorFailure(reason, err) {
       if (telegramToken && telegramChatId) {
         try {
           await sendTelegramMessage(
-            `🛠️ openfleet auto-fix applied. Restarting monitor.\n${fixResult.outcome}`,
+            `🛠️ bosun auto-fix applied. Restarting monitor.\n${fixResult.outcome}`,
           );
         } catch {
           /* best effort */
@@ -1390,7 +1390,7 @@ async function handleMonitorFailure(reason, err) {
       if (telegramToken && telegramChatId) {
         try {
           await sendTelegramMessage(
-            `🛑 openfleet entering safe mode after repeated failures (${failureCount} in 10m). Pausing restarts for ${pauseMin} minutes.`,
+            `🛑 bosun entering safe mode after repeated failures (${failureCount} in 10m). Pausing restarts for ${pauseMin} minutes.`,
           );
         } catch {
           /* best effort */
@@ -1449,9 +1449,9 @@ Please diagnose the likely root cause and apply a minimal fix.
 
 Targets (edit only if needed):
 - ${scriptPath}
-- openfleet/monitor.mjs
-- openfleet/autofix.mjs
-- openfleet/maintenance.mjs
+- bosun/monitor.mjs
+- bosun/autofix.mjs
+- bosun/maintenance.mjs
 
 Recent log excerpt:
 ${logText.slice(-6000)}
@@ -2799,7 +2799,7 @@ async function findExistingPrForBranchApi(branch) {
         Authorization: `Bearer ${githubToken}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "openfleet",
+        "User-Agent": "bosun",
       },
     });
     if (!res || !res.ok) {
@@ -2852,7 +2852,7 @@ async function getPullRequestByNumber(prNumber) {
         Authorization: `Bearer ${githubToken}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "openfleet",
+        "User-Agent": "bosun",
       },
     });
     if (!res || !res.ok) {
@@ -3528,8 +3528,8 @@ function isPlannerTaskData(task) {
     return true;
   }
   return (
-    desc.includes("task planner — auto-created by openfleet") ||
-    desc.includes("task planner - auto-created by openfleet")
+    desc.includes("task planner — auto-created by bosun") ||
+    desc.includes("task planner - auto-created by bosun")
   );
 }
 
@@ -6124,14 +6124,14 @@ async function actOnAssessment(ctx, decision) {
 // Use config-driven branch routing instead of hardcoded defaults
 const DEFAULT_TARGET_BRANCH =
   branchRouting?.defaultBranch || process.env.VK_TARGET_BRANCH || "origin/main";
-const DEFAULT_OPENFLEET_UPSTREAM =
-  branchRouting?.scopeMap?.["openfleet"] ||
-  process.env.OPENFLEET_TASK_UPSTREAM ||
-  "origin/ve/openfleet-generic";
+const DEFAULT_BOSUN_UPSTREAM =
+  branchRouting?.scopeMap?.["bosun"] ||
+  process.env.BOSUN_TASK_UPSTREAM ||
+  "origin/ve/bosun-generic";
 
 /**
  * Extract the conventional commit scope from a task title.
- * E.g. "feat(openfleet): add caching" → "openfleet"
+ * E.g. "feat(bosun): add caching" → "bosun"
  *      "[P1] fix(veid): broken flow"      → "veid"
  *      "chore(provider): cleanup"         → "provider"
  * @param {string} title
@@ -6155,7 +6155,7 @@ function extractScopeFromTitle(title) {
  *   4. Text body extraction
  *   5. Config scopeMap matching (title scope → branch)
  *   6. Config scopeMap matching (keyword-based)
- *   7. Legacy openfleet keyword detection
+ *   7. Legacy bosun keyword detection
  *   8. Config defaultBranch
  * @param {object} task
  * @returns {string|null}
@@ -6310,15 +6310,15 @@ function resolveUpstreamFromTask(task) {
   const fromConfig = resolveUpstreamFromConfig(task);
   if (fromConfig) return fromConfig;
 
-  // ── Legacy openfleet keyword detection ────────────────
+  // ── Legacy bosun keyword detection ────────────────
   const text = getTaskTextBlob(task).toLowerCase();
   if (
-    text.includes("openfleet") ||
+    text.includes("bosun") ||
     text.includes("codex monitor") ||
-    text.includes("@virtengine/openfleet") ||
-    text.includes("scripts/openfleet")
+    text.includes("@virtengine/bosun") ||
+    text.includes("scripts/bosun")
   ) {
-    return DEFAULT_OPENFLEET_UPSTREAM;
+    return DEFAULT_BOSUN_UPSTREAM;
   }
 
   return null;
@@ -6746,9 +6746,9 @@ Return a short summary of what you did and any files that needed manual resoluti
     let prDescription = "";
     if (attempt?.task_description) {
       prDescription = attempt.task_description.trim();
-      prDescription += `\n\n---\n_Auto-created by openfleet (${status})_`;
+      prDescription += `\n\n---\n_Auto-created by bosun (${status})_`;
     } else {
-      prDescription = `Auto-created by openfleet after ${status} status.`;
+      prDescription = `Auto-created by bosun after ${status} status.`;
     }
 
     const branchName = attempt?.branch || branchStatus?.branch || null;
@@ -7376,12 +7376,12 @@ function buildPlannerTaskDescription({
   runtimeContext,
 }) {
   return [
-    "## Task Planner — Auto-created by openfleet",
+    "## Task Planner — Auto-created by bosun",
     "",
     `**Trigger reason:** ${reason || "manual"}`,
     `**Requested task count:** ${numTasks}`,
     "",
-    "### Planner Prompt (Injected by openfleet)",
+    "### Planner Prompt (Injected by bosun)",
     "",
     plannerPrompt,
     "",
@@ -7495,7 +7495,7 @@ function formatPlannerTaskDescription(task) {
   }
 
   const description = lines.join("\n").trim();
-  return description || "Planned by openfleet task planner.";
+  return description || "Planned by bosun task planner.";
 }
 
 function resolvePlannerTaskBaseBranch(task) {
@@ -8790,7 +8790,7 @@ async function triggerTaskPlannerViaCodex(
     );
   }
 
-  const plannerArtifactDir = resolve(repoRoot, ".openfleet", ".cache");
+  const plannerArtifactDir = resolve(repoRoot, ".bosun", ".cache");
   await mkdir(plannerArtifactDir, { recursive: true });
   const artifactPath = resolve(
     plannerArtifactDir,
@@ -9019,7 +9019,7 @@ async function analyzeWithCodex(logPath, logText, reason) {
   // The new approach uses `codex exec` with --full-auto so the agent can
   // actually read files, inspect git status, and give a real diagnosis.
   const logTail = logText.slice(-12000);
-  const prompt = `You are diagnosing why the openfleet orchestrator exited.
+  const prompt = `You are diagnosing why the bosun orchestrator exited.
 You have FULL READ ACCESS to the workspace. Use it.
 
 ## Context
@@ -9027,7 +9027,7 @@ You have FULL READ ACCESS to the workspace. Use it.
 - Orchestrator script: ${scriptPath}
 - Repository root: ${repoRoot}
 - Active log file: ${logPath}
-- Monitor script: scripts/openfleet/monitor.mjs
+- Monitor script: scripts/bosun/monitor.mjs
 - VK endpoint: ${vkEndpointUrl || "(not set)"}
 - Git branch: ${(() => {
     try {
@@ -9712,7 +9712,7 @@ function buildMonitorMonitorStatusText(reason = "heartbeat") {
     .find(Boolean);
 
   const lines = [
-    "🛰️ OpenFleet-Monitor Update",
+    "🛰️ Bosun-Monitor Update",
     `- Reason: ${reason}`,
     `- Running: ${monitorMonitor.running ? "yes" : "no"}`,
     `- Current SDK: ${currentSdk}`,
@@ -9957,7 +9957,7 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
     "## Runtime Contract",
     "- You are running under monitor.mjs in devmode.",
     "- Fix reliability issues immediately; if smooth, perform code-analysis improvements.",
-    "- Apply fixes directly in scripts/openfleet and related prompt/config files.",
+    "- Apply fixes directly in scripts/bosun and related prompt/config files.",
     "- Do not commit, push, or open PRs from this run.",
     `- ${branchInstruction}`,
     "",
@@ -9991,7 +9991,7 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
     "",
     "## Deliverable",
     "1. Diagnose current reliability issues first and patch root causes.",
-    "2. If no active reliability issue exists, implement one meaningful openfleet quality/reliability improvement.",
+    "2. If no active reliability issue exists, implement one meaningful bosun quality/reliability improvement.",
     "3. Run focused validation commands for touched files.",
     "4. Summarize what changed and why.",
   ].join("\n");

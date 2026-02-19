@@ -1,5 +1,5 @@
 /**
- * telegram-bot.mjs — Two-way Telegram ↔ primary agent for openfleet.
+ * telegram-bot.mjs — Two-way Telegram ↔ primary agent for bosun.
  *
  * Polls Telegram Bot API for incoming messages, routes slash commands to
  * built-in handlers, and forwards free-text to the persistent primary agent.
@@ -97,7 +97,7 @@ import {
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
-const OpenFleetDir = __dirname;
+const BosunDir = __dirname;
 const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const telegramPollLockPath = resolve(
   repoRoot,
@@ -114,9 +114,9 @@ const fwCooldownPath = resolve(repoRoot, ".cache", "ve-fw-cooldown.json");
 const FW_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 function resolveVeKanbanPs1Path() {
-  const modulePath = resolve(OpenFleetDir, "ve-kanban.ps1");
+  const modulePath = resolve(BosunDir, "ve-kanban.ps1");
   if (existsSync(modulePath)) return modulePath;
-  return resolve(repoRoot, "scripts", "openfleet", "ve-kanban.ps1");
+  return resolve(repoRoot, "scripts", "bosun", "ve-kanban.ps1");
 }
 
 // ── Configuration ────────────────────────────────────────────────────────────
@@ -2148,7 +2148,7 @@ async function cmdRepos(chatId, _text) {
           "",
           `Active: \`${config.repoSlug || config.repoRoot || "current directory"}\``,
           "",
-          "_Single-repo mode. Add repositories in openfleet.config.json:_",
+          "_Single-repo mode. Add repositories in bosun.config.json:_",
           "\`\`\`json",
           JSON.stringify(
             {
@@ -2426,7 +2426,7 @@ const COMMANDS = {
   },
   "/presence": {
     handler: cmdPresence,
-    desc: "Show active openfleet instances",
+    desc: "Show active bosun instances",
   },
   "/instances": {
     handler: cmdPresence,
@@ -3570,7 +3570,7 @@ const UI_SCREENS = {};
 
 Object.assign(UI_SCREENS, {
   home: {
-    title: "OpenFleet Control Center",
+    title: "Bosun Control Center",
     parent: null,
     body: async () => {
       const statusLine = await buildHomeStatusLine();
@@ -3584,7 +3584,7 @@ Object.assign(UI_SCREENS, {
         executorLine = `Executor: ${_getExecutorMode?.() || "internal"}`;
       }
       return [
-        "Pick a section below to manage OpenFleet.",
+        "Pick a section below to manage Bosun.",
         "",
         statusLine,
         executorLine,
@@ -5209,7 +5209,7 @@ async function cmdApp(chatId) {
 
   await sendDirect(
     chatId,
-    "🚀 *OpenFleet Control Center*\n\nOpen the Mini App or access via browser:",
+    "🚀 *Bosun Control Center*\n\nOpen the Mini App or access via browser:",
     {
       parseMode: "Markdown",
       reply_markup: keyboard,
@@ -5241,7 +5241,7 @@ async function cmdHelp(chatId) {
 }
 
 async function cmdHelpFull(chatId) {
-  const lines = ["🤖 OpenFleet Primary Agent — All Commands:\n"];
+  const lines = ["🤖 Bosun Primary Agent — All Commands:\n"];
   for (const [cmd, { desc }] of Object.entries(COMMANDS)) {
     lines.push(`${cmd} — ${desc}`);
   }
@@ -5303,7 +5303,7 @@ async function cmdStatus(chatId) {
       : [];
 
     const lines = [
-      "📊 OpenFleet Orchestrator Status",
+      "📊 Bosun Orchestrator Status",
       "",
       `Running: ${counts.running ?? 0}`,
       `Review: ${counts.review ?? 0}`,
@@ -5738,7 +5738,7 @@ async function cmdStartTask(chatId, args) {
         }
       } catch (err) {
         console.warn(
-          `[openfleet] manual start failed to mark task ${taskId} inprogress: ${err.message}`,
+          `[bosun] manual start failed to mark task ${taskId} inprogress: ${err.message}`,
         );
       }
       const detailLines = [
@@ -9518,7 +9518,7 @@ export async function startTelegramBot() {
   } else {
     await sendDirect(
       telegramChatId,
-      `🤖 OpenFleet primary agent online (${getPrimaryAgentName()}).\n\nType /menu for the control center or send any message to chat with the agent.`,
+      `🤖 Bosun primary agent online (${getPrimaryAgentName()}).\n\nType /menu for the control center or send any message to chat with the agent.`,
     );
   }
 

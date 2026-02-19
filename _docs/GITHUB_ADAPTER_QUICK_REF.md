@@ -117,7 +117,7 @@ Tasks from `listTasks()` and `getTask()` include:
 Structured comments in GitHub issues:
 
 ```markdown
-<!-- openfleet-state
+<!-- bosun-state
 {
   "ownerId": "workstation-123/agent-456",
   "attemptToken": "uuid-here",
@@ -128,7 +128,7 @@ Structured comments in GitHub issues:
 }
 -->
 
-**OpenFleet Status**: Agent `agent-456` on `workstation-123` is working on this task.
+**Bosun Status**: Agent `agent-456` on `workstation-123` is working on this task.
 _Last heartbeat: 2026-02-14T17:30:00Z_
 ```
 

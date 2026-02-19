@@ -17,7 +17,7 @@ async function createScriptPair(dir, ext) {
 
 describe("setup platform defaults", () => {
   it("prefers .ps1 defaults on win32", async () => {
-    const dir = await mkdtemp(resolve(tmpdir(), "openfleet-setup-platform-"));
+    const dir = await mkdtemp(resolve(tmpdir(), "bosun-setup-platform-"));
 
     try {
       await createScriptPair(dir, "ps1");
@@ -36,7 +36,7 @@ describe("setup platform defaults", () => {
   });
 
   it("prefers .sh defaults on linux", async () => {
-    const dir = await mkdtemp(resolve(tmpdir(), "openfleet-setup-platform-"));
+    const dir = await mkdtemp(resolve(tmpdir(), "bosun-setup-platform-"));
 
     try {
       await createScriptPair(dir, "ps1");
@@ -51,7 +51,7 @@ describe("setup platform defaults", () => {
   });
 
   it("falls back to available variant when preferred one is missing", async () => {
-    const dir = await mkdtemp(resolve(tmpdir(), "openfleet-setup-platform-"));
+    const dir = await mkdtemp(resolve(tmpdir(), "bosun-setup-platform-"));
 
     try {
       await createScriptPair(dir, "ps1");
@@ -85,17 +85,17 @@ describe("setup platform defaults", () => {
   });
 
   it("formats default orchestrator script as config-relative path", () => {
-    const scriptPath = "/tmp/project/scripts/openfleet/ve-orchestrator.sh";
-    const configDir = "/tmp/project/scripts/openfleet";
+    const scriptPath = "/tmp/project/scripts/bosun/ve-orchestrator.sh";
+    const configDir = "/tmp/project/scripts/bosun";
     expect(formatOrchestratorScriptForEnv(scriptPath, configDir)).toBe(
       "./ve-orchestrator.sh",
     );
   });
 
   it("resolves setup defaults and emits relative .sh path on non-windows", async () => {
-    const repoRoot = await mkdtemp(resolve(tmpdir(), "openfleet-setup-repo-"));
-    const packageDir = await mkdtemp(resolve(tmpdir(), "openfleet-setup-pkg-"));
-    const configDir = resolve(repoRoot, "scripts", "openfleet");
+    const repoRoot = await mkdtemp(resolve(tmpdir(), "bosun-setup-repo-"));
+    const packageDir = await mkdtemp(resolve(tmpdir(), "bosun-setup-pkg-"));
+    const configDir = resolve(repoRoot, "scripts", "bosun");
 
     try {
       await createScriptPair(configDir, "sh");

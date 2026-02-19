@@ -6,9 +6,9 @@ import { homedir } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_FILES = [
-  "openfleet.config.json",
-  ".openfleet.json",
-  "openfleet.json",
+  "bosun.config.json",
+  ".bosun.json",
+  "bosun.json",
 ];
 
 function parseBool(value) {
@@ -82,7 +82,7 @@ function isWslInteropRuntime() {
 }
 
 function resolveConfigDir(repoRoot) {
-  const explicit = process.env.OPENFLEET_DIR;
+  const explicit = process.env.BOSUN_DIR;
   if (explicit) return resolve(explicit);
 
   const repoPath = resolve(repoRoot || process.cwd());
@@ -106,7 +106,7 @@ function resolveConfigDir(repoRoot) {
         process.env.APPDATA ||
         process.env.LOCALAPPDATA ||
         process.cwd();
-  return resolve(baseDir, "openfleet");
+  return resolve(baseDir, "bosun");
 }
 
 function loadDotEnvToObject(envPath) {
@@ -420,8 +420,8 @@ export function runConfigDoctor(options = {}) {
   } else {
     issues.warnings.push({
       code: "CONFIG_JSON_MISSING",
-      message: "No openfleet config JSON found.",
-      fix: "Run openfleet --setup to generate openfleet.config.json",
+      message: "No bosun config JSON found.",
+      fix: "Run bosun --setup to generate bosun.config.json",
     });
   }
 
@@ -429,7 +429,7 @@ export function runConfigDoctor(options = {}) {
     issues.warnings.push({
       code: "ENV_MISSING",
       message: "No .env file found in config directory or repo root.",
-      fix: "Run openfleet --setup to generate .env",
+      fix: "Run bosun --setup to generate .env",
     });
   }
 
@@ -439,7 +439,7 @@ export function runConfigDoctor(options = {}) {
       code: "VSCODE_SETTINGS_MISSING",
       message:
         "No .vscode/settings.json found — Copilot autonomous/subagent defaults may be missing.",
-      fix: "Run openfleet --setup to generate recommended workspace settings.",
+      fix: "Run bosun --setup to generate recommended workspace settings.",
     });
   } else {
     try {
@@ -456,14 +456,14 @@ export function runConfigDoctor(options = {}) {
           code: "VSCODE_SETTINGS_PARTIAL",
           message:
             "Workspace Copilot settings are missing recommended autonomous/subagent flags.",
-          fix: "Run openfleet --setup to merge the recommended .vscode/settings.json defaults.",
+          fix: "Run bosun --setup to merge the recommended .vscode/settings.json defaults.",
         });
       }
     } catch {
       issues.warnings.push({
         code: "VSCODE_SETTINGS_INVALID",
         message: ".vscode/settings.json is not valid JSON.",
-        fix: "Fix JSON syntax or rerun openfleet --setup to regenerate it.",
+        fix: "Fix JSON syntax or rerun bosun --setup to regenerate it.",
       });
     }
   }
@@ -476,7 +476,7 @@ export function runConfigDoctor(options = {}) {
       issues.warnings.push({
         code: "CODEX_NO_FEATURES",
         message: "Codex config.toml has no [features] section — sub-agents and advanced features disabled.",
-        fix: "Run openfleet --setup to auto-configure features, or add [features] manually",
+        fix: "Run bosun --setup to auto-configure features, or add [features] manually",
       });
     } else {
       if (!/child_agents_md\s*=\s*true/i.test(toml)) {
@@ -501,14 +501,14 @@ export function runConfigDoctor(options = {}) {
       issues.warnings.push({
         code: "CODEX_NO_SANDBOX_PERMS",
         message: "No sandbox_permissions in Codex config — may restrict agent file access.",
-        fix: "Run openfleet --setup to auto-configure sandbox permissions",
+        fix: "Run bosun --setup to auto-configure sandbox permissions",
       });
     }
     if (!/^\[sandbox_workspace_write\]/m.test(toml)) {
       issues.warnings.push({
         code: "CODEX_NO_SANDBOX_WORKSPACE",
         message: "No [sandbox_workspace_write] section in Codex config — workspace-write roots may be missing.",
-        fix: "Run openfleet --setup to add workspace-write defaults (writable_roots, network_access).",
+        fix: "Run bosun --setup to add workspace-write defaults (writable_roots, network_access).",
       });
     }
     if (
@@ -518,14 +518,14 @@ export function runConfigDoctor(options = {}) {
       issues.warnings.push({
         code: "CODEX_BWRAP_DISABLED",
         message: "Bubblewrap sandbox is enabled but unprivileged user namespaces appear disabled.",
-        fix: "Set CODEX_FEATURES_BWRAP=false and re-run openfleet --setup (or edit ~/.codex/config.toml [features]).",
+        fix: "Set CODEX_FEATURES_BWRAP=false and re-run bosun --setup (or edit ~/.codex/config.toml [features]).",
       });
     }
   } else {
     issues.warnings.push({
       code: "CODEX_CONFIG_MISSING",
       message: "~/.codex/config.toml not found — Codex CLI may not be configured.",
-      fix: "Run openfleet --setup or 'codex --setup' to create initial config",
+      fix: "Run bosun --setup or 'codex --setup' to create initial config",
     });
   }
 
@@ -569,7 +569,7 @@ export function runConfigDoctor(options = {}) {
 
 export function formatConfigDoctorReport(result) {
   const lines = [];
-  lines.push("=== openfleet config doctor ===");
+  lines.push("=== bosun config doctor ===");
   lines.push(
     `Status: ${result.ok ? "OK" : "FAILED"} (${result.errors.length} error(s), ${result.warnings.length} warning(s))`,
   );
@@ -605,7 +605,7 @@ export function formatConfigDoctorReport(result) {
     lines.push("Doctor check passed — configuration looks consistent.");
   } else {
     lines.push(
-      "Doctor check failed — fix the errors above and run: openfleet --doctor",
+      "Doctor check failed — fix the errors above and run: bosun --doctor",
     );
   }
 

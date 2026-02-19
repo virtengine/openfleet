@@ -70,14 +70,14 @@ const uiRoot = resolve(__dirname, "ui");
 const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const logsDir = resolve(__dirname, "logs");
 const agentLogsDir = resolve(repoRoot, ".cache", "agent-logs");
-const CONFIG_SCHEMA_PATH = resolve(__dirname, "openfleet.schema.json");
+const CONFIG_SCHEMA_PATH = resolve(__dirname, "bosun.schema.json");
 let _configSchema = null;
 let _configValidator = null;
 
 function resolveConfigPath() {
-  return process.env.OPENFLEET_CONFIG_PATH
-    ? resolve(process.env.OPENFLEET_CONFIG_PATH)
-    : resolve(__dirname, "openfleet.config.json");
+  return process.env.BOSUN_CONFIG_PATH
+    ? resolve(process.env.BOSUN_CONFIG_PATH)
+    : resolve(__dirname, "bosun.config.json");
 }
 
 function getConfigSchema() {
@@ -165,7 +165,7 @@ function coerceSettingValue(def, value, propSchema) {
       .split(",")
       .map((part) => part.trim())
       .filter(Boolean);
-    if (def?.key === "OPENFLEET_HOOK_TARGETS") {
+    if (def?.key === "BOSUN_HOOK_TARGETS") {
       parts = parts.map((part) => part.toLowerCase());
       if (parts.includes("all")) {
         const allowed = Array.isArray(propSchema?.items?.enum)
@@ -213,7 +213,7 @@ function getSchemaProperty(schema, pathParts) {
 
 const ROOT_SKIP_ENV_KEYS = new Set([]);
 const ROOT_OVERRIDE_MAP = {
-  OPENFLEET_MODE: "mode",
+  BOSUN_MODE: "mode",
   TASK_PLANNER_MODE: "plannerMode",
   EXECUTOR_DISTRIBUTION: "distribution",
 };
@@ -274,8 +274,8 @@ function mapEnvKeyToConfigPath(key, schema) {
     const sub = toCamelCaseFromEnv(rest);
     if (schema.properties.failover.properties[sub]) return buildConfigPath(["failover", sub]);
   }
-  if (envKey.startsWith("OPENFLEET_PROMPT_") && schema.properties.agentPrompts?.properties) {
-    const rest = envKey.slice("OPENFLEET_PROMPT_".length);
+  if (envKey.startsWith("BOSUN_PROMPT_") && schema.properties.agentPrompts?.properties) {
+    const rest = envKey.slice("BOSUN_PROMPT_".length);
     const sub = toCamelCaseFromEnv(rest);
     if (schema.properties.agentPrompts.properties[sub]) {
       return buildConfigPath(["agentPrompts", sub]);
@@ -293,10 +293,10 @@ function mapEnvKeyToConfigPath(key, schema) {
     }
   }
   const hookProfileMap = {
-    OPENFLEET_HOOK_PROFILE: ["hookProfiles", "profile"],
-    OPENFLEET_HOOK_TARGETS: ["hookProfiles", "targets"],
-    OPENFLEET_HOOKS_ENABLED: ["hookProfiles", "enabled"],
-    OPENFLEET_HOOKS_OVERWRITE: ["hookProfiles", "overwriteExisting"],
+    BOSUN_HOOK_PROFILE: ["hookProfiles", "profile"],
+    BOSUN_HOOK_TARGETS: ["hookProfiles", "targets"],
+    BOSUN_HOOKS_ENABLED: ["hookProfiles", "enabled"],
+    BOSUN_HOOKS_OVERWRITE: ["hookProfiles", "overwriteExisting"],
   };
   if (hookProfileMap[envKey]) {
     const pathParts = hookProfileMap[envKey];
@@ -470,10 +470,10 @@ const SETTINGS_KNOWN_KEYS = [
   "CODEX_MODEL_PROFILE_M_PROVIDER", "CODEX_MODEL_PROFILE_M_MODEL", "CODEX_MODEL_PROFILE_M_BASE_URL", "CODEX_MODEL_PROFILE_M_API_KEY",
   "CODEX_SUBAGENT_MODEL", "ANTHROPIC_API_KEY", "CLAUDE_MODEL",
   "COPILOT_MODEL", "COPILOT_CLI_TOKEN",
-  "KANBAN_BACKEND", "KANBAN_SYNC_POLICY", "OPENFLEET_TASK_LABEL",
-  "OPENFLEET_ENFORCE_TASK_LABEL", "STALE_TASK_AGE_HOURS",
+  "KANBAN_BACKEND", "KANBAN_SYNC_POLICY", "BOSUN_TASK_LABEL",
+  "BOSUN_ENFORCE_TASK_LABEL", "STALE_TASK_AGE_HOURS",
   "TASK_PLANNER_MODE", "TASK_PLANNER_DEDUP_HOURS",
-  "OPENFLEET_PROMPT_PLANNER",
+  "BOSUN_PROMPT_PLANNER",
   "GITHUB_TOKEN", "GITHUB_REPOSITORY", "GITHUB_PROJECT_MODE",
   "GITHUB_PROJECT_NUMBER", "GITHUB_DEFAULT_ASSIGNEE", "GITHUB_AUTO_ASSIGN_CREATOR",
   "GITHUB_PROJECT_WEBHOOK_PATH", "GITHUB_PROJECT_WEBHOOK_SECRET", "GITHUB_PROJECT_WEBHOOK_REQUIRE_SIGNATURE",
@@ -488,12 +488,12 @@ const SETTINGS_KNOWN_KEYS = [
   "CODEX_SANDBOX", "CODEX_FEATURES_BWRAP", "CODEX_SANDBOX_PERMISSIONS", "CODEX_SANDBOX_WRITABLE_ROOTS",
   "CONTAINER_ENABLED", "CONTAINER_RUNTIME", "CONTAINER_IMAGE",
   "CONTAINER_TIMEOUT_MS", "MAX_CONCURRENT_CONTAINERS", "CONTAINER_MEMORY_LIMIT", "CONTAINER_CPU_LIMIT",
-  "OPENFLEET_SENTINEL_AUTO_START", "SENTINEL_AUTO_RESTART_MONITOR",
+  "BOSUN_SENTINEL_AUTO_START", "SENTINEL_AUTO_RESTART_MONITOR",
   "SENTINEL_CRASH_LOOP_THRESHOLD", "SENTINEL_CRASH_LOOP_WINDOW_MIN",
   "SENTINEL_REPAIR_AGENT_ENABLED", "SENTINEL_REPAIR_TIMEOUT_MIN",
-  "OPENFLEET_HOOK_PROFILE", "OPENFLEET_HOOK_TARGETS",
-  "OPENFLEET_HOOKS_ENABLED", "OPENFLEET_HOOKS_OVERWRITE",
-  "OPENFLEET_HOOKS_BUILTINS_MODE",
+  "BOSUN_HOOK_PROFILE", "BOSUN_HOOK_TARGETS",
+  "BOSUN_HOOKS_ENABLED", "BOSUN_HOOKS_OVERWRITE",
+  "BOSUN_HOOKS_BUILTINS_MODE",
   "AGENT_WORK_LOGGING_ENABLED", "AGENT_WORK_ANALYZER_ENABLED",
   "AGENT_SESSION_LOG_RETENTION", "AGENT_ERROR_LOOP_THRESHOLD",
   "AGENT_STUCK_THRESHOLD_MS", "LOG_MAX_SIZE_MB",
@@ -545,13 +545,13 @@ function updateConfigFile(changes) {
   const schema = getConfigSchema();
   const configPath = resolveConfigPath();
   if (!schema) return { updated: [], path: configPath };
-  let configData = { $schema: "./openfleet.schema.json" };
+  let configData = { $schema: "./bosun.schema.json" };
   if (existsSync(configPath)) {
     try {
       const raw = readFileSync(configPath, "utf8");
       configData = JSON.parse(raw);
     } catch {
-      configData = { $schema: "./openfleet.schema.json" };
+      configData = { $schema: "./bosun.schema.json" };
     }
   }
 
@@ -578,7 +578,7 @@ function updateConfigFile(changes) {
   }
 
   if (!configData.$schema) {
-    configData.$schema = "./openfleet.schema.json";
+    configData.$schema = "./bosun.schema.json";
   }
   writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
   return { updated: Array.from(updated), path: configPath };
@@ -738,7 +738,7 @@ function ensureSelfSignedCert() {
       `openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 ` +
         `-keyout "${TLS_KEY_PATH}" -out "${TLS_CERT_PATH}" ` +
         `-days 825 -nodes -batch ` +
-        `-subj "/CN=openfleet" ` +
+        `-subj "/CN=bosun" ` +
         `-addext "subjectAltName=${subjectAltName}"`,
       { stdio: "pipe", timeout: 10_000 },
     );
@@ -814,7 +814,7 @@ function detectFirewallType(port) {
         if (active === "active") {
           return {
             firewall: "ufw",
-            allowCmd: `sudo ufw allow ${port}/tcp comment "openfleet UI"`,
+            allowCmd: `sudo ufw allow ${port}/tcp comment "bosun UI"`,
           };
         }
       } catch { /* not active */ }
@@ -840,7 +840,7 @@ function detectFirewallType(port) {
     if (platform === "win32") {
       return {
         firewall: "windows",
-        allowCmd: `netsh advfirewall firewall add rule name="openfleet UI" dir=in action=allow protocol=tcp localport=${port}`,
+        allowCmd: `netsh advfirewall firewall add rule name="bosun UI" dir=in action=allow protocol=tcp localport=${port}`,
       };
     }
 
@@ -871,7 +871,7 @@ export async function openFirewallPort(port) {
     // Build the actual command for pkexec (it doesn't support shell pipelines)
     let pkexecCmd;
     if (firewall === "ufw") {
-      pkexecCmd = `pkexec ufw allow ${port}/tcp comment "openfleet UI"`;
+      pkexecCmd = `pkexec ufw allow ${port}/tcp comment "bosun UI"`;
     } else if (firewall === "firewalld") {
       pkexecCmd = `pkexec bash -c 'firewall-cmd --add-port=${port}/tcp --permanent && firewall-cmd --reload'`;
     } else {

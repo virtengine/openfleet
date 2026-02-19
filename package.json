@@ -1,15 +1,15 @@
 {
-  "name": "@virtengine/openfleet",
+  "name": "bosun",
   "version": "0.26.3",
   "description": "AI-powered orchestrator supervisor — manages AI agent executors with failover, auto-restarts on failure, analyzes crashes with Codex SDK, creates PRs via Vibe-Kanban API, and sends Telegram notifications. Supports N executors with weighted distribution, multi-repo projects, and auto-setup.",
   "type": "module",
   "license": "Apache 2.0",
   "author": "VirtEngine <dev@virtengine.com>",
-  "homepage": "https://github.com/virtengine/virtengine/tree/main/scripts/openfleet",
+  "homepage": "https://github.com/virtengine/virtengine/tree/main/scripts/bosun",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/virtengine/virtengine.git",
-    "directory": "scripts/openfleet"
+    "directory": "scripts/bosun"
   },
   "bugs": {
     "url": "https://github.com/virtengine/virtengine/issues"
@@ -66,10 +66,10 @@
     "./compat": "./compat.mjs"
   },
   "bin": {
-    "openfleet": "cli.mjs",
-    "openfleet-setup": "setup.mjs",
-    "openfleet-chat-id": "get-telegram-chat-id.mjs",
-    "openfleet-shared-workspaces": "shared-workspace-cli.mjs",
+    "bosun": "cli.mjs",
+    "bosun-setup": "setup.mjs",
+    "bosun-chat-id": "get-telegram-chat-id.mjs",
+    "bosun-shared-workspaces": "shared-workspace-cli.mjs",
     "codex-monitor": "cli.mjs",
     "codex-monitor-setup": "setup.mjs",
     "codex-monitor-chat-id": "get-telegram-chat-id.mjs",
@@ -113,8 +113,8 @@
     "cli.mjs",
     "compat.mjs",
     "codex-config.mjs",
-    "openfleet.config.example.json",
-    "openfleet.schema.json",
+    "bosun.config.example.json",
+    "bosun.schema.json",
     "codex-model-profiles.mjs",
     "codex-shell.mjs",
     "config.mjs",

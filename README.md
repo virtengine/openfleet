@@ -1,27 +1,27 @@
-# @virtengine/openfleet
+# @virtengine/bosun
 
-**OpenFleet** is a production-grade supervisor for AI coding agents. It routes tasks across executors, manages retries and failover, automates PR lifecycle, and keeps you in control through Telegram (with optional WhatsApp and container isolation).
+**Bosun** is a production-grade supervisor for AI coding agents. It routes tasks across executors, manages retries and failover, automates PR lifecycle, and keeps you in control through Telegram (with optional WhatsApp and container isolation).
 
-[Website](https://openfleet.virtengine.com) · [Docs](https://openfleet.virtengine.com/docs/) · [GitHub](https://github.com/virtengine/virtengine/tree/main/scripts/openfleet) · [npm](https://www.npmjs.com/package/@virtengine/openfleet) · [Issues](https://github.com/virtengine/virtengine/issues)
+[Website](https://bosun.virtengine.com) · [Docs](https://bosun.virtengine.com/docs/) · [GitHub](https://github.com/virtengine/virtengine/tree/main/scripts/bosun) · [npm](https://www.npmjs.com/package/@virtengine/bosun) · [Issues](https://github.com/virtengine/virtengine/issues)
 
 ![CI](https://github.com/virtengine/virtengine/actions/workflows/ci.yaml/badge.svg)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)
-![npm](https://img.shields.io/npm/v/@virtengine/openfleet.svg)
+![npm](https://img.shields.io/npm/v/@virtengine/bosun.svg)
 
 ---
 
 ## Quick start
 
 ```bash
-npm install -g @virtengine/openfleet
+npm install -g @virtengine/bosun
 cd your-repo
-openfleet
+bosun
 ```
 
 First run launches setup automatically. You can also run setup directly:
 
 ```bash
-openfleet --setup
+bosun --setup
 ```
 
 Requires:
@@ -32,7 +32,7 @@ Requires:
 
 ---
 
-## What OpenFleet does
+## What Bosun does
 
 - Routes work across Codex, Copilot, and Claude executors
 - Automates retries, failover, and PR lifecycle management
@@ -44,7 +44,7 @@ Requires:
 
 ## Documentation
 
-**Published docs (website):** https://openfleet.virtengine.com/docs/
+**Published docs (website):** https://bosun.virtengine.com/docs/
 
 **Source docs (markdown):** `_docs/` is the source of truth for long-form documentation. Keep `site/docs` in sync with these markdown files so the website mirrors the same content.
 
@@ -64,7 +64,7 @@ Key references:
 
 ## CI/CD and quality gates
 
-OpenFleet enforces a strict quality pipeline in both local hooks and CI:
+Bosun enforces a strict quality pipeline in both local hooks and CI:
 
 - **Pre-commit hooks** auto-format and lint staged files.
 - **Pre-push hooks** run targeted checks based on changed files (Go, portal, docs).
@@ -73,11 +73,11 @@ OpenFleet enforces a strict quality pipeline in both local hooks and CI:
 Local commands you can run any time:
 
 ```bash
-# Syntax + tests for openfleet package
-npm -C scripts/openfleet test
+# Syntax + tests for bosun package
+npm -C scripts/bosun test
 
 # Prepublish safety checks
-npm -C scripts/openfleet run prepublishOnly
+npm -C scripts/bosun run prepublishOnly
 ```
 
 ---

@@ -1,6 +1,6 @@
 # Shared State System Tests
 
-Comprehensive test suite for the distributed task coordination system in openfleet.
+Comprehensive test suite for the distributed task coordination system in bosun.
 
 ## Test Files
 
@@ -110,7 +110,7 @@ it("returns null for missing required fields", async () => {
     JSON.stringify([
       {
         id: 123,
-        body: `<!-- openfleet-state\n${JSON.stringify(incompleteState)}\n-->\nIncomplete`,
+        body: `<!-- bosun-state\n${JSON.stringify(incompleteState)}\n-->\nIncomplete`,
       },
     ]),
   );
@@ -386,7 +386,7 @@ await expect(
 ### Enable verbose logging
 
 ```bash
-DEBUG=openfleet:* npx vitest run tests/shared-state-manager.test.mjs
+DEBUG=bosun:* npx vitest run tests/shared-state-manager.test.mjs
 ```
 
 ### Inspect registry state
@@ -418,7 +418,7 @@ Add to CI workflow:
 ```yaml
 - name: Run shared state tests
   run: |
-    cd scripts/openfleet
+    cd scripts/bosun
     npm test -- shared-state-manager.test.mjs
     npm test -- github-shared-state.test.mjs
     npm test -- shared-state-integration.test.mjs

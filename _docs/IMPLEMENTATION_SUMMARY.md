@@ -29,7 +29,7 @@
 #### `readSharedStateFromIssue(issueNumber)`
 
 - Fetches all issue comments via `_getIssueComments()`
-- Searches for latest openfleet-state comment
+- Searches for latest bosun-state comment
 - Parses JSON from HTML comment
 - Validates required fields
 - Returns SharedState object or null
@@ -167,14 +167,14 @@ Implemented robust error handling:
 
 ## Files Modified
 
-1. `scripts/openfleet/kanban-adapter.mjs` - Core implementation
+1. `scripts/bosun/kanban-adapter.mjs` - Core implementation
 
 ## Files Created
 
-1. `scripts/openfleet/KANBAN_GITHUB_ENHANCEMENT.md` - Documentation
-2. `scripts/openfleet/test-kanban-enhancement.mjs` - Validation test
-3. `scripts/openfleet/example-multi-agent.mjs` - Usage example
-4. `scripts/openfleet/IMPLEMENTATION_SUMMARY.md` - This file
+1. `scripts/bosun/KANBAN_GITHUB_ENHANCEMENT.md` - Documentation
+2. `scripts/bosun/test-kanban-enhancement.mjs` - Validation test
+3. `scripts/bosun/example-multi-agent.mjs` - Usage example
+4. `scripts/bosun/IMPLEMENTATION_SUMMARY.md` - This file
 
 ## Testing
 
@@ -225,7 +225,7 @@ Suggested future improvements:
 To verify the implementation:
 
 ```bash
-cd scripts/openfleet
+cd scripts/bosun
 node test-kanban-enhancement.mjs
 ```
 

@@ -1,5 +1,5 @@
 /**
- * shared-knowledge.mjs — Agent-to-agent knowledge sharing for openfleet.
+ * shared-knowledge.mjs — Agent-to-agent knowledge sharing for bosun.
  *
  * Allows agents across the fleet to contribute lessons learned, patterns,
  * and critical findings to a shared knowledge base (AGENTS.md or a

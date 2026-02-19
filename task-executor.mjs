@@ -97,13 +97,13 @@ const NO_COMMIT_MAX_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 const CLAIM_CONFLICT_COMMENT_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 const CODEX_TASK_LABELS = (() => {
   const raw = String(
-    process.env.OPENFLEET_TASK_LABELS || "openfleet,codex-mointor",
+    process.env.BOSUN_TASK_LABELS || "bosun,codex-mointor",
   );
   const labels = raw
     .split(",")
     .map((label) => label.trim().toLowerCase())
     .filter(Boolean);
-  return new Set(labels.length > 0 ? labels : ["openfleet"]);
+  return new Set(labels.length > 0 ? labels : ["bosun"]);
 })();
 
 /** Watchdog interval: how often to check for stalled agent slots */
@@ -479,7 +479,7 @@ function extractBacklogCandidates(outputText) {
   if (!text.trim()) return [];
 
   const fencedMatch = text.match(
-    /```(?:openfleet-backlog|json)?\s*([\s\S]*?)```/i,
+    /```(?:bosun-backlog|json)?\s*([\s\S]*?)```/i,
   );
   if (fencedMatch?.[1]) {
     try {
@@ -676,8 +676,8 @@ function isPlannerTaskData(task) {
     return true;
   }
   return (
-    desc.includes("task planner — auto-created by openfleet") ||
-    desc.includes("task planner - auto-created by openfleet")
+    desc.includes("task planner — auto-created by bosun") ||
+    desc.includes("task planner - auto-created by bosun")
   );
 }
 
@@ -1010,11 +1010,11 @@ class TaskExecutor {
     this._claimConflictNotifiedAt = new Map();
     this._instanceIdExplicit =
       String(process.env.VE_INSTANCE_ID || "").trim() !== "" ||
-      String(process.env.OPENFLEET_INSTANCE_ID || "").trim() !== "";
+      String(process.env.BOSUN_INSTANCE_ID || "").trim() !== "";
     this._instanceId =
       String(
         process.env.VE_INSTANCE_ID ||
-          process.env.OPENFLEET_INSTANCE_ID ||
+          process.env.BOSUN_INSTANCE_ID ||
           `${os.hostname() || "host"}-${process.pid}`,
       ).trim() || `executor-${process.pid}`;
     this.taskClaimOwnerStaleTtlMs = Math.max(
@@ -2973,7 +2973,7 @@ class TaskExecutor {
             : "",
           `| **SDK** | ${resolvedSdk} |`,
           selectedModel ? `| **Model** | ${selectedModel} |` : "",
-          `| **Executor** | openfleet (internal) |`,
+          `| **Executor** | bosun (internal) |`,
           executorProfile ? `| **Profile** | ${executorProfile} |` : "",
         ]
           .filter(Boolean)
@@ -3386,7 +3386,7 @@ class TaskExecutor {
         `Project requirements profile: ${reqProfile}`,
         reqNotes ? `Project requirements notes: ${reqNotes}` : "",
         `Return ONLY the backlog payload below in one fenced block after your completion summary:`,
-        "```openfleet-backlog",
+        "```bosun-backlog",
         "[",
         '  {"title":"...","description":"...","priority":"high","module":"x/market","rationale":"..."}',
         "]",

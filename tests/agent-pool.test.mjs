@@ -153,7 +153,7 @@ vi.mock("../agent-sdk.mjs", () => ({
   resolveAgentSdkConfig: () => ({ primary: "", source: "test" }),
 }));
 
-// Mock config.mjs so tests don't read the real openfleet.config.json
+// Mock config.mjs so tests don't read the real bosun.config.json
 vi.mock("../config.mjs", () => ({
   loadConfig: () => ({}),
 }));

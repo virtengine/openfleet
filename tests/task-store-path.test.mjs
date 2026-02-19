@@ -39,7 +39,7 @@ describe("task-store path configuration", () => {
     const baseDir = makeTempDir("ve-task-store-base-");
     const expectedPath = resolve(
       baseDir,
-      ".openfleet",
+      ".bosun",
       ".cache",
       "kanban-state.json",
     );

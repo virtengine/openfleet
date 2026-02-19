@@ -52,7 +52,7 @@ function extractPidsFromPath(worktreePath) {
   const pids = new Set();
   const lockPaths = [
     resolve(worktreePath, ".git", "index.lock"),
-    resolve(worktreePath, ".openfleet.pid"),
+    resolve(worktreePath, ".bosun.pid"),
     resolve(worktreePath, ".vk-executor.pid"),
   ];
   for (const lockPath of lockPaths) {

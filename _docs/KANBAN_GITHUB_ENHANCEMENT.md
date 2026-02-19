@@ -2,7 +2,7 @@
 
 ## Overview
 
-Enhanced `scripts/openfleet/kanban-adapter.mjs` GitHubAdapter with shared state persistence capabilities for multi-agent coordination via GitHub issues.
+Enhanced `scripts/bosun/kanban-adapter.mjs` GitHubAdapter with shared state persistence capabilities for multi-agent coordination via GitHub issues.
 
 > **Note**: This document covers **issue-level** shared state persistence (labels + comments).  
 > For **GitHub Projects v2** integration (reading from project boards, syncing status to project fields), see:
@@ -14,12 +14,12 @@ Enhanced `scripts/openfleet/kanban-adapter.mjs` GitHubAdapter with shared state 
 
 ### 1. New Label Scheme
 
-Added openfleet specific labels to track agent state:
+Added bosun specific labels to track agent state:
 
 - `codex:claimed` - Task has been claimed by an agent
 - `codex:working` - Agent is actively working on the task
 - `codex:stale` - Claim has expired or been abandoned
-- `codex:ignore` - Task explicitly excluded from openfleet automation
+- `codex:ignore` - Task explicitly excluded from bosun automation
 
 These labels coexist with existing status labels (`inprogress`, `inreview`, etc.).
 
@@ -28,7 +28,7 @@ These labels coexist with existing status labels (`inprogress`, `inreview`, etc.
 Agent state is persisted as HTML comments with embedded JSON:
 
 ```markdown
-<!-- openfleet-state
+<!-- bosun-state
 {
   "ownerId": "workstation-123/agent-456",
   "attemptToken": "uuid-here",
@@ -39,7 +39,7 @@ Agent state is persisted as HTML comments with embedded JSON:
 }
 -->
 
-**OpenFleet Status**: Agent `agent-456` on `workstation-123` is working on this task.
+**Bosun Status**: Agent `agent-456` on `workstation-123` is working on this task.
 _Last heartbeat: 2026-02-14T17:30:00Z_
 ```
 
@@ -104,7 +104,7 @@ if (state) {
 
 #### `markTaskIgnored(issueNumber, reason)`
 
-Marks a task as ignored by openfleet.
+Marks a task as ignored by bosun.
 
 **Parameters:**
 
@@ -153,7 +153,7 @@ tasks.forEach((task) => {
     console.log(`Task ${task.id} claimed by ${task.meta.sharedState.ownerId}`);
   }
   if (task.meta.codex.isIgnored) {
-    console.log(`Task ${task.id} is ignored by openfleet`);
+    console.log(`Task ${task.id} is ignored by bosun`);
   }
 });
 ```
@@ -290,7 +290,7 @@ for (const task of complexTasks) {
 Run validation test:
 
 ```bash
-cd scripts/openfleet
+cd scripts/bosun
 node test-kanban-enhancement.mjs
 ```
 

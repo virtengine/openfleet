@@ -336,7 +336,7 @@ describe("shared-state-integration", () => {
         JSON.stringify([
           {
             id: 100,
-            body: `<!-- openfleet-state
+            body: `<!-- bosun-state
 ${JSON.stringify({
   taskId,
   ownerId: agent1,
@@ -835,10 +835,10 @@ Status`,
       const registryPath = join(
         tempRoot,
         ".cache",
-        "openfleet",
+        "bosun",
         "shared-task-states.json",
       );
-      await mkdir(join(tempRoot, ".cache", "openfleet"), {
+      await mkdir(join(tempRoot, ".cache", "bosun"), {
         recursive: true,
       });
       await writeFile(registryPath, "corrupted json", "utf-8");

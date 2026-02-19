@@ -5,7 +5,7 @@
 # Rotates and compresses agent work logs to prevent unbounded growth.
 # Intended to run weekly via cron or manually.
 #
-# Usage: bash scripts/openfleet/rotate-agent-logs.sh
+# Usage: bash scripts/bosun/rotate-agent-logs.sh
 
 set -e
 

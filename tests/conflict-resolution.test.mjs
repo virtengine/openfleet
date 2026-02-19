@@ -52,7 +52,7 @@ describe("classifyConflictedFiles", () => {
   it("classifies lock files as theirs (auto-resolvable)", () => {
     const result = classifyConflictedFiles([
       "pnpm-lock.yaml",
-      "scripts/openfleet/package-lock.json",
+      "scripts/bosun/package-lock.json",
       "yarn.lock",
     ]);
     expect(result.allResolvable).toBe(true);
@@ -88,12 +88,12 @@ describe("classifyConflictedFiles", () => {
 
   it("flags source code files as manual resolution", () => {
     const result = classifyConflictedFiles([
-      "scripts/openfleet/monitor.mjs",
+      "scripts/bosun/monitor.mjs",
       "pkg/provider/handler.go",
     ]);
     expect(result.allResolvable).toBe(false);
     expect(result.manualFiles).toEqual([
-      "scripts/openfleet/monitor.mjs",
+      "scripts/bosun/monitor.mjs",
       "pkg/provider/handler.go",
     ]);
     expect(result.summary).toBe("none");
@@ -102,11 +102,11 @@ describe("classifyConflictedFiles", () => {
   it("handles mixed auto-resolvable and manual files", () => {
     const result = classifyConflictedFiles([
       "pnpm-lock.yaml",
-      "scripts/openfleet/monitor.mjs",
+      "scripts/bosun/monitor.mjs",
       "go.sum",
     ]);
     expect(result.allResolvable).toBe(false);
-    expect(result.manualFiles).toEqual(["scripts/openfleet/monitor.mjs"]);
+    expect(result.manualFiles).toEqual(["scripts/bosun/monitor.mjs"]);
     expect(result.summary).toBe("pnpm-lock.yaml→theirs, go.sum→theirs");
   });
 
@@ -133,10 +133,10 @@ describe("conflict resolution strategy", () => {
     // Documents the expected resolution order used in the orchestrator:
     // 1. PR's declared baseRefName (most authoritative)
     // 2. Stored target_branch from submission
-    // 3. Task-level upstream detection (Test-IsOpenFleetTask → OpenFleetTaskUpstream)
+    // 3. Task-level upstream detection (Test-IsBosunTask → BosunTaskUpstream)
     // 4. Fallback to VK_TARGET_BRANCH
     //
-    // For openfleet tasks, step 3 returns "origin/ve/openfleet-generic"
+    // For bosun tasks, step 3 returns "origin/ve/bosun-generic"
     // which prevents them from ever targeting "main" automatically.
     expect(true).toBe(true); // Documentation test
   });

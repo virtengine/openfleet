@@ -58,11 +58,11 @@ The system currently tracks:
 │  - Tail agent-work-stream.jsonl in real-time                   │
 │  - Pattern matching for known errors                            │
 │  - Anomaly detection (stuck agents, loops)                      │
-│  - Emit alerts to openfleet                                 │
+│  - Emit alerts to bosun                                 │
 └──────────────────────────────┬──────────────────────────────────┘
                                ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│            openfleet Integration                            │
+│            bosun Integration                            │
 │  - Consume real-time alerts from analyzer                       │
 │  - Trigger interventions (fresh session, AI autofix)            │
 │  - Send Telegram notifications for critical patterns            │
@@ -308,7 +308,7 @@ Write-AgentWorkLog -AttemptId $attemptId -EventType "error" `
 
 #### 2.1 Log Tailing Service
 
-**New file:** `scripts/openfleet/agent-work-analyzer.mjs`
+**New file:** `scripts/bosun/agent-work-analyzer.mjs`
 
 ```javascript
 import { createReadStream } from 'fs';
@@ -455,7 +455,7 @@ async function detectSuspiciousToolUse(session, event) {
 async function emitAlert(alert) {
   console.error(`[ALERT] ${alert.type}: ${JSON.stringify(alert)}`);
 
-  // Write to alerts file for openfleet to consume
+  // Write to alerts file for bosun to consume
   const alertEntry = {
     timestamp: new Date().toISOString(),
     ...alert
@@ -470,7 +470,7 @@ async function emitAlert(alert) {
 export { tailAgentWorkStream };
 ```
 
-#### 2.2 Integration with openfleet
+#### 2.2 Integration with bosun
 
 **In `monitor.mjs`:**
 ```javascript
@@ -512,7 +512,7 @@ async function handleAgentAlert(alert) {
 
 #### 3.1 Analytics CLI Tool
 
-**New file:** `scripts/openfleet/analyze-agent-work.mjs`
+**New file:** `scripts/bosun/analyze-agent-work.mjs`
 
 ```javascript
 #!/usr/bin/env node
@@ -733,7 +733,7 @@ AGENT_ANALYTICS_REPORT_HOUR=9
 - `agent-errors.jsonl` - Keep last 90 days
 - `agent-metrics.jsonl` - Keep indefinitely (compressed monthly)
 
-**Rotation script:** `scripts/openfleet/rotate-agent-logs.sh`
+**Rotation script:** `scripts/bosun/rotate-agent-logs.sh`
 ```bash
 #!/bin/bash
 # Rotate agent work logs
@@ -775,7 +775,7 @@ echo "Agent work logs rotated: $(date)"
 
 **Week 2:**
 - ✓ Deploy live stream analyzer
-- ✓ Integrate alerts with openfleet
+- ✓ Integrate alerts with bosun
 - ✓ Test error loop detection in production
 
 **Week 3:**
@@ -800,4 +800,4 @@ echo "Agent work logs rotated: $(date)"
 
 **Document version:** 1.0
 **Last updated:** 2026-02-09
-**Owner:** VirtEngine OpenFleet Team
+**Owner:** VirtEngine Bosun Team

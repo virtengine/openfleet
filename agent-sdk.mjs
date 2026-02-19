@@ -2,7 +2,7 @@
  * agent-sdk.mjs — Unified Agent SDK selection (config.toml)
  *
  * Reads ~/.codex/config.toml to determine the primary agent SDK and
- * capability flags for openfleet integrations.
+ * capability flags for bosun integrations.
  *
  * Supported primary agents: "codex", "copilot", "claude"
  * Capability flags: steering, subagents, vscode_tools

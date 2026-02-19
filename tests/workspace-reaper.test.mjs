@@ -43,7 +43,7 @@ async function createTestWorktree(name, options = {}) {
 
   if (options.withPidFile) {
     await writeFile(
-      resolve(worktreePath, ".openfleet.pid"),
+      resolve(worktreePath, ".bosun.pid"),
       String(options.pid || "99999"),
     );
   }

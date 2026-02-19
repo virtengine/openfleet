@@ -14,7 +14,7 @@ describe("hook-profiles", () => {
   let rootDir = "";
 
   beforeEach(async () => {
-    rootDir = await mkdtemp(resolve(tmpdir(), "openfleet-hooks-"));
+    rootDir = await mkdtemp(resolve(tmpdir(), "bosun-hooks-"));
   });
 
   afterEach(async () => {
@@ -53,9 +53,9 @@ describe("hook-profiles", () => {
 
   it("builds scaffold options from env", () => {
     const opts = buildHookScaffoldOptionsFromEnv({
-      OPENFLEET_HOOK_PROFILE: "balanced",
-      OPENFLEET_HOOK_TARGETS: "codex,copilot",
-      OPENFLEET_HOOK_PREPUSH: "go test ./...;;go build ./...",
+      BOSUN_HOOK_PROFILE: "balanced",
+      BOSUN_HOOK_TARGETS: "codex,copilot",
+      BOSUN_HOOK_PREPUSH: "go test ./...;;go build ./...",
     });
 
     expect(opts.profile).toBe("balanced");
@@ -74,8 +74,8 @@ describe("hook-profiles", () => {
     const written = result.written.map((item) => item.replace(/\\/g, "/"));
     expect(written).toContain(".codex/hooks.json");
     expect(written).toContain(".claude/settings.local.json");
-    expect(written).toContain(".github/hooks/openfleet.hooks.json");
-    expect(result.env.OPENFLEET_HOOKS_BUILTINS_MODE).toBe("auto");
+    expect(written).toContain(".github/hooks/bosun.hooks.json");
+    expect(result.env.BOSUN_HOOKS_BUILTINS_MODE).toBe("auto");
 
     const codexHooks = JSON.parse(
       await readFile(resolve(rootDir, ".codex", "hooks.json"), "utf8"),
@@ -95,7 +95,7 @@ describe("hook-profiles", () => {
 
     const copilotHooks = JSON.parse(
       await readFile(
-        resolve(rootDir, ".github", "hooks", "openfleet.hooks.json"),
+        resolve(rootDir, ".github", "hooks", "bosun.hooks.json"),
         "utf8",
       ),
     );
@@ -122,7 +122,7 @@ describe("hook-profiles", () => {
           type: "command",
           command: [
             "C:\\\\nvm4w\\\\nodejs\\\\node.exe",
-            "C:\\\\Users\\\\jon\\\\AppData\\\\Local\\\\nvm\\\\v24.11.1\\\\node_modules\\\\@virtengine\\\\openfleet\\\\agent-hook-bridge.mjs",
+            "C:\\\\Users\\\\jon\\\\AppData\\\\Local\\\\nvm\\\\v24.11.1\\\\node_modules\\\\@virtengine\\\\bosun\\\\agent-hook-bridge.mjs",
             "--agent",
             "copilot",
             "--event",
@@ -134,7 +134,7 @@ describe("hook-profiles", () => {
     };
 
     await writeFile(
-      resolve(hooksDir, "openfleet.hooks.json"),
+      resolve(hooksDir, "bosun.hooks.json"),
       JSON.stringify(legacyConfig, null, 2),
       "utf8",
     );
@@ -146,10 +146,10 @@ describe("hook-profiles", () => {
       enabled: true,
     });
 
-    expect(result.updated).toContain(".github/hooks/openfleet.hooks.json");
+    expect(result.updated).toContain(".github/hooks/bosun.hooks.json");
 
     const migratedConfig = JSON.parse(
-      await readFile(resolve(hooksDir, "openfleet.hooks.json"), "utf8"),
+      await readFile(resolve(hooksDir, "bosun.hooks.json"), "utf8"),
     );
     const migratedCommand = migratedConfig.sessionStart?.[0]?.command || [];
     expect(migratedCommand[0]).toBe("node");
@@ -185,8 +185,8 @@ describe("hook-profiles", () => {
       targets: ["codex"],
     });
 
-    expect(result.env.OPENFLEET_HOOKS_BUILTINS_MODE).toBe("off");
-    expect(result.env.OPENFLEET_HOOKS_DISABLE_PREPUSH).toBe("1");
-    expect(result.env.OPENFLEET_HOOKS_DISABLE_TASK_COMPLETE).toBe("1");
+    expect(result.env.BOSUN_HOOKS_BUILTINS_MODE).toBe("off");
+    expect(result.env.BOSUN_HOOKS_DISABLE_PREPUSH).toBe("1");
+    expect(result.env.BOSUN_HOOKS_DISABLE_TASK_COMPLETE).toBe("1");
   });
 });

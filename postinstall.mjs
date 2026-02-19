@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * openfleet — Post-Install Environment Validator
+ * bosun — Post-Install Environment Validator
  *
  * Runs after `npm install` to check for required system dependencies
  * that can't be installed via npm (git, gh, pwsh) and prints
@@ -103,13 +103,13 @@ const RECOMMENDED = [
 
 function main() {
   // Skip in CI environments
-  if (process.env.CI || process.env.OPENFLEET_SKIP_POSTINSTALL) {
+  if (process.env.CI || process.env.BOSUN_SKIP_POSTINSTALL) {
     return;
   }
 
   console.log("");
   console.log("  ┌──────────────────────────────────────────────┐");
-  console.log("  │      openfleet — environment check       │");
+  console.log("  │      bosun — environment check       │");
   console.log("  └──────────────────────────────────────────────┘");
   console.log("");
 
@@ -166,7 +166,7 @@ function main() {
   console.log("");
   if (hasErrors) {
     console.log(
-      "  ⛔ Missing required dependencies. Install them before running openfleet.",
+      "  ⛔ Missing required dependencies. Install them before running bosun.",
     );
   } else if (hasWarnings) {
     console.log(
@@ -178,9 +178,9 @@ function main() {
 
   console.log("");
   console.log("  Get started:");
-  console.log("    openfleet --setup     Interactive setup wizard");
-  console.log("    openfleet             Start with existing config");
-  console.log("    openfleet --help       See all options");
+  console.log("    bosun --setup     Interactive setup wizard");
+  console.log("    bosun             Start with existing config");
+  console.log("    bosun --help       See all options");
   console.log("");
 }
 

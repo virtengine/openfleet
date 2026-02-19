@@ -1,5 +1,5 @@
 /**
- * task-complexity.mjs — Task complexity routing for openfleet.
+ * task-complexity.mjs — Task complexity routing for bosun.
  *
  * Maps task size/complexity to appropriate AI models and reasoning effort
  * levels. Each executor type (CODEX, COPILOT/Claude) has its own model tier

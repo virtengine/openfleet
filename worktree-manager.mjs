@@ -177,7 +177,7 @@ function detectGitTopLevel(candidatePath) {
  * Resolve the best repository root for singleton initialization.
  * Priority:
  *   1) explicit repoRoot arg
- *   2) VE_REPO_ROOT / OPENFLEET_REPO_ROOT env
+ *   2) VE_REPO_ROOT / BOSUN_REPO_ROOT env
  *   3) current working directory's git top-level
  *   4) module-relative git top-level (useful for local dev)
  *   5) process.cwd() fallback
@@ -189,7 +189,7 @@ function resolveDefaultRepoRoot(repoRoot) {
   if (repoRoot) return resolve(repoRoot);
 
   const envRoot =
-    process.env.VE_REPO_ROOT || process.env.OPENFLEET_REPO_ROOT || "";
+    process.env.VE_REPO_ROOT || process.env.BOSUN_REPO_ROOT || "";
   const fromEnv = detectGitTopLevel(envRoot) || (envRoot ? resolve(envRoot) : null);
   if (fromEnv) return fromEnv;
 

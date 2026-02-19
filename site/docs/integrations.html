@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Integrations — OpenFleet Docs</title>
+  <title>Integrations — Bosun Docs</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -20,7 +20,7 @@
     <aside class="docs-sidebar">
       <a href="../" class="sidebar-brand">
         <div class="sidebar-brand__icon">⚡</div>
-        OpenFleet
+        Bosun
       </a>
       <span class="sidebar-version">v0.26.2</span>
       <div class="docs-search">
@@ -46,8 +46,8 @@
       <div class="sidebar-section">
         <div class="sidebar-section__title">Links</div>
         <ul class="sidebar-nav">
-          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/openfleet#virtengineopenfleet" target="_blank" rel="noopener"><span class="nav-icon">🐙</span> GitHub</a></li>
-          <li><a href="https://www.npmjs.com/package/@virtengine/openfleet" target="_blank"><span class="nav-icon">📦</span> npm</a></li>
+          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/bosun#virtenginebosun" target="_blank" rel="noopener"><span class="nav-icon">🐙</span> GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/@virtengine/bosun" target="_blank"><span class="nav-icon">📦</span> npm</a></li>
           <li><a href="../"><span class="nav-icon">🏠</span> Home</a></li>
         </ul>
       </div>
@@ -57,7 +57,7 @@
       <h1>Integrations</h1>
 
       <p>
-        OpenFleet integrates with multiple platforms for task management, notifications, and agent execution.
+        Bosun integrates with multiple platforms for task management, notifications, and agent execution.
         All integrations are configured through environment variables and the JSON config file.
       </p>
 
@@ -108,7 +108,7 @@ GITHUB_PROJECT_STATUS_CANCELLED=Cancelled</code></pre>
       <ol>
         <li>Create a bot via <a href="https://t.me/BotFather" target="_blank">@BotFather</a> on Telegram</li>
         <li>Copy the bot token to <code>TELEGRAM_BOT_TOKEN</code></li>
-        <li>Run <code>openfleet-chat-id</code> to find your chat ID</li>
+        <li>Run <code>bosun-chat-id</code> to find your chat ID</li>
         <li>Set <code>TELEGRAM_CHAT_ID</code></li>
       </ol>
 
@@ -159,7 +159,7 @@ CLOUDFLARE_TUNNEL_CREDENTIALS=/home/user/.cloudflared/tunnel-id.json
 TELEGRAM_UI_BASE_URL=https://fleet.yourdomain.com</code></pre>
 
       <h3>Sentinel (Independent Watchdog)</h3>
-      <pre><code>OPENFLEET_SENTINEL_AUTO_START=true
+      <pre><code>BOSUN_SENTINEL_AUTO_START=true
 SENTINEL_AUTO_RESTART_MONITOR=true</code></pre>
       <p>
         Keeps Telegram command availability even when the main monitor is down.
@@ -199,10 +199,10 @@ JIRA_CUSTOM_FIELD_RETRY_COUNT=customfield_10046</code></pre>
       <p>Optional notification channel alongside Telegram.</p>
 
       <pre><code># Authenticate
-openfleet --whatsapp-auth
+bosun --whatsapp-auth
 
 # Or use pairing code instead of QR
-openfleet --whatsapp-auth --pairing-code</code></pre>
+bosun --whatsapp-auth --pairing-code</code></pre>
 
       <p>
         Once authenticated, WhatsApp receives the same status updates and alerts as Telegram.

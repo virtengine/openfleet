@@ -1,5 +1,5 @@
 /**
- * maintenance.mjs - Process hygiene and cleanup for openfleet.
+ * maintenance.mjs - Process hygiene and cleanup for bosun.
  *
  * Handles:
  *  - Killing stale orchestrator processes from previous runs
@@ -458,8 +458,8 @@ export function cleanupStaleBranches(repoRoot, opts = {}) {
 
 // ── Monitor Singleton via PID file ──────────────────────────────────────
 
-const PID_FILE_NAME = "openfleet.pid";
-const MONITOR_MARKER = "openfleet/monitor.mjs";
+const PID_FILE_NAME = "bosun.pid";
+const MONITOR_MARKER = "bosun/monitor.mjs";
 
 function parsePidFile(raw) {
   const text = String(raw || "").trim();
@@ -487,7 +487,7 @@ function isMonitorProcess(pid) {
   if (!cmd) return false;
   const normalized = cmd.toLowerCase();
   if (normalized.includes(MONITOR_MARKER)) return true;
-  return normalized.includes("openfleet") && normalized.includes("monitor.mjs");
+  return normalized.includes("bosun") && normalized.includes("monitor.mjs");
 }
 
 /**
@@ -510,7 +510,7 @@ export function acquireMonitorLock(lockDir) {
       ) {
         if (isMonitorProcess(existingPid)) {
           console.error(
-            `[maintenance] another openfleet is already running (PID ${existingPid}). Exiting.`,
+            `[maintenance] another bosun is already running (PID ${existingPid}). Exiting.`,
           );
           return false;
         }

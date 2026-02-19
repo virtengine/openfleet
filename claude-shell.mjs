@@ -1,5 +1,5 @@
 /**
- * claude-shell.mjs - Persistent Claude agent adapter for openfleet.
+ * claude-shell.mjs - Persistent Claude agent adapter for bosun.
  *
  * Uses the Claude Agent SDK (@anthropic-ai/claude-agent-sdk) to run a
  * long-lived session with steering support via streaming input mode.

@@ -20,7 +20,7 @@ describe("setup vscode settings", () => {
   });
 
   it("merges into existing workspace settings", async () => {
-    const repoRoot = await mkdtemp(resolve(tmpdir(), "openfleet-vscode-"));
+    const repoRoot = await mkdtemp(resolve(tmpdir(), "bosun-vscode-"));
     const vscodeDir = resolve(repoRoot, ".vscode");
     const settingsPath = resolve(vscodeDir, "settings.json");
 

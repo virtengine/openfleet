@@ -1,8 +1,8 @@
-# OpenFleet Shared State Implementation - COMPLETE ✅
+# Bosun Shared State Implementation - COMPLETE ✅
 
 ## Problem Solved
 
-openfleet now handles shared GitHub/Jira kanban environments with multiple users, agents, and workstations reliably. Tasks no longer get duplicated, lost, or desynchronized across the fleet.
+bosun now handles shared GitHub/Jira kanban environments with multiple users, agents, and workstations reliably. Tasks no longer get duplicated, lost, or desynchronized across the fleet.
 
 ## Solution Architecture
 
@@ -38,30 +38,30 @@ openfleet now handles shared GitHub/Jira kanban environments with multiple users
 
 ### Created (19+ files)
 
-1. `scripts/openfleet/shared-state-manager.mjs` - Core state manager (600+ lines)
-2. `scripts/openfleet/tests/shared-state-manager.test.mjs` - 35+ tests (1045 lines)
-3. `scripts/openfleet/tests/github-shared-state.test.mjs` - 25+ tests (615 lines)
-4. `scripts/openfleet/tests/shared-state-integration.test.mjs` - 20+ tests (808 lines)
-5. `scripts/openfleet/JIRA_INTEGRATION.md` - Implementation guide (444 lines)
-6. `scripts/openfleet/SHARED_STATE_INTEGRATION.md` - Integration docs
-7. `scripts/openfleet/KANBAN_GITHUB_ENHANCEMENT.md` - Feature docs
-8. `scripts/openfleet/GITHUB_ADAPTER_QUICK_REF.md` - Quick reference
-9. `scripts/openfleet/VERIFICATION_CHECKLIST.md` - Validation checklist
-10. `scripts/openfleet/run-shared-state-tests.mjs` - Test runner
-11. `scripts/openfleet/test-kanban-enhancement.mjs` - Validation tests
-12. `scripts/openfleet/example-multi-agent.mjs` - Usage examples
-13. `scripts/openfleet/test-shared-state-integration.mjs` - Integration validation
+1. `scripts/bosun/shared-state-manager.mjs` - Core state manager (600+ lines)
+2. `scripts/bosun/tests/shared-state-manager.test.mjs` - 35+ tests (1045 lines)
+3. `scripts/bosun/tests/github-shared-state.test.mjs` - 25+ tests (615 lines)
+4. `scripts/bosun/tests/shared-state-integration.test.mjs` - 20+ tests (808 lines)
+5. `scripts/bosun/JIRA_INTEGRATION.md` - Implementation guide (444 lines)
+6. `scripts/bosun/SHARED_STATE_INTEGRATION.md` - Integration docs
+7. `scripts/bosun/KANBAN_GITHUB_ENHANCEMENT.md` - Feature docs
+8. `scripts/bosun/GITHUB_ADAPTER_QUICK_REF.md` - Quick reference
+9. `scripts/bosun/VERIFICATION_CHECKLIST.md` - Validation checklist
+10. `scripts/bosun/run-shared-state-tests.mjs` - Test runner
+11. `scripts/bosun/test-kanban-enhancement.mjs` - Validation tests
+12. `scripts/bosun/example-multi-agent.mjs` - Usage examples
+13. `scripts/bosun/test-shared-state-integration.mjs` - Integration validation
 14. Plus 6 additional documentation files (test summaries, checklists, output examples)
 
 ### Modified (6 files)
 
-1. `scripts/openfleet/kanban-adapter.mjs` - GitHub adapter enhancements (~300 lines added)
-2. `scripts/openfleet/task-claims.mjs` - Shared state integration (~50 lines added)
-3. `scripts/openfleet/sync-engine.mjs` - Conflict detection (~80 lines added)
-4. `scripts/openfleet/ve-orchestrator.mjs` - Orchestrator integration (~60 lines added)
-5. `scripts/openfleet/AGENTS.md` - Complete documentation update (~200 lines added)
-6. `scripts/openfleet/.env.example` - New config vars (5 vars added)
-7. `scripts/openfleet/README.md` - Updated features section
+1. `scripts/bosun/kanban-adapter.mjs` - GitHub adapter enhancements (~300 lines added)
+2. `scripts/bosun/task-claims.mjs` - Shared state integration (~50 lines added)
+3. `scripts/bosun/sync-engine.mjs` - Conflict detection (~80 lines added)
+4. `scripts/bosun/ve-orchestrator.mjs` - Orchestrator integration (~60 lines added)
+5. `scripts/bosun/AGENTS.md` - Complete documentation update (~200 lines added)
+6. `scripts/bosun/.env.example` - New config vars (5 vars added)
+7. `scripts/bosun/README.md` - Updated features section
 
 ## Configuration
 
@@ -94,7 +94,7 @@ TASK_CLAIM_OWNER_STALE_TTL_MS=600000          # 10 minutes
 Run the test suite:
 
 ```bash
-cd scripts/openfleet
+cd scripts/bosun
 npx vitest run tests/shared-state-manager.test.mjs
 npx vitest run tests/github-shared-state.test.mjs
 npx vitest run tests/shared-state-integration.test.mjs

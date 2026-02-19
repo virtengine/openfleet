@@ -64,7 +64,7 @@ describe("kanban-adapter github backend", () => {
   const originalOwner = process.env.GITHUB_REPO_OWNER;
   const originalName = process.env.GITHUB_REPO_NAME;
   const originalProjectMode = process.env.GITHUB_PROJECT_MODE;
-  const originalTaskLabelEnforce = process.env.OPENFLEET_ENFORCE_TASK_LABEL;
+  const originalTaskLabelEnforce = process.env.BOSUN_ENFORCE_TASK_LABEL;
 
   beforeEach(() => {
     execFileMock.mockReset();
@@ -73,7 +73,7 @@ describe("kanban-adapter github backend", () => {
     delete process.env.GITHUB_REPO_OWNER;
     delete process.env.GITHUB_REPO_NAME;
     process.env.GITHUB_PROJECT_MODE = "issues";
-    process.env.OPENFLEET_ENFORCE_TASK_LABEL = "true";
+    process.env.BOSUN_ENFORCE_TASK_LABEL = "true";
     loadConfigMock.mockReturnValue({
       repoSlug: "acme/widgets",
       kanban: { backend: "github" },
@@ -103,9 +103,9 @@ describe("kanban-adapter github backend", () => {
       process.env.GITHUB_PROJECT_MODE = originalProjectMode;
     }
     if (originalTaskLabelEnforce === undefined) {
-      delete process.env.OPENFLEET_ENFORCE_TASK_LABEL;
+      delete process.env.BOSUN_ENFORCE_TASK_LABEL;
     } else {
-      process.env.OPENFLEET_ENFORCE_TASK_LABEL = originalTaskLabelEnforce;
+      process.env.BOSUN_ENFORCE_TASK_LABEL = originalTaskLabelEnforce;
     }
   });
 
@@ -149,7 +149,7 @@ describe("kanban-adapter github backend", () => {
   });
 
   it("creates issue from URL output and resolves it via issue view", async () => {
-    mockGh('{"name":"openfleet"}\n');
+    mockGh('{"name":"bosun"}\n');
     mockGh("https://github.com/acme/widgets/issues/55\n");
     mockGh(
       JSON.stringify({
@@ -182,7 +182,7 @@ describe("kanban-adapter github backend", () => {
     );
     expect(issueCreateCall).toBeTruthy();
     expect(issueCreateCall[1]).toContain("--label");
-    expect(issueCreateCall[1]).toContain("openfleet");
+    expect(issueCreateCall[1]).toContain("bosun");
     expect(issueCreateCall[1]).toContain("--assignee");
     expect(issueCreateCall[1]).toContain("acme");
   });
@@ -196,7 +196,7 @@ describe("kanban-adapter github backend", () => {
           body: "",
           state: "open",
           url: "https://github.com/acme/widgets/issues/10",
-          labels: [{ name: "openfleet" }],
+          labels: [{ name: "bosun" }],
           assignees: [],
         },
         {
@@ -223,7 +223,7 @@ describe("kanban-adapter github backend", () => {
   });
 
   it("does not filter by codex labels when enforcement is disabled", async () => {
-    process.env.OPENFLEET_ENFORCE_TASK_LABEL = "false";
+    process.env.BOSUN_ENFORCE_TASK_LABEL = "false";
     setKanbanBackend("github");
     mockGh(
       JSON.stringify([
@@ -233,7 +233,7 @@ describe("kanban-adapter github backend", () => {
           body: "",
           state: "open",
           url: "https://github.com/acme/widgets/issues/10",
-          labels: [{ name: "openfleet" }],
+          labels: [{ name: "bosun" }],
           assignees: [],
         },
         {
@@ -324,7 +324,7 @@ describe("kanban-adapter github backend", () => {
       JSON.stringify([
         {
           id: 1001,
-          body: `<!-- openfleet-state
+          body: `<!-- bosun-state
 {
   "ownerId": "workstation-a/agent-a",
   "attemptToken": "token-a",
@@ -594,7 +594,7 @@ describe("kanban-adapter jira backend", () => {
                 summary: "First",
                 description: "desc",
                 status: { name: "In Progress", statusCategory: { key: "indeterminate" } },
-                labels: ["openfleet"],
+                labels: ["bosun"],
                 priority: { name: "High" },
                 project: { key: "PROJ" },
                 customfield_10042: "alpha",
@@ -642,7 +642,7 @@ describe("kanban-adapter jira backend", () => {
               status: transitioned
                 ? { name: "In Progress", statusCategory: { key: "indeterminate" } }
                 : { name: "To Do", statusCategory: { key: "new" } },
-              labels: ["openfleet"],
+              labels: ["bosun"],
               project: { key: "PROJ" },
             },
           }),
@@ -693,7 +693,7 @@ describe("kanban-adapter jira backend", () => {
               summary: "Renamed",
               description: "Updated",
               status: { name: "To Do", statusCategory: { key: "new" } },
-              labels: ["openfleet"],
+              labels: ["bosun"],
               project: { key: "PROJ" },
             },
           }),
@@ -744,7 +744,7 @@ describe("kanban-adapter jira backend", () => {
             comments: [
               {
                 id: "c1",
-                body: `<!-- openfleet-state
+                body: `<!-- bosun-state
 {
   "ownerId": "ws-2/agent-2",
   "attemptToken": "token-2",
@@ -792,7 +792,7 @@ describe("kanban-adapter internal backend", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tempDir = mkdtempSync(resolve(tmpdir(), "openfleet-internal-kanban-"));
+    tempDir = mkdtempSync(resolve(tmpdir(), "bosun-internal-kanban-"));
     configureTaskStore({ baseDir: tempDir });
     loadStore();
     process.env.KANBAN_BACKEND = "internal";

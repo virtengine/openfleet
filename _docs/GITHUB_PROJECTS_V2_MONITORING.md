@@ -1,12 +1,12 @@
 # GitHub Projects v2 Monitoring Guide
 
-**Scope**: Operational monitoring for Projects v2 read/write sync in `scripts/openfleet/kanban-adapter.mjs`.
+**Scope**: Operational monitoring for Projects v2 read/write sync in `scripts/bosun/kanban-adapter.mjs`.
 
 ---
 
 ## What to Monitor
 
-### 1. Read Path Health (Project -> openfleet)
+### 1. Read Path Health (Project -> bosun)
 
 Watch for read failures when `GITHUB_PROJECT_MODE=kanban`:
 
@@ -16,7 +16,7 @@ Watch for read failures when `GITHUB_PROJECT_MODE=kanban`:
 
 Expected behavior on failure: adapter logs warning and falls back to issue-based listing.
 
-### 2. Write Path Health (openfleet -> Project)
+### 2. Write Path Health (bosun -> Project)
 
 Watch sync outcomes from `updateTaskStatus()` auto-sync:
 
@@ -45,13 +45,13 @@ Run from repo root:
 
 ```bash
 # Recent Projects v2 related logs
-rg -n "project|sync status|syncFieldToProject|rate limit" scripts/openfleet/logs -g "*.log"
+rg -n "project|sync status|syncFieldToProject|rate limit" scripts/bosun/logs -g "*.log"
 
 # Failure-focused scan
-rg -n "failed to sync status to project|failed to list tasks from project|rate limit" scripts/openfleet/logs -g "*.log"
+rg -n "failed to sync status to project|failed to list tasks from project|rate limit" scripts/bosun/logs -g "*.log"
 
 # Success-focused scan
-rg -n "synced issue .* to project status|synced field" scripts/openfleet/logs -g "*.log"
+rg -n "synced issue .* to project status|synced field" scripts/bosun/logs -g "*.log"
 ```
 
 ---

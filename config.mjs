@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
 /**
- * openfleet — Configuration System
+ * bosun — Configuration System
  *
  * Loads configuration from (in priority order):
  *   1. CLI flags (--key value)
  *   2. Environment variables
  *   3. .env file
- *   4. openfleet.config.json (project config)
+ *   4. bosun.config.json (project config)
  *   5. Built-in defaults
  *
  * Executor configuration supports N executors with weights and failover.
@@ -28,9 +28,9 @@ import { applyAllCompatibility } from "./compat.mjs";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const CONFIG_FILES = [
-  "openfleet.config.json",
-  ".openfleet.json",
-  "openfleet.json",
+  "bosun.config.json",
+  ".bosun.json",
+  "bosun.json",
 ];
 
 function hasSetupMarkers(dir) {
@@ -78,12 +78,12 @@ function resolveConfigDir(repoRoot) {
       process.env.APPDATA ||
       process.env.LOCALAPPDATA ||
       process.cwd();
-  return resolve(baseDir, "openfleet");
+  return resolve(baseDir, "bosun");
 }
 
 function ensurePromptWorkspaceGitIgnore(repoRoot) {
   const gitignorePath = resolve(repoRoot, ".gitignore");
-  const entry = "/.openfleet/";
+  const entry = "/.bosun/";
   let existing = "";
   try {
     if (existsSync(gitignorePath)) {
@@ -169,11 +169,11 @@ function loadConfigFile(configDir) {
     }
   }
   // Hint about the example template
-  const examplePath = resolve(configDir, "openfleet.config.example.json");
+  const examplePath = resolve(configDir, "bosun.config.example.json");
   if (existsSync(examplePath)) {
     console.log(
-      `[config] No openfleet.config.json found. Copy the example:\n` +
-        `         cp ${examplePath} ${resolve(configDir, "openfleet.config.json")}`,
+      `[config] No bosun.config.json found. Copy the example:\n` +
+        `         cp ${examplePath} ${resolve(configDir, "bosun.config.json")}`,
     );
   }
   return { path: null, data: null };
@@ -716,21 +716,21 @@ function loadAgentPrompts(configDir, repoRoot, configData) {
 // ── Main Configuration Loader ────────────────────────────────────────────────
 
 /**
- * Load the full openfleet configuration.
+ * Load the full bosun configuration.
  * Returns a frozen config object used by all modules.
  */
 export function loadConfig(argv = process.argv, options = {}) {
-  // Apply legacy CODEX_MONITOR_* → OPENFLEET_* compatibility before anything else
+  // Apply legacy CODEX_MONITOR_* → BOSUN_* compatibility before anything else
   applyAllCompatibility();
 
   const { reloadEnv = false } = options;
   const cli = parseArgs(argv);
 
   const repoRootForConfig = detectRepoRoot();
-  // Determine config directory (where openfleet stores its config)
+  // Determine config directory (where bosun stores its config)
   const configDir =
     cli["config-dir"] ||
-    process.env.OPENFLEET_DIR ||
+    process.env.BOSUN_DIR ||
     resolveConfigDir(repoRootForConfig);
 
   const configFile = loadConfigFile(configDir);
@@ -744,8 +744,8 @@ export function loadConfig(argv = process.argv, options = {}) {
   const repoSelection =
     cli["repo-name"] ||
     cli.repository ||
-    process.env.OPENFLEET_REPO ||
-    process.env.OPENFLEET_REPO_NAME ||
+    process.env.BOSUN_REPO ||
+    process.env.BOSUN_REPO_NAME ||
     process.env.REPO_NAME ||
     configData.defaultRepository ||
     configData.defaultRepo ||
@@ -778,8 +778,8 @@ export function loadConfig(argv = process.argv, options = {}) {
     (profiles.default ? "default" : "");
   const profileName =
     cli.profile ||
-    process.env.OPENFLEET_PROFILE ||
-    process.env.OPENFLEET_ENV_PROFILE ||
+    process.env.BOSUN_PROFILE ||
+    process.env.BOSUN_ENV_PROFILE ||
     selectedRepository?.profile ||
     selectedRepository?.envProfile ||
     defaultProfile ||
@@ -842,7 +842,7 @@ export function loadConfig(argv = process.argv, options = {}) {
   const mode =
     (
       cli.mode ||
-      process.env.OPENFLEET_MODE ||
+      process.env.BOSUN_MODE ||
       configData.mode ||
       selectedRepository?.mode ||
       ""
@@ -947,20 +947,20 @@ export function loadConfig(argv = process.argv, options = {}) {
   const interactiveShellEnabled =
     flags.has("shell") ||
     flags.has("interactive") ||
-    isEnvEnabled(process.env.OPENFLEET_SHELL, false) ||
-    isEnvEnabled(process.env.OPENFLEET_INTERACTIVE, false) ||
+    isEnvEnabled(process.env.BOSUN_SHELL, false) ||
+    isEnvEnabled(process.env.BOSUN_INTERACTIVE, false) ||
     configData.interactiveShellEnabled === true ||
     configData.shellEnabled === true;
   const preflightEnabled = flags.has("no-preflight")
     ? false
     : configData.preflightEnabled !== undefined
       ? configData.preflightEnabled
-      : isEnvEnabled(process.env.OPENFLEET_PREFLIGHT_DISABLED, false)
+      : isEnvEnabled(process.env.BOSUN_PREFLIGHT_DISABLED, false)
         ? false
         : true;
   const preflightRetryMs = Number(
     cli["preflight-retry"] ||
-      process.env.OPENFLEET_PREFLIGHT_RETRY_MS ||
+      process.env.BOSUN_PREFLIGHT_RETRY_MS ||
       configData.preflightRetryMs ||
       "300000",
   );
@@ -1356,14 +1356,14 @@ export function loadConfig(argv = process.argv, options = {}) {
 
   // ── Branch Routing ────────────────────────────────────────
   // Maps scope patterns (from conventional commit scopes in task titles) to
-  // upstream branches.  Allows e.g. all "openfleet" tasks to route to
-  // "origin/ve/openfleet-staging" instead of the default target branch.
+  // upstream branches.  Allows e.g. all "bosun" tasks to route to
+  // "origin/ve/bosun-staging" instead of the default target branch.
   //
-  // Config format (openfleet.config.json):
+  // Config format (bosun.config.json):
   //   "branchRouting": {
   //     "defaultBranch": "origin/staging",
   //     "scopeMap": {
-  //       "openfleet": "origin/ve/openfleet-staging",
+  //       "bosun": "origin/ve/bosun-staging",
   //       "veid":          "origin/staging",
   //       "provider":      "origin/staging"
   //     },
@@ -1373,7 +1373,7 @@ export function loadConfig(argv = process.argv, options = {}) {
   //
   // Env overrides:
   //   VK_TARGET_BRANCH=origin/staging        (default branch)
-  //   BRANCH_ROUTING_SCOPE_MAP=openfleet:origin/ve/openfleet-staging,veid:origin/staging
+  //   BRANCH_ROUTING_SCOPE_MAP=bosun:origin/ve/bosun-staging,veid:origin/staging
   //   AUTO_REBASE_ON_MERGE=true
   //   ASSESS_WITH_SDK=true
   const branchRoutingRaw = configData.branchRouting || {};
@@ -1414,7 +1414,7 @@ export function loadConfig(argv = process.argv, options = {}) {
   });
 
   // ── Fleet Coordination ─────────────────────────────────────
-  // Multi-workstation collaboration: when 2+ openfleet instances share
+  // Multi-workstation collaboration: when 2+ bosun instances share
   // the same repo, the fleet system coordinates task planning, dispatch,
   // and conflict-aware ordering.
   const fleetEnabled = isEnvEnabled(
@@ -1660,7 +1660,7 @@ function detectProjectName(configDir, repoRoot) {
 }
 
 function findOrchestratorScript(configDir, repoRoot) {
-  const shellModeEnv = String(process.env.OPENFLEET_SHELL_MODE || "")
+  const shellModeEnv = String(process.env.BOSUN_SHELL_MODE || "")
     .trim()
     .toLowerCase();
   const shellModeRequested = ["1", "true", "yes", "on"].includes(shellModeEnv);

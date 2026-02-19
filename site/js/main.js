@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   OpenFleet Landing Page — Main JavaScript
+   Bosun Landing Page — Main JavaScript
    ═══════════════════════════════════════════════════════════════════════════ */
 
 (function () {
@@ -156,7 +156,7 @@
       (entries) => {
         if (entries[0].isIntersecting && !termInit) {
           termInit = true;
-          window.initOpenFleetTerminal('.terminal-window__body', {
+          window.initBosunTerminal('.terminal-window__body', {
             autoDemo: true,
             greeting: true,
           });

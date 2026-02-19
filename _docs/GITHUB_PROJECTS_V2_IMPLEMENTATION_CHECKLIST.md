@@ -152,7 +152,7 @@
   - [x] `GITHUB_PROJECT_STATUS_CANCELLED=Cancelled`
   - [x] `GITHUB_PROJECT_AUTO_SYNC=true`
 
-- [x] **Config schema** (`openfleet.schema.json`)
+- [x] **Config schema** (`bosun.schema.json`)
   - [x] Add `kanban.github.project` section
   - [x] Add `statusMapping` object
   - [x] Add `autoSync` boolean
@@ -185,7 +185,7 @@
   - [x] Error recovery scenarios
 
 - [ ] **Manual testing**
-  - [ ] Update task status via openfleet
+  - [ ] Update task status via bosun
   - [ ] Check project board for updated Status column
   - [ ] Test all status transitions
   - [ ] Test with custom status mappings
@@ -255,7 +255,7 @@
 ### Configuration Updates
 
 - [x] Update `.env.example` with new variables
-- [x] Update `openfleet.schema.json` with project config
+- [x] Update `bosun.schema.json` with project config
 - [x] Document migration steps in `GITHUB_PROJECTS_V2_API.md`
 
 ### Release Notes

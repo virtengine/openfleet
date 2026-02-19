@@ -606,7 +606,7 @@ export async function runKanbanCli(argv, runtime = new VeKanbanRuntime()) {
 
 export function printUsage() {
   console.log(`
-  OpenFleet Kanban CLI (ve-kanban)
+  Bosun Kanban CLI (ve-kanban)
   =================================
 
   Commands:

@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { resolve } from "node:path";
 
 /**
- * Resolve the repo root for openfleet.
+ * Resolve the repo root for bosun.
  *
  * Priority:
  *  1. Explicit REPO_ROOT env var.

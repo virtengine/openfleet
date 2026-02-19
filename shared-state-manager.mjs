@@ -1,5 +1,5 @@
 /**
- * @fileoverview Shared State Manager for OpenFleet Task Coordination
+ * @fileoverview Shared State Manager for Bosun Task Coordination
  *
  * Manages distributed task execution state across multiple agents and workstations.
  * Provides atomic operations for claiming, updating, and releasing task ownership
@@ -52,7 +52,7 @@ const MAX_EVENT_LOG_ENTRIES = 100;
  * @returns {string} Registry file path
  */
 function getRegistryPath(repoRoot = process.cwd()) {
-  return join(repoRoot, ".cache", "openfleet", "shared-task-states.json");
+  return join(repoRoot, ".cache", "bosun", "shared-task-states.json");
 }
 
 /**

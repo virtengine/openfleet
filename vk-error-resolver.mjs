@@ -29,7 +29,7 @@ const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const CONFIG = {
   maxAttempts: 3,
   cooldownMinutes: 5,
-  worktreePrefix: "openfleet-resolver",
+  worktreePrefix: "bosun-resolver",
   stateFile: resolve(__dirname, "logs", "vk-error-resolver-state.json"),
 };
 
@@ -204,7 +204,7 @@ class UncommittedChangesResolver {
       });
 
       // Commit changes
-      const commitMsg = "chore(openfleet): add uncommitted changes";
+      const commitMsg = "chore(bosun): add uncommitted changes";
       execSync(`git commit -m "${commitMsg}" --no-edit`, {
         cwd: worktreePath,
         stdio: "pipe",

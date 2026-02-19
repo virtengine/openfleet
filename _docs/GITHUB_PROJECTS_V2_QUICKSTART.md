@@ -146,7 +146,7 @@ await this._gh(["api", "graphql", "-f", `query=${mutation}`]);
 
 ```bash
 # Manual test
-cd scripts/openfleet
+cd scripts/bosun
 export GITHUB_PROJECT_MODE=kanban
 export GITHUB_PROJECT_OWNER=virtengine
 export GITHUB_PROJECT_NUMBER=3
@@ -175,7 +175,7 @@ To enable project sync:
 
 1. Set `GITHUB_PROJECT_MODE=kanban`
 2. Configure `GITHUB_PROJECT_OWNER` and `GITHUB_PROJECT_NUMBER`
-3. Restart openfleet
+3. Restart bosun
 
 ## Full Documentation
 

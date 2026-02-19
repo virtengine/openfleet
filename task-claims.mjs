@@ -9,7 +9,7 @@
  *   - Telegram/VK channel announcement support
  *
  * Architecture:
- *   - Claims are stored in .cache/openfleet/task-claims.json
+ *   - Claims are stored in .cache/bosun/task-claims.json
  *   - Each claim has a unique token (UUID) for idempotency
  *   - Claims include instance_id, timestamp, and TTL
  *   - Duplicate claims are resolved by instance priority (from presence.mjs)
@@ -51,7 +51,7 @@ import {
 const CLAIMS_FILENAME = "task-claims.json";
 const AUDIT_FILENAME = "task-claims-audit.jsonl";
 const DEFAULT_TTL_MINUTES = 60;
-const CACHE_DIR = ".cache/openfleet";
+const CACHE_DIR = ".cache/bosun";
 const DEFAULT_OWNER_STALE_TTL_MS = 10 * 60 * 1000;
 
 // Shared state configuration from environment

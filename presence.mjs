@@ -27,7 +27,7 @@ function safeParseNumber(value, fallback) {
 }
 
 async function ensurePresenceDir(repoRoot) {
-  const dir = resolve(repoRoot, ".cache", "openfleet");
+  const dir = resolve(repoRoot, ".cache", "bosun");
   await mkdir(dir, { recursive: true });
   return dir;
 }
@@ -179,7 +179,7 @@ export async function initPresence(options = {}) {
   state.repoRoot = options.repoRoot || process.cwd();
   state.presencePath =
     options.presencePath ||
-    resolve(state.repoRoot, ".cache", "openfleet", PRESENCE_FILENAME);
+    resolve(state.repoRoot, ".cache", "bosun", PRESENCE_FILENAME);
   state.localWorkspace = options.localWorkspace || null;
   state.instanceId = await loadOrCreateInstanceId(
     state.repoRoot,
@@ -286,7 +286,7 @@ export function formatPresenceSummary({ nowMs, ttlMs } = {}) {
     return "No active instances reported.";
   }
   const coordinator = selectCoordinator({ nowMs, ttlMs });
-  const lines = ["🛰️ OpenFleet Presence"];
+  const lines = ["🛰️ Bosun Presence"];
   for (const entry of active) {
     const name = entry.instance_label || entry.instance_id;
     const role = entry.workspace_role || "workspace";

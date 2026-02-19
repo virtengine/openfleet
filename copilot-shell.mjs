@@ -1,5 +1,5 @@
 /**
- * copilot-shell.mjs — Persistent Copilot SDK agent for openfleet.
+ * copilot-shell.mjs — Persistent Copilot SDK agent for bosun.
  *
  * Uses the GitHub Copilot SDK (@github/copilot-sdk) to maintain a persistent
  * session with multi-turn conversation, tool use (shell, file I/O, MCP), and
@@ -481,7 +481,7 @@ async function saveState() {
 
 const SYSTEM_PROMPT = `# AGENT DIRECTIVE — EXECUTE IMMEDIATELY
 
-You are an autonomous AI coding agent deployed inside openfleet.
+You are an autonomous AI coding agent deployed inside bosun.
 You are NOT a chatbot. You are NOT waiting for input. You EXECUTE tasks.
 
 CRITICAL RULES:
@@ -495,7 +495,7 @@ CRITICAL RULES:
 8. Think step-by-step, show your reasoning, then act.
 
 You have FULL ACCESS to:
-- The target repository checked out for this openfleet instance
+- The target repository checked out for this bosun instance
 - Shell: git, gh, node, go, make, and all system commands (pwsh optional)
 - File read/write: read any file, create/edit any file
 - MCP servers configured in this environment (availability varies)
@@ -504,7 +504,7 @@ You have FULL ACCESS to:
 Key files:
   ${REPO_ROOT} — Repository root
   .cache/ve-orchestrator-status.json — Live status data (if enabled)
-  scripts/openfleet/logs/ — Monitor logs (if available)
+  scripts/bosun/logs/ — Monitor logs (if available)
   AGENTS.md — Repo guide for agents
 `;
 

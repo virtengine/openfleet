@@ -19,7 +19,7 @@ describe("config-doctor", () => {
     const result = runConfigDoctor();
     const output = formatConfigDoctorReport(result);
     expect(typeof output).toBe("string");
-    expect(output).toContain("openfleet config doctor");
+    expect(output).toContain("bosun config doctor");
     expect(output).toContain("Status:");
   });
 

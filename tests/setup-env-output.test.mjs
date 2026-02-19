@@ -33,18 +33,18 @@ describe("setup env output", () => {
   });
 
   it("loads existing .env values into process env for setup defaults", async () => {
-    const dir = await mkdtemp(resolve(tmpdir(), "openfleet-setup-env-"));
+    const dir = await mkdtemp(resolve(tmpdir(), "bosun-setup-env-"));
     const envPath = resolve(dir, ".env");
-    delete process.env.OPENFLEET_TEST_KEY;
+    delete process.env.BOSUN_TEST_KEY;
 
     try {
-      await writeFile(envPath, "OPENFLEET_TEST_KEY=from-file\n", "utf8");
+      await writeFile(envPath, "BOSUN_TEST_KEY=from-file\n", "utf8");
       const result = applyEnvFileToProcess(envPath, { override: true });
       expect(result.found).toBe(true);
       expect(result.loaded).toBe(1);
-      expect(process.env.OPENFLEET_TEST_KEY).toBe("from-file");
+      expect(process.env.BOSUN_TEST_KEY).toBe("from-file");
     } finally {
-      delete process.env.OPENFLEET_TEST_KEY;
+      delete process.env.BOSUN_TEST_KEY;
       await rm(dir, { recursive: true, force: true });
     }
   });
@@ -79,7 +79,7 @@ describe("GitHub project resolution helpers", () => {
       return JSON.stringify({
         projects: [
           {
-            title: "OpenFleet",
+            title: "Bosun",
             number: 17,
             url: "https://github.com/orgs/acme/projects/17",
           },
@@ -89,7 +89,7 @@ describe("GitHub project resolution helpers", () => {
 
     const result = resolveOrCreateGitHubProject({
       owner: "acme",
-      title: "OpenFleet",
+      title: "Bosun",
       runCommand,
     });
 
@@ -139,7 +139,7 @@ describe("GitHub project resolution helpers", () => {
 
     const result = resolveOrCreateGitHubProject({
       owner: "acme",
-      title: "OpenFleet",
+      title: "Bosun",
       runCommand,
     });
 
@@ -160,7 +160,7 @@ describe("GitHub project resolution helpers", () => {
         if (args[3] === "repo-owner") {
           return JSON.stringify([
             {
-              title: "OpenFleet",
+              title: "Bosun",
               url: "https://github.com/orgs/repo-owner/projects/73",
             },
           ]);
@@ -179,7 +179,7 @@ describe("GitHub project resolution helpers", () => {
 
     const result = resolveOrCreateGitHubProject({
       owner: "configured-owner",
-      title: "OpenFleet",
+      title: "Bosun",
       githubLogin: "detected-user",
       repoOwner: "repo-owner",
       runCommand,

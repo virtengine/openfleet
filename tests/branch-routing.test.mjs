@@ -25,8 +25,8 @@ describe("extractScopeFromTitle", () => {
   });
 
   it("extracts scope with priority prefix", () => {
-    expect(extractScopeFromTitle("[P1] feat(openfleet): add caching")).toBe(
-      "openfleet",
+    expect(extractScopeFromTitle("[P1] feat(bosun): add caching")).toBe(
+      "bosun",
     );
   });
 
@@ -75,8 +75,8 @@ describe("extractScopeFromTitle", () => {
   });
 
   it("handles hyphenated scopes", () => {
-    expect(extractScopeFromTitle("feat(openfleet): branch routing")).toBe(
-      "openfleet",
+    expect(extractScopeFromTitle("feat(bosun): branch routing")).toBe(
+      "bosun",
     );
   });
 

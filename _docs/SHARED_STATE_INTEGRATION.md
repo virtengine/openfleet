@@ -2,11 +2,11 @@
 
 ## Overview
 
-Successfully integrated the shared state manager with existing openfleet claim and sync flows. The integration provides distributed task coordination across multiple agents and workstations with heartbeat-based liveness detection and conflict resolution.
+Successfully integrated the shared state manager with existing bosun claim and sync flows. The integration provides distributed task coordination across multiple agents and workstations with heartbeat-based liveness detection and conflict resolution.
 
 ## Modified Files
 
-### 1. `scripts/openfleet/task-claims.mjs`
+### 1. `scripts/bosun/task-claims.mjs`
 
 **Changes:**
 
@@ -34,7 +34,7 @@ Successfully integrated the shared state manager with existing openfleet claim a
 - Failures logged as warnings, don't block local claim operations
 - Ensures backward compatibility if shared state is unavailable
 
-### 2. `scripts/openfleet/sync-engine.mjs`
+### 2. `scripts/bosun/sync-engine.mjs`
 
 **Changes:**
 
@@ -71,7 +71,7 @@ Successfully integrated the shared state manager with existing openfleet claim a
 - Respects heartbeat freshness (using `SHARED_STATE_STALE_THRESHOLD_MS`)
 - Only skips push if conflict owner's heartbeat is fresh (not stale)
 
-### 3. `scripts/openfleet/ve-orchestrator.mjs`
+### 3. `scripts/bosun/ve-orchestrator.mjs`
 
 **Changes:**
 
@@ -104,7 +104,7 @@ Successfully integrated the shared state manager with existing openfleet claim a
 - Stale state sweep runs on every orchestrator cycle (default: 90 seconds)
 - Automatically reclaims tasks with stale heartbeats
 
-### 4. `scripts/openfleet/.env.example`
+### 4. `scripts/bosun/.env.example`
 
 **New Environment Variables:**
 
@@ -191,8 +191,8 @@ Created `test-shared-state-integration.mjs` to verify:
 
 ### State Hierarchy
 
-- **Local Claims** (.cache/openfleet/task-claims.json): Process-level claims
-- **Shared State** (.cache/openfleet/shared-task-states.json): Cross-instance coordination
+- **Local Claims** (.cache/bosun/task-claims.json): Process-level claims
+- **Shared State** (.cache/bosun/shared-task-states.json): Cross-instance coordination
 - **External Kanban** (GitHub/VK): User-facing task board
 
 ### Conflict Priority

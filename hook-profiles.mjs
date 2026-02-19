@@ -7,17 +7,17 @@ const __dirname = dirname(__filename);
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_HOOK_SCHEMA = "https://json-schema.org/draft/2020-12/schema";
-const LEGACY_BRIDGE_SNIPPET = "scripts/openfleet/agent-hook-bridge.mjs";
+const LEGACY_BRIDGE_SNIPPET = "scripts/bosun/agent-hook-bridge.mjs";
 const DEFAULT_BRIDGE_SCRIPT_PATH = resolve(__dirname, "agent-hook-bridge.mjs");
 
 function getHookNodeBinary() {
-  const configured = String(process.env.OPENFLEET_HOOK_NODE_BIN || "").trim();
+  const configured = String(process.env.BOSUN_HOOK_NODE_BIN || "").trim();
   return configured || "node";
 }
 
 function getHookBridgeScriptPath() {
   const configured = String(
-    process.env.OPENFLEET_HOOK_BRIDGE_PATH || "",
+    process.env.BOSUN_HOOK_BRIDGE_PATH || "",
   ).trim();
   return configured || DEFAULT_BRIDGE_SCRIPT_PATH;
 }
@@ -242,23 +242,23 @@ export function normalizeHookTargets(value) {
 }
 
 export function buildHookScaffoldOptionsFromEnv(env = process.env) {
-  const profile = normalizeProfile(env.OPENFLEET_HOOK_PROFILE);
+  const profile = normalizeProfile(env.BOSUN_HOOK_PROFILE);
   return {
-    enabled: parseBoolean(env.OPENFLEET_HOOKS_ENABLED, true),
+    enabled: parseBoolean(env.BOSUN_HOOKS_ENABLED, true),
     profile,
-    targets: normalizeHookTargets(env.OPENFLEET_HOOK_TARGETS),
-    overwriteExisting: parseBoolean(env.OPENFLEET_HOOKS_OVERWRITE, false),
+    targets: normalizeHookTargets(env.BOSUN_HOOK_TARGETS),
+    overwriteExisting: parseBoolean(env.BOSUN_HOOKS_OVERWRITE, false),
     commands: {
       SessionStart: normalizeOverrideCommands(
-        env.OPENFLEET_HOOK_SESSION_START,
+        env.BOSUN_HOOK_SESSION_START,
       ),
       SessionStop: normalizeOverrideCommands(
-        env.OPENFLEET_HOOK_SESSION_STOP,
+        env.BOSUN_HOOK_SESSION_STOP,
       ),
-      PrePush: normalizeOverrideCommands(env.OPENFLEET_HOOK_PREPUSH),
-      PreCommit: normalizeOverrideCommands(env.OPENFLEET_HOOK_PRECOMMIT),
+      PrePush: normalizeOverrideCommands(env.BOSUN_HOOK_PREPUSH),
+      PreCommit: normalizeOverrideCommands(env.BOSUN_HOOK_PRECOMMIT),
       TaskComplete: normalizeOverrideCommands(
-        env.OPENFLEET_HOOK_TASK_COMPLETE,
+        env.BOSUN_HOOK_TASK_COMPLETE,
       ),
     },
   };
@@ -323,11 +323,11 @@ export function buildCanonicalHookConfig(options = {}) {
   return {
     $schema: DEFAULT_HOOK_SCHEMA,
     description:
-      "Agent lifecycle hooks for openfleet. Compatible with Codex, Claude Code, and Copilot CLI.",
+      "Agent lifecycle hooks for bosun. Compatible with Codex, Claude Code, and Copilot CLI.",
     hooks,
     meta: {
       profile,
-      generatedBy: "openfleet setup",
+      generatedBy: "bosun setup",
       generatedAt: new Date().toISOString(),
     },
   };
@@ -545,10 +545,10 @@ function buildDisableEnv(hookConfig) {
   const hasTaskComplete = Array.isArray(hookConfig.hooks?.TaskComplete);
 
   return {
-    OPENFLEET_HOOKS_BUILTINS_MODE:
+    BOSUN_HOOKS_BUILTINS_MODE:
       hasPrePush || hasTaskComplete ? "auto" : "off",
-    OPENFLEET_HOOKS_DISABLE_PREPUSH: hasPrePush ? "0" : "1",
-    OPENFLEET_HOOKS_DISABLE_TASK_COMPLETE: hasTaskComplete ? "0" : "1",
+    BOSUN_HOOKS_DISABLE_PREPUSH: hasPrePush ? "0" : "1",
+    BOSUN_HOOKS_DISABLE_TASK_COMPLETE: hasTaskComplete ? "0" : "1",
   };
 }
 
@@ -571,9 +571,9 @@ export function scaffoldAgentHookFiles(repoRoot, options = {}) {
 
   if (!enabled) {
     result.env = {
-      OPENFLEET_HOOKS_BUILTINS_MODE: "off",
-      OPENFLEET_HOOKS_DISABLE_PREPUSH: "1",
-      OPENFLEET_HOOKS_DISABLE_TASK_COMPLETE: "1",
+      BOSUN_HOOKS_BUILTINS_MODE: "off",
+      BOSUN_HOOKS_DISABLE_PREPUSH: "1",
+      BOSUN_HOOKS_DISABLE_TASK_COMPLETE: "1",
     };
     return result;
   }
@@ -601,7 +601,7 @@ export function scaffoldAgentHookFiles(repoRoot, options = {}) {
       root,
       ".github",
       "hooks",
-      "openfleet.hooks.json",
+      "bosun.hooks.json",
     );
     const config = createCopilotHookConfig();
     const existedBefore = existsSync(copilotPath);

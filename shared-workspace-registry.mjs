@@ -120,7 +120,7 @@ function getRegistryPath(options = {}) {
   if (envPath) {
     return resolve(envPath);
   }
-  return resolve(repoRoot, ".cache", "openfleet", "shared-workspaces.json");
+  return resolve(repoRoot, ".cache", "bosun", "shared-workspaces.json");
 }
 
 function getSeedPath(options = {}) {
@@ -145,7 +145,7 @@ function getAuditPath(options = {}) {
   return resolve(
     repoRoot,
     ".cache",
-    "openfleet",
+    "bosun",
     "shared-workspace-audit.jsonl",
   );
 }

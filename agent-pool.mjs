@@ -20,7 +20,7 @@
  * Claude) based on configuration.  Resolution order:
  *   1. `AGENT_POOL_SDK` env var (explicit override)
  *   2. `PRIMARY_AGENT` env var → maps to SDK
- *   3. `loadConfig().agentPool.sdk` from `openfleet.config.json`
+ *   3. `loadConfig().agentPool.sdk` from `bosun.config.json`
  *   4. Fallback chain through available SDKs
  *
  * EXPORTS:
@@ -291,7 +291,7 @@ function logResolution(name, source) {
  *   1. Runtime override via `setPoolSdk()` (already cached)
  *   2. `AGENT_POOL_SDK` env var
  *   3. `PRIMARY_AGENT` env var
- *   4. `loadConfig().agentPool.sdk` from openfleet.config.json
+ *   4. `loadConfig().agentPool.sdk` from bosun.config.json
  *   5. First non-disabled SDK in fallback chain
  *
  * @returns {string} Canonical SDK name (e.g. "codex", "copilot", "claude").
@@ -317,7 +317,7 @@ function resolvePoolSdkName() {
     return resolvedSdkName;
   }
 
-  // 3. openfleet.config.json → agentPool.sdk
+  // 3. bosun.config.json → agentPool.sdk
   try {
     const config = loadConfig();
     const configSdk = (
@@ -327,7 +327,7 @@ function resolvePoolSdkName() {
     ).toLowerCase();
     if (configSdk && SDK_ADAPTERS[configSdk] && !isDisabled(configSdk)) {
       resolvedSdkName = configSdk;
-      logResolution(configSdk, "openfleet.config.json");
+      logResolution(configSdk, "bosun.config.json");
       return resolvedSdkName;
     }
   } catch {

@@ -223,7 +223,7 @@ AGENT_COST_ANOMALY_THRESHOLD=1.0     # Alert if session costs >$1
 
 ```powershell
 # From PowerShell
-Import-Module scripts/openfleet/lib/agent-work-logger.ps1
+Import-Module scripts/bosun/lib/agent-work-logger.ps1
 Show-AgentWorkSummary -LastNDays 7
 ```
 
@@ -303,7 +303,7 @@ All logs stored in `.cache/agent-work-logs/`:
 ### Analyze Failed Tasks
 
 ```bash
-node scripts/openfleet/analyze-agent-work.mjs --task-planning --failed-only
+node scripts/bosun/analyze-agent-work.mjs --task-planning --failed-only
 ```
 
 **Output:**
@@ -323,7 +323,7 @@ Root Cause Categories:
 ### Compare Executors
 
 ```bash
-node scripts/openfleet/analyze-agent-work.mjs --executor-comparison CODEX COPILOT
+node scripts/bosun/analyze-agent-work.mjs --executor-comparison CODEX COPILOT
 ```
 
 **Output:**
@@ -341,7 +341,7 @@ node scripts/openfleet/analyze-agent-work.mjs --executor-comparison CODEX COPILO
 ### Cluster Errors
 
 ```bash
-node scripts/openfleet/analyze-agent-work.mjs --error-clustering --days 30
+node scripts/bosun/analyze-agent-work.mjs --error-clustering --days 30
 ```
 
 **Output:**
@@ -384,7 +384,7 @@ Recommendation: review_prompt_efficiency
 
 ```bash
 # Rotate and compress old logs
-bash scripts/openfleet/rotate-agent-logs.sh
+bash scripts/bosun/rotate-agent-logs.sh
 ```
 
 ### Clean Up Old Sessions
@@ -429,7 +429,7 @@ ls -t .cache/agent-work-logs/agent-sessions/*.jsonl | tail -n +101 | xargs rm -f
 
 Check if logging is enabled:
 ```powershell
-Test-Path "scripts\openfleet\lib\agent-work-logger.ps1"
+Test-Path "scripts\bosun\lib\agent-work-logger.ps1"
 # Should return True
 ```
 
@@ -456,4 +456,4 @@ Check alert polling is running in monitor.mjs (should see log lines every 5s whe
 
 ---
 
-**Ready to start?** Just follow steps 1-5 above and restart openfleet!
+**Ready to start?** Just follow steps 1-5 above and restart bosun!

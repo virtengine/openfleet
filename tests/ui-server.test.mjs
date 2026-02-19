@@ -10,7 +10,7 @@ describe("ui-server mini app", () => {
     "TELEGRAM_UI_ALLOW_UNSAFE",
     "TELEGRAM_UI_PORT",
     "TELEGRAM_INTERVAL_MIN",
-    "OPENFLEET_CONFIG_PATH",
+    "BOSUN_CONFIG_PATH",
     "KANBAN_BACKEND",
     "GITHUB_PROJECT_MODE",
     "GITHUB_PROJECT_WEBHOOK_SECRET",
@@ -24,7 +24,7 @@ describe("ui-server mini app", () => {
     "PROJECT_REQUIREMENTS_PROFILE",
     "TASK_PLANNER_DEDUP_HOURS",
     "EXECUTORS",
-    "OPENFLEET_PROMPT_PLANNER",
+    "BOSUN_PROMPT_PLANNER",
     "FLEET_ENABLED",
     "FLEET_SYNC_INTERVAL_MS",
     "OPENAI_API_KEY",
@@ -228,7 +228,7 @@ describe("ui-server mini app", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         changes: {
-          OPENFLEET_HOOK_TARGETS: "codex,invalid",
+          BOSUN_HOOK_TARGETS: "codex,invalid",
         },
       }),
     });
@@ -236,14 +236,14 @@ describe("ui-server mini app", () => {
 
     expect(response.status).toBe(400);
     expect(json.ok).toBe(false);
-    expect(json.fieldErrors?.OPENFLEET_HOOK_TARGETS).toBeTruthy();
+    expect(json.fieldErrors?.BOSUN_HOOK_TARGETS).toBeTruthy();
   });
 
   it("writes supported settings into config file", async () => {
     const mod = await import("../ui-server.mjs");
-    const tmpDir = mkdtempSync(join(tmpdir(), "openfleet-config-"));
-    const configPath = join(tmpDir, "openfleet.config.json");
-    process.env.OPENFLEET_CONFIG_PATH = configPath;
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-config-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    process.env.BOSUN_CONFIG_PATH = configPath;
 
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
@@ -271,7 +271,7 @@ describe("ui-server mini app", () => {
           FLEET_ENABLED: "false",
           FLEET_SYNC_INTERVAL_MS: "90000",
           EXECUTORS: "CODEX:DEFAULT:70,COPILOT:DEFAULT:30",
-          OPENFLEET_PROMPT_PLANNER: ".openfleet/agents/task-planner.md",
+          BOSUN_PROMPT_PLANNER: ".bosun/agents/task-planner.md",
         },
       }),
     });
@@ -295,7 +295,7 @@ describe("ui-server mini app", () => {
         "FLEET_ENABLED",
         "FLEET_SYNC_INTERVAL_MS",
         "EXECUTORS",
-        "OPENFLEET_PROMPT_PLANNER",
+        "BOSUN_PROMPT_PLANNER",
       ]),
     );
     expect(json.configPath).toBe(configPath);
@@ -323,16 +323,16 @@ describe("ui-server mini app", () => {
         expect.objectContaining({ executor: "COPILOT", variant: "DEFAULT", weight: 30 }),
       ]),
     );
-    expect(config.agentPrompts?.planner).toBe(".openfleet/agents/task-planner.md");
+    expect(config.agentPrompts?.planner).toBe(".bosun/agents/task-planner.md");
 
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("does not sync unsupported settings into config file", async () => {
     const mod = await import("../ui-server.mjs");
-    const tmpDir = mkdtempSync(join(tmpdir(), "openfleet-config-"));
-    const configPath = join(tmpDir, "openfleet.config.json");
-    process.env.OPENFLEET_CONFIG_PATH = configPath;
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-config-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    process.env.BOSUN_CONFIG_PATH = configPath;
 
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),

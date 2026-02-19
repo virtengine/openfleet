@@ -28,7 +28,7 @@
 - ❌ Update iteration/sprint fields
 - ❌ Manage project item metadata
 
-**Impact**: Can't use GitHub Projects v2 as primary task board for openfleet.
+**Impact**: Can't use GitHub Projects v2 as primary task board for bosun.
 
 ---
 
@@ -152,7 +152,7 @@
 
 ## Related Documentation
 
-### Existing OpenFleet Docs
+### Existing Bosun Docs
 
 | Document                                                       | Relation to Projects v2                                                        |
 | -------------------------------------------------------------- | ------------------------------------------------------------------------------ |
@@ -302,7 +302,7 @@ If you find errors or gaps:
 
 ## License
 
-This documentation is part of the VirtEngine openfleet project and follows the same license as the main repository.
+This documentation is part of the VirtEngine bosun project and follows the same license as the main repository.
 
 ---
 

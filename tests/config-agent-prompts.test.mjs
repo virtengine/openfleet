@@ -9,8 +9,8 @@ describe("loadAgentPrompts generic prompt loading", () => {
   let rootDir = "";
 
   beforeEach(async () => {
-    rootDir = await mkdtemp(resolve(tmpdir(), "openfleet-prompts-"));
-    await mkdir(resolve(rootDir, ".openfleet", "agents"), {
+    rootDir = await mkdtemp(resolve(tmpdir(), "bosun-prompts-"));
+    await mkdir(resolve(rootDir, ".bosun", "agents"), {
       recursive: true,
     });
   });
@@ -19,12 +19,12 @@ describe("loadAgentPrompts generic prompt loading", () => {
     if (rootDir) {
       await rm(rootDir, { recursive: true, force: true });
     }
-    delete process.env.OPENFLEET_PROMPT_MONITOR_MONITOR;
+    delete process.env.BOSUN_PROMPT_MONITOR_MONITOR;
   });
 
-  it("loads monitor-monitor prompt from .openfleet/agents when present", async () => {
+  it("loads monitor-monitor prompt from .bosun/agents when present", async () => {
     await writeFile(
-      resolve(rootDir, ".openfleet", "agents", "monitor-monitor.md"),
+      resolve(rootDir, ".bosun", "agents", "monitor-monitor.md"),
       "CUSTOM_MONITOR_PROMPT",
       "utf8",
     );
@@ -56,12 +56,12 @@ describe("loadAgentPrompts generic prompt loading", () => {
       "utf8",
     );
 
-    process.env.OPENFLEET_PROMPT_MONITOR_MONITOR =
+    process.env.BOSUN_PROMPT_MONITOR_MONITOR =
       "env-prompts/monitor.md";
 
     const prompts = loadAgentPrompts(rootDir, rootDir, {
       agentPrompts: {
-        monitorMonitor: ".openfleet/agents/monitor-monitor.md",
+        monitorMonitor: ".bosun/agents/monitor-monitor.md",
       },
     });
 
@@ -72,6 +72,6 @@ describe("loadAgentPrompts generic prompt loading", () => {
     const prompts = loadAgentPrompts(rootDir, rootDir, {});
     expect(prompts.orchestrator).toContain("Task Orchestrator Agent");
     expect(prompts.planner).toContain("Codex-Task-Planner Agent");
-    expect(prompts.monitorMonitor).toContain("OpenFleet-Monitor Agent");
+    expect(prompts.monitorMonitor).toContain("Bosun-Monitor Agent");
   });
 });

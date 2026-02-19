@@ -1,12 +1,12 @@
 /**
  * @module agent-hooks
- * @description Comprehensive agent lifecycle hooks system for the openfleet
+ * @description Comprehensive agent lifecycle hooks system for the bosun
  * orchestrator. Provides a configurable hook pipeline that fires at key points
  * in the agent task lifecycle (session start/stop, tool use, git operations,
  * PR creation, task completion).
  *
  * Hooks can be loaded from config files (.codex/hooks.json, .vscode/hooks.json,
- * openfleet.config.json) or registered programmatically. Each hook targets
+ * bosun.config.json) or registered programmatically. Each hook targets
  * one or more SDKs (codex, copilot, claude) and can be blocking or fire-and-forget.
  *
  * @example
@@ -250,7 +250,7 @@ _initRegistry();
 const CONFIG_SEARCH_PATHS = [
   ".codex/hooks.json",
   ".vscode/hooks.json",
-  "scripts/openfleet/openfleet.config.json",
+  "scripts/bosun/bosun.config.json",
 ];
 
 /**
@@ -260,7 +260,7 @@ const CONFIG_SEARCH_PATHS = [
  * and values are arrays of {@link HookDefinition} objects.
  *
  * If no `configPath` is provided, the function searches the default locations
- * (`.codex/hooks.json`, `.vscode/hooks.json`, `openfleet.config.json`).
+ * (`.codex/hooks.json`, `.vscode/hooks.json`, `bosun.config.json`).
  * Hooks loaded from config are merged with (appended to) any programmatically
  * registered hooks.
  *
@@ -320,7 +320,7 @@ export function loadHooks(configPath) {
     return 0;
   }
 
-  // Support both top-level { hooks: { ... } } and nested inside openfleet config
+  // Support both top-level { hooks: { ... } } and nested inside bosun config
   const hooksDef = config.hooks ?? config.agentHooks ?? null;
   if (!hooksDef || typeof hooksDef !== "object") {
     console.log(`${TAG} no "hooks" or "agentHooks" key in ${resolvedPath}`);
@@ -617,7 +617,7 @@ export async function executeBlockingHooks(event, context = {}) {
 export function registerBuiltinHooks(options = {}) {
   const modeRaw =
     options.mode ??
-    process.env.OPENFLEET_HOOKS_BUILTINS_MODE ??
+    process.env.BOSUN_HOOKS_BUILTINS_MODE ??
     process.env.VE_HOOK_BUILTINS_MODE ??
     "force";
   const mode = String(modeRaw).trim().toLowerCase();
@@ -633,12 +633,12 @@ export function registerBuiltinHooks(options = {}) {
     (hook) => !hook.builtin,
   );
   const skipPrePush =
-    envFlag("OPENFLEET_HOOKS_DISABLE_PREPUSH", false) ||
+    envFlag("BOSUN_HOOKS_DISABLE_PREPUSH", false) ||
     envFlag("VE_HOOK_DISABLE_PREPUSH", false) ||
     (mode === "auto" && hasCustomPrePush);
   const skipTaskComplete =
-    envFlag("OPENFLEET_HOOKS_DISABLE_TASK_COMPLETE", false) ||
-    envFlag("OPENFLEET_HOOKS_DISABLE_VALIDATION", false) ||
+    envFlag("BOSUN_HOOKS_DISABLE_TASK_COMPLETE", false) ||
+    envFlag("BOSUN_HOOKS_DISABLE_VALIDATION", false) ||
     envFlag("VE_HOOK_DISABLE_TASK_COMPLETE", false) ||
     (mode === "auto" && hasCustomTaskComplete);
 
@@ -680,7 +680,7 @@ export function registerBuiltinHooks(options = {}) {
   // ── SessionStart: worktree health check ──
   // Verifies the worktree directory exists, is a valid git repo,
   // and the expected branch is checked out. Retryable for transient git issues.
-  const skipHealthCheck = envFlag("OPENFLEET_HOOKS_DISABLE_HEALTH_CHECK", false);
+  const skipHealthCheck = envFlag("BOSUN_HOOKS_DISABLE_HEALTH_CHECK", false);
   if (!skipHealthCheck) {
     const healthCmd = IS_WINDOWS
       ? 'powershell -NoProfile -Command "if (-not (Test-Path .git)) { if (-not (git rev-parse --git-dir 2>$null)) { Write-Error \'Not a git repository\'; exit 1 } }; git status --porcelain 2>&1 | Out-Null; if ($LASTEXITCODE -ne 0) { Write-Error \'git status failed\'; exit 1 }; Write-Host \'OK: worktree healthy\'"'

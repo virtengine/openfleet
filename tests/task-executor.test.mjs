@@ -134,7 +134,7 @@ const ENV_KEYS = [
   "CLAUDE_CODE_MODEL",
   "ANTHROPIC_MODEL",
   "VE_INSTANCE_ID",
-  "OPENFLEET_INSTANCE_ID",
+  "BOSUN_INSTANCE_ID",
   "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
   "INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS",
   "INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS",
@@ -748,7 +748,7 @@ describe("task-executor", () => {
       );
 
       expect(prompt).toContain("Experimental Backlog Replenishment");
-      expect(prompt).toContain("openfleet-backlog");
+      expect(prompt).toContain("bosun-backlog");
       expect(prompt).toContain("Project requirements profile: large-feature");
     });
   });
@@ -761,7 +761,7 @@ describe("task-executor", () => {
       const task = {
         id: "planner-1",
         title: "Plan next tasks (nightly)",
-        description: "Task Planner — Auto-created by openfleet",
+        description: "Task Planner — Auto-created by bosun",
       };
       ex._noCommitCounts.set(task.id, 2);
       ex._skipUntil.set(task.id, Date.now() + 60_000);
@@ -797,7 +797,7 @@ describe("task-executor", () => {
       const task = {
         id: "planner-2",
         title: "Task planner follow-up",
-        description: "Task Planner — Auto-created by openfleet",
+        description: "Task Planner — Auto-created by bosun",
       };
       vi.spyOn(ex, "_hasUnpushedCommits").mockReturnValue(false);
       vi.spyOn(ex, "_verifyPlannerTaskCompletion").mockResolvedValue({

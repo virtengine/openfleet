@@ -294,7 +294,7 @@ export class GitHubReconciler {
                 : "";
             await this.addComment(
               issueNumber,
-              `## ✅ Auto-Reconciled\nThis issue was auto-closed by openfleet after detecting merged PR linkage.${suffix}`,
+              `## ✅ Auto-Reconciled\nThis issue was auto-closed by bosun after detecting merged PR linkage.${suffix}`,
             );
           }
           summary.closed += 1;

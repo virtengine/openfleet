@@ -36,7 +36,7 @@ function inferRepoRoot(startDir) {
 function resolveDefaultStorePath() {
   const repoRoot =
     inferRepoRoot(process.cwd()) || resolve(__dirname, "..", "..");
-  return resolve(repoRoot, ".openfleet", ".cache", "kanban-state.json");
+  return resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
 }
 
 let storePath = resolveDefaultStorePath();
@@ -61,7 +61,7 @@ export function configureTaskStore(options = {}) {
         baseDir ||
           inferRepoRoot(process.cwd()) ||
           resolve(__dirname, "..", ".."),
-        ".openfleet",
+        ".bosun",
         ".cache",
         "kanban-state.json",
       );

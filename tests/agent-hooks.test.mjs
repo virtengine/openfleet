@@ -24,10 +24,10 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = resolve(__dirname, "..", ".cache", "test-hooks");
 const HOOK_ENV_VARS = [
-  "OPENFLEET_HOOKS_BUILTINS_MODE",
-  "OPENFLEET_HOOKS_DISABLE_PREPUSH",
-  "OPENFLEET_HOOKS_DISABLE_TASK_COMPLETE",
-  "OPENFLEET_HOOKS_DISABLE_VALIDATION",
+  "BOSUN_HOOKS_BUILTINS_MODE",
+  "BOSUN_HOOKS_DISABLE_PREPUSH",
+  "BOSUN_HOOKS_DISABLE_TASK_COMPLETE",
+  "BOSUN_HOOKS_DISABLE_VALIDATION",
   "VE_HOOK_DISABLE_PREPUSH",
   "VE_HOOK_DISABLE_TASK_COMPLETE",
 ];
@@ -341,7 +341,7 @@ describe("agent-hooks", () => {
     });
 
     it("should skip builtins when mode=off", () => {
-      process.env.OPENFLEET_HOOKS_BUILTINS_MODE = "off";
+      process.env.BOSUN_HOOKS_BUILTINS_MODE = "off";
       registerBuiltinHooks();
 
       expect(getRegisteredHooks("PrePush")).toEqual([]);
@@ -349,7 +349,7 @@ describe("agent-hooks", () => {
     });
 
     it("should auto-skip prepush builtin when custom prepush exists", () => {
-      process.env.OPENFLEET_HOOKS_BUILTINS_MODE = "auto";
+      process.env.BOSUN_HOOKS_BUILTINS_MODE = "auto";
       registerHook("PrePush", {
         id: "custom-prepush",
         command: "echo custom",
@@ -365,7 +365,7 @@ describe("agent-hooks", () => {
     });
 
     it("should force builtins when mode=force even with custom hooks", () => {
-      process.env.OPENFLEET_HOOKS_BUILTINS_MODE = "force";
+      process.env.BOSUN_HOOKS_BUILTINS_MODE = "force";
       registerHook("PrePush", {
         id: "custom-prepush",
         command: "echo custom",

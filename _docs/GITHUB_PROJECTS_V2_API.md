@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This document outlines the GitHub Projects v2 API integration requirements for openfleet. The current implementation only **links issues to projects** but does NOT:
+This document outlines the GitHub Projects v2 API integration requirements for bosun. The current implementation only **links issues to projects** but does NOT:
 
 - Read tasks FROM project boards
 - Sync status updates TO project fields (Status column)
@@ -18,7 +18,7 @@ This guide provides the API patterns needed for full bidirectional sync.
 
 ### What's Already Implemented
 
-**Location**: `scripts/openfleet/kanban-adapter.mjs` → GitHubAdapter class
+**Location**: `scripts/bosun/kanban-adapter.mjs` → GitHubAdapter class
 
 **Current Capability**: `_ensureIssueLinkedToProject(issueUrl)`
 
@@ -73,7 +73,7 @@ From `.env.example`:
 
 # Project identification (for kanban mode)
 # GITHUB_PROJECT_OWNER=your-org
-# GITHUB_PROJECT_TITLE=OpenFleet
+# GITHUB_PROJECT_TITLE=Bosun
 # GITHUB_PROJECT_NUMBER=3
 ```
 
@@ -143,7 +143,7 @@ gh api graphql -f query='
 #     "organization": {
 #       "projectV2": {
 #         "id": "PVT_kwDOABCDEF",
-#         "title": "OpenFleet Tasks"
+#         "title": "Bosun Tasks"
 #       }
 #     }
 #   }
@@ -335,7 +335,7 @@ async getProjectFields(projectNumber) {
 
 ### 1. Update Status Field
 
-**Map openfleet statuses to project Status options**:
+**Map bosun statuses to project Status options**:
 
 ```javascript
 // Status mapping
@@ -533,7 +533,7 @@ async listTasks(_projectId, filters = {}) {
 
 1. **`syncStatusToProject(issueNumber, projectNumber, status)`**
    - Update project Status field when task status changes
-   - Map openfleet statuses to project options
+   - Map bosun statuses to project options
    - Called automatically from `updateTaskStatus()`
 
 2. **`syncFieldToProject(issueNumber, projectNumber, fieldName, value)`**
@@ -605,11 +605,11 @@ GITHUB_PROJECT_MODE=kanban
 
 # Project identification (required for kanban mode)
 GITHUB_PROJECT_OWNER=virtengine
-GITHUB_PROJECT_TITLE=OpenFleet
+GITHUB_PROJECT_TITLE=Bosun
 GITHUB_PROJECT_NUMBER=3
 
 # Status field mapping (optional, defaults shown)
-# Map openfleet statuses to your project's Status field options
+# Map bosun statuses to your project's Status field options
 # GITHUB_PROJECT_STATUS_TODO=Todo
 # GITHUB_PROJECT_STATUS_INPROGRESS=In Progress
 # GITHUB_PROJECT_STATUS_INREVIEW=In Review
@@ -732,7 +732,7 @@ _normalizeProjectStatus(projectStatusName) {
 
 ```bash
 # Setup
-cd scripts/openfleet
+cd scripts/bosun
 export KANBAN_BACKEND=github
 export GITHUB_PROJECT_MODE=kanban
 export GITHUB_PROJECT_OWNER=virtengine
@@ -776,7 +776,7 @@ gh project item-list 3 --owner virtengine --format json | jq '.[] | select(.cont
    GITHUB_PROJECT_OWNER=your-org
    GITHUB_PROJECT_NUMBER=3
    ```
-3. Restart openfleet: `npm run monitor`
+3. Restart bosun: `npm run monitor`
 4. Verify: `gh project item-list 3 --owner your-org --format json`
 
 **To customize status mapping**:

@@ -887,10 +887,10 @@ describe("shared-state-manager", () => {
       const registryPath = join(
         tempRoot,
         ".cache",
-        "openfleet",
+        "bosun",
         "shared-task-states.json",
       );
-      await mkdir(join(tempRoot, ".cache", "openfleet"), {
+      await mkdir(join(tempRoot, ".cache", "bosun"), {
         recursive: true,
       });
       await writeFile(registryPath, "{ invalid json }", "utf-8");
@@ -910,7 +910,7 @@ describe("shared-state-manager", () => {
 
       // Check that backup was created
       const { readdir } = await import("node:fs/promises");
-      const files = await readdir(join(tempRoot, ".cache", "openfleet"));
+      const files = await readdir(join(tempRoot, ".cache", "bosun"));
       expect(files.some((f) => f.includes(".corrupt-"))).toBe(true);
     });
 
@@ -921,10 +921,10 @@ describe("shared-state-manager", () => {
       const registryPath = join(
         tempRoot,
         ".cache",
-        "openfleet",
+        "bosun",
         "shared-task-states.json",
       );
-      await mkdir(join(tempRoot, ".cache", "openfleet"), {
+      await mkdir(join(tempRoot, ".cache", "bosun"), {
         recursive: true,
       });
       await writeFile(
@@ -1044,10 +1044,10 @@ describe("shared-state-manager", () => {
       const registryPath = join(
         tempRoot,
         ".cache",
-        "openfleet",
+        "bosun",
         "shared-task-states.json",
       );
-      await mkdir(join(tempRoot, ".cache", "openfleet"), {
+      await mkdir(join(tempRoot, ".cache", "bosun"), {
         recursive: true,
       });
 

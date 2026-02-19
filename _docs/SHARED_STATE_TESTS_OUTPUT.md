@@ -87,7 +87,7 @@ $ npx vitest run tests/shared-state-*.test.mjs
  ✓ github-shared-state (25)
    ✓ persistSharedStateToIssue (7)
      ✓ creates labels and comment for claimed state
-     ✓ updates existing openfleet comment
+     ✓ updates existing bosun comment
      ✓ updates labels based on status
      ✓ retries on failure
      ✓ returns false after max retries
@@ -271,9 +271,9 @@ jobs:
         with:
           node-version: "20"
       - run: npm ci
-        working-directory: scripts/openfleet
+        working-directory: scripts/bosun
       - name: Run shared state tests
-        working-directory: scripts/openfleet
+        working-directory: scripts/bosun
         run: |
           npx vitest run tests/shared-state-manager.test.mjs
           npx vitest run tests/github-shared-state.test.mjs
@@ -326,7 +326,7 @@ npx vitest run tests/shared-state-manager.test.mjs --reporter=verbose
 ### Enable debug logging
 
 ```bash
-DEBUG=openfleet:* npx vitest run tests/shared-state-manager.test.mjs
+DEBUG=bosun:* npx vitest run tests/shared-state-manager.test.mjs
 ```
 
 ### Inspect test state

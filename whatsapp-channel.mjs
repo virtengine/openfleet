@@ -1,5 +1,5 @@
 /**
- * whatsapp-channel.mjs — Optional WhatsApp channel for openfleet.
+ * whatsapp-channel.mjs — Optional WhatsApp channel for bosun.
  *
  * Uses the @whiskeysockets/baileys library for WhatsApp Web multi-device API.
  * When configured (WHATSAPP_ENABLED=1), this module bridges WhatsApp messages
@@ -9,7 +9,7 @@
  *
  * Setup:
  *   1. Set WHATSAPP_ENABLED=1 in .env
- *   2. Run: openfleet --whatsapp-auth   (scans QR code once)
+ *   2. Run: bosun --whatsapp-auth   (scans QR code once)
  *   3. Messages from WHATSAPP_CHAT_ID are routed to the primary agent
  *
  * Security: Only messages from the configured WHATSAPP_CHAT_ID are processed.
@@ -33,7 +33,7 @@ const whatsappChatId = process.env.WHATSAPP_CHAT_ID || "";
 const assistantName =
   process.env.WHATSAPP_ASSISTANT_NAME ||
   process.env.PROJECT_NAME ||
-  "OpenFleet";
+  "Bosun";
 const storeDir = resolve(
   process.env.WHATSAPP_STORE_DIR ||
     resolve(repoRoot, ".cache", "whatsapp-store"),
@@ -65,8 +65,8 @@ async function loadBaileys() {
       packageJson: resolve(process.cwd(), "package.json"),
     },
     {
-      label: "cwd/scripts/openfleet resolve",
-      packageJson: resolve(process.cwd(), "scripts", "openfleet", "package.json"),
+      label: "cwd/scripts/bosun resolve",
+      packageJson: resolve(process.cwd(), "scripts", "bosun", "package.json"),
     },
   ];
 
@@ -103,9 +103,9 @@ async function loadBaileys() {
   console.error(
     `[whatsapp] Failed to load @whiskeysockets/baileys:\n` +
       attempts.map((line) => `  - ${line}`).join("\n") +
-      `\n  Install in the same runtime context as openfleet:` +
+      `\n  Install in the same runtime context as bosun:` +
       `\n    - Global install: npm install -g @whiskeysockets/baileys` +
-      `\n    - Project install (run openfleet from that folder): npm install @whiskeysockets/baileys`,
+      `\n    - Project install (run bosun from that folder): npm install @whiskeysockets/baileys`,
   );
   return null;
 }
@@ -229,7 +229,7 @@ async function connectInternal(onFirstOpen) {
     },
     printQRInTerminal: false,
     logger: silentLogger,
-    browser: b.Browsers?.macOS?.("Chrome") || ["OpenFleet", "Chrome", "1.0"],
+    browser: b.Browsers?.macOS?.("Chrome") || ["Bosun", "Chrome", "1.0"],
   });
 
   sock.ev.on("connection.update", (update) => {
@@ -237,7 +237,7 @@ async function connectInternal(onFirstOpen) {
 
     if (qr) {
       console.error(
-        "[whatsapp] Authentication required! Run: openfleet --whatsapp-auth",
+        "[whatsapp] Authentication required! Run: bosun --whatsapp-auth",
       );
       // Write QR data for external auth tool
       try {
@@ -265,7 +265,7 @@ async function connectInternal(onFirstOpen) {
         }, 5000);
       } else {
         console.error(
-          "[whatsapp] Logged out. Run: openfleet --whatsapp-auth",
+          "[whatsapp] Logged out. Run: bosun --whatsapp-auth",
         );
       }
     } else if (connection === "open") {
@@ -409,7 +409,7 @@ export async function stopWhatsAppChannel() {
 
 /**
  * Run interactive WhatsApp authentication (QR code or pairing code).
- * This is meant to be run standalone: openfleet --whatsapp-auth
+ * This is meant to be run standalone: bosun --whatsapp-auth
  */
 export async function runWhatsAppAuth(mode = "qr") {
   const b = await loadBaileys();
@@ -452,7 +452,7 @@ export async function runWhatsAppAuth(mode = "qr") {
     },
     printQRInTerminal: false,
     logger: silentLogger,
-    browser: b.Browsers?.macOS?.("Chrome") || ["OpenFleet", "Chrome", "1.0"],
+    browser: b.Browsers?.macOS?.("Chrome") || ["Bosun", "Chrome", "1.0"],
   });
 
   let pairingRequested = false;

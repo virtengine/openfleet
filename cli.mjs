@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
 /**
- * openfleet — CLI Entry Point
+ * bosun — CLI Entry Point
  *
  * Usage:
- *   openfleet                        # start with default config
- *   openfleet --setup                # run setup wizard
- *   openfleet --args "-MaxParallel 6" # pass orchestrator args
- *   openfleet --help                 # show help
+ *   bosun                        # start with default config
+ *   bosun --setup                # run setup wizard
+ *   bosun --args "-MaxParallel 6" # pass orchestrator args
+ *   bosun --help                 # show help
  *
  * The CLI handles:
  *   1. First-run detection → auto-launches setup wizard
@@ -58,15 +58,15 @@ const VERSION = JSON.parse(
 
 function showHelp() {
   console.log(`
-  openfleet v${VERSION}
+  bosun v${VERSION}
   AI-powered orchestrator supervisor with executor failover, smart PR flow, and Telegram notifications.
 
   USAGE
-    openfleet [options]
+    bosun [options]
 
   COMMANDS
     --setup                     Run the interactive setup wizard
-    --doctor                    Validate openfleet .env/config setup
+    --doctor                    Validate bosun .env/config setup
     --help                      Show this help
     --version                   Show version
     --update                    Check for and install latest version
@@ -114,8 +114,8 @@ function showHelp() {
     --vk-ensure-interval <ms>   VK health check interval (default: 60000)
 
   STARTUP SERVICE
-    --enable-startup             Register openfleet to auto-start on login
-    --disable-startup           Remove openfleet from startup services
+    --enable-startup             Register bosun to auto-start on login
+    --disable-startup           Remove bosun from startup services
     --startup-status            Check if startup service is installed
 
   SENTINEL
@@ -141,17 +141,17 @@ function showHelp() {
     1. CLI flags
     2. Environment variables
     3. .env file
-    4. openfleet.config.json
+    4. bosun.config.json
     5. Built-in defaults
 
     Auto-update environment variables:
-      OPENFLEET_SKIP_UPDATE_CHECK=1     Disable startup version check
-      OPENFLEET_SKIP_AUTO_UPDATE=1      Disable background polling
-      OPENFLEET_UPDATE_INTERVAL_MS=N    Override poll interval (default: 600000)
+      BOSUN_SKIP_UPDATE_CHECK=1     Disable startup version check
+      BOSUN_SKIP_AUTO_UPDATE=1      Disable background polling
+      BOSUN_UPDATE_INTERVAL_MS=N    Override poll interval (default: 600000)
 
     See .env.example for all environment variables.
 
-  EXECUTOR CONFIG (openfleet.config.json)
+  EXECUTOR CONFIG (bosun.config.json)
     {
       "projectName": "my-project",
       "executors": [
@@ -171,14 +171,14 @@ function showHelp() {
     EXECUTORS=COPILOT:CLAUDE_OPUS_4_6:50,CODEX:DEFAULT:50
 
   EXAMPLES
-    openfleet                                          # start with defaults
-    openfleet --setup                                  # interactive setup
-    openfleet --script ./my-orchestrator.sh             # custom script
-    openfleet --args "-MaxParallel 4" --no-telegram-bot # custom args
-    openfleet --no-codex --no-autofix                  # minimal mode
+    bosun                                          # start with defaults
+    bosun --setup                                  # interactive setup
+    bosun --script ./my-orchestrator.sh             # custom script
+    bosun --args "-MaxParallel 4" --no-telegram-bot # custom args
+    bosun --no-codex --no-autofix                  # minimal mode
 
   DOCS
-    https://www.npmjs.com/package/@virtengine/openfleet
+    https://www.npmjs.com/package/@virtengine/bosun
 `);
 }
 
@@ -186,7 +186,7 @@ function showHelp() {
 
 // ── Daemon Mode ──────────────────────────────────────────────────────────────
 
-const PID_FILE = resolve(__dirname, ".cache", "openfleet.pid");
+const PID_FILE = resolve(__dirname, ".cache", "bosun.pid");
 const DAEMON_LOG = resolve(__dirname, "logs", "daemon.log");
 const SENTINEL_PID_FILE = resolve(
   __dirname,
@@ -204,23 +204,23 @@ const SENTINEL_SCRIPT_PATH = fileURLToPath(
   new URL("./telegram-sentinel.mjs", import.meta.url),
 );
 const IS_DAEMON_CHILD =
-  args.includes("--daemon-child") || process.env.OPENFLEET_DAEMON === "1";
+  args.includes("--daemon-child") || process.env.BOSUN_DAEMON === "1";
 const DAEMON_RESTART_DELAY_MS = Math.max(
   1000,
-  Number(process.env.OPENFLEET_DAEMON_RESTART_DELAY_MS || 5000) || 5000,
+  Number(process.env.BOSUN_DAEMON_RESTART_DELAY_MS || 5000) || 5000,
 );
 const DAEMON_MAX_RESTARTS = Math.max(
   0,
-  Number(process.env.OPENFLEET_DAEMON_MAX_RESTARTS || 0) || 0,
+  Number(process.env.BOSUN_DAEMON_MAX_RESTARTS || 0) || 0,
 );
 const DAEMON_INSTANT_CRASH_WINDOW_MS = Math.max(
   1000,
-  Number(process.env.OPENFLEET_DAEMON_INSTANT_CRASH_WINDOW_MS || 15000) ||
+  Number(process.env.BOSUN_DAEMON_INSTANT_CRASH_WINDOW_MS || 15000) ||
     15000,
 );
 const DAEMON_MAX_INSTANT_RESTARTS = Math.max(
   1,
-  Number(process.env.OPENFLEET_DAEMON_MAX_INSTANT_RESTARTS || 3) || 3,
+  Number(process.env.BOSUN_DAEMON_MAX_INSTANT_RESTARTS || 3) || 3,
 );
 let daemonRestartCount = 0;
 const daemonCrashTracker = createDaemonCrashTracker({
@@ -288,7 +288,7 @@ async function ensureSentinelRunning(options = {}) {
     windowsHide: process.platform === "win32",
     env: {
       ...process.env,
-      OPENFLEET_SENTINEL_COMPANION: "1",
+      BOSUN_SENTINEL_COMPANION: "1",
     },
     cwd: process.cwd(),
   });
@@ -361,7 +361,7 @@ function removePidFile() {
 function startDaemon() {
   const existing = getDaemonPid();
   if (existing) {
-    console.log(`  openfleet daemon is already running (PID ${existing})`);
+    console.log(`  bosun daemon is already running (PID ${existing})`);
     console.log(`  Use --stop-daemon to stop it first.`);
     process.exit(1);
   }
@@ -385,7 +385,7 @@ function startDaemon() {
       detached: true,
       stdio: "ignore",
       windowsHide: process.platform === "win32",
-      env: { ...process.env, OPENFLEET_DAEMON: "1" },
+      env: { ...process.env, BOSUN_DAEMON: "1" },
       // Use home dir so spawn never inherits a deleted CWD (e.g. old git worktree)
       cwd: os.homedir(),
     },
@@ -396,16 +396,16 @@ function startDaemon() {
 
   console.log(`
   ╭──────────────────────────────────────────────────────────╮
-  │ openfleet daemon started (PID ${String(child.pid).padEnd(24)}│
+  │ bosun daemon started (PID ${String(child.pid).padEnd(24)}│
   ╰──────────────────────────────────────────────────────────╯
 
   Logs: ${DAEMON_LOG}
   PID:  ${PID_FILE}
 
   Commands:
-    openfleet --daemon-status   Check if running
-    openfleet --stop-daemon     Stop the daemon
-    openfleet --echo-logs       Tail live logs
+    bosun --daemon-status   Check if running
+    bosun --stop-daemon     Stop the daemon
+    bosun --echo-logs       Tail live logs
   `);
   process.exit(0);
 }
@@ -417,7 +417,7 @@ function stopDaemon() {
     removePidFile();
     process.exit(0);
   }
-  console.log(`  Stopping openfleet daemon (PID ${pid})...`);
+  console.log(`  Stopping bosun daemon (PID ${pid})...`);
   try {
     process.kill(pid, "SIGTERM");
     // Wait briefly for graceful shutdown
@@ -454,16 +454,16 @@ function stopDaemon() {
 function daemonStatus() {
   const pid = getDaemonPid();
   if (pid) {
-    console.log(`  openfleet daemon is running (PID ${pid})`);
+    console.log(`  bosun daemon is running (PID ${pid})`);
   } else {
-    console.log("  openfleet daemon is not running.");
+    console.log("  bosun daemon is not running.");
     removePidFile();
   }
   process.exit(0);
 }
 
 async function main() {
-  // Apply legacy CODEX_MONITOR_* → OPENFLEET_* env aliases before any config ops
+  // Apply legacy CODEX_MONITOR_* → BOSUN_* env aliases before any config ops
   applyAllCompatibility();
 
   // Handle --help
@@ -474,7 +474,7 @@ async function main() {
 
   // Handle --version
   if (args.includes("--version") || args.includes("-v")) {
-    console.log(`openfleet v${VERSION}`);
+    console.log(`bosun v${VERSION}`);
     process.exit(0);
   }
 
@@ -520,7 +520,7 @@ async function main() {
   // Write PID file if running as daemon child
   if (
     args.includes("--daemon-child") ||
-    process.env.OPENFLEET_DAEMON === "1"
+    process.env.BOSUN_DAEMON === "1"
   ) {
     writePidFile(process.pid);
     // Redirect console to log file on daemon child
@@ -560,21 +560,21 @@ async function main() {
       return safeWrite(origStderr, chunk, a);
     };
     console.log(
-      `\n[daemon] openfleet started at ${new Date().toISOString()} (PID ${process.pid})`,
+      `\n[daemon] bosun started at ${new Date().toISOString()} (PID ${process.pid})`,
     );
   }
 
   const sentinelRequested =
     args.includes("--sentinel") ||
-    parseBoolEnv(process.env.OPENFLEET_SENTINEL_AUTO_START, false);
+    parseBoolEnv(process.env.BOSUN_SENTINEL_AUTO_START, false);
   if (sentinelRequested) {
     const sentinel = await ensureSentinelRunning({ quiet: false });
     if (!sentinel.ok) {
       const mode = args.includes("--sentinel")
         ? "requested by --sentinel"
-        : "requested by OPENFLEET_SENTINEL_AUTO_START";
+        : "requested by BOSUN_SENTINEL_AUTO_START";
       const strictSentinel = parseBoolEnv(
-        process.env.OPENFLEET_SENTINEL_STRICT,
+        process.env.BOSUN_SENTINEL_STRICT,
         false,
       );
       const prefix = strictSentinel ? "✖" : "⚠";
@@ -599,7 +599,7 @@ async function main() {
       console.log(`  \u2705 Startup service installed via ${result.method}`);
       if (result.path) console.log(`     Path: ${result.path}`);
       if (result.name) console.log(`     Name: ${result.name}`);
-      console.log(`\n  openfleet will auto-start on login.`);
+      console.log(`\n  bosun will auto-start on login.`);
     } else {
       console.error(
         `  \u274c Failed to install startup service: ${result.error}`,
@@ -630,7 +630,7 @@ async function main() {
         console.log(`  Running: ${status.running ? "yes" : "no"}`);
     } else {
       console.log(`  Startup service: not installed`);
-      console.log(`  Run 'openfleet --enable-startup' to register.`);
+      console.log(`  Run 'bosun --enable-startup' to register.`);
     }
     process.exit(0);
   }
@@ -646,7 +646,7 @@ async function main() {
   console.log("");
   console.log("  ╭──────────────────────────────────────────────────────────╮");
   console.log(
-    `  │ >_ openfleet (v${VERSION})${" ".repeat(Math.max(0, 39 - VERSION.length))}│`,
+    `  │ >_ bosun (v${VERSION})${" ".repeat(Math.max(0, 39 - VERSION.length))}│`,
   );
   console.log("  ╰──────────────────────────────────────────────────────────╯");
 
@@ -659,10 +659,10 @@ async function main() {
 
   // Propagate --no-auto-update to env for monitor.mjs to pick up
   if (args.includes("--no-auto-update")) {
-    process.env.OPENFLEET_SKIP_AUTO_UPDATE = "1";
+    process.env.BOSUN_SKIP_AUTO_UPDATE = "1";
   }
 
-  // Mark all child processes as openfleet managed.
+  // Mark all child processes as bosun managed.
   // The agent-hook-bridge checks this to avoid firing hooks for standalone
   // agent sessions that happen to have hook config files in their tree.
   process.env.VE_MANAGED = "1";
@@ -671,7 +671,7 @@ async function main() {
   if (args.includes("--setup") || args.includes("setup")) {
     const configDirArg = getArgValue("--config-dir");
     if (configDirArg) {
-      process.env.OPENFLEET_DIR = configDirArg;
+      process.env.BOSUN_DIR = configDirArg;
     }
     const { runSetup } = await import("./setup.mjs");
     await runSetup();
@@ -692,14 +692,14 @@ async function main() {
     console.log("\n  🚀 First run detected — launching setup wizard...\n");
     const configDirArg = getArgValue("--config-dir");
     if (configDirArg) {
-      process.env.OPENFLEET_DIR = configDirArg;
+      process.env.BOSUN_DIR = configDirArg;
     }
     const { runSetup } = await import("./setup.mjs");
     await runSetup();
-    console.log("\n  Setup complete! Starting openfleet...\n");
+    console.log("\n  Setup complete! Starting bosun...\n");
   }
 
-  // Legacy migration: if ~/codex-monitor exists with config, auto-migrate to ~/openfleet
+  // Legacy migration: if ~/codex-monitor exists with config, auto-migrate to ~/bosun
   const legacyInfo = detectLegacySetup();
   if (legacyInfo.hasLegacy && !legacyInfo.alreadyMigrated) {
     console.log(
@@ -721,11 +721,11 @@ async function main() {
     // Search for the monitor PID file in common cache locations
     const candidatePidFiles = [
       PID_FILE,
-      process.env.OPENFLEET_DIR
-        ? resolve(process.env.OPENFLEET_DIR, ".cache", "openfleet.pid")
+      process.env.BOSUN_DIR
+        ? resolve(process.env.BOSUN_DIR, ".cache", "bosun.pid")
         : null,
-      resolve(__dirname, "..", ".cache", "openfleet.pid"),
-      resolve(process.cwd(), ".cache", "openfleet.pid"),
+      resolve(__dirname, "..", ".cache", "bosun.pid"),
+      resolve(process.cwd(), ".cache", "bosun.pid"),
     ].filter(Boolean);
 
     let activePidFile = null;
@@ -772,7 +772,7 @@ async function main() {
 
           if (existsSync(logFile)) {
             console.log(
-              `\n  Tailing logs for active openfleet (PID ${monitorPid}):\n  ${logFile}\n`,
+              `\n  Tailing logs for active bosun (PID ${monitorPid}):\n  ${logFile}\n`,
             );
             await new Promise((res) => {
               // Spawn tail in its own process group (detached) so that
@@ -791,7 +791,7 @@ async function main() {
             process.exit(0);
           } else {
             console.error(
-              `\n  No log file found for active openfleet (PID ${monitorPid}).\n  Expected: ${logFile}\n`,
+              `\n  No log file found for active bosun (PID ${monitorPid}).\n  Expected: ${logFile}\n`,
             );
             process.exit(1);
           }
@@ -802,7 +802,7 @@ async function main() {
       }
     } else {
       console.error(
-        "\n  --echo-logs: no active openfleet found (PID file missing).\n  Start openfleet first with: openfleet --daemon\n",
+        "\n  --echo-logs: no active bosun found (PID file missing).\n  Start bosun first with: bosun --daemon\n",
       );
       process.exit(1);
     }
@@ -874,7 +874,7 @@ async function sendCrashNotification(exitCode, signal, options = {}) {
         .join("\n")
     : "Monitor is no longer running. Manual restart required.";
   const text =
-    `🔥 *CRASH* ${tag} openfleet v${VERSION} died unexpectedly\n` +
+    `🔥 *CRASH* ${tag} bosun v${VERSION} died unexpectedly\n` +
     `Host: \`${host}\`\n` +
     `Reason: \`${reason}\`\n` +
     `Time: ${new Date().toISOString()}\n\n` +
@@ -1022,7 +1022,7 @@ process.on("SIGTERM", () => {
 });
 
 main().catch(async (err) => {
-  console.error(`openfleet failed: ${err.message}`);
+  console.error(`bosun failed: ${err.message}`);
   await sendCrashNotification(1, null).catch(() => {});
   process.exit(1);
 });

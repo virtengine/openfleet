@@ -1,5 +1,5 @@
 /**
- * update-check.mjs — Self-updating system for openfleet.
+ * update-check.mjs — Self-updating system for bosun.
  *
  * Capabilities:
  *   - `checkForUpdate(currentVersion)` — non-blocking startup check, prints notice
@@ -8,9 +8,9 @@
  *       auto-installs updates and restarts the process. Zero user interaction.
  *
  * Respects:
- *   - OPENFLEET_SKIP_UPDATE_CHECK=1 — disable startup check
- *   - OPENFLEET_SKIP_AUTO_UPDATE=1 — disable polling auto-update
- *   - OPENFLEET_UPDATE_INTERVAL_MS — override poll interval (default 10 min)
+ *   - BOSUN_SKIP_UPDATE_CHECK=1 — disable startup check
+ *   - BOSUN_SKIP_AUTO_UPDATE=1 — disable polling auto-update
+ *   - BOSUN_UPDATE_INTERVAL_MS — override poll interval (default 10 min)
  *   - Caches the last check timestamp so we don't query npm too aggressively
  */
 
@@ -23,7 +23,7 @@ import { createInterface } from "node:readline";
 import os from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PKG_NAME = "@virtengine/openfleet";
+const PKG_NAME = "@virtengine/bosun";
 const CACHE_FILE = resolve(__dirname, "logs", ".update-check-cache.json");
 const STARTUP_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour (startup notice)
 const AUTO_UPDATE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes (polling loop)
@@ -130,7 +130,7 @@ async function fetchLatestVersion() {
  * Called on startup — must never throw or delay the main process.
  */
 export async function checkForUpdate(currentVersion) {
-  if (process.env.OPENFLEET_SKIP_UPDATE_CHECK) return;
+  if (process.env.BOSUN_SKIP_UPDATE_CHECK) return;
 
   try {
     // Rate-limit: at most once per hour
@@ -192,7 +192,7 @@ export async function forceUpdate(currentVersion) {
       timeout: 120000,
     });
     console.log(
-      `\n  ✅ Updated to v${latest}. Restart openfleet to use the new version.\n`,
+      `\n  ✅ Updated to v${latest}. Restart bosun to use the new version.\n`,
     );
   } catch (err) {
     console.error(`\n  ❌ Update failed: ${err.message}`);
@@ -228,7 +228,7 @@ let cleanupHandlersRegistered = false;
 /**
  * Start a background polling loop that checks for updates every `intervalMs`
  * (default 10 min). When a newer version is found, it:
- *   1. Runs `npm install -g @virtengine/openfleet@<version>`
+ *   1. Runs `npm install -g @virtengine/bosun@<version>`
  *   2. Calls `onRestart()` (or `process.exit(0)` if not provided)
  *
  * This is fully autonomous — no user interaction required.
@@ -246,13 +246,13 @@ let cleanupHandlersRegistered = false;
  * @param {number}   [opts.parentPid]  - Parent process PID to monitor (default: process.ppid)
  */
 export function startAutoUpdateLoop(opts = {}) {
-  if (process.env.OPENFLEET_SKIP_AUTO_UPDATE === "1") {
-    console.log("[auto-update] Disabled via OPENFLEET_SKIP_AUTO_UPDATE=1");
+  if (process.env.BOSUN_SKIP_AUTO_UPDATE === "1") {
+    console.log("[auto-update] Disabled via BOSUN_SKIP_AUTO_UPDATE=1");
     return;
   }
 
   const intervalMs =
-    Number(process.env.OPENFLEET_UPDATE_INTERVAL_MS) ||
+    Number(process.env.BOSUN_UPDATE_INTERVAL_MS) ||
     opts.intervalMs ||
     AUTO_UPDATE_INTERVAL_MS;
   const onRestart = opts.onRestart || (() => process.exit(0));
@@ -443,7 +443,7 @@ function printUpdateNotice(current, latest) {
   );
   console.log("  │                                                          │");
   console.log(`  │  Run: npm install -g ${PKG_NAME}@latest      │`);
-  console.log("  │  Or:  openfleet --update                             │");
+  console.log("  │  Or:  bosun --update                             │");
   console.log("  ╰──────────────────────────────────────────────────────────╯");
   console.log("");
 }

@@ -8,7 +8,7 @@ const ENV_KEYS = [
   "TELEGRAM_INTERVAL_MIN",
   "INTERNAL_EXECUTOR_PARALLEL",
   "DEPENDABOT_MERGE_METHOD",
-  "OPENFLEET_CONFIG_PATH",
+  "BOSUN_CONFIG_PATH",
   "TELEGRAM_BOT_TOKEN",
   "TELEGRAM_CHAT_ID",
   "INTERNAL_EXECUTOR_SDK",
@@ -32,11 +32,11 @@ describe("loadConfig validation and edge cases", () => {
   let originalEnv = {};
 
   beforeEach(async () => {
-    tempConfigDir = await mkdtemp(resolve(tmpdir(), "openfleet-config-"));
+    tempConfigDir = await mkdtemp(resolve(tmpdir(), "bosun-config-"));
     originalEnv = Object.fromEntries(
       ENV_KEYS.map((key) => [key, process.env[key]]),
     );
-    delete process.env.OPENFLEET_CONFIG_PATH;
+    delete process.env.BOSUN_CONFIG_PATH;
   });
 
   afterEach(async () => {
@@ -59,7 +59,7 @@ describe("loadConfig validation and edge cases", () => {
 
     const config = loadConfig([
       "node",
-      "openfleet",
+      "bosun",
       "--config-dir",
       tempConfigDir,
       "--repo-root",
@@ -78,7 +78,7 @@ describe("loadConfig validation and edge cases", () => {
 
     const config = loadConfig([
       "node",
-      "openfleet",
+      "bosun",
       "--config-dir",
       tempConfigDir,
       "--repo-root",
@@ -92,7 +92,7 @@ describe("loadConfig validation and edge cases", () => {
 
   it("loadConfig does not throw on malformed JSON config file", async () => {
     await writeFile(
-      resolve(tempConfigDir, "openfleet.config.json"),
+      resolve(tempConfigDir, "bosun.config.json"),
       "{ invalid-json",
       "utf8",
     );
@@ -100,7 +100,7 @@ describe("loadConfig validation and edge cases", () => {
     // Should not throw — falls back to defaults
     const config = loadConfig([
       "node",
-      "openfleet",
+      "bosun",
       "--config-dir",
       tempConfigDir,
       "--repo-root",
@@ -114,7 +114,7 @@ describe("loadConfig validation and edge cases", () => {
   it("returns a config object with expected shape", () => {
     const config = loadConfig([
       "node",
-      "openfleet",
+      "bosun",
       "--config-dir",
       tempConfigDir,
       "--repo-root",
@@ -143,7 +143,7 @@ describe("loadConfig validation and edge cases", () => {
 
     const config = loadConfig([
       "node",
-      "openfleet",
+      "bosun",
       "--config-dir",
       tempConfigDir,
       "--repo-root",
@@ -163,7 +163,7 @@ describe("loadConfig validation and edge cases", () => {
 
     const config = loadConfig([
       "node",
-      "openfleet",
+      "bosun",
       "--config-dir",
       tempConfigDir,
       "--repo-root",
@@ -191,7 +191,7 @@ describe("loadConfig validation and edge cases", () => {
 
     const config = loadConfig([
       "node",
-      "openfleet",
+      "bosun",
       "--config-dir",
       tempConfigDir,
     ]);

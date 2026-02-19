@@ -2,7 +2,7 @@
  * Agent Work Stream Analyzer
  *
  * Tails agent-work-stream.jsonl in real-time, detects patterns, and emits alerts
- * for openfleet to consume.
+ * for bosun to consume.
  *
  * Features:
  * - Error loop detection (same error N+ times)

@@ -11,8 +11,8 @@ import {
 
 describe("agent-prompts workspace", () => {
   const envKeys = [
-    "OPENFLEET_PROMPT_WORKSPACE",
-    "OPENFLEET_HOME",
+    "BOSUN_PROMPT_WORKSPACE",
+    "BOSUN_HOME",
     "HOME",
     "USERPROFILE",
   ];
@@ -33,7 +33,7 @@ describe("agent-prompts workspace", () => {
   it("uses explicit prompt workspace override", async () => {
     const root = await mkdtemp(resolve(tmpdir(), "prompts-root-"));
     const custom = await mkdtemp(resolve(tmpdir(), "prompts-custom-"));
-    process.env.OPENFLEET_PROMPT_WORKSPACE = custom;
+    process.env.BOSUN_PROMPT_WORKSPACE = custom;
 
     const workspace = getDefaultPromptWorkspace(root);
     expect(workspace).toBe(custom);
@@ -46,11 +46,11 @@ describe("agent-prompts workspace", () => {
     const root = await mkdtemp(resolve(tmpdir(), "prompts-bad-root-"));
     const home = await mkdtemp(resolve(tmpdir(), "prompts-home-"));
 
-    // Make ".openfleet" a file so creating ".openfleet/agents" under root fails.
-    await writeFile(resolve(root, ".openfleet"), "blocker\n", "utf8");
+    // Make ".bosun" a file so creating ".bosun/agents" under root fails.
+    await writeFile(resolve(root, ".bosun"), "blocker\n", "utf8");
 
-    process.env.OPENFLEET_PROMPT_WORKSPACE = "";
-    process.env.OPENFLEET_HOME = "";
+    process.env.BOSUN_PROMPT_WORKSPACE = "";
+    process.env.BOSUN_HOME = "";
     process.env.HOME = home;
     process.env.USERPROFILE = home;
 
@@ -58,7 +58,7 @@ describe("agent-prompts workspace", () => {
     const expectedPrefix = resolve(home, PROMPT_WORKSPACE_DIR);
 
     expect(result.workspaceDir).toBe(expectedPrefix);
-    expect(process.env.OPENFLEET_PROMPT_WORKSPACE).toBe(expectedPrefix);
+    expect(process.env.BOSUN_PROMPT_WORKSPACE).toBe(expectedPrefix);
     expect(result.written.length).toBeGreaterThan(0);
 
     await rm(root, { recursive: true, force: true });

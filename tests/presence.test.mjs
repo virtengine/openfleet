@@ -17,7 +17,7 @@ import {
 let tempRoot = null;
 
 async function initTestPresence(instanceId) {
-  tempRoot = await mkdtemp(resolve(tmpdir(), "openfleet-presence-"));
+  tempRoot = await mkdtemp(resolve(tmpdir(), "bosun-presence-"));
   await initPresence({
     repoRoot: tempRoot,
     presencePath: resolve(tempRoot, "presence.json"),
@@ -552,7 +552,7 @@ describe("formatPresenceSummary", () => {
 
     const result = formatPresenceSummary({ nowMs: now, ttlMs: 5000 });
 
-    expect(result).toContain("🛰️ OpenFleet Presence");
+    expect(result).toContain("🛰️ Bosun Presence");
     expect(result).toContain("Primary Worker");
     expect(result).toContain("inst-2");
     expect(result).toContain("coordinator");

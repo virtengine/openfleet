@@ -618,7 +618,7 @@ Always use deterministic TF ops.
       expect(result.publishedAt).toBeTruthy();
 
       // Verify file was written
-      const filePath = resolve(tempRoot, ".cache/openfleet/fleet-tasks.json");
+      const filePath = resolve(tempRoot, ".cache/bosun/fleet-tasks.json");
       const raw = await readFile(filePath, "utf8");
       const data = JSON.parse(raw);
       expect(data.tasks).toHaveLength(2);

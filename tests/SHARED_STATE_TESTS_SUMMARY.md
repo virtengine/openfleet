@@ -2,7 +2,7 @@
 
 ## Overview
 
-Created comprehensive test coverage for the distributed task coordination system in openfleet, including local state management, GitHub synchronization, and end-to-end integration scenarios.
+Created comprehensive test coverage for the distributed task coordination system in bosun, including local state management, GitHub synchronization, and end-to-end integration scenarios.
 
 ## Files Created
 
@@ -120,7 +120,7 @@ Created comprehensive test coverage for the distributed task coordination system
 #### persistSharedStateToIssue
 
 - ✅ Create labels and comment for claimed state
-- ✅ Update existing openfleet comment
+- ✅ Update existing bosun comment
 - ✅ Update labels based on status
 - ✅ Retry on failure
 - ✅ Return false after max retries
@@ -286,7 +286,7 @@ node run-shared-state-tests.mjs
 
 ## Integration with Existing Tests
 
-These tests follow the same patterns as existing openfleet tests:
+These tests follow the same patterns as existing bosun tests:
 
 - Using vitest as test framework
 - Temporary directory isolation

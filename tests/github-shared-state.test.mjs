@@ -90,7 +90,7 @@ describe("github-shared-state", () => {
       expect(commentCall).toBeDefined();
     });
 
-    it("updates existing openfleet comment", async () => {
+    it("updates existing bosun comment", async () => {
       // Mock getting current labels
       mockGh(JSON.stringify({ labels: [{ name: "codex:claimed" }] }));
 
@@ -102,7 +102,7 @@ describe("github-shared-state", () => {
         JSON.stringify([
           {
             id: 999,
-            body: `<!-- openfleet-state
+            body: `<!-- bosun-state
 {
   "ownerId": "agent-old/workstation-old",
   "status": "claimed"
@@ -297,10 +297,10 @@ Old comment`,
         JSON.stringify([
           {
             id: 123,
-            body: `<!-- openfleet-state
+            body: `<!-- bosun-state
 ${JSON.stringify(stateData, null, 2)}
 -->
-**OpenFleet Status**: Working on this task`,
+**Bosun Status**: Working on this task`,
           },
         ]),
       );
@@ -348,7 +348,7 @@ ${JSON.stringify(stateData, null, 2)}
         JSON.stringify([
           {
             id: 100,
-            body: `<!-- openfleet-state
+            body: `<!-- bosun-state
 ${JSON.stringify(oldState, null, 2)}
 -->
 Old state`,
@@ -356,7 +356,7 @@ Old state`,
           { id: 101, body: "Regular comment" },
           {
             id: 102,
-            body: `<!-- openfleet-state
+            body: `<!-- bosun-state
 ${JSON.stringify(newState, null, 2)}
 -->
 New state`,
@@ -374,7 +374,7 @@ New state`,
         JSON.stringify([
           {
             id: 123,
-            body: `<!-- openfleet-state
+            body: `<!-- bosun-state
 { invalid json }
 -->
 Invalid`,
@@ -398,7 +398,7 @@ Invalid`,
         JSON.stringify([
           {
             id: 123,
-            body: `<!-- openfleet-state
+            body: `<!-- bosun-state
 ${JSON.stringify(incompleteState, null, 2)}
 -->
 Incomplete state`,
@@ -514,7 +514,7 @@ Incomplete state`,
             body: "Task description",
             state: "open",
             url: "https://github.com/acme/widgets/issues/42",
-            labels: [{ name: "codex:working" }, { name: "openfleet" }],
+            labels: [{ name: "codex:working" }, { name: "bosun" }],
             assignees: [],
           },
         ]),
@@ -525,7 +525,7 @@ Incomplete state`,
         JSON.stringify([
           {
             id: 123,
-            body: `<!-- openfleet-state
+            body: `<!-- bosun-state
 ${JSON.stringify(sharedState, null, 2)}
 -->
 Status comment`,
@@ -552,7 +552,7 @@ Status comment`,
             body: "Description",
             state: "open",
             url: "https://github.com/acme/widgets/issues/43",
-            labels: [{ name: "openfleet" }],
+            labels: [{ name: "bosun" }],
             assignees: [],
           },
         ]),

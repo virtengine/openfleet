@@ -9,7 +9,7 @@ function toEnvSuffix(key) {
     .toUpperCase();
 }
 
-export const PROMPT_WORKSPACE_DIR = ".openfleet/agents";
+export const PROMPT_WORKSPACE_DIR = ".bosun/agents";
 
 const PROMPT_DEFS = [
   {
@@ -119,7 +119,7 @@ export const AGENT_PROMPT_DEFINITIONS = Object.freeze(
   PROMPT_DEFS.map((item) =>
     Object.freeze({
       ...item,
-      envVar: `OPENFLEET_PROMPT_${toEnvSuffix(item.key)}`,
+      envVar: `BOSUN_PROMPT_${toEnvSuffix(item.key)}`,
       defaultRelativePath: `${PROMPT_WORKSPACE_DIR}/${item.filename}`,
     }),
   ),
@@ -188,9 +188,9 @@ Rules:
 - Keep titles unique and specific.
 - Keep file overlap low across tasks to maximize parallel execution.
 `,
-  monitorMonitor: `# OpenFleet-Monitor Agent
+  monitorMonitor: `# Bosun-Monitor Agent
 
-You are the always-on reliability guardian for openfleet in devmode.
+You are the always-on reliability guardian for bosun in devmode.
 
 ## Core Role
 
@@ -456,7 +456,7 @@ No structured error was extracted. Termination reason: {{FALLBACK_REASON}}
 {{RECENT_MESSAGES_CONTEXT}}
 ## Instructions
 1. Analyze likely root cause.
-2. Main script: scripts/openfleet/ve-orchestrator.ps1
+2. Main script: scripts/bosun/ve-orchestrator.ps1
 3. If fixable bug exists, apply minimal safe fix.
 4. If crash is external only (OOM/SIGKILL), do not modify code.
 `,
@@ -469,16 +469,16 @@ This error repeats {{REPEAT_COUNT}} times:
 {{RECENT_MESSAGES_CONTEXT}}
 
 ## Instructions
-1. Main script: scripts/openfleet/ve-orchestrator.ps1
+1. Main script: scripts/bosun/ve-orchestrator.ps1
 2. Find where this error is emitted.
 3. Fix loop root cause (missing state change, missing stop condition, etc).
 4. Apply minimal safe fix only.
 5. Write fix directly in file.
 `,
-  monitorCrashFix: `You are debugging {{PROJECT_NAME}} openfleet.
+  monitorCrashFix: `You are debugging {{PROJECT_NAME}} bosun.
 
 The monitor process hit an unexpected exception and needs a fix.
-Inspect and fix code in openfleet modules.
+Inspect and fix code in bosun modules.
 
 Crash info:
 {{CRASH_INFO}}
@@ -498,9 +498,9 @@ Diagnose likely root cause and apply a minimal fix.
 
 Targets (edit only if needed):
 - {{SCRIPT_PATH}}
-- openfleet/monitor.mjs
-- openfleet/autofix.mjs
-- openfleet/maintenance.mjs
+- bosun/monitor.mjs
+- bosun/autofix.mjs
+- bosun/maintenance.mjs
 
 Recent log excerpt:
 {{LOG_TAIL}}
@@ -562,7 +562,7 @@ export function getAgentPromptDefinitions() {
 
 export function getDefaultPromptWorkspace(repoRoot) {
   const override = String(
-    process.env.OPENFLEET_PROMPT_WORKSPACE || "",
+    process.env.BOSUN_PROMPT_WORKSPACE || "",
   ).trim();
   if (override) {
     return isAbsolute(override)
@@ -607,13 +607,13 @@ export function ensureAgentPromptWorkspace(repoRoot) {
     mkdirSync(workspaceDir, { recursive: true });
   } catch (err) {
     const fallbackRoot = resolve(
-      process.env.OPENFLEET_HOME ||
+      process.env.BOSUN_HOME ||
         process.env.HOME ||
         process.env.USERPROFILE ||
         homedir(),
     );
     const fallbackDir = resolve(fallbackRoot, PROMPT_WORKSPACE_DIR);
-    process.env.OPENFLEET_PROMPT_WORKSPACE = fallbackDir;
+    process.env.BOSUN_PROMPT_WORKSPACE = fallbackDir;
     workspaceDir = fallbackDir;
     mkdirSync(workspaceDir, { recursive: true });
     console.warn(
@@ -627,7 +627,7 @@ export function ensureAgentPromptWorkspace(repoRoot) {
     if (existsSync(filePath)) continue;
 
     const body = [
-      `<!-- openfleet prompt: ${def.key} -->`,
+      `<!-- bosun prompt: ${def.key} -->`,
       `<!-- ${def.description} -->`,
       "",
       DEFAULT_PROMPTS[def.key] || "",

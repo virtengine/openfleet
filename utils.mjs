@@ -1,5 +1,5 @@
 /**
- * Pure utility functions for openfleet
+ * Pure utility functions for bosun
  * Extracted for unit testing (no I/O, no side effects)
  */
 

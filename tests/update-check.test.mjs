@@ -7,7 +7,7 @@ describe("update-check", () => {
   beforeEach(() => {
     originalEnv = { ...process.env };
     // Disable auto-update by default in tests
-    process.env.OPENFLEET_SKIP_AUTO_UPDATE = "1";
+    process.env.BOSUN_SKIP_AUTO_UPDATE = "1";
   });
 
   afterEach(() => {
@@ -17,19 +17,19 @@ describe("update-check", () => {
   });
 
   describe("startAutoUpdateLoop", () => {
-    it("should respect OPENFLEET_SKIP_AUTO_UPDATE=1", () => {
-      process.env.OPENFLEET_SKIP_AUTO_UPDATE = "1";
+    it("should respect BOSUN_SKIP_AUTO_UPDATE=1", () => {
+      process.env.BOSUN_SKIP_AUTO_UPDATE = "1";
 
       const consoleSpy = vi.spyOn(console, "log");
       startAutoUpdateLoop();
 
       expect(consoleSpy).toHaveBeenCalledWith(
-        "[auto-update] Disabled via OPENFLEET_SKIP_AUTO_UPDATE=1"
+        "[auto-update] Disabled via BOSUN_SKIP_AUTO_UPDATE=1"
       );
     });
 
     it("should track parent process by default", () => {
-      delete process.env.OPENFLEET_SKIP_AUTO_UPDATE;
+      delete process.env.BOSUN_SKIP_AUTO_UPDATE;
 
       const consoleSpy = vi.spyOn(console, "log");
       startAutoUpdateLoop({ intervalMs: 1000000 }); // Long interval to avoid actual polling
@@ -42,7 +42,7 @@ describe("update-check", () => {
     });
 
     it("should allow custom parentPid", () => {
-      delete process.env.OPENFLEET_SKIP_AUTO_UPDATE;
+      delete process.env.BOSUN_SKIP_AUTO_UPDATE;
 
       const consoleSpy = vi.spyOn(console, "log");
       const customPid = 12345;
@@ -59,7 +59,7 @@ describe("update-check", () => {
     });
 
     it("should clean up intervals when stopped", () => {
-      delete process.env.OPENFLEET_SKIP_AUTO_UPDATE;
+      delete process.env.BOSUN_SKIP_AUTO_UPDATE;
 
       startAutoUpdateLoop({ intervalMs: 1000000 });
       stopAutoUpdateLoop();
@@ -71,7 +71,7 @@ describe("update-check", () => {
 
   describe("parent process monitoring", () => {
     it("should set up parent monitoring interval", () => {
-      delete process.env.OPENFLEET_SKIP_AUTO_UPDATE;
+      delete process.env.BOSUN_SKIP_AUTO_UPDATE;
 
       // Use a non-existent PID (guaranteed to be dead)
       const deadPid = 999999;
@@ -94,7 +94,7 @@ describe("update-check", () => {
 
   describe("cleanup handlers", () => {
     it("should register signal handlers on first call", () => {
-      delete process.env.OPENFLEET_SKIP_AUTO_UPDATE;
+      delete process.env.BOSUN_SKIP_AUTO_UPDATE;
 
       startAutoUpdateLoop({ intervalMs: 1000000 });
 

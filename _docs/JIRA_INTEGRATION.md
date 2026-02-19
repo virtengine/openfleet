@@ -1,10 +1,10 @@
-# Jira Integration Guide for OpenFleet
+# Jira Integration Guide for Bosun
 
-This guide documents Jira configuration parity for openfleet, including status mapping and shared-state field mapping.
+This guide documents Jira configuration parity for bosun, including status mapping and shared-state field mapping.
 
 ## Overview
 
-Jira integration uses the same openfleet shared-state contract used by other backends:
+Jira integration uses the same bosun shared-state contract used by other backends:
 
 - `ownerId`
 - `attemptToken`
@@ -25,7 +25,7 @@ Shared-state lifecycle labels are also consistent:
 Run the setup wizard and select Jira:
 
 ```bash
-openfleet --setup
+bosun --setup
 ```
 
 The wizard can (opt-in):
@@ -69,17 +69,17 @@ JIRA_DEFAULT_ASSIGNEE=5b10a2844c20165700ede21g
 
 ## Task Scoping + Tags
 
-OpenFleet scopes Jira tasks using labels. These are effectively your tags.
+Bosun scopes Jira tasks using labels. These are effectively your tags.
 
 ```bash
-JIRA_TASK_LABELS=openfleet,codex-mointor
+JIRA_TASK_LABELS=bosun,codex-mointor
 JIRA_ENFORCE_TASK_LABEL=true
 ```
 
 Notes:
 
 - Jira labels are sanitized to lowercase and non-alphanumeric characters become `-`.
-- If you set `JIRA_TASK_LABELS`, only issues with those labels are pulled into OpenFleet.
+- If you set `JIRA_TASK_LABELS`, only issues with those labels are pulled into Bosun.
 - Extra tags can be applied in Jira as labels; they will be preserved and exposed in task metadata.
 
 ## Comments + Fetch Limits
@@ -94,7 +94,7 @@ Format (default: true). The list limit caps how many issues are fetched per poll
 
 ## Status Mapping Env Vars
 
-Map internal openfleet statuses to Jira workflow status names:
+Map internal bosun statuses to Jira workflow status names:
 
 ```bash
 JIRA_STATUS_TODO=To Do
@@ -122,7 +122,7 @@ JIRA_CUSTOM_FIELD_IGNORE_REASON=customfield_10047
 ```
 
 If custom fields are not configured, keep these unset and use structured-comment
-fallback. OpenFleet will still update labels and comments.
+fallback. Bosun will still update labels and comments.
 
 ## Shared-State Labels
 
@@ -159,7 +159,7 @@ JIRA_LABEL_CLAIMED=codex:claimed
 JIRA_LABEL_WORKING=codex:working
 JIRA_LABEL_STALE=codex:stale
 JIRA_LABEL_IGNORE=codex:ignore
-JIRA_TASK_LABELS=openfleet,codex-mointor
+JIRA_TASK_LABELS=bosun,codex-mointor
 JIRA_ENFORCE_TASK_LABEL=true
 JIRA_USE_ADF_COMMENTS=true
 JIRA_ISSUES_LIST_LIMIT=250
@@ -186,9 +186,9 @@ JIRA_CUSTOM_FIELD_IGNORE_REASON=customfield_10047
 }
 ```
 
-## Jira Capabilities Used by OpenFleet
+## Jira Capabilities Used by Bosun
 
-OpenFleet maps task metadata to Jira fields wherever possible:
+Bosun maps task metadata to Jira fields wherever possible:
 
 - Status: mapped via `JIRA_STATUS_*` to keep workflow states aligned.
 - Tags/labels: `JIRA_TASK_LABELS` scopes tasks; additional labels are preserved.
@@ -202,7 +202,7 @@ priority) where supported. VK currently exposes status/description only.
 
 ## Collaboration + Multi-Workstation Sync
 
-OpenFleet coordinates multiple workstations via shared state stored in Jira:
+Bosun coordinates multiple workstations via shared state stored in Jira:
 
 - Each task claim writes `ownerId`, `attemptToken`, `heartbeat`, and status.
 - Heartbeats refresh periodically; stale heartbeats are marked `codex:stale`.
@@ -212,7 +212,7 @@ OpenFleet coordinates multiple workstations via shared state stored in Jira:
 
 For manual recovery, run a stale sweep or mark tasks ignored with `codex:ignore`.
 
-## Config File Equivalent (`openfleet.config.json`)
+## Config File Equivalent (`bosun.config.json`)
 
 ```json
 {

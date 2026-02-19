@@ -16,7 +16,7 @@ The current GitHubAdapter in `kanban-adapter.mjs` only **adds issues to projects
 ❌ Update iteration/sprint fields  
 ❌ Manage project item metadata
 
-This limits openfleet's ability to work with GitHub Projects v2 as a primary task board.
+This limits bosun's ability to work with GitHub Projects v2 as a primary task board.
 
 ---
 
@@ -73,7 +73,7 @@ gh api graphql -f query='
 
 ### Current Code
 
-**File**: `scripts/openfleet/kanban-adapter.mjs`  
+**File**: `scripts/bosun/kanban-adapter.mjs`  
 **Lines**: 1125-1154  
 **Method**: `_ensureIssueLinkedToProject(issueUrl)`
 
@@ -296,7 +296,7 @@ describe("GitHub Projects v2 Integration", () => {
 
 ```bash
 # Setup test environment
-cd scripts/openfleet
+cd scripts/bosun
 export KANBAN_BACKEND=github
 export GITHUB_PROJECT_MODE=kanban
 export GITHUB_PROJECT_OWNER=virtengine
@@ -418,7 +418,7 @@ For users wanting to enable project sync:
    ```bash
    gh project item-list 3 --owner virtengine --format json
    ```
-5. **Restart openfleet**: `npm run monitor`
+5. **Restart bosun**: `npm run monitor`
 6. **Verify sync**: Check project board after status change
 
 ---

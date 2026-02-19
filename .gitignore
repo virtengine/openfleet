@@ -36,3 +36,4 @@ workspaces.json
 !openfleet.config.example.json
 !openfleet.schema.json
 /.codex-monitor/
+/.bosun/
