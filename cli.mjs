@@ -386,7 +386,8 @@ function startDaemon() {
       stdio: "ignore",
       windowsHide: process.platform === "win32",
       env: { ...process.env, OPENFLEET_DAEMON: "1" },
-      cwd: process.cwd(),
+      // Use home dir so spawn never inherits a deleted CWD (e.g. old git worktree)
+      cwd: os.homedir(),
     },
   );
 

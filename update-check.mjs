@@ -20,6 +20,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
+import os from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_NAME = "@virtengine/openfleet";
@@ -28,9 +29,14 @@ const STARTUP_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour (startup notice)
 const AUTO_UPDATE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes (polling loop)
 
 function runNpmCommand(args, options = {}) {
+  // Default cwd to the user home directory so that npm never inherits a
+  // deleted working directory (e.g. a stale git worktree), which would cause
+  // Node's uv_cwd to throw ENOENT before npm even parses its arguments.
+  const safeOptions = { cwd: os.homedir(), ...options };
+
   const npmExecPath = process.env.npm_execpath;
   if (npmExecPath && existsSync(npmExecPath)) {
-    return execFileSync(process.execPath, [npmExecPath, ...args], options);
+    return execFileSync(process.execPath, [npmExecPath, ...args], safeOptions);
   }
 
   const nodeBinDir = dirname(process.execPath);
@@ -45,12 +51,12 @@ function runNpmCommand(args, options = {}) {
 
   for (const candidate of candidates) {
     if (existsSync(candidate)) {
-      return execFileSync(candidate, args, options);
+      return execFileSync(candidate, args, safeOptions);
     }
   }
 
   const fallback = process.platform === "win32" ? "npm.cmd" : "npm";
-  return execFileSync(fallback, args, options);
+  return execFileSync(fallback, args, safeOptions);
 }
 
 // ── Semver comparison ────────────────────────────────────────────────────────
