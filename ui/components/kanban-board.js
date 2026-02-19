@@ -105,6 +105,13 @@ let _touchClone = null;
 let _touchStartX = 0;
 let _touchStartY = 0;
 let _touchMoved = false;
+let _touchDragReady = false;
+let _touchHoldTimer = null;
+let _touchSuppressClickUntil = 0;
+
+const TOUCH_DRAG_DELAY_MS = 180;
+const TOUCH_DRAG_START_PX = 8;
+const TOUCH_CANCEL_PX = 10;
 
 /* ─── Touch drag helpers ─── */
 
@@ -134,6 +141,13 @@ function _removeTouchClone() {
     _touchClone.parentNode.removeChild(_touchClone);
   }
   _touchClone = null;
+}
+
+function _clearTouchHoldTimer() {
+  if (_touchHoldTimer) {
+    clearTimeout(_touchHoldTimer);
+    _touchHoldTimer = null;
+  }
 }
 
 function _columnFromPoint(x, y) {
@@ -187,8 +201,10 @@ async function _handleTouchDrop(colId) {
       },
     );
     showToast(`Moved to ${col ? col.title : colId}`, "success");
-  } catch {
-    /* toast via apiFetch */
+    // Force refresh from server to ensure consistency
+    setTimeout(() => loadTasks(), 500);
+  } catch (err) {
+    showToast(err?.message || "Failed to move task", "error");
   }
 }
 
@@ -223,27 +239,45 @@ function KanbanCard({ task, onOpen }) {
   const onDragEnd = useCallback((e) => {
     dragTaskId.value = null;
     e.currentTarget.classList.remove("dragging");
-  }, []);
+  }, [task.id]);
 
   /* ─ Touch drag handlers ─ */
   const onTouchStart = useCallback((e) => {
     const touch = e.touches[0];
+    if (!touch || e.touches.length > 1) return;
     _touchStartX = touch.clientX;
     _touchStartY = touch.clientY;
     _touchMoved = false;
-    touchDragId.value = task.id;
+    _touchDragReady = false;
+    _clearTouchHoldTimer();
+    _touchHoldTimer = setTimeout(() => {
+      _touchDragReady = true;
+      _touchHoldTimer = null;
+    }, TOUCH_DRAG_DELAY_MS);
   }, [task.id]);
 
   const onTouchMove = useCallback((e) => {
     const touch = e.touches[0];
+    if (!touch) return;
     const dx = touch.clientX - _touchStartX;
     const dy = touch.clientY - _touchStartY;
 
     // Only start drag after a small threshold to distinguish from scroll
-    if (!_touchMoved && Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+    const movedFar = Math.abs(dx) > TOUCH_CANCEL_PX || Math.abs(dy) > TOUCH_CANCEL_PX;
+    if (!_touchDragReady) {
+      if (movedFar) {
+        _clearTouchHoldTimer();
+        touchDragId.value = null;
+        touchOverCol.value = null;
+      }
+      return;
+    }
+
+    if (!_touchMoved && Math.abs(dx) < TOUCH_DRAG_START_PX && Math.abs(dy) < TOUCH_DRAG_START_PX) return;
 
     if (!_touchMoved) {
       _touchMoved = true;
+      touchDragId.value = task.id;
       _removeTouchClone();
       _touchClone = _createTouchClone(e.currentTarget);
       haptic("medium");
@@ -256,9 +290,14 @@ function KanbanCard({ task, onOpen }) {
     touchOverCol.value = colId;
   }, []);
 
-  const onTouchEnd = useCallback(() => {
+  const onTouchEnd = useCallback((e) => {
+    _clearTouchHoldTimer();
     const colId = touchOverCol.value;
     _removeTouchClone();
+    if (_touchMoved) {
+      _touchSuppressClickUntil = Date.now() + 350;
+      if (e?.preventDefault) e.preventDefault();
+    }
     if (_touchMoved && colId) {
       _handleTouchDrop(colId);
     } else {
@@ -266,13 +305,16 @@ function KanbanCard({ task, onOpen }) {
       touchOverCol.value = null;
     }
     _touchMoved = false;
+    _touchDragReady = false;
   }, []);
 
   const onTouchCancel = useCallback(() => {
+    _clearTouchHoldTimer();
     _removeTouchClone();
     touchDragId.value = null;
     touchOverCol.value = null;
     _touchMoved = false;
+    _touchDragReady = false;
   }, []);
 
   const priorityColor = PRIORITY_COLORS[task.priority] || null;
@@ -290,7 +332,10 @@ function KanbanCard({ task, onOpen }) {
       onTouchMove=${onTouchMove}
       onTouchEnd=${onTouchEnd}
       onTouchCancel=${onTouchCancel}
-      onClick=${() => onOpen(task.id)}
+      onClick=${() => {
+        if (Date.now() < _touchSuppressClickUntil) return;
+        onOpen(task.id);
+      }}
     >
       ${priorityLabel && html`
         <span class="kanban-card-badge" style="background:${priorityColor}">${priorityLabel}</span>
@@ -374,8 +419,10 @@ function KanbanColumn({ col, tasks, onOpen }) {
         },
       );
       showToast(`Moved to ${col.title}`, "success");
-    } catch {
-      /* toast via apiFetch */
+      // Force refresh from server to ensure consistency
+      setTimeout(() => loadTasks(), 500);
+    } catch (err) {
+      showToast(err?.message || "Failed to move task", "error");
     }
   }, [col.id, col.title]);
 

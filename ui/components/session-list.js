@@ -78,15 +78,34 @@ export function SessionList({
   showArchived = true,
   onToggleArchived,
   defaultType = null,
+  renamingSessionId = null,
+  onStartRename,
+  onSaveRename,
+  onCancelRename,
 }) {
   const [search, setSearch] = useState("");
   const allSessions = sessionsData.value || [];
   const error = sessionsError.value;
   const hasSearch = search.trim().length > 0;
 
+  // Filter by defaultType to exclude ghost sessions (e.g. task sessions in Chat tab)
+  const typeFiltered = defaultType
+    ? allSessions.filter((s) => {
+        const t = (s.type || "").toLowerCase();
+        if (defaultType === "primary") {
+          // Show primary, manual, and untyped sessions — exclude task/review
+          return t !== "task" && t !== "review";
+        }
+        if (defaultType === "task") {
+          return t === "task";
+        }
+        return t === defaultType.toLowerCase();
+      })
+    : allSessions;
+
   const base = showArchived
-    ? allSessions
-    : allSessions.filter((s) => s.status !== "archived");
+    ? typeFiltered
+    : typeFiltered.filter((s) => s.status !== "archived");
 
   const filtered = search
     ? base.filter(
@@ -119,6 +138,80 @@ export function SessionList({
     sessionsError.value = null;
     loadSessions();
   }, []);
+
+  /* ── Render a single session item (with optional rename support) ── */
+  function renderSessionItem(s) {
+    const isSelected = selectedSessionId.value === s.id;
+    const isRenaming = renamingSessionId === s.id;
+    const title = s.title || s.taskId || "Untitled";
+    return html`
+      <div
+        key=${s.id}
+        class="session-item ${isSelected ? "active" : ""}"
+        onClick=${() => handleSelect(s.id)}
+        onDblClick=${(e) => {
+          if (onStartRename) {
+            e.stopPropagation();
+            onStartRename(s.id);
+          }
+        }}
+      >
+        <div class="session-item-row">
+          <span class="session-item-icon">${sessionIcon(s.type)}</span>
+          ${isRenaming && onSaveRename && onCancelRename
+            ? html`
+                <input
+                  class="session-item-rename"
+                  value=${title}
+                  onClick=${(e) => e.stopPropagation()}
+                  onKeyDown=${(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      const v = e.target.value.trim();
+                      if (v && v !== title) onSaveRename(s.id, v);
+                      else onCancelRename();
+                    }
+                    if (e.key === "Escape") onCancelRename();
+                  }}
+                  onBlur=${(e) => {
+                    const v = e.target.value.trim();
+                    if (v && v !== title) onSaveRename(s.id, v);
+                    else onCancelRename();
+                  }}
+                  ref=${(el) => {
+                    if (el) {
+                      el.focus();
+                      el.select();
+                    }
+                  }}
+                />
+              `
+            : html`
+                <span class="session-item-title">${truncate(title, 28)}</span>
+                ${onStartRename &&
+                html`
+                  <button
+                    class="session-rename-btn"
+                    title="Rename session"
+                    onClick=${(e) => {
+                      e.stopPropagation();
+                      onStartRename(s.id);
+                    }}
+                  >✏️</button>
+                `}
+              `}
+          <span class="session-item-status">${statusIcon(s.status)}</span>
+        </div>
+        ${s.lastMessage &&
+        html`
+          <div class="session-item-preview">${truncate(s.lastMessage, 50)}</div>
+        `}
+        <div class="session-item-time">
+          ${formatRelative(s.updatedAt || s.createdAt)}
+        </div>
+      </div>
+    `;
+  }
 
   if (error) {
     return html`
@@ -174,104 +267,17 @@ export function SessionList({
         ${active.length > 0 &&
         html`
           <div class="session-group-label">Active Sessions</div>
-          ${active.map(
-            (s) => html`
-              <div
-                key=${s.id}
-                class="session-item ${selectedSessionId.value === s.id
-                  ? "active"
-                  : ""}"
-                onClick=${() => handleSelect(s.id)}
-              >
-                <div class="session-item-row">
-                  <span class="session-item-icon"
-                    >${sessionIcon(s.type)}</span
-                  >
-                  <span class="session-item-title"
-                    >${truncate(s.title || s.taskId || "Untitled", 28)}</span
-                  >
-                  <span class="session-item-status"
-                    >${statusIcon(s.status)}</span
-                  >
-                </div>
-                ${s.lastMessage &&
-                html`
-                  <div class="session-item-preview">
-                    ${truncate(s.lastMessage, 50)}
-                  </div>
-                `}
-                <div class="session-item-time">${formatRelative(s.updatedAt || s.createdAt)}</div>
-              </div>
-            `,
-          )}
+          ${active.map(renderSessionItem)}
         `}
         ${recent.length > 0 &&
         html`
           <div class="session-group-label">Recent Sessions</div>
-          ${recent.map(
-            (s) => html`
-              <div
-                key=${s.id}
-                class="session-item ${selectedSessionId.value === s.id
-                  ? "active"
-                  : ""}"
-                onClick=${() => handleSelect(s.id)}
-              >
-                <div class="session-item-row">
-                  <span class="session-item-icon"
-                    >${sessionIcon(s.type)}</span
-                  >
-                  <span class="session-item-title"
-                    >${truncate(s.title || s.taskId || "Untitled", 28)}</span
-                  >
-                  <span class="session-item-status"
-                    >${statusIcon(s.status)}</span
-                  >
-                </div>
-                ${s.lastMessage &&
-                html`
-                  <div class="session-item-preview">
-                    ${truncate(s.lastMessage, 50)}
-                  </div>
-                `}
-                <div class="session-item-time">${formatRelative(s.updatedAt || s.createdAt)}</div>
-              </div>
-            `,
-          )}
+          ${recent.map(renderSessionItem)}
         `}
         ${archived.length > 0 &&
         html`
           <div class="session-group-label">Archived</div>
-          ${archived.map(
-            (s) => html`
-              <div
-                key=${s.id}
-                class="session-item ${selectedSessionId.value === s.id
-                  ? "active"
-                  : ""}"
-                onClick=${() => handleSelect(s.id)}
-              >
-                <div class="session-item-row">
-                  <span class="session-item-icon"
-                    >${sessionIcon(s.type)}</span
-                  >
-                  <span class="session-item-title"
-                    >${truncate(s.title || s.taskId || "Untitled", 28)}</span
-                  >
-                  <span class="session-item-status"
-                    >${statusIcon(s.status)}</span
-                  >
-                </div>
-                ${s.lastMessage &&
-                html`
-                  <div class="session-item-preview">
-                    ${truncate(s.lastMessage, 50)}
-                  </div>
-                `}
-                <div class="session-item-time">${formatRelative(s.updatedAt || s.createdAt)}</div>
-              </div>
-            `,
-          )}
+          ${archived.map(renderSessionItem)}
         `}
         ${filtered.length === 0 &&
         html`

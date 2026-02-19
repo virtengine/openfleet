@@ -7,6 +7,7 @@ import {
   useEffect,
   useRef,
   useCallback,
+  useMemo,
 } from "preact/hooks";
 import htm from "htm";
 
@@ -566,6 +567,14 @@ export function TasksTab() {
     catch { return false; }
   });
   const searchRef = useRef(null);
+  const exportRef = useRef(null);
+  const listStateRef = useRef({
+    filter: tasksFilter?.value ?? "all",
+    priority: tasksPriority?.value ?? "",
+    sort: tasksSort?.value ?? "updated",
+    page: tasksPage?.value ?? 0,
+    pageSize: tasksPageSize?.value ?? 20,
+  });
 
   /* Detect desktop for keyboard shortcut hint */
   const [showKbdHint] = useState(() => {
@@ -613,12 +622,69 @@ export function TasksTab() {
   const lastNonCompletedRef = useRef(
     filterVal && filterVal !== "done" ? filterVal : "all",
   );
+  const isKanban = viewMode.value === "kanban";
 
   useEffect(() => {
     if (filterVal && filterVal !== "done") {
       lastNonCompletedRef.current = filterVal;
     }
   }, [filterVal]);
+
+  useEffect(() => {
+    if (isKanban) return;
+    listStateRef.current = {
+      filter: filterVal,
+      priority: priorityVal,
+      sort: sortVal,
+      page,
+      pageSize,
+    };
+  }, [isKanban, filterVal, priorityVal, sortVal, page, pageSize]);
+
+  useEffect(() => {
+    let shouldReload = false;
+    if (isKanban) {
+      if (tasksFilter?.value !== "all") {
+        tasksFilter.value = "all";
+        shouldReload = true;
+      }
+      if (tasksPriority?.value) {
+        tasksPriority.value = "";
+        shouldReload = true;
+      }
+      if (tasksPage?.value !== 0) {
+        tasksPage.value = 0;
+        shouldReload = true;
+      }
+      if ((tasksPageSize?.value ?? 0) < 120) {
+        tasksPageSize.value = 200;
+        shouldReload = true;
+      }
+    } else if (listStateRef.current) {
+      const next = listStateRef.current;
+      if (tasksFilter?.value !== (next.filter ?? "all")) {
+        tasksFilter.value = next.filter ?? "all";
+        shouldReload = true;
+      }
+      if (tasksPriority?.value !== (next.priority ?? "")) {
+        tasksPriority.value = next.priority ?? "";
+        shouldReload = true;
+      }
+      if (tasksSort?.value !== (next.sort ?? "updated")) {
+        tasksSort.value = next.sort ?? "updated";
+        shouldReload = true;
+      }
+      if (tasksPage?.value !== (next.page ?? 0)) {
+        tasksPage.value = next.page ?? 0;
+        shouldReload = true;
+      }
+      if (tasksPageSize?.value !== (next.pageSize ?? 20)) {
+        tasksPageSize.value = next.pageSize ?? 20;
+        shouldReload = true;
+      }
+    }
+    if (shouldReload) loadTasks();
+  }, [isKanban]);
 
   useEffect(() => {
     let mq;
@@ -644,6 +710,25 @@ export function TasksTab() {
     }
   }, [isCompact]);
 
+  useEffect(() => {
+    if (!exportOpen || typeof document === "undefined") return undefined;
+    const handlePointerDown = (event) => {
+      if (!exportRef.current) return;
+      if (!exportRef.current.contains(event.target)) {
+        setExportOpen(false);
+      }
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") setExportOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [exportOpen]);
+
   /* Search (local fuzzy filter on already-loaded data) */
   const searchLower = trimmedSearch.toLowerCase();
   const visible = searchLower
@@ -653,6 +738,40 @@ export function TasksTab() {
           .includes(searchLower),
       )
     : tasks;
+
+  const summaryMetrics = useMemo(() => {
+    const counts = {
+      backlog: 0,
+      active: 0,
+      review: 0,
+      done: 0,
+      error: 0,
+      draft: 0,
+    };
+    for (const task of tasks) {
+      const status = String(task?.status || "").toLowerCase();
+      if (["inprogress", "in-progress", "working", "active", "assigned", "running"].includes(status)) {
+        counts.active += 1;
+      } else if (["inreview", "in-review", "review", "pr-open", "pr-review"].includes(status)) {
+        counts.review += 1;
+      } else if (["done", "completed", "closed", "merged", "cancelled"].includes(status)) {
+        counts.done += 1;
+      } else if (["error", "blocked", "failed"].includes(status)) {
+        counts.error += 1;
+      } else if (["draft"].includes(status)) {
+        counts.draft += 1;
+      } else {
+        counts.backlog += 1;
+      }
+    }
+    return [
+      { label: "Backlog", value: counts.backlog, color: "var(--color-todo)" },
+      { label: "Active", value: counts.active, color: "var(--color-inprogress)" },
+      { label: "Review", value: counts.review, color: "var(--color-inreview)" },
+      { label: "Done", value: counts.done, color: "var(--color-done)" },
+      { label: "Errors", value: counts.error, color: "var(--color-error)" },
+    ];
+  }, [tasks]);
 
   /* ── Handlers ── */
   const handleFilter = async (s) => {
@@ -927,7 +1046,6 @@ export function TasksTab() {
   };
 
   /* ── Render ── */
-  const isKanban = viewMode.value === "kanban";
   const showBatchBar = !isKanban && batchMode && selectedIds.size > 0;
 
   if (!tasksLoaded.value && !tasks.length && !searchVal)
@@ -1025,40 +1143,44 @@ export function TasksTab() {
 
         <div class="tasks-filter-panel ${filtersOpen ? "open" : ""}">
           <div class="tasks-filter-grid">
-            <div class="tasks-filter-section">
-              <div class="tasks-filter-title">Status</div>
-              <div class="chip-group">
-                ${STATUS_CHIPS.map(
-                  (s) => html`
-                    <button
-                      key=${s.value}
-                      class="chip ${filterVal === s.value ? "active" : ""}"
-                      onClick=${() => handleFilter(s.value)}
-                    >
-                      ${s.label}
-                    </button>
-                  `,
-                )}
+            ${!isKanban && html`
+              <div class="tasks-filter-section">
+                <div class="tasks-filter-title">Status</div>
+                <div class="chip-group">
+                  ${STATUS_CHIPS.map(
+                    (s) => html`
+                      <button
+                        key=${s.value}
+                        class="chip ${filterVal === s.value ? "active" : ""}"
+                        onClick=${() => handleFilter(s.value)}
+                      >
+                        ${s.label}
+                      </button>
+                    `,
+                  )}
+                </div>
               </div>
-            </div>
-            <div class="tasks-filter-section">
-              <div class="tasks-filter-title">Priority</div>
-              <div class="chip-group">
-                ${PRIORITY_CHIPS.map(
-                  (p) => html`
-                    <button
-                      key=${p.value}
-                      class="chip chip-outline ${priorityVal === p.value
-                        ? "active"
-                        : ""}"
-                      onClick=${() => handlePriorityFilter(p.value)}
-                    >
-                      ${p.label}
-                    </button>
-                  `,
-                )}
+            `}
+            ${!isKanban && html`
+              <div class="tasks-filter-section">
+                <div class="tasks-filter-title">Priority</div>
+                <div class="chip-group">
+                  ${PRIORITY_CHIPS.map(
+                    (p) => html`
+                      <button
+                        key=${p.value}
+                        class="chip chip-outline ${priorityVal === p.value
+                          ? "active"
+                          : ""}"
+                        onClick=${() => handlePriorityFilter(p.value)}
+                      >
+                        ${p.label}
+                      </button>
+                    `,
+                  )}
+                </div>
               </div>
-            </div>
+            `}
             <div class="tasks-filter-section">
               <div class="tasks-filter-title">Sort</div>
               <div class="tasks-filter-row">
@@ -1078,7 +1200,7 @@ export function TasksTab() {
             <div class="tasks-filter-section">
               <div class="tasks-filter-title">Actions</div>
               <div class="tasks-filter-row">
-                ${isCompact
+                ${!isKanban && (isCompact
                   ? html`
                       <${Toggle}
                         label="Completed only"
@@ -1093,7 +1215,7 @@ export function TasksTab() {
                       >
                         ${completedOnly ? "Show All" : "Show Completed"}
                       </button>
-                    `}
+                    `)}
                 ${hasActiveFilters &&
                 html`
                   <button
@@ -1103,7 +1225,7 @@ export function TasksTab() {
                     Clear Filters
                   </button>
                 `}
-                <div class="export-wrap">
+                <div class="export-wrap" ref=${exportRef}>
                   <button
                     class="btn btn-secondary btn-sm export-btn"
                     disabled=${exporting}
@@ -1138,6 +1260,14 @@ export function TasksTab() {
                   />
                   Batch Select
                 </label>
+              </div>
+            `}
+            ${isKanban && html`
+              <div class="tasks-filter-section">
+                <div class="tasks-filter-title">Board View</div>
+                <div class="meta-text">
+                  Board view shows every status in one place. Switch to List to filter by status or priority.
+                </div>
               </div>
             `}
           </div>
@@ -1179,6 +1309,24 @@ export function TasksTab() {
       `}
     </div>
 
+    <${Card}
+      title="Work Snapshot"
+      subtitle=${isKanban ? "Board view · showing all statuses" : "List view · filtered results"}
+      className="work-summary-card"
+    >
+      <div class="stat-strip">
+        ${summaryMetrics.map(
+          (metric) => html`
+            <${StatCard}
+              value=${metric.value}
+              label=${metric.label}
+              color=${metric.color}
+            />
+          `,
+        )}
+      </div>
+    <//>
+
     <style>
       .export-btn { display:inline-flex; align-items:center; gap:4px; }
       .export-dropdown {
@@ -1197,7 +1345,8 @@ export function TasksTab() {
 
     ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} />`}
 
-    ${visible.map(
+    ${!isKanban &&
+    visible.map(
       (task) => html`
         <div
           key=${task.id}
@@ -1286,7 +1435,7 @@ export function TasksTab() {
         </div>
       `,
     )}
-    ${!visible.length &&
+    ${!isKanban && !visible.length &&
     html`
       <${EmptyState}
         message="No tasks match those filters"
@@ -1297,23 +1446,25 @@ export function TasksTab() {
       />
     `}
 
-    <div class="pager">
-      <button
-        class="btn btn-secondary btn-sm"
-        onClick=${handlePrev}
-        disabled=${page <= 0}
-      >
-        ← Prev
-      </button>
-      <span class="pager-info">Page ${page + 1} / ${totalPages}</span>
-      <button
-        class="btn btn-secondary btn-sm"
-        onClick=${handleNext}
-        disabled=${page + 1 >= totalPages}
-      >
-        Next →
-      </button>
-    </div>
+    ${!isKanban && html`
+      <div class="pager">
+        <button
+          class="btn btn-secondary btn-sm"
+          onClick=${handlePrev}
+          disabled=${page <= 0}
+        >
+          ← Prev
+        </button>
+        <span class="pager-info">Page ${page + 1} / ${totalPages}</span>
+        <button
+          class="btn btn-secondary btn-sm"
+          onClick=${handleNext}
+          disabled=${page + 1 >= totalPages}
+        >
+          Next →
+        </button>
+      </div>
+    `}
 
     <button
       class="fab"

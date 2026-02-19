@@ -1,0 +1,142 @@
+/* ── Workspace Switcher ──────────────────────────────────── */
+.ws-switcher {
+  position: relative;
+  display: inline-flex;
+  z-index: 100;
+}
+
+.ws-switcher-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border, rgba(255,255,255,0.1));
+  background: var(--color-surface, rgba(255,255,255,0.05));
+  color: var(--color-text, #e4e4e7);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.ws-switcher-btn:hover {
+  background: var(--color-surface-hover, rgba(255,255,255,0.08));
+  border-color: var(--color-primary, #60cc5d);
+}
+
+.ws-switcher-icon {
+  font-size: 14px;
+  opacity: 0.7;
+}
+
+.ws-switcher-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+
+.ws-switcher-chevron {
+  font-size: 10px;
+  opacity: 0.6;
+  transition: transform 0.15s;
+}
+
+.ws-switcher-chevron.open {
+  transform: rotate(180deg);
+}
+
+.ws-switcher-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 260px;
+  max-width: 340px;
+  max-height: 400px;
+  overflow-y: auto;
+  background: var(--color-bg, #1a1a2e);
+  border: 1px solid var(--color-border, rgba(255,255,255,0.1));
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  padding: 6px;
+  animation: wsDropIn 0.15s ease-out;
+}
+
+@keyframes wsDropIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.ws-switcher-header {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-text-muted, #a1a1aa);
+  padding: 6px 10px 4px;
+}
+
+.ws-switcher-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text, #e4e4e7);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.ws-switcher-item:hover {
+  background: var(--color-surface-hover, rgba(255,255,255,0.06));
+}
+
+.ws-switcher-item.active {
+  background: rgba(96,204,93,0.1);
+  border-left: 2px solid var(--color-primary, #60cc5d);
+}
+
+.ws-switcher-item-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ws-switcher-item-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.ws-switcher-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(96,204,93,0.15);
+  color: var(--color-primary, #60cc5d);
+  font-weight: 600;
+}
+
+.ws-switcher-item-repos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.ws-switcher-repo {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--color-surface, rgba(255,255,255,0.05));
+  color: var(--color-text-muted, #a1a1aa);
+}
+
+.ws-switcher-repo.missing {
+  opacity: 0.5;
+  text-decoration: line-through;
+}

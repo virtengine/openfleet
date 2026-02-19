@@ -46,7 +46,7 @@ body::after {
   pointer-events: none;
   z-index: 0;
   inset: auto;
-  opacity: 0.7;
+  opacity: 0.45;
 }
 
 body::before {
@@ -55,7 +55,7 @@ body::before {
   right: -10%;
   height: 55%;
   background: var(--gradient-hero);
-  filter: blur(10px);
+  filter: blur(12px);
 }
 
 body::after {
@@ -64,7 +64,7 @@ body::after {
   right: -20%;
   height: 60%;
   background: var(--gradient-radial-glow);
-  filter: blur(20px);
+  filter: blur(18px);
 }
 
 /* Selection styling */
