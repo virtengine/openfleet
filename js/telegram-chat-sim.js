@@ -9,7 +9,7 @@
   /* ── Bot Info ─────────────────────────────────────────────────────────── */
   const BOT_NAME = 'OpenFleet Bot';
   const BOT_USERNAME = '@openfleet_bot';
-  const BOT_AVATAR = '⚡';
+  const BOT_AVATAR = '🤖';
 
   /* ── Fake timestamps ─────────────────────────────────────────────────── */
   function timeStr() {
@@ -20,16 +20,18 @@
   /* ── Command Responses (matching real telegram-bot.mjs COMMANDS) ──── */
   const BOT_COMMANDS = {
     '/start': {
-      text: '👋 Welcome to <b>OpenFleet</b>!\n\nI\'m your autonomous AI fleet supervisor. Use /menu to see all controls, or /help for available commands.\n\n⚡ <i>Ready to ship code autonomously.</i>',
+      text: '🤖 <b>OpenFleet Primary Agent</b>\n\nI\'m your autonomous AI fleet supervisor with full repo + MCP access.\n\nUse /menu for the control center, /help for commands, or just type your request.\n\n<i>⚡ Ready to ship code autonomously.</i>',
+      keyboard: [
+        [{ text: '🎛 Open Control Center', cmd: '/menu' }, { text: '📊 Status', cmd: '/status' }],
+      ],
     },
 
     '/menu': {
       text: '🎛️ <b>OpenFleet Control Center</b>\n\nChoose an action:',
       keyboard: [
-        [{ text: '📊 Status', cmd: '/status' }, { text: '📋 Tasks', cmd: '/tasks' }],
-        [{ text: '🤖 Agents', cmd: '/agents' }, { text: '📜 Logs', cmd: '/logs' }],
-        [{ text: '💚 Health', cmd: '/health' }, { text: '📈 Metrics', cmd: '/metrics' }],
-        [{ text: '🌿 Branches', cmd: '/branches' }, { text: '🔄 Retry Last', cmd: '/retry' }],
+        [{ text: '📊 Status', cmd: '/status' }, { text: '📋 Tasks', cmd: '/tasks' }, { text: '🤖 Agents', cmd: '/agents' }, { text: '📜 Logs', cmd: '/logs' }],
+        [{ text: '💚 Health', cmd: '/health' }, { text: '⚡ Executor', cmd: '/executor' }, { text: '🧵 Threads', cmd: '/threads' }, { text: '🌿 Branches', cmd: '/branches' }],
+        [{ text: '🔄 Retry', cmd: '/retry' }, { text: '🧹 Cleanup', cmd: '/cleanup' }, { text: '⏸ Pause', cmd: '/pausetasks' }, { text: '📋 Kanban', cmd: '/kanban' }],
         [{ text: '📱 Open MiniApp', cmd: '/app' }],
       ],
     },
@@ -255,15 +257,159 @@
         'Status: <code>not configured</code>\n\n' +
         '<i>Run</i> <code>openfleet --whatsapp-auth</code> <i>to set up WhatsApp notifications.</i>',
     },
+
+    '/helpfull': {
+      text: '📋 <b>All Commands</b>\n\n' +
+        '/menu /help /helpfull /app /cancel\n' +
+        '/ask /status /tasks /starttask /agents\n' +
+        '/logs /agentlogs /branches /diff\n' +
+        '/restart /retry /plan /cleanup /history\n' +
+        '/clear /git /shell /background\n' +
+        '/region /health /anomalies /model /sdk\n' +
+        '/kanban /autobacklog /requirements\n' +
+        '/threads /worktrees /executor\n' +
+        '/shared_workspaces /claim /release /agent\n' +
+        '/stop /steer /presence /coordinator\n' +
+        '/pausetasks /resumetasks /repos\n' +
+        '/maxparallel /whatsapp /container\n\n' +
+        '<i>Any other text → sent to the primary agent.</i>',
+    },
+
+    '/ask': {
+      text: '🤖 <b>Primary Agent</b>\n\n<i>Send me your prompt and I\'ll dispatch it to the primary agent with full repo + MCP access.</i>\n\nExample: /ask refactor the escrow module to support batch payments',
+    },
+
+    '/diff': {
+      text: '📝 <b>Git Diff Summary</b> (staged)\n\n' +
+        '<code>x/market/keeper/order.go</code>  +47 -12\n' +
+        '<code>x/market/types/msgs.go</code>     +23 -0\n' +
+        '<code>x/market/keeper/keeper.go</code>  +8  -2\n\n' +
+        '3 files changed, 78 insertions(+), 14 deletions(-)',
+    },
+
+    '/plan': {
+      text: '📐 <b>Task Planner</b>\n\nPlanning next 5 tasks from backlog...\n\n' +
+        '1. feat(hpc): GPU resource metering\n' +
+        '2. fix(provider): health check endpoint\n' +
+        '3. docs: update provider guide\n' +
+        '4. refactor(roles): simplify permission model\n' +
+        '5. test(escrow): add settlement edge cases\n\n' +
+        '✅ 5 tasks queued for dispatch.',
+      keyboard: [
+        [{ text: '▶ Dispatch All', cmd: '/resumetasks' }, { text: '📋 View Tasks', cmd: '/tasks' }],
+      ],
+    },
+
+    '/history': {
+      text: '📖 <b>Agent Session History</b>\n\n' +
+        '├─ Session #14: feat(market) order expiry — 23 turns\n' +
+        '├─ Session #15: fix(veid) token validation — 11 turns\n' +
+        '├─ Session #16: refactor(escrow) batch settle — 31 turns\n' +
+        '└─ Session #17: feat(hpc) GPU metering — <i>in progress</i>\n\n' +
+        'Total: 4 sessions today, 65 turns',
+    },
+
+    '/clear': {
+      text: '🔄 <b>Session context cleared.</b>\n\nThe primary agent\'s conversation history has been reset.\nNext task will start with a fresh context window.',
+    },
+
+    '/git': {
+      text: '🔧 <b>Git — log --oneline -5</b>\n\n' +
+        '<code>a3f8e91</code> feat(market): add order expiry (#187)\n' +
+        '<code>7bc2d44</code> fix(veid): token validation (#188)\n' +
+        '<code>1e9f077</code> refactor(escrow): batch settlement (#189)\n' +
+        '<code>4da8b33</code> chore(deps): bump cosmos-sdk v0.53.2\n' +
+        '<code>9cd0e51</code> ci: fix lint on portal workflow',
+    },
+
+    '/shell': {
+      text: '💻 <b>Shell — ls logs/</b>\n\n' +
+        '<code>daemon.log</code>  monitor.log  agent-42.log\n' +
+        '<code>agent-43.log</code>  agent-44.log  telegram.log',
+    },
+
+    '/stop': {
+      text: '🛑 <b>Stop Agent</b>\n\nNo active agents running right now.\nUse /steer to redirect a running agent, or /restart to reset the orchestrator.',
+      keyboard: [
+        [{ text: '🔄 Restart', cmd: '/restart' }, { text: '📊 Status', cmd: '/status' }],
+      ],
+    },
+
+    '/steer': {
+      text: '🧭 <b>Steer Agent</b>\n\nUse: /steer <directive>\n\nExample:\n<code>/steer focus on adding tests first</code>\n<code>/steer skip the CLI and focus on keeper only</code>\n\n<i>The directive will be injected into the active agent\'s context on the next turn.</i>',
+    },
+
+    '/anomalies': {
+      text: '🔍 <b>Anomaly Detector</b> — <code>All Clear</code>\n\n' +
+        '✅ No stuck agents\n' +
+        '✅ No repeated lint failures\n' +
+        '✅ No push loop detected\n' +
+        '✅ No memory pressure\n\n' +
+        'Streak: <code>14</code> clean checks in a row\n' +
+        'Last anomaly: <i>none today</i>',
+    },
+
+    '/region': {
+      text: '🌍 <b>Codex Region</b>\n\nCurrent: <code>auto</code>\n\nAvailable regions:\n├─ <code>us</code> — US East (latency: ~180ms)\n├─ <code>sweden</code> — EU North (latency: ~95ms)\n└─ <code>auto</code> ✅ — lowest latency selected dynamically\n\nChange with: /region us',
+    },
+
+    '/threads': {
+      text: '🧵 <b>Active Agent Threads</b>\n\n' +
+        '├─ Thread #1: <code>ve/44-escrow-batch</code> 🟢 working (31 turns)\n' +
+        '├─ Thread #2: <code>ve/45-hpc-gpu</code> 🟢 working (8 turns)\n' +
+        '└─ Thread #3: <code>primary-agent</code> 🟡 idle\n\n' +
+        'Total: 3 threads (2 active)',
+      keyboard: [
+        [{ text: '🗑 Clear Idle', cmd: '/threads clear' }, { text: '🔄 Refresh', cmd: '/threads' }],
+      ],
+    },
+
+    '/maxparallel': {
+      text: '⚡ <b>Max Parallel Slots</b>\n\nCurrent: <code>6</code>\n\nRunning: <code>2</code> tasks\nQueued: <code>2</code> tasks\n\nChange with: /maxparallel 4',
+    },
+
+    '/repos': {
+      text: '📁 <b>Repositories</b>\n\nActive: <code>virtengine/virtengine</code>\n\n├─ <code>virtengine/virtengine</code> ✅ primary\n└─ <code>virtengine/openfleet</code> 📦 package\n\nSwitch with: /repos virtengine/openfleet',
+    },
+
+    '/coordinator': {
+      text: '🎯 <b>Coordinator</b>\n\nCurrent: <code>workstation-1</code> (this machine)\n\nAll task dispatch and agent management is handled by this instance.\n\n<i>Multiple coordinators require shared workspace setup.</i>',
+    },
+
+    '/autobacklog': {
+      text: '📥 <b>Auto-Backlog</b> — Experimental\n\nStatus: <code>enabled</code>\nReplenishment threshold: <code>2</code> tasks remaining\nSource: <code>github issues + vibe-kanban</code>\n\nNext replenishment check: <code>4m 12s</code>',
+    },
+
+    '/requirements': {
+      text: '📋 <b>Project Requirements</b>\n\nProfile: <code>blockchain-go</code>\n\n' +
+        '✅ Go 1.22+\n' +
+        '✅ Cosmos SDK v0.53.x\n' +
+        '✅ Conventional Commits\n' +
+        '✅ Pre-push hooks (lint + build + test)\n' +
+        '✅ golangci-lint strict mode\n\n' +
+        'Edit: openfleet.config.json → requirements',
+    },
   };
 
   /* ── Auto-demo sequence ──────────────────────────────────────────── */
   const DEMO_SEQUENCE = [
-    { user: '/status', delay: 1500 },
+    { user: '/start', delay: 1200 },
     { wait: 2500 },
-    { user: '/tasks', delay: 1500 },
+    { user: '/status', delay: 1500 },
     { wait: 3000 },
+    { user: '/tasks', delay: 1500 },
+    { wait: 3500 },
     { user: '/menu', delay: 1200 },
+    { wait: 4000 },
+    { user: '/health', delay: 1500 },
+    { wait: 3000 },
+    { user: '/agents', delay: 1500 },
+    { wait: 3500 },
+    { user: '/anomalies', delay: 1200 },
+    { wait: 4000 },
+    { user: '/branches', delay: 1500 },
+    { wait: 3000 },
+    { user: '/threads', delay: 1500 },
   ];
 
   /* ── Main initialization ─────────────────────────────────────────── */
@@ -408,7 +554,20 @@
 
       // Find matching command
       const cmdKey = text.split(' ')[0].toLowerCase();
-      const response = BOT_COMMANDS[cmdKey] || BOT_COMMANDS['/' + cmdKey.replace(/^\//, '')];
+      const aliases = {
+        '/log': '/logs',
+        '/reconcile': '/cleanup',
+        '/reset_thread': '/clear',
+        '/pause': '/pausetasks',
+        '/resume': '/resumetasks',
+        '/instances': '/presence',
+        '/context': '/steer',
+        '/miniapp': '/app',
+        '/webapp': '/app',
+        '/cancel': '/clear',
+      };
+      const resolvedKey = aliases[cmdKey] || cmdKey;
+      const response = BOT_COMMANDS[resolvedKey] || BOT_COMMANDS['/' + resolvedKey.replace(/^\//, '')];
 
       // Show typing then respond
       showTyping();

@@ -23,50 +23,90 @@
 
   /* ── Realistic boot sequence matching actual openfleet logs ──────────── */
   const DEMO_SEQUENCE = [
-    { cmd: 'openfleet --echo-logs', delay: 600 },
-    { log: '', delay: 80 },
-    { log: `  ${C.dim('╭──────────────────────────────────────────────────────────╮')}`, delay: 40 },
-    { log: `  ${C.dim('│')} ${C.cyan('>_')} ${C.bold('openfleet')} ${C.dim('(v0.26.2)')}                                 ${C.dim('│')}`, delay: 40 },
-    { log: `  ${C.dim('╰──────────────────────────────────────────────────────────╯')}`, delay: 120 },
-    { log: `${C.dim('[telegram-bot]')} agent timeout set to 90 min`, delay: 90 },
-    { log: `${C.dim('[kanban]')} switched to ${C.cyan('internal')} backend`, delay: 70 },
-    { log: `${C.dim('[maintenance]')} removing stale PID file (PID 272221 no longer alive)`, delay: 80 },
-    { log: `${C.dim('[dependabot]')} auto-merge enabled — checking every 10 min for: ${C.dim('dependabot[bot], app/dependabot')}`, delay: 70 },
-    { log: `${C.dim('[auto-update]')} Monitoring parent process PID 277248`, delay: 60 },
-    { log: `${C.dim('[monitor]')} self-restart watcher disabled ${C.dim('(default outside devmode)')}`, delay: 60 },
-    { log: `${C.dim('[task-executor]')} initialized ${C.dim('(mode=internal, maxParallel=3, sdk=auto)')}`, delay: 80 },
-    { log: `${C.dim('[agent-hooks]')} registered hook ${C.green('"prepush-go-vet"')} for event "PrePush" ${C.dim('(blocking)')}`, delay: 50 },
-    { log: `${C.dim('[agent-hooks]')} registered hook ${C.green('"prepush-go-build"')} for event "PrePush" ${C.dim('(blocking)')}`, delay: 50 },
-    { log: `${C.dim('[agent-hooks]')} registered hook ${C.green('"precommit-gofmt"')} for event "PreCommit"`, delay: 50 },
-    { log: `${C.dim('[agent-hooks]')} registered hook ${C.green('"task-complete-audit"')} for event "TaskComplete"`, delay: 50 },
-    { log: `${C.dim('[agent-hooks]')} loaded 6 hook(s) from .codex/hooks.json`, delay: 60 },
-    { log: `${C.dim('[task-executor]')} stream-based watchdog started — analyzing agent health every 60s`, delay: 70 },
-    { log: `${C.dim('[agent-pool]')} SDK selected: ${C.cyan('codex')} ${C.dim('(via fallback chain)')}`, delay: 70 },
-    { log: `${C.dim('[review-agent]')} initialized ${C.dim('(sdk=codex, maxConcurrent=2, timeout=300000ms)')}`, delay: 60 },
-    { log: `${C.dim('[review-agent]')} started`, delay: 40 },
-    { log: `${C.dim('[codex-shell]')} SDK loaded successfully`, delay: 80 },
-    { log: `${C.dim('[codex-shell]')} initialised with Codex SDK ${C.dim('(sub-agent features enabled)')}`, delay: 80 },
-    { log: `${C.dim('[agent-endpoint]')} Listening on ${C.cyan('127.0.0.1:18432')}`, delay: 70 },
-    { log: `${C.dim('[pr-cleanup-daemon]')} Starting with interval 1800000ms`, delay: 60 },
-    { log: `${C.dim('[worktree-manager]')} git worktree prune completed`, delay: 80 },
-    { log: `${C.dim('[maintenance]')} sweep complete: ${C.green('0')} stale orchestrators, ${C.green('0')} stuck pushes, ${C.green('1')} worktrees pruned`, delay: 100 },
-    { log: '', delay: 200 },
-    // Task routing phase
-    { log: `${C.dim('[TASK]')}  ${C.bold('#42')} feat(market): add order expiry → ${C.cyan('copilot-claude')}`, delay: 600 },
-    { log: `${C.dim('[TASK]')}  ${C.bold('#43')} fix(veid): token validation  → ${C.cyan('codex-default')}`, delay: 500 },
-    { log: `${C.dim('[TASK]')}  ${C.bold('#44')} refactor(escrow): batch settle → ${C.cyan('copilot-claude')}`, delay: 400 },
+    { cmd: 'openfleet --echo-logs', delay: 700 },
+    { log: '', delay: 100 },
+    { log: `  ${C.dim('╭──────────────────────────────────────────────────────────╮')}`, delay: 60 },
+    { log: `  ${C.dim('│')} ${C.cyan('>_')} ${C.bold('openfleet')} ${C.dim('v0.26.2')}                                 ${C.dim('│')}`, delay: 60 },
+    { log: `  ${C.dim('╰──────────────────────────────────────────────────────────╯')}`, delay: 150 },
+    { log: `${C.dim('[telegram-bot]')} agent timeout set to 90 min`, delay: 120 },
+    { log: `${C.dim('[kanban]')} switched to ${C.cyan('internal')} backend`, delay: 100 },
+    { log: `${C.dim('[maintenance]')} removing stale PID file ${C.dim('(PID 272221 no longer alive)')}`, delay: 110 },
+    { log: `${C.dim('[dependabot]')} auto-merge enabled — checking every 10 min`, delay: 100 },
+    { log: `${C.dim('[auto-update]')} monitoring parent process PID 277248`, delay: 90 },
+    { log: `${C.dim('[monitor]')} self-restart watcher disabled ${C.dim('(default outside devmode)')}`, delay: 90 },
+    { log: `${C.dim('[task-executor]')} initialized ${C.dim('(mode=internal, maxParallel=6, sdk=auto)')}`, delay: 110 },
+    { log: `${C.dim('[agent-hooks]')} registered hook ${C.green('"prepush-go-vet"')} for event "PrePush" ${C.dim('(blocking)')}`, delay: 80 },
+    { log: `${C.dim('[agent-hooks]')} registered hook ${C.green('"prepush-go-build"')} for event "PrePush" ${C.dim('(blocking)')}`, delay: 80 },
+    { log: `${C.dim('[agent-hooks]')} registered hook ${C.green('"precommit-gofmt"')} for event "PreCommit"`, delay: 80 },
+    { log: `${C.dim('[agent-hooks]')} registered hook ${C.green('"task-complete-audit"')} for event "TaskComplete"`, delay: 80 },
+    { log: `${C.dim('[agent-hooks]')} loaded 6 hook(s) from .codex/hooks.json`, delay: 100 },
+    { log: `${C.dim('[task-executor]')} stream-based watchdog started — analyzing agent health every 60s`, delay: 110 },
+    { log: `${C.dim('[agent-pool]')} SDK selected: ${C.cyan('codex')} ${C.dim('(via fallback chain)')}`, delay: 110 },
+    { log: `${C.dim('[review-agent]')} initialized ${C.dim('(sdk=codex, maxConcurrent=2, timeout=300000ms)')}`, delay: 100 },
+    { log: `${C.dim('[review-agent]')} started`, delay: 70 },
+    { log: `${C.dim('[codex-shell]')} SDK loaded successfully`, delay: 120 },
+    { log: `${C.dim('[codex-shell]')} initialised with Codex SDK ${C.dim('(sub-agent features enabled)')}`, delay: 120 },
+    { log: `${C.dim('[agent-endpoint]')} Listening on ${C.cyan('127.0.0.1:18432')}`, delay: 110 },
+    { log: `${C.dim('[pr-cleanup-daemon]')} Starting with interval 1800000ms`, delay: 90 },
+    { log: `${C.dim('[worktree-manager]')} git worktree prune completed`, delay: 120 },
+    { log: `${C.dim('[maintenance]')} sweep complete: ${C.green('0')} stale orchestrators, ${C.green('0')} stuck pushes, ${C.green('1')} worktrees pruned`, delay: 150 },
     { log: '', delay: 300 },
-    // PR lifecycle
-    { log: `${C.dim('[ OK ]')}  ${C.bold('#43')} PR #188 created — CI running...`, delay: 800 },
-    { log: `${C.dim('[ OK ]')}  ${C.bold('#42')} PR #187 created — CI running...`, delay: 600 },
-    { log: `${C.dim('[  ✓ ]')}  ${C.bold('#43')} PR #188 — ${C.green('all checks passed')}`, delay: 1000 },
-    { log: `${C.dim('[MERGE]')} ${C.bold('#43')} PR #188 merged to main ${C.green('✓')}`, delay: 400 },
-    { log: `${C.dim('[  ✓ ]')}  ${C.bold('#42')} PR #187 — ${C.green('all checks passed')}`, delay: 800 },
-    { log: `${C.dim('[MERGE]')} ${C.bold('#42')} PR #187 merged to main ${C.green('✓')}`, delay: 400 },
-    { log: `${C.dim('[ OK ]')}  ${C.bold('#44')} PR #189 created — CI running...`, delay: 500 },
+    // ── Task polling cycle 1 ──
+    { log: `${C.dim('[14:31:58]')} ${C.dim('[monitor]')} polling github board for new tasks...`, delay: 500 },
+    { log: `${C.dim('[14:32:01]')} ${C.dim('[kanban]')}  found ${C.cyan('3')} new tasks in backlog`, delay: 200 },
+    { log: '', delay: 100 },
+    { log: `${C.dim('[TASK]')}  ${C.bold('#42')}  feat(market): add order expiry        → ${C.cyan('copilot-claude')}`, delay: 400 },
+    { log: `${C.dim('[TASK]')}  ${C.bold('#43')}  fix(veid): token validation            → ${C.cyan('codex-default')}`, delay: 350 },
+    { log: `${C.dim('[TASK]')}  ${C.bold('#44')}  refactor(escrow): batch settlement     → ${C.cyan('copilot-claude')}`, delay: 350 },
     { log: '', delay: 200 },
-    { log: `${C.dim('[INFO]')}  Fleet status: ${C.green('3 completed')}, ${C.amber('0 failed')}, ${C.dim('0 retried')}`, delay: 100 },
-    { log: `${C.dim('[INFO]')}  Next poll in 60s...`, delay: 100 },
+    { log: `${C.dim('[14:33:12]')} ${C.dim('[worktree]')} created ${C.dim('ve/42-market-order-expiry')}`, delay: 200 },
+    { log: `${C.dim('[14:33:14]')} ${C.dim('[worktree]')} created ${C.dim('ve/43-veid-token-fix')}`, delay: 180 },
+    { log: `${C.dim('[14:33:15]')} ${C.dim('[worktree]')} created ${C.dim('ve/44-escrow-batch-settle')}`, delay: 180 },
+    { log: `${C.dim('[14:33:16]')} ${C.dim('[copilot]')} session started for task ${C.bold('#42')}`, delay: 200 },
+    { log: `${C.dim('[14:33:18]')} ${C.dim('[codex]')}   session started for task ${C.bold('#43')}`, delay: 180 },
+    { log: `${C.dim('[14:33:20]')} ${C.dim('[copilot]')} session started for task ${C.bold('#44')}`, delay: 200 },
+    { log: '', delay: 400 },
+    // ── Agent working ──
+    { log: `${C.dim('[14:35:44]')} ${C.dim('[agent:#43]')} ${C.dim('reading x/veid/keeper/keeper.go...')}`, delay: 300 },
+    { log: `${C.dim('[14:36:02]')} ${C.dim('[agent:#43]')} ${C.dim('writing x/veid/keeper/token.go')}`, delay: 250 },
+    { log: `${C.dim('[14:38:11]')} ${C.dim('[agent:#43]')} ${C.dim('running go test ./x/veid/... — 14 passed')}`, delay: 280 },
+    { log: `${C.dim('[14:38:45]')} ${C.dim('[agent:#43]')} ${C.dim('pre-push hook: gofmt OK, golangci-lint OK')}`, delay: 250 },
+    { log: `${C.dim('[14:39:02]')} ${C.dim('[agent:#43]')} ${C.dim('pushing branch ve/43-veid-token-fix...')}`, delay: 300 },
+    { log: '', delay: 200 },
+    { log: `${C.dim('[14:41:18]')} ${C.dim('[ OK ]')}  ${C.bold('#43')} PR #188 created — CI queued`, delay: 500 },
+    { log: `${C.dim('[14:41:20]')} ${C.dim('[ OK ]')}  ${C.bold('#42')} PR #187 created — CI queued`, delay: 400 },
+    // ── Watchdog health check ──
+    { log: '', delay: 300 },
+    { log: `${C.dim('[14:43:00]')} ${C.dim('[watchdog]')} agent health check — ${C.cyan('#42')} ${C.green('ok')}  ${C.cyan('#43')} ${C.green('ok')}  ${C.cyan('#44')} ${C.green('ok')}`, delay: 400 },
+    { log: `${C.dim('[14:43:01]')} ${C.dim('[watchdog]')} no anomalies detected, streak: ${C.green('14')} clean checks`, delay: 300 },
+    { log: '', delay: 200 },
+    // ── CI results ──
+    { log: `${C.dim('[14:44:02]')} ${C.dim('[  ✓ ]')}  ${C.bold('#43')} PR #188 — ${C.green('all checks passed')} ${C.dim('(lint ✓  build ✓  test ✓)')}`, delay: 600 },
+    { log: `${C.dim('[14:44:05]')} ${C.dim('[MERGE]')} ${C.bold('#43')} PR #188 merged to main ${C.green('✓')}`, delay: 300 },
+    { log: `${C.dim('[14:44:06]')} ${C.dim('[telegram]')} notified: ✅ PR #188 merged`, delay: 200 },
+    { log: '', delay: 200 },
+    { log: `${C.dim('[14:45:11]')} ${C.dim('[  ✓ ]')}  ${C.bold('#42')} PR #187 — ${C.green('all checks passed')} ${C.dim('(lint ✓  build ✓  test ✓)')}`, delay: 500 },
+    { log: `${C.dim('[14:45:14]')} ${C.dim('[MERGE]')} ${C.bold('#42')} PR #187 merged to main ${C.green('✓')}`, delay: 300 },
+    { log: `${C.dim('[14:45:15]')} ${C.dim('[telegram]')} notified: ✅ PR #187 merged`, delay: 200 },
+    { log: '', delay: 400 },
+    // ── Polling cycle 2 ──
+    { log: `${C.dim('[14:46:00]')} ${C.dim('[monitor]')} polling github board — checking for new work...`, delay: 500 },
+    { log: `${C.dim('[14:46:02]')} ${C.dim('[kanban]')}  found ${C.cyan('2')} new tasks`, delay: 250 },
+    { log: `${C.dim('[TASK]')}  ${C.bold('#45')}  feat(hpc): GPU resource metering       → ${C.cyan('codex-default')}`, delay: 350 },
+    { log: `${C.dim('[TASK]')}  ${C.bold('#46')}  docs: update provider guide            → ${C.cyan('copilot-claude')}`, delay: 300 },
+    { log: '', delay: 300 },
+    // ── PR for #44 ──
+    { log: `${C.dim('[14:51:20]')} ${C.dim('[ OK ]')}  ${C.bold('#44')} PR #189 created — CI queued`, delay: 600 },
+    { log: `${C.dim('[14:52:44]')} ${C.dim('[  ✗ ]')}  ${C.bold('#44')} PR #189 — ${C.amber('lint warning:')} ${C.dim('unused import in escrow/batch.go')}`, delay: 500 },
+    { log: `${C.dim('[14:52:45]')} ${C.dim('[autofix]')} ${C.bold('#44')} applying auto-fix for lint error...`, delay: 300 },
+    { log: `${C.dim('[14:52:51]')} ${C.dim('[autofix]')} pushed fix commit to PR #189`, delay: 300 },
+    { log: `${C.dim('[14:53:40]')} ${C.dim('[  ✓ ]')}  ${C.bold('#44')} PR #189 — ${C.green('all checks passed after auto-fix')}`, delay: 500 },
+    { log: `${C.dim('[14:53:43]')} ${C.dim('[MERGE]')} ${C.bold('#44')} PR #189 merged to main ${C.green('✓')}`, delay: 300 },
+    { log: '', delay: 300 },
+    // ── Summary ──
+    { log: `${C.dim('[INFO]')}  Fleet status: ${C.green('4 merged')}  ${C.amber('0 failed')}  ${C.dim('1 auto-fixed')}  ${C.cyan('2 in-progress')}`, delay: 200 },
+    { log: `${C.dim('[INFO]')}  Executor load — copilot-claude: ${C.green('42%')}  codex-default: ${C.green('38%')}`, delay: 180 },
+    { log: `${C.dim('[INFO]')}  Next poll in 60s. Type ${C.cyan('help')} for available commands.`, delay: 200 },
   ];
 
   /* ── Command responses ──────────────────────────────────────────────── */
@@ -88,7 +128,8 @@
       `  ${C.cyan('openfleet --logs')}       Tail recent logs`,
       `  ${C.cyan('openfleet --version')}    Show version`,
       '',
-      `  ${C.dim('Type any command to try it out.')}`,
+      `  ${C.dim('This demo terminal responds to common commands.')}`,
+      `  ${C.dim('For the full reference, try')} ${C.cyan('openfleet --help')} ${C.dim('(it\'s a real command).')}`,
       '',
     ],
 
@@ -485,10 +526,17 @@
         }, step.delay || 200);
       }
 
-      // Start demo after a brief pause
+      // Show loading screen, then start demo after 5 seconds
+      term.echo('');
+      term.echo(`  ${C.dim('Connecting to fleet supervisor...')}`);
       setTimeout(() => {
-        if (demoRunning) runDemo(0);
-      }, 1200);
+        if (!demoRunning) return;
+        term.echo(`  ${C.green('●')} ${C.dim('Session established — starting live tail...')}`);
+        term.echo('');
+        setTimeout(() => {
+          if (demoRunning) runDemo(0);
+        }, 800);
+      }, 4200);
     }
 
     return term;
