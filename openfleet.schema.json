@@ -1,0 +1,465 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "openfleet config",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "$schema": { "type": "string" },
+    "projectName": { "type": "string" },
+    "mode": {
+      "type": "string",
+      "enum": ["virtengine", "generic"]
+    },
+    "orchestratorScript": { "type": "string" },
+    "orchestratorArgs": { "type": "string" },
+    "logDir": { "type": "string" },
+    "logMaxSizeMb": {
+      "type": "number",
+      "description": "Max total log folder size in MB. 0 = unlimited.",
+      "default": 500
+    },
+    "logCleanupIntervalMin": {
+      "type": "number",
+      "description": "How often to check log folder size (minutes). 0 = startup only.",
+      "default": 30
+    },
+    "telegramVerbosity": {
+      "type": "string",
+      "enum": ["minimal", "summary", "detailed"],
+      "description": "Notification verbosity: minimal (critical+error), summary (default), detailed (everything)",
+      "default": "summary"
+    },
+    "watchPath": { "type": "string" },
+    "watchEnabled": { "type": "boolean" },
+    "echoLogs": { "type": "boolean" },
+    "autoFixEnabled": { "type": "boolean" },
+    "interactiveShellEnabled": { "type": "boolean" },
+    "shellEnabled": { "type": "boolean" },
+    "codexEnabled": { "type": "boolean" },
+    "primaryAgent": {
+      "type": "string",
+      "enum": ["codex-sdk", "copilot-sdk", "claude-sdk"]
+    },
+    "vkSpawnEnabled": { "type": "boolean" },
+    "kanban": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": ["internal", "vk", "github", "jira"]
+        },
+        "projectId": { "type": "string" },
+        "github": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "project": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "GitHub Projects v2 integration settings",
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": ["issues", "kanban"],
+                  "default": "issues",
+                  "description": "Task source mode: 'issues' for repo issues only, 'kanban' for project board sync"
+                },
+                "owner": {
+                  "type": "string",
+                  "description": "GitHub org/user that owns the project board"
+                },
+                "number": {
+                  "type": ["string", "number"],
+                  "description": "GitHub project number"
+                },
+                "title": {
+                  "type": "string",
+                  "description": "Project title for auto-detection"
+                },
+                "autoSync": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Auto-sync task status to project board Status field"
+                },
+                "statusMapping": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "Map internal statuses to project board column names",
+                  "properties": {
+                    "todo": { "type": "string", "default": "Todo" },
+                    "inprogress": { "type": "string", "default": "In Progress" },
+                    "inreview": { "type": "string", "default": "In Review" },
+                    "done": { "type": "string", "default": "Done" },
+                    "cancelled": { "type": "string", "default": "Cancelled" }
+                  }
+                },
+                "webhook": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "GitHub project webhook settings for near-real-time sync triggers",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "description": "HTTP path exposed by ui-server for GitHub webhook deliveries"
+                    },
+                    "secret": {
+                      "type": "string",
+                      "description": "Shared secret used to validate X-Hub-Signature-256"
+                    },
+                    "requireSignature": {
+                      "type": "boolean",
+                      "description": "Require a valid webhook signature before accepting payloads"
+                    }
+                  }
+                },
+                "syncMonitoring": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "Monitoring and alert thresholds for project-sync failures and rate-limits",
+                  "properties": {
+                    "alertFailureThreshold": {
+                      "type": "number",
+                      "description": "Consecutive webhook/sync failures that trigger an alert",
+                      "default": 3
+                    },
+                    "rateLimitAlertThreshold": {
+                      "type": "number",
+                      "description": "Rate-limit events counted before triggering an alert",
+                      "default": 3
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "jira": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "baseUrl": {
+              "type": "string",
+              "description": "Jira Cloud base URL (e.g. https://your-domain.atlassian.net)"
+            },
+            "email": {
+              "type": "string",
+              "description": "Jira account email used for API authentication"
+            },
+            "apiToken": {
+              "type": "string",
+              "description": "Jira API token used for Basic authentication"
+            },
+            "projectKey": {
+              "type": "string",
+              "description": "Default Jira project key used for list/create operations"
+            },
+            "issueType": {
+              "type": "string",
+              "default": "Task",
+              "description": "Default Jira issue type for new tasks"
+            },
+            "statusMapping": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Map internal statuses to Jira workflow status names",
+              "properties": {
+                "todo": { "type": "string", "default": "To Do" },
+                "inprogress": { "type": "string", "default": "In Progress" },
+                "inreview": { "type": "string", "default": "In Review" },
+                "done": { "type": "string", "default": "Done" },
+                "cancelled": { "type": "string", "default": "Cancelled" }
+              }
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Jira labels used to mark codex shared-state lifecycle",
+              "properties": {
+                "claimed": { "type": "string", "default": "codex:claimed" },
+                "working": { "type": "string", "default": "codex:working" },
+                "stale": { "type": "string", "default": "codex:stale" },
+                "ignore": { "type": "string", "default": "codex:ignore" }
+              }
+            },
+            "sharedStateFields": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Custom field IDs used to persist shared-state payload",
+              "properties": {
+                "ownerId": {
+                  "type": "string",
+                  "description": "Custom field ID for sharedState.ownerId"
+                },
+                "attemptToken": {
+                  "type": "string",
+                  "description": "Custom field ID for sharedState.attemptToken"
+                },
+                "attemptStarted": {
+                  "type": "string",
+                  "description": "Custom field ID for sharedState.attemptStarted (ISO timestamp)"
+                },
+                "heartbeat": {
+                  "type": "string",
+                  "description": "Custom field ID for sharedState.heartbeat (ISO timestamp)"
+                },
+                "retryCount": {
+                  "type": "string",
+                  "description": "Custom field ID for sharedState.retryCount"
+                },
+                "ignoreReason": {
+                  "type": "string",
+                  "description": "Optional custom field ID for ignore reason"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "plannerMode": {
+      "type": "string",
+      "enum": ["codex-sdk", "kanban", "disabled"]
+    },
+    "defaultRepository": { "type": "string" },
+    "repositoryDefaults": { "$ref": "#/$defs/repositoryDefaults" },
+    "repositories": {
+      "oneOf": [
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/repository" }
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "default": { "type": "string" },
+            "defaults": { "$ref": "#/$defs/repositoryDefaults" },
+            "items": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/repository" }
+            },
+            "list": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/repository" }
+            }
+          }
+        }
+      ]
+    },
+    "profiles": { "$ref": "#/$defs/profiles" },
+    "envProfiles": { "$ref": "#/$defs/profiles" },
+    "executors": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/executor" }
+    },
+    "failover": { "$ref": "#/$defs/failover" },
+    "distribution": {
+      "type": "string",
+      "enum": ["weighted", "round-robin", "primary-only"]
+    },
+    "agentPrompts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "orchestrator": { "type": "string" },
+        "planner": { "type": "string" },
+        "monitorMonitor": { "type": "string" },
+        "taskExecutor": { "type": "string" },
+        "taskExecutorRetry": { "type": "string" },
+        "taskExecutorContinueHasCommits": { "type": "string" },
+        "taskExecutorContinueHasEdits": { "type": "string" },
+        "taskExecutorContinueNoProgress": { "type": "string" },
+        "reviewer": { "type": "string" },
+        "conflictResolver": { "type": "string" },
+        "sdkConflictResolver": { "type": "string" },
+        "mergeStrategy": { "type": "string" },
+        "mergeStrategyFix": { "type": "string" },
+        "mergeStrategyReAttempt": { "type": "string" },
+        "autofixFix": { "type": "string" },
+        "autofixFallback": { "type": "string" },
+        "autofixLoop": { "type": "string" },
+        "monitorCrashFix": { "type": "string" },
+        "monitorRestartLoopFix": { "type": "string" }
+      }
+    },
+    "hookProfiles": { "$ref": "#/$defs/hookProfiles" },
+    "agentHooks": { "$ref": "#/$defs/agentHooks" },
+    "auth": {
+      "type": "object",
+      "description": "Authentication configuration for agent SDKs",
+      "additionalProperties": false,
+      "properties": {
+        "copilot": {
+          "type": "object",
+          "properties": {
+            "sources": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["env", "cli", "vscode", "interactive"]
+              },
+              "description": "Auth source priority: env (tokens), cli (gh auth), vscode (extension), interactive (prompt)"
+            },
+            "fallbackToInteractive": {
+              "type": "boolean",
+              "description": "Allow interactive login if all other sources fail"
+            }
+          }
+        },
+        "claude": {
+          "type": "object",
+          "properties": {
+            "sources": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["env", "cli", "interactive"]
+              },
+              "description": "Auth source priority: env (API key), cli (config file), interactive (prompt)"
+            },
+            "fallbackToInteractive": {
+              "type": "boolean",
+              "description": "Allow interactive API key prompt if all other sources fail"
+            }
+          }
+        },
+        "codex": {
+          "type": "object",
+          "properties": {
+            "sources": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["config", "env", "interactive"]
+              },
+              "description": "Auth source priority: config (config.toml), env (API key), interactive (prompt)"
+            },
+            "fallbackToInteractive": {
+              "type": "boolean",
+              "description": "Allow interactive configuration if all other sources fail"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "executor": { "type": "string" },
+        "variant": { "type": "string" },
+        "weight": { "type": "number" },
+        "role": { "type": "string" },
+        "enabled": { "type": "boolean" }
+      }
+    },
+    "failover": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "enum": ["next-in-line", "weighted-random", "round-robin"]
+        },
+        "maxRetries": { "type": "number" },
+        "cooldownMinutes": { "type": "number" },
+        "disableOnConsecutiveFailures": { "type": "number" }
+      }
+    },
+    "repositoryDefaults": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "path": { "type": "string" },
+        "slug": { "type": "string" },
+        "projectName": { "type": "string" },
+        "orchestratorScript": { "type": "string" },
+        "orchestratorArgs": { "type": "string" },
+        "logDir": { "type": "string" },
+        "watchPath": { "type": "string" },
+        "profile": { "type": "string" },
+        "envProfile": { "type": "string" },
+        "mode": { "type": "string" }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "id": { "type": "string" },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "path": { "type": "string" },
+        "repoRoot": { "type": "string" },
+        "slug": { "type": "string" },
+        "repo": { "type": "string" },
+        "repoUrlBase": { "type": "string" },
+        "projectName": { "type": "string" },
+        "primary": { "type": "boolean" },
+        "orchestratorScript": { "type": "string" },
+        "orchestratorArgs": { "type": "string" },
+        "logDir": { "type": "string" },
+        "watchPath": { "type": "string" },
+        "profile": { "type": "string" },
+        "envProfile": { "type": "string" },
+        "mode": { "type": "string" },
+        "cacheDir": { "type": "string" },
+        "statusPath": { "type": "string" },
+        "telegramPollLockPath": { "type": "string" }
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "description": { "type": "string" },
+          "env": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "envFile": { "type": "string" },
+          "envOverride": { "type": "boolean" },
+          "repository": { "type": "string" },
+          "repo": { "type": "string" },
+          "defaultRepository": { "type": "string" },
+          "overrides": { "type": "object" },
+          "config": { "type": "object" },
+          "settings": { "type": "object" }
+        }
+      }
+    },
+    "hookProfiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "profile": {
+          "type": "string",
+          "enum": ["strict", "balanced", "lightweight", "none"]
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["codex", "claude", "copilot"]
+          }
+        },
+        "overwriteExisting": { "type": "boolean" }
+      }
+    },
+    "agentHooks": {
+      "type": "object",
+      "description": "Hook definitions loaded by agent-hooks.mjs (event -> hook list).",
+      "additionalProperties": true
+    }
+  }
+}

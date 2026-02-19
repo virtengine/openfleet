@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Architecture — OpenFleet Docs</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../css/main.css" />
+  <link rel="stylesheet" href="../css/docs.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='80'>⚡</text></svg>" />
+</head>
+<body>
+
+  <div class="docs-sidebar-backdrop"></div>
+  <button class="docs-sidebar-toggle" aria-label="Toggle sidebar">☰</button>
+
+  <div class="docs-layout">
+    <aside class="docs-sidebar">
+      <a href="../" class="sidebar-brand">
+        <div class="sidebar-brand__icon">⚡</div>
+        OpenFleet
+      </a>
+      <span class="sidebar-version">v0.26.2</span>
+      <div class="docs-search">
+        <span class="docs-search__icon">🔍</span>
+        <input class="docs-search__input" type="text" placeholder="Search docs..." />
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Getting Started</div>
+        <ul class="sidebar-nav">
+          <li><a href="./"><span class="nav-icon">📖</span> Overview</a></li>
+          <li><a href="getting-started.html"><span class="nav-icon">🚀</span> Quick Start</a></li>
+          <li><a href="configuration.html"><span class="nav-icon">⚙️</span> Configuration</a></li>
+        </ul>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Reference</div>
+        <ul class="sidebar-nav">
+          <li><a href="cli-reference.html"><span class="nav-icon">💻</span> CLI Reference</a></li>
+          <li><a href="architecture.html" class="active"><span class="nav-icon">🏗️</span> Architecture</a></li>
+          <li><a href="integrations.html"><span class="nav-icon">🔗</span> Integrations</a></li>
+        </ul>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Links</div>
+        <ul class="sidebar-nav">
+          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/openfleet#virtengineopenfleet" target="_blank" rel="noopener"><span class="nav-icon">🐙</span> GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/@virtengine/openfleet" target="_blank"><span class="nav-icon">📦</span> npm</a></li>
+          <li><a href="../"><span class="nav-icon">🏠</span> Home</a></li>
+        </ul>
+      </div>
+    </aside>
+
+    <main class="docs-content">
+      <h1>Architecture</h1>
+
+      <p>
+        OpenFleet is organized as a modular Node.js application with clear component boundaries.
+        Each module has a single responsibility and communicates through well-defined interfaces.
+      </p>
+
+      <h2 id="high-level">High-Level Flow</h2>
+
+      <pre><code>┌──────────┐     ┌──────────────┐     ┌────────────────────┐
+│  cli.mjs │────▶│  monitor.mjs │────▶│  ve-orchestrator   │
+│  (entry) │     │  (supervisor)│     │  (task runner)     │
+└──────────┘     └──────┬───────┘     └─────────┬──────────┘
+                        │                       │
+                   ┌────┴────┐            ┌─────┴──────┐
+                   │ telegram │            │ ve-kanban  │
+                   │ bot.mjs  │            │ .mjs       │
+                   └─────────┘            └────────────┘</code></pre>
+
+      <ol>
+        <li><code>cli.mjs</code> loads config and routes to the appropriate handler (setup, doctor, daemon, or main start)</li>
+        <li><code>monitor.mjs</code> is the supervisor loop — orchestration, smart PR flow, maintenance, fleet sync</li>
+        <li><code>ve-orchestrator.mjs</code> handles native task execution with parallel slots, retries, and merge checks</li>
+        <li><code>ve-kanban.mjs</code> wraps VK CLI operations (list, submit, rebase, archive)</li>
+      </ol>
+
+      <h2 id="components">Component Map</h2>
+
+      <table>
+        <thead>
+          <tr><th>Component</th><th>File</th><th>Role</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>CLI Entry</strong></td><td><code>cli.mjs</code></td><td>Command routing, config loading, daemon management</td></tr>
+          <tr><td><strong>Supervisor</strong></td><td><code>monitor.mjs</code></td><td>Main loop, smart PR flow, maintenance scheduling</td></tr>
+          <tr><td><strong>Orchestrator</strong></td><td><code>ve-orchestrator.mjs</code></td><td>Task execution, parallel slots, retry logic</td></tr>
+          <tr><td><strong>VK Wrapper</strong></td><td><code>ve-kanban.mjs</code></td><td>Task board CRUD, attempt lifecycle</td></tr>
+          <tr><td><strong>Telegram Bot</strong></td><td><code>telegram-bot.mjs</code></td><td>Polling, batching, live digest, command handling</td></tr>
+          <tr><td><strong>Mini App Server</strong></td><td><code>ui-server.mjs</code></td><td>HTTP/WS server for Telegram Mini App</td></tr>
+          <tr><td><strong>Config</strong></td><td><code>config.mjs</code></td><td>Unified config loader (CLI + env + .env + JSON + defaults)</td></tr>
+          <tr><td><strong>Fleet Coordinator</strong></td><td><code>fleet-coordinator.mjs</code></td><td>Multi-workstation coordination</td></tr>
+          <tr><td><strong>Shared State</strong></td><td><code>shared-state-manager.mjs</code></td><td>Distributed task claims, heartbeats, conflict resolution</td></tr>
+          <tr><td><strong>Task Claims</strong></td><td><code>task-claims.mjs</code></td><td>Local + shared claim persistence</td></tr>
+          <tr><td><strong>Sync Engine</strong></td><td><code>sync-engine.mjs</code></td><td>Bidirectional kanban sync with shared state</td></tr>
+          <tr><td><strong>Autofix</strong></td><td><code>autofix.mjs</code></td><td>Error pattern detection, guarded auto-fix execution</td></tr>
+          <tr><td><strong>Agent Pool</strong></td><td><code>agent-pool.mjs</code></td><td>Executor management, weighted selection, failover</td></tr>
+          <tr><td><strong>Codex Shell</strong></td><td><code>codex-shell.mjs</code></td><td>Persistent Codex SDK sessions</td></tr>
+          <tr><td><strong>Copilot Shell</strong></td><td><code>copilot-shell.mjs</code></td><td>Persistent Copilot SDK sessions</td></tr>
+          <tr><td><strong>Claude Shell</strong></td><td><code>claude-shell.mjs</code></td><td>Persistent Claude SDK sessions</td></tr>
+          <tr><td><strong>Container Runner</strong></td><td><code>container-runner.mjs</code></td><td>Docker/Podman/Apple Container isolation</td></tr>
+          <tr><td><strong>Sentinel</strong></td><td><code>telegram-sentinel.mjs</code></td><td>Independent watchdog companion</td></tr>
+          <tr><td><strong>WhatsApp</strong></td><td><code>whatsapp-channel.mjs</code></td><td>Optional WhatsApp notification channel</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="execution-modes">Execution Modes</h2>
+
+      <h3>Internal Mode (<code>EXECUTOR_MODE=internal</code>)</h3>
+      <p>
+        Tasks run through the internal agent pool inside the monitor process.
+        The agent pool manages executor selection, weighted distribution, and failover.
+      </p>
+      <pre><code>Monitor → Agent Pool → [Copilot Shell | Codex Shell | Claude Shell]
+                            ↓
+                     Task Execution
+                            ↓
+                     Smart PR Flow → CI Check → Merge</code></pre>
+
+      <h3>VK Mode (<code>EXECUTOR_MODE=vk</code>)</h3>
+      <p>
+        Task execution is delegated to the Vibe-Kanban orchestrator scripts.
+        The monitor handles supervision and PR lifecycle.
+      </p>
+
+      <h3>Hybrid Mode (<code>EXECUTOR_MODE=hybrid</code>)</h3>
+      <p>
+        Combines internal and VK modes. Internal handles primary execution;
+        VK picks up overflow or specific task types.
+      </p>
+
+      <h2 id="shared-state">Shared State Model</h2>
+
+      <p>
+        Distributed task coordination across agents and workstations uses a shared state system:
+      </p>
+
+      <ul>
+        <li><strong>Owner heartbeat</strong> — Each claim has <code>ownerId</code> (workstation+agent) and <code>ownerHeartbeat</code> timestamp, renewed periodically to prove liveness</li>
+        <li><strong>Attempt tokens</strong> — Unique UUID per attempt for idempotent operations</li>
+        <li><strong>Retry/ignore flags</strong> — <code>retryCount</code> tracks attempts, <code>ignoreReason</code> marks tasks agents should skip</li>
+        <li><strong>Conflict resolution</strong> — Active heartbeat wins over stale claims (first-come-first-served if both active)</li>
+      </ul>
+
+      <h3>Claim Lifecycle</h3>
+      <pre><code>1. claimTaskInSharedState(taskId, ownerId, attemptToken)
+2. [work...] renewSharedStateHeartbeat() periodically
+3. releaseSharedState(taskId, attemptToken, 'complete'|'failed'|'abandoned')
+4. sweepStaleSharedStates() — background cleanup</code></pre>
+
+      <h2 id="smart-pr-flow">Smart PR Flow</h2>
+
+      <p>The <code>smartPRFlow</code> in <code>monitor.mjs</code> handles the full PR lifecycle:</p>
+
+      <ol>
+        <li><strong>Branch creation</strong> — from configured target branch</li>
+        <li><strong>PR creation</strong> — with conventional commit title and structured body</li>
+        <li><strong>CI monitoring</strong> — polls check status</li>
+        <li><strong>Auto-rebase</strong> — on merge conflicts with target</li>
+        <li><strong>Merge decision</strong> — merge when all checks pass</li>
+        <li><strong>Cleanup</strong> — archive task, prune worktree</li>
+      </ol>
+
+      <h2 id="error-recovery">Error Recovery</h2>
+
+      <p>OpenFleet uses multiple layers of error recovery:</p>
+
+      <ul>
+        <li><strong>Autofix</strong> — Pattern matching on error signatures with guarded fix execution</li>
+        <li><strong>Circuit breakers</strong> — Prevent infinite retry loops by tracking consecutive failures</li>
+        <li><strong>Stale sweeps</strong> — Background process that reclaims abandoned tasks</li>
+        <li><strong>Daemon restart policy</strong> — Configurable crash tracking with cooldown periods</li>
+        <li><strong>Sentinel watchdog</strong> — Independent process that can restart the monitor on crash</li>
+      </ul>
+
+      <h2 id="data-persistence">Data Persistence</h2>
+
+      <p>State is persisted in <code>.cache/openfleet/</code>:</p>
+
+      <table>
+        <thead>
+          <tr><th>File</th><th>Contents</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>shared-task-states.json</code></td><td>Distributed task claims and heartbeat state</td></tr>
+          <tr><td><code>fleet-state.json</code></td><td>Multi-workstation fleet coordination data</td></tr>
+          <tr><td><code>task-store.json</code></td><td>Internal kanban task database</td></tr>
+          <tr><td><code>workspaces.json</code></td><td>Workspace and worktree registry</td></tr>
+          <tr><td><code>sessions/</code></td><td>Agent session state and history</td></tr>
+        </tbody>
+      </table>
+
+      <div class="docs-nav-footer">
+        <a href="cli-reference.html" class="docs-nav-link">
+          <div class="docs-nav-link__label">← Previous</div>
+          <div class="docs-nav-link__title">CLI Reference</div>
+        </a>
+        <a href="integrations.html" class="docs-nav-link docs-nav-link--next">
+          <div class="docs-nav-link__label">Next →</div>
+          <div class="docs-nav-link__title">Integrations</div>
+        </a>
+      </div>
+    </main>
+  </div>
+
+  <script src="../js/main.js"></script>
+</body>
+</html>

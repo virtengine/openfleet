@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Documentation — OpenFleet</title>
+  <meta name="description" content="OpenFleet documentation — getting started, configuration, CLI reference, architecture, and integrations." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../css/main.css" />
+  <link rel="stylesheet" href="../css/docs.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='80'>⚡</text></svg>" />
+</head>
+<body>
+
+  <div class="docs-sidebar-backdrop"></div>
+  <button class="docs-sidebar-toggle" aria-label="Toggle sidebar">☰</button>
+
+  <div class="docs-layout">
+    <!-- ═══ Sidebar ═══════════════════════════════════════════════════ -->
+    <aside class="docs-sidebar">
+      <a href="../" class="sidebar-brand">
+        <div class="sidebar-brand__icon">⚡</div>
+        OpenFleet
+      </a>
+      <span class="sidebar-version">v0.26.2</span>
+
+      <div class="docs-search">
+        <span class="docs-search__icon">🔍</span>
+        <input class="docs-search__input" type="text" placeholder="Search docs..." />
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Getting Started</div>
+        <ul class="sidebar-nav">
+          <li><a href="./" class="active"><span class="nav-icon">📖</span> Overview</a></li>
+          <li><a href="getting-started.html"><span class="nav-icon">🚀</span> Quick Start</a></li>
+          <li><a href="configuration.html"><span class="nav-icon">⚙️</span> Configuration</a></li>
+        </ul>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Reference</div>
+        <ul class="sidebar-nav">
+          <li><a href="cli-reference.html"><span class="nav-icon">💻</span> CLI Reference</a></li>
+          <li><a href="architecture.html"><span class="nav-icon">🏗️</span> Architecture</a></li>
+          <li><a href="integrations.html"><span class="nav-icon">🔗</span> Integrations</a></li>
+        </ul>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section__title">Links</div>
+        <ul class="sidebar-nav">
+          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/openfleet#virtengineopenfleet" target="_blank" rel="noopener"><span class="nav-icon">🐙</span> GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/@virtengine/openfleet" target="_blank" rel="noopener"><span class="nav-icon">📦</span> npm</a></li>
+          <li><a href="../"><span class="nav-icon">🏠</span> Home</a></li>
+        </ul>
+      </div>
+    </aside>
+
+    <!-- ═══ Content ═══════════════════════════════════════════════════ -->
+    <main class="docs-content">
+      <h1>OpenFleet Documentation</h1>
+
+      <p>
+        <strong>OpenFleet</strong> is an open-source autonomous supervisor for AI coding workflows.
+        It watches task execution, routes work across agent executors (Copilot, Codex, Claude),
+        handles retries/failover, automates PR lifecycle, and keeps you in control through
+        Telegram, WhatsApp, and a full-featured control center.
+      </p>
+
+      <div class="callout callout--info">
+        <span class="callout__icon">💡</span>
+        <p>New to OpenFleet? Start with the <a href="getting-started.html">Quick Start guide</a> — it takes less than 5 minutes.</p>
+      </div>
+
+      <h2>Why OpenFleet?</h2>
+
+      <p>AI coding agents are fast, but unattended loops are expensive:</p>
+      <ul>
+        <li><strong>Silent failures</strong> — agents crash with no notification</li>
+        <li><strong>Repeated retries</strong> — same error looping without progress</li>
+        <li><strong>Stale worktrees</strong> — merge drift and orphaned branches</li>
+        <li><strong>Disconnected notifications</strong> — no visibility into what's happening</li>
+      </ul>
+      <p>
+        OpenFleet is the <strong>control plane</strong> that keeps delivery moving: task routing,
+        monitored orchestration, conflict/PR lifecycle automation, and live bot control.
+      </p>
+
+      <h2>Core Capabilities</h2>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Capability</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Multi-Executor Routing</strong></td>
+            <td>Weighted distribution across Copilot, Codex, and Claude with automatic failover</td>
+          </tr>
+          <tr>
+            <td><strong>Smart PR Flow</strong></td>
+            <td>Creates PRs, monitors CI, auto-rebases, merges on green</td>
+          </tr>
+          <tr>
+            <td><strong>Self-Healing</strong></td>
+            <td>Autofix patterns, circuit breakers, heartbeat-based stale recovery</td>
+          </tr>
+          <tr>
+            <td><strong>Task Boards</strong></td>
+            <td>Internal board + GitHub Issues + GitHub Projects v2 + Jira adapters</td>
+          </tr>
+          <tr>
+            <td><strong>Telegram Control</strong></td>
+            <td>30+ bot commands, Mini App with 7 tabs, sentinel watchdog</td>
+          </tr>
+          <tr>
+            <td><strong>Multi-Agent Coordination</strong></td>
+            <td>Shared state, atomic claims, heartbeat liveness, stale sweeps</td>
+          </tr>
+          <tr>
+            <td><strong>Container Isolation</strong></td>
+            <td>Docker, Podman, and Apple Container support with concurrent limits</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Documentation Guide</h2>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; margin: 1rem 0;">
+        <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 1.25rem;">
+          <h4 style="margin-top: 0;">🚀 <a href="getting-started.html">Quick Start</a></h4>
+          <p style="font-size: 0.85rem; margin: 0;">Install, configure, and launch your first fleet in under 5 minutes.</p>
+        </div>
+        <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 1.25rem;">
+          <h4 style="margin-top: 0;">⚙️ <a href="configuration.html">Configuration</a></h4>
+          <p style="font-size: 0.85rem; margin: 0;">Complete reference for .env, JSON config, executors, and env var overrides.</p>
+        </div>
+        <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 1.25rem;">
+          <h4 style="margin-top: 0;">💻 <a href="cli-reference.html">CLI Reference</a></h4>
+          <p style="font-size: 0.85rem; margin: 0;">Every flag, command, and option documented with examples.</p>
+        </div>
+        <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 1.25rem;">
+          <h4 style="margin-top: 0;">🏗️ <a href="architecture.html">Architecture</a></h4>
+          <p style="font-size: 0.85rem; margin: 0;">How the supervisor, orchestrator, and agents fit together.</p>
+        </div>
+        <div style="background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 1.25rem;">
+          <h4 style="margin-top: 0;">🔗 <a href="integrations.html">Integrations</a></h4>
+          <p style="font-size: 0.85rem; margin: 0;">GitHub, Telegram, Jira, WhatsApp, Docker, Cloudflare — all covered.</p>
+        </div>
+      </div>
+
+      <h2>Requirements</h2>
+
+      <ul>
+        <li><strong>Node.js</strong> 18+ (22 recommended)</li>
+        <li><strong>git</strong> installed and on PATH</li>
+        <li><strong>GitHub CLI</strong> (<code>gh</code>) — recommended for PR operations</li>
+        <li><strong>OS:</strong> Linux, macOS, and Windows fully supported</li>
+        <li><strong>Shell:</strong> Bash for <code>.sh</code> wrappers, PowerShell (<code>pwsh</code>) for <code>.ps1</code> wrappers</li>
+      </ul>
+
+      <div class="docs-nav-footer">
+        <div></div>
+        <a href="getting-started.html" class="docs-nav-link docs-nav-link--next">
+          <div class="docs-nav-link__label">Next →</div>
+          <div class="docs-nav-link__title">Quick Start</div>
+        </a>
+      </div>
+    </main>
+  </div>
+
+  <script src="../js/main.js"></script>
+</body>
+</html>

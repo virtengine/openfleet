@@ -1,0 +1,37 @@
+# npm-generated bin shims (created by `npm install` from the `bin` field)
+# These are auto-generated wrappers pointing to node_modules/ and must not be committed.
+openfleet
+openfleet.cmd
+openfleet.ps1
+openfleet-chat-id
+openfleet-chat-id.cmd
+openfleet-chat-id.ps1
+openfleet-setup
+openfleet-setup.cmd
+openfleet-setup.ps1
+openfleet-shared-workspaces
+openfleet-shared-workspaces.cmd
+openfleet-shared-workspaces.ps1
+vibe-kanban
+vibe-kanban.cmd
+vibe-kanban.ps1
+
+# npm artifacts
+node_modules/
+*.tgz
+/.openfleet/
+
+# Auto-generated TLS certificates
+.cache/tls/
+
+# Auto-downloaded binaries (cloudflared, etc.)
+.cache/bin/
+
+# Runtime secrets and cache — never commit
+.env
+.cache/
+logs/
+workspaces.json
+*.config.json
+!openfleet.config.example.json
+!openfleet.schema.json

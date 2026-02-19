@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; img-src * data: blob:; connect-src *;" />
+  <title>OpenFleet MiniApp — Demo Mode</title>
+
+  <!-- Telegram WebApp SDK is fully mocked below — no real SDK needed -->
+
+  <!-- Import map — same as the real app -->
+  <script type="importmap">
+  {
+    "imports": {
+      "preact":          "https://esm.sh/preact@10.25.4",
+      "preact/hooks":    "https://esm.sh/preact@10.25.4/hooks",
+      "preact/compat":   "https://esm.sh/preact@10.25.4/compat",
+      "htm":             "https://esm.sh/htm@3.1.1",
+      "@preact/signals": "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4"
+    }
+  }
+  </script>
+
+  <!-- Load the real MiniApp styles -->
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles/kanban.css" />
+  <link rel="stylesheet" href="styles/sessions.css" />
+
+  <!-- Fonts (match site) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+
+  <style>
+    /* Demo mode indicator */
+    .demo-banner {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 99999;
+      background: linear-gradient(135deg, #60cc5d, #4caf50);
+      color: #000;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      font-family: 'Inter', -apple-system, sans-serif;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    /* Push content down */
+    body { padding-top: 22px !important; }
+    /* Ensure no scrollbar leaks */
+    html, body { overflow: hidden; height: 100%; margin: 0; }
+    /* Force dark theme */
+    :root {
+      color-scheme: dark;
+    }
+  </style>
+
+  <!-- ═══ DEMO MOCK LAYER ═══════════════════════════════════════════════
+       This script runs BEFORE the real app.js to mock:
+       1. Telegram.WebApp — provides fake theme, user, initData
+       2. fetch() — intercepts /api/* to return seed data
+       3. WebSocket — provides fake WS connection for live updates
+       ═══════════════════════════════════════════════════════════════════ -->
+  <script>
+  (function() {
+    'use strict';
+
+    /* ── Mock Telegram.WebApp ──────────────────────────────────────── */
+    const mockUser = {
+      id: 1337420,
+      first_name: 'Demo',
+      last_name: 'User',
+      username: 'demo_user',
+      language_code: 'en',
+      is_premium: true,
+    };
+
+    const theme = {
+      bg_color: '#0b0f14',
+      text_color: '#f1f5f9',
+      hint_color: '#64748b',
+      link_color: '#4cc9f0',
+      button_color: '#4cc9f0',
+      button_text_color: '#000000',
+      secondary_bg_color: '#131a24',
+      header_bg_color: '#0b0f14',
+      accent_text_color: '#4cc9f0',
+      section_bg_color: '#131a24',
+      section_header_text_color: '#94a3b8',
+      subtitle_text_color: '#94a3b8',
+      destructive_text_color: '#ef4444',
+      section_separator_color: '#1e293b',
+      bottom_bar_bg_color: '#0b0f14',
+    };
+
+    window.Telegram = {
+      WebApp: {
+        initData: 'demo_mode=true&user=' + encodeURIComponent(JSON.stringify(mockUser)),
+        initDataUnsafe: { user: mockUser, auth_date: Date.now() },
+        version: '8.0',
+        platform: 'web',
+        colorScheme: 'dark',
+        themeParams: theme,
+        isExpanded: true,
+        viewportHeight: window.innerHeight,
+        viewportStableHeight: window.innerHeight,
+        headerColor: theme.header_bg_color,
+        backgroundColor: theme.bg_color,
+        bottomBarColor: theme.bottom_bar_bg_color,
+        isClosingConfirmationEnabled: false,
+        isVerticalSwipesEnabled: false,
+        isFullscreen: true,
+        safeAreaInset: { top: 0, bottom: 0, left: 0, right: 0 },
+        contentSafeAreaInset: { top: 0, bottom: 0, left: 0, right: 0 },
+        BackButton: {
+          isVisible: false,
+          show() { this.isVisible = true; },
+          hide() { this.isVisible = false; },
+          onClick(cb) { this._cb = cb; },
+          offClick() { this._cb = null; },
+        },
+        MainButton: {
+          isVisible: false,
+          text: '',
+          color: theme.button_color,
+          textColor: theme.button_text_color,
+          isProgressVisible: false,
+          show() { this.isVisible = true; },
+          hide() { this.isVisible = false; },
+          setText(t) { this.text = t; },
+          onClick(cb) { this._cb = cb; },
+          offClick() { this._cb = null; },
+          showProgress() { this.isProgressVisible = true; },
+          hideProgress() { this.isProgressVisible = false; },
+          enable() {},
+          disable() {},
+        },
+        HapticFeedback: {
+          impactOccurred() {},
+          notificationOccurred() {},
+          selectionChanged() {},
+        },
+        ready() {},
+        expand() {},
+        close() {},
+        requestFullscreen() {},
+        disableVerticalSwipes() {},
+        enableClosingConfirmation() {},
+        setHeaderColor(c) { this.headerColor = c; },
+        setBackgroundColor(c) { this.backgroundColor = c; },
+        setBottomBarColor(c) { this.bottomBarColor = c; },
+        onEvent(name, cb) {},
+        offEvent(name, cb) {},
+        showConfirm(msg, cb) { if (cb) cb(true); },
+        showAlert(msg, cb) { if (cb) cb(); },
+        showPopup(params, cb) { if (cb) cb('ok'); },
+        openLink(url) { window.open(url, '_blank'); },
+        openTelegramLink(url) {},
+      },
+    };
+
+    /* ── Seed Data ─────────────────────────────────────────────────── */
+    const now = Date.now();
+    const min = 60000;
+    const hr = 3600000;
+
+    const SEED_TASKS = [
+      { id: 've-abc123', title: 'feat(market): add order expiry validation', status: 'done', priority: 'high', assignee: 'copilot-claude', branch: 've/abc123-market-order-expiry', pr: 187, created: now - 4*hr, updated: now - 1*hr },
+      { id: 've-def456', title: 'fix(veid): token validation edge case', status: 'done', priority: 'medium', assignee: 'codex-default', branch: 've/def456-veid-token-fix', pr: 188, created: now - 3*hr, updated: now - 45*min },
+      { id: 've-ghi789', title: 'refactor(escrow): batch settlement pipeline', status: 'inprogress', priority: 'high', assignee: 'copilot-claude', branch: 've/ghi789-escrow-batch', pr: 189, created: now - 2*hr, updated: now - 15*min },
+      { id: 've-jkl012', title: 'feat(hpc): GPU resource metering', status: 'inprogress', priority: 'critical', assignee: 'codex-default', branch: 've/jkl012-hpc-gpu-metering', pr: null, created: now - 1*hr, updated: now - 5*min },
+      { id: 've-mno345', title: 'docs: update provider integration guide', status: 'todo', priority: 'low', assignee: null, branch: null, pr: null, created: now - 30*min, updated: now - 30*min },
+      { id: 've-pqr678', title: 'feat(provider): health check endpoint', status: 'todo', priority: 'medium', assignee: null, branch: null, pr: null, created: now - 20*min, updated: now - 20*min },
+      { id: 've-stu901', title: 'fix(roles): permission cascade bug', status: 'draft', priority: 'high', assignee: null, branch: null, pr: null, created: now - 10*min, updated: now - 10*min },
+      { id: 've-vwx234', title: 'test(mfa): add integration test suite', status: 'inreview', priority: 'medium', assignee: 'copilot-claude', branch: 've/vwx234-mfa-tests', pr: 190, created: now - 5*hr, updated: now - 30*min },
+    ];
+
+    const SEED_STATUS = {
+      status: 'running',
+      uptime: '2h 34m 12s',
+      executorMode: 'internal',
+      board: 'github',
+      maxParallel: 6,
+      version: '0.26.2',
+      tasks: { completed: 13, failed: 1, retried: 2, active: 2, queued: 3 },
+      prs: { created: 15, merged: 11, pending: 2, ciFailures: 1 },
+    };
+
+    const SEED_EXECUTORS = [
+      { name: 'copilot-claude', sdk: 'copilot', model: 'claude-opus-4-6', weight: 50, status: 'active', load: 67, tasksCompleted: 8, avgTime: '12m', uptime: '2h 34m', session: 'sk-...7f3a' },
+      { name: 'codex-default', sdk: 'codex', model: 'o4-mini', weight: 50, status: 'active', load: 42, tasksCompleted: 5, avgTime: '18m', uptime: '2h 34m', session: 'cx-...a91b' },
+    ];
+
+    const SEED_AGENTS = [
+      { id: 'agent-001', name: 'copilot-claude', type: 'copilot', model: 'claude-opus-4-6', status: 'busy', currentTask: 've-ghi789', lastHeartbeat: now - 30000 },
+      { id: 'agent-002', name: 'codex-default', type: 'codex', model: 'o4-mini', status: 'busy', currentTask: 've-jkl012', lastHeartbeat: now - 15000 },
+    ];
+
+    const SEED_LOGS = [
+      { ts: now - 20*min, level: 'info', source: 'monitor', msg: 'Polling github for new tasks...' },
+      { ts: now - 19*min, level: 'info', source: 'kanban', msg: 'Found 2 new tasks in backlog' },
+      { ts: now - 18*min, level: 'info', source: 'task-executor', msg: 'Routing #42 feat(market): add order expiry → copilot-claude' },
+      { ts: now - 17*min, level: 'info', source: 'task-executor', msg: 'Routing #43 fix(veid): token validation → codex-default' },
+      { ts: now - 14*min, level: 'info', source: 'worktree', msg: 'Created ve/abc123-market-order-expiry' },
+      { ts: now - 12*min, level: 'info', source: 'copilot', msg: 'Session started for #42' },
+      { ts: now - 10*min, level: 'success', source: 'pr', msg: 'PR #187 created — CI running...' },
+      { ts: now - 8*min, level: 'success', source: 'ci', msg: 'PR #187 — all checks passed' },
+      { ts: now - 7*min, level: 'success', source: 'merge', msg: 'PR #187 merged to main ✓' },
+      { ts: now - 5*min, level: 'info', source: 'health', msg: 'Health check: all systems nominal' },
+      { ts: now - 2*min, level: 'info', source: 'review-agent', msg: 'Reviewing PR #189...' },
+      { ts: now - 1*min, level: 'info', source: 'monitor', msg: 'Next poll in 60s...' },
+    ];
+
+    const SEED_HEALTH = {
+      overall: 'healthy',
+      components: [
+        { name: 'GitHub API', status: 'ok', latency: '142ms' },
+        { name: 'Telegram Bot', status: 'ok', latency: '89ms' },
+        { name: 'Codex SDK', status: 'ok', latency: '234ms' },
+        { name: 'Copilot SDK', status: 'ok', latency: '178ms' },
+        { name: 'Shared State', status: 'ok', latency: '12ms' },
+        { name: 'Worktree Manager', status: 'ok', latency: '45ms' },
+      ],
+    };
+
+    const SEED_INFRA = {
+      worktrees: [
+        { branch: 've/abc123-market-order-expiry', path: '/worktrees/abc123', active: false },
+        { branch: 've/ghi789-escrow-batch', path: '/worktrees/ghi789', active: true },
+        { branch: 've/jkl012-hpc-gpu-metering', path: '/worktrees/jkl012', active: true },
+        { branch: 've/vwx234-mfa-tests', path: '/worktrees/vwx234', active: true },
+      ],
+      containers: [],
+      tunnelStatus: 'active',
+      tunnelUrl: 'https://openfleet-demo.trycloudflare.com',
+    };
+
+    const SEED_PROJECT = {
+      name: 'virtengine',
+      repo: 'virtengine/virtengine',
+      defaultBranch: 'main',
+      totalTasks: SEED_TASKS.length,
+      completedTasks: 2,
+      activePRs: 3,
+    };
+
+    /* ── Internal State (mutable — actions modify this in-place) ──── */
+    const STATE = {
+      tasks: SEED_TASKS,
+      status: SEED_STATUS,
+      executors: SEED_EXECUTORS,
+      agents: SEED_AGENTS,
+      logs: SEED_LOGS,
+      health: SEED_HEALTH,
+      infra: SEED_INFRA,
+      project: SEED_PROJECT,
+      paused: false,
+      maxParallel: 6,
+      settings: {
+        maxParallel: 6,
+        executorMode: 'internal',
+        autoMerge: true,
+        autoRebase: true,
+        reviewAgent: true,
+        sentinelEnabled: false,
+        sdk: 'auto',
+        region: 'auto',
+      },
+      sessions: [
+        { id: 'ses-001', name: 'copilot-claude #42', agentType: 'copilot', status: 'active', taskId: 've-ghi789', created: now - 2*hr, messages: [
+          { role: 'system', text: 'Session started for ve-ghi789', ts: now - 2*hr },
+          { role: 'assistant', text: 'Analyzing escrow batch settlement pipeline...', ts: now - 110*min },
+          { role: 'assistant', text: 'Implementing batch processor in x/escrow/keeper/batch.go', ts: now - 90*min },
+        ]},
+        { id: 'ses-002', name: 'codex-default #43', agentType: 'codex', status: 'active', taskId: 've-jkl012', created: now - 1*hr, messages: [
+          { role: 'system', text: 'Session started for ve-jkl012', ts: now - 1*hr },
+          { role: 'assistant', text: 'Reading GPU metering requirements...', ts: now - 50*min },
+        ]},
+      ],
+      worktrees: [
+        { branch: 've/abc123-market-order-expiry', path: '/worktrees/abc123', active: false, taskId: 've-abc123' },
+        { branch: 've/ghi789-escrow-batch', path: '/worktrees/ghi789', active: true, taskId: 've-ghi789' },
+        { branch: 've/jkl012-hpc-gpu-metering', path: '/worktrees/jkl012', active: true, taskId: 've-jkl012' },
+        { branch: 've/vwx234-mfa-tests', path: '/worktrees/vwx234', active: true, taskId: 've-vwx234' },
+      ],
+      sharedWorkspaces: [
+        { id: 'sw-1', name: 'shared-escrow-dev', claimedBy: 'copilot-claude', claimedAt: now - 1*hr, expiresAt: now + 1*hr },
+      ],
+      gitBranches: ['main', 've/abc123-market-order-expiry', 've/ghi789-escrow-batch', 've/jkl012-hpc-gpu-metering', 've/vwx234-mfa-tests'],
+      gitDiff: '--- a/x/escrow/keeper/batch.go\n+++ b/x/escrow/keeper/batch.go\n@@ -0,0 +1,42 @@\n+package keeper\n+\n+// BatchSettle processes pending settlements in batch.\n+func (k Keeper) BatchSettle(ctx sdk.Context) error {\n+    // ... implementation\n+    return nil\n+}',
+      agentLogFiles: ['copilot-claude-42.log', 'codex-default-43.log', 'monitor.log'],
+      presence: {
+        instances: [{ id: 'inst-1', host: 'dev-machine', pid: 12345, started: now - 3*hr, role: 'primary' }],
+        coordinator: { id: 'inst-1', host: 'dev-machine', elected: now - 3*hr },
+      },
+    };
+
+    /* ── Helper: find task by ID ───────────────────────────────────── */
+    function findTask(id) { return STATE.tasks.find(t => t.id === id); }
+    function addLog(level, source, msg) {
+      STATE.logs.unshift({ ts: Date.now(), level, source, msg });
+      if (STATE.logs.length > 100) STATE.logs.length = 100;
+    }
+
+    /* ── API Route Handler (comprehensive — catches ALL /api/* calls) */
+    function handleApi(path, method, body) {
+      // Normalize: strip query string for route matching
+      const [route, qs] = path.split('?');
+      const params = new URLSearchParams(qs || '');
+
+      // ── Status & Executor ──
+      if (route === '/api/status')
+        return { data: STATE.status };
+      if (route === '/api/executor')
+        return { data: { ...STATE.status, maxParallel: STATE.maxParallel, paused: STATE.paused, executors: STATE.executors } };
+      if (route === '/api/executor/pause') {
+        STATE.paused = true; addLog('info', 'executor', 'Executor paused');
+        return { ok: true, paused: true };
+      }
+      if (route === '/api/executor/resume') {
+        STATE.paused = false; addLog('info', 'executor', 'Executor resumed');
+        return { ok: true, paused: false };
+      }
+      if (route === '/api/executor/maxparallel') {
+        const mp = body?.maxParallel ?? STATE.maxParallel;
+        STATE.maxParallel = mp; STATE.status.maxParallel = mp;
+        addLog('info', 'executor', `Max parallel set to ${mp}`);
+        return { ok: true, maxParallel: mp };
+      }
+      if (route === '/api/executor/stop-slot') {
+        addLog('info', 'executor', `Slot stopped: ${body?.slotId || 'unknown'}`);
+        return { ok: true };
+      }
+      if (route === '/api/executor/dispatch') {
+        addLog('info', 'executor', `Manual dispatch: ${body?.taskId || 'unknown'}`);
+        return { ok: true, dispatched: body?.taskId };
+      }
+
+      // ── Tasks ──
+      if (route === '/api/tasks') {
+        let tasks = [...STATE.tasks];
+        const status = params.get('status');
+        const priority = params.get('priority');
+        const search = params.get('search');
+        const sort = params.get('sort');
+        if (status && status !== 'all') tasks = tasks.filter(t => t.status === status);
+        if (priority && priority !== 'all') tasks = tasks.filter(t => t.priority === priority);
+        if (search) tasks = tasks.filter(t => t.title.toLowerCase().includes(search.toLowerCase()));
+        if (sort === 'priority') tasks.sort((a, b) => { const o = {critical:0,high:1,medium:2,low:3}; return (o[a.priority]??9)-(o[b.priority]??9); });
+        if (sort === '-updated') tasks.sort((a, b) => b.updated - a.updated);
+        const page = parseInt(params.get('page')) || 1;
+        const pageSize = parseInt(params.get('pageSize') || params.get('limit')) || 50;
+        const total = tasks.length;
+        const paged = tasks.slice((page-1)*pageSize, page*pageSize);
+        return { data: paged, tasks: paged, total, totalPages: Math.max(1, Math.ceil(total/pageSize)), page, pageSize };
+      }
+      if (route === '/api/tasks/detail') {
+        const t = findTask(params.get('taskId'));
+        return { data: t || null };
+      }
+      if (route === '/api/tasks/create') {
+        const id = 've-' + Math.random().toString(36).slice(2, 8);
+        const t = { id, title: body?.title || 'New task', status: 'todo', priority: body?.priority || 'medium', assignee: null, branch: null, pr: null, created: Date.now(), updated: Date.now() };
+        STATE.tasks.unshift(t); addLog('success', 'kanban', `Task created: ${t.title}`);
+        return { ok: true, data: t };
+      }
+      if (route === '/api/tasks/update') {
+        const t = findTask(body?.taskId || body?.id);
+        if (t) { Object.assign(t, body, { updated: Date.now() }); addLog('info', 'kanban', `Task updated: ${t.title}`); }
+        return { ok: true, data: t || null };
+      }
+      if (route === '/api/tasks/edit') {
+        const t = findTask(body?.taskId || body?.id);
+        if (t) { if (body?.title) t.title = body.title; if (body?.priority) t.priority = body.priority; t.updated = Date.now(); }
+        return { ok: true, data: t || null };
+      }
+      if (route === '/api/tasks/start') {
+        const t = findTask(body?.taskId);
+        if (t) { t.status = 'inprogress'; t.updated = Date.now(); addLog('info', 'task-executor', `Task started: ${t.title}`); }
+        return { ok: true, data: t || null };
+      }
+      if (route === '/api/tasks/retry') {
+        const t = findTask(body?.taskId);
+        if (t) { t.status = 'todo'; t.updated = Date.now(); addLog('info', 'task-executor', `Task retried: ${t.title}`); }
+        return { ok: true, data: t || null };
+      }
+
+      // ── Agents ──
+      if (route === '/api/agents')
+        return { data: STATE.agents };
+      if (route === '/api/executors')
+        return { executors: STATE.executors };
+
+      // ── Logs ──
+      if (route === '/api/logs') {
+        const lines = parseInt(params.get('lines')) || 50;
+        return { data: STATE.logs.slice(0, lines), logs: STATE.logs.slice(0, lines) };
+      }
+      if (route === '/api/agent-logs')
+        return { data: STATE.agentLogFiles };
+      if (route === '/api/agent-logs/tail') {
+        const file = params.get('file') || '';
+        const n = parseInt(params.get('lines')) || 100;
+        const lines = Array.from({ length: Math.min(n, 20) }, (_, i) => {
+          const ts = new Date(now - (20 - i) * 30000).toISOString();
+          return `[${ts}] [info] Demo log line ${i + 1} from ${file || 'agent'}`;
+        });
+        return { data: lines.join('\n') };
+      }
+      if (route === '/api/agent-context') {
+        const q = params.get('query') || '';
+        return { data: { query: q, branch: q, files: ['keeper.go', 'types.go', 'msg_server.go'], recentCommits: ['feat: initial implementation', 'fix: lint errors'], worktree: '/worktrees/' + q.slice(0, 6) } };
+      }
+
+      // ── Health ──
+      if (route === '/api/health')
+        return STATE.health;
+
+      // ── Infrastructure ──
+      if (route === '/api/infra')
+        return { data: STATE.infra };
+      if (route === '/api/worktrees') {
+        if (route === '/api/worktrees') return { data: STATE.worktrees, stats: { total: STATE.worktrees.length, active: STATE.worktrees.filter(w => w.active).length } };
+      }
+      if (route === '/api/worktrees/prune') {
+        STATE.worktrees = STATE.worktrees.filter(w => w.active); addLog('info', 'worktree', 'Pruned inactive worktrees');
+        return { ok: true, pruned: 1 };
+      }
+      if (route === '/api/worktrees/release') {
+        const branch = body?.branch;
+        const wt = STATE.worktrees.find(w => w.branch === branch);
+        if (wt) wt.active = false;
+        return { ok: true };
+      }
+
+      // ── Shared Workspaces ──
+      if (route === '/api/shared-workspaces')
+        return { data: STATE.sharedWorkspaces };
+      if (route === '/api/shared-workspaces/claim') {
+        const ws = { id: 'sw-' + Math.random().toString(36).slice(2, 5), name: body?.name || 'workspace', claimedBy: body?.agent || 'demo', claimedAt: Date.now(), expiresAt: Date.now() + 2*hr };
+        STATE.sharedWorkspaces.push(ws);
+        return { ok: true, data: ws };
+      }
+      if (route === '/api/shared-workspaces/renew') {
+        const ws = STATE.sharedWorkspaces.find(w => w.id === body?.id);
+        if (ws) ws.expiresAt = Date.now() + 2*hr;
+        return { ok: true };
+      }
+      if (route === '/api/shared-workspaces/release') {
+        STATE.sharedWorkspaces = STATE.sharedWorkspaces.filter(w => w.id !== body?.id);
+        return { ok: true };
+      }
+
+      // ── Git ──
+      if (route === '/api/git/branches')
+        return { data: STATE.gitBranches };
+      if (route === '/api/git/diff')
+        return { data: STATE.gitDiff };
+
+      // ── Sessions ──
+      if (route === '/api/sessions' && method === 'GET') {
+        return { data: STATE.sessions.map(s => ({ id: s.id, name: s.name, agentType: s.agentType, status: s.status, taskId: s.taskId, created: s.created })) };
+      }
+      if (route.match(/^\/api\/sessions\/[^/]+\/diff$/)) {
+        return { data: STATE.gitDiff };
+      }
+      if (route.match(/^\/api\/sessions\/[^/]+\/message$/)) {
+        const sid = route.split('/')[3];
+        const ses = STATE.sessions.find(s => s.id === sid);
+        if (ses) ses.messages.push({ role: 'user', text: body?.text || body?.message || '', ts: Date.now() });
+        return { ok: true };
+      }
+      if (route.match(/^\/api\/sessions\/[^/]+\/resume$/)) {
+        return { ok: true };
+      }
+      if (route.match(/^\/api\/sessions\/[^/]+\/archive$/)) {
+        const sid = route.split('/')[3];
+        const ses = STATE.sessions.find(s => s.id === sid);
+        if (ses) ses.status = 'archived';
+        return { ok: true };
+      }
+      if (route === '/api/sessions/create') {
+        const s = { id: 'ses-' + Math.random().toString(36).slice(2, 5), name: body?.name || 'New session', agentType: body?.agentType || 'copilot', status: 'active', taskId: body?.taskId || null, created: Date.now(), messages: [] };
+        STATE.sessions.push(s);
+        return { ok: true, data: s };
+      }
+      if (route.match(/^\/api\/sessions\/[^/]+$/) && method === 'GET') {
+        const sid = route.split('/')[3];
+        return { data: STATE.sessions.find(s => s.id === sid) || null };
+      }
+
+      // ── Settings & Config ──
+      if (route === '/api/settings')
+        return STATE.settings;
+      if (route === '/api/config/update') {
+        Object.assign(STATE.settings, body || {});
+        return { ok: true };
+      }
+
+      // ── Command ──
+      if (route === '/api/command') {
+        const cmd = body?.command || '';
+        addLog('info', 'command', `Executed: ${cmd}`);
+        return { ok: true, command: cmd, response: 'Command executed in demo mode: ' + cmd };
+      }
+
+      // ── Presence ──
+      if (route === '/api/presence')
+        return { data: STATE.presence };
+
+      // ── Project ──
+      if (route === '/api/project' || route === '/api/project-summary')
+        return { data: STATE.project };
+
+      // ── Catch-all: return empty success for any unhandled /api/ route ──
+      console.debug('[demo] Unhandled API route:', method, path);
+      return { ok: true, data: null };
+    }
+
+    /* ── Intercept fetch() — ALL /api/ calls handled internally ───── */
+    const _realFetch = window.fetch;
+    window.fetch = function(url, options) {
+      const path = typeof url === 'string' ? url : url?.url || '';
+
+      // Intercept ALL /api/ calls — nothing reaches the network
+      if (path.startsWith('/api/') || path.startsWith('/api?')) {
+        let body = null;
+        if (options?.body) {
+          try { body = JSON.parse(options.body); } catch {}
+        }
+        const method = (options?.method || 'GET').toUpperCase();
+        const data = handleApi(path, method, body);
+        return Promise.resolve(new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+
+      // Pass through non-API requests (fonts, CDN, ES modules, etc.)
+      return _realFetch.apply(this, arguments);
+    };
+
+    /* ── Intercept WebSocket ───────────────────────────────────────── */
+    const _RealWS = window.WebSocket;
+    window.WebSocket = function(url, protocols) {
+      const fake = {
+        url: url,
+        readyState: 1, // OPEN
+        bufferedAmount: 0,
+        extensions: '',
+        protocol: '',
+        onopen: null,
+        onmessage: null,
+        onclose: null,
+        onerror: null,
+        send(data) { /* swallow */ },
+        close() {
+          this.readyState = 3;
+          if (this.onclose) this.onclose({ code: 1000, reason: 'Demo mode' });
+        },
+        addEventListener(type, handler) {
+          this['on' + type] = handler;
+        },
+        removeEventListener() {},
+      };
+
+      // Simulate open after microtask
+      setTimeout(() => {
+        fake.readyState = 1;
+        if (fake.onopen) fake.onopen({});
+
+        // Send pong responses
+        setInterval(() => {
+          if (fake.onmessage) {
+            fake.onmessage({ data: JSON.stringify({ type: 'pong', ts: Date.now() }) });
+          }
+        }, 5000);
+
+        // Simulate periodic task updates
+        let updateIdx = 0;
+        setInterval(() => {
+          if (!fake.onmessage) return;
+          const updates = [
+            { type: 'task-update', task: { id: 've-ghi789', status: 'inprogress' } },
+            { type: 'log', entry: { ts: Date.now(), level: 'info', source: 'monitor', msg: 'Health check passed — all systems nominal' } },
+            { type: 'executor-update', executor: { name: 'copilot-claude', load: 55 + Math.floor(Math.random() * 25) } },
+          ];
+          fake.onmessage({ data: JSON.stringify(updates[updateIdx % updates.length]) });
+          updateIdx++;
+        }, 8000);
+      }, 100);
+
+      return fake;
+    };
+    window.WebSocket.CONNECTING = 0;
+    window.WebSocket.OPEN = 1;
+    window.WebSocket.CLOSING = 2;
+    window.WebSocket.CLOSED = 3;
+
+  })();
+  </script>
+</head>
+<body>
+  <!-- Demo mode banner -->
+  <div class="demo-banner">⚡ OpenFleet Demo Mode — Seed Data</div>
+
+  <!-- App root — boot loader lives INSIDE #app so Preact's render() replaces it -->
+  <div id="app">
+    <div id="boot-loader" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:'Inter',sans-serif;color:#9aa3b8;background:#0b0f14;overflow:hidden">
+      <style>
+        .boot-ring{position:absolute;inset:0;border-radius:50%;border:2px solid rgba(76,201,240,.15);animation:boot-spin 3s linear infinite}
+        .boot-ring-inner{position:absolute;inset:8px;border-radius:50%;border:2px solid transparent;border-top-color:#4cc9f0;border-right-color:rgba(76,201,240,.4);animation:boot-spin 1.5s linear infinite reverse}
+        .boot-dot{position:absolute;top:50%;left:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:linear-gradient(135deg,#4cc9f0,#60cc5d);box-shadow:0 0 20px rgba(76,201,240,.5);animation:boot-pulse 2s ease-in-out infinite}
+        @keyframes boot-spin{to{transform:rotate(360deg)}}
+        @keyframes boot-pulse{0%,100%{transform:scale(1);opacity:.8}50%{transform:scale(1.2);opacity:1}}
+      </style>
+      <div style="position:relative;width:60px;height:60px;margin-bottom:16px">
+        <div class="boot-ring"></div>
+        <div class="boot-ring-inner"></div>
+        <div class="boot-dot"></div>
+      </div>
+      <div style="font-size:13px;color:#64748b">Loading demo...</div>
+    </div>
+  </div>
+
+  <!-- Load the REAL app.js (it uses ES modules + importmap) -->
+  <script type="module" src="app.js"></script>
+  <script>
+    // Fallback: if ES modules fail to load within 12s, show an error
+    setTimeout(function() {
+      var el = document.getElementById('boot-loader');
+      if (el) el.innerHTML = '<div style="text-align:center;padding:40px;font-family:Inter,sans-serif;color:#94a3b8"><div style="font-size:18px;margin-bottom:8px">⚠️ Failed to load</div><div style="font-size:12px;color:#64748b">Check connection (CDN: esm.sh) or refresh</div></div>';
+    }, 12000);
+  </script>
+</body>
+</html>

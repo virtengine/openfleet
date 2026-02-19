@@ -1,0 +1,21 @@
+# Runtime / user config
+.env
+openfleet.config.json
+workspaces.json
+
+# Logs
+logs/
+.cache/
+
+# Dev / CI
+node_modules/
+package-lock.json
+.git/
+.github/
+.vscode/
+
+# OS junk
+.DS_Store
+Thumbs.db
+*.swp
+*.swo

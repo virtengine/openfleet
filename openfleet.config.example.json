@@ -1,0 +1,115 @@
+{
+  "$schema": "./openfleet.schema.json",
+  "projectName": "my-project",
+  "primaryAgent": "codex-sdk",
+  "kanban": {
+    "backend": "vk"
+  },
+  "internalExecutor": {
+    "mode": "vk"
+  },
+  "auth": {
+    "copilot": {
+      "sources": ["env", "cli"],
+      "fallbackToInteractive": false
+    },
+    "claude": {
+      "sources": ["env", "cli"],
+      "fallbackToInteractive": false
+    },
+    "codex": {
+      "sources": ["config"],
+      "fallbackToInteractive": true
+    }
+  },
+  "interactiveShellEnabled": false,
+  "executors": [
+    {
+      "name": "codex-default",
+      "executor": "CODEX",
+      "variant": "DEFAULT",
+      "weight": 100,
+      "role": "primary"
+    }
+  ],
+  "failover": {
+    "strategy": "weighted-random",
+    "maxRetries": 3,
+    "cooldownMinutes": 5,
+    "disableOnConsecutiveFailures": 3
+  },
+  "distribution": "primary-only",
+  "repositories": [
+    {
+      "name": "my-project",
+      "slug": "org/my-project",
+      "primary": true
+    }
+  ],
+  "agentPrompts": {
+    "orchestrator": ".openfleet/agents/orchestrator.md",
+    "planner": ".openfleet/agents/task-planner.md",
+    "monitorMonitor": ".openfleet/agents/monitor-monitor.md",
+    "taskExecutor": ".openfleet/agents/task-executor.md",
+    "taskExecutorRetry": ".openfleet/agents/task-executor-retry.md",
+    "taskExecutorContinueHasCommits": ".openfleet/agents/task-executor-continue-has-commits.md",
+    "taskExecutorContinueHasEdits": ".openfleet/agents/task-executor-continue-has-edits.md",
+    "taskExecutorContinueNoProgress": ".openfleet/agents/task-executor-continue-no-progress.md",
+    "reviewer": ".openfleet/agents/reviewer.md",
+    "conflictResolver": ".openfleet/agents/conflict-resolver.md",
+    "sdkConflictResolver": ".openfleet/agents/sdk-conflict-resolver.md",
+    "mergeStrategy": ".openfleet/agents/merge-strategy.md",
+    "mergeStrategyFix": ".openfleet/agents/merge-strategy-fix.md",
+    "mergeStrategyReAttempt": ".openfleet/agents/merge-strategy-reattempt.md",
+    "autofixFix": ".openfleet/agents/autofix-fix.md",
+    "autofixFallback": ".openfleet/agents/autofix-fallback.md",
+    "autofixLoop": ".openfleet/agents/autofix-loop.md",
+    "monitorCrashFix": ".openfleet/agents/monitor-crash-fix.md",
+    "monitorRestartLoopFix": ".openfleet/agents/monitor-restart-loop-fix.md"
+  },
+  "hookProfiles": {
+    "enabled": true,
+    "profile": "strict",
+    "targets": ["codex", "claude", "copilot"],
+    "overwriteExisting": false
+  },
+  "complexityRouting": {
+    "enabled": true,
+    "models": {
+      "CODEX": {
+        "low": {
+          "model": "gpt-5.1-codex-mini",
+          "variant": "GPT51_CODEX_MINI",
+          "reasoningEffort": "low"
+        },
+        "medium": {
+          "model": "gpt-5.2-codex",
+          "variant": "DEFAULT",
+          "reasoningEffort": "medium"
+        },
+        "high": {
+          "model": "gpt-5.1-codex-max",
+          "variant": "GPT51_CODEX_MAX",
+          "reasoningEffort": "high"
+        }
+      },
+      "COPILOT": {
+        "low": {
+          "model": "haiku-4.5",
+          "variant": "CLAUDE_HAIKU_4_5",
+          "reasoningEffort": "low"
+        },
+        "medium": {
+          "model": "sonnet-4.5",
+          "variant": "CLAUDE_SONNET_4_5",
+          "reasoningEffort": "medium"
+        },
+        "high": {
+          "model": "opus-4.6",
+          "variant": "CLAUDE_OPUS_4_6",
+          "reasoningEffort": "high"
+        }
+      }
+    }
+  }
+}
