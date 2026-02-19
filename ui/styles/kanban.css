@@ -246,9 +246,47 @@
   margin: 0 -12px -12px;
 }
 
-@media (min-width: 768px) {
+@media (min-width: 769px) {
   .kanban-column {
     min-width: 280px;
+  }
+}
+
+@media (max-width: 768px) {
+  .kanban-board {
+    scroll-snap-type: x mandatory;
+    scroll-padding: 12px;
+    padding: 8px 12px 12px;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .kanban-column {
+    flex: 0 0 85%;
+    min-width: 260px;
+    max-width: 85%;
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+  }
+}
+
+@media (max-width: 640px) {
+  .kanban-board {
+    gap: 10px;
+    scroll-snap-type: x mandatory;
+    scroll-padding: 16px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .kanban-column {
+    min-width: 86vw;
+    max-width: 86vw;
+    scroll-snap-align: start;
+    padding: 12px;
+  }
+
+  .kanban-cards {
+    padding: 2px;
   }
 }
 

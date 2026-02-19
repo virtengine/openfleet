@@ -563,6 +563,11 @@ export function TasksTab() {
   const [isSearching, setIsSearching] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [isCompact, setIsCompact] = useState(() => {
+    try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
+    catch { return false; }
+  });
   const searchRef = useRef(null);
 
   /* Detect desktop for keyboard shortcut hint */
@@ -598,6 +603,9 @@ export function TasksTab() {
   const hasSortFilter = sortVal && sortVal !== "updated";
   const hasActiveFilters =
     hasSearch || hasStatusFilter || hasPriorityFilter || hasSortFilter;
+  const activeFilterCount =
+    [hasSearch, hasStatusFilter, hasPriorityFilter, hasSortFilter]
+      .filter(Boolean).length;
   const filterSummaryParts = [];
   if (hasSearch)
     filterSummaryParts.push(`Search: "${truncate(trimmedSearch, 24)}"`);
@@ -614,6 +622,30 @@ export function TasksTab() {
       lastNonCompletedRef.current = filterVal;
     }
   }, [filterVal]);
+
+  useEffect(() => {
+    let mq;
+    try { mq = globalThis.matchMedia?.("(max-width: 768px)"); }
+    catch { mq = null; }
+    if (!mq) return undefined;
+    const handler = (event) => setIsCompact(event.matches);
+    handler(mq);
+    if (mq.addEventListener) mq.addEventListener("change", handler);
+    else mq.addListener(handler);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", handler);
+      else mq.removeListener(handler);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isCompact) {
+      setFiltersOpen(false);
+      setExportOpen(false);
+    } else {
+      setFiltersOpen(true);
+    }
+  }, [isCompact]);
 
   /* Search (local fuzzy filter on already-loaded data) */
   const searchLower = trimmedSearch.toLowerCase();
@@ -638,6 +670,11 @@ export function TasksTab() {
       ? lastNonCompletedRef.current || "all"
       : "done";
     await handleFilter(next);
+  };
+
+  const handleCompletedToggle = async (next) => {
+    if (next === completedOnly) return;
+    await toggleCompletedFilter();
   };
 
   const handlePriorityFilter = async (p) => {
@@ -691,6 +728,15 @@ export function TasksTab() {
     setIsSearching(false);
     await refreshTab("tasks");
   }, [triggerServerSearch]);
+
+  const handleToggleFilters = () => {
+    haptic();
+    setFiltersOpen((prev) => {
+      const next = !prev;
+      if (!next) setExportOpen(false);
+      return next;
+    });
+  };
 
   /* Keyboard shortcuts (mount/unmount) */
   useEffect(() => {
@@ -946,46 +992,162 @@ export function TasksTab() {
   return html`
     <!-- Sticky search bar + view toggle -->
     <div class="sticky-search">
-      <div class="sticky-search-row">
-        <div class="sticky-search-main">
-        <${SearchInput}
-          inputRef=${searchRef}
-          placeholder="Search title, ID, or tag…"
-          value=${searchVal}
-          onInput=${(e) => handleSearch(e.target.value)}
-          onClear=${handleClearSearch}
-        />
-        ${showKbdHint && !searchVal && html`<span class="pill" style="font-size:10px;padding:2px 7px;opacity:0.55;white-space:nowrap;pointer-events:none">${isMac ? "⌘K" : "Ctrl+K"}</span>`}
-        ${isSearching && html`<span class="pill" style="font-size:10px;padding:2px 7px;color:var(--accent);white-space:nowrap">Searching…</span>`}
-        ${!isSearching && searchVal && html`<span class="pill" style="font-size:10px;padding:2px 7px;white-space:nowrap">${visible.length} result${visible.length !== 1 ? "s" : ""}</span>`}
-        </div>
-        <div class="view-toggle">
-          <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
-          <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
-        </div>
-        <button
-          class="btn btn-ghost btn-sm"
-          onClick=${toggleCompletedFilter}
-        >
-          ${completedOnly ? "Show All" : "Show Completed"}
-        </button>
-        <div class="export-wrap">
-          <button
-            class="btn btn-secondary btn-sm export-btn"
-            disabled=${exporting}
-            onClick=${() => { setExportOpen(!exportOpen); haptic(); }}
-          >
-            ${DOWNLOAD_ICON} ${exporting ? "…" : "Export"}
-          </button>
-          ${exportOpen && html`
-            <div class="export-dropdown">
-              <button class="export-dropdown-item" onClick=${handleExportCSV}>📊 Export as CSV</button>
-              <button class="export-dropdown-item" onClick=${handleExportJSON}>📋 Export as JSON</button>
+      <div class="tasks-toolbar">
+        <div class="tasks-toolbar-row">
+          <div class="sticky-search-main">
+          <${SearchInput}
+            inputRef=${searchRef}
+            placeholder="Search title, ID, or tag…"
+            value=${searchVal}
+            onInput=${(e) => handleSearch(e.target.value)}
+            onClear=${handleClearSearch}
+          />
+          ${showKbdHint && !searchVal && html`<span class="pill" style="font-size:10px;padding:2px 7px;opacity:0.55;white-space:nowrap;pointer-events:none">${isMac ? "⌘K" : "Ctrl+K"}</span>`}
+          ${isSearching && html`<span class="pill" style="font-size:10px;padding:2px 7px;color:var(--accent);white-space:nowrap">Searching…</span>`}
+          ${!isSearching && searchVal && html`<span class="pill" style="font-size:10px;padding:2px 7px;white-space:nowrap">${visible.length} result${visible.length !== 1 ? "s" : ""}</span>`}
+          </div>
+          <div class="tasks-toolbar-actions">
+            ${isCompact && html`
+              <button
+                class="btn btn-secondary btn-sm filter-toggle ${filtersOpen ? "active" : ""}"
+                onClick=${handleToggleFilters}
+                aria-expanded=${filtersOpen}
+              >
+                ${ICONS.filter}
+                Filters
+                ${activeFilterCount > 0 && html`
+                  <span class="filter-count">${activeFilterCount}</span>
+                `}
+              </button>
+            `}
+            <div class="view-toggle">
+              <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
+              <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
             </div>
-          `}
+          </div>
+        </div>
+
+        <div class="tasks-filter-panel ${filtersOpen ? "open" : ""}">
+          <div class="tasks-filter-grid">
+            <div class="tasks-filter-section">
+              <div class="tasks-filter-title">Status</div>
+              <div class="chip-group">
+                ${STATUS_CHIPS.map(
+                  (s) => html`
+                    <button
+                      key=${s.value}
+                      class="chip ${filterVal === s.value ? "active" : ""}"
+                      onClick=${() => handleFilter(s.value)}
+                    >
+                      ${s.label}
+                    </button>
+                  `,
+                )}
+              </div>
+            </div>
+            <div class="tasks-filter-section">
+              <div class="tasks-filter-title">Priority</div>
+              <div class="chip-group">
+                ${PRIORITY_CHIPS.map(
+                  (p) => html`
+                    <button
+                      key=${p.value}
+                      class="chip chip-outline ${priorityVal === p.value
+                        ? "active"
+                        : ""}"
+                      onClick=${() => handlePriorityFilter(p.value)}
+                    >
+                      ${p.label}
+                    </button>
+                  `,
+                )}
+              </div>
+            </div>
+            <div class="tasks-filter-section">
+              <div class="tasks-filter-title">Sort</div>
+              <div class="tasks-filter-row">
+                <select
+                  class="input input-sm"
+                  value=${sortVal}
+                  onChange=${handleSort}
+                >
+                  ${SORT_OPTIONS.map(
+                    (o) =>
+                      html`<option key=${o.value} value=${o.value}>${o.label}</option>`,
+                  )}
+                </select>
+                <span class="pill">${visible.length} shown</span>
+              </div>
+            </div>
+            <div class="tasks-filter-section">
+              <div class="tasks-filter-title">Actions</div>
+              <div class="tasks-filter-row">
+                ${isCompact
+                  ? html`
+                      <${Toggle}
+                        label="Completed only"
+                        checked=${completedOnly}
+                        onChange=${handleCompletedToggle}
+                      />
+                    `
+                  : html`
+                      <button
+                        class="btn btn-ghost btn-sm"
+                        onClick=${toggleCompletedFilter}
+                      >
+                        ${completedOnly ? "Show All" : "Show Completed"}
+                      </button>
+                    `}
+                ${hasActiveFilters &&
+                html`
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    onClick=${handleClearFilters}
+                  >
+                    Clear Filters
+                  </button>
+                `}
+                <div class="export-wrap">
+                  <button
+                    class="btn btn-secondary btn-sm export-btn"
+                    disabled=${exporting}
+                    onClick=${() => { setExportOpen(!exportOpen); haptic(); }}
+                  >
+                    ${DOWNLOAD_ICON} ${exporting ? "…" : "Export"}
+                  </button>
+                  ${exportOpen && html`
+                    <div class="export-dropdown">
+                      <button class="export-dropdown-item" onClick=${handleExportCSV}>📊 Export as CSV</button>
+                      <button class="export-dropdown-item" onClick=${handleExportJSON}>📋 Export as JSON</button>
+                    </div>
+                  `}
+                </div>
+              </div>
+            </div>
+            ${!isKanban && html`
+              <div class="tasks-filter-section">
+                <div class="tasks-filter-title">List Options</div>
+                <label
+                  class="meta-text toggle-label"
+                  onClick=${() => {
+                    setBatchMode(!batchMode);
+                    haptic();
+                    setSelectedIds(new Set());
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked=${batchMode}
+                    style="accent-color:var(--accent)"
+                  />
+                  Batch Select
+                </label>
+              </div>
+            `}
+          </div>
         </div>
       </div>
-      ${hasActiveFilters && html`
+      ${hasActiveFilters && (!isCompact || filtersOpen) && html`
         <div class="filter-summary">
           <div class="filter-summary-text">
             <span class="pill">Filters</span>
@@ -1039,72 +1201,6 @@ export function TasksTab() {
 
     <!-- Kanban board view -->
     ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} />`}
-
-    <!-- List view filters -->
-    ${!isKanban && html`<${Card} title="Task Board">
-      <div class="chip-group mb-sm">
-        ${STATUS_CHIPS.map(
-          (s) => html`
-            <button
-              key=${s.value}
-              class="chip ${filterVal === s.value ? "active" : ""}"
-              onClick=${() => handleFilter(s.value)}
-            >
-              ${s.label}
-            </button>
-          `,
-        )}
-      </div>
-      <div class="chip-group mb-sm">
-        ${PRIORITY_CHIPS.map(
-          (p) => html`
-            <button
-              key=${p.value}
-              class="chip chip-outline ${priorityVal === p.value
-                ? "active"
-                : ""}"
-              onClick=${() => handlePriorityFilter(p.value)}
-            >
-              ${p.label}
-            </button>
-          `,
-        )}
-      </div>
-      <div class="flex-between mb-sm">
-        <select
-          class="input input-sm"
-          value=${sortVal}
-          onChange=${handleSort}
-          style="max-width:140px"
-        >
-          ${SORT_OPTIONS.map(
-            (o) =>
-              html`<option key=${o.value} value=${o.value}>${o.label}</option>`,
-          )}
-        </select>
-        <span class="pill">${visible.length} shown</span>
-      </div>
-
-      <!-- Batch mode toggle -->
-      <div class="flex-between mb-sm">
-        <label
-          class="meta-text toggle-label"
-          onClick=${() => {
-            setBatchMode(!batchMode);
-            haptic();
-            setSelectedIds(new Set());
-          }}
-        >
-          <input
-            type="checkbox"
-            checked=${batchMode}
-            style="accent-color:var(--accent)"
-          />
-          Batch Select
-        </label>
-      </div>
-
-    <//>
 
     <!-- Task list -->
     ${visible.map(

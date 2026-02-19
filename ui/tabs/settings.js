@@ -90,13 +90,15 @@ const SETTINGS_STYLES = `
 /* Floating save bar */
 .settings-save-bar {
   position: fixed;
-  bottom: 0;
+  bottom: calc(var(--nav-height) + var(--safe-bottom));
   left: 0; right: 0;
   z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
+  row-gap: 8px;
   padding: 12px 16px;
   padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
   background: var(--glass-bg, rgba(30,30,46,0.95));
@@ -115,11 +117,20 @@ const SETTINGS_STYLES = `
   gap: 8px;
   font-size: 13px;
   color: var(--text-secondary, #999);
+  min-width: 0;
+  flex: 1 1 auto;
 }
 .settings-save-bar .save-bar-actions {
   display: flex;
   gap: 8px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+@media (min-width: 1200px) {
+  .settings-save-bar {
+    bottom: 0;
+  }
 }
 /* Individual setting row */
 .setting-row {
@@ -131,20 +142,34 @@ const SETTINGS_STYLES = `
 .setting-row:last-child { border-bottom: none; }
 .setting-row-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   margin-bottom: 8px;
+  flex-wrap: wrap;
+  row-gap: 4px;
+  max-width: 100%;
 }
 .setting-row-label {
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary, #fff);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .setting-row-key {
   font-size: 11px;
   font-family: monospace;
   color: var(--text-tertiary, #666);
   opacity: 0.7;
+  max-width: 100%;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
 /* Help tooltip */
 .setting-help-btn {
@@ -216,13 +241,15 @@ const SETTINGS_STYLES = `
   gap: 8px;
   overflow: visible;
   max-width: 100%;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 .setting-input-wrap input[type="text"],
 .setting-input-wrap input[type="number"],
 .setting-input-wrap input[type="password"],
 .setting-input-wrap textarea,
 .setting-input-wrap select {
-  flex: 1;
+  flex: 1 1 220px;
   padding: 8px 12px;
   border-radius: 8px;
   border: 1px solid var(--border, rgba(255,255,255,0.1));
@@ -231,6 +258,8 @@ const SETTINGS_STYLES = `
   font-size: 13px;
   outline: none;
   transition: border-color 0.2s;
+  min-width: 0;
+  max-width: 100%;
 }
 .setting-input-wrap input:focus,
 .setting-input-wrap textarea:focus,
@@ -322,6 +351,15 @@ const SETTINGS_STYLES = `
 .settings-content-scroll {
   padding-bottom: 160px;
 }
+
+body.settings-save-open .main-content {
+  padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 100px);
+}
+@media (min-width: 1200px) {
+  body.settings-save-open .main-content {
+    padding-bottom: 140px;
+  }
+}
 `;
 
 /* ─── Inject styles once ─── */
@@ -389,7 +427,7 @@ function cloudRemove(key) {
 
 /* ─── Version info ─── */
 const APP_VERSION = "1.0.0";
-const APP_NAME = "VirtEngine Control Center";
+const APP_NAME = "Bosun";
 
 /* ─── Fuzzy search helper ─── */
 function fuzzyMatch(needle, haystack) {
@@ -507,6 +545,15 @@ function ServerConfigMode() {
 
   /* Count of unsaved changes */
   const changeCount = useMemo(() => Object.keys(edits).length, [edits]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const className = "settings-save-open";
+    document.body.classList.toggle(className, changeCount > 0);
+    return () => {
+      document.body.classList.remove(className);
+    };
+  }, [changeCount]);
 
   /* Any setting with restart: true in the changes? */
   const hasRestartSetting = useMemo(() => {
@@ -1069,6 +1116,7 @@ function AppPreferencesMode() {
 
   /* Preferences (loaded from CloudStorage) */
   const [fontSize, setFontSize] = useState("medium");
+  const [colorTheme, setColorTheme] = useState("system");
   const [notifyUpdates, setNotifyUpdates] = useState(true);
   const [notifyErrors, setNotifyErrors] = useState(true);
   const [notifyComplete, setNotifyComplete] = useState(true);
@@ -1091,11 +1139,21 @@ function AppPreferencesMode() {
     }
   }
 
+  /* Apply colour theme to the document */
+  function applyColorTheme(theme) {
+    if (!theme || theme === "system") {
+      document.documentElement.removeAttribute("data-theme");
+    } else {
+      document.documentElement.setAttribute("data-theme", theme);
+    }
+  }
+
   /* Load prefs from CloudStorage on mount */
   useEffect(() => {
     (async () => {
-      const [fs, nu, ne, nc, dm, dmp, ds, dr] = await Promise.all([
+      const [fs, ct, nu, ne, nc, dm, dmp, ds, dr] = await Promise.all([
         cloudGet("fontSize"),
+        cloudGet("colorTheme"),
         cloudGet("notifyUpdates"),
         cloudGet("notifyErrors"),
         cloudGet("notifyComplete"),
@@ -1107,6 +1165,10 @@ function AppPreferencesMode() {
       if (fs) {
         setFontSize(fs);
         applyFontSize(fs);
+      }
+      if (ct) {
+        setColorTheme(ct);
+        applyColorTheme(ct);
       }
       if (nu != null) setNotifyUpdates(nu);
       if (ne != null) setNotifyErrors(ne);
@@ -1132,6 +1194,13 @@ function AppPreferencesMode() {
     cloudSet("fontSize", v);
     haptic();
     applyFontSize(v);
+  };
+
+  const handleColorTheme = (v) => {
+    setColorTheme(v);
+    cloudSet("colorTheme", v);
+    haptic();
+    applyColorTheme(v);
   };
 
   const handleDefaultMaxParallel = (v) => {
@@ -1242,12 +1311,20 @@ function AppPreferencesMode() {
     <!-- ─── Appearance ─── -->
     <${Collapsible} title="🎨 Appearance" defaultOpen=${false}>
       <${Card}>
-        <div class="card-subtitle mb-sm">Color Scheme</div>
-        <div class="meta-text mb-md">
-          Follows your Telegram theme automatically.
-          ${tg?.colorScheme
-            ? html` Current: <strong>${tg.colorScheme}</strong>`
-            : ""}
+        <div class="card-subtitle mb-sm">Color Theme</div>
+        <${SegmentedControl}
+          options=${[
+            { value: "system", label: "System" },
+            { value: "light", label: "Light" },
+            { value: "dark", label: "Dark" },
+          ]}
+          value=${colorTheme}
+          onChange=${handleColorTheme}
+        />
+        <div class="meta-text mt-sm mb-md" style="font-size: 11px;">
+          ${colorTheme === "system"
+            ? html`Follows your ${tg ? "Telegram" : "OS"} theme automatically.`
+            : html`Using <strong>${colorTheme}</strong> theme.`}
         </div>
         <div class="card-subtitle mb-sm">Font Size</div>
         <${SegmentedControl}
@@ -1437,22 +1514,22 @@ function AppPreferencesMode() {
           </div>
           <div class="meta-text">Version ${APP_VERSION}</div>
           <div class="meta-text mt-sm">
-            Telegram Mini App for VirtEngine orchestrator management
+            Telegram Mini App for Bosun task orchestration
           </div>
           <div class="meta-text mt-sm">
-            Built with Preact + HTM · No build step
+            Built with Preact +https://github.com/virtengine/bosun#virtenginebosun"
           </div>
           <div class="btn-row mt-md" style="justify-content:center">
-            <button
+            <buttonhttps://github.com/virtengine/bosun#virtenginebosun"
               class="btn btn-ghost btn-sm"
               onClick=${() => {
                 haptic();
                 const tg = globalThis.Telegram?.WebApp;
                 if (tg?.openLink)
-                  tg.openLink("https://github.com/virtengine/virtengine");
+                  tg.openLink("https://github.com/virtengine/bosun#virtenginebosun");
                 else
                   globalThis.open(
-                    "https://github.com/virtengine/virtengine",
+                    "https://github.com/virtengine/bosun#virtenginebosun",
                     "_blank",
                   );
               }}

@@ -16,6 +16,7 @@ const backendError = signal("");
 const backendLastSeen = signal(null);
 const backendRetryCount = signal(0);
 const DESKTOP_MIN_WIDTH = 1200;
+const COMPACT_NAV_MAX_WIDTH = 520;
 
 /* ── Module imports ── */
 import { ICONS } from "./modules/icons.js";
@@ -55,7 +56,7 @@ function getNavHint() {
 }
 
 /* ── Component imports ── */
-import { ToastContainer } from "./components/shared.js";
+import { ToastContainer, Modal } from "./components/shared.js";
 import { PullToRefresh } from "./components/forms.js";
 import {
   SessionList,
@@ -527,19 +528,29 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
 /* ═══════════════════════════════════════════════
  *  Bottom Navigation
  * ═══════════════════════════════════════════════ */
-function BottomNav() {
+const PRIMARY_NAV_TABS = ["dashboard", "tasks", "agents", "control"];
+const MORE_NAV_TABS = ["chat", "infra", "logs", "settings"];
+
+function getTabsById(ids) {
+  return ids
+    .map((id) => TAB_CONFIG.find((tab) => tab.id === id))
+    .filter(Boolean);
+}
+
+function BottomNav({ compact, moreOpen, onToggleMore, onNavigate }) {
+  const primaryTabs = getTabsById(PRIMARY_NAV_TABS);
   return html`
-    <nav class="bottom-nav">
-      ${TAB_CONFIG.filter((t) => t.id !== "settings").map(
-        (tab) => {
-          const isHome = tab.id === "dashboard";
-          const isActive = activeTab.value === tab.id;
-          return html`
+    <nav class=${`bottom-nav ${compact ? "compact" : ""}`}>
+      ${primaryTabs.map((tab) => {
+        const isHome = tab.id === "dashboard";
+        const isActive = activeTab.value === tab.id;
+        return html`
           <button
             key=${tab.id}
-            class="nav-item ${activeTab.value === tab.id ? "active" : ""}"
+            class="nav-item ${isActive ? "active" : ""}"
+            aria-label=${`Go to ${tab.label}`}
             onClick=${() =>
-              navigateTo(tab.id, {
+              onNavigate(tab.id, {
                 resetHistory: isHome,
                 forceRefresh: isHome && isActive,
               })}
@@ -548,9 +559,75 @@ function BottomNav() {
             <span class="nav-label">${tab.label}</span>
           </button>
         `;
-        },
-      )}
+      })}
+      <button
+        class="nav-item nav-item-more ${moreOpen ? "active" : ""}"
+        aria-haspopup="dialog"
+        aria-expanded=${moreOpen ? "true" : "false"}
+        aria-label=${moreOpen ? "Close more menu" : "Open more menu"}
+        onClick=${onToggleMore}
+      >
+        ${ICONS.ellipsis}
+        <span class="nav-label">More</span>
+      </button>
     </nav>
+  `;
+}
+
+function MoreSheet({ open, onClose, onNavigate }) {
+  const primaryTabs = getTabsById(PRIMARY_NAV_TABS);
+  const moreTabs = getTabsById(MORE_NAV_TABS);
+  return html`
+    <${Modal} title="More" open=${open} onClose=${onClose}>
+      <div class="more-menu" role="navigation" aria-label="More menu">
+        <div class="more-menu-section">
+          <div class="more-menu-section-title">Quick Access</div>
+          <div class="more-menu-grid">
+            ${primaryTabs.map((tab) => {
+              const isHome = tab.id === "dashboard";
+              const isActive = activeTab.value === tab.id;
+              return html`
+                <button
+                  key=${tab.id}
+                  class="more-menu-item ${isActive ? "active" : ""}"
+                  aria-label=${`Open ${tab.label}`}
+                  onClick=${() =>
+                    onNavigate(tab.id, {
+                      resetHistory: isHome,
+                    })}
+                >
+                  <span class="more-menu-icon">${ICONS[tab.icon]}</span>
+                  <span class="more-menu-label">${tab.label}</span>
+                </button>
+              `;
+            })}
+          </div>
+        </div>
+        <div class="more-menu-section">
+          <div class="more-menu-section-title">Explore</div>
+          <div class="more-menu-grid">
+            ${moreTabs.map((tab) => {
+              const isHome = tab.id === "dashboard";
+              const isActive = activeTab.value === tab.id;
+              return html`
+                <button
+                  key=${tab.id}
+                  class="more-menu-item ${isActive ? "active" : ""}"
+                  aria-label=${`Open ${tab.label}`}
+                  onClick=${() =>
+                    onNavigate(tab.id, {
+                      resetHistory: isHome,
+                    })}
+                >
+                  <span class="more-menu-icon">${ICONS[tab.icon]}</span>
+                  <span class="more-menu-label">${tab.label}</span>
+                </button>
+              `;
+            })}
+          </div>
+        </div>
+      </div>
+    <//>
   `;
 }
 
@@ -563,7 +640,12 @@ function App() {
   const mainRef = useRef(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const scrollVisibilityRef = useRef(false);
+  const [isMoreOpen, setIsMoreOpen] = useState(false);
   const resizeRef = useRef(null);
+  const [isCompactNav, setIsCompactNav] = useState(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return false;
+    return window.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`).matches;
+  });
   const [isDesktop, setIsDesktop] = useState(() => {
     if (typeof window === "undefined" || !window.matchMedia) return false;
     return window.matchMedia(`(min-width: ${DESKTOP_MIN_WIDTH}px)`).matches;
@@ -641,6 +723,19 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const query = window.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`);
+    const update = () => setIsCompactNav(query.matches);
+    update();
+    if (query.addEventListener) query.addEventListener("change", update);
+    else query.addListener(update);
+    return () => {
+      if (query.removeEventListener) query.removeEventListener("change", update);
+      else query.removeListener(update);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!isDesktop || typeof window === "undefined") return;
     localStorage.setItem("ve-rail-width", String(railWidth));
   }, [railWidth, isDesktop]);
@@ -658,6 +753,28 @@ function App() {
       delete document.documentElement.dataset.desktop;
     }
   }, [isDesktop]);
+
+  const closeMore = useCallback(() => setIsMoreOpen(false), []);
+
+  const handleNavigate = useCallback((tabId, options = {}) => {
+    setIsMoreOpen(false);
+    navigateTo(tabId, options);
+  }, []);
+
+  const toggleMore = useCallback(() => {
+    setIsMoreOpen((prev) => !prev);
+  }, []);
+
+  useEffect(() => {
+    if (typeof globalThis === "undefined") return;
+    const handler = () => setIsMoreOpen(false);
+    globalThis.addEventListener("ve:close-modals", handler);
+    return () => globalThis.removeEventListener("ve:close-modals", handler);
+  }, []);
+
+  useEffect(() => {
+    setIsMoreOpen(false);
+  }, [activeTab.value]);
 
   useEffect(() => {
     // Initialize Telegram Mini App SDK
@@ -859,7 +976,17 @@ function App() {
           />`
         : null}
     </div>
-    <${BottomNav} />
+    <${BottomNav}
+      compact=${isCompactNav}
+      moreOpen=${isMoreOpen}
+      onToggleMore=${toggleMore}
+      onNavigate=${handleNavigate}
+    />
+    <${MoreSheet}
+      open=${isMoreOpen}
+      onClose=${closeMore}
+      onNavigate=${handleNavigate}
+    />
   `;
 }
 
