@@ -29,7 +29,7 @@
   --pink: #ec4899;
 
   /* Gradients */
-  --gradient-primary: linear-gradient(135deg, #60cc5d, #4caf50);
+  --gradient-primary: linear-gradient(135deg, #60cc5dd6, #07f21087);
   --gradient-hero: linear-gradient(135deg, #60cc5d 0%, #4caf50 100%);
   --gradient-card-border: linear-gradient(135deg, rgba(96,204,93,0.25), rgba(76,175,80,0.15));
   --gradient-glow: radial-gradient(ellipse at 50% 0%, rgba(96,204,93,0.1) 0%, transparent 60%);
@@ -193,7 +193,7 @@ section {
   left: 0;
   right: 0;
   z-index: 1000;
-  padding: 1rem 0;
+  padding: 1.5rem 0;
   transition: all 0.3s ease;
   backdrop-filter: blur(0px);
   -webkit-backdrop-filter: blur(0px);
@@ -204,7 +204,7 @@ section {
   backdrop-filter: blur(20px) saturate(1.5);
   -webkit-backdrop-filter: blur(20px) saturate(1.5);
   border-bottom: 1px solid var(--border-subtle);
-  padding: 0.6rem 0;
+  padding: 0.9rem 0;
 }
 
 .nav__inner {
@@ -221,14 +221,14 @@ section {
   align-items: center;
   gap: 0.4rem;
   font-weight: 800;
-  font-size: 1.25rem;
+  font-size: 1.875rem;
   color: var(--text-primary);
   letter-spacing: -0.03em;
 }
 
 .nav__brand-icon {
-  width: 64px;
-  height: 64px;
+  width: 96px;
+  height: 96px;
   border-radius: 0;
   background: none;
   display: grid;
@@ -246,7 +246,7 @@ section {
 
 .nav__links a {
   color: var(--text-secondary);
-  font-size: 0.9rem;
+  font-size: 1.35rem;
   font-weight: 500;
   transition: color 0.2s ease;
   position: relative;
@@ -305,7 +305,7 @@ section {
   background: none;
   border: none;
   color: var(--text-primary);
-  font-size: 1.5rem;
+  font-size: 2.25rem;
   cursor: pointer;
   padding: 0.25rem;
 }
@@ -1310,6 +1310,23 @@ body.is-miniapp-fullscreen {
     --section-gap: 5rem;
   }
 
+  .nav {
+    padding: 1rem 0;
+  }
+
+  .nav--scrolled {
+    padding: 0.7rem 0;
+  }
+
+  .nav__brand {
+    font-size: 1.4rem;
+  }
+
+  .nav__brand-icon {
+    width: 56px;
+    height: 56px;
+  }
+
   .nav__links {
     display: none;
     position: fixed;
@@ -1331,11 +1348,12 @@ body.is-miniapp-fullscreen {
   }
 
   .nav__links a {
-    font-size: 1.2rem;
+    font-size: 1.1rem;
   }
 
   .nav__toggle {
     display: block;
+    font-size: 1.8rem;
     z-index: 1001;
   }
 

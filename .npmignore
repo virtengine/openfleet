@@ -1,6 +1,6 @@
 # Runtime / user config
 .env
-openfleet.config.json
+bosun.config.json
 workspaces.json
 
 # Logs
