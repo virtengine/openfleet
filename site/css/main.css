@@ -406,11 +406,11 @@ section {
 }
 
 .hero__subtitle {
-  font-size: clamp(1.1rem, 2.5vw, 1.35rem);
+  font-size: clamp(1rem, 2vw, 1.15rem);
   color: var(--text-secondary);
   max-width: 700px;
-  margin: 0 auto 3rem;
-  line-height: 1.8;
+  margin: 0 0 1.5rem;
+  line-height: 1.85;
 }
 
 .hero__actions {
@@ -425,57 +425,93 @@ section {
 .hero__install {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 1rem;
   flex-wrap: wrap;
-  margin-bottom: 3rem;
+  margin-bottom: 1.5rem;
 }
 
 .hero__demo {
   margin-top: 0;
-  padding-top: 6rem;
+  padding-top: 0;
 }
 
 .hero__layout {
   display: grid;
-  grid-template-columns: 380px 1fr;
-  gap: 3rem;
-  align-items: start;
-  padding-top: 6rem;
-  padding-bottom: 2rem;
+  grid-template-columns: 400px 1fr;
+  gap: 4rem;
+  align-items: center;
+  width: 100%;
 }
 
-@media (max-width: 1024px) {
+@media (max-width: 1100px) {
   .hero__layout {
     grid-template-columns: 1fr;
-    padding-top: 4rem;
+    gap: 3rem;
   }
 }
 
 .hero__intro {
   text-align: left;
-  position: sticky;
-  top: 6rem;
 }
 
-.hero__intro .hero__subtitle {
-  margin-left: 0;
-  margin-right: 0;
-  font-size: 1.1rem;
-  line-height: 1.8;
-  margin-bottom: 2rem;
+/* ── Hero headline (replaces the old hero__title + typed combo) ──────── */
+.hero__headline {
+  font-size: clamp(2.2rem, 4vw, 3.2rem);
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  margin-bottom: 1.5rem;
+  color: var(--text-primary);
 }
 
-.hero__intro .hero__install {
-  justify-content: flex-start;
-  margin-bottom: 1rem;
+.hero__headline .gradient-text {
+  display: inline-block;
+}
+
+/* ── Hero feature bullets ────────────────────────────────────────────── */
+.hero__bullets {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.hero__bullets li {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.hero__bullets li::before {
+  content: '✓';
+  color: var(--green);
+  font-weight: 700;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+
+/* ── Hero CTA row ────────────────────────────────────────────────────── */
+.hero__ctas {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.5rem;
 }
 
 .hero__version-tag {
+  display: block;
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   color: var(--text-muted);
   letter-spacing: 0.03em;
+  margin-top: 0.5rem;
 }
 
 /* ── Buttons ───────────────────────────────────────────────────────────── */
