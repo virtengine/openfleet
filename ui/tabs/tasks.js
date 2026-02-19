@@ -467,7 +467,6 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           }}
         />
 
-        <!-- Metadata -->
         ${task?.created_at &&
         html`
           <div class="meta-text">
@@ -489,7 +488,6 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           </div>
         `}
 
-        <!-- Action buttons -->
         <div class="btn-row">
           ${task?.status === "todo" &&
           onStart &&
@@ -535,7 +533,6 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           `}
         </div>
 
-        <!-- Agent log link -->
         ${task?.id &&
         html`
           <button
@@ -990,7 +987,6 @@ export function TasksTab() {
     `;
 
   return html`
-    <!-- Sticky search bar + view toggle -->
     <div class="sticky-search">
       <div class="tasks-toolbar">
         <div class="tasks-toolbar-row">
@@ -1199,10 +1195,8 @@ export function TasksTab() {
       .export-dropdown-item:hover { background:var(--hover-bg, rgba(255,255,255,.08)); }
     </style>
 
-    <!-- Kanban board view -->
     ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} />`}
 
-    <!-- Task list -->
     ${visible.map(
       (task) => html`
         <div
@@ -1303,7 +1297,6 @@ export function TasksTab() {
       />
     `}
 
-    <!-- Pagination -->
     <div class="pager">
       <button
         class="btn btn-secondary btn-sm"
@@ -1321,9 +1314,7 @@ export function TasksTab() {
         Next →
       </button>
     </div>
-    `}
 
-    <!-- FAB -->
     <button
       class="fab"
       onClick=${() => {
@@ -1334,10 +1325,8 @@ export function TasksTab() {
       ${ICONS.plus}
     </button>
 
-    <!-- Modals -->
     ${showCreate &&
     html`
-      <!-- re-use CreateTaskModal from dashboard.js -->
       <${CreateTaskModalInline} onClose=${() => setShowCreate(false)} />
     `}
     ${detailTask &&

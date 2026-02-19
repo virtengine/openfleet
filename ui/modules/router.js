@@ -50,6 +50,11 @@ export function navigateTo(tab, opts = {}) {
   }
 }
 
+// Expose navigateTo globally for demo bot menu integration
+if (typeof globalThis !== "undefined") {
+  globalThis.__bosunSetTab = (tab) => navigateTo(tab);
+}
+
 /**
  * Go back to the previous tab (from history stack).
  */

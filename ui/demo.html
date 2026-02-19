@@ -59,6 +59,177 @@
     :root:not([data-theme="light"]) {
       color-scheme: dark;
     }
+    /* Reserve space at bottom for the Telegram chat overlay */
+    body { padding-bottom: 44px !important; } /* collapsed peek-bar height */
+    body.tg-chat-expanded { padding-bottom: 360px !important; } /* expanded chat height */
+
+    /* ── Telegram Chat Simulation (sticky bot menu at bottom) ── */
+    .tg-chat-overlay {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 99998;
+      font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+      pointer-events: none;
+      transition: transform 0.3s ease-out, opacity 0.3s ease-out;
+    }
+    .tg-chat-overlay.collapsed {
+      transform: translateY(calc(100% - 44px));
+    }
+    /* The chat area: simulates bottom of a Telegram chat */
+    .tg-chat-area {
+      pointer-events: auto;
+      background: #0e1621;
+      border-top: 1px solid #1b2838;
+      max-height: 70vh;
+      overflow-y: auto;
+    }
+    /* Bot message bubble */
+    .tg-msg {
+      padding: 6px 10px 4px;
+      max-width: 90%;
+      margin: 8px 8px 2px;
+    }
+    .tg-msg-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: #4cc9f0;
+      margin-bottom: 2px;
+    }
+    .tg-msg-bubble {
+      background: #182533;
+      border-radius: 4px 12px 12px 12px;
+      padding: 8px 12px;
+      color: #e8edf2;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    .tg-msg-bubble strong {
+      color: #fff;
+    }
+    .tg-msg-time {
+      font-size: 11px;
+      color: #5b7083;
+      text-align: right;
+      margin-top: 2px;
+      padding-right: 4px;
+    }
+    /* Inline keyboard buttons — matches Telegram style */
+    .tg-inline-kb {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      padding: 4px 8px 6px;
+      max-width: 90%;
+      margin-left: 8px;
+    }
+    .tg-inline-row {
+      display: flex;
+      gap: 1px;
+    }
+    .tg-inline-btn {
+      flex: 1;
+      background: #2b5278;
+      border: none;
+      border-radius: 4px;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 500;
+      padding: 8px 4px;
+      cursor: pointer;
+      transition: background 0.12s;
+      text-align: center;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      pointer-events: auto;
+    }
+    .tg-inline-btn:hover {
+      background: #3a6da0;
+    }
+    .tg-inline-btn:active {
+      background: #1d3f5e;
+    }
+    .tg-inline-btn.close-btn {
+      background: transparent;
+      color: #5b7083;
+      font-size: 12px;
+    }
+    .tg-inline-btn.close-btn:hover {
+      color: #ef5350;
+      background: rgba(239, 83, 80, 0.08);
+    }
+    /* Chat input bar at very bottom */
+    .tg-chat-input-bar {
+      pointer-events: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #17212b;
+      border-top: 1px solid #1b2838;
+      padding: 6px 10px;
+    }
+    .tg-chat-input {
+      flex: 1;
+      background: #242f3d;
+      border: none;
+      border-radius: 18px;
+      padding: 8px 14px;
+      font-size: 14px;
+      color: #e8edf2;
+      outline: none;
+    }
+    .tg-chat-input::placeholder {
+      color: #5b7083;
+    }
+    .tg-chat-input-btn {
+      background: none;
+      border: none;
+      font-size: 20px;
+      cursor: pointer;
+      padding: 4px;
+      color: #5b7083;
+      transition: color 0.15s;
+    }
+    .tg-chat-input-btn:hover {
+      color: #4cc9f0;
+    }
+    .tg-chat-input-btn.menu-toggle {
+      font-size: 22px;
+    }
+    /* Toggle bar when collapsed — peek strip */
+    .tg-peek-bar {
+      pointer-events: auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      background: #17212b;
+      border-top: 1px solid #1b2838;
+      padding: 10px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .tg-peek-bar:hover {
+      background: #1e2c3a;
+    }
+    .tg-peek-bar-text {
+      font-size: 13px;
+      font-weight: 600;
+      color: #4cc9f0;
+    }
+    .tg-peek-bar-icon {
+      font-size: 14px;
+      color: #5b7083;
+      transition: transform 0.3s;
+    }
+    .tg-chat-overlay.collapsed .tg-peek-bar-icon {
+      transform: rotate(180deg);
+    }
+    .tg-chat-overlay.collapsed .tg-chat-area {
+      display: none;
+    }
   </style>
 
   <!-- ═══ DEMO MOCK LAYER ═══════════════════════════════════════════════
@@ -931,6 +1102,147 @@
   </script>
 </head>
 <body>
+  <!-- ═══ Telegram Chat Simulation ═══════════════════════════════════
+       Simulates the bottom of a Telegram chat with the Bosun bot's
+       sticky inline keyboard menu — exactly as it appears in real TG.
+       The MiniApp (#app) sits ABOVE this, like a half-sheet overlay.
+       ═════════════════════════════════════════════════════════════════ -->
+  <div class="tg-chat-overlay" id="tg-chat-overlay">
+    <!-- Peek bar (always visible — click to expand/collapse) -->
+    <div class="tg-peek-bar" id="tg-peek-bar">
+      <span class="tg-peek-bar-icon">▼</span>
+      <span class="tg-peek-bar-text">Telegram Chat — Bosun Bot</span>
+      <span class="tg-peek-bar-icon">▼</span>
+    </div>
+
+    <!-- Chat message area -->
+    <div class="tg-chat-area">
+      <!-- Bot message -->
+      <div class="tg-msg">
+        <div class="tg-msg-name">Bosun Bot</div>
+        <div class="tg-msg-bubble">
+          <strong>🤖 Bosun Control Center</strong><br/>
+          Pick a section below to manage Bosun.<br/><br/>
+          Executor: running • Slots 2/4
+        </div>
+        <div class="tg-msg-time">12:42</div>
+      </div>
+
+      <!-- Inline keyboard (the actual "bot menu") -->
+      <div class="tg-inline-kb">
+        <div class="tg-inline-row">
+          <button class="tg-inline-btn" data-screen="miniapp">📱 Open Control Center</button>
+        </div>
+        <div class="tg-inline-row">
+          <button class="tg-inline-btn" data-screen="overview">📊 Overview</button>
+          <button class="tg-inline-btn" data-screen="tasks">🧭 Tasks</button>
+          <button class="tg-inline-btn" data-screen="agents">🤖 Agents</button>
+        </div>
+        <div class="tg-inline-row">
+          <button class="tg-inline-btn" data-screen="executor">⚙️ Executor</button>
+          <button class="tg-inline-btn" data-screen="workspaces">🌳 Workspaces</button>
+          <button class="tg-inline-btn" data-screen="routing">🛰 Routing</button>
+        </div>
+        <div class="tg-inline-row">
+          <button class="tg-inline-btn" data-screen="logs">📁 Logs & Git</button>
+          <button class="tg-inline-btn" data-screen="integrations">🔌 Integrations</button>
+          <button class="tg-inline-btn" data-screen="session">🧠 Session</button>
+        </div>
+        <div class="tg-inline-row">
+          <button class="tg-inline-btn" data-screen="ask">💬 Ask Agent</button>
+          <button class="tg-inline-btn" data-screen="commands">📖 All Commands</button>
+        </div>
+        <div class="tg-inline-row">
+          <button class="tg-inline-btn" data-screen="refresh">🔄 Refresh</button>
+          <button class="tg-inline-btn close-btn" data-screen="close">✖ Close Menu</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat input bar -->
+    <div class="tg-chat-input-bar">
+      <button class="tg-chat-input-btn menu-toggle" id="tg-menu-toggle" title="Toggle Bot Menu">☰</button>
+      <input class="tg-chat-input" placeholder="Message Bosun Bot..." readonly />
+      <button class="tg-chat-input-btn" title="Attach">📎</button>
+    </div>
+  </div>
+
+  <script>
+    // Telegram chat simulation — toggle & interaction logic
+    (function() {
+      const overlay = document.getElementById('tg-chat-overlay');
+      const peekBar = document.getElementById('tg-peek-bar');
+      const menuToggle = document.getElementById('tg-menu-toggle');
+      let expanded = true;
+
+      function toggle() {
+        expanded = !expanded;
+        overlay.classList.toggle('collapsed', !expanded);
+        document.body.classList.toggle('tg-chat-expanded', expanded);
+      }
+      peekBar.addEventListener('click', toggle);
+      menuToggle.addEventListener('click', toggle);
+
+      // Inline keyboard button clicks
+      overlay.querySelectorAll('.tg-inline-btn[data-screen]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const screen = btn.dataset.screen;
+
+          // "Open Control Center" scrolls up to the MiniApp
+          if (screen === 'miniapp') {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            return;
+          }
+          // "Close Menu" collapses the chat
+          if (screen === 'close') {
+            expanded = false;
+            overlay.classList.add('collapsed');
+            document.body.classList.remove('tg-chat-expanded');
+            return;
+          }
+          // "Refresh" re-renders the message time
+          if (screen === 'refresh') {
+            const timeEl = overlay.querySelector('.tg-msg-time');
+            if (timeEl) {
+              const now = new Date();
+              timeEl.textContent = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
+            }
+            // Brief flash effect
+            btn.style.background = '#4cc9f0';
+            btn.style.color = '#000';
+            setTimeout(() => { btn.style.background = ''; btn.style.color = ''; }, 300);
+            return;
+          }
+          // Map inline keyboard screens to MiniApp tabs where possible
+          const screenToTab = {
+            overview: 'dashboard',
+            tasks: 'tasks',
+            agents: 'agents',
+            executor: 'control',
+            workspaces: 'infra',
+            routing: 'control',
+            logs: 'logs',
+            integrations: 'settings',
+            session: 'chat',
+            ask: 'chat',
+            commands: 'control',
+          };
+          const tab = screenToTab[screen];
+          if (tab && window.__bosunSetTab) {
+            window.__bosunSetTab(tab);
+            // Brief highlight
+            btn.style.background = '#3a6da0';
+            setTimeout(() => { btn.style.background = ''; }, 200);
+          }
+        });
+      });
+
+      // Start expanded
+      overlay.classList.remove('collapsed');
+      document.body.classList.add('tg-chat-expanded');
+    })();
+  </script>
+
   <!-- Demo mode banner -->
   <div class="demo-banner">⚡ Bosun Demo Mode — Seed Data</div>
 
