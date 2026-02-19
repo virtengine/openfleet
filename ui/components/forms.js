@@ -9,6 +9,7 @@ import {
   useState,
   useRef,
   useCallback,
+  useEffect,
 } from "preact/hooks";
 import htm from "htm";
 
@@ -94,7 +95,25 @@ export function PullToRefresh({ onRefresh, children }) {
   const startYRef = useRef(0);
   const pullingRef = useRef(false);
 
+  // Detect non-touch (desktop) device
+  const [hasTouch, setHasTouch] = useState(false);
+  useEffect(() => {
+    setHasTouch('ontouchstart' in window || navigator.maxTouchPoints > 0);
+  }, []);
+
   const THRESHOLD = 64;
+
+  // Desktop refresh handler
+  const handleDesktopRefresh = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    haptic("medium");
+    try {
+      await onRefresh();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [onRefresh, refreshing]);
 
   const handleTouchStart = useCallback((e) => {
     if (containerRef.current && containerRef.current.scrollTop <= 0) {
@@ -136,6 +155,17 @@ export function PullToRefresh({ onRefresh, children }) {
       onTouchMove=${handleTouchMove}
       onTouchEnd=${handleTouchEnd}
     >
+      ${!hasTouch && html`
+        <button
+          class="ptr-desktop-refresh ${refreshing ? 'spinning' : ''}"
+          onClick=${handleDesktopRefresh}
+          disabled=${refreshing}
+          title="Refresh"
+          aria-label="Refresh"
+        >
+          ${ICONS.refresh}
+        </button>
+      `}
       ${(refreshing || pullDistance > 0) &&
       html`
         <div

@@ -921,6 +921,21 @@ export function getTunnelUrl() {
   return tunnelUrl;
 }
 
+let _tunnelReadyCallbacks = [];
+
+/** Register a callback to be called whenever the tunnel URL changes. */
+export function onTunnelUrlChange(cb) {
+  if (typeof cb === 'function') _tunnelReadyCallbacks.push(cb);
+}
+
+function _notifyTunnelChange(url) {
+  for (const cb of _tunnelReadyCallbacks) {
+    try { cb(url); } catch (err) {
+      console.warn(`[telegram-ui] tunnel change callback error: ${err.message}`);
+    }
+  }
+}
+
 // ── Cloudflared binary auto-download ─────────────────────────────────
 
 const CF_CACHE_DIR = resolve(__dirname, ".cache", "bin");
@@ -1168,6 +1183,7 @@ ingress:
         clearTimeout(timeout);
         tunnelUrl = publicUrl;
         tunnelProcess = child;
+        _notifyTunnelChange(publicUrl);
         console.log(`[telegram-ui] named tunnel active: ${publicUrl || tunnelName}`);
         resolvePromise(publicUrl);
       }
@@ -1237,6 +1253,7 @@ async function startQuickTunnel(cfBin, localPort) {
         clearTimeout(timeout);
         tunnelUrl = match[0];
         tunnelProcess = child;
+        _notifyTunnelChange(match[0]);
         console.log(`[telegram-ui] quick tunnel active: ${tunnelUrl}`);
         resolvePromise(tunnelUrl);
       }
@@ -3686,14 +3703,7 @@ async function handleApi(req, res, url) {
           const exec = uiDeps.execPrimaryPrompt;
           if (exec) {
             try {
-              const result = await exec(content);
-              if (result) {
-                tracker.recordEvent(sessionId, {
-                  role: "assistant",
-                  content: typeof result === "string" ? result : JSON.stringify(result),
-                  timestamp: new Date().toISOString(),
-                });
-              }
+              await exec(content, { sessionId, sessionType: "primary" });
             } catch { /* best-effort forwarding */ }
           }
         }

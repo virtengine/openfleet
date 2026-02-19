@@ -67,6 +67,7 @@ import {
   openFirewallPort,
   getSessionToken,
   getTunnelUrl,
+  onTunnelUrlChange,
 } from "./ui-server.mjs";
 import {
   loadWorkspaceRegistry,
@@ -3384,6 +3385,53 @@ function uiNavRow(parent) {
 function parsePageParam(value) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+const TASK_LIST_PAGE_SIZE = 6;
+const TASK_LIST_LABELS = {
+  backlog: "Backlog",
+  draft: "Draft",
+  todo: "Todo",
+  inprogress: "Active",
+  inreview: "Review",
+  blocked: "Blocked",
+  done: "Done",
+};
+
+function normalizeTaskListStatus(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw || raw === "all") return "";
+  if (["backlog"].includes(raw)) return "todo";
+  if (["active", "running", "in-progress", "in_progress"].includes(raw)) return "inprogress";
+  if (["review", "in-review", "in_review"].includes(raw)) return "inreview";
+  if (["done", "completed", "complete"].includes(raw)) return "done";
+  if (["blocked", "stuck"].includes(raw)) return "blocked";
+  if (["draft"].includes(raw)) return "draft";
+  if (["todo", "to-do"].includes(raw)) return "todo";
+  return raw;
+}
+
+function taskStatusLabel(status) {
+  const normalized = normalizeTaskListStatus(status) || "todo";
+  return TASK_LIST_LABELS[normalized] || normalized;
+}
+
+async function resolveKanbanProjectId(adapter) {
+  try {
+    const projects = await adapter.listProjects();
+    const primary = projects[0];
+    return primary?.id || primary?.project_id || "";
+  } catch {
+    return "";
+  }
+}
+
+function formatTaskLine(task, index) {
+  const id = task?.id || "(no-id)";
+  const title = task?.title || task?.summary || "Untitled";
+  const status = taskStatusLabel(task?.status || task?.state || "");
+  const priority = task?.priority ? ` • ${task.priority}` : "";
+  return `${index + 1}. ${shortenLabel(title, 48)}\n   ${id} • ${status}${priority}`;
 }
 
 function formatDurationMs(ms) {
@@ -9136,10 +9184,19 @@ export async function startTelegramBot() {
         lastMenuButtonUrl = null;
       }
 
-      // Periodically refresh the menu button URL in case the tunnel changes
+      // Immediately sync the menu button, then periodically refresh
+      if (reachable) {
+        void refreshMenuButton();
+      }
       if (reachable && !menuButtonRefreshTimer) {
         menuButtonRefreshTimer = setInterval(() => void refreshMenuButton(), MENU_BUTTON_REFRESH_MS);
       }
+
+      // React immediately when the tunnel URL changes (e.g. after restart)
+      onTunnelUrlChange((url) => {
+        console.log(`[telegram-bot] tunnel URL changed: ${url} — refreshing menu button`);
+        void refreshMenuButton();
+      });
 
       // Notify about firewall issues if detected (24h cooldown)
       // Skip the alarm if the cloudflared tunnel is active — Telegram Mini App

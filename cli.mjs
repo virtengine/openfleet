@@ -405,6 +405,7 @@ function startDaemon() {
   Commands:
     openfleet --daemon-status   Check if running
     openfleet --stop-daemon     Stop the daemon
+    openfleet --echo-logs       Tail live logs
   `);
   process.exit(0);
 }
@@ -719,6 +720,7 @@ async function main() {
   if (args.includes("--echo-logs")) {
     // Search for the monitor PID file in common cache locations
     const candidatePidFiles = [
+      PID_FILE,
       process.env.OPENFLEET_DIR
         ? resolve(process.env.OPENFLEET_DIR, ".cache", "openfleet.pid")
         : null,
@@ -736,9 +738,25 @@ async function main() {
 
     if (activePidFile) {
       try {
-        const pidData = JSON.parse(readFileSync(activePidFile, "utf8"));
-        const monitorPid = Number(pidData.pid);
-        const monitorPath = (pidData.argv || [])[1] || "";
+        const raw = readFileSync(activePidFile, "utf8").trim();
+        let monitorPid;
+        let monitorPath = "";
+
+        // PID file can be a plain number (from writePidFile) or JSON (legacy format)
+        const parsed = parseInt(raw, 10);
+        if (!isNaN(parsed) && String(parsed) === raw) {
+          monitorPid = parsed;
+          // Derive the log directory from __dirname since we don't have argv
+          monitorPath = fileURLToPath(new URL("./cli.mjs", import.meta.url));
+        } else {
+          try {
+            const pidData = JSON.parse(raw);
+            monitorPid = Number(pidData.pid);
+            monitorPath = (pidData.argv || [])[1] || "";
+          } catch {
+            throw new Error(`Could not parse PID file: ${raw.slice(0, 100)}`);
+          }
+        }
 
         let isAlive = false;
         try {
@@ -746,9 +764,9 @@ async function main() {
           isAlive = true;
         } catch {}
 
-        if (isAlive && monitorPath) {
-          const logDir = resolve(dirname(monitorPath), "logs");
-          const daemonLog = resolve(logDir, "daemon.log");
+        if (isAlive) {
+          const logDir = monitorPath ? resolve(dirname(monitorPath), "logs") : resolve(__dirname, "logs");
+          const daemonLog = existsSync(DAEMON_LOG) ? DAEMON_LOG : resolve(logDir, "daemon.log");
           const monitorLog = resolve(logDir, "monitor.log");
           const logFile = existsSync(daemonLog) ? daemonLog : monitorLog;
 
