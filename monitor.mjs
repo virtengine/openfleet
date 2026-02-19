@@ -46,6 +46,8 @@ import {
   getDigestSnapshot,
   startStatusFileWriter,
   stopStatusFileWriter,
+  initStatusBoard,
+  pushStatusBoardUpdate,
 } from "./telegram-bot.mjs";
 import { PRCleanupDaemon } from "./pr-cleanup-daemon.mjs";
 import {
@@ -1737,6 +1739,11 @@ function notifyVkError(line) {
   // In GitHub/Jira/internal-only modes, VK outages are non-actionable noise.
   // Suppress alerts to avoid false-positive reliability digests.
   if (!isVkBackendActive()) {
+    return;
+  }
+  // If the user explicitly disabled VK spawning they know VK isn't running —
+  // spamming "unreachable" every 10 minutes is pure noise.
+  if (!vkSpawnEnabled) {
     return;
   }
   const key = "vibe-kanban-unavailable";
@@ -8290,10 +8297,17 @@ async function startTelegramNotifier() {
   const sendUpdate = async () => {
     const summary = await readStatusSummary();
     if (summary && summary.text) {
-      await sendTelegramMessage(summary.text, {
+      // Push to the pinned status board (edits in-place) when available.
+      // Fall back to a regular new message only if the board hasn't been set up.
+      const routed = pushStatusBoardUpdate(summary.text, {
         parseMode: summary.parseMode,
-        disablePreview: true,
       });
+      if (!routed) {
+        await sendTelegramMessage(summary.text, {
+          parseMode: summary.parseMode,
+          disablePreview: true,
+        });
+      }
     }
     await flushMergeNotifications();
     await checkStatusMilestones();
@@ -12033,9 +12047,11 @@ if (telegramCommandEnabled) {
 // Restore live digest state BEFORE any messages flow — so restarts continue the
 // existing digest message instead of creating a new one.
 // Chain notifier start after restore to prevent race conditions.
+// Also initialise the pinned status board (creates/restores the persistent message).
 void restoreLiveDigest()
   .catch(() => {})
-  .then(() => startTelegramNotifier());
+  .then(() => startTelegramNotifier())
+  .then(() => initStatusBoard().catch(() => {}));
 
 // ── Start long-running devmode monitor-monitor supervisor ───────────────────
 startMonitorMonitorSupervisor();

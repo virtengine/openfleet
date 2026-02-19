@@ -104,6 +104,11 @@ const telegramPollLockPath = resolve(
   "telegram-getupdates.lock",
 );
 const liveDigestStatePath = resolve(repoRoot, ".cache", "ve-live-digest.json");
+const statusBoardStatePath = resolve(
+  repoRoot,
+  ".cache",
+  "ve-status-board.json",
+);
 const fwCooldownPath = resolve(repoRoot, ".cache", "ve-fw-cooldown.json");
 const FW_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -273,6 +278,17 @@ const liveDigestWindowSec = Number(
 const liveDigestEditDebounceMs = Number(
   process.env.TELEGRAM_LIVE_DIGEST_DEBOUNCE_MS || "3000",
 ); // 3 second debounce on edits
+
+// ── Status Board Configuration ─────────────────────────────────────────────
+// A single pinned Telegram message that persists forever and is edited in-place
+// to show the current orchestrator state. Replaces periodic "N-min Update"
+// messages so the chat stays quiet while the board stays current 24/7.
+const statusBoardEnabled = !["0", "false", "no"].includes(
+  String(process.env.TELEGRAM_STATUS_BOARD || "true").toLowerCase(),
+);
+const statusBoardEditDebounceMs = Number(
+  process.env.TELEGRAM_STATUS_BOARD_DEBOUNCE_MS || "2000",
+);
 
 function delayMs(ms) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
@@ -8748,6 +8764,124 @@ async function addToLiveDigest(text, priority, category) {
     // Subsequent event — debounced edit
     scheduleLiveDigestEdit();
     persistLiveDigest();
+  }
+}
+
+// ── Status Board State ──────────────────────────────────────────────────────
+// A single persistent Telegram message that is pinned and edited in-place.
+// Unlike the live digest (which opens a new window every N minutes), the
+// status board lives forever — it always represents the current state.
+let statusBoard = {
+  messageId: null,
+  chatId: null,
+  editTimer: null,
+};
+
+/**
+ * Persist status board message ID to disk across restarts.
+ */
+function persistStatusBoard() {
+  if (!statusBoard.messageId) return;
+  writeFile(
+    statusBoardStatePath,
+    JSON.stringify({ messageId: statusBoard.messageId, chatId: statusBoard.chatId }),
+  ).catch(() => {});
+}
+
+/**
+ * Schedule a debounced edit of the status board message.
+ */
+function scheduleStatusBoardEdit(text, opts) {
+  if (statusBoard.editTimer) clearTimeout(statusBoard.editTimer);
+  statusBoard.editTimer = setTimeout(async () => {
+    statusBoard.editTimer = null;
+    if (!statusBoard.messageId || !statusBoard.chatId) return;
+    try {
+      const newId = await editDirect(
+        statusBoard.chatId,
+        statusBoard.messageId,
+        text,
+        opts,
+      );
+      if (newId && newId !== statusBoard.messageId) {
+        // editDirect fell back to a new message — persist the new ID
+        statusBoard.messageId = newId;
+        persistStatusBoard();
+      }
+    } catch (err) {
+      console.warn(`[telegram-bot] status board edit failed: ${err.message}`);
+    }
+  }, statusBoardEditDebounceMs);
+}
+
+/**
+ * Push a status update to the pinned status board message.
+ * Returns true if the board exists and the update was scheduled, false otherwise.
+ * @param {string} text - Formatted message text
+ * @param {object} [opts] - { parseMode }
+ */
+export function pushStatusBoardUpdate(text, opts = {}) {
+  if (!statusBoardEnabled) return false;
+  if (!statusBoard.messageId) return false;
+  scheduleStatusBoardEdit(text, opts);
+  return true;
+}
+
+/**
+ * Initialise the status board: restore from disk or create a fresh pinned message.
+ * Should be called once at startup, after Telegram bot is ready.
+ */
+export async function initStatusBoard() {
+  if (!statusBoardEnabled) return;
+  if (!telegramToken || !telegramChatId) return;
+
+  // Try restoring the previously-pinned message
+  try {
+    const raw = await readFile(statusBoardStatePath, "utf8");
+    const saved = JSON.parse(raw);
+    if (saved.messageId) {
+      statusBoard.messageId = saved.messageId;
+      statusBoard.chatId = saved.chatId || telegramChatId;
+      console.log(
+        `[telegram-bot] status board restored (msg ${saved.messageId})`,
+      );
+      // Edit the board straight away so it shows "restarted" state
+      scheduleStatusBoardEdit("🔄 Orchestrator restarting…", {});
+      return;
+    }
+  } catch {
+    /* no saved state — create fresh */
+  }
+
+  // Create the initial status board message
+  const msgId = await sendDirect(
+    telegramChatId,
+    "📡 Orchestrator starting…",
+    { silent: true },
+  );
+  if (!msgId) return;
+
+  statusBoard.messageId = msgId;
+  statusBoard.chatId = telegramChatId;
+  persistStatusBoard();
+
+  // Pin the message (requires the bot to have admin rights in the chat)
+  try {
+    await telegramApiFetch("pinChatMessage", {
+      method: "POST",
+      payload: {
+        chat_id: telegramChatId,
+        message_id: msgId,
+        disable_notification: true,
+      },
+    });
+    console.log(
+      `[telegram-bot] status board created and pinned (msg ${msgId})`,
+    );
+  } catch (err) {
+    console.warn(
+      `[telegram-bot] status board created but could not pin: ${err.message}`,
+    );
   }
 }
 

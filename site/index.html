@@ -25,7 +25,7 @@
   <link rel="stylesheet" href="css/main.css" />
 
   <!-- Favicon (inline SVG) -->
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='80'>⚡</text></svg>" />
+  <link rel="icon" type="image/png" href="favicon.png" />
 </head>
 <body>
 
@@ -36,7 +36,7 @@
   <nav class="nav">
     <div class="nav__inner">
       <a href="#" class="nav__brand">
-        <div class="nav__brand-icon">⚡</div>
+        <img src="logo.png" alt="OpenFleet" class="nav__brand-icon" style="width:64px;height:64px;object-fit:contain;background:none;border-radius:0;" />
         OpenFleet
       </a>
 
@@ -68,46 +68,33 @@
     <div class="hero__glow hero__glow--purple"></div>
 
     <div class="container">
-      <div class="hero__content">
-        <div class="hero__badge">
-          <span class="pulse-dot"></span>
-          v0.26 — Now with GitHub Projects v2 &amp; Jira sync
-        </div>
+      <div class="hero__layout">
 
-        <h1 class="hero__title">
-          Your AI fleet.<br />
-          <span class="gradient-text" id="hero-typed"></span><span class="typed-cursor" id="typed-cursor">|</span>
-        </h1>
+        <!-- LEFT: intro -->
+        <div class="hero__intro">
+          <p class="hero__subtitle">
+            OpenFleet is the open-source supervisor for AI coding agents.
+            Route tasks, manage multi-executor pools, automate PR lifecycles,
+            and ship production code — without human intervention.
+          </p>
 
-        <p class="hero__subtitle">
-          OpenFleet is the open-source supervisor for AI coding agents.
-          Route tasks, manage multi-executor pools, automate PR lifecycles,
-          and ship production code — without human intervention.
-        </p>
-
-        <div class="hero__install">
-          <div class="install-cmd" title="Click to copy">
-            <span class="install-cmd__prompt">$</span>
-            <span class="install-cmd__text">npm install -g @virtengine/openfleet</span>
-            <span class="install-cmd__copy">📋</span>
-            <span class="install-cmd__tooltip">Copied!</span>
+          <div class="hero__install">
+            <div class="install-cmd" title="Click to copy">
+              <span class="install-cmd__prompt">$</span>
+              <span class="install-cmd__text">npm install -g @virtengine/openfleet</span>
+              <span class="install-cmd__copy">📋</span>
+              <span class="install-cmd__tooltip">Copied!</span>
+            </div>
+            <a href="docs/" class="btn btn--ghost btn--sm">
+              Documentation
+            </a>
           </div>
-          <a href="docs/" class="btn btn--ghost btn--sm">
-            Documentation
-          </a>
+          <span class="hero__version-tag">v0.26 · GitHub Projects v2 · Jira sync</span>
         </div>
-      </div>
 
+        <!-- RIGHT: demo panels -->
         <div class="hero__demo" id="demo">
           <div class="miniapp-demo-window__overlay" aria-hidden="true"></div>
-        <div class="section-header reveal">
-          <span class="section-header__label">Interactive Demo</span>
-          <h2 class="section-header__title">Every way to <span class="gradient-text">control your fleet</span></h2>
-          <p class="section-header__desc">
-            CLI, Telegram, MiniApp, or WhatsApp — choose your interface.
-            These are real, functional prototypes you can interact with.
-          </p>
-        </div>
 
         <!-- ── Channel Tabs ──────────────────────────────────────────── -->
         <div class="demo-tabs reveal">
@@ -197,7 +184,7 @@
         <div class="demo-panel" id="demo-panel-whatsapp">
           <div class="whatsapp-demo-window reveal">
             <div class="whatsapp-demo-window__header">
-              <div class="whatsapp-demo-window__avatar">⚡</div>
+              <div class="whatsapp-demo-window__avatar" style="background:#25d366;display:flex;align-items:center;justify-content:center;font-size:1.4rem;">🤖</div>
               <div class="whatsapp-demo-window__header-info">
                 <div class="whatsapp-demo-window__name">OpenFleet Alerts</div>
                 <div class="whatsapp-demo-window__status">online</div>
@@ -208,59 +195,81 @@
 
               <div class="wa-msg wa-msg--bot">
                 <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">🚀 <b>Fleet Started</b><br>OpenFleet v0.26.2 is running<br>Board: github | Agents: 2 | Max Parallel: 6</div>
-                  <div class="wa-msg__time">14:28</div>
+                  <div class="wa-msg__text">🚀 <b>Fleet Started</b><br>OpenFleet v0.26.2 online<br>Board: github · Agents: 2 · Max Parallel: 6<br><span style="font-size:0.8em;color:#8696a0">workstation-1 · 09:14</span></div>
+                  <div class="wa-msg__time">09:14</div>
                 </div>
               </div>
 
               <div class="wa-msg wa-msg--bot">
                 <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">📋 <b>Task Dispatched</b><br>#42 feat(market): add order expiry<br>→ copilot-claude</div>
-                  <div class="wa-msg__time">14:32</div>
+                  <div class="wa-msg__text">📋 <b>3 Tasks Dispatched</b><br>#42 feat(market): add order expiry → copilot-claude<br>#43 fix(veid): token validation → codex-default<br>#44 refactor(escrow): batch settle → copilot-claude</div>
+                  <div class="wa-msg__time">09:15</div>
                 </div>
               </div>
 
               <div class="wa-msg wa-msg--bot">
                 <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">📋 <b>Task Dispatched</b><br>#43 fix(veid): token validation<br>→ codex-default</div>
-                  <div class="wa-msg__time">14:32</div>
+                  <div class="wa-msg__text">✅ <b>PR Merged</b><br>#43 fix(veid): token validation<br>PR #188 → main ✓ · CI: 3/3 passed<br>codex-default · 9m 44s</div>
+                  <div class="wa-msg__time">09:27</div>
                 </div>
               </div>
 
               <div class="wa-msg wa-msg--bot">
                 <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">✅ <b>PR Merged</b><br>#43 fix(veid): token validation<br>PR #188 → main ✓<br><span style="color:#8696a0">All CI checks passed</span></div>
-                  <div class="wa-msg__time">14:44</div>
+                  <div class="wa-msg__text">⚠️ <b>Auto-fix Applied</b><br>#44 refactor(escrow): batch settle<br>Lint warning fixed automatically<br><span style="font-size:0.8em;color:#8696a0">pushed fix commit to PR #189</span></div>
+                  <div class="wa-msg__time">09:31</div>
                 </div>
               </div>
 
               <div class="wa-msg wa-msg--bot">
                 <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">✅ <b>PR Merged</b><br>#42 feat(market): add order expiry<br>PR #187 → main ✓<br><span style="color:#8696a0">All CI checks passed</span></div>
-                  <div class="wa-msg__time">14:46</div>
+                  <div class="wa-msg__text">✅ <b>PR Merged</b><br>#42 feat(market): add order expiry<br>PR #187 → main ✓ · CI: 3/3 passed<br>copilot-claude · 18m 02s</div>
+                  <div class="wa-msg__time">09:33</div>
                 </div>
               </div>
 
               <div class="wa-msg wa-msg--bot">
                 <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">📊 <b>Hourly Digest</b><br>✅ 2 tasks completed<br>🔀 2 PRs merged<br>🤖 2 agents active<br>💚 All systems healthy</div>
-                  <div class="wa-msg__time">15:00</div>
+                  <div class="wa-msg__text">✅ <b>PR Merged</b><br>#44 refactor(escrow): batch settle<br>PR #189 → main ✓ · 1 auto-fix applied<br>copilot-claude · 22m 11s</div>
+                  <div class="wa-msg__time">09:37</div>
                 </div>
               </div>
 
               <div class="wa-msg wa-msg--user">
                 <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">What's the status?</div>
-                  <div class="wa-msg__time">15:02 ✓✓</div>
+                  <div class="wa-msg__text">status?</div>
+                  <div class="wa-msg__time">09:41 ✓✓</div>
                 </div>
               </div>
 
               <div class="wa-msg wa-msg--bot">
                 <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">📊 <b>Fleet Status</b> — Running<br><br>⏱ Uptime: 2h 34m<br>✅ 13 tasks done today<br>🔀 11 PRs merged<br>⏳ 2 PRs pending<br><br>Executors: 2/2 active</div>
-                  <div class="wa-msg__time">15:02</div>
+                  <div class="wa-msg__text">📊 <b>Fleet Status</b> — Running<br><br>⏱ Uptime: 27m<br>✅ 3 tasks done · 3 PRs merged<br>🔵 2 in progress (#45 #46)<br>⏳ 4 queued<br><br>Executors: 2/2 active · load: 45%</div>
+                  <div class="wa-msg__time">09:41</div>
                 </div>
               </div>
+
+              <div class="wa-msg wa-msg--bot">
+                <div class="wa-msg__bubble">
+                  <div class="wa-msg__text">📊 <b>10:00 Digest</b><br><br>✅ 7 tasks completed<br>🔀 6 PRs merged<br>⚡ 1 auto-fix applied<br>🤖 2 agents active<br>💚 All systems healthy</div>
+                  <div class="wa-msg__time">10:00</div>
+                </div>
+              </div>
+
+              <div class="wa-msg wa-msg--user">
+                <div class="wa-msg__bubble">
+                  <div class="wa-msg__text">pause tasks</div>
+                  <div class="wa-msg__time">10:04 ✓✓</div>
+                </div>
+              </div>
+
+              <div class="wa-msg wa-msg--bot">
+                <div class="wa-msg__bubble">
+                  <div class="wa-msg__text">⏸ <b>Task Dispatch Paused</b><br>No new tasks will be dispatched.<br>Active tasks continue running.<br><span style="font-size:0.8em;color:#8696a0">Reply "resume" to restart dispatch</span></div>
+                  <div class="wa-msg__time">10:04</div>
+                </div>
+              </div>
+
             </div>
             <div class="whatsapp-demo-window__footer">
               <div class="whatsapp-demo-window__input-placeholder">
@@ -270,12 +279,13 @@
               <div class="whatsapp-demo-window__mic">🎤</div>
             </div>
             <p class="whatsapp-demo-window__caption">
-              WhatsApp channel delivers push notifications for task events, PR merges, and fleet digests.
+              WhatsApp delivers real-time push notifications for task events, PR merges, CI status, and fleet digests. Natural language queries work too.
               <br><span style="color:var(--text-muted);">Enable with: <code>openfleet --whatsapp-auth</code></span>
             </p>
           </div>
         </div>
 
+        </div>
       </div>
     </div>
   </section>
