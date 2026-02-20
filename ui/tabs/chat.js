@@ -1,6 +1,7 @@
 /* ─────────────────────────────────────────────────────────────
- *  Tab: Chat — ChatGPT-style session interface with slash
- *  commands, session rename, and multi-line input.
+ *  Tab: Chat — ChatGPT-style session interface with agent mode
+ *  selector, SDK command passthrough, optimistic rendering,
+ *  offline queue, and streaming status indicators.
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
 import { useEffect, useState, useCallback, useRef } from "preact/hooks";
@@ -19,26 +20,65 @@ import {
 import { ChatView } from "../components/chat-view.js";
 import { apiFetch } from "../modules/api.js";
 import { showToast } from "../modules/state.js";
+import {
+  ChatInputToolbar,
+  loadAvailableAgents,
+  agentMode,
+  activeAgent,
+  activeAgentInfo,
+} from "../components/agent-selector.js";
+import {
+  addPendingMessage,
+  confirmMessage,
+  rejectMessage,
+  markUserMessageSent,
+  sendOrQueue,
+  offlineQueueSize,
+} from "../modules/streaming.js";
 
-/* ─── Slash commands ─── */
-const SLASH_COMMANDS = [
-  { cmd: "/help", desc: "Show available commands", icon: "❓" },
-  { cmd: "/status", desc: "Check orchestrator status", icon: "📊" },
-  { cmd: "/health", desc: "Health check", icon: "💚" },
-  { cmd: "/logs", desc: "View recent logs", icon: "📜" },
-  { cmd: "/tasks", desc: "List tasks", icon: "📋" },
-  { cmd: "/plan", desc: "Generate plan", icon: "📝" },
-  { cmd: "/start", desc: "Start orchestrator", icon: "▶️" },
-  { cmd: "/stop", desc: "Stop orchestrator", icon: "⏹️" },
-  { cmd: "/pause", desc: "Pause execution", icon: "⏸️" },
-  { cmd: "/resume", desc: "Resume execution", icon: "▶️" },
-  { cmd: "/version", desc: "Show version info", icon: "🔢" },
-  { cmd: "/hooks", desc: "Show hook status", icon: "🪝" },
-  { cmd: "/sentinel", desc: "Sentinel status", icon: "🛡️" },
-  { cmd: "/kanban", desc: "Open Kanban board", icon: "📌" },
-  { cmd: "/deploy", desc: "Trigger deployment", icon: "🚀" },
-  { cmd: "/ask", desc: "Ask the assistant", icon: "💬" },
+/* ─── Bosun commands (always available) ─── */
+const BOSUN_COMMANDS = [
+  { cmd: "/help", desc: "Show available commands", icon: "❓", source: "bosun" },
+  { cmd: "/status", desc: "Check orchestrator status", icon: "📊", source: "bosun" },
+  { cmd: "/health", desc: "Health check", icon: "💚", source: "bosun" },
+  { cmd: "/logs", desc: "View recent logs", icon: "📜", source: "bosun" },
+  { cmd: "/tasks", desc: "List tasks", icon: "📋", source: "bosun" },
+  { cmd: "/plan", desc: "Generate plan", icon: "📝", source: "bosun" },
+  { cmd: "/start", desc: "Start orchestrator", icon: "▶️", source: "bosun" },
+  { cmd: "/stop", desc: "Stop orchestrator", icon: "⏹️", source: "bosun" },
+  { cmd: "/pause", desc: "Pause execution", icon: "⏸️", source: "bosun" },
+  { cmd: "/resume", desc: "Resume execution", icon: "▶️", source: "bosun" },
+  { cmd: "/version", desc: "Show version info", icon: "🔢", source: "bosun" },
+  { cmd: "/hooks", desc: "Show hook status", icon: "🪝", source: "bosun" },
+  { cmd: "/sentinel", desc: "Sentinel status", icon: "🛡️", source: "bosun" },
+  { cmd: "/kanban", desc: "Open Kanban board", icon: "📌", source: "bosun" },
+  { cmd: "/deploy", desc: "Trigger deployment", icon: "🚀", source: "bosun" },
+  { cmd: "/ask", desc: "Ask the assistant", icon: "💬", source: "bosun" },
 ];
+
+/* ─── SDK commands (dynamic based on active agent) ─── */
+const SDK_COMMAND_META = {
+  "/compact": { desc: "Compact conversation context", icon: "🗜️" },
+  "/context": { desc: "Show context window usage", icon: "📏" },
+  "/mcp": { desc: "MCP server status", icon: "🔌" },
+  "/model": { desc: "Show/change model", icon: "🧠" },
+  "/clear": { desc: "Clear agent session", icon: "🧹" },
+};
+
+/** Merge Bosun + SDK commands based on active agent capabilities */
+function getSlashCommands() {
+  const info = activeAgentInfo.value;
+  const sdkCmds = info?.capabilities?.sdkCommands || [];
+  const sdkEntries = sdkCmds
+    .filter((cmd) => !BOSUN_COMMANDS.some((b) => b.cmd === cmd))
+    .map((cmd) => ({
+      cmd,
+      desc: SDK_COMMAND_META[cmd]?.desc || `SDK: ${cmd}`,
+      icon: SDK_COMMAND_META[cmd]?.icon || "⚡",
+      source: "sdk",
+    }));
+  return [...BOSUN_COMMANDS, ...sdkEntries];
+}
 
 /* ─── Welcome screen (no session selected) ─── */
 function ChatWelcome({ onNewSession, onQuickCommand }) {
@@ -77,9 +117,9 @@ function ChatWelcome({ onNewSession, onQuickCommand }) {
 }
 
 /* ─── Slash command autocomplete popup ─── */
-function SlashMenu({ filter, onSelect, activeIndex }) {
+function SlashMenu({ filter, onSelect, activeIndex, commands }) {
   const lowerFilter = (filter || "").toLowerCase();
-  const matches = SLASH_COMMANDS.filter((c) =>
+  const matches = (commands || getSlashCommands()).filter((c) =>
     c.cmd.toLowerCase().startsWith(lowerFilter),
   );
   if (matches.length === 0) return null;
@@ -99,6 +139,7 @@ function SlashMenu({ filter, onSelect, activeIndex }) {
             <span class="slash-menu-item-icon">${c.icon}</span>
             <span class="slash-menu-item-cmd">${c.cmd}</span>
             <span class="slash-menu-item-desc">${c.desc}</span>
+            ${c.source === "sdk" && html`<span class="slash-menu-item-badge">SDK</span>`}
           </div>
         `,
       )}
@@ -157,16 +198,22 @@ export function ChatTab() {
   const [sending, setSending] = useState(false);
   const textareaRef = useRef(null);
 
-  /* ── Load sessions on mount ── */
+  /* ── Load sessions + agents on mount ── */
   useEffect(() => {
     let mounted = true;
     loadSessions({ type: "primary" });
+    loadAvailableAgents();
     const interval = setInterval(() => {
       if (mounted) loadSessions({ type: "primary" });
     }, 5000);
+    // Refresh agent list less frequently
+    const agentInterval = setInterval(() => {
+      if (mounted) loadAvailableAgents();
+    }, 30000);
     return () => {
       mounted = false;
       clearInterval(interval);
+      clearInterval(agentInterval);
     };
   }, []);
 
@@ -182,9 +229,17 @@ export function ChatTab() {
   }, [sessionsData.value, selectedSessionId.value]);
 
   /* ── Slash command filtering ── */
-  const filteredSlash = SLASH_COMMANDS.filter((c) =>
+  const allCommands = getSlashCommands();
+  const filteredSlash = allCommands.filter((c) =>
     c.cmd.toLowerCase().startsWith((slashFilter || "").toLowerCase()),
   );
+
+  /* ── Determine if a command is an SDK command ── */
+  function isSdkCommand(cmdBase) {
+    const info = activeAgentInfo.value;
+    const sdkCmds = info?.capabilities?.sdkCommands || [];
+    return sdkCmds.includes(cmdBase);
+  }
 
   /* ── Input handling with slash command detection ── */
   function handleInputChange(e) {
@@ -224,41 +279,92 @@ export function ChatTab() {
 
     try {
       if (content.startsWith("/")) {
-        // Send as slash command — show result in chat if session is active
-        const resp = await apiFetch("/api/command", {
-          method: "POST",
-          body: JSON.stringify({ command: content }),
-        });
-        const data = resp?.data;
-        if (sessionId) {
-          // Record command + result as chat messages so they appear in view
-          const { sessionMessages } = await import("../components/session-list.js");
-          const now = new Date().toISOString();
-          const msgs = sessionMessages.value || [];
-          const userMsg = { id: `cmd-${Date.now()}`, role: "user", content, timestamp: now };
-          const resultText = data?.content || data?.error
-            || (data?.readOnly ? `✅ ${content.split(/\s/)[0]} — see the relevant tab for details.` : `✅ Command executed: ${content.split(/\s/)[0]}`);
-          const sysMsg = { id: `cmd-r-${Date.now()}`, role: "system", content: resultText, timestamp: now };
-          sessionMessages.value = [...msgs, userMsg, sysMsg];
+        const cmdBase = content.split(/\s/)[0].toLowerCase();
+        const cmdArgs = content.slice(cmdBase.length).trim();
+
+        if (isSdkCommand(cmdBase)) {
+          // Forward to agent SDK
+          const resp = await apiFetch("/api/agents/sdk-command", {
+            method: "POST",
+            body: JSON.stringify({ command: cmdBase, args: cmdArgs }),
+          });
+          const resultText = resp?.result || resp?.data || `✅ SDK command executed: ${cmdBase}`;
+          if (sessionId) {
+            const { sessionMessages } = await import("../components/session-list.js");
+            const now = new Date().toISOString();
+            const msgs = sessionMessages.value || [];
+            const userMsg = { id: `sdk-${Date.now()}`, role: "user", content, timestamp: now };
+            const sysMsg = { id: `sdk-r-${Date.now()}`, role: "system", content: typeof resultText === "string" ? resultText : JSON.stringify(resultText), timestamp: now };
+            sessionMessages.value = [...msgs, userMsg, sysMsg];
+          } else {
+            showToast("SDK command: " + cmdBase, "success");
+          }
         } else {
-          showToast("Command sent: " + content.split(/\s/)[0], "success");
+          // Bosun command
+          const resp = await apiFetch("/api/command", {
+            method: "POST",
+            body: JSON.stringify({ command: content }),
+          });
+          const data = resp?.data;
+          if (sessionId) {
+            const { sessionMessages } = await import("../components/session-list.js");
+            const now = new Date().toISOString();
+            const msgs = sessionMessages.value || [];
+            const userMsg = { id: `cmd-${Date.now()}`, role: "user", content, timestamp: now };
+            const resultText = data?.content || data?.error
+              || (data?.readOnly ? `✅ ${cmdBase} — see the relevant tab for details.` : `✅ Command executed: ${cmdBase}`);
+            const sysMsg = { id: `cmd-r-${Date.now()}`, role: "system", content: resultText, timestamp: now };
+            sessionMessages.value = [...msgs, userMsg, sysMsg];
+          } else {
+            showToast("Command sent: " + cmdBase, "success");
+          }
         }
       } else if (sessionId) {
-        // Send as message to current session
-        await apiFetch(`/api/sessions/${sessionId}/message`, {
-          method: "POST",
-          body: JSON.stringify({ content }),
-        });
-        if (sessionId) loadSessionMessages(sessionId);
-      } else {
-        // No session — create one and send as first message
-        const res = await createSession({ type: "primary", prompt: content });
-        if (res?.session?.id) {
-          await apiFetch(`/api/sessions/${res.session.id}/message`, {
+        // Send as message to current session with optimistic rendering
+        const tempId = addPendingMessage(sessionId, content);
+        markUserMessageSent(activeAgent.value);
+
+        // Use sendOrQueue for offline resilience
+        const sendFn = async (sid, msg) => {
+          await apiFetch(`/api/sessions/${sid}/message`, {
             method: "POST",
-            body: JSON.stringify({ content }),
+            body: JSON.stringify({ content: msg, mode: agentMode.value }),
           });
-          loadSessionMessages(res.session.id);
+        };
+
+        try {
+          await sendOrQueue(sessionId, content, sendFn);
+          confirmMessage(tempId);
+        } catch (err) {
+          rejectMessage(tempId, err.message || "Send failed");
+          throw err;
+        }
+
+        loadSessionMessages(sessionId);
+      } else {
+        // No session — create one with current agent/mode, then send first message
+        const res = await createSession({
+          type: "primary",
+          prompt: content,
+          agent: activeAgent.value,
+          mode: agentMode.value,
+        });
+        const newId = res?.session?.id;
+        if (newId) {
+          const tempId = addPendingMessage(newId, content);
+          markUserMessageSent(activeAgent.value);
+
+          try {
+            await apiFetch(`/api/sessions/${newId}/message`, {
+              method: "POST",
+              body: JSON.stringify({ content, mode: agentMode.value }),
+            });
+            confirmMessage(tempId);
+          } catch (err) {
+            rejectMessage(tempId, err.message || "Send failed");
+          }
+
+          loadSessionMessages(newId);
         }
       }
     } catch (err) {
@@ -266,7 +372,6 @@ export function ChatTab() {
     } finally {
       setInputValue("");
       setSending(false);
-      // Reset textarea height
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
       }
@@ -399,8 +504,10 @@ export function ChatTab() {
                 filter=${slashFilter}
                 onSelect=${selectSlashCommand}
                 activeIndex=${slashActiveIdx}
+                commands=${allCommands}
               />
             `}
+            <${ChatInputToolbar} />
             <div class="chat-input-wrapper">
               <textarea
                 ref=${textareaRef}
@@ -425,6 +532,9 @@ export function ChatTab() {
             <div class="chat-input-hint">
               <span>Shift+Enter for new line</span>
               <span>Type / for commands</span>
+              ${offlineQueueSize.value > 0 && html`
+                <span class="chat-offline-badge">📤 ${offlineQueueSize.value} queued</span>
+              `}
             </div>
           </div>
         </div>
