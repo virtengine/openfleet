@@ -3529,3 +3529,257 @@ select.input {
   margin-right: 6px;
   font-size: 1.1em;
 }
+
+/* ═══════════════════════════════════════════════
+ *  Snapshot Bar  (replaces Work Summary card)
+ * ═══════════════════════════════════════════════ */
+
+.snapshot-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 10px;
+  font-size: 12px;
+  min-height: 36px;
+}
+
+.snapshot-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 2px 6px;
+  border-radius: 99px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.snapshot-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.snapshot-val {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.snapshot-lbl {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.snapshot-view-tag {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-hint);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════════
+ *  Task Table  (Jira-style list mode)
+ * ═══════════════════════════════════════════════ */
+
+.task-table-wrap {
+  overflow-x: auto;
+  margin-bottom: 8px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.task-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  table-layout: fixed;
+}
+
+/* Column widths via header cells */
+.task-th:nth-child(1) { width: 120px; } /* Status */
+.task-th:nth-child(2) { width: 76px; }  /* Priority */
+.task-th:nth-child(3) { }               /* Title — flex grows */
+.task-th:nth-child(4) { width: 140px; } /* Branch */
+.task-th:nth-child(5) { width: 110px; } /* Repo */
+.task-th:nth-child(6) { width: 90px; }  /* Updated */
+
+.task-th {
+  padding: 9px 12px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-hint);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: color 0.1s, background 0.1s;
+}
+
+.task-th:hover {
+  color: var(--text-primary);
+  background: var(--bg-card-hover);
+}
+
+.task-th-active {
+  color: var(--accent);
+}
+
+.task-th-grow {
+  width: auto;
+}
+
+.task-th-arrow {
+  font-size: 10px;
+  opacity: 0.5;
+  margin-left: 2px;
+}
+
+.task-th-arrow.active {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.task-tr {
+  cursor: pointer;
+  transition: background 0.1s;
+  border-bottom: 1px solid var(--border);
+}
+
+.task-tr:last-child {
+  border-bottom: none;
+}
+
+.task-tr:hover {
+  background: var(--bg-card-hover);
+}
+
+.task-tr[data-status="inprogress"] {
+  border-left: 3px solid var(--color-inprogress);
+}
+.task-tr[data-status="inreview"] {
+  border-left: 3px solid var(--color-inreview);
+}
+.task-tr[data-status="done"],
+.task-tr[data-status="completed"] {
+  border-left: 3px solid var(--color-done);
+  opacity: 0.75;
+}
+.task-tr[data-status="error"],
+.task-tr[data-status="failed"] {
+  border-left: 3px solid var(--color-error);
+}
+.task-tr[data-status="todo"] {
+  border-left: 3px solid var(--color-todo);
+}
+
+.task-tr-selected {
+  background: var(--accent-subtle) !important;
+}
+
+.task-td {
+  padding: 8px 12px;
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.task-td-status {
+  display: table-cell;
+  white-space: nowrap;
+}
+
+.task-td-title {
+  white-space: normal;
+}
+
+.task-td-title-text {
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.task-td-id {
+  font-size: 10px;
+  color: var(--text-hint);
+  margin-top: 2px;
+  font-family: var(--font-mono, monospace);
+}
+
+.task-td-branch .task-td-code,
+.task-td-code {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  max-width: 150px;
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.task-td-repo {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.task-td-date {
+  font-size: 11px;
+  color: var(--text-hint);
+  white-space: nowrap;
+}
+
+.task-td-updated {
+  white-space: nowrap;
+}
+
+.task-td-empty {
+  color: var(--text-hint);
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .task-td-branch,
+  .task-td-repo {
+    display: none;
+  }
+
+  .task-th:nth-child(4),
+  .task-th:nth-child(5) {
+    display: none;
+  }
+}
+
+/* ═══════════════════════════════════════════════
+ *  Workspace Manager modal toolbar
+ * ═══════════════════════════════════════════════ */
+
+.ws-manager-modal-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}

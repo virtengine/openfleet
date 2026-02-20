@@ -10,6 +10,7 @@ import { signal } from "@preact/signals";
 import htm from "htm";
 import { apiFetch } from "../modules/api.js";
 import { haptic } from "../modules/telegram.js";
+import { Modal } from "./shared.js";
 
 const html = htm.bind(h);
 
@@ -416,42 +417,34 @@ export function WorkspaceManager({ open, onClose }) {
   const loading = workspacesLoading.value;
 
   return html`
-    <div class="ws-manager-overlay" onClick=${(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div class="ws-manager-panel">
-        <div class="ws-manager-header">
-          <h2 class="ws-manager-title">Workspace Manager</h2>
-          <div class="ws-manager-header-actions">
-            <button
-              class="ws-manager-btn ghost"
-              onClick=${handleScan}
-              disabled=${scanning}
-              title="Scan disk for workspaces"
-            >${scanning ? html`<${Spinner} /> Scanning…` : "🔍 Scan Disk"}</button>
-            <button class="ws-manager-close-btn" onClick=${onClose} title="Close">✕</button>
-          </div>
-        </div>
-
-        <div class="ws-manager-body">
-          ${loading && !wsList.length
-            ? html`<div class="ws-manager-loading"><${Spinner} /> Loading workspaces…</div>`
-            : null
-          }
-
-          <div class="ws-manager-list">
-            ${wsList.map((ws) => html`
-              <${WorkspaceCard} key=${ws.id} ws=${ws} />
-            `)}
-          </div>
-
-          ${!wsList.length && !loading
-            ? html`<div class="ws-manager-empty-state">No workspaces found. Create one or scan disk.</div>`
-            : null
-          }
-
-          <${AddWorkspaceForm} />
-        </div>
+    <${Modal} title="Manage Workspaces" open=${open} onClose=${onClose}>
+      <div class="ws-manager-modal-toolbar">
+        <button
+          class="btn btn-ghost btn-sm"
+          onClick=${handleScan}
+          disabled=${scanning}
+          title="Scan disk for workspaces"
+        >${scanning ? "Scanning…" : "🔍 Scan Disk"}</button>
       </div>
-    </div>
+
+      ${loading && !wsList.length
+        ? html`<div class="ws-manager-loading">Loading workspaces…</div>`
+        : null
+      }
+
+      <div class="ws-manager-list">
+        ${wsList.map((ws) => html`
+          <${WorkspaceCard} key=${ws.id} ws=${ws} />
+        `)}
+      </div>
+
+      ${!wsList.length && !loading
+        ? html`<div class="ws-manager-empty-state">No workspaces found. Create one or scan disk.</div>`
+        : null
+      }
+
+      <${AddWorkspaceForm} />
+    <//>
   `;
 }
 
