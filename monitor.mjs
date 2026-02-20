@@ -49,6 +49,7 @@ import {
   initStatusBoard,
   pushStatusBoardUpdate,
 } from "./telegram-bot.mjs";
+import { startAnalyzer, stopAnalyzer } from "./agent-work-analyzer.mjs";
 import { PRCleanupDaemon } from "./pr-cleanup-daemon.mjs";
 import {
   execPrimaryPrompt,
@@ -226,6 +227,119 @@ const ANOMALY_SIGNAL_PATH = resolve(
   ".cache",
   "anomaly-signals.json",
 );
+
+const AGENT_ALERT_POLL_MS = 10_000;
+let agentWorkAnalyzerActive = false;
+let agentAlertsOffset = 0;
+let agentAlertsTimer = null;
+const agentAlertsDedup = new Map();
+
+function getAgentAlertsPath() {
+  return resolve(repoRoot, ".cache", "agent-work-logs", "agent-alerts.jsonl");
+}
+
+function rememberAlert(key) {
+  agentAlertsDedup.set(key, Date.now());
+  if (agentAlertsDedup.size > 200) {
+    const sorted = [...agentAlertsDedup.entries()].sort((a, b) => a[1] - b[1]);
+    for (const [oldKey] of sorted.slice(0, 100)) {
+      agentAlertsDedup.delete(oldKey);
+    }
+  }
+}
+
+function formatAgentAlert(alert) {
+  const severity = String(alert.severity || "medium").toUpperCase();
+  const type = alert.type || "alert";
+  const lines = [
+    `🔎 Agent Analyzer: ${severity} ${type}`,
+    `Attempt: ${alert.attempt_id || "unknown"}`,
+  ];
+  if (alert.task_id) lines.push(`Task: ${alert.task_id}`);
+  if (alert.executor) lines.push(`Executor: ${alert.executor}`);
+  if (alert.recommendation) lines.push(`Recommendation: ${alert.recommendation}`);
+  if (alert.error_count) lines.push(`Errors: ${alert.error_count}`);
+  if (alert.idle_time_ms) {
+    lines.push(`Idle: ${Math.round(alert.idle_time_ms / 1000)}s`);
+  }
+  if (alert.cost_usd) lines.push(`Cost: $${Number(alert.cost_usd).toFixed(3)}`);
+  return lines.join("\n");
+}
+
+async function pollAgentAlerts() {
+  if (process.env.VITEST) return;
+  const path = getAgentAlertsPath();
+  if (!existsSync(path)) return;
+  let data;
+  try {
+    data = await readFile(path, "utf8");
+  } catch {
+    return;
+  }
+  if (!data || data.length <= agentAlertsOffset) return;
+  const chunk = data.slice(agentAlertsOffset);
+  agentAlertsOffset = data.length;
+  const lines = chunk.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let alert;
+    try {
+      alert = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    const dedupKey = `${alert.type || "alert"}:${alert.attempt_id || "unknown"}:${alert.timestamp || ""}`;
+    if (agentAlertsDedup.has(dedupKey)) continue;
+    rememberAlert(dedupKey);
+    console.warn(
+      `[agent-work-analyzer] ${alert.severity || "medium"} ${alert.type || "alert"} ${alert.attempt_id || ""}`,
+    );
+    if (telegramToken && telegramChatId) {
+      void sendTelegramMessage(formatAgentAlert(alert), {
+        dedupKey: `agent-alert:${alert.type || "alert"}:${alert.attempt_id || "unknown"}`,
+      }).catch(() => {});
+    }
+  }
+}
+
+function startAgentWorkAnalyzer() {
+  if (agentWorkAnalyzerActive) return;
+  if (process.env.AGENT_WORK_ANALYZER_ENABLED === "false") return;
+  try {
+    void startAnalyzer();
+    agentWorkAnalyzerActive = true;
+    console.log("[monitor] agent-work analyzer started");
+  } catch (err) {
+    console.warn(`[monitor] agent-work analyzer failed to start: ${err.message}`);
+  }
+}
+
+function stopAgentWorkAnalyzer() {
+  if (!agentWorkAnalyzerActive) return;
+  try {
+    stopAnalyzer();
+  } catch {
+    /* ignore */
+  }
+  agentWorkAnalyzerActive = false;
+}
+
+function startAgentAlertTailer() {
+  if (agentAlertsTimer) return;
+  agentAlertsTimer = setInterval(() => {
+    void pollAgentAlerts();
+  }, AGENT_ALERT_POLL_MS);
+  agentAlertsTimer.unref?.();
+  void pollAgentAlerts();
+}
+
+function stopAgentAlertTailer() {
+  if (agentAlertsTimer) {
+    clearInterval(agentAlertsTimer);
+    agentAlertsTimer = null;
+  }
+}
 
 /**
  * Write an anomaly signal to the shared signal file for the orchestrator to pick up.
@@ -1157,6 +1271,8 @@ function restartSelf(reason) {
   stopTaskPlannerStatusLoop();
   stopMonitorMonitorSupervisor({ preserveRunning: true });
   stopAutoUpdateLoop();
+  stopAgentAlertTailer();
+  stopAgentWorkAnalyzer();
   stopSelfWatcher();
   stopWatcher();
   stopEnvWatchers();
@@ -7900,6 +8016,26 @@ async function sendTelegramMessage(text, options = {}) {
   });
 }
 
+globalThis.__bosunNotifyAnomaly = (anomaly) => {
+  if (!telegramToken || !telegramChatId) return;
+  const icon =
+    anomaly.severity === "CRITICAL"
+      ? "🔴"
+      : anomaly.severity === "HIGH"
+        ? "🟠"
+        : anomaly.severity === "MEDIUM"
+          ? "🟡"
+          : "⚪️";
+  const lines = [
+    `${icon} Internal Anomaly: ${anomaly.type}`,
+    `Attempt: ${anomaly.processId || anomaly.shortId || "unknown"}`,
+    anomaly.message ? `Message: ${anomaly.message}` : null,
+  ].filter(Boolean);
+  void sendTelegramMessage(lines.join("\n"), {
+    dedupKey: `internal-anomaly:${anomaly.type}:${anomaly.processId || anomaly.shortId || "unknown"}`,
+  }).catch(() => {});
+};
+
 function enqueueTelegramCommand(handler) {
   telegramCommandQueue.push(handler);
   void drainTelegramCommandQueue();
@@ -10775,6 +10911,8 @@ function selfRestartForSourceChange(filename) {
   stopTaskPlannerStatusLoop();
   stopMonitorMonitorSupervisor({ preserveRunning: true });
   stopAutoUpdateLoop();
+  stopAgentAlertTailer();
+  stopAgentWorkAnalyzer();
   stopSelfWatcher();
   stopWatcher();
   stopEnvWatchers();
@@ -11262,6 +11400,8 @@ process.on("SIGINT", async () => {
     prCleanupDaemon.stop();
   }
   stopAutoUpdateLoop();
+  stopAgentAlertTailer();
+  stopAgentWorkAnalyzer();
   stopSelfWatcher();
   stopEnvWatchers();
   if (watcher) {
@@ -11304,6 +11444,8 @@ process.on("exit", () => {
   stopTaskPlannerStatusLoop();
   stopGitHubReconciler();
   stopMonitorMonitorSupervisor();
+  stopAgentAlertTailer();
+  stopAgentWorkAnalyzer();
   if (vkLogStream) {
     vkLogStream.stop();
     vkLogStream = null;
@@ -11323,6 +11465,8 @@ process.on("SIGTERM", async () => {
     vkLogStream = null;
   }
   stopAutoUpdateLoop();
+  stopAgentAlertTailer();
+  stopAgentWorkAnalyzer();
   stopSelfWatcher();
   stopEnvWatchers();
   if (watcher) {
@@ -12225,6 +12369,8 @@ void restoreLiveDigest()
   .then(() => initStatusBoard().catch(() => {}));
 
 // ── Start long-running devmode monitor-monitor supervisor ───────────────────
+startAgentWorkAnalyzer();
+startAgentAlertTailer();
 startMonitorMonitorSupervisor();
 startTaskPlannerStatusLoop();
 restartGitHubReconciler();

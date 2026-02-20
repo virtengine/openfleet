@@ -3,6 +3,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -12,6 +14,7 @@ let shuttingDown = false;
 let uiServerStarted = false;
 let uiOrigin = null;
 let uiApi = null;
+let runtimeConfigLoaded = false;
 
 const DAEMON_PID_FILE = resolve(homedir(), ".cache", "bosun", "daemon.pid");
 
@@ -86,10 +89,75 @@ async function loadBosunModule(file) {
   return import(pathToFileURL(modulePath).href);
 }
 
+async function loadRuntimeConfig() {
+  if (runtimeConfigLoaded) return;
+  try {
+    const config = await loadBosunModule("config.mjs");
+    if (typeof config?.loadConfig === "function") {
+      config.loadConfig(["node", "desktop"], { reloadEnv: true });
+    }
+  } catch (err) {
+    console.warn("[desktop] failed to load config env", err?.message || err);
+  }
+  runtimeConfigLoaded = true;
+}
+
 async function loadUiServerModule() {
   if (uiApi) return uiApi;
   uiApi = await loadBosunModule("ui-server.mjs");
   return uiApi;
+}
+
+function buildDaemonUiBaseUrl() {
+  const rawPort = Number(process.env.TELEGRAM_UI_PORT || "0");
+  if (!Number.isFinite(rawPort) || rawPort <= 0) return null;
+  const tlsDisabled = parseBoolEnv(process.env.TELEGRAM_UI_TLS_DISABLE, false);
+  const protocol = tlsDisabled ? "http" : "https";
+  const host =
+    process.env.TELEGRAM_UI_DESKTOP_HOST ||
+    process.env.TELEGRAM_UI_HOST ||
+    "127.0.0.1";
+  return `${protocol}://${host}:${rawPort}`;
+}
+
+async function probeUiServer(url) {
+  return new Promise((resolve) => {
+    try {
+      const isHttps = url.startsWith("https://");
+      const req = (isHttps ? httpsRequest : httpRequest)(
+        `${url}/api/status`,
+        {
+          method: "GET",
+          timeout: 1500,
+          rejectUnauthorized: false,
+        },
+        (res) => {
+          res.resume();
+          resolve(Boolean(res.statusCode && res.statusCode < 500));
+        },
+      );
+      req.on("error", () => resolve(false));
+      req.on("timeout", () => {
+        req.destroy();
+        resolve(false);
+      });
+      req.end();
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+async function resolveDaemonUiUrl() {
+  const useDaemon = parseBoolEnv(
+    process.env.BOSUN_DESKTOP_USE_DAEMON_UI,
+    true,
+  );
+  if (!useDaemon) return null;
+  const base = buildDaemonUiBaseUrl();
+  if (!base) return null;
+  const ok = await probeUiServer(base);
+  return ok ? base : null;
 }
 
 async function ensureDaemonRunning() {
@@ -148,6 +216,13 @@ async function startUiServer() {
 }
 
 async function buildUiUrl() {
+  await loadRuntimeConfig();
+  const daemonUrl = await resolveDaemonUiUrl();
+  if (daemonUrl) {
+    uiOrigin = new URL(daemonUrl).origin;
+    return daemonUrl;
+  }
+  await startUiServer();
   const api = await loadUiServerModule();
   const uiServerUrl = api.getTelegramUiUrl();
   if (!uiServerUrl) {
@@ -196,8 +271,8 @@ async function bootstrap() {
   try {
     app.setAppUserModelId("com.virtengine.bosun");
     process.chdir(resolveBosunRoot());
+    await loadRuntimeConfig();
     await ensureDaemonRunning();
-    await startUiServer();
     await createMainWindow();
     await maybeAutoUpdate();
   } catch (error) {
@@ -231,8 +306,10 @@ async function shutdown(reason) {
   }
 
   try {
-    const api = await loadUiServerModule();
-    api.stopTelegramUiServer();
+    if (uiServerStarted) {
+      const api = await loadUiServerModule();
+      api.stopTelegramUiServer();
+    }
   } catch (error) {
     console.error("[desktop] failed to stop ui-server", error);
   }
@@ -243,7 +320,7 @@ async function shutdown(reason) {
 app.on("before-quit", () => {
   shuttingDown = true;
   try {
-    if (uiApi?.stopTelegramUiServer) {
+    if (uiServerStarted && uiApi?.stopTelegramUiServer) {
       uiApi.stopTelegramUiServer();
     }
   } catch (error) {

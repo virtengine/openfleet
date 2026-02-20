@@ -799,7 +799,7 @@ let agentChatId = null; // chat where agent is running
 // ── Sticky UI menu state (keep /menu accessible at bottom) ─────────────────
 const stickyMenuState = new Map();
 const stickyMenuTimers = new Map();
-const STICKY_MENU_BUMP_MS = 200;
+const STICKY_MENU_BUMP_MS = 600;
 
 // ── Queues ──────────────────────────────────────────────────────────────────
 
@@ -1017,7 +1017,10 @@ function scheduleStickyMenuBump(chatId, lastMessageId) {
   if (!state?.enabled || !state?.screenId) return;
   if (lastMessageId && state.messageId && lastMessageId === state.messageId)
     return;
-  if (stickyMenuTimers.has(chatId)) return;
+  // Debounce: cancel existing timer and schedule a fresh one so rapid
+  // messages don't cause multiple bumps (reduces flicker)
+  const existing = stickyMenuTimers.get(chatId);
+  if (existing) clearTimeout(existing);
   const timer = setTimeout(() => {
     stickyMenuTimers.delete(chatId);
     bumpStickyMenu(chatId).catch(() => {});
@@ -1028,6 +1031,8 @@ function scheduleStickyMenuBump(chatId, lastMessageId) {
 async function bumpStickyMenu(chatId) {
   const state = stickyMenuState.get(chatId);
   if (!state?.enabled || !state?.screenId) return;
+  // On bump (new messages pushed menu up), clear any inline result
+  // so the menu shows clean navigation when it reappears at the bottom
   await showUiScreen(chatId, null, state.screenId, state.params || {}, {
     sticky: true,
   });
@@ -3354,6 +3359,39 @@ function parseUiAction(data) {
   return { type, rest, raw: payload };
 }
 
+// ── Set of commands whose output can be captured and rendered inline ─────────
+const INLINE_CAPTURABLE_COMMANDS = new Set([
+  "/status", "/health", "/tasks", "/logs", "/agents",
+  "/branches", "/diff", "/threads", "/sdk", "/kanban",
+  "/executor", "/hooks", "/sentinel", "/anomalies",
+  "/worktrees", "/region", "/presence", "/coordinator",
+  "/history", "/metrics", "/repos", "/container",
+  "/whatsapp", "/model",
+]);
+
+/**
+ * Capture the text output of a command without sending it to Telegram.
+ * Returns the captured text (joined with double-newline) or null on failure.
+ */
+async function captureCommandOutput(command) {
+  const parts = command.split(/\s+/);
+  const cmd = parts[0].toLowerCase().replace(/@\w+/, "");
+  const cmdArgs = parts.slice(1).join(" ");
+  const entry = COMMANDS[cmd] || COMMANDS[cmd.replace(/-/g, "_")];
+  if (!entry?.handler) return null;
+  _uiCaptureBuffer = [];
+  try {
+    await entry.handler("__ui_capture__", cmdArgs);
+  } catch {
+    _uiCaptureBuffer = null;
+    return null;
+  }
+  const captured = _uiCaptureBuffer;
+  _uiCaptureBuffer = null;
+  const content = captured.join("\n\n").trim();
+  return content || null;
+}
+
 async function dispatchUiCommand(chatId, command) {
   const cmd = command.split(/\s+/)[0].toLowerCase().replace(/@\w+/, "");
   if (FAST_COMMANDS.has(cmd)) {
@@ -5286,7 +5324,22 @@ async function showUiScreen(chatId, messageId, screenId, params = {}, opts = {})
       ? await screen.body(ctx)
       : screen.body || "";
   const title = screen.title ? `*${screen.title}*` : "";
-  const text = [title, body].filter(Boolean).join("\n\n");
+
+  // Support inline result rendering — show command output above the keyboard
+  const inlineResult = opts.result || "";
+  const textParts = [title, body];
+  if (inlineResult) {
+    // Truncate result to leave room for title/body/keyboard in 4096 char limit
+    const maxResultLen = 3200 - title.length - body.length;
+    const trimmedResult = inlineResult.length > maxResultLen
+      ? inlineResult.slice(0, maxResultLen - 20) + "\n…(truncated)"
+      : inlineResult;
+    textParts.push("━━━━━━━━━━━━━━━━━━━━━━━━");
+    textParts.push(trimmedResult);
+    textParts.push("━━━━━━━━━━━━━━━━━━━━━━━━");
+  }
+  const text = textParts.filter(Boolean).join("\n\n");
+
   const keyboard =
     typeof screen.keyboard === "function"
       ? await screen.keyboard(ctx)
@@ -5357,10 +5410,35 @@ async function handleUiAction({ chatId, messageId, data }) {
     return;
   }
   if (type === "cmd") {
+    const command = raw.slice(4);
+    const cmd = command.split(/\s+/)[0].toLowerCase().replace(/@\w+/, "");
+
+    // For capturable read-only commands, render output inline in the menu message
+    // instead of sending a separate message (eliminates menu disappear/reappear)
+    if (INLINE_CAPTURABLE_COMMANDS.has(cmd)) {
+      try {
+        const captured = await captureCommandOutput(command);
+        if (captured) {
+          // Determine which screen to render the result in
+          const state = stickyMenuState.get(chatId);
+          const parentScreen = state?.screenId || "home";
+          const resolvedMessageId =
+            staleSticky ? null : (isStickyMenuMessage(chatId, messageId) ? messageId : null);
+          await showUiScreen(chatId, resolvedMessageId || messageId, parentScreen, state?.params || {}, {
+            sticky: stickyEnabled,
+            result: captured,
+          });
+          return;
+        }
+      } catch {
+        // Fall through to regular dispatch on capture failure
+      }
+    }
+
+    // For action commands (restart, cleanup, etc.), dispatch normally
     if (staleSticky && messageId) {
       await deleteDirect(chatId, messageId);
     }
-    const command = raw.slice(4);
     await dispatchUiCommand(chatId, command);
     return;
   }
@@ -5401,6 +5479,26 @@ async function handleUiAction({ chatId, messageId, data }) {
       return;
     }
     if (payload.type === "cmd") {
+      const tokenCmd = payload.command?.split(/\s+/)[0]?.toLowerCase()?.replace(/@\w+/, "") || "";
+      // Try inline rendering for capturable commands
+      if (INLINE_CAPTURABLE_COMMANDS.has(tokenCmd)) {
+        try {
+          const captured = await captureCommandOutput(payload.command);
+          if (captured) {
+            const state = stickyMenuState.get(chatId);
+            const parentScreen = state?.screenId || "home";
+            const resolvedMessageId =
+              staleSticky ? null : (isStickyMenuMessage(chatId, messageId) ? messageId : null);
+            await showUiScreen(chatId, resolvedMessageId || messageId, parentScreen, state?.params || {}, {
+              sticky: stickyEnabled,
+              result: captured,
+            });
+            return;
+          }
+        } catch {
+          // Fall through
+        }
+      }
       if (staleSticky && messageId) {
         await deleteDirect(chatId, messageId);
       }

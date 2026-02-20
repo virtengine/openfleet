@@ -1,4 +1,7 @@
-# ![virtengine bosun ai agent](site/logo.png) bosun
+<p align="center">
+  <img src="site/logo.png" alt="virtengine bosun ai agent" width="150" />
+</p>
+<h1 align="center">bosun</h1>
 
 Bosun is a production-grade supervisor for AI coding agents. It routes tasks across executors, automates PR lifecycles, and keeps operators in control through Telegram, the Mini App dashboard, and optional WhatsApp notifications.
 

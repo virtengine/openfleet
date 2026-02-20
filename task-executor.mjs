@@ -521,6 +521,12 @@ const AGENT_WORK_STREAM = resolve(AGENT_WORK_DIR, "agent-work-stream.jsonl");
 const AGENT_WORK_ERRORS = resolve(AGENT_WORK_DIR, "agent-errors.jsonl");
 const AGENT_WORK_METRICS = resolve(AGENT_WORK_DIR, "agent-metrics.jsonl");
 const AGENT_WORK_SESSIONS = resolve(AGENT_WORK_DIR, "agent-sessions");
+const INTERNAL_ANOMALY_SIGNAL_PATH = resolve(
+  __dirname,
+  "..",
+  ".cache",
+  "anomaly-signals.json",
+);
 const agentWorkSessionStarts = new Map();
 const anomalyAbortTargets = new Map();
 const internalAnomalyEnabled = process.env.BOSUN_INTERNAL_ANOMALY !== "false";
@@ -530,6 +536,15 @@ const anomalyDetector = internalAnomalyEnabled
         console.warn(
           `${TAG} anomaly ${anomaly.severity} ${anomaly.type} [${anomaly.shortId}]: ${anomaly.message}`,
         );
+        writeInternalAnomalySignal(anomaly);
+        const notifyFn = globalThis.__bosunNotifyAnomaly;
+        if (typeof notifyFn === "function") {
+          try {
+            notifyFn(anomaly);
+          } catch {
+            /* best effort */
+          }
+        }
         if (anomaly.action === "kill" || anomaly.action === "restart") {
           const target = anomalyAbortTargets.get(anomaly.processId);
           if (target && !target.signal.aborted) {
@@ -559,6 +574,35 @@ function writeAgentWorkEvent(entry) {
   if (entry.attempt_id) {
     const sessionPath = resolve(AGENT_WORK_SESSIONS, `${entry.attempt_id}.jsonl`);
     appendFileSync(sessionPath, `${line}\n`, "utf8");
+  }
+}
+
+function writeInternalAnomalySignal(anomaly) {
+  try {
+    const dir = resolve(__dirname, "..", ".cache");
+    mkdirSync(dir, { recursive: true });
+    let signals = [];
+    try {
+      const raw = readFileSync(INTERNAL_ANOMALY_SIGNAL_PATH, "utf8");
+      signals = JSON.parse(raw);
+      if (!Array.isArray(signals)) signals = [];
+    } catch {
+      /* ignore */
+    }
+    signals.push({
+      source: "internal",
+      type: anomaly.type,
+      severity: anomaly.severity,
+      action: anomaly.action,
+      shortId: anomaly.shortId,
+      processId: anomaly.processId,
+      message: anomaly.message,
+      timestamp: new Date().toISOString(),
+    });
+    if (signals.length > 50) signals = signals.slice(-50);
+    writeFileSync(INTERNAL_ANOMALY_SIGNAL_PATH, JSON.stringify(signals, null, 2));
+  } catch {
+    /* best effort */
   }
 }
 
