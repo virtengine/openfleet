@@ -834,17 +834,20 @@ async function main() {
     process.exit(0);
   }
 
-  // First-run detection
-  const { shouldRunSetup } = await import("./setup.mjs");
-  if (shouldRunSetup()) {
-    console.log("\n  🚀 First run detected — launching setup wizard...\n");
-    const configDirArg = getArgValue("--config-dir");
-    if (configDirArg) {
-      process.env.BOSUN_DIR = configDirArg;
+  // First-run detection — skip in daemon-child mode (parent already handled it,
+  // and the detached child has no stdin for interactive prompts).
+  if (!IS_DAEMON_CHILD) {
+    const { shouldRunSetup } = await import("./setup.mjs");
+    if (shouldRunSetup()) {
+      console.log("\n  🚀 First run detected — launching setup wizard...\n");
+      const configDirArg = getArgValue("--config-dir");
+      if (configDirArg) {
+        process.env.BOSUN_DIR = configDirArg;
+      }
+      const { runSetup } = await import("./setup.mjs");
+      await runSetup();
+      console.log("\n  Setup complete! Starting bosun...\n");
     }
-    const { runSetup } = await import("./setup.mjs");
-    await runSetup();
-    console.log("\n  Setup complete! Starting bosun...\n");
   }
 
   // Legacy migration: if ~/codex-monitor exists with config, auto-migrate to ~/bosun

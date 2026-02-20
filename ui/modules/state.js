@@ -86,6 +86,7 @@ export const tasksPriority = signal("all");
 export const tasksSearch = signal("");
 export const tasksSort = signal("updated");
 export const tasksTotalPages = signal(1);
+const TASK_IGNORE_LABEL = "codex:ignore";
 
 // ── Agents
 export const agentsData = signal([]);
@@ -387,6 +388,32 @@ export async function loadTasks() {
   tasksLoaded.value = true;
   _cacheSet(`/api/tasks?${params}`, { data: tasksData.value, totalPages: tasksTotalPages.value });
   _markFresh("tasks");
+}
+
+function normalizeLabelName(label) {
+  return String(typeof label === "string" ? label : label?.name || "")
+    .trim()
+    .toLowerCase();
+}
+
+export function updateTaskManualState(taskId, isManual) {
+  if (!taskId) return;
+  tasksData.value = tasksData.value.map((task) => {
+    if (task?.id !== taskId) return task;
+    const meta = { ...(task.meta || {}) };
+    const codex = { ...(meta.codex || {}), isIgnored: Boolean(isManual) };
+    meta.codex = codex;
+
+    const hadLabels = Array.isArray(meta.labels);
+    const labels = hadLabels ? [...meta.labels] : [];
+    const filtered = labels.filter(
+      (label) => normalizeLabelName(label) !== TASK_IGNORE_LABEL,
+    );
+    if (isManual) filtered.push(TASK_IGNORE_LABEL);
+    if (filtered.length || hadLabels) meta.labels = filtered;
+
+    return { ...task, meta };
+  });
 }
 
 /** Load active agents → agentsData */
