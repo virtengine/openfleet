@@ -212,9 +212,28 @@ function normalizeBranchName(value) {
 function extractScopeFromTitle(title) {
   if (!title) return null;
   const match = String(title).match(
-    /(?:^\[P\d+\]\s*)?(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\(([^)]+)\)/i,
+    /(?:^\[[^\]]+\]\s*)?(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\(([^)]+)\)/i,
   );
   return match ? match[1].toLowerCase().trim() : null;
+}
+
+/**
+ * If TASK_BRANCH_AUTO_MODULE=true (default), extract the conventional-commit
+ * scope from a task title and return the corresponding module branch ref.
+ *
+ * e.g. "[m] feat(veid): add verification" → "origin/veid"
+ *       "[s] fix(market): resolve bid race" → "origin/market"
+ */
+function resolveModuleAutoBaseBranch(title) {
+  const enabled = (process.env.TASK_BRANCH_AUTO_MODULE ?? "true") !== "false";
+  if (!enabled) return null;
+  const scope = extractScopeFromTitle(title);
+  if (!scope) return null;
+  // Exclude generic scopes that don't map to real module branches
+  const generic = new Set(["deps", "app", "sdk", "cli", "api"]);
+  if (generic.has(scope)) return null;
+  const prefix = (process.env.MODULE_BRANCH_PREFIX || "origin/").replace(/\/*$/, "/");
+  return `${prefix}${scope}`;
 }
 
 function collectTaskLabels(task) {
@@ -349,6 +368,10 @@ function resolveTaskBaseBranch(task, branchRouting, defaultTargetBranch) {
 
   const fromConfig = resolveUpstreamFromConfig(task, branchRouting);
   if (fromConfig) return normalizeBranchName(fromConfig);
+
+  // Auto-detect module branch from conventional commit scope in title
+  const moduleAuto = resolveModuleAutoBaseBranch(task.title || task.name);
+  if (moduleAuto) return normalizeBranchName(moduleAuto);
 
   return normalizeBranchName(defaultTargetBranch);
 }
@@ -3285,12 +3308,25 @@ class TaskExecutor {
     const requestedBranch = String(
       options?.branch || options?.resumeBranch || "",
     ).trim();
+    // Resolve base branch first so direct-mode can reuse it for the working branch
+    const baseBranch = this._resolveTaskBaseBranch(task);
+    // Branch name strategy:
+    //   TASK_BRANCH_MODE=direct  → work directly on the module branch (no ve/ sub-branch),
+    //                              enabling sequential in-place work with real-time conflict
+    //                              resolution by the same team of agents.
+    //   TASK_BRANCH_MODE=worktree (default) → create an isolated ve/<id>-<slug> sub-branch
+    //                              that PRs back into the module/base branch.
+    const branchMode = (process.env.TASK_BRANCH_MODE || "worktree").trim().toLowerCase();
+    const directModeBranch =
+      branchMode === "direct" && baseBranch
+        ? normalizeBranchName(baseBranch)?.replace(/^origin\//, "") || null
+        : null;
     const branch =
       requestedBranch ||
       task.branchName ||
       task.meta?.branch_name ||
+      directModeBranch ||
       `ve/${taskId.substring(0, 8)}-${slugify(taskTitle)}`;
-    const baseBranch = this._resolveTaskBaseBranch(task);
     const taskRepoContext = this._resolveTaskRepoContext(task);
     const executionRepoRoot = taskRepoContext.repoRoot || this.repoRoot;
     const executionRepoSlug = taskRepoContext.repoSlug || this.repoSlug;
@@ -5099,6 +5135,58 @@ class TaskExecutor {
         }
       } catch {
         /* best-effort upstream rebase */
+      }
+
+      // Additionally sync with origin/main (or DEFAULT_TARGET_BRANCH) so that
+      // module branches continuously absorb upstream changes before each push.
+      // This surfaces conflicts early — if a merge conflict occurs, we abort the
+      // merge and push as-is; the NEXT agent working on this branch will encounter
+      // the conflict immediately and resolve it inline (no separate conflict-fix task).
+      try {
+        const mainBranch =
+          process.env.DEFAULT_TARGET_BRANCH ||
+          process.env.VK_TARGET_BRANCH?.replace(/^origin\//, "") ||
+          "main";
+        const syncEnabled =
+          (process.env.TASK_UPSTREAM_SYNC_MAIN ?? "true") !== "false";
+        // Only sync main when base branch is NOT already main itself
+        const isMainBase = baseInfo.branch === mainBranch || baseBranch === "main";
+        if (syncEnabled && !isMainBase) {
+          spawnSync("git", ["fetch", "origin", mainBranch, "--quiet"], {
+            cwd: worktreePath,
+            encoding: "utf8",
+            timeout: 30_000,
+          });
+          const mainMergeResult = spawnSync(
+            "git",
+            ["merge", `origin/${mainBranch}`, "--no-edit", "--no-ff", "-X", "ours"],
+            {
+              cwd: worktreePath,
+              encoding: "utf8",
+              timeout: 60_000,
+            },
+          );
+          if (mainMergeResult.status !== 0) {
+            // Conflicts or error — abort and continue with push as-is.
+            // The unresolved divergence will be visible to the next agent.
+            console.warn(
+              `${TAG} upstream main merge (origin/${mainBranch}) had conflicts on ` +
+              `${branch} — aborting merge, pushing branch as-is. ` +
+              `Next agent on this branch will resolve conflicts.`,
+            );
+            spawnSync("git", ["merge", "--abort"], {
+              cwd: worktreePath,
+              encoding: "utf8",
+              timeout: 10_000,
+            });
+          } else {
+            console.log(
+              `${TAG} synced ${branch} with origin/${mainBranch} before push.`,
+            );
+          }
+        }
+      } catch {
+        /* best-effort upstream main sync */
       }
 
       const safety = evaluateBranchSafetyForPush(worktreePath, {

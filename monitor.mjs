@@ -7551,6 +7551,27 @@ async function buildPlannerRuntimeContext(reason, details, numTasks) {
   };
 }
 
+/**
+ * Extract a conventional-commit scope from a task title and return the
+ * corresponding module branch ref (e.g. "origin/veid").
+ * Respects TASK_BRANCH_AUTO_MODULE env var (default: true) and
+ * MODULE_BRANCH_PREFIX (default: "origin/").
+ */
+function extractModuleBaseBranchFromTitle(title) {
+  const enabled = (process.env.TASK_BRANCH_AUTO_MODULE ?? "true") !== "false";
+  if (!enabled || !title) return null;
+  const match = String(title).match(
+    /(?:^\[[^\]]+\]\s*)?(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\(([^)]+)\)/i,
+  );
+  if (!match) return null;
+  const scope = match[1].toLowerCase().trim();
+  // Exclude generic scopes that don't map to real module branches
+  const generic = new Set(["deps", "app", "sdk", "cli", "api"]);
+  if (generic.has(scope)) return null;
+  const prefix = (process.env.MODULE_BRANCH_PREFIX || "origin/").replace(/\/*$/, "/");
+  return `${prefix}${scope}`;
+}
+
 function buildPlannerTaskDescription({
   plannerPrompt,
   reason,
@@ -7620,8 +7641,13 @@ function buildPlannerTaskDescription({
     "4. Prioritize reliability and unblockers first when errors/review backlog is elevated.",
     "5. Avoid duplicates with existing todo/inprogress/review tasks and open PRs.",
     "6. Prefer task sets that can run in parallel with minimal file overlap.",
-    "7. If a task should target a non-default epic/base branch, include `base_branch` in the JSON task object.",
-  ].join("\n");
+    "7. **Module branch routing (important):** When a task's title follows conventional commit format",
+    "   `feat(module):` or `fix(module):`, ALWAYS set `base_branch` to `origin/<module>` in the JSON.",
+    "   This enables parallel branch-per-module execution where all work for a module accumulates on",
+    "   its dedicated branch and integrates upstream changes continuously.",
+    "   Examples: `feat(veid):` → `origin/veid`, `fix(market):` → `origin/market`.",
+    "   Do NOT set base_branch for cross-cutting tasks that modify many modules.",
+    "8. If a task should target a non-default epic/base branch for other reasons, include `base_branch` in the JSON task object.",].join("\n");
 }
 
 function normalizePlannerTitleForComparison(title) {
@@ -7798,7 +7824,12 @@ async function materializePlannerTasksToKanban(projectId, tasks) {
       title: task.title,
       description: task.description,
       status: "todo",
-      ...(task.baseBranch ? { baseBranch: task.baseBranch } : {}),
+      // Honour explicit baseBranch from planner JSON, then fall back to
+      // module auto-detection via conventional commit scope in the title.
+      ...(() => {
+        const b = task.baseBranch || task.base_branch || extractModuleBaseBranchFromTitle(task.title);
+        return b ? { baseBranch: b } : {};
+      })(),
     });
     if (createdTask?.id) {
       created.push({ id: createdTask.id, title: task.title });

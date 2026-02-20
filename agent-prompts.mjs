@@ -173,11 +173,12 @@ Return exactly one fenced json block with this shape:
 {
   "tasks": [
     {
-      "title": "[m] Example task title",
+      "title": "[m] feat(veid): example task title",
       "description": "Problem statement and scope",
       "implementation_steps": ["step 1", "step 2"],
       "acceptance_criteria": ["criterion 1", "criterion 2"],
-      "verification": ["test/check 1", "test/check 2"]
+      "verification": ["test/check 1", "test/check 2"],
+      "base_branch": "origin/veid"
     }
   ]
 }
@@ -187,6 +188,11 @@ Rules:
 - Provide at least the requested task count unless blocked by duplicate safeguards.
 - Keep titles unique and specific.
 - Keep file overlap low across tasks to maximize parallel execution.
+- **Module branch routing:** When the task title follows conventional commit format
+  \`feat(module):\` or \`fix(module):\`, set \`base_branch\` to \`origin/<module>\`.
+  This routes the task to the module's dedicated branch for parallel, isolated development.
+  Examples: \`feat(veid):\` → \`"base_branch": "origin/veid"\`, \`fix(market):\` → \`"base_branch": "origin/market"\`.
+  Omit \`base_branch\` for cross-cutting tasks that span multiple modules.
 `,
   monitorMonitor: `# Bosun-Monitor Agent
 
@@ -240,9 +246,9 @@ You are running as a **Bosun-managed task agent**.  Environment variables
 **After committing:**
 - If a precommit hook auto-applies additional formatting changes, add those
   to a follow-up commit before pushing.
-- Merge any upstream changes from the base branch before pushing:
-  \`git fetch origin && git merge origin/<base-branch> --no-edit\`
-  Resolve any conflicts that arise.
+- Merge any upstream changes — BOTH from the base (module) branch AND from main:
+  \`git fetch origin && git merge origin/<base-branch> --no-edit && git merge origin/main --no-edit\`
+  Resolve any conflicts that arise before pushing.
 - Push: \`git push --set-upstream origin {{BRANCH}}\`
 - After a successful push, open a Pull Request:
   \`gh pr create --title "{{TASK_TITLE}}" --body "Closes task {{TASK_ID}}"\`
