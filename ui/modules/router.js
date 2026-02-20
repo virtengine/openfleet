@@ -82,5 +82,6 @@ export const TAB_CONFIG = [
   { id: "chat", label: "Chat", icon: "chat" },
   { id: "infra", label: "Infra", icon: "server" },
   { id: "logs", label: "Logs", icon: "terminal" },
+  { id: "telemetry", label: "Telemetry", icon: "chart" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];

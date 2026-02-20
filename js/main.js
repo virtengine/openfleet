@@ -544,7 +544,7 @@
 
     function commitTypeIcon(msg) {
       if (/^feat/i.test(msg))    return { icon: '✦', cls: 'commit-type--feat',    label: 'feat' };
-      if (/^fix/i.test(msg))     return { icon: '⬤', cls: 'commit-type--fix',     label: 'fix' };
+      if (/^fix/i.test(msg))     return { icon: '⬧', cls: 'commit-type--fix',     label: 'fix' };
       if (/^chore/i.test(msg))   return { icon: '○', cls: 'commit-type--chore',   label: 'chore' };
       if (/^docs/i.test(msg))    return { icon: '⬡', cls: 'commit-type--docs',    label: 'docs' };
       if (/^refactor/i.test(msg))return { icon: '⟳', cls: 'commit-type--refactor',label: 'refactor' };

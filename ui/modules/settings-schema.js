@@ -53,6 +53,7 @@ export const SETTINGS_SCHEMA = [
   { key: "TELEGRAM_API_BASE_URL",          label: "API Base URL",               category: "telegram", type: "string",  defaultVal: "https://api.telegram.org", description: "Override for Telegram API proxy.", advanced: true, validate: "^https?://" },
   { key: "TELEGRAM_HTTP_TIMEOUT_MS",       label: "HTTP Timeout",               category: "telegram", type: "number",  defaultVal: 15000, min: 5000, max: 60000, unit: "ms", description: "Per-request timeout for Telegram API calls.", advanced: true },
   { key: "TELEGRAM_RETRY_ATTEMPTS",        label: "Retry Attempts",             category: "telegram", type: "number",  defaultVal: 4, min: 0, max: 10, description: "Number of retry attempts for transient Telegram API failures.", advanced: true },
+  { key: "TELEGRAM_HISTORY_RETENTION_DAYS", label: "Auto-Delete History",       category: "telegram", type: "number",  defaultVal: 3, min: 0, max: 365, unit: "days", description: "Automatically delete bot messages older than this many days to keep the chat tidy. 0 = disabled. Note: Telegram may silently skip messages older than 48 h in private chats.", restart: false },
   { key: "PROJECT_NAME",                   label: "Project Name",               category: "telegram", type: "string",  description: "Display name used in Telegram messages and logs. Auto-detected from package.json if not set." },
 
   // ── Mini App / UI Server ──────────────────────────────────────
@@ -111,6 +112,14 @@ export const SETTINGS_SCHEMA = [
   { key: "TASK_PLANNER_MODE",              label: "Task Planner Mode",          category: "kanban", type: "select", defaultVal: "kanban", options: ["kanban", "codex-sdk", "disabled"], description: "How the autonomous task planner operates. 'disabled' turns off automatic task generation." },
   { key: "TASK_PLANNER_DEDUP_HOURS",       label: "Planner Dedup Window",       category: "kanban", type: "number", defaultVal: 6, min: 1, max: 72, unit: "hours", description: "Hours to look back for duplicate task detection.", advanced: true },
   { key: "BOSUN_PROMPT_PLANNER",  label: "Planner Prompt Path",         category: "advanced", type: "string", description: "Override the task planner prompt file path.", advanced: true },
+
+  // ── Logging / Telemetry ──────────────────────────────────────
+  { key: "BOSUN_TELEMETRY_SAMPLE_RATE",    label: "Telemetry Sample Rate",      category: "logging", type: "number", defaultVal: 1, min: 0, max: 1, description: "Sampling rate for high-volume telemetry events (agent_output/tool events). 1 = full, 0.1 = 10% sample.", advanced: true },
+  { key: "AGENT_WORK_STREAM_RETENTION_DAYS", label: "Stream Retention",         category: "logging", type: "number", defaultVal: 30, min: 1, max: 365, unit: "days", description: "How long to keep agent-work stream logs before rotation.", advanced: true },
+  { key: "AGENT_WORK_ERROR_RETENTION_DAYS",  label: "Error Retention",          category: "logging", type: "number", defaultVal: 90, min: 1, max: 365, unit: "days", description: "How long to keep error logs before rotation.", advanced: true },
+  { key: "AGENT_WORK_SESSION_RETENTION_COUNT", label: "Session Retention Count", category: "logging", type: "number", defaultVal: 100, min: 10, max: 10000, description: "Number of session log files to keep.", advanced: true },
+  { key: "AGENT_WORK_ARCHIVE_RETENTION_DAYS", label: "Archive Retention",       category: "logging", type: "number", defaultVal: 180, min: 30, max: 3650, unit: "days", description: "Retention window for compressed log archives.", advanced: true },
+  { key: "AGENT_WORK_METRICS_ROTATION_ENABLED", label: "Rotate Metrics Log",    category: "logging", type: "boolean", defaultVal: true, description: "Rotate metrics log monthly to keep file size bounded.", advanced: true },
 
   // ── GitHub / Git ─────────────────────────────────────────
   { key: "GITHUB_TOKEN",                   label: "GitHub Token",               category: "github", type: "secret", sensitive: true, description: "Personal access token or fine-grained token for GitHub API. Required for GitHub kanban backend." },

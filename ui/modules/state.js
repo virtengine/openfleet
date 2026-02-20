@@ -43,6 +43,7 @@ const CACHE_TTL = {
   threads: 5000, logs: 15000, worktrees: 30000, workspaces: 30000,
   presence: 30000, config: 60000, projects: 60000, git: 20000,
   infra: 30000,
+  telemetry: 15000,
 };
 
 function _cacheKey(url) { return url; }
@@ -110,6 +111,12 @@ export const agentLogTail = signal(null);
 export const agentLogLines = signal(200);
 export const agentLogQuery = signal("");
 export const agentContext = signal(null);
+
+// ── Telemetry
+export const telemetrySummary = signal(null);
+export const telemetryErrors = signal([]);
+export const telemetryExecutors = signal({});
+export const telemetryAlerts = signal([]);
 
 // ── Config (routing, regions, etc.)
 export const configData = signal(null);
@@ -590,6 +597,50 @@ export async function loadConfig() {
   _markFresh("config");
 }
 
+export async function loadTelemetrySummary() {
+  const url = "/api/telemetry/summary";
+  if (_cacheFresh(url, "telemetry")) return;
+  const res = await apiFetch(url, { _silent: true }).catch(() => ({
+    ok: false,
+  }));
+  telemetrySummary.value = res?.data ?? res ?? null;
+  _cacheSet(url, telemetrySummary.value);
+  _markFresh("telemetry");
+}
+
+export async function loadTelemetryErrors() {
+  const url = "/api/telemetry/errors";
+  if (_cacheFresh(url, "telemetry")) return;
+  const res = await apiFetch(url, { _silent: true }).catch(() => ({
+    ok: false,
+  }));
+  telemetryErrors.value = res?.data ?? res ?? [];
+  _cacheSet(url, telemetryErrors.value);
+  _markFresh("telemetry");
+}
+
+export async function loadTelemetryExecutors() {
+  const url = "/api/telemetry/executors";
+  if (_cacheFresh(url, "telemetry")) return;
+  const res = await apiFetch(url, { _silent: true }).catch(() => ({
+    ok: false,
+  }));
+  telemetryExecutors.value = res?.data ?? res ?? {};
+  _cacheSet(url, telemetryExecutors.value);
+  _markFresh("telemetry");
+}
+
+export async function loadTelemetryAlerts() {
+  const url = "/api/telemetry/alerts";
+  if (_cacheFresh(url, "telemetry")) return;
+  const res = await apiFetch(url, { _silent: true }).catch(() => ({
+    ok: false,
+  }));
+  telemetryAlerts.value = res?.data ?? res ?? [];
+  _cacheSet(url, telemetryAlerts.value);
+  _markFresh("telemetry");
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  TAB REFRESH — map tab names to their required loaders
  * ═══════════════════════════════════════════════════════════════ */
@@ -609,6 +660,13 @@ const TAB_LOADERS = {
   control: () => Promise.all([loadExecutor(), loadConfig()]),
   logs: () =>
     Promise.all([loadLogs(), loadAgentLogFileList(), loadAgentLogTailData()]),
+  telemetry: () =>
+    Promise.all([
+      loadTelemetrySummary(),
+      loadTelemetryErrors(),
+      loadTelemetryExecutors(),
+      loadTelemetryAlerts(),
+    ]),
   settings: () => Promise.all([loadStatus(), loadConfig()]),
 };
 
@@ -687,6 +745,7 @@ const WS_CHANNEL_MAP = {
   infra: ["worktrees", "workspaces", "presence"],
   control: ["executor", "overview"],
   logs: ["*"],
+  telemetry: ["*"],
   settings: ["overview"],
 };
 
