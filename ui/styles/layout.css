@@ -309,10 +309,12 @@
   width: 22px;
   height: 22px;
   transition: transform 0.2s ease, filter 0.2s ease;
+  pointer-events: none;
 }
 
 .nav-label {
   line-height: 1;
+  pointer-events: none;
 }
 
 /* ─── More Menu (Modal Sheet) ─── */

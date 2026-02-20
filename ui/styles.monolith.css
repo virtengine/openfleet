@@ -260,10 +260,12 @@ body {
 .nav-item svg {
   width: 22px;
   height: 22px;
+  pointer-events: none;
 }
 
 .nav-label {
   line-height: 1;
+  pointer-events: none;
 }
 
 /* ─── Cards ─── */
