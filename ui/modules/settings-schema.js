@@ -53,6 +53,7 @@ export const SETTINGS_SCHEMA = [
   { key: "TELEGRAM_API_BASE_URL",          label: "API Base URL",               category: "telegram", type: "string",  defaultVal: "https://api.telegram.org", description: "Override for Telegram API proxy.", advanced: true, validate: "^https?://" },
   { key: "TELEGRAM_HTTP_TIMEOUT_MS",       label: "HTTP Timeout",               category: "telegram", type: "number",  defaultVal: 15000, min: 5000, max: 60000, unit: "ms", description: "Per-request timeout for Telegram API calls.", advanced: true },
   { key: "TELEGRAM_RETRY_ATTEMPTS",        label: "Retry Attempts",             category: "telegram", type: "number",  defaultVal: 4, min: 0, max: 10, description: "Number of retry attempts for transient Telegram API failures.", advanced: true },
+  { key: "TELEGRAM_HISTORY_RETENTION_DAYS", label: "Auto-Delete History",       category: "telegram", type: "number",  defaultVal: 3, min: 0, max: 365, unit: "days", description: "Automatically delete bot messages older than this many days to keep the chat tidy. 0 = disabled. Note: Telegram may silently skip messages older than 48 h in private chats.", restart: false },
   { key: "PROJECT_NAME",                   label: "Project Name",               category: "telegram", type: "string",  description: "Display name used in Telegram messages and logs. Auto-detected from package.json if not set." },
 
   // ── Mini App / UI Server ──────────────────────────────────────

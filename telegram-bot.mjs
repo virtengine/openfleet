@@ -132,6 +132,18 @@ const statusBoardStatePath = resolve(
 const fwCooldownPath = resolve(repoRoot, ".cache", "ve-fw-cooldown.json");
 const FW_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
 
+// ── Message History Auto-Cleanup ──────────────────────────────────────────
+const msgHistoryPath = resolve(repoRoot, ".cache", "ve-message-history.json");
+// Days to keep bot messages in chat. 0 = disabled. Default: 3 days.
+const HISTORY_RETENTION_DAYS = (() => {
+  const v = Number(process.env.TELEGRAM_HISTORY_RETENTION_DAYS ?? "3");
+  return Number.isFinite(v) && v > 0 ? v : 0;
+})();
+const HISTORY_RETENTION_MS = HISTORY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const HISTORY_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // run every 6 hours
+const HISTORY_INITIAL_DELAY_MS = 2 * 60 * 1000;         // wait 2 min after boot
+const HISTORY_MAX_TRACKED = 10_000;                      // safety cap
+
 function resolveVeKanbanPs1Path() {
   const modulePath = resolve(BosunDir, "ve-kanban.ps1");
   if (existsSync(modulePath)) return modulePath;
@@ -1117,6 +1129,7 @@ async function sendDirect(chatId, text, options = {}) {
         const data = await res.json();
         if (data.ok && data.result?.message_id) {
           lastMessageId = data.result.message_id;
+          recordSentMessage(chatId, lastMessageId);
         }
       } catch (err) {
         console.warn(`[telegram-bot] send JSON parse error: ${err.message}`);
@@ -1213,6 +1226,85 @@ async function deleteDirect(chatId, messageId) {
   } catch {
     /* best effort */
   }
+}
+
+// ── Message History Helpers ───────────────────────────────────────────────────
+
+/** Lazy-loaded in-memory list of sent message records. */
+let _msgHistory = null;
+let _msgHistoryDirty = false;
+
+function _loadMsgHistory() {
+  if (_msgHistory !== null) return;
+  try {
+    const raw = readFileSync(msgHistoryPath, "utf8");
+    const data = JSON.parse(raw);
+    _msgHistory = Array.isArray(data.messages) ? data.messages : [];
+  } catch {
+    _msgHistory = [];
+  }
+}
+
+function _saveMsgHistory() {
+  if (!_msgHistory) return;
+  try {
+    mkdirSync(resolve(repoRoot, ".cache"), { recursive: true });
+    writeFileSync(
+      msgHistoryPath,
+      JSON.stringify({ messages: _msgHistory }, null, 2),
+      "utf8",
+    );
+    _msgHistoryDirty = false;
+  } catch {
+    /* best effort */
+  }
+}
+
+/**
+ * Record a newly sent message ID so it can be cleaned up later.
+ * No-op when HISTORY_RETENTION_MS is 0 (feature disabled).
+ */
+function recordSentMessage(chatId, messageId) {
+  if (!HISTORY_RETENTION_MS || !messageId) return;
+  _loadMsgHistory();
+  _msgHistory.push({ chat_id: chatId, message_id: messageId, sent_at: Date.now() });
+  if (_msgHistory.length > HISTORY_MAX_TRACKED) {
+    _msgHistory = _msgHistory.slice(-HISTORY_MAX_TRACKED);
+  }
+  _msgHistoryDirty = true;
+}
+
+/**
+ * Delete all tracked bot messages older than HISTORY_RETENTION_MS.
+ * Failures are silently swallowed — Telegram may refuse deletes for messages
+ * older than 48 h in private chats; we just skip those gracefully.
+ */
+async function pruneMessageHistory() {
+  if (!HISTORY_RETENTION_MS) return;
+  _loadMsgHistory();
+  if (_msgHistoryDirty) _saveMsgHistory();
+
+  const cutoff = Date.now() - HISTORY_RETENTION_MS;
+  const toDelete = _msgHistory.filter((m) => m.sent_at < cutoff);
+  if (toDelete.length === 0) return;
+
+  console.log(
+    `[telegram-bot] auto-cleanup: deleting ${toDelete.length} message(s) older than ${HISTORY_RETENTION_DAYS}d`,
+  );
+
+  let i = 0;
+  for (const m of toDelete) {
+    await deleteDirect(m.chat_id, m.message_id);
+    i++;
+    // Pace at ~20 deletes/s to stay well under Telegram’s 30 msg/s limit
+    if (i % 20 === 0) await new Promise((r) => setTimeout(r, 1000));
+  }
+
+  _msgHistory = _msgHistory.filter((m) => m.sent_at >= cutoff);
+  _saveMsgHistory();
+  console.log(
+    `[telegram-bot] auto-cleanup: done. ${_msgHistory.length} messages remaining in history.`,
+  );
 }
 
 /**
@@ -10378,6 +10470,32 @@ export async function startTelegramBot() {
     console.error(`[telegram-bot] fatal poll loop error: ${err.message}`);
     polling = false;
   });
+
+  // ── Message history auto-cleanup ──
+  if (HISTORY_RETENTION_MS) {
+    // Flush in-memory buffer to disk every 5 minutes
+    const flushTimer = setInterval(() => {
+      if (_msgHistoryDirty) _saveMsgHistory();
+    }, 5 * 60 * 1000);
+    flushTimer.unref();
+
+    // Run first prune after HISTORY_INITIAL_DELAY_MS (2 min), then every 6 h
+    setTimeout(() => {
+      pruneMessageHistory().catch((err) =>
+        console.warn(`[telegram-bot] message history cleanup error: ${err.message}`),
+      );
+      const cleanupTimer = setInterval(
+        () =>
+          pruneMessageHistory().catch((err) =>
+            console.warn(
+              `[telegram-bot] message history cleanup error: ${err.message}`,
+            ),
+          ),
+        HISTORY_CLEANUP_INTERVAL_MS,
+      );
+      cleanupTimer.unref();
+    }, HISTORY_INITIAL_DELAY_MS);
+  }
 }
 
 /**
