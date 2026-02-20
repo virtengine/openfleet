@@ -687,6 +687,26 @@ select.input {
   box-shadow: 0 -10px 30px rgba(1, 4, 9, 0.4);
 }
 
+.modal-content.modal-content-wide {
+  max-width: 860px;
+}
+
+.modal-form-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.modal-form-span {
+  width: 100%;
+}
+
 .modal-handle {
   width: 36px;
   height: 4px;
@@ -1555,6 +1575,18 @@ select.input {
 
   .modal-overlay {
     align-items: center;
+  }
+}
+
+@media (min-width: 900px) {
+  .modal-form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 20px;
+  }
+
+  .modal-form-span {
+    grid-column: span 2;
   }
 }
 

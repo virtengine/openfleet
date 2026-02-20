@@ -3272,6 +3272,9 @@ function uiTokenAction(token) {
 }
 
 function uiButton(text, action) {
+  if (typeof action === "string" && (action.startsWith("cb:") || action.startsWith("ui:"))) {
+    return { text, callback_data: action };
+  }
   return { text, callback_data: uiCallback(action) };
 }
 
@@ -3984,11 +3987,16 @@ Object.assign(UI_SCREENS, {
             text: "📱 Open Control Center",
             web_app: { url: telegramWebAppUrl },
           },
+          uiButton("✖", "cb:close_menu"),
         ]);
       } else if (telegramUiUrl) {
-        rows.unshift([{ text: "🌐 Open Control Center", url: getBrowserUiUrl() || telegramUiUrl }]);
+        rows.unshift([
+          { text: "🌐 Open Control Center", url: getBrowserUiUrl() || telegramUiUrl },
+          uiButton("✖", "cb:close_menu"),
+        ]);
+      } else {
+        rows.unshift([uiButton("✖ Close Menu", "cb:close_menu")]);
       }
-      rows.push([uiButton("✖ Close Menu", "cb:close_menu")]);
       return buildKeyboard(rows);
     },
   },

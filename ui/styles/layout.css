@@ -1121,6 +1121,10 @@
   .app-shell[data-has-rail="true"] .main-content {
     max-width: none;
   }
+
+  .app-shell[data-tab="tasks"] .main-content {
+    max-width: none;
+  }
 }
 
 .inspector-log-line {

@@ -226,7 +226,7 @@ export function StartTaskModal({
   };
 
   return html`
-    <${Modal} title="Start Task" onClose=${onClose}>
+    <${Modal} title="Start Task" onClose=${onClose} contentClassName="modal-content-wide">
       ${task?.id || task?.title
         ? html`
             <div class="meta-text mb-sm">
@@ -238,38 +238,46 @@ export function StartTaskModal({
               Enter a task ID to manually dispatch it. Manual starts work even if automation is paused.
             </div>
           `}
-      <div class="flex-col gap-md">
+      <div class="modal-form-grid">
         ${(allowTaskIdInput || !task?.id) &&
         html`
-          <div class="card-subtitle">Task ID</div>
+          <div class="modal-form-field modal-form-span">
+            <div class="card-subtitle">Task ID</div>
+            <input
+              class="input"
+              placeholder="e.g. task-123"
+              value=${taskIdInput}
+              onInput=${(e) => setTaskIdInput(e.target.value)}
+            />
+          </div>
+        `}
+        <div class="modal-form-field">
+          <div class="card-subtitle">Executor SDK</div>
+          <select class="input" value=${sdk} onChange=${(e) => setSdk(e.target.value)}>
+            ${["auto", "codex", "copilot", "claude"].map(
+              (opt) => html`<option value=${opt}>${opt}</option>`,
+            )}
+          </select>
+        </div>
+        <div class="modal-form-field">
+          <div class="card-subtitle">Model Override (optional)</div>
           <input
             class="input"
-            placeholder="e.g. task-123"
-            value=${taskIdInput}
-            onInput=${(e) => setTaskIdInput(e.target.value)}
+            placeholder=${canModel ? "e.g. gpt-5.3-codex" : "Select SDK to enable"}
+            value=${model}
+            disabled=${!canModel}
+            onInput=${(e) => setModel(e.target.value)}
           />
-        `}
-        <div class="card-subtitle">Executor SDK</div>
-        <select class="input" value=${sdk} onChange=${(e) => setSdk(e.target.value)}>
-          ${["auto", "codex", "copilot", "claude"].map(
-            (opt) => html`<option value=${opt}>${opt}</option>`,
-          )}
-        </select>
-        <div class="card-subtitle">Model Override (optional)</div>
-        <input
-          class="input"
-          placeholder=${canModel ? "e.g. gpt-5.3-codex" : "Select SDK to enable"}
-          value=${model}
-          disabled=${!canModel}
-          onInput=${(e) => setModel(e.target.value)}
-        />
-        <button
-          class="btn btn-primary"
-          onClick=${handleStart}
-          disabled=${starting || !resolvedTaskId}
-        >
-          ${starting ? "Starting…" : "▶ Start Task"}
-        </button>
+        </div>
+        <div class="modal-form-field modal-form-span">
+          <button
+            class="btn btn-primary"
+            onClick=${handleStart}
+            disabled=${starting || !resolvedTaskId}
+          >
+            ${starting ? "Starting…" : "▶ Start Task"}
+          </button>
+        </div>
       </div>
     <//>
   `;
@@ -514,7 +522,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   };
 
   return html`
-    <${Modal} title=${task?.title || "Task Detail"} onClose=${onClose}>
+    <${Modal} title=${task?.title || "Task Detail"} onClose=${onClose} contentClassName="modal-content-wide">
       <div class="meta-text mb-sm" style="user-select:all">ID: ${task?.id}</div>
       <div class="flex-row gap-sm mb-md">
         <${Badge} status=${task?.status} text=${task?.status} />
@@ -523,27 +531,27 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         ${manualOverride && html`<${Badge} status="warning" text="manual" />`}
       </div>
 
-      <div class="flex-col gap-md">
+      <div class="flex-col gap-md modal-form-grid">
         <input
-          class="input"
+          class="input modal-form-span"
           placeholder="Title"
           value=${title}
           onInput=${(e) => setTitle(e.target.value)}
         />
         <textarea
-          class="input"
+          class="input modal-form-span"
           rows="5"
           placeholder="Description"
           value=${description}
           onInput=${(e) => setDescription(e.target.value)}
         ></textarea>
         <input
-          class="input"
+          class="input modal-form-span"
           placeholder="Base branch (optional, e.g. feature/xyz)"
           value=${baseBranch}
           onInput=${(e) => setBaseBranch(e.target.value)}
         />
-        <div class="input-row">
+        <div class="input-row modal-form-span">
           <select
             class="input"
             value=${workspaceId}
@@ -570,21 +578,21 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           </select>
         </div>
         <input
-          class="input"
+          class="input modal-form-span"
           placeholder="Tags (comma-separated)"
           value=${tagsInput}
           onInput=${(e) => setTagsInput(e.target.value)}
         />
         ${normalizeTagInput(tagsInput).length > 0 &&
         html`
-          <div class="tag-row">
+          <div class="tag-row modal-form-span">
             ${normalizeTagInput(tagsInput).map(
               (tag) => html`<span class="tag-chip">#${tag}</span>`,
             )}
           </div>
         `}
 
-        <div class="input-row">
+        <div class="input-row modal-form-span">
           <select
             class="input"
             value=${status}
@@ -610,23 +618,27 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             )}
           </select>
         </div>
-        <${Toggle}
-          label="Draft (keep in backlog)"
-          checked=${draft}
-          onChange=${(next) => {
-            setDraft(next);
-            if (next) setStatus("draft");
-            else if (status === "draft") setStatus("todo");
-          }}
-        />
-        <${Toggle}
-          label="Manual takeover (exclude from automation)"
-          checked=${manualOverride}
-          disabled=${manualBusy || !task?.id}
-          onChange=${handleManualToggle}
-        />
+        <div class="modal-form-span">
+          <${Toggle}
+            label="Draft (keep in backlog)"
+            checked=${draft}
+            onChange=${(next) => {
+              setDraft(next);
+              if (next) setStatus("draft");
+              else if (status === "draft") setStatus("todo");
+            }}
+          />
+        </div>
+        <div class="modal-form-span">
+          <${Toggle}
+            label="Manual takeover (exclude from automation)"
+            checked=${manualOverride}
+            disabled=${manualBusy || !task?.id}
+            onChange=${handleManualToggle}
+          />
+        </div>
         <input
-          class="input"
+          class="input modal-form-span"
           placeholder="Manual reason (optional)"
           value=${manualReason}
           disabled=${manualBusy}
@@ -634,35 +646,37 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         />
         ${manualOverride &&
         html`
-          <div class="meta-text">
-            Bosun will skip this task until manual takeover is cleared.
+          <div class="modal-form-span">
+            <div class="meta-text">
+              Bosun will skip this task until manual takeover is cleared.
+            </div>
+            ${manualReason &&
+            html`<div class="meta-text">Reason: ${manualReason}</div>`}
           </div>
-          ${manualReason &&
-          html`<div class="meta-text">Reason: ${manualReason}</div>`}
         `}
 
         ${task?.created_at &&
         html`
-          <div class="meta-text">
+          <div class="meta-text modal-form-span">
             Created: ${new Date(task.created_at).toLocaleString()}
           </div>
         `}
         ${task?.updated_at &&
         html`
-          <div class="meta-text">
+          <div class="meta-text modal-form-span">
             Updated: ${formatRelative(task.updated_at)}
           </div>
         `}
         ${task?.assignee &&
-        html` <div class="meta-text">Assignee: ${task.assignee}</div> `}
+        html` <div class="meta-text modal-form-span">Assignee: ${task.assignee}</div> `}
         ${task?.branch &&
         html`
-          <div class="meta-text" style="user-select:all">
+          <div class="meta-text modal-form-span" style="user-select:all">
             Branch: ${task.branch}
           </div>
         `}
 
-        <div class="btn-row">
+        <div class="btn-row modal-form-span">
           ${task?.status === "todo" &&
           onStart &&
           html`
@@ -710,7 +724,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         ${task?.id &&
         html`
           <button
-            class="btn btn-ghost btn-sm"
+            class="btn btn-ghost btn-sm modal-form-span"
             onClick=${() => {
               haptic();
               sendCommandToChat("/logs " + task.id);
@@ -1825,28 +1839,28 @@ function CreateTaskModalInline({ onClose }) {
   ]);
 
   return html`
-    <${Modal} title="New Task" onClose=${onClose}>
-      <div class="flex-col gap-md">
+    <${Modal} title="New Task" onClose=${onClose} contentClassName="modal-content-wide">
+      <div class="flex-col gap-md modal-form-grid">
         <input
-          class="input"
+          class="input modal-form-span"
           placeholder="Task title"
           value=${title}
           onInput=${(e) => setTitle(e.target.value)}
         />
         <textarea
-          class="input"
+          class="input modal-form-span"
           rows="4"
           placeholder="Description"
           value=${description}
           onInput=${(e) => setDescription(e.target.value)}
         ></textarea>
         <input
-          class="input"
+          class="input modal-form-span"
           placeholder="Base branch (optional, e.g. feature/xyz)"
           value=${baseBranch}
           onInput=${(e) => setBaseBranch(e.target.value)}
         />
-        <div class="input-row">
+        <div class="input-row modal-form-span">
           <select
             class="input"
             value=${workspaceId}
@@ -1873,39 +1887,43 @@ function CreateTaskModalInline({ onClose }) {
           </select>
         </div>
         <input
-          class="input"
+          class="input modal-form-span"
           placeholder="Tags (comma-separated)"
           value=${tagsInput}
           onInput=${(e) => setTagsInput(e.target.value)}
         />
         ${normalizeTagInput(tagsInput).length > 0 &&
         html`
-          <div class="tag-row">
+          <div class="tag-row modal-form-span">
             ${normalizeTagInput(tagsInput).map(
               (tag) => html`<span class="tag-chip">#${tag}</span>`,
             )}
           </div>
         `}
-        <${Toggle}
-          label="Draft (keep in backlog)"
-          checked=${draft}
-          onChange=${(next) => setDraft(next)}
-        />
-        <${SegmentedControl}
-          options=${[
-            { value: "low", label: "Low" },
-            { value: "medium", label: "Medium" },
-            { value: "high", label: "High" },
-            { value: "critical", label: "Critical" },
-          ]}
-          value=${priority}
-          onChange=${(v) => {
-            haptic();
-            setPriority(v);
-          }}
-        />
+        <div class="modal-form-span">
+          <${Toggle}
+            label="Draft (keep in backlog)"
+            checked=${draft}
+            onChange=${(next) => setDraft(next)}
+          />
+        </div>
+        <div class="modal-form-span">
+          <${SegmentedControl}
+            options=${[
+              { value: "low", label: "Low" },
+              { value: "medium", label: "Medium" },
+              { value: "high", label: "High" },
+              { value: "critical", label: "Critical" },
+            ]}
+            value=${priority}
+            onChange=${(v) => {
+              haptic();
+              setPriority(v);
+            }}
+          />
+        </div>
         <button
-          class="btn btn-primary"
+          class="btn btn-primary modal-form-span"
           onClick=${handleSubmit}
           disabled=${submitting}
         >

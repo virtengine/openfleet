@@ -36,10 +36,29 @@ import {
   initClaudeShell,
 } from "./claude-shell.mjs";
 
+/** Valid agent interaction modes */
+const VALID_MODES = ["ask", "agent", "plan"];
+
+/** Current interaction mode — affects how prompts are framed */
+let agentMode = "agent";
+
+/**
+ * Mode-specific prompt prefixes prepended to user messages.
+ * - "ask"   → brief, direct answer without tool use
+ * - "agent" → full agentic behavior (default, no prefix needed)
+ * - "plan"  → create a plan but do not execute it
+ */
+const MODE_PREFIXES = {
+  ask: "[MODE: ask] Respond briefly and directly. Avoid using tools unless absolutely necessary. Do not make code changes.\n\n",
+  agent: "",
+  plan: "[MODE: plan] Create a detailed plan for the following request but do NOT execute it. Outline the steps, files involved, and approach without making any changes.\n\n",
+};
+
 const ADAPTERS = {
   "codex-sdk": {
     name: "codex-sdk",
     provider: "CODEX",
+    displayName: "Codex",
     exec: (msg, opts) => execCodexPrompt(msg, { persistent: true, ...opts }),
     steer: steerCodexPrompt,
     isBusy: isCodexBusy,
@@ -56,20 +75,46 @@ const ADAPTERS = {
     listSessions: listCodexSessions,
     switchSession: switchCodexSession,
     createSession: createCodexSession,
+    sdkCommands: ["/compact", "/status", "/context", "/mcp", "/model", "/clear"],
+    /**
+     * Forward an SDK-native command to the Codex shell.
+     * /clear is handled specially as a reset; others are sent as user input.
+     */
+    execSdkCommand: async (command, args) => {
+      const cmd = command.startsWith("/") ? command : `/${command}`;
+      if (cmd === "/clear") {
+        await resetThread();
+        return "Session cleared.";
+      }
+      const fullCmd = args ? `${cmd} ${args}` : cmd;
+      return execCodexPrompt(fullCmd, { persistent: true });
+    },
   },
   "copilot-sdk": {
     name: "copilot-sdk",
     provider: "COPILOT",
+    displayName: "Copilot",
     exec: (msg, opts) => execCopilotPrompt(msg, { persistent: true, ...opts }),
     steer: steerCopilotPrompt,
     isBusy: isCopilotBusy,
     getInfo: () => getCopilotSessionInfo(),
     reset: resetCopilotSession,
     init: async () => initCopilotShell(),
+    sdkCommands: ["/status", "/model", "/clear"],
+    execSdkCommand: async (command, args) => {
+      const cmd = command.startsWith("/") ? command : `/${command}`;
+      if (cmd === "/clear") {
+        await resetCopilotSession();
+        return "Session cleared.";
+      }
+      const fullCmd = args ? `${cmd} ${args}` : cmd;
+      return execCopilotPrompt(fullCmd, { persistent: true });
+    },
   },
   "claude-sdk": {
     name: "claude-sdk",
     provider: "CLAUDE",
+    displayName: "Claude",
     exec: execClaudePrompt,
     steer: steerClaudePrompt,
     isBusy: isClaudeBusy,
@@ -78,6 +123,16 @@ const ADAPTERS = {
     init: async () => {
       await initClaudeShell();
       return true;
+    },
+    sdkCommands: ["/compact", "/status", "/model", "/clear"],
+    execSdkCommand: async (command, args) => {
+      const cmd = command.startsWith("/") ? command : `/${command}`;
+      if (cmd === "/clear") {
+        await resetClaudeSession();
+        return "Session cleared.";
+      }
+      const fullCmd = args ? `${cmd} ${args}` : cmd;
+      return execClaudePrompt(fullCmd, {});
     },
   },
 };
@@ -245,12 +300,18 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   const timeoutMs = options.timeoutMs || PRIMARY_EXEC_TIMEOUT_MS;
   const tracker = getSessionTracker();
 
-  // Record user message
+  // Apply mode prefix (options.mode overrides the global setting for this call)
+  const effectiveMode = options.mode || agentMode;
+  const modePrefix = MODE_PREFIXES[effectiveMode] || "";
+  const framedMessage = modePrefix ? modePrefix + userMessage : userMessage;
+
+  // Record user message (original, without mode prefix)
   tracker.recordEvent(sessionId, {
     role: "user",
     content: userMessage,
     timestamp: new Date().toISOString(),
     _sessionType: sessionType,
+    _mode: effectiveMode,
   });
 
   // Build ordered list of adapters to try: current first, then fallbacks
@@ -387,4 +448,95 @@ export async function switchPrimarySession(id) {
 
 export async function createPrimarySession(id) {
   return activeAdapter.createSession ? activeAdapter.createSession(id) : undefined;
+}
+
+// ── Agent mode & SDK command API ─────────────────────────────────────────────
+
+/**
+ * Get the current interaction mode ("ask" | "agent" | "plan").
+ * @returns {string}
+ */
+export function getAgentMode() {
+  return agentMode;
+}
+
+/**
+ * Set the interaction mode.
+ * @param {"ask"|"agent"|"plan"} mode
+ * @returns {{ ok: boolean, mode: string, error?: string }}
+ */
+export function setAgentMode(mode) {
+  const normalized = String(mode || "").trim().toLowerCase();
+  if (!VALID_MODES.includes(normalized)) {
+    return { ok: false, mode: agentMode, error: `Invalid mode "${mode}". Valid: ${VALID_MODES.join(", ")}` };
+  }
+  agentMode = normalized;
+  return { ok: true, mode: agentMode };
+}
+
+/**
+ * Build the full prompt with mode prefix applied.
+ * @param {string} userMessage
+ * @returns {string}
+ */
+export function applyModePrefix(userMessage) {
+  const prefix = MODE_PREFIXES[agentMode] || "";
+  return prefix ? prefix + userMessage : userMessage;
+}
+
+/**
+ * Get the list of available agent adapters with capabilities.
+ * @returns {Array<{id:string, name:string, provider:string, available:boolean, busy:boolean, capabilities:object}>}
+ */
+export function getAvailableAgents() {
+  return Object.entries(ADAPTERS).map(([id, adapter]) => {
+    const envDisabledKey = `${id.replace("-sdk", "").toUpperCase()}_SDK_DISABLED`;
+    const disabled = envFlagEnabled(process.env[envDisabledKey]);
+    let busy = false;
+    try { busy = adapter.isBusy(); } catch { /* ignore */ }
+    return {
+      id,
+      name: adapter.displayName || adapter.name,
+      provider: adapter.provider,
+      available: !disabled,
+      busy,
+      capabilities: {
+        sessions: typeof adapter.listSessions === "function",
+        steering: typeof adapter.steer === "function",
+        sdkCommands: adapter.sdkCommands || [],
+      },
+    };
+  });
+}
+
+/**
+ * Get the list of SDK commands supported by a specific adapter (or the active one).
+ * @param {string} [adapterName]
+ * @returns {string[]}
+ */
+export function getSdkCommands(adapterName) {
+  const adapter = adapterName ? ADAPTERS[adapterName] : activeAdapter;
+  return adapter?.sdkCommands || [];
+}
+
+/**
+ * Forward an SDK-native command to the active (or specified) adapter.
+ * @param {string} command  — e.g. "/compact", "/model"
+ * @param {string} [args]   — optional arguments string
+ * @param {string} [adapterName] — target adapter (defaults to active)
+ * @returns {Promise<string|object>}
+ */
+export async function execSdkCommand(command, args = "", adapterName) {
+  const adapter = adapterName ? ADAPTERS[adapterName] : activeAdapter;
+  if (!adapter) {
+    throw new Error(`Unknown adapter: ${adapterName || "(none)"}`);
+  }
+  const cmd = command.startsWith("/") ? command : `/${command}`;
+  if (!adapter.sdkCommands?.includes(cmd) && cmd !== "/clear") {
+    throw new Error(`Command "${cmd}" not supported by ${adapter.name}. Supported: ${(adapter.sdkCommands || []).join(", ")}`);
+  }
+  if (typeof adapter.execSdkCommand !== "function") {
+    throw new Error(`Adapter ${adapter.name} does not support SDK commands.`);
+  }
+  return adapter.execSdkCommand(cmd, args);
 }

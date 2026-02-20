@@ -9,6 +9,7 @@
   flex: 1;
   touch-action: pan-x;
   overscroll-behavior-x: contain;
+  align-items: stretch;
 }
 
 body.kanban-dragging {
@@ -30,8 +31,8 @@ body.kanban-dragging .kanban-card {
 
 .kanban-column {
   min-width: 260px;
-  max-width: 320px;
-  flex: 1;
+  max-width: none;
+  flex: 1 1 280px;
   display: flex;
   flex-direction: column;
   background: var(--glass-bg);
@@ -274,19 +275,6 @@ body.kanban-dragging .kanban-card {
   }
 }
 
-@media (max-width: 640px) {
-  .kanban-board {
-    scroll-snap-type: x mandatory;
-    scroll-padding: 12px;
-  }
-
-  .kanban-column {
-    min-width: 80%;
-    max-width: 85%;
-    scroll-snap-align: start;
-  }
-}
-
 .kanban-scroll-fade {
   height: 16px;
   flex-shrink: 0;
@@ -299,6 +287,18 @@ body.kanban-dragging .kanban-card {
 @media (min-width: 769px) {
   .kanban-column {
     min-width: 280px;
+  }
+}
+
+@media (min-width: 1200px) {
+  .kanban-board {
+    gap: 18px;
+    padding: 12px 0 18px;
+  }
+
+  .kanban-column {
+    min-width: 280px;
+    max-height: none;
   }
 }
 

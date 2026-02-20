@@ -265,7 +265,7 @@ export function ControlTab() {
 
       const backlog = all
         .filter((t) =>
-          ["todo", "backlog", "open"].includes(
+          ["todo", "backlog", "open", "new"].includes(
             String(t?.status || "").toLowerCase(),
           ),
         )
