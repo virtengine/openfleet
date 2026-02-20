@@ -330,6 +330,24 @@
   overflow: hidden;
 }
 
+.btn-icon-compact {
+  gap: 4px;
+}
+
+.btn-icon-compact svg {
+  width: 14px;
+  height: 14px;
+}
+
+.btn-icon-compact {
+  gap: 4px;
+}
+
+.btn-icon-compact svg {
+  width: 14px;
+  height: 14px;
+}
+
 .btn:disabled,
 .btn[disabled] {
   opacity: 0.55;
@@ -731,6 +749,10 @@ select.input {
   overscroll-behavior: contain;
 }
 
+.app-shell .modal-overlay {
+  padding-top: calc(var(--header-height) + 12px);
+}
+
 .modal-content {
   background: var(--bg-elevated);
   border-radius: var(--radius-xl) var(--radius-xl) 0 0;
@@ -783,10 +805,16 @@ select.input {
 
 /* ─── Modal header with close button ─── */
 .modal-header {
-  position: relative;
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
   flex-direction: column;
   align-items: center;
+  background: var(--bg-elevated);
+  margin: -20px -16px 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
 }
 
 .modal-header .modal-handle {
@@ -986,6 +1014,16 @@ select.input {
 
 .ptr-desktop-refresh.spinning svg {
   animation: spin 0.8s linear infinite;
+}
+
+.modal-open .ptr-desktop-refresh {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .ptr-desktop-refresh {
+    display: none;
+  }
 }
 
 .pull-to-refresh-container {

@@ -25,6 +25,11 @@ import {
   retryPendingMessage,
   clearPendingMessages,
 } from "../modules/streaming.js";
+import {
+  startAgentEventTracking,
+  agentAutoActions,
+  totalErrorCount,
+} from "../modules/agent-events.js";
 
 const html = htm.bind(h);
 
@@ -250,8 +255,12 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
   /* Start agent status tracking from WS events */
   useEffect(() => {
-    const cleanup = startAgentStatusTracking();
-    return cleanup;
+    const cleanup1 = startAgentStatusTracking();
+    const cleanup2 = startAgentEventTracking();
+    return () => {
+      cleanup1();
+      cleanup2();
+    };
   }, []);
 
   /* Clear pending messages when switching sessions */
