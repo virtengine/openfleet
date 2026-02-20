@@ -1909,6 +1909,110 @@ body.is-miniapp-fullscreen {
   font-size: 0.9rem;
 }
 
+/* ── Showcase feed tabs (PRs / Bosun Commits) ──────────────────────────── */
+.showcase-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  padding-bottom: 0;
+}
+
+.showcase-tab {
+  padding: 0.5rem 1.1rem;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.18s, border-color 0.18s;
+  border-radius: 0;
+}
+
+.showcase-tab:hover {
+  color: var(--text-primary, #e8e5de);
+}
+
+.showcase-tab--active {
+  color: var(--cyan, #22d3ee);
+  border-bottom-color: var(--cyan, #22d3ee);
+}
+
+/* Feed visibility */
+.showcase-feed {
+  display: none;
+}
+
+.showcase-feed--active {
+  display: grid;
+}
+
+/* ── Commit card variants ──────────────────────────────────────────────── */
+.commit-card {
+  align-items: flex-start;
+}
+
+.commit-type {
+  font-size: 1rem;
+  font-weight: 700;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+}
+
+.commit-type--feat     { background: rgba(16,185,129,0.15); color: #10b981; }
+.commit-type--fix      { background: rgba(239,68,68,0.15);  color: #ef4444; }
+.commit-type--chore    { background: rgba(100,116,139,0.15);color: #94a3b8; }
+.commit-type--docs     { background: rgba(59,130,246,0.15); color: #60a5fa; }
+.commit-type--refactor { background: rgba(167,139,250,0.15);color: #a78bfa; }
+.commit-type--test     { background: rgba(34,211,238,0.15); color: #22d3ee; }
+.commit-type--ci       { background: rgba(245,158,11,0.15); color: #f59e0b; }
+.commit-type--perf     { background: rgba(236,72,153,0.15); color: #ec4899; }
+.commit-type--other    { background: rgba(255,255,255,0.06);color: var(--text-muted); }
+
+.commit-sha {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.75rem;
+  background: rgba(255,255,255,0.06);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+
+.commit-avatar {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.commit-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.commit-label--feat     { background: rgba(16,185,129,0.15); color: #10b981; }
+.commit-label--fix      { background: rgba(239,68,68,0.15);  color: #ef4444; }
+.commit-label--chore    { background: rgba(100,116,139,0.15);color: #94a3b8; }
+.commit-label--docs     { background: rgba(59,130,246,0.15); color: #60a5fa; }
+.commit-label--refactor { background: rgba(167,139,250,0.15);color: #a78bfa; }
+.commit-label--test     { background: rgba(34,211,238,0.15); color: #22d3ee; }
+.commit-label--ci       { background: rgba(245,158,11,0.15); color: #f59e0b; }
+.commit-label--perf     { background: rgba(236,72,153,0.15); color: #ec4899; }
+
 /* ═══════════════════════════════════════════════════════════════════════════
    DEMO TABS — Multi-Channel Interaction Section
    ═══════════════════════════════════════════════════════════════════════════ */

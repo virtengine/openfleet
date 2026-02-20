@@ -410,23 +410,55 @@
     });
   }
 
+  // Shared time helper used by both PR and commit feeds
+  function timeAgo(dateStr) {
+    const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + 'm ago';
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + 'h ago';
+    const days = Math.floor(hours / 24);
+    if (days < 30) return days + 'd ago';
+    return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
+
   /* ── PR Showcase — fetch real PRs from VirtEngine repo ───────────────── */
   const prContainer = document.getElementById('pr-showcase');
+  const commitContainer = document.getElementById('commit-showcase');
+  const showcaseTabs = document.querySelectorAll('.showcase-tab');
+  const showcaseFeeds = document.querySelectorAll('.showcase-feed');
+  const showcaseGhLink = document.getElementById('showcase-gh-link');
+
+  const FEED_LINKS = {
+    prs: 'https://github.com/virtengine/virtengine/pulls?q=is%3Apr+sort%3Aupdated-desc',
+    commits: 'https://github.com/virtengine/bosun/commits/main',
+  };
+
+  // Tab switching
+  showcaseTabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      var feed = tab.dataset.feed;
+      showcaseTabs.forEach(function (t) { t.classList.remove('showcase-tab--active'); });
+      tab.classList.add('showcase-tab--active');
+      showcaseFeeds.forEach(function (p) { p.classList.remove('showcase-feed--active'); });
+      var panel = document.querySelector('[data-feed-panel="' + feed + '"]');
+      if (panel) panel.classList.add('showcase-feed--active');
+      if (showcaseGhLink) {
+        showcaseGhLink.href = FEED_LINKS[feed] || FEED_LINKS.prs;
+        showcaseGhLink.textContent = feed === 'commits' ? 'View All Commits on GitHub →' : 'View All PRs on GitHub →';
+      }
+      // Lazy-load commits on first click
+      if (feed === 'commits' && commitContainer && !commitContainer.dataset.loaded) {
+        commitContainer.dataset.loaded = '1';
+        fetchCommits();
+      }
+    });
+  });
+
   if (prContainer) {
     const API = 'https://api.github.com/repos/virtengine/virtengine/pulls';
     const MAX_PRS = 8;
-
-    function timeAgo(dateStr) {
-      const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
-      if (seconds < 60) return 'just now';
-      const minutes = Math.floor(seconds / 60);
-      if (minutes < 60) return minutes + 'm ago';
-      const hours = Math.floor(minutes / 60);
-      if (hours < 24) return hours + 'h ago';
-      const days = Math.floor(hours / 24);
-      if (days < 30) return days + 'd ago';
-      return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    }
 
     function labelColor(color) {
       return 'background: #' + color + '22; color: #' + color + '; border-color: #' + color + '44;';
@@ -502,5 +534,72 @@
     } else {
       fetchPRs();
     }
+  }
+
+  /* ── Bosun Commit Feed — fetch real commits from bosun repo ──────────── */
+  function fetchCommits() {
+    if (!commitContainer) return;
+    const COMMIT_API = 'https://api.github.com/repos/virtengine/bosun/commits?per_page=12&branch=main';
+    const MAX_COMMITS = 12;
+
+    function commitTypeIcon(msg) {
+      if (/^feat/i.test(msg))    return { icon: '✦', cls: 'commit-type--feat',    label: 'feat' };
+      if (/^fix/i.test(msg))     return { icon: '⬤', cls: 'commit-type--fix',     label: 'fix' };
+      if (/^chore/i.test(msg))   return { icon: '○', cls: 'commit-type--chore',   label: 'chore' };
+      if (/^docs/i.test(msg))    return { icon: '⬡', cls: 'commit-type--docs',    label: 'docs' };
+      if (/^refactor/i.test(msg))return { icon: '⟳', cls: 'commit-type--refactor',label: 'refactor' };
+      if (/^test/i.test(msg))    return { icon: '✓', cls: 'commit-type--test',    label: 'test' };
+      if (/^ci/i.test(msg))      return { icon: '⚙', cls: 'commit-type--ci',      label: 'ci' };
+      if (/^perf/i.test(msg))    return { icon: '▲', cls: 'commit-type--perf',    label: 'perf' };
+      return { icon: '•', cls: 'commit-type--other', label: '' };
+    }
+
+    function sha7(sha) { return sha ? sha.slice(0, 7) : ''; }
+
+    fetch(COMMIT_API, { cache: 'no-store' })
+      .then(function (res) {
+        if (!res.ok) throw new Error('GitHub API rate limited');
+        return res.json();
+      })
+      .then(function (commits) {
+        if (!Array.isArray(commits) || commits.length === 0) {
+          commitContainer.innerHTML = '<div class="pr-showcase__error">No commits found.</div>';
+          return;
+        }
+        var items = commits.slice(0, MAX_COMMITS);
+        commitContainer.innerHTML = items.map(function (c) {
+          var msg = (c.commit && c.commit.message) ? c.commit.message : '';
+          var firstLine = msg.split('\n')[0];
+          var typeInfo = commitTypeIcon(firstLine);
+          var author = (c.author && c.author.login) || (c.commit && c.commit.author && c.commit.author.name) || 'unknown';
+          var authorUrl = c.author ? c.author.html_url : null;
+          var avatarUrl = c.author ? c.author.avatar_url : null;
+          var date = c.commit && c.commit.author ? c.commit.author.date : null;
+          var commitUrl = c.html_url || '#';
+          var sha = sha7(c.sha);
+          var ago = date ? timeAgo(date) : '';
+          return '<a class="pr-card commit-card" href="' + commitUrl + '" target="_blank" rel="noopener">' +
+            '<div class="pr-card__state commit-type ' + typeInfo.cls + '">' + typeInfo.icon + '</div>' +
+            '<div class="pr-card__body">' +
+            '<div class="pr-card__title">' + escHtml(firstLine) + '</div>' +
+            '<div class="pr-card__meta">' +
+            '<code class="commit-sha">' + sha + '</code>' +
+            (avatarUrl ? '<img class="commit-avatar" src="' + avatarUrl + '" alt="' + escHtml(author) + '" loading="lazy" width="16" height="16">' : '') +
+            '<span>' + escHtml(author) + '</span>' +
+            '<span>' + ago + '</span>' +
+            (typeInfo.label ? '<span class="commit-label commit-label--' + typeInfo.label + '">' + typeInfo.label + '</span>' : '') +
+            '</div>' +
+            '</div></a>';
+        }).join('');
+      })
+      .catch(function (err) {
+        console.warn('[commit-showcase]', err);
+        commitContainer.innerHTML =
+          '<div class="pr-showcase__error">Unable to load commits. <a href="https://github.com/virtengine/bosun/commits/main" target="_blank" rel="noopener">View on GitHub →</a></div>';
+      });
+  }
+
+  function escHtml(str) {
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 })();
