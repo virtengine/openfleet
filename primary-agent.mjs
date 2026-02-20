@@ -356,7 +356,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
 
     try {
       const result = await withTimeout(
-        adapter.exec(userMessage, { ...options, sessionId }),
+        adapter.exec(framedMessage, { ...options, sessionId }),
         timeoutMs,
         `${adapterName}.exec`,
       );

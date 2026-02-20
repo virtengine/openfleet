@@ -86,6 +86,16 @@ import {
   SETTINGS_SCHEMA,
   validateSetting,
 } from "./ui/modules/settings-schema.js";
+import {
+  getAvailableAgents,
+  getAgentMode,
+  setAgentMode,
+  execSdkCommand,
+  getSdkCommands,
+  getPrimaryAgentName,
+  switchPrimaryAgent,
+  getPrimaryAgentInfo,
+} from "./primary-agent.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
@@ -4078,6 +4088,112 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // ── Agent API endpoints ────────────────────────────────────────────────
+
+  if (path === "/api/agents/available" && req.method === "GET") {
+    try {
+      const agents = getAvailableAgents();
+      const active = getPrimaryAgentName();
+      const mode = getAgentMode();
+      jsonResponse(res, 200, { ok: true, agents, active, mode });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/agents/switch" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const agent = (body?.agent || "").trim();
+      if (!agent) {
+        jsonResponse(res, 400, { ok: false, error: "agent is required" });
+        return;
+      }
+      const previousAgent = getPrimaryAgentName();
+      const result = await switchPrimaryAgent(agent);
+      if (!result.ok) {
+        jsonResponse(res, 400, { ok: false, error: result.reason || "Switch failed" });
+        return;
+      }
+      const newAgent = getPrimaryAgentName();
+      jsonResponse(res, 200, { ok: true, agent: newAgent, previousAgent });
+      broadcastUiEvent(["agents", "sessions", "overview"], "invalidate", {
+        reason: "agent-switched",
+        agent: newAgent,
+        previousAgent,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/agents/mode" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const mode = (body?.mode || "").trim();
+      if (!mode) {
+        jsonResponse(res, 400, { ok: false, error: "mode is required" });
+        return;
+      }
+      const result = setAgentMode(mode);
+      if (!result.ok) {
+        jsonResponse(res, 400, { ok: false, error: result.error });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, mode: result.mode });
+      broadcastUiEvent(["agents", "sessions"], "invalidate", {
+        reason: "agent-mode-changed",
+        mode: result.mode,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/agents/mode" && req.method === "GET") {
+    jsonResponse(res, 200, { ok: true, mode: getAgentMode() });
+    return;
+  }
+
+  if (path === "/api/agents/sdk-command" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const command = (body?.command || "").trim();
+      if (!command) {
+        jsonResponse(res, 400, { ok: false, error: "command is required" });
+        return;
+      }
+      const args = (body?.args || "").trim();
+      const adapter = (body?.adapter || "").trim() || undefined;
+      const result = await execSdkCommand(command, args, adapter);
+      const parsed = typeof result === "string" ? result : JSON.stringify(result);
+      jsonResponse(res, 200, { ok: true, result: parsed, command, adapter: adapter || getPrimaryAgentName() });
+      broadcastUiEvent(["agents", "sessions"], "invalidate", {
+        reason: "sdk-command-executed",
+        command,
+      });
+    } catch (err) {
+      const status = err.message?.includes("not supported") ? 400 : 500;
+      jsonResponse(res, status, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/agents/info" && req.method === "GET") {
+    try {
+      const info = getPrimaryAgentInfo();
+      const mode = getAgentMode();
+      const commands = getSdkCommands();
+      jsonResponse(res, 200, { ok: true, ...info, mode, sdkCommands: commands });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   // ── Session API endpoints ──────────────────────────────────────────────
 
   if (path === "/api/sessions" && req.method === "GET") {
@@ -4104,9 +4220,14 @@ async function handleApi(req, res, url) {
       const session = tracker.createSession({
         id,
         type,
-        metadata: { prompt: body?.prompt },
+        metadata: {
+          prompt: body?.prompt,
+          agent: body?.agent || getPrimaryAgentName(),
+          mode: body?.mode || getAgentMode(),
+          model: body?.model || undefined,
+        },
       });
-      jsonResponse(res, 200, { ok: true, session: { id: session.id, type: session.type, status: session.status } });
+      jsonResponse(res, 200, { ok: true, session: { id: session.id, type: session.type, status: session.status, metadata: session.metadata } });
       broadcastUiEvent(["sessions"], "invalidate", { reason: "session-created", sessionId: id });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -4155,6 +4276,9 @@ async function handleApi(req, res, url) {
         }
         const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+        // Per-message mode override (e.g. { "content": "...", "mode": "ask" })
+        const messageMode = body?.mode || undefined;
+
         // Forward to primary agent if applicable (exec records user + assistant events)
         const exec = session.type === "primary" ? uiDeps.execPrimaryPrompt : null;
         if (exec) {
@@ -4163,7 +4287,7 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 200, { ok: true, messageId });
           broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
           try {
-            await exec(content, { sessionId, sessionType: "primary" });
+            await exec(content, { sessionId, sessionType: "primary", mode: messageMode });
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
           } catch (execErr) {
             // Record error as system message so user sees feedback
