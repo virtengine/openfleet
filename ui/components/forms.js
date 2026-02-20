@@ -116,7 +116,9 @@ export function PullToRefresh({ onRefresh, children }) {
   }, [onRefresh, refreshing]);
 
   const handleTouchStart = useCallback((e) => {
-    if (containerRef.current && containerRef.current.scrollTop <= 0) {
+    if (!containerRef.current) return;
+    const scrollContainer = containerRef.current.querySelector('.main-content') || containerRef.current;
+    if (scrollContainer.scrollTop <= 0) {
       startYRef.current = e.touches[0].clientY;
       pullingRef.current = true;
     }

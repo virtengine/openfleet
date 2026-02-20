@@ -110,8 +110,8 @@ let _touchHoldTimer = null;
 let _touchSuppressClickUntil = 0;
 
 const TOUCH_DRAG_DELAY_MS = 180;
-const TOUCH_DRAG_START_PX = 8;
-const TOUCH_CANCEL_PX = 10;
+const TOUCH_DRAG_START_PX = 6;
+const TOUCH_CANCEL_PX = 14;
 
 /* ─── Touch drag helpers ─── */
 
@@ -150,13 +150,22 @@ function _clearTouchHoldTimer() {
   }
 }
 
+function _setTouchDragActive(active) {
+  if (typeof document === "undefined") return;
+  document.body.classList.toggle("kanban-dragging", active);
+}
+
 function _columnFromPoint(x, y) {
-  const el = document.elementFromPoint(x, y);
-  if (!el) return null;
-  const colEl = el.closest(".kanban-column");
-  if (!colEl) return null;
-  for (const col of COLUMNS) {
-    if (colEl.getAttribute("data-col") === col.id) return col.id;
+  const elements = document.elementsFromPoint
+    ? document.elementsFromPoint(x, y)
+    : [document.elementFromPoint(x, y)].filter(Boolean);
+  for (const el of elements) {
+    if (!el?.closest) continue;
+    const colEl = el.closest(".kanban-column");
+    if (!colEl) continue;
+    for (const col of COLUMNS) {
+      if (colEl.getAttribute("data-col") === col.id) return col.id;
+    }
   }
   return null;
 }
@@ -280,6 +289,7 @@ function KanbanCard({ task, onOpen }) {
       touchDragId.value = task.id;
       _removeTouchClone();
       _touchClone = _createTouchClone(e.currentTarget);
+      _setTouchDragActive(true);
       haptic("medium");
     }
 
@@ -306,6 +316,7 @@ function KanbanCard({ task, onOpen }) {
     }
     _touchMoved = false;
     _touchDragReady = false;
+    _setTouchDragActive(false);
   }, []);
 
   const onTouchCancel = useCallback(() => {
@@ -315,6 +326,7 @@ function KanbanCard({ task, onOpen }) {
     touchOverCol.value = null;
     _touchMoved = false;
     _touchDragReady = false;
+    _setTouchDragActive(false);
   }, []);
 
   const priorityColor = PRIORITY_COLORS[task.priority] || null;

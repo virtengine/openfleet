@@ -759,7 +759,7 @@ function WorkspaceViewer({ agent, onClose }) {
               placeholder="Steer agent…"
               value=${steerInput}
               onInput=${(e) => setSteerInput(e.target.value)}
-              onKeyDown=${(e) => e.key === "Enter" && handleSteer()}
+              onKeyDown=${(e) => { if (e.key === "Enter") { e.preventDefault(); handleSteer(); } }}
             />
             <button class="btn btn-primary btn-sm" onClick=${handleSteer}>🎯</button>
             <button
@@ -1379,6 +1379,10 @@ function ContextViewer({ sessionId }) {
     if (files.length) {
       text += `\n### Modified Files\n`;
       files.forEach((f) => { text += `[${f.code}] ${f.file}\n`; });
+    }
+    if (!navigator?.clipboard?.writeText) {
+      showToast("Clipboard unavailable", "error");
+      return;
     }
     navigator.clipboard.writeText(text).then(() => showToast("Context copied", "success")).catch(() => showToast("Copy failed", "error"));
   };

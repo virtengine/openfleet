@@ -7,6 +7,25 @@
   padding: 8px 0;
   min-height: 0;
   flex: 1;
+  touch-action: pan-x;
+  overscroll-behavior-x: contain;
+}
+
+body.kanban-dragging {
+  user-select: none;
+}
+
+body.kanban-dragging .kanban-board {
+  scroll-snap-type: none;
+  overscroll-behavior-x: none;
+}
+
+body.kanban-dragging .kanban-column {
+  scroll-snap-align: none;
+}
+
+body.kanban-dragging .kanban-card {
+  touch-action: none;
 }
 
 .kanban-column {
@@ -114,6 +133,8 @@
   flex: 1;
   padding: 4px;
   min-height: 0;
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
 }
 
 .kanban-card {
@@ -125,6 +146,7 @@
   padding: 14px;
   cursor: pointer;
   transition: border-color 0.15s, box-shadow 0.15s, opacity 0.15s, transform 0.15s;
+  touch-action: pan-y;
 }
 
 .kanban-card:hover {

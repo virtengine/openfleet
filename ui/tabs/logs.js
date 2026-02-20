@@ -593,7 +593,7 @@ export function LogsTab() {
           value=${contextQuery}
           onInput=${(e) => setContextQuery(e.target.value)}
           onKeyDown=${(e) => {
-            if (e.key === "Enter") handleContextLoad();
+            if (e.key === "Enter") { e.preventDefault(); handleContextLoad(); }
           }}
         />
         <button class="btn btn-secondary btn-sm" onClick=${handleContextLoad}>

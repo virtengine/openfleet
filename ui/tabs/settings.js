@@ -90,7 +90,7 @@ const SETTINGS_STYLES = `
 /* Floating save bar */
 .settings-save-bar {
   position: fixed;
-  bottom: calc(var(--nav-height) + var(--safe-bottom));
+  bottom: calc(var(--nav-height) + var(--safe-bottom) + 10px);
   left: 0; right: 0;
   z-index: 1000;
   display: flex;
@@ -353,7 +353,7 @@ const SETTINGS_STYLES = `
 }
 
 body.settings-save-open .main-content {
-  padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 100px);
+  padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 110px);
 }
 @media (min-width: 1200px) {
   body.settings-save-open .main-content {
@@ -1517,10 +1517,10 @@ function AppPreferencesMode() {
             Telegram Mini App for Bosun task orchestration
           </div>
           <div class="meta-text mt-sm">
-            Built with Preact +https://github.com/virtengine/bosun?tab=readme-ov-file#bosun"
+            Built with Preact + HTM.
           </div>
           <div class="btn-row mt-md" style="justify-content:center">
-            <buttonhttps://github.com/virtengine/bosun?tab=readme-ov-file#bosun"
+            <button
               class="btn btn-ghost btn-sm"
               onClick=${() => {
                 haptic();
