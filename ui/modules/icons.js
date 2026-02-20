@@ -88,6 +88,20 @@ export const ICONS = {
     <circle cx="19" cy="12" r="1.6" />
   </svg>`,
 
+  chart: html`<svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <line x1="4" y1="19" x2="20" y2="19" />
+    <rect x="6" y="10" width="3" height="9" />
+    <rect x="11" y="6" width="3" height="13" />
+    <rect x="16" y="13" width="3" height="6" />
+  </svg>`,
+
   /* ── Status / Feedback ── */
   check: html`<svg
     viewBox="0 0 24 24"

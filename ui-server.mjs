@@ -2213,6 +2213,60 @@ async function tailFile(filePath, lineCount, maxBytes = 1_000_000) {
   };
 }
 
+async function readJsonlTail(filePath, maxLines = 2000) {
+  if (!existsSync(filePath)) return [];
+  const tail = await tailFile(filePath, maxLines);
+  return (tail.lines || [])
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function withinDays(entry, days) {
+  if (!days) return true;
+  const ts = Date.parse(entry?.timestamp || "");
+  if (!Number.isFinite(ts)) return true;
+  return ts >= Date.now() - days * 24 * 60 * 60 * 1000;
+}
+
+function summarizeTelemetry(metrics, days) {
+  const filtered = metrics.filter((m) => withinDays(m, days));
+  if (filtered.length === 0) return null;
+  const total = filtered.length;
+  const success = filtered.filter(
+    (m) => m.outcome?.status === "completed" || m.metrics?.success === true,
+  ).length;
+  const durations = filtered.map((m) => m.metrics?.duration_ms || 0);
+  const avgDuration =
+    durations.length > 0
+      ? Math.round(
+          durations.reduce((a, b) => a + b, 0) / durations.length / 1000,
+        )
+      : 0;
+  const totalErrors = filtered.reduce(
+    (sum, m) => sum + (m.error_summary?.total_errors || m.metrics?.errors || 0),
+    0,
+  );
+  const executors = {};
+  for (const m of filtered) {
+    const exec = m.executor || "unknown";
+    executors[exec] = (executors[exec] || 0) + 1;
+  }
+  return {
+    total,
+    success,
+    successRate: total > 0 ? Math.round((success / total) * 100) : 0,
+    avgDuration,
+    totalErrors,
+    executors,
+  };
+}
+
 async function listAgentLogFiles(query = "", limit = 60) {
   const entries = [];
   const files = await readdir(agentLogsDir).catch(() => []);
@@ -3177,6 +3231,79 @@ async function handleApi(req, res, url) {
       }
       const tail = await tailFile(filePath, lines);
       jsonResponse(res, 200, { ok: true, data: tail });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/telemetry/summary") {
+    try {
+      const days = Number(url.searchParams.get("days") || "7");
+      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const metricsPath = resolve(logDir, "agent-metrics.jsonl");
+      const metrics = await readJsonlTail(metricsPath, 3000);
+      const summary = summarizeTelemetry(metrics, days);
+      jsonResponse(res, 200, { ok: true, data: summary });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/telemetry/errors") {
+    try {
+      const days = Number(url.searchParams.get("days") || "7");
+      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const errorsPath = resolve(logDir, "agent-errors.jsonl");
+      const errors = (await readJsonlTail(errorsPath, 2000)).filter((e) =>
+        withinDays(e, days),
+      );
+      const byFingerprint = new Map();
+      for (const e of errors) {
+        const fp = e.data?.error_fingerprint || e.data?.error_message || "unknown";
+        byFingerprint.set(fp, (byFingerprint.get(fp) || 0) + 1);
+      }
+      const top = [...byFingerprint.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 20)
+        .map(([fingerprint, count]) => ({ fingerprint, count }));
+      jsonResponse(res, 200, { ok: true, data: top });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/telemetry/executors") {
+    try {
+      const days = Number(url.searchParams.get("days") || "7");
+      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const metricsPath = resolve(logDir, "agent-metrics.jsonl");
+      const metrics = await readJsonlTail(metricsPath, 3000);
+      const summary = summarizeTelemetry(metrics, days);
+      jsonResponse(res, 200, {
+        ok: true,
+        data: summary?.executors || {},
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/telemetry/alerts") {
+    try {
+      const days = Number(url.searchParams.get("days") || "7");
+      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const alertsPath = resolve(logDir, "agent-alerts.jsonl");
+      const alerts = (await readJsonlTail(alertsPath, 500)).filter((a) =>
+        withinDays(a, days),
+      );
+      jsonResponse(res, 200, {
+        ok: true,
+        data: alerts.slice(-50),
+      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

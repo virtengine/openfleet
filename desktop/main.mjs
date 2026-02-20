@@ -163,7 +163,7 @@ async function resolveDaemonUiUrl() {
 async function ensureDaemonRunning() {
   const autoStart = parseBoolEnv(
     process.env.BOSUN_DESKTOP_AUTO_START_DAEMON,
-    true,
+    false,
   );
   if (!autoStart) return;
 
@@ -269,6 +269,10 @@ async function createMainWindow() {
 
 async function bootstrap() {
   try {
+    if (process.env.ELECTRON_DISABLE_SANDBOX === "1") {
+      app.commandLine.appendSwitch("no-sandbox");
+      app.commandLine.appendSwitch("disable-gpu-sandbox");
+    }
     app.setAppUserModelId("com.virtengine.bosun");
     process.chdir(resolveBosunRoot());
     await loadRuntimeConfig();

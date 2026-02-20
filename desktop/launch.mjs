@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync, spawn } from "node:child_process";
@@ -7,6 +7,28 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const desktopDir = resolve(__dirname);
 const binName = process.platform === "win32" ? "electron.cmd" : "electron";
 const electronBin = resolve(desktopDir, "node_modules", ".bin", binName);
+const chromeSandbox = resolve(
+  desktopDir,
+  "node_modules",
+  "electron",
+  "dist",
+  "chrome-sandbox",
+);
+
+function shouldDisableSandbox() {
+  if (process.env.BOSUN_DESKTOP_DISABLE_SANDBOX === "1") return true;
+  if (process.platform !== "linux") return false;
+  if (!existsSync(chromeSandbox)) return true;
+  try {
+    const stats = statSync(chromeSandbox);
+    const mode = stats.mode & 0o7777;
+    const isRootOwned = stats.uid === 0;
+    const isSetuid = mode === 0o4755;
+    return !(isRootOwned && isSetuid);
+  } catch {
+    return true;
+  }
+}
 
 function ensureElectronInstalled() {
   if (existsSync(electronBin)) return true;
@@ -28,11 +50,18 @@ function launch() {
     process.exit(1);
   }
 
-  const child = spawn(electronBin, [desktopDir], {
+  const disableSandbox = shouldDisableSandbox();
+  const args = [desktopDir];
+  if (disableSandbox) {
+    args.push("--no-sandbox", "--disable-gpu-sandbox");
+  }
+
+  const child = spawn(electronBin, args, {
     stdio: "inherit",
     env: {
       ...process.env,
       BOSUN_DESKTOP: "1",
+      ...(disableSandbox ? { ELECTRON_DISABLE_SANDBOX: "1" } : {}),
     },
   });
 

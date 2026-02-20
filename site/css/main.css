@@ -1968,7 +1968,7 @@ body.is-miniapp-fullscreen {
 }
 
 .commit-type--feat     { background: rgba(16,185,129,0.15); color: #10b981; }
-.commit-type--fix      { background: rgba(239,68,68,0.15);  color: #ef4444; }
+.commit-type--fix      { background: rgba(249,115,22,0.15); color: #f97316; }
 .commit-type--chore    { background: rgba(100,116,139,0.15);color: #94a3b8; }
 .commit-type--docs     { background: rgba(59,130,246,0.15); color: #60a5fa; }
 .commit-type--refactor { background: rgba(167,139,250,0.15);color: #a78bfa; }
@@ -2005,7 +2005,7 @@ body.is-miniapp-fullscreen {
 }
 
 .commit-label--feat     { background: rgba(16,185,129,0.15); color: #10b981; }
-.commit-label--fix      { background: rgba(239,68,68,0.15);  color: #ef4444; }
+.commit-label--fix      { background: rgba(249,115,22,0.15); color: #f97316; }
 .commit-label--chore    { background: rgba(100,116,139,0.15);color: #94a3b8; }
 .commit-label--docs     { background: rgba(59,130,246,0.15); color: #60a5fa; }
 .commit-label--refactor { background: rgba(167,139,250,0.15);color: #a78bfa; }

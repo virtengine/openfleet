@@ -9,7 +9,7 @@
  * - Linux:   .desktop entry
  */
 
-import { spawnSync } from "node:child_process";
+import { spawnSync, execSync } from "node:child_process";
 import {
   existsSync,
   readFileSync,
@@ -182,6 +182,8 @@ function installMacShortcut(desktopDir) {
 
 function installLinuxShortcut(desktopDir) {
   const desktopPath = resolve(desktopDir, `${APP_NAME}.desktop`);
+  const appDir = resolve(homedir(), ".local", "share", "applications");
+  const appPath = resolve(appDir, `${APP_NAME}.desktop`);
   const content = [
     "[Desktop Entry]",
     "Type=Application",
@@ -192,12 +194,27 @@ function installLinuxShortcut(desktopDir) {
     "Terminal=false",
     "StartupNotify=true",
     "Categories=Development;Utility;",
+    "NoDisplay=false",
     "",
   ].join("\n");
 
   try {
     writeFileSync(desktopPath, content, "utf8");
     chmodSync(desktopPath, 0o755);
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(appPath, content, "utf8");
+    chmodSync(appPath, 0o755);
+
+    try {
+      execSync(`gio set "${desktopPath}" metadata::trusted true`, {
+        stdio: "ignore",
+      });
+      execSync(`gio set "${appPath}" metadata::trusted true`, {
+        stdio: "ignore",
+      });
+    } catch {
+      /* best effort */
+    }
     return {
       success: true,
       method: "Linux desktop entry",
