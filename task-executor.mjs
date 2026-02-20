@@ -63,6 +63,7 @@ import {
 import { createErrorDetector } from "./error-detector.mjs";
 import { getSessionTracker } from "./session-tracker.mjs";
 import { getCompactDiffSummary, getRecentCommits } from "./diff-stats.mjs";
+import { createAnomalyDetector } from "./anomaly-detector.mjs";
 import {
   resolveExecutorForTask,
   executorToSdk,
@@ -515,6 +516,129 @@ const __dirname = dirname(__filename);
 // ── Agent Log Streaming ─────────────────────────────────────────────────────
 
 const AGENT_LOGS_DIR = resolve(__dirname, "logs", "agents");
+const AGENT_WORK_DIR = resolve(__dirname, "..", "..", ".cache", "agent-work-logs");
+const AGENT_WORK_STREAM = resolve(AGENT_WORK_DIR, "agent-work-stream.jsonl");
+const AGENT_WORK_ERRORS = resolve(AGENT_WORK_DIR, "agent-errors.jsonl");
+const AGENT_WORK_METRICS = resolve(AGENT_WORK_DIR, "agent-metrics.jsonl");
+const AGENT_WORK_SESSIONS = resolve(AGENT_WORK_DIR, "agent-sessions");
+const agentWorkSessionStarts = new Map();
+const anomalyAbortTargets = new Map();
+const internalAnomalyEnabled = process.env.BOSUN_INTERNAL_ANOMALY !== "false";
+const anomalyDetector = internalAnomalyEnabled
+  ? createAnomalyDetector({
+      onAnomaly: (anomaly) => {
+        console.warn(
+          `${TAG} anomaly ${anomaly.severity} ${anomaly.type} [${anomaly.shortId}]: ${anomaly.message}`,
+        );
+        if (anomaly.action === "kill" || anomaly.action === "restart") {
+          const target = anomalyAbortTargets.get(anomaly.processId);
+          if (target && !target.signal.aborted) {
+            target.abort(`anomaly:${anomaly.type}`);
+          }
+        }
+      },
+    })
+  : null;
+
+function ensureAgentWorkDirs() {
+  try {
+    mkdirSync(AGENT_WORK_DIR, { recursive: true });
+    mkdirSync(AGENT_WORK_SESSIONS, { recursive: true });
+  } catch {
+    /* best effort */
+  }
+}
+
+function writeAgentWorkEvent(entry) {
+  ensureAgentWorkDirs();
+  const line = JSON.stringify(entry);
+  appendFileSync(AGENT_WORK_STREAM, `${line}\n`, "utf8");
+  if (entry.event_type === "error") {
+    appendFileSync(AGENT_WORK_ERRORS, `${line}\n`, "utf8");
+  }
+  if (entry.attempt_id) {
+    const sessionPath = resolve(AGENT_WORK_SESSIONS, `${entry.attempt_id}.jsonl`);
+    appendFileSync(sessionPath, `${line}\n`, "utf8");
+  }
+}
+
+function startAgentWorkSession({ attemptId, taskMeta, executorInfo, gitContext, prompt }) {
+  agentWorkSessionStarts.set(attemptId, Date.now());
+  writeAgentWorkEvent({
+    timestamp: new Date().toISOString(),
+    attempt_id: attemptId,
+    event_type: "session_start",
+    data: { prompt_type: "initial", ...(prompt ? { prompt } : {}) },
+    ...taskMeta,
+    ...executorInfo,
+    ...gitContext,
+  });
+}
+
+function stopAgentWorkSession({ attemptId, status, executorInfo, taskMeta, gitContext, metrics }) {
+  const startedAt = agentWorkSessionStarts.get(attemptId);
+  const durationMs = startedAt ? Date.now() - startedAt : null;
+  writeAgentWorkEvent({
+    timestamp: new Date().toISOString(),
+    attempt_id: attemptId,
+    event_type: "session_end",
+    data: {
+      completion_status: status,
+      duration_ms: durationMs ?? undefined,
+      ...metrics,
+    },
+    ...taskMeta,
+    ...executorInfo,
+    ...gitContext,
+  });
+
+  if (metrics) {
+    appendFileSync(
+      AGENT_WORK_METRICS,
+      `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        attempt_id: attemptId,
+        ...taskMeta,
+        ...executorInfo,
+        metrics,
+      })}\n`,
+      "utf8",
+    );
+  }
+}
+
+function synthesizeAnomalyLine(event) {
+  try {
+    if (event?.type === "item.completed" && event.item) {
+      const item = event.item;
+      if (item.type === "function_call") {
+        return JSON.stringify({
+          ToolCall: {
+            title: item.name || "ToolCall",
+            rawInput: item.arguments || "",
+          },
+        });
+      }
+      if (item.type === "function_call_output") {
+        return JSON.stringify({
+          ToolUpdate: { status: item.status || "completed" },
+        });
+      }
+      if (item.type === "commandExecution") {
+        return JSON.stringify(item);
+      }
+      if (item.type === "reasoning" && item.summary) {
+        return JSON.stringify({ type: "reasoning", summary: [item.summary] });
+      }
+    }
+    if (event?.type === "error") {
+      return String(event.error || event.message || "error");
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
 
 /**
  * Create an onEvent callback that streams agent SDK events to a per-task log file
@@ -523,7 +647,14 @@ const AGENT_LOGS_DIR = resolve(__dirname, "logs", "agents");
  * @param {string} taskTitle
  * @returns {Function}
  */
-function createAgentLogStreamer(taskId, taskTitle) {
+function createAgentLogStreamer({
+  attemptId,
+  taskId,
+  taskTitle,
+  taskMeta,
+  executorInfo,
+  gitContext,
+}) {
   const shortId = taskId.substring(0, 8);
   const logFile = resolve(AGENT_LOGS_DIR, `agent-${shortId}.log`);
   const tracker = getSessionTracker();
@@ -554,17 +685,47 @@ function createAgentLogStreamer(taskId, taskTitle) {
       /* never let tracking crash the agent */
     }
 
+    if (anomalyDetector) {
+      const line = synthesizeAnomalyLine(event);
+      if (line) {
+        anomalyDetector.processLine(line, {
+          processId: attemptId,
+          attemptId,
+          taskTitle,
+          branch: gitContext?.branch,
+        });
+      }
+    }
+
     try {
       const ts = new Date().toISOString();
       if (event.type === "item.completed" && event.item) {
         const item = event.item;
         if (item.type === "agent_message" && item.text) {
+          writeAgentWorkEvent({
+            timestamp: ts,
+            attempt_id: attemptId,
+            event_type: "agent_output",
+            data: { output: item.text, stream_type: "stdout" },
+            ...taskMeta,
+            ...executorInfo,
+            ...gitContext,
+          });
           appendFileSync(
             logFile,
             `[${ts}] AGENT: ${item.text.slice(0, 2000)}\n`,
             "utf8",
           );
         } else if (item.type === "function_call") {
+          writeAgentWorkEvent({
+            timestamp: ts,
+            attempt_id: attemptId,
+            event_type: "tool_call",
+            data: { tool_name: item.name, tool_params: item.arguments || "" },
+            ...taskMeta,
+            ...executorInfo,
+            ...gitContext,
+          });
           appendFileSync(
             logFile,
             `[${ts}] TOOL: ${item.name}(${(item.arguments || "").slice(0, 200)})\n`,
@@ -572,6 +733,15 @@ function createAgentLogStreamer(taskId, taskTitle) {
           );
         } else if (item.type === "function_call_output") {
           const out = (item.output || "").slice(0, 500);
+          writeAgentWorkEvent({
+            timestamp: ts,
+            attempt_id: attemptId,
+            event_type: "tool_result",
+            data: { tool_name: item.name, result: item.output || "" },
+            ...taskMeta,
+            ...executorInfo,
+            ...gitContext,
+          });
           appendFileSync(logFile, `[${ts}] RESULT: ${out}\n`, "utf8");
         } else {
           appendFileSync(
@@ -590,6 +760,20 @@ function createAgentLogStreamer(taskId, taskTitle) {
       } else if (event.type) {
         // Log any other event type for debugging
         appendFileSync(logFile, `[${ts}] EVT[${event.type}]\n`, "utf8");
+      }
+
+      if (event.type === "error") {
+        writeAgentWorkEvent({
+          timestamp: ts,
+          attempt_id: attemptId,
+          event_type: "error",
+          data: {
+            error_message: event.error || event.message || "unknown error",
+          },
+          ...taskMeta,
+          ...executorInfo,
+          ...gitContext,
+        });
       }
     } catch {
       /* never let logging crash the agent */
@@ -3218,29 +3402,72 @@ class TaskExecutor {
       process.env.BOSUN_WORKSPACE       = taskRepoContext.workspace || "";
       process.env.BOSUN_REPOSITORY      = taskRepoContext.repository || "";
 
+      const attemptId = `${taskId}-${randomUUID()}`;
+      const taskMeta = {
+        task_id: taskId,
+        task_title: taskTitle,
+        task_description: String(task.description || task.body || ""),
+      };
+      const executorInfo = {
+        executor: resolvedSdk,
+        executor_variant: selectedModel || undefined,
+        model: selectedModel || undefined,
+      };
+      const gitContext = { branch };
+
       // 6b. Start session tracking for review handoff
       const sessionTracker = getSessionTracker();
       sessionTracker.startSession(taskId, taskTitle);
-
-      const result = await execWithRetry(prompt, {
-        taskKey: taskId,
-        cwd: wt.path,
-        timeoutMs: this.taskTimeoutMs,
-        maxRetries: this.maxRetries,
-        maxContinues: 3,
-        sdk: resolvedSdk !== "auto" ? resolvedSdk : undefined,
-        model: selectedModel || undefined,
-        buildRetryPrompt: (lastResult, attempt) =>
-          this._buildRetryPrompt(task, lastResult, attempt),
-        buildContinuePrompt: (lastResult, attempt) =>
-          this._buildContinuePrompt(task, lastResult, attempt),
-        onEvent: createAgentLogStreamer(taskId, taskTitle),
-        abortController: taskAbortController,
-        // When AbortController is replaced after idle_continue, update our reference
-        onAbortControllerReplaced: (newAC) => {
-          this._slotAbortControllers.set(taskId, newAC);
-        },
+      startAgentWorkSession({
+        attemptId,
+        taskMeta,
+        executorInfo,
+        gitContext,
+        prompt,
       });
+      anomalyAbortTargets.set(attemptId, taskAbortController);
+
+      let result;
+      try {
+        result = await execWithRetry(prompt, {
+          taskKey: taskId,
+          cwd: wt.path,
+          timeoutMs: this.taskTimeoutMs,
+          maxRetries: this.maxRetries,
+          maxContinues: 3,
+          sdk: resolvedSdk !== "auto" ? resolvedSdk : undefined,
+          model: selectedModel || undefined,
+          buildRetryPrompt: (lastResult, attempt) =>
+            this._buildRetryPrompt(task, lastResult, attempt),
+          buildContinuePrompt: (lastResult, attempt) =>
+            this._buildContinuePrompt(task, lastResult, attempt),
+          onEvent: createAgentLogStreamer({
+            attemptId,
+            taskId,
+            taskTitle,
+            taskMeta,
+            executorInfo,
+            gitContext,
+          }),
+          abortController: taskAbortController,
+          // When AbortController is replaced after idle_continue, update our reference
+          onAbortControllerReplaced: (newAC) => {
+            this._slotAbortControllers.set(taskId, newAC);
+            anomalyAbortTargets.set(attemptId, newAC);
+          },
+        });
+      } catch (err) {
+        result = {
+          success: false,
+          output: "",
+          items: [],
+          error: err?.message || String(err || "unknown"),
+          sdk: resolvedSdk,
+          attempts: 1,
+          continues: 0,
+          resumed: false,
+        };
+      }
 
       // Restore env vars that were injected for this task slot so parallel
       // tasks running in the same process don't see stale values.
@@ -3335,10 +3562,18 @@ class TaskExecutor {
               this._buildRetryPrompt(task, lr, att),
             buildContinuePrompt: (lr, att) =>
               this._buildContinuePrompt(task, lr, att),
-            onEvent: createAgentLogStreamer(taskId, taskTitle),
+            onEvent: createAgentLogStreamer({
+              attemptId,
+              taskId,
+              taskTitle,
+              taskMeta,
+              executorInfo,
+              gitContext,
+            }),
             abortController: resumeAC,
             onAbortControllerReplaced: (newAC) => {
               this._slotAbortControllers.set(taskId, newAC);
+              anomalyAbortTargets.set(attemptId, newAC);
             },
           });
 
@@ -3376,6 +3611,22 @@ class TaskExecutor {
           );
         }
       }
+
+      stopAgentWorkSession({
+        attemptId,
+        status: validatedResult?.success ? "success" : "failed",
+        executorInfo,
+        taskMeta,
+        gitContext,
+        metrics: {
+          tool_calls: Array.isArray(validatedResult?.items)
+            ? validatedResult.items.length
+            : undefined,
+          success: !!validatedResult?.success,
+          retry_count: Math.max(0, (validatedResult?.attempts || 1) - 1),
+        },
+      });
+      anomalyAbortTargets.delete(attemptId);
 
       // 7. Handle result
       slot.status = validatedResult.success ? "completing" : "failed";

@@ -1,5 +1,6 @@
 /**
- * anomaly-detector.mjs — Plaintext real-time anomaly detection for VK agent sessions.
+ * anomaly-detector.mjs — Plaintext real-time anomaly detection for agent sessions.
+ * Works with VK WebSocket log streams and internal SDK/CLI event streams.
  *
  * Detects death loops, stalls, token overflows, rebase spirals, and other
  * wasteful agent behaviors by pattern-matching raw log lines. No AI inference —
@@ -398,6 +399,7 @@ export class AnomalyDetector {
 
     const line = stripAnsi(rawLine).trim();
     if (!line) return;
+    if (line.length > 20000) return;
 
     this.#totalLines++;
 
@@ -427,19 +429,35 @@ export class AnomalyDetector {
       return;
     }
 
-    // ── Run all detectors ───────────────────────────────────────────
-    this.#detectTokenOverflow(line, state);
-    this.#detectModelNotSupported(line, state);
-    this.#detectStreamDeath(line, state);
-    this.#detectToolCallLoop(line, state);
-    this.#detectToolFailures(line, state);
-    this.#detectRebaseSpiral(line, state);
-    this.#detectGitPushLoop(line, state);
-    this.#detectSubagentWaste(line, state);
-    this.#detectCommandFailures(line, state);
-    this.#detectThoughtSpinning(line, state);
-    this.#detectSelfDebugLoop(line, state);
-    this.#detectRepeatedErrors(line, state);
+    // ── Run all detectors (cheap string gates before regex) ──────────
+    if (line.includes("CAPIError")) {
+      this.#detectTokenOverflow(line, state);
+      this.#detectModelNotSupported(line, state);
+    }
+    if (line.includes("Stream completed")) {
+      this.#detectStreamDeath(line, state);
+    }
+    if (line.includes("ToolCall")) {
+      this.#detectToolCallLoop(line, state);
+      this.#detectSubagentWaste(line, state);
+    }
+    if (line.includes("ToolUpdate")) {
+      this.#detectToolFailures(line, state);
+    }
+    if (line.includes("git ")) {
+      this.#detectRebaseSpiral(line, state);
+      this.#detectGitPushLoop(line, state);
+    }
+    if (line.includes("commandExecution")) {
+      this.#detectCommandFailures(line, state);
+    }
+    if (line.includes("\"Thought\"") || line.includes("\"reasoning\"")) {
+      this.#detectThoughtSpinning(line, state);
+      this.#detectSelfDebugLoop(line, state);
+    }
+    if (line.includes("error") || line.includes("Error") || line.includes("ERROR")) {
+      this.#detectRepeatedErrors(line, state);
+    }
     this.#detectSessionCompletion(line, state);
 
     // Move completed processes out of the active map immediately so stats reflect completion.

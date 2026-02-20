@@ -304,6 +304,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     task?.workspace || activeWorkspaceId.value || "",
   );
   const [repository, setRepository] = useState(task?.repository || "");
+  const activeWsId = activeWorkspaceId.value || "";
+  const canDispatch = Boolean(onStart && task?.id);
 
   const workspaceOptions = managedWorkspaces.value || [];
   const selectedWorkspace = useMemo(
@@ -331,6 +333,11 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       loadWorkspaces().catch(() => {});
     }
   }, []);
+
+  useEffect(() => {
+    if (workspaceId || !activeWsId) return;
+    setWorkspaceId(activeWsId);
+  }, [activeWsId, workspaceId]);
 
   useEffect(() => {
     if (!repositoryOptions.length) {
@@ -530,6 +537,14 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         html`<${Badge} status=${task.priority} text=${task.priority} />`}
         ${manualOverride && html`<${Badge} status="warning" text="manual" />`}
       </div>
+      ${canDispatch &&
+      html`
+        <div class="btn-row mb-sm">
+          <button class="btn btn-primary btn-sm" onClick=${handleStart}>
+            ▶ Dispatch Task
+          </button>
+        </div>
+      `}
 
       <div class="flex-col gap-md modal-form-grid">
         <input
@@ -677,13 +692,6 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         `}
 
         <div class="btn-row modal-form-span">
-          ${task?.status === "todo" &&
-          onStart &&
-          html`
-            <button class="btn btn-primary btn-sm" onClick=${handleStart}>
-              ▶ Start
-            </button>
-          `}
           ${(task?.status === "error" || task?.status === "cancelled") &&
           html`
             <button class="btn btn-primary btn-sm" onClick=${handleRetry}>
@@ -1330,7 +1338,7 @@ export function TasksTab() {
 
   const newButton = html`
     <button
-      class="btn btn-primary btn-sm"
+      class="btn btn-primary btn-sm btn-icon-compact"
       onClick=${() => {
         haptic();
         setShowCreate(true);
@@ -1805,6 +1813,7 @@ function CreateTaskModalInline({ onClose }) {
   const [submitting, setSubmitting] = useState(false);
   const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId.value || "");
   const [repository, setRepository] = useState("");
+  const activeWsId = activeWorkspaceId.value || "";
 
   const workspaceOptions = managedWorkspaces.value || [];
   const selectedWorkspace = useMemo(
@@ -1818,6 +1827,11 @@ function CreateTaskModalInline({ onClose }) {
       loadWorkspaces().catch(() => {});
     }
   }, []);
+
+  useEffect(() => {
+    if (workspaceId || !activeWsId) return;
+    setWorkspaceId(activeWsId);
+  }, [activeWsId, workspaceId]);
 
   useEffect(() => {
     if (!repositoryOptions.length) {

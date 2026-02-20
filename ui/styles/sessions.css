@@ -1020,6 +1020,22 @@ ul.md-list li::before {
   flex-shrink: 0;
 }
 
+.app-shell[data-tab="chat"] .chat-view-embedded .chat-messages {
+  padding: 0 0 16px;
+}
+
+.app-shell[data-tab="chat"] .chat-input-area {
+  padding: 0 0 calc(12px + var(--safe-bottom, 0px));
+}
+
+.app-shell[data-tab="chat"] .chat-view-embedded .chat-messages {
+  padding: 0 0 16px;
+}
+
+.app-shell[data-tab="chat"] .chat-input-area {
+  padding: 0 0 calc(12px + var(--safe-bottom, 0px));
+}
+
 .chat-input-wrapper {
   display: flex;
   align-items: flex-end;

@@ -210,6 +210,14 @@
   z-index: 1;
 }
 
+.modal-open .main-content {
+  z-index: 100;
+}
+
+.modal-open .app-header {
+  z-index: 0;
+}
+
 /* ─── Tab Panel ─── */
 .tab-panel {
   display: none;
@@ -436,8 +444,8 @@
 }
 
 .fab svg {
-  width: 24px;
-  height: 24px;
+  width: 18px;
+  height: 18px;
 }
 
 .scroll-top {
@@ -1125,6 +1133,13 @@
   .app-shell[data-tab="tasks"] .main-content {
     max-width: none;
   }
+}
+
+.app-shell[data-tab="chat"] .main-content {
+  padding-top: 0;
+  padding-left: calc(var(--safe-left));
+  padding-right: calc(var(--safe-right));
+  padding-bottom: calc(var(--nav-height, 60px) + var(--safe-bottom, 0px));
 }
 
 .inspector-log-line {

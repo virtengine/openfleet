@@ -138,6 +138,12 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
     requestAnimationFrame(() => setVisible(open));
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    document.body.classList.add("modal-open");
+    return () => document.body.classList.remove("modal-open");
+  }, [open]);
+
   // Escape key to close (desktop support)
   useEffect(() => {
     if (!open) return;
@@ -210,6 +216,65 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
     setDragY(0);
   }, [dragY, onClose]);
 
+  const handlePointerDown = useCallback((e) => {
+    if (e.pointerType === "touch") return;
+    const el = contentRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (e.clientY - rect.top > 60) return;
+    dragState.current = {
+      startY: e.clientY,
+      startRect: rect.top,
+      dragging: true,
+      pointerId: e.pointerId,
+    };
+    el.style.transition = "none";
+    try { el.setPointerCapture(e.pointerId); } catch { /* no-op */ }
+  }, []);
+
+  const handlePointerMove = useCallback((e) => {
+    if (!dragState.current.dragging) return;
+    if (dragState.current.pointerId !== e.pointerId) return;
+    const deltaY = e.clientY - dragState.current.startY;
+    if (deltaY < 0) {
+      setDragY(0);
+      return;
+    }
+    const translated = deltaY <= 100 ? deltaY : 100 + (deltaY - 100) * 0.3;
+    setDragY(translated);
+    e.preventDefault();
+  }, []);
+
+  const handlePointerEnd = useCallback((e) => {
+    if (!dragState.current.dragging) return;
+    if (dragState.current.pointerId !== e.pointerId) return;
+    dragState.current.dragging = false;
+    dragState.current.pointerId = null;
+    const el = contentRef.current;
+    if (el) {
+      el.style.transition = "";
+      try { el.releasePointerCapture(e.pointerId); } catch { /* no-op */ }
+    }
+    if (dragY > 150) {
+      getTg()?.HapticFeedback?.impactOccurred("light");
+      onClose();
+    }
+    setDragY(0);
+  }, [dragY, onClose]);
+
+  const handlePointerCancel = useCallback((e) => {
+    if (!dragState.current.dragging) return;
+    if (dragState.current.pointerId !== e.pointerId) return;
+    dragState.current.dragging = false;
+    dragState.current.pointerId = null;
+    const el = contentRef.current;
+    if (el) {
+      el.style.transition = "";
+      try { el.releasePointerCapture(e.pointerId); } catch { /* no-op */ }
+    }
+    setDragY(0);
+  }, []);
+
   const handleTouchCancel = useCallback(() => {
     if (!dragState.current.dragging) return;
     dragState.current.dragging = false;
@@ -240,6 +305,10 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
         onTouchMove=${handleTouchMove}
         onTouchEnd=${handleTouchEnd}
         onTouchCancel=${handleTouchCancel}
+        onPointerDown=${handlePointerDown}
+        onPointerMove=${handlePointerMove}
+        onPointerUp=${handlePointerEnd}
+        onPointerCancel=${handlePointerCancel}
       >
         <div class="modal-header">
           <div class="modal-handle"></div>

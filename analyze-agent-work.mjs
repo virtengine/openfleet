@@ -100,6 +100,121 @@ async function loadMetrics(options = {}) {
   return metrics;
 }
 
+function normalizeTimestamp(value) {
+  const ts = Date.parse(value);
+  return Number.isFinite(ts) ? ts : null;
+}
+
+function normalizeErrorFingerprint(message) {
+  const text = String(message || "unknown").trim().toLowerCase();
+  if (!text) return "unknown";
+  return text
+    .replace(/0x[0-9a-f]+/gi, "0x#")
+    .replace(/\b\d+\b/g, "#")
+    .replace(/\s+/g, " ")
+    .slice(0, 120);
+}
+
+function buildDerivedMetrics(events, options = {}) {
+  const cutoff =
+    options.days != null
+      ? Date.now() - options.days * 24 * 60 * 60 * 1000
+      : null;
+  const sessions = new Map();
+
+  for (const event of events) {
+    const tsValue = normalizeTimestamp(event.timestamp);
+    if (cutoff && tsValue && tsValue < cutoff) continue;
+
+    const attemptId = event.attempt_id;
+    if (!attemptId) continue;
+    if (!sessions.has(attemptId)) {
+      sessions.set(attemptId, {
+        attempt_id: attemptId,
+        task_id: event.task_id || "",
+        task_title: event.task_title || "",
+        executor: event.executor || "unknown",
+        started_at: null,
+        ended_at: null,
+        duration_ms: null,
+        tool_calls: 0,
+        tool_results: 0,
+        errors: 0,
+        error_fingerprints: new Set(),
+        error_categories: new Set(),
+        status: null,
+      });
+    }
+    const session = sessions.get(attemptId);
+    if (event.task_id && !session.task_id) session.task_id = event.task_id;
+    if (event.task_title && !session.task_title) session.task_title = event.task_title;
+    if (event.executor && session.executor === "unknown")
+      session.executor = event.executor;
+
+    if (event.event_type === "session_start") {
+      session.started_at = session.started_at || tsValue;
+    }
+    if (event.event_type === "session_end") {
+      session.ended_at = tsValue || session.ended_at;
+      session.status = event.data?.completion_status || session.status;
+      if (event.data?.duration_ms) {
+        session.duration_ms = event.data.duration_ms;
+      }
+    }
+    if (event.event_type === "tool_call") session.tool_calls += 1;
+    if (event.event_type === "tool_result") session.tool_results += 1;
+    if (event.event_type === "error") {
+      session.errors += 1;
+      const fingerprint =
+        event.data?.error_fingerprint ||
+        normalizeErrorFingerprint(event.data?.error_message);
+      session.error_fingerprints.add(fingerprint);
+      if (event.data?.error_category) {
+        session.error_categories.add(event.data.error_category);
+      }
+    }
+  }
+
+  const derived = [];
+  for (const session of sessions.values()) {
+    if (!session.duration_ms && session.started_at && session.ended_at) {
+      session.duration_ms = Math.max(0, session.ended_at - session.started_at);
+    }
+    derived.push({
+      timestamp: new Date().toISOString(),
+      attempt_id: session.attempt_id,
+      task_id: session.task_id,
+      task_title: session.task_title,
+      executor: session.executor,
+      metrics: {
+        duration_ms: session.duration_ms || 0,
+        tool_calls: session.tool_calls,
+        errors: session.errors,
+      },
+      outcome: {
+        status:
+          session.status ||
+          (session.errors > 0 ? "failed" : "completed"),
+      },
+      error_summary: {
+        total_errors: session.errors,
+        error_categories: [...session.error_categories],
+        error_fingerprints: [...session.error_fingerprints],
+      },
+    });
+  }
+
+  return derived;
+}
+
+async function loadMetricsWithFallback(options = {}) {
+  const metrics = await loadMetrics(options);
+  if (metrics.length > 0) return metrics;
+  const events = await loadEvents(options);
+  if (events.length === 0) return [];
+  return buildDerivedMetrics(events, options);
+}
+
 /**
  * Load errors from error log
  */
@@ -206,7 +321,7 @@ function topN(obj, n) {
 async function analyzeBacklog(options) {
   console.log("\n=== Backlog Task Analysis ===\n");
 
-  const metrics = await loadMetrics({ days: options.days || 30 });
+  const metrics = await loadMetricsWithFallback({ days: options.days || 30 });
 
   if (metrics.length === 0) {
     console.log("No metrics data found");
@@ -226,7 +341,7 @@ async function analyzeBacklog(options) {
 
       return {
         task_id: taskId,
-        task_title: firstSession.task_id, // Would need to join with VK task data
+        task_title: firstSession.task_title || firstSession.task_id || "",
         attempts: sessions.length,
         success: completed,
         first_shot_success: firstShotSuccess,
@@ -296,7 +411,9 @@ async function clusterErrors(options) {
   // Group by fingerprint
   const byFingerprint = groupBy(
     errors,
-    (e) => e.data?.error_fingerprint || "unknown",
+    (e) =>
+      e.data?.error_fingerprint ||
+      normalizeErrorFingerprint(e.data?.error_message),
   );
 
   // Build clusters
@@ -346,7 +463,7 @@ async function clusterErrors(options) {
 async function compareExecutors(executors) {
   console.log("\n=== Executor Performance Comparison ===\n");
 
-  const metrics = await loadMetrics({ days: 30 });
+  const metrics = await loadMetricsWithFallback({ days: 30 });
 
   if (metrics.length === 0) {
     console.log("No metrics data found");
@@ -425,7 +542,7 @@ async function compareExecutors(executors) {
 async function analyzePlanning(options) {
   console.log("\n=== Task Planning Analysis ===\n");
 
-  const metrics = await loadMetrics({ days: 30 });
+  const metrics = await loadMetricsWithFallback({ days: 30 });
 
   if (metrics.length === 0) {
     console.log("No metrics data found");
@@ -547,7 +664,7 @@ async function analyzePlanning(options) {
 async function generateWeeklyReport() {
   console.log("\n=== Weekly Agent Work Report ===\n");
 
-  const metrics = await loadMetrics({ days: 7 });
+  const metrics = await loadMetricsWithFallback({ days: 7 });
 
   if (metrics.length === 0) {
     console.log("No data for the past 7 days");
