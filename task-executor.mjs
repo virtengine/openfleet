@@ -115,17 +115,17 @@ const CODEX_TASK_LABELS = (() => {
 const WATCHDOG_INTERVAL_MS = 60_000; // 1 minute
 
 /**
- * Returns the Co-authored-by trailer for bosun[bot], or empty string if the
- * GitHub App ID is not configured. Used to attribute agent commits to the
- * Bosun GitHub App so the bot shows up as a contributor.
+ * Returns the Co-authored-by trailer for bosun-botswain[bot], or empty string
+ * if the GitHub App ID is not configured. Used to attribute agent commits to
+ * the Bosun GitHub App so the bot shows up as a contributor.
  *
  * To enable: set BOSUN_GITHUB_APP_ID=<your-app-id> in .env
- * App noreply email format: <id>+bosun[bot]@users.noreply.github.com
+ * App noreply email format: <id>+bosun-botswain[bot]@users.noreply.github.com
  */
 function getBosunCoAuthorLine() {
   const appId = String(process.env.BOSUN_GITHUB_APP_ID || "").trim();
   if (!appId) return "";
-  return `Co-authored-by: bosun[bot] <${appId}+bosun[bot]@users.noreply.github.com>`;
+  return `Co-authored-by: bosun-botswain[bot] <${appId}+bosun-botswain[bot]@users.noreply.github.com>`;
 }
 
 /**

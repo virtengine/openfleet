@@ -2115,6 +2115,232 @@ async function handleGitHubProjectWebhook(req, res) {
   }
 }
 
+// ─── GitHub App webhook ──────────────────────────────────────────────────────
+
+function getAppWebhookPath() {
+  return (
+    process.env.BOSUN_GITHUB_APP_WEBHOOK_PATH ||
+    "/api/webhooks/github/app"
+  );
+}
+
+/**
+ * Handles App-level webhook deliveries from GitHub.
+ * Events: installation, installation_repositories, ping, pull_request, push…
+ * Validates HMAC-SHA256 signature using BOSUN_GITHUB_WEBHOOK_SECRET.
+ */
+async function handleGitHubAppWebhook(req, res) {
+  if (req.method !== "POST") {
+    jsonResponse(res, 405, { ok: false, error: "Method not allowed" });
+    return;
+  }
+
+  const deliveryId = String(req.headers["x-github-delivery"] || "");
+  const eventType = String(req.headers["x-github-event"] || "").toLowerCase();
+
+  let rawBody;
+  try {
+    rawBody = await readRawBody(req);
+  } catch (err) {
+    jsonResponse(res, 400, { ok: false, error: "Failed to read body" });
+    return;
+  }
+
+  // Validate HMAC signature if secret is configured
+  const webhookSecret = process.env.BOSUN_GITHUB_WEBHOOK_SECRET || "";
+  if (webhookSecret) {
+    const sigHeader = req.headers["x-hub-signature-256"] || "";
+    if (!verifyGitHubWebhookSignature(rawBody, sigHeader, webhookSecret)) {
+      console.warn(
+        `[app-webhook] delivery=${deliveryId} invalid signature — check BOSUN_GITHUB_WEBHOOK_SECRET`,
+      );
+      jsonResponse(res, 401, { ok: false, error: "Invalid webhook signature" });
+      return;
+    }
+  }
+
+  let payload = {};
+  try {
+    payload = rawBody ? JSON.parse(rawBody) : {};
+  } catch {
+    jsonResponse(res, 400, { ok: false, error: "Invalid JSON payload" });
+    return;
+  }
+
+  // Acknowledge immediately — GitHub requires a fast response
+  jsonResponse(res, 202, { ok: true, deliveryId, eventType });
+
+  // Process asynchronously
+  setImmediate(() => {
+    try {
+      _processAppWebhookEvent(eventType, payload, deliveryId);
+    } catch (err) {
+      console.warn(`[app-webhook] processing error delivery=${deliveryId}: ${err.message}`);
+    }
+  });
+}
+
+function _processAppWebhookEvent(eventType, payload, deliveryId) {
+  switch (eventType) {
+    case "ping":
+      console.log(
+        `[app-webhook] ping delivery=${deliveryId} zen="${payload.zen || ""}"`,
+      );
+      break;
+
+    case "installation": {
+      const action = payload.action || "";
+      const login = payload.installation?.account?.login || "unknown";
+      const repos = (payload.repositories || []).map((r) => r.full_name);
+      console.log(
+        `[app-webhook] installation ${action} account=${login} repos=${repos.join(",") || "(all)"}`,
+      );
+      broadcastUiEvent(["overview"], "invalidate", {
+        reason: `github-app-installation-${action}`,
+        account: login,
+      });
+      break;
+    }
+
+    case "installation_repositories": {
+      const action = payload.action || "";
+      const added = (payload.repositories_added || []).map((r) => r.full_name);
+      const removed = (payload.repositories_removed || []).map((r) => r.full_name);
+      console.log(
+        `[app-webhook] installation_repositories ${action} added=${added.join(",")} removed=${removed.join(",")}`,
+      );
+      break;
+    }
+
+    default:
+      console.log(
+        `[app-webhook] delivery=${deliveryId} event=${eventType} action=${payload.action || ""} (unhandled, ack'd)`,
+      );
+  }
+}
+
+// ─── GitHub OAuth callback ────────────────────────────────────────────────────
+
+/**
+ * Handles the OAuth redirect from GitHub after a user installs/authorizes
+ * the Bosun[botswain] GitHub App.
+ *
+ * Flow:
+ *   1. GitHub redirects: GET /api/github/callback?code=xxx&installation_id=yyy
+ *   2. We exchange `code` for a user access token
+ *   3. We fetch the user's GitHub login for confirmation
+ *   4. We redirect the user to the main app UI with a success banner
+ *
+ * The token is surfaced in the response so the operator can copy it;
+ * it is also written to .env as GH_TOKEN if GH_TOKEN is currently unset.
+ */
+async function handleGitHubOAuthCallback(req, res) {
+  if (req.method !== "GET") {
+    jsonResponse(res, 405, { ok: false, error: "Method not allowed" });
+    return;
+  }
+
+  const urlObj = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const code = urlObj.searchParams.get("code") || "";
+  const installationId = urlObj.searchParams.get("installation_id") || "";
+  const setupAction = urlObj.searchParams.get("setup_action") || "";
+
+  // If no code, this might be a test ping — just return 200
+  if (!code) {
+    jsonResponse(res, 400, { ok: false, error: "Missing code parameter" });
+    return;
+  }
+
+  const clientId = process.env.BOSUN_GITHUB_CLIENT_ID || "";
+  const clientSecret = process.env.BOSUN_GITHUB_CLIENT_SECRET || "";
+
+  if (!clientId || !clientSecret) {
+    console.warn("[oauth-callback] BOSUN_GITHUB_CLIENT_ID/CLIENT_SECRET not set — cannot exchange code");
+    res.writeHead(302, { Location: "/?oauth=error&reason=not_configured" });
+    res.end();
+    return;
+  }
+
+  try {
+    // Exchange code for user access token
+    const tokenBody = new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      code,
+    });
+    const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "bosun-botswain",
+      },
+      body: tokenBody.toString(),
+    });
+
+    if (!tokenRes.ok) {
+      throw new Error(`Token exchange HTTP ${tokenRes.status}`);
+    }
+    const tokenData = await tokenRes.json();
+    if (tokenData.error) {
+      throw new Error(`${tokenData.error}: ${tokenData.error_description || ""}`);
+    }
+
+    const accessToken = tokenData.access_token;
+
+    // Fetch the user identity for logging / display
+    let login = "unknown";
+    try {
+      const userRes = await fetch("https://api.github.com/user", {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "bosun-botswain",
+        },
+      });
+      if (userRes.ok) {
+        const u = await userRes.json();
+        login = u.login || "unknown";
+      }
+    } catch {
+      // non-fatal
+    }
+
+    console.log(
+      `[oauth-callback] authorized user=${login} installation_id=${installationId} setup_action=${setupAction}`,
+    );
+
+    // If GH_TOKEN is not already set, write the token to .env so Bosun can use it.
+    if (!process.env.GH_TOKEN && accessToken) {
+      try {
+        updateEnvFile({ GH_TOKEN: accessToken });
+        process.env.GH_TOKEN = accessToken;
+        console.log(`[oauth-callback] wrote GH_TOKEN to .env for user=${login}`);
+      } catch (err) {
+        console.warn(`[oauth-callback] could not write GH_TOKEN to .env: ${err.message}`);
+      }
+    }
+
+    broadcastUiEvent(["overview"], "invalidate", {
+      reason: "github-oauth-authorized",
+      login,
+      installationId,
+    });
+
+    // Redirect to the main UI with success indication
+    const redirectUrl = `/?oauth=success&gh_user=${encodeURIComponent(login)}${installationId ? `&installation_id=${encodeURIComponent(installationId)}` : ""}`;
+    res.writeHead(302, { Location: redirectUrl });
+    res.end();
+  } catch (err) {
+    console.warn(`[oauth-callback] error: ${err.message}`);
+    res.writeHead(302, {
+      Location: `/?oauth=error&reason=${encodeURIComponent(err.message.slice(0, 100))}`,
+    });
+    res.end();
+  }
+}
+
 async function readStatusSnapshot() {
   try {
     const raw = await readFile(statusPath, "utf8");
@@ -4047,6 +4273,44 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/github/app/config") {
+    const appId = (process.env.BOSUN_GITHUB_APP_ID || "").trim();
+    const privateKeyPath = (process.env.BOSUN_GITHUB_PRIVATE_KEY_PATH || "").trim();
+    const clientId = (process.env.BOSUN_GITHUB_CLIENT_ID || "").trim();
+    const webhookSecretSet = Boolean(process.env.BOSUN_GITHUB_WEBHOOK_SECRET);
+    const appWebhookPath = getAppWebhookPath();
+
+    // Build public URLs from tunnel URL if available, else from request host
+    const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost";
+    const proto = uiServerTls || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+    const baseUrl = `${proto}://${host}`;
+
+    jsonResponse(res, 200, {
+      ok: true,
+      data: {
+        appId: appId || null,
+        appSlug: "bosun-botswain",
+        botUsername: "bosun-botswain[bot]",
+        appUrl: "https://github.com/apps/bosun-botswain",
+        configured: {
+          appId: Boolean(appId),
+          privateKey: Boolean(privateKeyPath),
+          oauthClient: Boolean(clientId),
+          webhookSecret: webhookSecretSet,
+        },
+        urls: {
+          webhookUrl: `${baseUrl}${appWebhookPath}`,
+          oauthCallbackUrl: `${baseUrl}/api/github/callback`,
+        },
+        paths: {
+          webhookPath: appWebhookPath,
+          oauthCallbackPath: "/api/github/callback",
+        },
+      },
+    });
+    return;
+  }
+
   if (path === "/api/command") {
     try {
       const body = await readJsonBody(req);
@@ -4788,6 +5052,19 @@ export async function startTelegramUiServer(options = {}) {
 
     if (url.pathname === webhookPath) {
       await handleGitHubProjectWebhook(req, res);
+      return;
+    }
+
+    // GitHub App webhook (installation events, pr events, etc.)
+    const appWebhookPath = getAppWebhookPath();
+    if (url.pathname === appWebhookPath) {
+      await handleGitHubAppWebhook(req, res);
+      return;
+    }
+
+    // GitHub OAuth callback — public (no session auth required)
+    if (url.pathname === "/api/github/callback") {
+      await handleGitHubOAuthCallback(req, res);
       return;
     }
 

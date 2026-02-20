@@ -112,6 +112,7 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/git/branch-detail", // Real git branch detail
   "/api/project-sync/metrics", // Real project sync metrics
   "/api/settings/update",   // Alias for /api/config/update
+  "/api/github/app/config", // GitHub App config — server-only (reads env vars + key files)
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────
