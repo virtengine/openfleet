@@ -24,7 +24,7 @@
 export const CATEGORIES = [
   { id: "telegram",  label: "Telegram Bot",        icon: "📱", description: "Bot token, chat, polling, and notification settings" },
   { id: "miniapp",   label: "Mini App / UI",        icon: "🖥️", description: "Web UI server, port, auth, and tunnel settings" },
-  { id: "executor",  label: "Executor / AI",        icon: "⚡", description: "Agent execution, SDK selection, parallelism, and timeouts" },
+  { id: "executor",  label: "Executor / AI",        icon: "🧠", description: "Agent execution, SDK selection, parallelism, and timeouts" },
   { id: "kanban",    label: "Kanban / Tasks",        icon: "📋", description: "Task backend, sync, labels, and project mapping" },
   { id: "github",    label: "GitHub / Git",          icon: "🐙", description: "Repository, auth, PR, merge, and reconciliation settings" },
   { id: "network",   label: "Network / Tunnel",      icon: "🌐", description: "Cloudflare tunnel, presence, and multi-instance coordination" },

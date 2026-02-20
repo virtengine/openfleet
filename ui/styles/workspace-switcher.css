@@ -164,6 +164,23 @@
   font-size: 14px;
 }
 
+@media (max-width: 640px) {
+  .ws-switcher-btn {
+    padding: 4px 8px;
+    max-width: 150px;
+  }
+
+  .ws-switcher-name {
+    max-width: 90px;
+  }
+}
+
+@media (max-width: 420px) {
+  .ws-switcher-name {
+    display: none;
+  }
+}
+
 
 /* ══════════════════════════════════════════════════════════════
    Workspace Manager — full-screen overlay panel

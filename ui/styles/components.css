@@ -2470,6 +2470,7 @@ select.input {
   gap: 6px;
 }
 
+.actions-wrap,
 .export-wrap {
   position: relative;
 }

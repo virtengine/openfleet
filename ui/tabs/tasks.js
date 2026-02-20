@@ -230,9 +230,17 @@ export function StartTaskModal({
 
   return html`
     <${Modal} title="Start Task" onClose=${onClose}>
-      <div class="meta-text mb-sm">
-        ${task?.title || "(untitled)"} · ${task?.id || "—"}
-      </div>
+      ${task?.id || task?.title
+        ? html`
+            <div class="meta-text mb-sm">
+              ${task?.title || "(untitled)"} · ${task?.id || "—"}
+            </div>
+          `
+        : html`
+            <div class="meta-text mb-sm">
+              Enter a task ID to manually dispatch it. Manual starts work even if automation is paused.
+            </div>
+          `}
       <div class="flex-col gap-md">
         ${(allowTaskIdInput || !task?.id) &&
         html`
@@ -724,10 +732,11 @@ export function TasksTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [detailTask, setDetailTask] = useState(null);
   const [startTarget, setStartTarget] = useState(null);
+  const [startAnyOpen, setStartAnyOpen] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [isSearching, setIsSearching] = useState(false);
-  const [exportOpen, setExportOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [isCompact, setIsCompact] = useState(() => {
@@ -735,7 +744,7 @@ export function TasksTab() {
     catch { return false; }
   });
   const searchRef = useRef(null);
-  const exportRef = useRef(null);
+  const actionsRef = useRef(null);
   const listStateRef = useRef({
     filter: tasksFilter?.value ?? "all",
     priority: tasksPriority?.value ?? "",
@@ -872,22 +881,20 @@ export function TasksTab() {
   useEffect(() => {
     if (isCompact) {
       setFiltersOpen(false);
-      setExportOpen(false);
-    } else {
-      setFiltersOpen(true);
+      setActionsOpen(false);
     }
   }, [isCompact]);
 
   useEffect(() => {
-    if (!exportOpen || typeof document === "undefined") return undefined;
+    if (!actionsOpen || typeof document === "undefined") return undefined;
     const handlePointerDown = (event) => {
-      if (!exportRef.current) return;
-      if (!exportRef.current.contains(event.target)) {
-        setExportOpen(false);
+      if (!actionsRef.current) return;
+      if (!actionsRef.current.contains(event.target)) {
+        setActionsOpen(false);
       }
     };
     const handleKeyDown = (event) => {
-      if (event.key === "Escape") setExportOpen(false);
+      if (event.key === "Escape") setActionsOpen(false);
     };
     document.addEventListener("pointerdown", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
@@ -895,7 +902,7 @@ export function TasksTab() {
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [exportOpen]);
+  }, [actionsOpen]);
 
   /* Search (local fuzzy filter on already-loaded data) */
   const searchLower = trimmedSearch.toLowerCase();
@@ -1017,7 +1024,7 @@ export function TasksTab() {
     haptic();
     setFiltersOpen((prev) => {
       const next = !prev;
-      if (!next) setExportOpen(false);
+      if (!next) setActionsOpen(false);
       return next;
     });
   };
@@ -1159,7 +1166,7 @@ export function TasksTab() {
   /* ── Export handlers ── */
   const handleExportCSV = async () => {
     setExporting(true);
-    setExportOpen(false);
+    setActionsOpen(false);
     haptic("medium");
     try {
       const res = await apiFetch("/api/tasks?limit=1000", { _silent: true });
@@ -1199,7 +1206,7 @@ export function TasksTab() {
 
   const handleExportJSON = async () => {
     setExporting(true);
-    setExportOpen(false);
+    setActionsOpen(false);
     haptic("medium");
     try {
       const res = await apiFetch("/api/tasks?limit=1000", { _silent: true });
@@ -1289,33 +1296,66 @@ export function TasksTab() {
           ${!isSearching && searchVal && html`<span class="pill" style="font-size:10px;padding:2px 7px;white-space:nowrap">${visible.length} result${visible.length !== 1 ? "s" : ""}</span>`}
           </div>
           <div class="tasks-toolbar-actions">
-            ${isCompact && html`
-              <button
-                class="btn btn-secondary btn-sm filter-toggle ${filtersOpen ? "active" : ""}"
-                onClick=${handleToggleFilters}
-                aria-expanded=${filtersOpen}
-              >
-                ${ICONS.filter}
-                Filters
-                ${activeFilterCount > 0 && html`
-                  <span class="filter-count">${activeFilterCount}</span>
-                `}
-              </button>
-              <button
-                class="btn btn-primary btn-sm"
-                onClick=${() => {
-                  haptic();
-                  setShowCreate(true);
-                }}
-                aria-label="Create task"
-              >
-                ${ICONS.plus}
-                New
-              </button>
-            `}
+            <button
+              class="btn btn-secondary btn-sm filter-toggle ${filtersOpen ? "active" : ""}"
+              onClick=${handleToggleFilters}
+              aria-expanded=${filtersOpen}
+            >
+              ${ICONS.filter}
+              Filters
+              ${activeFilterCount > 0 && html`
+                <span class="filter-count">${activeFilterCount}</span>
+              `}
+            </button>
             <div class="view-toggle">
               <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
               <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
+            </div>
+            <button
+              class="btn btn-primary btn-sm"
+              onClick=${() => {
+                haptic();
+                setShowCreate(true);
+              }}
+              aria-label="Create task"
+            >
+              ${ICONS.plus}
+              ${isCompact ? "New" : "New Task"}
+            </button>
+            ${!isCompact && html`
+              <button
+                class="btn btn-ghost btn-sm"
+                onClick=${() => {
+                  haptic();
+                  setStartAnyOpen(true);
+                }}
+              >
+                ▶ Start Task
+              </button>
+            `}
+            <div class="actions-wrap" ref=${actionsRef}>
+              <button
+                class="btn btn-ghost btn-sm actions-btn"
+                onClick=${() => { setActionsOpen(!actionsOpen); haptic(); }}
+                aria-haspopup="menu"
+                aria-expanded=${actionsOpen}
+                disabled=${exporting}
+              >
+                ${ICONS.ellipsis}
+                <span class="actions-label">Actions</span>
+              </button>
+              ${actionsOpen && html`
+                <div class="actions-dropdown" role="menu">
+                  <button
+                    class="actions-dropdown-item"
+                    onClick=${() => { setActionsOpen(false); setStartAnyOpen(true); }}
+                  >
+                    ▶ Start Task
+                  </button>
+                  <button class="actions-dropdown-item" onClick=${handleExportCSV}>📊 Export CSV</button>
+                  <button class="actions-dropdown-item" onClick=${handleExportJSON}>📋 Export JSON</button>
+                </div>
+              `}
             </div>
           </div>
         </div>
@@ -1404,21 +1444,6 @@ export function TasksTab() {
                     Clear Filters
                   </button>
                 `}
-                <div class="export-wrap" ref=${exportRef}>
-                  <button
-                    class="btn btn-secondary btn-sm export-btn"
-                    disabled=${exporting}
-                    onClick=${() => { setExportOpen(!exportOpen); haptic(); }}
-                  >
-                    ${DOWNLOAD_ICON} ${exporting ? "…" : "Export"}
-                  </button>
-                  ${exportOpen && html`
-                    <div class="export-dropdown">
-                      <button class="export-dropdown-item" onClick=${handleExportCSV}>📊 Export as CSV</button>
-                      <button class="export-dropdown-item" onClick=${handleExportJSON}>📋 Export as JSON</button>
-                    </div>
-                  `}
-                </div>
               </div>
             </div>
             ${!isKanban && html`
@@ -1507,19 +1532,22 @@ export function TasksTab() {
     <//>
 
     <style>
-      .export-btn { display:inline-flex; align-items:center; gap:4px; }
-      .export-dropdown {
+      .actions-btn { display:inline-flex; align-items:center; gap:4px; }
+      .actions-dropdown {
         position:absolute; right:0; top:100%; margin-top:4px; z-index:100;
         background:var(--card-bg, #1e1e2e); border:1px solid var(--border, #333);
         border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,.3); overflow:hidden;
         min-width:160px;
       }
-      .export-dropdown-item {
+      .actions-dropdown-item {
         display:block; width:100%; padding:10px 14px; border:none;
         background:none; color:inherit; text-align:left; font-size:13px;
         cursor:pointer;
       }
-      .export-dropdown-item:hover { background:var(--hover-bg, rgba(255,255,255,.08)); }
+      .actions-dropdown-item:hover { background:var(--hover-bg, rgba(255,255,255,.08)); }
+      @media (max-width: 640px) {
+        .actions-label { display:none; }
+      }
     </style>
 
     ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} />`}
@@ -1685,6 +1713,16 @@ export function TasksTab() {
         defaultSdk=${defaultSdk}
         allowTaskIdInput=${false}
         onClose=${() => setStartTarget(null)}
+        onStart=${startTask}
+      />
+    `}
+    ${startAnyOpen &&
+    html`
+      <${StartTaskModal}
+        task=${null}
+        defaultSdk=${defaultSdk}
+        allowTaskIdInput=${true}
+        onClose=${() => setStartAnyOpen(false)}
         onStart=${startTask}
       />
     `}

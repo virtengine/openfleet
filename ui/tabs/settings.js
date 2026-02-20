@@ -898,7 +898,7 @@ function ServerConfigMode() {
     !loadError &&
     html`
       <div class="settings-banner settings-banner-warn">
-        <span>⚡</span>
+        <span>🧠</span>
         <span class="settings-banner-text">Connection lost — reconnecting…</span>
       </div>
     `}

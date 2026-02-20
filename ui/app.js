@@ -217,6 +217,8 @@ function Header() {
   const reconnect = wsReconnectIn.value;
   const freshnessRaw = dataFreshness.value;
   const navHint = getNavHint();
+  const tabMeta = TAB_CONFIG.find((tab) => tab.id === activeTab.value);
+  const subLabel = tabMeta?.label || "";
   let freshness = null;
   if (typeof freshnessRaw === "number") {
     freshness = Number.isFinite(freshnessRaw) ? freshnessRaw : null;
@@ -251,33 +253,39 @@ function Header() {
   return html`
     <header class="app-header">
       <div class="app-header-left">
-        <div class="app-header-logo">
-          <img src="logo.png" alt="Bosun" class="app-logo-img" />
-        </div>
-        <div class="app-header-titles">
-          <div class="app-header-title">Bosun</div>
-          <div class="app-header-subtitle">
-            ${ICONS[TAB_CONFIG.find((tab) => tab.id === activeTab.value)?.icon] || ""} ${TAB_CONFIG.find((tab) => tab.id === activeTab.value)?.label || "Control Center"}
+        <div class="app-header-brand">
+          <div class="app-header-logo">
+            <img src="logo.png" alt="Bosun" class="app-logo-img" />
           </div>
-          ${navHint
-            ? html`<div class="app-header-hint">${navHint}</div>`
-            : null}
+          <div class="app-header-titles">
+            <div class="app-header-title">Bosun</div>
+            ${subLabel
+              ? html`<div class="app-header-subtitle">${subLabel}</div>`
+              : null}
+            ${navHint
+              ? html`<div class="app-header-hint">${navHint}</div>`
+              : null}
+          </div>
         </div>
-        <${WorkspaceSwitcher} />
       </div>
-      <div class="header-actions">
-        <div class="header-status">
-          <div class="connection-pill ${connClass}">
-            <span class="connection-dot"></span>
-            ${connLabel}
+      <div class="app-header-right">
+        <div class="app-header-workspace">
+          <${WorkspaceSwitcher} />
+        </div>
+        <div class="header-actions">
+          <div class="header-status">
+            <div class="connection-pill ${connClass}">
+              <span class="connection-dot"></span>
+              ${connLabel}
+            </div>
+            ${freshnessLabel
+              ? html`<div class="header-freshness">${freshnessLabel}</div>`
+              : null}
           </div>
-          ${freshnessLabel
-            ? html`<div class="header-freshness">${freshnessLabel}</div>`
+          ${user
+            ? html`<div class="app-header-user">@${user.username || user.first_name}</div>`
             : null}
         </div>
-        ${user
-          ? html`<div class="app-header-user">@${user.username || user.first_name}</div>`
-          : null}
       </div>
     </header>
   `;
@@ -295,9 +303,7 @@ function SidebarNav() {
         <div class="sidebar-logo">
           <img src="logo.png" alt="Bosun" class="app-logo-img" />
         </div>
-        <div>
-          <div class="sidebar-subtitle">Control Center</div>
-        </div>
+        <div class="sidebar-title">Bosun</div>
       </div>
       <div class="sidebar-actions">
         <button class="btn btn-primary btn-block" onClick=${() => createSession({ type: "primary" })}>
@@ -561,6 +567,7 @@ function BottomNav({ compact, moreOpen, onToggleMore, onNavigate }) {
             key=${tab.id}
             class="nav-item ${isActive ? "active" : ""}"
             aria-label=${`Go to ${tab.label}`}
+            type="button"
             onClick=${() =>
               onNavigate(tab.id, {
                 resetHistory: isHome,
@@ -577,6 +584,7 @@ function BottomNav({ compact, moreOpen, onToggleMore, onNavigate }) {
         aria-haspopup="dialog"
         aria-expanded=${moreOpen ? "true" : "false"}
         aria-label=${moreOpen ? "Close more menu" : "Open more menu"}
+        type="button"
         onClick=${onToggleMore}
       >
         ${ICONS.ellipsis}
