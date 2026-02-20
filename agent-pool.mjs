@@ -94,6 +94,33 @@ function shouldFallbackForSdkError(error) {
   return false;
 }
 
+/**
+ * Detect if an error is a context/token overflow that should trigger a
+ * new thread instead of retrying on the same (exhausted) session.
+ * @param {string|Error} error
+ * @returns {boolean}
+ */
+export function isContextOverflowError(error) {
+  if (!error) return false;
+  const msg = String(error).toLowerCase();
+  return (
+    msg.includes("context_length_exceeded") ||
+    msg.includes("prompt_too_long") ||
+    msg.includes("prompt is too long") ||
+    msg.includes("context too long") ||
+    msg.includes("context length exceeded") ||
+    msg.includes("token_budget") ||
+    msg.includes("turn_limit_reached") ||
+    msg.includes("conversation too long") ||
+    msg.includes("maximum context length") ||
+    msg.includes("max token") ||
+    msg.includes("maximum number of tokens") ||
+    msg.includes("string_above_max_length") ||
+    msg.includes("input too large") ||
+    msg.includes("reduce the length")
+  );
+}
+
 const OPENAI_ENV_KEYS = [
   "OPENAI_API_KEY",
   "OPENAI_BASE_URL",
@@ -411,7 +438,7 @@ export function getAvailableSdks() {
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string }>}
  */
 async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
-  const { onEvent, abortController: externalAC, onThreadReady = null } = extra;
+  const { onEvent, abortController: externalAC, onThreadReady = null, taskKey: steerKey = null } = extra;
 
   let reportedThreadId = null;
   const emitThreadReady = (threadId) => {
@@ -483,6 +510,16 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   }
   emitThreadReady(thread.id || null);
 
+  // Register active session for mid-execution steering
+  if (steerKey) {
+    registerActiveSession(steerKey, "codex", thread.id || null, (steerPrompt) => {
+      // Codex steering: send a follow-up message to the live thread
+      // Note: the thread is consumed in the streaming loop below, so
+      // additional runStreamed calls are queued by the SDK
+      thread.runStreamed(steerPrompt, { signal: controller?.signal }).catch(() => {});
+    });
+  }
+
   // ── 3. Timeout / abort wiring ────────────────────────────────────────────
   const controller = externalAC || new AbortController();
   const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
@@ -538,6 +575,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
 
     const output =
       finalResponse.trim() || "(Agent completed with no text output)";
+    if (steerKey) unregisterActiveSession(steerKey);
     return {
       success: true,
       output,
@@ -549,6 +587,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   } catch (err) {
     clearTimeout(timer);
     if (hardTimer) clearTimeout(hardTimer);
+    if (steerKey) unregisterActiveSession(steerKey);
     const isTimeout =
       err.name === "AbortError" ||
       String(err) === "timeout" ||
@@ -647,6 +686,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
     resumeThreadId = null,
     onThreadReady = null,
     model: requestedModel = null,
+    taskKey: steerKey = null,
   } = extra;
 
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
@@ -791,6 +831,16 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
         onThreadReady(copilotSessionId, "copilot");
       } catch {
         /* best effort */
+      }
+    }
+
+    // Register active session for mid-execution steering
+    if (steerKey && session) {
+      const hasSendMethod = typeof session.send === "function";
+      if (hasSendMethod) {
+        registerActiveSession(steerKey, "copilot", copilotSessionId, (steerPrompt) => {
+          session.send({ prompt: steerPrompt }).catch(() => {});
+        });
       }
     }
 
@@ -961,6 +1011,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
     };
   } finally {
     clearTimeout(timer);
+    if (steerKey) unregisterActiveSession(steerKey);
     try {
       if (typeof unsubscribe === "function") unsubscribe();
     } catch {
@@ -1021,6 +1072,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     resumeThreadId = null,
     onThreadReady = null,
     model: requestedModel = null,
+    taskKey: steerKey = null,
   } = extra;
 
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
@@ -1137,6 +1189,13 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
 
     msgQueue.push(makeUserMessage(formattedPrompt));
 
+    // Register active session for mid-execution steering (Claude uses message queue)
+    if (steerKey) {
+      registerActiveSession(steerKey, "claude", resumeThreadId, (steerPrompt) => {
+        msgQueue.push(makeUserMessage(steerPrompt));
+      });
+    }
+
     const normalizeList = (value) => {
       if (Array.isArray(value)) {
         return value.map((entry) => String(entry || "").trim()).filter(Boolean);
@@ -1244,6 +1303,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
 
     clearTimeout(softTimer);
     msgQueue.close();
+    if (steerKey) unregisterActiveSession(steerKey);
 
     const output =
       finalResponse.trim() || "(Agent completed with no text output)";
@@ -1257,6 +1317,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     };
   } catch (err) {
     clearTimeout(softTimer);
+    if (steerKey) unregisterActiveSession(steerKey);
     const isTimeout =
       err.name === "AbortError" ||
       String(err).includes("timeout") ||
@@ -1514,6 +1575,120 @@ const PERSISTENT_THREAD_SDKS = new Set(["codex", "copilot", "claude"]);
 
 function sdkSupportsPersistentThreads(sdkName) {
   return PERSISTENT_THREAD_SDKS.has(String(sdkName || "").toLowerCase());
+}
+
+// ---------------------------------------------------------------------------
+// Active Session Store — steering support
+// ---------------------------------------------------------------------------
+// Stores live session/thread/queue references so the supervisor can inject
+// prompts into running agents (mid-session steering).
+//
+// Each entry is keyed by taskKey and holds a `send(prompt)` function that
+// abstracts over the SDK-specific injection mechanism:
+//   - Codex:   thread.runStreamed(prompt) (steer feature)
+//   - Copilot: session.send({ prompt })
+//   - Claude:  msgQueue.push(makeUserMessage(prompt))
+
+/**
+ * @typedef {Object} ActiveSession
+ * @property {string} sdk          SDK name ("codex" | "copilot" | "claude")
+ * @property {string|null} threadId SDK-specific thread/session ID
+ * @property {Function} send        (prompt: string) => void — inject a follow-up message
+ * @property {number} registeredAt  Unix ms when this session was registered
+ */
+
+/** @type {Map<string, ActiveSession>} */
+const activeSessions = new Map();
+
+/** Threshold for approaching-exhaustion warning (80% of MAX_THREAD_TURNS). */
+const THREAD_EXHAUSTION_WARNING_THRESHOLD = Math.floor(MAX_THREAD_TURNS * 0.8);
+
+/**
+ * Register an active session so the supervisor can steer it mid-execution.
+ * Called by each launch function when the session/thread/queue is established.
+ *
+ * @param {string} taskKey
+ * @param {string} sdk
+ * @param {string|null} threadId
+ * @param {Function} sendFn  (prompt: string) => void
+ */
+function registerActiveSession(taskKey, sdk, threadId, sendFn) {
+  if (!taskKey || typeof sendFn !== "function") return;
+  activeSessions.set(taskKey, {
+    sdk,
+    threadId,
+    send: sendFn,
+    registeredAt: Date.now(),
+  });
+}
+
+/**
+ * Unregister an active session (called when the launch function completes).
+ * @param {string} taskKey
+ */
+function unregisterActiveSession(taskKey) {
+  activeSessions.delete(taskKey);
+}
+
+/**
+ * Inject a prompt into an active (running) agent session.
+ *
+ * This is the core steering capability: the supervisor calls this to send
+ * follow-up instructions, recovery prompts, or continue signals to agents
+ * that are currently executing.
+ *
+ * Returns true if the injection was sent, false if no active session exists.
+ *
+ * @param {string} taskKey  The task identifier (same key used in threadRegistry)
+ * @param {string} prompt   The prompt/instruction to inject
+ * @returns {boolean}
+ */
+export function steerActiveThread(taskKey, prompt) {
+  const session = activeSessions.get(taskKey);
+  if (!session) {
+    console.warn(`${TAG} steerActiveThread: no active session for task "${taskKey}"`);
+    return false;
+  }
+  try {
+    session.send(prompt);
+    console.log(
+      `${TAG} steered active ${session.sdk} session for task "${taskKey}" (thread: ${session.threadId})`,
+    );
+    return true;
+  } catch (err) {
+    console.error(
+      `${TAG} steerActiveThread failed for task "${taskKey}":`,
+      err.message || err,
+    );
+    return false;
+  }
+}
+
+/**
+ * Check if a specific task has a steerable active session.
+ * @param {string} taskKey
+ * @returns {boolean}
+ */
+export function hasActiveSession(taskKey) {
+  return activeSessions.has(taskKey);
+}
+
+/**
+ * Get info about which tasks have active (steerable) sessions.
+ * @returns {Array<{ taskKey: string, sdk: string, threadId: string|null, age: number }>}
+ */
+export function getActiveSessions() {
+  const now = Date.now();
+  const result = [];
+  for (const [key, session] of activeSessions) {
+    result.push({
+      taskKey: key,
+      sdk: session.sdk,
+      threadId: session.threadId,
+      age: now - session.registeredAt,
+    });
+  }
+  return result;
 }
 
 /** @type {Promise<void>|null} */
@@ -1825,6 +2000,8 @@ export async function launchOrResumeThread(
 ) {
   await ensureThreadRegistryLoaded();
   const { taskKey, ...restExtra } = extra;
+  // Pass taskKey through as steer key so SDK launchers can register active sessions
+  restExtra.taskKey = taskKey;
   timeoutMs = clampMonitorMonitorTimeout(timeoutMs, taskKey);
 
   // No taskKey — pure ephemeral (backward compatible)
@@ -1841,6 +2018,17 @@ export async function launchOrResumeThread(
   // Check registry for existing thread
   const existing = threadRegistry.get(taskKey);
   if (existing && existing.alive && existing.threadId) {
+    // Approaching-exhaustion warning (non-blocking — still proceeds with resume)
+    if (
+      existing.turnCount >= THREAD_EXHAUSTION_WARNING_THRESHOLD &&
+      existing.turnCount < MAX_THREAD_TURNS
+    ) {
+      const remaining = MAX_THREAD_TURNS - existing.turnCount;
+      console.warn(
+        `${TAG} ⚠ thread for task "${taskKey}" approaching exhaustion: ${existing.turnCount}/${MAX_THREAD_TURNS} turns (${remaining} remaining)`,
+      );
+    }
+
     // Check if thread has exceeded max turns — force fresh start
     if (existing.turnCount >= MAX_THREAD_TURNS) {
       console.warn(

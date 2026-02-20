@@ -211,7 +211,11 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(null);
   const [paused, setPaused] = useState(false);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [visibleCount, setVisibleCount] = useState(200);
   const [filters, setFilters] = useState({
     tool: false,
     result: false,
@@ -219,6 +223,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   });
   const messagesRef = useRef(null);
   const inputRef = useRef(null);
+  const lastMessageCount = useRef(0);
+  const filterKey = `${filters.tool}-${filters.result}-${filters.error}`;
   const messages = sessionMessages.value || [];
 
   const session = (sessionsData.value || []).find((s) => s.id === sessionId);
@@ -251,6 +257,13 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     return messages.filter((msg) => activeFilters.includes(categorizeMessage(msg)));
   }, [messages, activeFilters]);
 
+  const visibleMessages = useMemo(() => {
+    if (filteredMessages.length <= visibleCount) return filteredMessages;
+    return filteredMessages.slice(-visibleCount);
+  }, [filteredMessages, visibleCount]);
+
+  const hasMoreMessages = filteredMessages.length > visibleCount;
+
   const recentAutoActions = useMemo(() => {
     const items = (agentAutoActions.value || []).slice(0, 3);
     return items.map(formatAutoAction).filter(Boolean);
@@ -263,7 +276,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const refreshMessages = useCallback(async () => {
     if (!sessionId) return;
     setLoading(true);
-    await loadSessionMessages(sessionId).finally(() => setLoading(false));
+    const res = await loadSessionMessages(sessionId).finally(() => setLoading(false));
+    setLoadError(res?.ok ? null : res?.error || "unavailable");
   }, [sessionId]);
 
   /* Load messages on mount; WS push via initSessionWsListener handles real-time */
@@ -272,7 +286,9 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     let active = true;
     if (!paused) {
       setLoading(true);
-      loadSessionMessages(sessionId).finally(() => {
+      loadSessionMessages(sessionId).then((res) => {
+        if (active) setLoadError(res?.ok ? null : res?.error || "unavailable");
+      }).finally(() => {
         if (active) setLoading(false);
       });
     } else {
@@ -281,7 +297,11 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
     // Fallback: poll slowly as safety net (30s) - WS does the heavy lifting
     const interval = setInterval(() => {
-      if (active && !paused) loadSessionMessages(sessionId);
+      if (active && !paused) {
+        loadSessionMessages(sessionId).then((res) => {
+          if (active && res?.ok === false) setLoadError(res?.error || "unavailable");
+        });
+      }
     }, 30000);
 
     return () => {
@@ -305,12 +325,41 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     if (sessionId) clearPendingMessages(sessionId);
   }, [sessionId]);
 
-  /* Auto-scroll to bottom */
+  /* Reset visible window when session or filters change */
   useEffect(() => {
-    if (!paused && messagesRef.current) {
-      messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
+    setVisibleCount(200);
+    setUnreadCount(0);
+  }, [sessionId, filterKey]);
+
+  /* Track scroll position to decide auto-scroll + unread */
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (!el) return undefined;
+    const onScroll = () => {
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+      setAutoScroll(nearBottom);
+      if (nearBottom) setUnreadCount(0);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [sessionId]);
+
+  /* Auto-scroll to bottom when new messages arrive */
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (!el) return;
+    const prevCount = lastMessageCount.current;
+    const nextCount = messages.length;
+    const newMessages = nextCount > prevCount;
+    lastMessageCount.current = nextCount;
+    if (!paused && autoScroll) {
+      el.scrollTop = el.scrollHeight;
+      return;
     }
-  }, [messages.length, paused]);
+    if (newMessages && !autoScroll) {
+      setUnreadCount((prev) => prev + (nextCount - prevCount));
+    }
+  }, [messages.length, paused, autoScroll]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
@@ -332,7 +381,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         method: "POST",
         body: JSON.stringify({ content: text }),
       });
-      await loadSessionMessages(sessionId);
+      const res = await loadSessionMessages(sessionId);
+      setLoadError(res?.ok ? null : res?.error || "unavailable");
     } catch {
       showToast("Failed to send message", "error");
     } finally {
@@ -348,7 +398,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         "success",
       );
       await loadSessions();
-      await loadSessionMessages(sessionId);
+      const res = await loadSessionMessages(sessionId);
+      setLoadError(res?.ok ? null : res?.error || "unavailable");
     } catch {
       showToast("Failed to resume session", "error");
     }
@@ -359,7 +410,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       await apiFetch(`/api/sessions/${sessionId}/archive`, { method: "POST" });
       showToast("Session archived", "success");
       await loadSessions();
-      await loadSessionMessages(sessionId);
+      const res = await loadSessionMessages(sessionId);
+      setLoadError(res?.ok ? null : res?.error || "unavailable");
     } catch {
       showToast("Failed to archive session", "error");
     }
@@ -602,6 +654,27 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       `}
 
       <div class="chat-messages" ref=${messagesRef}>
+        ${hasMoreMessages && html`
+          <div class="chat-load-earlier">
+            <button
+              class="btn btn-ghost btn-sm"
+              onClick=${() => setVisibleCount((prev) => prev + 200)}
+            >
+              Load earlier messages
+            </button>
+            <span class="chat-load-count">
+              Showing ${visibleMessages.length} of ${filteredMessages.length}
+            </span>
+          </div>
+        `}
+        ${loadError && !loading && html`
+          <div class="chat-error-banner">
+            <span>Stream unavailable (${loadError}).</span>
+            <button class="btn btn-ghost btn-xs" onClick=${refreshMessages}>
+              Retry
+            </button>
+          </div>
+        `}
         ${loading && messages.length === 0 && html`
           <div class="chat-loading">Loading messages…</div>
         `}
@@ -628,7 +701,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             </button>
           </div>
         `}
-        ${filteredMessages.map((msg) => {
+        ${visibleMessages.map((msg) => {
           const isTool =
             msg.type === "tool_call" || msg.type === "tool_result";
           const isError = msg.type === "error" || msg.type === "stream_error";
@@ -671,7 +744,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
                   `}
             </div>
           `;
-        })}
+        })} 
 
         ${/* Pending messages (optimistic rendering) */
           (pendingMessages.value || [])
@@ -709,6 +782,21 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           </div>
         `}
       </div>
+      ${!autoScroll && messages.length > 0 && html`
+        <div class="chat-jump-latest">
+          <button
+            class="btn btn-primary btn-sm"
+            onClick=${() => {
+              const el = messagesRef.current;
+              if (el) el.scrollTop = el.scrollHeight;
+              setAutoScroll(true);
+              setUnreadCount(0);
+            }}
+          >
+            Jump to latest${unreadCount ? ` (${unreadCount})` : ""}
+          </button>
+        </div>
+      `}
 
       ${!readOnly && html`
       <div class="chat-input-bar">

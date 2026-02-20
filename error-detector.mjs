@@ -40,15 +40,37 @@ export const TOKEN_OVERFLOW_PATTERNS = [
   /input.*too.*large/i,
   /reduce.*(context|input|message)/i,
   /maximum.*context.*length/i,
+  /413 Payload Too Large/i,                        // HTTP 413 = too much data
+  /context_length_exceeded/i,                      // OpenAI error code
+  /prompt.*(too long|too large)/i,                 // Anthropic / generic
+  /prompt_too_long/i,                              // Anthropic error code
+  /This model's maximum context length/i,          // OpenAI human-readable
+  /token_budget.*exceeded|token.*budget/i,         // Codex CLI
+  /turn_limit_reached|turn.*limit/i,               // Copilot / thread exhaustion
+  /string_above_max_length/i,                      // OpenAI field-level
+  /maximum.*number.*tokens/i,                      // Generic
 ];
 
 const API_ERROR_PATTERNS = [
   /ECONNREFUSED|ETIMEDOUT|ENOTFOUND/i,
   /500 Internal Server Error/i,
-  /502 Bad Gateway|503 Service Unavailable/i,
+  /502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout/i,
+  /408 Request Timeout/i,
   /network.*(error|failure|unreachable)/i,
   /fetch failed|request failed/i,
   /overloaded_error|server_error|engine_overloaded/i,  // Anthropic/OpenAI overloaded
+];
+
+// ── Client request errors (NOT blindly retryable — bad payload/params) ──
+export const REQUEST_ERROR_PATTERNS = [
+  /400 Bad Request/i,
+  /invalid_request_error/i,
+  /malformed.*request|malformed.*json|invalid.*json/i,
+  /422 Unprocessable Entity/i,
+  /validation.*failed|invalid.*parameter|missing.*parameter/i,
+  /request.*too.*large|payload.*too.*large/i,     // 413 without token context
+  /404 Not Found/i,                                // wrong endpoint URL
+  /invalid.*endpoint|endpoint.*not.*found/i,
 ];
 
 const SESSION_EXPIRED_PATTERNS = [
@@ -162,6 +184,7 @@ const PATTERN_GROUPS = [
   ["rate_limit", RATE_LIMIT_PATTERNS, 0.95],
   ["token_overflow", TOKEN_OVERFLOW_PATTERNS, 0.9],
   ["model_error", MODEL_ERROR_PATTERNS, 0.92],    // Model errors — not retryable
+  ["request_error", REQUEST_ERROR_PATTERNS, 0.91], // Client errors (400/404/422) — needs prompt fix
   ["api_error", API_ERROR_PATTERNS, 0.9],
   ["session_expired", SESSION_EXPIRED_PATTERNS, 0.9],
   ["codex_sandbox", CODEX_SANDBOX_PATTERNS, 0.88], // Codex sandbox failures
@@ -204,6 +227,7 @@ const PATTERN_DESCRIPTIONS = {
   git_conflict: "Git merge conflict detected",
   auth_error: "API key invalid, expired, or missing — NOT retryable",
   model_error: "Model not found, deprecated, or unavailable",
+  request_error: "Bad request (400/404/422) — invalid payload or endpoint",
   content_policy: "Content policy / safety filter violation — NOT retryable",
   codex_sandbox: "Codex CLI sandbox or permission error",
   permission_wait: "Agent waiting for human input/permission",
@@ -540,6 +564,29 @@ export class ErrorDetector {
           reason:
             "Content policy or safety filter violation. The request " +
             "was rejected and will not succeed on retry.",
+          errorCount,
+        };
+
+      case "request_error":
+        // Client errors (400/404/422) — retry with guidance but block after 2
+        if (errorCount >= 2) {
+          return {
+            action: "block",
+            reason:
+              "Client request errors persist (400/404/422) — the request payload " +
+              "or endpoint is invalid and needs manual investigation.",
+            errorCount,
+          };
+        }
+        return {
+          action: "retry_with_prompt",
+          prompt:
+            "The API returned a client error (400 Bad Request, 404, or 422). " +
+            "This means the request itself is malformed — NOT a server issue. " +
+            "Check: 1) API endpoint URL is correct, 2) request body is valid JSON, " +
+            "3) all required parameters are present, 4) parameter values are valid. " +
+            "Do NOT simply retry — fix the request first.",
+          reason: `Client request error (attempt ${errorCount}/2) — fix request payload`,
           errorCount,
         };
 

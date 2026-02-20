@@ -276,9 +276,15 @@ const RECOVERY_PROMPTS = {
     `Reset: What file needs to change? Make that change NOW.`,
 
   [SITUATION.TOKEN_OVERFLOW]: (ctx) =>
-    `Context overflow on "${ctx.taskTitle}". Starting fresh session.\n` +
-    `Check existing progress: git log --oneline -10 && git diff --stat\n` +
-    `Continue from where the last session left off. Do NOT restart from scratch.`,
+    `Context overflow on "${ctx.taskTitle}". Starting fresh session.\n\n` +
+    `This happens when the conversation accumulates too much context (large files, ` +
+    `many tool calls, long outputs). The previous session's work is preserved in git.\n\n` +
+    `Recovery steps:\n` +
+    `1. Run: git log --oneline -10 && git diff --stat\n` +
+    `2. Check what's already been implemented\n` +
+    `3. Continue from where the last session left off\n` +
+    `4. Be more targeted — read only what you need, avoid dumping entire files\n\n` +
+    `Do NOT restart from scratch. Do NOT re-read files you already processed.`,
 
   [SITUATION.POOR_QUALITY]: (ctx) =>
     `Review found critical issues in your implementation of "${ctx.taskTitle}":\n` +
@@ -920,7 +926,12 @@ export class AgentSupervisor {
       if (/ECONNREFUSED|ETIMEDOUT|500|502|503|fetch failed/i.test(errText)) {
         return SITUATION.API_ERROR;
       }
-      if (/context.*(too long|exceeded|overflow)|max.*token/i.test(errText)) {
+      if (/context.*(too long|exceeded|overflow)|max.*token/i.test(errText) ||
+          /context_length_exceeded|prompt_too_long|prompt.*too.*long/i.test(errText) ||
+          /This model's maximum context length/i.test(errText) ||
+          /token_budget.*exceeded|token.*budget/i.test(errText) ||
+          /turn_limit_reached|conversation.*too.*long/i.test(errText) ||
+          /string_above_max_length|maximum.*number.*tokens/i.test(errText)) {
         return SITUATION.TOKEN_OVERFLOW;
       }
       if (/model.*not.*supported|model.*error|invalid.*model|model.*not.*found|model.*deprecated/i.test(errText)) {

@@ -61,6 +61,9 @@ import {
   execPooledPrompt,
   launchOrResumeThread,
   getAvailableSdks,
+  forceNewThread,
+  steerActiveThread,
+  hasActiveSession,
 } from "./agent-pool.mjs";
 import { loadConfig } from "./config.mjs";
 import { formatPreflightReport, runPreflightChecks } from "./preflight.mjs";
@@ -11987,6 +11990,27 @@ if (isExecutorDisabled()) {
         setTaskStatus: (taskId, status, source) =>
           setInternalTaskStatus(taskId, status, source),
         assessIntervalMs: 30_000,
+        // ── Intervention callbacks (steering, thread management) ──
+        forceNewThread: (taskId, reason) => {
+          console.log(`[monitor] supervisor forcing new thread for ${taskId}: ${reason}`);
+          forceNewThread(taskId, reason);
+        },
+        injectPrompt: (taskId, prompt) => {
+          if (hasActiveSession(taskId)) {
+            console.log(`[monitor] supervisor steering active session for ${taskId}`);
+            steerActiveThread(taskId, prompt);
+          } else {
+            console.warn(`[monitor] supervisor inject: no active session for ${taskId}, prompt dropped`);
+          }
+        },
+        sendContinueSignal: (taskId) => {
+          if (hasActiveSession(taskId)) {
+            console.log(`[monitor] supervisor sending continue signal to ${taskId}`);
+            steerActiveThread(taskId, "Continue executing your current task. Do NOT restart or re-read files you already processed.");
+          } else {
+            console.warn(`[monitor] supervisor continue: no active session for ${taskId}`);
+          }
+        },
       });
       agentSupervisor.start();
 
