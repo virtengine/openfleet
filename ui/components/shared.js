@@ -126,9 +126,9 @@ export function SkeletonCard({ height = "80px", className = "" }) {
 
 /**
  * Bottom-sheet modal with drag handle, title, swipe-to-dismiss, and TG BackButton integration.
- * @param {{title?: string, open?: boolean, onClose: () => void, children?: any}} props
+ * @param {{title?: string, open?: boolean, onClose: () => void, children?: any, contentClassName?: string}} props
  */
-export function Modal({ title, open = true, onClose, children }) {
+export function Modal({ title, open = true, onClose, children, contentClassName = "" }) {
   const [visible, setVisible] = useState(false);
   const contentRef = useRef(null);
   const dragState = useRef({ startY: 0, startRect: 0, dragging: false });
@@ -233,7 +233,7 @@ export function Modal({ title, open = true, onClose, children }) {
     >
       <div
         ref=${contentRef}
-        class="modal-content ${visible ? "modal-content-visible" : ""} ${dragY > 0 ? "modal-dragging" : ""}"
+        class="modal-content ${contentClassName} ${visible ? "modal-content-visible" : ""} ${dragY > 0 ? "modal-dragging" : ""}"
         style=${dragStyle}
         onClick=${(e) => e.stopPropagation()}
         onTouchStart=${handleTouchStart}
