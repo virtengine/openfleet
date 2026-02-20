@@ -89,6 +89,8 @@ const SORT_OPTIONS = [
   { value: "title", label: "Title" },
 ];
 
+const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, "": 4 };
+
 const SYSTEM_TAGS = new Set([
   "draft",
   "todo",
@@ -760,6 +762,8 @@ export function TasksTab() {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [listSortCol, setListSortCol] = useState("");   // active column sort in list mode
+  const [listSortDir, setListSortDir] = useState("desc"); // "asc" | "desc"
   const [isCompact, setIsCompact] = useState(() => {
     try { return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false; }
     catch { return false; }
@@ -977,6 +981,31 @@ export function TasksTab() {
       { label: "Errors", value: counts.error, color: "var(--color-error)" },
     ];
   }, [tasks]);
+
+  /* ── Client-side table sort (list mode) ── */
+  const sortedForTable = useMemo(() => {
+    if (!listSortCol) return visible;
+    return [...visible].sort((a, b) => {
+      let av, bv;
+      const dir = listSortDir === "asc" ? 1 : -1;
+      if (listSortCol === "priority") {
+        av = PRIORITY_ORDER[a.priority || ""] ?? 4;
+        bv = PRIORITY_ORDER[b.priority || ""] ?? 4;
+        return dir * (av - bv);
+      }
+      if (listSortCol === "updated") {
+        av = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+        bv = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+        return dir * (av - bv);
+      }
+      if (listSortCol === "status") { av = a.status || ""; bv = b.status || ""; }
+      else if (listSortCol === "title") { av = (a.title || "").toLowerCase(); bv = (b.title || "").toLowerCase(); }
+      else if (listSortCol === "repo") { av = a.repository || a.workspace || ""; bv = b.repository || b.workspace || ""; }
+      else if (listSortCol === "branch") { av = getTaskBaseBranch(a); bv = getTaskBaseBranch(b); }
+      else { return 0; }
+      return dir * String(av).localeCompare(String(bv));
+    });
+  }, [visible, listSortCol, listSortDir]);
 
   /* ── Handlers ── */
   const handleFilter = async (s) => {
@@ -1578,23 +1607,16 @@ export function TasksTab() {
       `}
     </div>
 
-    <${Card}
-      title="Work Snapshot"
-      subtitle=${isKanban ? "Board view · showing all statuses" : "List view · filtered results"}
-      className="work-summary-card"
-    >
-      <div class="stat-strip">
-        ${summaryMetrics.map(
-          (metric) => html`
-            <${StatCard}
-              value=${metric.value}
-              label=${metric.label}
-              color=${metric.color}
-            />
-          `,
-        )}
-      </div>
-    <//>
+    <div class="snapshot-bar">
+      ${summaryMetrics.map((m) => html`
+        <span key=${m.label} class="snapshot-pill">
+          <span class="snapshot-dot" style="background:${m.color};" />
+          <strong class="snapshot-val">${m.value}</strong>
+          <span class="snapshot-lbl">${m.label}</span>
+        </span>
+      `)}
+      <span class="snapshot-view-tag">${isKanban ? "⬛ Board" : "☰ List"}</span>
+    </div>
 
     <style>
       .actions-btn { display:inline-flex; align-items:center; gap:4px; }
@@ -1617,119 +1639,84 @@ export function TasksTab() {
 
     ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} />`}
 
-    ${!isKanban &&
-    visible.map((task) => {
-      const isManual = isTaskManual(task);
-      const descriptionLimit = isCompact ? 90 : 120;
-      const tags = getTaskTags(task);
-      const visibleTags = isCompact ? tags.slice(0, 3) : tags;
-      const extraTagCount = tags.length - visibleTags.length;
-      return html`
-        <div
-          key=${task.id}
-          class="task-card ${batchMode && selectedIds.has(task.id)
-            ? "task-card-selected"
-            : ""} task-card-enter"
-          data-status=${task.status || ""}
-          data-manual=${isManual ? "true" : "false"}
-          onClick=${() =>
-            batchMode ? toggleSelect(task.id) : openDetail(task.id)}
-        >
-          ${batchMode &&
-          html`
-            <input
-              type="checkbox"
-              checked=${selectedIds.has(task.id)}
-              class="task-checkbox"
-              onClick=${(e) => {
-                e.stopPropagation();
-                toggleSelect(task.id);
-              }}
-              style="accent-color:var(--accent)"
-            />
-          `}
-          <div class="task-card-header">
-            <div>
-              <div class="task-card-title">${task.title || "(untitled)"}</div>
-              <div class="task-card-meta">
-                ${task.id}${task.priority
-                  ? html` ·
-                      <${Badge}
-                        status=${task.priority}
-                        text=${task.priority}
-                      />`
-                  : ""}
-                ${task.updated_at
-                  ? html` · ${formatRelative(task.updated_at)}`
-                  : ""}
-              </div>
-            </div>
-            <div class="task-card-badges">
-              ${isManual && html`<${Badge} status="warning" text="manual" />`}
-              <${Badge} status=${task.status} text=${task.status} />
-            </div>
-          </div>
-          <div class="meta-text">
-            ${task.description
-              ? truncate(task.description, descriptionLimit)
-              : "No description."}
-          </div>
-          ${getTaskBaseBranch(task) &&
-          html`
-            <div class="meta-text">
-              Base: <code>${getTaskBaseBranch(task)}</code>
-            </div>
-          `}
-          ${(task.workspace || task.repository) &&
-          html`
-            <div class="meta-text" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
-              ${task.workspace && html`<span class="pill" style="font-size:11px">📂 ${task.workspace}</span>`}
-              ${task.repository && html`<span class="pill" style="font-size:11px">📁 ${task.repository}</span>`}
-            </div>
-          `}
-          ${tags.length > 0 &&
-          html`
-            <div class="tag-row">
-              ${visibleTags.map(
-                (tag) => html`<span class="tag-chip">#${tag}</span>`,
-              )}
-              ${extraTagCount > 0 &&
-              html`
-                <span class="tag-chip tag-chip-muted">
-                  +${extraTagCount}
-                </span>
-              `}
-            </div>
-          `}
-          ${!batchMode &&
-          html`
-            <div class="btn-row mt-sm task-card-actions" onClick=${(e) => e.stopPropagation()}>
-              ${task.status === "todo" &&
-              html`
-                <button
-                  class="btn btn-primary btn-sm"
-                  onClick=${() => openStartModal(task)}
+    ${!isKanban && visible.length > 0 && html`
+      <div class="task-table-wrap">
+        <table class="task-table">
+          <thead>
+            <tr>
+              ${[
+                { col: "status", label: "Status" },
+                { col: "priority", label: "Pri" },
+                { col: "title", label: "Title", grow: true },
+                { col: "branch", label: "Branch" },
+                { col: "repo", label: "Repo" },
+                { col: "updated", label: "Updated" },
+              ].map(({ col, label, grow }) => {
+                const active = listSortCol === col;
+                const arrow = active ? (listSortDir === "asc" ? "▲" : "▼") : "⇅";
+                return html`
+                  <th
+                    key=${col}
+                    class="task-th ${active ? "task-th-active" : ""} ${grow ? "task-th-grow" : ""}"
+                    onClick=${() => {
+                      if (listSortCol === col) {
+                        setListSortDir(listSortDir === "asc" ? "desc" : "asc");
+                      } else {
+                        setListSortCol(col);
+                        setListSortDir("desc");
+                      }
+                    }}
+                  >${label} <span class="task-th-arrow">${arrow}</span></th>
+                `;
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            ${sortedForTable.map((task) => {
+              const isManual = isTaskManual(task);
+              const branch = getTaskBaseBranch(task);
+              return html`
+                <tr
+                  key=${task.id}
+                  class="task-tr ${batchMode && selectedIds.has(task.id) ? "task-tr-selected" : ""}"
+                  data-status=${task.status || ""}
+                  onClick=${() => batchMode ? toggleSelect(task.id) : openDetail(task.id)}
                 >
-                  ▶ Start
-                </button>
-              `}
-              <button
-                class="btn btn-secondary btn-sm"
-                onClick=${() => handleStatusUpdate(task.id, "inreview")}
-              >
-                → Review
-              </button>
-              <button
-                class="btn btn-ghost btn-sm"
-                onClick=${() => handleStatusUpdate(task.id, "done")}
-              >
-                ✓ Done
-              </button>
-            </div>
-          `}
-        </div>
-      `;
-    })}
+                  <td class="task-td task-td-status">
+                    <${Badge} status=${task.status} text=${task.status} />
+                    ${isManual && html`<${Badge} status="warning" text="⚑" />`}
+                  </td>
+                  <td class="task-td task-td-pri">
+                    ${task.priority
+                      ? html`<${Badge} status=${task.priority} text=${task.priority} />`
+                      : html`<span class="task-td-empty">—</span>`}
+                  </td>
+                  <td class="task-td task-td-title">
+                    <div class="task-td-title-text">${task.title || "(untitled)"}</div>
+                    ${task.id && html`<div class="task-td-id">${task.id}</div>`}
+                  </td>
+                  <td class="task-td task-td-branch">
+                    ${branch
+                      ? html`<code class="task-td-code">${branch}</code>`
+                      : html`<span class="task-td-empty">—</span>`}
+                  </td>
+                  <td class="task-td task-td-repo">
+                    ${(task.repository || task.workspace)
+                      ? html`<span>${task.repository || task.workspace}</span>`
+                      : html`<span class="task-td-empty">—</span>`}
+                  </td>
+                  <td class="task-td task-td-updated">
+                    ${task.updated_at
+                      ? html`<span class="task-td-date">${formatRelative(task.updated_at)}</span>`
+                      : html`<span class="task-td-empty">—</span>`}
+                  </td>
+                </tr>
+              `;
+            })}
+          </tbody>
+        </table>
+      </div>
+    `}
     ${!isKanban && !visible.length &&
     html`
       <${EmptyState}
