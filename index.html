@@ -638,27 +638,42 @@
     </div>
   </section>
 
-  <!-- ═══ Live PR Showcase ════════════════════════════════════════════ -->
+  <!-- ═══ Live Showcase ════════════════════════════════════════════════ -->
   <section id="showcase">
     <div class="container">
       <div class="section-header reveal">
         <span class="section-header__label">Shipping Code</span>
         <h2 class="section-header__title">Live from <span class="gradient-text">VirtEngine</span></h2>
         <p class="section-header__desc">
-          Real pull requests created and merged by Bosun's AI agents.
+          Real pull requests merged &amp; commits shipped by Bosun's AI agents.
           Powered by Codex, Copilot, and Claude — shipping production code daily.
         </p>
       </div>
 
-      <div class="pr-showcase reveal" id="pr-showcase">
+      <!-- Feed tabs -->
+      <div class="showcase-tabs reveal" id="showcase-tabs">
+        <button class="showcase-tab showcase-tab--active" data-feed="prs">⬆ Open PRs</button>
+        <button class="showcase-tab" data-feed="commits">📦 Bosun Commits</button>
+      </div>
+
+      <!-- PR feed -->
+      <div class="pr-showcase reveal showcase-feed showcase-feed--active" id="pr-showcase" data-feed-panel="prs">
         <div class="pr-showcase__loading">
           <span class="pr-showcase__spinner"></span>
           Loading recent PRs from VirtEngine...
         </div>
       </div>
 
+      <!-- Bosun commit feed -->
+      <div class="pr-showcase reveal showcase-feed" id="commit-showcase" data-feed-panel="commits">
+        <div class="pr-showcase__loading">
+          <span class="pr-showcase__spinner"></span>
+          Loading recent commits to bosun...
+        </div>
+      </div>
+
       <div class="pr-showcase__footer reveal" style="text-align: center; margin-top: 1.5rem;">
-        <a href="https://github.com/virtengine/virtengine/pulls?q=is%3Apr+sort%3Aupdated-desc" class="btn btn--ghost btn--sm" target="_blank" rel="noopener">
+        <a id="showcase-gh-link" href="https://github.com/virtengine/virtengine/pulls?q=is%3Apr+sort%3Aupdated-desc" class="btn btn--ghost btn--sm" target="_blank" rel="noopener">
           View All PRs on GitHub →
         </a>
       </div>

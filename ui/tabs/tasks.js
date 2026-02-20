@@ -1817,6 +1817,7 @@ function CreateTaskModalInline({ onClose }) {
   const [submitting, setSubmitting] = useState(false);
   const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId.value || "");
   const [repository, setRepository] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const activeWsId = activeWorkspaceId.value || "";
 
   const workspaceOptions = managedWorkspaces.value || [];
@@ -1902,97 +1903,134 @@ function CreateTaskModalInline({ onClose }) {
     repository,
   ]);
 
+  const parsedTags = normalizeTagInput(tagsInput);
+  const hasAdvanced = baseBranch || draft || showAdvanced;
+
+  const footerContent = html`
+    <button
+      class="btn btn-primary"
+      style="width:100%"
+      onClick=${handleSubmit}
+      disabled=${submitting}
+    >
+      ${submitting ? "Creating…" : "✓ Create Task"}
+    </button>
+  `;
+
   return html`
-    <${Modal} title="New Task" onClose=${onClose} contentClassName="modal-content-wide">
-      <div class="flex-col gap-md modal-form-grid">
+    <${Modal}
+      title="New Task"
+      onClose=${onClose}
+      contentClassName="modal-content-wide"
+      footer=${footerContent}
+    >
+      <div class="flex-col create-task-form">
+
+        <!-- Title — autofocus so keyboard opens immediately -->
         <input
-          class="input modal-form-span"
-          placeholder="Task title"
+          class="input"
+          placeholder="Task title *"
           value=${title}
+          autoFocus=${true}
           onInput=${(e) => setTitle(e.target.value)}
+          onKeyDown=${(e) => e.key === "Enter" && !e.shiftKey && handleSubmit()}
         />
+
+        <!-- Description — compact 2-row textarea -->
         <textarea
-          class="input modal-form-span"
-          rows="4"
-          placeholder="Description"
+          class="input"
+          rows="2"
+          placeholder="What needs to be done? (optional)"
           value=${description}
-          onInput=${(e) => setDescription(e.target.value)}
+          onInput=${(e) => {
+            setDescription(e.target.value);
+            // auto-grow up to 6 rows
+            e.target.style.height = "auto";
+            e.target.style.height = Math.min(e.target.scrollHeight, 6 * 24 + 16) + "px";
+          }}
         ></textarea>
-        <input
-          class="input modal-form-span"
-          placeholder="Base branch (optional, e.g. feature/xyz)"
-          value=${baseBranch}
-          onInput=${(e) => setBaseBranch(e.target.value)}
+
+        <!-- Priority — always visible, most commonly changed -->
+        <${SegmentedControl}
+          options=${[
+            { value: "low", label: "Low" },
+            { value: "medium", label: "Med" },
+            { value: "high", label: "High" },
+            { value: "critical", label: "🔥" },
+          ]}
+          value=${priority}
+          onChange=${(v) => { haptic(); setPriority(v); }}
         />
-        <div class="input-row modal-form-span">
-          <select
-            class="input"
-            value=${workspaceId}
-            onChange=${(e) => setWorkspaceId(e.target.value)}
-          >
-            <option value="">Active workspace</option>
-            ${workspaceOptions.map(
-              (ws) => html`<option value=${ws.id}>${ws.name || ws.id}</option>`,
-            )}
-          </select>
-          <select
-            class="input"
-            value=${repository}
-            onChange=${(e) => setRepository(e.target.value)}
-            disabled=${!repositoryOptions.length}
-          >
-            <option value="">
-              ${repositoryOptions.length ? "Auto repository" : "No repos in workspace"}
-            </option>
-            ${repositoryOptions.map(
-              (repo) =>
-                html`<option value=${repo.slug}>${repo.name}${repo.primary ? " ★" : ""}</option>`,
-            )}
-          </select>
-        </div>
+
+        <!-- Workspace + Repo row -->
+        ${workspaceOptions.length > 0 && html`
+          <div class="input-row">
+            <select
+              class="input"
+              value=${workspaceId}
+              onChange=${(e) => setWorkspaceId(e.target.value)}
+            >
+              <option value="">Active workspace</option>
+              ${workspaceOptions.map(
+                (ws) => html`<option value=${ws.id}>${ws.name || ws.id}</option>`,
+              )}
+            </select>
+            <select
+              class="input"
+              value=${repository}
+              onChange=${(e) => setRepository(e.target.value)}
+              disabled=${!repositoryOptions.length}
+            >
+              <option value="">
+                ${repositoryOptions.length ? "Auto repo" : "No repos"}
+              </option>
+              ${repositoryOptions.map(
+                (repo) =>
+                  html`<option value=${repo.slug}>${repo.name}${repo.primary ? " ★" : ""}</option>`,
+              )}
+            </select>
+          </div>
+        `}
+
+        <!-- Tags -->
         <input
-          class="input modal-form-span"
-          placeholder="Tags (comma-separated)"
+          class="input"
+          placeholder="Tags (comma-separated, optional)"
           value=${tagsInput}
           onInput=${(e) => setTagsInput(e.target.value)}
         />
-        ${normalizeTagInput(tagsInput).length > 0 &&
-        html`
-          <div class="tag-row modal-form-span">
-            ${normalizeTagInput(tagsInput).map(
-              (tag) => html`<span class="tag-chip">#${tag}</span>`,
-            )}
+        ${parsedTags.length > 0 && html`
+          <div class="tag-row">
+            ${parsedTags.map((tag) => html`<span class="tag-chip">#${tag}</span>`)}
           </div>
         `}
-        <div class="modal-form-span">
+
+        <!-- Advanced toggle -->
+        <button
+          class="btn btn-ghost btn-sm create-task-advanced-toggle"
+          style="text-align:left;justify-content:flex-start;gap:6px;padding:6px 0;color:var(--text-hint)"
+          onClick=${() => setShowAdvanced(!showAdvanced)}
+          type="button"
+        >
+          <span style="display:inline-block;transition:transform 0.15s;transform:rotate(${showAdvanced ? 90 : 0}deg)">▶</span>
+          Advanced${hasAdvanced && !showAdvanced ? " •" : ""}
+        </button>
+
+        <!-- Advanced fields: base branch + draft -->
+        ${(showAdvanced || hasAdvanced) && html`
+          <input
+            class="input"
+            placeholder="Base branch (optional, e.g. main)"
+            value=${baseBranch}
+            onInput=${(e) => setBaseBranch(e.target.value)}
+          />
           <${Toggle}
-            label="Draft (keep in backlog)"
+            label="Draft (save to backlog, don't start)"
             checked=${draft}
             onChange=${(next) => setDraft(next)}
           />
-        </div>
-        <div class="modal-form-span">
-          <${SegmentedControl}
-            options=${[
-              { value: "low", label: "Low" },
-              { value: "medium", label: "Medium" },
-              { value: "high", label: "High" },
-              { value: "critical", label: "Critical" },
-            ]}
-            value=${priority}
-            onChange=${(v) => {
-              haptic();
-              setPriority(v);
-            }}
-          />
-        </div>
-        <button
-          class="btn btn-primary modal-form-span"
-          onClick=${handleSubmit}
-          disabled=${submitting}
-        >
-          ${submitting ? "Creating…" : "Create Task"}
-        </button>
+        `}
+
       </div>
     <//>
   `;

@@ -128,7 +128,7 @@ export function SkeletonCard({ height = "80px", className = "" }) {
  * Bottom-sheet modal with drag handle, title, swipe-to-dismiss, and TG BackButton integration.
  * @param {{title?: string, open?: boolean, onClose: () => void, children?: any, contentClassName?: string}} props
  */
-export function Modal({ title, open = true, onClose, children, contentClassName = "" }) {
+export function Modal({ title, open = true, onClose, children, contentClassName = "", footer }) {
   const [visible, setVisible] = useState(false);
   const contentRef = useRef(null);
   const dragState = useRef({ startY: 0, startRect: 0, dragging: false });
@@ -178,6 +178,32 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
       return () => { document.body.style.overflow = ""; };
     }
   });
+
+  // Visual viewport (software keyboard) awareness
+  // Sets --keyboard-height on :root so the modal can lift above the keyboard
+  useEffect(() => {
+    if (!open) return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      // keyboard height = amount the visual viewport has shrunk from the layout viewport
+      const kh = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      document.documentElement.style.setProperty("--keyboard-height", `${kh}px`);
+    };
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    update();
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+      document.documentElement.style.setProperty("--keyboard-height", "0px");
+    };
+  }, [open]);
+
+  // Prevent touches on the scrollable body from triggering swipe-to-dismiss
+  const handleBodyTouchStart = useCallback((e) => {
+    e.stopPropagation();
+  }, []);
 
   const handleTouchStart = useCallback((e) => {
     const el = contentRef.current;
@@ -317,7 +343,10 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
             ${ICONS.close}
           </button>
         </div>
-        ${children}
+        <div class="modal-body" onTouchStart=${handleBodyTouchStart}>
+          ${children}
+        </div>
+        ${footer ? html`<div class="modal-footer">${footer}</div>` : null}
       </div>
     </div>
   `;
