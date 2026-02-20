@@ -362,9 +362,13 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
       );
 
       if (result) {
+        // Extract human-readable text from structured responses
+        const text = typeof result === "string"
+          ? result
+          : result.finalResponse || result.text || result.message || JSON.stringify(result);
         tracker.recordEvent(sessionId, {
           role: "assistant",
-          content: typeof result === "string" ? result : JSON.stringify(result),
+          content: text,
           timestamp: new Date().toISOString(),
           _sessionType: sessionType,
         });

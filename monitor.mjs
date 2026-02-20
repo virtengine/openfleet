@@ -1531,8 +1531,9 @@ async function handleMonitorFailure(reason, err) {
 
     if (telegramToken && telegramChatId) {
       try {
+        const shortMsg = message.length > 200 ? message.slice(0, 200) + "…" : message;
         await sendTelegramMessage(
-          `⚠️ bosun exception (${reason}). Attempting recovery (count=${failureCount}).`,
+          `⚠️ bosun exception (${reason}): ${shortMsg}\n\nAttempting recovery (count=${failureCount}).`,
         );
       } catch {
         /* suppress Telegram errors during failure handling */

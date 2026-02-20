@@ -979,7 +979,10 @@ async function main() {
           const logDir = monitorPath ? resolve(dirname(monitorPath), "logs") : resolve(__dirname, "logs");
           const daemonLog = existsSync(DAEMON_LOG) ? DAEMON_LOG : resolve(logDir, "daemon.log");
           const monitorLog = resolve(logDir, "monitor.log");
-          const logFile = existsSync(daemonLog) ? daemonLog : monitorLog;
+          // Prefer monitor.log — that's where the real activity goes.
+          // daemon.log only has the startup line; monitor.mjs intercepts
+          // all console output and writes to monitor.log.
+          const logFile = existsSync(monitorLog) ? monitorLog : daemonLog;
 
           if (existsSync(logFile)) {
             console.log(

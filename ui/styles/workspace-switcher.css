@@ -51,9 +51,9 @@
 .ws-switcher-dropdown {
   position: absolute;
   top: calc(100% + 4px);
-  left: 0;
+  right: 0;
   min-width: 260px;
-  max-width: 340px;
+  max-width: min(340px, calc(100vw - 32px));
   max-height: 400px;
   overflow-y: auto;
   background: var(--bg-primary, #1f1e1c);
@@ -195,8 +195,6 @@
   align-items: center;
   justify-content: center;
   background: rgba(0, 0, 0, 0.65);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
   animation: wsOverlayIn 0.2s ease-out;
 }
 

@@ -8,6 +8,7 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  min-width: 0;
 }
 
 html,
@@ -21,8 +22,6 @@ body {
   line-height: 1.5;
   color: var(--text-primary);
   background: var(--bg-primary);
-  background-image: var(--gradient-mesh);
-  background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   -webkit-tap-highlight-color: transparent;
@@ -34,8 +33,6 @@ body {
 }
 
 #app {
-  /* height: 100% (not min-height) anchors the flex tree so .main-content gets
-     a real bounded height to scroll within instead of growing indefinitely */
   height: 100%;
   overflow: hidden;
   display: flex;
@@ -44,32 +41,10 @@ body {
   z-index: 1;
 }
 
+/* Remove body glow pseudo-elements — they cause visual noise */
 body::before,
 body::after {
-  content: "";
-  position: fixed;
-  pointer-events: none;
-  z-index: 0;
-  inset: auto;
-  opacity: 0.45;
-}
-
-body::before {
-  top: -20%;
-  left: -10%;
-  right: -10%;
-  height: 55%;
-  background: var(--gradient-hero);
-  filter: blur(12px);
-}
-
-body::after {
-  bottom: -25%;
-  left: -20%;
-  right: -20%;
-  height: 60%;
-  background: var(--gradient-radial-glow);
-  filter: blur(18px);
+  display: none;
 }
 
 /* Selection styling */

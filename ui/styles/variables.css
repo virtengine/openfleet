@@ -87,15 +87,15 @@
   --accent-danger: var(--color-error);
 
   /* Layout */
-  --header-height: calc(60px + var(--content-safe-top));
-  --nav-height: 66px;
-  --sidebar-width: 88px;
-  --rail-width: 320px;
-  --inspector-width: 320px;
+  --header-height: calc(44px + var(--content-safe-top));
+  --nav-height: 56px;
+  --sidebar-width: 72px;
+  --rail-width: 300px;
+  --inspector-width: 300px;
   --content-max: 1200px;
-  --shell-gap: 16px;
-  --radius-xs: 4px;
-  --radius-sm: 8px;
+  --shell-gap: 0px;
+  --radius-xs: 6px;
+  --radius-sm: 10px;
   --radius-md: 14px;
   --radius-lg: 18px;
   --radius-xl: 24px;
