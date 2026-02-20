@@ -365,7 +365,7 @@ JIRA_STATUS_CANCELLED=Cancelled</code></pre>
           <tr><td><code>TELEGRAM_UI_HOST</code></td><td><code>0.0.0.0</code></td><td>Bind address</td></tr>
           <tr><td><code>TELEGRAM_UI_PUBLIC_HOST</code></td><td>auto-detect</td><td>Public hostname override (for tunnels)</td></tr>
           <tr><td><code>TELEGRAM_UI_BASE_URL</code></td><td>—</td><td>Full public URL override (HTTPS)</td></tr>
-          <tr><td><code>TELEGRAM_UI_ALLOW_UNSAFE</code></td><td><code>false</code></td><td>Skip initData auth (local testing only)</td></tr>
+          <tr><td><code>TELEGRAM_UI_ALLOW_UNSAFE</code></td><td><code>false</code></td><td>⛔ <strong>DANGER:</strong> Disables ALL authentication. Anyone with the URL can control agents, read secrets, and execute code on your machine. <strong>Never combine with an active tunnel</strong> — the tunnel will be blocked if this is enabled. Only use for localhost-only debugging.</td></tr>
           <tr><td><code>TELEGRAM_UI_AUTH_MAX_AGE_SEC</code></td><td><code>86400</code></td><td>Auth token max age (24h)</td></tr>
         </tbody>
       </table>

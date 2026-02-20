@@ -2591,6 +2591,10 @@ const COMMANDS = {
     desc: "Show all active monitor/task/review/conflict agents",
   },
   "/logs": { handler: cmdLogs, desc: "Recent monitor logs" },
+  "/telemetry": {
+    handler: cmdTelemetry,
+    desc: "Telemetry summary: /telemetry [errors|executors|alerts]",
+  },
   "/agentlogs": {
     handler: cmdAgentLogs,
     desc: "Agent output for branch: /agentlogs <branch>",
@@ -4013,7 +4017,7 @@ Object.assign(UI_SCREENS, {
         // Monitoring & Tools
         [
           uiButton("📁 Logs & Git", uiGoAction("logs")),
-          uiButton("🔌 Integrations", uiGoAction("integrations")),
+          uiButton("📈 Telemetry", uiGoAction("telemetry")),
           uiButton("🧠 Session", uiGoAction("session")),
         ],
         // Quick Actions
@@ -4063,6 +4067,27 @@ Object.assign(UI_SCREENS, {
         [
           uiButton("🎯 Coordinator", uiCmdAction("/coordinator")),
           uiButton("📝 Logs", uiCmdAction("/logs 50")),
+        ],
+        [
+          uiButton("📈 Telemetry", uiGoAction("telemetry")),
+        ],
+        uiNavRow("home"),
+      ]),
+  },
+  telemetry: {
+    title: "Telemetry",
+    parent: "home",
+    body: () =>
+      "Analytics and quality signals from recent agent runs.",
+    keyboard: () =>
+      buildKeyboard([
+        [
+          uiButton("📈 Summary", uiCmdAction("/telemetry")),
+          uiButton("🧯 Errors", uiCmdAction("/telemetry errors")),
+        ],
+        [
+          uiButton("🧪 Executors", uiCmdAction("/telemetry executors")),
+          uiButton("🚨 Alerts", uiCmdAction("/telemetry alerts")),
         ],
         uiNavRow("home"),
       ]),
@@ -5899,6 +5924,155 @@ async function cmdHelpFull(chatId) {
     "Use /menu for the full button-driven control center.",
   );
   await sendReply(chatId, lines.join("\n"));
+}
+
+async function readJsonlTail(path, maxLines = 2000) {
+  try {
+    const raw = await readFile(path, "utf8");
+    if (!raw) return [];
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    const tail = lines.slice(-maxLines);
+    return tail
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function withinDays(entry, days) {
+  if (!days) return true;
+  const ts = Date.parse(entry?.timestamp || "");
+  if (!Number.isFinite(ts)) return true;
+  return ts >= Date.now() - days * 24 * 60 * 60 * 1000;
+}
+
+function summarizeTelemetry(metrics, days) {
+  const filtered = metrics.filter((m) => withinDays(m, days));
+  if (filtered.length === 0) return null;
+  const total = filtered.length;
+  const success = filtered.filter(
+    (m) => m.outcome?.status === "completed" || m.metrics?.success === true,
+  ).length;
+  const durations = filtered.map((m) => m.metrics?.duration_ms || 0);
+  const avgDuration =
+    durations.length > 0
+      ? Math.round(
+          durations.reduce((a, b) => a + b, 0) / durations.length / 1000,
+        )
+      : 0;
+  const totalErrors = filtered.reduce(
+    (sum, m) => sum + (m.error_summary?.total_errors || m.metrics?.errors || 0),
+    0,
+  );
+  const executors = {};
+  for (const m of filtered) {
+    const exec = m.executor || "unknown";
+    executors[exec] = (executors[exec] || 0) + 1;
+  }
+  return {
+    total,
+    success,
+    successRate: total > 0 ? Math.round((success / total) * 100) : 0,
+    avgDuration,
+    totalErrors,
+    executors,
+  };
+}
+
+async function cmdTelemetry(chatId, args = "") {
+  const mode = String(args || "").trim().toLowerCase();
+  const days = Number(process.env.TELEMETRY_DAYS || 7);
+  const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+  const metricsPath = resolve(logDir, "agent-metrics.jsonl");
+  const errorsPath = resolve(logDir, "agent-errors.jsonl");
+  const alertsPath = resolve(logDir, "agent-alerts.jsonl");
+
+  if (mode === "errors") {
+    const errors = (await readJsonlTail(errorsPath, 1000)).filter((e) =>
+      withinDays(e, days),
+    );
+    if (errors.length === 0) {
+      return sendReply(chatId, "No error telemetry found.");
+    }
+    const byFingerprint = new Map();
+    for (const e of errors) {
+      const fp = e.data?.error_fingerprint || e.data?.error_message || "unknown";
+      byFingerprint.set(fp, (byFingerprint.get(fp) || 0) + 1);
+    }
+    const top = [...byFingerprint.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8);
+    const lines = [
+      "🧯 Telemetry — Top Errors",
+      `Window: last ${days}d`,
+      "",
+    ];
+    for (const [fp, count] of top) {
+      lines.push(`• ${fp.slice(0, 80)} (${count})`);
+    }
+    return sendReply(chatId, lines.join("\n"));
+  }
+
+  if (mode === "executors") {
+    const metrics = await readJsonlTail(metricsPath, 2000);
+    const summary = summarizeTelemetry(metrics, days);
+    if (!summary) return sendReply(chatId, "No telemetry metrics found.");
+    const lines = [
+      "🧪 Telemetry — Executor Mix",
+      `Window: last ${days}d`,
+      "",
+    ];
+    for (const [exec, count] of Object.entries(summary.executors)) {
+      lines.push(`• ${exec}: ${count}`);
+    }
+    return sendReply(chatId, lines.join("\n"));
+  }
+
+  if (mode === "alerts") {
+    const alerts = (await readJsonlTail(alertsPath, 200)).filter((a) =>
+      withinDays(a, days),
+    );
+    if (alerts.length === 0) {
+      return sendReply(chatId, "No analyzer alerts found.");
+    }
+    const lines = [
+      "🚨 Telemetry — Recent Alerts",
+      `Window: last ${days}d`,
+      "",
+      ...alerts.slice(-10).map((a) => {
+        const sev = (a.severity || "medium").toUpperCase();
+        const attempt = a.attempt_id || "unknown";
+        const type = a.type || "alert";
+        return `• ${sev} ${type} (${attempt})`;
+      }),
+    ];
+    return sendReply(chatId, lines.join("\n"));
+  }
+
+  const metrics = await readJsonlTail(metricsPath, 2000);
+  const summary = summarizeTelemetry(metrics, days);
+  if (!summary) {
+    return sendReply(chatId, "No telemetry metrics found.");
+  }
+  const lines = [
+    "📈 Telemetry Summary",
+    `Window: last ${days}d`,
+    "",
+    `Sessions: ${summary.total}`,
+    `Success: ${summary.success}/${summary.total} (${summary.successRate}%)`,
+    `Avg duration: ${summary.avgDuration}s`,
+    `Total errors: ${summary.totalErrors}`,
+    "",
+    "Use /telemetry errors | executors | alerts for drill‑down.",
+  ];
+  return sendReply(chatId, lines.join("\n"));
 }
 
 async function cmdAsk(chatId, args) {
@@ -10171,6 +10345,30 @@ export async function startTelegramBot() {
       telegramChatId,
       `🤖 Bosun primary agent online (${getPrimaryAgentName()}).\n\nType /menu for the control center or send any message to chat with the agent.`,
     );
+
+    // ── SECURITY: Alert when ALLOW_UNSAFE is enabled (especially with tunnel) ──
+    const _isUnsafe = ["1", "true", "yes"].includes(
+      String(process.env.TELEGRAM_UI_ALLOW_UNSAFE || "").toLowerCase(),
+    );
+    if (_isUnsafe) {
+      const _tunnelMode = (process.env.TELEGRAM_UI_TUNNEL || "auto").toLowerCase();
+      const _tunnelActive = _tunnelMode !== "disabled" && _tunnelMode !== "off" && _tunnelMode !== "0";
+      const severity = _tunnelActive
+        ? "⛔ *CRITICAL SECURITY WARNING*"
+        : "⚠️ *Security Warning*";
+      const tunnelNote = _tunnelActive
+        ? "\n\n🔴 *Tunnel is active* — your UI is exposed to the *public internet*. Anyone who discovers the URL can control your machine, execute code, and read secrets."
+        : "";
+      await sendDirect(
+        telegramChatId,
+        `${severity}\n\n` +
+          "`TELEGRAM_UI_ALLOW_UNSAFE=true` — authentication is *completely disabled* on the web UI. " +
+          "Anyone with the URL can send commands to agents, modify settings, and access API keys." +
+          tunnelNote +
+          "\n\nTo fix: set `TELEGRAM_UI_ALLOW_UNSAFE=false` in your .env and restart.",
+        { parse_mode: "Markdown" },
+      );
+    }
   }
 
   console.log("[telegram-bot] started — listening for messages");

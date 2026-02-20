@@ -1204,6 +1204,17 @@ async function startTunnel(localPort) {
     return null;
   }
 
+  // ── SECURITY: Block tunnel when auth is disabled ─────────────────────
+  if (isAllowUnsafe()) {
+    console.error(
+      "[telegram-ui] ⛔ REFUSING to start tunnel — TELEGRAM_UI_ALLOW_UNSAFE=true\n" +
+      "  A public tunnel with no authentication lets ANYONE on the internet\n" +
+      "  control your agents, read secrets, and execute commands.\n" +
+      "  Either set TELEGRAM_UI_ALLOW_UNSAFE=false or TELEGRAM_UI_TUNNEL=disabled.",
+    );
+    return null;
+  }
+
   const cfBin = await findCloudflared();
   if (!cfBin) {
     if (tunnelMode === "auto") {
@@ -4807,6 +4818,25 @@ export async function startTelegramUiServer(options = {}) {
   console.log(`[telegram-ui] server listening on ${uiServerUrl}`);
   if (uiServerTls) {
     console.log(`[telegram-ui] TLS enabled (self-signed) — Telegram WebApp buttons will use HTTPS`);
+  }
+
+  // ── SECURITY: Warn loudly when auth is disabled ──────────────────────
+  if (isAllowUnsafe()) {
+    const tunnelMode = (process.env.TELEGRAM_UI_TUNNEL || "auto").toLowerCase();
+    const tunnelActive = tunnelMode !== "disabled" && tunnelMode !== "off" && tunnelMode !== "0";
+    const border = "═".repeat(68);
+    console.warn(`\n╔${border}╗`);
+    console.warn(`║ ⛔  DANGER: TELEGRAM_UI_ALLOW_UNSAFE=true — ALL AUTH IS DISABLED   ║`);
+    console.warn(`║                                                                    ║`);
+    console.warn(`║  Anyone with your URL can control agents, read secrets, and        ║`);
+    console.warn(`║  execute arbitrary commands on this machine.                        ║`);
+    if (tunnelActive) {
+      console.warn(`║                                                                    ║`);
+      console.warn(`║  🔴  TUNNEL IS ACTIVE — your UI is exposed to the PUBLIC INTERNET  ║`);
+      console.warn(`║  This means ANYONE can discover your URL and take control.         ║`);
+      console.warn(`║  Set TELEGRAM_UI_TUNNEL=disabled or TELEGRAM_UI_ALLOW_UNSAFE=false ║`);
+    }
+    console.warn(`╚${border}╝\n`);
   }
   console.log(`[telegram-ui] LAN access: ${protocol}://${lanIp}:${actualPort}`);
   console.log(`[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`);
