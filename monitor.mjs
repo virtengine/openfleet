@@ -7555,12 +7555,21 @@ function buildPlannerTaskDescription({
   reason,
   numTasks,
   runtimeContext,
+  userPrompt,
 }) {
   return [
     "## Task Planner — Auto-created by bosun",
     "",
     `**Trigger reason:** ${reason || "manual"}`,
     `**Requested task count:** ${numTasks}`,
+    ...(userPrompt
+      ? [
+          "",
+          "### User Planning Prompt",
+          "",
+          userPrompt,
+        ]
+      : []),
     "",
     "### Planner Prompt (Injected by bosun)",
     "",
@@ -8689,6 +8698,7 @@ async function triggerTaskPlanner(
   details,
   {
     taskCount,
+    userPrompt,
     notify = true,
     preferredMode,
     allowCodexWhenDisabled = false,
@@ -8724,6 +8734,7 @@ async function triggerTaskPlanner(
       try {
         result = await triggerTaskPlannerViaKanban(reason, details, {
           taskCount,
+          userPrompt,
           notify,
         });
       } catch (kanbanErr) {
@@ -8753,6 +8764,7 @@ async function triggerTaskPlanner(
         }
         result = await triggerTaskPlannerViaCodex(reason, details, {
           taskCount,
+          userPrompt,
           notify,
           allowWhenDisabled: allowCodexWhenDisabled,
         });
@@ -8761,6 +8773,7 @@ async function triggerTaskPlanner(
       try {
         result = await triggerTaskPlannerViaCodex(reason, details, {
           taskCount,
+          userPrompt,
           notify,
           allowWhenDisabled: allowCodexWhenDisabled,
         });
@@ -8784,6 +8797,7 @@ async function triggerTaskPlanner(
 
         result = await triggerTaskPlannerViaKanban(reason, details, {
           taskCount,
+          userPrompt,
           notify,
         });
       }
@@ -8818,7 +8832,7 @@ async function triggerTaskPlanner(
 async function triggerTaskPlannerViaKanban(
   reason,
   details,
-  { taskCount, notify = true } = {},
+  { taskCount, userPrompt, notify = true } = {},
 ) {
   const defaultPlannerTaskCount = Number(
     process.env.TASK_PLANNER_DEFAULT_COUNT || "30",
@@ -8844,12 +8858,15 @@ async function triggerTaskPlannerViaKanban(
     );
   }
 
-  const desiredTitle = `[${plannerTaskSizeLabel}] Plan next tasks (${reason || "backlog-empty"})`;
+  const desiredTitle = userPrompt
+    ? `[${plannerTaskSizeLabel}] Plan next tasks (${reason || "backlog-empty"}) — ${userPrompt.slice(0, 60)}${userPrompt.length > 60 ? "…" : ""}`
+    : `[${plannerTaskSizeLabel}] Plan next tasks (${reason || "backlog-empty"})`;
   const desiredDescription = buildPlannerTaskDescription({
     plannerPrompt,
     reason,
     numTasks,
     runtimeContext,
+    userPrompt,
   });
 
   // Check for existing planner tasks to avoid duplicates
@@ -8941,7 +8958,7 @@ async function triggerTaskPlannerViaKanban(
 async function triggerTaskPlannerViaCodex(
   reason,
   details,
-  { taskCount, notify = true, allowWhenDisabled = false } = {},
+  { taskCount, userPrompt, notify = true, allowWhenDisabled = false } = {},
 ) {
   if (!codexEnabled && !allowWhenDisabled) {
     throw new Error(
@@ -8973,6 +8990,17 @@ async function triggerTaskPlannerViaCodex(
     "## Execution Context",
     `- Trigger reason: ${reason || "manual"}`,
     `- Requested task count: ${numTasks}`,
+    ...(userPrompt
+      ? [
+          "",
+          "## User Planning Prompt",
+          "",
+          userPrompt,
+          "",
+          "Incorporate the above user prompt into any relevant planning decisions.",
+        ]
+      : []),
+    "",
     "Context JSON:",
     "```json",
     safeJsonBlock(runtimeContext),

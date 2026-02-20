@@ -2701,7 +2701,7 @@ const COMMANDS = {
   },
   "/plan": {
     handler: cmdPlan,
-    desc: "Trigger task planner: /plan [count] (default 5)",
+    desc: "Trigger task planner: /plan [count] [prompt] (e.g. /plan 5 fix auth bugs)",
   },
   "/cleanup": {
     handler: cmdCleanupMerged,
@@ -3237,8 +3237,23 @@ const UI_INPUT_HANDLERS = {
     buildCommand: (input) => `/shell ${input}`,
   },
   plan_count: {
-    prompt: "How many tasks should the planner generate?",
+    prompt: "How many tasks should the planner generate? (e.g. 5)",
     buildCommand: (input) => `/plan ${input}`,
+  },
+  plan_prompt: {
+    prompt:
+      "Describe what you want the planner to focus on.\n" +
+      "You can prefix with a count: e.g. '10 fix auth bugs and add tests'\n" +
+      "Or just a topic: 'improve error handling across API layer'",
+    buildCommand: (input) => {
+      const trimmed = input.trim();
+      const firstWord = trimmed.split(/\s+/)[0];
+      const maybeCount = parseInt(firstWord, 10);
+      if (Number.isFinite(maybeCount) && maybeCount > 0) {
+        return `/plan ${trimmed}`;
+      }
+      return `/plan 5 ${trimmed}`;
+    },
   },
   starttask: {
     prompt:
@@ -4418,7 +4433,10 @@ Object.assign(UI_SCREENS, {
           uiButton("Plan 5", uiCmdAction("/plan 5")),
           uiButton("Plan 10", uiCmdAction("/plan 10")),
         ],
-        [uiButton("Custom Count", uiInputAction("plan_count"))],
+        [
+          uiButton("Custom Count", uiInputAction("plan_count")),
+          uiButton("With Prompt", uiInputAction("plan_prompt")),
+        ],
         uiNavRow("tasks"),
       ]),
   },
@@ -7097,11 +7115,26 @@ async function cmdPlan(chatId, args) {
     return;
   }
 
-  // Parse optional task count: /plan 5 or /plan 10
-  const parsed = parseInt(args?.trim(), 10);
-  const taskCount = Number.isFinite(parsed) && parsed > 0 ? parsed : 5;
+  // Parse optional task count and/or free-form prompt:
+  //   /plan           → 5 tasks, no prompt
+  //   /plan 10        → 10 tasks, no prompt
+  //   /plan fix auth  → 5 tasks, userPrompt="fix auth"
+  //   /plan 10 fix auth → 10 tasks, userPrompt="fix auth"
+  const rawArgs = (args || "").trim();
+  const firstToken = rawArgs.split(/\s+/)[0];
+  const parsedCount = parseInt(firstToken, 10);
+  let taskCount = 5;
+  let userPrompt;
+  if (Number.isFinite(parsedCount) && parsedCount > 0) {
+    taskCount = parsedCount;
+    const remainder = rawArgs.slice(firstToken.length).trim();
+    if (remainder) userPrompt = remainder;
+  } else if (rawArgs) {
+    userPrompt = rawArgs;
+  }
 
-  await sendReply(chatId, `📋 Triggering task planner (${taskCount} tasks)...`);
+  const promptSuffix = userPrompt ? ` — "${userPrompt.slice(0, 60)}${userPrompt.length > 60 ? "…" : ""}"` : "";
+  await sendReply(chatId, `📋 Triggering task planner (${taskCount} tasks${promptSuffix})...`);
 
   try {
     const result = await _triggerTaskPlanner(
@@ -7109,6 +7142,7 @@ async function cmdPlan(chatId, args) {
       { source: "telegram /plan command" },
       {
         taskCount,
+        userPrompt,
         notify: false,
         preferredMode: "codex-sdk",
         allowCodexWhenDisabled: true,

@@ -83,6 +83,8 @@ export function ControlTab() {
   const [tasksLoading, setTasksLoading] = useState(false);
   const [startTaskError, setStartTaskError] = useState("");
   const [retryTaskError, setRetryTaskError] = useState("");
+  const [planPrompt, setPlanPrompt] = useState("");
+  const [planCount, setPlanCount] = useState("5");
   const startTaskIdRef = useRef("");
   const retryTaskIdRef = useRef("");
 
@@ -844,9 +846,52 @@ export function ControlTab() {
                 >
                   Retry Task
                 </button>
-                <button class="btn btn-ghost btn-sm" onClick=${() => sendCmd("/plan")}>
-                  📋 Plan
-                </button>
+                <div class="form-group" style="margin-top:0.5rem">
+                  <div class="card-subtitle" style="margin-bottom:0.25rem">Task Planner</div>
+                  <div class="input-row" style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap">
+                    <input
+                      type="number"
+                      class="input"
+                      style="width:4.5rem;flex-shrink:0"
+                      min="1"
+                      max="50"
+                      placeholder="5"
+                      value=${planCount}
+                      onInput=${(e) => setPlanCount(e.target.value)}
+                      title="Number of tasks to generate"
+                    />
+                    <input
+                      class="input"
+                      style="flex:1;min-width:10rem"
+                      placeholder="Optional: focus on X, fix Y issues…"
+                      value=${planPrompt}
+                      onInput=${(e) => setPlanPrompt(e.target.value)}
+                      onKeyDown=${(e) => {
+                        if (e.key === "Enter") {
+                          const count = parseInt(planCount, 10);
+                          const n = Number.isFinite(count) && count > 0 ? count : 5;
+                          const cmd = planPrompt.trim()
+                            ? `/plan ${n} ${planPrompt.trim()}`
+                            : `/plan ${n}`;
+                          sendCmd(cmd);
+                        }
+                      }}
+                    />
+                    <button
+                      class="btn btn-ghost btn-sm"
+                      onClick=${() => {
+                        const count = parseInt(planCount, 10);
+                        const n = Number.isFinite(count) && count > 0 ? count : 5;
+                        const cmd = planPrompt.trim()
+                          ? `/plan ${n} ${planPrompt.trim()}`
+                          : `/plan ${n}`;
+                        sendCmd(cmd);
+                      }}
+                    >
+                      📋 Plan
+                    </button>
+                  </div>
+                </div>
               </div>
               ${retryTaskError
                 ? html`<div class="form-hint error">${retryTaskError}</div>`
