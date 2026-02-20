@@ -295,7 +295,11 @@ async function pollAgentAlerts() {
     console.warn(
       `[agent-work-analyzer] ${alert.severity || "medium"} ${alert.type || "alert"} ${alert.attempt_id || ""}`,
     );
-    if (telegramToken && telegramChatId) {
+    if (
+      telegramToken &&
+      telegramChatId &&
+      process.env.AGENT_ALERTS_NOTIFY === "true"
+    ) {
       void sendTelegramMessage(formatAgentAlert(alert), {
         dedupKey: `agent-alert:${alert.type || "alert"}:${alert.attempt_id || "unknown"}`,
       }).catch(() => {});
@@ -8017,6 +8021,7 @@ async function sendTelegramMessage(text, options = {}) {
 }
 
 globalThis.__bosunNotifyAnomaly = (anomaly) => {
+  if (process.env.BOSUN_INTERNAL_ANOMALY_NOTIFY === "false") return;
   if (!telegramToken || !telegramChatId) return;
   const icon =
     anomaly.severity === "CRITICAL"

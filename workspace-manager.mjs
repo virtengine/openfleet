@@ -412,7 +412,51 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
   for (const repo of ws.repos || []) {
     const repoPath = resolve(ws.path, repo.name);
     if (!existsSync(repoPath)) {
-      results.push({ name: repo.name, success: false, error: "Directory not found" });
+      const repoUrl =
+        repo.url ||
+        (repo.slug ? `https://github.com/${repo.slug.replace(/\.git$/i, "")}.git` : "");
+      if (!repoUrl) {
+        results.push({
+          name: repo.name,
+          success: false,
+          error: "Directory not found and repo URL is missing",
+        });
+        continue;
+      }
+      try {
+        mkdirSync(ws.path, { recursive: true });
+        console.log(TAG, `Cloning ${repoUrl} into ${repoPath}...`);
+        const clone = spawnSync("git", ["clone", repoUrl, repoPath], {
+          encoding: "utf8",
+          timeout: 300000,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        if (clone.status !== 0) {
+          results.push({
+            name: repo.name,
+            success: false,
+            error: `git clone failed: ${
+              clone.stderr || clone.stdout || clone.error?.message || "unknown error"
+            }`,
+          });
+          continue;
+        }
+        console.log(TAG, `Cloned ${repo.name} successfully`);
+      } catch (err) {
+        results.push({
+          name: repo.name,
+          success: false,
+          error: `git clone failed: ${err.message || err}`,
+        });
+        continue;
+      }
+    }
+    if (!existsSync(resolve(repoPath, ".git"))) {
+      results.push({
+        name: repo.name,
+        success: false,
+        error: "Directory exists but is not a git repository",
+      });
       continue;
     }
     try {

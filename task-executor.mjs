@@ -62,8 +62,13 @@ import {
 } from "./task-store.mjs";
 import { createErrorDetector } from "./error-detector.mjs";
 import { getSessionTracker } from "./session-tracker.mjs";
-import { getCompactDiffSummary, getRecentCommits } from "./diff-stats.mjs";
+import {
+  getCompactDiffSummary,
+  getRecentCommits,
+  collectDiffStats,
+} from "./diff-stats.mjs";
 import { createAnomalyDetector } from "./anomaly-detector.mjs";
+import { normalizeDedupKey } from "./utils.mjs";
 import {
   resolveExecutorForTask,
   executorToSdk,
@@ -528,6 +533,7 @@ const INTERNAL_ANOMALY_SIGNAL_PATH = resolve(
   "anomaly-signals.json",
 );
 const agentWorkSessionStarts = new Map();
+const attemptTelemetry = new Map();
 const anomalyAbortTargets = new Map();
 const internalAnomalyEnabled = process.env.BOSUN_INTERNAL_ANOMALY !== "false";
 const anomalyDetector = internalAnomalyEnabled
@@ -544,6 +550,16 @@ const anomalyDetector = internalAnomalyEnabled
           } catch {
             /* best effort */
           }
+        }
+        if (anomaly?.processId && attemptTelemetry.has(anomaly.processId)) {
+          const telemetry = attemptTelemetry.get(anomaly.processId);
+          telemetry.anomaly_actions = telemetry.anomaly_actions || [];
+          telemetry.anomaly_actions.push({
+            type: anomaly.type,
+            action: anomaly.action,
+            severity: anomaly.severity,
+            timestamp: Date.now(),
+          });
         }
         if (anomaly.action === "kill" || anomaly.action === "restart") {
           const target = anomalyAbortTargets.get(anomaly.processId);
@@ -575,6 +591,84 @@ function writeAgentWorkEvent(entry) {
     const sessionPath = resolve(AGENT_WORK_SESSIONS, `${entry.attempt_id}.jsonl`);
     appendFileSync(sessionPath, `${line}\n`, "utf8");
   }
+}
+
+function getAttemptTelemetry(attemptId) {
+  if (!attemptTelemetry.has(attemptId)) {
+    attemptTelemetry.set(attemptId, {
+      tool_calls: 0,
+      tool_results: 0,
+      tool_failures: 0,
+      commands: 0,
+      command_failures: 0,
+      permission_requests: 0,
+      permission_denied: 0,
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      cost_usd: 0,
+      model: null,
+      anomaly_actions: [],
+      auto_resume: false,
+    });
+  }
+  return attemptTelemetry.get(attemptId);
+}
+
+function applyUsage(telemetry, usage) {
+  if (!usage) return;
+  const prompt =
+    usage.prompt_tokens ??
+    usage.input_tokens ??
+    usage.tokens_in ??
+    usage.promptTokens ??
+    0;
+  const completion =
+    usage.completion_tokens ??
+    usage.output_tokens ??
+    usage.tokens_out ??
+    usage.completionTokens ??
+    0;
+  const total =
+    usage.total_tokens ??
+    usage.totalTokens ??
+    usage.tokens ??
+    (prompt + completion);
+  if (prompt) telemetry.prompt_tokens += Number(prompt) || 0;
+  if (completion) telemetry.completion_tokens += Number(completion) || 0;
+  if (total) telemetry.total_tokens += Number(total) || 0;
+  const cost =
+    usage.cost_usd ??
+    usage.cost ??
+    usage.total_cost ??
+    usage.usd ??
+    0;
+  if (cost) telemetry.cost_usd += Number(cost) || 0;
+}
+
+function extractUsageFromEvent(event) {
+  return (
+    event?.usage ||
+    event?.data?.usage ||
+    event?.item?.usage ||
+    event?.message?.usage ||
+    event?.response?.usage ||
+    event?.metrics?.usage ||
+    event?.data?.metrics?.usage ||
+    event?.result?.usage ||
+    null
+  );
+}
+
+function classifyError(errorDetector, message, stderr) {
+  if (!errorDetector) return { category: "unknown", confidence: 0 };
+  const result = errorDetector.classify(message || "", stderr || "");
+  return {
+    category: result.pattern || "unknown",
+    confidence: result.confidence || 0,
+    details: result.details,
+    rawMatch: result.rawMatch,
+  };
 }
 
 function writeInternalAnomalySignal(anomaly) {
@@ -619,9 +713,21 @@ function startAgentWorkSession({ attemptId, taskMeta, executorInfo, gitContext, 
   });
 }
 
-function stopAgentWorkSession({ attemptId, status, executorInfo, taskMeta, gitContext, metrics }) {
+function stopAgentWorkSession({
+  attemptId,
+  status,
+  executorInfo,
+  taskMeta,
+  gitContext,
+  metrics,
+}) {
   const startedAt = agentWorkSessionStarts.get(attemptId);
   const durationMs = startedAt ? Date.now() - startedAt : null;
+  const telemetry = attemptTelemetry.get(attemptId) || {};
+  const mergedMetrics = {
+    ...telemetry,
+    ...metrics,
+  };
   writeAgentWorkEvent({
     timestamp: new Date().toISOString(),
     attempt_id: attemptId,
@@ -629,14 +735,14 @@ function stopAgentWorkSession({ attemptId, status, executorInfo, taskMeta, gitCo
     data: {
       completion_status: status,
       duration_ms: durationMs ?? undefined,
-      ...metrics,
+      ...mergedMetrics,
     },
     ...taskMeta,
     ...executorInfo,
     ...gitContext,
   });
 
-  if (metrics) {
+  if (mergedMetrics) {
     appendFileSync(
       AGENT_WORK_METRICS,
       `${JSON.stringify({
@@ -644,11 +750,12 @@ function stopAgentWorkSession({ attemptId, status, executorInfo, taskMeta, gitCo
         attempt_id: attemptId,
         ...taskMeta,
         ...executorInfo,
-        metrics,
+        metrics: mergedMetrics,
       })}\n`,
       "utf8",
     );
   }
+  attemptTelemetry.delete(attemptId);
 }
 
 function synthesizeAnomalyLine(event) {
@@ -698,10 +805,12 @@ function createAgentLogStreamer({
   taskMeta,
   executorInfo,
   gitContext,
+  errorDetector,
 }) {
   const shortId = taskId.substring(0, 8);
   const logFile = resolve(AGENT_LOGS_DIR, `agent-${shortId}.log`);
   const tracker = getSessionTracker();
+  const telemetry = getAttemptTelemetry(attemptId);
 
   // Ensure log dir exists
   try {
@@ -743,24 +852,53 @@ function createAgentLogStreamer({
 
     try {
       const ts = new Date().toISOString();
+      if (event?.model && !telemetry.model) telemetry.model = event.model;
+      if (event?.data?.model && !telemetry.model)
+        telemetry.model = event.data.model;
+      if (event?.message?.model && !telemetry.model)
+        telemetry.model = event.message.model;
+
+      const usage = extractUsageFromEvent(event);
+      applyUsage(telemetry, usage);
+      if (usage) {
+        writeAgentWorkEvent({
+          timestamp: ts,
+          attempt_id: attemptId,
+          event_type: "usage",
+          data: usage,
+          ...taskMeta,
+          ...executorInfo,
+          ...gitContext,
+        });
+      }
+
+      if (String(event?.type || "").toLowerCase().includes("permission")) {
+        telemetry.permission_requests += 1;
+        if (String(event?.action || "").toLowerCase().includes("deny")) {
+          telemetry.permission_denied += 1;
+        }
+      }
+
       if (event.type === "item.completed" && event.item) {
         const item = event.item;
         if (item.type === "agent_message" && item.text) {
+          const text = item.text;
           writeAgentWorkEvent({
             timestamp: ts,
             attempt_id: attemptId,
             event_type: "agent_output",
-            data: { output: item.text, stream_type: "stdout" },
+            data: { output: text, stream_type: "stdout" },
             ...taskMeta,
             ...executorInfo,
             ...gitContext,
           });
           appendFileSync(
             logFile,
-            `[${ts}] AGENT: ${item.text.slice(0, 2000)}\n`,
+            `[${ts}] AGENT: ${text.slice(0, 2000)}\n`,
             "utf8",
           );
         } else if (item.type === "function_call") {
+          telemetry.tool_calls += 1;
           writeAgentWorkEvent({
             timestamp: ts,
             attempt_id: attemptId,
@@ -777,16 +915,29 @@ function createAgentLogStreamer({
           );
         } else if (item.type === "function_call_output") {
           const out = (item.output || "").slice(0, 500);
+          telemetry.tool_results += 1;
+          const failed =
+            item.status === "failed" ||
+            item.success === false ||
+            String(item.output || "").toLowerCase().includes("error");
+          if (failed) telemetry.tool_failures += 1;
           writeAgentWorkEvent({
             timestamp: ts,
             attempt_id: attemptId,
             event_type: "tool_result",
-            data: { tool_name: item.name, result: item.output || "" },
+            data: {
+              tool_name: item.name,
+              result: item.output || "",
+              status: item.status || (failed ? "failed" : "completed"),
+            },
             ...taskMeta,
             ...executorInfo,
             ...gitContext,
           });
           appendFileSync(logFile, `[${ts}] RESULT: ${out}\n`, "utf8");
+        } else if (item.type === "commandExecution") {
+          telemetry.commands += 1;
+          if (item.status === "failed") telemetry.command_failures += 1;
         } else {
           appendFileSync(
             logFile,
@@ -794,6 +945,46 @@ function createAgentLogStreamer({
             "utf8",
           );
         }
+      } else if (event.type === "assistant.message") {
+        const content = event.data?.content || "";
+        if (content) {
+          writeAgentWorkEvent({
+            timestamp: ts,
+            attempt_id: attemptId,
+            event_type: "agent_output",
+            data: { output: content, stream_type: "stdout" },
+            ...taskMeta,
+            ...executorInfo,
+            ...gitContext,
+          });
+        }
+      } else if (event.type === "assistant.message_delta") {
+        const delta = event.data?.deltaContent || "";
+        if (delta && delta.length > 40) {
+          writeAgentWorkEvent({
+            timestamp: ts,
+            attempt_id: attemptId,
+            event_type: "agent_output",
+            data: { output: delta, stream_type: "stdout", delta: true },
+            ...taskMeta,
+            ...executorInfo,
+            ...gitContext,
+          });
+        }
+      } else if (event.type === "tool_call") {
+        telemetry.tool_calls += 1;
+        writeAgentWorkEvent({
+          timestamp: ts,
+          attempt_id: attemptId,
+          event_type: "tool_call",
+          data: {
+            tool_name: event.tool_name || event.data?.tool_name || "",
+            tool_params: event.tool_params || event.data?.tool_params || "",
+          },
+          ...taskMeta,
+          ...executorInfo,
+          ...gitContext,
+        });
       } else if (event.type === "item.created") {
         const item = event.item || {};
         appendFileSync(
@@ -807,12 +998,44 @@ function createAgentLogStreamer({
       }
 
       if (event.type === "error") {
+        const errText = event.error || event.message || "unknown error";
+        const classification = classifyError(errorDetector, errText);
+        const fingerprint = normalizeDedupKey(errText).slice(0, 120);
         writeAgentWorkEvent({
           timestamp: ts,
           attempt_id: attemptId,
           event_type: "error",
           data: {
-            error_message: event.error || event.message || "unknown error",
+            error_message: errText,
+            error_category: classification.category,
+            error_fingerprint: fingerprint,
+            error_confidence: classification.confidence,
+          },
+          ...taskMeta,
+          ...executorInfo,
+          ...gitContext,
+        });
+      } else if (
+        event?.item?.type === "commandExecution" &&
+        event.item?.status === "failed"
+      ) {
+        const errText =
+          event.item?.error ||
+          event.item?.stderr ||
+          event.item?.message ||
+          "command failed";
+        const classification = classifyError(errorDetector, errText);
+        const fingerprint = normalizeDedupKey(errText).slice(0, 120);
+        writeAgentWorkEvent({
+          timestamp: ts,
+          attempt_id: attemptId,
+          event_type: "error",
+          data: {
+            error_message: errText,
+            error_category: classification.category,
+            error_fingerprint: fingerprint,
+            error_confidence: classification.confidence,
+            source: "commandExecution",
           },
           ...taskMeta,
           ...executorInfo,
@@ -3492,6 +3715,7 @@ class TaskExecutor {
             taskMeta,
             executorInfo,
             gitContext,
+            errorDetector: this._errorDetector,
           }),
           abortController: taskAbortController,
           // When AbortController is replaced after idle_continue, update our reference
@@ -3578,6 +3802,8 @@ class TaskExecutor {
           sessionMessages,
         );
         if (shouldAutoResume) {
+          const telemetry = getAttemptTelemetry(attemptId);
+          telemetry.auto_resume = true;
           console.log(
             `${TAG} completion validation: "${taskTitle}" reported success but appears incomplete — auto-resuming`,
           );
@@ -3613,6 +3839,7 @@ class TaskExecutor {
               taskMeta,
               executorInfo,
               gitContext,
+              errorDetector: this._errorDetector,
             }),
             abortController: resumeAC,
             onAbortControllerReplaced: (newAC) => {
@@ -3656,6 +3883,13 @@ class TaskExecutor {
         }
       }
 
+      let diffStats = null;
+      try {
+        diffStats = collectDiffStats(wt.path);
+      } catch {
+        diffStats = null;
+      }
+
       stopAgentWorkSession({
         attemptId,
         status: validatedResult?.success ? "success" : "failed",
@@ -3668,6 +3902,15 @@ class TaskExecutor {
             : undefined,
           success: !!validatedResult?.success,
           retry_count: Math.max(0, (validatedResult?.attempts || 1) - 1),
+          attempts: validatedResult?.attempts || 1,
+          continues: validatedResult?.continues || 0,
+          first_shot_success:
+            !!validatedResult?.success && (validatedResult?.attempts || 1) === 1,
+          agent_made_commits: agentMadeNewCommits,
+          diff_summary: diffStats?.formatted || null,
+          diff_files_changed: diffStats?.totalFiles ?? null,
+          diff_lines_added: diffStats?.totalAdditions ?? null,
+          diff_lines_deleted: diffStats?.totalDeletions ?? null,
         },
       });
       anomalyAbortTargets.delete(attemptId);

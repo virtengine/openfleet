@@ -21,7 +21,7 @@
  */
 
 import { createInterface } from "node:readline";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { resolve, dirname, basename, relative, isAbsolute } from "node:path";
 import { execSync } from "node:child_process";
 import { execFileSync } from "node:child_process";
@@ -45,11 +45,13 @@ import {
   scaffoldAgentHookFiles,
 } from "./hook-profiles.mjs";
 import { detectLegacySetup, applyAllCompatibility } from "./compat.mjs";
+import { DEFAULT_MODEL_PROFILES } from "./task-complexity.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const isNonInteractive =
   process.argv.includes("--non-interactive") || process.argv.includes("-y");
+const SETUP_TOTAL_STEPS = 10;
 
 // ── Zero-dependency terminal styling (replaces chalk) ────────────────────────
 const isTTY = process.stdout.isTTY;
@@ -114,6 +116,43 @@ function resolveConfigDir(repoRoot) {
   return resolve(baseDir, "bosun");
 }
 
+function getSetupProgressPath(configDir) {
+  return resolve(configDir || __dirname, ".setup-progress.json");
+}
+
+function readSetupProgress(configDir) {
+  const progressPath = getSetupProgressPath(configDir);
+  if (!existsSync(progressPath)) return null;
+  try {
+    const raw = readFileSync(progressPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSetupProgress(configDir, data) {
+  const progressPath = getSetupProgressPath(configDir);
+  try {
+    mkdirSync(dirname(progressPath), { recursive: true });
+    writeFileSync(progressPath, JSON.stringify(data, null, 2) + "\n", "utf8");
+    return progressPath;
+  } catch {
+    return "";
+  }
+}
+
+function clearSetupProgress(configDir) {
+  const progressPath = getSetupProgressPath(configDir);
+  if (!existsSync(progressPath)) return;
+  try {
+    rmSync(progressPath);
+  } catch {
+    /* ignore */
+  }
+}
+
 function printBanner() {
   const ver = getVersion();
   const title = `Codex Monitor — Setup Wizard  v${ver}`;
@@ -135,12 +174,22 @@ function printBanner() {
   console.log(
     chalk.dim("  Press Enter to accept defaults shown in [brackets]."),
   );
+  console.log(
+    chalk.dim("  Setup writes .env and config files at the end (cancel anytime to discard changes)."),
+  );
   console.log("");
 }
 
 function heading(text) {
   const line = "\u2500".repeat(Math.max(0, 59 - text.length));
   console.log(`\n  ${chalk.bold(text)} ${chalk.dim(line)}\n`);
+}
+
+function headingStep(step, label, markProgress) {
+  if (typeof markProgress === "function") {
+    markProgress(step, label);
+  }
+  heading(`Step ${step} of ${SETUP_TOTAL_STEPS} — ${label}`);
 }
 
 function check(label, ok, hint) {
@@ -160,6 +209,13 @@ function success(msg) {
 
 function warn(msg) {
   console.log(`  ⚠️  ${msg}`);
+}
+
+function escapeTelegramHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function commandExists(cmd) {
@@ -524,6 +580,65 @@ function bundledBinExists(cmd) {
   return existsSync(base) || existsSync(base + ".cmd");
 }
 
+function normalizeRepoSlug(owner, repo) {
+  const cleanOwner = String(owner || "").trim();
+  const cleanRepo = String(repo || "")
+    .trim()
+    .replace(/\.git$/i, "");
+  if (!cleanOwner || !cleanRepo) return "";
+  return `${cleanOwner}/${cleanRepo}`;
+}
+
+function parseRepoSlugFromUrl(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+
+  const directMatch = trimmed.match(
+    /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/,
+  );
+  if (directMatch) {
+    return normalizeRepoSlug(directMatch[1], directMatch[2]);
+  }
+
+  const scpMatch = trimmed.match(
+    /^[^@]+@[^:]+:([^/]+)\/([^/]+?)(?:\.git)?$/,
+  );
+  if (scpMatch) {
+    return normalizeRepoSlug(scpMatch[1], scpMatch[2]);
+  }
+
+  const hostPathMatch = trimmed.match(
+    /^[^:\/]+:([^/]+)\/([^/]+?)(?:\.git)?$/,
+  );
+  if (hostPathMatch) {
+    return normalizeRepoSlug(hostPathMatch[1], hostPathMatch[2]);
+  }
+
+  let path = "";
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      path = parsed.pathname || "";
+    } catch {
+      const pathMatch = trimmed.match(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\/(.+)$/i);
+      if (pathMatch) {
+        path = `/${pathMatch[1]}`;
+      }
+    }
+  }
+
+  if (path) {
+    const segments = path.split("/").filter(Boolean);
+    if (segments.length >= 2) {
+      const owner = segments[segments.length - 2];
+      const repo = segments[segments.length - 1];
+      return normalizeRepoSlug(owner, repo);
+    }
+  }
+
+  return "";
+}
+
 function detectRepoSlug(cwd) {
   try {
     const remote = execSync("git remote get-url origin", {
@@ -531,8 +646,8 @@ function detectRepoSlug(cwd) {
       cwd: cwd || process.cwd(),
       stdio: ["pipe", "pipe", "ignore"],
     }).trim();
-    const match = remote.match(/github\.com[/:]([^/]+\/[^/.]+)/);
-    return match ? match[1] : null;
+    const parsed = parseRepoSlugFromUrl(remote);
+    return parsed || null;
   } catch {
     return null;
   }
@@ -563,6 +678,66 @@ function detectProjectName(repoRoot) {
   return basename(repoRoot);
 }
 
+function formatModelVariant(profile) {
+  if (!profile?.model && !profile?.variant) return "";
+  if (profile?.model && profile?.variant) {
+    return `${profile.model} (${profile.variant})`;
+  }
+  return profile?.model || profile?.variant || "";
+}
+
+function printExecutorModelReference() {
+  const codexProfiles = DEFAULT_MODEL_PROFILES?.CODEX || {};
+  const copilotProfiles = DEFAULT_MODEL_PROFILES?.COPILOT || {};
+  const codexLow = formatModelVariant(codexProfiles.low);
+  const codexMed = formatModelVariant(codexProfiles.medium);
+  const codexHigh = formatModelVariant(codexProfiles.high);
+  const copilotLow = formatModelVariant(copilotProfiles.low);
+  const copilotMed = formatModelVariant(copilotProfiles.medium);
+  const copilotHigh = formatModelVariant(copilotProfiles.high);
+
+  console.log(chalk.dim("  Default model/variant reference (model → variant):"));
+  if (codexLow || codexMed || codexHigh) {
+    console.log(
+      chalk.dim(
+        `    CODEX: ${[codexLow, codexMed, codexHigh].filter(Boolean).join(" · ")}`,
+      ),
+    );
+  }
+  if (copilotLow || copilotMed || copilotHigh) {
+    console.log(
+      chalk.dim(
+        `    COPILOT (Claude): ${[copilotLow, copilotMed, copilotHigh].filter(Boolean).join(" · ")}`,
+      ),
+    );
+  }
+  console.log(
+    chalk.dim(
+      "  Variants are the tokens used in EXECUTORS/config (ex: CODEX:DEFAULT, COPILOT:CLAUDE_OPUS_4_6).",
+    ),
+  );
+  console.log(
+    chalk.dim(
+      "  Model names are used for overrides (ex: CODEX → gpt-5.2-codex, COPILOT → opus-4.6).",
+    ),
+  );
+  console.log(
+    chalk.dim(
+      "  Copilot GPT variants (if used) follow tokens like GPT_4_1; Claude variants are CLAUDE_*.",
+    ),
+  );
+  console.log();
+}
+
+function defaultVariantForExecutor(executor) {
+  const normalized = String(executor || "").trim().toUpperCase();
+  if (normalized === "CODEX") return "DEFAULT";
+  if (normalized === "COPILOT" || normalized === "CLAUDE") {
+    return "CLAUDE_OPUS_4_6";
+  }
+  return "DEFAULT";
+}
+
 function runGhCommand(args, cwd) {
   const normalizedArgs = Array.isArray(args)
     ? args.map((entry) => String(entry))
@@ -588,6 +763,47 @@ function detectGitHubUserLogin(cwd) {
     return runGhCommand(["api", "user", "--jq", ".login"], cwd);
   } catch {
     return "";
+  }
+}
+
+function getGitHubAuthStatus(cwd) {
+  if (!commandExists("gh")) {
+    return { ok: false, reason: "gh CLI not found" };
+  }
+  const login = detectGitHubUserLogin(cwd);
+  if (login) {
+    return { ok: true, login };
+  }
+  return { ok: false, reason: "gh auth required" };
+}
+
+function getGitHubAuthScopes(cwd) {
+  if (!commandExists("gh")) return [];
+  try {
+    const output = execSync("gh auth status --hostname github.com 2>&1", {
+      encoding: "utf8",
+      cwd: cwd || process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const line = String(output || "")
+      .split(/\r?\n/)
+      .find((entry) => entry.toLowerCase().includes("token scopes"));
+    if (!line) return [];
+    const scopesText = line.split(":").slice(1).join(":");
+    return scopesText
+      .split(",")
+      .map((scope) => scope.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function tryRunGhCommand(args, cwd) {
+  try {
+    return { ok: true, output: runGhCommand(args, cwd), error: "" };
+  } catch (err) {
+    return { ok: false, output: "", error: formatGhErrorReason(err) };
   }
 }
 
@@ -817,6 +1033,85 @@ function resolveOrCreateGitHubProject({
 
 function resolveOrCreateGitHubProjectNumber(options) {
   return resolveOrCreateGitHubProject(options).number;
+}
+
+const DEFAULT_GITHUB_PROJECT_STATUSES = {
+  todo: "Todo",
+  inprogress: "In Progress",
+  inreview: "In Review",
+  done: "Done",
+  cancelled: "Cancelled",
+};
+
+const PROJECT_STATUS_ALIASES = {
+  todo: ["todo", "to do", "backlog", "queued"],
+  inprogress: ["in progress", "in-progress", "doing", "active"],
+  inreview: ["in review", "review", "needs review", "ready for review"],
+  done: ["done", "complete", "completed", "closed"],
+  cancelled: ["cancelled", "canceled", "abandoned", "wontfix", "won't fix"],
+};
+
+function normalizeStatusOption(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[_-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getGitHubProjectFields({ owner, number, cwd, runCommand = runGhCommand }) {
+  if (!owner || !number) return [];
+  try {
+    const raw = runCommand(
+      ["project", "field-list", String(number), "--owner", owner, "--format", "json"],
+      cwd,
+    );
+    const parsed = JSON.parse(String(raw || "[]"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function resolveProjectStatusMapping(statusOptions = []) {
+  const normalizedOptions = statusOptions
+    .map((opt) => ({
+      name: String(opt?.name || "").trim(),
+      norm: normalizeStatusOption(opt?.name || ""),
+    }))
+    .filter((opt) => opt.name && opt.norm);
+
+  const findOption = (candidates) => {
+    for (const candidate of candidates) {
+      const normCandidate = normalizeStatusOption(candidate);
+      const found = normalizedOptions.find((opt) => opt.norm === normCandidate);
+      if (found) return found.name;
+    }
+    return "";
+  };
+
+  const mapping = {};
+  for (const [key, aliases] of Object.entries(PROJECT_STATUS_ALIASES)) {
+    const desired = DEFAULT_GITHUB_PROJECT_STATUSES[key];
+    const candidates = [desired, ...aliases];
+    mapping[key] = findOption(candidates);
+  }
+
+  const fallbacks = [];
+  if (!mapping.inreview && mapping.inprogress) {
+    mapping.inreview = mapping.inprogress;
+    fallbacks.push({ key: "inreview", value: mapping.inprogress });
+  }
+  if (!mapping.cancelled && mapping.done) {
+    mapping.cancelled = mapping.done;
+    fallbacks.push({ key: "cancelled", value: mapping.done });
+  }
+
+  const missing = Object.entries(mapping)
+    .filter(([, value]) => !value)
+    .map(([key]) => key);
+
+  return { mapping, missing, fallbacks };
 }
 
 function getDefaultPromptOverrides() {
@@ -1695,8 +1990,35 @@ echo "Cleanup complete."
 async function main() {
   printBanner();
 
+  const repoRoot = detectRepoRoot();
+  const configDir = resolveConfigDir(repoRoot);
+  const slug = detectRepoSlug();
+  const projectName = detectProjectName(repoRoot);
+  const setupProgress = readSetupProgress(configDir);
+  const markSetupProgress = (step, label) => {
+    writeSetupProgress(configDir, {
+      status: "incomplete",
+      step,
+      total: SETUP_TOTAL_STEPS,
+      label,
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  if (setupProgress?.status === "incomplete") {
+    const label = setupProgress.label ? ` — ${setupProgress.label}` : "";
+    const timestamp = setupProgress.updatedAt
+      ? ` (last updated ${setupProgress.updatedAt})`
+      : "";
+    info(
+      `Detected a previous setup that ended at step ${setupProgress.step}${label}${timestamp}.`,
+    );
+    info("Setup writes .env/config files at the end, so partial runs do not persist changes.");
+    console.log();
+  }
+
   // ── Step 1: Prerequisites ───────────────────────────────
-  heading("Step 1 of 9 — Prerequisites");
+  headingStep(1, "Prerequisites", markSetupProgress);
   const hasNode = check(
     "Node.js ≥ 18",
     Number(process.versions.node.split(".")[0]) >= 18,
@@ -1744,10 +2066,6 @@ async function main() {
     process.exit(1);
   }
 
-  const repoRoot = detectRepoRoot();
-  const configDir = resolveConfigDir(repoRoot);
-  const slug = detectRepoSlug();
-  const projectName = detectProjectName(repoRoot);
   const envCandidates = [resolve(configDir, ".env"), resolve(repoRoot, ".env")];
   const seenEnvPaths = new Set();
   let detectedEnv = false;
@@ -1794,10 +2112,11 @@ async function main() {
   }
 
   const prompt = createPrompt();
+  let aborted = false;
 
   try {
     // ── Step 2: Setup Mode + Project Identity ─────────────
-    heading("Step 2 of 9 — Setup Mode & Project Identity");
+    headingStep(2, "Setup Mode & Project Identity", markSetupProgress);
     const setupProfileIdx = await prompt.choose(
       "How much setup detail do you want?",
       SETUP_PROFILES.map((profile) => profile.label),
@@ -1819,7 +2138,7 @@ async function main() {
     configJson.projectName = env.PROJECT_NAME;
 
     // ── Step 3: Workspace & Repository ─────────────────────
-    heading("Step 3 of 9 — Workspace & Repository Configuration");
+    headingStep(3, "Workspace & Repository Configuration", markSetupProgress);
 
     const useWorkspaces = await prompt.confirm(
       "Set up multi-repo workspaces? (organizes repos into ~/bosun/workspaces/)",
@@ -1850,16 +2169,21 @@ async function main() {
             `    Repo ${repoIdx + 1} — git URL (SSH or HTTPS)`,
             repoIdx === 0 ? (env.GITHUB_REPO ? `git@github.com:${env.GITHUB_REPO}.git` : "") : "",
           );
-          const defaultName = repoUrl
+          const parsedSlug = parseRepoSlugFromUrl(repoUrl);
+          const parsedRepoName = parsedSlug ? parsedSlug.split("/")[1] : "";
+          const defaultNameFromUrl = repoUrl
             ? (repoUrl.match(/[/:]([^/]+?)(?:\.git)?$/) || [])[1] || ""
             : "";
+          const defaultName = defaultNameFromUrl || parsedRepoName;
+          const repoSlugDefault =
+            parsedSlug || (repoIdx === 0 ? env.GITHUB_REPO : "");
           const repoName = await prompt.ask(
             `    Repo ${repoIdx + 1} — directory name`,
             defaultName || (repoIdx === 0 ? basename(repoRoot) : ""),
           );
           const repoSlug = await prompt.ask(
             `    Repo ${repoIdx + 1} — GitHub slug (org/repo)`,
-            repoIdx === 0 ? env.GITHUB_REPO : "",
+            repoSlugDefault,
           );
 
           wsRepos.push({
@@ -1918,9 +2242,11 @@ async function main() {
             `  Repo ${repoIdx + 1} — local path`,
             repoIdx === 0 ? repoRoot : "",
           );
+          const repoSlugDefault =
+            detectRepoSlug(repoPath) || (repoIdx === 0 ? env.GITHUB_REPO : "");
           const repoSlug = await prompt.ask(
             `  Repo ${repoIdx + 1} — GitHub slug`,
-            repoIdx === 0 ? env.GITHUB_REPO : "",
+            repoSlugDefault,
           );
           configJson.repositories.push({
             name: repoName,
@@ -1946,7 +2272,7 @@ async function main() {
     }
 
     // ── Step 4: Executor Configuration ─────────────────────
-    heading("Step 4 of 9 — Executor / Agent Configuration");
+    headingStep(4, "Executor / Agent Configuration", markSetupProgress);
     console.log("  Executors are the AI agents that work on tasks.\n");
 
     const presetOptions = isAdvancedSetup
@@ -1977,6 +2303,13 @@ async function main() {
 
     if (presetKey === "custom") {
       info("Define your executors. Enter empty name to finish.\n");
+      printExecutorModelReference();
+      console.log(
+        chalk.dim(
+          "  Weights are relative (they do not need to sum to 100). Percentages are normalized from the total.",
+        ),
+      );
+      console.log();
       let execIdx = 0;
       const roles = ["primary", "backup", "tertiary"];
       while (true) {
@@ -1986,8 +2319,13 @@ async function main() {
         );
         if (!eName) break;
         const eType = await prompt.ask("  Executor type", "COPILOT");
-        const eVariant = await prompt.ask("  Model variant", "CLAUDE_OPUS_4_6");
-        const eWeight = Number(await prompt.ask("  Weight (1-100)", "50"));
+        const eVariant = await prompt.ask(
+          "  Model variant",
+          defaultVariantForExecutor(eType),
+        );
+        const eWeight = Number(
+          await prompt.ask("  Weight (relative number)", "50"),
+        );
         configJson.executors.push({
           name: eName,
           executor: eType.toUpperCase(),
@@ -1996,6 +2334,18 @@ async function main() {
           role: roles[execIdx] || `executor-${execIdx + 1}`,
           enabled: true,
         });
+        const totalWeight = configJson.executors.reduce(
+          (sum, entry) => sum + (Number(entry.weight) || 0),
+          0,
+        );
+        if (totalWeight > 0) {
+          console.log(
+            chalk.dim(
+              `  Current total weight: ${totalWeight} (percentages will be normalized)`,
+            ),
+          );
+          console.log();
+        }
         execIdx++;
       }
     } else {
@@ -2060,7 +2410,7 @@ async function main() {
     }
 
     // ── Step 5: AI Provider ────────────────────────────────
-    heading("Step 5 of 9 — AI / Codex Provider");
+    headingStep(5, "AI / Codex Provider", markSetupProgress);
     console.log(
       "  Codex Monitor uses the Codex SDK for crash analysis & autofix.\n",
     );
@@ -2146,7 +2496,7 @@ async function main() {
     }
 
     // ── Step 6: Telegram ──────────────────────────────────
-    heading("Step 6 of 9 — Telegram Notifications");
+    headingStep(6, "Telegram Notifications", markSetupProgress);
     console.log(
       "  The Telegram bot sends real-time notifications and lets you\n" +
         "  control the orchestrator via /status, /tasks, /restart, etc.\n",
@@ -2330,10 +2680,13 @@ async function main() {
             if (testNow) {
               info("Sending test message...");
               try {
+                const projectLabel = escapeTelegramHtml(
+                  env.PROJECT_NAME || configJson.projectName || "Unknown",
+                );
                 const testMsg =
-                  "🤖 *Telegram Bot Test*\n\n" +
+                  "🤖 <b>Telegram Bot Test</b>\n\n" +
                   "Your bosun Telegram bot is configured correctly!\n\n" +
-                  `Project: ${env.PROJECT_NAME || configJson.projectName || "Unknown"}\n` +
+                  `Project: ${projectLabel}\n` +
                   "Try: /status, /tasks, /help";
 
                 const response = await fetch(
@@ -2344,7 +2697,7 @@ async function main() {
                     body: JSON.stringify({
                       chat_id: env.TELEGRAM_CHAT_ID,
                       text: testMsg,
-                      parse_mode: "Markdown",
+                      parse_mode: "HTML",
                     }),
                   },
                 );
@@ -2371,36 +2724,73 @@ async function main() {
     }
 
     // ── Step 7: Kanban + Execution ─────────────────────────
-    heading("Step 7 of 9 — Kanban & Execution");
+    headingStep(7, "Kanban & Execution", markSetupProgress);
     const backendDefault = String(
       process.env.KANBAN_BACKEND || configJson.kanban?.backend || "internal",
     )
       .trim()
       .toLowerCase();
-    const backendIdx = await prompt.choose(
-      "Select task board backend:",
-      [
-        "Internal Store (internal, recommended primary)",
-        "Vibe-Kanban (vk)",
-        "GitHub Issues (github)",
-        "Jira Issues (jira)",
-      ],
-      backendDefault === "vk"
-        ? 1
-        : backendDefault === "github"
-          ? 2
-          : backendDefault === "jira"
-            ? 3
-            : 0,
-    );
-    const selectedKanbanBackend =
-      backendIdx === 1
-        ? "vk"
-        : backendIdx === 2
-          ? "github"
-          : backendIdx === 3
-            ? "jira"
-            : "internal";
+    let selectedKanbanBackend = "internal";
+    let skipGitHubProjectSetup = false;
+    while (true) {
+      const backendIdx = await prompt.choose(
+        "Select task board backend:",
+        [
+          "Internal Store (internal, recommended primary)",
+          "Vibe-Kanban (vk)",
+          "GitHub Issues (github)",
+          "Jira Issues (jira)",
+        ],
+        backendDefault === "vk"
+          ? 1
+          : backendDefault === "github"
+            ? 2
+            : backendDefault === "jira"
+              ? 3
+              : 0,
+      );
+      selectedKanbanBackend =
+        backendIdx === 1
+          ? "vk"
+          : backendIdx === 2
+            ? "github"
+            : backendIdx === 3
+              ? "jira"
+              : "internal";
+
+      if (selectedKanbanBackend !== "github") break;
+
+      const ghStatus = getGitHubAuthStatus(repoRoot);
+      if (ghStatus.ok) break;
+
+      warn(
+        "GitHub auth is required to auto-detect projects, create boards, and sync issues.",
+      );
+      info(
+        "If you do not plan to use GitHub as the task manager, pick Internal, Jira, or Vibe-Kanban.",
+      );
+      const ghActionIdx = await prompt.choose(
+        "How do you want to proceed?",
+        [
+          "Continue with GitHub (skip Projects setup for now)",
+          "Choose a different backend",
+          "Exit setup",
+        ],
+        1,
+      );
+      if (ghActionIdx === 0) {
+        skipGitHubProjectSetup = true;
+        break;
+      }
+      if (ghActionIdx === 1) {
+        continue;
+      }
+      aborted = true;
+      break;
+    }
+    if (aborted) {
+      return;
+    }
     env.KANBAN_BACKEND = selectedKanbanBackend;
     const syncPolicyIdx = await prompt.choose(
       "Select sync policy:",
@@ -2527,18 +2917,74 @@ async function main() {
       selectedExecutorMode === "hybrid";
 
     if (selectedKanbanBackend === "github") {
-      const [slugOwner, slugRepo] = String(slug || "").split("/", 2);
-      env.GITHUB_REPO_OWNER = await prompt.ask(
-        "GitHub owner/org",
-        process.env.GITHUB_REPO_OWNER || slugOwner || "",
+      const primaryRepoSlug =
+        configJson.repositories?.find((repo) => repo.primary && repo.slug)?.slug || "";
+      const repoSlugDefaults = [
+        process.env.GITHUB_REPOSITORY,
+        process.env.GITHUB_REPO,
+        env.GITHUB_REPO,
+        primaryRepoSlug,
+        slug,
+      ]
+        .map((entry) => String(entry || "").trim())
+        .filter(Boolean);
+      const repoSlugDefault = repoSlugDefaults[0] || "";
+
+      info(
+        "Pick the repo that should receive tasks (issues/projects). If you have multiple orgs, use the owner for that repo.",
       );
-      env.GITHUB_REPO_NAME = await prompt.ask(
-        "GitHub repository name",
-        process.env.GITHUB_REPO_NAME || slugRepo || basename(repoRoot),
+      const repoInput = await prompt.ask(
+        "GitHub repository for tasks (owner/repo or URL)",
+        repoSlugDefault,
       );
+      const parsedRepoSlug = parseRepoSlugFromUrl(repoInput || repoSlugDefault);
+      if (parsedRepoSlug) {
+        const [repoOwner, repoName] = parsedRepoSlug.split("/", 2);
+        env.GITHUB_REPO_OWNER = repoOwner || "";
+        env.GITHUB_REPO_NAME = repoName || "";
+      } else {
+        const [slugOwner, slugRepo] = String(slug || "").split("/", 2);
+        env.GITHUB_REPO_OWNER = await prompt.ask(
+          "GitHub owner/org",
+          process.env.GITHUB_REPO_OWNER || slugOwner || "",
+        );
+        env.GITHUB_REPO_NAME = await prompt.ask(
+          "GitHub repository name",
+          process.env.GITHUB_REPO_NAME || slugRepo || basename(repoRoot),
+        );
+      }
       if (env.GITHUB_REPO_OWNER && env.GITHUB_REPO_NAME) {
         env.GITHUB_REPOSITORY = `${env.GITHUB_REPO_OWNER}/${env.GITHUB_REPO_NAME}`;
+        env.GITHUB_REPO = env.GITHUB_REPOSITORY;
         env.KANBAN_PROJECT_ID = env.GITHUB_REPOSITORY;
+      }
+
+      if (env.GITHUB_REPOSITORY && !skipGitHubProjectSetup) {
+        const repoCheck = tryRunGhCommand(
+          ["repo", "view", env.GITHUB_REPOSITORY, "--json", "name", "--jq", ".name"],
+          repoRoot,
+        );
+        if (!repoCheck.ok) {
+          warn(
+            `Could not access repo via gh: ${env.GITHUB_REPOSITORY}. ${repoCheck.error || ""}`.trim(),
+          );
+          const repoActionIdx = await prompt.choose(
+            "Continue with GitHub backend?",
+            [
+              "Continue (use GitHub anyway)",
+              "Switch to a different backend",
+              "Exit setup",
+            ],
+            0,
+          );
+          if (repoActionIdx === 1) {
+            selectedKanbanBackend = "internal";
+            env.KANBAN_BACKEND = selectedKanbanBackend;
+          } else if (repoActionIdx === 2) {
+            aborted = true;
+            return;
+          }
+        }
       }
 
       const githubTaskModeDefault = String(
@@ -2556,7 +3002,48 @@ async function main() {
         ],
         githubTaskModeDefault === "issues" ? 1 : 0,
       );
-      const githubTaskMode = githubTaskModeIdx === 1 ? "issues" : "kanban";
+      let githubTaskMode = githubTaskModeIdx === 1 ? "issues" : "kanban";
+      if (skipGitHubProjectSetup && githubTaskMode === "kanban") {
+        const downgrade = await prompt.confirm(
+          "GitHub auth is missing. Switch to Issues-only mode for now?",
+          true,
+        );
+        if (downgrade) githubTaskMode = "issues";
+      }
+
+      if (githubTaskMode === "kanban" && !skipGitHubProjectSetup) {
+        const scopes = getGitHubAuthScopes(repoRoot);
+        const missingScopes = [];
+        if (!scopes.includes("project")) missingScopes.push("project");
+        if (env.GITHUB_REPO_OWNER && env.GITHUB_REPO_OWNER !== detectedLogin) {
+          if (!scopes.includes("read:org")) missingScopes.push("read:org");
+        }
+        if (missingScopes.length > 0) {
+          warn(
+            `GitHub token is missing scopes required for Projects: ${missingScopes.join(
+              ", ",
+            )}.`,
+          );
+          info(
+            "Run: gh auth refresh -h github.com -s project,repo,read:org",
+          );
+          const scopeActionIdx = await prompt.choose(
+            "Proceed without Projects?",
+            [
+              "Use Issues-only for now",
+              "Continue and try Projects anyway",
+              "Exit setup",
+            ],
+            0,
+          );
+          if (scopeActionIdx === 0) {
+            githubTaskMode = "issues";
+          } else if (scopeActionIdx === 2) {
+            aborted = true;
+            return;
+          }
+        }
+      }
       env.GITHUB_PROJECT_MODE = githubTaskMode;
 
       const detectedLogin = detectGitHubUserLogin(repoRoot);
@@ -2585,7 +3072,7 @@ async function main() {
       env.BOSUN_TASK_LABELS = existingScopeLabels.join(",");
       env.BOSUN_ENFORCE_TASK_LABEL = "true";
 
-      if (githubTaskMode === "kanban") {
+      if (githubTaskMode === "kanban" && !skipGitHubProjectSetup) {
         env.GITHUB_PROJECT_OWNER =
           process.env.GITHUB_PROJECT_OWNER || env.GITHUB_REPO_OWNER || "";
         env.GITHUB_PROJECT_TITLE = await prompt.ask(
@@ -2610,6 +3097,57 @@ async function main() {
           success(
             `GitHub Project linked: ${env.GITHUB_PROJECT_OWNER}#${resolvedProject.number} (${env.GITHUB_PROJECT_TITLE})`,
           );
+
+          const fields = getGitHubProjectFields({
+            owner: env.GITHUB_PROJECT_OWNER,
+            number: resolvedProject.number,
+            cwd: repoRoot,
+          });
+          const statusField = fields.find(
+            (field) =>
+              String(field?.name || "").trim().toLowerCase() === "status",
+          );
+          if (statusField && Array.isArray(statusField.options)) {
+            const { mapping, missing, fallbacks } = resolveProjectStatusMapping(
+              statusField.options,
+            );
+            const statusEnvKeys = {
+              todo: "GITHUB_PROJECT_STATUS_TODO",
+              inprogress: "GITHUB_PROJECT_STATUS_INPROGRESS",
+              inreview: "GITHUB_PROJECT_STATUS_INREVIEW",
+              done: "GITHUB_PROJECT_STATUS_DONE",
+              cancelled: "GITHUB_PROJECT_STATUS_CANCELLED",
+            };
+            for (const [key, value] of Object.entries(mapping)) {
+              const envKey = statusEnvKeys[key];
+              if (!envKey || !value) continue;
+              if (!env[envKey] && !process.env[envKey]) {
+                env[envKey] = value;
+              }
+            }
+
+            if (fallbacks.length > 0) {
+              const fallbackSummary = fallbacks
+                .map((entry) => `${entry.key} → ${entry.value}`)
+                .join(", ");
+              warn(
+                `GitHub Project Status options missing. Using fallbacks: ${fallbackSummary}.`,
+              );
+            }
+            if (missing.length > 0) {
+              warn(
+                `GitHub Project Status options still missing: ${missing.join(
+                  ", ",
+                )}. Add them in GitHub or set GITHUB_PROJECT_STATUS_* overrides.`,
+              );
+            } else {
+              info("GitHub Project Status mapping verified.");
+            }
+          } else {
+            warn(
+              "GitHub Project has no Status field metadata. Status sync may be limited.",
+            );
+          }
         } else {
           const reasonSuffix = resolvedProject.reason
             ? ` Reason: ${resolvedProject.reason}`
@@ -2618,6 +3156,10 @@ async function main() {
             `Could not auto-detect/create GitHub Project. Issues will still be created and can be linked later.${reasonSuffix}`,
           );
         }
+      } else if (githubTaskMode === "kanban" && skipGitHubProjectSetup) {
+        warn(
+          "Skipping GitHub Project auto-setup (auth missing). You can re-run setup after `gh auth login`.",
+        );
       }
 
       configJson.kanban = {
@@ -3478,7 +4020,7 @@ async function main() {
     }
 
     // ── Step 8: Optional Channels ─────────────────────────
-    heading("Step 8 of 10 — Optional Channels (WhatsApp & Container)");
+    headingStep(8, "Optional Channels (WhatsApp & Container)", markSetupProgress);
 
     console.log(
       chalk.dim(
@@ -3541,7 +4083,7 @@ async function main() {
     }
 
     // ── Step 9: Desktop Shortcut ──────────────────────────
-    heading("Step 9 of 10 — Desktop Shortcut");
+    headingStep(9, "Desktop Shortcut", markSetupProgress);
 
     const {
       getDesktopShortcutStatus,
@@ -3572,7 +4114,7 @@ async function main() {
     }
 
     // ── Step 10: Startup Service ───────────────────────────
-    heading("Step 10 of 10 — Startup Service");
+    headingStep(10, "Startup Service", markSetupProgress);
 
     const { getStartupStatus, getStartupMethodName } =
       await import("./startup-service.mjs");
@@ -3610,6 +4152,7 @@ async function main() {
   // ── Write Files ─────────────────────────────────────────
   normalizeSetupConfiguration({ env, configJson, repoRoot, slug, configDir });
   await writeConfigFiles({ env, configJson, repoRoot, configDir });
+  clearSetupProgress(configDir);
 }
 
 // ── Non-Interactive Mode ─────────────────────────────────────────────────────
