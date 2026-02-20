@@ -1298,6 +1298,68 @@ export function TasksTab() {
       ${showCreate && html`<${CreateTaskModalInline} onClose=${() => setShowCreate(false)} />`}
     `;
 
+  const filterButton = html`
+    <button
+      class="btn btn-secondary btn-sm filter-toggle ${filtersOpen ? "active" : ""}"
+      onClick=${handleToggleFilters}
+      aria-expanded=${filtersOpen}
+    >
+      ${ICONS.filter}
+      Filters
+      ${activeFilterCount > 0 && html`
+        <span class="filter-count">${activeFilterCount}</span>
+      `}
+    </button>
+  `;
+
+  const viewToggle = html`
+    <div class="view-toggle">
+      <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
+      <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
+    </div>
+  `;
+
+  const newButton = html`
+    <button
+      class="btn btn-primary btn-sm"
+      onClick=${() => {
+        haptic();
+        setShowCreate(true);
+      }}
+      aria-label="Create task"
+    >
+      ${ICONS.plus}
+      ${isCompact ? "New" : "New Task"}
+    </button>
+  `;
+
+  const actionsMenu = html`
+    <div class="actions-wrap" ref=${actionsRef}>
+      <button
+        class="btn btn-ghost btn-sm actions-btn"
+        onClick=${() => { setActionsOpen(!actionsOpen); haptic(); }}
+        aria-haspopup="menu"
+        aria-expanded=${actionsOpen}
+        disabled=${exporting}
+      >
+        ${ICONS.ellipsis}
+        <span class="actions-label">Actions</span>
+      </button>
+      ${actionsOpen && html`
+        <div class="actions-dropdown" role="menu">
+          <button
+            class="actions-dropdown-item"
+            onClick=${() => { setActionsOpen(false); setStartAnyOpen(true); }}
+          >
+            ▶ Start Task
+          </button>
+          <button class="actions-dropdown-item" onClick=${handleExportCSV}>📊 Export CSV</button>
+          <button class="actions-dropdown-item" onClick=${handleExportJSON}>📋 Export JSON</button>
+        </div>
+      `}
+    </div>
+  `;
+
   return html`
     <div class="sticky-search">
       <div class="tasks-toolbar">
@@ -1314,68 +1376,33 @@ export function TasksTab() {
           ${isSearching && html`<span class="pill" style="font-size:10px;padding:2px 7px;color:var(--accent);white-space:nowrap">Searching…</span>`}
           ${!isSearching && searchVal && html`<span class="pill" style="font-size:10px;padding:2px 7px;white-space:nowrap">${visible.length} result${visible.length !== 1 ? "s" : ""}</span>`}
           </div>
-          <div class="tasks-toolbar-actions">
-            <button
-              class="btn btn-secondary btn-sm filter-toggle ${filtersOpen ? "active" : ""}"
-              onClick=${handleToggleFilters}
-              aria-expanded=${filtersOpen}
-            >
-              ${ICONS.filter}
-              Filters
-              ${activeFilterCount > 0 && html`
-                <span class="filter-count">${activeFilterCount}</span>
-              `}
-            </button>
-            <div class="view-toggle">
-              <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
-              <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
-            </div>
-            <button
-              class="btn btn-primary btn-sm"
-              onClick=${() => {
-                haptic();
-                setShowCreate(true);
-              }}
-              aria-label="Create task"
-            >
-              ${ICONS.plus}
-              ${isCompact ? "New" : "New Task"}
-            </button>
-            ${!isCompact && html`
-              <button
-                class="btn btn-ghost btn-sm"
-                onClick=${() => {
-                  haptic();
-                  setStartAnyOpen(true);
-                }}
-              >
-                ▶ Start Task
-              </button>
-            `}
-            <div class="actions-wrap" ref=${actionsRef}>
-              <button
-                class="btn btn-ghost btn-sm actions-btn"
-                onClick=${() => { setActionsOpen(!actionsOpen); haptic(); }}
-                aria-haspopup="menu"
-                aria-expanded=${actionsOpen}
-                disabled=${exporting}
-              >
-                ${ICONS.ellipsis}
-                <span class="actions-label">Actions</span>
-              </button>
-              ${actionsOpen && html`
-                <div class="actions-dropdown" role="menu">
+          <div class=${`tasks-toolbar-actions ${isCompact ? "compact" : ""}`}>
+            ${isCompact
+              ? html`
+                  <div class="tasks-toolbar-group">
+                    ${filterButton}
+                    ${viewToggle}
+                  </div>
+                  <div class="tasks-toolbar-group">
+                    ${newButton}
+                    ${actionsMenu}
+                  </div>
+                `
+              : html`
+                  ${filterButton}
+                  ${viewToggle}
+                  ${newButton}
                   <button
-                    class="actions-dropdown-item"
-                    onClick=${() => { setActionsOpen(false); setStartAnyOpen(true); }}
+                    class="btn btn-ghost btn-sm"
+                    onClick=${() => {
+                      haptic();
+                      setStartAnyOpen(true);
+                    }}
                   >
                     ▶ Start Task
                   </button>
-                  <button class="actions-dropdown-item" onClick=${handleExportCSV}>📊 Export CSV</button>
-                  <button class="actions-dropdown-item" onClick=${handleExportJSON}>📋 Export JSON</button>
-                </div>
-              `}
-            </div>
+                  ${actionsMenu}
+                `}
           </div>
         </div>
 

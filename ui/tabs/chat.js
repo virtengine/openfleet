@@ -196,6 +196,13 @@ export function ChatTab() {
   const [slashActiveIdx, setSlashActiveIdx] = useState(0);
   const [renamingSessionId, setRenamingSessionId] = useState(null);
   const [sending, setSending] = useState(false);
+  const [isMobile, setIsMobile] = useState(() => {
+    try {
+      return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false;
+    } catch {
+      return false;
+    }
+  });
   const textareaRef = useRef(null);
 
   /* ── Load sessions + agents on mount ── */
@@ -217,8 +224,22 @@ export function ChatTab() {
     };
   }, []);
 
+  /* ── Track mobile viewport to avoid auto-select loops ── */
+  useEffect(() => {
+    const mq = globalThis.matchMedia?.("(max-width: 768px)");
+    if (!mq) return;
+    const handler = (e) => setIsMobile(e.matches);
+    if (mq.addEventListener) mq.addEventListener("change", handler);
+    else mq.addListener(handler);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", handler);
+      else mq.removeListener(handler);
+    };
+  }, []);
+
   /* ── Auto-select first session if none ── */
   useEffect(() => {
+    if (isMobile) return;
     const sessions = sessionsData.value || [];
     if (selectedSessionId.value || sessions.length === 0) return;
     const next =
@@ -226,7 +247,7 @@ export function ChatTab() {
         (s) => s.status === "active" || s.status === "running",
       ) || sessions[0];
     if (next?.id) selectedSessionId.value = next.id;
-  }, [sessionsData.value, selectedSessionId.value]);
+  }, [sessionsData.value, selectedSessionId.value, isMobile]);
 
   /* ── Slash command filtering ── */
   const allCommands = getSlashCommands();
