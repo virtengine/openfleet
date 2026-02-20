@@ -69,6 +69,7 @@ function showHelp() {
     --doctor                    Validate bosun .env/config setup
     --help                      Show this help
     --version                   Show version
+    --portal, --desktop         Launch the Bosun desktop portal (Electron)
     --update                    Check for and install latest version
     --no-update-check           Skip automatic update check on startup
     --no-auto-update            Disable background auto-update polling
@@ -533,6 +534,19 @@ async function main() {
   if (args.includes("--version") || args.includes("-v")) {
     console.log(`bosun v${VERSION}`);
     process.exit(0);
+  }
+
+  // Handle --portal / --desktop
+  if (args.includes("--portal") || args.includes("--desktop")) {
+    const launcher = resolve(__dirname, "desktop", "launch.mjs");
+    const child = spawn(process.execPath, [launcher], {
+      stdio: "inherit",
+      env: process.env,
+    });
+    child.on("exit", (code) => {
+      process.exit(code ?? 0);
+    });
+    return;
   }
 
   // Handle --doctor

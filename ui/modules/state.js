@@ -396,12 +396,19 @@ function normalizeLabelName(label) {
     .toLowerCase();
 }
 
-export function updateTaskManualState(taskId, isManual) {
+export function updateTaskManualState(taskId, isManual, reason = "") {
   if (!taskId) return;
   tasksData.value = tasksData.value.map((task) => {
     if (task?.id !== taskId) return task;
     const meta = { ...(task.meta || {}) };
-    const codex = { ...(meta.codex || {}), isIgnored: Boolean(isManual) };
+    const codex = {
+      ...(meta.codex || {}),
+      isIgnored: Boolean(isManual),
+      ...(isManual && reason ? { ignoreReason: reason } : {}),
+    };
+    if (!isManual && codex.ignoreReason) {
+      delete codex.ignoreReason;
+    }
     meta.codex = codex;
 
     const hadLabels = Array.isArray(meta.labels);
@@ -440,8 +447,11 @@ export async function loadWorktrees() {
     data: [],
     stats: null,
   }));
-  worktreeData.value = res.data || [];
-  _cacheSet(url, worktreeData.value);
+  const payload = res?.stats
+    ? { data: res.data || [], stats: res.stats }
+    : res.data || [];
+  worktreeData.value = payload;
+  _cacheSet(url, payload);
   _markFresh("worktrees");
 }
 

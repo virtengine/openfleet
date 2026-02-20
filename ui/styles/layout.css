@@ -782,6 +782,21 @@
   letter-spacing: 0.02em;
 }
 
+@media (min-width: 1200px) {
+  .sidebar-nav-item {
+    flex-direction: row;
+    justify-content: flex-start;
+    padding: 10px 12px;
+    gap: 10px;
+    font-size: 12px;
+  }
+
+  .sidebar-nav-item span {
+    font-size: 12px;
+    letter-spacing: 0.01em;
+  }
+}
+
 .sidebar-nav-item:hover {
   background: var(--accent-subtle);
   color: var(--text-bright);

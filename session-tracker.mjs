@@ -71,6 +71,38 @@ function resolveSessionMaxMessages(type, metadata, explicitMax, fallbackMax) {
 /** Debounce interval for disk writes (ms). */
 const FLUSH_INTERVAL_MS = 2000;
 
+const SESSION_EVENT_LISTENERS = new Set();
+
+export function addSessionEventListener(listener) {
+  if (typeof listener !== "function") return () => {};
+  SESSION_EVENT_LISTENERS.add(listener);
+  return () => SESSION_EVENT_LISTENERS.delete(listener);
+}
+
+function emitSessionEvent(session, message) {
+  if (!session || !message || SESSION_EVENT_LISTENERS.size === 0) return;
+  const payload = {
+    sessionId: session.id || session.taskId,
+    taskId: session.taskId || session.id,
+    message,
+    session: {
+      id: session.id || session.taskId,
+      taskId: session.taskId || session.id,
+      type: session.type || "task",
+      status: session.status || "active",
+      lastActiveAt: session.lastActiveAt || new Date().toISOString(),
+      turnCount: session.turnCount || 0,
+    },
+  };
+  for (const listener of SESSION_EVENT_LISTENERS) {
+    try {
+      listener(payload);
+    } catch {
+      // best-effort listeners
+    }
+  }
+}
+
 // ── SessionTracker Class ────────────────────────────────────────────────────
 
 export class SessionTracker {
@@ -200,6 +232,7 @@ export class SessionTracker {
         while (session.messages.length > maxMessages) session.messages.shift();
       }
       this.#markDirty(taskId);
+      emitSessionEvent(session, msg);
       return;
     }
 
@@ -215,6 +248,7 @@ export class SessionTracker {
       while (session.messages.length > maxMessages) session.messages.shift();
     }
     this.#markDirty(taskId);
+    emitSessionEvent(session, msg);
   }
 
   /**

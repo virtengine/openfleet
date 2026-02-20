@@ -80,6 +80,7 @@ export function InfraTab() {
   const [sharedTtl, setSharedTtl] = useState("");
   const [sharedNote, setSharedNote] = useState("");
   const [expandedWt, setExpandedWt] = useState(null);
+  const [worktreeDetails, setWorktreeDetails] = useState({});
 
   /* ── Worktree actions ── */
   const handlePrune = async () => {
@@ -127,6 +128,30 @@ export function InfraTab() {
     }).catch(() => {});
     setReleaseInput("");
     scheduleRefresh(120);
+  };
+
+  const loadWorktreePeek = async (wt) => {
+    const key = wt?.path || wt?.branch || wt?.taskKey;
+    if (!key) return;
+    if (worktreeDetails[key]?.loading || worktreeDetails[key]?.loaded) return;
+    setWorktreeDetails((prev) => ({
+      ...prev,
+      [key]: { loading: true },
+    }));
+    try {
+      const res = await apiFetch(`/api/worktrees/peek?path=${encodeURIComponent(wt.path || "")}`, {
+        _silent: true,
+      });
+      setWorktreeDetails((prev) => ({
+        ...prev,
+        [key]: { ...(res?.data || {}), loaded: true },
+      }));
+    } catch (err) {
+      setWorktreeDetails((prev) => ({
+        ...prev,
+        [key]: { loaded: true, error: err?.message || "Failed to load" },
+      }));
+    }
   };
 
   /* ── Shared workspace actions ── */
@@ -310,14 +335,23 @@ export function InfraTab() {
         </div>
 
         ${wts.map(
-          (wt, idx) => html`
+          (wt, idx) => {
+            const key = wt?.path || wt?.branch || wt?.taskKey || String(idx);
+            const detail = worktreeDetails[key] || {};
+            const detailLoading = Boolean(detail?.loading);
+            const detailError = detail?.error;
+            return html`
             <div key=${wt.branch || wt.path || idx} class="task-card">
               <div
                 class="task-card-header"
                 style="cursor:pointer"
                 onClick=${() => {
                   haptic();
-                  setExpandedWt(expandedWt === idx ? null : idx);
+                  const nextOpen = expandedWt === idx ? null : idx;
+                  setExpandedWt(nextOpen);
+                  if (nextOpen === idx) {
+                    loadWorktreePeek(wt);
+                  }
                 }}
               >
                 <div style="display:flex;align-items:center;gap:6px">
@@ -345,18 +379,38 @@ export function InfraTab() {
               ${expandedWt === idx &&
               html`
                 <div class="wt-detail mt-sm">
-                  ${wt.gitStatus &&
-                  html` <div class="log-box log-box-sm">${wt.gitStatus}</div> `}
-                  ${wt.lastCommit &&
+                  ${detailLoading &&
+                  html`<div class="meta-text">Loading worktree details…</div>`}
+                  ${detailError &&
+                  html`<div class="meta-text" style="color:var(--color-error)">${detailError}</div>`}
+                  ${detail.gitStatus &&
+                  html` <div class="log-box log-box-sm">${detail.gitStatus}</div> `}
+                  ${detail.lastCommit &&
                   html`
                     <div class="meta-text mt-xs">
-                      Last commit: ${truncate(wt.lastCommit, 80)}
+                      Last commit: ${truncate(detail.lastCommit, 80)}
                     </div>
                   `}
-                  ${wt.filesChanged != null &&
+                  ${detail.filesChanged != null &&
                   html`
                     <div class="meta-text">
-                      Files changed: ${wt.filesChanged}
+                      Files changed: ${detail.filesChanged}
+                    </div>
+                  `}
+                  ${detail.diffSummary &&
+                  html`<div class="log-box log-box-sm mt-xs">${detail.diffSummary}</div>`}
+                  ${Array.isArray(detail.recentCommits) && detail.recentCommits.length > 0 &&
+                  html`
+                    <div class="meta-text mt-xs">Recent commits:</div>
+                    <div class="log-box log-box-sm">
+                      ${detail.recentCommits.map((c) => html`<div>${c}</div>`)}
+                    </div>
+                  `}
+                  ${Array.isArray(detail.sessions) && detail.sessions.length > 0 &&
+                  html`
+                    <div class="meta-text mt-xs">Active sessions:</div>
+                    <div class="log-box log-box-sm">
+                      ${detail.sessions.map((s) => html`<div>${s.title || s.id} · ${s.type} · ${formatRelative(s.lastActiveAt)}</div>`)}
                     </div>
                   `}
                 </div>
@@ -383,7 +437,8 @@ export function InfraTab() {
                 `}
               </div>
             </div>
-          `,
+          `;
+          },
         )}
         ${!wts.length &&
         html`<${EmptyState} message="No worktrees tracked." />`}

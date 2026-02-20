@@ -12,6 +12,8 @@
   - Telegram bot: `scripts/bosun/telegram-bot.mjs:1`
   - Telegram UI server: `scripts/bosun/ui-server.mjs:1`
   - Telegram Mini App UI: `scripts/bosun/ui/app.js:1`
+  - Desktop portal launcher: `scripts/bosun/desktop/launch.mjs:1`
+  - Desktop portal shell: `scripts/bosun/desktop/main.mjs:1`
 
 ## Architecture
 
@@ -73,6 +75,12 @@ node scripts/bosun/cli.mjs
 
 ```bash
 ./scripts/bosun/ve-orchestrator.sh -MaxParallel 2 -PollIntervalSec 60
+```
+
+### Launch the desktop portal
+
+```bash
+node scripts/bosun/desktop/launch.mjs
 ```
 
 ### List todo tasks

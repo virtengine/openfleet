@@ -1,4 +1,4 @@
-import { execSync, spawn } from "node:child_process";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, writeFileSync, watchFile, unwatchFile } from "node:fs";
 import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
@@ -74,6 +74,7 @@ import {
 } from "./workspace-manager.mjs";
 import {
   getSessionTracker,
+  addSessionEventListener,
 } from "./session-tracker.mjs";
 import {
   collectDiffStats,
@@ -244,6 +245,74 @@ async function applySharedStateToTasks(tasks) {
       ignoreReason: state.ignoreReason,
     };
   });
+}
+
+function normalizeWorktreePath(input) {
+  if (!input) return "";
+  try {
+    return resolve(String(input));
+  } catch {
+    return String(input);
+  }
+}
+
+function findWorktreeMatch(worktrees, { path, branch, taskKey }) {
+  const normalizedPath = normalizeWorktreePath(path);
+  if (normalizedPath) {
+    const byPath = worktrees.find((wt) => normalizeWorktreePath(wt.path) === normalizedPath);
+    if (byPath) return byPath;
+  }
+  if (taskKey) {
+    const byKey = worktrees.find((wt) => String(wt.taskKey || "") === String(taskKey));
+    if (byKey) return byKey;
+  }
+  if (branch) {
+    const normalizedBranch = String(branch || "").replace(/^refs\/heads\//, "");
+    const byBranch = worktrees.find((wt) => String(wt.branch || "") === normalizedBranch);
+    if (byBranch) return byBranch;
+  }
+  return null;
+}
+
+async function buildWorktreePeek(wt) {
+  const cwd = wt?.path;
+  if (!cwd) return null;
+  let gitStatus = "";
+  let filesChanged = 0;
+  try {
+    const status = spawnSync("git", ["status", "--short"], {
+      cwd,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    if (status.status === 0 && status.stdout) {
+      gitStatus = status.stdout.trim();
+      filesChanged = gitStatus ? gitStatus.split("\n").filter(Boolean).length : 0;
+    }
+  } catch {
+    // best effort
+  }
+
+  const diffStats = collectDiffStats(cwd);
+  const diffSummary = diffStats?.formatted || "";
+  const recentCommits = getRecentCommits(cwd, 6);
+  const lastCommit = recentCommits[0] || "";
+
+  const tracker = getSessionTracker();
+  const sessions = tracker
+    .listAllSessions()
+    .filter((s) => s.taskId === wt.taskKey || s.id === wt.taskKey);
+
+  return {
+    ...wt,
+    gitStatus,
+    filesChanged,
+    diffSummary,
+    diffStats,
+    recentCommits,
+    lastCommit,
+    sessions,
+  };
 }
 
 function getSchemaProperty(schema, pathParts) {
@@ -468,6 +537,7 @@ let uiServerUrl = null;
 let uiServerTls = false;
 let wsServer = null;
 const wsClients = new Set();
+let sessionListenerAttached = false;
 /** @type {ReturnType<typeof setInterval>|null} */
 let wsHeartbeatTimer = null;
 
@@ -1524,6 +1594,25 @@ function broadcastUiEvent(channels, type, payload = {}) {
   const required = new Set(Array.isArray(channels) ? channels : [channels]);
   const message = {
     type,
+    channels: Array.from(required),
+    payload,
+    ts: Date.now(),
+  };
+  for (const socket of wsClients) {
+    const subscribed = socket.__channels || new Set(["*"]);
+    const shouldSend =
+      subscribed.has("*") ||
+      Array.from(required).some((channel) => subscribed.has(channel));
+    if (shouldSend) {
+      sendWsMessage(socket, message);
+    }
+  }
+}
+
+function broadcastSessionMessage(payload) {
+  const required = new Set(["sessions", "chat"]);
+  const message = {
+    type: "session-message",
     channels: Array.from(required),
     payload,
     ts: Date.now(),
@@ -2783,6 +2872,25 @@ async function handleApi(req, res, url) {
       const worktrees = listActiveWorktrees();
       const stats = await getWorktreeStats();
       jsonResponse(res, 200, { ok: true, data: worktrees, stats });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/worktrees/peek") {
+    try {
+      const pathParam = url.searchParams.get("path") || "";
+      const branch = url.searchParams.get("branch") || "";
+      const taskKey = url.searchParams.get("taskKey") || url.searchParams.get("task") || "";
+      const worktrees = listActiveWorktrees();
+      const target = findWorktreeMatch(worktrees, { path: pathParam, branch, taskKey });
+      if (!target) {
+        jsonResponse(res, 404, { ok: false, error: "Worktree not found" });
+        return;
+      }
+      const detail = await buildWorktreePeek(target);
+      jsonResponse(res, 200, { ok: true, data: detail });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -4259,6 +4367,12 @@ export async function startTelegramUiServer(options = {}) {
   }
 
   wsServer = new WebSocketServer({ noServer: true });
+  if (!sessionListenerAttached) {
+    sessionListenerAttached = true;
+    addSessionEventListener((payload) => {
+      broadcastSessionMessage(payload);
+    });
+  }
   wsServer.on("connection", (socket) => {
     socket.__channels = new Set(["*"]);
     socket.__lastPong = Date.now();

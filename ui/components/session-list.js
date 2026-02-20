@@ -6,7 +6,7 @@ import { h } from "preact";
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import htm from "htm";
 import { signal, computed } from "@preact/signals";
-import { apiFetch } from "../modules/api.js";
+import { apiFetch, onWsMessage } from "../modules/api.js";
 import { formatRelative, truncate } from "../modules/utils.js";
 
 const html = htm.bind(h);
@@ -16,6 +16,8 @@ export const sessionsData = signal([]);
 export const selectedSessionId = signal(null);
 export const sessionMessages = signal([]);
 export const sessionsError = signal(null);
+
+let _wsListenerReady = false;
 
 /** Track the last filter used so createSession can reload with the same filter */
 let _lastLoadFilter = {};
@@ -40,6 +42,59 @@ export async function loadSessionMessages(id) {
   } catch {
     sessionMessages.value = [];
   }
+}
+
+function normalizePreview(content) {
+  if (content == null) return "";
+  const text =
+    typeof content === "string" ? content : JSON.stringify(content);
+  return text.slice(0, 100);
+}
+
+function appendSessionMessage(sessionId, message, sessionMeta) {
+  if (!sessionId || !message) return;
+  const sessions = sessionsData.value || [];
+  let updated = false;
+  const next = sessions.map((s) => {
+    if (s.id !== sessionId) return s;
+    updated = true;
+    const preview = normalizePreview(message.content || message.text || "");
+    const lastActiveAt = message.timestamp || sessionMeta?.lastActiveAt || new Date().toISOString();
+    return {
+      ...s,
+      preview,
+      lastMessage: preview,
+      lastActiveAt,
+      turnCount: Math.max(s.turnCount || 0, sessionMeta?.turnCount || 0),
+    };
+  });
+  if (updated) sessionsData.value = next;
+
+  if (selectedSessionId.value === sessionId) {
+    const current = sessionMessages.value || [];
+    const last = current[current.length - 1];
+    if (
+      last &&
+      last.timestamp === message.timestamp &&
+      last.content === message.content &&
+      last.role === message.role
+    ) {
+      return;
+    }
+    sessionMessages.value = [...current, message];
+  }
+}
+
+export function initSessionWsListener() {
+  if (_wsListenerReady) return;
+  _wsListenerReady = true;
+  onWsMessage((msg) => {
+    if (msg?.type !== "session-message") return;
+    const payload = msg.payload || {};
+    const sessionId = payload.sessionId || payload.taskId;
+    if (!sessionId) return;
+    appendSessionMessage(sessionId, payload.message, payload.session);
+  });
 }
 
 /**

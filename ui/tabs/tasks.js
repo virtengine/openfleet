@@ -125,6 +125,14 @@ function isTaskManual(task) {
   return false;
 }
 
+function getManualReason(task) {
+  return (
+    task?.ignoreReason ||
+    task?.meta?.codex?.ignoreReason ||
+    ""
+  );
+}
+
 function normalizeTagInput(input) {
   if (!input) return [];
   const values = Array.isArray(input)
@@ -273,6 +281,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   const [saving, setSaving] = useState(false);
   const [manualOverride, setManualOverride] = useState(isTaskManual(task));
   const [manualBusy, setManualBusy] = useState(false);
+  const [manualReason, setManualReason] = useState(getManualReason(task));
 
   useEffect(() => {
     setTitle(task?.title || "");
@@ -283,6 +292,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     setTagsInput(getTaskTags(task).join(", "));
     setDraft(Boolean(task?.draft || task?.status === "draft"));
     setManualOverride(isTaskManual(task));
+    setManualReason(getManualReason(task));
   }, [task?.id]);
 
   const handleSave = async () => {
@@ -414,19 +424,23 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     haptic("medium");
     const prevTasks = cloneValue(tasksData.value);
     const prevManual = manualOverride;
+    const reason = String(manualReason || "").trim();
     setManualBusy(true);
     try {
       await runOptimistic(
         () => {
           setManualOverride(next);
-          updateTaskManualState(task.id, next);
+          updateTaskManualState(task.id, next, reason || "manual");
         },
         async () => {
           const res = await apiFetch(
             next ? "/api/tasks/ignore" : "/api/tasks/unignore",
             {
               method: "POST",
-              body: JSON.stringify({ taskId: task.id }),
+              body: JSON.stringify({
+                taskId: task.id,
+                ...(next && reason ? { reason } : {}),
+              }),
             },
           );
           return res;
@@ -541,11 +555,20 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           disabled=${manualBusy || !task?.id}
           onChange=${handleManualToggle}
         />
+        <input
+          class="input"
+          placeholder="Manual reason (optional)"
+          value=${manualReason}
+          disabled=${manualBusy}
+          onInput=${(e) => setManualReason(e.target.value)}
+        />
         ${manualOverride &&
         html`
           <div class="meta-text">
             Bosun will skip this task until manual takeover is cleared.
           </div>
+          ${manualReason &&
+          html`<div class="meta-text">Reason: ${manualReason}</div>`}
         `}
 
         ${task?.created_at &&

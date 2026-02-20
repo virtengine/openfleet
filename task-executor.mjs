@@ -1563,6 +1563,25 @@ class TaskExecutor {
   }
 
   /**
+   * Abort a running task by task ID (manual takeover / emergency stop).
+   * @param {string} taskId
+   * @param {string} [reason]
+   * @returns {{ ok: boolean, reason: string }}
+   */
+  abortTask(taskId, reason = "manual") {
+    const normalized = String(taskId || "").trim();
+    if (!normalized) {
+      return { ok: false, reason: "task_id_required" };
+    }
+    const ac = this._slotAbortControllers.get(normalized);
+    if (!ac || ac.signal.aborted) {
+      return { ok: false, reason: "not_active" };
+    }
+    ac.abort(String(reason || "manual"));
+    return { ok: true, reason: String(reason || "manual") };
+  }
+
+  /**
    * Pause task dispatch for a fixed duration.
    * @param {number} durationMs
    * @param {string|null} reason

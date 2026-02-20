@@ -64,6 +64,7 @@ import {
   createSession,
   selectedSessionId,
   sessionsData,
+  initSessionWsListener,
 } from "./components/session-list.js";
 import { WorkspaceSwitcher, loadWorkspaces } from "./components/workspace-switcher.js";
 import { DiffViewer } from "./components/diff-viewer.js";
@@ -310,6 +311,8 @@ function SidebarNav() {
             <button
               key=${tab.id}
               class="sidebar-nav-item ${isActive ? "active" : ""}"
+              aria-label=${tab.label}
+              aria-current=${isActive ? "page" : null}
               onClick=${() =>
                 navigateTo(tab.id, {
                   resetHistory: isHome,
@@ -796,6 +799,7 @@ function App() {
     // Connect WebSocket + invalidation auto-refresh
     connectWebSocket();
     initWsInvalidationListener();
+    initSessionWsListener();
 
     // Load notification preferences early (non-blocking)
     loadNotificationPrefs();
@@ -922,8 +926,8 @@ function App() {
   }, []);
 
   const CurrentTab = TAB_COMPONENTS[activeTab.value] || DashboardTab;
-  const showSessionRail = activeTab.value === "chat" || activeTab.value === "agents";
-  const showInspector = activeTab.value === "chat" || activeTab.value === "agents";
+  const showSessionRail = isDesktop && (activeTab.value === "chat" || activeTab.value === "agents");
+  const showInspector = isDesktop && (activeTab.value === "chat" || activeTab.value === "agents");
 
   const shellStyle = isDesktop
     ? {

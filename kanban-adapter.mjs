@@ -29,6 +29,7 @@
  *   persistSharedStateToIssue(id, state)     → GitHub/Jira: persist agent state to issue
  *   readSharedStateFromIssue(id)             → GitHub/Jira: read agent state from issue
  *   markTaskIgnored(id, reason)              → GitHub/Jira: mark task as ignored
+ *   unmarkTaskIgnored(id)                    → GitHub/Jira: remove ignore marker
  *
  * Each adapter implements the KanbanAdapter interface:
  *   - listTasks(projectId, filters?)         → Task[]
@@ -43,11 +44,13 @@
  *   - persistSharedStateToIssue(num, state)  → boolean
  *   - readSharedStateFromIssue(num)          → SharedState|null
  *   - markTaskIgnored(num, reason)           → boolean
+ *   - unmarkTaskIgnored(num)                 → boolean
  *
  * Jira adapter shared state methods:
  *   - persistSharedStateToIssue(key, state)  → boolean
  *   - readSharedStateFromIssue(key)          → SharedState|null
  *   - markTaskIgnored(key, reason)           → boolean
+ *   - unmarkTaskIgnored(key)                 → boolean
  */
 
 import { loadConfig } from "./config.mjs";
@@ -2727,6 +2730,42 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
   }
 
   /**
+   * Remove the ignored marker from a task.
+   *
+   * Removes the `codex:ignore` label so bosun automation can resume.
+   *
+   * @param {string|number} issueNumber - GitHub issue number
+   * @returns {Promise<boolean>} Success status
+   */
+  async unmarkTaskIgnored(issueNumber) {
+    const num = String(issueNumber).replace(/^#/, "");
+    if (!/^\d+$/.test(num)) {
+      throw new Error(`Invalid issue number: ${issueNumber}`);
+    }
+
+    try {
+      await this._gh(
+        [
+          "issue",
+          "edit",
+          num,
+          "--repo",
+          `${this._owner}/${this._repo}`,
+          "--remove-label",
+          this._codexLabels.ignore,
+        ],
+        { parseJson: false },
+      );
+      return true;
+    } catch (err) {
+      console.error(
+        `[kanban] failed to unmark task #${num} ignored: ${err.message}`,
+      );
+      return false;
+    }
+  }
+
+  /**
    * Get all labels for an issue.
    * @private
    */
@@ -4304,6 +4343,37 @@ class JiraAdapter {
       return false;
     }
   }
+
+  /**
+   * Remove the ignored marker from a Jira task.
+   *
+   * @param {string} issueKey - Jira issue key (e.g., "PROJ-123")
+   * @returns {Promise<boolean>} Success status
+   */
+  async unmarkTaskIgnored(issueKey) {
+    const key = this._validateIssueKey(issueKey);
+    try {
+      await this._setIssueLabels(
+        key,
+        [],
+        [this._codexLabels.ignore, "codex:ignore"],
+      );
+      if (this._sharedStateFields.ignoreReason) {
+        await this._jira(`/rest/api/3/issue/${encodeURIComponent(key)}`, {
+          method: "PUT",
+          body: {
+            fields: {
+              [this._sharedStateFields.ignoreReason]: "",
+            },
+          },
+        });
+      }
+      return true;
+    } catch (err) {
+      console.error(`${TAG} failed to unmark Jira issue ${key} ignored: ${err.message}`);
+      return false;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4486,6 +4556,22 @@ export async function markTaskIgnored(taskId, reason) {
   }
   console.warn(
     `[kanban] markTaskIgnored not supported by ${adapter.name} backend`,
+  );
+  return false;
+}
+
+/**
+ * Remove the ignore marker from a task (GitHub/Jira only).
+ * @param {string} taskId - Task identifier
+ * @returns {Promise<boolean>} Success status
+ */
+export async function unmarkTaskIgnored(taskId) {
+  const adapter = getKanbanAdapter();
+  if (typeof adapter.unmarkTaskIgnored === "function") {
+    return adapter.unmarkTaskIgnored(taskId);
+  }
+  console.warn(
+    `[kanban] unmarkTaskIgnored not supported by ${adapter.name} backend`,
   );
   return false;
 }

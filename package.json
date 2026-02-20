@@ -123,6 +123,7 @@
     "conflict-resolver.mjs",
     "copilot-shell.mjs",
     "diff-stats.mjs",
+    "desktop/",
     "error-detector.mjs",
     "fetch-runtime.mjs",
     "fleet-coordinator.mjs",
