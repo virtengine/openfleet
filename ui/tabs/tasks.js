@@ -54,6 +54,11 @@ import {
 } from "../components/shared.js";
 import { SegmentedControl, SearchInput, Toggle } from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
+import {
+  workspaces as managedWorkspaces,
+  activeWorkspaceId,
+  loadWorkspaces,
+} from "../components/workspace-switcher.js";
 
 /* ─── View mode toggle ─── */
 const viewMode = signal("kanban");
@@ -282,6 +287,17 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   const [manualOverride, setManualOverride] = useState(isTaskManual(task));
   const [manualBusy, setManualBusy] = useState(false);
   const [manualReason, setManualReason] = useState(getManualReason(task));
+  const [workspaceId, setWorkspaceId] = useState(
+    task?.workspace || activeWorkspaceId.value || "",
+  );
+  const [repository, setRepository] = useState(task?.repository || "");
+
+  const workspaceOptions = managedWorkspaces.value || [];
+  const selectedWorkspace = useMemo(
+    () => workspaceOptions.find((ws) => ws.id === workspaceId) || null,
+    [workspaceId, workspaceOptions],
+  );
+  const repositoryOptions = selectedWorkspace?.repos || [];
 
   useEffect(() => {
     setTitle(task?.title || "");
@@ -293,7 +309,26 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     setDraft(Boolean(task?.draft || task?.status === "draft"));
     setManualOverride(isTaskManual(task));
     setManualReason(getManualReason(task));
+    setWorkspaceId(task?.workspace || activeWorkspaceId.value || "");
+    setRepository(task?.repository || "");
   }, [task?.id]);
+
+  useEffect(() => {
+    if (!workspaceOptions.length) {
+      loadWorkspaces().catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!repositoryOptions.length) {
+      if (repository) setRepository("");
+      return;
+    }
+    if (!repositoryOptions.some((repo) => repo?.slug === repository)) {
+      const primary = repositoryOptions.find((repo) => repo?.primary);
+      setRepository(primary?.slug || repositoryOptions[0]?.slug || "");
+    }
+  }, [workspaceId, repositoryOptions.length]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -316,6 +351,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
                   priority: priority || null,
                   tags,
                   draft: wantsDraft,
+                  workspace: workspaceId || null,
+                  repository: repository || null,
                 }
               : t,
           );
@@ -332,6 +369,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
               priority,
               tags,
               draft: wantsDraft,
+              workspace: workspaceId || undefined,
+              repository: repository || undefined,
             }),
           });
           if (res?.data)
@@ -499,6 +538,32 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           value=${baseBranch}
           onInput=${(e) => setBaseBranch(e.target.value)}
         />
+        <div class="input-row">
+          <select
+            class="input"
+            value=${workspaceId}
+            onChange=${(e) => setWorkspaceId(e.target.value)}
+          >
+            <option value="">Active workspace</option>
+            ${workspaceOptions.map(
+              (ws) => html`<option value=${ws.id}>${ws.name || ws.id}</option>`,
+            )}
+          </select>
+          <select
+            class="input"
+            value=${repository}
+            onChange=${(e) => setRepository(e.target.value)}
+            disabled=${!repositoryOptions.length}
+          >
+            <option value="">
+              ${repositoryOptions.length ? "Auto repository" : "No repos in workspace"}
+            </option>
+            ${repositoryOptions.map(
+              (repo) =>
+                html`<option value=${repo.slug}>${repo.name}${repo.primary ? " ★" : ""}</option>`,
+            )}
+          </select>
+        </div>
         <input
           class="input"
           placeholder="Tags (comma-separated)"
@@ -1628,6 +1693,32 @@ function CreateTaskModalInline({ onClose }) {
   const [tagsInput, setTagsInput] = useState("");
   const [draft, setDraft] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId.value || "");
+  const [repository, setRepository] = useState("");
+
+  const workspaceOptions = managedWorkspaces.value || [];
+  const selectedWorkspace = useMemo(
+    () => workspaceOptions.find((ws) => ws.id === workspaceId) || null,
+    [workspaceId, workspaceOptions],
+  );
+  const repositoryOptions = selectedWorkspace?.repos || [];
+
+  useEffect(() => {
+    if (!workspaceOptions.length) {
+      loadWorkspaces().catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!repositoryOptions.length) {
+      if (repository) setRepository("");
+      return;
+    }
+    if (!repositoryOptions.some((repo) => repo?.slug === repository)) {
+      const primary = repositoryOptions.find((repo) => repo?.primary);
+      setRepository(primary?.slug || repositoryOptions[0]?.slug || "");
+    }
+  }, [workspaceId, repositoryOptions.length]);
 
   const handleSubmit = async () => {
     if (!title.trim()) {
@@ -1648,6 +1739,8 @@ function CreateTaskModalInline({ onClose }) {
           tags,
           draft,
           status: draft ? "draft" : "todo",
+          workspace: workspaceId || undefined,
+          repository: repository || undefined,
         }),
       });
       showToast("Task created", "success");
@@ -1670,7 +1763,16 @@ function CreateTaskModalInline({ onClose }) {
         tg.MainButton.offClick(handleSubmit);
       };
     }
-  }, [title, description, baseBranch, priority, tagsInput, draft]);
+  }, [
+    title,
+    description,
+    baseBranch,
+    priority,
+    tagsInput,
+    draft,
+    workspaceId,
+    repository,
+  ]);
 
   return html`
     <${Modal} title="New Task" onClose=${onClose}>
@@ -1694,6 +1796,32 @@ function CreateTaskModalInline({ onClose }) {
           value=${baseBranch}
           onInput=${(e) => setBaseBranch(e.target.value)}
         />
+        <div class="input-row">
+          <select
+            class="input"
+            value=${workspaceId}
+            onChange=${(e) => setWorkspaceId(e.target.value)}
+          >
+            <option value="">Active workspace</option>
+            ${workspaceOptions.map(
+              (ws) => html`<option value=${ws.id}>${ws.name || ws.id}</option>`,
+            )}
+          </select>
+          <select
+            class="input"
+            value=${repository}
+            onChange=${(e) => setRepository(e.target.value)}
+            disabled=${!repositoryOptions.length}
+          >
+            <option value="">
+              ${repositoryOptions.length ? "Auto repository" : "No repos in workspace"}
+            </option>
+            ${repositoryOptions.map(
+              (repo) =>
+                html`<option value=${repo.slug}>${repo.name}${repo.primary ? " ★" : ""}</option>`,
+            )}
+          </select>
+        </div>
         <input
           class="input"
           placeholder="Tags (comma-separated)"

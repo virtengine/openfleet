@@ -2903,8 +2903,8 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/worktrees") {
     try {
-      const worktrees = listActiveWorktrees();
-      const stats = await getWorktreeStats();
+      const worktrees = listActiveWorktrees(repoRoot);
+      const stats = await getWorktreeStats(repoRoot);
       jsonResponse(res, 200, { ok: true, data: worktrees, stats });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -2917,7 +2917,7 @@ async function handleApi(req, res, url) {
       const pathParam = url.searchParams.get("path") || "";
       const branch = url.searchParams.get("branch") || "";
       const taskKey = url.searchParams.get("taskKey") || url.searchParams.get("task") || "";
-      const worktrees = listActiveWorktrees();
+      const worktrees = listActiveWorktrees(repoRoot);
       const target = findWorktreeMatch(worktrees, { path: pathParam, branch, taskKey });
       if (!target) {
         jsonResponse(res, 404, { ok: false, error: "Worktree not found" });
@@ -3289,7 +3289,7 @@ async function handleApi(req, res, url) {
       const worktreeMatches = [];
       let matchedWorktree = null;
       try {
-        const active = await listActiveWorktrees();
+        const active = await listActiveWorktrees(repoRoot);
         for (const wt of active || []) {
           const branch = String(wt.branch || "").toLowerCase();
           const taskKey = String(wt.taskKey || "").toLowerCase();
@@ -3566,7 +3566,7 @@ async function handleApi(req, res, url) {
 
       let worktree = null;
       try {
-        const active = await listActiveWorktrees();
+        const active = await listActiveWorktrees(repoRoot);
         const match = (active || []).find((wt) => {
           const branch = String(wt.branch || "").replace(/^refs\/heads\//, "");
           return branch === safe || branch === cleaned || branch.endsWith(`/${safe}`);

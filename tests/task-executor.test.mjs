@@ -24,13 +24,31 @@ vi.mock("../agent-pool.mjs", () => ({
   ensureThreadRegistryLoaded: vi.fn(() => Promise.resolve()),
 }));
 
-vi.mock("../worktree-manager.mjs", () => ({
-  acquireWorktree: vi.fn(() =>
+vi.mock("../worktree-manager.mjs", () => {
+  const acquireWorktree = vi.fn(() =>
     Promise.resolve({ path: "/fake/worktree", created: true }),
-  ),
-  releaseWorktree: vi.fn(() => Promise.resolve()),
-  getWorktreeStats: vi.fn(() => ({ active: 0, total: 0 })),
-}));
+  );
+  const releaseWorktree = vi.fn(() => Promise.resolve());
+  const getWorktreeStats = vi.fn(() => ({
+    active: 0,
+    total: 0,
+    stale: 0,
+    byOwner: {},
+  }));
+
+  class WorktreeManager {
+    acquireWorktree = acquireWorktree;
+    releaseWorktree = releaseWorktree;
+    getStats = getWorktreeStats;
+  }
+
+  return {
+    WorktreeManager,
+    acquireWorktree,
+    releaseWorktree,
+    getWorktreeStats,
+  };
+});
 
 vi.mock("../task-claims.mjs", () => ({
   initTaskClaims: vi.fn(() => Promise.resolve()),
@@ -586,7 +604,7 @@ describe("task-executor", () => {
       expect(acquireWorktree).toHaveBeenCalledWith(
         "ve/task-123-fix-the-bug",
         "task-123-uuid",
-        expect.objectContaining({ owner: "task-executor" }),
+        expect.objectContaining({ owner: "task-executor", baseBranch: "main" }),
       );
     });
 
@@ -716,7 +734,7 @@ describe("task-executor", () => {
       expect(acquireWorktree).toHaveBeenCalledWith(
         expect.stringMatching(/^ve\/abcd1234-add-new-feature/),
         "abcd1234-uuid",
-        expect.any(Object),
+        expect.objectContaining({ owner: "task-executor", baseBranch: "main" }),
       );
     });
   });

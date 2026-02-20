@@ -2827,6 +2827,10 @@ class TaskExecutor {
       task.meta?.branch_name ||
       `ve/${taskId.substring(0, 8)}-${slugify(taskTitle)}`;
     const baseBranch = this._resolveTaskBaseBranch(task);
+    const taskRepoContext = this._resolveTaskRepoContext(task);
+    const executionRepoRoot = taskRepoContext.repoRoot || this.repoRoot;
+    const executionRepoSlug = taskRepoContext.repoSlug || this.repoSlug;
+    const worktreeManager = this._getWorktreeManager(executionRepoRoot);
     let taskClaimToken = null;
 
     const releaseTaskClaimLock = async () => {
@@ -3086,11 +3090,11 @@ class TaskExecutor {
           this.defaultTargetBranch,
         );
         const worktreeBaseBranch = ensureBaseBranchAvailable(
-          this.repoRoot,
+          executionRepoRoot,
           taskBaseBranch,
           this.defaultTargetBranch,
         );
-        wt = await acquireWorktree(this.repoRoot, branch, taskId, {
+        wt = await worktreeManager.acquireWorktree(branch, taskId, {
           owner: "task-executor",
           baseBranch: worktreeBaseBranch,
         });
@@ -3120,7 +3124,7 @@ class TaskExecutor {
         );
         this._taskCooldowns.set(taskId, Date.now());
         try {
-          await releaseWorktree(this.repoRoot, taskId);
+          await worktreeManager.releaseWorktree(taskId);
         } catch {
           /* best-effort */
         }
@@ -3154,6 +3158,10 @@ class TaskExecutor {
       const prompt = this._buildTaskPrompt(task, wt.path, {
         retryReason: options?.retryReason,
         branch,
+        repoRoot: executionRepoRoot,
+        repoSlug: executionRepoSlug,
+        workspace: taskRepoContext.workspace,
+        repository: taskRepoContext.repository,
       });
 
       // 5b. Create per-task AbortController for watchdog integration
@@ -3175,9 +3183,11 @@ class TaskExecutor {
       const _savedEnvKeys = [
         "VE_TASK_ID", "VE_TASK_TITLE", "VE_TASK_DESCRIPTION",
         "VE_BRANCH_NAME", "VE_WORKTREE_PATH", "VE_SDK", "VE_MANAGED",
+        "VE_REPO_ROOT", "VE_REPO_SLUG", "VE_WORKSPACE", "VE_REPOSITORY",
         "VK_TITLE", "VK_DESCRIPTION",
         "BOSUN_TASK_ID", "BOSUN_TASK_TITLE", "BOSUN_TASK_DESCRIPTION",
         "BOSUN_BRANCH_NAME", "BOSUN_WORKTREE_PATH", "BOSUN_SDK", "BOSUN_MANAGED",
+        "BOSUN_REPO_ROOT", "BOSUN_REPO_SLUG", "BOSUN_WORKSPACE", "BOSUN_REPOSITORY",
       ];
       const _savedEnv = {};
       for (const k of _savedEnvKeys) _savedEnv[k] = process.env[k];
@@ -3190,6 +3200,10 @@ class TaskExecutor {
       process.env.VE_WORKTREE_PATH      = wt.path;
       process.env.VE_SDK                = resolvedSdk;
       process.env.VE_MANAGED            = "1";
+      process.env.VE_REPO_ROOT          = executionRepoRoot;
+      process.env.VE_REPO_SLUG          = executionRepoSlug;
+      process.env.VE_WORKSPACE          = taskRepoContext.workspace || "";
+      process.env.VE_REPOSITORY         = taskRepoContext.repository || "";
       process.env.VK_TITLE              = taskTitle;
       process.env.VK_DESCRIPTION        = String(task.description || task.body || "");
       process.env.BOSUN_TASK_ID         = taskId;
@@ -3199,6 +3213,10 @@ class TaskExecutor {
       process.env.BOSUN_WORKTREE_PATH   = wt.path;
       process.env.BOSUN_SDK             = resolvedSdk;
       process.env.BOSUN_MANAGED         = "1";
+      process.env.BOSUN_REPO_ROOT       = executionRepoRoot;
+      process.env.BOSUN_REPO_SLUG       = executionRepoSlug;
+      process.env.BOSUN_WORKSPACE       = taskRepoContext.workspace || "";
+      process.env.BOSUN_REPOSITORY      = taskRepoContext.repository || "";
 
       // 6b. Start session tracking for review handoff
       const sessionTracker = getSessionTracker();
@@ -3376,7 +3394,7 @@ class TaskExecutor {
       // 8. Cleanup
       this._slotAbortControllers.delete(taskId);
       try {
-        await releaseWorktree(this.repoRoot, taskId);
+        await worktreeManager.releaseWorktree(taskId);
       } catch (err) {
         console.warn(`${TAG} worktree release warning: ${err.message}`);
       }
@@ -3398,7 +3416,7 @@ class TaskExecutor {
         /* best-effort */
       }
       try {
-        await releaseWorktree(this.repoRoot, taskId);
+        await worktreeManager.releaseWorktree(taskId);
       } catch {
         /* best-effort */
       }
@@ -3428,6 +3446,10 @@ class TaskExecutor {
    * @private
    */
   _buildTaskPrompt(task, worktreePath, opts = {}) {
+    const promptRepoRoot = resolve(opts?.repoRoot || this.repoRoot || process.cwd());
+    const promptRepoSlug = String(opts?.repoSlug || this.repoSlug || "").trim();
+    const promptWorkspace = String(opts?.workspace || task?.workspace || task?.meta?.workspace || "").trim();
+    const promptRepository = String(opts?.repository || task?.repository || task?.meta?.repository || "").trim();
     const branch =
       String(opts?.branch || "").trim() ||
       task.branchName ||
@@ -3461,7 +3483,10 @@ class TaskExecutor {
       `## Environment`,
       `- Working Directory: ${worktreePath}`,
       `- Branch: ${branch}`,
-      `- Repository: ${this.repoSlug}`,
+      `- Repository: ${promptRepoSlug || "unknown/unknown"}`,
+      promptWorkspace ? `- Workspace: ${promptWorkspace}` : "",
+      promptRepository ? `- Repository Name: ${promptRepository}` : "",
+      `- Repo Root: ${promptRepoRoot}`,
       ``,
       `## Instructions`,
       `You are working autonomously on a software engineering task for this repository.`,
@@ -3503,7 +3528,7 @@ class TaskExecutor {
     }
 
     // Append cached repo context (AGENTS.md + copilot-instructions.md)
-    const context = this._getRepoContext();
+    const context = this._getRepoContext(promptRepoRoot);
     if (context) {
       lines.push(`## Repository Context`, ``, context, ``);
     }
@@ -3543,11 +3568,14 @@ class TaskExecutor {
           "No description provided. Check the task URL for details.",
         WORKTREE_PATH: worktreePath,
         BRANCH: branch,
-        REPO_SLUG: this.repoSlug || "unknown/unknown",
+        REPO_SLUG: promptRepoSlug || "unknown/unknown",
         TASK_ID: task.id || task.task_id || "unknown",
         ENDPOINT_PORT: endpointPort,
         TASK_URL_LINE: taskUrl ? `- URL: ${taskUrl}` : "- URL: (not available)",
         REPO_CONTEXT: context || "(no repository context available)",
+        REPO_ROOT: promptRepoRoot,
+        TASK_WORKSPACE: promptWorkspace,
+        TASK_REPOSITORY: promptRepository,
       },
       fallbackPrompt,
     );
@@ -3754,13 +3782,12 @@ class TaskExecutor {
    * @returns {string|null}
    * @private
    */
-  _getRepoContext() {
+  _getRepoContext(repoRoot = this.repoRoot) {
+    const normalizedRoot = resolve(repoRoot || this.repoRoot || process.cwd());
     const now = Date.now();
-    if (
-      this._contextCache &&
-      now - this._contextCacheTime < CONTEXT_CACHE_TTL
-    ) {
-      return this._contextCache;
+    const cached = this._contextCacheByRepo.get(normalizedRoot);
+    if (cached && now - cached.cachedAt < CONTEXT_CACHE_TTL) {
+      return cached.context;
     }
 
     const parts = [];
@@ -3771,7 +3798,7 @@ class TaskExecutor {
 
     for (const cf of contextFiles) {
       try {
-        const fullPath = resolve(this.repoRoot, cf.rel);
+        const fullPath = resolve(normalizedRoot, cf.rel);
         if (existsSync(fullPath)) {
           const content = readFileSync(fullPath, "utf8");
           // Truncate to 4000 chars to keep prompt reasonable
@@ -3786,9 +3813,14 @@ class TaskExecutor {
       }
     }
 
-    this._contextCache = parts.length > 0 ? parts.join("\n\n---\n\n") : null;
+    const context = parts.length > 0 ? parts.join("\n\n---\n\n") : null;
+    this._contextCacheByRepo.set(normalizedRoot, {
+      context,
+      cachedAt: now,
+    });
+    this._contextCache = context;
     this._contextCacheTime = now;
-    return this._contextCache;
+    return context;
   }
 
   // ── Result Handling ───────────────────────────────────────────────────────
@@ -5173,6 +5205,8 @@ export function loadExecutorOptionsFromConfig() {
     },
     repoRoot: config.repoRoot || process.cwd(),
     repoSlug: config.repoSlug || "",
+    repositories: Array.isArray(config.repositories) ? config.repositories : [],
+    activeWorkspace: config.activeWorkspace || "",
     branchRouting: config.branchRouting || null,
     defaultTargetBranch:
       config.branchRouting?.defaultBranch ||

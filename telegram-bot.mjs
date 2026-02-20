@@ -87,6 +87,24 @@ import {
   sweepExpiredLeases as sweepSharedLeases,
 } from "./shared-workspace-registry.mjs";
 import {
+  listWorkspaces as listManagedWorkspaces,
+  getActiveWorkspace as getActiveManagedWs,
+  createWorkspace as createManagedWs,
+  removeWorkspace as removeManagedWs,
+  setActiveWorkspace as setActiveManagedWs,
+  addRepoToWorkspace as addRepoToManagedWs,
+  removeRepoFromWorkspace as removeRepoFromManagedWs,
+  pullWorkspaceRepos as pullManagedWsRepos,
+  detectWorkspaces as detectManagedWs,
+  initializeWorkspaces as initManagedWs,
+  mergeDetectedWorkspaces,
+} from "./workspace-manager.mjs";
+
+// Convenience aliases used in existing /workspace command
+const listLocalWorkspaces = listManagedWorkspaces;
+const getActiveLocalWorkspace = getActiveManagedWs;
+const setActiveLocalWorkspace = setActiveManagedWs;
+import {
   buildLocalPresence,
   formatCoordinatorSummary,
   formatPresenceMessage,
@@ -2178,10 +2196,11 @@ async function cmdResumeTasks(chatId) {
  */
 async function cmdRepos(chatId, _text) {
   try {
-    const config = (await import("./config.mjs")).default;
-    const repos = config.repositories || [];
-    const selected =
-      config.selectedRepository || config.repoSlug || "(default)";
+    const loadConfig = (await import("./config.mjs")).default;
+    const config = loadConfig();
+    const repos = Array.isArray(config.repositories) ? config.repositories : [];
+    const selected = config.selectedRepository || null;
+    const activeWorkspace = config.activeWorkspace || "";
 
     if (repos.length === 0) {
       return sendDirect(
@@ -2215,9 +2234,15 @@ async function cmdRepos(chatId, _text) {
     }
 
     const lines = ["📁 *Repositories*", ""];
+    if (activeWorkspace) {
+      lines.push(`Workspace: \`${activeWorkspace}\``, "");
+    }
     for (const repo of repos) {
       const isCurrent =
-        repo.name === selected || repo.slug === selected || repo.primary;
+        repo.id === selected?.id ||
+        repo.name === selected?.name ||
+        repo.slug === selected?.slug ||
+        repo.primary;
       const icon = isCurrent ? "🟢" : "⚪";
       const primary = repo.primary ? " _(primary)_" : "";
       lines.push(
@@ -2225,12 +2250,206 @@ async function cmdRepos(chatId, _text) {
       );
     }
     lines.push("");
-    lines.push(`Selected: \`${selected}\``);
-    lines.push("Switch: \`/repos set <name>\`");
+    lines.push(`Selected: \`${selected?.name || selected?.slug || selected?.id || "(auto)"}\``);
+    lines.push("Switch workspace: \`/workspace switch <id>\`");
 
     return sendDirect(chatId, lines.join("\n"), { parse_mode: "Markdown" });
   } catch (err) {
     return sendDirect(chatId, `❌ Failed to read repo config: ${err.message}`);
+  }
+}
+
+/**
+ * /workspace — list/switch/scan/create/add-repo/remove-repo/pull/delete local BOSUN_DIR workspaces.
+ *
+ * Usage:
+ *   /workspace                                        — list all workspaces
+ *   /workspace list                                   — list all workspaces
+ *   /workspace switch <id>                            — switch active workspace
+ *   /workspace scan                                   — detect new workspaces from disk
+ *   /workspace create <name>                          — create a new workspace
+ *   /workspace add-repo <wsId> <gitUrl> [branch]      — clone a repo into workspace
+ *   /workspace remove-repo <wsId> <repoName>          — remove a repo from workspace
+ *   /workspace pull [wsId]                            — pull all repos in workspace
+ *   /workspace delete <wsId>                          — delete a workspace
+ */
+async function cmdWorkspace(chatId, text) {
+  const raw = String(text || "")
+    .replace(/^\/workspace\b/i, "")
+    .trim();
+  const [sub, ...rest] = raw ? raw.split(/\s+/) : [];
+  const subcmd = String(sub || "list").toLowerCase();
+  const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+
+  try {
+    if (subcmd === "scan") {
+      const merged = mergeDetectedWorkspaces(configDir);
+      await sendReply(
+        chatId,
+        [
+          "🔎 Workspace Scan Complete",
+          `Scanned: ${merged.scanned}`,
+          `Added: ${merged.added}`,
+          `Updated: ${merged.updated}`,
+          "",
+          "Use /workspace to view all workspaces.",
+        ].join("\n"),
+      );
+      return;
+    }
+
+    if (subcmd === "switch") {
+      const targetId = String(rest[0] || "").trim();
+      if (!targetId) {
+        await sendReply(chatId, "Usage: /workspace switch <id>");
+        return;
+      }
+      setActiveLocalWorkspace(configDir, targetId);
+      const active = getActiveLocalWorkspace(configDir);
+      await sendReply(
+        chatId,
+        `✅ Active workspace: ${active?.name || targetId} (\`${active?.id || targetId}\`)`,
+      );
+      return;
+    }
+
+    if (subcmd === "create") {
+      const name = rest.join(" ").trim();
+      if (!name) {
+        await sendReply(chatId, "Usage: /workspace create <name>");
+        return;
+      }
+      const ws = createManagedWs(configDir, { name });
+      await sendReply(
+        chatId,
+        `✅ Created workspace: *${ws.name}* (\`${ws.id}\`)\nPath: \`${ws.path}\``,
+        { parseMode: "Markdown" },
+      );
+      return;
+    }
+
+    if (subcmd === "add-repo" || subcmd === "addrepo") {
+      const wsId = String(rest[0] || "").trim();
+      const gitUrl = String(rest[1] || "").trim();
+      const branch = rest[2] || undefined;
+      if (!wsId || !gitUrl) {
+        await sendReply(chatId, "Usage: /workspace add-repo <wsId> <gitUrl> [branch]");
+        return;
+      }
+      await sendReply(chatId, `⏳ Cloning ${gitUrl} into workspace ${wsId}...`);
+      const repo = addRepoToManagedWs(configDir, wsId, {
+        url: gitUrl,
+        branch,
+      });
+      await sendReply(
+        chatId,
+        `✅ Added repo *${repo.name}* to workspace \`${wsId}\`\n${repo.cloned ? "Cloned from remote" : "Already existed on disk"}`,
+        { parseMode: "Markdown" },
+      );
+      return;
+    }
+
+    if (subcmd === "remove-repo" || subcmd === "removerepo") {
+      const wsId = String(rest[0] || "").trim();
+      const repoName = String(rest[1] || "").trim();
+      if (!wsId || !repoName) {
+        await sendReply(chatId, "Usage: /workspace remove-repo <wsId> <repoName>");
+        return;
+      }
+      const removed = removeRepoFromManagedWs(configDir, wsId, repoName);
+      await sendReply(
+        chatId,
+        removed
+          ? `✅ Removed repo \`${repoName}\` from workspace \`${wsId}\``
+          : `⚠️ Repo \`${repoName}\` not found in workspace \`${wsId}\``,
+      );
+      return;
+    }
+
+    if (subcmd === "pull") {
+      const wsId = String(rest[0] || "").trim();
+      if (!wsId) {
+        const active = getActiveLocalWorkspace(configDir);
+        if (!active) {
+          await sendReply(chatId, "Usage: /workspace pull <wsId> (no active workspace)");
+          return;
+        }
+        await sendReply(chatId, `⏳ Pulling repos in workspace ${active.name}...`);
+        const results = pullManagedWsRepos(configDir, active.id);
+        const lines = results.map(
+          (r) => `${r.success ? "✅" : "❌"} ${r.name}${r.error ? ` — ${r.error}` : ""}`,
+        );
+        await sendReply(chatId, ["Pull results:", ...lines].join("\n"));
+        return;
+      }
+      await sendReply(chatId, `⏳ Pulling repos in workspace ${wsId}...`);
+      const results = pullManagedWsRepos(configDir, wsId);
+      const lines = results.map(
+        (r) => `${r.success ? "✅" : "❌"} ${r.name}${r.error ? ` — ${r.error}` : ""}`,
+      );
+      await sendReply(chatId, ["Pull results:", ...lines].join("\n"));
+      return;
+    }
+
+    if (subcmd === "delete" || subcmd === "remove") {
+      const wsId = String(rest[0] || "").trim();
+      if (!wsId) {
+        await sendReply(chatId, "Usage: /workspace delete <wsId>");
+        return;
+      }
+      const deleted = removeManagedWs(configDir, wsId, { deleteFiles: false });
+      await sendReply(
+        chatId,
+        deleted
+          ? `✅ Removed workspace \`${wsId}\` from config (files preserved on disk)`
+          : `⚠️ Workspace \`${wsId}\` not found`,
+      );
+      return;
+    }
+
+    // Default: list
+    const workspaces = listLocalWorkspaces(configDir);
+    const active = getActiveLocalWorkspace(configDir);
+    if (!workspaces.length) {
+      await sendReply(
+        chatId,
+        [
+          "🌳 No local workspaces configured.",
+          `Expected directory: ${resolve(configDir, "workspaces")}`,
+          "",
+          "Quick start:",
+          "• /workspace create MyProject",
+          "• /workspace add-repo myproject git@github.com:org/repo.git",
+          "• /workspace scan (auto-detect existing repos)",
+        ].join("\n"),
+      );
+      return;
+    }
+
+    const lines = ["🌳 *Local Workspaces*", ""];
+    for (const workspace of workspaces) {
+      const marker = workspace.id === active?.id ? "🟢" : "⚪";
+      const repoCount = Array.isArray(workspace.repos) ? workspace.repos.length : 0;
+      lines.push(`${marker} *${workspace.name}* (\`${workspace.id}\`) — ${repoCount} repo(s)`);
+      for (const repo of (workspace.repos || []).slice(0, 4)) {
+        const primary = repo.primary ? "★ " : "";
+        const exists = repo.exists === false ? "✖" : "✔";
+        lines.push(`   ${exists} ${primary}${repo.name}${repo.slug ? ` (${repo.slug})` : ""}`);
+      }
+      if ((workspace.repos || []).length > 4) {
+        lines.push(`   … +${workspace.repos.length - 4} more`);
+      }
+    }
+    lines.push("");
+    lines.push("Commands:");
+    lines.push("• /workspace switch <id>");
+    lines.push("• /workspace create <name>");
+    lines.push("• /workspace add-repo <wsId> <url>");
+    lines.push("• /workspace pull [wsId]");
+    lines.push("• /workspace scan");
+    await sendReply(chatId, lines.join("\n"), { parseMode: "Markdown" });
+  } catch (err) {
+    await sendReply(chatId, `❌ Workspace command failed: ${err.message}`);
   }
 }
 
@@ -2499,6 +2718,10 @@ const COMMANDS = {
     handler: cmdRepos,
     desc: "View configured repositories",
   },
+  "/workspace": {
+    handler: cmdWorkspace,
+    desc: "List/switch/scan local workspaces",
+  },
   "/maxparallel": {
     handler: cmdMaxParallel,
     desc: "View/set max parallel slots: /maxparallel [n]",
@@ -2510,6 +2733,14 @@ const COMMANDS = {
   "/container": {
     handler: cmdContainer,
     desc: "Container runtime status",
+  },
+  "/workspace": {
+    handler: cmdWorkspace,
+    desc: "Manage workspaces: /workspace [list|switch|create|add-repo|pull|scan|delete]",
+  },
+  "/ws": {
+    handler: cmdWorkspace,
+    desc: "Alias for /workspace",
   },
 };
 
@@ -2710,6 +2941,7 @@ const FAST_COMMANDS = new Set([
   "/resume",
   "/maxparallel",
   "/repos",
+  "/workspace",
   "/whatsapp",
   "/container",
 ]);
@@ -2928,6 +3160,33 @@ const UI_INPUT_HANDLERS = {
   agent_workspace_task: {
     prompt: (ctx) => `Task for workspace ${ctx.workspaceId}:`,
     buildCommand: (input, ctx) => `${ctx.commandPrefix}${input}`,
+  },
+  workspace_switch: {
+    prompt: "Workspace id to activate.",
+    buildCommand: (input) => `/workspace switch ${input}`,
+  },
+  workspace_create: {
+    prompt: "Enter a name for the new workspace (letters, numbers, hyphens).",
+    buildCommand: (input) => `/workspace create ${input}`,
+  },
+  workspace_add_repo: {
+    prompt: (ctx) =>
+      ctx?.workspaceId
+        ? `Enter the git URL to clone into workspace "${ctx.workspaceId}":`
+        : "Enter: <workspace-id> <git-url>",
+    buildCommand: (input, ctx) =>
+      ctx?.workspaceId
+        ? `/workspace add-repo ${ctx.workspaceId} ${input}`
+        : `/workspace add-repo ${input}`,
+  },
+  workspace_delete: {
+    prompt: "Enter the workspace ID to delete.",
+    buildCommand: (input) => `/workspace delete ${input}`,
+    confirm: true,
+    confirmTitle: "Delete Workspace",
+    confirmLabel: "Delete",
+    confirmBackAction: "go:managed_workspaces",
+    confirmDetails: (input) => [`Workspace: \`${shortSnippet(input, 60)}\``],
   },
   agent_role_task: {
     prompt: (ctx) => `Task for role ${ctx.role}:`,
@@ -3546,7 +3805,7 @@ async function listThreadEntries() {
 
 async function listWorktreeEntries() {
   try {
-    const worktrees = await listManagedWorktrees();
+    const worktrees = await listManagedWorktrees(repoRoot);
     return worktrees
       .map((wt) => ({
         taskKey: wt.taskKey,
@@ -4434,16 +4693,24 @@ Object.assign(UI_SCREENS, {
   workspaces: {
     title: "Workspaces",
     parent: "home",
-    body: () => "Worktree and shared workspace controls.",
+    body: () => "Manage workspaces, repos, worktrees, and shared environments.",
     keyboard: () =>
       buildKeyboard([
+        [
+          uiButton("📂 My Workspaces", uiGoAction("managed_workspaces")),
+          uiButton("➕ New Workspace", uiInputAction("workspace_create")),
+        ],
+        [
+          uiButton("🎯 Switch Active", uiGoAction("workspace_switch")),
+          uiButton("🔄 Scan Disk", uiCmdAction("/workspace scan")),
+        ],
         [
           uiButton("🌳 Worktrees", uiCmdAction("/worktrees")),
           uiButton("📊 Stats", uiCmdAction("/worktrees stats")),
           uiButton("🧹 Prune", uiCmdAction("/worktrees prune")),
         ],
         [
-          uiButton("🔓 Release", uiGoAction("worktrees_release")),
+          uiButton("🔓 Release WT", uiGoAction("worktrees_release")),
           uiButton("📁 Repos", uiCmdAction("/repos")),
           uiButton("👁 Presence", uiCmdAction("/presence")),
         ],
@@ -4452,12 +4719,84 @@ Object.assign(UI_SCREENS, {
           uiButton("✅ Claim", uiGoAction("shared_claim")),
           uiButton("🚪 Release", uiGoAction("shared_release")),
         ],
-        [
-          uiButton("🎯 Coordinator", uiCmdAction("/coordinator")),
-          uiButton("📍 Worktree List", uiCmdAction("/worktrees")),
-        ],
         uiNavRow("home"),
       ]),
+  },
+  workspace_switch: {
+    title: "Switch Workspace",
+    parent: "workspaces",
+    body: () => "Choose a local workspace to set active for task routing.",
+    keyboard: async (ctx) => {
+      const page = parsePageParam(ctx.params?.page);
+      const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+      const workspaces = listLocalWorkspaces(configDir);
+      const active = getActiveLocalWorkspace(configDir);
+      if (!workspaces.length) {
+        return buildKeyboard([
+          [uiButton("🔄 Scan", uiCmdAction("/workspace scan"))],
+          [uiButton("Type Workspace ID", uiInputAction("workspace_switch"))],
+          uiNavRow("workspaces"),
+        ]);
+      }
+
+      const perPage = 8;
+      const totalPages = Math.max(1, Math.ceil(workspaces.length / perPage));
+      const safePage = Math.min(page, totalPages - 1);
+      const slice = workspaces.slice(
+        safePage * perPage,
+        safePage * perPage + perPage,
+      );
+
+      const rows = chunkButtons(
+        slice.map((workspace) => {
+          const isActive = workspace.id === active?.id;
+          const repoCount = Array.isArray(workspace.repos)
+            ? workspace.repos.length
+            : 0;
+          const token = issueUiToken({
+            type: "confirm_cmd",
+            command: `/workspace switch ${workspace.id}`,
+            title: "Switch Local Workspace",
+            confirmLabel: "Switch",
+            detailLines: [
+              `Workspace: \`${workspace.name || workspace.id}\``,
+              `ID: \`${workspace.id}\``,
+              `Repos: ${repoCount}`,
+              isActive ? "Status: already active" : "Status: inactive",
+            ],
+            backAction: uiGoAction("workspace_switch", safePage),
+          });
+          const prefix = isActive ? "🟢" : "⚪";
+          return uiButton(
+            `${prefix} ${shortenLabel(workspace.name || workspace.id)}`,
+            uiTokenAction(token),
+          );
+        }),
+        2,
+      );
+
+      if (totalPages > 1) {
+        const pager = [];
+        if (safePage > 0) {
+          pager.push(
+            uiButton("⬅️ Prev", uiGoAction("workspace_switch", safePage - 1)),
+          );
+        }
+        if (safePage < totalPages - 1) {
+          pager.push(
+            uiButton("Next ➡️", uiGoAction("workspace_switch", safePage + 1)),
+          );
+        }
+        if (pager.length) rows.push(pager);
+      }
+
+      rows.push([
+        uiButton("Type Workspace ID", uiInputAction("workspace_switch")),
+      ]);
+      rows.push([uiButton("🔄 Scan", uiCmdAction("/workspace scan"))]);
+      rows.push(uiNavRow("workspaces"));
+      return buildKeyboard(rows);
+    },
   },
   worktrees_release: {
     title: "Release Worktree",
@@ -4643,6 +4982,81 @@ Object.assign(UI_SCREENS, {
         if (pager.length) rows.push(pager);
       }
       rows.push([uiButton("Custom Release", uiInputAction("shared_release"))]);
+      rows.push(uiNavRow("workspaces"));
+      return buildKeyboard(rows);
+    },
+  },
+  managed_workspaces: {
+    title: "My Workspaces",
+    parent: "workspaces",
+    body: () => "Browse, manage, and interact with your managed workspaces.",
+    keyboard: async (ctx) => {
+      const page = parsePageParam(ctx.params?.page);
+      const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+      const workspaces = listLocalWorkspaces(configDir);
+      const active = getActiveLocalWorkspace(configDir);
+      if (!workspaces.length) {
+        return buildKeyboard([
+          [uiButton("➕ Create Workspace", uiInputAction("workspace_create"))],
+          [uiButton("🔄 Scan Disk", uiCmdAction("/workspace scan"))],
+          uiNavRow("workspaces"),
+        ]);
+      }
+      const perPage = 5;
+      const totalPages = Math.max(1, Math.ceil(workspaces.length / perPage));
+      const safePage = Math.min(page, totalPages - 1);
+      const slice = workspaces.slice(
+        safePage * perPage,
+        safePage * perPage + perPage,
+      );
+      const rows = [];
+      for (const ws of slice) {
+        const isActive = ws.id === active?.id;
+        const repoCount = Array.isArray(ws.repos) ? ws.repos.length : 0;
+        const repoNames = Array.isArray(ws.repos)
+          ? ws.repos.map((r) => (typeof r === "string" ? r : r.name || r.url || "?")).join(", ")
+          : "none";
+        const prefix = isActive ? "🟢" : "⚪";
+        const switchToken = issueUiToken({
+          type: "confirm_cmd",
+          command: `/workspace switch ${ws.id}`,
+          title: `Workspace: ${ws.name || ws.id}`,
+          confirmLabel: isActive ? "Already Active" : "Set Active",
+          detailLines: [
+            `Name: \`${ws.name || ws.id}\``,
+            `ID: \`${ws.id}\``,
+            `Repos (${repoCount}): ${repoNames || "none"}`,
+            `Status: ${isActive ? "✅ Active" : "Inactive"}`,
+          ],
+          backAction: uiGoAction("managed_workspaces", safePage),
+        });
+        rows.push([
+          uiButton(
+            `${prefix} ${shortenLabel(ws.name || ws.id, 20)} (${repoCount})`,
+            uiTokenAction(switchToken),
+          ),
+          uiButton("⬇️ Pull", uiCmdAction(`/workspace pull ${ws.id}`)),
+          uiButton("🗑️", uiCmdAction(`/workspace delete ${ws.id}`)),
+        ]);
+      }
+      if (totalPages > 1) {
+        const pager = [];
+        if (safePage > 0) {
+          pager.push(
+            uiButton("⬅️ Prev", uiGoAction("managed_workspaces", safePage - 1)),
+          );
+        }
+        if (safePage < totalPages - 1) {
+          pager.push(
+            uiButton("Next ➡️", uiGoAction("managed_workspaces", safePage + 1)),
+          );
+        }
+        if (pager.length) rows.push(pager);
+      }
+      rows.push([
+        uiButton("➕ Create", uiInputAction("workspace_create")),
+        uiButton("🔄 Scan", uiCmdAction("/workspace scan")),
+      ]);
       rows.push(uiNavRow("workspaces"));
       return buildKeyboard(rows);
     },
@@ -7183,7 +7597,7 @@ async function cmdWorktrees(chatId, args) {
     }
     // Prune stale worktrees
     try {
-      const result = await pruneStaleWorktrees();
+      const result = await pruneStaleWorktrees(repoRoot);
       const lines = [`🧹 Worktree prune complete:`];
       lines.push(`  Pruned: ${result.pruned}`);
       lines.push(`  Registry evicted: ${result.evicted}`);
@@ -7220,7 +7634,7 @@ async function cmdWorktrees(chatId, args) {
       return;
     }
     try {
-      const wm = getWorktreeManager();
+      const wm = getWorktreeManager(repoRoot);
       const result = wm.releaseWorktree(taskKey);
       if (result.success) {
         await sendReply(
@@ -7261,7 +7675,7 @@ async function cmdWorktrees(chatId, args) {
 
   // Default: list all active worktrees
   try {
-    const worktrees = listManagedWorktrees();
+    const worktrees = listManagedWorktrees(repoRoot);
     if (!worktrees || worktrees.length === 0) {
       await sendReply(chatId, "🌳 No active worktrees tracked.");
       return;
