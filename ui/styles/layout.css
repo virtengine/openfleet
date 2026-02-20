@@ -712,10 +712,135 @@
     display: none;
   }
 
+  .tablet-action-bar {
+    display: none;
+  }
+
   .scroll-top {
     left: auto;
     right: 32px;
     bottom: 32px;
+  }
+}
+
+/* ═══════════════════════════════════════════════
+ *  Tablet Breakpoint (768px – 1199px)
+ *  Sidebar & Inspector as slide-over drawers
+ * ═══════════════════════════════════════════════ */
+
+/* --- Drawer overlay --- */
+.drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 900;
+  animation: fadeIn 0.18s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* --- Drawer panels --- */
+.drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  z-index: 910;
+  width: min(320px, 85vw);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg, 0 10px 40px rgba(0, 0, 0, 0.3));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  animation: slideDrawer 0.22s ease-out;
+}
+
+.drawer-left {
+  left: 0;
+  border-radius: 0 var(--radius-xl) var(--radius-xl) 0;
+}
+
+.drawer-right {
+  right: 0;
+  left: auto;
+  border-radius: var(--radius-xl) 0 0 var(--radius-xl);
+}
+
+@keyframes slideDrawer {
+  from { opacity: 0; transform: translateX(-32px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.drawer-right {
+  animation-name: slideDrawerRight;
+}
+
+@keyframes slideDrawerRight {
+  from { opacity: 0; transform: translateX(32px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* Force sidebar / inspector visible inside drawers */
+.drawer .sidebar {
+  display: flex !important;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.drawer .inspector {
+  display: flex !important;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* --- Tablet action bar --- */
+.tablet-action-bar {
+  display: none;
+}
+
+@media (min-width: 768px) and (max-width: 1199px) {
+  .tablet-action-bar {
+    display: flex;
+    gap: 8px;
+    padding: 6px 16px;
+    align-items: center;
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .tablet-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 12px;
+    border-radius: var(--radius-lg);
+    color: var(--text-secondary);
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .tablet-toggle:hover {
+    background: var(--accent-subtle);
+    color: var(--text-bright);
+    border-color: var(--accent);
+  }
+
+  .tablet-toggle:active {
+    transform: scale(0.97);
   }
 }
 

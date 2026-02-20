@@ -1032,7 +1032,18 @@ async function bumpStickyMenu(chatId) {
 
 // ── Telegram API Helpers ─────────────────────────────────────────────────────
 
+/**
+ * UI capture buffer — when commands are executed via handleUiCommand with
+ * chatId === "__ui_capture__", sendReply pushes here instead of Telegram.
+ */
+let _uiCaptureBuffer = null;
+
 async function sendReply(chatId, text, options = {}) {
+  // UI capture mode — collect messages instead of sending to Telegram
+  if (chatId === "__ui_capture__" && _uiCaptureBuffer) {
+    _uiCaptureBuffer.push(typeof text === "string" ? text : String(text));
+    return;
+  }
   // If monitor's sendTelegramMessage is available, use it (handles dedup & history)
   if (_sendTelegramMessage) {
     // Bypass dedup for direct replies
@@ -3018,7 +3029,9 @@ async function handleCommand(text, chatId) {
 /**
  * Handle a command from the Mini App UI.
  * Runs the Telegram command handler silently (without sending to chat)
- * and returns a summary object.
+ * and returns a summary object. For read-only commands (/status, /health,
+ * /tasks, etc.), captures the formatted output and returns it as `content`
+ * so the MiniApp chat can render it inline without needing the agent.
  */
 async function handleUiCommand(text) {
   const parts = text.split(/\s+/);
@@ -3042,8 +3055,6 @@ async function handleUiCommand(text) {
 
   if (ACTION_COMMANDS.has(cmd)) {
     try {
-      // Use a dummy chatId — the handler sends to Telegram chat, but we
-      // also send the command there so the user sees the result.
       if (telegramChatId) {
         await entry.handler(telegramChatId, cmdArgs);
       }
@@ -3053,20 +3064,52 @@ async function handleUiCommand(text) {
     }
   }
 
-  // For read-only commands (/status, /tasks, /logs, etc.), the UI already
-  // has API endpoints — just acknowledge. The UI refreshes data automatically.
-  // For /help and /version, return inline content so it renders in chat.
+  // For /help and /version, return inline content
   if (cmd === "/help" || cmd === "/helpfull") {
     const helpLines = Object.entries(COMMANDS)
-      .filter(([, v]) => v.description)
-      .map(([k, v]) => `**${k}** — ${v.description}`)
+      .filter(([, v]) => v.desc || v.description)
+      .map(([k, v]) => `**${k}** — ${v.desc || v.description}`)
       .join("\n");
     return { executed: true, command: cmd, readOnly: true, content: `**Available Commands:**\n${helpLines}` };
   }
   if (cmd === "/version") {
-    const pkg = await import("./package.json", { with: { type: "json" } }).catch(() => ({ default: { version: "unknown" } }));
-    return { executed: true, command: cmd, readOnly: true, content: `**Bosun** v${pkg.default.version}` };
+    try {
+      const { readFileSync } = await import("node:fs");
+      const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
+      return { executed: true, command: cmd, readOnly: true, content: `**Bosun** v${pkg.version}` };
+    } catch {
+      return { executed: true, command: cmd, readOnly: true, content: "**Bosun** (version unknown)" };
+    }
   }
+
+  // For read-only data commands, capture their output by running against
+  // a fake chatId that collects messages instead of sending to Telegram.
+  const DATA_COMMANDS = new Set([
+    "/status", "/health", "/tasks", "/logs", "/agents",
+    "/branches", "/diff", "/threads", "/sdk", "/kanban",
+    "/executor", "/hooks", "/sentinel", "/anomalies",
+    "/worktrees", "/region", "/presence", "/coordinator",
+    "/history",
+  ]);
+
+  if (DATA_COMMANDS.has(cmd) && entry.handler) {
+    try {
+      _uiCaptureBuffer = [];
+      try {
+        await entry.handler("__ui_capture__", cmdArgs);
+      } finally {
+        const captured = _uiCaptureBuffer;
+        _uiCaptureBuffer = null;
+        const content = captured.join("\n\n").trim();
+        if (content) {
+          return { executed: true, command: cmd, readOnly: true, content };
+        }
+      }
+    } catch {
+      // Fall through to generic acknowledgment
+    }
+  }
+
   return { executed: true, command: cmd, args: cmdArgs, readOnly: true };
 }
 

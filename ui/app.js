@@ -16,6 +16,7 @@ const backendError = signal("");
 const backendLastSeen = signal(null);
 const backendRetryCount = signal(0);
 const DESKTOP_MIN_WIDTH = 1200;
+const TABLET_MIN_WIDTH = 768;
 const COMPACT_NAV_MAX_WIDTH = 520;
 
 /* ── Module imports ── */
@@ -539,8 +540,8 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
 /* ═══════════════════════════════════════════════
  *  Bottom Navigation
  * ═══════════════════════════════════════════════ */
-const PRIMARY_NAV_TABS = ["dashboard", "tasks", "agents", "control"];
-const MORE_NAV_TABS = ["chat", "infra", "logs", "settings"];
+const PRIMARY_NAV_TABS = ["dashboard", "chat", "tasks", "agents"];
+const MORE_NAV_TABS = ["control", "infra", "logs", "settings"];
 
 function getTabsById(ids) {
   return ids
@@ -661,6 +662,13 @@ function App() {
     if (typeof window === "undefined" || !window.matchMedia) return false;
     return window.matchMedia(`(min-width: ${DESKTOP_MIN_WIDTH}px)`).matches;
   });
+  const [isTablet, setIsTablet] = useState(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return false;
+    const w = window.innerWidth;
+    return w >= TABLET_MIN_WIDTH && w < DESKTOP_MIN_WIDTH;
+  });
+  const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
+  const [inspectorDrawerOpen, setInspectorDrawerOpen] = useState(false);
   const [railWidth, setRailWidth] = useState(() => {
     if (typeof window === "undefined") return 320;
     const stored = Number(localStorage.getItem("ve-rail-width"));
@@ -735,6 +743,21 @@ function App() {
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
+    const tabletQuery = window.matchMedia(
+      `(min-width: ${TABLET_MIN_WIDTH}px) and (max-width: ${DESKTOP_MIN_WIDTH - 1}px)`,
+    );
+    const update = () => setIsTablet(tabletQuery.matches);
+    update();
+    if (tabletQuery.addEventListener) tabletQuery.addEventListener("change", update);
+    else tabletQuery.addListener(update);
+    return () => {
+      if (tabletQuery.removeEventListener) tabletQuery.removeEventListener("change", update);
+      else tabletQuery.removeListener(update);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
     const query = window.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`);
     const update = () => setIsCompactNav(query.matches);
     update();
@@ -760,10 +783,20 @@ function App() {
     if (typeof document === "undefined") return;
     if (isDesktop) {
       document.documentElement.dataset.desktop = "true";
+      delete document.documentElement.dataset.tablet;
+      // Close drawers when switching to desktop — panels are always visible
+      setSidebarDrawerOpen(false);
+      setInspectorDrawerOpen(false);
+    } else if (isTablet) {
+      delete document.documentElement.dataset.desktop;
+      document.documentElement.dataset.tablet = "true";
     } else {
       delete document.documentElement.dataset.desktop;
+      delete document.documentElement.dataset.tablet;
+      setSidebarDrawerOpen(false);
+      setInspectorDrawerOpen(false);
     }
-  }, [isDesktop]);
+  }, [isDesktop, isTablet]);
 
   const closeMore = useCallback(() => setIsMoreOpen(false), []);
 
@@ -785,6 +818,8 @@ function App() {
 
   useEffect(() => {
     setIsMoreOpen(false);
+    setSidebarDrawerOpen(false);
+    setInspectorDrawerOpen(false);
   }, [activeTab.value]);
 
   useEffect(() => {
@@ -929,8 +964,13 @@ function App() {
   }, []);
 
   const CurrentTab = TAB_COMPONENTS[activeTab.value] || DashboardTab;
-  const showSessionRail = isDesktop && (activeTab.value === "chat" || activeTab.value === "agents");
-  const showInspector = isDesktop && (activeTab.value === "chat" || activeTab.value === "agents");
+  const isChatOrAgents = activeTab.value === "chat" || activeTab.value === "agents";
+  const showSessionRail = isDesktop && isChatOrAgents;
+  const showInspector = isDesktop && isChatOrAgents;
+
+  // On tablet: show toggle buttons for sidebar + inspector when relevant
+  const showDrawerToggles = isTablet;
+  const showInspectorToggle = isTablet && isChatOrAgents;
 
   const shellStyle = isDesktop
     ? {
@@ -938,6 +978,21 @@ function App() {
         "--inspector-width": `${inspectorWidth}px`,
       }
     : null;
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarDrawerOpen((v) => !v);
+    setInspectorDrawerOpen(false);
+  }, []);
+
+  const toggleInspector = useCallback(() => {
+    setInspectorDrawerOpen((v) => !v);
+    setSidebarDrawerOpen(false);
+  }, []);
+
+  const closeDrawers = useCallback(() => {
+    setSidebarDrawerOpen(false);
+    setInspectorDrawerOpen(false);
+  }, []);
 
   return html`
     <div
@@ -948,6 +1003,31 @@ function App() {
       data-has-inspector=${showInspector ? "true" : "false"}
     >
       <${SidebarNav} />
+
+      ${/* Sidebar drawer overlay for tablet */ ""}
+      ${sidebarDrawerOpen && !isDesktop
+        ? html`
+            <div class="drawer-overlay" onClick=${closeDrawers}></div>
+            <div class="drawer drawer-left">
+              <${SidebarNav} />
+            </div>
+          `
+        : null}
+
+      ${/* Inspector drawer overlay for tablet */ ""}
+      ${inspectorDrawerOpen && !isDesktop
+        ? html`
+            <div class="drawer-overlay" onClick=${closeDrawers}></div>
+            <div class="drawer drawer-right">
+              <${InspectorPanel}
+                onResizeStart=${handleResizeStart}
+                onResizeReset=${handleResizeReset}
+                showResizer=${false}
+              />
+            </div>
+          `
+        : null}
+
       ${showSessionRail
         ? html`<${SessionRail}
             onResizeStart=${handleResizeStart}
@@ -958,6 +1038,33 @@ function App() {
       <div class="app-main">
         <div class="main-panel">
           <${Header} />
+
+          ${/* Tablet action bar with drawer toggles */ ""}
+          ${showDrawerToggles
+            ? html`
+                <div class="tablet-action-bar">
+                  <button
+                    class="btn btn-ghost btn-sm tablet-toggle"
+                    onClick=${toggleSidebar}
+                    aria-label=${sidebarDrawerOpen ? "Close sidebar" : "Open sidebar"}
+                  >
+                    ☰ Navigation
+                  </button>
+                  ${showInspectorToggle
+                    ? html`
+                        <button
+                          class="btn btn-ghost btn-sm tablet-toggle"
+                          onClick=${toggleInspector}
+                          aria-label=${inspectorDrawerOpen ? "Close inspector" : "Open inspector"}
+                        >
+                          📋 Inspector
+                        </button>
+                      `
+                    : null}
+                </div>
+              `
+            : null}
+
           ${backendDown.value ? html`<${OfflineBanner} />` : null}
           <${ToastContainer} />
           <${CommandPalette} open=${paletteOpen} onClose=${paletteClose} />

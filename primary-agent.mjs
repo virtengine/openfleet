@@ -2,6 +2,7 @@
  * primary-agent.mjs — Adapter that selects the primary agent implementation.
  *
  * Supports Codex SDK, Copilot SDK, and Claude SDK.
+ * Includes timeout detection and automatic failover between adapters.
  */
 
 import { loadConfig } from "./config.mjs";
@@ -206,6 +207,31 @@ export async function initPrimaryAgent(nameOrConfig = null) {
   return getPrimaryAgentName();
 }
 
+/** Default timeout for primary agent execution (2 minutes for interactive use) */
+const PRIMARY_EXEC_TIMEOUT_MS = Number(process.env.PRIMARY_AGENT_TIMEOUT_MS) || 2 * 60 * 1000;
+
+/** Maximum number of failover attempts across adapters */
+const MAX_FAILOVER_ATTEMPTS = 2;
+
+/** Ordered fallback chain — if the current adapter times out, try the next */
+const FALLBACK_ORDER = ["codex-sdk", "copilot-sdk", "claude-sdk"];
+
+/**
+ * Wrap a promise with a timeout. Rejects with a clear error when exceeded.
+ */
+function withTimeout(promise, ms, label = "operation") {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`AGENT_TIMEOUT: ${label} did not respond within ${ms / 1000}s`)),
+      ms,
+    );
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
 export async function execPrimaryPrompt(userMessage, options = {}) {
   if (!initialized) {
     await initPrimaryAgent();
@@ -216,26 +242,100 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
   const sessionType =
     (options && options.sessionType ? String(options.sessionType) : "") ||
     "primary";
+  const timeoutMs = options.timeoutMs || PRIMARY_EXEC_TIMEOUT_MS;
   const tracker = getSessionTracker();
+
+  // Record user message
   tracker.recordEvent(sessionId, {
     role: "user",
     content: userMessage,
     timestamp: new Date().toISOString(),
     _sessionType: sessionType,
   });
-  const result = await activeAdapter.exec(userMessage, {
-    ...options,
-    sessionId,
-  });
-  if (result) {
-    tracker.recordEvent(sessionId, {
-      role: "assistant",
-      content: typeof result === "string" ? result : JSON.stringify(result),
-      timestamp: new Date().toISOString(),
-      _sessionType: sessionType,
-    });
+
+  // Build ordered list of adapters to try: current first, then fallbacks
+  const adaptersToTry = [activeAdapter.name];
+  for (const name of FALLBACK_ORDER) {
+    if (name !== activeAdapter.name && ADAPTERS[name]) {
+      const envDisabledKey = `${name.replace("-sdk", "").toUpperCase()}_SDK_DISABLED`;
+      if (!envFlagEnabled(process.env[envDisabledKey])) {
+        adaptersToTry.push(name);
+      }
+    }
   }
-  return result;
+
+  let lastError = null;
+
+  for (let attempt = 0; attempt < Math.min(adaptersToTry.length, MAX_FAILOVER_ATTEMPTS + 1); attempt++) {
+    const adapterName = adaptersToTry[attempt];
+    const adapter = ADAPTERS[adapterName];
+    if (!adapter) continue;
+
+    // If failing over to a different adapter, switch and init
+    if (attempt > 0) {
+      console.warn(
+        `[primary-agent] ⚠️ Failing over from ${adaptersToTry[attempt - 1]} to ${adapterName} (reason: ${lastError?.message || "unknown"})`,
+      );
+      tracker.recordEvent(sessionId, {
+        role: "system",
+        type: "failover",
+        content: `⚠️ Agent "${adaptersToTry[attempt - 1]}" failed — switching to "${adapterName}": ${lastError?.message || "timeout/error"}`,
+        timestamp: new Date().toISOString(),
+      });
+      setPrimaryAgent(adapterName);
+      primaryFallbackReason = `Failover from ${adaptersToTry[attempt - 1]}: ${lastError?.message || "timeout"}`;
+      try {
+        await adapter.init();
+      } catch (initErr) {
+        console.error(`[primary-agent] Failed to init ${adapterName}:`, initErr.message);
+        lastError = initErr;
+        continue;
+      }
+    }
+
+    try {
+      const result = await withTimeout(
+        adapter.exec(userMessage, { ...options, sessionId }),
+        timeoutMs,
+        `${adapterName}.exec`,
+      );
+
+      if (result) {
+        tracker.recordEvent(sessionId, {
+          role: "assistant",
+          content: typeof result === "string" ? result : JSON.stringify(result),
+          timestamp: new Date().toISOString(),
+          _sessionType: sessionType,
+        });
+      }
+      return result;
+    } catch (err) {
+      lastError = err;
+      const isTimeout = err.message?.startsWith("AGENT_TIMEOUT");
+      console.error(
+        `[primary-agent] ${isTimeout ? "⏱️ Timeout" : "❌ Error"} with ${adapterName}: ${err.message}`,
+      );
+
+      // If this is the last adapter, report to user
+      if (attempt >= Math.min(adaptersToTry.length, MAX_FAILOVER_ATTEMPTS + 1) - 1) {
+        tracker.recordEvent(sessionId, {
+          role: "system",
+          type: "error",
+          content: isTimeout
+            ? `⏱️ All agents timed out. The AI service may be experiencing issues. Your message was saved — please try again shortly.`
+            : `❌ Agent error: ${err.message}. Your message was saved — please try again.`,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+  }
+
+  // All adapters failed
+  return {
+    finalResponse: `❌ All agent adapters failed. Last error: ${lastError?.message || "unknown"}`,
+    items: [],
+    usage: null,
+  };
 }
 
 export async function steerPrimaryPrompt(message) {
