@@ -197,8 +197,9 @@ export function ControlTab() {
             return next;
           });
           setExpandedOutputs((prev) => ({ ...prev, [0]: true }));
+        } else {
+          lastContent = text;
         }
-        lastContent = text;
       } catch (_) {
         clearInterval(pollRef.current);
         pollRef.current = null;
@@ -451,6 +452,7 @@ export function ControlTab() {
 
     // Submit
     if (e.key === 'Enter' && commandInput.trim()) {
+      e.preventDefault();
       sendCmd(commandInput.trim());
       setCommandInput('');
       setShowAc(false);
