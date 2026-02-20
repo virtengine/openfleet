@@ -224,12 +224,25 @@ export function ChatTab() {
 
     try {
       if (content.startsWith("/")) {
-        // Send as slash command
-        await apiFetch("/api/command", {
+        // Send as slash command — show result in chat if session is active
+        const resp = await apiFetch("/api/command", {
           method: "POST",
           body: JSON.stringify({ command: content }),
         });
-        showToast("Command sent: " + content.split(/\s/)[0], "success");
+        const data = resp?.data;
+        if (sessionId) {
+          // Record command + result as chat messages so they appear in view
+          const { sessionMessages } = await import("../components/session-list.js");
+          const now = new Date().toISOString();
+          const msgs = sessionMessages.value || [];
+          const userMsg = { id: `cmd-${Date.now()}`, role: "user", content, timestamp: now };
+          const resultText = data?.content || data?.error
+            || (data?.readOnly ? `✅ ${content.split(/\s/)[0]} — see the relevant tab for details.` : `✅ Command executed: ${content.split(/\s/)[0]}`);
+          const sysMsg = { id: `cmd-r-${Date.now()}`, role: "system", content: resultText, timestamp: now };
+          sessionMessages.value = [...msgs, userMsg, sysMsg];
+        } else {
+          showToast("Command sent: " + content.split(/\s/)[0], "success");
+        }
       } else if (sessionId) {
         // Send as message to current session
         await apiFetch(`/api/sessions/${sessionId}/message`, {
@@ -341,7 +354,7 @@ export function ChatTab() {
   /* ── Render ── */
   return html`
     <div class="session-panel">
-      <div class="session-split">
+      <div class="session-split ${sessionId ? 'has-active-session' : ''}">
         <!-- Left panel: Sessions sidebar -->
         <div class="session-pane">
           <${SessionList}
@@ -359,12 +372,18 @@ export function ChatTab() {
         <div class="session-detail">
           ${sessionId &&
           html`
-            <button class="session-back-btn" onClick=${handleBack}>
-              ← Back to sessions
-            </button>
+            <div class="chat-mobile-header">
+              <button class="session-back-btn" onClick=${handleBack}>
+                ← Back
+              </button>
+              <span class="chat-mobile-title">${
+                (sessionsData.value || []).find(s => s.id === sessionId)?.title
+                || "Chat"
+              }</span>
+            </div>
           `}
           ${sessionId
-            ? html`<${ChatView} sessionId=${sessionId} />`
+            ? html`<${ChatView} sessionId=${sessionId} readOnly embedded />`
             : html`
                 <${ChatWelcome}
                   onNewSession=${handleNewSession}

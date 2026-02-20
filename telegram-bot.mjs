@@ -3055,6 +3055,18 @@ async function handleUiCommand(text) {
 
   // For read-only commands (/status, /tasks, /logs, etc.), the UI already
   // has API endpoints — just acknowledge. The UI refreshes data automatically.
+  // For /help and /version, return inline content so it renders in chat.
+  if (cmd === "/help" || cmd === "/helpfull") {
+    const helpLines = Object.entries(COMMANDS)
+      .filter(([, v]) => v.description)
+      .map(([k, v]) => `**${k}** — ${v.description}`)
+      .join("\n");
+    return { executed: true, command: cmd, readOnly: true, content: `**Available Commands:**\n${helpLines}` };
+  }
+  if (cmd === "/version") {
+    const pkg = await import("./package.json", { with: { type: "json" } }).catch(() => ({ default: { version: "unknown" } }));
+    return { executed: true, command: cmd, readOnly: true, content: `**Bosun** v${pkg.default.version}` };
+  }
   return { executed: true, command: cmd, args: cmdArgs, readOnly: true };
 }
 
@@ -9857,6 +9869,7 @@ export async function startTelegramBot() {
     try {
       await startTelegramUiServer({
         dependencies: {
+          execPrimaryPrompt,
           getInternalExecutor: _getInternalExecutor,
           getExecutorMode: _getExecutorMode,
           handleUiCommand: handleUiCommand,

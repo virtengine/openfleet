@@ -4154,20 +4154,33 @@ async function handleApi(req, res, url) {
           return;
         }
         const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        tracker.recordEvent(sessionId, { role: "user", content, timestamp: new Date().toISOString() });
 
-        // Forward to primary agent if applicable
-        if (session.type === "primary") {
-          const exec = uiDeps.execPrimaryPrompt;
-          if (exec) {
-            try {
-              await exec(content, { sessionId, sessionType: "primary" });
-            } catch { /* best-effort forwarding */ }
+        // Forward to primary agent if applicable (exec records user + assistant events)
+        const exec = session.type === "primary" ? uiDeps.execPrimaryPrompt : null;
+        if (exec) {
+          // Don't record user event here — execPrimaryPrompt records it
+          // Respond immediately so the UI doesn't block on agent execution
+          jsonResponse(res, 200, { ok: true, messageId });
+          broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
+          try {
+            await exec(content, { sessionId, sessionType: "primary" });
+            broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
+          } catch (execErr) {
+            // Record error as system message so user sees feedback
+            tracker.recordEvent(sessionId, {
+              role: "system",
+              type: "error",
+              content: `Agent error: ${execErr.message || "Unknown error"}`,
+              timestamp: new Date().toISOString(),
+            });
+            broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-error", sessionId });
           }
+        } else {
+          // No agent — record user event and acknowledge
+          tracker.recordEvent(sessionId, { role: "user", content, timestamp: new Date().toISOString() });
+          jsonResponse(res, 200, { ok: true, messageId });
+          broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
         }
-
-        jsonResponse(res, 200, { ok: true, messageId });
-        broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
