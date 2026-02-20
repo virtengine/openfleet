@@ -189,6 +189,7 @@
     "hook-profiles.mjs",
     "agent-hook-bridge.mjs",
     "agent-supervisor.mjs",
+    "agent-work-analyzer.mjs",
     "startup-service.mjs",
     "telegram-sentinel.mjs",
     "whatsapp-channel.mjs",
