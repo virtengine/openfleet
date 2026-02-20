@@ -2411,6 +2411,39 @@ select.input {
   flex-wrap: wrap;
 }
 
+.tasks-toolbar-actions.compact {
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+}
+
+.tasks-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.tasks-toolbar-actions.compact .filter-toggle,
+.tasks-toolbar-actions.compact .view-toggle,
+.tasks-toolbar-actions.compact .btn-primary {
+  flex: 1;
+  justify-content: center;
+}
+
+.tasks-toolbar-actions.compact .actions-wrap {
+  flex: 0 0 auto;
+}
+
+.tasks-toolbar-actions.compact .actions-btn {
+  min-width: 44px;
+  justify-content: center;
+}
+
+.tasks-toolbar-actions.compact .actions-label {
+  display: none;
+}
+
 .actions-btn svg {
   width: 16px;
   height: 16px;
@@ -2543,7 +2576,6 @@ select.input {
 
   .tasks-toolbar-actions {
     width: 100%;
-    justify-content: space-between;
   }
 
   .filter-toggle {
