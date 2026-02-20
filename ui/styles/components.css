@@ -3783,3 +3783,23 @@ select.input {
   justify-content: flex-end;
   margin-bottom: 12px;
 }
+
+/* ═══════════════════════════════════════════════
+ *  Plan chips + inline count
+ * ═══════════════════════════════════════════════ */
+
+.plan-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.plan-count-input {
+  display: inline-block;
+  width: 3.2rem;
+  padding: 1px 6px;
+  margin: 0 4px;
+  text-align: center;
+  vertical-align: baseline;
+  font-size: inherit;
+}
