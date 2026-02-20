@@ -38,9 +38,15 @@ export async function loadSessions(filter = {}) {
 export async function loadSessionMessages(id) {
   try {
     const res = await apiFetch(`/api/sessions/${id}`, { _silent: true });
-    if (res?.session) sessionMessages.value = res.session.messages || [];
+    if (res?.session) {
+      sessionMessages.value = res.session.messages || [];
+      return { ok: true, messages: sessionMessages.value };
+    }
+    sessionMessages.value = [];
+    return { ok: false, error: "empty" };
   } catch {
     sessionMessages.value = [];
+    return { ok: false, error: "unavailable" };
   }
 }
 
