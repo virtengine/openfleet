@@ -8,42 +8,42 @@
   --font-mono: "SF Mono", "JetBrains Mono", "IBM Plex Mono", "Fira Code", monospace;
 
   /* Bosun Brand Colors */
-  --color-primary: #60cc5d;
-  --color-primary-dim: #4caf50;
-  --gradient-primary: linear-gradient(135deg, rgba(96, 204, 93, 0.85), rgba(7, 242, 16, 0.35));
+  --color-primary: #10b981;
+  --color-primary-dim: #059669;
+  --gradient-primary: linear-gradient(135deg, rgba(16, 185, 129, 0.85), rgba(5, 150, 105, 0.35));
 
   /* Core colors (dark, with Telegram fallbacks) */
-  --bg-primary: var(--tg-theme-bg-color, #06060b);
-  --bg-secondary: var(--tg-theme-secondary-bg-color, #0d0d14);
-  --bg-card: var(--tg-theme-section-bg-color, #12121c);
-  --bg-surface: #0d0d14;
-  --bg-input: #0d0d14;
-  --bg-card-hover: rgba(255, 255, 255, 0.05);
-  --bg-elevated: #1a1a28;
-  --surface-1: rgba(255, 255, 255, 0.02);
-  --surface-2: rgba(255, 255, 255, 0.05);
-  --surface-3: rgba(255, 255, 255, 0.08);
+  --bg-primary: var(--tg-theme-bg-color, #030712);
+  --bg-secondary: var(--tg-theme-secondary-bg-color, #0f172a);
+  --bg-card: var(--tg-theme-section-bg-color, #1e293b);
+  --bg-surface: #0f172a;
+  --bg-input: #0f172a;
+  --bg-card-hover: rgba(255, 255, 255, 0.06);
+  --bg-elevated: #1e293b;
+  --surface-1: rgba(255, 255, 255, 0.03);
+  --surface-2: rgba(255, 255, 255, 0.06);
+  --surface-3: rgba(255, 255, 255, 0.09);
 
-  --text-primary: var(--tg-theme-text-color, #f1f5f9);
+  --text-primary: var(--tg-theme-text-color, #f8fafc);
   --text-secondary: var(
     --tg-theme-subtitle-text-color,
     var(--tg-theme-hint-color, #94a3b8)
   );
-  --text-hint: var(--tg-theme-hint-color, #7f8898);
-  --text-bright: #f5f8fb;
+  --text-hint: var(--tg-theme-hint-color, #64748b);
+  --text-bright: #ffffff;
   --text-muted: rgba(148, 163, 184, 0.85);
 
-  --accent: var(--tg-theme-button-color, #60cc5d);
-  --accent-text: var(--tg-theme-button-text-color, #fff);
-  --accent-hover: var(--tg-theme-accent-text-color, #7bdff6);
-  --accent-soft: rgba(96, 204, 93, 0.16);
+  --accent: var(--tg-theme-button-color, #3b82f6);
+  --accent-text: var(--tg-theme-button-text-color, #ffffff);
+  --accent-hover: var(--tg-theme-accent-text-color, #60a5fa);
+  --accent-soft: rgba(59, 130, 246, 0.16);
 
-  --link-color: var(--tg-theme-link-color, #7bdff6);
-  --destructive: var(--tg-theme-destructive-text-color, #ff6b6b);
+  --link-color: var(--tg-theme-link-color, #60a5fa);
+  --destructive: var(--tg-theme-destructive-text-color, #ef4444);
 
-  --border: var(--tg-theme-section-separator-color, rgba(148, 163, 184, 0.18));
-  --border-strong: rgba(148, 163, 184, 0.28);
-  --separator: rgba(148, 163, 184, 0.18);
+  --border: var(--tg-theme-section-separator-color, rgba(148, 163, 184, 0.15));
+  --border-strong: rgba(148, 163, 184, 0.25);
+  --separator: rgba(148, 163, 184, 0.15);
   --header-text: var(
     --tg-theme-section-header-text-color,
     var(--text-secondary)
@@ -115,40 +115,40 @@
   --glass-highlight: rgba(255, 255, 255, 0.04);
 
   /* Glow System */
-  --accent-glow: rgba(76, 201, 240, 0.14);
-  --accent-subtle: rgba(76, 201, 240, 0.08);
-  --glow-progress: rgba(59, 130, 246, 0.14);
-  --glow-success: rgba(34, 197, 94, 0.16);
-  --glow-warning: rgba(245, 158, 11, 0.16);
-  --glow-error: rgba(248, 113, 113, 0.16);
-  --shadow-glow: 0 0 12px var(--accent-glow);
-  --shadow-glow-sm: 0 0 6px var(--accent-glow);
-  --border-glow: rgba(76, 201, 240, 0.22);
+  --accent-glow: rgba(59, 130, 246, 0.15);
+  --accent-subtle: rgba(59, 130, 246, 0.1);
+  --glow-progress: rgba(59, 130, 246, 0.15);
+  --glow-success: rgba(16, 185, 129, 0.15);
+  --glow-warning: rgba(245, 158, 11, 0.15);
+  --glow-error: rgba(239, 68, 68, 0.15);
+  --shadow-glow: 0 0 16px var(--accent-glow);
+  --shadow-glow-sm: 0 0 8px var(--accent-glow);
+  --border-glow: rgba(59, 130, 246, 0.25);
 
   /* Status colors */
-  --color-todo: #94a3b2;
-  --color-inprogress: #4cc9f0;
+  --color-todo: #64748b;
+  --color-inprogress: #3b82f6;
   --color-inreview: #f59e0b;
-  --color-done: #34d399;
-  --color-error: #f87171;
-  --color-cancelled: #94a3b2;
-  --color-critical: #f87171;
+  --color-done: #10b981;
+  --color-error: #ef4444;
+  --color-cancelled: #64748b;
+  --color-critical: #ef4444;
   --color-high: #f59e0b;
-  --color-medium: #4cc9f0;
-  --color-low: #94a3b2;
+  --color-medium: #3b82f6;
+  --color-low: #64748b;
 
   /* Gradients */
-  --gradient-accent: linear-gradient(135deg, #4cc9f0 0%, #5eead4 100%);
-  --gradient-accent-hover: linear-gradient(135deg, #5eead4 0%, #7bdff6 100%);
-  --gradient-progress: linear-gradient(90deg, #4cc9f0 0%, #34d399 100%);
-  --gradient-hero: radial-gradient(circle at 20% 0%, rgba(76, 201, 240, 0.12), transparent 60%),
-    radial-gradient(circle at 80% 10%, rgba(94, 234, 212, 0.08), transparent 55%),
-    radial-gradient(circle at 50% 90%, rgba(59, 130, 246, 0.06), transparent 65%);
-  --gradient-surface: linear-gradient(180deg, rgba(12, 16, 24, 0.92) 0%, rgba(10, 13, 20, 0.96) 100%);
-  --gradient-radial-glow: radial-gradient(circle at 50% 20%, rgba(76, 201, 240, 0.12), transparent 65%);
-  --gradient-mesh: radial-gradient(circle at 10% 20%, rgba(76, 201, 240, 0.08), transparent 60%),
-    radial-gradient(circle at 90% 10%, rgba(94, 234, 212, 0.06), transparent 50%),
-    radial-gradient(circle at 50% 100%, rgba(59, 130, 246, 0.05), transparent 65%);
+  --gradient-accent: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+  --gradient-accent-hover: linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%);
+  --gradient-progress: linear-gradient(90deg, #3b82f6 0%, #10b981 100%);
+  --gradient-hero: radial-gradient(circle at 20% 0%, rgba(59, 130, 246, 0.15), transparent 60%),
+    radial-gradient(circle at 80% 10%, rgba(139, 92, 246, 0.1), transparent 55%),
+    radial-gradient(circle at 50% 90%, rgba(16, 185, 129, 0.08), transparent 65%);
+  --gradient-surface: linear-gradient(180deg, rgba(15, 23, 42, 0.95) 0%, rgba(3, 7, 18, 0.98) 100%);
+  --gradient-radial-glow: radial-gradient(circle at 50% 20%, rgba(59, 130, 246, 0.15), transparent 65%);
+  --gradient-mesh: radial-gradient(circle at 10% 20%, rgba(59, 130, 246, 0.1), transparent 60%),
+    radial-gradient(circle at 90% 10%, rgba(139, 92, 246, 0.08), transparent 50%),
+    radial-gradient(circle at 50% 100%, rgba(16, 185, 129, 0.06), transparent 65%);
 
   /* Backdrop */
   --backdrop: rgba(5, 10, 18, 0.7);

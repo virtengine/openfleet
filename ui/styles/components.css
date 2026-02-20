@@ -17,7 +17,7 @@
 .card:hover {
   background: var(--bg-card-hover);
   border-color: var(--border-strong);
-  box-shadow: var(--shadow-md), 0 0 20px rgba(76, 201, 240, 0.05);
+  box-shadow: var(--shadow-md), 0 0 20px rgba(59, 130, 246, 0.08);
 }
 
 .card-title {
@@ -134,19 +134,19 @@
 }
 
 .badge-todo {
-  background: rgba(139, 148, 158, 0.15);
+  background: rgba(100, 116, 139, 0.15);
   color: var(--color-todo);
-  border-color: rgba(139, 148, 158, 0.25);
+  border-color: rgba(100, 116, 139, 0.25);
 }
 .badge-inprogress {
-  background: rgba(88, 166, 255, 0.18);
+  background: rgba(59, 130, 246, 0.18);
   color: var(--color-inprogress);
-  border-color: rgba(88, 166, 255, 0.35);
+  border-color: rgba(59, 130, 246, 0.35);
 }
 .badge-inreview {
-  background: rgba(210, 153, 34, 0.18);
+  background: rgba(245, 158, 11, 0.18);
   color: var(--color-inreview);
-  border-color: rgba(210, 153, 34, 0.35);
+  border-color: rgba(245, 158, 11, 0.35);
 }
 .badge-draft {
   background: rgba(245, 158, 11, 0.16);
@@ -154,56 +154,56 @@
   border-color: rgba(245, 158, 11, 0.35);
 }
 .badge-done {
-  background: rgba(46, 160, 67, 0.18);
+  background: rgba(16, 185, 129, 0.18);
   color: var(--color-done);
-  border-color: rgba(46, 160, 67, 0.35);
+  border-color: rgba(16, 185, 129, 0.35);
 }
 .badge-error {
-  background: rgba(248, 81, 73, 0.18);
+  background: rgba(239, 68, 68, 0.18);
   color: var(--color-error);
-  border-color: rgba(248, 81, 73, 0.35);
+  border-color: rgba(239, 68, 68, 0.35);
 }
 .badge-cancelled {
-  background: rgba(110, 118, 129, 0.18);
+  background: rgba(100, 116, 139, 0.18);
   color: var(--color-cancelled);
-  border-color: rgba(110, 118, 129, 0.3);
+  border-color: rgba(100, 116, 139, 0.3);
 }
 
 .badge-critical {
-  background: rgba(248, 81, 73, 0.18);
+  background: rgba(239, 68, 68, 0.18);
   color: var(--color-critical);
-  border-color: rgba(248, 81, 73, 0.35);
+  border-color: rgba(239, 68, 68, 0.35);
 }
 .badge-high {
-  background: rgba(210, 153, 34, 0.18);
+  background: rgba(245, 158, 11, 0.18);
   color: var(--color-high);
-  border-color: rgba(210, 153, 34, 0.35);
+  border-color: rgba(245, 158, 11, 0.35);
 }
 .badge-medium {
-  background: rgba(88, 166, 255, 0.18);
+  background: rgba(59, 130, 246, 0.18);
   color: var(--color-medium);
-  border-color: rgba(88, 166, 255, 0.35);
+  border-color: rgba(59, 130, 246, 0.35);
 }
 .badge-low {
-  background: rgba(139, 148, 158, 0.15);
+  background: rgba(100, 116, 139, 0.15);
   color: var(--color-low);
-  border-color: rgba(139, 148, 158, 0.25);
+  border-color: rgba(100, 116, 139, 0.25);
 }
 
 .badge-info {
-  background: rgba(88, 166, 255, 0.18);
+  background: rgba(59, 130, 246, 0.18);
   color: var(--color-inprogress);
-  border-color: rgba(88, 166, 255, 0.35);
+  border-color: rgba(59, 130, 246, 0.35);
 }
 .badge-warning {
-  background: rgba(210, 153, 34, 0.18);
+  background: rgba(245, 158, 11, 0.18);
   color: var(--color-inreview);
-  border-color: rgba(210, 153, 34, 0.35);
+  border-color: rgba(245, 158, 11, 0.35);
 }
 .badge-log {
-  background: rgba(139, 148, 158, 0.12);
+  background: rgba(100, 116, 139, 0.12);
   color: var(--text-secondary);
-  border-color: rgba(139, 148, 158, 0.2);
+  border-color: rgba(100, 116, 139, 0.2);
 }
 
 /* ─── Chips / Filters ─── */
@@ -264,9 +264,9 @@
   font-size: 11px;
   font-weight: 600;
   border-radius: var(--radius-full);
-  background: rgba(56, 189, 248, 0.15);
-  color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.3);
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
 }
 
 /* ─── Buttons ─── */
@@ -316,12 +316,12 @@
 .btn-primary {
   background: var(--accent);
   color: var(--accent-text);
-  box-shadow: var(--shadow-sm), 0 0 14px rgba(96, 204, 93, 0.28);
+  box-shadow: var(--shadow-sm), 0 0 14px rgba(59, 130, 246, 0.28);
 }
 
 .btn-primary:hover {
   background: var(--accent-hover);
-  box-shadow: var(--shadow-md), 0 0 18px rgba(96, 204, 93, 0.35);
+  box-shadow: var(--shadow-md), 0 0 18px rgba(59, 130, 246, 0.35);
 }
 
 .btn-secondary {
@@ -347,13 +347,13 @@
 }
 
 .btn-danger {
-  background: rgba(248, 81, 73, 0.12);
+  background: rgba(239, 68, 68, 0.12);
   color: var(--color-error);
-  border: 1px solid rgba(248, 81, 73, 0.25);
+  border: 1px solid rgba(239, 68, 68, 0.25);
 }
 
 .btn-danger:hover {
-  background: rgba(248, 81, 73, 0.18);
+  background: rgba(239, 68, 68, 0.18);
 }
 
 @media (hover: hover) {
@@ -404,8 +404,8 @@
 }
 
 .input-error {
-  border-color: rgba(248, 113, 113, 0.6);
-  box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.15);
+  border-color: rgba(239, 68, 68, 0.6);
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.15);
 }
 
 .input::placeholder {
@@ -1096,7 +1096,7 @@ select.input {
   flex-shrink: 0;
 }
 .toggle-on {
-  background: var(--accent, #5b6eae) !important;
+  background: var(--accent, #3b82f6) !important;
 }
 .toggle-thumb {
   position: absolute;
@@ -1372,19 +1372,19 @@ select.input {
 
 .slot-busy,
 .slot-running {
-  background: rgba(88, 166, 255, 0.12);
-  border-color: rgba(88, 166, 255, 0.4);
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.4);
   animation: glowPulse 2s ease-in-out infinite;
 }
 
 .slot-error {
-  background: rgba(248, 81, 73, 0.12);
-  border-color: rgba(248, 81, 73, 0.4);
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.4);
 }
 
 .slot-done {
-  background: rgba(46, 160, 67, 0.12);
-  border-color: rgba(46, 160, 67, 0.4);
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.4);
 }
 
 @keyframes slot-pulse {
@@ -1402,7 +1402,7 @@ select.input {
 
 .agent-progress-bar-fill {
   height: 100%;
-  background: var(--gradient-progress, linear-gradient(90deg, #6366f1, #818cf8));
+  background: var(--gradient-progress, linear-gradient(90deg, #3b82f6, #8b5cf6));
   border-radius: var(--radius-full);
   width: 100%;
 }
@@ -1675,12 +1675,12 @@ select.input {
   border-radius: var(--radius-lg);
   background: linear-gradient(
     140deg,
-    rgba(96, 204, 93, 0.16) 0%,
-    rgba(76, 201, 240, 0.10) 55%,
-    rgba(94, 234, 212, 0.06) 100%
+    rgba(59, 130, 246, 0.16) 0%,
+    rgba(139, 92, 246, 0.10) 55%,
+    rgba(16, 185, 129, 0.06) 100%
   );
-  border: 1px solid rgba(96, 204, 93, 0.24);
-  box-shadow: var(--shadow-sm), 0 0 28px rgba(96, 204, 93, 0.07);
+  border: 1px solid rgba(59, 130, 246, 0.24);
+  box-shadow: var(--shadow-sm), 0 0 28px rgba(59, 130, 246, 0.07);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   position: relative;
@@ -1695,7 +1695,7 @@ select.input {
   width: 190px;
   height: 190px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(96, 204, 93, 0.13), transparent 70%);
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.13), transparent 70%);
   pointer-events: none;
 }
 
@@ -1980,17 +1980,17 @@ select.input {
 
 .dashboard-alert-dot.error {
   background: var(--color-error);
-  box-shadow: 0 0 0 4px rgba(248, 81, 73, 0.15);
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.15);
 }
 
 .dashboard-alert-dot.warning {
   background: var(--color-inreview);
-  box-shadow: 0 0 0 4px rgba(210, 153, 34, 0.16);
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.16);
 }
 
 .dashboard-alert-dot.ok {
   background: var(--color-done);
-  box-shadow: 0 0 0 4px rgba(46, 160, 67, 0.14);
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.14);
 }
 
 .dashboard-alert-title {
@@ -2184,15 +2184,15 @@ select.input {
 }
 
 .dashboard-quality-item.tone-good {
-  border-color: rgba(46, 160, 67, 0.35);
+  border-color: rgba(16, 185, 129, 0.35);
 }
 
 .dashboard-quality-item.tone-warn {
-  border-color: rgba(210, 153, 34, 0.35);
+  border-color: rgba(245, 158, 11, 0.35);
 }
 
 .dashboard-quality-item.tone-error {
-  border-color: rgba(248, 81, 73, 0.35);
+  border-color: rgba(239, 68, 68, 0.35);
 }
 
 .dashboard-activity .list-item {
@@ -2308,7 +2308,7 @@ select.input {
 /* ─── Task Card States ─── */
 .task-card-selected {
   border-color: var(--accent);
-  background: rgba(99, 102, 241, 0.06);
+  background: rgba(59, 130, 246, 0.06);
   box-shadow: var(--shadow-glow-sm);
 }
 
@@ -2849,7 +2849,7 @@ select.input {
 }
 
 .fleet-overview-card {
-  background-image: radial-gradient(circle at top left, rgba(99, 102, 241, 0.12), transparent 55%);
+  background-image: radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 55%);
 }
 
 .fleet-hero {
@@ -2891,8 +2891,8 @@ select.input {
   margin-top: 8px;
   font-size: 12px;
   color: var(--color-error);
-  background: rgba(248, 81, 73, 0.12);
-  border: 1px solid rgba(248, 81, 73, 0.35);
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
   padding: 6px 8px;
   border-radius: var(--radius-md);
 }
@@ -2949,7 +2949,7 @@ select.input {
 }
 
 .fleet-agent-card {
-  border-left: 3px solid rgba(99, 102, 241, 0.35);
+  border-left: 3px solid rgba(59, 130, 246, 0.35);
 }
 
 .fleet-slotmap-card .slot-grid {
@@ -2982,7 +2982,7 @@ select.input {
 }
 
 .control-hero {
-  background-image: radial-gradient(circle at top right, rgba(56, 189, 248, 0.12), transparent 55%);
+  background-image: radial-gradient(circle at top right, rgba(59, 130, 246, 0.12), transparent 55%);
 }
 
 .control-hero-header {
@@ -3096,11 +3096,11 @@ select.input {
 }
 
 .cmd-dropdown-item.selected {
-  background: rgba(99, 102, 241, 0.2);
+  background: rgba(59, 130, 246, 0.2);
 }
 
 .cmd-dropdown-item:hover {
-  background: rgba(99, 102, 241, 0.15);
+  background: rgba(59, 130, 246, 0.15);
 }
 
 .cmd-item-title {
