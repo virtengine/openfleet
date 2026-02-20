@@ -4,7 +4,7 @@
  *  offline queue, and streaming status indicators.
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
-import { useEffect, useState, useCallback, useRef } from "preact/hooks";
+import { useEffect, useState, useCallback, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
 
 const html = htm.bind(h);
@@ -16,6 +16,8 @@ import {
   sessionsData,
   createSession,
   loadSessionMessages,
+  archiveSession,
+  resumeSession,
 } from "../components/session-list.js";
 import { ChatView } from "../components/chat-view.js";
 import { apiFetch } from "../modules/api.js";
@@ -203,6 +205,23 @@ export function ChatTab() {
       return false;
     }
   });
+  const [isDesktop, setIsDesktop] = useState(() => {
+    try {
+      return globalThis.matchMedia?.("(min-width: 1200px)")?.matches ?? false;
+    } catch {
+      return false;
+    }
+  });
+  const [drawerOpen, setDrawerOpen] = useState(() => {
+    return !selectedSessionId.value && (globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false);
+  });
+  const [focusMode, setFocusMode] = useState(() => {
+    try {
+      return localStorage.getItem("ve-chat-focus") === "true";
+    } catch {
+      return false;
+    }
+  });
   const textareaRef = useRef(null);
 
   /* ── Load sessions + agents on mount ── */
@@ -237,6 +256,35 @@ export function ChatTab() {
     };
   }, []);
 
+  useEffect(() => {
+    const mq = globalThis.matchMedia?.("(min-width: 1200px)");
+    if (!mq) return;
+    const handler = (e) => setIsDesktop(e.matches);
+    if (mq.addEventListener) mq.addEventListener("change", handler);
+    else mq.addListener(handler);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", handler);
+      else mq.removeListener(handler);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    if (focusMode) {
+      document.documentElement.dataset.chatFocus = "true";
+    } else {
+      delete document.documentElement.dataset.chatFocus;
+    }
+    try {
+      localStorage.setItem("ve-chat-focus", String(focusMode));
+    } catch {
+      /* ignore storage errors */
+    }
+    return () => {
+      delete document.documentElement.dataset.chatFocus;
+    };
+  }, [focusMode]);
+
   /* ── Auto-select first session if none ── */
   useEffect(() => {
     if (isMobile) return;
@@ -248,6 +296,16 @@ export function ChatTab() {
       ) || sessions[0];
     if (next?.id) selectedSessionId.value = next.id;
   }, [sessionsData.value, selectedSessionId.value, isMobile]);
+
+  useEffect(() => {
+    if (!isMobile) {
+      setDrawerOpen(false);
+      return;
+    }
+    if (!selectedSessionId.value) {
+      setDrawerOpen(true);
+    }
+  }, [isMobile, selectedSessionId.value]);
 
   /* ── Slash command filtering ── */
   const allCommands = getSlashCommands();
@@ -474,13 +532,33 @@ export function ChatTab() {
   }
 
   const handleBack = useCallback(() => {
+    if (isMobile) {
+      setDrawerOpen(true);
+      return;
+    }
     selectedSessionId.value = null;
-  }, []);
+  }, [isMobile]);
+
+  const handleSelectSession = useCallback(() => {
+    if (isMobile) setDrawerOpen(false);
+  }, [isMobile]);
+
+  const activeSession = useMemo(
+    () => (sessionsData.value || []).find((s) => s.id === sessionId) || null,
+    [sessionsData.value, sessionId],
+  );
+  const sessionTitle = activeSession?.title || activeSession?.taskId || "Session";
+  const sessionMeta = [activeSession?.type, activeSession?.status]
+    .filter(Boolean)
+    .join(" · ");
 
   /* ── Render ── */
   return html`
     <div class="session-panel">
-      <div class="session-split ${sessionId ? 'has-active-session' : ''}">
+      <div
+        class="session-split ${sessionId ? 'has-active-session' : ''} ${drawerOpen ? 'drawer-open' : ''}"
+        data-mobile=${isMobile ? "true" : "false"}
+      >
         <!-- Left panel: Sessions sidebar -->
         <div class="session-pane">
           <${SessionList}
@@ -491,6 +569,7 @@ export function ChatTab() {
             onStartRename=${(sid) => setRenamingSessionId(sid)}
             onSaveRename=${saveRename}
             onCancelRename=${cancelRename}
+            onSelect=${handleSelectSession}
           />
         </div>
 
@@ -498,14 +577,45 @@ export function ChatTab() {
         <div class="session-detail">
           ${sessionId &&
           html`
-            <div class="chat-mobile-header">
-              <button class="session-back-btn" onClick=${handleBack}>
-                ← Back
-              </button>
-              <span class="chat-mobile-title">${
-                (sessionsData.value || []).find(s => s.id === sessionId)?.title
-                || "Chat"
-              }</span>
+            <div class="chat-shell-header">
+              <div class="chat-shell-inner">
+                <button class="session-drawer-btn" onClick=${handleBack}>
+                  ☰ Sessions
+                </button>
+                <div class="chat-shell-title">
+                  <div class="chat-shell-name">${sessionTitle}</div>
+                  <div class="chat-shell-meta">${sessionMeta || "Session"}</div>
+                </div>
+                <div class="chat-shell-actions">
+                  ${isDesktop &&
+                  html`
+                    <button
+                      class="btn btn-ghost btn-sm"
+                      onClick=${() => setFocusMode((prev) => !prev)}
+                      title=${focusMode ? "Exit focus mode" : "Enter focus mode"}
+                    >
+                      ${focusMode ? "Exit Focus" : "Focus"}
+                    </button>
+                  `}
+                  ${activeSession?.status === "archived"
+                    ? html`
+                        <button
+                          class="btn btn-ghost btn-sm"
+                          onClick=${() => resumeSession(activeSession.id)}
+                        >
+                          Restore
+                        </button>
+                      `
+                    : html`
+                        <button
+                          class="btn btn-ghost btn-sm"
+                          onClick=${() => archiveSession(activeSession.id)}
+                        >
+                          Archive
+                        </button>
+                      `}
+                </div>
+              </div>
             </div>
           `}
           ${sessionId
@@ -560,6 +670,13 @@ export function ChatTab() {
           </div>
         </div>
       </div>
+      ${isMobile &&
+      html`
+        <div
+          class="session-drawer-backdrop ${drawerOpen ? "open" : ""}"
+          onClick=${() => setDrawerOpen(false)}
+        ></div>
+      `}
     </div>
   `;
 }

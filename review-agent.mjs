@@ -273,6 +273,9 @@ export class ReviewAgent {
   /** @type {string|undefined} */
   #promptTemplate;
 
+  /** @type {object|undefined} */
+  #supervisor;
+
   /**
    * @param {Object} [options]
    * @param {string} [options.sdk]
@@ -282,6 +285,7 @@ export class ReviewAgent {
    * @param {Function} [options.onReviewComplete]
    * @param {Function} [options.sendTelegram]
    * @param {string} [options.promptTemplate]
+   * @param {object} [options.supervisor]
    */
   constructor(options = {}) {
     this.#sdk = options.sdk || getPoolSdkName();
@@ -293,6 +297,7 @@ export class ReviewAgent {
     this.#onReviewComplete = options.onReviewComplete;
     this.#sendTelegram = options.sendTelegram;
     this.#promptTemplate = options.promptTemplate;
+    this.#supervisor = options.supervisor || null;
     console.log(
       `${TAG} initialized (sdk=${this.#sdk}, maxConcurrent=${this.#maxConcurrent}, timeout=${this.#reviewTimeoutMs}ms)`,
     );
@@ -352,6 +357,14 @@ export class ReviewAgent {
       queuedReviews: this.#queue.length,
       completedReviews: this.#completedCount,
     };
+  }
+
+  /**
+   * Set the AgentSupervisor instance for review enforcement.
+   * @param {object} supervisor - AgentSupervisor instance
+   */
+  setSupervisor(supervisor) {
+    this.#supervisor = supervisor || null;
   }
 
   /** Start processing the review queue. */
@@ -504,6 +517,15 @@ export class ReviewAgent {
         this.#onReviewComplete(taskId, result);
       } catch (err) {
         console.error(`${TAG} onReviewComplete callback error:`, err.message);
+      }
+    }
+
+    // ── Notify supervisor for review enforcement ──
+    if (this.#supervisor) {
+      try {
+        this.#supervisor.onReviewComplete(taskId, result);
+      } catch (err) {
+        console.error(`${TAG} supervisor.onReviewComplete error:`, err.message);
       }
     }
 

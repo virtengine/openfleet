@@ -3,54 +3,54 @@
 
 :root {
   /* Typography */
-  --font-ui: "SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Sora",
-    "Space Grotesk", "IBM Plex Sans", "Segoe UI", sans-serif;
-  --font-mono: "SF Mono", "JetBrains Mono", "IBM Plex Mono", "Fira Code", monospace;
+  --font-ui: "Instrument Sans", "SF Pro Text", "SF Pro Display", -apple-system,
+    BlinkMacSystemFont, "IBM Plex Sans", "Segoe UI", sans-serif;
+  --font-mono: "DM Mono", "SF Mono", "JetBrains Mono", "IBM Plex Mono", monospace;
 
   /* Bosun Brand Colors */
-  --color-primary: #10b981;
-  --color-primary-dim: #059669;
-  --gradient-primary: linear-gradient(135deg, rgba(16, 185, 129, 0.85), rgba(5, 150, 105, 0.35));
+  --color-primary: #da7756;
+  --color-primary-dim: #c66a4d;
+  --gradient-primary: linear-gradient(135deg, rgba(218, 119, 86, 0.9), rgba(198, 106, 77, 0.4));
 
   /* Core colors (dark, with Telegram fallbacks) */
-  --bg-primary: var(--tg-theme-bg-color, #030712);
-  --bg-secondary: var(--tg-theme-secondary-bg-color, #0f172a);
-  --bg-card: var(--tg-theme-section-bg-color, #1e293b);
-  --bg-surface: #0f172a;
-  --bg-input: #0f172a;
-  --bg-card-hover: rgba(255, 255, 255, 0.06);
-  --bg-elevated: #1e293b;
-  --surface-1: rgba(255, 255, 255, 0.03);
-  --surface-2: rgba(255, 255, 255, 0.06);
-  --surface-3: rgba(255, 255, 255, 0.09);
+  --bg-primary: var(--tg-theme-bg-color, #1f1e1c);
+  --bg-secondary: var(--tg-theme-secondary-bg-color, #262522);
+  --bg-card: var(--tg-theme-section-bg-color, #2b2a27);
+  --bg-surface: #23221f;
+  --bg-input: #2b2a27;
+  --bg-card-hover: rgba(255, 255, 255, 0.05);
+  --bg-elevated: #2a2926;
+  --surface-1: rgba(255, 255, 255, 0.02);
+  --surface-2: rgba(255, 255, 255, 0.04);
+  --surface-3: rgba(255, 255, 255, 0.06);
 
-  --text-primary: var(--tg-theme-text-color, #f8fafc);
+  --text-primary: var(--tg-theme-text-color, #e8e5de);
   --text-secondary: var(
     --tg-theme-subtitle-text-color,
-    var(--tg-theme-hint-color, #94a3b8)
+    var(--tg-theme-hint-color, #b5b0a6)
   );
-  --text-hint: var(--tg-theme-hint-color, #64748b);
-  --text-bright: #ffffff;
-  --text-muted: rgba(148, 163, 184, 0.85);
+  --text-hint: var(--tg-theme-hint-color, #908b81);
+  --text-bright: #f6f2ea;
+  --text-muted: rgba(181, 176, 166, 0.82);
 
-  --accent: var(--tg-theme-button-color, #3b82f6);
-  --accent-text: var(--tg-theme-button-text-color, #ffffff);
-  --accent-hover: var(--tg-theme-accent-text-color, #60a5fa);
-  --accent-soft: rgba(59, 130, 246, 0.16);
+  --accent: var(--tg-theme-button-color, #da7756);
+  --accent-text: var(--tg-theme-button-text-color, #1e1d1a);
+  --accent-hover: var(--tg-theme-accent-text-color, #e5886a);
+  --accent-soft: rgba(218, 119, 86, 0.18);
 
-  --link-color: var(--tg-theme-link-color, #60a5fa);
-  --destructive: var(--tg-theme-destructive-text-color, #ef4444);
+  --link-color: var(--tg-theme-link-color, #e2a08a);
+  --destructive: var(--tg-theme-destructive-text-color, #e5534b);
 
-  --border: var(--tg-theme-section-separator-color, rgba(148, 163, 184, 0.15));
-  --border-strong: rgba(148, 163, 184, 0.25);
-  --separator: rgba(148, 163, 184, 0.15);
+  --border: var(--tg-theme-section-separator-color, rgba(255, 255, 255, 0.08));
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --separator: rgba(255, 255, 255, 0.08);
   --header-text: var(
     --tg-theme-section-header-text-color,
     var(--text-secondary)
   );
 
   /* Bottom bar */
-  --bottom-bar-bg: var(--tg-theme-bottom-bar-bg-color, var(--bg-secondary));
+  --bottom-bar-bg: var(--tg-theme-bottom-bar-bg-color, #1f1e1c);
 
   /* Safe areas from Telegram */
   --safe-top: var(--tg-safe-area-inset-top, env(safe-area-inset-top, 0px));
@@ -109,15 +109,15 @@
   --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 
   /* Glass System */
-  --glass-bg: rgba(10, 14, 20, 0.78);
-  --glass-border: rgba(148, 163, 184, 0.16);
-  --glass-blur: blur(10px);
-  --glass-highlight: rgba(255, 255, 255, 0.04);
+  --glass-bg: rgba(32, 31, 29, 0.92);
+  --glass-border: rgba(255, 255, 255, 0.06);
+  --glass-blur: blur(6px);
+  --glass-highlight: rgba(255, 255, 255, 0.02);
 
   /* Glow System */
-  --accent-glow: rgba(59, 130, 246, 0.15);
-  --accent-subtle: rgba(59, 130, 246, 0.1);
-  --glow-progress: rgba(59, 130, 246, 0.15);
+  --accent-glow: rgba(218, 119, 86, 0.18);
+  --accent-subtle: rgba(218, 119, 86, 0.12);
+  --glow-progress: rgba(218, 119, 86, 0.18);
   --glow-success: rgba(16, 185, 129, 0.15);
   --glow-warning: rgba(245, 158, 11, 0.15);
   --glow-error: rgba(239, 68, 68, 0.15);
@@ -138,17 +138,17 @@
   --color-low: #64748b;
 
   /* Gradients */
-  --gradient-accent: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
-  --gradient-accent-hover: linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%);
-  --gradient-progress: linear-gradient(90deg, #3b82f6 0%, #10b981 100%);
-  --gradient-hero: radial-gradient(circle at 20% 0%, rgba(59, 130, 246, 0.15), transparent 60%),
-    radial-gradient(circle at 80% 10%, rgba(139, 92, 246, 0.1), transparent 55%),
-    radial-gradient(circle at 50% 90%, rgba(16, 185, 129, 0.08), transparent 65%);
-  --gradient-surface: linear-gradient(180deg, rgba(15, 23, 42, 0.95) 0%, rgba(3, 7, 18, 0.98) 100%);
-  --gradient-radial-glow: radial-gradient(circle at 50% 20%, rgba(59, 130, 246, 0.15), transparent 65%);
-  --gradient-mesh: radial-gradient(circle at 10% 20%, rgba(59, 130, 246, 0.1), transparent 60%),
-    radial-gradient(circle at 90% 10%, rgba(139, 92, 246, 0.08), transparent 50%),
-    radial-gradient(circle at 50% 100%, rgba(16, 185, 129, 0.06), transparent 65%);
+  --gradient-accent: linear-gradient(135deg, #da7756 0%, #e5886a 100%);
+  --gradient-accent-hover: linear-gradient(135deg, #e5886a 0%, #f0a384 100%);
+  --gradient-progress: linear-gradient(90deg, #da7756 0%, #f0a384 100%);
+  --gradient-hero: none;
+  --gradient-surface: linear-gradient(180deg, rgba(47, 46, 43, 0.96) 0%, rgba(32, 31, 29, 0.98) 100%);
+  --gradient-radial-glow: none;
+  --gradient-mesh: none;
+
+  --sidebar-bg: #262522;
+  --sidebar-hover: #302e2a;
+  --sidebar-active: #3a3834;
 
   /* Backdrop */
   --backdrop: rgba(5, 10, 18, 0.7);

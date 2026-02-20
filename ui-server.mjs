@@ -4304,6 +4304,51 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // ── Supervisor API endpoint ──
+  if (path === "/api/supervisor/status" && req.method === "GET") {
+    try {
+      const supervisor = typeof uiDeps.getAgentSupervisor === "function"
+        ? uiDeps.getAgentSupervisor()
+        : null;
+      if (!supervisor) {
+        jsonResponse(res, 503, { ok: false, error: "Supervisor not available" });
+        return;
+      }
+      const systemHealth = supervisor.getSystemHealth();
+      const diagnostics = supervisor.getAllDiagnostics();
+      jsonResponse(res, 200, { ok: true, ...systemHealth, tasks: diagnostics });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/supervisor/task/") && req.method === "GET") {
+    try {
+      const supervisor = typeof uiDeps.getAgentSupervisor === "function"
+        ? uiDeps.getAgentSupervisor()
+        : null;
+      if (!supervisor) {
+        jsonResponse(res, 503, { ok: false, error: "Supervisor not available" });
+        return;
+      }
+      const taskId = path.split("/api/supervisor/task/")[1];
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "Missing taskId" });
+        return;
+      }
+      const diag = supervisor.getTaskDiagnostics(taskId);
+      if (!diag) {
+        jsonResponse(res, 404, { ok: false, error: "Task not tracked" });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, ...diag });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   // ── Session API endpoints ──────────────────────────────────────────────
 
   if (path === "/api/sessions" && req.method === "GET") {

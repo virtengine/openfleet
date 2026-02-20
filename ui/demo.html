@@ -29,13 +29,13 @@
   <!-- Fonts (match site) -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
 
   <style>
     /* ═══ DEMO LAYOUT — Telegram MiniApp (single view) ═══════════════ */
     *, *::before, *::after { box-sizing: border-box; }
     html { height: 100%; margin: 0; }
-    body { height: 100%; margin: 0; font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', 'Inter', sans-serif; background: #0b0f14; color: #e8edf2; overflow: hidden; }
+    body { height: 100%; margin: 0; font-family: "Instrument Sans", -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif; background: #0b0f14; color: #e8edf2; overflow: hidden; }
 
     /* Demo banner */
     .demo-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 99999; background: linear-gradient(135deg, #60cc5d, #4caf50); color: #000; text-align: center; font-size: 11px; font-weight: 700; padding: 3px 8px; letter-spacing: 0.05em; text-transform: uppercase; }
@@ -1028,6 +1028,26 @@
       // ── Project ──
       if (route === '/api/project' || route === '/api/project-summary')
         return { data: STATE.project };
+
+      // ── Supervisor ──
+      if (route === '/api/supervisor/status')
+        return {
+          systemHealth: { started: true, trackedTasks: STATE.tasks.filter(t => t.status === 'inprogress').length, averageHealth: 85, blockedTasks: 0, activeInterventions: 0 },
+          tasks: STATE.tasks.filter(t => t.status === 'inprogress').map(t => ({
+            taskId: t.id, interventionCount: 0, lastDecision: null,
+            averageHealthScore: 85, currentHealthScore: 85,
+            qualityScore: null, reviewVerdict: null, reviewIssueCount: 0,
+            recentSituations: [{ situation: 'healthy', ts: Date.now() }],
+          })),
+        };
+      if (route.match(/^\/api\/supervisor\/task\/[^/]+$/))
+        return {
+          taskId: route.split('/')[4],
+          interventionCount: 0, lastDecision: null,
+          averageHealthScore: 85, currentHealthScore: 85,
+          qualityScore: null, reviewVerdict: null, reviewIssueCount: 0,
+          recentSituations: [{ situation: 'healthy', ts: Date.now() }],
+        };
 
       // ── Catch-all: return empty success for any unhandled /api/ route ──
       console.debug('[demo] Unhandled API route:', method, path);

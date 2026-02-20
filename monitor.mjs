@@ -198,6 +198,8 @@ import { createAgentEventBus } from "./agent-event-bus.mjs";
 import { createReviewAgent } from "./review-agent.mjs";
 import { createSyncEngine } from "./sync-engine.mjs";
 import { createErrorDetector } from "./error-detector.mjs";
+import { createAgentSupervisor } from "./agent-supervisor.mjs";
+import { getSessionTracker } from "./session-tracker.mjs";
 import {
   startGitHubReconciler,
   stopGitHubReconciler,
@@ -11268,6 +11270,9 @@ process.on("SIGINT", async () => {
   void workspaceMonitor.shutdown();
   void releaseTelegramPollLock();
   stopWhatsAppChannel();
+  if (agentSupervisor) {
+    agentSupervisor.stop();
+  }
   if (isContainerEnabled()) {
     await stopAllContainers().catch((e) =>
       console.warn(`[monitor] container cleanup error: ${e.message}`),
@@ -11327,6 +11332,9 @@ process.on("SIGTERM", async () => {
   void releaseTelegramPollLock();
   stopTelegramBot();
   stopWhatsAppChannel();
+  if (agentSupervisor) {
+    agentSupervisor.stop();
+  }
   if (isContainerEnabled()) {
     await stopAllContainers().catch((e) =>
       console.warn(`[monitor] container cleanup error: ${e.message}`),
@@ -11684,6 +11692,8 @@ let reviewAgent = null;
 let syncEngine = null;
 /** @type {import("./error-detector.mjs").ErrorDetector|null} */
 let errorDetector = null;
+/** @type {import("./agent-supervisor.mjs").AgentSupervisor|null} */
+let agentSupervisor = null;
 /** @type {import("./pr-cleanup-daemon.mjs").PRCleanupDaemon|null} */
 let prCleanupDaemon = null;
 /** @type {import("./github-reconciler.mjs").GitHubReconciler|null} */
@@ -11961,6 +11971,34 @@ if (isExecutorDisabled()) {
       agentEventBus = null;
     }
 
+    // ── Agent Supervisor ──
+    try {
+      agentSupervisor = createAgentSupervisor({
+        sessionTracker: (() => {
+          try { return getSessionTracker(); } catch { return null; }
+        })(),
+        errorDetector: errorDetector || undefined,
+        eventBus: agentEventBus || undefined,
+        sendTelegram:
+          telegramToken && telegramChatId
+            ? (msg) => void sendTelegramMessage(msg)
+            : null,
+        getTask: (taskId) => getInternalTask(taskId),
+        setTaskStatus: (taskId, status, source) =>
+          setInternalTaskStatus(taskId, status, source),
+        assessIntervalMs: 30_000,
+      });
+      agentSupervisor.start();
+
+      // Wire supervisor into event bus and review agent
+      if (agentEventBus) agentEventBus.setSupervisor(agentSupervisor);
+
+      console.log("[monitor] agent supervisor started");
+    } catch (err) {
+      console.warn(`[monitor] agent supervisor failed: ${err.message}`);
+      agentSupervisor = null;
+    }
+
     // ── Review Agent ──
     if (isReviewAgentEnabled()) {
       try {
@@ -12021,6 +12059,11 @@ if (isExecutorDisabled()) {
           },
         });
         reviewAgent.start();
+
+        // Connect review agent to supervisor for review enforcement
+        if (agentSupervisor) {
+          reviewAgent.setSupervisor(agentSupervisor);
+        }
 
         // Connect review agent to task executor for handoff
         if (internalTaskExecutor) {
@@ -12185,6 +12228,7 @@ injectMonitorFunctions({
   getAgentEndpoint: () => agentEndpoint,
   getAgentEventBus: () => agentEventBus,
   getReviewAgent: () => reviewAgent,
+  getAgentSupervisor: () => agentSupervisor,
   getReviewAgentEnabled: () => isReviewAgentEnabled(),
   getSyncEngine: () => syncEngine,
   getErrorDetector: () => errorDetector,

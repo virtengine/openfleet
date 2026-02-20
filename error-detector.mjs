@@ -48,13 +48,53 @@ const API_ERROR_PATTERNS = [
   /502 Bad Gateway|503 Service Unavailable/i,
   /network.*(error|failure|unreachable)/i,
   /fetch failed|request failed/i,
+  /overloaded_error|server_error|engine_overloaded/i,  // Anthropic/OpenAI overloaded
 ];
 
 const SESSION_EXPIRED_PATTERNS = [
   /session.*expired|invalid.*session/i,
   /thread.*not.*found|conversation.*not.*found/i,
-  /authentication.*failed|unauthorized/i,
   /token.*expired|invalid.*token/i,
+];
+
+// ── Auth errors (NOT transient — should NOT be retried) ──
+export const AUTH_ERROR_PATTERNS = [
+  /invalid.?api.?key|incorrect.?api.?key/i,
+  /authentication_error|permission_error/i,
+  /authentication.*failed|unauthenticated/i,
+  /401 Unauthorized|403 Forbidden/i,
+  /invalid.*credentials|bad.*credentials/i,
+  /billing_hard_limit_reached|insufficient_quota/i,
+  /access.?denied|not.?authorized/i,
+  /OPENAI_API_KEY.*invalid|ANTHROPIC_API_KEY.*invalid/i,
+];
+
+// ── Model-specific errors ──
+export const MODEL_ERROR_PATTERNS = [
+  /model.*not.*found|model.*not.*supported/i,
+  /invalid.*model|model.*does.*not.*exist/i,
+  /not_found_error.*model/i,
+  /model.*deprecated|model.*unavailable/i,
+  /engine.*not.*found|deployment.*not.*found/i,  // Azure OpenAI
+];
+
+// ── Content policy violations (NOT retryable) ──
+export const CONTENT_POLICY_PATTERNS = [
+  /content_policy_violation|content.?filter/i,
+  /safety_system|safety.*filter/i,
+  /flagged.*content|unsafe.*content/i,
+  /output.*blocked|response.*blocked/i,
+  /responsible.?ai|content.?management/i,
+];
+
+// ── Codex sandbox / CLI errors ──
+export const CODEX_SANDBOX_PATTERNS = [
+  /sandbox.*fail|sandbox.*error/i,
+  /bubblewrap.*error|bwrap.*error|bwrap.*fail/i,
+  /EPERM.*operation.*not.*permitted/i,
+  /writable_roots/i,
+  /codex.*segfault|codex.*killed|codex.*crash/i,
+  /namespace.*error|unshare.*fail/i,
 ];
 
 const BUILD_FAILURE_PATTERNS = [
@@ -72,16 +112,62 @@ const GIT_CONFLICT_PATTERNS = [
   /both modified/i,
 ];
 
+export const PUSH_FAILURE_PATTERNS = [
+  /git push.*fail|rejected.*push|push.*rejected/i,
+  /pre-push hook.*fail/i,
+  /remote.*rejected|remote:.*error/i,
+  /failed to push|push.*error/i,
+  /non-fast-forward|fetch first|stale info/i,
+];
+
+export const PERMISSION_WAIT_PATTERNS = [
+  /waiting for.*input|waiting for.*response/i,
+  /please provide|please specify|please confirm/i,
+  /do you want me to|should I/i,
+  /what would you prefer/i,
+  /which option|which approach/i,
+  /I need your.*input|I need.*confirmation/i,
+];
+
+export const EMPTY_RESPONSE_PATTERNS = [
+  /^[\s]*$/,
+  /no output|empty response|blank response/i,
+  /agent produced no output/i,
+];
+
+export const TEST_FAILURE_PATTERNS = [
+  /FAIL\s+\S+/m,
+  /test.*fail|tests? failed/i,
+  /--- FAIL:/,
+  /✗|✘|FAILED/,
+  /AssertionError|assertion failed/i,
+  /Expected.*but got|expected.*received/i,
+];
+
+export const LINT_FAILURE_PATTERNS = [
+  /golangci-lint.*error/i,
+  /eslint.*error|prettier.*error/i,
+  /lint.*failed|linting.*error/i,
+  /gofmt.*differ|goimports.*differ/i,
+];
+
 /**
  * Ordered list of pattern groups to check. Earlier entries win on ties.
  * Each entry: [patternName, regexArray, baseConfidence]
  */
 const PATTERN_GROUPS = [
+  ["auth_error", AUTH_ERROR_PATTERNS, 0.97],      // Auth first — never retryable
+  ["content_policy", CONTENT_POLICY_PATTERNS, 0.96], // Content policy — never retryable
   ["plan_stuck", PLAN_STUCK_PATTERNS, 0.85],
   ["rate_limit", RATE_LIMIT_PATTERNS, 0.95],
   ["token_overflow", TOKEN_OVERFLOW_PATTERNS, 0.9],
+  ["model_error", MODEL_ERROR_PATTERNS, 0.92],    // Model errors — not retryable
   ["api_error", API_ERROR_PATTERNS, 0.9],
   ["session_expired", SESSION_EXPIRED_PATTERNS, 0.9],
+  ["codex_sandbox", CODEX_SANDBOX_PATTERNS, 0.88], // Codex sandbox failures
+  ["push_failure", PUSH_FAILURE_PATTERNS, 0.85],
+  ["test_failure", TEST_FAILURE_PATTERNS, 0.83],
+  ["lint_failure", LINT_FAILURE_PATTERNS, 0.82],
   ["build_failure", BUILD_FAILURE_PATTERNS, 0.8],
   ["git_conflict", GIT_CONFLICT_PATTERNS, 0.85],
 ];
@@ -112,7 +198,16 @@ const PATTERN_DESCRIPTIONS = {
   api_error: "API connection or server error",
   session_expired: "Agent session or thread expired",
   build_failure: "Build, test, or lint failure",
+  test_failure: "Unit or integration test failure",
+  lint_failure: "Lint or code formatting failure",
+  push_failure: "Git push or pre-push hook failure",
   git_conflict: "Git merge conflict detected",
+  auth_error: "API key invalid, expired, or missing — NOT retryable",
+  model_error: "Model not found, deprecated, or unavailable",
+  content_policy: "Content policy / safety filter violation — NOT retryable",
+  codex_sandbox: "Codex CLI sandbox or permission error",
+  permission_wait: "Agent waiting for human input/permission",
+  empty_response: "Agent produced no meaningful output",
   unknown: "Unclassified error",
 };
 
@@ -357,6 +452,115 @@ export class ErrorDetector {
           prompt:
             "There are git merge conflicts. Run `git status` to find conflicting files, resolve each conflict by choosing the correct code, then `git add` and `git commit`. Do NOT leave conflict markers in the code.",
           reason: "Git conflict detected — retry with resolution prompt",
+          errorCount,
+        };
+
+      case "push_failure":
+        if (errorCount >= 3) {
+          return {
+            action: "manual",
+            reason:
+              "Push failures persist after 3 retries — needs manual review",
+            errorCount,
+          };
+        }
+        return {
+          action: "retry_with_prompt",
+          prompt:
+            "git push failed. Check the error output:\n" +
+            "1. If pre-push hooks failed → fix lint/test/build errors, then push again\n" +
+            "2. If remote rejected → git pull --rebase origin main && resolve conflicts && push\n" +
+            "Do NOT use --no-verify.",
+          reason: `Push failure (attempt ${errorCount}/3) — retry with fix prompt`,
+          errorCount,
+        };
+
+      case "test_failure":
+        if (errorCount >= 3) {
+          return {
+            action: "manual",
+            reason:
+              "Test failures persist after 3 retries — needs manual review",
+            errorCount,
+          };
+        }
+        return {
+          action: "retry_with_prompt",
+          prompt:
+            "Tests are failing. Read the EXACT failure output. " +
+            "Fix the IMPLEMENTATION, not the tests (unless tests have an obvious bug). " +
+            "Run the specific failing test to verify your fix before pushing.",
+          reason: `Test failure (attempt ${errorCount}/3) — retry with fix prompt`,
+          errorCount,
+        };
+
+      case "lint_failure":
+        if (errorCount >= 3) {
+          return {
+            action: "manual",
+            reason:
+              "Lint failures persist after 3 retries — needs manual review",
+            errorCount,
+          };
+        }
+        return {
+          action: "retry_with_prompt",
+          prompt:
+            "Linting/formatting failed. Fix the specific lint errors reported. " +
+            "Common issues: unused variables, unchecked error returns, formatting. " +
+            "Apply minimal targeted fixes, then re-run the linter to verify.",
+          reason: `Lint failure (attempt ${errorCount}/3) — retry with fix prompt`,
+          errorCount,
+        };
+
+      case "auth_error":
+        // Auth errors are NEVER retryable — block immediately
+        return {
+          action: "block",
+          reason:
+            "API authentication failed (invalid/expired/missing key). " +
+            "Fix the API key configuration before retrying.",
+          errorCount,
+        };
+
+      case "model_error":
+        // Model errors are NEVER retryable — wrong model name or deprecated
+        return {
+          action: "block",
+          reason:
+            "Model not found or unavailable. Check the model name in your " +
+            "configuration (COPILOT_MODEL, CLAUDE_MODEL, OPENAI_MODEL).",
+          errorCount,
+        };
+
+      case "content_policy":
+        // Content policy violations are NEVER retryable
+        return {
+          action: "block",
+          reason:
+            "Content policy or safety filter violation. The request " +
+            "was rejected and will not succeed on retry.",
+          errorCount,
+        };
+
+      case "codex_sandbox":
+        if (errorCount >= 2) {
+          return {
+            action: "block",
+            reason:
+              "Codex sandbox/permission errors persist — check sandbox config in ~/.codex/config.toml",
+            errorCount,
+          };
+        }
+        return {
+          action: "retry_with_prompt",
+          prompt:
+            "Codex sandbox error detected. Check:\n" +
+            "1. writable_roots includes your workspace in ~/.codex/config.toml\n" +
+            "2. Bubblewrap (bwrap) is installed if use_linux_sandbox_bwrap=true\n" +
+            "3. File permissions allow the operation\n" +
+            "If using Docker, ensure the container has the right mounts.",
+          reason: `Codex sandbox failure (attempt ${errorCount}/2) — check config`,
           errorCount,
         };
 
@@ -633,14 +837,74 @@ Do NOT restart from scratch — build on existing progress.`;
       details.rate_limited = `${rateLimitErrors.length} rate limit errors detected`;
     }
 
+    // ── Commits without push ──
+    const hasGitCommitCall = toolCalls.some((m) => {
+      const content = (m.content || "").toLowerCase();
+      return content.includes("git commit");
+    });
+    const hasGitPushCall = toolCalls.some((m) => {
+      const content = (m.content || "").toLowerCase();
+      return content.includes("git push");
+    });
+    if (hasGitCommitCall && !hasGitPushCall && claimsDone) {
+      patterns.push("commits_no_push");
+      details.commits_no_push =
+        "Agent committed changes but never pushed them";
+    }
+
+    // ── Permission waiting ──
+    const permissionPhrases = [
+      "do you want me to",
+      "should i proceed",
+      "should i continue",
+      "waiting for your",
+      "let me know if",
+      "please confirm",
+      "would you like",
+      "whenever you're ready",
+    ];
+    const lastAgentMsg = agentMessages.length > 0
+      ? (agentMessages[agentMessages.length - 1].content || "").toLowerCase()
+      : "";
+    if (permissionPhrases.some((p) => lastAgentMsg.includes(p))) {
+      patterns.push("permission_wait");
+      details.permission_wait =
+        "Agent's last message asks for permission/input — will never receive a response";
+    }
+
+    // ── Empty/no-progress ──
+    if (
+      messages.length >= 5 &&
+      toolCalls.length === 0 &&
+      agentMessages.length <= 1
+    ) {
+      patterns.push("no_progress");
+      details.no_progress =
+        `${messages.length} messages but no tool calls and ≤1 agent message — agent may be stuck`;
+    }
+
+    // ── Error loop (same error repeating) ──
+    if (errors.length >= 3) {
+      const lastThree = errors.slice(-3).map((m) => (m.content || "").slice(0, 100));
+      if (lastThree.every((e) => e === lastThree[0])) {
+        patterns.push("error_loop");
+        details.error_loop =
+          `Same error repeated ${errors.length}x: "${lastThree[0].slice(0, 80)}"`;
+      }
+    }
+
     // Determine primary pattern (most actionable)
     const priority = [
       "rate_limited",
       "plan_stuck",
       "false_completion",
+      "commits_no_push",
+      "permission_wait",
+      "error_loop",
       "needs_clarification",
       "tool_loop",
       "analysis_paralysis",
+      "no_progress",
     ];
     const primary = priority.find((p) => patterns.includes(p)) || null;
 
@@ -795,6 +1059,64 @@ Do NOT restart from scratch — build on existing progress.`;
           `You hit rate limits while working on "${taskTitle}".`,
           `Wait 30 seconds, then continue with smaller, focused operations.`,
           `Avoid large file reads or many parallel tool calls.`,
+        ].join("\n");
+
+      case "commits_no_push":
+        return [
+          `# PUSH YOUR COMMITS`,
+          ``,
+          `You committed changes for "${taskTitle}" but never pushed them.`,
+          ``,
+          `Run now:`,
+          `  git push --set-upstream origin $(git branch --show-current)`,
+          ``,
+          `If the push fails due to pre-push hooks, fix the reported issues and push again.`,
+          `Do NOT use --no-verify.`,
+        ].join("\n");
+
+      case "permission_wait":
+        return [
+          `# DO NOT WAIT FOR INPUT`,
+          ``,
+          `You appear to be waiting for human input on "${taskTitle}".`,
+          `This is FULLY AUTONOMOUS execution — no human will respond.`,
+          ``,
+          `Make the best engineering decision and continue:`,
+          `1. Choose the simplest correct approach`,
+          `2. Implement it now`,
+          `3. Test, commit, and push`,
+        ].join("\n");
+
+      case "error_loop":
+        return [
+          `# BREAK THE ERROR LOOP`,
+          ``,
+          `You've hit the same error multiple times on "${taskTitle}".`,
+          analysis.details?.error_loop
+            ? `Detail: ${analysis.details.error_loop}`
+            : "",
+          ``,
+          `The current approach is NOT working. Try something different:`,
+          `1. Read the error message carefully — what is the ROOT CAUSE?`,
+          `2. Fix the underlying issue, not just the symptom`,
+          `3. If a tool keeps failing, use a different tool or approach`,
+          `4. Make a small change, verify it works, commit it`,
+        ]
+          .filter(Boolean)
+          .join("\n");
+
+      case "no_progress":
+        return [
+          `# START WORKING`,
+          ``,
+          `No meaningful progress detected on "${taskTitle}".`,
+          `You have sent messages but made no tool calls and no code changes.`,
+          ``,
+          `Start now:`,
+          `1. Identify the first file to modify`,
+          `2. Edit it`,
+          `3. Test the change`,
+          `4. Commit and push`,
         ].join("\n");
 
       default:

@@ -370,6 +370,94 @@ export function runConfigDoctor(options = {}) {
     }
   }
 
+  // ── API Key Validation ──────────────────────────────────────────────
+  // Parse EXECUTORS to determine which SDK backends need keys
+  const executorsList = String(effective.EXECUTORS || "").toLowerCase();
+  const needsOpenAI =
+    executorsList.includes("codex") || executorsList.includes("openai");
+  const needsClaude =
+    executorsList.includes("claude") || executorsList.includes("anthropic");
+  const needsCopilot = executorsList.includes("copilot");
+
+  if (needsOpenAI) {
+    const openaiKey =
+      effective.OPENAI_API_KEY || effective.AZURE_OPENAI_API_KEY || "";
+    if (!openaiKey) {
+      issues.errors.push({
+        code: "OPENAI_API_KEY_MISSING",
+        message:
+          "EXECUTORS uses codex/openai but OPENAI_API_KEY is not set.",
+        fix: "Set OPENAI_API_KEY=sk-... or AZURE_OPENAI_API_KEY in your .env",
+      });
+    } else if (
+      openaiKey.startsWith("sk-") &&
+      openaiKey.length < 20
+    ) {
+      issues.warnings.push({
+        code: "OPENAI_API_KEY_SHORT",
+        message: "OPENAI_API_KEY looks too short — may be truncated.",
+        fix: "Verify the full key from platform.openai.com/api-keys",
+      });
+    }
+  }
+
+  if (needsClaude) {
+    const claudeKey =
+      effective.ANTHROPIC_API_KEY ||
+      effective.CLAUDE_API_KEY ||
+      effective.CLAUDE_KEY ||
+      "";
+    if (!claudeKey) {
+      issues.errors.push({
+        code: "ANTHROPIC_API_KEY_MISSING",
+        message:
+          "EXECUTORS uses claude/anthropic but no Anthropic API key is set.",
+        fix: "Set ANTHROPIC_API_KEY=sk-ant-... in your .env",
+      });
+    } else if (
+      !claudeKey.startsWith("sk-ant-") &&
+      !claudeKey.startsWith("anthropic-")
+    ) {
+      issues.warnings.push({
+        code: "ANTHROPIC_API_KEY_FORMAT",
+        message:
+          "ANTHROPIC_API_KEY doesn't match expected prefix (sk-ant-... or anthropic-...).",
+        fix: "Verify the key from console.anthropic.com",
+      });
+    }
+  }
+
+  if (needsCopilot) {
+    const ghToken = effective.GITHUB_TOKEN || "";
+    if (!ghToken) {
+      issues.warnings.push({
+        code: "GITHUB_TOKEN_MISSING",
+        message:
+          "EXECUTORS uses copilot but GITHUB_TOKEN is not set. " +
+          "Copilot may fall back to `gh auth token` at runtime.",
+        fix: "Set GITHUB_TOKEN or run `gh auth login`",
+      });
+    }
+  }
+
+  // ── Model Name Validation ─────────────────────────────────────────
+  const modelVars = [
+    "COPILOT_MODEL",
+    "CLAUDE_MODEL",
+    "OPENAI_MODEL",
+    "CODEX_MODEL",
+  ];
+  for (const varName of modelVars) {
+    const val = effective[varName] || "";
+    if (val && /\s/.test(val)) {
+      issues.errors.push({
+        code: `${varName}_INVALID`,
+        message: `${varName} contains whitespace: "${val}"`,
+        fix: `Fix the model name — model IDs never contain spaces`,
+      });
+    }
+  }
+
   if (parseBool(effective.CONTAINER_ENABLED)) {
     const runtime = String(effective.CONTAINER_RUNTIME || "auto").toLowerCase();
     if (!["auto", "docker", "podman", "container"].includes(runtime)) {

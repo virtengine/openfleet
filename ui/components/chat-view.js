@@ -33,6 +33,34 @@ import {
 
 const html = htm.bind(h);
 
+const AUTO_ACTION_LABELS = {
+  "agent:auto-retry": "Auto Retry",
+  "agent:auto-review": "Auto Review",
+  "agent:auto-cooldown": "Cooldown",
+  "agent:auto-block": "Auto Block",
+  "agent:auto-new-session": "New Session",
+  "agent:executor-paused": "Executor Paused",
+  "agent:executor-resumed": "Executor Resumed",
+};
+
+function formatAutoAction(event) {
+  if (!event) return null;
+  const label =
+    AUTO_ACTION_LABELS[event.type] ||
+    event.type.replace(/^agent:/, "").replace(/-/g, " ");
+  const task =
+    event.payload?.title ||
+    event.payload?.branch ||
+    event.payload?.taskId ||
+    event.taskId ||
+    "";
+  return {
+    label,
+    task: truncate(task, 28),
+    ts: event.ts || Date.now(),
+  };
+}
+
 /* ─── Inline markdown formatting ─── */
 function applyInline(text) {
   text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
@@ -222,6 +250,15 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     if (activeFilters.length === 0) return messages;
     return messages.filter((msg) => activeFilters.includes(categorizeMessage(msg)));
   }, [messages, activeFilters]);
+
+  const recentAutoActions = useMemo(() => {
+    const items = (agentAutoActions.value || []).slice(0, 3);
+    return items.map(formatAutoAction).filter(Boolean);
+  }, [agentAutoActions.value]);
+
+  const errorCount = totalErrorCount.value || 0;
+  const statusState = paused ? "paused" : agentStatus.value.state || "idle";
+  const statusText = paused ? "Stream paused" : agentStatusText.value;
 
   const refreshMessages = useCallback(async () => {
     if (!sessionId) return;
@@ -486,6 +523,82 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           </button>
         </div>
       </div>
+      `}
+
+      ${embedded && html`
+        <div class="chat-stream-bar">
+          <div class="chat-stream-status">
+            <span class="chat-stream-dot ${statusState}"></span>
+            <div class="chat-stream-text">
+              <div class="chat-stream-label">Live Activity</div>
+              <div class="chat-stream-value">${statusText}</div>
+            </div>
+          </div>
+          <div class="chat-stream-actions">
+            <button class="btn btn-ghost btn-xs" onClick=${refreshMessages} title="Refresh">
+              Refresh
+            </button>
+            <button
+              class="btn btn-ghost btn-xs"
+              onClick=${() => setPaused((prev) => !prev)}
+              title=${paused ? "Resume stream" : "Pause stream"}
+            >
+              ${paused ? "Resume" : "Pause"}
+            </button>
+            <button class="btn btn-ghost btn-xs" onClick=${handleCopyStream} title="Copy stream">
+              Copy
+            </button>
+            <button class="btn btn-ghost btn-xs" onClick=${handleExportStream} title="Export stream">
+              Export
+            </button>
+          </div>
+        </div>
+        <div class="chat-stream-meta">
+          <div class="chat-stream-filters">
+            <button
+              class="chat-filter-chip ${activeFilters.length === 0 ? "active" : ""}"
+              onClick=${clearFilters}
+            >
+              All
+              <span class="chat-filter-count">${counts.total}</span>
+            </button>
+            <button
+              class="chat-filter-chip ${filters.tool ? "active" : ""}"
+              onClick=${() => toggleFilter("tool")}
+            >
+              Tool
+              <span class="chat-filter-count">${counts.tool}</span>
+            </button>
+            <button
+              class="chat-filter-chip ${filters.result ? "active" : ""}"
+              onClick=${() => toggleFilter("result")}
+            >
+              Result
+              <span class="chat-filter-count">${counts.result}</span>
+            </button>
+            <button
+              class="chat-filter-chip ${filters.error ? "active" : ""}"
+              onClick=${() => toggleFilter("error")}
+            >
+              Error
+              <span class="chat-filter-count">${counts.error}</span>
+            </button>
+          </div>
+          ${(errorCount > 0 || recentAutoActions.length > 0) && html`
+            <div class="chat-stream-events">
+              ${errorCount > 0 && html`
+                <span class="chat-stream-chip error">Errors · ${errorCount}</span>
+              `}
+              ${recentAutoActions.map((action) => html`
+                <span class="chat-stream-chip">
+                  ${action.label}
+                  ${action.task ? html`<span class="chat-stream-chip-sub">· ${action.task}</span>` : ""}
+                  <span class="chat-stream-chip-time">${formatRelative(action.ts)}</span>
+                </span>
+              `)}
+            </div>
+          `}
+        </div>
       `}
 
       <div class="chat-messages" ref=${messagesRef}>

@@ -105,6 +105,7 @@ export class AgentEventBus {
     this._sendTelegram = options.sendTelegram || null;
     this._getTask = options.getTask || null;
     this._setTaskStatus = options.setTaskStatus || null;
+    this._supervisor = options.supervisor || null;
 
     this._maxEventLogSize = options.maxEventLogSize || DEFAULTS.maxEventLogSize;
     this._staleThresholdMs =
@@ -160,6 +161,15 @@ export class AgentEventBus {
       this._staleCheckTimer = null;
     }
     console.log(`${TAG} stopped`);
+  }
+
+  /**
+   * Set the AgentSupervisor instance for integrated health scoring.
+   * Call after both event bus and supervisor are created.
+   * @param {object} supervisor - AgentSupervisor instance
+   */
+  setSupervisor(supervisor) {
+    this._supervisor = supervisor || null;
   }
 
   // ── External Listener API ──────────────────────────────────────────────
@@ -704,6 +714,16 @@ export class AgentEventBus {
         }
         break;
       }
+    }
+
+    // ── Forward error context to supervisor for unified health scoring ──
+    if (this._supervisor) {
+      try {
+        this._supervisor.assess(taskId, {
+          error: rawError,
+          errorPattern: classification?.pattern,
+        });
+      } catch { /* best-effort */ }
     }
   }
 
