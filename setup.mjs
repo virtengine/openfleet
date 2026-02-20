@@ -4288,6 +4288,28 @@ async function main() {
   normalizeSetupConfiguration({ env, configJson, repoRoot, slug, configDir });
   await writeConfigFiles({ env, configJson, repoRoot, configDir });
   clearSetupProgress(configDir);
+
+  if (cloneWorkspacesAfterSetup && Array.isArray(configJson.workspaces) && configJson.workspaces.length > 0) {
+    heading("Cloning Workspace Repos");
+    for (const ws of configJson.workspaces) {
+      const wsId = ws?.id;
+      if (!wsId) continue;
+      try {
+        const results = pullWorkspaceRepos(configDir, wsId);
+        for (const result of results) {
+          if (result.success) {
+            success(`Workspace ${wsId}: ${result.name} ready`);
+          } else {
+            warn(
+              `Workspace ${wsId}: ${result.name} ${result.error ? `— ${result.error}` : "failed"}`,
+            );
+          }
+        }
+      } catch (err) {
+        warn(`Workspace ${wsId}: clone/pull failed — ${err.message || err}`);
+      }
+    }
+  }
 }
 
 // ── Non-Interactive Mode ─────────────────────────────────────────────────────

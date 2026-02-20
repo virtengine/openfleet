@@ -184,11 +184,13 @@ function installLinuxShortcut(desktopDir) {
   const desktopPath = resolve(desktopDir, `${APP_NAME}.desktop`);
   const appDir = resolve(homedir(), ".local", "share", "applications");
   const appPath = resolve(appDir, `${APP_NAME}.desktop`);
+  const iconPath = resolve(__dirname, "logo.png");
   const content = [
     "[Desktop Entry]",
     "Type=Application",
     `Name=${APP_NAME}`,
     "Comment=Bosun Desktop Portal",
+    `Icon=${iconPath}`,
     `Exec=${buildShellCommand()}`,
     `Path=${getWorkingDirectory()}`,
     "Terminal=false",
