@@ -1140,34 +1140,28 @@ class WorktreeManager {
 
 // ── Singleton ───────────────────────────────────────────────────────────────
 
-/** @type {WorktreeManager|null} */
-let _instance = null;
+/** @type {Map<string, WorktreeManager>} */
+const _instances = new Map();
 
 /**
- * Get or create the singleton WorktreeManager.
+ * Get or create the WorktreeManager for a specific repository.
  * @param {string} [repoRoot] - Repository root (required on first call)
  * @param {object} [opts] - Options (only used on first call)
  * @returns {WorktreeManager}
  */
 function getWorktreeManager(repoRoot, opts) {
   const resolvedRoot = resolveDefaultRepoRoot(repoRoot);
-  if (!_instance) {
-    _instance = new WorktreeManager(resolvedRoot, opts);
-    return _instance;
+  if (!_instances.has(resolvedRoot)) {
+    _instances.set(resolvedRoot, new WorktreeManager(resolvedRoot, opts));
   }
-
-  // Allow explicit repoRoot to rebind singleton for the current process.
-  if (repoRoot && _instance.repoRoot !== resolvedRoot) {
-    _instance = new WorktreeManager(resolvedRoot, opts);
-  }
-  return _instance;
+  return _instances.get(resolvedRoot);
 }
 
 /**
- * Reset the singleton (for testing).
+ * Reset the instances (for testing).
  */
 function resetWorktreeManager() {
-  _instance = null;
+  _instances.clear();
 }
 
 // ── Convenience Wrappers ────────────────────────────────────────────────────
@@ -1175,65 +1169,72 @@ function resetWorktreeManager() {
 
 /**
  * Acquire a worktree for the given branch.
+ * @param {string} repoRoot
  * @param {string} branch
  * @param {string} taskKey
  * @param {object} [opts]
  * @returns {Promise<{ path: string, created: boolean, existing: boolean }>}
  */
-function acquireWorktree(branch, taskKey, opts) {
-  return getWorktreeManager().acquireWorktree(branch, taskKey, opts);
+function acquireWorktree(repoRoot, branch, taskKey, opts) {
+  return getWorktreeManager(repoRoot).acquireWorktree(branch, taskKey, opts);
 }
 
 /**
  * Release a worktree by its taskKey.
+ * @param {string} repoRoot
  * @param {string} taskKey
  * @returns {Promise<{ success: boolean, path: string|null }>}
  */
-function releaseWorktree(taskKey) {
-  return getWorktreeManager().releaseWorktree(taskKey);
+function releaseWorktree(repoRoot, taskKey) {
+  return getWorktreeManager(repoRoot).releaseWorktree(taskKey);
 }
 
 /**
  * Release a worktree by its branch name.
+ * @param {string} repoRoot
  * @param {string} branch
  * @returns {Promise<{ success: boolean, path: string|null }>}
  */
-function releaseWorktreeByBranch(branch) {
-  return getWorktreeManager().releaseWorktreeByBranch(branch);
+function releaseWorktreeByBranch(repoRoot, branch) {
+  return getWorktreeManager(repoRoot).releaseWorktreeByBranch(branch);
 }
 
 /**
  * Find the worktree path for a given branch.
+ * @param {string} repoRoot
  * @param {string} branch
  * @returns {string|null}
  */
-function findWorktreeForBranch(branch) {
-  return getWorktreeManager().findWorktreeForBranch(branch);
+function findWorktreeForBranch(repoRoot, branch) {
+  return getWorktreeManager(repoRoot).findWorktreeForBranch(branch);
 }
 
 /**
  * List all worktrees that are actively tracked.
+ * @param {string} repoRoot
  * @returns {Array<{ path: string, branch: string|null, taskKey: string|null, age: number, status: string, owner: string|null, isMainWorktree: boolean }>}
  */
-function listActiveWorktrees() {
-  return getWorktreeManager().listActiveWorktrees();
+function listActiveWorktrees(repoRoot) {
+  return getWorktreeManager(repoRoot).listActiveWorktrees();
 }
 
 /**
  * Prune stale and orphaned worktrees.
+ * @param {string} repoRoot
  * @param {object} [opts]
  * @returns {Promise<{ pruned: number, evicted: number }>}
  */
-function pruneStaleWorktrees(opts) {
-  return getWorktreeManager().pruneStaleWorktrees(opts);
+function pruneStaleWorktrees(repoRoot, opts) {
+  return getWorktreeManager(repoRoot).pruneStaleWorktrees(opts);
 }
 
 /**
  * Get aggregate statistics about tracked worktrees.
+ * @param {string} repoRoot
  * @returns {{ total: number, active: number, stale: number, byOwner: Record<string, number> }}
  */
-function getWorktreeStats() {
-  return getWorktreeManager().getStats();
+function getWorktreeStats(repoRoot) {
+  return getWorktreeManager(repoRoot).getStats();
 }
 
 // ── Exports ─────────────────────────────────────────────────────────────────

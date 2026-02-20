@@ -46,6 +46,7 @@ npm run dist
 ## Configuration
 - Desktop packaging config lives in `scripts/bosun/desktop/package.json:20`.
 - Auto-update is opt-in via `BOSUN_DESKTOP_AUTO_UPDATE=1`.
+- Optional update feed override: `BOSUN_DESKTOP_UPDATE_URL`.
 - To skip Electron auto-install in dev, set `BOSUN_DESKTOP_SKIP_INSTALL=1`.
 
 ## Testing

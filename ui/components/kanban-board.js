@@ -51,6 +51,10 @@ const PRIORITY_LABELS = {
   low: "LOW",
 };
 
+function matchTaskId(a, b) {
+  return String(a) === String(b);
+}
+
 function getColumnForStatus(status) {
   const s = (status || "").toLowerCase();
   for (const [col, statuses] of Object.entries(COLUMN_MAP)) {
@@ -176,7 +180,7 @@ async function _handleTouchDrop(colId) {
   touchOverCol.value = null;
   if (!taskId || !colId) return;
 
-  const currentTask = (tasksData.value || []).find((t) => t.id === taskId);
+  const currentTask = (tasksData.value || []).find((t) => matchTaskId(t.id, taskId));
   if (!currentTask) return;
   const currentCol = getColumnForStatus(currentTask.status);
   if (currentCol === colId) return;
@@ -190,7 +194,7 @@ async function _handleTouchDrop(colId) {
     await runOptimistic(
       () => {
         tasksData.value = tasksData.value.map((t) =>
-          t.id === taskId ? { ...t, status: newStatus } : t,
+          matchTaskId(t.id, taskId) ? { ...t, status: newStatus } : t,
         );
       },
       async () => {
@@ -200,7 +204,7 @@ async function _handleTouchDrop(colId) {
         });
         if (res?.data) {
           tasksData.value = tasksData.value.map((t) =>
-            t.id === taskId ? { ...t, ...res.data } : t,
+            matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
           );
         }
         return res;
@@ -398,7 +402,7 @@ function KanbanColumn({ col, tasks, onOpen }) {
     dragTaskId.value = null;
     if (!taskId) return;
 
-    const currentTask = (tasksData.value || []).find((t) => t.id === taskId);
+    const currentTask = (tasksData.value || []).find((t) => matchTaskId(t.id, taskId));
     if (!currentTask) return;
     const currentCol = getColumnForStatus(currentTask.status);
     if (currentCol === col.id) return;
@@ -411,7 +415,7 @@ function KanbanColumn({ col, tasks, onOpen }) {
       await runOptimistic(
         () => {
           tasksData.value = tasksData.value.map((t) =>
-            t.id === taskId ? { ...t, status: newStatus } : t,
+            matchTaskId(t.id, taskId) ? { ...t, status: newStatus } : t,
           );
         },
         async () => {
@@ -420,10 +424,10 @@ function KanbanColumn({ col, tasks, onOpen }) {
             body: JSON.stringify({ taskId, status: newStatus }),
           });
           if (res?.data) {
-            tasksData.value = tasksData.value.map((t) =>
-              t.id === taskId ? { ...t, ...res.data } : t,
-            );
-          }
+          tasksData.value = tasksData.value.map((t) =>
+            matchTaskId(t.id, taskId) ? { ...t, ...res.data } : t,
+          );
+        }
           return res;
         },
         () => {

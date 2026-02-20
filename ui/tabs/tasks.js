@@ -1236,6 +1236,17 @@ export function TasksTab() {
                   <span class="filter-count">${activeFilterCount}</span>
                 `}
               </button>
+              <button
+                class="btn btn-primary btn-sm"
+                onClick=${() => {
+                  haptic();
+                  setShowCreate(true);
+                }}
+                aria-label="Create task"
+              >
+                ${ICONS.plus}
+                New
+              </button>
             `}
             <div class="view-toggle">
               <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>

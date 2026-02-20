@@ -23,7 +23,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync } from "node:fs";
 import { resolve, basename, join } from "node:path";
 import { execSync, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 
 const TAG = "[workspace-manager]";
 
@@ -437,8 +436,10 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
  * @param {string} configDir
  * @returns {Array}
  */
-export function getWorkspaceRepositories(configDir) {
-  const ws = getActiveWorkspace(configDir);
+export function getWorkspaceRepositories(configDir, workspaceId = "") {
+  const ws = workspaceId
+    ? getWorkspace(configDir, workspaceId)
+    : getActiveWorkspace(configDir);
   if (!ws || !ws.repos?.length) return [];
 
   return ws.repos.map((repo) => ({
@@ -450,6 +451,93 @@ export function getWorkspaceRepositories(configDir) {
     primary: repo.primary || false,
     workspace: ws.id,
   }));
+}
+
+/**
+ * Merge filesystem-detected workspaces into persisted config without cloning.
+ * Useful when operators manually add folders under $BOSUN_DIR/workspaces.
+ * @param {string} configDir
+ * @returns {{workspaces: Array, added: number, updated: number, scanned: number}}
+ */
+export function mergeDetectedWorkspaces(configDir) {
+  const detected = detectWorkspaces(configDir);
+  const workspaces = getWorkspacesFromConfig(configDir);
+  const byId = new Map(
+    workspaces.map((ws) => [normalizeId(ws.id), ws]),
+  );
+
+  let added = 0;
+  let updated = 0;
+
+  for (const ws of detected) {
+    const wsId = normalizeId(ws.id);
+    const existing = byId.get(wsId);
+    if (!existing) {
+      workspaces.push({
+        id: wsId,
+        name: ws.name || ws.id || wsId,
+        repos: ws.repos || [],
+        createdAt: ws.createdAt || new Date().toISOString(),
+        activeRepo:
+          ws.activeRepo ||
+          ws.repos?.find((repo) => repo.primary)?.name ||
+          ws.repos?.[0]?.name ||
+          null,
+      });
+      byId.set(wsId, workspaces[workspaces.length - 1]);
+      added += 1;
+      continue;
+    }
+
+    const existingRepos = Array.isArray(existing.repos) ? existing.repos : [];
+    const existingRepoMap = new Map(existingRepos.map((repo) => [repo.name, repo]));
+    let changed = false;
+
+    for (const repo of ws.repos || []) {
+      if (!repo?.name) continue;
+      const current = existingRepoMap.get(repo.name);
+      if (!current) {
+        existingRepos.push({
+          ...repo,
+          primary: repo.primary === true || existingRepos.length === 0,
+        });
+        changed = true;
+        continue;
+      }
+      if (!current.slug && repo.slug) {
+        current.slug = repo.slug;
+        changed = true;
+      }
+      if (!current.url && repo.url) {
+        current.url = repo.url;
+        changed = true;
+      }
+    }
+
+    existing.repos = existingRepos;
+    if (!existing.activeRepo) {
+      existing.activeRepo =
+        existing.repos.find((repo) => repo.primary)?.name ||
+        existing.repos[0]?.name ||
+        null;
+      changed = true;
+    }
+    if (changed) updated += 1;
+  }
+
+  if (added > 0 || updated > 0) {
+    const config = loadBosunConfig(configDir);
+    const activeWorkspace =
+      config.activeWorkspace || workspaces[0]?.id || "";
+    saveWorkspacesToConfig(configDir, workspaces, activeWorkspace);
+  }
+
+  return {
+    workspaces: listWorkspaces(configDir),
+    added,
+    updated,
+    scanned: detected.length,
+  };
 }
 
 /**

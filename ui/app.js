@@ -254,7 +254,7 @@ function Header() {
           <img src="logo.png" alt="Bosun" class="app-logo-img" />
         </div>
         <div class="app-header-titles">
-          <div class="app-header-title">VirtEngine</div>
+          <div class="app-header-title">Bosun</div>
           <div class="app-header-subtitle">
             ${TAB_CONFIG.find((tab) => tab.id === activeTab.value)?.label || "Control Center"}
           </div>
@@ -295,7 +295,7 @@ function SidebarNav() {
           <img src="logo.png" alt="Bosun" class="app-logo-img" />
         </div>
         <div>
-          <div class="sidebar-title">VirtEngine</div>
+          <div class="sidebar-title">Bosun</div>
           <div class="sidebar-subtitle">Control Center</div>
         </div>
       </div>

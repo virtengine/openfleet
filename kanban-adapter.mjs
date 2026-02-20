@@ -301,6 +301,14 @@ class InternalAdapter {
       tags,
       draft,
       projectId: task.projectId || "internal",
+      workspace: task.workspace || task.meta?.workspace || null,
+      repository: task.repository || task.meta?.repository || null,
+      repositories:
+        Array.isArray(task.repositories) && task.repositories.length > 0
+          ? task.repositories
+          : Array.isArray(task.meta?.repositories)
+            ? task.meta.repositories
+            : [],
       baseBranch,
       branchName: task.branchName || null,
       prNumber: task.prNumber || null,
@@ -380,6 +388,9 @@ class InternalAdapter {
       updates.status = normaliseStatus(patch.status);
     }
     if (typeof patch.priority === "string") updates.priority = patch.priority;
+    if (typeof patch.workspace === "string") updates.workspace = patch.workspace;
+    if (typeof patch.repository === "string") updates.repository = patch.repository;
+    if (Array.isArray(patch.repositories)) updates.repositories = patch.repositories;
     if (Array.isArray(patch.tags) || Array.isArray(patch.labels) || typeof patch.tags === "string") {
       updates.tags = normalizeTags(patch.tags ?? patch.labels);
     }
@@ -397,6 +408,9 @@ class InternalAdapter {
       updates.meta = {
         ...(current?.meta || {}),
         ...patch.meta,
+        ...(typeof patch.workspace === "string" ? { workspace: patch.workspace } : {}),
+        ...(typeof patch.repository === "string" ? { repository: patch.repository } : {}),
+        ...(Array.isArray(patch.repositories) ? { repositories: patch.repositories } : {}),
         ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
       };
     } else if (baseBranch) {
@@ -428,9 +442,30 @@ class InternalAdapter {
       tags,
       draft,
       projectId: taskData.projectId || projectId || "internal",
+      workspace:
+        taskData.workspace ||
+        taskData.meta?.workspace ||
+        null,
+      repository:
+        taskData.repository ||
+        taskData.repo ||
+        taskData.meta?.repository ||
+        taskData.meta?.repo ||
+        null,
+      repositories:
+        Array.isArray(taskData.repositories) && taskData.repositories.length > 0
+          ? taskData.repositories
+          : Array.isArray(taskData.meta?.repositories)
+            ? taskData.meta.repositories
+            : [],
       baseBranch,
       meta: {
         ...(taskData.meta || {}),
+        ...(taskData.workspace ? { workspace: taskData.workspace } : {}),
+        ...(taskData.repository || taskData.repo
+          ? { repository: taskData.repository || taskData.repo }
+          : {}),
+        ...(Array.isArray(taskData.repositories) ? { repositories: taskData.repositories } : {}),
         ...(tags.length ? { tags } : {}),
         ...(draft ? { draft: true } : {}),
         ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),

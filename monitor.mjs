@@ -4752,7 +4752,7 @@ async function checkMergedPRsAndUpdateTasks() {
                 if (!worktreePath && cc.branch) {
                   try {
                     const taskKey = task.id || cc.branch;
-                    const wt = await acquireWorktree(cc.branch, taskKey, {
+                    const wt = await acquireWorktree(repoRoot, cc.branch, taskKey, {
                       owner: "monitor-conflict",
                     });
                     if (wt?.path) {
@@ -5421,7 +5421,7 @@ async function syncEpicBranchWithDefault(epicBranch, defaultBranch) {
 
   ensureEpicBranchAvailable(epicBranch, defaultBranch);
   const worktreeKey = `epic-sync:${headInfo.name}`;
-  const worktree = await acquireWorktree(headInfo.name, worktreeKey, {
+  const worktree = await acquireWorktree(repoRoot, headInfo.name, worktreeKey, {
     owner: "epic-sync",
   });
 
@@ -5463,7 +5463,7 @@ async function syncEpicBranchWithDefault(epicBranch, defaultBranch) {
 
     return { synced: false, behind: behindCount };
   } finally {
-    await releaseWorktree(worktreeKey);
+    await releaseWorktree(repoRoot, worktreeKey);
   }
 }
 

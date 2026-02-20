@@ -328,6 +328,39 @@ async function readSourceContext(filePath, errorLine, contextLines = 30) {
  */
 let _devModeCache = null;
 
+function detectBosunRepo(startDir, maxDepth = 6) {
+  let cursor = resolve(startDir);
+  for (let i = 0; i < maxDepth; i += 1) {
+    const pkgPath = resolve(cursor, "package.json");
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+        if (pkg?.name === "bosun" && existsSync(resolve(cursor, "monitor.mjs"))) {
+          return true;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    const monoPkg = resolve(cursor, "scripts", "bosun", "package.json");
+    if (existsSync(monoPkg)) {
+      try {
+        const pkg = JSON.parse(readFileSync(monoPkg, "utf8"));
+        if (
+          pkg?.name === "bosun" &&
+          existsSync(resolve(cursor, "scripts", "bosun", "monitor.mjs"))
+        ) {
+          return true;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    cursor = resolve(cursor, "..");
+  }
+  return false;
+}
+
 export function isDevMode() {
   if (_devModeCache !== null) return _devModeCache;
 
@@ -350,7 +383,12 @@ export function isDevMode() {
     normalized.includes("/node_modules/.vite/") ||
     normalized.includes("/node_modules/.vitest/") ||
     normalized.includes("/node_modules/.cache/");
-  if (inNodeModules && !inViteCache) {
+  if (inNodeModules) {
+    if (inViteCache) {
+      const fromCwd = detectBosunRepo(process.cwd());
+      _devModeCache = fromCwd;
+      return fromCwd;
+    }
     _devModeCache = false;
     return false;
   }

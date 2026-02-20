@@ -261,6 +261,32 @@ body.kanban-dragging .kanban-card {
   margin: 4px;
 }
 
+@media (max-width: 640px) {
+  .kanban-board {
+    scroll-snap-type: x mandatory;
+    scroll-padding: 12px;
+  }
+
+  .kanban-column {
+    min-width: 80%;
+    max-width: 85%;
+    scroll-snap-align: start;
+  }
+}
+
+@media (max-width: 640px) {
+  .kanban-board {
+    scroll-snap-type: x mandatory;
+    scroll-padding: 12px;
+  }
+
+  .kanban-column {
+    min-width: 80%;
+    max-width: 85%;
+    scroll-snap-align: start;
+  }
+}
+
 .kanban-scroll-fade {
   height: 16px;
   flex-shrink: 0;

@@ -38,8 +38,7 @@ import {
   ensureThreadRegistryLoaded,
 } from "./agent-pool.mjs";
 import {
-  acquireWorktree,
-  releaseWorktree,
+  WorktreeManager,
   getWorktreeStats,
 } from "./worktree-manager.mjs";
 import {
@@ -112,6 +111,12 @@ const WATCHDOG_INTERVAL_MS = 60_000; // 1 minute
 const WATCHDOG_GRACE_MS = 10 * 60_000; // 10 minutes — generous buffer, stream analysis handles real issues
 /** Max age for in-progress tasks to auto-resume after monitor restart */
 const INPROGRESS_RECOVERY_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours — agents should be resumable for a full day
+
+function normalizeSelector(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
 
 function normalizeModel(value) {
   const model = String(value || "").trim();
@@ -896,6 +901,8 @@ class TaskExecutor {
       projectId: null,
       repoRoot: process.cwd(),
       repoSlug: "",
+      repositories: [],
+      activeWorkspace: "",
       branchRouting: null,
       defaultTargetBranch: null,
       onTaskStarted: null,
@@ -923,6 +930,10 @@ class TaskExecutor {
     this.projectId = merged.projectId;
     this.repoRoot = merged.repoRoot;
     this.repoSlug = merged.repoSlug;
+    this.repositories = Array.isArray(merged.repositories)
+      ? merged.repositories
+      : [];
+    this.activeWorkspace = String(merged.activeWorkspace || "").trim();
     this.branchRouting = merged.branchRouting || null;
     this.defaultTargetBranch =
       merged.defaultTargetBranch ||
@@ -1035,6 +1046,9 @@ class TaskExecutor {
     );
     this._taskClaimRenewTimers = new Map();
 
+    // Per-repository worktree managers for true multi-repo task execution.
+    this._worktreeManagers = new Map();
+
     /** @type {Map<string, AbortController>} taskId → AbortController for per-slot abort */
     this._slotAbortControllers = new Map();
     /** @type {NodeJS.Timeout|null} watchdog interval handle */
@@ -1075,6 +1089,7 @@ class TaskExecutor {
     // Repo context cache (AGENTS.md, copilot-instructions.md)
     this._contextCache = null;
     this._contextCacheTime = 0;
+    this._contextCacheByRepo = new Map();
 
     // Error detector for classifying agent failures
     this._errorDetector = createErrorDetector({
@@ -2720,6 +2735,62 @@ class TaskExecutor {
 
   // ── Task Execution ────────────────────────────────────────────────────────
 
+  _getWorktreeManager(repoRoot) {
+    const normalizedRoot = resolve(repoRoot || this.repoRoot || process.cwd());
+    let manager = this._worktreeManagers.get(normalizedRoot);
+    if (!manager) {
+      manager = new WorktreeManager(normalizedRoot);
+      this._worktreeManagers.set(normalizedRoot, manager);
+    }
+    return manager;
+  }
+
+  _resolveTaskRepoContext(task) {
+    const taskWorkspace = normalizeSelector(
+      task?.workspace || task?.meta?.workspace || "",
+    );
+    const taskRepository = normalizeSelector(
+      task?.repository ||
+        task?.repo ||
+        task?.meta?.repository ||
+        task?.meta?.repo ||
+        "",
+    );
+
+    const repoCandidates = Array.isArray(this.repositories)
+      ? this.repositories
+      : [];
+    const scopedCandidates = taskWorkspace
+      ? repoCandidates.filter(
+          (repo) => normalizeSelector(repo.workspace) === taskWorkspace,
+        )
+      : repoCandidates;
+
+    const selectedRepo =
+      scopedCandidates.find((repo) => normalizeSelector(repo.id) === taskRepository) ||
+      scopedCandidates.find((repo) => normalizeSelector(repo.name) === taskRepository) ||
+      scopedCandidates.find((repo) => normalizeSelector(repo.slug) === taskRepository) ||
+      scopedCandidates.find((repo) => Array.isArray(repo.aliases) && repo.aliases.includes(taskRepository)) ||
+      null;
+
+    const fallbackRepo =
+      scopedCandidates.find((repo) => repo.primary) || scopedCandidates[0] || null;
+    const effectiveRepo = selectedRepo || fallbackRepo;
+
+    return {
+      repoRoot: effectiveRepo?.path || this.repoRoot,
+      repoSlug: effectiveRepo?.slug || this.repoSlug || "",
+      workspace:
+        taskWorkspace ||
+        normalizeSelector(effectiveRepo?.workspace || this.activeWorkspace || "") ||
+        "",
+      repository:
+        taskRepository ||
+        normalizeSelector(effectiveRepo?.id || effectiveRepo?.name || "") ||
+        "",
+    };
+  }
+
   /**
    * Execute a single task through its full lifecycle:
    * slot allocation → status update → worktree → agent → result → cleanup.
@@ -3019,7 +3090,7 @@ class TaskExecutor {
           taskBaseBranch,
           this.defaultTargetBranch,
         );
-        wt = await acquireWorktree(branch, taskId, {
+        wt = await acquireWorktree(this.repoRoot, branch, taskId, {
           owner: "task-executor",
           baseBranch: worktreeBaseBranch,
         });
@@ -3049,7 +3120,7 @@ class TaskExecutor {
         );
         this._taskCooldowns.set(taskId, Date.now());
         try {
-          await releaseWorktree(taskId);
+          await releaseWorktree(this.repoRoot, taskId);
         } catch {
           /* best-effort */
         }
@@ -3305,7 +3376,7 @@ class TaskExecutor {
       // 8. Cleanup
       this._slotAbortControllers.delete(taskId);
       try {
-        await releaseWorktree(taskId);
+        await releaseWorktree(this.repoRoot, taskId);
       } catch (err) {
         console.warn(`${TAG} worktree release warning: ${err.message}`);
       }
@@ -3327,7 +3398,7 @@ class TaskExecutor {
         /* best-effort */
       }
       try {
-        await releaseWorktree(taskId);
+        await releaseWorktree(this.repoRoot, taskId);
       } catch {
         /* best-effort */
       }

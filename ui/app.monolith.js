@@ -2396,7 +2396,10 @@ function Header() {
   const isConn = connected.value;
   return html`
     <header class="app-header">
-      <div class="app-header-title">VirtEngine</div>
+      <div class="app-header-brand">
+        <img src="logo.png" alt="Bosun" class="app-logo-img" />
+        <div class="app-header-title">Bosun</div>
+      </div>
       <div class="connection-pill ${isConn ? "connected" : "disconnected"}">
         <span class="connection-dot"></span>
         ${isConn ? "Live" : "Offline"}

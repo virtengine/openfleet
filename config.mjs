@@ -703,6 +703,48 @@ function loadRepoConfig(configDir, configData = {}, options = {}) {
   ];
 }
 
+function loadWorkspaceRepoConfig(configDir, configData = {}, activeWorkspace = "") {
+  const workspaces = Array.isArray(configData.workspaces)
+    ? configData.workspaces
+    : [];
+  if (workspaces.length === 0) return [];
+
+  const targetWorkspaceId = normalizeKey(activeWorkspace || configData.activeWorkspace || "");
+  const targetWorkspace =
+    (targetWorkspaceId
+      ? workspaces.find((workspace) => normalizeKey(workspace?.id) === targetWorkspaceId)
+      : null) ||
+    workspaces[0];
+
+  if (!targetWorkspace || !Array.isArray(targetWorkspace.repos)) {
+    return [];
+  }
+
+  const workspacePath = resolve(configDir, "workspaces", targetWorkspace.id);
+  const activeRepoName = normalizeKey(targetWorkspace.activeRepo || "");
+
+  return targetWorkspace.repos
+    .map((repo, index) => {
+      if (!repo || typeof repo !== "object") return null;
+      const name = String(repo.name || repo.id || "").trim();
+      if (!name) return null;
+      const repoPath = resolve(workspacePath, name);
+      return {
+        name,
+        id: normalizeKey(name),
+        path: repoPath,
+        slug: String(repo.slug || "").trim(),
+        url: String(repo.url || "").trim(),
+        workspace: String(targetWorkspace.id || "").trim(),
+        primary:
+          repo.primary === true ||
+          (activeRepoName && normalizeKey(name) === activeRepoName) ||
+          (!activeRepoName && index === 0),
+      };
+    })
+    .filter(Boolean);
+}
+
 function loadAgentPrompts(configDir, repoRoot, configData) {
   const resolved = resolveAgentPrompts(configDir, repoRoot, configData);
   return { ...resolved.prompts, _sources: resolved.sources };
@@ -741,9 +783,16 @@ export function loadConfig(argv = process.argv, options = {}) {
     configData.defaultWorkspace ||
     "";
 
-  let repositories = loadRepoConfig(configDir, configData, {
-    repoRootOverride,
-  });
+  let repositories = loadWorkspaceRepoConfig(
+    configDir,
+    configData,
+    activeWorkspace,
+  );
+  if (!repositories.length) {
+    repositories = loadRepoConfig(configDir, configData, {
+      repoRootOverride,
+    });
+  }
 
   const repoSelection =
     cli["repo-name"] ||
@@ -798,7 +847,14 @@ export function loadConfig(argv = process.argv, options = {}) {
 
   // Apply profile overrides (executors, repos, etc.)
   configData = applyProfileOverrides(configData, profile);
-  repositories = loadRepoConfig(configDir, configData, { repoRootOverride });
+  repositories = loadWorkspaceRepoConfig(
+    configDir,
+    configData,
+    activeWorkspace,
+  );
+  if (!repositories.length) {
+    repositories = loadRepoConfig(configDir, configData, { repoRootOverride });
+  }
   selectedRepository =
     resolveRepoSelection(
       repositories,

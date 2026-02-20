@@ -57,7 +57,8 @@
 
     /* MiniApp header (Telegram-style) */
     .miniapp-header { display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: #17212b; border-bottom: 1px solid #1b2838; flex-shrink: 0; z-index: 10; }
-    .miniapp-header-icon { width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg, #4cc9f0, #60cc5d); display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+    .miniapp-header-icon { width: 28px; height: 28px; border-radius: 8px; background: rgba(12,16,24,0.95); border: 1px solid rgba(255,255,255,0.12); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .miniapp-header-icon img { width: 20px; height: 20px; object-fit: contain; display: block; }
     .miniapp-header-title { flex: 1; font-size: 15px; font-weight: 600; color: #fff; }
     .miniapp-header-badge { font-size: 10px; color: #64748b; background: #1e293b; padding: 2px 7px; border-radius: 10px; }
 
@@ -997,7 +998,7 @@
   <div class="demo-container">
     <!-- Header -->
     <div class="miniapp-header">
-      <div class="miniapp-header-icon">🤖</div>
+      <div class="miniapp-header-icon"><img src="logo.png" alt="Bosun" /></div>
       <div class="miniapp-header-title">Telegram MiniApp</div>
       <div class="miniapp-header-badge">DEMO</div>
     </div>

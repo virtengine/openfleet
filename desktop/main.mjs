@@ -98,6 +98,10 @@ async function maybeAutoUpdate() {
   if (process.env.BOSUN_DESKTOP_AUTO_UPDATE !== "1") return;
   try {
     const { autoUpdater } = await import("electron-updater");
+    const feedUrl = process.env.BOSUN_DESKTOP_UPDATE_URL;
+    if (feedUrl) {
+      autoUpdater.setFeedURL({ url: feedUrl });
+    }
     autoUpdater.autoDownload = true;
     autoUpdater.checkForUpdatesAndNotify().catch(() => {});
   } catch (err) {

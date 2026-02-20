@@ -70,7 +70,7 @@ import {
   removeRepoFromWorkspace,
   pullWorkspaceRepos,
   initializeWorkspaces,
-  detectWorkspaces,
+  mergeDetectedWorkspaces,
 } from "./workspace-manager.mjs";
 import {
   getSessionTracker,
@@ -2319,6 +2319,8 @@ async function handleApi(req, res, url) {
   if (path === "/api/tasks") {
     const status = url.searchParams.get("status") || "";
     const projectId = url.searchParams.get("project") || "";
+    const workspaceFilter = (url.searchParams.get("workspace") || "").trim().toLowerCase();
+    const repositoryFilter = (url.searchParams.get("repository") || "").trim().toLowerCase();
     const page = Math.max(0, Number(url.searchParams.get("page") || "0"));
     const pageSize = Math.min(
       50,
@@ -2344,12 +2346,31 @@ async function handleApi(req, res, url) {
         status ? { status } : {},
       );
       const search = (url.searchParams.get("search") || "").trim().toLowerCase();
-      const filtered = search
-        ? tasks.filter((t) => {
-            const hay = `${t.title || ""} ${t.description || ""} ${t.id || ""}`.toLowerCase();
-            return hay.includes(search);
-          })
-        : tasks;
+      const filtered = tasks.filter((task) => {
+        const taskWorkspace = String(
+          task.workspace || task.meta?.workspace || "",
+        ).trim().toLowerCase();
+        const taskRepository = String(
+          task.repository || task.meta?.repository || "",
+        ).trim().toLowerCase();
+        if (workspaceFilter && taskWorkspace !== workspaceFilter) {
+          return false;
+        }
+        if (repositoryFilter && taskRepository !== repositoryFilter) {
+          return false;
+        }
+        if (!search) return true;
+        const hay = [
+          task.title || "",
+          task.description || "",
+          task.id || "",
+          taskWorkspace,
+          taskRepository,
+        ]
+          .join(" ")
+          .toLowerCase();
+        return hay.includes(search);
+      });
       const total = filtered.length;
       const start = page * pageSize;
       const slice = filtered.slice(start, start + pageSize);
@@ -2471,6 +2492,9 @@ async function handleApi(req, res, url) {
         title: body?.title,
         description: body?.description,
         priority: body?.priority,
+        workspace: body?.workspace,
+        repository: body?.repository,
+        repositories: Array.isArray(body?.repositories) ? body.repositories : undefined,
         ...(tagsProvided ? { tags } : {}),
         ...(draftProvided ? { draft: Boolean(body?.draft) } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
@@ -2481,7 +2505,10 @@ async function handleApi(req, res, url) {
       const hasTags = Array.isArray(patch.tags);
       const hasDraft = typeof patch.draft === "boolean";
       const hasBaseBranch = baseBranchProvided;
-      if (!hasPatch && !hasTags && !hasDraft && !hasBaseBranch) {
+      const hasWorkspace = typeof patch.workspace === "string";
+      const hasRepository = typeof patch.repository === "string";
+      const hasRepositories = Array.isArray(patch.repositories);
+      if (!hasPatch && !hasTags && !hasDraft && !hasBaseBranch && !hasWorkspace && !hasRepository && !hasRepositories) {
         jsonResponse(res, 400, {
           ok: false,
           error: "No update fields provided",
@@ -2528,6 +2555,9 @@ async function handleApi(req, res, url) {
         description: body?.description,
         priority: body?.priority,
         status: body?.status,
+        workspace: body?.workspace,
+        repository: body?.repository,
+        repositories: Array.isArray(body?.repositories) ? body.repositories : undefined,
         ...(tagsProvided ? { tags } : {}),
         ...(draftProvided ? { draft: Boolean(body?.draft) } : {}),
         ...(baseBranchProvided ? { baseBranch } : {}),
@@ -2538,7 +2568,10 @@ async function handleApi(req, res, url) {
       const hasTags = Array.isArray(patch.tags);
       const hasDraft = typeof patch.draft === "boolean";
       const hasBaseBranch = baseBranchProvided;
-      if (!hasPatch && !hasTags && !hasDraft && !hasBaseBranch) {
+      const hasWorkspace = typeof patch.workspace === "string";
+      const hasRepository = typeof patch.repository === "string";
+      const hasRepositories = Array.isArray(patch.repositories);
+      if (!hasPatch && !hasTags && !hasDraft && !hasBaseBranch && !hasWorkspace && !hasRepository && !hasRepositories) {
         jsonResponse(res, 400, {
           ok: false,
           error: "No edit fields provided",
@@ -2574,15 +2607,32 @@ async function handleApi(req, res, url) {
       const tags = normalizeTagsInput(body?.tags);
       const wantsDraft = Boolean(body?.draft) || body?.status === "draft";
       const baseBranch = normalizeBranchInput(body?.baseBranch ?? body?.base_branch);
+      const activeWorkspace = getActiveManagedWorkspace(resolveUiConfigDir());
+      const defaultRepository =
+        activeWorkspace?.activeRepo ||
+        activeWorkspace?.repos?.find((repo) => repo.primary)?.name ||
+        activeWorkspace?.repos?.[0]?.name ||
+        "";
+      const workspace = String(body?.workspace || activeWorkspace?.id || "").trim();
+      const repository = String(body?.repository || defaultRepository || "").trim();
+      const repositories = Array.isArray(body?.repositories)
+        ? body.repositories.filter((value) => typeof value === "string" && value.trim())
+        : [];
       const taskData = {
         title: String(title).trim(),
         description: body?.description || "",
         status: body?.status || (wantsDraft ? "draft" : "todo"),
         priority: body?.priority || undefined,
+        ...(workspace ? { workspace } : {}),
+        ...(repository ? { repository } : {}),
+        ...(repositories.length ? { repositories } : {}),
         ...(tags.length ? { tags } : {}),
         ...(tags.length ? { labels: tags } : {}),
         ...(baseBranch ? { baseBranch } : {}),
         meta: {
+          ...(workspace ? { workspace } : {}),
+          ...(repository ? { repository } : {}),
+          ...(repositories.length ? { repositories } : {}),
           ...(tags.length ? { tags } : {}),
           ...(wantsDraft ? { draft: true } : {}),
           ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
@@ -2710,31 +2760,15 @@ async function handleApi(req, res, url) {
   if (path === "/api/workspaces/scan") {
     try {
       const configDir = resolveUiConfigDir();
-      const detected = detectWorkspaces(configDir);
-      // Merge any newly-detected workspaces into the persisted config
-      const existing = listManagedWorkspaces(configDir);
-      const existingIds = new Set(existing.map((w) => w.id));
-      let added = 0;
-      for (const ws of detected) {
-        if (!existingIds.has(ws.id)) {
-          // persist each newly detected workspace via createWorkspace + addRepo
-          const created = createManagedWorkspace(configDir, ws.name);
-          if (created && ws.repos) {
-            for (const repo of ws.repos) {
-              addRepoToWorkspace(configDir, created.id, repo);
-            }
-          }
-          added++;
-        }
-      }
-      const workspaces = listManagedWorkspaces(configDir);
+      const merged = mergeDetectedWorkspaces(configDir);
       jsonResponse(res, 200, {
         ok: true,
-        data: workspaces,
-        scanned: detected.length,
-        added,
+        data: merged.workspaces,
+        scanned: merged.scanned,
+        added: merged.added,
+        updated: merged.updated,
       });
-      if (added > 0) {
+      if (merged.added > 0 || merged.updated > 0) {
         broadcastUiEvent(["workspaces"], "invalidate", { reason: "workspace-scan" });
       }
     } catch (err) {
@@ -2917,9 +2951,9 @@ async function handleApi(req, res, url) {
       const branch = body?.branch;
       let released = null;
       if (taskKey) {
-        released = await releaseWorktree(taskKey);
+        released = await releaseWorktree(repoRoot, taskKey);
       } else if (branch) {
-        released = await releaseWorktreeByBranch(branch);
+        released = await releaseWorktreeByBranch(repoRoot, branch);
       } else {
         jsonResponse(res, 400, {
           ok: false,
