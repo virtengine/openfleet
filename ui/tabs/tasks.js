@@ -63,9 +63,6 @@ import {
 /* ─── View mode toggle ─── */
 const viewMode = signal("kanban");
 
-/* ─── Export dropdown icon (inline SVG) ─── */
-const DOWNLOAD_ICON = html`<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
-
 /* ─── Status chip definitions ─── */
 const STATUS_CHIPS = [
   { value: "all", label: "All" },
@@ -1091,25 +1088,33 @@ export function TasksTab() {
   const startTask = async ({ taskId, sdk, model }) => {
     haptic("medium");
     const prev = cloneValue(tasks);
+    let res = null;
     await runOptimistic(
       () => {
         tasksData.value = tasksData.value.map((t) =>
           t.id === taskId ? { ...t, status: "inprogress" } : t,
         );
       },
-      () =>
-        apiFetch("/api/tasks/start", {
+      async () => {
+        res = await apiFetch("/api/tasks/start", {
           method: "POST",
           body: JSON.stringify({
             taskId,
             ...(sdk ? { sdk } : {}),
             ...(model ? { model } : {}),
           }),
-        }),
+        });
+        return res;
+      },
       () => {
         tasksData.value = prev;
       },
     ).catch(() => {});
+    if (res?.wasPaused) {
+      showToast("Task started (executor paused — force-dispatched)", "warning");
+    } else if (res) {
+      showToast("Task started", "success");
+    }
     scheduleRefresh(150);
   };
 

@@ -2379,6 +2379,11 @@ select.input {
   flex-wrap: wrap;
 }
 
+.actions-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
 .filter-toggle {
   position: relative;
   display: inline-flex;
@@ -2497,15 +2502,6 @@ select.input {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-@media (min-width: 769px) {
-  .tasks-filter-panel {
-    max-height: none;
-    opacity: 1;
-    transform: none;
-    pointer-events: auto;
-  }
 }
 
 @media (max-width: 768px) {
