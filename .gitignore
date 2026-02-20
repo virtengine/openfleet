@@ -37,3 +37,4 @@ workspaces.json
 !bosun.schema.json
 /.codex-monitor/
 /.bosun/
+*.bak
