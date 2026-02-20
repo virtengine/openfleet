@@ -1082,10 +1082,10 @@ function runMonitor() {
       monitorChild = null;
       if (code === SELF_RESTART_EXIT_CODE) {
         console.log(
-          "\n  \u21BB Monitor source changed \u2014 restarting with fresh modules...\n",
+          "\n  \u21BB Monitor restarting with fresh modules...\n",
         );
-        // Small delay to let file writes settle
-        setTimeout(() => resolve(runMonitor()), 1000);
+        // Small delay to let file writes / port releases settle
+        setTimeout(() => resolve(runMonitor()), 2000);
       } else {
         const exitCode = code ?? (signal ? 1 : 0);
         // 4294967295 (0xFFFFFFFF / -1 signed) = OS killed the process (OOM, external termination)

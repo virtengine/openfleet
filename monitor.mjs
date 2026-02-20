@@ -500,6 +500,9 @@ function isSelfRestartWatcherEnabled() {
   if (explicit !== undefined && String(explicit).trim() !== "") {
     return !isFalsyFlag(explicit);
   }
+  // Dev mode (source checkout / monorepo) → watch for code changes.
+  // npm mode (installed via npm) → do NOT watch; source only changes via
+  // npm update, which is handled by the auto-update loop instead.
   return isDevMode();
 }
 
@@ -1121,21 +1124,65 @@ function restartSelf(reason) {
   }
   const now = Date.now();
   lastMonitorRestartAt = now;
-  console.warn(`[monitor] restarting self (${reason || "unknown"})`);
-  try {
-    const child = spawn(process.execPath, process.argv.slice(1), {
-      cwd: process.cwd(),
-      env: { ...process.env },
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
-  } catch (err) {
-    console.warn(
-      `[monitor] failed to spawn replacement monitor: ${err.message || err}`,
+
+  // ── Graceful restart: use exit code 75 so cli.mjs re-forks cleanly ──
+  // Previously this spawned a detached orphan + exit(1), which:
+  //   - Triggered the crash handler in cli.mjs ("Monitor crashed exit code 1")
+  //   - Created an unmanaged orphan process instead of using cli's fork loop
+  //   - Killed in-flight agents without draining
+  // Now we do the same graceful shutdown as selfRestartForSourceChange().
+  console.warn(`[monitor] graceful restart — ${reason || "unknown"}`);
+  shuttingDown = true;
+  if (vkLogStream) {
+    vkLogStream.stop();
+    vkLogStream = null;
+  }
+  if (prCleanupDaemon) {
+    prCleanupDaemon.stop();
+  }
+  const shutdownPromises = [];
+  if (agentEndpoint) {
+    shutdownPromises.push(
+      Promise.resolve(agentEndpoint.stop()).catch((e) =>
+        console.warn(`[monitor] endpoint stop error: ${e.message}`),
+      ),
     );
   }
-  process.exit(1);
+  stopTaskPlannerStatusLoop();
+  stopMonitorMonitorSupervisor({ preserveRunning: true });
+  stopAutoUpdateLoop();
+  stopSelfWatcher();
+  stopWatcher();
+  stopEnvWatchers();
+  if (currentChild) {
+    currentChild.kill("SIGTERM");
+    setTimeout(() => {
+      if (currentChild && !currentChild.killed) {
+        currentChild.kill("SIGKILL");
+      }
+    }, 3000);
+  }
+  void releaseTelegramPollLock();
+  stopTelegramBot({ preserveDigest: true });
+  stopWhatsAppChannel();
+  if (isContainerEnabled()) {
+    void stopAllContainers().catch(() => {});
+  }
+  // Write self-restart marker so the new process suppresses startup notifications
+  try {
+    writeFileSync(
+      resolve(repoRoot, ".cache", "ve-self-restart.marker"),
+      String(Date.now()),
+    );
+  } catch {
+    /* best effort */
+  }
+  // Wait for shutdown, then exit with code 75 — cli.mjs re-forks cleanly
+  Promise.allSettled(shutdownPromises).then(() => {
+    setTimeout(() => process.exit(SELF_RESTART_EXIT_CODE), 500);
+  });
+  // Safety net: exit after 10s even if shutdown hangs
+  setTimeout(() => process.exit(SELF_RESTART_EXIT_CODE), 10000);
 }
 
 function recordOrchestratorRestart() {
@@ -11515,7 +11562,7 @@ if (selfRestartWatcherEnabled) {
   startSelfWatcher();
 } else {
   console.log(
-    "[monitor] self-restart watcher disabled (default outside devmode)",
+    `[monitor] self-restart file watcher disabled (${isDevMode() ? "explicitly" : "npm/prod mode — updates via auto-update loop"})`,
   );
 }
 startInteractiveShell();
