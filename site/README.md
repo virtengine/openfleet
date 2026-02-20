@@ -44,3 +44,28 @@ All loaded via CDN (no build step):
 - [jQuery Terminal 2.42.2](https://terminal.jcubic.pl/)
 - [Inter font](https://fonts.google.com/specimen/Inter)
 - [JetBrains Mono font](https://fonts.google.com/specimen/JetBrains+Mono)
+
+## Analytics (optional)
+
+Bosun's landing page supports lightweight analytics without a build step.
+Configuration lives in `scripts/bosun/site/js/analytics-config.js`.
+
+Recommended (open source): **Umami**
+
+```js
+window.BOSUN_ANALYTICS_CONFIG = {
+  provider: 'umami',
+  umami: {
+    scriptUrl: 'https://umami.example.com/script.js',
+    websiteId: 'YOUR_UMAMI_WEBSITE_ID',
+    domains: 'bosun.virtengine.com',
+  },
+};
+```
+
+Also supported:
+
+- Plausible (privacy-focused SaaS): set `provider: 'plausible'` and `plausible.domain`
+- GA4: set `provider: 'ga4'` and `ga4.measurementId`
+
+If `analytics-config.js` keeps the defaults (empty IDs), analytics stays disabled.
