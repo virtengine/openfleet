@@ -11,7 +11,7 @@
  * @module session-tracker
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -393,6 +393,14 @@ export class SessionTracker {
    */
   removeSession(taskId) {
     this.#sessions.delete(taskId);
+    this.#dirty.delete(taskId);
+    // Remove persisted session file if it exists
+    if (this.#persistDir) {
+      try {
+        const filePath = this.#sessionFilePath(taskId);
+        if (existsSync(filePath)) unlinkSync(filePath);
+      } catch { /* best effort */ }
+    }
   }
 
   /**

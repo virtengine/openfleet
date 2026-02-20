@@ -1036,22 +1036,174 @@ ul.md-list li::before {
   box-sizing: border-box;
 }
 
-.session-rename-btn {
+/* ═══ Swipeable Session Items ═══ */
+
+/* Wrapper holds behind-layer and the sliding item */
+.session-item-wrapper {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Action buttons behind the session item (revealed on swipe-left) */
+.session-item-behind {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: stretch;
+  z-index: 0;
+}
+
+.session-action-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  padding: 0 16px;
+  min-width: 60px;
+  font-size: 11px;
+  font-family: inherit;
+  gap: 2px;
+  transition: background 0.15s, transform 0.15s;
+}
+
+.session-action-btn.archive {
+  background: var(--color-warning, #e5a50a);
+  color: #000;
+}
+
+.session-action-btn.resume {
+  background: var(--color-primary, #60cc5d);
+  color: #000;
+}
+
+.session-action-btn.delete {
+  background: var(--color-error, #f85149);
+  color: #fff;
+}
+
+.session-action-btn.delete.confirm {
+  background: #d1242f;
+  animation: session-pulse 0.4s ease;
+}
+
+.session-action-btn:active {
+  transform: scale(0.95);
+}
+
+.session-action-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.session-action-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+@keyframes session-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* The actual session item (slides left) */
+.session-item-wrapper .session-item {
+  position: relative;
+  z-index: 1;
+  background: var(--bg-surface, var(--glass-bg));
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.session-item.archived {
+  opacity: 0.6;
+}
+
+.session-item.archived:hover {
+  opacity: 0.85;
+}
+
+/* ═══ Inline Action Buttons (desktop hover) ═══ */
+
+.session-item-end {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.session-actions {
+  display: flex;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+
+.session-item:hover .session-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.session-item.active .session-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.session-inline-btn {
   background: none;
   border: none;
   cursor: pointer;
   font-size: 12px;
   padding: 2px 4px;
-  opacity: 0;
-  transition: opacity 0.15s;
-  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+  opacity: 0.5;
+  transition: opacity 0.12s, background 0.12s;
   line-height: 1;
+  flex-shrink: 0;
 }
 
-.session-item:hover .session-rename-btn {
-  opacity: 0.6;
+.session-inline-btn:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
 }
 
-.session-rename-btn:hover {
-  opacity: 1 !important;
+.session-inline-btn.delete:hover {
+  opacity: 1;
+  background: rgba(248, 81, 73, 0.15);
+}
+
+/* ═══ Swipe Hint ═══ */
+.session-swipe-hint {
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-hint);
+  padding: 6px;
+  opacity: 0.5;
+  border-top: 1px solid var(--border);
+}
+
+/* Hide swipe hint on desktop (hover is the primary UX there) */
+@media (hover: hover) and (pointer: fine) {
+  .session-swipe-hint {
+    display: none;
+  }
+}
+
+/* On touch devices, hide the inline hover actions (use swipe instead) */
+@media (hover: none) {
+  .session-actions {
+    display: none !important;
+  }
+}
+
+/* ═══ Legacy rename btn (replaced by inline actions) ═══ */
+.session-rename-btn {
+  display: none;
 }

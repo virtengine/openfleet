@@ -3912,6 +3912,26 @@ async function handleApi(req, res, url) {
       return;
     }
 
+    if (action === "delete" && req.method === "POST") {
+      try {
+        const tracker = getSessionTracker();
+        const session = tracker.getSessionById(sessionId);
+        if (!session) {
+          jsonResponse(res, 404, { ok: false, error: "Session not found" });
+          return;
+        }
+        tracker.removeSession(sessionId);
+        jsonResponse(res, 200, { ok: true });
+        broadcastUiEvent(["sessions"], "invalidate", {
+          reason: "session-deleted",
+          sessionId,
+        });
+      } catch (err) {
+        jsonResponse(res, 500, { ok: false, error: err.message });
+      }
+      return;
+    }
+
     if (action === "rename" && req.method === "POST") {
       try {
         const tracker = getSessionTracker();
