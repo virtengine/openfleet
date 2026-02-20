@@ -1,0 +1,63 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#070b12" />
+      <stop offset="55%" stop-color="#0c111c" />
+      <stop offset="100%" stop-color="#0a0f18" />
+    </linearGradient>
+    <radialGradient id="glow-cyan" cx="0.15" cy="0.2" r="0.6">
+      <stop offset="0%" stop-color="#4cc9f0" stop-opacity="0.35" />
+      <stop offset="55%" stop-color="#4cc9f0" stop-opacity="0.1" />
+      <stop offset="100%" stop-color="#4cc9f0" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="glow-green" cx="0.85" cy="0.15" r="0.6">
+      <stop offset="0%" stop-color="#60cc5d" stop-opacity="0.32" />
+      <stop offset="60%" stop-color="#60cc5d" stop-opacity="0.08" />
+      <stop offset="100%" stop-color="#60cc5d" stop-opacity="0" />
+    </radialGradient>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="1" />
+    </pattern>
+    <linearGradient id="icon" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4cc9f0" />
+      <stop offset="100%" stop-color="#60cc5d" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="630" rx="36" fill="url(#bg)" />
+  <rect width="1200" height="630" rx="36" fill="url(#glow-cyan)" />
+  <rect width="1200" height="630" rx="36" fill="url(#glow-green)" />
+  <rect width="1200" height="630" rx="36" fill="url(#grid)" opacity="0.35" />
+
+  <g transform="translate(90, 110)">
+    <rect x="0" y="0" width="86" height="86" rx="22" fill="rgba(10,14,20,0.8)" stroke="rgba(255,255,255,0.12)" />
+    <rect x="6" y="6" width="74" height="74" rx="18" fill="url(#icon)" opacity="0.18" />
+    <path d="M52 12L22 48H40L34 76L66 38H46L52 12Z" fill="url(#icon)" />
+  </g>
+
+  <g font-family="SF Pro Display, SF Pro Text, Helvetica Neue, Arial, sans-serif" fill="#F8FAFC">
+    <text x="200" y="170" font-size="72" font-weight="700" letter-spacing="-1">Bosun</text>
+    <text x="200" y="230" font-size="34" font-weight="500" fill="#B6C2D9">
+      Autonomous AI Fleet Supervisor
+    </text>
+    <text x="200" y="280" font-size="22" font-weight="500" fill="#7A879C">
+      Route tasks · Orchestrate agents · Ship PRs
+    </text>
+  </g>
+
+  <g font-family="SF Pro Text, Helvetica Neue, Arial, sans-serif" fill="#A0AEC0">
+    <text x="200" y="340" font-size="18" font-weight="500">
+      Open-source control plane for AI coding agents.
+    </text>
+    <text x="200" y="370" font-size="18" font-weight="500">
+      Multi-executor orchestration with automated PR lifecycle control.
+    </text>
+  </g>
+
+  <g transform="translate(900, 92)">
+    <rect x="0" y="0" width="220" height="38" rx="19" fill="rgba(96,204,93,0.12)" stroke="rgba(96,204,93,0.4)" />
+    <text x="110" y="25" text-anchor="middle" font-family="SF Pro Text, Helvetica Neue, Arial, sans-serif" font-size="16" font-weight="600" fill="#60cc5d">
+      virtengine.com
+    </text>
+  </g>
+</svg>

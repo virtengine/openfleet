@@ -250,7 +250,9 @@ function Header() {
   return html`
     <header class="app-header">
       <div class="app-header-left">
-        <div class="app-header-logo">${ICONS.zap}</div>
+        <div class="app-header-logo">
+          <img src="logo.png" alt="Bosun" class="app-logo-img" />
+        </div>
         <div class="app-header-titles">
           <div class="app-header-title">VirtEngine</div>
           <div class="app-header-subtitle">
@@ -289,7 +291,9 @@ function SidebarNav() {
   return html`
     <aside class="sidebar">
       <div class="sidebar-brand">
-        <div class="sidebar-logo">${ICONS.zap}</div>
+        <div class="sidebar-logo">
+          <img src="logo.png" alt="Bosun" class="app-logo-img" />
+        </div>
         <div>
           <div class="sidebar-title">VirtEngine</div>
           <div class="sidebar-subtitle">Control Center</div>

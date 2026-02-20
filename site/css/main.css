@@ -5,22 +5,22 @@
 /* ── CSS Custom Properties ─────────────────────────────────────────────── */
 :root {
   /* Backgrounds */
-  --bg-root: #06060b;
-  --bg-surface: #0d0d14;
-  --bg-card: #12121c;
-  --bg-card-hover: #181826;
-  --bg-code: #0f0f1a;
-  --bg-terminal: #0a0a12;
+  --bg-root: #09090b;
+  --bg-surface: rgba(255, 255, 255, 0.03);
+  --bg-card: rgba(255, 255, 255, 0.02);
+  --bg-card-hover: rgba(255, 255, 255, 0.04);
+  --bg-code: #121214;
+  --bg-terminal: rgba(10, 10, 18, 0.6);
 
   /* Borders */
-  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-subtle: rgba(255, 255, 255, 0.05);
   --border-default: rgba(255, 255, 255, 0.1);
-  --border-glow: rgba(96, 204, 93, 0.2);
+  --border-glow: rgba(96, 204, 93, 0.3);
 
   /* Colors */
   --cyan: #60cc5d;
   --cyan-dim: #4caf50;
-  --purple: #7c3aed;
+  --purple: #8b5cf6;
   --purple-light: #a78bfa;
   --blue: #3b82f6;
   --green: #10b981;
@@ -29,13 +29,13 @@
   --pink: #ec4899;
 
   /* Gradients */
-  --gradient-primary: linear-gradient(135deg, #60cc5dd6, #07f21087);
+  --gradient-primary: linear-gradient(135deg, #60cc5d, #22c55e);
   --gradient-hero: linear-gradient(135deg, #60cc5d 0%, #4caf50 100%);
-  --gradient-card-border: linear-gradient(135deg, rgba(96,204,93,0.25), rgba(76,175,80,0.15));
-  --gradient-glow: radial-gradient(ellipse at 50% 0%, rgba(96,204,93,0.1) 0%, transparent 60%);
+  --gradient-card-border: linear-gradient(135deg, rgba(96,204,93,0.3), rgba(76,175,80,0.1));
+  --gradient-glow: radial-gradient(ellipse at 50% 0%, rgba(96,204,93,0.15) 0%, transparent 60%);
 
   /* Text */
-  --text-primary: #f1f5f9;
+  --text-primary: #f8fafc;
   --text-secondary: #94a3b8;
   --text-muted: #64748b;
   --text-accent: #60cc5d;
@@ -502,16 +502,22 @@ section {
 
 /* ── Hero headline (replaces the old hero__title + typed combo) ──────── */
 .hero__headline {
-  font-size: clamp(2.2rem, 4vw, 2.85rem);
+  font-size: clamp(2.5rem, 5vw, 4rem);
   font-weight: 800;
-  line-height: 1.15;
-  letter-spacing: -0.03em;
+  line-height: 1.1;
+  letter-spacing: -0.04em;
   margin-bottom: 0;
   color: var(--text-primary);
+  background: linear-gradient(to right, #fff, #a1a1aa);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .hero__headline .gradient-text {
   display: inline-block;
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .hero__typed {
@@ -782,6 +788,7 @@ section {
   transition: all 0.4s var(--ease-out);
   overflow: hidden;
   will-change: transform;
+  backdrop-filter: blur(10px);
 }
 
 .feature-card::before {
@@ -806,7 +813,7 @@ section {
   left: 0;
   width: 100%;
   height: 100%;
-  background: radial-gradient(circle at var(--mouse-x, 50%) var(--mouse-y, 50%), rgba(96,204,93,0.06), transparent 60%);
+  background: radial-gradient(circle at var(--mouse-x, 50%) var(--mouse-y, 50%), rgba(96,204,93,0.1), transparent 60%);
   border-radius: 16px;
   opacity: 0;
   transition: opacity 0.4s ease;
@@ -824,6 +831,7 @@ section {
 .feature-card:hover {
   border-color: transparent;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3), 0 0 40px rgba(96, 204, 93, 0.05);
+  transform: translateY(-4px);
 }
 
 .feature-card__icon {
@@ -893,12 +901,14 @@ section {
   max-width: 960px;
   margin: 0 auto;
   border-radius: 16px;
-  border: 1px solid var(--border-default);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   overflow: hidden;
+  background: rgba(10, 10, 18, 0.8);
+  backdrop-filter: blur(20px);
   box-shadow:
-    0 40px 100px rgba(0, 0, 0, 0.5),
-    0 0 80px rgba(96, 204, 93, 0.05),
-    inset 0 1px 0 rgba(255,255,255,0.05);
+    0 25px 50px -12px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.05),
+    0 0 80px rgba(96, 204, 93, 0.05);
 }
 
 .terminal-window__titlebar {
@@ -906,8 +916,8 @@ section {
   align-items: center;
   gap: 0.5rem;
   padding: 0.75rem 1rem;
-  background: #1a1a28;
-  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .terminal-window__dots {
@@ -1078,11 +1088,13 @@ body.is-miniapp-fullscreen {
   padding: 1.25rem 0.75rem;
   text-align: center;
   transition: all 0.3s ease;
+  backdrop-filter: blur(10px);
 }
 
 .arch-node:hover {
   border-color: var(--cyan);
-  transform: translateY(-2px);
+  transform: translateY(-4px);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
 }
 
 .arch-node__icon {
@@ -1127,6 +1139,14 @@ body.is-miniapp-fullscreen {
   border-radius: 14px;
   padding: 1.5rem;
   position: relative;
+  backdrop-filter: blur(10px);
+  transition: all 0.3s ease;
+}
+
+.arch-layer:hover {
+  border-color: rgba(96, 204, 93, 0.2);
+  transform: translateY(-2px);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
 }
 
 .arch-layer__title {
@@ -1175,6 +1195,7 @@ body.is-miniapp-fullscreen {
   transition: all 0.3s ease;
   position: relative;
   overflow: hidden;
+  backdrop-filter: blur(10px);
 }
 
 .integration-card::before {
@@ -1185,7 +1206,7 @@ body.is-miniapp-fullscreen {
   transform: translateX(-50%);
   width: 60%;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(96, 204, 93, 0.3), transparent);
+  background: linear-gradient(90deg, transparent, rgba(96, 204, 93, 0.5), transparent);
   opacity: 0;
   transition: opacity 0.3s ease;
 }
@@ -1196,7 +1217,7 @@ body.is-miniapp-fullscreen {
 
 .integration-card:hover {
   border-color: rgba(96, 204, 93, 0.3);
-  transform: translateY(-3px);
+  transform: translateY(-4px);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.25);
 }
 
@@ -1552,12 +1573,13 @@ body.is-miniapp-fullscreen {
   border-radius: 16px;
   text-align: center;
   transition: all 0.3s ease;
+  backdrop-filter: blur(10px);
 }
 
 .step:hover {
-  border-color: rgba(96, 204, 93, 0.2);
-  transform: translateY(-3px);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
+  border-color: rgba(96, 204, 93, 0.3);
+  transform: translateY(-4px);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.25);
 }
 
 .step__number {
@@ -1611,16 +1633,18 @@ body.is-miniapp-fullscreen {
   max-width: 720px;
   margin: 0 auto;
   border-radius: 16px;
-  border: 1px solid var(--border-default);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   overflow: hidden;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  background: rgba(10, 10, 18, 0.8);
+  backdrop-filter: blur(20px);
 }
 
 .code-showcase__tabs {
   display: flex;
   flex-wrap: wrap;
-  background: #1a1a28;
-  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   gap: 0;
 }
 
@@ -1819,42 +1843,44 @@ body.is-miniapp-fullscreen {
 
 /* ── Tab Bar ───────────────────────────────────────────────────────────── */
 .demo-tabs {
-  display: flex;
+  display: inline-flex;
   justify-content: center;
-  gap: 0.5rem;
+  gap: 0.25rem;
   margin-bottom: 2rem;
   flex-wrap: wrap;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.35rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(10px);
 }
 
 .demo-tab {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.65rem 1.25rem;
-  border-radius: 10px;
-  border: 1px solid var(--border-default);
-  background: var(--bg-card);
+  padding: 0.6rem 1.2rem;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
   color: var(--text-secondary);
   font-size: 0.85rem;
-  font-weight: 600;
+  font-weight: 500;
   font-family: var(--font-sans);
   cursor: pointer;
-  transition: all 0.25s var(--ease-out);
+  transition: all 0.3s ease;
   white-space: nowrap;
 }
 
 .demo-tab:hover {
-  border-color: var(--cyan);
   color: var(--text-primary);
-  background: var(--bg-card-hover);
-  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .demo-tab--active {
-  background: rgba(96, 204, 93, 0.1);
-  border-color: var(--cyan);
-  color: var(--cyan);
-  box-shadow: 0 4px 16px rgba(96, 204, 93, 0.15);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 .demo-tab svg {
@@ -1884,15 +1910,16 @@ body.is-miniapp-fullscreen {
   max-width: 520px;
   margin: 0 auto;
   border-radius: 16px;
-  border: 1px solid var(--border-default);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   overflow: hidden;
+  background: #0e1621;
   box-shadow:
-    0 40px 100px rgba(0, 0, 0, 0.5),
+    0 25px 50px -12px rgba(0, 0, 0, 0.5),
     0 0 60px rgba(96, 204, 93, 0.04);
 }
 
 .telegram-demo-window__chrome {
-  background: #1a2236;
+  background: #17212b;
   padding: 0;
 }
 
@@ -2215,21 +2242,21 @@ body.is-miniapp-fullscreen {
   border-radius: 40px;
   background: #000;
   padding: 12px;
+  border: 2px solid #222;
   box-shadow:
-    0 40px 100px rgba(0,0,0,0.5),
-    0 0 0 1px rgba(255,255,255,0.08),
-    inset 0 0 0 1px rgba(255,255,255,0.05);
+    0 25px 50px -12px rgba(0,0,0,0.5),
+    inset 0 0 0 2px #444;
   position: relative;
 }
 
 .miniapp-demo-window__notch {
-  width: 120px;
-  height: 24px;
+  width: 100px;
+  height: 25px;
   background: #000;
-  border-radius: 0 0 16px 16px;
+  border-radius: 20px;
   margin: 0 auto;
   position: absolute;
-  top: 12px;
+  top: 8px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 10;
@@ -2302,12 +2329,12 @@ body.is-miniapp-fullscreen {
   max-width: 480px;
   margin: 0 auto;
   border-radius: 16px;
-  border: 1px solid var(--border-default);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   overflow: hidden;
-  box-shadow:
-    0 40px 100px rgba(0,0,0,0.5),
-    0 0 60px rgba(96,204,93,0.04);
   background: #0b141a;
+  box-shadow:
+    0 25px 50px -12px rgba(0,0,0,0.5),
+    0 0 60px rgba(96,204,93,0.04);
 }
 
 .whatsapp-demo-window__header {
@@ -2315,7 +2342,7 @@ body.is-miniapp-fullscreen {
   align-items: center;
   gap: 0.75rem;
   padding: 0.75rem 1rem;
-  background: #1f2c34;
+  background: #202c33;
   border-bottom: 1px solid rgba(255,255,255,0.06);
 }
 
@@ -2385,7 +2412,7 @@ body.is-miniapp-fullscreen {
 }
 
 .wa-msg--bot .wa-msg__bubble {
-  background: #1f2c34;
+  background: #202c33;
   border-top-left-radius: 0;
   color: #e9edef;
 }
@@ -2465,12 +2492,13 @@ body.is-miniapp-fullscreen {
   padding: 1.75rem;
   transition: all 0.3s var(--ease-out);
   overflow: hidden;
+  backdrop-filter: blur(10px);
 }
 
 .security-card:hover {
-  border-color: rgba(96, 204, 93, 0.25);
+  border-color: rgba(96, 204, 93, 0.3);
   box-shadow: 0 16px 50px rgba(0,0,0,0.25);
-  transform: translateY(-2px);
+  transform: translateY(-4px);
 }
 
 .security-card__header {

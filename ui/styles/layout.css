@@ -52,12 +52,12 @@
   width: 28px;
   height: 28px;
   border-radius: 10px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: var(--shadow-sm);
+  box-shadow: none;
   flex-shrink: 0;
   color: var(--accent);
 }
@@ -66,6 +66,13 @@
   width: 16px;
   height: 16px;
   color: currentColor;
+}
+
+.app-logo-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 
 .app-header-title {
@@ -717,13 +724,13 @@
   width: 40px;
   height: 40px;
   border-radius: 12px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: none;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--accent);
-  box-shadow: var(--shadow-sm);
+  box-shadow: none;
 }
 
 .sidebar-logo svg {
