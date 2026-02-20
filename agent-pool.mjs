@@ -71,6 +71,20 @@ function envFlagEnabled(value) {
   return ["1", "true", "yes", "on", "y"].includes(raw);
 }
 
+/**
+ * Extract a human-readable task heading from the prompt built by _buildTaskPrompt.
+ * The first line is "# TASKID — Task Title"; we return the title portion only.
+ * Falls back to the raw first line if no em-dash separator is found.
+ * @param {string} prompt
+ * @returns {string}
+ */
+function extractTaskHeading(prompt) {
+  const firstLine = String(prompt || "").split(/\r?\n/)[0].replace(/^#+\s*/, "").trim();
+  const dashIdx = firstLine.indexOf(" \u2014 ");
+  const title = dashIdx !== -1 ? firstLine.slice(dashIdx + 3).trim() : firstLine;
+  return title || "Execute Task";
+}
+
 function shouldAutoApproveCopilotPermissions() {
   const raw = process.env.COPILOT_AUTO_APPROVE_PERMISSIONS;
   if (raw === undefined || raw === null || String(raw).trim() === "") {
@@ -870,7 +884,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
     }
 
     const formattedPrompt =
-      `# YOUR TASK — EXECUTE NOW\n\n${prompt}\n\n---\n` +
+      `# ${extractTaskHeading(prompt)}\n\n${prompt}\n\n---\n` +
       'Do NOT respond with "Ready" or ask what to do. EXECUTE this task.';
 
     const hasSend = typeof session.send === "function";
@@ -1184,7 +1198,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     const msgQueue = createMessageQueue();
 
     const formattedPrompt =
-      `# YOUR TASK — EXECUTE NOW\n\n${prompt}\n\n---\n` +
+      `# ${extractTaskHeading(prompt)}\n\n${prompt}\n\n---\n` +
       'Do NOT respond with "Ready" or ask what to do. EXECUTE this task.';
 
     msgQueue.push(makeUserMessage(formattedPrompt));

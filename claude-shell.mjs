@@ -430,12 +430,22 @@ async function saveState() {
   }
 }
 
+function extractTaskHeading(msg) {
+  // Prompt first line is "# TASKID — Task Title" (from _buildTaskPrompt).
+  // Return just the task title portion, or a short fallback.
+  const firstLine = msg.split(/\r?\n/)[0].replace(/^#+\s*/, '').trim();
+  const dashIdx = firstLine.indexOf(' \u2014 ');
+  const heading = dashIdx !== -1 ? firstLine.slice(dashIdx + 3).trim() : firstLine;
+  return heading || 'Execute Task';
+}
+
 function buildPrompt(userMessage, statusData) {
+  const title = extractTaskHeading(userMessage);
   if (!statusData) {
-    return `# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with \"Ready\" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.`;
+    return `# ${title}\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.`;
   }
   const statusSnippet = JSON.stringify(statusData, null, 2).slice(0, 2000);
-  return `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with \"Ready\" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.`;
+  return `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n# ${title}\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.`;
 }
 
 // ── Main Execution ─────────────────────────────────────────────────────────
