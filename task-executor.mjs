@@ -113,6 +113,35 @@ const CODEX_TASK_LABELS = (() => {
 
 /** Watchdog interval: how often to check for stalled agent slots */
 const WATCHDOG_INTERVAL_MS = 60_000; // 1 minute
+
+/**
+ * Returns the Co-authored-by trailer for bosun[bot], or empty string if the
+ * GitHub App ID is not configured. Used to attribute agent commits to the
+ * Bosun GitHub App so the bot shows up as a contributor.
+ *
+ * To enable: set BOSUN_GITHUB_APP_ID=<your-app-id> in .env
+ * App noreply email format: <id>+bosun[bot]@users.noreply.github.com
+ */
+function getBosunCoAuthorLine() {
+  const appId = String(process.env.BOSUN_GITHUB_APP_ID || "").trim();
+  if (!appId) return "";
+  return `Co-authored-by: bosun[bot] <${appId}+bosun[bot]@users.noreply.github.com>`;
+}
+
+/**
+ * Returns a prompt instruction block telling the agent to append the Bosun
+ * co-author trailer to every commit. Empty string when app ID not configured.
+ */
+function getBosunCoAuthorInstruction() {
+  const line = getBosunCoAuthorLine();
+  if (!line) return "";
+  return `\n**Attribution (required — do not omit):**
+Every commit message MUST end with a blank line then this exact trailer:
+\`\`\`
+${line}
+\`\`\`
+`;
+}
 /** Grace period after task timeout before watchdog force-kills the slot */
 const WATCHDOG_GRACE_MS = 10 * 60_000; // 10 minutes — generous buffer, stream analysis handles real issues
 /** Max age for in-progress tasks to auto-resume after monitor restart */
@@ -4160,6 +4189,7 @@ class TaskExecutor {
         REPO_ROOT: promptRepoRoot,
         TASK_WORKSPACE: promptWorkspace,
         TASK_REPOSITORY: promptRepository,
+        COAUTHOR_INSTRUCTION: getBosunCoAuthorInstruction(),
       },
       fallbackPrompt,
     );
@@ -4232,6 +4262,11 @@ class TaskExecutor {
       `3. Re-run tests to verify`,
       `4. Commit and push your fixes`,
       ``,
+      ...(getBosunCoAuthorLine() ? [
+        `Attribution: append this trailer after each commit message body (blank line before it):`,
+        getBosunCoAuthorLine(),
+        ``,
+      ] : []),
       `Original task description:`,
       task.description || "See task URL for details.",
     ].join("\n");

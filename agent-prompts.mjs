@@ -253,7 +253,7 @@ You are running as a **Bosun-managed task agent**.  Environment variables
 - After a successful push, open a Pull Request:
   \`gh pr create --title "{{TASK_TITLE}}" --body "Closes task {{TASK_ID}}"\`
 - **Do NOT** run \`gh pr merge\` — the orchestrator handles merges after CI.
-
+{{COAUTHOR_INSTRUCTION}}
 **Do NOT:**
 - Bypass pre-push hooks (\`git push --no-verify\` is forbidden).
 - Use \`git add .\` — stage files individually.
