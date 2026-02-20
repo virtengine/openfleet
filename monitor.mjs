@@ -194,6 +194,7 @@ import {
   getAllTasks as getAllInternalTasks,
 } from "./task-store.mjs";
 import { createAgentEndpoint } from "./agent-endpoint.mjs";
+import { createAgentEventBus } from "./agent-event-bus.mjs";
 import { createReviewAgent } from "./review-agent.mjs";
 import { createSyncEngine } from "./sync-engine.mjs";
 import { createErrorDetector } from "./error-detector.mjs";
@@ -10444,16 +10445,20 @@ async function startProcess() {
 
   if (scriptLower.endsWith(".ps1")) {
     const configuredPwsh = String(process.env.PWSH_PATH || "").trim();
-    const pwshCmd = configuredPwsh || "pwsh";
+    const bundledPwsh = resolve(__dirname, ".cache", "bosun", "pwsh", "pwsh");
+    const bundledPwshExists = existsSync(bundledPwsh);
+    const pwshCmd = configuredPwsh || (bundledPwshExists ? bundledPwsh : "pwsh");
     const pwshExists = configuredPwsh
       ? configuredPwsh.includes("/") || configuredPwsh.includes("\\")
         ? existsSync(configuredPwsh)
         : commandExists(configuredPwsh)
-      : commandExists("pwsh");
+      : bundledPwshExists || commandExists("pwsh");
     if (!pwshExists) {
       const pwshLabel = configuredPwsh
         ? `PWSH_PATH (${configuredPwsh})`
-        : "pwsh on PATH";
+        : bundledPwshExists
+          ? `bundled pwsh (${bundledPwsh})`
+          : "pwsh on PATH";
       const pauseMs = Math.max(orchestratorPauseMs, 60_000);
       const pauseMin = Math.max(1, Math.round(pauseMs / 60_000));
       monitorSafeModeUntil = Math.max(monitorSafeModeUntil, Date.now() + pauseMs);
@@ -11671,6 +11676,8 @@ try {
 let internalTaskExecutor = null;
 /** @type {import("./agent-endpoint.mjs").AgentEndpoint|null} */
 let agentEndpoint = null;
+/** @type {import("./agent-event-bus.mjs").AgentEventBus|null} */
+let agentEventBus = null;
 /** @type {import("./review-agent.mjs").ReviewAgent|null} */
 let reviewAgent = null;
 /** @type {import("./sync-engine.mjs").SyncEngine|null} */
@@ -11768,22 +11775,27 @@ if (isExecutorDisabled()) {
         console.log(
           `[task-executor] 🚀 started: "${task.title}" (${slot.sdk}) agent=${agentId} branch=${slot.branch} worktree=${slot.worktreePath || "(pending)"}`,
         );
+        if (agentEventBus) agentEventBus.onTaskStarted(task, slot);
       },
       onTaskCompleted: (task, result) => {
         console.log(
           `[task-executor] ✅ completed: "${task.title}" (${result.attempts} attempt(s))`,
         );
-        // Queue review if task moved to inreview and has a PR
-        if (reviewAgent && result.success) {
-          try {
-            reviewAgent.queueReview({
-              id: task.id || task.task_id,
-              title: task.title,
-              branchName: task.branchName || task.meta?.branch_name,
-              description: task.description || "",
-            });
-          } catch {
-            /* best-effort */
+        if (agentEventBus) {
+          agentEventBus.onTaskCompleted(task, result);
+        } else {
+          // Fallback: queue review directly if event bus not ready
+          if (reviewAgent && result.success) {
+            try {
+              reviewAgent.queueReview({
+                id: task.id || task.task_id,
+                title: task.title,
+                branchName: task.branchName || task.meta?.branch_name,
+                description: task.description || "",
+              });
+            } catch {
+              /* best-effort */
+            }
           }
         }
       },
@@ -11791,6 +11803,7 @@ if (isExecutorDisabled()) {
         console.warn(
           `[task-executor] ❌ failed: "${task.title}" — ${err?.message || err}`,
         );
+        if (agentEventBus) agentEventBus.onTaskFailed(task, err);
       },
     };
     internalTaskExecutor = getTaskExecutor(execOpts);
@@ -11861,28 +11874,34 @@ if (isExecutorDisabled()) {
         },
         onTaskComplete: (taskId, body) => {
           console.log(`[monitor] agent self-reported complete for ${taskId}`);
-          try {
-            setInternalTaskStatus(taskId, "inreview", "agent-endpoint");
-          } catch {
-            /* best-effort */
-          }
-          if (reviewAgent) {
-            const task = internalTaskExecutor?._activeSlots?.get(taskId);
-            if (task)
-              reviewAgent.queueReview({
-                id: taskId,
-                title: task.taskTitle,
-                prNumber: body?.prNumber,
-                branchName: task.branch,
-                description: body?.description || "",
-              });
+          if (agentEventBus) {
+            agentEventBus.onAgentComplete(taskId, body);
+          } else {
+            try {
+              setInternalTaskStatus(taskId, "inreview", "agent-endpoint");
+            } catch {
+              /* best-effort */
+            }
+            if (reviewAgent) {
+              const task = internalTaskExecutor?._activeSlots?.get(taskId);
+              if (task)
+                reviewAgent.queueReview({
+                  id: taskId,
+                  title: task.taskTitle,
+                  prNumber: body?.prNumber,
+                  branchName: task.branch,
+                  description: body?.description || "",
+                });
+            }
           }
         },
         onTaskError: (taskId, body) => {
           console.warn(
             `[monitor] agent self-reported error for ${taskId}: ${body?.error}`,
           );
-          if (errorDetector) {
+          if (agentEventBus) {
+            agentEventBus.onAgentError(taskId, body);
+          } else if (errorDetector) {
             const classification = errorDetector.classify(
               body?.output || "",
               body?.error || "",
@@ -11894,10 +11913,14 @@ if (isExecutorDisabled()) {
           console.log(
             `[monitor] agent status change for ${taskId}: ${newStatus}`,
           );
-          try {
-            setInternalTaskStatus(taskId, newStatus, "agent-endpoint");
-          } catch {
-            /* best-effort */
+          if (agentEventBus) {
+            agentEventBus.onStatusChange(taskId, newStatus, "agent");
+          } else {
+            try {
+              setInternalTaskStatus(taskId, newStatus, "agent-endpoint");
+            } catch {
+              /* best-effort */
+            }
           }
         },
       });
@@ -11915,6 +11938,27 @@ if (isExecutorDisabled()) {
     } catch (err) {
       console.warn(`[monitor] agent endpoint creation failed: ${err.message}`);
       agentEndpoint = null;
+    }
+
+    // ── Agent Event Bus ──
+    try {
+      agentEventBus = createAgentEventBus({
+        errorDetector: errorDetector || undefined,
+        sendTelegram:
+          telegramToken && telegramChatId
+            ? (msg) => void sendTelegramMessage(msg)
+            : null,
+        getTask: (taskId) => getInternalTask(taskId),
+        setTaskStatus: (taskId, status, source) =>
+          setInternalTaskStatus(taskId, status, source),
+        // broadcastUiEvent is wired later when UI server starts via
+        // injectUiDependencies → setBroadcastFn pattern
+      });
+      agentEventBus.start();
+      console.log("[monitor] agent event bus started");
+    } catch (err) {
+      console.warn(`[monitor] agent event bus failed: ${err.message}`);
+      agentEventBus = null;
     }
 
     // ── Review Agent ──
@@ -12017,6 +12061,11 @@ if (isExecutorDisabled()) {
         }
 
         console.log("[monitor] review agent started");
+
+        // Wire review agent into event bus
+        if (agentEventBus) {
+          agentEventBus._reviewAgent = reviewAgent;
+        }
       } catch (err) {
         console.warn(`[monitor] review agent failed to start: ${err.message}`);
       }
@@ -12134,6 +12183,7 @@ injectMonitorFunctions({
   getInternalExecutor: () => internalTaskExecutor,
   getExecutorMode: () => executorMode,
   getAgentEndpoint: () => agentEndpoint,
+  getAgentEventBus: () => agentEventBus,
   getReviewAgent: () => reviewAgent,
   getReviewAgentEnabled: () => isReviewAgentEnabled(),
   getSyncEngine: () => syncEngine,

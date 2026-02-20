@@ -15,6 +15,11 @@ import { signal, computed, effect } from "@preact/signals";
 import htm from "htm";
 import { apiFetch } from "../modules/api.js";
 import { haptic } from "../modules/telegram.js";
+import {
+  aliveAgentCount,
+  staleAgentCount,
+  totalErrorCount,
+} from "../modules/agent-events.js";
 
 const html = htm.bind(h);
 
@@ -587,6 +592,9 @@ export function AgentPicker() {
 export function AgentStatusBadge() {
   const status = agentStatus.value;
   const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.idle;
+  const alive = aliveAgentCount.value;
+  const stale = staleAgentCount.value;
+  const errors = totalErrorCount.value;
 
   return html`
     <div class="agent-status-badge" title=${cfg.label}>
@@ -595,6 +603,9 @@ export function AgentStatusBadge() {
         style="background: ${cfg.color}"
       />
       <span class="agent-status-label">${cfg.label}</span>
+      ${alive > 0 && html`<span class="agent-count-badge" title="${alive} agent(s) active" style="background:#2ea043;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:4px;">${alive}</span>`}
+      ${stale > 0 && html`<span class="agent-count-badge" title="${stale} agent(s) stale" style="background:#d29922;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;">⚠${stale}</span>`}
+      ${errors > 0 && html`<span class="agent-count-badge" title="${errors} error(s)" style="background:#f85149;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;">✕${errors}</span>`}
     </div>
   `;
 }

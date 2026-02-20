@@ -777,6 +777,50 @@
         const agent = STATE.availableAgents.find(a => a.id === STATE.activeAgentId) || STATE.availableAgents[0];
         return { ok: true, data: agent };
       }
+
+      // ── Agent Event Bus (mock) ──
+      if (route === '/api/agents/events') {
+        const taskId = params.get('taskId');
+        const type = params.get('type');
+        const limit = parseInt(params.get('limit')) || 100;
+        let events = [
+          { type: 'agent:task-started', taskId: 'demo-task-1', payload: { title: 'Fix authentication bug', sdk: 'copilot-sdk' }, ts: now - 300000 },
+          { type: 'agent:heartbeat', taskId: 'demo-task-1', payload: { alive: true }, ts: now - 120000 },
+          { type: 'agent:error-classified', taskId: 'demo-task-1', payload: { pattern: 'build_failure', confidence: 0.92, action: 'retry_with_prompt' }, ts: now - 60000 },
+          { type: 'agent:auto-retry', taskId: 'demo-task-1', payload: { retryCount: 1, maxRetries: 5, pattern: 'build_failure' }, ts: now - 55000 },
+          { type: 'agent:task-completed', taskId: 'demo-task-1', payload: { title: 'Fix authentication bug', success: true, hasCommits: true, branch: 've/demo-task-1' }, ts: now - 10000 },
+          { type: 'agent:auto-review', taskId: 'demo-task-1', payload: { title: 'Fix authentication bug', branch: 've/demo-task-1' }, ts: now - 5000 },
+        ];
+        if (taskId) events = events.filter(e => e.taskId === taskId);
+        if (type) events = events.filter(e => e.type === type);
+        events = events.slice(-limit);
+        return { ok: true, events };
+      }
+      if (route === '/api/agents/events/errors') {
+        const taskId = params.get('taskId');
+        if (taskId) {
+          return { ok: true, taskId, errors: [
+            { pattern: 'build_failure', ts: now - 60000, action: 'retry_with_prompt', confidence: 0.92 },
+          ]};
+        }
+        return { ok: true, patterns: {
+          build_failure: { count: 3, lastSeen: now - 60000, tasks: ['demo-task-1', 'demo-task-2'] },
+          rate_limit: { count: 1, lastSeen: now - 180000, tasks: ['demo-task-2'] },
+        }};
+      }
+      if (route === '/api/agents/events/liveness') {
+        return { ok: true, agents: [
+          { taskId: 'demo-task-1', lastHeartbeat: now - 30000, alive: true, staleSinceMs: null },
+          { taskId: 'demo-task-2', lastHeartbeat: now - 120000, alive: false, staleSinceMs: 120000 },
+        ]};
+      }
+      if (route === '/api/agents/events/status') {
+        return { ok: true, started: true, eventLogSize: 6, trackedAgents: 2, errorTrackedTasks: 2, autoActionTasks: 1, listenerCount: 0, liveness: [
+          { taskId: 'demo-task-1', lastHeartbeat: now - 30000, alive: true, staleSinceMs: null },
+        ], errorPatterns: {
+          build_failure: { count: 3, lastSeen: now - 60000, tasks: ['demo-task-1'] },
+        }};
+      }
       if (route === '/api/executors')
         return { executors: STATE.executors };
 

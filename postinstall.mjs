@@ -12,12 +12,25 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import {
+  existsSync,
+  createWriteStream,
+  mkdirSync,
+  rmSync,
+  chmodSync,
+  mkdtempSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import https from "node:https";
+import { pipeline } from "node:stream/promises";
 
 const isWin = process.platform === "win32";
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const BUNDLED_PWSH_DIR = resolve(__dirname, ".cache", "bosun", "pwsh");
+const BUNDLED_PWSH_PATH = resolve(BUNDLED_PWSH_DIR, "pwsh");
+const FALLBACK_PWSH_VERSION = "7.4.6";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -50,6 +63,127 @@ function parseBoolEnv(value, fallback) {
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return fallback;
+}
+
+function bundledPwshExists() {
+  return existsSync(BUNDLED_PWSH_PATH);
+}
+
+function isPwshSupportedPlatform(platform) {
+  return platform === "linux" || platform === "darwin";
+}
+
+function getPwshAssetSuffix(platform, arch) {
+  if (platform === "linux") {
+    if (arch === "x64") return "linux-x64";
+    if (arch === "arm64") return "linux-arm64";
+    return null;
+  }
+  if (platform === "darwin") {
+    if (arch === "x64") return "osx-x64";
+    if (arch === "arm64") return "osx-arm64";
+    return null;
+  }
+  return null;
+}
+
+function httpsGetJson(url) {
+  return new Promise((resolvePromise, reject) => {
+    const req = https.get(
+      url,
+      {
+        headers: {
+          "User-Agent": "bosun-postinstall",
+          Accept: "application/vnd.github+json",
+        },
+      },
+      (res) => {
+        if (res.statusCode && res.statusCode >= 400) {
+          reject(new Error(`HTTP ${res.statusCode}`));
+          res.resume();
+          return;
+        }
+        let raw = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => (raw += chunk));
+        res.on("end", () => {
+          try {
+            resolvePromise(JSON.parse(raw));
+          } catch (err) {
+            reject(err);
+          }
+        });
+      },
+    );
+    req.on("error", reject);
+  });
+}
+
+function downloadFile(url, destPath) {
+  return new Promise((resolvePromise, reject) => {
+    const req = https.get(
+      url,
+      { headers: { "User-Agent": "bosun-postinstall" } },
+      (res) => {
+        if (res.statusCode && res.statusCode >= 400) {
+          reject(new Error(`HTTP ${res.statusCode}`));
+          res.resume();
+          return;
+        }
+        pipeline(res, createWriteStream(destPath))
+          .then(resolvePromise)
+          .catch(reject);
+      },
+    );
+    req.on("error", reject);
+  });
+}
+
+async function resolvePwshVersion() {
+  const forced = String(process.env.BOSUN_PWSH_VERSION || "").trim();
+  if (forced) return forced.replace(/^v/, "");
+  try {
+    const release = await httpsGetJson(
+      "https://api.github.com/repos/PowerShell/PowerShell/releases/latest",
+    );
+    const tag = String(release?.tag_name || "").trim();
+    if (tag) return tag.replace(/^v/, "");
+  } catch {
+    /* fallback */
+  }
+  return FALLBACK_PWSH_VERSION;
+}
+
+async function installBundledPwsh(platform, arch) {
+  const suffix = getPwshAssetSuffix(platform, arch);
+  if (!suffix) {
+    throw new Error(`Unsupported platform/arch: ${platform}/${arch}`);
+  }
+
+  const version = await resolvePwshVersion();
+  const assetName = `powershell-${version}-${suffix}.tar.gz`;
+  const url = `https://github.com/PowerShell/PowerShell/releases/download/v${version}/${assetName}`;
+  const tempDir = mkdtempSync(resolve(tmpdir(), "bosun-pwsh-"));
+  const archivePath = resolve(tempDir, assetName);
+
+  await downloadFile(url, archivePath);
+
+  rmSync(BUNDLED_PWSH_DIR, { recursive: true, force: true });
+  mkdirSync(BUNDLED_PWSH_DIR, { recursive: true });
+
+  execSync(`tar -xzf "${archivePath}" -C "${BUNDLED_PWSH_DIR}"`, {
+    stdio: "ignore",
+  });
+
+  if (!existsSync(BUNDLED_PWSH_PATH)) {
+    throw new Error("pwsh binary not found after extraction");
+  }
+  try {
+    chmodSync(BUNDLED_PWSH_PATH, 0o755);
+  } catch {
+    /* best effort */
+  }
+  return { version, path: BUNDLED_PWSH_PATH };
 }
 
 // ── Dependency checks ────────────────────────────────────────────────────────
@@ -113,7 +247,7 @@ const RECOMMENDED = [
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-function main() {
+async function main() {
   // Skip in CI environments
   if (process.env.CI || process.env.BOSUN_SKIP_POSTINSTALL) {
     return;
@@ -152,11 +286,39 @@ function main() {
     }
   }
 
+  // Optional: auto-install PowerShell on Linux/macOS if missing
+  const autoInstallPwsh = parseBoolEnv(
+    process.env.BOSUN_AUTO_INSTALL_PWSH,
+    true,
+  );
+  if (
+    autoInstallPwsh &&
+    !commandExists("pwsh") &&
+    !bundledPwshExists() &&
+    isPwshSupportedPlatform(platform)
+  ) {
+    console.log("  ▸ Installing PowerShell (bundled)...");
+    try {
+      const info = await installBundledPwsh(platform, process.arch);
+      console.log(`  ✅ PowerShell bundled (${info.version})`);
+    } catch (err) {
+      console.log(`  ⚠️  PowerShell bundle install failed: ${err.message}`);
+    }
+  }
+
   // Recommended tools
   for (const dep of RECOMMENDED) {
-    if (commandExists(dep.cmd)) {
+    const isPwsh = dep.cmd === "pwsh";
+    const hasPwsh = isPwsh
+      ? commandExists(dep.cmd) || bundledPwshExists()
+      : commandExists(dep.cmd);
+    if (hasPwsh) {
       const ver = getVersion(dep.cmd);
-      console.log(`  ✅ ${dep.name}${ver ? ` (${ver})` : ""}`);
+      if (isPwsh && bundledPwshExists() && !ver) {
+        console.log(`  ✅ ${dep.name} (bundled)`);
+      } else {
+        console.log(`  ✅ ${dep.name}${ver ? ` (${ver})` : ""}`);
+      }
     } else {
       console.log(`  ⚠️  ${dep.name} — not found`);
       console.log(`     ${dep.why}`);
@@ -236,4 +398,6 @@ function main() {
   }
 }
 
-main();
+main().catch((err) => {
+  console.error(`  ⚠️  postinstall failed: ${err.message}`);
+});

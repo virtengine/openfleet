@@ -426,8 +426,21 @@ function cloudRemove(key) {
 }
 
 /* ─── Version info ─── */
-const APP_VERSION = "1.0.0";
-const APP_NAME = "Bosun";
+let APP_VERSION = "loading...";
+let APP_NAME = "Bosun";
+
+// Fetch version from API
+(async () => {
+  try {
+    const res = await fetch("/api/config");
+    const data = await res.json();
+    if (data.ok && data.version) {
+      APP_VERSION = data.version;
+    }
+  } catch {
+    APP_VERSION = "unknown";
+  }
+})();
 
 /* ─── Fuzzy search helper ─── */
 function fuzzyMatch(needle, haystack) {

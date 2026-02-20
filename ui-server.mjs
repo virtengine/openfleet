@@ -1443,6 +1443,38 @@ export function stopTunnel() {
 
 export function injectUiDependencies(deps = {}) {
   uiDeps = { ...uiDeps, ...deps };
+
+  // Auto-wire broadcastUiEvent into the agent event bus when available
+  if (typeof deps.getAgentEventBus === "function") {
+    try {
+      const bus = deps.getAgentEventBus();
+      if (bus && !bus._broadcastUiEvent) {
+        bus._broadcastUiEvent = broadcastUiEvent;
+        console.log("[ui-server] wired broadcastUiEvent into agent event bus");
+      }
+    } catch {
+      /* bus not ready yet — will be wired on first API access */
+    }
+  }
+}
+
+/**
+ * Lazily resolve the agent event bus, wiring broadcastUiEvent on first access.
+ * Returns the bus instance or null if unavailable.
+ */
+function _resolveEventBus() {
+  if (typeof uiDeps.getAgentEventBus !== "function") return null;
+  try {
+    const bus = uiDeps.getAgentEventBus();
+    if (!bus) return null;
+    // Late-wire broadcastUiEvent if it wasn't available during injection
+    if (!bus._broadcastUiEvent) {
+      bus._broadcastUiEvent = broadcastUiEvent;
+    }
+    return bus;
+  } catch {
+    return null;
+  }
 }
 
 export function getTelegramUiUrl() {
@@ -3672,8 +3704,10 @@ async function handleApi(req, res, url) {
   if (path === "/api/config") {
     const regionEnv = (process.env.EXECUTOR_REGIONS || "").trim();
     const regions = regionEnv ? regionEnv.split(",").map((r) => r.trim()).filter(Boolean) : ["auto"];
+    const pkg = JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf8"));
     jsonResponse(res, 200, {
       ok: true,
+      version: pkg.version,
       miniAppEnabled:
         !!process.env.TELEGRAM_MINIAPP_ENABLED ||
         !!process.env.TELEGRAM_UI_PORT,
@@ -4188,6 +4222,82 @@ async function handleApi(req, res, url) {
       const mode = getAgentMode();
       const commands = getSdkCommands();
       jsonResponse(res, 200, { ok: true, ...info, mode, sdkCommands: commands });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // ── Agent Event Bus API ───────────────────────────────────────────────
+
+  if (path === "/api/agents/events" && req.method === "GET") {
+    try {
+      const bus = _resolveEventBus();
+      if (!bus) {
+        jsonResponse(res, 503, { ok: false, error: "Event bus not available" });
+        return;
+      }
+      const taskId = url.searchParams.get("taskId") || undefined;
+      const type = url.searchParams.get("type") || undefined;
+      const since = url.searchParams.get("since")
+        ? Number(url.searchParams.get("since"))
+        : undefined;
+      const limit = url.searchParams.get("limit")
+        ? Number(url.searchParams.get("limit"))
+        : 100;
+      const events = bus.getEventLog({ taskId, type, since, limit });
+      jsonResponse(res, 200, { ok: true, events });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/agents/events/errors" && req.method === "GET") {
+    try {
+      const bus = _resolveEventBus();
+      if (!bus) {
+        jsonResponse(res, 503, { ok: false, error: "Event bus not available" });
+        return;
+      }
+      const taskId = url.searchParams.get("taskId");
+      if (taskId) {
+        const history = bus.getErrorHistory(taskId);
+        jsonResponse(res, 200, { ok: true, taskId, errors: history });
+      } else {
+        const summary = bus.getErrorPatternSummary();
+        jsonResponse(res, 200, { ok: true, patterns: summary });
+      }
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/agents/events/liveness" && req.method === "GET") {
+    try {
+      const bus = _resolveEventBus();
+      if (!bus) {
+        jsonResponse(res, 503, { ok: false, error: "Event bus not available" });
+        return;
+      }
+      const liveness = bus.getAgentLiveness();
+      jsonResponse(res, 200, { ok: true, agents: liveness });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/agents/events/status" && req.method === "GET") {
+    try {
+      const bus = _resolveEventBus();
+      if (!bus) {
+        jsonResponse(res, 503, { ok: false, error: "Event bus not available" });
+        return;
+      }
+      const status = bus.getStatus();
+      jsonResponse(res, 200, { ok: true, ...status });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

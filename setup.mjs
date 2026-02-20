@@ -331,12 +331,15 @@ export function getScriptRuntimePrerequisiteStatus(
   platform = process.platform,
   checker = commandExists,
 ) {
+  const bundledPwsh = resolve(__dirname, ".cache", "bosun", "pwsh", "pwsh");
+  const bundledPwshExists = existsSync(bundledPwsh);
+
   if (platform === "win32") {
     return {
       required: {
         label: "PowerShell (pwsh)",
         command: "pwsh",
-        ok: checker("pwsh"),
+        ok: checker("pwsh") || bundledPwshExists,
         hint: "Install: https://github.com/PowerShell/PowerShell",
       },
       optionalPwsh: null,
@@ -353,7 +356,7 @@ export function getScriptRuntimePrerequisiteStatus(
     optionalPwsh: {
       label: "PowerShell (pwsh)",
       command: "pwsh",
-      ok: checker("pwsh"),
+      ok: checker("pwsh") || bundledPwshExists,
       hint: "Optional on macOS/Linux (needed only for .ps1 scripts)",
     },
   };

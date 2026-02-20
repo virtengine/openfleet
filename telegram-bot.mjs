@@ -864,6 +864,7 @@ let _getAnomalyReport = null;
 let _getInternalExecutor = null;
 let _getExecutorMode = null;
 let _getAgentEndpoint = null;
+let _getAgentEventBus = null;
 let _getReviewAgent = null;
 let _getReviewAgentEnabled = null;
 let _getSyncEngine = null;
@@ -898,6 +899,7 @@ export function injectMonitorFunctions({
   getInternalExecutor,
   getExecutorMode,
   getAgentEndpoint,
+  getAgentEventBus,
   getReviewAgent,
   getReviewAgentEnabled,
   getSyncEngine,
@@ -928,6 +930,7 @@ export function injectMonitorFunctions({
   _getInternalExecutor = getInternalExecutor || null;
   _getExecutorMode = getExecutorMode || null;
   _getAgentEndpoint = getAgentEndpoint || null;
+  _getAgentEventBus = getAgentEventBus || null;
   _getReviewAgent = getReviewAgent || null;
   _getReviewAgentEnabled = getReviewAgentEnabled || null;
   _getSyncEngine = getSyncEngine || null;
@@ -9923,6 +9926,7 @@ export async function startTelegramBot() {
           execPrimaryPrompt,
           getInternalExecutor: _getInternalExecutor,
           getExecutorMode: _getExecutorMode,
+          getAgentEventBus: _getAgentEventBus,
           handleUiCommand: handleUiCommand,
           getSyncEngine: _getSyncEngine,
           configDir: process.env.BOSUN_DIR || join(homedir(), "bosun"),
