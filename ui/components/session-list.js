@@ -169,23 +169,15 @@ export async function resumeSession(id) {
 }
 
 /* ─── Helpers ─── */
-const TYPE_ICONS = { primary: "🤖", task: "🔨", review: "👀", manual: "💬" };
-const STATUS_ICONS = {
-  active: "🟢",
-  running: "🟢",
-  paused: "⏸️",
-  completed: "✅",
-  error: "🔴",
-  archived: "📦",
+const STATUS_COLOR_MAP = {
+  running: "var(--accent)",
+  active: "var(--accent)",
+  paused: "var(--text-hint)",
+  completed: "var(--color-done)",
+  done: "var(--color-done)",
+  error: "var(--color-error)",
+  archived: "var(--text-hint)",
 };
-
-function sessionIcon(type) {
-  return TYPE_ICONS[(type || "").toLowerCase()] || "💬";
-}
-
-function statusIcon(status) {
-  return STATUS_ICONS[(status || "").toLowerCase()] || "";
-}
 
 /* ─── Swipeable Session Item ─── */
 function SwipeableSessionItem({
@@ -212,6 +204,9 @@ function SwipeableSessionItem({
   const title = s.title || s.taskId || "Untitled";
   const isArchived = s.status === "archived";
   const isCompleted = s.status === "completed";
+  const statusKey = String(s.status || "idle").toLowerCase().replace(/\s+/g, "-");
+  const typeLabel = (s.type || "session").toUpperCase();
+  const dotColor = STATUS_COLOR_MAP[statusKey] || "var(--text-hint)";
 
   /* ── Touch / pointer swipe handling ── */
   function onPointerDown(e) {
@@ -320,7 +315,7 @@ function SwipeableSessionItem({
 
       <!-- The actual session item (slides left on swipe) -->
       <div
-        class="session-item ${isSelected ? "active" : ""} ${isArchived ? "archived" : ""}"
+        class="session-item ${isSelected ? "active" : ""} ${isArchived ? "archived" : ""} status-${statusKey}"
         style="transform: translateX(${offset}px); transition: ${swiping.current ? "none" : "transform 0.2s ease"}"
         onClick=${() => {
           if (Math.abs(offset) > 10) return; // don't select during swipe
@@ -346,7 +341,7 @@ function SwipeableSessionItem({
         }}
       >
         <div class="session-item-row">
-          <span class="session-item-icon">${sessionIcon(s.type)}</span>
+          <span class="session-item-dot" style=${`background:${dotColor}`}></span>
           ${isRenaming && onSaveRename && onCancelRename
             ? html`
                 <input
@@ -376,65 +371,30 @@ function SwipeableSessionItem({
                 />
               `
             : html`
-                <span class="session-item-title">${truncate(title, 28)}</span>
+                <span class="session-item-title">${truncate(title, 32)}</span>
               `}
-          <div class="session-item-end">
-            <span class="session-item-status">${statusIcon(s.status)}</span>
-            <!-- Inline action buttons (hover reveal on desktop) -->
-            <div class="session-actions">
-              ${onStartRename &&
-              html`
-                <button
-                  class="session-inline-btn"
-                  title="Rename"
-                  onClick=${(e) => {
-                    e.stopPropagation();
-                    onStartRename(s.id);
-                  }}
-                >✏️</button>
-              `}
-              ${isArchived
-                ? html`
-                    <button
-                      class="session-inline-btn"
-                      title="Restore"
-                      onClick=${(e) => {
-                        e.stopPropagation();
-                        onResume(s.id);
-                      }}
-                    >↩</button>
-                  `
-                : html`
-                    <button
-                      class="session-inline-btn"
-                      title="Archive"
-                      onClick=${(e) => {
-                        e.stopPropagation();
-                        onArchive(s.id);
-                      }}
-                    >📦</button>
-                  `}
-              <button
-                class="session-inline-btn delete"
-                title="Delete"
-                onClick=${(e) => {
-                  e.stopPropagation();
-                  if (onToggleActions) {
-                    onToggleActions(s.id);
-                    setOffset(-120);
-                  }
-                }}
-              >🗑</button>
-            </div>
-          </div>
+          <span class="session-item-type">${typeLabel}</span>
+          <span class="session-item-time">
+            ${formatRelative(s.updatedAt || s.createdAt)}
+          </span>
+          <button
+            class="session-item-menu"
+            title="Actions"
+            onClick=${(e) => {
+              e.stopPropagation();
+              if (onToggleActions) {
+                onToggleActions(s.id);
+                setOffset(-120);
+              }
+            }}
+          >
+            ⋯
+          </button>
         </div>
         ${s.lastMessage &&
         html`
           <div class="session-item-preview">${truncate(s.lastMessage, 50)}</div>
         `}
-        <div class="session-item-time">
-          ${formatRelative(s.updatedAt || s.createdAt)}
-        </div>
       </div>
     </div>
   `;

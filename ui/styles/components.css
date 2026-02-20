@@ -430,6 +430,12 @@
   min-height: 32px;
 }
 
+.btn-xs {
+  padding: 4px 8px;
+  font-size: 11px;
+  min-height: 26px;
+}
+
 .btn-block {
   width: 100%;
 }

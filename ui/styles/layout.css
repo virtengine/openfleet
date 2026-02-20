@@ -772,6 +772,32 @@
     right: 32px;
     bottom: 32px;
   }
+
+  :root[data-chat-focus="true"] .app-shell[data-tab="chat"] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "main";
+    padding: 0;
+    gap: 0;
+  }
+
+  :root[data-chat-focus="true"] .app-shell[data-tab="chat"] .sidebar,
+  :root[data-chat-focus="true"] .app-shell[data-tab="chat"] .session-rail,
+  :root[data-chat-focus="true"] .app-shell[data-tab="chat"] .inspector {
+    display: none !important;
+  }
+
+  :root[data-chat-focus="true"] .app-shell[data-tab="chat"] .main-panel {
+    border-radius: 0;
+    border: none;
+    box-shadow: none;
+  }
+
+  :root[data-chat-focus="true"] .app-shell[data-tab="chat"] .app-header {
+    border-radius: 0;
+    margin-bottom: 0;
+    border-left: none;
+    border-right: none;
+  }
 }
 
 /* ═══════════════════════════════════════════════
