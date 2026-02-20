@@ -11,9 +11,9 @@
   gap: 6px;
   padding: 4px 10px;
   border-radius: 8px;
-  border: 1px solid var(--border, rgba(255,255,255,0.08));
-  background: var(--bg-card, #2b2a27);
-  color: var(--text-primary, #e8e5de);
+  border: 1px solid var(--color-border, rgba(255,255,255,0.1));
+  background: var(--color-surface, rgba(255,255,255,0.05));
+  color: var(--color-text, #e4e4e7);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -23,7 +23,7 @@
 }
 
 .ws-switcher-btn:hover {
-  background: var(--bg-card-hover, rgba(255,255,255,0.05));
+  background: var(--color-surface-hover, rgba(255,255,255,0.08));
   border-color: var(--color-primary, #10b981);
 }
 
@@ -56,8 +56,8 @@
   max-width: 340px;
   max-height: 400px;
   overflow-y: auto;
-  background: var(--bg-primary, #1f1e1c);
-  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  background: var(--color-bg, #1a1a2e);
+  border: 1px solid var(--color-border, rgba(255,255,255,0.1));
   border-radius: 12px;
   box-shadow: 0 8px 32px rgba(0,0,0,0.4);
   padding: 6px;
@@ -74,7 +74,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: var(--text-muted, rgba(181,176,166,0.82));
+  color: var(--color-text-muted, #a1a1aa);
   padding: 6px 10px 4px;
 }
 
@@ -86,13 +86,13 @@
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: var(--text-primary, #e8e5de);
+  color: var(--color-text, #e4e4e7);
   cursor: pointer;
   transition: background 0.12s;
 }
 
 .ws-switcher-item:hover {
-  background: var(--bg-card-hover, rgba(255,255,255,0.05));
+  background: var(--color-surface-hover, rgba(255,255,255,0.06));
 }
 
 .ws-switcher-item.active {
@@ -132,8 +132,8 @@
   font-size: 11px;
   padding: 1px 6px;
   border-radius: 4px;
-  background: var(--bg-card, #2b2a27);
-  color: var(--text-muted, rgba(181,176,166,0.82));
+  background: var(--color-surface, rgba(255,255,255,0.05));
+  color: var(--color-text-muted, #a1a1aa);
 }
 
 .ws-switcher-repo.missing {
@@ -145,14 +145,14 @@
 .ws-switcher-divider {
   height: 1px;
   margin: 4px 8px;
-  background: var(--border, rgba(255,255,255,0.08));
+  background: var(--color-border, rgba(255,255,255,0.08));
 }
 
 .ws-switcher-manage-btn {
   display: flex !important;
   align-items: center;
   gap: 8px;
-  color: var(--text-muted, rgba(181,176,166,0.82)) !important;
+  color: var(--color-text-muted, #a1a1aa) !important;
   font-size: 12px;
 }
 

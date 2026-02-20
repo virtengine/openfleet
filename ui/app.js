@@ -506,15 +506,20 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
                   ? html`<div class="inspector-empty">No noteworthy logs right now.</div>`
                   : html`
                       <div class="inspector-scroll">
-                        ${smartLogs.map(
-                          (entry, idx) => html`
-                            <div key=${idx} class="inspector-log-line ${entry.level}">
-                              ${entry.line.length > 220 ? entry.line.slice(-220) : entry.line}
-                            </div>
-                          `,
-                        )}
-                      </div>
-                    `}
+                          ${smartLogs.map(
+                            (entry, idx) => html`
+                              <div key=${idx} class="inspector-log-line ${entry.level}">
+                                <span class="inspector-log-level">
+                                  ${entry.level.toUpperCase()}
+                                </span>
+                                <span class="inspector-log-text">
+                                  ${entry.line.length > 220 ? entry.line.slice(-220) : entry.line}
+                                </span>
+                              </div>
+                            `,
+                          )}
+                        </div>
+                      `}
               <button class="btn btn-ghost btn-sm" onClick=${() => navigateTo("logs")}>
                 Open Logs
               </button>
