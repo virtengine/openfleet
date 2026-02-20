@@ -5,11 +5,19 @@
 
 Bosun is a production-grade supervisor for AI coding agents. It routes tasks across executors, automates PR lifecycles, and keeps operators in control through Telegram, the Mini App dashboard, and optional WhatsApp notifications.
 
-[Website](https://bosun.virtengine.com) · [Docs](https://bosun.virtengine.com/docs/) · [GitHub](https://github.com/virtengine/bosun?tab=readme-ov-file#bosun) · [npm](https://www.npmjs.com/package/bosun) · [Issues](https://github.com/virtengine/bosun/issues)
+<p align="center">
+  <a href="https://bosun.virtengine.com">Website</a> · <a href="https://bosun.virtengine.com/docs/">Docs</a> · <a href="https://github.com/virtengine/bosun?tab=readme-ov-file#bosun">GitHub</a> · <a href="https://www.npmjs.com/package/bosun">npm</a> · <a href="https://github.com/virtengine/bosun/issues">Issues</a>
+</p>
 
-[![CI](https://github.com/virtengine/bosun/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/virtengine/bosun/actions/workflows/ci.yaml)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![npm](https://img.shields.io/npm/v/bosun.svg)](https://www.npmjs.com/package/bosun)
+<p align="center">
+  <img src="site/social-banner.png" alt="bosun — AI agent supervisor" width="100%" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/virtengine/bosun/actions/workflows/ci.yaml"><img src="https://github.com/virtengine/bosun/actions/workflows/ci.yaml/badge.svg?branch=main" alt="CI" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License" /></a>
+  <a href="https://www.npmjs.com/package/bosun"><img src="https://img.shields.io/npm/v/bosun.svg" alt="npm" /></a>
+</p>
 
 ---
 
