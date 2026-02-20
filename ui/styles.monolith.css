@@ -126,6 +126,19 @@ body {
   z-index: 10;
 }
 
+.app-header-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-logo-img {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  display: block;
+}
+
 .app-header-title {
   font-size: 18px;
   font-weight: 700;

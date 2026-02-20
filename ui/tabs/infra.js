@@ -30,6 +30,11 @@ import {
 } from "../components/shared.js";
 import { ProgressBar } from "../components/charts.js";
 import { Collapsible } from "../components/forms.js";
+import {
+  workspaces as managedWorkspaces,
+  activeWorkspaceId,
+  loadWorkspaces as loadManagedWorkspaces,
+} from "../components/workspace-switcher.js";
 
 /* ─── Worktree health indicator ─── */
 function healthColor(wt) {
@@ -247,6 +252,108 @@ export function InfraTab() {
     scheduleRefresh(120);
   };
 
+  /* ── Managed Workspace state ── */
+  const [addRepoUrl, setAddRepoUrl] = useState("");
+  const [addRepoWs, setAddRepoWs] = useState("");
+  const [newWsName, setNewWsName] = useState("");
+
+  const handleCreateWorkspace = async () => {
+    const name = newWsName.trim();
+    if (!name) return;
+    haptic("medium");
+    try {
+      await apiFetch("/api/workspaces/create", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+      showToast(`Workspace "${name}" created`, "success");
+      setNewWsName("");
+      await loadManagedWorkspaces();
+      scheduleRefresh(120);
+    } catch (err) {
+      showToast(err?.message || "Failed to create workspace", "error");
+    }
+  };
+
+  const handleDeleteWorkspace = async (id) => {
+    const ok = await showConfirm("Delete this workspace? This cannot be undone.");
+    if (!ok) return;
+    haptic("medium");
+    try {
+      await apiFetch("/api/workspaces/delete", {
+        method: "POST",
+        body: JSON.stringify({ id }),
+      });
+      showToast("Workspace deleted", "success");
+      await loadManagedWorkspaces();
+      scheduleRefresh(120);
+    } catch (err) {
+      showToast(err?.message || "Failed to delete workspace", "error");
+    }
+  };
+
+  const handlePullWorkspace = async (id) => {
+    haptic("medium");
+    try {
+      await apiFetch("/api/workspaces/pull", {
+        method: "POST",
+        body: JSON.stringify({ id }),
+      });
+      showToast("Pull initiated", "success");
+      await loadManagedWorkspaces();
+      scheduleRefresh(120);
+    } catch (err) {
+      showToast(err?.message || "Failed to pull workspace", "error");
+    }
+  };
+
+  const handleAddRepo = async (wsId, url) => {
+    if (!url || !url.trim()) return;
+    haptic("medium");
+    try {
+      await apiFetch("/api/workspaces/repos/add", {
+        method: "POST",
+        body: JSON.stringify({ workspaceId: wsId, url: url.trim() }),
+      });
+      showToast("Repo added", "success");
+      setAddRepoUrl("");
+      setAddRepoWs("");
+      await loadManagedWorkspaces();
+      scheduleRefresh(120);
+    } catch (err) {
+      showToast(err?.message || "Failed to add repo", "error");
+    }
+  };
+
+  const handleRemoveRepo = async (wsId, repoName) => {
+    const ok = await showConfirm(`Remove repo "${repoName}" from workspace?`);
+    if (!ok) return;
+    haptic("medium");
+    try {
+      await apiFetch("/api/workspaces/repos/remove", {
+        method: "POST",
+        body: JSON.stringify({ workspaceId: wsId, repoName }),
+      });
+      showToast("Repo removed", "success");
+      await loadManagedWorkspaces();
+      scheduleRefresh(120);
+    } catch (err) {
+      showToast(err?.message || "Failed to remove repo", "error");
+    }
+  };
+
+  const handleScanDisk = async () => {
+    haptic("medium");
+    try {
+      await apiFetch("/api/workspaces/scan");
+      showToast("Disk scan complete", "success");
+      await loadManagedWorkspaces();
+      scheduleRefresh(120);
+    } catch (err) {
+      showToast(err?.message || "Scan failed", "error");
+    }
+  };
+
   /* ── Export infrastructure report ── */
   const handleExportReport = () => {
     haptic("medium");
@@ -298,6 +405,112 @@ export function InfraTab() {
         Export Report
       </button>
     </div>
+
+    <!-- ─── Managed Workspaces ─── -->
+    <${Collapsible} title="Managed Workspaces" defaultOpen=${true}>
+      <${Card}>
+        <div class="input-row mb-md">
+          <input
+            class="input"
+            placeholder="New workspace name"
+            value=${newWsName}
+            onInput=${(e) => setNewWsName(e.target.value)}
+            onKeyDown=${(e) => e.key === "Enter" && handleCreateWorkspace()}
+          />
+          <button class="btn btn-primary btn-sm" onClick=${handleCreateWorkspace}>
+            ➕ Create
+          </button>
+          <button class="btn btn-secondary btn-sm" onClick=${handleScanDisk}>
+            🔄 Scan
+          </button>
+        </div>
+
+        ${(managedWorkspaces.value || []).map((ws) => {
+          const isActive = ws.id === activeWorkspaceId.value;
+          const repos = Array.isArray(ws.repos) ? ws.repos : [];
+          return html`
+            <div class="task-card" key=${ws.id}>
+              <div class="task-card-header">
+                <div>
+                  <div class="task-card-title" style="display:flex;align-items:center;gap:6px">
+                    <span
+                      class="health-dot"
+                      style="background:${isActive ? "var(--color-done)" : "var(--color-neutral)"}"
+                    ></span>
+                    ${ws.name || ws.id}
+                    ${isActive && html`<${Badge} status="done" text="Active" />`}
+                  </div>
+                  <div class="task-card-meta">${repos.length} repos · ID: ${ws.id}</div>
+                </div>
+                <div class="btn-row">
+                  <button
+                    class="btn btn-secondary btn-sm"
+                    onClick=${() => handlePullWorkspace(ws.id)}
+                  >
+                    ⬇️ Pull
+                  </button>
+                  <button
+                    class="btn btn-danger btn-sm"
+                    onClick=${() => handleDeleteWorkspace(ws.id)}
+                  >
+                    🗑
+                  </button>
+                </div>
+              </div>
+
+              ${repos.length > 0 &&
+              html`
+                <div class="mt-sm">
+                  ${repos.map((repo) => {
+                    const repoName =
+                      typeof repo === "string"
+                        ? repo
+                        : repo.name || repo.url || "?";
+                    return html`
+                      <div
+                        class="flex-between"
+                        style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05)"
+                      >
+                        <span class="meta-text">📁 ${repoName}</span>
+                        <button
+                          class="btn btn-ghost btn-sm"
+                          onClick=${() => handleRemoveRepo(ws.id, repoName)}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    `;
+                  })}
+                </div>
+              `}
+
+              <div class="input-row mt-sm">
+                <input
+                  class="input"
+                  placeholder="Repo URL to clone"
+                  value=${addRepoWs === ws.id ? addRepoUrl : ""}
+                  onInput=${(e) => {
+                    setAddRepoWs(ws.id);
+                    setAddRepoUrl(e.target.value);
+                  }}
+                  onKeyDown=${(e) =>
+                    e.key === "Enter" && handleAddRepo(ws.id, addRepoWs === ws.id ? addRepoUrl : "")}
+                />
+                <button
+                  class="btn btn-secondary btn-sm"
+                  onClick=${() => handleAddRepo(ws.id, addRepoWs === ws.id ? addRepoUrl : "")}
+                >
+                  📥 Clone
+                </button>
+              </div>
+            </div>
+          `;
+        })}
+
+        ${!(managedWorkspaces.value || []).length &&
+        html`<${EmptyState} message="No managed workspaces. Create one or scan disk." />`}
+      <//>
+    <//>
 
     <!-- ─── Worktrees ─── -->
     <${Collapsible} title="Worktrees" defaultOpen=${true}>

@@ -254,9 +254,9 @@ function Header() {
           <img src="logo.png" alt="Bosun" class="app-logo-img" />
         </div>
         <div class="app-header-titles">
-          <div class="app-header-title">VirtEngine</div>
+          <div class="app-header-title">Bosun</div>
           <div class="app-header-subtitle">
-            ${TAB_CONFIG.find((tab) => tab.id === activeTab.value)?.label || "Control Center"}
+            ${ICONS[TAB_CONFIG.find((tab) => tab.id === activeTab.value)?.icon] || ""} ${TAB_CONFIG.find((tab) => tab.id === activeTab.value)?.label || "Control Center"}
           </div>
           ${navHint
             ? html`<div class="app-header-hint">${navHint}</div>`
@@ -295,16 +295,15 @@ function SidebarNav() {
           <img src="logo.png" alt="Bosun" class="app-logo-img" />
         </div>
         <div>
-          <div class="sidebar-title">VirtEngine</div>
           <div class="sidebar-subtitle">Control Center</div>
         </div>
       </div>
       <div class="sidebar-actions">
         <button class="btn btn-primary btn-block" onClick=${() => createSession({ type: "primary" })}>
-          New Session
+          <span class="btn-icon">✨</span> New Session
         </button>
         <button class="btn btn-ghost btn-block" onClick=${() => navigateTo("tasks")}>
-          View Tasks
+          <span class="btn-icon">📋</span> View Tasks
         </button>
       </div>
       <nav class="sidebar-nav">

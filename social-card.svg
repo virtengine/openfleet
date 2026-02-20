@@ -1,63 +1,64 @@
 <svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#070b12" />
-      <stop offset="55%" stop-color="#0c111c" />
-      <stop offset="100%" stop-color="#0a0f18" />
+      <stop offset="0%" stop-color="#05080f" />
+      <stop offset="55%" stop-color="#0a111c" />
+      <stop offset="100%" stop-color="#0b0f18" />
     </linearGradient>
-    <radialGradient id="glow-cyan" cx="0.15" cy="0.2" r="0.6">
+    <radialGradient id="glow-cyan" cx="0.18" cy="0.22" r="0.6">
       <stop offset="0%" stop-color="#4cc9f0" stop-opacity="0.35" />
-      <stop offset="55%" stop-color="#4cc9f0" stop-opacity="0.1" />
+      <stop offset="55%" stop-color="#4cc9f0" stop-opacity="0.12" />
       <stop offset="100%" stop-color="#4cc9f0" stop-opacity="0" />
     </radialGradient>
-    <radialGradient id="glow-green" cx="0.85" cy="0.15" r="0.6">
+    <radialGradient id="glow-green" cx="0.82" cy="0.15" r="0.6">
       <stop offset="0%" stop-color="#60cc5d" stop-opacity="0.32" />
       <stop offset="60%" stop-color="#60cc5d" stop-opacity="0.08" />
       <stop offset="100%" stop-color="#60cc5d" stop-opacity="0" />
     </radialGradient>
-    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
-      <path d="M48 0H0V48" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="1" />
-    </pattern>
-    <linearGradient id="icon" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#4cc9f0" />
-      <stop offset="100%" stop-color="#60cc5d" />
+    <linearGradient id="device-frame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1c2434" />
+      <stop offset="100%" stop-color="#0b101a" />
     </linearGradient>
+    <filter id="soft-shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <clipPath id="device-clip">
+      <rect x="12" y="12" width="316" height="536" rx="32" />
+    </clipPath>
   </defs>
 
   <rect width="1200" height="630" rx="36" fill="url(#bg)" />
   <rect width="1200" height="630" rx="36" fill="url(#glow-cyan)" />
   <rect width="1200" height="630" rx="36" fill="url(#glow-green)" />
-  <rect width="1200" height="630" rx="36" fill="url(#grid)" opacity="0.35" />
 
-  <g transform="translate(90, 110)">
-    <rect x="0" y="0" width="86" height="86" rx="22" fill="rgba(10,14,20,0.8)" stroke="rgba(255,255,255,0.12)" />
-    <rect x="6" y="6" width="74" height="74" rx="18" fill="url(#icon)" opacity="0.18" />
-    <path d="M52 12L22 48H40L34 76L66 38H46L52 12Z" fill="url(#icon)" />
+  <g transform="translate(110, 120)">
+    <rect x="0" y="0" width="64" height="64" rx="18" fill="rgba(12,16,24,0.7)" stroke="rgba(255,255,255,0.12)" />
+    <image href="logo.png" x="8" y="8" width="48" height="48" preserveAspectRatio="xMidYMid meet" />
   </g>
 
-  <g font-family="SF Pro Display, SF Pro Text, Helvetica Neue, Arial, sans-serif" fill="#F8FAFC">
-    <text x="200" y="170" font-size="72" font-weight="700" letter-spacing="-1">Bosun</text>
-    <text x="200" y="230" font-size="34" font-weight="500" fill="#B6C2D9">
+  <g font-family="Inter, Arial, Helvetica, sans-serif" fill="#F8FAFC">
+    <text x="190" y="170" font-size="64" font-weight="700" letter-spacing="-1">Bosun</text>
+    <text x="110" y="230" font-size="28" font-weight="500" fill="#B6C2D9">
       Autonomous AI Fleet Supervisor
     </text>
-    <text x="200" y="280" font-size="22" font-weight="500" fill="#7A879C">
+    <text x="110" y="268" font-size="20" font-weight="500" fill="#7A879C">
       Route tasks · Orchestrate agents · Ship PRs
     </text>
-  </g>
-
-  <g font-family="SF Pro Text, Helvetica Neue, Arial, sans-serif" fill="#A0AEC0">
-    <text x="200" y="340" font-size="18" font-weight="500">
+    <text x="110" y="318" font-size="18" font-weight="500" fill="#9AA8BF">
       Open-source control plane for AI coding agents.
     </text>
-    <text x="200" y="370" font-size="18" font-weight="500">
-      Multi-executor orchestration with automated PR lifecycle control.
-    </text>
   </g>
 
-  <g transform="translate(900, 92)">
-    <rect x="0" y="0" width="220" height="38" rx="19" fill="rgba(96,204,93,0.12)" stroke="rgba(96,204,93,0.4)" />
-    <text x="110" y="25" text-anchor="middle" font-family="SF Pro Text, Helvetica Neue, Arial, sans-serif" font-size="16" font-weight="600" fill="#60cc5d">
-      virtengine.com
-    </text>
+  <g transform="translate(790, 40)" filter="url(#soft-shadow)">
+    <rect x="0" y="0" width="340" height="560" rx="42" fill="url(#device-frame)" stroke="rgba(255,255,255,0.14)" />
+    <rect x="12" y="12" width="316" height="536" rx="32" fill="#0b0f14" />
+    <g clip-path="url(#device-clip)">
+      <image href="social-card-miniapp.png" x="12" y="12" width="316" height="536" preserveAspectRatio="xMidYMid slice" />
+    </g>
+    <rect x="120" y="18" width="100" height="8" rx="4" fill="rgba(255,255,255,0.12)" />
+  </g>
+
+  <g font-family="Inter, Arial, Helvetica, sans-serif" fill="#8FA0B8">
+    <text x="110" y="560" font-size="16" font-weight="500">bosun.virtengine.com</text>
   </g>
 </svg>

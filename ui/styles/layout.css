@@ -514,6 +514,10 @@
     padding: 4px 8px;
     font-size: 10px;
   }
+
+  .fab {
+    display: none;
+  }
 }
 
 @media (min-width: 768px) {
