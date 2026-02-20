@@ -52,12 +52,12 @@
   width: 28px;
   height: 28px;
   border-radius: 10px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: var(--shadow-sm);
+  box-shadow: none;
   flex-shrink: 0;
   color: var(--accent);
 }
@@ -66,6 +66,13 @@
   width: 16px;
   height: 16px;
   color: currentColor;
+}
+
+.app-logo-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 
 .app-header-title {
@@ -551,7 +558,11 @@
 
 /* ─── Desktop Shell: Sidebar + Session Rail ─── */
 .app-shell {
-  min-height: 100%;
+  /* flex:1 + min-height:0 constrains the shell to the bounded #app height.
+     Avoids the min-height:100% trap where children grow past the viewport
+     and .main-content never gets a finite height to scroll within. */
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   position: relative;
@@ -713,13 +724,13 @@
   width: 40px;
   height: 40px;
   border-radius: 12px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: none;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--accent);
-  box-shadow: var(--shadow-sm);
+  box-shadow: none;
 }
 
 .sidebar-logo svg {
@@ -776,6 +787,21 @@
 .sidebar-nav-item span {
   font-size: 10px;
   letter-spacing: 0.02em;
+}
+
+@media (min-width: 1200px) {
+  .sidebar-nav-item {
+    flex-direction: row;
+    justify-content: flex-start;
+    padding: 10px 12px;
+    gap: 10px;
+    font-size: 12px;
+  }
+
+  .sidebar-nav-item span {
+    font-size: 12px;
+    letter-spacing: 0.01em;
+  }
 }
 
 .sidebar-nav-item:hover {

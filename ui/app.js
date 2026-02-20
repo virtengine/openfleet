@@ -64,6 +64,7 @@ import {
   createSession,
   selectedSessionId,
   sessionsData,
+  initSessionWsListener,
 } from "./components/session-list.js";
 import { WorkspaceSwitcher, loadWorkspaces } from "./components/workspace-switcher.js";
 import { DiffViewer } from "./components/diff-viewer.js";
@@ -249,7 +250,9 @@ function Header() {
   return html`
     <header class="app-header">
       <div class="app-header-left">
-        <div class="app-header-logo">${ICONS.zap}</div>
+        <div class="app-header-logo">
+          <img src="logo.png" alt="Bosun" class="app-logo-img" />
+        </div>
         <div class="app-header-titles">
           <div class="app-header-title">VirtEngine</div>
           <div class="app-header-subtitle">
@@ -288,7 +291,9 @@ function SidebarNav() {
   return html`
     <aside class="sidebar">
       <div class="sidebar-brand">
-        <div class="sidebar-logo">${ICONS.zap}</div>
+        <div class="sidebar-logo">
+          <img src="logo.png" alt="Bosun" class="app-logo-img" />
+        </div>
         <div>
           <div class="sidebar-title">VirtEngine</div>
           <div class="sidebar-subtitle">Control Center</div>
@@ -310,6 +315,8 @@ function SidebarNav() {
             <button
               key=${tab.id}
               class="sidebar-nav-item ${isActive ? "active" : ""}"
+              aria-label=${tab.label}
+              aria-current=${isActive ? "page" : null}
               onClick=${() =>
                 navigateTo(tab.id, {
                   resetHistory: isHome,
@@ -796,6 +803,7 @@ function App() {
     // Connect WebSocket + invalidation auto-refresh
     connectWebSocket();
     initWsInvalidationListener();
+    initSessionWsListener();
 
     // Load notification preferences early (non-blocking)
     loadNotificationPrefs();
@@ -922,8 +930,8 @@ function App() {
   }, []);
 
   const CurrentTab = TAB_COMPONENTS[activeTab.value] || DashboardTab;
-  const showSessionRail = activeTab.value === "chat" || activeTab.value === "agents";
-  const showInspector = activeTab.value === "chat" || activeTab.value === "agents";
+  const showSessionRail = isDesktop && (activeTab.value === "chat" || activeTab.value === "agents");
+  const showInspector = isDesktop && (activeTab.value === "chat" || activeTab.value === "agents");
 
   const shellStyle = isDesktop
     ? {

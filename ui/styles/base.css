@@ -27,12 +27,16 @@ body {
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior: none;
   height: var(--viewport-stable-height);
-  overflow-x: hidden;
+  /* Block all body-level scroll — the only scroll container is .main-content */
+  overflow: hidden;
   position: relative;
 }
 
 #app {
-  min-height: 100%;
+  /* height: 100% (not min-height) anchors the flex tree so .main-content gets
+     a real bounded height to scroll within instead of growing indefinitely */
+  height: 100%;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   position: relative;

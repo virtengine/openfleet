@@ -32,6 +32,7 @@ import {
   runOptimistic,
   scheduleRefresh,
   loadTasks,
+  updateTaskManualState,
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
 import {
@@ -107,6 +108,31 @@ const SYSTEM_TAGS = new Set([
   "codex-mointor",
 ]);
 
+const IGNORE_LABEL = "codex:ignore";
+
+function labelMatchesIgnore(label) {
+  const name = typeof label === "string" ? label : label?.name || "";
+  return String(name || "").trim().toLowerCase() === IGNORE_LABEL;
+}
+
+function isTaskManual(task) {
+  if (!task) return false;
+  if (task.manual === true || task.isIgnored === true) return true;
+  if (task.meta?.codex?.isIgnored) return true;
+  if (Array.isArray(task?.meta?.labels) && task.meta.labels.some(labelMatchesIgnore))
+    return true;
+  if (Array.isArray(task?.labels) && task.labels.some(labelMatchesIgnore)) return true;
+  return false;
+}
+
+function getManualReason(task) {
+  return (
+    task?.ignoreReason ||
+    task?.meta?.codex?.ignoreReason ||
+    ""
+  );
+}
+
 function normalizeTagInput(input) {
   if (!input) return [];
   const values = Array.isArray(input)
@@ -172,7 +198,7 @@ export function StartTaskModal({
 
   useEffect(() => {
     setTaskIdInput(task?.id || "");
-  }, [task?.id]);
+  }, [task?.id, task?.meta?.codex?.isIgnored, task?.meta?.labels]);
 
   const canModel = sdk && sdk !== "auto";
   const resolvedTaskId = (task?.id || taskIdInput || "").trim();
@@ -253,6 +279,9 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     Boolean(task?.draft || task?.status === "draft"),
   );
   const [saving, setSaving] = useState(false);
+  const [manualOverride, setManualOverride] = useState(isTaskManual(task));
+  const [manualBusy, setManualBusy] = useState(false);
+  const [manualReason, setManualReason] = useState(getManualReason(task));
 
   useEffect(() => {
     setTitle(task?.title || "");
@@ -262,6 +291,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     setPriority(task?.priority || "");
     setTagsInput(getTaskTags(task).join(", "));
     setDraft(Boolean(task?.draft || task?.status === "draft"));
+    setManualOverride(isTaskManual(task));
+    setManualReason(getManualReason(task));
   }, [task?.id]);
 
   const handleSave = async () => {
@@ -382,6 +413,56 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     }
   };
 
+  const handleManualToggle = async (next) => {
+    if (!task?.id || manualBusy) return;
+    if (next) {
+      const ok = await showConfirm(
+        "Mark this task for manual takeover? Automation will skip it.",
+      );
+      if (!ok) return;
+    }
+    haptic("medium");
+    const prevTasks = cloneValue(tasksData.value);
+    const prevManual = manualOverride;
+    const reason = String(manualReason || "").trim();
+    setManualBusy(true);
+    try {
+      await runOptimistic(
+        () => {
+          setManualOverride(next);
+          updateTaskManualState(task.id, next, reason || "manual");
+        },
+        async () => {
+          const res = await apiFetch(
+            next ? "/api/tasks/ignore" : "/api/tasks/unignore",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                taskId: task.id,
+                ...(next && reason ? { reason } : {}),
+              }),
+            },
+          );
+          return res;
+        },
+        () => {
+          tasksData.value = prevTasks;
+          setManualOverride(prevManual);
+        },
+      );
+      showToast(
+        next
+          ? "Task marked for manual takeover"
+          : "Task returned to automation",
+        "success",
+      );
+      scheduleRefresh(150);
+    } catch {
+      /* toast via apiFetch */
+    }
+    setManualBusy(false);
+  };
+
   const handleCancel = async () => {
     const ok = await showConfirm("Cancel this task?");
     if (!ok) return;
@@ -395,6 +476,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         <${Badge} status=${task?.status} text=${task?.status} />
         ${task?.priority &&
         html`<${Badge} status=${task.priority} text=${task.priority} />`}
+        ${manualOverride && html`<${Badge} status="warning" text="manual" />`}
       </div>
 
       <div class="flex-col gap-md">
@@ -467,6 +549,27 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             else if (status === "draft") setStatus("todo");
           }}
         />
+        <${Toggle}
+          label="Manual takeover (exclude from automation)"
+          checked=${manualOverride}
+          disabled=${manualBusy || !task?.id}
+          onChange=${handleManualToggle}
+        />
+        <input
+          class="input"
+          placeholder="Manual reason (optional)"
+          value=${manualReason}
+          disabled=${manualBusy}
+          onInput=${(e) => setManualReason(e.target.value)}
+        />
+        ${manualOverride &&
+        html`
+          <div class="meta-text">
+            Bosun will skip this task until manual takeover is cleared.
+          </div>
+          ${manualReason &&
+          html`<div class="meta-text">Reason: ${manualReason}</div>`}
+        `}
 
         ${task?.created_at &&
         html`
@@ -1346,8 +1449,9 @@ export function TasksTab() {
     ${isKanban && html`<${KanbanBoard} onOpenTask=${openDetail} />`}
 
     ${!isKanban &&
-    visible.map(
-      (task) => html`
+    visible.map((task) => {
+      const isManual = isTaskManual(task);
+      return html`
         <div
           key=${task.id}
           class="task-card ${batchMode && selectedIds.has(task.id)
@@ -1385,7 +1489,10 @@ export function TasksTab() {
                   : ""}
               </div>
             </div>
-            <${Badge} status=${task.status} text=${task.status} />
+            <div style="display:flex; gap:6px; align-items:center;">
+              ${isManual && html`<${Badge} status="warning" text="manual" />`}
+              <${Badge} status=${task.status} text=${task.status} />
+            </div>
           </div>
           <div class="meta-text">
             ${task.description
@@ -1433,8 +1540,8 @@ export function TasksTab() {
             </div>
           `}
         </div>
-      `,
-    )}
+      `;
+    })}
     ${!isKanban && !visible.length &&
     html`
       <${EmptyState}

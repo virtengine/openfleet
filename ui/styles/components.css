@@ -909,7 +909,14 @@ select.input {
 }
 
 .pull-to-refresh-container {
+  /* Must participate in the flex chain so .main-content (flex:1) gets a
+     bounded height and can actually scroll. Without flex here, .main-content's
+     flex:1 + overflow-y:auto has no effect — content just overflows forever. */
   position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ─── Cards need breathing room ─── */

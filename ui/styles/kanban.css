@@ -20,7 +20,9 @@
   -webkit-backdrop-filter: blur(12px);
   border-radius: var(--radius-lg, 12px);
   padding: 14px;
-  max-height: calc(100vh - 180px);
+  /* Use the Telegram stable viewport height, not raw 100vh which Telegram
+     overrides — prevents columns being too short or clipped on the web app */
+  max-height: calc(var(--viewport-stable-height, 100vh) - 180px);
   position: relative;
   border: 1px solid var(--glass-border);
 }
