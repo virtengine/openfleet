@@ -920,10 +920,28 @@
         }
         const method = (options?.method || 'GET').toUpperCase();
         const data = handleApi(path, method, body);
-        return Promise.resolve(new Response(JSON.stringify(data), {
+        
+        // Create a proper Response object that resolves immediately
+        const response = new Response(JSON.stringify(data), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
-        }));
+        });
+        
+        // If an abort signal is provided, we should respect it
+        if (options?.signal) {
+          return new Promise((resolve, reject) => {
+            if (options.signal.aborted) {
+              return reject(new DOMException('Aborted', 'AbortError'));
+            }
+            options.signal.addEventListener('abort', () => {
+              reject(new DOMException('Aborted', 'AbortError'));
+            });
+            // Resolve immediately since it's a mock
+            resolve(response);
+          });
+        }
+        
+        return Promise.resolve(response);
       }
 
       // Pass through non-API requests (fonts, CDN, ES modules, etc.)

@@ -163,7 +163,7 @@ function formatMessageLine(msg) {
 }
 
 /* ─── Chat View component ─── */
-export function ChatView({ sessionId, readOnly = false }) {
+export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -372,7 +372,8 @@ export function ChatView({ sessionId, readOnly = false }) {
   }
 
   return html`
-    <div class="chat-view">
+    <div class="chat-view ${embedded ? 'chat-view-embedded' : ''}">
+      ${!embedded && html`
       <div class="chat-header">
         <div class="chat-header-info">
           <div class="chat-header-title">
@@ -397,7 +398,9 @@ export function ChatView({ sessionId, readOnly = false }) {
           `}
         </div>
       </div>
+      `}
 
+      ${!embedded && html`
       <div class="chat-toolbar">
         <div class="chat-toolbar-left">
           <div class="chat-filter-group">
@@ -451,6 +454,7 @@ export function ChatView({ sessionId, readOnly = false }) {
           </button>
         </div>
       </div>
+      `}
 
       <div class="chat-messages" ref=${messagesRef}>
         ${loading && messages.length === 0 && html`

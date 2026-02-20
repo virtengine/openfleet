@@ -19,8 +19,10 @@
 .session-detail {
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
   min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
 }
 
 @media (min-width: 769px) {
@@ -41,9 +43,18 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-md);
+    height: 100%;
   }
   .session-list {
     max-height: 300px;
+  }
+  /* Hide sidebar on mobile when a session is selected (ChatGPT-like) */
+  .session-split.has-active-session > .session-pane {
+    display: none;
+  }
+  .session-split.has-active-session > .session-detail {
+    flex: 1;
+    height: 100%;
   }
 }
 
@@ -94,13 +105,37 @@
   font-size: 14px;
   cursor: pointer;
   padding: 6px 0;
-  margin-bottom: var(--space-sm);
   font-family: inherit;
+  flex-shrink: 0;
+}
+
+/* ─── Chat mobile header (back + title) ─── */
+.chat-mobile-header {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border, var(--glass-border));
+  background: var(--bg-surface, var(--glass-bg));
+  flex-shrink: 0;
+}
+
+.chat-mobile-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
 }
 
 @media (max-width: 768px) {
   .session-back-btn {
     display: inline-flex;
+  }
+  .chat-mobile-header {
+    display: flex;
   }
 }
 
@@ -952,19 +987,53 @@ ul.md-list li::before {
   flex-shrink: 0;
 }
 
+/* ═══ Embedded ChatView (inside ChatTab — clean ChatGPT-like) ═══ */
+.chat-view-embedded {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chat-view-embedded .chat-messages {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 16px 12px;
+}
+
+/* ═══ Session Detail as flex column (messages grow, input pinned) ═══ */
+.session-detail > .chat-view-embedded {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.session-detail > .chat-welcome {
+  flex: 1;
+  min-height: 0;
+}
+
+.session-detail > .chat-input-area {
+  flex-shrink: 0;
+}
+
 .chat-input-wrapper {
   display: flex;
   align-items: flex-end;
   gap: 8px;
   background: var(--bg-card, var(--glass-bg));
   border: 1px solid var(--border, var(--glass-border));
-  border-radius: var(--radius-lg);
-  padding: 8px 12px;
-  transition: border-color 0.15s;
+  border-radius: 24px;
+  padding: 8px 8px 8px 16px;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .chat-input-wrapper:focus-within {
   border-color: var(--accent, var(--color-primary, #3b82f6));
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
 }
 
 .chat-textarea {

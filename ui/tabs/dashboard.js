@@ -525,7 +525,7 @@ export function DashboardTab() {
 
         <${Card}
           title=${html`<span class="dashboard-card-title"
-            ><span class="dashboard-title-icon">${ICONS.zap}</span>Active Work</span
+            ><span class="dashboard-title-icon">${ICONS.check}</span>Active Work</span
           >`}
           className="dashboard-card dashboard-active"
         >

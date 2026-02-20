@@ -40,18 +40,28 @@
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.app-header-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 
 .app-header-titles {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
 .app-header-logo {
-  width: 28px;
-  height: 28px;
-  border-radius: 10px;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
   background: transparent;
   border: none;
   display: flex;
@@ -76,16 +86,18 @@
 }
 
 .app-header-title {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--text-bright);
+  white-space: nowrap;
 }
 
 .app-header-subtitle {
   font-size: 12px;
   font-weight: 500;
   color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .app-header-hint {
@@ -106,6 +118,18 @@
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.app-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.app-header-workspace {
+  display: flex;
+  align-items: center;
 }
 
 .header-status {
@@ -233,6 +257,7 @@
   -webkit-backdrop-filter: var(--glass-blur);
   animation: navSlideUp 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) 0.2s both;
   padding-bottom: 0;
+  pointer-events: auto;
 }
 
 .bottom-nav.compact {
@@ -266,6 +291,8 @@
   -webkit-tap-highlight-color: transparent;
   position: relative;
   border-radius: var(--radius-md);
+  pointer-events: auto;
+  touch-action: manipulation;
 }
 
 .bottom-nav.compact .nav-item {
@@ -309,10 +336,12 @@
   width: 22px;
   height: 22px;
   transition: transform 0.2s ease, filter 0.2s ease;
+  pointer-events: none;
 }
 
 .nav-label {
   line-height: 1;
+  pointer-events: none;
 }
 
 /* ─── More Menu (Modal Sheet) ─── */
@@ -476,22 +505,33 @@
 
 @media (max-width: 640px) {
   .app-header {
-    height: auto;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
-    padding-top: calc(10px + var(--content-safe-top));
-    padding-bottom: 10px;
-  }
-
-  .app-header-left,
-  .header-actions {
-    width: 100%;
-    justify-content: space-between;
+    height: var(--header-height);
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    padding-top: var(--content-safe-top);
+    padding-bottom: 0;
   }
 
   .app-header-logo {
+    width: 34px;
+    height: 34px;
+  }
+
+  .app-header-subtitle {
     display: none;
+  }
+
+  .app-header-hint {
+    display: none;
+  }
+
+  .header-status {
+    display: none;
+  }
+
+  .app-header-right {
+    gap: 8px;
   }
 }
 
@@ -534,6 +574,11 @@
 
   .app-header {
     height: var(--header-height);
+  }
+
+  .app-header-logo {
+    width: 44px;
+    height: 44px;
   }
 
   .bottom-nav {
@@ -710,10 +755,135 @@
     display: none;
   }
 
+  .tablet-action-bar {
+    display: none;
+  }
+
   .scroll-top {
     left: auto;
     right: 32px;
     bottom: 32px;
+  }
+}
+
+/* ═══════════════════════════════════════════════
+ *  Tablet Breakpoint (768px – 1199px)
+ *  Sidebar & Inspector as slide-over drawers
+ * ═══════════════════════════════════════════════ */
+
+/* --- Drawer overlay --- */
+.drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 900;
+  animation: fadeIn 0.18s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* --- Drawer panels --- */
+.drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  z-index: 910;
+  width: min(320px, 85vw);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg, 0 10px 40px rgba(0, 0, 0, 0.3));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  animation: slideDrawer 0.22s ease-out;
+}
+
+.drawer-left {
+  left: 0;
+  border-radius: 0 var(--radius-xl) var(--radius-xl) 0;
+}
+
+.drawer-right {
+  right: 0;
+  left: auto;
+  border-radius: var(--radius-xl) 0 0 var(--radius-xl);
+}
+
+@keyframes slideDrawer {
+  from { opacity: 0; transform: translateX(-32px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.drawer-right {
+  animation-name: slideDrawerRight;
+}
+
+@keyframes slideDrawerRight {
+  from { opacity: 0; transform: translateX(32px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* Force sidebar / inspector visible inside drawers */
+.drawer .sidebar {
+  display: flex !important;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.drawer .inspector {
+  display: flex !important;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* --- Tablet action bar --- */
+.tablet-action-bar {
+  display: none;
+}
+
+@media (min-width: 768px) and (max-width: 1199px) {
+  .tablet-action-bar {
+    display: flex;
+    gap: 8px;
+    padding: 6px 16px;
+    align-items: center;
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .tablet-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 12px;
+    border-radius: var(--radius-lg);
+    color: var(--text-secondary);
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+
+  .tablet-toggle:hover {
+    background: var(--accent-subtle);
+    color: var(--text-bright);
+    border-color: var(--accent);
+  }
+
+  .tablet-toggle:active {
+    transform: scale(0.97);
   }
 }
 

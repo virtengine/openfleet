@@ -131,13 +131,14 @@
     });
   });
 
-  /* ── Inject package version in hero tag ──────────────────────────────── */
-  const versionTarget = document.querySelector('[data-version]');
-  if (versionTarget) {
-    const sources = [
-      './package.json',
-      'https://raw.githubusercontent.com/virtengine/bosun/main/package.json',
-    ];
+  /* ── Inject package version in hero tag and footer ───────────────────── */
+  const versionTargets = document.querySelectorAll('[data-version]');
+  if (versionTargets.length > 0) {
+    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    const sources = isLocal
+      ? ['../package.json', './package.json', 'https://raw.githubusercontent.com/virtengine/bosun/main/package.json']
+      : ['https://raw.githubusercontent.com/virtengine/bosun/main/package.json'];
+      
     const tryNext = () => {
       const next = sources.shift();
       if (!next) return;
@@ -145,7 +146,7 @@
         .then((res) => (res.ok ? res.json() : null))
         .then((pkg) => {
           if (pkg?.version) {
-            versionTarget.textContent = `v${pkg.version}`;
+            versionTargets.forEach(el => el.textContent = `v${pkg.version}`);
           } else {
             tryNext();
           }
