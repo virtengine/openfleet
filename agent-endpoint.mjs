@@ -297,6 +297,14 @@ export class AgentEndpoint {
       let output;
       let pids = new Set();
 
+      // PIDs we must NEVER kill — ourselves, our parent (cli.mjs fork host),
+      // and any ancestor in the same process tree.  lsof can return these when
+      // the listening socket fd is inherited across fork().
+      const protectedPids = new Set([
+        String(process.pid),
+        String(process.ppid),
+      ]);
+
       if (isWindows) {
         // Windows: netstat -ano | findstr
         output = execSync(`netstat -ano | findstr ":${port}"`, {
@@ -307,7 +315,7 @@ export class AgentEndpoint {
         for (const line of lines) {
           const parts = line.trim().split(/\s+/);
           const pid = parts[parts.length - 1];
-          if (pid && /^\d+$/.test(pid) && pid !== String(process.pid)) {
+          if (pid && /^\d+$/.test(pid) && !protectedPids.has(pid)) {
             pids.add(pid);
           }
         }
@@ -320,9 +328,15 @@ export class AgentEndpoint {
           }).trim();
           const pidList = output.split("\n").filter((p) => p.trim());
           for (const pid of pidList) {
-            if (pid && /^\d+$/.test(pid) && pid !== String(process.pid)) {
+            if (pid && /^\d+$/.test(pid) && !protectedPids.has(pid)) {
               pids.add(pid);
             }
+          }
+          if (pidList.length > 0 && pids.size === 0) {
+            console.log(
+              `${TAG} Port ${port} held by own process tree (PIDs: ${pidList.join(", ")}) — skipping kill`,
+            );
+            return;
           }
         } catch (lsofErr) {
           // lsof returns exit code 1 when no processes found (port is free)
@@ -334,7 +348,7 @@ export class AgentEndpoint {
       }
 
       for (const pid of pids) {
-        console.log(`${TAG} Killing stale process PID ${pid} on port ${port}`);
+        console.log(`${TAG} Sending SIGTERM to stale process PID ${pid} on port ${port}`);
         try {
           if (isWindows) {
             execSync(`taskkill /F /PID ${pid}`, {
@@ -342,7 +356,8 @@ export class AgentEndpoint {
               timeout: 5000,
             });
           } else {
-            execSync(`kill -9 ${pid}`, {
+            // Graceful SIGTERM first — only escalate to SIGKILL if still alive
+            execSync(`kill ${pid}`, {
               encoding: "utf8",
               timeout: 5000,
             });
@@ -362,8 +377,22 @@ export class AgentEndpoint {
           );
         }
       }
-      // Give OS time to release the port
-      await new Promise((r) => setTimeout(r, 1000));
+      // Give the SIGTERM'd processes time to exit gracefully
+      await new Promise((r) => setTimeout(r, 2000));
+
+      // Escalate: check if any are still alive and SIGKILL them
+      if (!isWindows) {
+        for (const pid of pids) {
+          try {
+            process.kill(Number(pid), 0); // probe — throws if dead
+            console.warn(`${TAG} PID ${pid} still alive after SIGTERM — sending SIGKILL`);
+            execSync(`kill -9 ${pid}`, { encoding: "utf8", timeout: 5000 });
+          } catch {
+            /* already dead — good */
+          }
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
     } catch (outerErr) {
       // Commands may fail if port already free
       if (outerErr.status !== 1) {

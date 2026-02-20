@@ -1832,6 +1832,7 @@ async function startVibeKanbanProcess() {
   try {
     const isWindows = process.platform === "win32";
     let stalePid;
+    const protectedPids = new Set([String(process.pid), String(process.ppid)]);
 
     if (isWindows) {
       const portCheck = execSync(
@@ -1839,7 +1840,7 @@ async function startVibeKanbanProcess() {
         { encoding: "utf8", timeout: 5000, stdio: "pipe" },
       ).trim();
       const pidMatch = portCheck.match(/(\d+)\s*$/);
-      if (pidMatch) {
+      if (pidMatch && !protectedPids.has(pidMatch[1])) {
         stalePid = pidMatch[1];
       }
     } else if (commandExists("lsof")) {
@@ -1850,8 +1851,14 @@ async function startVibeKanbanProcess() {
         stdio: "pipe",
       }).trim();
       const pids = portCheck.split("\n").filter((p) => p.trim());
-      if (pids.length > 0) {
-        stalePid = pids[0]; // Take first PID if multiple
+      // Filter out own process tree to avoid self-kill
+      const safePids = pids.filter((p) => !protectedPids.has(p));
+      if (safePids.length > 0) {
+        stalePid = safePids[0];
+      } else if (pids.length > 0) {
+        console.log(
+          `[monitor] port ${vkRecoveryPort} held by own process tree (PIDs: ${pids.join(", ")}) — skipping kill`,
+        );
       }
     } else {
       console.warn(
@@ -1861,7 +1868,7 @@ async function startVibeKanbanProcess() {
 
     if (stalePid) {
       console.log(
-        `[monitor] killing stale process ${stalePid} on port ${vkRecoveryPort}`,
+        `[monitor] sending SIGTERM to stale process ${stalePid} on port ${vkRecoveryPort}`,
       );
       try {
         if (isWindows) {
@@ -1870,7 +1877,8 @@ async function startVibeKanbanProcess() {
             stdio: "pipe",
           });
         } else {
-          execSync(`kill -9 ${stalePid}`, {
+          // Graceful SIGTERM first, then escalate if still alive
+          execSync(`kill ${stalePid}`, {
             timeout: 5000,
             stdio: "pipe",
           });
