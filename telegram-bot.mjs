@@ -59,6 +59,7 @@ import {
   getWorktreeStats,
 } from "./worktree-manager.mjs";
 import { loadExecutorConfig } from "./config.mjs";
+import { resolvePwshRuntime } from "./pwsh-runtime.mjs";
 import {
   getTelegramUiUrl,
   startTelegramUiServer,
@@ -7432,7 +7433,9 @@ async function cmdShell(chatId, shellArgs) {
 
 function runPwsh(psScript, timeoutMs = 15000) {
   const isWin = process.platform === "win32";
-  const pwsh = isWin ? "powershell.exe" : "pwsh";
+  const pwsh = isWin
+    ? "powershell.exe"
+    : resolvePwshRuntime({ preferBundled: true }).command;
   const script = `& { ${psScript} }`;
   const result = spawnSync(pwsh, ["-NoProfile", "-Command", script], {
     cwd: repoRoot,

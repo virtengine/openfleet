@@ -22,6 +22,7 @@
 
 import { createInterface } from "node:readline";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve, dirname, basename, relative, isAbsolute } from "node:path";
 import { execSync } from "node:child_process";
 import { execFileSync } from "node:child_process";
@@ -654,6 +655,18 @@ function detectRepoSlug(cwd) {
   }
 }
 
+function detectRepoRemoteUrl(cwd) {
+  try {
+    return execSync("git remote get-url origin", {
+      encoding: "utf8",
+      cwd: cwd || process.cwd(),
+      stdio: ["pipe", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
 function detectRepoRoot(cwd) {
   try {
     return execSync("git rev-parse --show-toplevel", {
@@ -677,6 +690,36 @@ function detectProjectName(repoRoot) {
     }
   }
   return basename(repoRoot);
+}
+
+function hasSshKeyMaterial() {
+  if (process.env.SSH_AUTH_SOCK) return true;
+  const home = homedir();
+  if (!home) return false;
+  const candidates = [
+    ".ssh/id_rsa.pub",
+    ".ssh/id_ed25519.pub",
+    ".ssh/id_ecdsa.pub",
+    ".ssh/id_dsa.pub",
+  ];
+  return candidates.some((rel) => existsSync(resolve(home, rel)));
+}
+
+function isSshGitUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return text.startsWith("git@") || text.startsWith("ssh://");
+}
+
+function buildDefaultGitUrl(slug, repoRoot) {
+  const normalizedSlug = String(slug || "").trim();
+  if (!normalizedSlug) return "";
+  const remote = detectRepoRemoteUrl(repoRoot);
+  if (remote) return remote;
+  const preferSsh = hasSshKeyMaterial();
+  return preferSsh
+    ? `git@github.com:${normalizedSlug}.git`
+    : `https://github.com/${normalizedSlug}.git`;
 }
 
 function formatModelVariant(profile) {
@@ -2222,10 +2265,27 @@ async function main() {
         let repoIdx = 0;
 
         while (addMoreRepos) {
-          const repoUrl = await prompt.ask(
+          let repoUrl = await prompt.ask(
             `    Repo ${repoIdx + 1} — git URL (SSH or HTTPS)`,
-            repoIdx === 0 ? (env.GITHUB_REPO ? `git@github.com:${env.GITHUB_REPO}.git` : "") : "",
+            repoIdx === 0
+              ? buildDefaultGitUrl(env.GITHUB_REPO || slug, repoRoot)
+              : "",
           );
+          if (repoUrl && isSshGitUrl(repoUrl) && !hasSshKeyMaterial()) {
+            warn(
+              "SSH URL detected but no SSH agent/keys found. Cloning may fail unless SSH is configured.",
+            );
+            const switchToHttps = await prompt.confirm(
+              "Use HTTPS URL instead?",
+              true,
+            );
+            if (switchToHttps) {
+              const parsedSlug = parseRepoSlugFromUrl(repoUrl);
+              if (parsedSlug) {
+                repoUrl = `https://github.com/${parsedSlug}.git`;
+              }
+            }
+          }
           const parsedSlug = parseRepoSlugFromUrl(repoUrl);
           const parsedRepoName = parsedSlug ? parsedSlug.split("/")[1] : "";
           const defaultNameFromUrl = repoUrl
@@ -2872,11 +2932,12 @@ async function main() {
       if (ghStatus.ok) break;
 
       warn(
-        "GitHub auth is required to auto-detect projects, create boards, and sync issues.",
+        `GitHub auth is required to auto-detect projects, create boards, and sync issues. ${ghStatus.reason || ""}`.trim(),
       );
       info(
         "If you do not plan to use GitHub as the task manager, pick Internal, Jira, or Vibe-Kanban.",
       );
+      info("Authenticate with GitHub using: gh auth login");
       const ghActionIdx = await prompt.choose(
         "How do you want to proceed?",
         [

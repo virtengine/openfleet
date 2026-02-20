@@ -432,12 +432,24 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
           stdio: ["pipe", "pipe", "pipe"],
         });
         if (clone.status !== 0) {
+          const stderr = String(clone.stderr || clone.stdout || "");
+          let hint = "";
+          if (/permission denied \(publickey\)/i.test(stderr)) {
+            hint =
+              "SSH auth failed. Configure SSH keys or use an HTTPS URL instead.";
+          } else if (/authentication failed|fatal: authentication failed/i.test(stderr)) {
+            hint =
+              "HTTPS auth failed. Use a PAT/credential helper or switch to SSH.";
+          } else if (/repository .* not found|not found/i.test(stderr)) {
+            hint =
+              "Repository not found or access denied. Verify the org/repo and permissions.";
+          }
           results.push({
             name: repo.name,
             success: false,
-            error: `git clone failed: ${
-              clone.stderr || clone.stdout || clone.error?.message || "unknown error"
-            }`,
+            error: `git clone failed (${repoUrl}): ${
+              stderr || clone.error?.message || "unknown error"
+            }${hint ? ` — ${hint}` : ""}`,
           });
           continue;
         }
@@ -446,18 +458,52 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
         results.push({
           name: repo.name,
           success: false,
-          error: `git clone failed: ${err.message || err}`,
+          error: `git clone failed (${repoUrl}): ${err.message || err}`,
         });
         continue;
       }
     }
-    if (!existsSync(resolve(repoPath, ".git"))) {
-      results.push({
-        name: repo.name,
-        success: false,
-        error: "Directory exists but is not a git repository",
-      });
-      continue;
+    const gitDir = resolve(repoPath, ".git");
+    if (!existsSync(gitDir)) {
+      try {
+        const contents = existsSync(repoPath) ? readdirSync(repoPath) : [];
+        const isEmpty = contents.length === 0;
+        const repoUrl =
+          repo.url ||
+          (repo.slug ? `https://github.com/${repo.slug.replace(/\.git$/i, "")}.git` : "");
+        if (isEmpty && repoUrl) {
+          console.log(TAG, `Cloning ${repoUrl} into existing empty directory ${repoPath}...`);
+          const clone = spawnSync("git", ["clone", repoUrl, "."], {
+            encoding: "utf8",
+            timeout: 300000,
+            stdio: ["pipe", "pipe", "pipe"],
+            cwd: repoPath,
+          });
+          if (clone.status !== 0) {
+            const stderr = String(clone.stderr || clone.stdout || "");
+            results.push({
+              name: repo.name,
+              success: false,
+              error: `git clone failed (${repoUrl}): ${stderr || clone.error?.message || "unknown error"}`,
+            });
+            continue;
+          }
+        } else {
+          results.push({
+            name: repo.name,
+            success: false,
+            error: "Directory exists but is not a git repository",
+          });
+          continue;
+        }
+      } catch (err) {
+        results.push({
+          name: repo.name,
+          success: false,
+          error: `Directory check failed: ${err.message || err}`,
+        });
+        continue;
+      }
     }
     try {
       execSync("git pull --rebase", {

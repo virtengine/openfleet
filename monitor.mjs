@@ -157,6 +157,7 @@ import { WorkspaceMonitor } from "./workspace-monitor.mjs";
 import { VkLogStream } from "./vk-log-stream.mjs";
 import { VKErrorResolver } from "./vk-error-resolver.mjs";
 import { createAnomalyDetector } from "./anomaly-detector.mjs";
+import { resolvePwshRuntime } from "./pwsh-runtime.mjs";
 import {
   getWorktreeManager,
   acquireWorktree,
@@ -10618,21 +10619,16 @@ async function startProcess() {
   let orchestratorArgs = [...scriptArgs];
 
   if (scriptLower.endsWith(".ps1")) {
-    const configuredPwsh = String(process.env.PWSH_PATH || "").trim();
-    const bundledPwsh = resolve(__dirname, ".cache", "bosun", "pwsh", "pwsh");
-    const bundledPwshExists = existsSync(bundledPwsh);
-    const pwshCmd = configuredPwsh || (bundledPwshExists ? bundledPwsh : "pwsh");
-    const pwshExists = configuredPwsh
-      ? configuredPwsh.includes("/") || configuredPwsh.includes("\\")
-        ? existsSync(configuredPwsh)
-        : commandExists(configuredPwsh)
-      : bundledPwshExists || commandExists("pwsh");
-    if (!pwshExists) {
-      const pwshLabel = configuredPwsh
-        ? `PWSH_PATH (${configuredPwsh})`
-        : bundledPwshExists
-          ? `bundled pwsh (${bundledPwsh})`
-          : "pwsh on PATH";
+    const pwshRuntime = resolvePwshRuntime({ preferBundled: true });
+    if (!pwshRuntime.exists) {
+      const pwshLabel =
+        pwshRuntime.source === "env"
+          ? `PWSH_PATH (${pwshRuntime.command})`
+          : pwshRuntime.source === "bundled"
+            ? `bundled pwsh (${pwshRuntime.command})`
+            : pwshRuntime.source === "powershell"
+              ? `powershell on PATH`
+              : "pwsh on PATH";
       const pauseMs = Math.max(orchestratorPauseMs, 60_000);
       const pauseMin = Math.max(1, Math.round(pauseMs / 60_000));
       monitorSafeModeUntil = Math.max(monitorSafeModeUntil, Date.now() + pauseMs);
@@ -10650,7 +10646,7 @@ async function startProcess() {
       setTimeout(startProcess, pauseMs);
       return;
     }
-    orchestratorCmd = pwshCmd;
+    orchestratorCmd = pwshRuntime.command;
     orchestratorArgs = ["-File", scriptPath, ...scriptArgs];
   } else if (scriptLower.endsWith(".sh")) {
     const shellCmd =

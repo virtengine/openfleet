@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import os from "node:os";
+import { resolvePwshRuntime } from "./pwsh-runtime.mjs";
 
 const isWindows = process.platform === "win32";
 const MIN_FREE_GB = Number(process.env.BOSUN_MIN_FREE_GB || "10");
@@ -179,6 +180,7 @@ function checkToolchain() {
     "node",
     shellMode ? "shell" : "pwsh",
   ]);
+  const pwshRuntime = resolvePwshRuntime({ preferBundled: true });
 
   const tools = [
     checkToolVersion(
@@ -213,7 +215,7 @@ function checkToolchain() {
     ),
     checkToolVersion(
       "pwsh",
-      "pwsh",
+      pwshRuntime.command,
       ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"],
       "Install PowerShell 7+ (pwsh) and ensure it is on PATH.",
     ),

@@ -152,6 +152,7 @@
     "sdk-conflict-resolver.mjs",
     "session-tracker.mjs",
     "setup.mjs",
+    "pwsh-runtime.mjs",
     "shared-knowledge.mjs",
     "shared-state-manager.mjs",
     "shared-workspace-cli.mjs",
