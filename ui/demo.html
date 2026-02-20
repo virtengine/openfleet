@@ -572,8 +572,25 @@
         { branch: 've/jkl012-hpc-gpu-metering', path: '/worktrees/jkl012', active: true, taskId: 've-jkl012' },
         { branch: 've/vwx234-mfa-tests', path: '/worktrees/vwx234', active: true, taskId: 've-vwx234' },
       ],
+      managedWorkspaces: [
+        { id: 'ws-virtengine', name: 'virtengine', path: '/home/demo/repos/virtengine', active: true, repos: [
+          { name: 'virtengine', url: 'https://github.com/virtengine-gh/virtengine.git', branch: 'main', primary: true },
+          { name: 'virtengine-go', url: 'https://github.com/virtengine/go.git', branch: 'main', primary: false },
+        ], createdAt: now - 30*24*hr },
+        { id: 'ws-provider', name: 'provider-tools', path: '/home/demo/repos/provider-tools', active: false, repos: [
+          { name: 'provider-daemon', url: 'https://github.com/virtengine-gh/provider-daemon.git', branch: 'main', primary: true },
+        ], createdAt: now - 7*24*hr },
+      ],
+      activeWorkspaceId: 'ws-virtengine',
       sharedWorkspaces: [
         { id: 'sw-1', name: 'shared-escrow-dev', claimedBy: 'copilot-claude', claimedAt: now - 1*hr, expiresAt: now + 1*hr },
+      ],
+      agentMode: 'agent',
+      activeAgentId: 'codex-sdk',
+      availableAgents: [
+        { id: 'codex-sdk', name: 'Codex SDK', provider: 'openai', available: true, busy: false, capabilities: ['code', 'test', 'refactor'] },
+        { id: 'copilot-claude', name: 'Copilot Claude', provider: 'anthropic', available: true, busy: false, capabilities: ['code', 'review', 'plan'] },
+        { id: 'codex-mini', name: 'Codex Mini', provider: 'openai', available: true, busy: false, capabilities: ['code'] },
       ],
       gitBranches: ['main', 've/abc123-market-order-expiry', 've/ghi789-escrow-batch', 've/jkl012-hpc-gpu-metering', 've/vwx234-mfa-tests'],
       gitDiff: '--- a/x/escrow/keeper/batch.go\n+++ b/x/escrow/keeper/batch.go\n@@ -0,0 +1,42 @@\n+package keeper\n+\n+// BatchSettle processes pending settlements in batch.\n+func (k Keeper) BatchSettle(ctx sdk.Context) error {\n+    // ... implementation\n+    return nil\n+}',
@@ -723,10 +740,43 @@
         if (t) { t.status = 'todo'; t.updated = Date.now(); addLog('info', 'task-executor', `Task retried: ${t.title}`); }
         return { ok: true, data: t || null };
       }
+      if (route === '/api/tasks/ignore') {
+        const t = findTask(body?.taskId || body?.id);
+        if (t) { t.status = 'ignored'; t.updated = Date.now(); addLog('info', 'kanban', `Task ignored: ${t.title}`); }
+        return { ok: true, data: t || null };
+      }
+      if (route === '/api/tasks/unignore') {
+        const t = findTask(body?.taskId || body?.id);
+        if (t) { t.status = 'todo'; t.updated = Date.now(); addLog('info', 'kanban', `Task unignored: ${t.title}`); }
+        return { ok: true, data: t || null };
+      }
 
       // ── Agents ──
       if (route === '/api/agents')
         return { data: STATE.agents };
+      if (route === '/api/agents/available')
+        return { ok: true, data: STATE.availableAgents };
+      if (route === '/api/agents/switch') {
+        const agentId = body?.agentId || body?.id;
+        if (agentId) STATE.activeAgentId = agentId;
+        return { ok: true, activeAgent: STATE.activeAgentId };
+      }
+      if (route === '/api/agents/mode') {
+        if (method === 'POST') {
+          if (body?.mode) STATE.agentMode = body.mode;
+          return { ok: true, mode: STATE.agentMode };
+        }
+        return { ok: true, mode: STATE.agentMode };
+      }
+      if (route === '/api/agents/sdk-command') {
+        const cmd = body?.command || '';
+        addLog('info', 'sdk', `SDK command: ${cmd}`);
+        return { ok: true, command: cmd, response: 'SDK command executed in demo mode: ' + cmd };
+      }
+      if (route === '/api/agents/info') {
+        const agent = STATE.availableAgents.find(a => a.id === STATE.activeAgentId) || STATE.availableAgents[0];
+        return { ok: true, data: agent };
+      }
       if (route === '/api/executors')
         return { executors: STATE.executors };
 
@@ -771,6 +821,52 @@
         const wt = STATE.worktrees.find(w => w.branch === branch);
         if (wt) wt.active = false;
         return { ok: true };
+      }
+
+      // ── Managed Workspaces ──
+      if (route === '/api/workspaces')
+        return { ok: true, data: STATE.managedWorkspaces, activeId: STATE.activeWorkspaceId };
+      if (route === '/api/workspaces/active') {
+        if (method === 'POST' && body?.workspaceId) {
+          STATE.activeWorkspaceId = body.workspaceId;
+          return { ok: true, activeId: body.workspaceId };
+        }
+        const active = STATE.managedWorkspaces.find(w => w.id === STATE.activeWorkspaceId) || null;
+        return { ok: true, data: active };
+      }
+      if (route === '/api/workspaces/create') {
+        const name = body?.name || 'new-workspace';
+        const ws = { id: 'ws-' + Math.random().toString(36).slice(2, 7), name, path: '/home/demo/repos/' + name, active: false, repos: [], createdAt: Date.now() };
+        STATE.managedWorkspaces.push(ws);
+        return { ok: true, data: ws };
+      }
+      if (route === '/api/workspaces/delete') {
+        const wsId = body?.workspaceId || body?.id;
+        STATE.managedWorkspaces = STATE.managedWorkspaces.filter(w => w.id !== wsId);
+        if (STATE.activeWorkspaceId === wsId) STATE.activeWorkspaceId = STATE.managedWorkspaces[0]?.id || null;
+        return { ok: true, deleted: true };
+      }
+      if (route === '/api/workspaces/pull') {
+        const wsId = body?.workspaceId || body?.id;
+        const ws = STATE.managedWorkspaces.find(w => w.id === wsId);
+        return { ok: true, data: (ws?.repos || []).map(r => ({ repo: r.name, status: 'up-to-date', branch: r.branch })) };
+      }
+      if (route === '/api/workspaces/repos/add') {
+        const ws = STATE.managedWorkspaces.find(w => w.id === body?.workspaceId);
+        if (ws) {
+          const repo = { name: body?.name || body?.url?.split('/').pop()?.replace('.git','') || 'repo', url: body?.url, branch: body?.branch || 'main', primary: Boolean(body?.primary) };
+          ws.repos.push(repo);
+          return { ok: true, data: repo };
+        }
+        return { ok: false, error: 'workspace not found' };
+      }
+      if (route === '/api/workspaces/repos/remove') {
+        const ws = STATE.managedWorkspaces.find(w => w.id === body?.workspaceId);
+        if (ws) ws.repos = ws.repos.filter(r => r.name !== (body?.repoName || body?.name));
+        return { ok: true, removed: true };
+      }
+      if (route === '/api/workspaces/scan') {
+        return { ok: true, data: STATE.managedWorkspaces, scanned: STATE.managedWorkspaces.length, added: 0, updated: 0 };
       }
 
       // ── Shared Workspaces ──

@@ -7,6 +7,7 @@
 #   Settings → Pages → Source: GitHub Actions
 #
 # The CNAME file in site/ keeps bosun.virtengine.com wired up.
+# NOTE: site/ui is a symlink to ../ui — resolved at deploy time.
 
 name: "Bosun: Deploy Site"
 
@@ -15,6 +16,7 @@ on:
     branches: [main]
     paths:
       - "site/**"
+      - "ui/**"
   workflow_dispatch:
 
 jobs:
@@ -29,6 +31,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # GitHub Pages does not follow symlinks.
+      # site/ui → ../ui is a symlink that works locally but breaks on GH Pages.
+      # Replace it with a real copy of the ui/ directory.
+      - name: Resolve symlinks in site/
+        run: |
+          if [ -L site/ui ]; then
+            rm site/ui
+            cp -rL ui site/ui
+            echo "Resolved site/ui symlink → copied ui/ into site/ui/"
+          fi
 
       - name: Deploy to gh-pages
         uses: peaceiris/actions-gh-pages@v4

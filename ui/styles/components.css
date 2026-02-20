@@ -77,6 +77,46 @@
   border-color: var(--border);
 }
 
+@media (max-width: 640px) {
+  .work-summary-card .card-title {
+    font-size: 12px;
+    letter-spacing: 0.12em;
+  }
+
+  .work-summary-card .card-subtitle {
+    font-size: 12px;
+  }
+
+  .stat-strip {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    overflow: visible;
+    padding-bottom: 0;
+  }
+
+  .stat-strip .stat-card {
+    min-width: 0;
+  }
+
+  .work-summary-card .stat-card {
+    padding: 12px 10px;
+  }
+
+  .work-summary-card .stat-value {
+    font-size: 20px;
+  }
+
+  .work-summary-card .stat-label {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+  }
+
+  .work-summary-card .stat-strip .stat-card:last-child {
+    grid-column: span 2;
+  }
+}
+
 .stat-card {
   background: var(--bg-card);
   border-radius: var(--radius-md);
@@ -521,6 +561,25 @@ select.input {
   color: var(--text-secondary);
   margin-bottom: 8px;
   line-height: 1.4;
+}
+
+.task-card-badges {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  .task-card-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .task-card-badges {
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
 
 /* ─── Progress Bar ─── */

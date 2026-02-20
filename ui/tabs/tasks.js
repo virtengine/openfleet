@@ -811,12 +811,21 @@ export function TasksTab() {
     filterVal && filterVal !== "done" ? filterVal : "all",
   );
   const isKanban = viewMode.value === "kanban";
+  const viewModeInitRef = useRef(false);
 
   useEffect(() => {
     if (filterVal && filterVal !== "done") {
       lastNonCompletedRef.current = filterVal;
     }
   }, [filterVal]);
+
+  useEffect(() => {
+    if (viewModeInitRef.current) return;
+    if (isCompact) {
+      viewMode.value = "list";
+    }
+    viewModeInitRef.current = true;
+  }, [isCompact]);
 
   useEffect(() => {
     if (isKanban) return;
@@ -1601,6 +1610,10 @@ export function TasksTab() {
     ${!isKanban &&
     visible.map((task) => {
       const isManual = isTaskManual(task);
+      const descriptionLimit = isCompact ? 90 : 120;
+      const tags = getTaskTags(task);
+      const visibleTags = isCompact ? tags.slice(0, 3) : tags;
+      const extraTagCount = tags.length - visibleTags.length;
       return html`
         <div
           key=${task.id}
@@ -1639,14 +1652,14 @@ export function TasksTab() {
                   : ""}
               </div>
             </div>
-            <div style="display:flex; gap:6px; align-items:center;">
+            <div class="task-card-badges">
               ${isManual && html`<${Badge} status="warning" text="manual" />`}
               <${Badge} status=${task.status} text=${task.status} />
             </div>
           </div>
           <div class="meta-text">
             ${task.description
-              ? truncate(task.description, 120)
+              ? truncate(task.description, descriptionLimit)
               : "No description."}
           </div>
           ${getTaskBaseBranch(task) &&
@@ -1662,12 +1675,18 @@ export function TasksTab() {
               ${task.repository && html`<span class="pill" style="font-size:11px">📁 ${task.repository}</span>`}
             </div>
           `}
-          ${getTaskTags(task).length > 0 &&
+          ${tags.length > 0 &&
           html`
             <div class="tag-row">
-              ${getTaskTags(task).map(
+              ${visibleTags.map(
                 (tag) => html`<span class="tag-chip">#${tag}</span>`,
               )}
+              ${extraTagCount > 0 &&
+              html`
+                <span class="tag-chip tag-chip-muted">
+                  +${extraTagCount}
+                </span>
+              `}
             </div>
           `}
           ${!batchMode &&
