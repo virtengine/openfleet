@@ -64,9 +64,6 @@ export function ControlTab() {
   const [commandInput, setCommandInput] = useState("");
   const [startTaskId, setStartTaskId] = useState("");
   const [retryTaskId, setRetryTaskId] = useState("");
-  const [retryReason, setRetryReason] = useState("");
-  const [askInput, setAskInput] = useState("");
-  const [steerInput, setSteerInput] = useState("");
   const [quickCmdInput, setQuickCmdInput] = useState("");
   const [quickCmdPrefix, setQuickCmdPrefix] = useState("shell");
   const [quickCmdFeedback, setQuickCmdFeedback] = useState("");
@@ -83,7 +80,7 @@ export function ControlTab() {
   const [tasksLoading, setTasksLoading] = useState(false);
   const [startTaskError, setStartTaskError] = useState("");
   const [retryTaskError, setRetryTaskError] = useState("");
-  const [planPrompt, setPlanPrompt] = useState("");
+  const [planFocus, setPlanFocus] = useState(""); // chip selection — no typing needed
   const [planCount, setPlanCount] = useState("5");
   const startTaskIdRef = useRef("");
   const retryTaskIdRef = useRef("");
@@ -504,19 +501,15 @@ export function ControlTab() {
     try {
       await apiFetch("/api/tasks/retry", {
         method: "POST",
-        body: JSON.stringify({
-          taskId,
-          retryReason: retryReason.trim() || undefined,
-        }),
+        body: JSON.stringify({ taskId }),
       });
       showToast("Task retried", "success");
-      setRetryReason("");
       refreshTaskOptions();
       scheduleRefresh(150);
     } catch {
       /* toast via apiFetch */
     }
-  }, [retryTaskId, retryReason, refreshTaskOptions]);
+  }, [retryTaskId, refreshTaskOptions]);
 
   return html`
     ${!executor && !config && html`<${Card} title="Loading…"><${SkeletonCard} /><//>`}
@@ -709,58 +702,6 @@ export function ControlTab() {
           <//>
         <//>
 
-        <${Card} className="agent-control-card">
-          <${Collapsible} title="Agent Control" defaultOpen=${!isCompact}>
-            <div class="meta-text mb-sm">Ask or steer the active agent.</div>
-            <div class="agent-control-grid">
-              <div>
-                <div class="form-label">Ask agent</div>
-                <textarea
-                  class="input mb-sm"
-                  rows="2"
-                  placeholder="Ask the agent…"
-                  value=${askInput}
-                  onInput=${(e) => setAskInput(e.target.value)}
-                ></textarea>
-                <div class="btn-row">
-                  <button
-                    class="btn btn-primary btn-sm"
-                    onClick=${() => {
-                      if (askInput.trim()) {
-                        sendCmd(`/ask ${askInput.trim()}`);
-                        setAskInput("");
-                      }
-                    }}
-                  >
-                    💬 Ask
-                  </button>
-                </div>
-              </div>
-              <div>
-                <div class="form-label">Steer prompt</div>
-                <div class="input-row mb-sm">
-                  <input
-                    class="input"
-                    placeholder="Steer prompt (focus on…)"
-                    value=${steerInput}
-                    onInput=${(e) => setSteerInput(e.target.value)}
-                  />
-                  <button
-                    class="btn btn-secondary btn-sm"
-                    onClick=${() => {
-                      if (steerInput.trim()) {
-                        sendCmd(`/steer ${steerInput.trim()}`);
-                        setSteerInput("");
-                      }
-                    }}
-                  >
-                    🎯 Steer
-                  </button>
-                </div>
-              </div>
-            </div>
-          <//>
-        <//>
       </div>
 
       <div class="control-side">
@@ -815,6 +756,7 @@ export function ControlTab() {
             <div class="field-group">
               <div class="form-label">Retry task</div>
               <div class="input-row">
+                <div class="input-row">
                 <select
                   class=${retryTaskError ? "input input-error" : "input"}
                   value=${retryTaskId}
@@ -833,69 +775,51 @@ export function ControlTab() {
                     `,
                   )}
                 </select>
-                <input
-                  class="input"
-                  placeholder="Retry reason (optional)"
-                  value=${retryReason}
-                  onInput=${(e) => setRetryReason(e.target.value)}
-                />
                 <button
                   class="btn btn-secondary btn-sm"
                   disabled=${!retryTaskId}
                   onClick=${handleRetryTask}
                 >
-                  Retry Task
+                  ↻ Retry
                 </button>
-                <div class="form-group" style="margin-top:0.5rem">
-                  <div class="card-subtitle" style="margin-bottom:0.25rem">Task Planner</div>
-                  <div class="input-row" style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap">
-                    <input
-                      type="number"
-                      class="input"
-                      style="width:4.5rem;flex-shrink:0"
-                      min="1"
-                      max="50"
-                      placeholder="5"
-                      value=${planCount}
-                      onInput=${(e) => setPlanCount(e.target.value)}
-                      title="Number of tasks to generate"
-                    />
-                    <input
-                      class="input"
-                      style="flex:1;min-width:10rem"
-                      placeholder="Optional: focus on X, fix Y issues…"
-                      value=${planPrompt}
-                      onInput=${(e) => setPlanPrompt(e.target.value)}
-                      onKeyDown=${(e) => {
-                        if (e.key === "Enter") {
-                          const count = parseInt(planCount, 10);
-                          const n = Number.isFinite(count) && count > 0 ? count : 5;
-                          const cmd = planPrompt.trim()
-                            ? `/plan ${n} ${planPrompt.trim()}`
-                            : `/plan ${n}`;
-                          sendCmd(cmd);
-                        }
-                      }}
-                    />
-                    <button
-                      class="btn btn-ghost btn-sm"
-                      onClick=${() => {
-                        const count = parseInt(planCount, 10);
-                        const n = Number.isFinite(count) && count > 0 ? count : 5;
-                        const cmd = planPrompt.trim()
-                          ? `/plan ${n} ${planPrompt.trim()}`
-                          : `/plan ${n}`;
-                        sendCmd(cmd);
-                      }}
-                    >
-                      📋 Plan
-                    </button>
-                  </div>
-                </div>
               </div>
               ${retryTaskError
                 ? html`<div class="form-hint error">${retryTaskError}</div>`
                 : null}
+            </div>
+
+            <div class="field-group">
+              <div class="form-label">Task Planner</div>
+              <div class="plan-chips">
+                ${["fix bugs", "add tests", "security", "refactor", "add docs", "performance"].map((chip) => html`
+                  <button
+                    key=${chip}
+                    class=${`chip ${planFocus === chip ? "active" : ""}`}
+                    onClick=${() => { haptic("light"); setPlanFocus(planFocus === chip ? "" : chip); }}
+                  >${chip}</button>
+                `)}
+              </div>
+              <div class="input-row mt-sm">
+                <span class="form-hint" style="flex:1;margin:0">Generate
+                  <input
+                    type="number"
+                    class="input plan-count-input"
+                    min="1" max="50"
+                    value=${planCount}
+                    onInput=${(e) => setPlanCount(e.target.value)}
+                  />
+                  tasks${planFocus ? ` · ${planFocus}` : ""}
+                </span>
+                <button
+                  class="btn btn-ghost btn-sm"
+                  onClick=${() => {
+                    const n = Math.max(1, parseInt(planCount, 10) || 5);
+                    sendCmd(planFocus ? `/plan ${n} ${planFocus}` : `/plan ${n}`);
+                  }}
+                >
+                  📋 Plan
+                </button>
+              </div>
             </div>
           <//>
         <//>
