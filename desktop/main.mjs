@@ -1,12 +1,6 @@
 import { app, BrowserWindow } from "electron";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import {
-  getSessionToken,
-  getTelegramUiUrl,
-  startTelegramUiServer,
-  stopTelegramUiServer,
-} from "../ui-server.mjs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -14,24 +8,42 @@ let mainWindow = null;
 let shuttingDown = false;
 let uiServerStarted = false;
 let uiOrigin = null;
+let uiApi = null;
+
+function resolveBosunRoot() {
+  if (app.isPackaged) {
+    return resolve(process.resourcesPath, "bosun");
+  }
+  return resolve(__dirname, "..");
+}
+
+async function loadUiServerModule() {
+  if (uiApi) return uiApi;
+  const bosunRoot = resolveBosunRoot();
+  const uiServerPath = resolve(bosunRoot, "ui-server.mjs");
+  uiApi = await import(pathToFileURL(uiServerPath).href);
+  return uiApi;
+}
 
 async function startUiServer() {
   if (uiServerStarted) return;
-  const server = await startTelegramUiServer({});
+  const api = await loadUiServerModule();
+  const server = await api.startTelegramUiServer({});
   if (!server) {
     throw new Error("Failed to start Telegram UI server.");
   }
   uiServerStarted = true;
 }
 
-function buildUiUrl() {
-  const uiServerUrl = getTelegramUiUrl();
+async function buildUiUrl() {
+  const api = await loadUiServerModule();
+  const uiServerUrl = api.getTelegramUiUrl();
   if (!uiServerUrl) {
     throw new Error("Telegram UI server URL is unavailable.");
   }
   const targetUrl = new URL(uiServerUrl);
   uiOrigin = targetUrl.origin;
-  const sessionToken = getSessionToken();
+  const sessionToken = api.getSessionToken();
   if (sessionToken) {
     targetUrl.searchParams.set("token", sessionToken);
   }
@@ -64,17 +76,32 @@ async function createMainWindow() {
     mainWindow?.show();
   });
 
-  const uiUrl = buildUiUrl();
+  const uiUrl = await buildUiUrl();
   await mainWindow.loadURL(uiUrl);
 }
 
 async function bootstrap() {
   try {
+    app.setAppUserModelId("com.virtengine.bosun");
+    process.chdir(resolveBosunRoot());
     await startUiServer();
     await createMainWindow();
+    await maybeAutoUpdate();
   } catch (error) {
     console.error("[desktop] startup failed", error);
     await shutdown("startup_failed");
+  }
+}
+
+async function maybeAutoUpdate() {
+  if (!app.isPackaged) return;
+  if (process.env.BOSUN_DESKTOP_AUTO_UPDATE !== "1") return;
+  try {
+    const { autoUpdater } = await import("electron-updater");
+    autoUpdater.autoDownload = true;
+    autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+  } catch (err) {
+    console.warn("[desktop] auto-update unavailable", err?.message || err);
   }
 }
 
@@ -87,7 +114,8 @@ async function shutdown(reason) {
   }
 
   try {
-    stopTelegramUiServer();
+    const api = await loadUiServerModule();
+    api.stopTelegramUiServer();
   } catch (error) {
     console.error("[desktop] failed to stop ui-server", error);
   }
@@ -98,7 +126,9 @@ async function shutdown(reason) {
 app.on("before-quit", () => {
   shuttingDown = true;
   try {
-    stopTelegramUiServer();
+    if (uiApi?.stopTelegramUiServer) {
+      uiApi.stopTelegramUiServer();
+    }
   } catch (error) {
     console.error("[desktop] failed to stop ui-server", error);
   }

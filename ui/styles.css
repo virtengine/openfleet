@@ -97,27 +97,27 @@
 }
 
 .stream-tag-tool_call {
-  background: rgba(88, 166, 255, 0.16);
+  background: rgba(59, 130, 246, 0.16);
   color: var(--color-inprogress);
-  border-color: rgba(88, 166, 255, 0.4);
+  border-color: rgba(59, 130, 246, 0.4);
 }
 
 .stream-tag-tool_result {
-  background: rgba(46, 160, 67, 0.16);
+  background: rgba(16, 185, 129, 0.16);
   color: var(--color-done);
-  border-color: rgba(46, 160, 67, 0.35);
+  border-color: rgba(16, 185, 129, 0.35);
 }
 
 .stream-tag-error {
-  background: rgba(248, 81, 73, 0.16);
+  background: rgba(239, 68, 68, 0.16);
   color: var(--color-error);
-  border-color: rgba(248, 81, 73, 0.35);
+  border-color: rgba(239, 68, 68, 0.35);
 }
 
 .stream-tag-file {
-  background: rgba(139, 148, 158, 0.14);
+  background: rgba(100, 116, 139, 0.14);
   color: var(--text-secondary);
-  border-color: rgba(139, 148, 158, 0.35);
+  border-color: rgba(100, 116, 139, 0.35);
 }
 
 .stream-empty {

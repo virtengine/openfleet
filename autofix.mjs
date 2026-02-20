@@ -341,9 +341,16 @@ export function isDevMode() {
     return false;
   }
 
-  // Check if we're inside node_modules (npm install)
+  // Check if we're inside node_modules (npm install). Ignore Vite/Vitest
+  // cache paths so local tests that bundle via node_modules/.vite still
+  // fall back to repo detection.
   const normalized = __dirname.replace(/\\/g, "/").toLowerCase();
-  if (normalized.includes("/node_modules/")) {
+  const inNodeModules = normalized.includes("/node_modules/");
+  const inViteCache =
+    normalized.includes("/node_modules/.vite/") ||
+    normalized.includes("/node_modules/.vitest/") ||
+    normalized.includes("/node_modules/.cache/");
+  if (inNodeModules && !inViteCache) {
     _devModeCache = false;
     return false;
   }

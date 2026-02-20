@@ -68,8 +68,8 @@
 }
 
 @keyframes glowPulse {
-  0%, 100% { box-shadow: 0 0 8px var(--accent-glow, rgba(99,102,241,.2)); }
-  50% { box-shadow: 0 0 20px var(--accent-glow, rgba(99,102,241,.4)), 0 0 40px var(--accent-glow, rgba(99,102,241,.1)); }
+  0%, 100% { box-shadow: 0 0 8px var(--accent-glow, rgba(59, 130, 246, .2)); }
+  50% { box-shadow: 0 0 20px var(--accent-glow, rgba(59, 130, 246, .4)), 0 0 40px var(--accent-glow, rgba(59, 130, 246, .1)); }
 }
 
 @keyframes breathe {

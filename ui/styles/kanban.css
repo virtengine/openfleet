@@ -29,7 +29,7 @@
 
 .kanban-column.drag-over {
   border: 2px dashed var(--accent);
-  background: rgba(99, 102, 241, 0.06);
+  background: rgba(59, 130, 246, 0.06);
 }
 
 .kanban-column-header {
@@ -146,7 +146,7 @@
   opacity: 0.85;
   transform: rotate(2deg) scale(1.04);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35), 0 4px 12px rgba(0, 0, 0, 0.2);
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent, #3b82f6);
   pointer-events: none;
   z-index: 9999;
   transition: none;

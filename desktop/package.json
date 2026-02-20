@@ -4,12 +4,70 @@
   "private": true,
   "type": "module",
   "main": "main.mjs",
-  "description": "Electron wrapper for the Bosun Telegram UI",
+  "description": "Electron wrapper for the Bosun desktop portal",
   "scripts": {
     "start": "electron .",
-    "start:dev": "ELECTRON_ENABLE_LOGGING=1 ELECTRON_ENABLE_STACK_DUMPING=1 electron ."
+    "start:dev": "ELECTRON_ENABLE_LOGGING=1 ELECTRON_ENABLE_STACK_DUMPING=1 electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
-    "electron": "^30.0.0"
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.virtengine.bosun",
+    "productName": "Bosun Desktop",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.mjs",
+      "preload.mjs"
+    ],
+    "extraResources": [
+      {
+        "from": "..",
+        "to": "bosun",
+        "filter": [
+          "**/*",
+          "!node_modules/**",
+          "!desktop/**",
+          "!tests/**",
+          "!*.md",
+          "!logs/**",
+          "!.cache/**",
+          "!**/*.map"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "linux": {
+      "category": "Development",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    }
   }
 }

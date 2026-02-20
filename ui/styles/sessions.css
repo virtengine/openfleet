@@ -964,7 +964,7 @@ ul.md-list li::before {
 }
 
 .chat-input-wrapper:focus-within {
-  border-color: var(--accent, var(--color-primary, #60cc5d));
+  border-color: var(--accent, var(--color-primary, #3b82f6));
 }
 
 .chat-textarea {
@@ -994,7 +994,7 @@ ul.md-list li::before {
   height: 36px;
   border-radius: 50%;
   border: none;
-  background: var(--gradient-accent, var(--accent, #60cc5d));
+  background: var(--gradient-accent, var(--accent, #3b82f6));
   color: var(--accent-text, white);
   cursor: pointer;
   flex-shrink: 0;
@@ -1025,7 +1025,7 @@ ul.md-list li::before {
 /* ═══ Session Rename ═══ */
 .session-item-rename {
   background: var(--bg-input, var(--glass-bg));
-  border: 1px solid var(--accent, var(--color-primary, #60cc5d));
+  border: 1px solid var(--accent, var(--color-primary, #3b82f6));
   border-radius: var(--radius-sm);
   padding: 2px 6px;
   color: var(--text-primary);
@@ -1071,17 +1071,17 @@ ul.md-list li::before {
 }
 
 .session-action-btn.archive {
-  background: var(--color-warning, #e5a50a);
+  background: var(--color-warning, #f59e0b);
   color: #000;
 }
 
 .session-action-btn.resume {
-  background: var(--color-primary, #60cc5d);
+  background: var(--color-primary, #10b981);
   color: #000;
 }
 
 .session-action-btn.delete {
-  background: var(--color-error, #f85149);
+  background: var(--color-error, #ef4444);
   color: #fff;
 }
 
@@ -1176,7 +1176,7 @@ ul.md-list li::before {
 
 .session-inline-btn.delete:hover {
   opacity: 1;
-  background: rgba(248, 81, 73, 0.15);
+  background: rgba(239, 68, 68, 0.15);
 }
 
 /* ═══ Swipe Hint ═══ */
