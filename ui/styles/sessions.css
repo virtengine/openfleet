@@ -1276,3 +1276,96 @@ ul.md-list li::before {
 .session-rename-btn {
   display: none;
 }
+
+/* ═══ SDK Badge in Slash Menu ═══ */
+.slash-menu-item-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--accent, #6366f1);
+  color: #fff;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* ═══ Pending Messages (Optimistic Rendering) ═══ */
+.chat-pending-msg {
+  opacity: 0.7;
+  position: relative;
+}
+
+.chat-pending-msg.sending {
+  animation: chat-pending-pulse 2s ease-in-out infinite;
+}
+
+.chat-pending-msg.uncertain {
+  opacity: 0.55;
+  border-left: 3px solid var(--warning-color, #f59e0b);
+}
+
+.chat-pending-msg.failed {
+  opacity: 0.6;
+  border-left: 3px solid var(--error-color, #ef4444);
+}
+
+@keyframes chat-pending-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 0.4; }
+}
+
+.chat-pending-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chat-pending-warn {
+  color: var(--warning-color, #f59e0b);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.chat-pending-err {
+  color: var(--error-color, #ef4444);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.chat-retry-btn {
+  font-size: 11px !important;
+  padding: 1px 6px !important;
+  min-height: unset !important;
+  border: 1px solid rgba(255,255,255,.12) !important;
+}
+
+/* ═══ Agent Status Indicator ═══ */
+.chat-agent-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px !important;
+}
+
+.chat-agent-status-text {
+  font-size: 12px;
+  color: var(--text-secondary, #aaa);
+  font-style: italic;
+}
+
+/* ═══ Offline Queue Badge ═══ */
+.chat-offline-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--warning-color, #f59e0b);
+  font-weight: 600;
+  padding: 1px 6px;
+  background: rgba(245, 158, 11, 0.1);
+  border-radius: 4px;
+}

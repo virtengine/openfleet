@@ -5,23 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; img-src * data: blob:; connect-src *;" />
   <title>Bosun MiniApp — Demo Mode</title>
-  <link rel="icon" href="favicon.png" type="image/png" />
 
   <!-- Telegram WebApp SDK is fully mocked below — no real SDK needed -->
 
   <!-- Import map — same as the real app -->
   <script type="importmap">
-  {
-    "imports": {
-      "preact":          "https://cdn.jsdelivr.net/npm/preact@10.25.4/+esm",
-      "preact/hooks":    "https://cdn.jsdelivr.net/npm/preact@10.25.4/hooks/+esm",
-      "preact/compat":   "https://cdn.jsdelivr.net/npm/preact@10.25.4/compat/+esm",
-      "htm":             "https://cdn.jsdelivr.net/npm/htm@3.1.1/+esm",
-      "@preact/signals": "https://cdn.jsdelivr.net/npm/@preact/signals@1.3.1/+esm"
-    }
-  }
-  </script>
-  <script type="application/json" id="importmap-fallback">
   {
     "imports": {
       "preact":          "https://esm.sh/preact@10.25.4",
@@ -57,8 +45,7 @@
 
     /* MiniApp header (Telegram-style) */
     .miniapp-header { display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: #17212b; border-bottom: 1px solid #1b2838; flex-shrink: 0; z-index: 10; }
-    .miniapp-header-icon { width: 28px; height: 28px; border-radius: 8px; background: rgba(12,16,24,0.95); border: 1px solid rgba(255,255,255,0.12); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-    .miniapp-header-icon img { width: 20px; height: 20px; object-fit: contain; display: block; }
+    .miniapp-header-icon { width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg, #4cc9f0, #60cc5d); display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
     .miniapp-header-title { flex: 1; font-size: 15px; font-weight: 600; color: #fff; }
     .miniapp-header-badge { font-size: 10px; color: #64748b; background: #1e293b; padding: 2px 7px; border-radius: 10px; }
 
@@ -67,7 +54,7 @@
     .miniapp-content #app { position: absolute; inset: 0; display: flex; flex-direction: column; }
 
     /* ── BOT MENU FAB (Floating Action Button) ── */
-    .bot-fab { position: fixed; bottom: calc(var(--nav-height, 66px) + var(--safe-bottom, 0px) + 18px); right: 16px; z-index: 9000; width: 48px; height: 48px; border-radius: 50%; border: none; background: linear-gradient(135deg, #4cc9f0, #3a9ec7); color: #fff; font-size: 22px; cursor: pointer; box-shadow: 0 4px 16px rgba(76, 201, 240, 0.35), 0 2px 4px rgba(0,0,0,0.3); transition: transform 0.2s, box-shadow 0.2s, background 0.2s; display: flex; align-items: center; justify-content: center; }
+    .bot-fab { position: fixed; bottom: 90px; right: 16px; z-index: 9000; width: 48px; height: 48px; border-radius: 50%; border: none; background: linear-gradient(135deg, #4cc9f0, #3a9ec7); color: #fff; font-size: 22px; cursor: pointer; box-shadow: 0 4px 16px rgba(76, 201, 240, 0.35), 0 2px 4px rgba(0,0,0,0.3); transition: transform 0.2s, box-shadow 0.2s, background 0.2s; display: flex; align-items: center; justify-content: center; }
     .bot-fab:hover { transform: scale(1.08); box-shadow: 0 6px 24px rgba(76, 201, 240, 0.45), 0 3px 8px rgba(0,0,0,0.3); }
     .bot-fab:active { transform: scale(0.95); }
     .bot-fab.panel-open { background: #ef5350; transform: rotate(45deg); }
@@ -585,8 +572,25 @@
         { branch: 've/jkl012-hpc-gpu-metering', path: '/worktrees/jkl012', active: true, taskId: 've-jkl012' },
         { branch: 've/vwx234-mfa-tests', path: '/worktrees/vwx234', active: true, taskId: 've-vwx234' },
       ],
+      managedWorkspaces: [
+        { id: 'ws-virtengine', name: 'virtengine', path: '/home/demo/repos/virtengine', active: true, repos: [
+          { name: 'virtengine', url: 'https://github.com/virtengine-gh/virtengine.git', branch: 'main', primary: true },
+          { name: 'virtengine-go', url: 'https://github.com/virtengine/go.git', branch: 'main', primary: false },
+        ], createdAt: now - 30*24*hr },
+        { id: 'ws-provider', name: 'provider-tools', path: '/home/demo/repos/provider-tools', active: false, repos: [
+          { name: 'provider-daemon', url: 'https://github.com/virtengine-gh/provider-daemon.git', branch: 'main', primary: true },
+        ], createdAt: now - 7*24*hr },
+      ],
+      activeWorkspaceId: 'ws-virtengine',
       sharedWorkspaces: [
         { id: 'sw-1', name: 'shared-escrow-dev', claimedBy: 'copilot-claude', claimedAt: now - 1*hr, expiresAt: now + 1*hr },
+      ],
+      agentMode: 'agent',
+      activeAgentId: 'codex-sdk',
+      availableAgents: [
+        { id: 'codex-sdk', name: 'Codex SDK', provider: 'openai', available: true, busy: false, capabilities: ['code', 'test', 'refactor'] },
+        { id: 'copilot-claude', name: 'Copilot Claude', provider: 'anthropic', available: true, busy: false, capabilities: ['code', 'review', 'plan'] },
+        { id: 'codex-mini', name: 'Codex Mini', provider: 'openai', available: true, busy: false, capabilities: ['code'] },
       ],
       gitBranches: ['main', 've/abc123-market-order-expiry', 've/ghi789-escrow-batch', 've/jkl012-hpc-gpu-metering', 've/vwx234-mfa-tests'],
       gitDiff: '--- a/x/escrow/keeper/batch.go\n+++ b/x/escrow/keeper/batch.go\n@@ -0,0 +1,42 @@\n+package keeper\n+\n+// BatchSettle processes pending settlements in batch.\n+func (k Keeper) BatchSettle(ctx sdk.Context) error {\n+    // ... implementation\n+    return nil\n+}',
@@ -736,10 +740,43 @@
         if (t) { t.status = 'todo'; t.updated = Date.now(); addLog('info', 'task-executor', `Task retried: ${t.title}`); }
         return { ok: true, data: t || null };
       }
+      if (route === '/api/tasks/ignore') {
+        const t = findTask(body?.taskId || body?.id);
+        if (t) { t.status = 'ignored'; t.updated = Date.now(); addLog('info', 'kanban', `Task ignored: ${t.title}`); }
+        return { ok: true, data: t || null };
+      }
+      if (route === '/api/tasks/unignore') {
+        const t = findTask(body?.taskId || body?.id);
+        if (t) { t.status = 'todo'; t.updated = Date.now(); addLog('info', 'kanban', `Task unignored: ${t.title}`); }
+        return { ok: true, data: t || null };
+      }
 
       // ── Agents ──
       if (route === '/api/agents')
         return { data: STATE.agents };
+      if (route === '/api/agents/available')
+        return { ok: true, data: STATE.availableAgents };
+      if (route === '/api/agents/switch') {
+        const agentId = body?.agentId || body?.id;
+        if (agentId) STATE.activeAgentId = agentId;
+        return { ok: true, activeAgent: STATE.activeAgentId };
+      }
+      if (route === '/api/agents/mode') {
+        if (method === 'POST') {
+          if (body?.mode) STATE.agentMode = body.mode;
+          return { ok: true, mode: STATE.agentMode };
+        }
+        return { ok: true, mode: STATE.agentMode };
+      }
+      if (route === '/api/agents/sdk-command') {
+        const cmd = body?.command || '';
+        addLog('info', 'sdk', `SDK command: ${cmd}`);
+        return { ok: true, command: cmd, response: 'SDK command executed in demo mode: ' + cmd };
+      }
+      if (route === '/api/agents/info') {
+        const agent = STATE.availableAgents.find(a => a.id === STATE.activeAgentId) || STATE.availableAgents[0];
+        return { ok: true, data: agent };
+      }
       if (route === '/api/executors')
         return { executors: STATE.executors };
 
@@ -784,6 +821,52 @@
         const wt = STATE.worktrees.find(w => w.branch === branch);
         if (wt) wt.active = false;
         return { ok: true };
+      }
+
+      // ── Managed Workspaces ──
+      if (route === '/api/workspaces')
+        return { ok: true, data: STATE.managedWorkspaces, activeId: STATE.activeWorkspaceId };
+      if (route === '/api/workspaces/active') {
+        if (method === 'POST' && body?.workspaceId) {
+          STATE.activeWorkspaceId = body.workspaceId;
+          return { ok: true, activeId: body.workspaceId };
+        }
+        const active = STATE.managedWorkspaces.find(w => w.id === STATE.activeWorkspaceId) || null;
+        return { ok: true, data: active };
+      }
+      if (route === '/api/workspaces/create') {
+        const name = body?.name || 'new-workspace';
+        const ws = { id: 'ws-' + Math.random().toString(36).slice(2, 7), name, path: '/home/demo/repos/' + name, active: false, repos: [], createdAt: Date.now() };
+        STATE.managedWorkspaces.push(ws);
+        return { ok: true, data: ws };
+      }
+      if (route === '/api/workspaces/delete') {
+        const wsId = body?.workspaceId || body?.id;
+        STATE.managedWorkspaces = STATE.managedWorkspaces.filter(w => w.id !== wsId);
+        if (STATE.activeWorkspaceId === wsId) STATE.activeWorkspaceId = STATE.managedWorkspaces[0]?.id || null;
+        return { ok: true, deleted: true };
+      }
+      if (route === '/api/workspaces/pull') {
+        const wsId = body?.workspaceId || body?.id;
+        const ws = STATE.managedWorkspaces.find(w => w.id === wsId);
+        return { ok: true, data: (ws?.repos || []).map(r => ({ repo: r.name, status: 'up-to-date', branch: r.branch })) };
+      }
+      if (route === '/api/workspaces/repos/add') {
+        const ws = STATE.managedWorkspaces.find(w => w.id === body?.workspaceId);
+        if (ws) {
+          const repo = { name: body?.name || body?.url?.split('/').pop()?.replace('.git','') || 'repo', url: body?.url, branch: body?.branch || 'main', primary: Boolean(body?.primary) };
+          ws.repos.push(repo);
+          return { ok: true, data: repo };
+        }
+        return { ok: false, error: 'workspace not found' };
+      }
+      if (route === '/api/workspaces/repos/remove') {
+        const ws = STATE.managedWorkspaces.find(w => w.id === body?.workspaceId);
+        if (ws) ws.repos = ws.repos.filter(r => r.name !== (body?.repoName || body?.name));
+        return { ok: true, removed: true };
+      }
+      if (route === '/api/workspaces/scan') {
+        return { ok: true, data: STATE.managedWorkspaces, scanned: STATE.managedWorkspaces.length, added: 0, updated: 0 };
       }
 
       // ── Shared Workspaces ──
@@ -920,28 +1003,10 @@
         }
         const method = (options?.method || 'GET').toUpperCase();
         const data = handleApi(path, method, body);
-        
-        // Create a proper Response object that resolves immediately
-        const response = new Response(JSON.stringify(data), {
+        return Promise.resolve(new Response(JSON.stringify(data), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
-        });
-        
-        // If an abort signal is provided, we should respect it
-        if (options?.signal) {
-          return new Promise((resolve, reject) => {
-            if (options.signal.aborted) {
-              return reject(new DOMException('Aborted', 'AbortError'));
-            }
-            options.signal.addEventListener('abort', () => {
-              reject(new DOMException('Aborted', 'AbortError'));
-            });
-            // Resolve immediately since it's a mock
-            resolve(response);
-          });
-        }
-        
-        return Promise.resolve(response);
+        }));
       }
 
       // Pass through non-API requests (fonts, CDN, ES modules, etc.)
@@ -1016,7 +1081,7 @@
   <div class="demo-container">
     <!-- Header -->
     <div class="miniapp-header">
-      <div class="miniapp-header-icon"><img src="logo.png" alt="Bosun" /></div>
+      <div class="miniapp-header-icon">🤖</div>
       <div class="miniapp-header-title">Telegram MiniApp</div>
       <div class="miniapp-header-badge">DEMO</div>
     </div>
@@ -1059,40 +1124,8 @@
     <div class="bot-panel-keyboard" id="bot-panel-keyboard"></div>
   </div>
 
-  <!-- Load the real app.js with CDN fallback -->
-  <script type="module">
-    const bootEl = document.getElementById('boot-loader');
-    const bootErr = (html) => {
-      if (bootEl) bootEl.innerHTML = html;
-    };
-    const applyFallbackImportMap = () => {
-      const fallback = document.getElementById('importmap-fallback');
-      if (!fallback) return;
-      const script = document.createElement('script');
-      script.type = 'importmap';
-      script.textContent = fallback.textContent;
-      document.head.appendChild(script);
-    };
-    const loadApp = async (bust = false) => {
-      const base = new URL('app.js', import.meta.url).toString();
-      const url = bust ? `${base}?v=${Date.now()}` : base;
-      await import(url);
-    };
-    (async () => {
-      try {
-        await loadApp(false);
-      } catch (err) {
-        console.warn('[demo] Primary CDN failed, switching to fallback.', err);
-        applyFallbackImportMap();
-        try {
-          await loadApp(true);
-        } catch (fallbackErr) {
-          console.error('[demo] Fallback CDN failed.', fallbackErr);
-          bootErr('<div style="text-align:center;padding:40px;font-family:Inter,sans-serif;color:#94a3b8"><div style="font-size:18px;margin-bottom:8px">⚠️ Failed to load</div><div style="font-size:12px;color:#64748b">Both CDNs failed (jsdelivr + esm.sh). Check your connection or refresh.</div></div>');
-        }
-      }
-    })();
-  </script>
+  <!-- Load the real app.js immediately -->
+  <script type="module" src="app.js"></script>
 
   <!-- ═══ BOT MENU ENGINE (multi-layer screen navigation) ═══════════ -->
   <script>
@@ -1664,6 +1697,12 @@
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && panelOpen) closePanel();
     });
+
+    // Fallback: if ES modules fail to load within 12s, show an error
+    setTimeout(function() {
+      var el = document.getElementById('boot-loader');
+      if (el) el.innerHTML = '<div style="text-align:center;padding:40px;font-family:Inter,sans-serif;color:#94a3b8"><div style="font-size:18px;margin-bottom:8px">⚠️ Failed to load</div><div style="font-size:12px;color:#64748b">Check connection (CDN: esm.sh) or refresh</div></div>';
+    }, 12000);
 
   })();
   </script>

@@ -36,35 +36,40 @@
       if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
     } catch(e) {}
   </script>
-  <!-- Import map: ensures all modules share a single Preact instance
-       (required for @preact/signals auto-subscription to work) -->
+  <!-- Import map: ensures all modules share a single Preact instance.
+       esm.sh is primary because its ?deps= param forces @preact/signals to
+       re-use the SAME preact instance (jsdelivr +esm bundles an internal copy
+       of preact, creating two instances that break signals/hooks). -->
   <script type="importmap">
   {
     "imports": {
-      "preact": "https://cdn.jsdelivr.net/npm/preact@10.25.4/+esm",
-      "preact/hooks": "https://cdn.jsdelivr.net/npm/preact@10.25.4/hooks/+esm",
-      "htm": "https://cdn.jsdelivr.net/npm/htm@3.1.1/+esm",
-      "@preact/signals": "https://cdn.jsdelivr.net/npm/@preact/signals@1.3.1/+esm"
+      "preact":          "https://esm.sh/preact@10.25.4",
+      "preact/hooks":    "https://esm.sh/preact@10.25.4/hooks",
+      "preact/compat":   "https://esm.sh/preact@10.25.4/compat",
+      "htm":             "https://esm.sh/htm@3.1.1",
+      "@preact/signals": "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4"
     }
   }
   </script>
   <script type="importmap-shim">
   {
     "imports": {
-      "preact": "https://cdn.jsdelivr.net/npm/preact@10.25.4/+esm",
-      "preact/hooks": "https://cdn.jsdelivr.net/npm/preact@10.25.4/hooks/+esm",
-      "htm": "https://cdn.jsdelivr.net/npm/htm@3.1.1/+esm",
-      "@preact/signals": "https://cdn.jsdelivr.net/npm/@preact/signals@1.3.1/+esm"
+      "preact":          "https://esm.sh/preact@10.25.4",
+      "preact/hooks":    "https://esm.sh/preact@10.25.4/hooks",
+      "preact/compat":   "https://esm.sh/preact@10.25.4/compat",
+      "htm":             "https://esm.sh/htm@3.1.1",
+      "@preact/signals": "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4"
     }
   }
   </script>
   <script type="application/json" id="importmap-fallback">
   {
     "imports": {
-      "preact": "https://esm.sh/preact@10.25.4",
-      "preact/hooks": "https://esm.sh/preact@10.25.4/hooks",
-      "htm": "https://esm.sh/htm@3.1.1",
-      "@preact/signals": "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4"
+      "preact":          "https://cdn.jsdelivr.net/npm/preact@10.25.4/+esm",
+      "preact/hooks":    "https://cdn.jsdelivr.net/npm/preact@10.25.4/hooks/+esm",
+      "preact/compat":   "https://cdn.jsdelivr.net/npm/preact@10.25.4/compat/+esm",
+      "htm":             "https://cdn.jsdelivr.net/npm/htm@3.1.1/+esm",
+      "@preact/signals": "https://cdn.jsdelivr.net/npm/@preact/signals@1.3.1/+esm"
     }
   }
   </script>
@@ -134,7 +139,7 @@
         await loadApp(false);
       } catch (err) {
         if (!shimReady || !window.importShim) {
-          bootErr('⚠️ Failed to load app modules.<br><small style="color:#888">Check your internet connection (CDN: jsdelivr) or try refreshing.</small>');
+          bootErr('⚠️ Failed to load app modules.<br><small style="color:#888">Check your internet connection (CDN: esm.sh) or try refreshing.</small>');
           return;
         }
         console.warn("[ui] Primary CDN failed, switching to fallback.", err);
@@ -143,7 +148,7 @@
           await loadApp(true);
         } catch (fallbackErr) {
           console.error("[ui] Fallback CDN failed.", fallbackErr);
-          bootErr('⚠️ Failed to load app modules.<br><small style="color:#888">Both CDNs failed (jsdelivr + esm.sh). Check your connection or refresh.</small>');
+          bootErr('⚠️ Failed to load app modules.<br><small style="color:#888">Both CDNs failed (esm.sh + jsdelivr). Check your connection or refresh.</small>');
         }
       }
     })();
@@ -156,7 +161,7 @@
       var el = document.getElementById('boot-loader');
       if (el) {
         var s = document.getElementById('boot-status');
-        if (s) s.innerHTML = '⚠️ Failed to load app modules.<br><small style="color:#888">Check your internet connection (CDN: jsdelivr) or try refreshing.</small>';
+        if (s) s.innerHTML = '⚠️ Failed to load app modules.<br><small style="color:#888">Check your internet connection (CDN: esm.sh) or try refreshing.</small>';
       }
     }, 12000);
   </script>

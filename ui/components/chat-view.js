@@ -1,5 +1,7 @@
 /* ─────────────────────────────────────────────────────────────
  *  Component: Chat View — ChatGPT-style message interface
+ *  with real-time WS push, optimistic rendering, agent status
+ *  tracking, and pending/retry message support.
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
 import { useState, useEffect, useRef, useCallback, useMemo } from "preact/hooks";
@@ -14,6 +16,15 @@ import {
   selectedSessionId,
   sessionsData,
 } from "./session-list.js";
+import {
+  pendingMessages,
+  typingIndicator,
+  agentStatus,
+  agentStatusText,
+  startAgentStatusTracking,
+  retryPendingMessage,
+  clearPendingMessages,
+} from "../modules/streaming.js";
 
 const html = htm.bind(h);
 
@@ -213,7 +224,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     await loadSessionMessages(sessionId).finally(() => setLoading(false));
   }, [sessionId]);
 
-  /* Load messages on mount and poll while active */
+  /* Load messages on mount; WS push via initSessionWsListener handles real-time */
   useEffect(() => {
     if (!sessionId) return;
     let active = true;
@@ -226,15 +237,27 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       setLoading(false);
     }
 
+    // Fallback: poll slowly as safety net (30s) - WS does the heavy lifting
     const interval = setInterval(() => {
       if (active && !paused) loadSessionMessages(sessionId);
-    }, 3000);
+    }, 30000);
 
     return () => {
       active = false;
       clearInterval(interval);
     };
   }, [sessionId, session?.status, paused]);
+
+  /* Start agent status tracking from WS events */
+  useEffect(() => {
+    const cleanup = startAgentStatusTracking();
+    return cleanup;
+  }, []);
+
+  /* Clear pending messages when switching sessions */
+  useEffect(() => {
+    if (sessionId) clearPendingMessages(sessionId);
+  }, [sessionId]);
 
   /* Auto-scroll to bottom */
   useEffect(() => {
@@ -527,13 +550,40 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             </div>
           `;
         })}
-        ${sending && html`
-          <div class="chat-bubble assistant">
+
+        ${/* Pending messages (optimistic rendering) */
+          (pendingMessages.value || [])
+            .filter((pm) => pm.sessionId === sessionId)
+            .map((pm) => html`
+              <div key=${pm.tempId} class="chat-bubble user chat-pending-msg ${pm.status}">
+                <div class="chat-bubble-content">
+                  <${MessageContent} text=${pm.content} />
+                </div>
+                <div class="chat-bubble-time chat-pending-status">
+                  ${pm.status === "sending"
+                    ? "Sending…"
+                    : pm.status === "uncertain"
+                      ? html`<span class="chat-pending-warn">⚠ Uncertain</span>
+                              <button class="btn btn-ghost btn-xs chat-retry-btn"
+                                onClick=${() => retryPendingMessage(pm.tempId)}>↻ Retry</button>`
+                      : pm.status === "failed"
+                        ? html`<span class="chat-pending-err">✘ Failed${pm.error ? `: ${pm.error}` : ""}</span>
+                                <button class="btn btn-ghost btn-xs chat-retry-btn"
+                                  onClick=${() => retryPendingMessage(pm.tempId)}>↻ Retry</button>`
+                        : ""}
+                </div>
+              </div>
+            `)}
+
+        ${/* Agent status typing indicator (replaces simple 'sending' dot animation) */
+          agentStatus.value.state !== "idle" && html`
+          <div class="chat-bubble assistant chat-agent-status">
             <div class="chat-typing">
               <span class="chat-typing-dot"></span>
               <span class="chat-typing-dot"></span>
               <span class="chat-typing-dot"></span>
             </div>
+            <div class="chat-agent-status-text">${agentStatusText.value}</div>
           </div>
         `}
       </div>
