@@ -13,9 +13,11 @@
 
 import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const isWin = process.platform === "win32";
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -40,6 +42,14 @@ function getVersion(cmd, flag = "--version") {
   } catch {
     return null;
   }
+}
+
+function parseBoolEnv(value, fallback) {
+  if (value === undefined || value === null) return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
 }
 
 // ── Dependency checks ────────────────────────────────────────────────────────
@@ -163,6 +173,34 @@ function main() {
   console.log(`  ✅ @anthropic-ai/claude-agent-sdk (bundled)`);
   console.log(`  ✅ @github/copilot-sdk (bundled)`);
   console.log(`  ✅ @anthropic-ai/claude-agent-sdk (bundled)`);
+
+  // Desktop dependencies (Electron) — optional but recommended for instant launch
+  const desktopDir = resolve(__dirname, "desktop");
+  const isDesktopInstallEnabled = parseBoolEnv(
+    process.env.BOSUN_DESKTOP_INSTALL,
+    true,
+  );
+  if (isDesktopInstallEnabled && existsSync(desktopDir)) {
+    const binName = isWin ? "electron-builder.cmd" : "electron-builder";
+    const binPath = resolve(desktopDir, "node_modules", ".bin", binName);
+    if (!existsSync(binPath)) {
+      console.log("");
+      console.log("  ▸ Installing desktop dependencies (Electron)...");
+      try {
+        execSync("npm install", {
+          cwd: desktopDir,
+          stdio: "inherit",
+          timeout: 0,
+        });
+        console.log("  ✅ Desktop dependencies installed");
+      } catch (err) {
+        console.log(
+          "  ⚠️  Desktop dependency install failed — run manually:",
+        );
+        console.log("     npm -C scripts/bosun/desktop install");
+      }
+    }
+  }
 
   // Summary
   console.log("");

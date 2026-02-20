@@ -3760,13 +3760,13 @@ function formatDurationMs(ms) {
 
 async function buildHomeStatusLine() {
   const data = await readStatusSnapshot();
-  if (!data) return "Status: unavailable";
+  if (!data) return "Status: ❌ unavailable";
   const counts = data.counts || {};
   const backlog = data.backlog_remaining ?? "?";
   const running = counts.running ?? 0;
   const review = counts.review ?? 0;
   const error = counts.error ?? 0;
-  return `Running ${running} • Review ${review} • Error ${error} • Backlog ${backlog}`;
+  return `▶️ Running ${running} • 👁️ Review ${review} • ⚠️ Error ${error} • 📥 Backlog ${backlog}`;
 }
 
 async function listWorktreeNames() {
@@ -3884,10 +3884,10 @@ Object.assign(UI_SCREENS, {
       let executorLine = "";
       if (executor) {
         const status = executor.getStatus();
-        const paused = executor.isPaused?.() ? "paused" : "running";
-        executorLine = `Executor: ${paused} • Slots ${status.activeSlots}/${status.maxParallel}`;
+        const paused = executor.isPaused?.() ? "⏸ paused" : "▶️ running";
+        executorLine = `⚙️ Executor: ${paused} • 🎛️ Slots ${status.activeSlots}/${status.maxParallel}`;
       } else {
-        executorLine = `Executor: ${_getExecutorMode?.() || "internal"}`;
+        executorLine = `⚙️ Executor: ${_getExecutorMode?.() || "internal"}`;
       }
       return [
         "Pick a section below to manage Bosun.",
@@ -3938,21 +3938,24 @@ Object.assign(UI_SCREENS, {
     },
   },
   overview: {
-    title: "Overview",
+    title: "Dashboard",
     parent: "home",
     body: () => "Live status, health, and presence dashboards.",
     keyboard: () =>
       buildKeyboard([
+        // Core Status
         [
           uiButton("📊 Status", uiCmdAction("/status")),
           uiButton("📋 Tasks", uiCmdAction("/tasks")),
           uiButton("🤖 Agents", uiCmdAction("/agents")),
         ],
+        // System Health
         [
           uiButton("🏥 Health", uiCmdAction("/health")),
           uiButton("⚠️ Anomalies", uiCmdAction("/anomalies")),
           uiButton("👁 Presence", uiCmdAction("/presence")),
         ],
+        // Deep Dives
         [
           uiButton("🎯 Coordinator", uiCmdAction("/coordinator")),
           uiButton("📝 Logs", uiCmdAction("/logs 50")),
@@ -4265,20 +4268,22 @@ Object.assign(UI_SCREENS, {
     body: () => "Monitor and steer running agents.",
     keyboard: () =>
       buildKeyboard([
+        // Monitoring
         [
-          uiButton("🤖 Agents", uiCmdAction("/agents")),
-          uiButton("📋 Tasks", uiCmdAction("/tasks")),
-          uiButton("📊 Status", uiCmdAction("/status")),
-        ],
-        [
+          uiButton("🤖 Active Agents", uiCmdAction("/agents")),
           uiButton("📂 Agent Logs", uiGoAction("agent_logs")),
           uiButton("🧵 Threads", uiGoAction("threads")),
-          uiButton("🧠 History", uiCmdAction("/history")),
         ],
+        // Control
         [
           uiButton("🧭 Steer", uiInputAction("steer")),
           uiButton("🛑 Stop", uiCmdAction("/stop")),
           uiButton("🛰 Background", uiGoAction("background")),
+        ],
+        // Context
+        [
+          uiButton("🧠 History", uiCmdAction("/history")),
+          uiButton("📊 Status", uiCmdAction("/status")),
         ],
         uiNavRow("home"),
       ]),
@@ -4436,18 +4441,21 @@ Object.assign(UI_SCREENS, {
     body: () => "Control model routing, SDKs, and workspace routing.",
     keyboard: () =>
       buildKeyboard([
+        // Core Routing
         [
           uiButton("🤖 Model", uiGoAction("model")),
           uiButton("📦 SDK", uiGoAction("sdk")),
-          uiButton("📋 Kanban", uiGoAction("kanban")),
-        ],
-        [
           uiButton("🌍 Region", uiGoAction("region")),
-          uiButton("♻️ Auto Backlog", uiGoAction("autobacklog")),
-          uiButton("📐 Requirements", uiGoAction("requirements")),
         ],
+        // Task Routing
         [
           uiButton("🎯 Route Task", uiGoAction("route_task")),
+          uiButton("📋 Kanban", uiGoAction("kanban")),
+          uiButton("♻️ Auto Backlog", uiGoAction("autobacklog")),
+        ],
+        // Config
+        [
+          uiButton("📐 Requirements", uiGoAction("requirements")),
           uiButton("🏥 Health", uiCmdAction("/health")),
         ],
         uiNavRow("home"),
@@ -4701,24 +4709,25 @@ Object.assign(UI_SCREENS, {
     body: () => "Manage workspaces, repos, worktrees, and shared environments.",
     keyboard: () =>
       buildKeyboard([
+        // Workspaces
         [
           uiButton("📂 My Workspaces", uiGoAction("managed_workspaces")),
           uiButton("➕ New Workspace", uiInputAction("workspace_create")),
-        ],
-        [
           uiButton("🎯 Switch Active", uiGoAction("workspace_switch")),
-          uiButton("🔄 Scan Disk", uiCmdAction("/workspace scan")),
         ],
+        // Worktrees
         [
           uiButton("🌳 Worktrees", uiCmdAction("/worktrees")),
           uiButton("📊 Stats", uiCmdAction("/worktrees stats")),
           uiButton("🧹 Prune", uiCmdAction("/worktrees prune")),
         ],
+        // Repos & Shared
         [
-          uiButton("🔓 Release WT", uiGoAction("worktrees_release")),
           uiButton("📁 Repos", uiCmdAction("/repos")),
-          uiButton("👁 Presence", uiCmdAction("/presence")),
+          uiButton("🔓 Release WT", uiGoAction("worktrees_release")),
+          uiButton("🔄 Scan Disk", uiCmdAction("/workspace scan")),
         ],
+        // Shared
         [
           uiButton("📋 Shared", uiCmdAction("/shared_workspaces")),
           uiButton("✅ Claim", uiGoAction("shared_claim")),
@@ -5075,15 +5084,20 @@ Object.assign(UI_SCREENS, {
     body: () => "Logs, branches, diffs, and utilities.",
     keyboard: () =>
       buildKeyboard([
+        // Logs
         [
-          uiButton("📝 Logs", uiGoAction("logs_tail")),
+          uiButton("📝 System Logs", uiGoAction("logs_tail")),
+          uiButton("📂 Agent Logs", uiGoAction("agent_logs")),
+        ],
+        // Git
+        [
           uiButton("🌿 Branches", uiCmdAction("/branches")),
           uiButton("💡 Diff", uiCmdAction("/diff")),
-        ],
-        [
           uiButton("🔎 Git", uiGoAction("git")),
+        ],
+        // Utils
+        [
           uiButton("🖥 Shell", uiGoAction("shell")),
-          uiButton("📂 Agent Logs", uiGoAction("agent_logs")),
         ],
         uiNavRow("home"),
       ]),
@@ -5164,14 +5178,17 @@ Object.assign(UI_SCREENS, {
     body: () => "Primary agent session controls.",
     keyboard: () =>
       buildKeyboard([
+        // Interaction
         [
-          uiButton("🧠 History", uiCmdAction("/history")),
           uiButton("💬 Ask", uiInputAction("ask")),
-        ],
-        [
-          uiButton("🧹 Clear", "confirm_clear"),
           uiButton("🧭 Steer", uiInputAction("steer")),
         ],
+        // Context
+        [
+          uiButton("🧠 History", uiCmdAction("/history")),
+          uiButton("🧹 Clear", "confirm_clear"),
+        ],
+        // Control
         [
           uiButton("🛰 Background", uiGoAction("background")),
           uiButton("🛑 Stop", uiCmdAction("/stop")),

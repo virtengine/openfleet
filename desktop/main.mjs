@@ -125,7 +125,7 @@ async function ensureDaemonRunning() {
     );
   }
 
-  const child = spawn(process.execPath, [cliPath, "--daemon"], {
+  const child = spawn(process.execPath, ["--run-as-node", cliPath, "--daemon"], {
     detached: true,
     stdio: "ignore",
     env: { ...process.env, BOSUN_DESKTOP: "1" },

@@ -3475,7 +3475,7 @@ async function main() {
     }
 
     // ── Step 8: Optional Channels ─────────────────────────
-    heading("Step 8 of 9 — Optional Channels (WhatsApp & Container)");
+    heading("Step 8 of 10 — Optional Channels (WhatsApp & Container)");
 
     console.log(
       chalk.dim(
@@ -3537,8 +3537,39 @@ async function main() {
       env.CONTAINER_ENABLED = "false";
     }
 
-    // ── Step 9: Startup Service ────────────────────────────
-    heading("Step 9 of 9 — Startup Service");
+    // ── Step 9: Desktop Shortcut ──────────────────────────
+    heading("Step 9 of 10 — Desktop Shortcut");
+
+    const {
+      getDesktopShortcutStatus,
+      getDesktopShortcutMethodName,
+    } = await import("./desktop-shortcut.mjs");
+    const currentDesktopShortcut = getDesktopShortcutStatus();
+    const desktopMethod = getDesktopShortcutMethodName();
+
+    if (desktopMethod === "unsupported") {
+      info("Desktop shortcut not supported on this OS.");
+      env._DESKTOP_SHORTCUT = "0";
+    } else if (currentDesktopShortcut.installed) {
+      info(`Desktop shortcut already installed (${currentDesktopShortcut.method}).`);
+      const reinstall = await prompt.confirm(
+        "Re-install desktop shortcut?",
+        false,
+      );
+      env._DESKTOP_SHORTCUT = reinstall ? "1" : "skip";
+    } else {
+      console.log(
+        chalk.dim(`  Add a desktop shortcut using ${desktopMethod}.`),
+      );
+      const enableDesktopShortcut = await prompt.confirm(
+        "Create desktop shortcut for Bosun Portal?",
+        true,
+      );
+      env._DESKTOP_SHORTCUT = enableDesktopShortcut ? "1" : "0";
+    }
+
+    // ── Step 10: Startup Service ───────────────────────────
+    heading("Step 10 of 10 — Startup Service");
 
     const { getStartupStatus, getStartupMethodName } =
       await import("./startup-service.mjs");
@@ -3764,6 +3795,18 @@ async function runNonInteractive({
   }
   // else: don't set — writeConfigFiles will skip silently
 
+  // Desktop shortcut: respect DESKTOP_SHORTCUT env in non-interactive mode
+  const desktopShortcutEnv =
+    process.env.DESKTOP_SHORTCUT ?? process.env.BOSUN_DESKTOP_SHORTCUT;
+  if (parseBooleanEnvValue(desktopShortcutEnv, false)) {
+    env._DESKTOP_SHORTCUT = "1";
+  } else if (
+    desktopShortcutEnv !== undefined &&
+    !parseBooleanEnvValue(desktopShortcutEnv, true)
+  ) {
+    env._DESKTOP_SHORTCUT = "0";
+  }
+
   if (
     (env.KANBAN_BACKEND || "").toLowerCase() !== "vk" &&
     !["vk", "hybrid"].includes((env.EXECUTOR_MODE || "").toLowerCase())
@@ -3893,6 +3936,25 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
     warn(
       "Dependency install failed — run manually: pnpm install (or) npm install",
     );
+  }
+
+  // ── Desktop shortcut ───────────────────────────────────
+  if (env._DESKTOP_SHORTCUT === "1") {
+    heading("Desktop Shortcut");
+    try {
+      const { installDesktopShortcut } = await import("./desktop-shortcut.mjs");
+      const result = installDesktopShortcut();
+      if (result.success) {
+        success(`Desktop shortcut installed (${result.method})`);
+        if (result.path) info(`Path: ${result.path}`);
+      } else {
+        warn(`Could not install desktop shortcut: ${result.error}`);
+      }
+    } catch (err) {
+      warn(`Desktop shortcut installation failed: ${err.message}`);
+    }
+  } else if (env._DESKTOP_SHORTCUT === "0") {
+    info("Desktop shortcut skipped — enable anytime: bosun --desktop-shortcut");
   }
 
   // ── Startup Service ────────────────────────────────────

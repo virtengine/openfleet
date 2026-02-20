@@ -70,6 +70,9 @@ function showHelp() {
     --help                      Show this help
     --version                   Show version
     --portal, --desktop         Launch the Bosun desktop portal (Electron)
+    --desktop-shortcut          Create a desktop shortcut for the portal
+    --desktop-shortcut-remove   Remove the desktop shortcut
+    --desktop-shortcut-status   Show desktop shortcut status
     --update                    Check for and install latest version
     --no-update-check           Skip automatic update check on startup
     --no-auto-update            Disable background auto-update polling
@@ -423,9 +426,11 @@ function startDaemon() {
     /* ok */
   }
 
+  const runAsNode = process.versions?.electron ? ["--run-as-node"] : [];
   const child = spawn(
     process.execPath,
     [
+      ...runAsNode,
       "--max-old-space-size=4096",
       fileURLToPath(new URL("./cli.mjs", import.meta.url)),
       ...process.argv.slice(2).filter((a) => a !== "--daemon" && a !== "-d"),
@@ -533,6 +538,47 @@ async function main() {
   // Handle --version
   if (args.includes("--version") || args.includes("-v")) {
     console.log(`bosun v${VERSION}`);
+    process.exit(0);
+  }
+
+  // Handle desktop shortcut controls
+  if (args.includes("--desktop-shortcut")) {
+    const { installDesktopShortcut, getDesktopShortcutMethodName } =
+      await import("./desktop-shortcut.mjs");
+    const result = installDesktopShortcut();
+    if (result.success) {
+      console.log(`  ✅ Desktop shortcut installed (${result.method})`);
+      if (result.path) console.log(`     Path: ${result.path}`);
+      if (result.name) console.log(`     Name: ${result.name}`);
+    } else {
+      const method = getDesktopShortcutMethodName();
+      console.error(
+        `  ❌ Failed to install desktop shortcut (${method}): ${result.error}`,
+      );
+    }
+    process.exit(result.success ? 0 : 1);
+  }
+  if (args.includes("--desktop-shortcut-remove")) {
+    const { removeDesktopShortcut } = await import("./desktop-shortcut.mjs");
+    const result = removeDesktopShortcut();
+    if (result.success) {
+      console.log(`  ✅ Desktop shortcut removed`);
+    } else {
+      console.error(
+        `  ❌ Failed to remove desktop shortcut: ${result.error}`,
+      );
+    }
+    process.exit(result.success ? 0 : 1);
+  }
+  if (args.includes("--desktop-shortcut-status")) {
+    const { getDesktopShortcutStatus } = await import("./desktop-shortcut.mjs");
+    const status = getDesktopShortcutStatus();
+    if (status.installed) {
+      console.log(`  Desktop shortcut: installed (${status.method})`);
+      if (status.path) console.log(`  Path: ${status.path}`);
+    } else {
+      console.log(`  Desktop shortcut: not installed`);
+    }
     process.exit(0);
   }
 

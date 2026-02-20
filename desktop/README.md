@@ -16,6 +16,15 @@ cd scripts/bosun
 node cli.mjs --desktop
 ```
 
+## Desktop shortcut
+```bash
+cd scripts/bosun
+node cli.mjs --desktop-shortcut
+```
+
+The shortcut launches the desktop portal and will auto-start the bosun daemon
+if it is not already running.
+
 ## Build installers
 ```bash
 cd scripts/bosun/desktop
