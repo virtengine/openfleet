@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "author": "VirtEngine Maintainers <hello@virtengine.com>",
+  "homepage": "https://bosun.virtengine.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/virtengine/bosun.git",
+    "directory": "/desktop"
+  },
+
   "main": "main.mjs",
   "description": "Electron wrapper for the Bosun desktop portal",
   "scripts": {

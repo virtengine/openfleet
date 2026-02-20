@@ -46,6 +46,7 @@ import {
 } from "./hook-profiles.mjs";
 import { detectLegacySetup, applyAllCompatibility } from "./compat.mjs";
 import { DEFAULT_MODEL_PROFILES } from "./task-complexity.mjs";
+import { pullWorkspaceRepos, listWorkspaces } from "./workspace-manager.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -727,6 +728,61 @@ function printExecutorModelReference() {
     ),
   );
   console.log();
+}
+
+function buildRepositoryChoices(configJson, repoRoot) {
+  const choices = [];
+  const seen = new Set();
+
+  const pushChoice = (input) => {
+    if (!input) return;
+    const name = String(input.name || "").trim();
+    const slug = String(input.slug || "").trim();
+    const workspace = String(input.workspace || input.workspaceId || "").trim();
+    if (!name && !slug) return;
+    const key = slug || name;
+    if (seen.has(`${workspace}:${key}`)) return;
+    seen.add(`${workspace}:${key}`);
+    const labelParts = [];
+    if (workspace) labelParts.push(`ws:${workspace}`);
+    labelParts.push(name || slug);
+    if (slug && name && slug !== name) labelParts.push(`(${slug})`);
+    const label = labelParts.join(" ");
+    choices.push({
+      label,
+      name,
+      slug,
+      workspace,
+      value: key,
+    });
+  };
+
+  if (Array.isArray(configJson?.workspaces)) {
+    for (const ws of configJson.workspaces) {
+      const wsId = String(ws?.id || "").trim();
+      const wsName = String(ws?.name || wsId || "").trim();
+      const wsLabel = wsName || wsId;
+      for (const repo of ws?.repos || []) {
+        pushChoice({
+          name: repo?.name,
+          slug: repo?.slug,
+          workspace: wsLabel,
+        });
+      }
+    }
+  }
+
+  if (Array.isArray(configJson?.repositories)) {
+    for (const repo of configJson.repositories) {
+      pushChoice(repo);
+    }
+  }
+
+  if (choices.length === 0 && repoRoot) {
+    pushChoice({ name: basename(repoRoot) });
+  }
+
+  return choices;
 }
 
 function defaultVariantForExecutor(executor) {
@@ -2113,6 +2169,7 @@ async function main() {
 
   const prompt = createPrompt();
   let aborted = false;
+  let cloneWorkspacesAfterSetup = false;
 
   try {
     // ── Step 2: Setup Mode + Project Identity ─────────────
@@ -2220,6 +2277,11 @@ async function main() {
       if (configJson.workspaces.length > 0) {
         configJson.activeWorkspace = configJson.workspaces[0].id;
       }
+
+      cloneWorkspacesAfterSetup = await prompt.confirm(
+        "Clone/pull workspace repos now (recommended)?",
+        true,
+      );
     } else {
       // Single-repo mode (classic) — still works as before
       const multiRepo = isAdvancedSetup
@@ -2725,6 +2787,52 @@ async function main() {
 
     // ── Step 7: Kanban + Execution ─────────────────────────
     headingStep(7, "Kanban & Execution", markSetupProgress);
+    const repoChoices = buildRepositoryChoices(configJson, repoRoot);
+    let selectedRepoChoice = repoChoices[0] || null;
+    if (repoChoices.length > 1) {
+      console.log(
+        chalk.dim(
+          "  Multiple repositories detected. Select which repo this bosun instance should manage tasks for.",
+        ),
+      );
+      const repoLabels = repoChoices.map((choice) => choice.label);
+      repoLabels.push("Decide later (skip)");
+      const defaultRepoIdx = (() => {
+        const slugDefault =
+          process.env.GITHUB_REPOSITORY || env.GITHUB_REPO || "";
+        if (slugDefault) {
+          const matchIdx = repoChoices.findIndex(
+            (choice) => choice.slug === slugDefault,
+          );
+          if (matchIdx >= 0) return matchIdx;
+        }
+        const primaryIdx = repoChoices.findIndex(
+          (choice) => choice.slug && choice.slug === configJson?.repositories?.find((repo) => repo.primary)?.slug,
+        );
+        return primaryIdx >= 0 ? primaryIdx : 0;
+      })();
+      const selectedIdx = await prompt.choose(
+        "Primary repo for task board",
+        repoLabels,
+        Math.min(defaultRepoIdx, repoChoices.length - 1),
+      );
+      if (selectedIdx >= 0 && selectedIdx < repoChoices.length) {
+        selectedRepoChoice = repoChoices[selectedIdx];
+        if (selectedRepoChoice?.value) {
+          configJson.defaultRepository = selectedRepoChoice.value;
+        }
+      } else {
+        selectedRepoChoice = null;
+      }
+      console.log();
+      info(
+        "If you need different task backends per repo, run separate bosun instances with different configs.",
+      );
+      console.log();
+    } else if (selectedRepoChoice?.value) {
+      configJson.defaultRepository = selectedRepoChoice.value;
+    }
+
     const backendDefault = String(
       process.env.KANBAN_BACKEND || configJson.kanban?.backend || "internal",
     )
@@ -2918,7 +3026,9 @@ async function main() {
 
     if (selectedKanbanBackend === "github") {
       const primaryRepoSlug =
-        configJson.repositories?.find((repo) => repo.primary && repo.slug)?.slug || "";
+        selectedRepoChoice?.slug ||
+        configJson.repositories?.find((repo) => repo.primary && repo.slug)?.slug ||
+        "";
       const repoSlugDefaults = [
         process.env.GITHUB_REPOSITORY,
         process.env.GITHUB_REPO,
@@ -2933,10 +3043,35 @@ async function main() {
       info(
         "Pick the repo that should receive tasks (issues/projects). If you have multiple orgs, use the owner for that repo.",
       );
-      const repoInput = await prompt.ask(
-        "GitHub repository for tasks (owner/repo or URL)",
-        repoSlugDefault,
-      );
+      let repoInput = repoSlugDefault;
+      if (repoChoices.length > 1) {
+        const repoLabels = repoChoices.map((choice) => choice.label);
+        repoLabels.push("Enter manually");
+        const repoIdx = await prompt.choose(
+          "Select GitHub repo for tasks",
+          repoLabels,
+          repoChoices.findIndex(
+            (choice) => choice.slug && choice.slug === repoSlugDefault,
+          ) >= 0
+            ? repoChoices.findIndex(
+                (choice) => choice.slug && choice.slug === repoSlugDefault,
+              )
+            : 0,
+        );
+        if (repoIdx >= 0 && repoIdx < repoChoices.length) {
+          repoInput = repoChoices[repoIdx]?.slug || repoChoices[repoIdx]?.name || repoSlugDefault;
+        } else {
+          repoInput = await prompt.ask(
+            "GitHub repository for tasks (owner/repo or URL)",
+            repoSlugDefault,
+          );
+        }
+      } else {
+        repoInput = await prompt.ask(
+          "GitHub repository for tasks (owner/repo or URL)",
+          repoSlugDefault,
+        );
+      }
       const parsedRepoSlug = parseRepoSlugFromUrl(repoInput || repoSlugDefault);
       if (parsedRepoSlug) {
         const [repoOwner, repoName] = parsedRepoSlug.split("/", 2);

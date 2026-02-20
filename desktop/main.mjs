@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, session } from "electron";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
@@ -17,6 +17,19 @@ let uiApi = null;
 let runtimeConfigLoaded = false;
 
 const DAEMON_PID_FILE = resolve(homedir(), ".cache", "bosun", "daemon.pid");
+
+// Local/private-network patterns — TLS cert bypass for the embedded UI server
+const LOCAL_HOSTNAME_RE = [
+  /^127\./,
+  /^192\.168\./,
+  /^10\./,
+  /^172\.(1[6-9]|2[0-9]|3[01])\./,
+  /^::1$/,
+  /^localhost$/i,
+];
+function isLocalHost(hostname) {
+  return LOCAL_HOSTNAME_RE.some((re) => re.test(hostname));
+}
 
 function parseBoolEnv(value, fallback) {
   if (value === undefined || value === null) return fallback;
@@ -239,6 +252,7 @@ async function buildUiUrl() {
 
 async function createMainWindow() {
   if (mainWindow) return;
+  const iconPath = resolveBosunRuntimePath("logo.png");
 
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -246,6 +260,7 @@ async function createMainWindow() {
     minWidth: 960,
     minHeight: 640,
     backgroundColor: "#0b0b0c",
+    ...(existsSync(iconPath) ? { icon: iconPath } : {}),
     show: false,
     webPreferences: {
       contextIsolation: true,
@@ -274,8 +289,29 @@ async function bootstrap() {
       app.commandLine.appendSwitch("disable-gpu-sandbox");
     }
     app.setAppUserModelId("com.virtengine.bosun");
+    const iconPath = resolveBosunRuntimePath("logo.png");
+    if (existsSync(iconPath)) {
+      try {
+        app.setIcon(iconPath);
+      } catch {
+        /* best effort */
+      }
+    }
     process.chdir(resolveBosunRoot());
     await loadRuntimeConfig();
+
+    // Bypass TLS verification for the local embedded UI server.
+    // setCertificateVerifyProc works at the OpenSSL level — it fires before
+    // the higher-level `certificate-error` event and stops the repeated
+    // "handshake failed" logs from Chromium's ssl_client_socket_impl.
+    session.defaultSession.setCertificateVerifyProc((request, callback) => {
+      if (isLocalHost(request.hostname)) {
+        callback(0); // 0 = verified OK
+        return;
+      }
+      callback(-3); // -3 = use Chromium default chain verification
+    });
+
     await ensureDaemonRunning();
     await createMainWindow();
     await maybeAutoUpdate();
@@ -335,10 +371,15 @@ app.on("before-quit", () => {
 app.on(
   "certificate-error",
   (event, _webContents, url, _error, _certificate, callback) => {
-    if (uiOrigin && url.startsWith(uiOrigin)) {
-      event.preventDefault();
-      callback(true);
-      return;
+    try {
+      const hostname = new URL(url).hostname;
+      if ((uiOrigin && url.startsWith(uiOrigin)) || isLocalHost(hostname)) {
+        event.preventDefault();
+        callback(true);
+        return;
+      }
+    } catch {
+      // malformed URL — fall through
     }
     callback(false);
   },

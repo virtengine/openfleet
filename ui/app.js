@@ -82,6 +82,7 @@ import { AgentsTab } from "./tabs/agents.js";
 import { InfraTab } from "./tabs/infra.js";
 import { ControlTab } from "./tabs/control.js";
 import { LogsTab } from "./tabs/logs.js";
+import { TelemetryTab } from "./tabs/telemetry.js";
 import { SettingsTab } from "./tabs/settings.js";
 
 /* ── Placeholder signals for connection quality (may be provided by api.js) ── */
@@ -203,6 +204,7 @@ const TAB_COMPONENTS = {
   infra: InfraTab,
   control: ControlTab,
   logs: LogsTab,
+  telemetry: TelemetryTab,
   settings: SettingsTab,
 };
 

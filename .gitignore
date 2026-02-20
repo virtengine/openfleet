@@ -16,6 +16,8 @@ vibe-kanban
 vibe-kanban.cmd
 vibe-kanban.ps1
 
+*/dist/*
+
 # npm artifacts
 node_modules/
 *.tgz

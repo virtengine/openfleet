@@ -669,6 +669,14 @@
         return { data: STATE.status };
       if (route === '/api/executor')
         return { data: { ...STATE.status, maxParallel: STATE.maxParallel, paused: STATE.paused, executors: STATE.executors } };
+      if (route === '/api/telemetry/summary')
+        return { data: { status: 'ok', updatedAt: Date.now(), totals: { tasks: STATE.tasks.length, executors: STATE.executors.length } } };
+      if (route === '/api/telemetry/errors')
+        return { data: [] };
+      if (route === '/api/telemetry/executors')
+        return { data: STATE.executors.map((e) => ({ ...e, status: e.enabled ? 'active' : 'disabled' })) };
+      if (route === '/api/telemetry/alerts')
+        return { data: [] };
       if (route === '/api/executor/pause') {
         STATE.paused = true; addLog('info', 'executor', 'Executor paused');
         return { ok: true, paused: true };

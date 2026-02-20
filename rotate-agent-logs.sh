@@ -15,11 +15,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOG_DIR="$REPO_ROOT/.cache/agent-work-logs"
 ARCHIVE_DIR="$LOG_DIR/archive"
 
-# Retention periods
-STREAM_RETENTION_DAYS=30
-ERROR_RETENTION_DAYS=90
-SESSION_RETENTION_COUNT=100
-ARCHIVE_RETENTION_DAYS=180
+# Retention periods (override via env)
+STREAM_RETENTION_DAYS="${AGENT_WORK_STREAM_RETENTION_DAYS:-30}"
+ERROR_RETENTION_DAYS="${AGENT_WORK_ERROR_RETENTION_DAYS:-90}"
+SESSION_RETENTION_COUNT="${AGENT_WORK_SESSION_RETENTION_COUNT:-100}"
+ARCHIVE_RETENTION_DAYS="${AGENT_WORK_ARCHIVE_RETENTION_DAYS:-180}"
+METRICS_ROTATION_ENABLED="${AGENT_WORK_METRICS_ROTATION_ENABLED:-true}"
 
 # ── Functions ───────────────────────────────────────────────────────────────
 
@@ -111,10 +112,10 @@ if [ -f "$LOG_DIR/agent-alerts.jsonl" ]; then
   rotate_file "$LOG_DIR/agent-alerts.jsonl" "$ALERTS_ARCHIVE" "$STREAM_RETENTION_DAYS"
 fi
 
-# Metrics log is kept indefinitely (compressed monthly)
+# Metrics log is kept indefinitely (compressed monthly unless disabled)
 if [ -f "$LOG_DIR/agent-metrics.jsonl" ]; then
   # Only rotate on first day of month
-  if [ "$(date +%d)" = "01" ]; then
+  if [ "$METRICS_ROTATION_ENABLED" != "false" ] && [ "$(date +%d)" = "01" ]; then
     METRICS_ARCHIVE="agent-metrics-$(date -d 'last month' +%Y%m).jsonl.gz"
     rotate_file "$LOG_DIR/agent-metrics.jsonl" "$METRICS_ARCHIVE" ""
   fi

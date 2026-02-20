@@ -536,6 +536,11 @@ const agentWorkSessionStarts = new Map();
 const attemptTelemetry = new Map();
 const anomalyAbortTargets = new Map();
 const internalAnomalyEnabled = process.env.BOSUN_INTERNAL_ANOMALY !== "false";
+const TELEMETRY_SAMPLE_RATE = (() => {
+  const raw = Number(process.env.BOSUN_TELEMETRY_SAMPLE_RATE || "1");
+  if (!Number.isFinite(raw)) return 1;
+  return Math.min(1, Math.max(0, raw));
+})();
 const anomalyDetector = internalAnomalyEnabled
   ? createAnomalyDetector({
       onAnomaly: (anomaly) => {
@@ -581,6 +586,14 @@ function ensureAgentWorkDirs() {
 }
 
 function writeAgentWorkEvent(entry) {
+  const eventType = String(entry?.event_type || "");
+  const shouldSample =
+    TELEMETRY_SAMPLE_RATE < 1 &&
+    ["agent_output", "tool_call", "tool_result", "usage"].includes(eventType);
+  if (shouldSample && Math.random() > TELEMETRY_SAMPLE_RATE) {
+    return;
+  }
+
   ensureAgentWorkDirs();
   const line = JSON.stringify(entry);
   appendFileSync(AGENT_WORK_STREAM, `${line}\n`, "utf8");
@@ -3897,9 +3910,6 @@ class TaskExecutor {
         taskMeta,
         gitContext,
         metrics: {
-          tool_calls: Array.isArray(validatedResult?.items)
-            ? validatedResult.items.length
-            : undefined,
           success: !!validatedResult?.success,
           retry_count: Math.max(0, (validatedResult?.attempts || 1) - 1),
           attempts: validatedResult?.attempts || 1,

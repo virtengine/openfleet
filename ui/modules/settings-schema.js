@@ -113,6 +113,14 @@ export const SETTINGS_SCHEMA = [
   { key: "TASK_PLANNER_DEDUP_HOURS",       label: "Planner Dedup Window",       category: "kanban", type: "number", defaultVal: 6, min: 1, max: 72, unit: "hours", description: "Hours to look back for duplicate task detection.", advanced: true },
   { key: "BOSUN_PROMPT_PLANNER",  label: "Planner Prompt Path",         category: "advanced", type: "string", description: "Override the task planner prompt file path.", advanced: true },
 
+  // ── Logging / Telemetry ──────────────────────────────────────
+  { key: "BOSUN_TELEMETRY_SAMPLE_RATE",    label: "Telemetry Sample Rate",      category: "logging", type: "number", defaultVal: 1, min: 0, max: 1, description: "Sampling rate for high-volume telemetry events (agent_output/tool events). 1 = full, 0.1 = 10% sample.", advanced: true },
+  { key: "AGENT_WORK_STREAM_RETENTION_DAYS", label: "Stream Retention",         category: "logging", type: "number", defaultVal: 30, min: 1, max: 365, unit: "days", description: "How long to keep agent-work stream logs before rotation.", advanced: true },
+  { key: "AGENT_WORK_ERROR_RETENTION_DAYS",  label: "Error Retention",          category: "logging", type: "number", defaultVal: 90, min: 1, max: 365, unit: "days", description: "How long to keep error logs before rotation.", advanced: true },
+  { key: "AGENT_WORK_SESSION_RETENTION_COUNT", label: "Session Retention Count", category: "logging", type: "number", defaultVal: 100, min: 10, max: 10000, description: "Number of session log files to keep.", advanced: true },
+  { key: "AGENT_WORK_ARCHIVE_RETENTION_DAYS", label: "Archive Retention",       category: "logging", type: "number", defaultVal: 180, min: 30, max: 3650, unit: "days", description: "Retention window for compressed log archives.", advanced: true },
+  { key: "AGENT_WORK_METRICS_ROTATION_ENABLED", label: "Rotate Metrics Log",    category: "logging", type: "boolean", defaultVal: true, description: "Rotate metrics log monthly to keep file size bounded.", advanced: true },
+
   // ── GitHub / Git ─────────────────────────────────────────
   { key: "GITHUB_TOKEN",                   label: "GitHub Token",               category: "github", type: "secret", sensitive: true, description: "Personal access token or fine-grained token for GitHub API. Required for GitHub kanban backend." },
   { key: "GITHUB_REPOSITORY",              label: "Repository",                 category: "github", type: "string", description: "GitHub repository in owner/repo format. Auto-detected from git remote if not set.", validate: "^[\\w.-]+/[\\w.-]+$" },
