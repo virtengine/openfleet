@@ -3899,21 +3899,25 @@ Object.assign(UI_SCREENS, {
     keyboard: () => {
       syncUiUrlsFromServer();
       const rows = [
+        // Core Operations
         [
-          uiButton("📊 Overview", uiGoAction("overview")),
+          uiButton("📊 Dashboard", uiGoAction("overview")),
           uiButton("🧭 Tasks", uiGoAction("tasks")),
           uiButton("🤖 Agents", uiGoAction("agents")),
         ],
+        // System & Config
         [
-          uiButton("⚙️ Executor", uiGoAction("executor")),
           uiButton("🌳 Workspaces", uiGoAction("workspaces")),
+          uiButton("⚙️ Executor", uiGoAction("executor")),
           uiButton("🛰 Routing", uiGoAction("routing")),
         ],
+        // Monitoring & Tools
         [
           uiButton("📁 Logs & Git", uiGoAction("logs")),
           uiButton("🔌 Integrations", uiGoAction("integrations")),
           uiButton("🧠 Session", uiGoAction("session")),
         ],
+        // Quick Actions
         [
           uiButton("💬 Ask Agent", uiInputAction("ask")),
           uiButton("📖 All Commands", uiCmdAction("/helpfull")),
@@ -3960,27 +3964,26 @@ Object.assign(UI_SCREENS, {
     title: "Task Operations",
     parent: "home",
     body: () =>
-      "Pause/resume, plan, retry, cleanup, and guided manual starts.",
+      "Manage task execution, planning, and cleanup.",
     keyboard: () =>
       buildKeyboard([
+        // Execution Controls
         [
           { text: "⏸ Pause", callback_data: "cb:confirm_pause" },
           { text: "▶️ Resume", callback_data: "cb:confirm_resume" },
           { text: "🔄 Restart", callback_data: "cb:confirm_restart" },
         ],
+        // Viewing & Starting
         [
-          uiButton("📋 Tasks", uiCmdAction("/tasks")),
-          uiButton("🧹 Cleanup", uiCmdAction("/cleanup")),
-          uiButton("📊 Status", uiCmdAction("/status")),
+          uiButton("📋 Active Tasks", uiCmdAction("/tasks")),
+          uiButton("🗂 Task Lists", uiGoAction("task_lists")),
+          uiButton("▶️ Start Task", uiInputAction("starttask")),
         ],
+        // Management
         [
           uiButton("🗺️ Planner", uiGoAction("plan")),
           uiButton("🔁 Retry", uiGoAction("retry")),
-          uiButton("⚙️ Executor", uiGoAction("executor")),
-        ],
-        [
-          uiButton("🗂 Task Lists", uiGoAction("task_lists")),
-          uiButton("▶️ Start Task (guided)", uiInputAction("starttask")),
+          uiButton("🧹 Cleanup", uiCmdAction("/cleanup")),
         ],
         uiNavRow("home"),
       ]),
@@ -4216,15 +4219,17 @@ Object.assign(UI_SCREENS, {
     body: () => "Executor status, slots, and tuning.",
     keyboard: () =>
       buildKeyboard([
+        // Status
         [
-          uiButton("Status", uiCmdAction("/executor")),
-          uiButton("Slots", uiCmdAction("/executor slots")),
-          uiButton("Mode", uiCmdAction("/executor mode")),
+          uiButton("📊 Status", uiCmdAction("/executor")),
+          uiButton("🎛️ Slots", uiCmdAction("/executor slots")),
+          uiButton("⚙️ Mode", uiCmdAction("/executor mode")),
         ],
+        // Controls
         [
-          uiButton("Max Parallel", uiGoAction("maxparallel")),
-          uiButton("Pause", uiCmdAction("/pausetasks")),
-          uiButton("Resume", uiCmdAction("/resumetasks")),
+          uiButton("⏸ Pause", uiCmdAction("/pausetasks")),
+          uiButton("▶️ Resume", uiCmdAction("/resumetasks")),
+          uiButton("🔢 Max Parallel", uiGoAction("maxparallel")),
         ],
         uiNavRow("home"),
       ]),

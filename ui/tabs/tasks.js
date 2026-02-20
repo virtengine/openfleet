@@ -1581,6 +1581,13 @@ export function TasksTab() {
               Base: <code>${getTaskBaseBranch(task)}</code>
             </div>
           `}
+          ${(task.workspace || task.repository) &&
+          html`
+            <div class="meta-text" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
+              ${task.workspace && html`<span class="pill" style="font-size:11px">📂 ${task.workspace}</span>`}
+              ${task.repository && html`<span class="pill" style="font-size:11px">📁 ${task.repository}</span>`}
+            </div>
+          `}
           ${getTaskTags(task).length > 0 &&
           html`
             <div class="tag-row">
