@@ -24,7 +24,11 @@ function getLocalLanIp() {
   return "localhost";
 }
 import { WebSocketServer } from "ws";
-import { getKanbanAdapter } from "./kanban-adapter.mjs";
+import {
+  getKanbanAdapter,
+  markTaskIgnored,
+  unmarkTaskIgnored,
+} from "./kanban-adapter.mjs";
 import { getActiveThreads } from "./agent-pool.mjs";
 import {
   listActiveWorktrees,
@@ -41,6 +45,11 @@ import {
   releaseSharedWorkspace,
   renewSharedWorkspaceLease,
 } from "./shared-workspace-registry.mjs";
+import {
+  getAllSharedStates,
+  clearIgnoreFlag,
+  setIgnoreFlag,
+} from "./shared-state-manager.mjs";
 import {
   initPresence,
   listActiveInstances,
@@ -60,6 +69,8 @@ import {
   addRepoToWorkspace,
   removeRepoFromWorkspace,
   pullWorkspaceRepos,
+  initializeWorkspaces,
+  detectWorkspaces,
 } from "./workspace-manager.mjs";
 import {
   getSessionTracker,
@@ -211,6 +222,28 @@ function coerceSettingValue(def, value, propSchema) {
     if (["0", "false", "no", "off"].includes(normalized)) return false;
   }
   return value;
+}
+
+async function applySharedStateToTasks(tasks) {
+  if (!Array.isArray(tasks) || tasks.length === 0) return tasks;
+  const states = await getAllSharedStates(repoRoot);
+  if (!states || Object.keys(states).length === 0) return tasks;
+  return tasks.map((task) => {
+    if (!task?.id) return task;
+    const state = states[task.id];
+    if (!state?.ignoreReason) return task;
+    const meta = { ...(task.meta || {}) };
+    const codex = { ...(meta.codex || {}) };
+    codex.isIgnored = true;
+    codex.ignoreReason = state.ignoreReason;
+    meta.codex = codex;
+    return {
+      ...task,
+      meta,
+      manual: true,
+      ignoreReason: state.ignoreReason,
+    };
+  });
 }
 
 function getSchemaProperty(schema, pathParts) {
@@ -442,6 +475,26 @@ let wsHeartbeatTimer = null;
 /** Map<string, { sockets: Set<WebSocket>, offset: number, pollTimer }> keyed by filePath */
 const logStreamers = new Map();
 let uiDeps = {};
+
+/**
+ * Resolve the bosun config directory. Falls back through:
+ *   1. uiDeps.configDir (injected at server start)
+ *   2. BOSUN_DIR env var
+ *   3. ~/bosun (standard default)
+ * Ensures the directory exists.
+ */
+function resolveUiConfigDir() {
+  const dir = uiDeps.configDir
+    || process.env.BOSUN_DIR
+    || resolve(process.env.HOME || process.env.USERPROFILE || "", "bosun");
+  if (dir) {
+    try { mkdirSync(dir, { recursive: true }); } catch { /* ok */ }
+    // Cache it so subsequent calls don't re-resolve
+    if (!uiDeps.configDir) uiDeps.configDir = dir;
+  }
+  return dir;
+}
+
 const projectSyncWebhookMetrics = {
   received: 0,
   processed: 0,
@@ -2211,9 +2264,10 @@ async function handleApi(req, res, url) {
       const total = filtered.length;
       const start = page * pageSize;
       const slice = filtered.slice(start, start + pageSize);
+      const enriched = await applySharedStateToTasks(slice);
       jsonResponse(res, 200, {
         ok: true,
-        data: slice,
+        data: enriched,
         page,
         pageSize,
         total,
@@ -2235,7 +2289,8 @@ async function handleApi(req, res, url) {
       }
       const adapter = getKanbanAdapter();
       const task = await adapter.getTask(taskId);
-      jsonResponse(res, 200, { ok: true, data: task || null });
+      const enriched = await applySharedStateToTasks(task ? [task] : []);
+      jsonResponse(res, 200, { ok: true, data: enriched[0] || null });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -2456,6 +2511,73 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/tasks/ignore") {
+    try {
+      const body = await readJsonBody(req);
+      const taskId = body?.taskId || body?.id;
+      const reason = String(body?.reason || "manual").trim() || "manual";
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+      const shared = await setIgnoreFlag(String(taskId), reason, repoRoot);
+      let adapterMarked = false;
+      try {
+        adapterMarked = await markTaskIgnored(String(taskId), reason);
+      } catch (err) {
+        console.warn(`[ui] markTaskIgnored failed: ${err.message}`);
+      }
+      let aborted = null;
+      const executor = uiDeps.getInternalExecutor?.();
+      if (executor && typeof executor.abortTask === "function") {
+        aborted = executor.abortTask(String(taskId), "manual_takeover");
+      }
+      jsonResponse(res, 200, {
+        ok: shared.success,
+        shared,
+        adapterMarked,
+        aborted,
+      });
+      broadcastUiEvent(["tasks", "overview", "executor", "agents"], "invalidate", {
+        reason: "task-ignored",
+        taskId,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/unignore") {
+    try {
+      const body = await readJsonBody(req);
+      const taskId = body?.taskId || body?.id;
+      if (!taskId) {
+        jsonResponse(res, 400, { ok: false, error: "taskId required" });
+        return;
+      }
+      const shared = await clearIgnoreFlag(String(taskId), repoRoot);
+      let adapterUnmarked = false;
+      try {
+        adapterUnmarked = await unmarkTaskIgnored(String(taskId));
+      } catch (err) {
+        console.warn(`[ui] unmarkTaskIgnored failed: ${err.message}`);
+      }
+      jsonResponse(res, 200, {
+        ok: shared.success,
+        shared,
+        adapterUnmarked,
+      });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", {
+        reason: "task-unignored",
+        taskId,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/logs") {
     const lines = Math.min(
       1000,
@@ -2483,12 +2605,10 @@ async function handleApi(req, res, url) {
   // ── Workspace Management API ──────────────────────────────────────────────
   if (path === "/api/workspaces") {
     try {
-      const configDir = uiDeps.configDir || process.env.BOSUN_DIR || "";
-      if (!configDir) {
-        jsonResponse(res, 400, { ok: false, error: "Config directory not set" });
-        return;
-      }
-      const workspaces = listManagedWorkspaces(configDir);
+      const configDir = resolveUiConfigDir();
+      // Auto-initialize workspaces from disk if config has none yet
+      const { workspaces: initialized } = initializeWorkspaces(configDir);
+      const workspaces = initialized.length > 0 ? initialized : listManagedWorkspaces(configDir);
       const active = getActiveManagedWorkspace(configDir);
       jsonResponse(res, 200, { ok: true, data: workspaces, activeId: active?.id || null });
     } catch (err) {
@@ -2497,9 +2617,46 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Re-scan the $BOSUN_DIR/workspaces/ directory for newly cloned repos / workspaces
+  if (path === "/api/workspaces/scan") {
+    try {
+      const configDir = resolveUiConfigDir();
+      const detected = detectWorkspaces(configDir);
+      // Merge any newly-detected workspaces into the persisted config
+      const existing = listManagedWorkspaces(configDir);
+      const existingIds = new Set(existing.map((w) => w.id));
+      let added = 0;
+      for (const ws of detected) {
+        if (!existingIds.has(ws.id)) {
+          // persist each newly detected workspace via createWorkspace + addRepo
+          const created = createManagedWorkspace(configDir, ws.name);
+          if (created && ws.repos) {
+            for (const repo of ws.repos) {
+              addRepoToWorkspace(configDir, created.id, repo);
+            }
+          }
+          added++;
+        }
+      }
+      const workspaces = listManagedWorkspaces(configDir);
+      jsonResponse(res, 200, {
+        ok: true,
+        data: workspaces,
+        scanned: detected.length,
+        added,
+      });
+      if (added > 0) {
+        broadcastUiEvent(["workspaces"], "invalidate", { reason: "workspace-scan" });
+      }
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/workspaces/active") {
     try {
-      const configDir = uiDeps.configDir || process.env.BOSUN_DIR || "";
+      const configDir = resolveUiConfigDir();
       if (req.method === "POST") {
         const body = await readJsonBody(req);
         const wsId = body?.workspaceId || body?.id;
@@ -2525,7 +2682,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workspaces/create") {
     try {
-      const configDir = uiDeps.configDir || process.env.BOSUN_DIR || "";
+      const configDir = resolveUiConfigDir();
       const body = await readJsonBody(req);
       const name = body?.name;
       if (!name || !String(name).trim()) {
@@ -2543,7 +2700,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workspaces/delete") {
     try {
-      const configDir = uiDeps.configDir || process.env.BOSUN_DIR || "";
+      const configDir = resolveUiConfigDir();
       const body = await readJsonBody(req);
       const wsId = body?.workspaceId || body?.id;
       if (!wsId) {
@@ -2561,7 +2718,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workspaces/repos/add") {
     try {
-      const configDir = uiDeps.configDir || process.env.BOSUN_DIR || "";
+      const configDir = resolveUiConfigDir();
       const body = await readJsonBody(req);
       const wsId = body?.workspaceId;
       const repoUrl = body?.url;
@@ -2585,7 +2742,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workspaces/repos/remove") {
     try {
-      const configDir = uiDeps.configDir || process.env.BOSUN_DIR || "";
+      const configDir = resolveUiConfigDir();
       const body = await readJsonBody(req);
       const wsId = body?.workspaceId;
       const repoName = body?.repoName || body?.name;
@@ -2606,7 +2763,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/workspaces/pull") {
     try {
-      const configDir = uiDeps.configDir || process.env.BOSUN_DIR || "";
+      const configDir = resolveUiConfigDir();
       const body = await readJsonBody(req);
       const wsId = body?.workspaceId || body?.id;
       if (!wsId) {

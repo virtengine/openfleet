@@ -22,8 +22,9 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
 import { resolveRepoRoot } from "./repo-root.mjs";
 import {
   execPrimaryPrompt,
@@ -9424,6 +9425,7 @@ export async function startTelegramBot() {
           getExecutorMode: _getExecutorMode,
           handleUiCommand: handleUiCommand,
           getSyncEngine: _getSyncEngine,
+          configDir: process.env.BOSUN_DIR || join(homedir(), "bosun"),
           onProjectSyncAlert: async (alert) => {
             if (!_sendTelegramMessage) return;
             const text = String(alert?.message || "Project sync alert");
