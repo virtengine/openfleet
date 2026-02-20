@@ -5,6 +5,10 @@
 (function () {
   'use strict';
 
+  const track = typeof window !== 'undefined' && typeof window.bosunTrack === 'function'
+    ? window.bosunTrack
+    : function () {};
+
   /* ── Scroll Progress Bar ─────────────────────────────────────────────── */
   const progressBar = document.getElementById('scroll-progress');
   if (progressBar) {
@@ -61,6 +65,17 @@
       });
     });
   }
+
+  /* ── Navigation click tracking ─────────────────────────────────────── */
+  const navTrackLinks = document.querySelectorAll('.nav__links a');
+  navTrackLinks.forEach((link) => {
+    link.addEventListener('click', () => {
+      track('nav_click', {
+        label: link.textContent.trim(),
+        href: link.getAttribute('href') || '',
+      });
+    });
+  });
 
   /* ── Hero Typing Effect ──────────────────────────────────────────────── */
   const typedEl = document.getElementById('hero-typed');
@@ -127,6 +142,33 @@
           tip.classList.add('install-cmd__tooltip--visible');
           setTimeout(() => tip.classList.remove('install-cmd__tooltip--visible'), 1500);
         }
+        track('install_copy', { command: text });
+      });
+    });
+  });
+
+  /* ── CTA click tracking ────────────────────────────────────────────── */
+  function resolveCtaLocation(link) {
+    if (link.closest('.cta-section')) return 'cta_section';
+    if (link.closest('.hero__install')) return 'hero_install';
+    if (link.closest('.nav')) return 'nav';
+    if (link.closest('.footer')) return 'footer';
+    return 'site';
+  }
+
+  const ctaSelectors = [
+    '.hero__install a',
+    '.cta-section .btn',
+    '.footer__links a',
+    '.footer__left a',
+    '.nav__cta',
+  ];
+  document.querySelectorAll(ctaSelectors.join(', ')).forEach((link) => {
+    link.addEventListener('click', () => {
+      track('cta_click', {
+        label: link.textContent.trim(),
+        href: link.getAttribute('href') || '',
+        location: resolveCtaLocation(link),
       });
     });
   });
@@ -198,6 +240,7 @@
   const miniappPhone = document.querySelector('.miniapp-demo-window__phone');
   const miniappOverlay = document.querySelector('.miniapp-demo-window__overlay');
   if (miniappExpandBtn && miniappPhone) {
+    let lastFullscreenState = null;
     const setFullscreen = (enabled) => {
       miniappPhone.classList.toggle('is-fullscreen', enabled);
       miniappExpandBtn.classList.toggle('is-fullscreen', enabled);
@@ -205,6 +248,10 @@
       miniappExpandBtn.setAttribute('aria-label', enabled ? 'Exit fullscreen' : 'Enter fullscreen');
       if (miniappOverlay) miniappOverlay.classList.toggle('is-visible', enabled);
       document.body.classList.toggle('is-miniapp-fullscreen', enabled);
+      if (enabled !== lastFullscreenState) {
+        track('miniapp_fullscreen', { enabled: enabled ? 'true' : 'false' });
+        lastFullscreenState = enabled;
+      }
     };
 
     const syncFullscreenState = () => {
@@ -270,6 +317,8 @@
       demoPanels.forEach(function (p) { p.classList.remove('demo-panel--active'); });
       var panel = document.getElementById('demo-panel-' + target);
       if (panel) panel.classList.add('demo-panel--active');
+
+      track('demo_tab', { tab: target });
 
       // Lazy-init Telegram chat on first reveal
       if (target === 'telegram' && !tgChatInitialized && typeof window.initTelegramChatDemo === 'function') {
@@ -388,6 +437,7 @@
   var searchInput = document.querySelector('.docs-search__input');
   if (searchInput) {
     var sidebarLinks = document.querySelectorAll('.sidebar-nav a');
+    var searchTimer = null;
     searchInput.addEventListener('input', function () {
       var query = searchInput.value.toLowerCase().trim();
       sidebarLinks.forEach(function (link) {
@@ -399,6 +449,13 @@
           item.style.display = 'none';
         }
       });
+
+      if (searchTimer) clearTimeout(searchTimer);
+      searchTimer = setTimeout(function () {
+        if (query) {
+          track('docs_search', { length: query.length });
+        }
+      }, 600);
     });
 
     // Keyboard shortcut: Ctrl+K or / to focus search
