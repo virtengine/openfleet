@@ -10,7 +10,7 @@ Bosun is a production-grade supervisor for AI coding agents. It routes tasks acr
 </p>
 
 <p align="center">
-  <img src="site/social-banner.png" alt="bosun — AI agent supervisor" width="100%" />
+  <img src="site/social-card.png" alt="bosun — AI agent supervisor" width="100%" />
 </p>
 
 <p align="center">
