@@ -530,21 +530,23 @@ export function TaskDetailModal({ task, onClose, onStart }) {
 
   return html`
     <${Modal} title=${task?.title || "Task Detail"} onClose=${onClose} contentClassName="modal-content-wide">
-      <div class="meta-text mb-sm" style="user-select:all">ID: ${task?.id}</div>
-      <div class="flex-row gap-sm mb-md">
-        <${Badge} status=${task?.status} text=${task?.status} />
-        ${task?.priority &&
-        html`<${Badge} status=${task.priority} text=${task.priority} />`}
-        ${manualOverride && html`<${Badge} status="warning" text="manual" />`}
-      </div>
-      ${canDispatch &&
-      html`
-        <div class="btn-row mb-sm">
-          <button class="btn btn-primary btn-sm" onClick=${handleStart}>
-            ▶ Dispatch Task
-          </button>
+      <div class="task-modal-summary">
+        <div class="task-modal-id" style="user-select:all">ID: ${task?.id}</div>
+        <div class="task-modal-badges">
+          <${Badge} status=${task?.status} text=${task?.status} />
+          ${task?.priority &&
+          html`<${Badge} status=${task.priority} text=${task.priority} />`}
+          ${manualOverride && html`<${Badge} status="warning" text="manual" />`}
         </div>
-      `}
+        ${canDispatch &&
+        html`
+          <div class="task-modal-actions">
+            <button class="btn btn-primary btn-sm" onClick=${handleStart}>
+              ▶ Dispatch Task
+            </button>
+          </div>
+        `}
+      </div>
 
       <div class="flex-col gap-md modal-form-grid">
         <input
@@ -1628,6 +1630,8 @@ export function TasksTab() {
           class="task-card ${batchMode && selectedIds.has(task.id)
             ? "task-card-selected"
             : ""} task-card-enter"
+          data-status=${task.status || ""}
+          data-manual=${isManual ? "true" : "false"}
           onClick=${() =>
             batchMode ? toggleSelect(task.id) : openDetail(task.id)}
         >
@@ -1699,7 +1703,7 @@ export function TasksTab() {
           `}
           ${!batchMode &&
           html`
-            <div class="btn-row mt-sm" onClick=${(e) => e.stopPropagation()}>
+            <div class="btn-row mt-sm task-card-actions" onClick=${(e) => e.stopPropagation()}>
               ${task.status === "todo" &&
               html`
                 <button

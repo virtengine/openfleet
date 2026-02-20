@@ -250,6 +250,75 @@
   overflow: hidden;
 }
 
+.session-rail .session-list {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.session-rail .session-list-header {
+  padding: 8px 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.session-rail .session-list-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-hint);
+}
+
+.session-rail .session-list-header .btn {
+  padding: 4px 8px;
+  font-size: 11px;
+  min-height: 28px;
+}
+
+.session-rail .session-search {
+  padding: 6px 6px 8px;
+}
+
+.session-rail .session-search-input {
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 10px;
+}
+
+.session-rail .session-list-scroll {
+  max-height: none;
+}
+
+.session-rail .session-group-label {
+  padding: 8px 6px 4px;
+  font-size: 10px;
+}
+
+.session-rail .session-item {
+  padding: 8px 8px;
+}
+
+.session-rail .session-item.active {
+  padding-left: 6px;
+}
+
+.session-rail .session-item-title {
+  font-size: 12px;
+}
+
+.session-rail .session-item-preview {
+  font-size: 11px;
+}
+
+.session-rail .session-item-type {
+  font-size: 8px;
+  padding: 2px 4px;
+}
+
+.session-rail .session-item-time {
+  font-size: 10px;
+}
+
 .session-list-header {
   display: flex;
   align-items: center;

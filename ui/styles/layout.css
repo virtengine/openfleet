@@ -1105,6 +1105,13 @@
   color: var(--text-hint);
 }
 
+.rail-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg-secondary);
+}
+
 /* ─── Inspector styling ─── */
 .inspector-section {
   background: var(--bg-card);
@@ -1151,6 +1158,27 @@
   max-height: 320px;
 }
 
+.inspector .diff-viewer {
+  border-radius: 12px;
+  background: var(--bg-elevated);
+  border-color: var(--border);
+}
+
+.inspector .diff-summary {
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.inspector .diff-file-header {
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.inspector .diff-line {
+  font-size: 11px;
+  padding: 1px 10px;
+}
+
 @media (min-width: 1200px) {
   .app-shell[data-has-rail="true"] .main-content {
     max-width: none;
@@ -1169,16 +1197,69 @@
 }
 
 .inspector-log-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   font-family: var(--font-mono);
   font-size: 11px;
-  line-height: 1.4;
-  padding: 6px 8px;
-  border-radius: 10px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  border-radius: 12px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   color: var(--text-secondary);
   margin-bottom: 6px;
   word-break: break-word;
+  position: relative;
+  overflow: hidden;
+}
+
+.inspector-log-line::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--border-strong);
+  opacity: 0.7;
+}
+
+.inspector-log-line.warn::before {
+  background: var(--color-inreview);
+}
+
+.inspector-log-line.error::before {
+  background: var(--color-error);
+}
+
+.inspector-log-level {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-hint);
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  line-height: 1.2;
+  flex-shrink: 0;
+}
+
+.inspector-log-line.warn .inspector-log-level {
+  color: var(--color-inreview);
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.inspector-log-line.error .inspector-log-level {
+  color: var(--color-error);
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.inspector-log-text {
+  flex: 1;
+  min-width: 0;
 }
 
 .inspector-log-line.warn {
