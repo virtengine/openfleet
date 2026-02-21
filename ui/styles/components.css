@@ -1,23 +1,21 @@
-/* ─── Component Styles — Mission Control ─── */
+/* ─── Component Styles — iOS-style Clean Design ─── */
 
 /* ─── Cards ─── */
 .card {
   background: var(--bg-card);
-  background-image: linear-gradient(180deg, var(--surface-2), transparent 70%);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   padding: var(--space-md);
   border: 1px solid var(--border);
-  box-shadow: var(--shadow-sm), var(--shadow-inset);
-  margin-bottom: var(--space-md, 12px);
-  transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+  margin-bottom: 12px;
+  transition: background 0.15s ease, border-color 0.15s ease;
   position: relative;
   overflow: hidden;
+  min-width: 0;
 }
 
 .card:hover {
   background: var(--bg-card-hover);
   border-color: var(--border-strong);
-  box-shadow: var(--shadow-md), 0 0 20px rgba(59, 130, 246, 0.08);
 }
 
 .card-title {
@@ -144,7 +142,6 @@
 .stat-card:hover {
   border-color: var(--border-strong);
   background: var(--bg-card-hover);
-  box-shadow: var(--shadow-md);
 }
 
 .stat-value {
@@ -387,12 +384,10 @@
 .btn-primary {
   background: var(--accent);
   color: var(--accent-text);
-  box-shadow: var(--shadow-sm), 0 0 14px rgba(59, 130, 246, 0.28);
 }
 
 .btn-primary:hover {
   background: var(--accent-hover);
-  box-shadow: var(--shadow-md), 0 0 18px rgba(59, 130, 246, 0.35);
 }
 
 .btn-secondary {
@@ -404,7 +399,6 @@
 .btn-secondary:hover {
   border-color: var(--border-strong);
   background: var(--bg-card-hover);
-  box-shadow: var(--shadow-sm);
 }
 
 .btn-ghost {
@@ -477,7 +471,7 @@
 
 .input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-subtle), var(--shadow-glow-sm);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
 }
 
 .input-error {
@@ -978,7 +972,7 @@ select.input {
   align-items: center;
   justify-content: center;
   border: none;
-  background: var(--glass-bg, rgba(255,255,255,0.06));
+  background: var(--bg-card);
   border-radius: var(--radius-full, 50%);
   color: var(--text-secondary);
   cursor: pointer;
@@ -987,7 +981,7 @@ select.input {
 }
 
 .modal-close-btn:hover {
-  background: var(--bg-card-hover, rgba(255,255,255,0.12));
+  background: var(--bg-card-hover);
   color: var(--text-bright);
 }
 
@@ -1017,7 +1011,7 @@ select.input {
   font-size: 13px;
   font-weight: 500;
   color: #fff;
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(8px);
   box-shadow: 0 4px 16px rgba(0,0,0,0.3);
   animation: toastIn 0.3s ease, toastOut 0.3s ease 2.7s forwards;
   display: flex;
@@ -1266,12 +1260,11 @@ select.input {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--gradient-accent);
+  background: var(--accent);
   color: var(--accent-text);
   font-size: 14px;
   font-weight: 600;
   flex-shrink: 0;
-  box-shadow: var(--shadow-glow-sm);
 }
 
 .avatar-initials {
@@ -1893,13 +1886,11 @@ select.input {
   justify-content: center;
   gap: var(--space-xs, 4px);
   padding: var(--space-md, 14px) var(--space-sm, 8px);
-  background: var(--glass-bg);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: var(--bg-card);
   border-radius: var(--radius-md);
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--border);
   cursor: pointer;
-  transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
   -webkit-tap-highlight-color: transparent;
   font-family: inherit;
 }
@@ -1910,8 +1901,8 @@ select.input {
 }
 
 .quick-action-btn:hover {
-  box-shadow: var(--shadow-glow-sm);
-  border-color: var(--border-glow);
+  border-color: var(--border-strong);
+  background: var(--bg-card-hover);
 }
 
 .quick-action-btn:focus-visible {
@@ -1944,30 +1935,14 @@ select.input {
   gap: 8px;
   padding: 16px 20px;
   border-radius: var(--radius-lg);
-  background: linear-gradient(
-    140deg,
-    rgba(59, 130, 246, 0.16) 0%,
-    rgba(139, 92, 246, 0.10) 55%,
-    rgba(16, 185, 129, 0.06) 100%
-  );
-  border: 1px solid rgba(59, 130, 246, 0.24);
-  box-shadow: var(--shadow-sm), 0 0 28px rgba(59, 130, 246, 0.07);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   position: relative;
   overflow: hidden;
 }
 
 .dashboard-header::before {
-  content: "";
-  position: absolute;
-  top: -50px;
-  right: -30px;
-  width: 190px;
-  height: 190px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(59, 130, 246, 0.13), transparent 70%);
-  pointer-events: none;
+  display: none;
 }
 
 .dashboard-eyebrow {
@@ -2301,11 +2276,9 @@ select.input {
   padding: 11px 14px;
   border-radius: 14px;
   border: 1px solid var(--border);
-  background: var(--glass-bg);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  background: var(--bg-card);
   cursor: pointer;
-  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
   text-align: left;
   position: relative;
   overflow: hidden;
@@ -2331,7 +2304,7 @@ select.input {
 
 .dashboard-action-btn:hover {
   border-color: var(--border-strong);
-  box-shadow: var(--shadow-md);
+  background: var(--bg-card-hover);
   transform: translateY(-1px);
 }
 
@@ -2533,11 +2506,9 @@ select.input {
   left: 0;
   right: 0;
   background: var(--bg-elevated);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg), var(--shadow-glow-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   z-index: 50;
   max-height: 200px;
   overflow-y: auto;
@@ -2563,7 +2534,7 @@ select.input {
 }
 
 .cmd-history-item:not(:last-child) {
-  border-bottom: 1px solid var(--glass-border);
+  border-bottom: 1px solid var(--border);
 }
 
 /* ─── Health Dot (Infra) ─── */
@@ -2580,7 +2551,6 @@ select.input {
 .task-card-selected {
   border-color: var(--accent);
   background: rgba(59, 130, 246, 0.06);
-  box-shadow: var(--shadow-glow-sm);
 }
 
 .task-card-expanded {
@@ -2601,13 +2571,11 @@ select.input {
 
 /* ─── Batch Action Bar ─── */
 .batch-action-bar {
-  background: var(--glass-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: var(--bg-card);
   border-radius: var(--radius-md);
   padding: var(--space-sm, 8px) var(--space-md, 12px);
   align-items: center;
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--border);
 }
 
 /* ─── Sticky Search ─── */
@@ -2619,7 +2587,6 @@ select.input {
   padding: 8px 0 12px;
   margin-bottom: var(--space-sm, 8px);
   border-bottom: 1px solid var(--border);
-  backdrop-filter: blur(10px);
 }
 
 .sticky-search-row {
@@ -2701,7 +2668,6 @@ select.input {
 
 .filter-toggle.active {
   border-color: var(--accent);
-  box-shadow: var(--shadow-glow-sm);
 }
 
 .filter-count {
@@ -2720,8 +2686,8 @@ select.input {
 }
 
 .tasks-filter-panel {
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 10px 12px;
   overflow: hidden;
@@ -2858,7 +2824,6 @@ select.input {
   padding: 8px 0 10px;
   margin-bottom: 8px;
   border-bottom: 1px solid var(--border);
-  backdrop-filter: blur(10px);
 }
 
 /* ─── Control Unit (sticky) ─── */
@@ -3035,10 +3000,8 @@ select.input {
 /* ─── ConfirmDialog ─── */
 .confirm-dialog {
   background: var(--bg-elevated);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
   border-radius: var(--radius-xl);
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--border);
   width: calc(100% - 48px);
   max-width: 340px;
   padding: 24px;
@@ -3079,9 +3042,9 @@ select.input {
 }
 
 .confirm-dialog-actions .btn-secondary {
-  background: var(--glass-bg);
+  background: var(--bg-card);
   color: var(--text-primary);
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--border);
 }
 
 .confirm-dialog-actions .btn-destructive {
@@ -3153,7 +3116,7 @@ select.input {
 }
 
 .fleet-overview-card {
-  background-image: radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 55%);
+  /* clean — no gradient */
 }
 
 .fleet-hero {
@@ -3286,7 +3249,7 @@ select.input {
 }
 
 .control-hero {
-  background-image: radial-gradient(circle at top right, rgba(59, 130, 246, 0.12), transparent 55%);
+  /* clean — no gradient */
 }
 
 .control-hero-header {
@@ -3382,13 +3345,12 @@ select.input {
   bottom: 100%;
   left: 0;
   right: 0;
-  background: var(--glass-bg, rgba(15, 23, 42, 0.9));
-  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: 12px;
   max-height: 240px;
   overflow-y: auto;
   z-index: 50;
-  backdrop-filter: blur(12px);
 }
 
 .cmd-dropdown-item {

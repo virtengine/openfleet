@@ -110,8 +110,8 @@
 .session-detail-tabs {
   display: flex;
   gap: 2px;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 3px;
   margin-bottom: var(--space-md);
@@ -133,13 +133,12 @@
 
 .session-detail-tab:hover {
   color: var(--text-primary);
-  background: var(--glass-highlight);
+  background: var(--bg-card-hover);
 }
 
 .session-detail-tab.active {
-  background: var(--gradient-accent);
+  background: var(--accent);
   color: var(--accent-text);
-  box-shadow: var(--shadow-glow-sm);
 }
 
 /* Back button (mobile) */
@@ -151,7 +150,7 @@
   display: flex;
   align-items: center;
   padding: 0;
-  border-bottom: 1px solid var(--border, var(--glass-border));
+  border-bottom: 1px solid var(--border, var(--border));
   background: var(--bg-primary);
   flex-shrink: 0;
 }
@@ -507,7 +506,7 @@
 
 .chat-header {
   padding: 12px 16px;
-  border-bottom: 1px solid var(--glass-border);
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -679,8 +678,8 @@
 }
 
 .chat-filter-chip {
-  border: 1px solid var(--glass-border);
-  background: var(--glass-bg);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
   color: var(--text-secondary);
   font-size: 11px;
   padding: 4px 10px;
@@ -796,7 +795,7 @@
   justify-content: center;
   padding: var(--space-lg);
   gap: var(--space-sm);
-  border: 1px dashed var(--glass-border);
+  border: 1px dashed var(--border);
   border-radius: var(--radius-md);
   background: rgba(8, 12, 20, 0.35);
   text-align: center;
@@ -962,7 +961,7 @@
 
 .md-blockquote {
   border-left: 3px solid var(--accent);
-  background: var(--glass-bg);
+  background: var(--bg-card);
   padding: 6px 12px;
   margin: 4px 0;
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
@@ -1003,8 +1002,8 @@ ul.md-list li::before {
 }
 
 .md-inline-code {
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   padding: 1px 6px;
   border-radius: 10px;
   font-family: "SF Mono", "Fira Code", "Consolas", monospace;
@@ -1013,7 +1012,7 @@ ul.md-list li::before {
 
 .md-hr {
   border: none;
-  border-top: 1px solid var(--glass-border);
+  border-top: 1px solid var(--border);
   margin: 8px 0;
 }
 
@@ -1088,10 +1087,8 @@ ul.md-list li::before {
 
 /* ═══ Diff Viewer ═══ */
 .diff-viewer {
-  background: var(--glass-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--glass-border);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
   min-height: 200px;
@@ -1120,8 +1117,8 @@ ul.md-list li::before {
   font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
-  border-bottom: 1px solid var(--glass-border);
-  background: var(--glass-bg);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
 }
 
 .diff-stat-add {
@@ -1256,8 +1253,8 @@ ul.md-list li::before {
   right: 0;
   max-height: 240px;
   overflow-y: auto;
-  background: var(--bg-card, var(--glass-bg));
-  border: 1px solid var(--border, var(--glass-border));
+  background: var(--bg-card, var(--bg-card));
+  border: 1px solid var(--border, var(--border));
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   box-shadow: var(--shadow-lg, 0 4px 24px rgba(0,0,0,.35));
   z-index: 50;
@@ -1307,10 +1304,8 @@ ul.md-list li::before {
   padding: 32px;
   text-align: center;
   gap: 16px;
-  background: var(--glass-bg);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--glass-border);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
 }
 
@@ -1350,8 +1345,8 @@ ul.md-list li::before {
 .chat-input-area {
   position: relative;
   padding: 16px 16px;
-  border-top: 1px solid var(--border, var(--glass-border));
-  background: var(--bg-surface, var(--glass-bg));
+  border-top: 1px solid var(--border, var(--border));
+  background: var(--bg-surface, var(--bg-card));
   flex-shrink: 0;
 }
 
@@ -1408,8 +1403,8 @@ ul.md-list li::before {
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  background: var(--bg-card, var(--glass-bg));
-  border: 1px solid var(--border, var(--glass-border));
+  background: var(--bg-card, var(--bg-card));
+  border: 1px solid var(--border, var(--border));
   border-radius: 24px;
   padding: 8px 8px 8px 16px;
   transition: border-color 0.15s, box-shadow 0.15s;
@@ -1481,7 +1476,7 @@ ul.md-list li::before {
 
 /* ═══ Session Rename ═══ */
 .session-item-rename {
-  background: var(--bg-input, var(--glass-bg));
+  background: var(--bg-input, var(--bg-card));
   border: 1px solid var(--accent, var(--color-primary, #3b82f6));
   border-radius: var(--radius-sm);
   padding: 2px 6px;
@@ -1572,7 +1567,7 @@ ul.md-list li::before {
 .session-item-wrapper .session-item {
   position: relative;
   z-index: 1;
-  background: var(--bg-surface, var(--glass-bg));
+  background: var(--bg-surface, var(--bg-card));
   touch-action: pan-y;
   user-select: none;
 }

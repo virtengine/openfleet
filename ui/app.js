@@ -255,25 +255,11 @@ function Header() {
   return html`
     <header class="app-header">
       <div class="app-header-left">
-        <div class="app-header-brand">
-          <div class="app-header-logo">
-            <img src="logo.png" alt="Bosun" class="app-logo-img" />
-          </div>
-          <div class="app-header-titles">
-            <div class="app-header-title">Bosun</div>
-            ${subLabel
-              ? html`<div class="app-header-subtitle">${subLabel}</div>`
-              : null}
-            ${navHint
-              ? html`<div class="app-header-hint">${navHint}</div>`
-              : null}
-          </div>
-        </div>
-      </div>
-      <div class="app-header-right">
         <div class="app-header-workspace">
           <${WorkspaceSwitcher} />
         </div>
+      </div>
+      <div class="app-header-right">
         <div class="header-actions">
           <div class="header-status">
             <div class="connection-pill ${connClass}">

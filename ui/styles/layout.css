@@ -5,43 +5,29 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: var(--header-height);
+  height: calc(44px + var(--content-safe-top));
   padding-top: var(--content-safe-top);
-  padding-left: calc(18px + var(--safe-left));
-  padding-right: calc(18px + var(--safe-right));
-  background: var(--glass-bg);
+  padding-left: calc(16px + var(--safe-left));
+  padding-right: calc(16px + var(--safe-right));
+  background: var(--bg-primary);
   border-bottom: 1px solid var(--border);
-  box-shadow: var(--shadow-sm);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
   flex-shrink: 0;
   z-index: 10;
   position: relative;
+  min-width: 0;
 }
 
 .app-header::after {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(59, 130, 246, 0.4) 30%,
-    rgba(139, 92, 246, 0.35) 60%,
-    transparent 100%
-  );
-  pointer-events: none;
+  display: none;
 }
 
 .app-header-left {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   min-width: 0;
   flex: 1;
+  overflow: hidden;
 }
 
 .app-header-brand {
@@ -199,10 +185,7 @@
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-gutter: stable;
-  padding-top: 16px;
-  padding-right: calc(16px + var(--safe-right));
-  padding-bottom: calc(var(--nav-height, 60px) + var(--safe-bottom, 0px) + 24px);
-  padding-left: calc(16px + var(--safe-left));
+  padding: 12px calc(12px + var(--safe-right)) calc(var(--nav-height, 56px) + var(--safe-bottom, 0px) + 16px) calc(12px + var(--safe-left));
   -webkit-overflow-scrolling: touch;
   scroll-behavior: smooth;
   touch-action: pan-y;
@@ -246,33 +229,31 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* ─── Bottom Navigation — Floating Pill ─── */
+/* ─── Bottom Navigation — Clean pill bar ─── */
 .bottom-nav {
   position: fixed;
-  bottom: calc(10px + var(--safe-bottom));
-  left: calc(16px + var(--safe-left));
-  right: calc(16px + var(--safe-right));
+  bottom: calc(8px + var(--safe-bottom));
+  left: calc(12px + var(--safe-left));
+  right: calc(12px + var(--safe-right));
   height: var(--nav-height);
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   display: flex;
   align-items: center;
   justify-content: space-around;
   z-index: 500;
-  box-shadow: var(--shadow-md);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  animation: navSlideUp 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) 0.2s both;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+  animation: navSlideUp 0.3s cubic-bezier(0.25, 1, 0.5, 1) 0.15s both;
   padding-bottom: 0;
   pointer-events: auto;
 }
 
 .bottom-nav.compact {
-  height: calc(var(--nav-height) - 8px);
-  padding: 4px 8px;
+  height: calc(var(--nav-height) - 4px);
+  padding: 2px 6px;
   justify-content: space-between;
-  gap: 4px;
+  gap: 2px;
 }
 
 @keyframes navSlideUp {
@@ -743,9 +724,7 @@
     margin-bottom: var(--space-md);
     position: sticky;
     top: 0;
-    background: var(--glass-bg);
-    backdrop-filter: var(--glass-blur);
-    -webkit-backdrop-filter: var(--glass-blur);
+    background: var(--bg-primary);
     z-index: 5;
   }
 
@@ -814,9 +793,7 @@
 .drawer-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.5);
   z-index: 900;
   animation: fadeIn 0.18s ease-out;
 }
@@ -894,9 +871,7 @@
     gap: 8px;
     padding: 6px 16px;
     align-items: center;
-    background: var(--glass-bg);
-    backdrop-filter: var(--glass-blur);
-    -webkit-backdrop-filter: var(--glass-blur);
+    background: var(--bg-primary);
     border-bottom: 1px solid var(--border);
   }
 

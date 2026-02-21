@@ -1028,6 +1028,9 @@ function ServerConfigMode() {
         ${activeCat?.description &&
         html`<div class="settings-cat-desc">${activeCat.description}</div>`}
 
+        <!-- GitHub Device Flow login card -->
+        ${activeCategory === "github" && html`<${GitHubDeviceFlowCard} config=${serverData} />`}
+
         <!-- Settings list for active category -->
         ${catDefs.length === 0
           ? html`
@@ -1563,6 +1566,210 @@ function AppPreferencesMode() {
           </div>
         </div>
       <//>
+    <//>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  GitHubDeviceFlowCard — "Sign in with GitHub" (like VS Code / Roo Code)
+ *  Uses OAuth Device Flow: no public URL, no callback needed.
+ * ═══════════════════════════════════════════════════════════════ */
+function GitHubDeviceFlowCard({ config }) {
+  const [phase, setPhase] = useState("idle"); // idle | loading | code | polling | done | error
+  const [userCode, setUserCode] = useState("");
+  const [verificationUri, setVerificationUri] = useState("");
+  const [deviceCode, setDeviceCode] = useState("");
+  const [pollInterval, setPollInterval] = useState(5);
+  const [ghUser, setGhUser] = useState("");
+  const [error, setError] = useState("");
+  const pollRef = useRef(null);
+
+  // Check if already authenticated
+  const hasToken = Boolean(
+    config?.GH_TOKEN || config?.GITHUB_TOKEN
+  );
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => { if (pollRef.current) clearTimeout(pollRef.current); };
+  }, []);
+
+  async function startFlow() {
+    setPhase("loading");
+    setError("");
+    try {
+      const res = await apiFetch("/api/github/device/start", { method: "POST" });
+      if (!res.ok) throw new Error(res.error || "Failed to start device flow");
+      const d = res.data;
+      setUserCode(d.userCode);
+      setVerificationUri(d.verificationUri);
+      setDeviceCode(d.deviceCode);
+      setPollInterval(d.interval || 5);
+      setPhase("code");
+
+      // Open GitHub in a new tab automatically
+      try {
+        window.open(d.verificationUri, "_blank");
+      } catch {
+        // may be blocked by popup blocker
+      }
+
+      // Start polling
+      startPolling(d.deviceCode, (d.interval || 5) * 1000);
+    } catch (err) {
+      setError(err.message);
+      setPhase("error");
+    }
+  }
+
+  function startPolling(dc, intervalMs) {
+    if (pollRef.current) clearTimeout(pollRef.current);
+    setPhase("polling");
+
+    async function tick() {
+      try {
+        const res = await apiFetch("/api/github/device/poll", {
+          method: "POST",
+          body: { deviceCode: dc },
+        });
+        if (!res.ok) {
+          pollRef.current = setTimeout(tick, intervalMs);
+          return;
+        }
+        const d = res.data;
+        if (d.status === "complete") {
+          pollRef.current = null;
+          setGhUser(d.login);
+          setPhase("done");
+          haptic("success");
+          showToast("success", `Signed in as ${d.login}`);
+          return;
+        } else if (d.status === "slow_down") {
+          // Increase interval as requested by GitHub
+          const newInterval = (d.interval || 10) * 1000;
+          setPollInterval(d.interval || 10);
+          intervalMs = newInterval;
+        } else if (d.status === "expired") {
+          pollRef.current = null;
+          setError("Code expired. Please try again.");
+          setPhase("error");
+          return;
+        } else if (d.status === "error") {
+          pollRef.current = null;
+          setError(d.description || d.error || "Authorization failed");
+          setPhase("error");
+          return;
+        }
+        // "pending" or "slow_down" → schedule next tick
+        pollRef.current = setTimeout(tick, intervalMs);
+      } catch {
+        // network error — keep polling, it may recover
+        pollRef.current = setTimeout(tick, intervalMs);
+      }
+    }
+
+    pollRef.current = setTimeout(tick, intervalMs);
+  }
+
+  function copyCode() {
+    try {
+      navigator.clipboard.writeText(userCode);
+      haptic("light");
+      showToast("info", "Code copied!");
+    } catch {
+      // clipboard not available
+    }
+  }
+
+  // Already authenticated — compact info
+  if (hasToken && phase !== "done") {
+    return html`
+      <${Card}>
+        <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
+          <span style="font-size:20px">🐙</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:600;color:var(--text-primary)">GitHub Connected</div>
+            <div style="font-size:12px;color:var(--text-secondary)">Token is configured. Re-authenticate below if needed.</div>
+          </div>
+          <button class="btn btn-sm btn-secondary" onClick=${startFlow}>
+            Re-auth
+          </button>
+        </div>
+      <//>
+    `;
+  }
+
+  // Done — just authorized
+  if (phase === "done") {
+    return html`
+      <${Card}>
+        <div style="text-align:center;padding:12px 0">
+          <div style="font-size:32px;margin-bottom:8px">✅</div>
+          <div style="font-size:15px;font-weight:600;color:var(--text-primary)">Signed in as ${ghUser}</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">GitHub token saved to .env</div>
+        </div>
+      <//>
+    `;
+  }
+
+  // Show device code to enter
+  if (phase === "code" || phase === "polling") {
+    return html`
+      <${Card}>
+        <div style="text-align:center;padding:8px 0">
+          <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+            Go to <a href=${verificationUri} target="_blank" rel="noopener"
+              style="color:var(--accent);font-weight:600;text-decoration:underline">${verificationUri}</a>
+            and enter this code:
+          </div>
+          <button onClick=${copyCode}
+            style="font-size:28px;font-weight:700;letter-spacing:0.15em;font-family:var(--font-mono,'SF Mono',monospace);
+              padding:12px 24px;border-radius:var(--radius-md);background:var(--surface-1);
+              border:2px dashed var(--accent);color:var(--text-primary);cursor:pointer;
+              transition:background 0.15s ease"
+            title="Click to copy">
+            ${userCode}
+          </button>
+          <div style="font-size:12px;color:var(--text-hint);margin-top:10px;display:flex;align-items:center;justify-content:center;gap:6px">
+            <span class="spinner" style="width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%"></span>
+            Waiting for authorization…
+          </div>
+        </div>
+      <//>
+    `;
+  }
+
+  // Error state
+  if (phase === "error") {
+    return html`
+      <${Card}>
+        <div style="text-align:center;padding:12px 0">
+          <div style="font-size:24px;margin-bottom:8px">⚠️</div>
+          <div style="font-size:13px;color:var(--color-error);margin-bottom:12px">${error}</div>
+          <button class="btn btn-sm btn-primary" onClick=${startFlow}>Try Again</button>
+        </div>
+      <//>
+    `;
+  }
+
+  // Idle — show sign-in button
+  return html`
+    <${Card}>
+      <div style="text-align:center;padding:16px 0">
+        <div style="font-size:32px;margin-bottom:8px">🐙</div>
+        <div style="font-size:15px;font-weight:600;margin-bottom:4px;color:var(--text-primary)">
+          Sign in with GitHub
+        </div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:16px;max-width:280px;margin-inline:auto;line-height:1.5">
+          Authorize Bosun to manage repos and issues on your behalf.
+          No public URL needed — works entirely from your local machine.
+        </div>
+        <button class="btn btn-primary" onClick=${startFlow}
+          disabled=${phase === "loading"}
+          style="min-width:200px">
+          ${phase === "loading" ? html`<${Spinner} size=${14} /> Connecting…` : "Sign in with GitHub"}
+        </button>
+      </div>
     <//>
   `;
 }
