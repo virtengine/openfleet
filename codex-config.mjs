@@ -373,10 +373,17 @@ function normalizeWritableRoots(input, { repoRoot } = {}) {
     if (repo) {
       addRoot(repo);
       addRoot(resolve(repo, ".git"));
+      // Worktree checkout paths (used by task-executor)
+      addRoot(resolve(repo, ".cache", "worktrees"));
+      // Cache directories for agent work logs, build artifacts, etc.
+      addRoot(resolve(repo, ".cache"));
       const parent = dirname(repo);
       if (parent && parent !== repo) addRoot(parent);
     }
   }
+
+  // /tmp is needed for sandbox temp files, pip installs, etc.
+  addRoot("/tmp");
 
   return Array.from(roots);
 }

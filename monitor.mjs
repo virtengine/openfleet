@@ -312,7 +312,10 @@ function startAgentWorkAnalyzer() {
   if (agentWorkAnalyzerActive) return;
   if (process.env.AGENT_WORK_ANALYZER_ENABLED === "false") return;
   try {
-    void startAnalyzer();
+    startAnalyzer().catch((err) => {
+      console.warn(`[monitor] agent-work analyzer async error: ${err.message}`);
+      agentWorkAnalyzerActive = false;
+    });
     agentWorkAnalyzerActive = true;
     console.log("[monitor] agent-work analyzer started");
   } catch (err) {

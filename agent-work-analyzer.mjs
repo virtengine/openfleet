@@ -12,8 +12,8 @@
  * - Cost anomaly detection (unusually expensive sessions)
  */
 
-import { readFile, writeFile, appendFile, stat, watch } from "fs/promises";
-import { createReadStream, existsSync } from "fs";
+import { readFile, writeFile, appendFile, stat, watch, mkdir } from "fs/promises";
+import { createReadStream, existsSync, mkdirSync } from "fs";
 import { createInterface } from "readline";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -73,30 +73,54 @@ export async function startAnalyzer() {
 
   console.log("[agent-work-analyzer] Starting...");
 
-  // Ensure alerts log exists
-  if (!existsSync(ALERTS_LOG)) {
-    await writeFile(ALERTS_LOG, "");
+  // Ensure parent directory and alerts log exist
+  try {
+    const alertsDir = dirname(ALERTS_LOG);
+    if (!existsSync(alertsDir)) {
+      await mkdir(alertsDir, { recursive: true });
+    }
+    if (!existsSync(ALERTS_LOG)) {
+      await writeFile(ALERTS_LOG, "");
+    }
+  } catch (err) {
+    console.warn(`[agent-work-analyzer] Failed to init alerts log: ${err.message}`);
   }
 
   // Initial read of existing log
   if (existsSync(AGENT_WORK_STREAM)) {
     filePosition = await processLogFile(filePosition);
+  } else {
+    // Ensure the stream file exists so the watcher doesn't throw
+    try {
+      await writeFile(AGENT_WORK_STREAM, "");
+    } catch {
+      // May fail if another process creates it first — that's fine
+    }
   }
 
-  // Watch for changes
+  // Watch for changes — retry loop handles the case where the file
+  // is deleted and recreated (e.g. log rotation).
   console.log(`[agent-work-analyzer] Watching: ${AGENT_WORK_STREAM}`);
 
-  const watcher = watch(AGENT_WORK_STREAM, { persistent: true });
-
-  try {
-    for await (const event of watcher) {
-      if (event.eventType === "change") {
-        filePosition = await processLogFile(filePosition);
+  while (isRunning) {
+    try {
+      const watcher = watch(AGENT_WORK_STREAM, { persistent: true });
+      for await (const event of watcher) {
+        if (!isRunning) break;
+        if (event.eventType === "change") {
+          filePosition = await processLogFile(filePosition);
+        }
       }
-    }
-  } catch (err) {
-    if (err.code !== "ENOENT") {
+    } catch (err) {
+      if (!isRunning) break;
+      if (err.code === "ENOENT") {
+        // File was deleted — wait a bit and retry
+        await new Promise((r) => setTimeout(r, 5000));
+        continue;
+      }
       console.error(`[agent-work-analyzer] Watcher error: ${err.message}`);
+      // Wait before retrying to avoid busy-loop
+      await new Promise((r) => setTimeout(r, 10000));
     }
   }
 }

@@ -1627,7 +1627,13 @@ function buildDefaultWritableRoots(repoRoot) {
     if (parent && parent !== repo) roots.add(parent);
     roots.add(repo);
     roots.add(resolve(repo, ".git"));
+    // Worktree checkout paths (used by task-executor)
+    roots.add(resolve(repo, ".cache", "worktrees"));
+    // Cache directories for agent work logs, build artifacts, etc.
+    roots.add(resolve(repo, ".cache"));
   }
+  // /tmp needed for sandbox temp files, pip installs, etc.
+  roots.add("/tmp");
   return Array.from(roots).join(",");
 }
 
