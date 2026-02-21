@@ -246,7 +246,7 @@ export function StartTaskModal({
           <div class="modal-form-field modal-form-span">
             <div class="card-subtitle">Task ID</div>
             <input
-              class="input input-bordered input-sm w-full"
+              class="input"
               placeholder="e.g. task-123"
               value=${taskIdInput}
               onInput=${(e) => setTaskIdInput(e.target.value)}
@@ -255,7 +255,7 @@ export function StartTaskModal({
         `}
         <div class="modal-form-field">
           <div class="card-subtitle">Executor SDK</div>
-          <select class="select select-bordered select-sm w-full" value=${sdk} onChange=${(e) => setSdk(e.target.value)}>
+          <select class="input" value=${sdk} onChange=${(e) => setSdk(e.target.value)}>
             ${["auto", "codex", "copilot", "claude"].map(
               (opt) => html`<option value=${opt}>${opt}</option>`,
             )}
@@ -264,7 +264,7 @@ export function StartTaskModal({
         <div class="modal-form-field">
           <div class="card-subtitle">Model Override (optional)</div>
           <input
-            class="input input-bordered input-sm w-full"
+            class="input"
             placeholder=${canModel ? "e.g. gpt-5.3-codex" : "Select SDK to enable"}
             value=${model}
             disabled=${!canModel}
@@ -532,9 +532,9 @@ export function TaskDetailModal({ task, onClose, onStart }) {
 
   return html`
     <${Modal} title=${task?.title || "Task Detail"} onClose=${onClose} contentClassName="modal-content-wide">
-      <div class="flex flex-wrap items-center gap-2 mb-3">
-        <div class="text-xs opacity-60 font-mono" style="user-select:all">ID: ${task?.id}</div>
-        <div class="flex flex-wrap items-center gap-1">
+      <div class="task-modal-summary">
+        <div class="task-modal-id" style="user-select:all">ID: ${task?.id}</div>
+        <div class="task-modal-badges">
           <${Badge} status=${task?.status} text=${task?.status} />
           ${task?.priority &&
           html`<${Badge} status=${task.priority} text=${task.priority} />`}
@@ -542,7 +542,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         </div>
         ${canDispatch &&
         html`
-          <div class="ml-auto">
+          <div class="task-modal-actions">
             <button class="btn btn-primary btn-sm" onClick=${handleStart}>
               ▶ Dispatch Task
             </button>
@@ -550,29 +550,29 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         `}
       </div>
 
-      <div class="flex flex-col gap-3 modal-form-grid">
+      <div class="flex-col gap-md modal-form-grid">
         <input
-          class="input input-bordered input-sm w-full modal-form-span"
+          class="input modal-form-span"
           placeholder="Title"
           value=${title}
           onInput=${(e) => setTitle(e.target.value)}
         />
         <textarea
-          class="textarea textarea-bordered w-full modal-form-span"
+          class="input modal-form-span"
           rows="5"
           placeholder="Description"
           value=${description}
           onInput=${(e) => setDescription(e.target.value)}
         ></textarea>
         <input
-          class="input input-bordered input-sm w-full modal-form-span"
+          class="input modal-form-span"
           placeholder="Base branch (optional, e.g. feature/xyz)"
           value=${baseBranch}
           onInput=${(e) => setBaseBranch(e.target.value)}
         />
-        <div class="flex flex-wrap gap-2 modal-form-span">
+        <div class="input-row modal-form-span">
           <select
-            class="select select-bordered select-sm flex-1 min-w-[160px]"
+            class="input"
             value=${workspaceId}
             onChange=${(e) => setWorkspaceId(e.target.value)}
           >
@@ -582,7 +582,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             )}
           </select>
           <select
-            class="select select-bordered select-sm flex-1 min-w-[160px]"
+            class="input"
             value=${repository}
             onChange=${(e) => setRepository(e.target.value)}
             disabled=${!repositoryOptions.length}
@@ -597,23 +597,23 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           </select>
         </div>
         <input
-          class="input input-bordered input-sm w-full modal-form-span"
+          class="input modal-form-span"
           placeholder="Tags (comma-separated)"
           value=${tagsInput}
           onInput=${(e) => setTagsInput(e.target.value)}
         />
         ${normalizeTagInput(tagsInput).length > 0 &&
         html`
-          <div class="flex flex-wrap gap-1 modal-form-span">
+          <div class="tag-row modal-form-span">
             ${normalizeTagInput(tagsInput).map(
-              (tag) => html`<span class="badge badge-outline badge-sm">#${tag}</span>`,
+              (tag) => html`<span class="tag-chip">#${tag}</span>`,
             )}
           </div>
         `}
 
-        <div class="flex flex-wrap gap-2 modal-form-span">
+        <div class="input-row modal-form-span">
           <select
-            class="select select-bordered select-sm flex-1 min-w-[120px]"
+            class="input"
             value=${status}
             onChange=${(e) => {
               const next = e.target.value;
@@ -627,7 +627,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             )}
           </select>
           <select
-            class="select select-bordered select-sm flex-1 min-w-[120px]"
+            class="input"
             value=${priority}
             onChange=${(e) => setPriority(e.target.value)}
           >
@@ -657,7 +657,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           />
         </div>
         <input
-          class="input input-bordered input-sm w-full modal-form-span"
+          class="input modal-form-span"
           placeholder="Manual reason (optional)"
           value=${manualReason}
           disabled=${manualBusy}
@@ -724,7 +724,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           ${task?.status !== "cancelled" &&
           html`
             <button
-              class="btn btn-error btn-sm btn-outline"
+              class="btn btn-ghost btn-sm"
+              style="color:var(--color-error)"
               onClick=${handleCancel}
             >
               ✕ Cancel
@@ -1295,9 +1296,9 @@ export function TasksTab() {
   if (tasksLoaded.value && !tasks.length && !searchVal)
     return html`
       <div class="flex-between mb-sm" style="padding:0 4px">
-        <div class="join">
-          <button class="btn btn-sm join-item ${!isKanban ? 'btn-active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
-          <button class="btn btn-sm join-item ${isKanban ? 'btn-active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
+        <div class="view-toggle">
+          <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
+          <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
         </div>
         <button
           class="btn btn-ghost btn-sm"
@@ -1311,20 +1312,16 @@ export function TasksTab() {
         <${Card} title="Active Slots">
           ${activeSlots.map(
             (slot) => html`
-              <div key=${slot.taskId} class="card bg-base-200 shadow-sm mb-2">
-                <div class="card-body p-3">
-                  <div class="flex items-start gap-3">
-                    <div class="flex-1 min-w-0">
-                      <div class="text-sm font-medium truncate">
-                        ${truncate(slot.taskTitle || "(untitled)", 50)}
-                      </div>
-                      <div class="text-xs opacity-50">
-                        ${slot.taskId} · ${slot.branch || "no branch"}
-                      </div>
-                    </div>
-                    <${Badge} status="inprogress" text="running" />
+              <div key=${slot.taskId} class="list-item">
+                <div class="list-item-content">
+                  <div class="list-item-title">
+                    ${truncate(slot.taskTitle || "(untitled)", 50)}
+                  </div>
+                  <div class="meta-text">
+                    ${slot.taskId} · ${slot.branch || "no branch"}
                   </div>
                 </div>
+                <${Badge} status="inprogress" text="running" />
               </div>
             `,
           )}
@@ -1364,9 +1361,9 @@ export function TasksTab() {
   `;
 
   const viewToggle = html`
-    <div class="join">
-      <button class="btn btn-sm join-item ${!isKanban ? 'btn-active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
-      <button class="btn btn-sm join-item ${isKanban ? 'btn-active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
+    <div class="view-toggle">
+      <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
+      <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
     </div>
   `;
 
@@ -1501,7 +1498,7 @@ export function TasksTab() {
               <div class="tasks-filter-title">Sort</div>
               <div class="tasks-filter-row">
                 <select
-                  class="select select-bordered select-sm"
+                  class="input input-sm"
                   value=${sortVal}
                   onChange=${handleSort}
                 >
@@ -1594,7 +1591,7 @@ export function TasksTab() {
           <button class="btn btn-primary btn-sm" onClick=${handleBatchDone}>
             ✓ Done All
           </button>
-          <button class="btn btn-error btn-sm btn-outline" onClick=${handleBatchCancel}>
+          <button class="btn btn-danger btn-sm" onClick=${handleBatchCancel}>
             ✕ Cancel All
           </button>
           <button
@@ -1632,7 +1629,7 @@ export function TasksTab() {
       .actions-dropdown-item {
         display:block; width:100%; padding:10px 14px; border:none;
         background:none; color:inherit; text-align:left; font-size:13px;
-        cursor:pointer; transition: background 0.15s;
+        cursor:pointer;
       }
       .actions-dropdown-item:hover { background:var(--hover-bg, rgba(255,255,255,.08)); }
       @media (max-width: 640px) {
@@ -1695,12 +1692,12 @@ export function TasksTab() {
                       : html`<span class="task-td-empty">—</span>`}
                   </td>
                   <td class="task-td task-td-title">
-                    <div class="task-td-title-text truncate max-w-[300px]">${task.title || "(untitled)"}</div>
-                    ${task.id && html`<div class="task-td-id text-xs opacity-50 truncate">${task.id}</div>`}
+                    <div class="task-td-title-text">${task.title || "(untitled)"}</div>
+                    ${task.id && html`<div class="task-td-id">${task.id}</div>`}
                   </td>
                   <td class="task-td task-td-branch">
                     ${branch
-                      ? html`<code class="text-xs truncate max-w-[180px] inline-block">${branch}</code>`
+                      ? html`<code class="task-td-code">${branch}</code>`
                       : html`<span class="task-td-empty">—</span>`}
                   </td>
                   <td class="task-td task-td-repo">
@@ -1914,11 +1911,11 @@ function CreateTaskModalInline({ onClose }) {
       contentClassName="modal-content-wide"
       footer=${footerContent}
     >
-      <div class="flex flex-col gap-3 create-task-form">
+      <div class="flex-col create-task-form">
 
         <!-- Title — autofocus so keyboard opens immediately -->
         <input
-          class="input input-bordered input-sm w-full"
+          class="input"
           placeholder="Task title *"
           value=${title}
           autoFocus=${true}
@@ -1928,7 +1925,7 @@ function CreateTaskModalInline({ onClose }) {
 
         <!-- Description — compact 2-row textarea -->
         <textarea
-          class="textarea textarea-bordered w-full"
+          class="input"
           rows="2"
           placeholder="What needs to be done? (optional)"
           value=${description}
@@ -1954,9 +1951,9 @@ function CreateTaskModalInline({ onClose }) {
 
         <!-- Workspace + Repo row -->
         ${workspaceOptions.length > 0 && html`
-          <div class="flex flex-wrap gap-2">
+          <div class="input-row">
             <select
-              class="select select-bordered select-sm flex-1 min-w-[140px]"
+              class="input"
               value=${workspaceId}
               onChange=${(e) => setWorkspaceId(e.target.value)}
             >
@@ -1966,7 +1963,7 @@ function CreateTaskModalInline({ onClose }) {
               )}
             </select>
             <select
-              class="select select-bordered select-sm flex-1 min-w-[140px]"
+              class="input"
               value=${repository}
               onChange=${(e) => setRepository(e.target.value)}
               disabled=${!repositoryOptions.length}
@@ -1984,14 +1981,14 @@ function CreateTaskModalInline({ onClose }) {
 
         <!-- Tags -->
         <input
-          class="input input-bordered input-sm w-full"
+          class="input"
           placeholder="Tags (comma-separated, optional)"
           value=${tagsInput}
           onInput=${(e) => setTagsInput(e.target.value)}
         />
         ${parsedTags.length > 0 && html`
-          <div class="flex flex-wrap gap-1">
-            ${parsedTags.map((tag) => html`<span class="badge badge-outline badge-sm">#${tag}</span>`)}
+          <div class="tag-row">
+            ${parsedTags.map((tag) => html`<span class="tag-chip">#${tag}</span>`)}
           </div>
         `}
 
@@ -2009,7 +2006,7 @@ function CreateTaskModalInline({ onClose }) {
         <!-- Advanced fields: base branch + draft -->
         ${(showAdvanced || hasAdvanced) && html`
           <input
-            class="input input-bordered input-sm w-full"
+            class="input"
             placeholder="Base branch (optional, e.g. main)"
             value=${baseBranch}
             onInput=${(e) => setBaseBranch(e.target.value)}

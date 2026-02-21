@@ -145,21 +145,21 @@ export function CreateTaskModal({ onClose }) {
 
   return html`
     <${Modal} title="Create Task" onClose=${onClose}>
-      <div class="flex flex-col gap-3">
+      <div class="flex-col gap-md">
         <input
-          class="input input-bordered w-full"
+          class="input"
           placeholder="Task title"
           value=${title}
           onInput=${(e) => setTitle(e.target.value)}
         />
         <textarea
-          class="input input-bordered w-full"
+          class="input"
           rows="4"
           placeholder="Description (optional)"
           value=${description}
           onInput=${(e) => setDescription(e.target.value)}
         ></textarea>
-        <div class="text-sm font-semibold text-base-content/70">Priority</div>
+        <div class="card-subtitle">Priority</div>
         <${SegmentedControl}
           options=${[
             { value: "low", label: "Low" },
@@ -414,85 +414,77 @@ export function DashboardTab() {
 
   /* ── Loading skeleton ── */
   if (!status && !executor)
-    return html`<div class="flex flex-col gap-4 max-w-7xl mx-auto p-4">
-      <${Card} title="Loading…">
-        <div class="flex flex-col gap-3">
-          <${SkeletonCard} height="60px" />
-          <${SkeletonCard} height="60px" />
-          <${SkeletonCard} height="60px" />
-          <${SkeletonCard} height="60px" />
-        </div>
-      <//>
-    </div>`;
+    return html`<${Card} title="Loading…"><${SkeletonCard} count=${4} /><//>`;
 
   return html`
-    <div class="flex flex-col gap-4 max-w-7xl mx-auto">
-      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-        <div class="flex flex-col gap-0.5">
-          <div class="text-xs font-semibold uppercase tracking-wider text-primary">Pulse</div>
-          <div class="text-lg font-bold text-base-content">Calm system overview</div>
-          <div class="text-sm text-base-content/60 truncate">${headerLine}</div>
+    <div class="dashboard-shell">
+      <div class="dashboard-header">
+        <div class="dashboard-header-text">
+          <div class="dashboard-eyebrow">Pulse</div>
+          <div class="dashboard-title">Calm system overview</div>
+          <div class="dashboard-subtitle">${headerLine}</div>
         </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="badge badge-outline badge-sm">Mode ${mode}</span>
-          <span class="badge badge-outline badge-sm">SDK ${defaultSdk}</span>
+        <div class="dashboard-header-meta">
+          <span class="dashboard-chip">Mode ${mode}</span>
+          <span class="dashboard-chip">SDK ${defaultSdk}</span>
           ${executor
             ? executor.paused
               ? html`<${Badge} status="error" text="Paused" />`
               : html`<${Badge} status="done" text="Running" />`
-            : html`<span class="badge badge-outline badge-sm">Executor · —</span>`}
+            : html`<span class="dashboard-chip">Executor · —</span>`}
         </div>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+      <div class="dashboard-grid">
         <${Card}
-          title=${html`<span class="flex items-center gap-1.5"
-            ><span class="text-base">${ICONS.shield}</span>Health
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.shield}</span>Health
             Summary</span
           >`}
+          className="dashboard-card dashboard-health"
         >
-          <div class="flex items-center justify-between py-1">
-            <div class="text-sm text-base-content/60">Executor status</div>
-            <div class="text-sm font-semibold">
+          <div class="dashboard-status-row">
+            <div class="dashboard-status-label">Executor status</div>
+            <div class="dashboard-status-value">
               ${executor?.paused ? "Paused" : "Running"}
             </div>
           </div>
-          <div class="stats stats-vertical lg:stats-horizontal shadow bg-base-200 w-full my-2">
-            <div class="stat py-2 px-3">
-              <div class="stat-desc">Slots</div>
-              <div class="stat-value text-base">
+          <div class="dashboard-health-grid">
+            <div class="dashboard-health-item">
+              <div class="dashboard-health-label">Slots</div>
+              <div class="dashboard-health-value">
                 ${execData?.activeSlots ?? 0}/${execData?.maxParallel ?? "—"}
               </div>
             </div>
-            <div class="stat py-2 px-3">
-              <div class="stat-desc">Error rate</div>
-              <div class="stat-value text-base">${errorRate}%</div>
+            <div class="dashboard-health-item">
+              <div class="dashboard-health-label">Error rate</div>
+              <div class="dashboard-health-value">${errorRate}%</div>
             </div>
-            <div class="stat py-2 px-3">
-              <div class="stat-desc">Active</div>
-              <div class="stat-value text-base">${totalActive}</div>
+            <div class="dashboard-health-item">
+              <div class="dashboard-health-label">Active</div>
+              <div class="dashboard-health-value">${totalActive}</div>
             </div>
-            <div class="stat py-2 px-3">
-              <div class="stat-desc">Total tasks</div>
-              <div class="stat-value text-base">${totalTasks}</div>
+            <div class="dashboard-health-item">
+              <div class="dashboard-health-label">Total tasks</div>
+              <div class="dashboard-health-value">${totalTasks}</div>
             </div>
           </div>
-          <div class="mt-2">
-            <div class="flex items-center justify-between text-xs text-base-content/60 mb-1">
+          <div class="dashboard-health-progress">
+            <div class="dashboard-progress-meta">
               <span>Slot utilization</span>
               <span>${Math.round(slotPct)}%</span>
             </div>
             <${ProgressBar} percent=${slotPct} />
           </div>
-          <div class="flex gap-2 mt-3">
+          <div class="dashboard-inline-actions">
             <button
-              class="btn btn-ghost btn-sm"
+              class="btn btn-secondary btn-sm dashboard-btn"
               onClick=${handlePause}
             >
               Pause
             </button>
             <button
-              class="btn btn-ghost btn-sm"
+              class="btn btn-secondary btn-sm dashboard-btn"
               onClick=${handleResume}
             >
               Resume
@@ -501,22 +493,23 @@ export function DashboardTab() {
         <//>
 
         <${Card}
-          title=${html`<span class="flex items-center gap-1.5"
-            ><span class="text-base">${ICONS.grid}</span>Overview</span
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.grid}</span>Overview</span
           >`}
+          className="dashboard-card dashboard-overview"
         >
-          <div class="grid grid-cols-2 gap-3">
+          <div class="dashboard-metric-grid">
             ${overviewMetrics.map(
               (metric) => html`
-                <div class="flex flex-col gap-0.5">
-                  <div class="text-xs text-base-content/60 truncate">${metric.label}</div>
+                <div class="dashboard-metric">
+                  <div class="dashboard-metric-label">${metric.label}</div>
                   <div
-                    class="text-xl font-bold"
+                    class="dashboard-metric-value"
                     style="color: ${metric.color}"
                   >
                     ${metric.value} ${trend(metric.trend)}
                   </div>
-                  <div class="h-5">
+                  <div class="dashboard-metric-spark">
                     <${MiniSparkline}
                       data=${sparkData(metric.spark)}
                       color=${metric.color}
@@ -531,30 +524,31 @@ export function DashboardTab() {
         <//>
 
         <${Card}
-          title=${html`<span class="flex items-center gap-1.5"
-            ><span class="text-base">${ICONS.check}</span>Active Work</span
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.check}</span>Active Work</span
           >`}
+          className="dashboard-card dashboard-active"
         >
-          <div class="flex flex-col sm:flex-row gap-4">
-            <div class="flex flex-col gap-2 flex-1">
+          <div class="dashboard-work-layout">
+            <div class="dashboard-work-list">
               ${workItems.map(
                 (item) => html`
-                  <div class="flex items-center justify-between py-1">
-                    <div class="flex items-center gap-2">
+                  <div class="dashboard-work-item">
+                    <div class="dashboard-work-left">
                       <span
-                        class="w-2.5 h-2.5 rounded-full shrink-0"
+                        class="dashboard-work-dot"
                         style="background: ${item.color}"
                       ></span>
-                      <span class="text-sm text-base-content/80">${item.label}</span>
+                      <span class="dashboard-work-label">${item.label}</span>
                     </div>
-                    <span class="text-sm font-semibold">${item.value}</span>
+                    <span class="dashboard-work-value">${item.value}</span>
                   </div>
                 `,
               )}
             </div>
-            <div class="flex flex-col items-center gap-2 flex-1">
+            <div class="dashboard-work-chart">
               <${DonutChart} segments=${segments} size=${110} strokeWidth=${10} />
-              <div class="text-xs text-base-content/60 text-center">
+              <div class="dashboard-work-meta">
                 Active progress · ${progressPct}% engaged
               </div>
               <${ProgressBar} percent=${progressPct} />
@@ -563,22 +557,20 @@ export function DashboardTab() {
         <//>
 
         <${Card}
-          title=${html`<span class="flex items-center gap-1.5"
-            ><span class="text-base">${ICONS.bell}</span>Alerts</span
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.bell}</span>Alerts</span
           >`}
+          className="dashboard-card dashboard-alerts"
         >
-          <div class="flex flex-col gap-2">
+          <div class="dashboard-alerts-wrap">
             ${alertItems.map(
               (alert) => html`
-                <div class="flex items-center justify-between p-2 rounded-lg bg-base-300/50">
-                  <div class="flex items-center gap-2">
-                    <span class="w-2.5 h-2.5 rounded-full shrink-0 ${
-                      alert.tone === "error" ? "bg-error" :
-                      alert.tone === "warning" ? "bg-warning" : "bg-success"
-                    }"></span>
-                    <div class="flex flex-col">
-                      <div class="text-sm font-medium">${alert.label}</div>
-                      <div class="text-xs text-base-content/50">
+                <div class="dashboard-alert-item">
+                  <div class="dashboard-alert-left">
+                    <span class="dashboard-alert-dot ${alert.tone}"></span>
+                    <div class="dashboard-alert-text">
+                      <div class="dashboard-alert-title">${alert.label}</div>
+                      <div class="dashboard-alert-meta">
                         ${alert.tone === "ok"
                           ? hasAlerts
                             ? "Stable"
@@ -587,7 +579,7 @@ export function DashboardTab() {
                       </div>
                     </div>
                   </div>
-                  <div class="text-sm font-bold">${alert.value}</div>
+                  <div class="dashboard-alert-value">${alert.value}</div>
                 </div>
               `,
             )}
@@ -595,21 +587,23 @@ export function DashboardTab() {
         <//>
 
         <${Card}
-          title=${html`<span class="flex items-center gap-1.5"
-            ><span class="text-base">${ICONS.bosun}</span>Quick
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.bosun}</span>Quick
             Actions</span
           >`}
+          className="dashboard-card dashboard-actions"
         >
-          <div class="grid grid-cols-3 sm:grid-cols-4 gap-2">
+          <div class="dashboard-actions-grid">
             ${QUICK_ACTIONS.map(
               (a) => html`
                 <button
                   key=${a.label}
-                  class="btn btn-ghost btn-sm flex flex-col items-center gap-1 h-auto py-2"
+                  class="dashboard-action-btn"
+                  style="--qa-color: ${a.color}"
                   onClick=${(e) => handleQuickAction(a, e)}
                 >
-                  <span class="text-lg">${a.icon}</span>
-                  <span class="text-xs truncate">${a.label}</span>
+                  <span class="dashboard-action-icon">${a.icon}</span>
+                  <span class="dashboard-action-label">${a.label}</span>
                 </button>
               `,
             )}
@@ -619,30 +613,32 @@ export function DashboardTab() {
         ${project &&
         html`
           <${Card}
-            title=${html`<span class="flex items-center gap-1.5"
-              ><span class="text-base">${ICONS.server}</span>Project</span
+            title=${html`<span class="dashboard-card-title"
+              ><span class="dashboard-title-icon">${ICONS.server}</span>Project</span
             >`}
+            className="dashboard-card dashboard-project"
           >
-            <div class="text-base font-bold truncate overflow-hidden">
+            <div class="dashboard-project-name">
               ${project.name || project.id || "Current Project"}
             </div>
             ${project.description &&
-            html`<div class="text-sm text-base-content/60 mt-1 overflow-hidden truncate">
+            html`<div class="dashboard-project-desc">
               ${truncate(project.description, 160)}
             </div>`}
             ${project.taskCount != null &&
             html`
-              <div class="stats stats-vertical lg:stats-horizontal shadow bg-base-200 w-full mt-3">
-                <div class="stat py-2 px-3">
-                  <div class="stat-desc">Tasks</div>
-                  <div class="stat-value text-base">
+              <div class="dashboard-project-grid">
+                <div class="dashboard-project-item">
+                  <div class="dashboard-project-label">Tasks</div>
+                  <div class="dashboard-project-value">
                     ${project.taskCount}
                   </div>
                 </div>
-                <div class="stat py-2 px-3">
-                  <div class="stat-desc">Completed</div>
+                <div class="dashboard-project-item">
+                  <div class="dashboard-project-label">Completed</div>
                   <div
-                    class="stat-value text-base text-success"
+                    class="dashboard-project-value"
+                    style="color: var(--color-done)"
                   >
                     ${project.completedCount ?? 0}
                   </div>
@@ -653,19 +649,17 @@ export function DashboardTab() {
         `}
 
         <${Card}
-          title=${html`<span class="flex items-center gap-1.5"
-            ><span class="text-base">${ICONS.star}</span>Quality</span
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.star}</span>Quality</span
           >`}
+          className="dashboard-card dashboard-quality"
         >
-          <div class="grid grid-cols-3 gap-3">
+          <div class="dashboard-quality-grid">
             ${qualityItems.map(
               (item) => html`
-                <div class="flex flex-col items-center p-2 rounded-lg bg-base-300/50">
-                  <div class="text-lg font-bold ${
-                    item.tone === "error" ? "text-error" :
-                    item.tone === "warn" ? "text-warning" : "text-success"
-                  }">${item.value}</div>
-                  <div class="text-xs text-base-content/60">${item.label}</div>
+                <div class="dashboard-quality-item tone-${item.tone}">
+                  <div class="dashboard-quality-value">${item.value}</div>
+                  <div class="dashboard-quality-label">${item.label}</div>
                 </div>
               `,
             )}
@@ -673,22 +667,22 @@ export function DashboardTab() {
         <//>
 
         <${Card}
-          title=${html`<span class="flex items-center gap-1.5"
-            ><span class="text-base">${ICONS.clock}</span>Recent
+          title=${html`<span class="dashboard-card-title"
+            ><span class="dashboard-title-icon">${ICONS.clock}</span>Recent
             Activity</span
           >`}
-          className="md:col-span-2 xl:col-span-3"
+          className="dashboard-card dashboard-activity"
         >
-          <div class="flex flex-col gap-2">
+          <div class="dashboard-activity-list">
             ${recentTasks.length
               ? recentTasks.map(
                   (task) => html`
-                    <div key=${task.id} class="flex items-center justify-between p-2 rounded-lg hover:bg-base-300/50 transition-colors">
-                      <div class="flex flex-col min-w-0 flex-1 mr-2">
-                        <div class="text-sm font-medium truncate overflow-hidden">
+                    <div key=${task.id} class="list-item">
+                      <div class="list-item-content">
+                        <div class="list-item-title">
                           ${truncate(task.title || "(untitled)", 50)}
                         </div>
-                        <div class="text-xs text-base-content/50 truncate overflow-hidden">
+                        <div class="meta-text">
                           ${task.id}${task.updated_at
                             ? ` · ${formatRelative(task.updated_at)}`
                             : ""}

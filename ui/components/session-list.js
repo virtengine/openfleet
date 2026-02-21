@@ -286,41 +286,42 @@ function SwipeableSessionItem({
       key=${s.id}
       class="session-item-wrapper ${showActions === s.id ? "actions-revealed" : ""}"
     >
-      <div class="absolute right-0 top-0 bottom-0 flex items-center gap-1 pr-2">
+      <!-- Swipe-reveal action buttons behind the item -->
+      <div class="session-item-behind">
         ${isArchived
           ? html`
               <button
-                class="btn btn-sm btn-ghost flex flex-col items-center gap-0.5 h-auto py-1"
+                class="session-action-btn resume"
                 onClick=${handleResume}
                 title="Unarchive"
               >
-                <span class="text-base">↩</span>
-                <span class="text-[10px]">Restore</span>
+                <span class="session-action-icon">↩</span>
+                <span class="session-action-label">Restore</span>
               </button>
             `
           : html`
               <button
-                class="btn btn-sm btn-ghost flex flex-col items-center gap-0.5 h-auto py-1"
+                class="session-action-btn archive"
                 onClick=${handleArchive}
                 title="Archive session"
               >
-                <span class="text-base">📦</span>
-                <span class="text-[10px]">Archive</span>
+                <span class="session-action-icon">📦</span>
+                <span class="session-action-label">Archive</span>
               </button>
             `}
         <button
-          class="btn btn-sm ${confirmDelete ? "btn-error" : "btn-ghost"} flex flex-col items-center gap-0.5 h-auto py-1"
+          class="session-action-btn delete ${confirmDelete ? "confirm" : ""}"
           onClick=${handleDelete}
           title=${confirmDelete ? "Confirm delete" : "Delete session"}
         >
-          <span class="text-base">${confirmDelete ? "⚠️" : "🗑"}</span>
-          <span class="text-[10px]">${confirmDelete ? "Sure?" : "Delete"}</span>
+          <span class="session-action-icon">${confirmDelete ? "⚠️" : "🗑"}</span>
+          <span class="session-action-label">${confirmDelete ? "Sure?" : "Delete"}</span>
         </button>
       </div>
 
       <!-- The actual session item (slides left on swipe) -->
       <div
-        class="relative px-3 py-2 rounded-lg cursor-pointer transition-colors ${isSelected ? "bg-primary/10 border-l-2 border-primary" : "hover:bg-base-300"} ${isArchived ? "opacity-50" : ""}"
+        class="session-item ${isSelected ? "active" : ""} ${isArchived ? "archived" : ""} status-${statusKey}"
         style="transform: translateX(${offset}px); transition: ${swiping.current ? "none" : "transform 0.2s ease"}"
         onClick=${() => {
           if (Math.abs(offset) > 10) return; // don't select during swipe
@@ -345,12 +346,12 @@ function SwipeableSessionItem({
           }
         }}
       >
-        <div class="flex items-center gap-2">
-          <span class="w-2 h-2 rounded-full flex-shrink-0" style=${`background:${dotColor}`}></span>
+        <div class="session-item-row">
+          <span class="session-item-dot" style=${`background:${dotColor}`}></span>
           ${isRenaming && onSaveRename && onCancelRename
             ? html`
                 <input
-                  class="input input-bordered input-sm flex-1"
+                  class="session-item-rename"
                   value=${title}
                   onClick=${(e) => e.stopPropagation()}
                   onKeyDown=${(e) => {
@@ -376,14 +377,14 @@ function SwipeableSessionItem({
                 />
               `
             : html`
-                <span class="text-sm font-medium truncate flex-1">${truncate(title, 32)}</span>
+                <span class="session-item-title">${truncate(title, 32)}</span>
               `}
-          <span class="badge badge-xs badge-ghost">${typeLabel}</span>
-          <span class="text-xs opacity-50 flex-shrink-0">
+          <span class="session-item-type">${typeLabel}</span>
+          <span class="session-item-time">
             ${formatRelative(s.updatedAt || s.createdAt)}
           </span>
           <button
-            class="btn btn-ghost btn-xs"
+            class="session-item-menu"
             title="Actions"
             onClick=${(e) => {
               e.stopPropagation();
@@ -398,7 +399,7 @@ function SwipeableSessionItem({
         </div>
         ${s.lastMessage &&
         html`
-          <div class="text-xs opacity-50 truncate mt-0.5 pl-4">${truncate(s.lastMessage, 50)}</div>
+          <div class="session-item-preview">${truncate(s.lastMessage, 50)}</div>
         `}
       </div>
     </div>
@@ -520,13 +521,13 @@ export function SessionList({
 
   if (error) {
     return html`
-      <div class="flex flex-col h-full">
-        <div class="flex items-center justify-between px-3 py-2">
-          <span class="text-sm font-semibold">Sessions</span>
+      <div class="session-list">
+        <div class="session-list-header">
+          <span class="session-list-title">Sessions</span>
         </div>
-        <div class="flex flex-col items-center justify-center gap-2 py-12 opacity-60">
-          <div class="text-3xl">📡</div>
-          <div class="text-sm">Sessions not available</div>
+        <div class="session-empty">
+          <div class="session-empty-icon">📡</div>
+          <div class="session-empty-text">Sessions not available</div>
           <button class="btn btn-primary btn-sm" onClick=${handleRetry}>
             Retry
           </button>
@@ -536,9 +537,9 @@ export function SessionList({
   }
 
   return html`
-    <div class="session-list flex flex-col h-full" onClick=${handleListClick}>
-      <div class="flex items-center justify-between px-3 py-2">
-        <span class="text-sm font-semibold">Sessions</span>
+    <div class="session-list" onClick=${handleListClick}>
+      <div class="session-list-header">
+        <span class="session-list-title">Sessions</span>
         <div style="display:flex;gap:6px;align-items:center">
           ${typeof onToggleArchived === "function" &&
           archivedCount > 0 &&
@@ -562,44 +563,44 @@ export function SessionList({
         </div>
       </div>
 
-      <div class="px-3 pb-2">
+      <div class="session-search">
         <input
-          class="input input-bordered input-sm w-full"
+          class="input session-search-input"
           placeholder="Search sessions…"
           value=${search}
           onInput=${(e) => setSearch(e.target.value)}
         />
       </div>
 
-      <div class="flex-1 overflow-y-auto flex flex-col gap-1 px-2">
+      <div class="session-list-scroll">
         ${active.length > 0 &&
         html`
-          <div class="text-xs font-semibold uppercase opacity-50 px-2 pt-3 pb-1">Active Sessions</div>
+          <div class="session-group-label">Active Sessions</div>
           ${active.map(renderSessionItem)}
         `}
         ${recent.length > 0 &&
         html`
-          <div class="text-xs font-semibold uppercase opacity-50 px-2 pt-3 pb-1">Recent</div>
+          <div class="session-group-label">Recent</div>
           ${recent.map(renderSessionItem)}
         `}
         ${archived.length > 0 &&
         html`
-          <div class="text-xs font-semibold uppercase opacity-50 px-2 pt-3 pb-1">Archived (${archived.length})</div>
+          <div class="session-group-label">Archived (${archived.length})</div>
           ${archived.map(renderSessionItem)}
         `}
         ${filtered.length === 0 &&
         html`
-          <div class="flex flex-col items-center justify-center gap-3 py-12">
-            <div class="text-3xl">💬</div>
-            <div class="text-sm text-center opacity-60">
+          <div class="session-empty">
+            <div class="session-empty-icon">💬</div>
+            <div class="session-empty-text">
               ${hasSearch ? "No matching sessions" : "No sessions yet"}
-              <div class="text-xs mt-1">
+              <div class="session-empty-subtext">
                 ${hasSearch
                   ? "Try a different keyword or clear the search."
                   : "Create a session to get started."}
               </div>
             </div>
-            <div class="flex gap-2">
+            <div class="session-empty-actions">
               <button
                 class="btn btn-primary btn-sm"
                 onClick=${() =>
@@ -624,7 +625,7 @@ export function SessionList({
       <!-- Swipe hint for mobile (shown once) -->
       ${filtered.length > 0 &&
       html`
-        <div class="text-center text-xs opacity-30 py-2">
+        <div class="session-swipe-hint">
           ← Swipe items for actions
         </div>
       `}

@@ -514,25 +514,24 @@ export function ControlTab() {
   return html`
     ${!executor && !config && html`<${Card} title="Loading…"><${SkeletonCard} /><//>`}
 
-    <div class="flex flex-col gap-3 max-w-7xl mx-auto p-2">
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
-      <div class="lg:col-span-2 flex flex-col gap-3">
+    <div class="control-layout">
+      <div class="control-main">
         <${Card}
           title="Control Unit"
           subtitle="Executor health and rapid actions"
           className="control-unit-card control-hero"
         >
-          <div class="flex items-center justify-between flex-wrap gap-2">
-            <div>
-              <div class="text-xs opacity-60 uppercase tracking-wide">Executor</div>
-              <div class="flex items-center gap-2 mt-1">
-                <span class="badge badge-sm badge-neutral">${mode}</span>
+          <div class="control-hero-header">
+            <div class="control-hero-title">
+              <div class="control-hero-label">Executor</div>
+              <div class="control-hero-status">
+                <span class="control-hero-mode">${mode}</span>
                 ${isPaused
                   ? html`<${Badge} status="error" text="Paused" />`
                   : html`<${Badge} status="done" text="Running" />`}
               </div>
             </div>
-            <div class="flex flex-wrap gap-2">
+            <div class="control-hero-actions">
               <button class="btn btn-primary btn-sm" onClick=${handlePause}>
                 Pause Executor
               </button>
@@ -549,27 +548,26 @@ export function ControlTab() {
             </div>
           </div>
 
-          <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3">
+          <div class="control-meta-grid">
             ${controlMeta.map(
               (item) => html`
-                <div class="bg-base-300 rounded-lg p-2 text-center" key=${item.label}>
-                  <span class="text-xs opacity-60 block">${item.label}</span>
-                  <span class="font-semibold text-sm">${item.value}</span>
+                <div class="control-meta-item" key=${item.label}>
+                  <span class="control-meta-label">${item.label}</span>
+                  <span class="control-meta-value">${item.value}</span>
                 </div>
               `,
             )}
-            <div class="bg-base-300 rounded-lg p-2 text-center">
-              <span class="text-xs opacity-60 block">Capacity</span>
-              <span class="font-semibold text-sm">Max ${maxParallel}</span>
+            <div class="control-meta-item">
+              <span class="control-meta-label">Capacity</span>
+              <span class="control-meta-value">Max ${maxParallel}</span>
             </div>
           </div>
 
-          <div class="mt-3">
-            <div class="text-xs font-semibold opacity-70 mt-2">Max parallel tasks</div>
-            <div class="flex items-center gap-2 mb-3">
+          <div class="control-range">
+            <div class="form-label mt-sm">Max parallel tasks</div>
+            <div class="range-row mb-md">
               <input
                 type="range"
-                class="range range-primary range-xs flex-1"
                 min="0"
                 max="20"
                 step="1"
@@ -578,18 +576,18 @@ export function ControlTab() {
                 onInput=${(e) => setMaxParallel(Number(e.target.value))}
                 onChange=${(e) => handleMaxParallel(Number(e.target.value))}
               />
-              <span class="badge badge-sm">Max ${maxParallel}</span>
+              <span class="pill">Max ${maxParallel}</span>
             </div>
           </div>
         <//>
 
         <${Card} className="command-console-card">
           <${Collapsible} title="Command Console" defaultOpen=${true}>
-            <div class="text-xs opacity-60 mb-2">Send commands with autocomplete and quick actions.</div>
-            <div class="flex items-center gap-2 mb-2">
-              <div class="relative flex-1">
+            <div class="meta-text mb-sm">Send commands with autocomplete and quick actions.</div>
+            <div class="cmd-input-row mb-sm">
+              <div class="cmd-input-wrap">
                 <input
-                  class="input input-bordered input-sm w-full"
+                  class="input cmd-input"
                   placeholder="/status"
                   value=${commandInput}
                   onInput=${(e) => {
@@ -601,21 +599,22 @@ export function ControlTab() {
                   onKeyDown=${handleConsoleKeyDown}
                 />
                 ${showAc && acItems.length > 0 && html`
-                  <div class="absolute bottom-full left-0 w-full bg-base-300 rounded-lg shadow-lg mb-1 max-h-48 overflow-y-auto z-50">
+                  <div class="cmd-dropdown">
                     ${acItems.map((item, i) => html`
                       <div
                         key=${item.cmd}
-                        class="flex items-center justify-between px-3 py-1.5 cursor-pointer text-sm ${i === acIndex ? 'bg-primary text-primary-content' : 'hover:bg-base-200'}"
+                        class="cmd-dropdown-item${i === acIndex ? ' selected' : ''}"
                         onMouseDown=${(e) => { e.preventDefault(); selectAcItem(item); }}
                         onMouseEnter=${() => setAcIndex(i)}
                       >
                         <div>
-                          <span class="font-mono font-semibold">${item.cmd}</span>
-                          <span class="text-xs opacity-60 ml-2">${item.desc}</span>
+                          <span class="cmd-item-title">${item.cmd}</span>
+                          <span class="cmd-item-desc">${item.desc}</span>
                         </div>
-                        <span class="badge badge-xs" style=${{
+                        <span style=${{
+                          fontSize: '0.7rem', padding: '2px 8px', borderRadius: '9999px',
                           background: (CAT_COLORS[item.cat] || '#6366f1') + '33',
-                          color: CAT_COLORS[item.cat] || '#6366f1',
+                          color: CAT_COLORS[item.cat] || '#6366f1', fontWeight: 600,
                         }}>${item.cat}</span>
                       </div>
                     `)}
@@ -624,12 +623,12 @@ export function ControlTab() {
                 ${!showAc && showHistory &&
                 cmdHistory.length > 0 &&
                 html`
-                  <div class="absolute bottom-full left-0 w-full bg-base-300 rounded-lg shadow-lg mb-1 max-h-40 overflow-y-auto z-50">
+                  <div class="cmd-history-dropdown">
                     ${cmdHistory.map(
                       (c, i) => html`
                         <button
                           key=${i}
-                          class="block w-full text-left px-3 py-1 text-sm hover:bg-base-200 font-mono"
+                          class="cmd-history-item"
                           onMouseDown=${(e) => {
                             e.preventDefault();
                             setCommandInput(c);
@@ -657,12 +656,12 @@ export function ControlTab() {
               </button>
             </div>
 
-            <div class="flex flex-wrap gap-1 mt-2">
+            <div class="cmd-quick-actions">
               ${["/status", "/health", "/menu", "/helpfull"].map(
                 (cmd) => html`
                   <button
                     key=${cmd}
-                    class="btn btn-ghost btn-xs"
+                    class="btn btn-ghost btn-sm"
                     onClick=${() => sendCmd(cmd)}
                   >
                     ${cmd}
@@ -672,29 +671,29 @@ export function ControlTab() {
             </div>
 
             ${runningCmd && html`
-              <div class="flex items-center gap-2 text-xs mt-2 animate-pulse">
-                <span class="w-2 h-2 rounded-full bg-success"></span>
-                Running: <code class="font-mono bg-base-300 px-1 rounded">${runningCmd}</code>
+              <div class="cmd-running-indicator">
+                <span class="cmd-running-dot"></span>
+                Running: <code>${runningCmd}</code>
               </div>
             `}
 
             ${cmdOutputs.length > 0 && html`
-              <div class="flex flex-col gap-1 mt-2">
+              <div class="cmd-output-list">
                 ${cmdOutputs.map((entry, idx) => html`
-                  <div key=${idx} class="card bg-base-300 shadow-sm">
+                  <div key=${idx} class="cmd-output-item">
                     <button
-                      class="flex items-center justify-between w-full px-3 py-1.5 text-sm cursor-pointer"
+                      class="cmd-output-toggle"
                       onClick=${() => toggleOutput(idx)}
                     >
-                      <span>
-                        <code class="font-mono">${entry.cmd}</code>
+                      <span class="cmd-output-title">
+                        <code>${entry.cmd}</code>
                       </span>
-                      <span class="text-xs opacity-50">
+                      <span class="cmd-output-time">
                         ${new Date(entry.ts).toLocaleTimeString()} ${expandedOutputs[idx] ? '▲' : '▼'}
                       </span>
                     </button>
                     ${expandedOutputs[idx] && html`
-                      <div class="bg-base-300 rounded-b-lg p-3 font-mono text-xs overflow-x-auto border-t border-base-content/10">${entry.output}</div>
+                      <div class="cmd-output-panel">${entry.output}</div>
                     `}
                   </div>
                 `)}
@@ -705,15 +704,15 @@ export function ControlTab() {
 
       </div>
 
-      <div class="flex flex-col gap-3">
+      <div class="control-side">
         <${Card} className="task-ops-card">
           <${Collapsible} title="Task Ops" defaultOpen=${!isCompact}>
-            <div class="text-xs opacity-60 mb-2">Start or retry work.</div>
+            <div class="meta-text mb-sm">Start or retry work.</div>
             <div class="field-group">
-              <div class="text-xs font-semibold opacity-70">Backlog task</div>
-              <div class="flex items-center gap-2">
+              <div class="form-label">Backlog task</div>
+              <div class="input-row">
                 <select
-                  class=${startTaskError ? "select select-bordered select-sm select-error flex-1" : "select select-bordered select-sm flex-1"}
+                  class=${startTaskError ? "input input-error" : "input"}
                   value=${startTaskId}
                   aria-label="Backlog task"
                   onChange=${(e) => {
@@ -746,20 +745,20 @@ export function ControlTab() {
                 </button>
               </div>
               ${startTaskError
-                ? html`<div class="text-xs text-error mt-1">${startTaskError}</div>`
+                ? html`<div class="form-hint error">${startTaskError}</div>`
                 : null}
             </div>
-            <div class="text-xs opacity-60 mb-2">
+            <div class="meta-text mb-sm">
               ${tasksLoading
                 ? "Loading tasks…"
                 : `${backlogTasks.length} backlog · ${retryTasks.length} retryable`}
             </div>
             <div class="field-group">
-              <div class="text-xs font-semibold opacity-70">Retry task</div>
-              <div class="flex items-center gap-2">
-                <div class="flex items-center gap-2 flex-1">
+              <div class="form-label">Retry task</div>
+              <div class="input-row">
+                <div class="input-row">
                 <select
-                  class=${retryTaskError ? "select select-bordered select-sm select-error flex-1" : "select select-bordered select-sm flex-1"}
+                  class=${retryTaskError ? "input input-error" : "input"}
                   value=${retryTaskId}
                   aria-label="Retry task"
                   onChange=${(e) => {
@@ -785,26 +784,26 @@ export function ControlTab() {
                 </button>
               </div>
               ${retryTaskError
-                ? html`<div class="text-xs text-error mt-1">${retryTaskError}</div>`
+                ? html`<div class="form-hint error">${retryTaskError}</div>`
                 : null}
             </div>
 
             <div class="field-group">
-              <div class="text-xs font-semibold opacity-70">Task Planner</div>
-              <div class="flex flex-wrap gap-1">
+              <div class="form-label">Task Planner</div>
+              <div class="plan-chips">
                 ${["fix bugs", "add tests", "security", "refactor", "add docs", "performance"].map((chip) => html`
                   <button
                     key=${chip}
-                    class=${`btn btn-xs ${planFocus === chip ? "btn-primary" : "btn-ghost"}`}
+                    class=${`chip ${planFocus === chip ? "active" : ""}`}
                     onClick=${() => { haptic("light"); setPlanFocus(planFocus === chip ? "" : chip); }}
                   >${chip}</button>
                 `)}
               </div>
-              <div class="flex items-center gap-2 mt-2">
-                <span class="text-xs opacity-60 flex-1">Generate
+              <div class="input-row mt-sm">
+                <span class="form-hint" style="flex:1;margin:0">Generate
                   <input
                     type="number"
-                    class="input input-bordered input-xs w-16 mx-1"
+                    class="input plan-count-input"
                     min="1" max="50"
                     value=${planCount}
                     onInput=${(e) => setPlanCount(e.target.value)}
@@ -827,8 +826,8 @@ export function ControlTab() {
 
         <${Card} className="routing-card">
           <${Collapsible} title="Routing" defaultOpen=${!isCompact}>
-            <div class="text-xs opacity-60 mb-2">Executor routing and region.</div>
-            <div class="text-sm font-semibold opacity-80">SDK</div>
+            <div class="meta-text mb-sm">Executor routing and region.</div>
+            <div class="card-subtitle">SDK</div>
             <${SegmentedControl}
               options=${[
                 { value: "codex", label: "Codex" },
@@ -839,7 +838,7 @@ export function ControlTab() {
               value=${config?.sdk || "auto"}
               onChange=${(v) => updateConfig("sdk", v)}
             />
-            <div class="text-sm font-semibold opacity-80 mt-2">Kanban</div>
+            <div class="card-subtitle mt-sm">Kanban</div>
             <${SegmentedControl}
               options=${[
                 { value: "vk", label: "VK" },
@@ -850,7 +849,7 @@ export function ControlTab() {
               onChange=${(v) => updateConfig("kanban", v)}
             />
             ${regions.length > 1 && html`
-              <div class="text-sm font-semibold opacity-80 mt-2">Region</div>
+              <div class="card-subtitle mt-sm">Region</div>
               <${SegmentedControl}
                 options=${regionOptions}
                 value=${regions[0]}
@@ -862,11 +861,11 @@ export function ControlTab() {
 
         <${Card} className="quick-commands-card">
           <${Collapsible} title="Quick Commands" defaultOpen=${!isCompact}>
-            <div class="text-xs opacity-60 mb-2">Run a shell or git command.</div>
-            <div class="text-xs font-semibold opacity-70">Command</div>
-            <div class="flex items-center gap-2 mb-2">
+            <div class="meta-text mb-sm">Run a shell or git command.</div>
+            <div class="form-label">Command</div>
+            <div class="input-row mb-sm">
               <select
-                class="select select-bordered select-sm"
+                class="input"
                 style="flex:0 0 auto;width:80px"
                 value=${quickCmdPrefix}
                 onChange=${(e) => setQuickCmdPrefix(e.target.value)}
@@ -875,7 +874,7 @@ export function ControlTab() {
                 <option value="git">Git</option>
               </select>
               <input
-                class="input input-bordered input-sm"
+                class="input"
                 placeholder=${quickCmdPrefix === "shell" ? "ls -la" : "status --short"}
                 value=${quickCmdInput}
                 onInput=${(e) => {
@@ -892,15 +891,15 @@ export function ControlTab() {
               </button>
             </div>
             ${quickCmdFeedback && html`
-              <div class="text-xs ${quickCmdFeedbackTone === "error" ? "text-error" : "text-success"} mb-2">
+              <div class="form-hint ${quickCmdFeedbackTone === "error" ? "error" : "success"} mb-sm">
                 ${quickCmdFeedback}
               </div>
             `}
-            <div class="text-xs opacity-60">
+            <div class="meta-text">
               Output appears in agent logs. ${""}
               <a
                 href="#"
-                class="link link-primary text-xs"
+                class="quick-commands-link"
                 onClick=${(e) => {
                   e.preventDefault();
                   import("../modules/router.js").then(({ navigateTo }) => navigateTo("logs"));
@@ -910,7 +909,6 @@ export function ControlTab() {
           <//>
         <//>
       </div>
-    </div>
     </div>
   `;
 }

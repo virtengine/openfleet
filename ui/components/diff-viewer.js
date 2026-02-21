@@ -52,34 +52,34 @@ function DiffFile({ file }) {
       : "modified";
 
   return html`
-    <div class="card bg-base-200 shadow-sm mb-2">
+    <div class="diff-file-item">
       <div
-        class="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-base-300 rounded-t-lg transition-colors ${statusClass === 'added' ? 'border-l-2 border-success' : statusClass === 'deleted' ? 'border-l-2 border-error' : ''}"
+        class="diff-file-header ${statusClass}"
         onClick=${() => setExpanded(!expanded)}
       >
-        <span class="text-base flex-shrink-0">${fileIcon(file.filename)}</span>
-        <span class="text-sm font-medium truncate flex-1">${file.filename}</span>
-        <span class="flex items-center gap-2 text-xs flex-shrink-0">
-          ${additions > 0 && html`<span class="text-success font-mono">+${additions}</span>`}
-          ${deletions > 0 && html`<span class="text-error font-mono">-${deletions}</span>`}
+        <span class="diff-file-icon">${fileIcon(file.filename)}</span>
+        <span class="diff-file-name">${file.filename}</span>
+        <span class="diff-file-stats">
+          ${additions > 0 && html`<span class="diff-stat-add">+${additions}</span>`}
+          ${deletions > 0 && html`<span class="diff-stat-del">-${deletions}</span>`}
         </span>
-        <span class="text-xs opacity-60">${expanded ? "▾" : "▸"}</span>
+        <span class="diff-file-toggle">${expanded ? "▾" : "▸"}</span>
       </div>
       ${expanded && lines.length > 0 && html`
-        <div class="bg-base-300 rounded-b-lg p-3 font-mono text-xs overflow-x-auto">
+        <div class="diff-hunk">
           ${lines.map(
             (line) => html`
-              <div key=${line.index} class="${line.type === 'addition' ? 'bg-success/10 text-success' : line.type === 'deletion' ? 'bg-error/10 text-error' : line.type === 'hunk-header' ? 'bg-info/10 text-info opacity-70' : ''} px-2 py-0.5 whitespace-pre">
-                <span>${line.text}</span>
+              <div key=${line.index} class="diff-line ${line.type}">
+                <span class="diff-line-text">${line.text}</span>
               </div>
             `,
           )}
         </div>
       `}
       ${expanded && lines.length === 0 && html`
-        <div class="bg-base-300 rounded-b-lg p-3 font-mono text-xs">
-          <div class="opacity-50 px-2 py-0.5">
-            <span>(no diff available)</span>
+        <div class="diff-hunk">
+          <div class="diff-line context">
+            <span class="diff-line-text">(no diff available)</span>
           </div>
         </div>
       `}
@@ -125,27 +125,27 @@ export function DiffViewer({ sessionId }) {
 
   if (!sessionId) {
     return html`
-      <div class="flex flex-col items-center justify-center gap-2 py-12 opacity-60">
-        <div class="text-3xl">📝</div>
-        <div class="text-sm">Select a session to view diffs</div>
+      <div class="diff-viewer diff-empty">
+        <div class="session-empty-icon">📝</div>
+        <div class="session-empty-text">Select a session to view diffs</div>
       </div>
     `;
   }
 
   if (loading) {
     return html`
-      <div class="flex flex-col gap-3">
-        <div class="flex items-center justify-center py-8 text-sm opacity-60">Loading diff…</div>
+      <div class="diff-viewer">
+        <div class="diff-loading">Loading diff…</div>
       </div>
     `;
   }
 
   if (error) {
     return html`
-      <div class="flex flex-col gap-3">
-        <div class="flex flex-col items-center justify-center gap-2 py-12 opacity-60">
-          <div class="text-3xl">📝</div>
-          <div class="text-sm">Diff not available</div>
+      <div class="diff-viewer">
+        <div class="session-empty">
+          <div class="session-empty-icon">📝</div>
+          <div class="session-empty-text">Diff not available</div>
           <button class="btn btn-primary btn-sm" onClick=${handleRetry}>
             Retry
           </button>
@@ -165,23 +165,23 @@ export function DiffViewer({ sessionId }) {
   );
 
   return html`
-    <div class="flex flex-col gap-3">
+    <div class="diff-viewer">
       ${files.length > 0 && html`
-        <div class="flex items-center gap-3 text-sm px-1">
-          <span class="font-medium">${files.length} file${files.length !== 1 ? "s" : ""} changed</span>
-          ${totalAdditions > 0 && html`<span class="text-success font-mono">+${totalAdditions}</span>`}
-          ${totalDeletions > 0 && html`<span class="text-error font-mono">-${totalDeletions}</span>`}
+        <div class="diff-summary">
+          <span>${files.length} file${files.length !== 1 ? "s" : ""} changed</span>
+          ${totalAdditions > 0 && html`<span class="diff-stat-add">+${totalAdditions}</span>`}
+          ${totalDeletions > 0 && html`<span class="diff-stat-del">-${totalDeletions}</span>`}
         </div>
       `}
-      <div class="flex flex-col gap-2">
+      <div class="diff-file-list">
         ${files.length > 0
           ? files.map(
               (f) => html`<${DiffFile} key=${f.filename} file=${f} />`,
             )
           : html`
-              <div class="flex flex-col items-center justify-center gap-2 py-12 opacity-60">
-                <div class="text-3xl">✨</div>
-                <div class="text-sm">No changes yet</div>
+              <div class="session-empty">
+                <div class="session-empty-icon">✨</div>
+                <div class="session-empty-text">No changes yet</div>
               </div>
             `}
       </div>
