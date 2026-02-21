@@ -139,6 +139,120 @@ export async function getInstallationTokenForRepo(owner, repo) {
 // ── OAuth ────────────────────────────────────────────────────────────────────
 
 /**
+ * Starts a GitHub Device Flow authorization request.
+ * The user visits the returned URL, enters the code, and authorizes.
+ * Then poll with pollDeviceToken() until authorization completes.
+ *
+ * Requires BOSUN_GITHUB_CLIENT_ID. No client secret or public URL needed.
+ * NOTE: Device Flow must be enabled in the GitHub App settings.
+ *
+ * @param {string} [scope] — OAuth scopes (default: "repo")
+ * @returns {Promise<{deviceCode: string, userCode: string, verificationUri: string, expiresIn: number, interval: number}>}
+ */
+export async function startDeviceFlow(scope = "repo") {
+  const clientId = process.env.BOSUN_GITHUB_CLIENT_ID || "";
+  if (!clientId) {
+    throw new Error("BOSUN_GITHUB_CLIENT_ID must be set for Device Flow");
+  }
+
+  const body = new URLSearchParams({ client_id: clientId, scope });
+  const res = await fetch("https://github.com/login/device/code", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": "bosun-botswain",
+    },
+    body: body.toString(),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Device flow initiation failed ${res.status}: ${text}`);
+  }
+
+  const data = await res.json();
+  if (data.error) {
+    throw new Error(`Device flow error: ${data.error} — ${data.error_description || ""}`);
+  }
+
+  return {
+    deviceCode: data.device_code,
+    userCode: data.user_code,
+    verificationUri: data.verification_uri,
+    expiresIn: data.expires_in,
+    interval: data.interval,
+  };
+}
+
+/**
+ * Polls GitHub to check if the user has completed device authorization.
+ *
+ * Returns one of:
+ *   - { status: "complete", accessToken, tokenType, scope }
+ *   - { status: "pending" }                        — user hasn't entered code yet
+ *   - { status: "slow_down", interval }             — increase poll interval
+ *   - { status: "expired" }                         — code expired, restart flow
+ *   - { status: "error", error, description }       — permanent error
+ *
+ * @param {string} deviceCode — from startDeviceFlow()
+ * @returns {Promise<{status: string, accessToken?: string, tokenType?: string, scope?: string, interval?: number, error?: string, description?: string}>}
+ */
+export async function pollDeviceToken(deviceCode) {
+  const clientId = process.env.BOSUN_GITHUB_CLIENT_ID || "";
+  if (!clientId) {
+    throw new Error("BOSUN_GITHUB_CLIENT_ID must be set");
+  }
+
+  const body = new URLSearchParams({
+    client_id: clientId,
+    device_code: deviceCode,
+    grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+  });
+
+  const res = await fetch("https://github.com/login/oauth/access_token", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": "bosun-botswain",
+    },
+    body: body.toString(),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Device token poll failed ${res.status}: ${text}`);
+  }
+
+  const data = await res.json();
+
+  if (data.access_token) {
+    return {
+      status: "complete",
+      accessToken: data.access_token,
+      tokenType: data.token_type,
+      scope: data.scope || "",
+    };
+  }
+
+  switch (data.error) {
+    case "authorization_pending":
+      return { status: "pending" };
+    case "slow_down":
+      return { status: "slow_down", interval: data.interval };
+    case "expired_token":
+      return { status: "expired" };
+    default:
+      return {
+        status: "error",
+        error: data.error,
+        description: data.error_description || "",
+      };
+  }
+}
+
+/**
  * Exchanges an OAuth authorization code for a user access token.
  * Called from the /api/github/callback route after GitHub redirects the user.
  *

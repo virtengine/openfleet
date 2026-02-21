@@ -2341,6 +2341,204 @@ async function handleGitHubOAuthCallback(req, res) {
   }
 }
 
+// ─── GitHub Device Flow ───────────────────────────────────────────────────────
+
+/**
+ * POST /api/github/device/start
+ * Kicks off the OAuth Device Flow — returns a user code + verification URL.
+ * No public URL, no callback, no client secret needed.
+ * User visits github.com/login/device, enters the code, done.
+ */
+async function handleDeviceFlowStart(req, res) {
+  if (req.method !== "POST") {
+    jsonResponse(res, 405, { ok: false, error: "Method not allowed" });
+    return;
+  }
+
+  const clientId = (process.env.BOSUN_GITHUB_CLIENT_ID || "").trim();
+  if (!clientId) {
+    jsonResponse(res, 400, {
+      ok: false,
+      error: "BOSUN_GITHUB_CLIENT_ID is not set. Configure it in Settings → GitHub.",
+    });
+    return;
+  }
+
+  try {
+    const body = new URLSearchParams({ client_id: clientId, scope: "repo" });
+    const ghRes = await fetch("https://github.com/login/device/code", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "bosun-botswain",
+      },
+      body: body.toString(),
+    });
+
+    if (!ghRes.ok) {
+      const text = await ghRes.text();
+      throw new Error(`GitHub device/code ${ghRes.status}: ${text}`);
+    }
+
+    const data = await ghRes.json();
+    if (data.error) {
+      throw new Error(`${data.error}: ${data.error_description || ""}`);
+    }
+
+    console.log(`[device-flow] started — user code: ${data.user_code}`);
+
+    jsonResponse(res, 200, {
+      ok: true,
+      data: {
+        deviceCode: data.device_code,
+        userCode: data.user_code,
+        verificationUri: data.verification_uri,
+        expiresIn: data.expires_in,
+        interval: data.interval || 5,
+      },
+    });
+  } catch (err) {
+    console.warn(`[device-flow] start error: ${err.message}`);
+    jsonResponse(res, 500, { ok: false, error: err.message });
+  }
+}
+
+/**
+ * POST /api/github/device/poll
+ * Polls GitHub to check if the user has entered the device code.
+ * Body: { deviceCode: "..." }
+ *
+ * Returns:
+ *   { status: "pending" }        — still waiting
+ *   { status: "complete", login } — done, token saved
+ *   { status: "expired" }        — code expired, restart
+ *   { status: "error", error }   — something went wrong
+ */
+async function handleDeviceFlowPoll(req, res) {
+  if (req.method !== "POST") {
+    jsonResponse(res, 405, { ok: false, error: "Method not allowed" });
+    return;
+  }
+
+  const clientId = (process.env.BOSUN_GITHUB_CLIENT_ID || "").trim();
+  if (!clientId) {
+    jsonResponse(res, 400, { ok: false, error: "BOSUN_GITHUB_CLIENT_ID not set" });
+    return;
+  }
+
+  let deviceCode;
+  try {
+    const body = await readJsonBody(req);
+    deviceCode = body?.deviceCode;
+  } catch {
+    jsonResponse(res, 400, { ok: false, error: "Invalid JSON body" });
+    return;
+  }
+
+  if (!deviceCode) {
+    jsonResponse(res, 400, { ok: false, error: "deviceCode is required" });
+    return;
+  }
+
+  try {
+    const body = new URLSearchParams({
+      client_id: clientId,
+      device_code: deviceCode,
+      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+    });
+
+    const ghRes = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "bosun-botswain",
+      },
+      body: body.toString(),
+    });
+
+    if (!ghRes.ok) {
+      throw new Error(`Token poll HTTP ${ghRes.status}`);
+    }
+
+    const data = await ghRes.json();
+
+    // Success — got a token
+    if (data.access_token) {
+      const accessToken = data.access_token;
+
+      // Fetch user identity
+      let login = "unknown";
+      try {
+        const userRes = await fetch("https://api.github.com/user", {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "bosun-botswain",
+          },
+        });
+        if (userRes.ok) {
+          const u = await userRes.json();
+          login = u.login || "unknown";
+        }
+      } catch {
+        // non-fatal
+      }
+
+      console.log(`[device-flow] authorized user=${login}`);
+
+      // Save token to .env and process.env
+      if (accessToken) {
+        try {
+          updateEnvFile({ GH_TOKEN: accessToken });
+          process.env.GH_TOKEN = accessToken;
+          console.log(`[device-flow] wrote GH_TOKEN to .env for user=${login}`);
+        } catch (err) {
+          console.warn(`[device-flow] could not write GH_TOKEN to .env: ${err.message}`);
+        }
+      }
+
+      broadcastUiEvent(["overview"], "invalidate", {
+        reason: "github-device-flow-authorized",
+        login,
+      });
+
+      jsonResponse(res, 200, { ok: true, data: { status: "complete", login } });
+      return;
+    }
+
+    // Still pending or error
+    switch (data.error) {
+      case "authorization_pending":
+        jsonResponse(res, 200, { ok: true, data: { status: "pending" } });
+        return;
+      case "slow_down":
+        jsonResponse(res, 200, {
+          ok: true,
+          data: { status: "slow_down", interval: data.interval },
+        });
+        return;
+      case "expired_token":
+        jsonResponse(res, 200, { ok: true, data: { status: "expired" } });
+        return;
+      default:
+        jsonResponse(res, 200, {
+          ok: true,
+          data: {
+            status: "error",
+            error: data.error,
+            description: data.error_description || "",
+          },
+        });
+    }
+  } catch (err) {
+    console.warn(`[device-flow] poll error: ${err.message}`);
+    jsonResponse(res, 500, { ok: false, error: err.message });
+  }
+}
+
 async function readStatusSnapshot() {
   try {
     const raw = await readFile(statusPath, "utf8");
@@ -5065,6 +5263,16 @@ export async function startTelegramUiServer(options = {}) {
     // GitHub OAuth callback — public (no session auth required)
     if (url.pathname === "/api/github/callback") {
       await handleGitHubOAuthCallback(req, res);
+      return;
+    }
+
+    // GitHub Device Flow — no public URL needed
+    if (url.pathname === "/api/github/device/start") {
+      await handleDeviceFlowStart(req, res);
+      return;
+    }
+    if (url.pathname === "/api/github/device/poll") {
+      await handleDeviceFlowPoll(req, res);
       return;
     }
 
