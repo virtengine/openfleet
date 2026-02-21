@@ -56,7 +56,7 @@ function statusColor(s) {
 
 function StatusDot({ status }) {
   return html`<span
-    class="w-2 h-2 rounded-full inline-block shrink-0"
+    class="status-dot"
     style="background:${statusColor(status)}"
   ></span>`;
 }
@@ -275,15 +275,13 @@ function WorkspaceViewer({ agent, onClose }) {
     const renderMatchList = (title, items, renderItem) => {
       if (!items || items.length === 0) return null;
       return html`
-        <div class="card bg-base-200 shadow-sm mb-2">
-          <div class="card-body p-3">
-            <div class="font-semibold text-sm mb-1">${title}</div>
-            ${items.map((item, i) => html`
-              <div class="text-xs text-base-content/60" key=${i}>
-                ${renderItem(item)}
-              </div>
-            `)}
-          </div>
+        <div class="card mb-sm">
+          <div class="card-title">${title}</div>
+          ${items.map((item, i) => html`
+            <div class="meta-text" key=${i}>
+              ${renderItem(item)}
+            </div>
+          `)}
         </div>
       `;
     };
@@ -306,49 +304,45 @@ function WorkspaceViewer({ agent, onClose }) {
       const reasons = diagnostics?.reasons || [];
       const hints = diagnostics?.hints || [];
       return html`
-        <div class="flex flex-col gap-2 overflow-auto p-2">
-          <div class="card bg-base-200 shadow-sm mb-2">
-            <div class="card-body p-3">
-              <div class="font-semibold text-sm mb-1">Workspace Context Unavailable</div>
-              <div class="text-xs text-base-content/60">Query: ${contextData?.query || query || "unknown"}</div>
-              ${reasons.length > 0 &&
-                html`<div class="text-xs text-base-content/60 mt-1">
-                  ${reasons.map((r) => formatReason(r)).join(" ")}
-                </div>`}
-              ${hints.length > 0 &&
-                html`<div class="text-xs text-base-content/60 mt-1">
-                  ${hints.join(" ")}
-                </div>`}
-              ${(diagnostics?.searched?.activeSlots != null ||
-                diagnostics?.searched?.activeWorktrees != null ||
-                diagnostics?.searched?.sessions != null) &&
-                html`<div class="text-xs text-base-content/60 mt-1">
-                  Searched: ${diagnostics?.searched?.activeSlots ?? 0} slots · ${diagnostics?.searched?.activeWorktrees ?? 0} worktrees · ${diagnostics?.searched?.sessions ?? 0} sessions
-                </div>`}
-            </div>
+        <div class="workspace-context">
+          <div class="card mb-sm">
+            <div class="card-title">Workspace Context Unavailable</div>
+            <div class="meta-text">Query: ${contextData?.query || query || "unknown"}</div>
+            ${reasons.length > 0 &&
+              html`<div class="meta-text mt-xs">
+                ${reasons.map((r) => formatReason(r)).join(" ")}
+              </div>`}
+            ${hints.length > 0 &&
+              html`<div class="meta-text mt-xs">
+                ${hints.join(" ")}
+              </div>`}
+            ${(diagnostics?.searched?.activeSlots != null ||
+              diagnostics?.searched?.activeWorktrees != null ||
+              diagnostics?.searched?.sessions != null) &&
+              html`<div class="meta-text mt-xs">
+                Searched: ${diagnostics?.searched?.activeSlots ?? 0} slots · ${diagnostics?.searched?.activeWorktrees ?? 0} worktrees · ${diagnostics?.searched?.sessions ?? 0} sessions
+              </div>`}
           </div>
 
           ${renderMatchList("Worktree Matches", matches.worktrees, (wt) =>
-            html`<span class="font-mono">${wt.name || wt.branch || "worktree"}</span> ${wt.path ? `· ${wt.path}` : ""}`)}
+            html`<span class="mono">${wt.name || wt.branch || "worktree"}</span> ${wt.path ? `· ${wt.path}` : ""}`)}
           ${renderMatchList("Slot Matches", matches.slots, (slot) =>
-            html`<span class="font-mono">${slot.taskId || slot.taskTitle || "slot"}</span> ${slot.branch ? `· ${slot.branch}` : ""}`)}
+            html`<span class="mono">${slot.taskId || slot.taskTitle || "slot"}</span> ${slot.branch ? `· ${slot.branch}` : ""}`)}
           ${renderMatchList("Session Matches", matches.sessions, (sess) =>
-            html`<span class="font-mono">${sess.id || sess.taskId || "session"}</span> ${sess.status ? `· ${sess.status}` : ""}`)}
+            html`<span class="mono">${sess.id || sess.taskId || "session"}</span> ${sess.status ? `· ${sess.status}` : ""}`)}
 
           ${sessionInfo && html`
-            <div class="card bg-base-200 shadow-sm mb-2">
-              <div class="card-body p-3">
-                <div class="font-semibold text-sm mb-1">Session</div>
-                <div class="text-xs text-base-content/60">
-                  <span class="font-mono">${sessionInfo.id || sessionInfo.taskId}</span>
-                  ${sessionInfo.status ? ` · ${sessionInfo.status}` : ""}
-                </div>
-                ${sessionInfo.preview &&
-                  html`<div class="text-xs text-base-content/60 mt-1">${truncate(sessionInfo.preview, 120)}</div>`}
-                <button class="btn btn-ghost btn-sm mt-2" onClick=${() => setActiveTab("stream")}>
-                  💬 View Stream
-                </button>
+            <div class="card mb-sm">
+              <div class="card-title">Session</div>
+              <div class="meta-text">
+                <span class="mono">${sessionInfo.id || sessionInfo.taskId}</span>
+                ${sessionInfo.status ? ` · ${sessionInfo.status}` : ""}
               </div>
+              ${sessionInfo.preview &&
+                html`<div class="meta-text mt-xs">${truncate(sessionInfo.preview, 120)}</div>`}
+              <button class="btn btn-ghost btn-sm mt-sm" onClick=${() => setActiveTab("stream")}>
+                💬 View Stream
+              </button>
             </div>
           `}
         </div>
@@ -358,26 +352,24 @@ function WorkspaceViewer({ agent, onClose }) {
     const renderActionHistory = () => {
       if (!sessionInfo && actionHistory.length === 0) return null;
       return html`
-        <div class="card bg-base-200 shadow-sm mb-2">
-          <div class="card-body p-3">
-            <div class="font-semibold text-sm mb-1">Action History</div>
-            ${actionHistory.length === 0 &&
-              html`<div class="text-xs text-base-content/60">No recent tool actions recorded</div>`}
-            ${actionHistory.map((action, i) => {
-              const label =
-                action.type === "tool_result"
-                  ? "RESULT"
-                  : action.tool || "TOOL";
-              const detail = action.detail || action.content || "";
-              return html`
-                <div class="text-xs text-base-content/60" key=${i}>
-                  <span class="font-mono">${label}</span>
-                  ${detail ? ` ${truncate(detail, 140)}` : ""}
-                  ${action.timestamp ? ` · ${formatRelative(action.timestamp)}` : ""}
-                </div>
-              `;
-            })}
-          </div>
+        <div class="card mb-sm">
+          <div class="card-title">Action History</div>
+          ${actionHistory.length === 0 &&
+            html`<div class="meta-text">No recent tool actions recorded</div>`}
+          ${actionHistory.map((action, i) => {
+            const label =
+              action.type === "tool_result"
+                ? "RESULT"
+                : action.tool || "TOOL";
+            const detail = action.detail || action.content || "";
+            return html`
+              <div class="meta-text" key=${i}>
+                <span class="mono">${label}</span>
+                ${detail ? ` ${truncate(detail, 140)}` : ""}
+                ${action.timestamp ? ` · ${formatRelative(action.timestamp)}` : ""}
+              </div>
+            `;
+          })}
         </div>
       `;
     };
@@ -417,46 +409,45 @@ function WorkspaceViewer({ agent, onClose }) {
         type === "tool_result" ? "RESULT" : type === "error" ? "ERROR" : "TOOL"
       );
       return html`
-        <div class="card bg-base-200 shadow-sm mb-2">
-          <div class="card-body p-3">
-            <div class="font-semibold text-sm mb-1">Live Tool/Event Stream</div>
-            <div class="flex flex-wrap items-center gap-2 mb-2">
-              <div class="flex flex-wrap gap-1">
-                <button
-                  class="btn btn-xs ${streamFilter === "all" ? "btn-primary" : "btn-ghost"}"
-                  onClick=${() => setStreamFilter("all")}
-                >
-                  All (${counts.all})
-                </button>
-                <button
-                  class="btn btn-xs ${streamFilter === "tool" ? "btn-primary" : "btn-ghost"}"
-                  onClick=${() => setStreamFilter("tool")}
-                >
-                  Tool (${counts.tool})
-                </button>
-                <button
-                  class="btn btn-xs ${streamFilter === "result" ? "btn-primary" : "btn-ghost"}"
-                  onClick=${() => setStreamFilter("result")}
-                >
-                  Result (${counts.result})
-                </button>
-                <button
-                  class="btn btn-xs ${streamFilter === "error" ? "btn-primary" : "btn-ghost"}"
-                  onClick=${() => setStreamFilter("error")}
-                >
-                  Error (${counts.error})
-                </button>
+        <div class="card mb-sm">
+          <div class="card-title">Live Tool/Event Stream</div>
+          <div class="stream-toolbar">
+            <div class="chip-group stream-chips">
+              <button
+                class="chip ${streamFilter === "all" ? "active" : ""}"
+                onClick=${() => setStreamFilter("all")}
+              >
+                All (${counts.all})
+              </button>
+              <button
+                class="chip ${streamFilter === "tool" ? "active" : ""}"
+                onClick=${() => setStreamFilter("tool")}
+              >
+                Tool (${counts.tool})
+              </button>
+              <button
+                class="chip ${streamFilter === "result" ? "active" : ""}"
+                onClick=${() => setStreamFilter("result")}
+              >
+                Result (${counts.result})
+              </button>
+              <button
+                class="chip ${streamFilter === "error" ? "active" : ""}"
+                onClick=${() => setStreamFilter("error")}
+              >
+                Error (${counts.error})
+              </button>
+            </div>
+            <div class="stream-actions">
+              <div class="stream-search">
+                <span class="icon-inline">${ICONS.search}</span>
+                <input
+                  class="input input-compact"
+                  placeholder="Filter events..."
+                  value=${streamSearch}
+                  onInput=${(e) => setStreamSearch(e.target.value)}
+                />
               </div>
-              <div class="flex items-center gap-1 ml-auto">
-                <div class="join">
-                  <span class="icon-inline">${ICONS.search}</span>
-                  <input
-                    class="input input-bordered input-sm"
-                    placeholder="Filter events..."
-                    value=${streamSearch}
-                    onInput=${(e) => setStreamSearch(e.target.value)}
-                  />
-                </div>
               <button class="btn btn-ghost btn-sm" onClick=${() => {
                 if (!streamPaused) {
                   setStreamSnapshot({
@@ -489,33 +480,32 @@ function WorkspaceViewer({ agent, onClose }) {
               >
                 <span class="icon-inline">${ICONS.download}</span> Export
               </button>
-              </div>
             </div>
-            ${streamPaused && snapshotMeta &&
-              html`<div class="text-xs text-base-content/60 mt-1">Paused at ${snapshotMeta}</div>`}
-            ${filteredEvents.length === 0 &&
-              html`<div class="flex flex-col items-center justify-center py-6 text-base-content/50">
-                <div class="text-2xl mb-1">🛰️</div>
-                <div class="text-xs">
-                  ${toolEvents.length === 0 ? "No tool events yet" : "No events match filters"}
-                </div>
-              </div>`}
-            ${filteredEvents.length > 0 &&
-              html`<div class="flex flex-col gap-1 max-h-64 overflow-y-auto">
-                ${filteredEvents.map((evt) => html`
-                  <div class="p-2 rounded bg-base-300 text-xs" key=${evt._id}>
-                    <div class="flex items-center gap-2">
-                      <span class="badge badge-xs ${evt.type === 'error' ? 'badge-error' : evt.type === 'tool_result' ? 'badge-success' : 'badge-info'}">
-                        ${toolLabel(evt.type)}
-                      </span>
-                      ${evt.tool && html`<span class="font-mono truncate">${evt.tool}</span>`}
-                      ${evt.timestamp && html`<span class="text-base-content/50 ml-auto text-[10px]">${formatRelative(evt.timestamp)}</span>`}
-                    </div>
-                    ${evt.content && html`<div class="text-base-content/70 mt-1 break-words">${truncate(evt.content, 260)}</div>`}
-                  </div>
-                `)}
-              </div>`}
           </div>
+          ${streamPaused && snapshotMeta &&
+            html`<div class="meta-text mt-xs">Paused at ${snapshotMeta}</div>`}
+          ${filteredEvents.length === 0 &&
+            html`<div class="stream-empty">
+              <div class="stream-empty-icon">🛰️</div>
+              <div class="stream-empty-text">
+                ${toolEvents.length === 0 ? "No tool events yet" : "No events match filters"}
+              </div>
+            </div>`}
+          ${filteredEvents.length > 0 &&
+            html`<div class="stream-list">
+              ${filteredEvents.map((evt) => html`
+                <div class="stream-item stream-${evt.type}" key=${evt._id}>
+                  <div class="stream-item-header">
+                    <span class="stream-tag stream-tag-${evt.type}">
+                      ${toolLabel(evt.type)}
+                    </span>
+                    ${evt.tool && html`<span class="stream-item-tool mono">${evt.tool}</span>`}
+                    ${evt.timestamp && html`<span class="stream-item-time">${formatRelative(evt.timestamp)}</span>`}
+                  </div>
+                  ${evt.content && html`<div class="stream-item-body">${truncate(evt.content, 260)}</div>`}
+                </div>
+              `)}
+            </div>`}
         </div>
       `;
     };
@@ -541,91 +531,89 @@ function WorkspaceViewer({ agent, onClose }) {
         return `${entry.path}${kinds}`;
       }).join("\n");
       return html`
-        <div class="card bg-base-200 shadow-sm mb-2">
-          <div class="card-body p-3">
-            <div class="font-semibold text-sm mb-1">File Access</div>
-            <div class="flex flex-wrap items-center gap-2 mb-2">
-              <div class="flex flex-wrap gap-1">
-                <button
-                  class="btn btn-xs ${fileFilter === "all" ? "btn-primary" : "btn-ghost"}"
-                  onClick=${() => setFileFilter("all")}
-                >
-                  All (${summaryFiles.length})
-                </button>
-                <button
-                  class="btn btn-xs ${fileFilter === "read" ? "btn-primary" : "btn-ghost"}"
-                  onClick=${() => setFileFilter("read")}
-                >
-                  Read (${counts.read})
-                </button>
-                <button
-                  class="btn btn-xs ${fileFilter === "write" ? "btn-primary" : "btn-ghost"}"
-                  onClick=${() => setFileFilter("write")}
-                >
-                  Write (${counts.write})
-                </button>
-                <button
-                  class="btn btn-xs ${fileFilter === "other" ? "btn-primary" : "btn-ghost"}"
-                  onClick=${() => setFileFilter("other")}
-                >
-                  Other (${counts.other})
-                </button>
-              </div>
-              <div class="flex items-center gap-1 ml-auto">
-                <div class="join">
-                  <span class="icon-inline">${ICONS.search}</span>
-                  <input
-                    class="input input-bordered input-sm"
-                    placeholder="Filter files..."
-                    value=${fileSearch}
-                    onInput=${(e) => setFileSearch(e.target.value)}
-                  />
-                </div>
-                <button
-                  class="btn btn-ghost btn-sm"
-                  onClick=${() => copyToClipboard(exportText, "File list copied")}
-                  disabled=${filteredFiles.length === 0}
-                >
-                  <span class="icon-inline">${ICONS.copy}</span> Copy
-                </button>
-                <button
-                  class="btn btn-ghost btn-sm"
-                  onClick=${() => downloadText(
-                    `file-access-${agent.taskId || agent.branch || "agent"}.txt`,
-                    exportText,
-                  )}
-                  disabled=${filteredFiles.length === 0}
-                >
-                  <span class="icon-inline">${ICONS.download}</span> Export
-                </button>
-              </div>
+        <div class="card mb-sm">
+          <div class="card-title">File Access</div>
+          <div class="stream-toolbar">
+            <div class="chip-group stream-chips">
+              <button
+                class="chip ${fileFilter === "all" ? "active" : ""}"
+                onClick=${() => setFileFilter("all")}
+              >
+                All (${summaryFiles.length})
+              </button>
+              <button
+                class="chip ${fileFilter === "read" ? "active" : ""}"
+                onClick=${() => setFileFilter("read")}
+              >
+                Read (${counts.read})
+              </button>
+              <button
+                class="chip ${fileFilter === "write" ? "active" : ""}"
+                onClick=${() => setFileFilter("write")}
+              >
+                Write (${counts.write})
+              </button>
+              <button
+                class="chip ${fileFilter === "other" ? "active" : ""}"
+                onClick=${() => setFileFilter("other")}
+              >
+                Other (${counts.other})
+              </button>
             </div>
-            <div class="text-xs text-base-content/60">
-              ${counts.read} read · ${counts.write} written · ${counts.other} other
+            <div class="stream-actions">
+              <div class="stream-search">
+                <span class="icon-inline">${ICONS.search}</span>
+                <input
+                  class="input input-compact"
+                  placeholder="Filter files..."
+                  value=${fileSearch}
+                  onInput=${(e) => setFileSearch(e.target.value)}
+                />
+              </div>
+              <button
+                class="btn btn-ghost btn-sm"
+                onClick=${() => copyToClipboard(exportText, "File list copied")}
+                disabled=${filteredFiles.length === 0}
+              >
+                <span class="icon-inline">${ICONS.copy}</span> Copy
+              </button>
+              <button
+                class="btn btn-ghost btn-sm"
+                onClick=${() => downloadText(
+                  `file-access-${agent.taskId || agent.branch || "agent"}.txt`,
+                  exportText,
+                )}
+                disabled=${filteredFiles.length === 0}
+              >
+                <span class="icon-inline">${ICONS.download}</span> Export
+              </button>
             </div>
-            ${streamPaused && snapshotMeta &&
-              html`<div class="text-xs text-base-content/60 mt-1">Paused at ${snapshotMeta}</div>`}
-            ${filteredFiles.length === 0 &&
-              html`<div class="flex flex-col items-center justify-center py-6 text-base-content/50">
-                <div class="text-2xl mb-1">📂</div>
-                <div class="text-xs">
-                  ${summaryFiles.length === 0 ? "No file access recorded" : "No files match filters"}
-                </div>
-              </div>`}
-            ${filteredFiles.length > 0 &&
-              html`<div class="flex flex-col gap-1 max-h-64 overflow-y-auto">
-                ${filteredFiles.map((entry) => html`
-                  <div class="p-2 rounded bg-base-300 text-xs" key=${entry.path}>
-                    <div class="flex items-center gap-2">
-                      <span class="badge badge-xs badge-info">FILE</span>
-                      <span class="font-mono truncate">${entry.path}</span>
-                    </div>
-                    ${entry.kinds?.length &&
-                      html`<div class="text-base-content/70 mt-1">Access: ${entry.kinds.join(", ")}</div>`}
-                  </div>
-                `)}
-              </div>`}
           </div>
+          <div class="meta-text">
+            ${counts.read} read · ${counts.write} written · ${counts.other} other
+          </div>
+          ${streamPaused && snapshotMeta &&
+            html`<div class="meta-text mt-xs">Paused at ${snapshotMeta}</div>`}
+          ${filteredFiles.length === 0 &&
+            html`<div class="stream-empty">
+              <div class="stream-empty-icon">📂</div>
+              <div class="stream-empty-text">
+                ${summaryFiles.length === 0 ? "No file access recorded" : "No files match filters"}
+              </div>
+            </div>`}
+          ${filteredFiles.length > 0 &&
+            html`<div class="stream-list">
+              ${filteredFiles.map((entry) => html`
+                <div class="stream-item stream-file" key=${entry.path}>
+                  <div class="stream-item-header">
+                    <span class="stream-tag stream-tag-file">FILE</span>
+                    <span class="mono">${entry.path}</span>
+                  </div>
+                  ${entry.kinds?.length &&
+                    html`<div class="stream-item-body">Access: ${entry.kinds.join(", ")}</div>`}
+                </div>
+              `)}
+            </div>`}
         </div>
       `;
     };
@@ -634,96 +622,84 @@ function WorkspaceViewer({ agent, onClose }) {
     const commits = ctx?.recentCommits || [];
     const aheadBehind = ctx?.gitAheadBehind || "";
     return html`
-      <div class="flex flex-col gap-2 overflow-auto p-2">
+      <div class="workspace-context">
         ${ctx && html`
-          <div class="card bg-base-200 shadow-sm mb-2">
-            <div class="card-body p-3">
-              <div class="font-semibold text-sm mb-1">Branch</div>
-              <div class="text-xs text-base-content/60">${ctx.gitBranch || agent.branch || "unknown"}</div>
-              <div class="text-xs text-base-content/60 mt-1">${ctx.path || "unknown path"}</div>
-              ${aheadBehind &&
-                html`<div class="text-xs text-base-content/60 mt-1">Ahead/Behind: ${aheadBehind}</div>`}
-            </div>
+          <div class="card mb-sm">
+            <div class="card-title">Branch</div>
+            <div class="meta-text">${ctx.gitBranch || agent.branch || "unknown"}</div>
+            <div class="meta-text mt-xs">${ctx.path || "unknown path"}</div>
+            ${aheadBehind &&
+              html`<div class="meta-text mt-xs">Ahead/Behind: ${aheadBehind}</div>`}
           </div>
         `}
         ${sessionInfo && html`
-          <div class="card bg-base-200 shadow-sm mb-2">
-            <div class="card-body p-3">
-              <div class="font-semibold text-sm mb-1">Session</div>
-              <div class="text-xs text-base-content/60">
-                <span class="font-mono">${sessionInfo.id || sessionInfo.taskId}</span>
-                ${sessionInfo.status ? ` · ${sessionInfo.status}` : ""}
-              </div>
-              ${sessionInfo.lastActiveAt &&
-                html`<div class="text-xs text-base-content/60 mt-1">Last Active: ${sessionInfo.lastActiveAt}</div>`}
-              ${sessionInfo.preview &&
-                html`<div class="text-xs text-base-content/60 mt-1">${truncate(sessionInfo.preview, 140)}</div>`}
-              <button class="btn btn-ghost btn-sm mt-2" onClick=${() => setActiveTab("stream")}>
-                💬 View Stream
-              </button>
+          <div class="card mb-sm">
+            <div class="card-title">Session</div>
+            <div class="meta-text">
+              <span class="mono">${sessionInfo.id || sessionInfo.taskId}</span>
+              ${sessionInfo.status ? ` · ${sessionInfo.status}` : ""}
             </div>
+            ${sessionInfo.lastActiveAt &&
+              html`<div class="meta-text mt-xs">Last Active: ${sessionInfo.lastActiveAt}</div>`}
+            ${sessionInfo.preview &&
+              html`<div class="meta-text mt-xs">${truncate(sessionInfo.preview, 140)}</div>`}
+            <button class="btn btn-ghost btn-sm mt-sm" onClick=${() => setActiveTab("stream")}>
+              💬 View Stream
+            </button>
           </div>
         `}
         ${slotInfo && html`
-          <div class="card bg-base-200 shadow-sm mb-2">
-            <div class="card-body p-3">
-              <div class="font-semibold text-sm mb-1">Active Slot</div>
-              <div class="text-xs text-base-content/60">
-                ${slotInfo.taskTitle || slotInfo.taskId || "slot"}
-                ${slotInfo.status ? ` · ${slotInfo.status}` : ""}
-              </div>
-              ${slotInfo.branch &&
-                html`<div class="text-xs text-base-content/60 mt-1">Branch: ${slotInfo.branch}</div>`}
+          <div class="card mb-sm">
+            <div class="card-title">Active Slot</div>
+            <div class="meta-text">
+              ${slotInfo.taskTitle || slotInfo.taskId || "slot"}
+              ${slotInfo.status ? ` · ${slotInfo.status}` : ""}
             </div>
+            ${slotInfo.branch &&
+              html`<div class="meta-text mt-xs">Branch: ${slotInfo.branch}</div>`}
           </div>
         `}
         ${renderActionHistory()}
         ${renderLiveToolEvents()}
         ${renderFileAccess()}
         ${renderMatchList("Worktree Matches", matches.worktrees, (wt) =>
-          html`<span class="font-mono">${wt.name || wt.branch || "worktree"}</span> ${wt.path ? `· ${wt.path}` : ""}`)}
+          html`<span class="mono">${wt.name || wt.branch || "worktree"}</span> ${wt.path ? `· ${wt.path}` : ""}`)}
         ${renderMatchList("Slot Matches", matches.slots, (slot) =>
-          html`<span class="font-mono">${slot.taskId || slot.taskTitle || "slot"}</span> ${slot.branch ? `· ${slot.branch}` : ""}`)}
+          html`<span class="mono">${slot.taskId || slot.taskTitle || "slot"}</span> ${slot.branch ? `· ${slot.branch}` : ""}`)}
         ${renderMatchList("Session Matches", matches.sessions, (sess) =>
-          html`<span class="font-mono">${sess.id || sess.taskId || "session"}</span> ${sess.status ? `· ${sess.status}` : ""}`)}
+          html`<span class="mono">${sess.id || sess.taskId || "session"}</span> ${sess.status ? `· ${sess.status}` : ""}`)}
         ${commits.length > 0 &&
         html`
-          <div class="card bg-base-200 shadow-sm mb-2">
-            <div class="card-body p-3">
-              <div class="font-semibold text-sm mb-1">Recent Commits</div>
-              ${commits.map(
-                (cm) => html`
-                  <div class="text-xs text-base-content/60" key=${cm.hash}>
-                    <span class="font-mono">${cm.hash}</span> ${cm.message || ""} ${cm.time ? `· ${cm.time}` : ""}
-                  </div>
-                `,
-              )}
-            </div>
+          <div class="card mb-sm">
+            <div class="card-title">Recent Commits</div>
+            ${commits.map(
+              (cm) => html`
+                <div class="meta-text" key=${cm.hash}>
+                  <span class="mono">${cm.hash}</span> ${cm.message || ""} ${cm.time ? `· ${cm.time}` : ""}
+                </div>
+              `,
+            )}
           </div>
         `}
         ${ctx && html`
-          <div class="card bg-base-200 shadow-sm mb-2">
-            <div class="card-body p-3">
-              <div class="font-semibold text-sm mb-1">Changed Files</div>
-              ${files.length === 0 &&
-              html`<div class="text-xs text-base-content/60">Clean working tree</div>`}
-              ${files.map(
-                (f) => html`
-                  <div class="text-xs text-base-content/60" key=${f.file}>
-                    <span class="font-mono">${f.code}</span> ${f.file}
-                  </div>
-                `,
-              )}
-            </div>
+          <div class="card mb-sm">
+            <div class="card-title">Changed Files</div>
+            ${files.length === 0 &&
+            html`<div class="meta-text">Clean working tree</div>`}
+            ${files.map(
+              (f) => html`
+                <div class="meta-text" key=${f.file}>
+                  <span class="mono">${f.code}</span> ${f.file}
+                </div>
+              `,
+            )}
           </div>
         `}
         ${ctx?.diffSummary &&
         html`
-          <div class="card bg-base-200 shadow-sm">
-            <div class="card-body p-3">
-              <div class="font-semibold text-sm mb-1">Diff Summary</div>
-              <pre class="font-mono text-xs whitespace-pre-wrap">${ctx.diffSummary}</pre>
-            </div>
+          <div class="card">
+            <div class="card-title">Diff Summary</div>
+            <pre class="workspace-diff">${ctx.diffSummary}</pre>
           </div>
         `}
       </div>
@@ -731,53 +707,55 @@ function WorkspaceViewer({ agent, onClose }) {
   };
 
   return html`
-    <div class="modal modal-open" onClick=${(e) => e.target === e.currentTarget && onClose()}>
-      <div class="modal-box max-w-4xl w-full max-h-[90vh] flex flex-col">
-        <div class="flex items-center justify-between mb-2">
-          <div>
-            <div class="font-semibold text-sm flex items-center gap-1">
-              <${StatusDot} status=${agent.status || "busy"} />
-              <span class="truncate">${agent.taskTitle || "(no title)"}</span>
+    <div class="modal-overlay" onClick=${(e) => e.target === e.currentTarget && onClose()}>
+      <div class="modal-content">
+        <div class="modal-handle" />
+        <div class="workspace-viewer">
+          <div class="workspace-header">
+            <div>
+              <div class="task-card-title">
+                <${StatusDot} status=${agent.status || "busy"} />
+                ${agent.taskTitle || "(no title)"}
+              </div>
+              <div class="task-card-meta">
+                ${agent.branch || "?"} · Slot ${(agent.index ?? 0) + 1} · ${formatDuration(agent.startedAt)}
+              </div>
             </div>
-            <div class="text-xs text-base-content/60 truncate">
-              ${agent.branch || "?"} · Slot ${(agent.index ?? 0) + 1} · ${formatDuration(agent.startedAt)}
-            </div>
+            <button class="btn btn-ghost btn-sm" onClick=${onClose}>✕</button>
           </div>
-          <button class="btn btn-ghost btn-sm" onClick=${onClose}>✕</button>
-        </div>
-        <div class="tabs tabs-boxed mb-2">
-          <button
-            class="tab ${activeTab === "stream" ? "tab-active" : ""}"
-            onClick=${() => setActiveTab("stream")}
-          >💬 Stream</button>
-          <button
-            class="tab ${activeTab === "changes" ? "tab-active" : ""}"
-            onClick=${() => setActiveTab("changes")}
-          >📝 Changes</button>
-          <button
-            class="tab ${activeTab === "logs" ? "tab-active" : ""}"
-            onClick=${() => setActiveTab("logs")}
-          >📄 Logs</button>
-        </div>
+          <div class="session-detail-tabs workspace-tabs">
+            <button
+              class="session-detail-tab ${activeTab === "stream" ? "active" : ""}"
+              onClick=${() => setActiveTab("stream")}
+            >💬 Stream</button>
+            <button
+              class="session-detail-tab ${activeTab === "changes" ? "active" : ""}"
+              onClick=${() => setActiveTab("changes")}
+            >📝 Changes</button>
+            <button
+              class="session-detail-tab ${activeTab === "logs" ? "active" : ""}"
+              onClick=${() => setActiveTab("logs")}
+            >📄 Logs</button>
+          </div>
 
           ${activeTab === "stream" &&
           html`
             ${sessionId
               ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
               : html`
-                  <div class="flex flex-col items-center justify-center py-8">
-                    <div class="text-3xl mb-2">💬</div>
-                    <div class="text-sm text-base-content/60">No session stream available</div>
+                  <div class="chat-view chat-empty-state">
+                    <div class="session-empty-icon">💬</div>
+                    <div class="session-empty-text">No session stream available</div>
                   </div>
                 `}
           `}
           ${activeTab === "changes" && renderChanges()}
           ${activeTab === "logs" &&
-          html`<div class="bg-base-300 rounded-box p-2 font-mono text-xs overflow-auto max-h-96 whitespace-pre-wrap" ref=${logRef}>${logText}</div>`}
+          html`<div class="workspace-log" ref=${logRef}>${logText}</div>`}
 
-          <div class="flex gap-2 items-center mt-2">
+          <div class="workspace-controls">
             <input
-              class="input input-bordered input-sm flex-1"
+              class="input"
               placeholder="Steer agent…"
               value=${steerInput}
               onInput=${(e) => setSteerInput(e.target.value)}
@@ -785,11 +763,12 @@ function WorkspaceViewer({ agent, onClose }) {
             />
             <button class="btn btn-primary btn-sm" onClick=${handleSteer}>🎯</button>
             <button
-              class="btn btn-error btn-sm"
+              class="btn btn-danger btn-sm"
               disabled=${agent.index == null}
               onClick=${handleStop}
             >⛔ Stop</button>
           </div>
+        </div>
       </div>
     </div>
   `;
@@ -834,29 +813,31 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
       subtitle="Start a slot with a task ID or a focused prompt"
       className=${className}
     >
-      <div class="flex flex-col gap-2">
-        <div class="text-xs text-base-content/60">
+      <div class="dispatch-section">
+        <div class="meta-text mb-sm">
           ${freeSlots > 0
             ? `${freeSlots} slot${freeSlots > 1 ? "s" : ""} available`
             : "No free slots"}
         </div>
-        <input
-          class="input input-bordered input-sm w-full"
-          placeholder="Task ID"
-          value=${taskId}
-          ref=${inputRef}
-          onInput=${(e) => { setTaskId(e.target.value); if (e.target.value) setPrompt(""); }}
-        />
-        <div class="divider text-xs my-0">or</div>
+        <div class="input-row">
+          <input
+            class="input"
+            placeholder="Task ID"
+            value=${taskId}
+            ref=${inputRef}
+            onInput=${(e) => { setTaskId(e.target.value); if (e.target.value) setPrompt(""); }}
+          />
+        </div>
+        <div class="divider-label">or</div>
         <textarea
-          class="textarea textarea-bordered textarea-sm w-full"
+          class="input"
           placeholder="Freeform prompt…"
           rows="2"
           value=${prompt}
           onInput=${(e) => { setPrompt(e.target.value); if (e.target.value) setTaskId(""); }}
         />
         <button
-          class="btn btn-primary btn-sm"
+          class="btn btn-primary"
           disabled=${!canDispatch || dispatching}
           onClick=${handleDispatch}
         >
@@ -1046,58 +1027,58 @@ export function AgentsTab() {
     return html`<${Card} title="Loading…"><${SkeletonCard} count=${3} /><//>`;
 
   return html`
-    <div class="flex flex-col gap-3 max-w-7xl mx-auto">
-      <div class="w-full">
+    <div class="fleet-layout">
+      <div class="fleet-span">
         <${Card}
           title="Fleet Overview"
           subtitle="Capacity, health, and quick actions"
           className="fleet-overview-card"
         >
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <div class="text-xs font-semibold uppercase text-base-content/50">Health</div>
-              <div class="flex items-center gap-2 text-lg font-bold">
+          <div class="fleet-hero">
+            <div class="fleet-health">
+              <div class="fleet-label">Health</div>
+              <div class="fleet-health-value">
                 <span
-                  class="w-3 h-3 rounded-full inline-block"
+                  class="fleet-health-dot"
                   style=${`background:${healthColor}`}
                 ></span>
                 <span>${healthLabel}</span>
               </div>
-              <div class="text-xs text-base-content/60">${healthSubtext}</div>
+              <div class="fleet-subtext">${healthSubtext}</div>
               ${lastErrorSlot && statusCounts.error > 0 &&
-              html`<div class="text-xs text-error mt-1">
+              html`<div class="fleet-alert">
                 Last error: ${truncate(lastErrorSlot.lastError || "Unknown error", 90)}
               </div>`}
             </div>
 
-            <div>
-              <div class="text-xs font-semibold uppercase text-base-content/50">Capacity</div>
-              <div class="text-2xl font-bold">
+            <div class="fleet-capacity">
+              <div class="fleet-label">Capacity</div>
+              <div class="fleet-capacity-value">
                 ${activeSlots}
-                <span class="text-base-content/40">/</span>
+                <span class="fleet-capacity-divider">/</span>
                 ${maxParallel}
               </div>
-              <div class="text-xs text-base-content/60">
+              <div class="fleet-subtext">
                 ${capacityPct}% used · ${freeSlots} free
               </div>
-              <div class="mt-1">
+              <div class="fleet-capacity-bar">
                 <${ProgressBar} percent=${capacityPct} />
               </div>
             </div>
           </div>
 
-          <div class="grid grid-cols-2 md:grid-cols-5 gap-2 mt-3">
+          <div class="fleet-metrics">
             ${fleetMetrics.map(
               (metric) => html`
-                <div class="text-center" key=${metric.label}>
-                  <div class="text-xs text-base-content/50">${metric.label}</div>
-                  <div class="text-lg font-bold">${metric.value}</div>
+                <div class="fleet-metric" key=${metric.label}>
+                  <div class="fleet-metric-label">${metric.label}</div>
+                  <div class="fleet-metric-value">${metric.value}</div>
                 </div>
               `,
             )}
           </div>
 
-          <div class="flex flex-wrap gap-2 mt-3">
+          <div class="fleet-quick-actions">
             <button class="btn btn-primary btn-sm" onClick=${handleFocusDispatch}>
               🚀 Dispatch
             </button>
@@ -1114,17 +1095,17 @@ export function AgentsTab() {
         <//>
       </div>
 
-      <div class="w-full">
+      <div class="fleet-column">
         <${DispatchSection}
           freeSlots=${freeSlots}
           inputRef=${dispatchInputRef}
           className="fleet-dispatch-card"
         />
 
-        <${Card} className="fleet-slotmap-card mt-3">
+        <${Card} className="fleet-slotmap-card">
           <${Collapsible} title="Slot Map" defaultOpen=${!isCompact}>
-            <div class="text-xs text-base-content/60 mb-2">Tap a slot to open the workspace.</div>
-            <div class="grid grid-cols-4 md:grid-cols-6 gap-1">
+            <div class="meta-text mb-sm">Tap a slot to open the workspace.</div>
+            <div class="slot-grid">
               ${Array.from(
                 { length: Math.max(maxParallel, slots.length, 1) },
                 (_, i) => {
@@ -1133,14 +1114,14 @@ export function AgentsTab() {
                   return html`
                     <div
                       key=${i}
-                      class="flex items-center gap-1 p-1.5 rounded cursor-pointer hover:bg-base-300 text-xs"
+                      class="slot-cell slot-${st}"
                       title=${slot
                         ? `${slot.taskTitle || slot.taskId} (${st})`
                         : `Slot ${i + 1} idle`}
                       onClick=${() => slot && openWorkspace(slot, i)}
                     >
                       <${StatusDot} status=${st} />
-                      <span class="font-mono text-xs">${i + 1}</span>
+                      <span class="slot-label">${i + 1}</span>
                     </div>
                   `;
                 },
@@ -1150,7 +1131,7 @@ export function AgentsTab() {
         <//>
       </div>
 
-      <div class="w-full">
+      <div class="fleet-column">
         <${Card} className="fleet-active-card">
           <${Collapsible}
             title=${activeSlots > 0
@@ -1158,7 +1139,7 @@ export function AgentsTab() {
               : "Active Slots"}
             defaultOpen=${!isCompact}
           >
-            <div class="text-xs text-base-content/60 mb-2">
+            <div class="meta-text mb-sm">
               ${activeSlots > 0
                 ? `${activeSlots} active · ${freeSlots} free`
                 : "No active slots"}
@@ -1168,106 +1149,106 @@ export function AgentsTab() {
                   (slot, i) => html`
                     <div
                       key=${i}
-                      class="card bg-base-200 shadow-sm mb-2 ${expandedSlot === i
-                        ? "ring-1 ring-primary"
+                      class="task-card fleet-agent-card ${expandedSlot === i
+                        ? "task-card-expanded"
                         : ""}"
                     >
-                      <div class="card-body p-3">
-                        <div
-                          class="flex items-center justify-between cursor-pointer"
-                          onClick=${() => toggleExpand(i)}
-                        >
-                          <div class="min-w-0">
-                            <div class="font-semibold text-sm flex items-center gap-1">
-                              <${StatusDot} status=${slot.status || "busy"} />
-                              <span class="truncate">${slot.taskTitle || "(no title)"}</span>
-                            </div>
-                            <div class="text-xs text-base-content/60 truncate">
-                              ${slot.taskId || "?"} · Agent
-                              ${slot.agentInstanceId || "n/a"} · ${slot.sdk || "?"}${slot.model ? ` · ${slot.model}` : ""}
-                            </div>
+                      <div
+                        class="task-card-header"
+                        onClick=${() => toggleExpand(i)}
+                        style="cursor:pointer"
+                      >
+                        <div>
+                          <div class="task-card-title">
+                            <${StatusDot} status=${slot.status || "busy"} />
+                            ${slot.taskTitle || "(no title)"}
                           </div>
-                          <${Badge}
-                            status=${slot.status || "busy"}
-                            text=${slot.status || "busy"}
-                          />
+                          <div class="task-card-meta">
+                            ${slot.taskId || "?"} · Agent
+                            ${slot.agentInstanceId || "n/a"} · ${slot.sdk || "?"}${slot.model ? ` · ${slot.model}` : ""}
+                          </div>
                         </div>
-                        <div class="flex items-center justify-between text-xs">
-                          <div class="text-base-content/60">Attempt ${slot.attempt || 1}</div>
-                          ${slot.startedAt && html`
-                            <div class="font-mono text-base-content/60">${formatDuration(slot.startedAt)}</div>
-                          `}
-                        </div>
-
-                        ${(slot.status === "running" || slot.status === "busy") &&
-                      html`
-                        <div class="w-full h-1 bg-base-300 rounded-full overflow-hidden mt-2">
-                          <div
-                            class="h-full bg-primary animate-pulse rounded-full w-1/2"
-                          ></div>
-                        </div>
-                      `}
-
-                      ${expandedSlot === i &&
-                      html`
-                        <div class="flex flex-col gap-1 mt-2">
-                          ${slot.branch &&
-                          html`<div class="text-xs text-base-content/60">Branch: ${slot.branch}</div>`}
-                          ${slot.startedAt &&
-                          html`<div class="text-xs text-base-content/60">
-                            Started: ${formatRelative(slot.startedAt)}
-                          </div>`}
-                          ${slot.completedCount != null &&
-                          html`<div class="text-xs text-base-content/60">
-                            Completed: ${slot.completedCount} tasks
-                          </div>`}
-                          ${slot.avgDurationMs &&
-                          html`<div class="text-xs text-base-content/60">
-                            Avg: ${Math.round(slot.avgDurationMs / 1000)}s
-                          </div>`}
-                          ${slot.model &&
-                          html`<div class="text-xs text-base-content/60">Model: ${slot.model}</div>`}
-                          ${slot.lastError &&
-                          html`<div
-                            class="text-xs text-error"
-                          >
-                            Last error: ${truncate(slot.lastError, 100)}
-                          </div>`}
-                        </div>
-                      `}
-
-                      <div class="flex flex-wrap gap-1 mt-2">
-                        <button
-                          class="btn btn-ghost btn-sm"
-                          onClick=${() =>
-                            viewAgentLogs(
-                              (slot.taskId || slot.branch || "").slice(0, 12),
-                            )}
-                        >
-                          📄 Logs
-                        </button>
-                        <button
-                          class="btn btn-ghost btn-sm"
-                          onClick=${() =>
-                            sendCommandToChat(
-                              `/steer focus on ${slot.taskTitle || slot.taskId}`,
-                            )}
-                        >
-                          🎯 Steer
-                        </button>
-                        <button
-                          class="btn btn-ghost btn-sm"
-                          onClick=${() => openWorkspace(slot, i)}
-                        >
-                          🔍 View
-                        </button>
-                        <button
-                          class="btn btn-error btn-sm"
-                          onClick=${() => handleForceStop({ ...slot, index: i })}
-                        >
-                          ⛔ Stop
-                        </button>
+                        <${Badge}
+                          status=${slot.status || "busy"}
+                          text=${slot.status || "busy"}
+                        />
                       </div>
+                      <div class="flex-between">
+                        <div class="meta-text">Attempt ${slot.attempt || 1}</div>
+                        ${slot.startedAt && html`
+                          <div class="agent-duration">${formatDuration(slot.startedAt)}</div>
+                        `}
+                      </div>
+
+                      ${(slot.status === "running" || slot.status === "busy") &&
+                    html`
+                      <div class="agent-progress-bar mt-sm">
+                        <div
+                          class="agent-progress-bar-fill agent-progress-pulse"
+                        ></div>
+                      </div>
+                    `}
+
+                    ${expandedSlot === i &&
+                    html`
+                      <div class="agent-detail mt-sm">
+                        ${slot.branch &&
+                        html`<div class="meta-text">Branch: ${slot.branch}</div>`}
+                        ${slot.startedAt &&
+                        html`<div class="meta-text">
+                          Started: ${formatRelative(slot.startedAt)}
+                        </div>`}
+                        ${slot.completedCount != null &&
+                        html`<div class="meta-text">
+                          Completed: ${slot.completedCount} tasks
+                        </div>`}
+                        ${slot.avgDurationMs &&
+                        html`<div class="meta-text">
+                          Avg: ${Math.round(slot.avgDurationMs / 1000)}s
+                        </div>`}
+                        ${slot.model &&
+                        html`<div class="meta-text">Model: ${slot.model}</div>`}
+                        ${slot.lastError &&
+                        html`<div
+                          class="meta-text"
+                          style="color:var(--color-error)"
+                        >
+                          Last error: ${truncate(slot.lastError, 100)}
+                        </div>`}
+                      </div>
+                    `}
+
+                    <div class="btn-row mt-sm">
+                      <button
+                        class="btn btn-ghost btn-sm"
+                        onClick=${() =>
+                          viewAgentLogs(
+                            (slot.taskId || slot.branch || "").slice(0, 12),
+                          )}
+                      >
+                        📄 Logs
+                      </button>
+                      <button
+                        class="btn btn-ghost btn-sm"
+                        onClick=${() =>
+                          sendCommandToChat(
+                            `/steer focus on ${slot.taskTitle || slot.taskId}`,
+                          )}
+                      >
+                        🎯 Steer
+                      </button>
+                      <button
+                        class="btn btn-ghost btn-sm"
+                        onClick=${() => openWorkspace(slot, i)}
+                      >
+                        🔍 View
+                      </button>
+                      <button
+                        class="btn btn-danger btn-sm"
+                        onClick=${() => handleForceStop({ ...slot, index: i })}
+                      >
+                        ⛔ Stop
+                      </button>
                     </div>
                   </div>
                 `,
@@ -1279,10 +1260,10 @@ export function AgentsTab() {
 
       ${agents.length > 0 &&
       html`
-        <div class="w-full">
+        <div class="fleet-span">
           <${Collapsible} title="Agent Threads" defaultOpen=${false}>
             <${Card} className="fleet-threads-card">
-              <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+              <div class="stats-grid">
                 ${agents.map(
                   (t, i) => html`
                     <${StatCard}
@@ -1299,7 +1280,7 @@ export function AgentsTab() {
         </div>
       `}
 
-      <div class="w-full">
+      <div class="fleet-span">
         <${SessionsPanel} />
       </div>
     </div>
@@ -1407,25 +1388,25 @@ function ContextViewer({ sessionId }) {
   };
 
   if (loading) {
-    return html`<div class="p-4">
+    return html`<div class="chat-view" style="padding:16px;">
       <${SkeletonCard} height="40px" />
-      <${SkeletonCard} height="120px" className="mt-2" />
-      <${SkeletonCard} height="80px" className="mt-2" />
+      <${SkeletonCard} height="120px" className="mt-sm" />
+      <${SkeletonCard} height="80px" className="mt-sm" />
     </div>`;
   }
 
   if (error) {
-    return html`<div class="flex flex-col items-center justify-center py-8">
-      <div class="text-3xl mb-2 text-error">⚠️</div>
-      <div class="text-sm text-base-content/60">${error}</div>
-      <button class="btn btn-primary btn-sm mt-2" onClick=${() => { setLoading(true); setError(null); fetchContext(); }}>🔄 Retry</button>
+    return html`<div class="chat-view chat-empty-state">
+      <div class="session-empty-icon" style="color:var(--color-error)">⚠️</div>
+      <div class="session-empty-text">${error}</div>
+      <button class="btn btn-primary btn-sm mt-sm" onClick=${() => { setLoading(true); setError(null); fetchContext(); }}>🔄 Retry</button>
     </div>`;
   }
 
   if (!ctx?.context) {
-    return html`<div class="flex flex-col items-center justify-center py-8">
-      <div class="text-3xl mb-2">📋</div>
-      <div class="text-sm text-base-content/60">No context available for this session</div>
+    return html`<div class="chat-view chat-empty-state">
+      <div class="session-empty-icon">📋</div>
+      <div class="session-empty-text">No context available for this session</div>
     </div>`;
   }
 
@@ -1436,9 +1417,9 @@ function ContextViewer({ sessionId }) {
   const isDirty = files.length > 0;
 
   return html`
-    <div class="flex flex-col gap-2 p-3 overflow-y-auto">
+    <div class="chat-view" style="padding:12px; overflow-y:auto;">
       <!-- Toolbar -->
-      <div class="flex gap-2 justify-end mb-2">
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-bottom:12px;">
         <button class="btn btn-ghost btn-sm" onClick=${() => { setLoading(true); fetchContext(); }}>
           <span class="icon-inline">${ICONS.refresh}</span> Refresh
         </button>
@@ -1448,98 +1429,88 @@ function ContextViewer({ sessionId }) {
       </div>
 
       <!-- Branch & Status -->
-      <div class="card bg-base-200 shadow-sm mb-2">
-        <div class="card-body p-3">
-          <div class="font-semibold text-sm mb-1 flex items-center gap-2">
-            <span class="icon-inline">${ICONS.git}</span> Branch & Status
+      <div class="card mb-sm">
+        <div class="card-title" style="display:flex; align-items:center; gap:8px;">
+          <span class="icon-inline">${ICONS.git}</span> Branch & Status
+        </div>
+        <div style="display:flex; flex-wrap:wrap; gap:12px; margin-top:8px;">
+          <div style="flex:1; min-width:120px;">
+            <div class="meta-text">Branch</div>
+            <div style="font-weight:600; font-family:monospace; font-size:13px;">${c.gitBranch || "unknown"}</div>
           </div>
-          <div class="flex flex-wrap gap-3 mt-2">
-            <div class="flex-1 min-w-[120px]">
-              <div class="text-xs text-base-content/60">Branch</div>
-              <div class="font-semibold font-mono text-sm">${c.gitBranch || "unknown"}</div>
-            </div>
+          <div>
+            <div class="meta-text">Status</div>
+            <${Badge}
+              status=${isDirty ? "inprogress" : "done"}
+              text=${isDirty ? `${files.length} changed` : "Clean"}
+            />
+          </div>
+          ${(ab.ahead > 0 || ab.behind > 0) && html`
             <div>
-              <div class="text-xs text-base-content/60">Status</div>
-              <${Badge}
-                status=${isDirty ? "inprogress" : "done"}
-                text=${isDirty ? `${files.length} changed` : "Clean"}
-              />
-            </div>
-            ${(ab.ahead > 0 || ab.behind > 0) && html`
-              <div>
-                <div class="text-xs text-base-content/60">Sync</div>
-                <div class="text-sm">
-                  ${ab.ahead > 0 ? html`<span class="text-success">↑${ab.ahead}</span>` : null}
-                  ${ab.ahead > 0 && ab.behind > 0 ? " " : null}
-                  ${ab.behind > 0 ? html`<span class="text-error">↓${ab.behind}</span>` : null}
-                </div>
+              <div class="meta-text">Sync</div>
+              <div style="font-size:13px;">
+                ${ab.ahead > 0 ? html`<span style="color:var(--color-done)">↑${ab.ahead}</span>` : null}
+                ${ab.ahead > 0 && ab.behind > 0 ? " " : null}
+                ${ab.behind > 0 ? html`<span style="color:var(--color-error)">↓${ab.behind}</span>` : null}
               </div>
-            `}
-          </div>
+            </div>
+          `}
         </div>
       </div>
 
       <!-- Working Directory -->
-      <div class="card bg-base-200 shadow-sm mb-2">
-        <div class="card-body p-3">
-          <div class="font-semibold text-sm mb-1 flex items-center gap-2">
-            <span class="icon-inline">${ICONS.folder}</span> Working Directory
-          </div>
-          <div class="font-mono text-xs text-base-content/60 mt-1 break-all">
-            ${c.path || "unknown"}
-          </div>
+      <div class="card mb-sm">
+        <div class="card-title" style="display:flex; align-items:center; gap:8px;">
+          <span class="icon-inline">${ICONS.folder}</span> Working Directory
+        </div>
+        <div style="font-family:monospace; font-size:12px; color:var(--text-secondary); margin-top:6px; word-break:break-all;">
+          ${c.path || "unknown"}
         </div>
       </div>
 
       <!-- Recent Commits -->
       ${commits.length > 0 && html`
-        <div class="card bg-base-200 shadow-sm mb-2">
-          <div class="card-body p-3">
-            <div class="font-semibold text-sm mb-1 flex items-center gap-2">
-              <span class="icon-inline">${ICONS.clock}</span> Recent Commits
-            </div>
-            <div class="mt-2">
-              ${commits.map((cm) => html`
-                <div key=${cm.hash} class="flex gap-2 items-baseline py-1 border-b border-base-300">
-                  <code class="text-info text-xs shrink-0">${cm.hash}</code>
-                  <span class="flex-1 text-sm truncate">${cm.message}</span>
-                  <span class="text-xs text-base-content/50 shrink-0">${cm.time}</span>
-                </div>
-              `)}
-            </div>
+        <div class="card mb-sm">
+          <div class="card-title" style="display:flex; align-items:center; gap:8px;">
+            <span class="icon-inline">${ICONS.clock}</span> Recent Commits
+          </div>
+          <div style="margin-top:8px;">
+            ${commits.map((cm) => html`
+              <div key=${cm.hash} style="display:flex; gap:8px; align-items:baseline; padding:4px 0; border-bottom:1px solid var(--border-color, rgba(255,255,255,0.06));">
+                <code style="color:var(--color-inprogress); font-size:12px; flex-shrink:0;">${cm.hash}</code>
+                <span style="flex:1; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${cm.message}</span>
+                <span class="meta-text" style="flex-shrink:0; font-size:11px;">${cm.time}</span>
+              </div>
+            `)}
           </div>
         </div>
       `}
 
       <!-- Modified Files -->
       ${files.length > 0 && html`
-        <div class="card bg-base-200 shadow-sm mb-2">
-          <div class="card-body p-3">
-            <div class="font-semibold text-sm mb-1 flex items-center gap-2">
-              <span class="icon-inline">${ICONS.edit}</span> Modified Files
-              <${Badge} text="${files.length}" className="ml-auto" />
-            </div>
-            <div class="mt-2">
-              ${files.map((f) => html`
-                <div key=${f.file} class="flex gap-2 items-center py-1 border-b border-base-300">
-                  <code class="text-xs font-bold min-w-[20px] text-center" style="color:${statusColor(f.code)}" title=${statusLabel(f.code)}>${f.code}</code>
-                  <span class="font-mono text-xs truncate">${f.file}</span>
-                </div>
-              `)}
-            </div>
+        <div class="card mb-sm">
+          <div class="card-title" style="display:flex; align-items:center; gap:8px;">
+            <span class="icon-inline">${ICONS.edit}</span> Modified Files
+            <${Badge} text="${files.length}" className="ml-auto" />
+          </div>
+          <div style="margin-top:8px;">
+            ${files.map((f) => html`
+              <div key=${f.file} style="display:flex; gap:8px; align-items:center; padding:4px 0; border-bottom:1px solid var(--border-color, rgba(255,255,255,0.06));">
+                <code style="color:${statusColor(f.code)}; font-size:11px; font-weight:700; min-width:20px; text-align:center;" title=${statusLabel(f.code)}>${f.code}</code>
+                <span style="font-family:monospace; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${f.file}</span>
+              </div>
+            `)}
           </div>
         </div>
       `}
 
       <!-- Diff Stats -->
       ${c.gitDiffStat && html`
-        <div class="card bg-base-200 shadow-sm mb-2">
-          <div class="card-body p-3">
-            <div class="font-semibold text-sm mb-1 flex items-center gap-2">
-              <span class="icon-inline">${ICONS.terminal}</span> Diff Summary
-            </div>
-            <pre class="text-xs mt-2 whitespace-pre-wrap text-base-content/60 overflow-x-auto">${c.gitDiffStat}</pre>
+        <div class="card mb-sm">
+          <div class="card-title" style="display:flex; align-items:center; gap:8px;">
+            <span class="icon-inline">${ICONS.terminal}</span> Diff Summary
           </div>
+          <pre style="font-size:11px; margin:8px 0 0; white-space:pre-wrap; color:var(--text-secondary); overflow-x:auto;">${c.gitDiffStat}</pre>
         </div>
       `}
     </div>
@@ -1557,24 +1528,24 @@ function SessionsPanel() {
 
   return html`
     <${Card} title="Sessions">
-      <div class="flex gap-2">
+      <div class="session-split">
         <${SessionList} onSelect=${() => setDetailTab("chat")} />
-        <div class="flex-1 flex flex-col min-w-0">
+        <div class="session-detail">
           ${sessionId && html`
-            <button class="btn btn-ghost btn-xs mb-1" onClick=${handleBack}>
+            <button class="session-back-btn" onClick=${handleBack}>
               ← Back to sessions
             </button>
-            <div class="tabs tabs-boxed mb-2">
+            <div class="session-detail-tabs">
               <button
-                class="tab ${detailTab === "chat" ? "tab-active" : ""}"
+                class="session-detail-tab ${detailTab === "chat" ? "active" : ""}"
                 onClick=${() => setDetailTab("chat")}
               >💬 Chat</button>
               <button
-                class="tab ${detailTab === "diff" ? "tab-active" : ""}"
+                class="session-detail-tab ${detailTab === "diff" ? "active" : ""}"
                 onClick=${() => setDetailTab("diff")}
               >📝 Diff</button>
               <button
-                class="tab ${detailTab === "context" ? "tab-active" : ""}"
+                class="session-detail-tab ${detailTab === "context" ? "active" : ""}"
                 onClick=${() => setDetailTab("context")}
               >📋 Context</button>
             </div>
@@ -1583,9 +1554,9 @@ function SessionsPanel() {
           ${detailTab === "diff" && sessionId && html`<${DiffViewer} sessionId=${sessionId} />`}
           ${detailTab === "context" && sessionId && html`<${ContextViewer} sessionId=${sessionId} />`}
           ${!sessionId && detailTab !== "chat" && html`
-            <div class="flex flex-col items-center justify-center py-8">
-              <div class="text-3xl mb-2">💬</div>
-              <div class="text-sm text-base-content/60">Select a session</div>
+            <div class="chat-view chat-empty-state">
+              <div class="session-empty-icon">💬</div>
+              <div class="session-empty-text">Select a session</div>
             </div>
           `}
         </div>

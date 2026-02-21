@@ -122,13 +122,13 @@ function Spinner() {
 // ─── Confirm dialog helper ─────────────────────────────────
 function ConfirmBar({ message, onConfirm, onCancel, loading }) {
   return html`
-    <div class="flex items-center gap-2 px-3 py-2 bg-warning/10 rounded-lg text-sm">
-      <span class="flex-1">${message}</span>
-      <div class="flex gap-1">
-        <button class="btn btn-error btn-sm btn-outline" onClick=${onConfirm} disabled=${loading}>
+    <div class="ws-manager-confirm">
+      <span class="ws-manager-confirm-msg">${message}</span>
+      <div class="ws-manager-confirm-actions">
+        <button class="ws-manager-btn danger sm" onClick=${onConfirm} disabled=${loading}>
           ${loading ? html`<${Spinner} />` : "Yes"}
         </button>
-        <button class="btn btn-ghost btn-sm" onClick=${onCancel} disabled=${loading}>Cancel</button>
+        <button class="ws-manager-btn ghost sm" onClick=${onCancel} disabled=${loading}>Cancel</button>
       </div>
     </div>
   `;
@@ -154,7 +154,7 @@ function RepoRow({ repo, workspaceId }) {
 
   if (confirming) {
     return html`
-      <div class="flex items-center gap-2 py-1">
+      <div class="ws-manager-repo-row">
         <${ConfirmBar}
           message="Remove ${repo.name}?"
           onConfirm=${handleRemove}
@@ -166,16 +166,16 @@ function RepoRow({ repo, workspaceId }) {
   }
 
   return html`
-    <div class="flex items-center gap-2 py-1">
-      <span class="text-sm truncate flex-1 ${repo.exists ? '' : 'opacity-50 line-through'}">
-        ${repo.primary ? html`<span class="text-warning mr-1" title="Primary">★</span>` : null}
+    <div class="ws-manager-repo-row">
+      <span class="ws-manager-repo-name ${repo.exists ? "" : "missing"}">
+        ${repo.primary ? html`<span class="ws-manager-repo-star" title="Primary">★</span>` : null}
         ${repo.name}
       </span>
-      <span class="text-xs ${repo.exists ? 'text-success' : 'text-error'}">
+      <span class="ws-manager-repo-status ${repo.exists ? "ok" : "err"}">
         ${repo.exists ? "✓" : "✗ missing"}
       </span>
       <button
-        class="btn btn-ghost btn-xs"
+        class="ws-manager-btn ghost sm icon-btn"
         title="Remove repo"
         onClick=${() => { haptic("light"); setConfirming(true); }}
       >✕</button>
@@ -209,36 +209,36 @@ function AddRepoForm({ workspaceId }) {
   if (!expanded) {
     return html`
       <button
-        class="btn btn-ghost btn-sm"
+        class="ws-manager-btn ghost sm add-repo-toggle"
         onClick=${() => { haptic("light"); setExpanded(true); }}
       >+ Add Repo</button>
     `;
   }
 
   return html`
-    <div class="flex flex-col gap-2 pt-2">
+    <div class="ws-manager-form repo-form">
       <input
-        class="input input-bordered input-sm w-full"
+        class="ws-manager-input"
         placeholder="Git URL (https or ssh)"
         value=${url}
         onInput=${(e) => setUrl(e.target.value)}
         disabled=${loading}
       />
       <input
-        class="input input-bordered input-sm w-full"
+        class="ws-manager-input sm"
         placeholder="Branch (optional)"
         value=${branch}
         onInput=${(e) => setBranch(e.target.value)}
         disabled=${loading}
       />
-      <div class="flex gap-2">
+      <div class="ws-manager-form-actions">
         <button
-          class="btn btn-primary btn-sm"
+          class="ws-manager-btn primary sm"
           onClick=${handleAdd}
           disabled=${loading || !url.trim()}
         >${loading ? html`<${Spinner} />` : "Clone"}</button>
         <button
-          class="btn btn-ghost btn-sm"
+          class="ws-manager-btn ghost sm"
           onClick=${() => { setExpanded(false); setUrl(""); setBranch(""); }}
           disabled=${loading}
         >Cancel</button>
@@ -291,30 +291,29 @@ function WorkspaceCard({ ws }) {
   }, [ws.id]);
 
   return html`
-    <div class="card bg-base-200 shadow-sm mb-2 ${isActive ? "ring-1 ring-primary" : ""}">
-      <div class="card-body p-3 gap-2">
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <span class="font-medium text-sm">${ws.name}</span>
-            ${isActive ? html`<span class="badge badge-primary badge-sm">Active</span>` : null}
-          </div>
-          <div class="flex gap-1">
+    <div class="ws-manager-item ${isActive ? "active" : ""}">
+      <div class="ws-manager-item-header">
+        <div class="ws-manager-item-title">
+          <span class="ws-manager-item-name">${ws.name}</span>
+          ${isActive ? html`<span class="ws-manager-active-badge">Active</span>` : null}
+        </div>
+        <div class="ws-manager-actions">
           ${!isActive && html`
             <button
-              class="btn btn-ghost btn-sm"
+              class="ws-manager-btn ghost sm"
               onClick=${handleSetActive}
               disabled=${activating}
               title="Set as active workspace"
             >${activating ? html`<${Spinner} />` : "Activate"}</button>
           `}
           <button
-            class="btn btn-ghost btn-sm"
+            class="ws-manager-btn ghost sm"
             onClick=${handlePull}
             disabled=${pulling}
             title="Pull all repos"
           >${pulling ? html`<${Spinner} /> Pulling` : "⟳ Pull"}</button>
           <button
-            class="btn btn-ghost btn-sm text-error"
+            class="ws-manager-btn ghost sm danger-text"
             onClick=${() => { haptic("light"); setDelConfirm(true); }}
             title="Delete workspace"
           >🗑</button>
@@ -330,9 +329,9 @@ function WorkspaceCard({ ws }) {
         />
       `}
 
-      <div class="flex flex-col gap-1 mt-1">
+      <div class="ws-manager-repos">
         ${(ws.repos || []).length === 0
-          ? html`<div class="text-xs opacity-50 py-1">No repos yet</div>`
+          ? html`<div class="ws-manager-empty">No repos yet</div>`
           : (ws.repos || []).map((r) => html`
             <${RepoRow} key=${r.name} repo=${r} workspaceId=${ws.id} />
           `)
@@ -363,24 +362,22 @@ function AddWorkspaceForm() {
   }, [name]);
 
   return html`
-    <div class="card bg-base-200 shadow-sm mt-3">
-      <div class="card-body p-3 gap-2">
-        <div class="text-sm font-semibold">Create Workspace</div>
-        <div class="flex gap-2">
-          <input
-            class="input input-bordered input-sm flex-1"
-            placeholder="Workspace name"
-            value=${name}
-            onInput=${(e) => setName(e.target.value)}
-            onKeyDown=${(e) => { if (e.key === "Enter") handleCreate(); }}
-            disabled=${loading}
-          />
-          <button
-            class="btn btn-primary btn-sm"
-            onClick=${handleCreate}
-            disabled=${loading || !name.trim()}
-          >${loading ? html`<${Spinner} />` : "Create"}</button>
-        </div>
+    <div class="ws-manager-form add-ws-form">
+      <div class="ws-manager-form-title">Create Workspace</div>
+      <div class="ws-manager-form-row">
+        <input
+          class="ws-manager-input"
+          placeholder="Workspace name"
+          value=${name}
+          onInput=${(e) => setName(e.target.value)}
+          onKeyDown=${(e) => { if (e.key === "Enter") handleCreate(); }}
+          disabled=${loading}
+        />
+        <button
+          class="ws-manager-btn primary"
+          onClick=${handleCreate}
+          disabled=${loading || !name.trim()}
+        >${loading ? html`<${Spinner} />` : "Create"}</button>
       </div>
     </div>
   `;
@@ -421,7 +418,7 @@ export function WorkspaceManager({ open, onClose }) {
 
   return html`
     <${Modal} title="Manage Workspaces" open=${open} onClose=${onClose}>
-      <div class="flex justify-end pb-2">
+      <div class="ws-manager-modal-toolbar">
         <button
           class="btn btn-ghost btn-sm"
           onClick=${handleScan}
@@ -431,18 +428,18 @@ export function WorkspaceManager({ open, onClose }) {
       </div>
 
       ${loading && !wsList.length
-        ? html`<div class="flex items-center justify-center py-8 text-sm opacity-60">Loading workspaces…</div>`
+        ? html`<div class="ws-manager-loading">Loading workspaces…</div>`
         : null
       }
 
-      <div class="flex flex-col gap-2">
+      <div class="ws-manager-list">
         ${wsList.map((ws) => html`
           <${WorkspaceCard} key=${ws.id} ws=${ws} />
         `)}
       </div>
 
       ${!wsList.length && !loading
-        ? html`<div class="text-center text-sm opacity-60 py-8">No workspaces found. Create one or scan disk.</div>`
+        ? html`<div class="ws-manager-empty-state">No workspaces found. Create one or scan disk.</div>`
         : null
       }
 
@@ -476,47 +473,47 @@ export function WorkspaceSwitcher() {
   if (!wsList.length && !managerOpen) return null;
 
   return html`
-    <div class="ws-switcher dropdown dropdown-bottom">
+    <div class="ws-switcher">
       <button
-        class="btn btn-ghost btn-sm gap-1 truncate max-w-[200px]"
+        class="ws-switcher-btn"
         onClick=${(e) => { e.stopPropagation(); haptic("light"); setOpen(!open); }}
         title="Switch workspace"
       >
-        <span>⬡</span>
-        <span class="truncate">${activeWs?.name || "Select Workspace"}</span>
-        <span class="text-xs">${open ? "▴" : "▾"}</span>
+        <span class="ws-switcher-icon">⬡</span>
+        <span class="ws-switcher-name">${activeWs?.name || "Select Workspace"}</span>
+        <span class="ws-switcher-chevron ${open ? "open" : ""}">${open ? "▴" : "▾"}</span>
       </button>
 
       ${open && html`
-        <div class="dropdown-content menu bg-base-200 rounded-box w-64 p-2 shadow-lg z-50">
-          <div class="text-xs font-semibold uppercase opacity-50 px-3 py-1">Workspaces</div>
+        <div class="ws-switcher-dropdown">
+          <div class="ws-switcher-header">Workspaces</div>
           ${wsList.map((ws) => html`
             <button
               key=${ws.id}
-              class="flex flex-col gap-0.5 w-full text-left px-3 py-2 rounded-lg cursor-pointer transition-colors ${ws.id === activeWorkspaceId.value ? "bg-primary/10" : "hover:bg-base-300"}"
+              class="ws-switcher-item ${ws.id === activeWorkspaceId.value ? "active" : ""}"
               onClick=${() => { haptic("light"); switchWorkspace(ws.id); setOpen(false); }}
             >
-              <div class="flex items-center gap-2">
-                <span class="text-sm font-medium truncate">${ws.name}</span>
+              <div class="ws-switcher-item-main">
+                <span class="ws-switcher-item-name">${ws.name}</span>
                 ${ws.id === activeWorkspaceId.value
-                  ? html`<span class="badge badge-primary badge-xs">Active</span>`
+                  ? html`<span class="ws-switcher-badge">Active</span>`
                   : null}
               </div>
-              <div class="flex flex-wrap gap-1">
+              <div class="ws-switcher-item-repos">
                 ${(ws.repos || []).map((r) => html`
-                  <span key=${r.name} class="text-xs opacity-60 ${r.exists ? '' : 'line-through opacity-40'}" title=${r.slug || r.name}>
+                  <span key=${r.name} class="ws-switcher-repo ${r.exists ? "" : "missing"}" title=${r.slug || r.name}>
                     ${r.primary ? "★ " : ""}${r.name}
                   </span>
                 `)}
               </div>
             </button>
           `)}
-          <div class="divider my-1 h-0" />
+          <div class="ws-switcher-divider" />
           <button
-            class="flex items-center gap-2 w-full text-left px-3 py-2 rounded-lg cursor-pointer hover:bg-base-300 transition-colors text-sm"
+            class="ws-switcher-item ws-switcher-manage-btn"
             onClick=${() => { haptic("medium"); setOpen(false); setManagerOpen(true); }}
           >
-            <span>⚙</span>
+            <span class="ws-switcher-manage-icon">⚙</span>
             <span>Manage Workspaces</span>
           </button>
         </div>
