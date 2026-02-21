@@ -284,16 +284,20 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   useEffect(() => {
     if (!sessionId) return;
     let active = true;
-    if (!paused) {
-      setLoading(true);
-      loadSessionMessages(sessionId).then((res) => {
-        if (active) setLoadError(res?.ok ? null : res?.error || "unavailable");
-      }).finally(() => {
-        if (active) setLoading(false);
-      });
-    } else {
-      setLoading(false);
-    }
+    // Use a small delay to let the Chat tab's session list settle first
+    const timer = setTimeout(() => {
+      if (!active) return;
+      if (!paused) {
+        setLoading(true);
+        loadSessionMessages(sessionId).then((res) => {
+          if (active) setLoadError(res?.ok ? null : res?.error || "unavailable");
+        }).finally(() => {
+          if (active) setLoading(false);
+        });
+      } else {
+        setLoading(false);
+      }
+    }, 100);
 
     // Fallback: poll slowly as safety net (30s) - WS does the heavy lifting
     const interval = setInterval(() => {
@@ -306,17 +310,24 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
     return () => {
       active = false;
+      clearTimeout(timer);
       clearInterval(interval);
     };
   }, [sessionId, session?.status, paused]);
 
-  /* Start agent status tracking from WS events */
+  /* Start agent status tracking from WS events — deferred to avoid
+     signal cascade during initial mount */
   useEffect(() => {
-    const cleanup1 = startAgentStatusTracking();
-    const cleanup2 = startAgentEventTracking();
+    let cleanup1 = null;
+    let cleanup2 = null;
+    const timer = setTimeout(() => {
+      cleanup1 = startAgentStatusTracking();
+      cleanup2 = startAgentEventTracking();
+    }, 200);
     return () => {
-      cleanup1();
-      cleanup2();
+      clearTimeout(timer);
+      if (cleanup1) cleanup1();
+      if (cleanup2) cleanup2();
     };
   }, []);
 

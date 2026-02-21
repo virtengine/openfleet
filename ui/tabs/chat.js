@@ -227,8 +227,21 @@ export function ChatTab() {
   /* ── Load sessions + agents on mount ── */
   useEffect(() => {
     let mounted = true;
-    loadSessions({ type: "primary" });
-    loadAvailableAgents();
+    // Stagger initial loads to avoid signal cascade storm —
+    // each API response updates a signal → triggers re-render.
+    // Loading them sequentially gives each render time to settle.
+    (async () => {
+      try {
+        await loadSessions({ type: "primary" });
+      } catch { /* handled internally */ }
+      if (!mounted) return;
+      // Small delay before loading agents to let session render settle
+      await new Promise(r => setTimeout(r, 50));
+      if (!mounted) return;
+      try {
+        await loadAvailableAgents();
+      } catch { /* handled internally */ }
+    })();
     const interval = setInterval(() => {
       if (mounted) loadSessions({ type: "primary" });
     }, 5000);
