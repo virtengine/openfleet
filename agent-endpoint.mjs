@@ -20,6 +20,7 @@ import { createServer } from "node:http";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileSync, mkdirSync, unlinkSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -505,6 +506,20 @@ export class AgentEndpoint {
         return await this._handleListTasks(url, res);
       }
 
+      if (method === "POST" && pathname === "/api/tasks/create") {
+        const body = await parseBody(req);
+        return await this._handleCreateTask(body, res);
+      }
+
+      if (method === "GET" && pathname === "/api/tasks/stats") {
+        return await this._handleTaskStats(res);
+      }
+
+      if (method === "POST" && pathname === "/api/tasks/import") {
+        const body = await parseBody(req);
+        return await this._handleImportTasks(body, res);
+      }
+
       if (method === "GET" && pathname === "/api/executor") {
         return this._handleExecutorStatus(res);
       }
@@ -544,6 +559,15 @@ export class AgentEndpoint {
         if (method === "POST" && pathname === `/api/tasks/${taskId}/error`) {
           const body = await parseBody(req);
           return await this._handleError(taskId, body, res);
+        }
+
+        if (method === "POST" && pathname === `/api/tasks/${taskId}/update`) {
+          const body = await parseBody(req);
+          return await this._handleUpdateTask(taskId, body, res);
+        }
+
+        if (method === "DELETE" && pathname === `/api/tasks/${taskId}`) {
+          return await this._handleDeleteTask(taskId, res);
         }
       }
 
@@ -862,6 +886,299 @@ export class AgentEndpoint {
     }
 
     sendJson(res, 200, { ok: true, task, nextAction });
+  }
+
+  // ── Task CRUD Handlers ──────────────────────────────────────────────────
+
+  async _handleCreateTask(body, res) {
+    if (!this._taskStore) {
+      sendJson(res, 503, { error: "Task store not configured" });
+      return;
+    }
+
+    const { title, description, status, priority, tags, baseBranch, base_branch, workspace, repository, repositories, implementation_steps, acceptance_criteria, verification, draft } = body;
+
+    if (!title) {
+      sendJson(res, 400, { error: "Missing 'title' in body" });
+      return;
+    }
+
+    try {
+      // Build description from structured fields if provided
+      let fullDescription = description || "";
+      if (implementation_steps?.length || acceptance_criteria?.length || verification?.length) {
+        const parts = [fullDescription];
+        if (implementation_steps?.length) {
+          parts.push("", "## Implementation Steps");
+          for (const step of implementation_steps) parts.push(`- ${step}`);
+        }
+        if (acceptance_criteria?.length) {
+          parts.push("", "## Acceptance Criteria");
+          for (const c of acceptance_criteria) parts.push(`- ${c}`);
+        }
+        if (verification?.length) {
+          parts.push("", "## Verification");
+          for (const v of verification) parts.push(`- ${v}`);
+        }
+        fullDescription = parts.join("\n");
+      }
+
+      let task;
+      if (typeof this._taskStore.createTask === "function") {
+        // kanban adapter — handles ID generation
+        task = await this._taskStore.createTask(null, {
+          title,
+          description: fullDescription,
+          status: status || "draft",
+          priority: priority || "medium",
+          tags: tags || [],
+          baseBranch: baseBranch || base_branch || "main",
+          workspace: workspace || "",
+          repository: repository || "",
+          repositories: repositories || [],
+          draft: draft ?? (status === "draft" || !status),
+        });
+      } else if (typeof this._taskStore.addTask === "function") {
+        // raw task-store
+        task = this._taskStore.addTask({
+          id: randomUUID(),
+          title,
+          description: fullDescription,
+          status: status || "draft",
+          priority: priority || "medium",
+          tags: tags || [],
+          baseBranch: baseBranch || base_branch || "main",
+          workspace: workspace || "",
+          repository: repository || "",
+          repositories: repositories || [],
+          draft: draft ?? (status === "draft" || !status),
+        });
+      } else {
+        sendJson(res, 501, { error: "Task store does not support creation" });
+        return;
+      }
+
+      if (!task) {
+        sendJson(res, 500, { error: "Failed to create task" });
+        return;
+      }
+
+      console.log(`${TAG} Created task ${task.id}: ${task.title}`);
+      sendJson(res, 201, { ok: true, task });
+    } catch (err) {
+      console.error(`${TAG} createTask error:`, err.message);
+      sendJson(res, 500, { error: `Failed to create task: ${err.message}` });
+    }
+  }
+
+  async _handleUpdateTask(taskId, body, res) {
+    if (!this._taskStore) {
+      sendJson(res, 503, { error: "Task store not configured" });
+      return;
+    }
+
+    try {
+      // Verify task exists
+      let existing = null;
+      if (typeof this._taskStore.getTask === "function") {
+        existing = await this._taskStore.getTask(taskId);
+      } else if (typeof this._taskStore.get === "function") {
+        existing = await this._taskStore.get(taskId);
+      }
+      if (!existing) {
+        sendJson(res, 404, { error: "Task not found" });
+        return;
+      }
+
+      const updates = { ...body };
+      delete updates.id; // Never allow ID change
+
+      // Normalize base_branch → baseBranch
+      if (updates.base_branch) {
+        updates.baseBranch = updates.base_branch;
+        delete updates.base_branch;
+      }
+
+      // Handle status change with history tracking
+      if (updates.status && updates.status !== existing.status) {
+        if (typeof this._taskStore.updateTaskStatus === "function") {
+          await this._taskStore.updateTaskStatus(taskId, updates.status);
+        }
+        delete updates.status;
+      }
+
+      // Apply remaining updates
+      let updatedTask;
+      if (Object.keys(updates).length > 0) {
+        if (typeof this._taskStore.updateTask === "function") {
+          updatedTask = await this._taskStore.updateTask(taskId, updates);
+        } else if (typeof this._taskStore.update === "function") {
+          updatedTask = await this._taskStore.update(taskId, updates);
+        }
+      }
+
+      // Re-fetch to get final state
+      if (typeof this._taskStore.getTask === "function") {
+        updatedTask = await this._taskStore.getTask(taskId);
+      } else if (typeof this._taskStore.get === "function") {
+        updatedTask = await this._taskStore.get(taskId);
+      }
+
+      console.log(`${TAG} Updated task ${taskId}`);
+      sendJson(res, 200, { ok: true, task: updatedTask || { id: taskId } });
+    } catch (err) {
+      console.error(`${TAG} updateTask(${taskId}) error:`, err.message);
+      sendJson(res, 500, { error: `Failed to update task: ${err.message}` });
+    }
+  }
+
+  async _handleDeleteTask(taskId, res) {
+    if (!this._taskStore) {
+      sendJson(res, 503, { error: "Task store not configured" });
+      return;
+    }
+
+    try {
+      let removed = false;
+      if (typeof this._taskStore.deleteTask === "function") {
+        await this._taskStore.deleteTask(taskId);
+        removed = true;
+      } else if (typeof this._taskStore.removeTask === "function") {
+        removed = this._taskStore.removeTask(taskId);
+      } else {
+        sendJson(res, 501, { error: "Task store does not support deletion" });
+        return;
+      }
+
+      if (!removed) {
+        sendJson(res, 404, { error: "Task not found" });
+        return;
+      }
+
+      console.log(`${TAG} Deleted task ${taskId}`);
+      sendJson(res, 200, { ok: true, deleted: taskId });
+    } catch (err) {
+      console.error(`${TAG} deleteTask(${taskId}) error:`, err.message);
+      sendJson(res, 500, { error: `Failed to delete task: ${err.message}` });
+    }
+  }
+
+  async _handleTaskStats(res) {
+    if (!this._taskStore) {
+      sendJson(res, 503, { error: "Task store not configured" });
+      return;
+    }
+
+    try {
+      let stats;
+      if (typeof this._taskStore.getStats === "function") {
+        stats = this._taskStore.getStats();
+      } else {
+        // Compute from list
+        let tasks = [];
+        if (typeof this._taskStore.listTasks === "function") {
+          tasks = await this._taskStore.listTasks(null, {});
+        } else if (typeof this._taskStore.list === "function") {
+          tasks = await this._taskStore.list({});
+        }
+        const list = Array.isArray(tasks) ? tasks : [];
+        stats = {
+          draft: list.filter((t) => t.status === "draft").length,
+          todo: list.filter((t) => t.status === "todo").length,
+          inprogress: list.filter((t) => t.status === "inprogress").length,
+          inreview: list.filter((t) => t.status === "inreview").length,
+          done: list.filter((t) => t.status === "done").length,
+          blocked: list.filter((t) => t.status === "blocked").length,
+          total: list.length,
+        };
+      }
+
+      sendJson(res, 200, { ok: true, stats });
+    } catch (err) {
+      console.error(`${TAG} taskStats error:`, err.message);
+      sendJson(res, 500, { error: `Failed to get stats: ${err.message}` });
+    }
+  }
+
+  async _handleImportTasks(body, res) {
+    if (!this._taskStore) {
+      sendJson(res, 503, { error: "Task store not configured" });
+      return;
+    }
+
+    const tasks = body.tasks || body.backlog || (Array.isArray(body) ? body : null);
+    if (!tasks || !Array.isArray(tasks)) {
+      sendJson(res, 400, { error: "Body must contain 'tasks' array" });
+      return;
+    }
+
+    const results = { created: [], failed: [] };
+    for (const t of tasks) {
+      try {
+        // Recursively use our create handler logic
+        let fullDescription = t.description || "";
+        if (t.implementation_steps?.length || t.acceptance_criteria?.length || t.verification?.length) {
+          const parts = [fullDescription];
+          if (t.implementation_steps?.length) {
+            parts.push("", "## Implementation Steps");
+            for (const step of t.implementation_steps) parts.push(`- ${step}`);
+          }
+          if (t.acceptance_criteria?.length) {
+            parts.push("", "## Acceptance Criteria");
+            for (const c of t.acceptance_criteria) parts.push(`- ${c}`);
+          }
+          if (t.verification?.length) {
+            parts.push("", "## Verification");
+            for (const v of t.verification) parts.push(`- ${v}`);
+          }
+          fullDescription = parts.join("\n");
+        }
+
+        let task;
+        if (typeof this._taskStore.createTask === "function") {
+          task = await this._taskStore.createTask(null, {
+            title: t.title,
+            description: fullDescription,
+            status: t.status || "draft",
+            priority: t.priority || "medium",
+            tags: t.tags || [],
+            baseBranch: t.baseBranch || t.base_branch || "main",
+            workspace: t.workspace || "",
+            repository: t.repository || "",
+            draft: t.draft ?? true,
+          });
+        } else if (typeof this._taskStore.addTask === "function") {
+          task = this._taskStore.addTask({
+            id: randomUUID(),
+            title: t.title,
+            description: fullDescription,
+            status: t.status || "draft",
+            priority: t.priority || "medium",
+            tags: t.tags || [],
+            baseBranch: t.baseBranch || t.base_branch || "main",
+            workspace: t.workspace || "",
+            repository: t.repository || "",
+            draft: t.draft ?? true,
+          });
+        }
+
+        if (task) {
+          results.created.push({ id: task.id, title: task.title });
+        } else {
+          results.failed.push({ title: t.title, error: "addTask returned null" });
+        }
+      } catch (err) {
+        results.failed.push({ title: t.title || "untitled", error: err.message });
+      }
+    }
+
+    console.log(`${TAG} Import: ${results.created.length} created, ${results.failed.length} failed`);
+    sendJson(res, 200, {
+      ok: true,
+      created: results.created.length,
+      failed: results.failed.length,
+      results,
+    });
   }
 
   async _handleError(taskId, body, res) {

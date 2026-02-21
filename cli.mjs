@@ -119,6 +119,16 @@ function showHelp() {
     --workspace-switch <id>     Switch active workspace
     --workspace-add-repo        Add repo to workspace (interactive)
 
+  TASK MANAGEMENT
+    task list [--status s] [--json]  List tasks with optional filters
+    task create <json|flags>    Create a new task from JSON or flags
+    task get <id> [--json]      Show task details by ID (prefix match)
+    task update <id> <patch>    Update task fields (JSON or flags)
+    task delete <id>            Delete a task
+    task stats [--json]         Show aggregate task statistics
+    task import <file.json>     Bulk import tasks from JSON
+    task plan [--count N]       Trigger AI task planner
+
   VIBE-KANBAN
     --no-vk-spawn               Don't auto-spawn Vibe-Kanban
     --vk-ensure-interval <ms>   VK health check interval (default: 60000)
@@ -593,6 +603,15 @@ async function main() {
       process.exit(code ?? 0);
     });
     return;
+  }
+
+  // Handle 'task' subcommand — must come before flag-based routing
+  if (args[0] === "task" || args.includes("--task")) {
+    const { runTaskCli } = await import("./task-cli.mjs");
+    // Pass everything after "task" to the task CLI
+    const taskArgs = args[0] === "task" ? args.slice(1) : args.slice(args.indexOf("--task") + 1);
+    await runTaskCli(taskArgs);
+    process.exit(0);
   }
 
   // Handle --doctor

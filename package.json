@@ -1,6 +1,6 @@
 {
   "name": "bosun",
-  "version": "0.28.4",
+  "version": "0.29.1",
   "description": "AI-powered orchestrator supervisor — manages AI agent executors with failover, auto-restarts on failure, analyzes crashes with Codex SDK, creates PRs via Vibe-Kanban API, and sends Telegram notifications. Supports N executors with weighted distribution, multi-repo projects, and auto-setup.",
   "type": "module",
   "license": "Apache 2.0",
@@ -63,10 +63,12 @@
     "./telegram-sentinel": "./telegram-sentinel.mjs",
     "./whatsapp-channel": "./whatsapp-channel.mjs",
     "./container-runner": "./container-runner.mjs",
-    "./compat": "./compat.mjs"
+    "./compat": "./compat.mjs",
+    "./task-cli": "./task-cli.mjs"
   },
   "bin": {
     "bosun": "cli.mjs",
+    "bosun-task": "task-cli.mjs",
     "bosun-setup": "setup.mjs",
     "bosun-chat-id": "get-telegram-chat-id.mjs",
     "bosun-shared-workspaces": "shared-workspace-cli.mjs",
@@ -127,7 +129,10 @@
     "conflict-resolver.mjs",
     "copilot-shell.mjs",
     "diff-stats.mjs",
-    "desktop/",
+    "desktop/main.mjs",
+    "desktop/launch.mjs",
+    "desktop/preload.mjs",
+    "desktop/package.json",
     "desktop-shortcut.mjs",
     "error-detector.mjs",
     "fetch-runtime.mjs",

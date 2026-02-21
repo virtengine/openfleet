@@ -1,0 +1,336 @@
+{
+  "tasks": [
+    {
+      "title": "[l] feat(cli): Desktop three-column layout with resizable sidebar and inspector panels",
+      "description": "WHY: Our Bosun UI was built mobile-first for Telegram WebView and the desktop experience at ≥1200px is essentially a stretched phone layout. bosun.ai's polished desktop-first design with sidebar + main + inspector panels is dramatically more usable for desktop power users.\n\nSCOPE: Implement a responsive three-column CSS grid layout for desktop viewports (≥1200px). The sidebar (left, 240px default) holds vertical nav tabs + session list. The main content area (flex-1) renders the active tab. The inspector panel (right, 320px default, collapsible) shows contextual details. Tablet (≥768px) gets 2-column (sidebar + main). Mobile (<768px) stays as-is with bottom nav.\n\nKEY FILES:\n- scripts/bosun/ui/styles/layout.css — primary layout rules, breakpoints\n- scripts/bosun/ui/app.js — App component rendering, SessionRail, InspectorPanel, BottomNav\n- scripts/bosun/ui/styles/variables.css — spacing/sizing custom properties\n\nCONSTRAINTS:\n- Must not break Telegram WebView mobile layout\n- Must work without a build step (no CSS preprocessors)\n- SessionRail and InspectorPanel already exist in app.js — refactor them into the 3-column grid\n- Use CSS custom properties for panel widths so they're adjustable\n- Store panel collapse state and widths in localStorage",
+      "implementation_steps": [
+        "Step 1: In layout.css, add a `.app-desktop-grid` class with `display: grid; grid-template-columns: var(--sidebar-width, 240px) 1fr var(--inspector-width, 320px)` inside a `@media (min-width: 1200px)` block",
+        "Step 2: In layout.css, add tablet breakpoint `@media (min-width: 768px) and (max-width: 1199px)` with 2-column grid (sidebar + main only)",
+        "Step 3: In app.js, refactor the App component's desktop render path to use the new grid classes — move sidebar nav from BottomNav into a vertical `.sidebar-nav` list for desktop",
+        "Step 4: In app.js, make InspectorPanel render as the third grid column on desktop with a collapse/expand toggle button",
+        "Step 5: Add CSS resize handles between columns using `resize: horizontal; overflow: auto` on sidebar and inspector containers",
+        "Step 6: Add localStorage persistence for panel widths and collapse state in a new `usePanelLayout()` hook",
+        "Step 7: Add keyboard shortcut `Ctrl+B` to toggle sidebar and `Ctrl+Shift+I` to toggle inspector (register in command palette)",
+        "Step 8: Convert BottomNav to `display: none` on desktop (≥1200px) since nav moves to sidebar",
+        "Step 9: Restructure the header for desktop: show breadcrumbs (active tab > session name > task name) and move connection status indicator to header right"
+      ],
+      "acceptance_criteria": [
+        "At ≥1200px viewport, layout renders as three columns: sidebar (nav + sessions) | main content | inspector",
+        "At ≥768px and <1200px, layout renders as two columns: sidebar | main content",
+        "At <768px, layout renders as current mobile layout with bottom nav bar",
+        "Sidebar and inspector can be collapsed/expanded via toggle buttons",
+        "Panel widths persist across page reloads via localStorage",
+        "All existing tabs render correctly in the main content area",
+        "BottomNav is hidden on desktop, visible on mobile/tablet",
+        "No visual regressions in Telegram WebView mobile layout"
+      ],
+      "verification": [
+        "Open UI at ≥1200px viewport width and verify three-column grid renders",
+        "Resize browser to <768px and verify mobile layout with bottom nav appears",
+        "Toggle sidebar collapse and reload — verify state persists",
+        "node -c ui/app.js && node -c ui/styles/layout.css (syntax check)",
+        "Test in Telegram WebView on mobile device to verify no regressions"
+      ],
+      "priority": "high",
+      "tags": ["ui", "desktop", "layout", "p0"]
+    },
+    {
+      "title": "[m] feat(cli): Vertical navigation sidebar component for desktop Bosun UI",
+      "description": "WHY: The bottom tab bar designed for mobile Telegram doesn't translate well to desktop. bosun.ai uses a vertical sidebar navigation that's standard for desktop web apps. Our TAB_CONFIG and ICONS are already defined — this is a rendering change, not a data model change.\n\nSCOPE: Create a SidebarNav component that renders the existing TAB_CONFIG items as a vertical list with icons, labels, and active state indicators. Only visible at desktop breakpoints (≥1200px). Lives alongside BottomNav — no removal of mobile nav.\n\nKEY FILES:\n- scripts/bosun/ui/app.js — BottomNav component, TAB_CONFIG, navigateTo\n- scripts/bosun/ui/modules/router.js — activeTab signal, TAB_CONFIG definition\n- scripts/bosun/ui/modules/icons.js — ICONS constants\n- scripts/bosun/ui/styles/layout.css — add sidebar nav styles\n\nCONSTRAINTS:\n- Reuse TAB_CONFIG and ICONS — don't duplicate tab definitions\n- Active tab indicator should use --accent color\n- Support keyboard navigation (arrow keys within nav, number keys 1-9 for tabs)\n- Include a collapse toggle that shrinks sidebar to icon-only mode (48px width)",
+      "implementation_steps": [
+        "Step 1: In app.js, create a SidebarNav component that maps TAB_CONFIG entries to vertical list items with icon + label",
+        "Step 2: Style each nav item with hover state, active indicator (left accent border), and transition animations",
+        "Step 3: Add collapse/expand toggle button at bottom of sidebar — when collapsed, hide labels and shrink to 48px icon-only mode",
+        "Step 4: In layout.css, add `.sidebar-nav` styles with flex-direction: column, gap: 2px, and proper overflow handling",
+        "Step 5: Wire SidebarNav to navigateTo() on click and activeTab signal for highlighting",
+        "Step 6: Add `display: none` on SidebarNav at <1200px and `display: none` on BottomNav at ≥1200px via media queries",
+        "Step 7: Persist sidebar collapse state in localStorage",
+        "Step 8: Add tooltip showing tab name when sidebar is in collapsed icon-only mode"
+      ],
+      "acceptance_criteria": [
+        "SidebarNav visible at ≥1200px with all TAB_CONFIG items rendered vertically",
+        "BottomNav hidden at ≥1200px, SidebarNav hidden at <1200px",
+        "Clicking a nav item switches to that tab (same behavior as BottomNav)",
+        "Active tab has visual accent indicator",
+        "Collapse toggle shrinks sidebar to icon-only mode",
+        "Collapse state persists across page reloads"
+      ],
+      "verification": [
+        "Open UI at desktop width (≥1200px), verify vertical nav appears with all tabs",
+        "Click each tab in sidebar nav — verify tab switches correctly",
+        "Collapse sidebar — verify icon-only mode renders correctly",
+        "Resize to mobile (<768px) — verify bottom nav appears and sidebar is hidden",
+        "node -c ui/app.js (syntax check)"
+      ],
+      "priority": "high",
+      "tags": ["ui", "desktop", "navigation", "p0"]
+    },
+    {
+      "title": "[m] feat(cli): Task graph DAG visualization component for workflow steps",
+      "description": "WHY: bosun.ai's task graph visualization shows multi-step workflows as directed acyclic graphs with visual flow between steps. Our tasks appear as flat kanban cards with no visual relationship between steps. When agents execute multi-step work, there's no way to see the workflow topology.\n\nSCOPE: Create a new TaskGraph component that renders task steps as an SVG-based DAG. Each step is a node (box with title + status indicator). Edges connect steps with labeled arrows (success/failure). Current executing step is highlighted. Click a node to see its output. No external dependencies — pure SVG rendering.\n\nKEY FILES:\n- scripts/bosun/ui/components/task-graph.js — NEW: DAG renderer component\n- scripts/bosun/ui/styles/task-graph.css — NEW: graph styling\n- scripts/bosun/ui/tabs/tasks.js — integrate TaskGraph into task detail view\n- scripts/bosun/ui/components/shared.js — reuse Card, Badge components\n\nCONSTRAINTS:\n- No external charting libraries — use inline SVG with Preact+HTM\n- Must handle linear chains (most common) and branching graphs\n- Responsive: horizontal layout on desktop, vertical on mobile\n- Nodes should show: step name, status (pending/running/success/failed/skipped), duration\n- Auto-layout using simple topological sort + level assignment",
+      "implementation_steps": [
+        "Step 1: Create ui/components/task-graph.js with a TaskGraph component that accepts `steps` array and `edges` array props",
+        "Step 2: Implement topological sort + level assignment for auto-layout — assign x position by topological order, y position by dependency depth",
+        "Step 3: Render each step as an SVG rect with rounded corners containing: step name text, status icon (circle colored by status), optional duration text",
+        "Step 4: Render edges as SVG path elements with arrowheads, labeled with condition (success/failure) when applicable",
+        "Step 5: Highlight the currently executing step with a pulsing border animation using CSS @keyframes",
+        "Step 6: Add click handler on nodes that dispatches a custom event or calls an onStepClick callback",
+        "Step 7: Create ui/styles/task-graph.css with node styles, edge styles, status colors, pulse animation",
+        "Step 8: Add a StepTimeline subcomponent — horizontal progress bar showing steps as circles connected by lines (simpler linear view)",
+        "Step 9: Integrate TaskGraph into the task detail view in tasks.js — show it when a task has implementation_steps"
+      ],
+      "acceptance_criteria": [
+        "TaskGraph renders a visual DAG for tasks with multiple steps",
+        "Each node shows step name and status with appropriate color coding",
+        "Edges between nodes are visible with directional arrows",
+        "Currently executing step has a visible pulse/highlight animation",
+        "Clicking a node fires an onStepClick callback with the step data",
+        "StepTimeline provides a simpler horizontal progress view for linear workflows",
+        "Component renders without errors when given 0, 1, or 10+ steps"
+      ],
+      "verification": [
+        "Create a test task with 3+ implementation steps and verify TaskGraph renders in detail view",
+        "node -c ui/components/task-graph.js (syntax check)",
+        "Visually verify SVG renders correctly at desktop and mobile widths",
+        "Verify click handlers fire correctly on step nodes"
+      ],
+      "priority": "high",
+      "tags": ["ui", "visualization", "workflow", "p0"]
+    },
+    {
+      "title": "[m] feat(cli): Live diff viewer integration in chat messages for agent file changes",
+      "description": "WHY: bosun.ai shows live diffs inline as agents edit files, with a timeline overlay for navigating between changes. Our chat view shows only text messages — when an agent modifies files, users can't see what changed until they check git. This is the biggest transparency gap.\n\nSCOPE: Enhance the existing DiffViewer component to render inline in chat messages when an agent reports file modifications. Add a diff timeline panel that appears in the inspector, showing all file changes chronologically. Support unified and side-by-side diff views.\n\nKEY FILES:\n- scripts/bosun/ui/components/diff-viewer.js — existing DiffViewer component to extend\n- scripts/bosun/ui/components/chat-view.js — ChatView where inline diffs appear\n- scripts/bosun/ui/app.js — InspectorPanel for diff timeline\n- scripts/bosun/ui-server.mjs — may need endpoint for git diff data\n\nCONSTRAINTS:\n- Diffs should be collapsible (expanded by default, click to collapse)\n- Syntax highlighting for diff hunks using CSS classes (not a full highlighter)\n- Side-by-side view only on desktop (≥1200px), unified on mobile\n- Limit rendered diff lines to 500 per file with 'Show more' expander",
+      "implementation_steps": [
+        "Step 1: In diff-viewer.js, extend DiffViewer to accept a `diff` string (unified diff format) and render it with +/- line coloring",
+        "Step 2: Add a parseDiff utility function that splits unified diff text into file sections with hunks",
+        "Step 3: Add file header bars showing filename, +N/-N stats, and expand/collapse toggle",
+        "Step 4: In chat-view.js, detect messages containing diff data (look for messages with type 'diff' or content matching diff patterns) and render DiffViewer inline",
+        "Step 5: Add a DiffTimeline component for the inspector panel that lists all diffs in the session chronologically with file names and timestamps",
+        "Step 6: Add toggle between unified and side-by-side view modes (side-by-side only shown at ≥1200px)",
+        "Step 7: Add copy-to-clipboard button on each diff file section",
+        "Step 8: Style diff hunks with proper colors: additions (green bg), deletions (red bg), context (neutral bg), file headers (accent bg)"
+      ],
+      "acceptance_criteria": [
+        "DiffViewer renders unified diff format with colored +/- lines",
+        "File sections are collapsible with filename headers showing stats",
+        "Diffs appear inline in chat messages when agent reports file changes",
+        "Inspector panel shows a chronological list of all diffs in the session",
+        "Side-by-side mode available on desktop, unified on mobile",
+        "Large diffs (>500 lines per file) are truncated with 'Show more' control"
+      ],
+      "verification": [
+        "In a chat session, trigger an agent action that modifies files and verify diff appears inline",
+        "node -c ui/components/diff-viewer.js (syntax check)",
+        "Test with a large diff (1000+ lines) to verify truncation works",
+        "Test unified and side-by-side toggle on desktop viewport"
+      ],
+      "priority": "high",
+      "tags": ["ui", "diff", "transparency", "p1"]
+    },
+    {
+      "title": "[m] feat(cli): Structured agent output cards with schema validation display",
+      "description": "WHY: bosun.ai validates agent outputs against JSON schemas and renders them as structured cards. Our agent responses are free-form chat text, making it impossible to extract, verify, or reuse results programmatically. When an agent completes a task, we should show a structured summary card, not just prose.\n\nSCOPE: Add an AgentOutputCard component that renders structured JSON output in a formatted card with labeled fields. Support displaying success outcomes and failure outcomes differently. Add output rendering in both chat messages and the inspector panel.\n\nKEY FILES:\n- scripts/bosun/ui/components/shared.js — add AgentOutputCard component\n- scripts/bosun/ui/components/chat-view.js — render AgentOutputCard for structured messages\n- scripts/bosun/ui/app.js — show latest agent output in InspectorPanel\n- scripts/bosun/ui/modules/streaming.js — agent status data that may contain structured output\n\nCONSTRAINTS:\n- Card should handle nested objects/arrays with expandable sections\n- Success outputs get green accent, failure outputs get red accent\n- Support common fields: summary, files_changed, tests_passed, errors, retryable\n- Include copy-to-clipboard for the raw JSON",
+      "implementation_steps": [
+        "Step 1: In shared.js, create AgentOutputCard component that accepts a `data` object and `type` ('success'|'failure') prop",
+        "Step 2: Render common top-level fields (summary, status) as prominent header text",
+        "Step 3: Render array fields (files_changed, errors, tests) as bulleted lists with appropriate icons",
+        "Step 4: Render nested objects as expandable sections with key-value pairs",
+        "Step 5: Add a 'Raw JSON' toggle that shows the formatted JSON source",
+        "Step 6: Add copy-to-clipboard button for the raw JSON",
+        "Step 7: In chat-view.js, detect messages with structured JSON content and render AgentOutputCard instead of plain text",
+        "Step 8: In InspectorPanel (app.js), add a section showing the most recent agent output card for the active session"
+      ],
+      "acceptance_criteria": [
+        "AgentOutputCard renders structured JSON as a formatted card with labeled fields",
+        "Success and failure outcomes have different color accents (green/red)",
+        "Nested objects are expandable/collapsible",
+        "Array fields render as lists",
+        "Raw JSON view available via toggle",
+        "Copy-to-clipboard works for raw JSON",
+        "Cards appear inline in chat and in inspector panel"
+      ],
+      "verification": [
+        "Create a mock structured output JSON and verify AgentOutputCard renders correctly",
+        "node -c ui/components/shared.js (syntax check)",
+        "Test with deeply nested JSON (3+ levels) to verify expandable sections",
+        "Test copy-to-clipboard in browser"
+      ],
+      "priority": "medium",
+      "tags": ["ui", "agent-output", "transparency", "p1"]
+    },
+    {
+      "title": "[s] feat(cli): Desktop breadcrumb header with context bar for Bosun UI",
+      "description": "WHY: On desktop, the header wastes space showing just a logo and minimal info. bosun.ai shows contextual breadcrumbs and status in the header. Users should see: current tab > selected session > active task at a glance.\n\nSCOPE: Extend the app header for desktop viewports to show a breadcrumb trail and status indicators. Reuse existing signals (activeTab, selectedSessionId, sessionsData) — no new data sources needed.\n\nKEY FILES:\n- scripts/bosun/ui/app.js — Header component\n- scripts/bosun/ui/styles/layout.css — header styles\n- scripts/bosun/ui/modules/router.js — activeTab signal\n- scripts/bosun/ui/components/session-list.js — selectedSessionId, sessionsData signals\n\nCONSTRAINTS:\n- Only show breadcrumbs on desktop (≥1200px) — mobile header stays as-is\n- Breadcrumb items should be clickable (navigate to tab, select session)\n- Include connection status dot (green=connected, yellow=reconnecting, red=disconnected)",
+      "implementation_steps": [
+        "Step 1: In app.js, create a BreadcrumbHeader subcomponent that reads activeTab, selectedSessionId, and sessionsData signals",
+        "Step 2: Render breadcrumb trail: [Tab Icon + Name] > [Session Name] > [Task Title if applicable], with separator chevrons",
+        "Step 3: Make each breadcrumb segment clickable — tab segment calls navigateTo(), session segment opens session",
+        "Step 4: Add a connection status dot indicator on the far right of the header that reads wsConnected and backendDown signals",
+        "Step 5: In layout.css, add `.breadcrumb-header` styles with flex layout, proper truncation for long names, and separator styling",
+        "Step 6: Wrap BreadcrumbHeader in a media query check — only render on desktop viewports"
+      ],
+      "acceptance_criteria": [
+        "Breadcrumb shows current tab name on desktop",
+        "When a session is selected, breadcrumb shows tab > session name",
+        "Clicking breadcrumb segments navigates correctly",
+        "Connection status dot is visible and reflects actual connection state",
+        "Mobile header is unchanged"
+      ],
+      "verification": [
+        "Open UI at desktop width, navigate between tabs and select sessions — verify breadcrumbs update",
+        "node -c ui/app.js (syntax check)",
+        "Disconnect WebSocket and verify status dot turns red"
+      ],
+      "priority": "medium",
+      "tags": ["ui", "desktop", "header", "p1"]
+    },
+    {
+      "title": "[s] feat(cli): Onboarding checklist component for first-time Bosun users",
+      "description": "WHY: bosun.ai has a step-by-step onboarding flow that resumes where you left off. Our Bosun has no onboarding — new users face a blank UI with no guidance. A simple checklist that tracks setup progress would dramatically reduce friction.\n\nSCOPE: Create an OnboardingChecklist component that guides first-time users through: verify connection → explore dashboard → create first task → start a task → review chat. Progress is tracked in localStorage. Shows as a dismissible floating card on the dashboard tab.\n\nKEY FILES:\n- scripts/bosun/ui/components/shared.js — or create new ui/components/onboarding.js\n- scripts/bosun/ui/tabs/dashboard.js — render onboarding card on dashboard\n- scripts/bosun/ui/modules/state.js — can track onboarding completion signals\n\nCONSTRAINTS:\n- Must not force users through onboarding — always dismissible\n- Resume exactly where user left off (localStorage persistence)\n- Each step should have an action button that navigates to the relevant tab/action\n- Show completion percentage and celebration state when all steps done",
+      "implementation_steps": [
+        "Step 1: Create ui/components/onboarding.js with an OnboardingChecklist component",
+        "Step 2: Define ONBOARDING_STEPS array with steps: {id, title, description, action} for each onboarding phase",
+        "Step 3: Track completed steps in localStorage under key 'bosun-onboarding-progress'",
+        "Step 4: Render as a card with progress bar, step list with checkmarks, and action buttons",
+        "Step 5: Add dismiss button that sets 'bosun-onboarding-dismissed' in localStorage",
+        "Step 6: Auto-detect completion of certain steps (e.g., if tasks exist, mark 'create first task' as done)",
+        "Step 7: In dashboard.js, render OnboardingChecklist at top of dashboard if not dismissed and not all complete",
+        "Step 8: Add 'Show onboarding' option in settings tab to re-enable dismissed onboarding"
+      ],
+      "acceptance_criteria": [
+        "OnboardingChecklist renders on dashboard for new users (no localStorage data)",
+        "Each step shows title, description, and action button",
+        "Completing steps updates progress bar and adds checkmarks",
+        "Progress persists across page reloads",
+        "Dismiss button hides the checklist permanently",
+        "Can be re-enabled from settings",
+        "Auto-detects steps that are already complete (existing tasks, sessions, etc.)"
+      ],
+      "verification": [
+        "Clear localStorage and reload — verify onboarding appears on dashboard",
+        "Complete a step and reload — verify progress persists",
+        "Dismiss and reload — verify onboarding stays hidden",
+        "node -c ui/components/onboarding.js (syntax check)"
+      ],
+      "priority": "medium",
+      "tags": ["ui", "onboarding", "ux", "p2"]
+    },
+    {
+      "title": "[m] feat(cli): Session audit summary cards with auto-generated checkpoints in chat view",
+      "description": "WHY: bosun.ai auto-generates structured summaries (task semantics, decision log, audit trail, files changed) as collapsible checkpoint cards in the session log. Our chat history is purely linear — long sessions become impossible to navigate. Adding periodic summary cards would make sessions scannable.\n\nSCOPE: Create a SessionSummaryCard component and a summarization function that condenses the last N messages into a structured summary. Render as collapsible cards in the chat timeline at regular intervals.\n\nKEY FILES:\n- scripts/bosun/ui/components/chat-view.js — render summary cards in message list\n- scripts/bosun/ui/components/shared.js — add SessionSummaryCard component\n- scripts/bosun/ui/modules/state.js — sessionMessages signal\n\nCONSTRAINTS:\n- Summaries should be client-side generated (extract key info from messages) — no LLM calls\n- Collapsible by default to save space, expandable on click\n- Include: message count, time span, files mentioned, tasks referenced, errors encountered\n- Insert summary card every 20 messages or when there's a 30+ minute gap",
+      "implementation_steps": [
+        "Step 1: In shared.js, create SessionSummaryCard component with collapsible header showing message count, time range, and quick stats",
+        "Step 2: Create a summarizeMessages utility that scans N messages and extracts: file paths mentioned, task IDs referenced, error messages, key actions taken",
+        "Step 3: Render extracted data as structured sections: Files Changed (list), Errors (list), Key Actions (list)",
+        "Step 4: In chat-view.js, modify filteredMessages/visibleMessages to insert SessionSummaryCard placeholders every 20 messages",
+        "Step 5: Add a time-gap detector that inserts a summary card when there's a 30+ minute gap between messages",
+        "Step 6: Style summary cards with a distinct background (surface-2) and a subtle left accent border",
+        "Step 7: Make summary cards collapsible — show only header by default, click to expand full content",
+        "Step 8: Add a 'Jump to summaries' button in the chat header that scrolls to the nearest summary card"
+      ],
+      "acceptance_criteria": [
+        "Summary cards appear in chat view every 20 messages",
+        "Summary cards show message count, time range, and key stats in header",
+        "Expanded view shows files, errors, and actions extracted from messages",
+        "Cards are collapsible with smooth animation",
+        "Time-gap summaries appear for 30+ minute gaps",
+        "Jump-to-summaries navigation works"
+      ],
+      "verification": [
+        "In a session with 40+ messages, verify two summary cards appear",
+        "node -c ui/components/chat-view.js (syntax check)",
+        "Expand and collapse summary cards to verify animation",
+        "Test with a session that has a long time gap between messages"
+      ],
+      "priority": "low",
+      "tags": ["ui", "chat", "audit", "p3"]
+    },
+    {
+      "title": "[s] feat(cli): PR tracking cards in chat messages with live status updates",
+      "description": "WHY: bosun.ai shows PR status as first-class cards with title, state, diff stats, and direct GitHub links. Our chat mentions PRs in text but doesn't track them as entities. When an agent creates a PR, it should appear as a rich card.\n\nSCOPE: Create a PRCard component that extracts PR URLs from chat messages and renders them as formatted cards with metadata. Poll for status updates to show current PR state.\n\nKEY FILES:\n- scripts/bosun/ui/components/shared.js — add PRCard component\n- scripts/bosun/ui/components/chat-view.js — detect PR URLs in messages and render PRCard\n- scripts/bosun/ui/modules/api.js — may need a lightweight PR status fetch function\n\nCONSTRAINTS:\n- Extract PR URLs using regex patterns for GitHub/GitLab PR URLs\n- Card should show: title, PR number, state (open/closed/merged/draft), additions/deletions\n- Link to PR should open in new tab\n- Poll for updates every 60 seconds when PR is in open/draft state\n- Gracefully handle cases where PR data can't be fetched (show URL-only fallback)",
+      "implementation_steps": [
+        "Step 1: Create a PR_URL_PATTERN regex that matches GitHub and GitLab PR/MR URLs",
+        "Step 2: In shared.js, create a PRCard component that accepts PR metadata and renders a card with title, number, state badge, and stats",
+        "Step 3: In chat-view.js, scan message content for PR URLs and render PRCard inline where URLs are found",
+        "Step 4: Create a fetchPRStatus function in api.js that calls /api/pr-status (or parses PR data from task metadata)",
+        "Step 5: Add polling in PRCard — every 60s while PR state is open/draft, refresh status",
+        "Step 6: Style state badges: green for merged, purple for open, gray for closed, yellow for draft",
+        "Step 7: Add a direct link button that opens the PR in a new browser tab",
+        "Step 8: Handle fetch failures gracefully — show a simple URL link instead of full card"
+      ],
+      "acceptance_criteria": [
+        "PR URLs in chat messages render as formatted cards instead of plain text",
+        "Card shows PR title, number, and state with color-coded badge",
+        "Clicking the link opens the PR in a new tab",
+        "Open/draft PRs auto-refresh state every 60 seconds",
+        "Failed PR data fetches show a graceful URL-only fallback"
+      ],
+      "verification": [
+        "Paste a GitHub PR URL in a chat message and verify card renders",
+        "node -c ui/components/shared.js && node -c ui/components/chat-view.js (syntax check)",
+        "Test with an invalid PR URL to verify graceful fallback"
+      ],
+      "priority": "low",
+      "tags": ["ui", "pr-tracking", "chat", "p3"]
+    },
+    {
+      "title": "[s] feat(cli): Widen and enhance chat input toolbar for desktop with formatting controls",
+      "description": "WHY: The chat input area is designed for mobile — narrow, single-line primary, compact toolbar. On desktop we have horizontal space that's wasted. bosun.ai's desktop editor gives the input area proper width and formatting controls. This is a quick win that immediately improves the desktop chat experience.\n\nSCOPE: On desktop (≥1200px), expand the chat input to use full available width, add a taller default height (3 lines visible), and surface formatting/action buttons (bold, code block, attach file, command shortcuts).\n\nKEY FILES:\n- scripts/bosun/ui/components/agent-selector.js — ChatInputToolbar component\n- scripts/bosun/ui/tabs/chat.js — chat input area rendering\n- scripts/bosun/ui/styles/components.css — input styling\n\nCONSTRAINTS:\n- Mobile input stays compact and unchanged\n- Formatting buttons are icon-only with tooltips\n- Keyboard shortcuts for formatting: Ctrl+B bold, Ctrl+` code, Ctrl+Shift+K code block\n- Input should auto-grow up to 12 lines on desktop, 4 lines on mobile",
+      "implementation_steps": [
+        "Step 1: In components.css, add desktop-specific styles for `.chat-input-area` at ≥1200px: min-height: 3em, max-height: 12em, wider padding",
+        "Step 2: In chat.js, add Markdown formatting helper functions (wrapSelection for bold/italic/code)",
+        "Step 3: In agent-selector.js ChatInputToolbar, add a desktop-only formatting bar above the input with icon buttons for: bold, italic, inline code, code block",
+        "Step 4: Wire formatting buttons to insert Markdown syntax around the current selection in the textarea",
+        "Step 5: Add keyboard shortcuts in the textarea onKeyDown handler for Ctrl+B, Ctrl+I, Ctrl+` ",
+        "Step 6: Improve auto-grow logic for desktop — use scrollHeight measurement to expand up to max-height",
+        "Step 7: Add subtle char count indicator on the far right of the input area (only show when >500 chars)"
+      ],
+      "acceptance_criteria": [
+        "Chat input is visually wider and taller on desktop (≥1200px) than on mobile",
+        "Formatting buttons appear on desktop toolbar for bold, code, code block",
+        "Clicking formatting buttons wraps selected text in appropriate Markdown syntax",
+        "Keyboard shortcuts Ctrl+B, Ctrl+` work in the input area",
+        "Input auto-grows up to 12 lines on desktop",
+        "Mobile chat input is unchanged"
+      ],
+      "verification": [
+        "Open UI on desktop, verify chat input is wider with formatting toolbar",
+        "Select text and click bold button — verify **text** wrapping",
+        "Type a long message and verify auto-grow behavior",
+        "node -c ui/components/agent-selector.js && node -c ui/tabs/chat.js (syntax check)",
+        "Test on mobile viewport — verify no formatting toolbar appears"
+      ],
+      "priority": "medium",
+      "tags": ["ui", "desktop", "chat", "quick-win"]
+    },
+    {
+      "title": "[s] feat(cli): Keyboard shortcut overlay and help panel for Bosun desktop UI",
+      "description": "WHY: We already have a command palette (Ctrl+K) but no discoverable way to see all available keyboard shortcuts. bosun.ai focuses on keyboard-first desktop UX. A '?' shortcut that shows all bindings would help power users.\n\nSCOPE: Create a keyboard shortcut overlay modal triggered by '?' key (when not in an input field). List all existing shortcuts plus new ones from other tasks. Include a 'Getting Started' section.\n\nKEY FILES:\n- scripts/bosun/ui/components/command-palette.js — existing command palette to extend\n- scripts/bosun/ui/app.js — global keyboard listener\n- scripts/bosun/ui/components/shared.js — Modal component to reuse\n\nCONSTRAINTS:\n- Only trigger on '?' when no input/textarea is focused\n- Group shortcuts by category (Navigation, Chat, Tasks, System)\n- Close on Escape or clicking outside\n- Should be searchable (filter shortcuts by typing)",
+      "implementation_steps": [
+        "Step 1: Create a KEYBOARD_SHORTCUTS constant array with {key, description, category} for all existing shortcuts",
+        "Step 2: In app.js, add a global keydown listener for '?' that opens the shortcut overlay (guarded by activeElement check)",
+        "Step 3: Create a ShortcutOverlay component using the existing Modal from shared.js",
+        "Step 4: Render shortcuts grouped by category with key badges (styled like keyboard keys) and descriptions",
+        "Step 5: Add a search input at the top that filters shortcuts by description or key",
+        "Step 6: Add a link to open the full command palette (Ctrl+K) from the overlay footer",
+        "Step 7: Style key badges with monospace font, border, rounded corners to look like physical keyboard keys"
+      ],
+      "acceptance_criteria": [
+        "Pressing '?' opens a modal showing all keyboard shortcuts",
+        "'?' does not trigger when typing in an input field or textarea",
+        "Shortcuts are grouped by category with visual section headers",
+        "Search input filters shortcuts in real-time",
+        "Escape closes the overlay",
+        "Key combinations render as styled keyboard key badges"
+      ],
+      "verification": [
+        "Press '?' on desktop — verify overlay appears with all shortcuts listed",
+        "Type in search box — verify shortcuts filter correctly",
+        "Focus a textarea, press '?' — verify overlay does NOT appear",
+        "node -c ui/app.js (syntax check)"
+      ],
+      "priority": "medium",
+      "tags": ["ui", "desktop", "keyboard", "quick-win"]
+    }
+  ]
+}

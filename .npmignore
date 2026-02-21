@@ -9,6 +9,8 @@ logs/
 
 # Dev / CI
 node_modules/
+desktop/node_modules/
+tests/
 package-lock.json
 .git/
 .github/

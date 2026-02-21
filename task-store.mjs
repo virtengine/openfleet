@@ -220,13 +220,13 @@ export function loadStore() {
         _meta: { ...defaultMeta(), ...(data._meta || {}) },
         tasks: data.tasks || {},
       };
-      console.log(
+      console.error(
         TAG,
         `Loaded ${Object.keys(_store.tasks).length} tasks from disk`,
       );
     } else {
       _store = { _meta: defaultMeta(), tasks: {} };
-      console.log(TAG, "No store file found — initialised empty store");
+      console.error(TAG, "No store file found — initialised empty store");
     }
   } catch (err) {
     console.error(TAG, "Failed to load store, starting fresh:", err.message);
