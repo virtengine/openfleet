@@ -180,15 +180,15 @@ function useBackendHealth() {
 function OfflineBanner() {
   const { retry: manualRetry } = useBackendHealth();
   return html`
-    <div class="offline-banner">
-      <div class="offline-banner-icon">⚠️</div>
-      <div class="offline-banner-content">
-        <div class="offline-banner-title">Backend Unreachable</div>
-        <div class="offline-banner-meta">${backendError.value || "Connection lost"}</div>
+    <div class="offline-banner alert alert-error shadow-sm mx-4 my-2">
+      <span class="text-lg">⚠️</span>
+      <div class="flex-1">
+        <div class="font-semibold text-sm">Backend Unreachable</div>
+        <div class="text-xs opacity-70">${backendError.value || "Connection lost"}</div>
         ${backendLastSeen.value
-          ? html`<div class="offline-banner-meta">Last connected: ${formatTimeAgo(backendLastSeen.value)}</div>`
+          ? html`<div class="text-xs opacity-70">Last connected: ${formatTimeAgo(backendLastSeen.value)}</div>`
           : null}
-        <div class="offline-banner-meta">Retry attempt #${backendRetryCount.value}</div>
+        <div class="text-xs opacity-70">Retry attempt #${backendRetryCount.value}</div>
       </div>
       <button class="btn btn-ghost btn-sm" onClick=${manualRetry}>Retry</button>
     </div>
@@ -253,27 +253,19 @@ function Header() {
   }
 
   return html`
-    <header class="app-header">
-      <div class="app-header-left">
-        <div class="app-header-workspace">
-          <${WorkspaceSwitcher} />
-        </div>
+    <header class="app-header navbar bg-base-200/80 backdrop-blur-sm sticky top-0 z-30 min-h-0 px-4 py-2 border-b border-base-content/5">
+      <div class="navbar-start">
+        <${WorkspaceSwitcher} />
       </div>
-      <div class="app-header-right">
-        <div class="header-actions">
-          <div class="header-status">
-            <div class="connection-pill ${connClass}">
-              <span class="connection-dot"></span>
-              ${connLabel}
-            </div>
-            ${freshnessLabel
-              ? html`<div class="header-freshness">${freshnessLabel}</div>`
-              : null}
+      <div class="navbar-end gap-2">
+        <div class="flex items-center gap-2">
+          <div class="badge ${connClass === 'connected' ? 'badge-success' : connClass === 'reconnecting' ? 'badge-warning' : 'badge-error'} badge-sm gap-1">
+            <span class="w-1.5 h-1.5 rounded-full ${connClass === 'connected' ? 'bg-success-content' : connClass === 'reconnecting' ? 'bg-warning-content' : 'bg-error-content'}"></span>
+            ${connLabel}
           </div>
-          ${user
-            ? html`<div class="app-header-user">@${user.username || user.first_name}</div>`
-            : null}
+          ${freshnessLabel ? html`<span class="text-xs opacity-50">${freshnessLabel}</span>` : null}
         </div>
+        ${user ? html`<div class="text-xs opacity-60">@${user.username || user.first_name}</div>` : null}
       </div>
     </header>
   `;
@@ -286,51 +278,49 @@ function SidebarNav() {
   const user = getTelegramUser();
   const isConn = connected.value;
   return html`
-    <aside class="sidebar">
-      <div class="sidebar-brand">
-        <div class="sidebar-logo">
-          <img src="logo.png" alt="Bosun" class="app-logo-img" />
-        </div>
-        <div class="sidebar-title">Bosun</div>
+    <aside class="sidebar flex flex-col bg-base-200 border-r border-base-content/5 h-full w-[var(--sidebar-width)]">
+      <div class="p-3 flex items-center gap-2">
+        <img src="logo.png" alt="Bosun" class="w-8 h-8 rounded" />
+        <span class="font-semibold text-sm">Bosun</span>
       </div>
-      <div class="sidebar-actions">
-        <button class="btn btn-primary btn-block" onClick=${() => createSession({ type: "primary" })}>
-          <span class="btn-icon">✨</span> New Session
+      <div class="px-3 flex flex-col gap-1.5 mb-3">
+        <button class="btn btn-primary btn-sm w-full gap-1" onClick=${() => createSession({ type: "primary" })}>
+          ✨ New Session
         </button>
-        <button class="btn btn-ghost btn-block" onClick=${() => navigateTo("tasks")}>
-          <span class="btn-icon">📋</span> View Tasks
+        <button class="btn btn-ghost btn-sm w-full gap-1" onClick=${() => navigateTo("tasks")}>
+          📋 View Tasks
         </button>
       </div>
-      <nav class="sidebar-nav">
+      <ul class="menu menu-sm flex-1 px-2 gap-0.5">
         ${TAB_CONFIG.map((tab) => {
           const isActive = activeTab.value === tab.id;
           const isHome = tab.id === "dashboard";
           return html`
-            <button
-              key=${tab.id}
-              class="sidebar-nav-item ${isActive ? "active" : ""}"
-              aria-label=${tab.label}
-              aria-current=${isActive ? "page" : null}
-              onClick=${() =>
-                navigateTo(tab.id, {
+            <li key=${tab.id}>
+              <a
+                class=${isActive ? "active font-medium" : ""}
+                aria-label=${tab.label}
+                aria-current=${isActive ? "page" : null}
+                onClick=${() => navigateTo(tab.id, {
                   resetHistory: isHome,
                   forceRefresh: isHome && isActive,
                 })}
-            >
-              ${ICONS[tab.icon]}
-              <span>${tab.label}</span>
-            </button>
+              >
+                ${ICONS[tab.icon]}
+                <span>${tab.label}</span>
+              </a>
+            </li>
           `;
         })}
-      </nav>
-      <div class="sidebar-footer">
-        <div class="sidebar-status ${isConn ? "online" : "offline"}">
-          <span class="sidebar-status-dot"></span>
-          ${isConn ? "Connected" : "Offline"}
+      </ul>
+      <div class="p-3 border-t border-base-content/5">
+        <div class="flex items-center gap-2 text-xs">
+          <span class="w-2 h-2 rounded-full ${isConn ? "bg-success" : "bg-error"}"></span>
+          <span class="opacity-70">${isConn ? "Connected" : "Offline"}</span>
         </div>
         ${user
-          ? html`<div class="sidebar-user">@${user.username || user.first_name || "operator"}</div>`
-          : html`<div class="sidebar-user">Operator Console</div>`}
+          ? html`<div class="text-xs opacity-50 mt-1 truncate">@${user.username || user.first_name || "operator"}</div>`
+          : html`<div class="text-xs opacity-50 mt-1">Operator Console</div>`}
       </div>
     </aside>
   `;
@@ -364,29 +354,21 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer }) {
   }, [sessionsData.value, selectedSessionId.value]);
 
   return html`
-    <aside class="session-rail">
-      <div class="rail-header">
-        <div class="rail-title">Sessions</div>
-        <div class="rail-meta">
-          ${activeCount} active · ${sessions.length} total
-        </div>
+    <aside class="session-rail flex flex-col bg-base-200 border-r border-base-content/5 overflow-hidden" style="width: var(--rail-width, 300px)">
+      <div class="p-3 border-b border-base-content/5">
+        <div class="font-medium text-sm">Sessions</div>
+        <div class="text-xs opacity-50 mt-0.5">${activeCount} active · ${sessions.length} total</div>
       </div>
-      <${SessionList}
-        showArchived=${showArchived}
-        onToggleArchived=${setShowArchived}
-        defaultType="primary"
-      />
-      ${showResizer
-        ? html`
-            <div
-              class="rail-resizer"
-              role="separator"
-              aria-label="Resize sessions panel"
-              onPointerDown=${(e) => onResizeStart("rail", e)}
-              onDoubleClick=${() => onResizeReset("rail")}
-            ></div>
-          `
-        : null}
+      <div class="flex-1 overflow-y-auto">
+        <${SessionList} showArchived=${showArchived} onToggleArchived=${setShowArchived} defaultType="primary" />
+      </div>
+      ${showResizer ? html`
+        <div class="w-1 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors absolute right-0 top-0 bottom-0"
+          role="separator" aria-label="Resize sessions panel"
+          onPointerDown=${(e) => onResizeStart("rail", e)}
+          onDoubleClick=${() => onResizeReset("rail")}
+        ></div>
+      ` : null}
     </aside>
   `;
 }
@@ -466,32 +448,34 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
   }, [isSessionTab, sessionId, session?.taskId, session?.branch, status]);
 
   return html`
-    <aside class="inspector">
-      <div class="inspector-section">
-        <div class="inspector-title">Focus</div>
+    <aside class="inspector flex flex-col bg-base-200 border-l border-base-content/5 overflow-y-auto" style="width: var(--inspector-width, 300px)">
+      <div class="inspector-section p-3 border-b border-base-content/5">
+        <div class="inspector-title font-medium text-sm mb-2">Focus</div>
         ${session
           ? html`
-              <div class="inspector-kv"><span>Session</span><strong>${session.title || session.taskId || session.id}</strong></div>
-              <div class="inspector-kv"><span>Status</span><strong>${status}</strong></div>
-              <div class="inspector-kv"><span>Type</span><strong>${type}</strong></div>
-              <div class="inspector-kv"><span>Last Active</span><strong>${lastActive ? formatRelative(lastActive) : "—"}</strong></div>
-              <div class="inspector-kv"><span>Preview</span><strong>${preview}</strong></div>
+              <div class="flex flex-col gap-1">
+                <div class="inspector-kv flex justify-between text-xs"><span class="opacity-50">Session</span><strong class="truncate ml-2">${session.title || session.taskId || session.id}</strong></div>
+                <div class="inspector-kv flex justify-between text-xs"><span class="opacity-50">Status</span><strong>${status}</strong></div>
+                <div class="inspector-kv flex justify-between text-xs"><span class="opacity-50">Type</span><strong>${type}</strong></div>
+                <div class="inspector-kv flex justify-between text-xs"><span class="opacity-50">Last Active</span><strong>${lastActive ? formatRelative(lastActive) : "—"}</strong></div>
+                <div class="inspector-kv flex justify-between text-xs"><span class="opacity-50">Preview</span><strong>${preview}</strong></div>
+              </div>
             `
-          : html`<div class="inspector-empty">Select a session to see context.</div>`}
+          : html`<div class="inspector-empty text-xs opacity-40">Select a session to see context.</div>`}
       </div>
 
       ${isSessionTab
         ? html`
-            <div class="inspector-section inspector-scroll">
-              <div class="inspector-title">Latest Diff</div>
+            <div class="inspector-section inspector-scroll p-3 border-b border-base-content/5">
+              <div class="inspector-title font-medium text-sm mb-2">Latest Diff</div>
               <${DiffViewer} sessionId=${sessionId} />
             </div>
-            <div class="inspector-section">
-              <div class="inspector-title">Smart Logs</div>
+            <div class="inspector-section p-3">
+              <div class="inspector-title font-medium text-sm mb-2">Smart Logs</div>
               ${logState === "error"
-                ? html`<div class="inspector-empty">Log stream unavailable.</div>`
+                ? html`<div class="inspector-empty text-xs opacity-40">Log stream unavailable.</div>`
                 : smartLogs.length === 0
-                  ? html`<div class="inspector-empty">No noteworthy logs right now.</div>`
+                  ? html`<div class="inspector-empty text-xs opacity-40">No noteworthy logs right now.</div>`
                   : html`
                       <div class="inspector-scroll">
                           ${smartLogs.map(
@@ -514,17 +498,17 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
             </div>
           `
         : html`
-            <div class="inspector-section">
-              <div class="inspector-title">System Pulse</div>
-              <div class="inspector-kv"><span>API</span><strong>${connected.value ? "Connected" : "Offline"}</strong></div>
-              <div class="inspector-kv"><span>WebSocket</span><strong>${wsConnected.value ? "Live" : "Closed"}</strong></div>
-              <div class="inspector-kv"><span>Last Seen</span><strong>${backendLastSeen.value ? formatRelative(backendLastSeen.value) : "—"}</strong></div>
+            <div class="inspector-section p-3">
+              <div class="inspector-title font-medium text-sm mb-2">System Pulse</div>
+              <div class="inspector-kv flex justify-between text-xs"><span class="opacity-50">API</span><strong>${connected.value ? "Connected" : "Offline"}</strong></div>
+              <div class="inspector-kv flex justify-between text-xs"><span class="opacity-50">WebSocket</span><strong>${wsConnected.value ? "Live" : "Closed"}</strong></div>
+              <div class="inspector-kv flex justify-between text-xs"><span class="opacity-50">Last Seen</span><strong>${backendLastSeen.value ? formatRelative(backendLastSeen.value) : "—"}</strong></div>
             </div>
           `}
       ${showResizer
         ? html`
             <div
-              class="inspector-resizer"
+              class="inspector-resizer w-1 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors absolute left-0 top-0 bottom-0"
               role="separator"
               aria-label="Resize inspector panel"
               onPointerDown=${(e) => onResizeStart("inspector", e)}
@@ -551,37 +535,23 @@ function getTabsById(ids) {
 function BottomNav({ compact, moreOpen, onToggleMore, onNavigate }) {
   const primaryTabs = getTabsById(PRIMARY_NAV_TABS);
   return html`
-    <nav class=${`bottom-nav ${compact ? "compact" : ""}`}>
+    <nav class="btm-nav btm-nav-sm bg-base-200 border-t border-base-content/5 z-40">
       ${primaryTabs.map((tab) => {
         const isHome = tab.id === "dashboard";
         const isActive = activeTab.value === tab.id;
         return html`
-          <button
-            key=${tab.id}
-            class="nav-item ${isActive ? "active" : ""}"
-            aria-label=${`Go to ${tab.label}`}
-            type="button"
-            onClick=${() =>
-              onNavigate(tab.id, {
-                resetHistory: isHome,
-                forceRefresh: isHome && isActive,
-              })}
-          >
+          <button key=${tab.id}
+            class=${isActive ? "active text-primary" : ""}
+            onClick=${() => onNavigate(tab.id, { resetHistory: isHome, forceRefresh: isHome && isActive })}>
             ${ICONS[tab.icon]}
-            <span class="nav-label">${tab.label}</span>
+            <span class="btm-nav-label text-xs">${tab.label}</span>
           </button>
         `;
       })}
-      <button
-        class="nav-item nav-item-more ${moreOpen ? "active" : ""}"
-        aria-haspopup="dialog"
-        aria-expanded=${moreOpen ? "true" : "false"}
-        aria-label=${moreOpen ? "Close more menu" : "Open more menu"}
-        type="button"
-        onClick=${onToggleMore}
-      >
+      <button class=${moreOpen ? "active text-primary" : ""}
+        onClick=${onToggleMore}>
         ${ICONS.ellipsis}
-        <span class="nav-label">More</span>
+        <span class="btm-nav-label text-xs">More</span>
       </button>
     </nav>
   `;
@@ -593,47 +563,47 @@ function MoreSheet({ open, onClose, onNavigate }) {
   return html`
     <${Modal} title="More" open=${open} onClose=${onClose}>
       <div class="more-menu" role="navigation" aria-label="More menu">
-        <div class="more-menu-section">
-          <div class="more-menu-section-title">Quick Access</div>
-          <div class="more-menu-grid">
+        <div class="more-menu-section mb-4">
+          <div class="more-menu-section-title text-xs font-semibold opacity-50 mb-2">Quick Access</div>
+          <div class="grid grid-cols-4 gap-2 p-2">
             ${primaryTabs.map((tab) => {
               const isHome = tab.id === "dashboard";
               const isActive = activeTab.value === tab.id;
               return html`
                 <button
                   key=${tab.id}
-                  class="more-menu-item ${isActive ? "active" : ""}"
+                  class="btn btn-ghost btn-sm flex flex-col items-center gap-1 h-auto py-2 ${isActive ? "btn-active" : ""}"
                   aria-label=${`Open ${tab.label}`}
                   onClick=${() =>
                     onNavigate(tab.id, {
                       resetHistory: isHome,
                     })}
                 >
-                  <span class="more-menu-icon">${ICONS[tab.icon]}</span>
-                  <span class="more-menu-label">${tab.label}</span>
+                  <span class="text-lg">${ICONS[tab.icon]}</span>
+                  <span class="text-xs">${tab.label}</span>
                 </button>
               `;
             })}
           </div>
         </div>
         <div class="more-menu-section">
-          <div class="more-menu-section-title">Explore</div>
-          <div class="more-menu-grid">
+          <div class="more-menu-section-title text-xs font-semibold opacity-50 mb-2">Explore</div>
+          <div class="grid grid-cols-4 gap-2 p-2">
             ${moreTabs.map((tab) => {
               const isHome = tab.id === "dashboard";
               const isActive = activeTab.value === tab.id;
               return html`
                 <button
                   key=${tab.id}
-                  class="more-menu-item ${isActive ? "active" : ""}"
+                  class="btn btn-ghost btn-sm flex flex-col items-center gap-1 h-auto py-2 ${isActive ? "btn-active" : ""}"
                   aria-label=${`Open ${tab.label}`}
                   onClick=${() =>
                     onNavigate(tab.id, {
                       resetHistory: isHome,
                     })}
                 >
-                  <span class="more-menu-icon">${ICONS[tab.icon]}</span>
-                  <span class="more-menu-label">${tab.label}</span>
+                  <span class="text-lg">${ICONS[tab.icon]}</span>
+                  <span class="text-xs">${tab.label}</span>
                 </button>
               `;
             })}
@@ -997,7 +967,7 @@ function App() {
 
   return html`
     <div
-      class="app-shell"
+      class="app-shell flex h-screen bg-base-100 overflow-hidden"
       style=${shellStyle}
       data-tab=${activeTab.value}
       data-has-rail=${showSessionRail ? "true" : "false"}
@@ -1008,8 +978,8 @@ function App() {
       ${/* Sidebar drawer overlay for tablet */ ""}
       ${sidebarDrawerOpen && !isDesktop
         ? html`
-            <div class="drawer-overlay" onClick=${closeDrawers}></div>
-            <div class="drawer drawer-left">
+            <div class="drawer-overlay fixed inset-0 bg-black/50 z-40" onClick=${closeDrawers}></div>
+            <div class="drawer drawer-left fixed top-0 bottom-0 left-0 z-50 w-72">
               <${SidebarNav} />
             </div>
           `
@@ -1018,8 +988,8 @@ function App() {
       ${/* Inspector drawer overlay for tablet */ ""}
       ${inspectorDrawerOpen && !isDesktop
         ? html`
-            <div class="drawer-overlay" onClick=${closeDrawers}></div>
-            <div class="drawer drawer-right">
+            <div class="drawer-overlay fixed inset-0 bg-black/50 z-40" onClick=${closeDrawers}></div>
+            <div class="drawer drawer-right fixed top-0 bottom-0 right-0 z-50 w-72">
               <${InspectorPanel}
                 onResizeStart=${handleResizeStart}
                 onResizeReset=${handleResizeReset}
@@ -1036,14 +1006,14 @@ function App() {
             showResizer=${isDesktop}
           />`
         : null}
-      <div class="app-main">
-        <div class="main-panel">
+      <div class="app-main flex flex-col flex-1 min-w-0">
+        <div class="main-panel flex flex-col flex-1 min-w-0">
           <${Header} />
 
           ${/* Tablet action bar with drawer toggles */ ""}
           ${showDrawerToggles
             ? html`
-                <div class="tablet-action-bar">
+                <div class="tablet-action-bar flex items-center gap-2 px-4 py-2 bg-base-200 border-b border-base-content/5">
                   <button
                     class="btn btn-ghost btn-sm tablet-toggle"
                     onClick=${toggleSidebar}
@@ -1070,14 +1040,14 @@ function App() {
           <${ToastContainer} />
           <${CommandPalette} open=${paletteOpen} onClose=${paletteClose} />
           <${PullToRefresh} onRefresh=${() => refreshTab(activeTab.value)}>
-            <main class="main-content" ref=${mainRef}>
+            <main class="main-content flex-1 overflow-y-auto p-4" ref=${mainRef}>
               <${CurrentTab} />
             </main>
           <//>
           ${showScrollTop &&
           html`
             <button
-              class="scroll-top"
+              class="scroll-top btn btn-circle btn-sm btn-primary fixed bottom-20 right-4 z-30 shadow-lg"
               title="Back to top"
               onClick=${() => {
                 mainRef.current?.scrollTo({ top: 0, behavior: "smooth" });

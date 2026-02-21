@@ -47,7 +47,7 @@ function healthColor(wt) {
 
 function HealthDot({ wt }) {
   return html`<span
-    class="health-dot"
+    class="w-2 h-2 rounded-full inline-block"
     style="background:${healthColor(wt)}"
   ></span>`;
 }
@@ -397,10 +397,11 @@ export function InfraTab() {
 
   /* ── Render ── */
   return html`
+    <div class="flex flex-col gap-3 max-w-7xl mx-auto p-2">
     <!-- ─── Infra header with export ─── -->
-    <div class="flex-between mb-md" style="padding:0 4px">
-      <span style="font-weight:600;font-size:15px">Infrastructure</span>
-      <button class="btn btn-secondary btn-sm" style="display:inline-flex;align-items:center;gap:4px" onClick=${handleExportReport}>
+    <div class="flex items-center justify-between mb-1">
+      <span class="text-base font-semibold">Infrastructure</span>
+      <button class="btn btn-secondary btn-sm gap-1" onClick=${handleExportReport}>
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
         Export Report
       </button>
@@ -409,9 +410,9 @@ export function InfraTab() {
     <!-- ─── Managed Workspaces ─── -->
     <${Collapsible} title="Managed Workspaces" defaultOpen=${true}>
       <${Card}>
-        <div class="input-row mb-md">
+        <div class="flex items-center gap-2 mb-3">
           <input
-            class="input"
+            class="input input-bordered input-sm flex-1"
             placeholder="New workspace name"
             value=${newWsName}
             onInput=${(e) => setNewWsName(e.target.value)}
@@ -429,20 +430,21 @@ export function InfraTab() {
           const isActive = ws.id === activeWorkspaceId.value;
           const repos = Array.isArray(ws.repos) ? ws.repos : [];
           return html`
-            <div class="task-card" key=${ws.id}>
-              <div class="task-card-header">
+            <div class="card bg-base-200 shadow-sm mb-2" key=${ws.id}>
+              <div class="card-body p-3">
+              <div class="flex items-center justify-between">
                 <div>
-                  <div class="task-card-title" style="display:flex;align-items:center;gap:6px">
+                  <div class="font-semibold text-sm flex items-center gap-1.5">
                     <span
-                      class="health-dot"
+                      class="w-2 h-2 rounded-full inline-block"
                       style="background:${isActive ? "var(--color-done)" : "var(--color-neutral)"}"
                     ></span>
                     ${ws.name || ws.id}
                     ${isActive && html`<${Badge} status="done" text="Active" />`}
                   </div>
-                  <div class="task-card-meta">${repos.length} repos · ID: ${ws.id}</div>
+                  <div class="text-xs opacity-60">${repos.length} repos · ID: ${ws.id}</div>
                 </div>
-                <div class="btn-row">
+                <div class="flex gap-1">
                   <button
                     class="btn btn-secondary btn-sm"
                     onClick=${() => handlePullWorkspace(ws.id)}
@@ -460,7 +462,7 @@ export function InfraTab() {
 
               ${repos.length > 0 &&
               html`
-                <div class="mt-sm">
+                <div class="mt-2">
                   ${repos.map((repo) => {
                     const repoName =
                       typeof repo === "string"
@@ -468,10 +470,9 @@ export function InfraTab() {
                         : repo.name || repo.url || "?";
                     return html`
                       <div
-                        class="flex-between"
-                        style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05)"
+                        class="flex items-center justify-between py-1 border-b border-base-content/5"
                       >
-                        <span class="meta-text">📁 ${repoName}</span>
+                        <span class="text-xs opacity-70">📁 ${repoName}</span>
                         <button
                           class="btn btn-ghost btn-sm"
                           onClick=${() => handleRemoveRepo(ws.id, repoName)}
@@ -484,9 +485,9 @@ export function InfraTab() {
                 </div>
               `}
 
-              <div class="input-row mt-sm">
+              <div class="flex items-center gap-2 mt-2">
                 <input
-                  class="input"
+                  class="input input-bordered input-sm flex-1"
                   placeholder="Repo URL to clone"
                   value=${addRepoWs === ws.id ? addRepoUrl : ""}
                   onInput=${(e) => {
@@ -503,6 +504,7 @@ export function InfraTab() {
                   📥 Clone
                 </button>
               </div>
+              </div>
             </div>
           `;
         })}
@@ -515,7 +517,7 @@ export function InfraTab() {
     <!-- ─── Worktrees ─── -->
     <${Collapsible} title="Worktrees" defaultOpen=${true}>
       <${Card}>
-        <div class="stats-grid mb-md">
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
           <${StatCard} value=${wStats.total ?? wts.length} label="Total" />
           <${StatCard}
             value=${wStats.active ?? 0}
@@ -529,9 +531,9 @@ export function InfraTab() {
           />
         </div>
 
-        <div class="input-row mb-md">
+        <div class="flex items-center gap-2 mb-3">
           <input
-            class="input"
+            class="input input-bordered input-sm flex-1"
             placeholder="Task key or branch"
             value=${releaseInput}
             onInput=${(e) => setReleaseInput(e.target.value)}
@@ -554,10 +556,9 @@ export function InfraTab() {
             const detailLoading = Boolean(detail?.loading);
             const detailError = detail?.error;
             return html`
-            <div key=${wt.branch || wt.path || idx} class="task-card">
+            <div key=${wt.branch || wt.path || idx} class="card bg-base-200 shadow-sm mb-2">
               <div
-                class="task-card-header"
-                style="cursor:pointer"
+                class="card-body p-3 cursor-pointer"
                 onClick=${() => {
                   haptic();
                   const nextOpen = expandedWt === idx ? null : idx;
@@ -567,21 +568,22 @@ export function InfraTab() {
                   }
                 }}
               >
-                <div style="display:flex;align-items:center;gap:6px">
+                <div class="flex items-center justify-between">
+                <div class="flex items-center gap-1.5">
                   <${HealthDot} wt=${wt} />
                   <div>
-                    <div class="task-card-title">
+                    <div class="font-semibold text-sm truncate">
                       ${wt.branch || "(detached)"}
                     </div>
-                    <div class="task-card-meta">${wt.path}</div>
+                    <div class="text-xs opacity-60">${wt.path}</div>
                   </div>
                 </div>
                 <${Badge}
                   status=${wt.status || "active"}
                   text=${wt.status || "active"}
                 />
-              </div>
-              <div class="meta-text">
+                </div>
+              <div class="text-xs opacity-70 mt-1">
                 Age
                 ${ageString(wt.age)}${wt.taskKey
                   ? ` · ${wt.taskKey}`
@@ -591,45 +593,45 @@ export function InfraTab() {
               <!-- Collapsible git status section -->
               ${expandedWt === idx &&
               html`
-                <div class="wt-detail mt-sm">
+                <div class="mt-2 p-2 bg-base-300 rounded-lg">
                   ${detailLoading &&
-                  html`<div class="meta-text">Loading worktree details…</div>`}
+                  html`<div class="text-xs opacity-70">Loading worktree details…</div>`}
                   ${detailError &&
-                  html`<div class="meta-text" style="color:var(--color-error)">${detailError}</div>`}
+                  html`<div class="text-xs text-error">${detailError}</div>`}
                   ${detail.gitStatus &&
-                  html` <div class="log-box log-box-sm">${detail.gitStatus}</div> `}
+                  html` <div class="bg-base-300 rounded-lg p-2 font-mono text-xs overflow-x-auto max-h-40 overflow-y-auto">${detail.gitStatus}</div> `}
                   ${detail.lastCommit &&
                   html`
-                    <div class="meta-text mt-xs">
+                    <div class="text-xs opacity-70 mt-1">
                       Last commit: ${truncate(detail.lastCommit, 80)}
                     </div>
                   `}
                   ${detail.filesChanged != null &&
                   html`
-                    <div class="meta-text">
+                    <div class="text-xs opacity-70">
                       Files changed: ${detail.filesChanged}
                     </div>
                   `}
                   ${detail.diffSummary &&
-                  html`<div class="log-box log-box-sm mt-xs">${detail.diffSummary}</div>`}
+                  html`<div class="bg-base-300 rounded-lg p-2 font-mono text-xs overflow-x-auto max-h-40 overflow-y-auto mt-1">${detail.diffSummary}</div>`}
                   ${Array.isArray(detail.recentCommits) && detail.recentCommits.length > 0 &&
                   html`
-                    <div class="meta-text mt-xs">Recent commits:</div>
-                    <div class="log-box log-box-sm">
+                    <div class="text-xs opacity-70 mt-1">Recent commits:</div>
+                    <div class="bg-base-300 rounded-lg p-2 font-mono text-xs overflow-x-auto max-h-40 overflow-y-auto">
                       ${detail.recentCommits.map((c) => html`<div>${c}</div>`)}
                     </div>
                   `}
                   ${Array.isArray(detail.sessions) && detail.sessions.length > 0 &&
                   html`
-                    <div class="meta-text mt-xs">Active sessions:</div>
-                    <div class="log-box log-box-sm">
+                    <div class="text-xs opacity-70 mt-1">Active sessions:</div>
+                    <div class="bg-base-300 rounded-lg p-2 font-mono text-xs overflow-x-auto max-h-40 overflow-y-auto">
                       ${detail.sessions.map((s) => html`<div>${s.title || s.id} · ${s.type} · ${formatRelative(s.lastActiveAt)}</div>`)}
                     </div>
                   `}
                 </div>
               `}
 
-              <div class="btn-row mt-sm">
+              <div class="flex flex-wrap gap-2 mt-2">
                 ${wt.taskKey &&
                 html`
                   <button
@@ -649,6 +651,7 @@ export function InfraTab() {
                   </button>
                 `}
               </div>
+              </div>
             </div>
           `;
           },
@@ -661,23 +664,23 @@ export function InfraTab() {
     <!-- ─── Shared Workspaces ─── -->
     <${Collapsible} title="Shared Workspaces" defaultOpen=${true}>
       <${Card}>
-        <div class="chip-group mb-sm">
+        <div class="flex flex-wrap gap-1 mb-2">
           ${Object.entries(availability).map(
-            ([k, v]) => html`<span key=${k} class="pill">${k}: ${v}</span>`,
+            ([k, v]) => html`<span key=${k} class="badge badge-sm">${k}: ${v}</span>`,
           )}
           ${!Object.keys(availability).length &&
-          html`<span class="pill">No registry</span>`}
+          html`<span class="badge badge-sm badge-ghost">No registry</span>`}
         </div>
 
-        <div class="input-row mb-sm">
+        <div class="flex items-center gap-2 mb-2">
           <input
-            class="input"
+            class="input input-bordered input-sm flex-1"
             placeholder="Owner"
             value=${sharedOwner}
             onInput=${(e) => setSharedOwner(e.target.value)}
           />
           <input
-            class="input"
+            class="input input-bordered input-sm w-24"
             type="number"
             min="30"
             step="15"
@@ -687,7 +690,7 @@ export function InfraTab() {
           />
         </div>
         <input
-          class="input mb-md"
+          class="input input-bordered input-sm w-full mb-3"
           placeholder="Note (optional)"
           value=${sharedNote}
           onInput=${(e) => setSharedNote(e.target.value)}
@@ -699,23 +702,24 @@ export function InfraTab() {
             ? `Leased to ${lease.owner} until ${new Date(lease.lease_expires_at).toLocaleString()}`
             : "Available";
           return html`
-            <div key=${ws.id} class="task-card">
-              <div class="task-card-header">
+            <div key=${ws.id} class="card bg-base-200 shadow-sm mb-2">
+              <div class="card-body p-3">
+              <div class="flex items-center justify-between">
                 <div>
-                  <div class="task-card-title">${ws.name || ws.id}</div>
-                  <div class="task-card-meta">
+                  <div class="font-semibold text-sm truncate">${ws.name || ws.id}</div>
+                  <div class="text-xs opacity-60">
                     ${ws.provider || "provider"} · ${ws.region || "region?"}
                   </div>
                 </div>
                 <${Badge} status=${ws.availability} text=${ws.availability} />
               </div>
-              <div class="meta-text">${leaseInfo}</div>
+              <div class="text-xs opacity-70 mt-1">${leaseInfo}</div>
               ${lease?.note &&
-              html`<div class="meta-text" style="font-style:italic">
+              html`<div class="text-xs opacity-60 italic mt-0.5">
                 ${lease.note}
               </div>`}
 
-              <div class="btn-row mt-sm">
+              <div class="flex flex-wrap gap-2 mt-2">
                 <button
                   class="btn btn-primary btn-sm"
                   onClick=${() => handleClaim(ws.id)}
@@ -735,6 +739,7 @@ export function InfraTab() {
                   🔓 Release
                 </button>
               </div>
+              </div>
             </div>
           `;
         })}
@@ -747,51 +752,54 @@ export function InfraTab() {
     <${Collapsible} title="Presence" defaultOpen=${true}>
       <${Card}>
         <!-- Coordinator info -->
-        <div class="task-card mb-md">
-          <div class="task-card-title">🎯 Coordinator</div>
-          <div class="meta-text">
+        <div class="card bg-base-200 shadow-sm mb-3">
+          <div class="card-body p-3">
+          <div class="font-semibold text-sm">🎯 Coordinator</div>
+          <div class="text-xs opacity-70">
             ${coordinator?.instance_label || coordinator?.instance_id || "none"}
             · Priority ${coordinator?.coordinator_priority ?? "—"}
           </div>
           ${coordinator?.last_seen_at &&
           html`
-            <div class="meta-text">
+            <div class="text-xs opacity-60">
               Last seen: ${formatRelative(coordinator.last_seen_at)}
             </div>
           `}
+          </div>
         </div>
 
         <!-- Instance grid -->
         ${instances.length
           ? html`
-              <div class="stats-grid">
+              <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
                 ${instances.map(
                   (inst, i) => html`
                     <div
                       key=${i}
-                      class="stat-card"
-                      style="text-align:left;padding:10px"
+                      class="card bg-base-200 shadow-sm"
                     >
-                      <div style="display:flex;align-items:center;gap:6px">
+                      <div class="card-body p-3">
+                      <div class="flex items-center gap-1.5">
                         <span
-                          class="health-dot"
+                          class="w-2 h-2 rounded-full inline-block"
                           style="background:${inst.status === "offline"
                             ? "var(--color-error)"
                             : "var(--color-done)"}"
                         ></span>
-                        <span style="font-weight:600;font-size:13px">
+                        <span class="font-semibold text-sm">
                           ${inst.instance_label || inst.instance_id}
                         </span>
                       </div>
-                      <div class="meta-text">
+                      <div class="text-xs opacity-60">
                         ${inst.workspace_role || "workspace"} ·
                         ${inst.host || "host"}
                       </div>
-                      <div class="meta-text">
+                      <div class="text-xs opacity-60">
                         Last:
                         ${inst.last_seen_at
                           ? formatRelative(inst.last_seen_at)
                           : "unknown"}
+                      </div>
                       </div>
                     </div>
                   `,
@@ -801,5 +809,6 @@ export function InfraTab() {
           : html`<${EmptyState} message="No active instances." />`}
       <//>
     <//>
+    </div>
   `;
 }

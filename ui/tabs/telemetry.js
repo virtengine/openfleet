@@ -57,9 +57,9 @@ export function TelemetryTab() {
   );
 
   return html`
-    <section class="telemetry-tab">
-      <div class="section-header">
-        <h2>Telemetry</h2>
+    <section class="flex flex-col gap-3">
+      <div class="flex items-center justify-between">
+        <h2 class="text-lg font-semibold">Telemetry</h2>
         <button
           class="btn btn-ghost btn-sm"
           onClick=${() => {
@@ -79,41 +79,41 @@ export function TelemetryTab() {
             title="No telemetry yet"
             description="Telemetry appears here once agents start running."
           />`
-        : html`<${Card} title="Summary" class="telemetry-summary">
-            <div class="metric-grid">
-              <div>
-                <div class="metric-label">Sessions</div>
-                <div class="metric-value">${formatCount(summary.total)}</div>
+        : html`<${Card} title="Summary">
+            <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <div class="flex flex-col">
+                <div class="text-xs uppercase opacity-60">Sessions</div>
+                <div class="text-xl font-bold">${formatCount(summary.total)}</div>
               </div>
-              <div>
-                <div class="metric-label">Success</div>
-                <div class="metric-value">
+              <div class="flex flex-col">
+                <div class="text-xs uppercase opacity-60">Success</div>
+                <div class="text-xl font-bold">
                   ${formatCount(summary.success)} (${summary.successRate}%)
                 </div>
               </div>
-              <div>
-                <div class="metric-label">Avg Duration</div>
-                <div class="metric-value">${formatSeconds(summary.avgDuration)}</div>
+              <div class="flex flex-col">
+                <div class="text-xs uppercase opacity-60">Avg Duration</div>
+                <div class="text-xl font-bold">${formatSeconds(summary.avgDuration)}</div>
               </div>
-              <div>
-                <div class="metric-label">Errors</div>
-                <div class="metric-value">${formatCount(summary.totalErrors)}</div>
+              <div class="flex flex-col">
+                <div class="text-xs uppercase opacity-60">Errors</div>
+                <div class="text-xl font-bold">${formatCount(summary.totalErrors)}</div>
               </div>
             </div>
           </${Card}>`}
 
-      <div class="telemetry-grid">
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
         <${Card} title="Top Errors">
           ${errors.length === 0
             ? html`<${EmptyState}
                 title="No errors logged"
                 description="Errors appear here when failures are detected."
               />`
-            : html`<ul class="telemetry-list">
+            : html`<ul class="flex flex-col gap-1">
                 ${errors.slice(0, 8).map(
-                  (err) => html`<li>
-                    <span class="telemetry-label">${err.fingerprint}</span>
-                    <span class="telemetry-count">${err.count}</span>
+                  (err) => html`<li class="flex items-center justify-between px-2 py-1 rounded-lg hover:bg-base-200 transition-colors">
+                    <span class="text-sm truncate">${err.fingerprint}</span>
+                    <span class="badge badge-sm badge-ghost">${err.count}</span>
                   </li>`,
                 )}
               </ul>`}
@@ -125,11 +125,11 @@ export function TelemetryTab() {
                 title="No executor data"
                 description="Run tasks to populate executor usage."
               />`
-            : html`<ul class="telemetry-list">
+            : html`<ul class="flex flex-col gap-1">
                 ${executorRows.map(
-                  ([name, count]) => html`<li>
-                    <span class="telemetry-label">${name}</span>
-                    <span class="telemetry-count">${count}</span>
+                  ([name, count]) => html`<li class="flex items-center justify-between px-2 py-1 rounded-lg hover:bg-base-200 transition-colors">
+                    <span class="text-sm truncate">${name}</span>
+                    <span class="badge badge-sm badge-ghost">${count}</span>
                   </li>`,
                 )}
               </ul>`}
@@ -142,17 +142,17 @@ export function TelemetryTab() {
               title="No alerts"
               description="Analyzer alerts will show up here."
             />`
-          : html`<ul class="telemetry-alerts">
+          : html`<ul class="flex flex-col gap-2">
               ${alertRows.map(
-                (alert) => html`<li>
+                (alert) => html`<li class="flex flex-col gap-1 px-3 py-2 rounded-lg hover:bg-base-200 transition-colors">
                   <div>
-                    <div class="telemetry-alert-title">
+                    <div class="flex items-center gap-2 text-sm font-medium">
                       ${alert.type || "alert"}
                       <${Badge} tone=${severityBadge(alert.severity)}>${
                         String(alert.severity || "medium").toUpperCase()
                       }</${Badge}>
                     </div>
-                    <div class="telemetry-alert-meta">
+                    <div class="text-xs opacity-60">
                       ${alert.attempt_id || "unknown"}
                       ${alert.executor ? html` · ${alert.executor}` : ""}
                     </div>
