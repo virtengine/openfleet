@@ -94,14 +94,14 @@ function ChatWelcome({ onNewSession, onQuickCommand }) {
   ];
 
   return html`
-    <div class="chat-welcome">
-      <div class="chat-welcome-icon">🤖</div>
-      <div class="chat-welcome-title">Welcome to Bosun</div>
-      <div class="chat-welcome-subtitle">
+    <div class="flex flex-col items-center justify-center gap-4 p-8 min-h-[40vh]">
+      <div class="text-5xl">🤖</div>
+      <div class="text-xl font-bold">Welcome to Bosun</div>
+      <div class="text-sm opacity-70 text-center max-w-md">
         Select a session from the sidebar, start a new chat, or use a quick
         action below to get started.
       </div>
-      <div class="chat-welcome-actions">
+      <div class="flex flex-wrap gap-2 justify-center">
         ${quickActions.map(
           (a) => html`
             <button
@@ -127,21 +127,21 @@ function SlashMenu({ filter, onSelect, activeIndex, commands }) {
   if (matches.length === 0) return null;
 
   return html`
-    <div class="slash-menu">
+    <div class="bg-base-300 rounded-lg shadow-lg p-1 max-h-60 overflow-y-auto">
       ${matches.map(
         (c, i) => html`
           <div
             key=${c.cmd}
-            class="slash-menu-item ${i === activeIndex ? "active" : ""}"
+            class="flex items-center gap-2 px-3 py-1.5 rounded cursor-pointer text-sm ${i === activeIndex ? "bg-primary text-primary-content" : "hover:bg-base-200"}"
             onMouseDown=${(e) => {
               e.preventDefault();
               onSelect(c.cmd);
             }}
           >
-            <span class="slash-menu-item-icon">${c.icon}</span>
-            <span class="slash-menu-item-cmd">${c.cmd}</span>
-            <span class="slash-menu-item-desc">${c.desc}</span>
-            ${c.source === "sdk" && html`<span class="slash-menu-item-badge">SDK</span>`}
+            <span class="text-base">${c.icon}</span>
+            <span class="font-mono font-semibold">${c.cmd}</span>
+            <span class="text-xs opacity-60 flex-1">${c.desc}</span>
+            ${c.source === "sdk" && html`<span class="badge badge-xs badge-accent">SDK</span>`}
           </div>
         `,
       )}
@@ -173,7 +173,7 @@ function SessionRenameInput({ value, onSave, onCancel }) {
   return html`
     <input
       ref=${inputRef}
-      class="session-item-rename"
+      class="input input-bordered input-sm w-full"
       value=${val}
       onInput=${(e) => setVal(e.target.value)}
       onKeyDown=${(e) => {
@@ -642,7 +642,7 @@ export function ChatTab() {
             <div class="chat-input-wrapper">
               <textarea
                 ref=${textareaRef}
-                class="chat-textarea"
+                class="textarea textarea-bordered w-full text-sm"
                 placeholder=${sessionId
                   ? 'Send a message… (type "/" for commands)'
                   : 'Start a new chat or type "/" for commands'}
@@ -652,7 +652,7 @@ export function ChatTab() {
                 onKeyDown=${handleKeyDown}
               />
               <button
-                class="chat-send-btn"
+                class="btn btn-primary btn-sm"
                 disabled=${!inputValue.trim() || sending}
                 onClick=${handleSend}
                 title="Send (Enter)"
@@ -660,11 +660,11 @@ export function ChatTab() {
                 ${sending ? "⏳" : "➤"}
               </button>
             </div>
-            <div class="chat-input-hint">
+            <div class="flex items-center justify-between text-xs opacity-50 px-1 py-0.5">
               <span>Shift+Enter for new line</span>
               <span>Type / for commands</span>
               ${offlineQueueSize.value > 0 && html`
-                <span class="chat-offline-badge">📤 ${offlineQueueSize.value} queued</span>
+                <span class="badge badge-sm badge-warning">📤 ${offlineQueueSize.value} queued</span>
               `}
             </div>
           </div>

@@ -34,10 +34,12 @@ import { classNames } from "../modules/utils.js";
  */
 export function Card({ title, subtitle, children, className = "", onClick }) {
   return html`
-    <div class="card ${className}" onClick=${onClick}>
-      ${title ? html`<div class="card-title">${title}</div>` : null}
-      ${subtitle ? html`<div class="card-subtitle">${subtitle}</div>` : null}
-      ${children}
+    <div class="card bg-base-200 shadow-md ${className}" onClick=${onClick}>
+      <div class="card-body">
+        ${title ? html`<h3 class="card-title text-sm">${title}</h3>` : null}
+        ${subtitle ? html`<div class="text-xs text-base-content/60">${subtitle}</div>` : null}
+        ${children}
+      </div>
     </div>
   `;
 }
@@ -46,22 +48,26 @@ export function Card({ title, subtitle, children, className = "", onClick }) {
  *  Badge
  * ═══════════════════════════════════════════════ */
 
-const BADGE_STATUS_MAP = new Set([
-  "draft",
-  "todo",
-  "inprogress",
-  "inreview",
-  "done",
-  "error",
-  "cancelled",
-  "critical",
-  "high",
-  "medium",
-  "low",
-  "log",
-  "info",
-  "warning",
-]);
+const BADGE_VARIANT_MAP = {
+  done: "badge-success",
+  success: "badge-success",
+  error: "badge-error",
+  critical: "badge-error",
+  inprogress: "badge-info",
+  busy: "badge-info",
+  running: "badge-info",
+  inreview: "badge-warning",
+  warning: "badge-warning",
+  todo: "badge-ghost",
+  idle: "badge-ghost",
+  low: "badge-ghost",
+  high: "badge-warning",
+  medium: "badge-info",
+  cancelled: "badge-ghost opacity-50",
+  draft: "badge-ghost",
+  log: "badge-ghost",
+  info: "badge-info",
+};
 
 /**
  * Status badge pill.
@@ -70,10 +76,8 @@ const BADGE_STATUS_MAP = new Set([
 export function Badge({ status, text, className = "" }) {
   const label = text || status || "";
   const normalized = (status || "").toLowerCase().replace(/\s+/g, "");
-  const statusClass = BADGE_STATUS_MAP.has(normalized)
-    ? `badge-${normalized}`
-    : "";
-  return html`<span class="badge ${statusClass} ${className}">${label}</span>`;
+  const variant = BADGE_VARIANT_MAP[normalized] || "";
+  return html`<span class="badge ${variant} ${className}">${label}</span>`;
 }
 
 /* ═══════════════════════════════════════════════
@@ -88,17 +92,17 @@ export function StatCard({ value, label, trend, color }) {
   const valueStyle = color ? `color: ${color}` : "";
   const trendIcon =
     trend === "up"
-      ? html`<span class="stat-trend stat-trend-up">↑</span>`
+      ? html`<span class="text-success ml-1">↑</span>`
       : trend === "down"
-        ? html`<span class="stat-trend stat-trend-down">↓</span>`
+        ? html`<span class="text-error ml-1">↓</span>`
         : null;
 
   return html`
-    <div class="stat-card">
+    <div class="stat bg-base-200 rounded-box">
       <div class="stat-value" style=${valueStyle}>
         ${value ?? "—"}${trendIcon}
       </div>
-      <div class="stat-label">${label}</div>
+      <div class="stat-desc">${label}</div>
     </div>
   `;
 }
@@ -114,7 +118,7 @@ export function StatCard({ value, label, trend, color }) {
 export function SkeletonCard({ height = "80px", className = "" }) {
   return html`
     <div
-      class="skeleton skeleton-card ${className}"
+      class="skeleton rounded-box ${className}"
       style="height: ${height}"
     ></div>
   `;
@@ -317,14 +321,14 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
 
   return html`
     <div
-      class="modal-overlay ${visible ? "modal-overlay-visible" : ""}"
+      class="modal modal-open modal-overlay ${visible ? "modal-overlay-visible" : ""}"
       onClick=${(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       <div
         ref=${contentRef}
-        class="modal-content ${contentClassName} ${visible ? "modal-content-visible" : ""} ${dragY > 0 ? "modal-dragging" : ""}"
+        class="modal-box modal-content ${contentClassName} ${visible ? "modal-content-visible" : ""} ${dragY > 0 ? "modal-dragging" : ""}"
         style=${dragStyle}
         onClick=${(e) => e.stopPropagation()}
         onTouchStart=${handleTouchStart}
@@ -336,17 +340,17 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
         onPointerUp=${handlePointerEnd}
         onPointerCancel=${handlePointerCancel}
       >
-        <div class="modal-header">
+        <div class="modal-header flex items-center justify-between p-4">
           <div class="modal-handle"></div>
-          ${title ? html`<div class="modal-title">${title}</div>` : null}
-          <button class="modal-close-btn" onClick=${onClose} aria-label="Close">
+          ${title ? html`<div class="modal-title font-bold text-lg">${title}</div>` : null}
+          <button class="btn btn-sm btn-circle btn-ghost modal-close-btn" onClick=${onClose} aria-label="Close">
             ${ICONS.close}
           </button>
         </div>
-        <div class="modal-body" onTouchStart=${handleBodyTouchStart}>
+        <div class="modal-body p-4 overflow-y-auto" onTouchStart=${handleBodyTouchStart}>
           ${children}
         </div>
-        ${footer ? html`<div class="modal-footer">${footer}</div>` : null}
+        ${footer ? html`<div class="modal-footer p-4">${footer}</div>` : null}
       </div>
     </div>
   `;
@@ -393,31 +397,27 @@ export function ConfirmDialog({
   // If Telegram native is available, render nothing (native dialog handles it)
   if (getTg()?.showConfirm) return null;
 
-  const confirmBtnStyle = destructive
-    ? "background: var(--destructive); color: #fff;"
-    : "";
-
   return html`
-    <div class="modal-overlay modal-overlay-visible" onClick=${onCancel}>
+    <div class="modal modal-open">
       <div
-        class="confirm-dialog"
+        class="modal-box"
         onClick=${(e) => e.stopPropagation()}
       >
-        <div class="confirm-dialog-title">${title}</div>
-        <div class="confirm-dialog-message">${message}</div>
-        <div class="confirm-dialog-actions">
-          <button class="btn btn-secondary" onClick=${onCancel}>
+        <h3 class="font-bold text-lg">${title}</h3>
+        <p class="py-4">${message}</p>
+        <div class="modal-action">
+          <button class="btn" onClick=${onCancel}>
             ${cancelText}
           </button>
           <button
-            class="btn btn-primary ${destructive ? "btn-destructive" : ""}"
-            style=${confirmBtnStyle}
+            class="btn btn-primary ${destructive ? "btn-error" : ""}"
             onClick=${onConfirm}
           >
             ${confirmText}
           </button>
         </div>
       </div>
+      <div class="modal-backdrop" onClick=${onCancel}></div>
     </div>
   `;
 }
@@ -465,7 +465,7 @@ export function Spinner({ size = 16, color = "currentColor" }) {
  */
 export function LoadingButton({ loading = false, onClick, children, class: cls = "", disabled = false, ...rest }) {
   return html`<button
-    class=${`btn ${cls} ${loading ? "btn-loading" : ""}`}
+    class=${`btn ${cls} ${loading ? "loading loading-spinner" : ""}`}
     onClick=${!loading && !disabled ? onClick : undefined}
     disabled=${loading || disabled}
     ...${rest}
@@ -488,18 +488,18 @@ export function ToastContainer() {
   if (!visible.length) return null;
 
   return html`
-    <div class="toast-container">
+    <div class="toast toast-end toast-bottom z-50">
       ${visible.map(
         (t) => html`
-          <div key=${t.id} class="toast toast-${t.type}">
-            <span class="toast-message">${t.message}</span>
+          <div key=${t.id} class="alert alert-${t.type === 'error' ? 'error' : t.type === 'success' ? 'success' : t.type === 'warning' ? 'warning' : 'info'} shadow-lg">
+            <span>${t.message}</span>
             <button
-              class="toast-close"
+              class="btn btn-sm btn-ghost"
               onClick=${() => {
                 toasts.value = toasts.value.filter((x) => x.id !== t.id);
               }}
             >
-              ×
+              ✕
             </button>
           </div>
         `,
@@ -518,19 +518,19 @@ export function ToastContainer() {
  */
 export function EmptyState({ icon, title, message, description, action }) {
   const iconSvg = icon && ICONS[icon] ? ICONS[icon] : null;
-  const displayIcon = iconSvg ? html`<div class="empty-state-icon">${iconSvg}</div>`
-    : icon ? html`<div class="empty-state-icon">${icon}</div>`
+  const displayIcon = iconSvg ? html`<div class="text-4xl mb-4 opacity-40">${iconSvg}</div>`
+    : icon ? html`<div class="text-4xl mb-4 opacity-40">${icon}</div>`
     : null;
   const displayTitle = title || message || null;
   return html`
-    <div class="empty-state">
+    <div class="flex flex-col items-center justify-center py-12 px-4 text-center">
       ${displayIcon}
-      ${displayTitle ? html`<div class="empty-state-title">${displayTitle}</div>` : null}
+      ${displayTitle ? html`<div class="text-lg font-semibold text-base-content/70">${displayTitle}</div>` : null}
       ${description
-        ? html`<div class="empty-state-description">${description}</div>`
+        ? html`<div class="text-sm text-base-content/50 mt-2 max-w-xs">${description}</div>`
         : null}
       ${action
-        ? html`<button class="btn btn-primary btn-sm" onClick=${action.onClick}>
+        ? html`<button class="btn btn-primary btn-sm mt-4" onClick=${action.onClick}>
             ${action.label}
           </button>`
         : null}
@@ -547,12 +547,7 @@ export function EmptyState({ icon, title, message, description, action }) {
  * @param {{label?: string}} props
  */
 export function Divider({ label }) {
-  if (!label) return html`<div class="divider"></div>`;
-  return html`
-    <div class="divider divider-label">
-      <span>${label}</span>
-    </div>
-  `;
+  return html`<div class="divider">${label || ""}</div>`;
 }
 
 /* ═══════════════════════════════════════════════
@@ -570,27 +565,32 @@ export function Avatar({ name = "", size = 36, src }) {
     .map((w) => w.charAt(0).toUpperCase())
     .join("");
 
-  const style = `width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;
-    display:flex;align-items:center;justify-content:center;
-    background:var(--accent,#5b6eae);color:var(--accent-text,#fff);
-    font-size:${Math.round(size * 0.4)}px;font-weight:600;flex-shrink:0`;
+  const innerStyle = `width:${size}px;height:${size}px`;
 
   if (src) {
     return html`
-      <div style=${style}>
-        <img
-          src=${src}
-          alt=${name}
-          style="width:100%;height:100%;object-fit:cover"
-          onError=${(e) => {
-            e.target.style.display = "none";
-          }}
-        />
+      <div class="avatar placeholder">
+        <div class="bg-primary text-primary-content rounded-full" style=${innerStyle}>
+          <img
+            src=${src}
+            alt=${name}
+            style="width:100%;height:100%;object-fit:cover"
+            onError=${(e) => {
+              e.target.style.display = "none";
+            }}
+          />
+        </div>
       </div>
     `;
   }
 
-  return html`<div style=${style}>${initials || "?"}</div>`;
+  return html`
+    <div class="avatar placeholder">
+      <div class="bg-primary text-primary-content rounded-full" style=${innerStyle}>
+        <span style="font-size:${Math.round(size * 0.4)}px">${initials || "?"}</span>
+      </div>
+    </div>
+  `;
 }
 
 /* ═══════════════════════════════════════════════
@@ -605,18 +605,18 @@ export function ListItem({ title, subtitle, trailing, onClick, icon }) {
   const iconSvg = icon && ICONS[icon] ? ICONS[icon] : null;
   return html`
     <div
-      class=${classNames("list-item", { "list-item-clickable": !!onClick })}
+      class="flex items-center gap-3 px-4 py-3 rounded-lg ${onClick ? 'hover:bg-base-200 cursor-pointer' : ''} transition-colors"
       onClick=${onClick}
     >
-      ${iconSvg ? html`<div class="list-item-icon">${iconSvg}</div>` : null}
-      <div class="list-item-body">
-        <div class="list-item-title">${title}</div>
+      ${iconSvg ? html`<div class="flex-shrink-0 w-5 h-5 opacity-60">${iconSvg}</div>` : null}
+      <div class="flex-1 min-w-0">
+        <div class="text-sm font-medium truncate">${title}</div>
         ${subtitle
-          ? html`<div class="list-item-subtitle">${subtitle}</div>`
+          ? html`<div class="text-xs text-base-content/50 truncate">${subtitle}</div>`
           : null}
       </div>
       ${trailing != null
-        ? html`<div class="list-item-trailing">${trailing}</div>`
+        ? html`<div class="flex-shrink-0">${trailing}</div>`
         : null}
     </div>
   `;

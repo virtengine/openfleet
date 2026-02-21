@@ -38,6 +38,7 @@ import {
   Collapsible,
   Toggle,
   SearchInput,
+  SelectInput,
 } from "../components/forms.js";
 import {
   CATEGORIES,
@@ -49,41 +50,16 @@ import {
 
 /* ─── Scoped Styles ─── */
 const SETTINGS_STYLES = `
-/* Category pill tabs — horizontal scrollable row */
+/* Category pill tabs — horizontal scrollable row (DaisyUI btn pills) */
 .settings-category-tabs {
   display: flex;
   overflow-x: auto;
-  gap: 8px;
-  padding: 8px 0;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
 }
 .settings-category-tabs::-webkit-scrollbar { display: none; }
-.settings-category-tab {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
-  border-radius: 20px;
-  border: 1px solid var(--border, rgba(255,255,255,0.08));
-  background: var(--card-bg, rgba(255,255,255,0.04));
-  color: var(--text-secondary, #999);
-  font-size: 13px;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  flex-shrink: 0;
-}
-.settings-category-tab:hover {
-  border-color: var(--accent, #5b6eae);
-  color: var(--text-primary, #fff);
-}
-.settings-category-tab.active {
-  background: var(--accent, #5b6eae);
-  border-color: var(--accent, #5b6eae);
-  color: var(--accent-text, #fff);
-  font-weight: 600;
-}
 .settings-category-tab-icon { font-size: 15px; }
 /* Search wrapper */
 .settings-search { margin-bottom: 8px; }
@@ -238,41 +214,22 @@ const SETTINGS_STYLES = `
 .setting-input-wrap {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0.5rem;
   overflow: visible;
   max-width: 100%;
   flex-wrap: wrap;
   min-width: 0;
+  width: 100%;
 }
-.setting-input-wrap input[type="text"],
-.setting-input-wrap input[type="number"],
-.setting-input-wrap input[type="password"],
-.setting-input-wrap textarea,
-.setting-input-wrap select {
-  flex: 1 1 220px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--border, rgba(255,255,255,0.1));
-  background: var(--input-bg, rgba(255,255,255,0.04));
-  color: var(--text-primary, #fff);
-  font-size: 13px;
-  outline: none;
-  transition: border-color 0.2s;
-  min-width: 0;
-  max-width: 100%;
-}
-.setting-input-wrap input:focus,
-.setting-input-wrap textarea:focus,
-.setting-input-wrap select:focus {
-  border-color: var(--accent, #5b6eae);
+/* DaisyUI select dropdowns need proper z-index */
+.setting-row .select {
+  position: relative;
+  z-index: 10;
 }
 .setting-input-wrap textarea {
   min-height: 60px;
   resize: vertical;
   font-family: monospace;
-}
-.setting-input-wrap select {
-  appearance: auto;
 }
 .setting-unit {
   font-size: 12px;
@@ -280,9 +237,8 @@ const SETTINGS_STYLES = `
   white-space: nowrap;
 }
 .setting-validation-error {
-  font-size: 12px;
-  color: var(--destructive, #e74c3c);
-  margin-top: 4px;
+  font-size: 0.75rem;
+  margin-top: 0.25rem;
   padding-left: 2px;
 }
 /* Banner styles */
@@ -768,18 +724,15 @@ function ServerConfigMode() {
               />
             `;
           } else {
-            // Dropdown for >4 options
+            // Dropdown for >4 options — use DaisyUI SelectInput
             control = html`
-              <div class="setting-input-wrap">
-                <select
-                  value=${value || (def.defaultVal != null ? String(def.defaultVal) : "")}
-                  onChange=${(e) => handleChange(def.key, e.target.value)}
-                >
-                  ${opts.map(
-                    (o) => html`<option key=${o} value=${o}>${o}</option>`,
-                  )}
-                </select>
-              </div>
+              <${SelectInput}
+                value=${value || (def.defaultVal != null ? String(def.defaultVal) : "")}
+                options=${opts}
+                onChange=${(v) => handleChange(def.key, v)}
+                size="sm"
+                className="max-w-xs"
+              />
             `;
           }
           break;
@@ -789,6 +742,7 @@ function ServerConfigMode() {
           control = html`
             <div class="setting-input-wrap">
               <input
+                class="input input-bordered input-sm w-full"
                 type=${secretVisible ? "text" : "password"}
                 value=${value}
                 placeholder="Enter value…"
@@ -815,6 +769,7 @@ function ServerConfigMode() {
           control = html`
             <div class="setting-input-wrap">
               <input
+                class="input input-bordered input-sm w-full max-w-xs"
                 type="number"
                 value=${value}
                 placeholder=${def.defaultVal != null ? String(def.defaultVal) : ""}
@@ -832,6 +787,7 @@ function ServerConfigMode() {
           control = html`
             <div class="setting-input-wrap">
               <textarea
+                class="textarea textarea-bordered textarea-sm w-full"
                 value=${value}
                 placeholder=${def.defaultVal != null ? String(def.defaultVal) : "Enter value…"}
                 onInput=${(e) => handleChange(def.key, e.target.value)}
@@ -847,6 +803,7 @@ function ServerConfigMode() {
           control = html`
             <div class="setting-input-wrap">
               <input
+                class="input input-bordered input-sm w-full"
                 type="text"
                 value=${value}
                 placeholder=${def.defaultVal != null ? String(def.defaultVal) : "Enter value…"}
@@ -880,7 +837,7 @@ function ServerConfigMode() {
           </div>
           <div class="setting-row-key">${def.key}</div>
           ${control}
-          ${error && html`<div class="setting-validation-error">⚠ ${error}</div>`}
+          ${error && html`<div class="setting-validation-error text-error">⚠ ${error}</div>`}
         </div>
       `;
     },
@@ -1011,7 +968,7 @@ function ServerConfigMode() {
             (cat) => html`
               <button
                 key=${cat.id}
-                class="settings-category-tab ${activeCategory === cat.id ? "active" : ""}"
+                class="btn btn-sm ${activeCategory === cat.id ? "btn-primary" : "btn-ghost"} gap-1 flex-nowrap flex-shrink-0"
                 onClick=${() => {
                   setActiveCategory(cat.id);
                   haptic("light");

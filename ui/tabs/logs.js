@@ -399,14 +399,16 @@ export function LogsTab() {
       .log-lt { flex: 1; white-space: pre-wrap; word-break: break-all; }
       .log-hl { background: rgba(250,204,21,0.3); border-radius: 2px; padding: 0 1px; }
     </style>
+    <div class="flex flex-col gap-3 max-w-7xl mx-auto p-2">
     <!-- Loading skeleton -->
     ${!logsData?.value && !agentLogFiles?.value && html`<${Card} title="Loading Logs…"><${SkeletonCard} /><//>`}
 
     <!-- ── System Logs ── -->
     <${Card} title="System Logs">
-      <div class="range-row mb-sm">
+      <div class="flex items-center gap-2 mb-2">
         <input
           type="range"
+          class="range range-primary range-xs flex-1"
           min="20"
           max="800"
           step="20"
@@ -414,16 +416,16 @@ export function LogsTab() {
           onInput=${(e) => setLocalLogLines(Number(e.target.value))}
           onChange=${(e) => handleLogLinesChange(Number(e.target.value))}
         />
-        <span class="pill">${localLogLines} lines</span>
+        <span class="badge badge-sm">${localLogLines} lines</span>
       </div>
-      <div class="chip-group mb-sm">
+      <div class="flex flex-wrap gap-1 mb-2">
         ${[50, 200, 500].map(
           (n) => html`
             <button
               key=${n}
-              class="chip ${(logsLines?.value ?? localLogLines) === n
-                ? "active"
-                : ""}"
+              class="btn btn-xs ${(logsLines?.value ?? localLogLines) === n
+                ? "btn-primary"
+                : "btn-ghost"}"
               onClick=${() => handleLogLinesChange(n)}
             >
               ${n}
@@ -431,12 +433,12 @@ export function LogsTab() {
           `,
         )}
       </div>
-      <div class="chip-group mb-sm">
+      <div class="flex flex-wrap gap-1 mb-2">
         ${LOG_LEVELS.map(
           (l) => html`
             <button
               key=${l.value}
-              class="chip chip-outline ${logLevel === l.value ? "active" : ""}"
+              class="btn btn-xs ${logLevel === l.value ? "btn-primary" : "btn-outline"}"
               onClick=${() => {
                 haptic();
                 setLogLevel(l.value);
@@ -447,9 +449,9 @@ export function LogsTab() {
           `,
         )}
       </div>
-      <div class="input-row mb-sm">
+      <div class="flex items-center gap-2 mb-2">
         <input
-          class="input"
+          class="input input-bordered input-sm flex-1"
           placeholder=${regexMode ? "Regex pattern…" : "Search/grep logs…"}
           value=${logSearch}
           onInput=${(e) => setLogSearch(e.target.value)}
@@ -460,9 +462,9 @@ export function LogsTab() {
           onClick=${() => { setRegexMode(!regexMode); haptic(); }}
           title="Toggle regex mode"
         >.*</button>
-        ${logSearch.trim() && matchCount > 0 && html`<span class="pill">${matchCount} matches</span>`}
+        ${logSearch.trim() && matchCount > 0 && html`<span class="badge badge-sm badge-info">${matchCount} matches</span>`}
         <label
-          class="meta-text toggle-label"
+          class="text-xs opacity-70 flex items-center gap-1 cursor-pointer"
           style="white-space:nowrap"
           onClick=${() => {
             setAutoScroll(!autoScroll);
@@ -477,7 +479,7 @@ export function LogsTab() {
           Auto-scroll
         </label>
       </div>
-      <div ref=${logRef} class="log-box" onScroll=${handleLogScroll} style="overflow-y:auto">
+      <div ref=${logRef} class="bg-base-300 rounded-lg p-2 font-mono text-xs max-h-[70vh] overflow-y-auto" onScroll=${handleLogScroll}>
         <div style="height:${topSpacer}px"></div>
         ${visibleLines.map((line, i) => {
           const lineNum = startIdx + i + 1;
@@ -488,7 +490,7 @@ export function LogsTab() {
         })}
         <div style="height:${bottomSpacer}px"></div>
       </div>
-      <div class="btn-row mt-sm">
+      <div class="flex flex-wrap gap-2 mt-2">
         <button
           class="btn btn-ghost btn-sm"
           onClick=${() =>
@@ -513,9 +515,9 @@ export function LogsTab() {
 
     <!-- ── Agent Log Library ── -->
     <${Card} title="Agent Log Library">
-      <div class="input-row mb-sm">
+      <div class="flex items-center gap-2 mb-2">
         <input
-          class="input"
+          class="input input-bordered input-sm flex-1"
           placeholder="Search log files"
           value=${agentLogQuery?.value ?? ""}
           onInput=${(e) => {
@@ -526,9 +528,10 @@ export function LogsTab() {
           🔍 Search
         </button>
       </div>
-      <div class="range-row mb-md">
+      <div class="flex items-center gap-2 mb-3">
         <input
           type="range"
+          class="range range-primary range-xs flex-1"
           min="50"
           max="800"
           step="50"
@@ -536,7 +539,7 @@ export function LogsTab() {
           onInput=${(e) => setLocalAgentLines(Number(e.target.value))}
           onChange=${(e) => handleAgentLinesChange(Number(e.target.value))}
         />
-        <span class="pill">${localAgentLines} lines</span>
+        <span class="badge badge-sm">${localAgentLines} lines</span>
       </div>
     <//>
 
@@ -547,14 +550,13 @@ export function LogsTab() {
             (file) => html`
               <div
                 key=${file.name}
-                class="task-card"
-                style="cursor:pointer"
+                class="card bg-base-200 shadow-sm mb-2 cursor-pointer"
                 onClick=${() => handleAgentOpen(file.name)}
               >
-                <div class="task-card-header">
+                <div class="card-body p-3 flex flex-row items-center justify-between">
                   <div>
-                    <div class="task-card-title">${file.name}</div>
-                    <div class="task-card-meta">
+                    <div class="font-semibold text-sm truncate">${file.name}</div>
+                    <div class="text-xs opacity-60">
                       ${formatBytes
                         ? formatBytes(file.size)
                         : Math.round(file.size / 1024) + "kb"}
@@ -572,9 +574,9 @@ export function LogsTab() {
     <!-- ── Log Tail viewer ── -->
     <${Card} title=${agentLogFile?.value || "Log Tail"}>
       ${agentLogTail?.value?.truncated &&
-      html`<span class="pill mb-sm">Tail clipped</span>`}
-      <div ref=${tailRef} class="log-box">${rawTailText}</div>
-      <div class="btn-row mt-sm">
+      html`<span class="badge badge-sm badge-warning mb-2">Tail clipped</span>`}
+      <div ref=${tailRef} class="bg-base-300 rounded-lg p-4 font-mono text-xs overflow-x-auto max-h-[50vh] overflow-y-auto">${rawTailText}</div>
+      <div class="flex flex-wrap gap-2 mt-2">
         <button
           class="btn btn-ghost btn-sm"
           onClick=${() => copyToClipboard(rawTailText, "Log tail")}
@@ -586,9 +588,9 @@ export function LogsTab() {
 
     <!-- ── Worktree Context ── -->
     <${Card} title="Worktree Context">
-      <div class="input-row mb-sm">
+      <div class="flex items-center gap-2 mb-2">
         <input
-          class="input"
+          class="input input-bordered input-sm flex-1"
           placeholder="Branch fragment"
           value=${contextQuery}
           onInput=${(e) => setContextQuery(e.target.value)}
@@ -600,7 +602,7 @@ export function LogsTab() {
           📂 Load
         </button>
       </div>
-      <div class="log-box">
+      <div class="bg-base-300 rounded-lg p-4 font-mono text-xs overflow-x-auto max-h-[50vh] overflow-y-auto">
         ${agentContext?.value
           ? [
               "Worktree: " + (agentContext.value.name || "?"),
@@ -615,7 +617,7 @@ export function LogsTab() {
       </div>
       ${agentContext?.value &&
       html`
-        <div class="btn-row mt-sm">
+        <div class="flex flex-wrap gap-2 mt-2">
           <button
             class="btn btn-ghost btn-sm"
             onClick=${() =>
@@ -638,7 +640,7 @@ export function LogsTab() {
 
     <!-- ── Git Snapshot ── -->
     <${Card} title="Git Snapshot">
-      <div class="btn-row mb-sm">
+      <div class="flex flex-wrap gap-2 mb-2">
         <button class="btn btn-secondary btn-sm" onClick=${handleGitRefresh}>
           ${ICONS.refresh} Refresh
         </button>
@@ -655,10 +657,10 @@ export function LogsTab() {
           📋 Copy
         </button>
       </div>
-      <div class="log-box mb-md">
+      <div class="bg-base-300 rounded-lg p-4 font-mono text-xs overflow-x-auto max-h-[50vh] overflow-y-auto mb-3">
         ${gitDiff?.value || "Clean working tree."}
       </div>
-      <div class="card-subtitle">Recent Branches</div>
+      <div class="text-sm font-semibold opacity-80 mt-2 mb-1">Recent Branches</div>
       ${(gitBranches?.value || []).length
         ? (gitBranches.value || []).map(
             (line, i) => {
@@ -666,36 +668,36 @@ export function LogsTab() {
               return html`
                 <button
                   key=${i}
-                  class="branch-row"
+                  class="flex items-center justify-between w-full text-left py-1 px-2 rounded hover:bg-base-300 cursor-pointer"
                   onClick=${() => openBranchDetail(line)}
                 >
-                  <span class="branch-name">${parsed?.short || line}</span>
-                  <span class="branch-raw">${line}</span>
+                  <span class="font-mono text-sm truncate">${parsed?.short || line}</span>
+                  <span class="text-xs opacity-50 truncate ml-2">${line}</span>
                 </button>
               `;
             },
           )
-        : html`<div class="meta-text">No branches found.</div>`}
+        : html`<div class="text-xs opacity-70">No branches found.</div>`}
     <//>
 
     ${branchDetail &&
     html`
       <${Modal} title="Branch Detail" onClose=${() => setBranchDetail(null)}>
         ${branchLoading && html`<${SkeletonCard} height="80px" />`}
-        ${branchError && html`<div class="meta-text" style="color:var(--color-error)">${branchError}</div>`}
+        ${branchError && html`<div class="text-xs opacity-70" style="color:var(--color-error)">${branchError}</div>`}
         ${!branchLoading &&
         !branchError &&
         html`
-          <div class="meta-text mb-sm">
-            Branch: <span class="mono">${branchDetail.branch}</span>
+          <div class="text-xs opacity-70 mb-2">
+            Branch: <span class="font-mono">${branchDetail.branch}</span>
           </div>
           ${branchDetail.base &&
-          html`<div class="meta-text mb-sm">Base: ${branchDetail.base}</div>`}
+          html`<div class="text-xs opacity-70 mb-2">Base: ${branchDetail.base}</div>`}
           ${branchDetail.activeSlot &&
-          html`<div class="meta-text mb-sm">Active Agent: ${branchDetail.activeSlot.taskTitle || branchDetail.activeSlot.taskId}</div>`}
+          html`<div class="text-xs opacity-70 mb-2">Active Agent: ${branchDetail.activeSlot.taskTitle || branchDetail.activeSlot.taskId}</div>`}
           ${branchDetail.worktree?.path &&
-          html`<div class="meta-text mb-sm">Worktree: <span class="mono">${branchDetail.worktree.path}</span></div>`}
-          <div class="btn-row mb-sm">
+          html`<div class="text-xs opacity-70 mb-2">Worktree: <span class="font-mono">${branchDetail.worktree.path}</span></div>`}
+          <div class="flex flex-wrap gap-2 mb-2">
             ${(branchDetail.workspaceTarget || branchDetail.activeSlot || branchDetail.worktree) &&
             html`<button class="btn btn-primary btn-sm" onClick=${() => openWorkspace(branchDetail)}>
               🔍 Open Workspace Viewer
@@ -714,16 +716,16 @@ export function LogsTab() {
           </div>
           ${workspaceLink &&
           html`
-            <div class="meta-text mb-sm">
+            <div class="text-xs opacity-70 mb-2">
               Workspace: ${workspaceLink.label || workspaceLink.taskTitle || workspaceLink.branch || "Active"}
               ${(workspaceLink.target?.workspacePath || workspaceLink.workspacePath)
-                ? html`<span class="mono"> · ${workspaceLink.target?.workspacePath || workspaceLink.workspacePath}</span>`
+                ? html`<span class="font-mono"> · ${workspaceLink.target?.workspacePath || workspaceLink.workspacePath}</span>`
                 : ""}
             </div>
           `}
           ${branchDetail.diffSummary &&
           html`
-            <div class="meta-text mb-sm">
+            <div class="text-xs opacity-70 mb-2">
               Diff: ${branchDetail.diffSummary.totalFiles || 0} files ·
               +${branchDetail.diffSummary.totalAdditions || 0} ·
               -${branchDetail.diffSummary.totalDeletions || 0}
@@ -732,8 +734,9 @@ export function LogsTab() {
           `}
           ${branchCommits.length > 0 &&
           html`
-            <div class="card mb-sm">
-              <div class="card-title">Commits</div>
+            <div class="card bg-base-200 shadow-sm mb-2">
+              <div class="card-body p-3">
+              <div class="font-semibold text-sm mb-1">Commits</div>
               ${branchCommits.map((cm) => {
                 const subject = cm.subject || cm.message || "";
                 const author =
@@ -743,41 +746,47 @@ export function LogsTab() {
                     : cm.authorName || cm.authorEmail || "");
                 const dateVal = cm.authorDate || cm.date || cm.time;
                 return html`
-                  <div class="meta-text" key=${cm.hash}>
-                    <span class="mono">${cm.hash}</span> ${subject}
+                  <div class="text-xs opacity-70" key=${cm.hash}>
+                    <span class="font-mono">${cm.hash}</span> ${subject}
                     ${author ? `· ${author}` : ""}
                     ${dateVal ? `· ${new Date(dateVal).toLocaleString()}` : ""}
                   </div>
                 `;
               })}
+              </div>
             </div>
           `}
-          <div class="card mb-sm">
-            <div class="card-title">Files Changed</div>
+          <div class="card bg-base-200 shadow-sm mb-2">
+            <div class="card-body p-3">
+            <div class="font-semibold text-sm mb-1">Files Changed</div>
             ${branchFileDetails.length
               ? branchFileDetails.map(
                   (f) => html`
-                    <div class="meta-text" key=${f.file}>
-                      <span class="mono">${f.file}</span>
+                    <div class="text-xs opacity-70" key=${f.file}>
+                      <span class="font-mono">${f.file}</span>
                       ${typeof f.additions === "number" &&
-                      html`<span class="pill" style="margin-left:6px">+${f.additions}</span>`}
+                      html`<span class="badge badge-sm badge-success ml-1">+${f.additions}</span>`}
                       ${typeof f.deletions === "number" &&
-                      html`<span class="pill" style="margin-left:6px">-${f.deletions}</span>`}
-                      ${f.binary && html`<span class="pill" style="margin-left:6px">binary</span>`}
+                      html`<span class="badge badge-sm badge-error ml-1">-${f.deletions}</span>`}
+                      ${f.binary && html`<span class="badge badge-sm ml-1">binary</span>`}
                     </div>
                   `,
                 )
-              : html`<div class="meta-text">No diff against base.</div>`}
+              : html`<div class="text-xs opacity-70">No diff against base.</div>`}
+            </div>
           </div>
           ${branchDetail.diffStat &&
           html`
-            <div class="card">
-              <div class="card-title">Diff Summary</div>
-              <pre class="workspace-diff">${branchDetail.diffStat}</pre>
+            <div class="card bg-base-200 shadow-sm">
+              <div class="card-body p-3">
+              <div class="font-semibold text-sm mb-1">Diff Summary</div>
+              <pre class="bg-base-300 rounded-lg p-4 font-mono text-xs overflow-x-auto">${branchDetail.diffStat}</pre>
+              </div>
             </div>
           `}
         `}
       <//>
     `}
+    </div>
   `;
 }
