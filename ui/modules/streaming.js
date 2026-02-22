@@ -540,17 +540,33 @@ const IDLE_TIMEOUT = 5000;
 
 /**
  * Internal: transition agent state and reset idle timer.
+ * Only updates the signal when the logical state actually changes
+ * (state or adapter). This prevents WS event storms from creating
+ * a new object on every event and triggering cascading re-renders.
+ *
  * @param {string} state
  * @param {string} [adapter]
  */
 function _setAgentState(state, adapter) {
   const now = Date.now();
-  agentStatus.value = {
-    state,
-    adapter: adapter || agentStatus.value.adapter,
-    startedAt: state !== agentStatus.value.state ? now : agentStatus.value.startedAt,
-    lastEventAt: now,
-  };
+  const prev = agentStatus.value;
+  const resolvedAdapter = adapter || prev.adapter;
+  const stateChanged = state !== prev.state;
+  const adapterChanged = resolvedAdapter !== prev.adapter;
+
+  // Only update the signal (which triggers re-renders) when something
+  // the UI actually cares about has changed.
+  if (stateChanged || adapterChanged) {
+    agentStatus.value = {
+      state,
+      adapter: resolvedAdapter,
+      startedAt: stateChanged ? now : prev.startedAt,
+      lastEventAt: now,
+    };
+  }
+
+  // Always reset idle timer — even if we didn't update the signal,
+  // we want to push back the "return to idle" deadline.
   if (_idleTimer) clearTimeout(_idleTimer);
   if (state !== "idle") {
     _idleTimer = setTimeout(() => {

@@ -3,6 +3,14 @@
  *  Modular SPA for Telegram Mini App (no build step)
  * ────────────────────────────────────────────────────────────── */
 
+/* ── Global error handlers — catch unhandled errors before they freeze the UI ── */
+globalThis.addEventListener?.("error", (e) => {
+  console.error("[ve:global-error]", e.error || e.message);
+});
+globalThis.addEventListener?.("unhandledrejection", (e) => {
+  console.error("[ve:unhandled-rejection]", e.reason);
+});
+
 import { h, render as preactRender } from "preact";
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import { signal } from "@preact/signals";
@@ -136,25 +144,27 @@ function useBackendHealth() {
 
   const checkHealth = useCallback(async () => {
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch("/api/health", { signal: controller.signal });
-      clearTimeout(timeout);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // Use apiFetch (includes Telegram initData auth header) instead of raw fetch
+      const res = await apiFetch("/api/health", { _silent: true });
+      if (!res?.ok) throw new Error(res?.error || "Health check failed");
       backendDown.value = false;
       backendError.value = "";
       backendLastSeen.value = Date.now();
       backendRetryCount.value = 0;
     } catch (err) {
-      backendDown.value = true;
-      backendError.value = err?.message || "Connection lost";
-      backendRetryCount.value = backendRetryCount.value + 1;
+      // Only mark as down if WS is also disconnected — WS is the primary
+      // connectivity signal; the health check is a fallback.
+      if (!wsConnected.value) {
+        backendDown.value = true;
+        backendError.value = err?.message || "Connection lost";
+        backendRetryCount.value = backendRetryCount.value + 1;
+      }
     }
   }, []);
 
   useEffect(() => {
     checkHealth();
-    intervalRef.current = setInterval(checkHealth, 10000);
+    intervalRef.current = setInterval(checkHealth, 15000);
     return () => clearInterval(intervalRef.current);
   }, [checkHealth]);
 
@@ -178,7 +188,21 @@ function useBackendHealth() {
 }
 
 function OfflineBanner() {
-  const { retry: manualRetry } = useBackendHealth();
+  // Don't call useBackendHealth() here — the App component already runs it.
+  // Calling it here caused a mount/unmount oscillation: App health check fails
+  // (no auth) → backendDown=true → OfflineBanner mounts → effect corrects it
+  // → backendDown=false → unmount → repeat every 10s.
+  const manualRetry = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/health", { _silent: true });
+      if (res?.ok) {
+        backendDown.value = false;
+        backendError.value = "";
+        backendLastSeen.value = Date.now();
+        backendRetryCount.value = 0;
+      }
+    } catch { /* handled by signal */ }
+  }, []);
   return html`
     <div class="offline-banner">
       <div class="offline-banner-icon">⚠️</div>
@@ -193,6 +217,41 @@ function OfflineBanner() {
       <button class="btn btn-ghost btn-sm" onClick=${manualRetry}>Retry</button>
     </div>
   `;
+}
+
+/* ── Error Boundary — catches render errors in child components ── */
+import { Component } from "preact";
+class TabErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("[TabErrorBoundary] Caught error:", error, info);
+  }
+  render() {
+    if (this.state.error) {
+      const retry = () => this.setState({ error: null });
+      return html`
+        <div style="padding:24px;text-align:center;color:var(--text-secondary);">
+          <div style="font-size:32px;margin-bottom:12px;">⚠️</div>
+          <div style="font-size:14px;font-weight:600;margin-bottom:8px;">
+            Something went wrong
+          </div>
+          <div style="font-size:12px;opacity:0.7;margin-bottom:16px;max-width:400px;margin-left:auto;margin-right:auto;">
+            ${this.state.error?.message || "An unexpected error occurred while rendering this tab."}
+          </div>
+          <button class="btn btn-primary btn-sm" onClick=${retry}>
+            Retry
+          </button>
+        </div>
+      `;
+    }
+    return this.props.children;
+  }
 }
 
 /* ── Tab component map ── */
@@ -1071,7 +1130,9 @@ function App() {
           <${CommandPalette} open=${paletteOpen} onClose=${paletteClose} />
           <${PullToRefresh} onRefresh=${() => refreshTab(activeTab.value)}>
             <main class="main-content" ref=${mainRef}>
-              <${CurrentTab} />
+              <${TabErrorBoundary} key=${activeTab.value}>
+                <${CurrentTab} />
+              <//>
             </main>
           <//>
           ${showScrollTop &&

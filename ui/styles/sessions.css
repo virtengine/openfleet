@@ -1257,7 +1257,7 @@ ul.md-list li::before {
   border: 1px solid var(--border, var(--border));
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   box-shadow: var(--shadow-lg, 0 4px 24px rgba(0,0,0,.35));
-  z-index: 50;
+  z-index: 9999;
 }
 
 .slash-menu-item {

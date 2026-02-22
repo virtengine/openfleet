@@ -621,9 +621,12 @@ export function ChatInputToolbar() {
     injectAgentSelectorStyles();
   }, []);
 
-  // Load agents on mount
+  // Load agents on mount — but only if not already loaded or loading.
+  // ChatTab already calls loadAvailableAgents() so this is a fallback.
   useEffect(() => {
-    loadAvailableAgents();
+    if (availableAgents.value.length === 0 && !agentSelectorLoading.value) {
+      loadAvailableAgents();
+    }
   }, []);
 
   return html`

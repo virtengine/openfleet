@@ -2508,8 +2508,8 @@ select.input {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
-  z-index: 50;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+  z-index: 9999;
   max-height: 200px;
   overflow-y: auto;
   margin-top: 4px;
@@ -3350,7 +3350,8 @@ select.input {
   border-radius: 12px;
   max-height: 240px;
   overflow-y: auto;
-  z-index: 50;
+  z-index: 9999;
+  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.35);
 }
 
 .cmd-dropdown-item {

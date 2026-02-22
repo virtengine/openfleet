@@ -136,8 +136,9 @@ const SETTINGS_STYLES = `
 .setting-row {
   padding: 12px 0;
   border-bottom: 1px solid var(--border, rgba(255,255,255,0.05));
-  overflow: hidden;
+  overflow: visible;
   max-width: 100%;
+  position: relative;
 }
 .setting-row:last-child { border-bottom: none; }
 .setting-row-header {
