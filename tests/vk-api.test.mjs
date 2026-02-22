@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { setKanbanBackend } from "../kanban-adapter.mjs";
 
 // Force VK backend so fetchVk() doesn't short-circuit when config says "github"
 process.env.KANBAN_BACKEND = "vk";
@@ -25,6 +26,8 @@ const {
 
 describe("fetchVk", () => {
   beforeEach(() => {
+    // Reset kanban backend to "vk" in case another test/import set it otherwise
+    setKanbanBackend("vk");
     mockFetch.mockClear();
     mockConsoleWarn.mockClear();
     mockConsoleError.mockClear();
@@ -314,6 +317,7 @@ describe("fetchVk", () => {
 
 describe("updateTaskStatus", () => {
   beforeEach(() => {
+    setKanbanBackend("vk");
     mockFetch.mockClear();
     mockConsoleWarn.mockClear();
   });
@@ -437,6 +441,7 @@ describe("updateTaskStatus", () => {
 
 describe("VK API integration scenarios", () => {
   beforeEach(() => {
+    setKanbanBackend("vk");
     mockFetch.mockClear();
     mockConsoleWarn.mockClear();
   });
@@ -604,6 +609,7 @@ describe("getTaskAgeMs", () => {
 
 describe("safeRecoverTask + recoverySkipCache", () => {
   beforeEach(() => {
+    setKanbanBackend("vk");
     mockFetch.mockClear();
     mockConsoleWarn.mockClear();
     mockConsoleError.mockClear();

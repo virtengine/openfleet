@@ -6,7 +6,11 @@ const fallbackEnabled =
 
 export function resolveFetch() {
   if (process.env.VITEST) {
-    return initialFetch || globalThis.fetch;
+    // In test mode, prefer the current globalThis.fetch so vi.fn() mocks work
+    // even when this module was cached before the mock was installed.
+    return typeof globalThis.fetch === "function"
+      ? globalThis.fetch
+      : initialFetch;
   }
   if (typeof globalThis.fetch === "function") {
     return globalThis.fetch;
