@@ -469,19 +469,30 @@ export function WorkspaceSwitcher() {
 
   const activeWs = workspaces.value.find((ws) => ws.id === activeWorkspaceId.value);
   const wsList = workspaces.value;
+  const isLoading = workspacesLoading.value;
 
-  if (!wsList.length && !managerOpen) return null;
+  // Always render — even with no workspaces, show a manage button so users can add one
 
   return html`
     <div class="ws-switcher">
       <button
-        class="ws-switcher-btn"
-        onClick=${(e) => { e.stopPropagation(); haptic("light"); setOpen(!open); }}
-        title="Switch workspace"
+        class="ws-switcher-btn ${!wsList.length ? 'ws-switcher-btn-empty' : ''}"
+        onClick=${(e) => {
+          e.stopPropagation();
+          haptic("light");
+          if (!wsList.length) {
+            setManagerOpen(true);
+          } else {
+            setOpen(!open);
+          }
+        }}
+        title=${wsList.length ? "Switch workspace" : "Set up a workspace"}
       >
         <span class="ws-switcher-icon">⬡</span>
-        <span class="ws-switcher-name">${activeWs?.name || "Select Workspace"}</span>
-        <span class="ws-switcher-chevron ${open ? "open" : ""}">${open ? "▴" : "▾"}</span>
+        <span class="ws-switcher-name">
+          ${isLoading ? "Loading…" : (activeWs?.name || (wsList.length ? "Select Workspace" : "Set up workspace"))}
+        </span>
+        ${wsList.length ? html`<span class="ws-switcher-chevron ${open ? "open" : ""}">${open ? "▴" : "▾"}</span>` : null}
       </button>
 
       ${open && html`

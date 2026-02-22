@@ -89,6 +89,15 @@ const SORT_OPTIONS = [
   { value: "title", label: "Title" },
 ];
 
+/* Maps snapshot-bar labels → tasksFilter values */
+const SNAPSHOT_STATUS_MAP = {
+  Backlog: "todo",
+  Active: "inprogress",
+  Review: "inreview",
+  Done: "done",
+  Errors: "error",
+};
+
 const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, "": 4 };
 
 const SYSTEM_TAGS = new Set([
@@ -994,8 +1003,10 @@ export function TasksTab() {
         return dir * (av - bv);
       }
       if (listSortCol === "updated") {
-        av = a.updated_at ? new Date(a.updated_at).getTime() : 0;
-        bv = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+        const tsA = a.updated_at || a.updated;
+        const tsB = b.updated_at || b.updated;
+        av = tsA ? (typeof tsA === 'number' ? tsA : new Date(tsA).getTime()) : 0;
+        bv = tsB ? (typeof tsB === 'number' ? tsB : new Date(tsB).getTime()) : 0;
         return dir * (av - bv);
       }
       if (listSortCol === "status") { av = a.status || ""; bv = b.status || ""; }
@@ -1609,11 +1620,20 @@ export function TasksTab() {
 
     <div class="snapshot-bar">
       ${summaryMetrics.map((m) => html`
-        <span key=${m.label} class="snapshot-pill">
+        <button
+          key=${m.label}
+          class="snapshot-pill snapshot-pill-btn ${!isKanban && filterVal === SNAPSHOT_STATUS_MAP[m.label] ? 'snapshot-pill-active' : ''}"
+          onClick=${() => {
+            if (isKanban) return;
+            const statusVal = SNAPSHOT_STATUS_MAP[m.label];
+            if (statusVal !== undefined) handleFilter(filterVal === statusVal ? 'all' : statusVal);
+          }}
+          title=${isKanban ? m.label : `Filter by ${m.label}`}
+        >
           <span class="snapshot-dot" style="background:${m.color};" />
           <strong class="snapshot-val">${m.value}</strong>
           <span class="snapshot-lbl">${m.label}</span>
-        </span>
+        </button>
       `)}
       <span class="snapshot-view-tag">${isKanban ? "⬛ Board" : "☰ List"}</span>
     </div>
@@ -1632,6 +1652,23 @@ export function TasksTab() {
         cursor:pointer;
       }
       .actions-dropdown-item:hover { background:var(--hover-bg, rgba(255,255,255,.08)); }
+      .snapshot-pill-btn {
+        background: none;
+        border: 1px solid transparent;
+        border-radius: 999px;
+        cursor: pointer;
+        padding: 2px 8px;
+        transition: border-color 0.15s, background 0.15s;
+        font: inherit;
+      }
+      .snapshot-pill-btn:hover {
+        border-color: var(--border);
+        background: var(--bg-card-hover, rgba(255,255,255,0.05));
+      }
+      .snapshot-pill-active {
+        border-color: var(--accent) !important;
+        background: rgba(59,130,246,0.12) !important;
+      }
       @media (max-width: 640px) {
         .actions-label { display:none; }
       }
@@ -1706,8 +1743,8 @@ export function TasksTab() {
                       : html`<span class="task-td-empty">—</span>`}
                   </td>
                   <td class="task-td task-td-updated">
-                    ${task.updated_at
-                      ? html`<span class="task-td-date">${formatRelative(task.updated_at)}</span>`
+                    ${(task.updated_at || task.updated)
+                      ? html`<span class="task-td-date">${formatRelative(task.updated_at || task.updated)}</span>`
                       : html`<span class="task-td-empty">—</span>`}
                   </td>
                 </tr>

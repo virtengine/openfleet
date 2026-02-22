@@ -278,9 +278,9 @@ function SwipeableSessionItem({
     const x = e.clientX || e.touches?.[0]?.clientX || 0;
     currentX.current = x;
     const dx = x - startX.current;
-    // Only allow left swipe (negative), cap at -120
+    // Only allow left swipe (negative), cap at -140
     if (dx < 0) {
-      setOffset(Math.max(dx, -120));
+      setOffset(Math.max(dx, -140));
     } else {
       setOffset(0);
     }
@@ -290,7 +290,7 @@ function SwipeableSessionItem({
     swiping.current = false;
     if (offset < -50) {
       // Snap open to reveal actions
-      setOffset(-120);
+      setOffset(-140);
       if (onToggleActions) onToggleActions(s.id);
     } else {
       setOffset(0);
@@ -440,7 +440,7 @@ function SwipeableSessionItem({
               e.stopPropagation();
               if (onToggleActions) {
                 onToggleActions(s.id);
-                setOffset(-120);
+                setOffset(-140);
               }
             }}
           >

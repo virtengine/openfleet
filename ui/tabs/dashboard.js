@@ -521,39 +521,33 @@ export function DashboardTab() {
               `,
             )}
           </div>
-        <//>
-
-        <${Card}
-          title=${html`<span class="dashboard-card-title"
-            ><span class="dashboard-title-icon">${ICONS.check}</span>Active Work</span
-          >`}
-          className="dashboard-card dashboard-active"
-        >
-          <div class="dashboard-work-layout">
-            <div class="dashboard-work-list">
-              ${workItems.map(
-                (item) => html`
-                  <div class="dashboard-work-item">
-                    <div class="dashboard-work-left">
-                      <span
-                        class="dashboard-work-dot"
-                        style="background: ${item.color}"
-                      ></span>
-                      <span class="dashboard-work-label">${item.label}</span>
+          ${segments.length > 0 && html`
+            <div class="dashboard-work-layout" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+              <div class="dashboard-work-list">
+                ${workItems.map(
+                  (item) => html`
+                    <div class="dashboard-work-item">
+                      <div class="dashboard-work-left">
+                        <span
+                          class="dashboard-work-dot"
+                          style="background: ${item.color}"
+                        ></span>
+                        <span class="dashboard-work-label">${item.label}</span>
+                      </div>
+                      <span class="dashboard-work-value">${item.value}</span>
                     </div>
-                    <span class="dashboard-work-value">${item.value}</span>
-                  </div>
-                `,
-              )}
-            </div>
-            <div class="dashboard-work-chart">
-              <${DonutChart} segments=${segments} size=${110} strokeWidth=${10} />
-              <div class="dashboard-work-meta">
-                Active progress · ${progressPct}% engaged
+                  `,
+                )}
               </div>
-              <${ProgressBar} percent=${progressPct} />
+              <div class="dashboard-work-chart">
+                <${DonutChart} segments=${segments} size=${90} strokeWidth=${9} />
+                <div class="dashboard-work-meta">
+                  ${progressPct}% engaged
+                </div>
+                <${ProgressBar} percent=${progressPct} />
+              </div>
             </div>
-          </div>
+          `}
         <//>
 
         <${Card}
@@ -683,8 +677,8 @@ export function DashboardTab() {
                           ${truncate(task.title || "(untitled)", 50)}
                         </div>
                         <div class="meta-text">
-                          ${task.id}${task.updated_at
-                            ? ` · ${formatRelative(task.updated_at)}`
+                          ${task.id}${(task.updated_at || task.updated)
+                            ? ` · ${formatRelative(task.updated_at || task.updated)}`
                             : ""}
                         </div>
                       </div>
