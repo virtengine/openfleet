@@ -94,11 +94,11 @@
   --inspector-width: 300px;
   --content-max: 1200px;
   --shell-gap: 0px;
-  --radius-xs: 6px;
-  --radius-sm: 10px;
-  --radius-md: 14px;
-  --radius-lg: 18px;
-  --radius-xl: 24px;
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 5px;
+  --radius-xl: 6px;
   --radius-full: 9999px;
 
   /* Shadows */

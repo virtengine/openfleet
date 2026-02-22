@@ -2478,20 +2478,7 @@ select.input {
 
 @media (min-width: 760px) {
   .dashboard-grid {
-    grid-template-columns: repeat(12, 1fr);
-  }
-
-  .dashboard-health,
-  .dashboard-active,
-  .dashboard-project {
-    grid-column: 1 / span 7;
-  }
-
-  .dashboard-overview,
-  .dashboard-alerts,
-  .dashboard-actions,
-  .dashboard-quality {
-    grid-column: 8 / span 5;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   }
 
   .dashboard-activity {

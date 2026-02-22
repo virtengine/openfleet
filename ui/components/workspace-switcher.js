@@ -448,87 +448,62 @@ export function WorkspaceManager({ open, onClose }) {
   `;
 }
 
-// ─── Main component: compact dropdown + manage trigger ─────
+// ─── Main component: native <select> dropdown + manage trigger ─────
 export function WorkspaceSwitcher() {
-  const [open, setOpen] = useState(false);
   const [managerOpen, setManagerOpen] = useState(false);
 
   useEffect(() => {
     loadWorkspaces();
   }, []);
 
-  // Close dropdown on outside click
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e) => {
-      if (!e.target.closest?.(".ws-switcher")) setOpen(false);
-    };
-    document.addEventListener("click", handler, true);
-    return () => document.removeEventListener("click", handler, true);
-  }, [open]);
-
-  const activeWs = workspaces.value.find((ws) => ws.id === activeWorkspaceId.value);
   const wsList = workspaces.value;
-  const isLoading = workspacesLoading.value;
+  const currentId = activeWorkspaceId.value;
 
-  // Always render — even with no workspaces, show a manage button so users can add one
+  const handleChange = async (e) => {
+    const wsId = e.target.value;
+    if (wsId === "__manage__") {
+      e.target.value = currentId || "";
+      haptic("medium");
+      setManagerOpen(true);
+      return;
+    }
+    if (!wsId || wsId === currentId) return;
+    haptic("light");
+    await switchWorkspace(wsId);
+  };
+
+  if (!wsList.length && !workspacesLoading.value) {
+    return html`
+      <div class="ws-switcher">
+        <button
+          class="ws-switcher-btn ws-switcher-btn-empty"
+          onClick=${() => { haptic("medium"); setManagerOpen(true); }}
+          title="Set up a workspace"
+        >
+          <span class="ws-switcher-icon">⬡</span>
+          <span class="ws-switcher-name">Set up workspace</span>
+        </button>
+        <${WorkspaceManager}
+          open=${managerOpen}
+          onClose=${() => setManagerOpen(false)}
+        />
+      </div>
+    `;
+  }
 
   return html`
     <div class="ws-switcher">
-      <button
-        class="ws-switcher-btn ${!wsList.length ? 'ws-switcher-btn-empty' : ''}"
-        onClick=${(e) => {
-          e.stopPropagation();
-          haptic("light");
-          if (!wsList.length) {
-            setManagerOpen(true);
-          } else {
-            setOpen(!open);
-          }
-        }}
-        title=${wsList.length ? "Switch workspace" : "Set up a workspace"}
+      <select
+        class="ws-native-select"
+        value=${currentId || ""}
+        onChange=${handleChange}
       >
-        <span class="ws-switcher-icon">⬡</span>
-        <span class="ws-switcher-name">
-          ${isLoading ? "Loading…" : (activeWs?.name || (wsList.length ? "Select Workspace" : "Set up workspace"))}
-        </span>
-        ${wsList.length ? html`<span class="ws-switcher-chevron ${open ? "open" : ""}">${open ? "▴" : "▾"}</span>` : null}
-      </button>
-
-      ${open && html`
-        <div class="ws-switcher-dropdown">
-          <div class="ws-switcher-header">Workspaces</div>
-          ${wsList.map((ws) => html`
-            <button
-              key=${ws.id}
-              class="ws-switcher-item ${ws.id === activeWorkspaceId.value ? "active" : ""}"
-              onClick=${() => { haptic("light"); switchWorkspace(ws.id); setOpen(false); }}
-            >
-              <div class="ws-switcher-item-main">
-                <span class="ws-switcher-item-name">${ws.name}</span>
-                ${ws.id === activeWorkspaceId.value
-                  ? html`<span class="ws-switcher-badge">Active</span>`
-                  : null}
-              </div>
-              <div class="ws-switcher-item-repos">
-                ${(ws.repos || []).map((r) => html`
-                  <span key=${r.name} class="ws-switcher-repo ${r.exists ? "" : "missing"}" title=${r.slug || r.name}>
-                    ${r.primary ? "★ " : ""}${r.name}
-                  </span>
-                `)}
-              </div>
-            </button>
-          `)}
-          <div class="ws-switcher-divider" />
-          <button
-            class="ws-switcher-item ws-switcher-manage-btn"
-            onClick=${() => { haptic("medium"); setOpen(false); setManagerOpen(true); }}
-          >
-            <span class="ws-switcher-manage-icon">⚙</span>
-            <span>Manage Workspaces</span>
-          </button>
-        </div>
-      `}
+        ${wsList.map((ws) => html`
+          <option key=${ws.id} value=${ws.id}>${ws.name || ws.id}</option>
+        `)}
+        <option disabled>──────────</option>
+        <option value="__manage__">⚙ Manage Workspaces</option>
+      </select>
 
       <${WorkspaceManager}
         open=${managerOpen}
