@@ -26,6 +26,39 @@ import { execSync, spawnSync } from "node:child_process";
 
 const TAG = "[workspace-manager]";
 
+// Lazy-loaded reference to repo-config.mjs (resolved on first use)
+let _repoConfigModule = null;
+
+/**
+ * Ensure repo-level AI executor configs exist after clone/pull.
+ * Uses synchronous import cache — repo-config.mjs is pure sync.
+ * @param {string} repoPath  Absolute path to the repo directory
+ */
+function ensureRepoAIConfigs(repoPath) {
+  try {
+    if (!_repoConfigModule) {
+      // repo-config.mjs is ESM but fully synchronous internally.
+      // We pre-populate the cache via dynamic import at module init.
+      return; // Will be populated after first async import
+    }
+    const { ensureRepoConfigs, printRepoConfigSummary } = _repoConfigModule;
+    const result = ensureRepoConfigs(repoPath);
+    // Only log if something was created/updated
+    const anyChange = Object.values(result).some((r) => r.created || r.updated);
+    if (anyChange) {
+      console.log(TAG, `Repo-level AI configs for ${basename(repoPath)}:`);
+      printRepoConfigSummary(result, (msg) => console.log(TAG, msg));
+    }
+  } catch (err) {
+    console.warn(TAG, `Could not ensure repo AI configs: ${err.message}`);
+  }
+}
+
+// Pre-load repo-config.mjs asynchronously at module init time
+import("./repo-config.mjs")
+  .then((mod) => { _repoConfigModule = mod; })
+  .catch(() => { /* repo-config not available — skip */ });
+
 // ── Path Helpers ─────────────────────────────────────────────────────────────
 
 /**
@@ -313,8 +346,12 @@ export function addRepoToWorkspace(configDir, workspaceId, { url, name, branch, 
     }
     cloned = true;
     console.log(TAG, `Cloned ${repoName} successfully`);
+    // Ensure repo-level AI executor configs exist after fresh clone
+    ensureRepoAIConfigs(repoPath);
   } else {
     console.log(TAG, `Repository ${repoName} already exists at ${repoPath}`);
+    // Ensure repo-level configs are up to date even for existing repos
+    ensureRepoAIConfigs(repoPath);
   }
 
   const slug = extractSlug(url);

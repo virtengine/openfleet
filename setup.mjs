@@ -4905,6 +4905,42 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
     warn(`Could not update Copilot MCP config: ${copilotMcpResult.error}`);
   }
 
+  // ── Repo-level AI configs for all workspace repos ──────
+  heading("Repo-Level AI Configs");
+  try {
+    const { ensureRepoConfigs, printRepoConfigSummary } = await import("./repo-config.mjs");
+    // Apply to the primary repo
+    const repoResult = ensureRepoConfigs(repoRoot);
+    printRepoConfigSummary(repoResult, (msg) => console.log(msg));
+
+    // Also apply to all workspace repos under $BOSUN_DIR/workspaces/
+    const bosunDir = env.BOSUN_DIR || configDir || resolve(homedir(), "bosun");
+    const bosunConfigPath = resolve(bosunDir, "bosun.config.json");
+    if (existsSync(bosunConfigPath)) {
+      try {
+        const bosunCfg = JSON.parse(readFileSync(bosunConfigPath, "utf8"));
+        const wsDir = resolve(bosunDir, "workspaces");
+        for (const ws of bosunCfg.workspaces || []) {
+          for (const repo of ws.repos || []) {
+            const wsRepoPath = resolve(wsDir, ws.id || ws.name || "", repo.name);
+            if (wsRepoPath !== repoRoot && existsSync(wsRepoPath)) {
+              const wsResult = ensureRepoConfigs(wsRepoPath);
+              const anyChange = Object.values(wsResult).some((r) => r.created || r.updated);
+              if (anyChange) {
+                info(`Workspace repo: ${repo.name}`);
+                printRepoConfigSummary(wsResult, (msg) => console.log(msg));
+              }
+            }
+          }
+        }
+      } catch (wsErr) {
+        warn(`Could not update workspace repo configs: ${wsErr.message}`);
+      }
+    }
+  } catch (rcErr) {
+    warn(`Could not apply repo-level configs: ${rcErr.message}`);
+  }
+
   // ── Codex CLI config.toml ─────────────────────────────
   heading("Codex CLI Config");
 

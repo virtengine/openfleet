@@ -9,6 +9,16 @@
  *   5. Sandbox permissions and shell environment policy
  *   6. Common MCP servers (context7, microsoft-docs)
  *
+ * SCOPE: This manages the GLOBAL ~/.codex/config.toml which contains:
+ *   - Model provider configs (API keys, base URLs) — MUST be global
+ *   - Stream timeouts & retry settings — per-provider, global
+ *   - Sandbox workspace-write (writable_roots) — spans multiple repos, global
+ *   - Feature flags, MCP servers, agent_sdk — kept as FALLBACK defaults
+ *     (prefer repo-level .codex/config.toml via repo-config.mjs)
+ *
+ * For project-scoped settings, see repo-config.mjs which generates
+ * .codex/config.toml at the repo level.
+ *
  * Uses string-based TOML manipulation (no parser dependency) — we only
  * append or patch well-known sections rather than rewriting the whole file.
  */
