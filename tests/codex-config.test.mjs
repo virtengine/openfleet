@@ -37,29 +37,84 @@ describe("codex-config defaults", () => {
     expect(toml).toContain("undo = false");
   });
 
-  it("adds agents.max_threads when missing", () => {
-    const input = ["[features]", "child_agents_md = true", ""].join("\n");
+  it("adds max_threads under [agent_sdk] when section exists but key is missing", () => {
+    const input = [
+      "[agent_sdk]",
+      'primary = "codex"',
+      "",
+      "[agent_sdk.capabilities]",
+      "steering = true",
+      "",
+      "[features]",
+      "child_agents_md = true",
+      "",
+    ].join("\n");
     const result = ensureAgentMaxThreads(input, { maxThreads: 12 });
     expect(result.changed).toBe(true);
-    expect(result.toml).toContain("[agents]");
-    expect(result.toml).toContain("max_threads = 12");
+    expect(result.added).toBe(true);
+    // max_threads should be under [agent_sdk], NOT [agents]
+    const agentSdkIdx = result.toml.indexOf("[agent_sdk]");
+    const capsIdx = result.toml.indexOf("[agent_sdk.capabilities]");
+    const maxThreadsIdx = result.toml.indexOf("max_threads = 12");
+    expect(maxThreadsIdx).toBeGreaterThan(agentSdkIdx);
+    expect(maxThreadsIdx).toBeLessThan(capsIdx);
   });
 
-  it("overwrites agents.max_threads when explicitly requested", () => {
-    const input = ["[agents]", "max_threads = 4", "", "[features]"].join("\n");
+  it("overwrites max_threads under [agent_sdk] when explicitly requested", () => {
+    const input = [
+      "[agent_sdk]",
+      'primary = "codex"',
+      "max_threads = 4",
+      "",
+      "[agent_sdk.capabilities]",
+      "steering = true",
+      "",
+      "[features]",
+    ].join("\n");
     const result = ensureAgentMaxThreads(input, {
       maxThreads: 12,
       overwrite: true,
     });
     expect(result.changed).toBe(true);
     expect(result.toml).toContain("max_threads = 12");
+    expect(result.toml).not.toContain("max_threads = 4");
   });
 
-  it("does not overwrite agents.max_threads by default", () => {
-    const input = ["[agents]", "max_threads = 4", ""].join("\n");
+  it("does not overwrite max_threads under [agent_sdk] by default", () => {
+    const input = [
+      "[agent_sdk]",
+      'primary = "codex"',
+      "max_threads = 4",
+      "",
+      "[agent_sdk.capabilities]",
+      "steering = true",
+      "",
+    ].join("\n");
     const result = ensureAgentMaxThreads(input, { maxThreads: 12 });
     expect(result.changed).toBe(false);
     expect(result.toml).toContain("max_threads = 4");
+  });
+
+  it("migrates stale max_threads from [agents] to [agent_sdk]", () => {
+    const input = [
+      "[agents]",
+      "# Max concurrent agent threads per Codex session.",
+      "max_threads = 8",
+      "",
+      "[agent_sdk]",
+      'primary = "codex"',
+      "",
+      "[agent_sdk.capabilities]",
+      "steering = true",
+      "",
+    ].join("\n");
+    const result = ensureAgentMaxThreads(input, { maxThreads: 12 });
+    expect(result.changed).toBe(true);
+    // Stale max_threads should be removed from [agents]
+    const agentsMatch = result.toml.match(/\[agents\][^[]*max_threads/);
+    expect(agentsMatch).toBeNull();
+    // max_threads should be added under [agent_sdk]
+    expect(result.toml).toContain("max_threads = 12");
   });
 
   it("honors env overrides for feature flags", () => {

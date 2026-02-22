@@ -278,14 +278,66 @@ function detectRepoSlug() {
 }
 
 function detectRepoRoot() {
+  // 1. Explicit env var
+  if (process.env.REPO_ROOT) {
+    const envRoot = resolve(process.env.REPO_ROOT);
+    if (existsSync(envRoot)) return envRoot;
+  }
+
+  // 2. Try git from cwd
   try {
-    return execSync("git rev-parse --show-toplevel", {
+    const gitRoot = execSync("git rev-parse --show-toplevel", {
       encoding: "utf8",
       stdio: ["pipe", "pipe", "ignore"],
     }).trim();
+    if (gitRoot) return gitRoot;
   } catch {
-    return process.cwd();
+    // not in a git repo from cwd
   }
+
+  // 3. Bosun package directory may be inside a repo (common: scripts/bosun/ within a project)
+  try {
+    const gitRoot = execSync("git rev-parse --show-toplevel", {
+      encoding: "utf8",
+      cwd: __dirname,
+      stdio: ["pipe", "pipe", "ignore"],
+    }).trim();
+    if (gitRoot) return gitRoot;
+  } catch {
+    // bosun installed standalone, not in a repo
+  }
+
+  // 4. Check bosun config for workspace repos
+  const configDir = process.env.BOSUN_DIR || resolve(process.env.HOME || process.env.USERPROFILE || "", "bosun");
+  for (const cfgName of CONFIG_FILES) {
+    const cfgPath = resolve(configDir, cfgName);
+    if (existsSync(cfgPath)) {
+      try {
+        const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+        // Check workspace repos
+        const repos = cfg.repositories || cfg.repos || [];
+        if (Array.isArray(repos) && repos.length > 0) {
+          const primary = repos.find((r) => r.primary) || repos[0];
+          const repoPath = primary?.path || primary?.repoRoot;
+          if (repoPath && existsSync(resolve(repoPath))) return resolve(repoPath);
+        }
+        // Check workspaces
+        const workspaces = cfg.workspaces;
+        if (Array.isArray(workspaces) && workspaces.length > 0) {
+          const ws = workspaces[0];
+          const wsRepos = ws?.repos || ws?.repositories || [];
+          if (Array.isArray(wsRepos) && wsRepos.length > 0) {
+            const primary = wsRepos.find((r) => r.primary) || wsRepos[0];
+            const repoPath = primary?.path || primary?.repoRoot;
+            if (repoPath && existsSync(resolve(repoPath))) return resolve(repoPath);
+          }
+        }
+      } catch { /* invalid config */ }
+    }
+  }
+
+  // 5. Final fallback to cwd
+  return process.cwd();
 }
 
 // ── Executor Configuration ───────────────────────────────────────────────────
@@ -814,12 +866,16 @@ export function loadConfig(argv = process.argv, options = {}) {
   let repoRoot =
     repoRootOverride || selectedRepository?.path || detectRepoRoot();
 
-  // Load .env from config dir
-  loadDotEnv(configDir, { override: reloadEnv });
+  // Load .env from config dir — Bosun's .env is the primary source of truth
+  // for Bosun-specific configuration, so it should override any stale shell
+  // env vars.  Users who want shell vars to take precedence can use profiles
+  // or set BOSUN_ENV_NO_OVERRIDE=1.
+  const envOverride = reloadEnv || !isEnvEnabled(process.env.BOSUN_ENV_NO_OVERRIDE, false);
+  loadDotEnv(configDir, { override: envOverride });
 
   // Also load .env from repo root if different
   if (resolve(repoRoot) !== resolve(configDir)) {
-    loadDotEnv(repoRoot, { override: reloadEnv });
+    loadDotEnv(repoRoot, { override: envOverride });
   }
 
   const initialRepoRoot = repoRoot;
@@ -870,7 +926,7 @@ export function loadConfig(argv = process.argv, options = {}) {
   repoRoot = repoRootOverride || selectedRepository?.path || detectRepoRoot();
 
   if (resolve(repoRoot) !== resolve(initialRepoRoot)) {
-    loadDotEnv(repoRoot, { override: reloadEnv });
+    loadDotEnv(repoRoot, { override: envOverride });
   }
 
   const envPaths = [

@@ -62,6 +62,8 @@ const DEFAULT_AGENT_SDK_BLOCK = [
   "# Primary agent SDK used for in-process automation.",
   '# Supported: "codex", "copilot", "claude"',
   'primary = "codex"',
+  "# Max concurrent agent threads per Codex session.",
+  `max_threads = ${DEFAULT_AGENT_MAX_THREADS}`,
   "",
   AGENT_SDK_CAPS_HEADER,
   "# Live steering updates during an active run.",
@@ -73,13 +75,18 @@ const DEFAULT_AGENT_SDK_BLOCK = [
   "",
 ].join("\n");
 
-const buildAgentsBlock = (maxThreads) =>
+/**
+ * @deprecated No longer used — max_threads is now managed under [agent_sdk].
+ * The [agents] section in Codex CLI uses serde(flatten) to parse all keys
+ * as agent role names, so bare scalar keys like max_threads = 12 cause:
+ *   "invalid length 1, expected struct AgentRoleToml with 2 elements"
+ * Kept only for migration removal of stale [agents] sections.
+ */
+const buildAgentsBlock = (_maxThreads) =>
   [
     "",
-    "# ── Agent limits (added by bosun) ──",
+    "# ── Agent roles (added by bosun) ──",
     AGENTS_HEADER,
-    "# Max concurrent agent threads per Codex session.",
-    `max_threads = ${maxThreads}`,
     "",
   ].join("\n");
 
@@ -152,6 +159,15 @@ function resolveAgentMaxThreads(envOverrides = process.env) {
   };
 }
 
+/**
+ * Ensure max_threads is set under [agent_sdk] (NOT under [agents]).
+ *
+ * The [agents] section in Codex CLI uses serde(flatten), so any bare scalar
+ * key is parsed as an agent role name and causes a deserialization error.
+ * We store max_threads under [agent_sdk] which Bosun owns.
+ *
+ * Also migrates any stale max_threads from [agents] if found.
+ */
 export function ensureAgentMaxThreads(
   toml,
   { maxThreads, overwrite = false } = {},
@@ -173,36 +189,80 @@ export function ensureAgentMaxThreads(
   }
   result.applied = desired;
 
-  const headerIdx = toml.indexOf(AGENTS_HEADER);
-  if (headerIdx === -1) {
+  // ── Migration: remove stale max_threads from [agents] section ──
+  const agentsIdx = toml.indexOf(AGENTS_HEADER);
+  if (agentsIdx !== -1) {
+    const afterAgentsHeader = agentsIdx + AGENTS_HEADER.length;
+    const nextAgentsSection = toml.indexOf("\n[", afterAgentsHeader);
+    const agentsSectionEnd = nextAgentsSection === -1 ? toml.length : nextAgentsSection;
+    const agentsSection = toml.substring(afterAgentsHeader, agentsSectionEnd);
+    const staleRegex = /^[ \t]*#[^\n]*max.*threads[^\n]*\n?|^[ \t]*max_threads\s*=\s*\d+[^\n]*\n?/gm;
+    if (staleRegex.test(agentsSection)) {
+      const cleaned = agentsSection.replace(staleRegex, "");
+      toml = toml.substring(0, afterAgentsHeader) + cleaned + toml.substring(agentsSectionEnd);
+      result.changed = true;
+    }
+    // If [agents] section is now empty (only whitespace/comments about agents),
+    // remove the whole section to avoid confusing Codex CLI
+    const updatedAgentsIdx = toml.indexOf(AGENTS_HEADER);
+    if (updatedAgentsIdx !== -1) {
+      const afterUpdated = updatedAgentsIdx + AGENTS_HEADER.length;
+      const nextUpdated = toml.indexOf("\n[", afterUpdated);
+      const endUpdated = nextUpdated === -1 ? toml.length : nextUpdated;
+      const remaining = toml.substring(afterUpdated, endUpdated).trim();
+      // If only whitespace or the bosun comment header remains, remove entire section
+      if (!remaining || /^(#[^\n]*\n?\s*)*$/.test(remaining)) {
+        // Remove from the line before [agents] header to section end
+        const lineStart = toml.lastIndexOf("\n", updatedAgentsIdx);
+        const removeFrom = lineStart === -1 ? updatedAgentsIdx : lineStart;
+        toml = toml.substring(0, removeFrom) + toml.substring(endUpdated);
+        result.changed = true;
+      }
+    }
+  }
+
+  // ── Place max_threads under [agent_sdk] ──
+  const sdkIdx = toml.indexOf(AGENT_SDK_HEADER);
+  if (sdkIdx === -1) {
+    // No [agent_sdk] section yet — it will be created by ensureCodexConfig;
+    // the DEFAULT_AGENT_SDK_BLOCK already includes max_threads.
     result.changed = true;
     result.added = true;
-    result.toml = toml.trimEnd() + buildAgentsBlock(desired);
     return result;
   }
 
-  const afterHeader = headerIdx + AGENTS_HEADER.length;
-  const nextSection = toml.indexOf("\n[", afterHeader);
-  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
-  let section = toml.substring(afterHeader, sectionEnd);
+  const afterSdkHeader = sdkIdx + AGENT_SDK_HEADER.length;
+  // Find the end of [agent_sdk] — either [agent_sdk.capabilities] or the next section
+  const capsIdx = toml.indexOf(AGENT_SDK_CAPS_HEADER, afterSdkHeader);
+  const nextSectionIdx = toml.indexOf("\n[", afterSdkHeader);
+  // Use the capabilities sub-section boundary or next top-level section
+  let sdkSectionEnd;
+  if (capsIdx !== -1 && (nextSectionIdx === -1 || capsIdx <= nextSectionIdx)) {
+    sdkSectionEnd = capsIdx;
+  } else {
+    sdkSectionEnd = nextSectionIdx === -1 ? toml.length : nextSectionIdx;
+  }
+
+  let sdkSection = toml.substring(afterSdkHeader, sdkSectionEnd);
 
   const maxThreadsRegex = /^max_threads\s*=\s*(\d+)/m;
-  const match = section.match(maxThreadsRegex);
+  const match = sdkSection.match(maxThreadsRegex);
   if (match) {
     result.existing = parsePositiveInt(match[1]);
     if (overwrite && result.existing !== desired) {
-      section = section.replace(maxThreadsRegex, `max_threads = ${desired}`);
+      sdkSection = sdkSection.replace(maxThreadsRegex, `max_threads = ${desired}`);
       result.changed = true;
       result.updated = true;
     }
   } else {
-    section = section.trimEnd() + `\nmax_threads = ${desired}\n`;
+    // Add max_threads right after [agent_sdk] header, before other keys
+    sdkSection = sdkSection.trimEnd() + `\nmax_threads = ${desired}\n`;
     result.changed = true;
     result.added = true;
   }
 
   if (result.changed) {
-    result.toml = toml.substring(0, afterHeader) + section + toml.substring(sectionEnd);
+    result.toml = toml.substring(0, afterSdkHeader) + sdkSection + toml.substring(sdkSectionEnd);
   }
 
   return result;

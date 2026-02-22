@@ -1065,6 +1065,6 @@ describe("resolution and launch integration", () => {
     const result = await launchEphemeralThread("test", process.cwd(), 5000);
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/no SDK available/);
-    expect(result.error).toMatch(/all disabled/i);
+    expect(result.error).toMatch(/all sdks are disabled/i);
   });
 });

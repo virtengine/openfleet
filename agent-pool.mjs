@@ -102,10 +102,72 @@ function shouldFallbackForSdkError(error) {
   if (!error) return false;
   const message = String(error).toLowerCase();
   if (!message) return false;
+  // SDK not installed / not found
   if (message.includes("not available")) return true;
+  // Missing finish_reason (incomplete response)
   if (message.includes("missing finish_reason")) return true;
   if (message.includes("missing") && message.includes("finish_reason")) return true;
+  // Model-related errors — SDK doesn't support the requested model
+  if (message.includes("not supported")) return true;
+  if (message.includes("model not found")) return true;
+  if (message.includes("model_not_found")) return true;
+  if (message.includes("does not exist")) return true;
+  if (message.includes("invalid model")) return true;
+  // Auth / key errors — SDK isn't properly configured
+  if (message.includes("unauthorized") || message.includes("401")) return true;
+  if (message.includes("api key") && (message.includes("invalid") || message.includes("missing") || message.includes("required"))) return true;
+  if (message.includes("authentication") && (message.includes("failed") || message.includes("required") || message.includes("error"))) return true;
+  if (message.includes("forbidden") || message.includes("403")) return true;
+  // Connection errors — SDK endpoint is unreachable
+  if (message.includes("econnrefused")) return true;
+  if (message.includes("enotfound")) return true;
+  if (message.includes("connection refused")) return true;
   return false;
+}
+
+/**
+ * Check whether an SDK has the minimum prerequisites to be attempted.
+ * This prevents wasting time and error logs trying unconfigured SDKs.
+ *
+ * @param {string} name  SDK canonical name
+ * @returns {{ ok: boolean, reason: string|null }}
+ */
+function hasSdkPrerequisites(name) {
+  // Test mocks bypass prerequisite checks
+  if (process.env[`__MOCK_${name.toUpperCase()}_AVAILABLE`] === "1") {
+    return { ok: true, reason: null };
+  }
+
+  if (name === "codex") {
+    // Codex needs an OpenAI API key (or Azure key, or profile-specific key)
+    const hasKey =
+      process.env.OPENAI_API_KEY ||
+      process.env.AZURE_OPENAI_API_KEY ||
+      process.env.CODEX_MODEL_PROFILE_XL_API_KEY ||
+      process.env.CODEX_MODEL_PROFILE_M_API_KEY;
+    if (!hasKey) {
+      return { ok: false, reason: "no API key (OPENAI_API_KEY / AZURE_OPENAI_API_KEY)" };
+    }
+    return { ok: true, reason: null };
+  }
+  if (name === "copilot") {
+    // Copilot needs either a token or VS Code context
+    const hasToken = process.env.COPILOT_CLI_TOKEN || process.env.GITHUB_TOKEN;
+    // Copilot also works from VS Code extension context — check for common indicators
+    const hasVsCode = process.env.VSCODE_PID || process.env.COPILOT_AGENT_HOST;
+    if (!hasToken && !hasVsCode) {
+      return { ok: false, reason: "no COPILOT_CLI_TOKEN or GITHUB_TOKEN" };
+    }
+    return { ok: true, reason: null };
+  }
+  if (name === "claude") {
+    const hasKey = process.env.ANTHROPIC_API_KEY;
+    if (!hasKey) {
+      return { ok: false, reason: "no ANTHROPIC_API_KEY" };
+    }
+    return { ok: true, reason: null };
+  }
+  return { ok: true, reason: null };
 }
 
 /**
@@ -1452,18 +1514,25 @@ export async function launchEphemeralThread(
 
   // ── Try primary SDK ──────────────────────────────────────────────────────
   if (primaryAdapter && !isDisabled(primaryName)) {
-    const launcher = await primaryAdapter.load();
-    const result = await launcher(prompt, cwd, timeoutMs, extra);
+    const prereq = hasSdkPrerequisites(primaryName);
+    if (!prereq.ok) {
+      console.warn(
+        `${TAG} primary SDK "${primaryName}" missing prerequisites: ${prereq.reason}; trying fallback chain`,
+      );
+    } else {
+      const launcher = await primaryAdapter.load();
+      const result = await launcher(prompt, cwd, timeoutMs, extra);
 
-    // If it succeeded, or if the error isn't "not available", return as-is
-    if (result.success || !shouldFallbackForSdkError(result.error)) {
-      return result;
+      // If it succeeded, or if the error isn't fallback-worthy, return as-is
+      if (result.success || !shouldFallbackForSdkError(result.error)) {
+        return result;
+      }
+
+      // Primary SDK not installed — fall through to fallback chain
+      console.warn(
+        `${TAG} primary SDK "${primaryName}" failed (${result.error}); trying fallback chain`,
+      );
     }
-
-    // Primary SDK not installed — fall through to fallback chain
-    console.warn(
-      `${TAG} primary SDK "${primaryName}" failed (${result.error}); trying fallback chain`,
-    );
   }
 
   // ── Fallback chain ───────────────────────────────────────────────────────
@@ -1473,6 +1542,15 @@ export async function launchEphemeralThread(
 
     const adapter = SDK_ADAPTERS[name];
     if (!adapter) continue;
+
+    // Check prerequisites before wasting time trying an unconfigured SDK
+    const prereq = hasSdkPrerequisites(name);
+    if (!prereq.ok) {
+      console.log(
+        `${TAG} skipping fallback SDK "${name}": ${prereq.reason}`,
+      );
+      continue;
+    }
 
     console.log(`${TAG} trying fallback SDK: ${name}`);
     const launcher = await adapter.load();
@@ -1485,11 +1563,23 @@ export async function launchEphemeralThread(
 
   // ── All SDKs exhausted ───────────────────────────────────────────────────
   const triedSdks = SDK_FALLBACK_ORDER.filter((n) => !isDisabled(n));
+  const configuredSdks = triedSdks.filter((n) => hasSdkPrerequisites(n).ok);
+  const skippedSdks = triedSdks.filter((n) => !hasSdkPrerequisites(n).ok);
+  let errorMsg = `${TAG} no SDK available.`;
+  if (configuredSdks.length > 0) {
+    errorMsg += ` Tried: ${configuredSdks.join(", ")}.`;
+  }
+  if (skippedSdks.length > 0) {
+    errorMsg += ` Skipped (missing credentials): ${skippedSdks.map((n) => `${n} (${hasSdkPrerequisites(n).reason})`).join(", ")}.`;
+  }
+  if (triedSdks.length === 0) {
+    errorMsg += " All SDKs are disabled.";
+  }
   return {
     success: false,
     output: "",
     items: [],
-    error: `${TAG} no SDK available. Tried: ${triedSdks.join(", ") || "(all disabled)"}`,
+    error: errorMsg,
     sdk: primaryName,
     threadId: null,
   };

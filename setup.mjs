@@ -1915,6 +1915,58 @@ export function buildStandardizedEnvFile(templateText, envEntries) {
   return [...header, ...updated].join("\n") + "\n";
 }
 
+/**
+ * Merge new env values from a setup run into an existing .env file.
+ *
+ * Strategy:
+ *   - Preserves all comments and structure from the existing file
+ *   - Updates values for keys that exist in both (setup wins)
+ *   - Appends new keys that only exist in the setup result
+ *   - Skips internal keys starting with "_"
+ *   - Preserves keys that exist in the file but not in the setup result
+ *
+ * @param {string} existingContent  The current .env file content
+ * @param {object} newEntries       The env object from the setup wizard
+ * @returns {string}  Merged .env content
+ */
+export function mergeEnvFiles(existingContent, newEntries) {
+  const entryMap = new Map(
+    Object.entries(newEntries)
+      .filter(([key]) => !key.startsWith("_"))
+      .filter(([, val]) => val !== undefined && val !== null && String(val) !== "")
+      .map(([key, value]) => [key, String(value ?? "")]),
+  );
+
+  const consumed = new Set();
+  const lines = existingContent.split(/\r?\n/);
+
+  const merged = lines.map((line) => {
+    const trimmed = line.trim();
+    // Preserve comments and blank lines
+    if (!trimmed || trimmed.startsWith("#")) return line;
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx === -1) return line;
+    const key = trimmed.slice(0, eqIdx).trim();
+    if (!entryMap.has(key)) return line; // preserve existing keys not in new entries
+
+    consumed.add(key);
+    const newVal = entryMap.get(key);
+    return `${key}=${formatEnvValue(newVal)}`;
+  });
+
+  // Append any new keys that didn't exist in the original file
+  const extras = [...entryMap.keys()].filter((key) => !consumed.has(key));
+  if (extras.length > 0) {
+    merged.push("");
+    merged.push(`# Added by setup wizard (${new Date().toISOString()})`);
+    for (const key of extras.sort()) {
+      merged.push(`${key}=${formatEnvValue(entryMap.get(key))}`);
+    }
+  }
+
+  return merged.join("\n");
+}
+
 // ── Agent Template ───────────────────────────────────────────────────────────
 
 function generateAgentsMd(projectName, repoSlug) {
@@ -2537,6 +2589,46 @@ async function main() {
       );
     }
 
+    // ── SDK Fallback Configuration ─────────────────────────
+    // Determine which SDKs are being used in executor config
+    const usedSdks = new Set(
+      configJson.executors.map((e) => String(e.executor).toUpperCase()),
+    );
+    // Auto-disable SDKs that aren't in any executor config and have no API key
+    if (!usedSdks.has("COPILOT") && !process.env.COPILOT_CLI_TOKEN && !process.env.GITHUB_TOKEN) {
+      env.COPILOT_SDK_DISABLED = "true";
+    }
+    if (!usedSdks.has("CLAUDE") && !process.env.ANTHROPIC_API_KEY) {
+      env.CLAUDE_SDK_DISABLED = "true";
+    }
+
+    if (isAdvancedSetup) {
+      console.log();
+      info("SDK fallback configuration — which SDKs should be available for fallback?");
+      console.log(chalk.dim("  SDKs not in your executor preset will be tried as fallback on failure."));
+      console.log(chalk.dim("  Disable SDKs you don't have credentials for to avoid error cascades.\n"));
+
+      const wantCopilotFallback = usedSdks.has("COPILOT") || await prompt.confirm(
+        "Enable Copilot SDK fallback? (requires COPILOT_CLI_TOKEN or GITHUB_TOKEN)",
+        !!process.env.COPILOT_CLI_TOKEN || !!process.env.GITHUB_TOKEN,
+      );
+      if (!wantCopilotFallback) env.COPILOT_SDK_DISABLED = "true";
+      else delete env.COPILOT_SDK_DISABLED;
+
+      const wantClaudeFallback = usedSdks.has("CLAUDE") || await prompt.confirm(
+        "Enable Claude SDK fallback? (requires ANTHROPIC_API_KEY)",
+        !!process.env.ANTHROPIC_API_KEY,
+      );
+      if (!wantClaudeFallback) env.CLAUDE_SDK_DISABLED = "true";
+      else delete env.CLAUDE_SDK_DISABLED;
+
+      const wantCodexFallback = usedSdks.has("CODEX") || await prompt.confirm(
+        "Enable Codex SDK fallback? (requires OPENAI_API_KEY)",
+        true,
+      );
+      if (!wantCodexFallback) env.CODEX_SDK_DISABLED = "true";
+    }
+
     // ── Step 5: AI Provider ────────────────────────────────
     headingStep(5, "AI / Codex Provider", markSetupProgress);
     console.log(
@@ -2558,10 +2650,12 @@ async function main() {
     if (providerIdx < 4) {
       env.OPENAI_API_KEY = await prompt.ask(
         "API Key",
-        process.env.OPENAI_API_KEY || "",
+        process.env.OPENAI_API_KEY || process.env.AZURE_OPENAI_API_KEY || "",
       );
     }
     if (providerIdx === 1) {
+      // Azure OpenAI also needs AZURE_OPENAI_API_KEY for adapters that check it directly
+      env.AZURE_OPENAI_API_KEY = env.OPENAI_API_KEY;
       env.OPENAI_BASE_URL = await prompt.ask(
         "Azure endpoint URL",
         process.env.OPENAI_BASE_URL || "",
@@ -4606,13 +4700,6 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
 
   // ── .env file ──────────────────────────────────────────
   const envPath = resolve(targetDir, ".env");
-  const targetEnvPath = existsSync(envPath)
-    ? resolve(targetDir, ".env.generated")
-    : envPath;
-
-  if (existsSync(envPath)) {
-    warn(`.env already exists. Writing to .env.generated`);
-  }
 
   const envTemplatePath = resolve(__dirname, ".env.example");
   const templateText = existsSync(envTemplatePath)
@@ -4623,8 +4710,23 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
     ? buildStandardizedEnvFile(templateText, env)
     : buildStandardizedEnvFile("", env);
 
-  writeFileSync(targetEnvPath, envOut, "utf8");
-  success(`Environment written to ${relative(repoRoot, targetEnvPath)}`);
+  if (existsSync(envPath)) {
+    // ── Merge into existing .env ──
+    // Back up the current .env, then merge new values into it.
+    // Strategy: preserve existing user values for keys they explicitly set,
+    // add new keys from the setup wizard, update keys the user changed in setup.
+    const backupPath = resolve(targetDir, `.env.backup.${Date.now()}`);
+    const existingContent = readFileSync(envPath, "utf8");
+    writeFileSync(backupPath, existingContent, "utf8");
+    info(`.env backed up to ${relative(repoRoot, backupPath)}`);
+
+    const merged = mergeEnvFiles(existingContent, env);
+    writeFileSync(envPath, merged, "utf8");
+    success(`Environment merged into ${relative(repoRoot, envPath)}`);
+  } else {
+    writeFileSync(envPath, envOut, "utf8");
+    success(`Environment written to ${relative(repoRoot, envPath)}`);
+  }
 
   // ── bosun.config.json ──────────────────────────
   // Write config with schema reference for editor autocomplete
@@ -4782,7 +4884,7 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
 
   // Missing items
   console.log("");
-  if (!env.TELEGRAM_BOT_TOKEN) {
+  if (!env.TELEGRAM_BOT_TOKEN && !process.env.TELEGRAM_BOT_TOKEN) {
     info("Telegram not configured — add TELEGRAM_BOT_TOKEN to .env later.");
   }
   if (
@@ -4790,6 +4892,10 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
     !env.AZURE_OPENAI_API_KEY &&
     !env.CODEX_MODEL_PROFILE_XL_API_KEY &&
     !env.CODEX_MODEL_PROFILE_M_API_KEY &&
+    !process.env.OPENAI_API_KEY &&
+    !process.env.AZURE_OPENAI_API_KEY &&
+    !process.env.CODEX_MODEL_PROFILE_XL_API_KEY &&
+    !process.env.CODEX_MODEL_PROFILE_M_API_KEY &&
     !parseBooleanEnvValue(env.CODEX_SDK_DISABLED, false)
   ) {
     info("No API key set — AI analysis & autofix will be disabled.");
@@ -4822,6 +4928,11 @@ export function shouldRunSetup() {
   // skip the setup wizard — they are already configured.
   const legacyInfo = detectLegacySetup();
   if (legacyInfo.hasLegacy) return false;
+
+  // Always check the package directory first — this is where bosun stores its
+  // config when installed within a project (e.g. scripts/bosun/).
+  // This prevents false "first run" detection when cwd differs from install dir.
+  if (hasSetupMarkers(__dirname)) return false;
 
   const repoRoot = detectRepoRoot();
   const configDir = resolveConfigDir(repoRoot);
