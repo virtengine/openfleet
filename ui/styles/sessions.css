@@ -953,7 +953,8 @@
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 16px;
+  /* position above the input bar (~60px) + gap */
+  bottom: 72px;
   display: flex;
   justify-content: center;
   pointer-events: none;
@@ -1585,8 +1586,8 @@ ul.md-list li::before {
   justify-content: center;
   border: none;
   cursor: pointer;
-  padding: 0 16px;
-  min-width: 60px;
+  padding: 0 10px;
+  min-width: 68px;
   font-size: 11px;
   font-family: inherit;
   gap: 2px;
@@ -1627,6 +1628,7 @@ ul.md-list li::before {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.3px;
+  white-space: nowrap;
 }
 
 @keyframes session-pulse {

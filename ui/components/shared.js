@@ -206,6 +206,8 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
   }, []);
 
   const handleTouchStart = useCallback((e) => {
+    // Don't intercept touches on the close button
+    if (e.target.closest?.(".modal-close-btn")) return;
     const el = contentRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
@@ -244,6 +246,8 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
 
   const handlePointerDown = useCallback((e) => {
     if (e.pointerType === "touch") return;
+    // Don't intercept clicks on the close button
+    if (e.target.closest?.(".modal-close-btn")) return;
     const el = contentRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();

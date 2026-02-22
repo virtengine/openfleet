@@ -237,6 +237,24 @@
       version: '0.26.2',
       tasks: { completed: 13, failed: 1, retried: 2, active: 2, queued: 3 },
       prs: { created: 15, merged: 11, pending: 2, ciFailures: 1 },
+      // counts consumed by dashboard metrics
+      counts: {
+        running: 2,
+        inprogress: 2,
+        inreview: 1,
+        review: 1,
+        done: 2,
+        todo: 2,
+        draft: 1,
+        error: 0,
+      },
+      backlog_remaining: 2,
+      // consumed by dashboard quality section
+      success_metrics: {
+        first_shot_rate: 72,
+        needed_fix: 3,
+        failed: 1,
+      },
     };
 
     const SEED_EXECUTORS = [
@@ -668,7 +686,7 @@
       if (route === '/api/status')
         return { data: STATE.status };
       if (route === '/api/executor')
-        return { data: { ...STATE.status, maxParallel: STATE.maxParallel, paused: STATE.paused, executors: STATE.executors } };
+        return { data: { ...STATE.status, maxParallel: STATE.maxParallel, paused: STATE.paused, executors: STATE.executors, activeSlots: STATE.executors.filter(e => e.status === 'active').length, sdk: 'auto' } };
       if (route === '/api/telemetry/summary')
         return { data: { status: 'ok', updatedAt: Date.now(), totals: { tasks: STATE.tasks.length, executors: STATE.executors.length } } };
       if (route === '/api/telemetry/errors')
