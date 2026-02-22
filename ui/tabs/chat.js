@@ -3,11 +3,42 @@
  *  selector, SDK command passthrough, optimistic rendering,
  *  offline queue, and streaming status indicators.
  * ────────────────────────────────────────────────────────────── */
-import { h } from "preact";
+import { h, Component } from "preact";
 import { useEffect, useState, useCallback, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
 
 const html = htm.bind(h);
+
+/* ─── Inner error boundary for complex sub-components ─── */
+class ChatSafeBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("[ChatSafeBoundary] Caught error in", this.props.label || "component", ":", error, info);
+  }
+  render() {
+    if (this.state.error) {
+      const retry = () => this.setState({ error: null });
+      return html`
+        <div class="chat-error-inline" style="padding:16px;text-align:center;color:var(--text-secondary,#999);opacity:0.8;">
+          <span style="font-size:18px;">⚠️</span>
+          <span style="margin-left:8px;font-size:12px;">
+            ${this.props.label || "Component"} failed to render.
+          </span>
+          <button class="btn btn-ghost btn-xs" style="margin-left:8px;" onClick=${retry}>
+            Retry
+          </button>
+        </div>
+      `;
+    }
+    return this.props.children;
+  }
+}
 
 import {
   SessionList,
@@ -67,9 +98,10 @@ const SDK_COMMAND_META = {
   "/clear": { desc: "Clear agent session", icon: "🧹" },
 };
 
-/** Merge Bosun + SDK commands based on active agent capabilities */
+/** Merge Bosun + SDK commands based on active agent capabilities.
+ *  Uses .peek() to avoid subscribing render callers to the signal. */
 function getSlashCommands() {
-  const info = activeAgentInfo.value;
+  const info = activeAgentInfo.peek();
   const sdkCmds = info?.capabilities?.sdkCommands || [];
   const sdkEntries = sdkCmds
     .filter((cmd) => !BOSUN_COMMANDS.some((b) => b.cmd === cmd))
@@ -190,7 +222,17 @@ function SessionRenameInput({ value, onSave, onCancel }) {
 
 /* ─── Main Chat Tab ─── */
 export function ChatTab() {
-  const sessionId = selectedSessionId.value;
+  const [chatError, setChatError] = useState(null);
+
+  // Wrap the entire signal read in try/catch to prevent crash on corrupt signal state
+  let sessionId = null;
+  try {
+    sessionId = selectedSessionId.value;
+  } catch (err) {
+    console.error("[ChatTab] Failed to read selectedSessionId:", err);
+    if (!chatError) setChatError(err.message || "Signal read error");
+  }
+
   const [showArchived, setShowArchived] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const [showSlashMenu, setShowSlashMenu] = useState(false);
@@ -299,36 +341,63 @@ export function ChatTab() {
   }, [focusMode]);
 
   /* ── Auto-select first session if none ── */
+  /* NOTE: We use an effect subscription on the signal instead of putting
+     signal.value in the deps array.  Putting .value in deps causes Preact
+     to re-run the effect on every signal update AND re-render the component
+     simultaneously, creating a cascade storm that can crash the mini-app.
+     Instead we subscribe with effect() and clean up on unmount. */
   useEffect(() => {
-    if (isMobile) return;
-    const sessions = sessionsData.value || [];
-    if (selectedSessionId.value || sessions.length === 0) return;
-    const next =
-      sessions.find(
-        (s) => s.status === "active" || s.status === "running",
-      ) || sessions[0];
-    if (next?.id) selectedSessionId.value = next.id;
-  }, [sessionsData.value, selectedSessionId.value, isMobile]);
+    if (isMobile) return undefined;
+    // Use a short debounce to batch signal cascades during initial load
+    let debounceTimer = null;
+    const tryAutoSelect = () => {
+      try {
+        const sessions = sessionsData.value || [];
+        if (selectedSessionId.value || sessions.length === 0) return;
+        const next =
+          sessions.find(
+            (s) => s.status === "active" || s.status === "running",
+          ) || sessions[0];
+        if (next?.id) selectedSessionId.value = next.id;
+      } catch (err) {
+        console.warn("[ChatTab] Auto-select error:", err);
+      }
+    };
+    // Run once immediately for SSR / pre-loaded data
+    tryAutoSelect();
+    // Then watch for changes via polling (avoids signal dep cascade)
+    const interval = setInterval(tryAutoSelect, 1000);
+    return () => {
+      clearInterval(interval);
+      if (debounceTimer) clearTimeout(debounceTimer);
+    };
+  }, [isMobile]);
 
   useEffect(() => {
     if (!isMobile) {
       setDrawerOpen(false);
       return;
     }
-    if (!selectedSessionId.value) {
-      setDrawerOpen(true);
-    }
-  }, [isMobile, selectedSessionId.value]);
+    // Check signal value outside deps to avoid cascade
+    try {
+      if (!selectedSessionId.value) {
+        setDrawerOpen(true);
+      }
+    } catch { /* signal read error - ignore */ }
+  }, [isMobile]);
 
-  /* ── Slash command filtering ── */
-  const allCommands = getSlashCommands();
+  /* ── Slash command filtering ──
+     Use useMemo with no signal deps to avoid subscribing ChatTab to
+     activeAgentInfo. The commands list only matters when the user is
+     actively typing, and the input handler re-renders anyway. */
+  const allCommands = useMemo(() => getSlashCommands(), []);
   const filteredSlash = allCommands.filter((c) =>
     c.cmd.toLowerCase().startsWith((slashFilter || "").toLowerCase()),
   );
 
   /* ── Determine if a command is an SDK command ── */
   function isSdkCommand(cmdBase) {
-    const info = activeAgentInfo.value;
+    const info = activeAgentInfo.peek();
     const sdkCmds = info?.capabilities?.sdkCommands || [];
     return sdkCmds.includes(cmdBase);
   }
@@ -556,16 +625,34 @@ export function ChatTab() {
     if (isMobile) setDrawerOpen(false);
   }, [isMobile]);
 
-  const activeSession = useMemo(
-    () => (sessionsData.value || []).find((s) => s.id === sessionId) || null,
-    [sessionsData.value, sessionId],
-  );
+  const activeSession = useMemo(() => {
+    try {
+      return (sessionsData.peek() || []).find((s) => s.id === sessionId) || null;
+    } catch {
+      return null;
+    }
+  }, [sessionId]);
   const sessionTitle = activeSession?.title || activeSession?.taskId || "Session";
   const sessionMeta = [activeSession?.type, activeSession?.status]
     .filter(Boolean)
     .join(" · ");
 
   /* ── Render ── */
+
+  // If we hit a critical error during signal reads, show recovery UI
+  if (chatError) {
+    return html`
+      <div class="session-panel" style="display:flex;align-items:center;justify-content:center;height:100%;padding:24px;">
+        <div style="text-align:center;color:var(--text-secondary,#999);">
+          <div style="font-size:28px;margin-bottom:12px;">⚠️</div>
+          <div style="font-size:14px;font-weight:600;margin-bottom:8px;">Chat failed to load</div>
+          <div style="font-size:12px;opacity:0.7;margin-bottom:16px;">${chatError}</div>
+          <button class="btn btn-primary btn-sm" onClick=${() => setChatError(null)}>Retry</button>
+        </div>
+      </div>
+    `;
+  }
+
   return html`
     <div class="session-panel">
       <div
@@ -574,16 +661,18 @@ export function ChatTab() {
       >
         <!-- Left panel: Sessions sidebar -->
         <div class="session-pane">
-          <${SessionList}
-            showArchived=${showArchived}
-            onToggleArchived=${setShowArchived}
-            defaultType="primary"
-            renamingSessionId=${renamingSessionId}
-            onStartRename=${(sid) => setRenamingSessionId(sid)}
-            onSaveRename=${saveRename}
-            onCancelRename=${cancelRename}
-            onSelect=${handleSelectSession}
-          />
+          <${ChatSafeBoundary} label="Session List">
+            <${SessionList}
+              showArchived=${showArchived}
+              onToggleArchived=${setShowArchived}
+              defaultType="primary"
+              renamingSessionId=${renamingSessionId}
+              onStartRename=${(sid) => setRenamingSessionId(sid)}
+              onSaveRename=${saveRename}
+              onCancelRename=${cancelRename}
+              onSelect=${handleSelectSession}
+            />
+          <//>
         </div>
 
         <!-- Right panel: Chat area -->
@@ -632,7 +721,7 @@ export function ChatTab() {
             </div>
           `}
           ${sessionId
-            ? html`<${ChatView} sessionId=${sessionId} readOnly embedded />`
+            ? html`<${ChatSafeBoundary} label="Chat View"><${ChatView} sessionId=${sessionId} readOnly embedded /><//>`
             : html`
                 <${ChatWelcome}
                   onNewSession=${handleNewSession}
@@ -651,7 +740,9 @@ export function ChatTab() {
                 commands=${allCommands}
               />
             `}
-            <${ChatInputToolbar} />
+            <${ChatSafeBoundary} label="Agent Toolbar">
+              <${ChatInputToolbar} />
+            <//>
             <div class="chat-input-wrapper">
               <textarea
                 ref=${textareaRef}
@@ -676,8 +767,8 @@ export function ChatTab() {
             <div class="chat-input-hint">
               <span>Shift+Enter for new line</span>
               <span>Type / for commands</span>
-              ${offlineQueueSize.value > 0 && html`
-                <span class="chat-offline-badge">📤 ${offlineQueueSize.value} queued</span>
+              ${offlineQueueSize.peek() > 0 && html`
+                <span class="chat-offline-badge">📤 ${offlineQueueSize.peek()} queued</span>
               `}
             </div>
           </div>

@@ -24,7 +24,7 @@ import {
   mkdirSync,
 } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { execFileSync, fork, spawn } from "node:child_process";
+import { execFileSync, execSync, fork, spawn } from "node:child_process";
 import os from "node:os";
 import { createDaemonCrashTracker } from "./daemon-restart-policy.mjs";
 import {
@@ -450,7 +450,27 @@ function startDaemon() {
       detached: true,
       stdio: "ignore",
       windowsHide: process.platform === "win32",
-      env: { ...process.env, BOSUN_DAEMON: "1" },
+      env: {
+        ...process.env,
+        BOSUN_DAEMON: "1",
+        // Propagate the bosun package directory so repo-root detection works
+        // even when the daemon child's cwd is not inside a git repo.
+        BOSUN_DIR: process.env.BOSUN_DIR || fileURLToPath(new URL(".", import.meta.url)),
+        // Propagate REPO_ROOT if available; otherwise resolve from cwd before detaching
+        ...(process.env.REPO_ROOT
+          ? {}
+          : (() => {
+              try {
+                const gitRoot = execSync("git rev-parse --show-toplevel", {
+                  encoding: "utf8",
+                  stdio: ["ignore", "pipe", "ignore"],
+                }).trim();
+                return gitRoot ? { REPO_ROOT: gitRoot } : {};
+              } catch {
+                return {};
+              }
+            })()),
+      },
       // Use home dir so spawn never inherits a deleted CWD (e.g. old git worktree)
       cwd: os.homedir(),
     },

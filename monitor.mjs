@@ -524,6 +524,20 @@ let githubReconcile = githubReconcileConfig || {
   mergedLookbackHours: 72,
   trackingLabels: ["tracking"],
 };
+
+// ── Ensure CWD is the repo root ─────────────────────────────────────────────
+// The daemon is spawned with cwd=homedir (to avoid deleted worktree paths).
+// Re-anchor CWD to repoRoot so child processes (esp. Codex CLI) inherit a
+// trusted git directory, preventing "Not inside a trusted directory" errors.
+if (repoRoot && process.cwd() !== repoRoot) {
+  try {
+    process.chdir(repoRoot);
+    console.log(`[monitor] changed CWD to repo root: ${repoRoot}`);
+  } catch (err) {
+    console.warn(`[monitor] could not chdir to ${repoRoot}: ${err.message}`);
+  }
+}
+
 console.log(`[monitor] task planner mode: ${plannerMode}`);
 console.log(`[monitor] kanban backend: ${kanbanBackend}`);
 console.log(`[monitor] executor mode: ${executorMode}`);
@@ -1966,7 +1980,7 @@ async function runCodexRecovery(reason) {
       }
     }
     const codex = new CodexClient(buildCodexSdkOptionsForMonitor());
-    const thread = codex.startThread();
+    const thread = codex.startThread({ skipGitRepoCheck: true, workingDirectory: repoRoot, approvalPolicy: "never" });
     const prompt = `You are monitoring a Node.js orchestrator.
 A local service (vibe-kanban) is unreachable.
 Provide a short recovery plan and validate environment assumptions.
@@ -9018,8 +9032,11 @@ async function triggerTaskPlannerViaCodex(
     numTasks,
   );
   const agentPrompt = agentPrompts.planner;
-  const codex = new CodexClient(buildCodexSdkOptionsForMonitor());
-  const thread = codex.startThread();
+  const codexOpts = buildCodexSdkOptionsForMonitor();
+  const codex = new CodexClient(codexOpts);
+  const threadOpts = { skipGitRepoCheck: true, workingDirectory: repoRoot, approvalPolicy: "never" };
+  console.log(`[monitor] task planner codex: cwd=${process.cwd()}, workingDir=${repoRoot}, skipGitRepoCheck=true`);
+  const thread = codex.startThread(threadOpts);
   const prompt = [
     agentPrompt,
     "",
@@ -9348,7 +9365,7 @@ ${logTail}
         if (!ready) throw new Error(codexDisabledReason || "Codex SDK N/A");
       }
       const codex = new CodexClient(buildCodexSdkOptionsForMonitor());
-      const thread = codex.startThread();
+      const thread = codex.startThread({ skipGitRepoCheck: true, workingDirectory: repoRoot, approvalPolicy: "never" });
       const result = await thread.run(prompt);
       const analysisPath = logPath.replace(/\.log$/, "-analysis.txt");
       const analysisText = formatCodexResult(result);
@@ -12354,6 +12371,16 @@ if (isExecutorDisabled()) {
     // ── Sync Engine ──
     try {
       const activeKanbanBackend = getActiveKanbanBackend();
+
+      // Sync engine only makes sense when there is an external backend to sync
+      // with.  When the backend is "internal" there is no remote to pull/push,
+      // and every sync attempt would fail, accumulating consecutive-failure
+      // counters and spamming alerts.
+      if (activeKanbanBackend === "internal") {
+        console.log(
+          `[monitor] sync engine skipped — kanban backend is "internal" (no external to sync)`,
+        );
+      } else {
       const githubProjectId =
         process.env.GITHUB_REPOSITORY ||
         (process.env.GITHUB_REPO_OWNER && process.env.GITHUB_REPO_NAME
@@ -12399,6 +12426,7 @@ if (isExecutorDisabled()) {
           `[monitor] sync engine skipped — no project ID configured for backend=${activeKanbanBackend}`,
         );
       }
+      } // end else (non-internal backend)
     } catch (err) {
       console.warn(`[monitor] sync engine failed to start: ${err.message}`);
     }

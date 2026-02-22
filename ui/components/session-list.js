@@ -57,37 +57,87 @@ function normalizePreview(content) {
   return text.slice(0, 100);
 }
 
+/**
+ * Throttle sessionsData updates — the sidebar preview metadata
+ * (lastActiveAt, preview) changes on every WS event, but the user
+ * doesn't notice sub-second updates. Batch them to avoid triggering
+ * cascading re-renders in the 5+ components that subscribe to
+ * sessionsData. Messages (sessionMessages) are batched per-frame
+ * so multiple WS events within a single animation frame cause only
+ * one ChatView re-render.
+ */
+let _sessionUpdateTimer = null;
+let _pendingSessionUpdates = new Map();
+
+function _flushSessionUpdates() {
+  _sessionUpdateTimer = null;
+  if (_pendingSessionUpdates.size === 0) return;
+  const sessions = sessionsData.value || [];
+  const patches = _pendingSessionUpdates;
+  _pendingSessionUpdates = new Map();
+  const next = sessions.map((s) => {
+    const patch = patches.get(s.id);
+    return patch ? { ...s, ...patch } : s;
+  });
+  sessionsData.value = next;
+}
+
+/** Per-frame message batching for sessionMessages */
+let _msgBatchBuffer = [];
+let _msgBatchRaf = null;
+
+function _flushMessageBatch() {
+  _msgBatchRaf = null;
+  if (_msgBatchBuffer.length === 0) return;
+  const batch = _msgBatchBuffer;
+  _msgBatchBuffer = [];
+  const current = sessionMessages.value || [];
+  // Deduplicate against current tail and within batch
+  const seen = new Set();
+  const lastExisting = current[current.length - 1];
+  if (lastExisting) {
+    seen.add(`${lastExisting.timestamp}|${lastExisting.role}|${lastExisting.content}`);
+  }
+  const newMsgs = [];
+  for (const msg of batch) {
+    const key = `${msg.timestamp}|${msg.role}|${msg.content}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      newMsgs.push(msg);
+    }
+  }
+  if (newMsgs.length > 0) {
+    sessionMessages.value = [...current, ...newMsgs];
+  }
+}
+
 function appendSessionMessage(sessionId, message, sessionMeta) {
   if (!sessionId || !message) return;
+
+  // ── Batch sessionsData sidebar updates (throttled to ~500ms) ──
   const sessions = sessionsData.value || [];
-  let updated = false;
-  const next = sessions.map((s) => {
-    if (s.id !== sessionId) return s;
-    updated = true;
+  const existing = sessions.find((s) => s.id === sessionId);
+  if (existing) {
     const preview = normalizePreview(message.content || message.text || "");
     const lastActiveAt = message.timestamp || sessionMeta?.lastActiveAt || new Date().toISOString();
-    return {
-      ...s,
-      preview,
-      lastMessage: preview,
-      lastActiveAt,
-      turnCount: Math.max(s.turnCount || 0, sessionMeta?.turnCount || 0),
-    };
-  });
-  if (updated) sessionsData.value = next;
-
-  if (selectedSessionId.value === sessionId) {
-    const current = sessionMessages.value || [];
-    const last = current[current.length - 1];
-    if (
-      last &&
-      last.timestamp === message.timestamp &&
-      last.content === message.content &&
-      last.role === message.role
-    ) {
-      return;
+    const turnCount = Math.max(existing.turnCount || 0, sessionMeta?.turnCount || 0);
+    // Only schedule an update if something actually changed
+    if (existing.preview !== preview || existing.turnCount !== turnCount) {
+      _pendingSessionUpdates.set(sessionId, { preview, lastMessage: preview, lastActiveAt, turnCount });
+      if (!_sessionUpdateTimer) {
+        _sessionUpdateTimer = setTimeout(_flushSessionUpdates, 500);
+      }
     }
-    sessionMessages.value = [...current, message];
+  }
+
+  // ── Batch sessionMessages per animation frame ──
+  if (selectedSessionId.value === sessionId) {
+    _msgBatchBuffer.push(message);
+    if (!_msgBatchRaf) {
+      _msgBatchRaf = typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame(_flushMessageBatch)
+        : setTimeout(_flushMessageBatch, 16);
+    }
   }
 }
 

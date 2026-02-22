@@ -225,17 +225,39 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const inputRef = useRef(null);
   const lastMessageCount = useRef(0);
   const filterKey = `${filters.tool}-${filters.result}-${filters.error}`;
-  const messages = sessionMessages.value || [];
 
-  const session = (sessionsData.value || []).find((s) => s.id === sessionId);
+  let messages = [];
+  try {
+    messages = sessionMessages.value || [];
+  } catch (err) {
+    console.warn("[ChatView] Failed to read sessionMessages:", err);
+  }
+
+  /* Safely read signal values — if any signal is in a broken state (e.g. from a
+     module load race or a WebSocket push that corrupted state), we default to
+     safe empty values so the component renders instead of crashing.
+     
+     Use .peek() for signals whose changes should NOT trigger a re-render of
+     this component. sessionsData changes frequently (sidebar metadata), but
+     we only need the session status for the header — not worth re-rendering
+     the entire message list. */
+  let session = null;
+  try {
+    session = (sessionsData.peek() || []).find((s) => s.id === sessionId) || null;
+  } catch (err) {
+    console.warn("[ChatView] Failed to read sessionsData:", err);
+  }
   const isActive =
     session?.status === "active" || session?.status === "running";
   const resumeLabel =
     session?.status === "archived" ? "Unarchive" : "Resume Session";
 
-  const activeFilters = Object.entries(filters)
-    .filter(([, enabled]) => enabled)
-    .map(([key]) => key);
+  /* Memoize the filter key list so filteredMessages memoization works properly.
+     Previously a new array was created every render, breaking useMemo deps. */
+  const activeFilters = useMemo(
+    () => Object.entries(filters).filter(([, v]) => v).map(([k]) => k),
+    [filterKey],
+  );
 
   const counts = useMemo(() => {
     return messages.reduce(
@@ -264,14 +286,34 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
   const hasMoreMessages = filteredMessages.length > visibleCount;
 
+  /* Use .peek() for auto-actions — these are low-priority decorations, not
+     worth triggering a full ChatView re-render for. The component will pick
+     them up on the next render triggered by messages or other signals. */
   const recentAutoActions = useMemo(() => {
-    const items = (agentAutoActions.value || []).slice(0, 3);
-    return items.map(formatAutoAction).filter(Boolean);
-  }, [agentAutoActions.value]);
+    try {
+      const items = (agentAutoActions.peek() || []).slice(0, 3);
+      return items.map(formatAutoAction).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }, [messages.length]);
 
-  const errorCount = totalErrorCount.value || 0;
-  const statusState = paused ? "paused" : agentStatus.value.state || "idle";
-  const statusText = paused ? "Stream paused" : agentStatusText.value;
+  /* Same approach for status signals — use .peek() to avoid creating signal
+     subscriptions. The status bar cosmetics don't justify re-rendering the
+     entire 200-message list. We piggyback on the messages.length change
+     (which already triggers a re-render) to refresh these values. */
+  let errorCount = 0;
+  let statusState = "idle";
+  let statusText = "";
+  try {
+    errorCount = totalErrorCount.peek() || 0;
+    statusState = paused ? "paused" : (agentStatus.peek()?.state || "idle");
+    statusText = paused ? "Stream paused" : (agentStatusText.peek() || "Ready");
+  } catch (err) {
+    console.warn("[ChatView] Failed to read status signals:", err);
+    statusState = paused ? "paused" : "idle";
+    statusText = paused ? "Stream paused" : "Ready";
+  }
 
   const refreshMessages = useCallback(async () => {
     if (!sessionId) return;
@@ -313,7 +355,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       clearTimeout(timer);
       clearInterval(interval);
     };
-  }, [sessionId, session?.status, paused]);
+  }, [sessionId, paused]);
 
   /* Start agent status tracking from WS events — deferred to avoid
      signal cascade during initial mount */
@@ -383,7 +425,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       content: text,
       timestamp: new Date().toISOString(),
     };
-    sessionMessages.value = [...sessionMessages.value, optimistic];
+    sessionMessages.value = [...(sessionMessages.value || []), optimistic];
     setInput("");
     setSending(true);
 
@@ -757,8 +799,11 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           `;
         })} 
 
-        ${/* Pending messages (optimistic rendering) */
-          (pendingMessages.value || [])
+        ${/* Pending messages (optimistic rendering) — use .peek() to avoid
+              subscribing ChatView to pendingMessages signal. Pending messages
+              are updated via handleSend which already triggers a re-render
+              through sessionMessages. */
+          (pendingMessages.peek() || [])
             .filter((pm) => pm.sessionId === sessionId)
             .map((pm) => html`
               <div key=${pm.tempId} class="chat-bubble user chat-pending-msg ${pm.status}">
@@ -782,14 +827,14 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             `)}
 
         ${/* Agent status typing indicator (replaces simple 'sending' dot animation) */
-          agentStatus.value.state !== "idle" && html`
+          statusState !== "idle" && statusState !== "paused" && html`
           <div class="chat-bubble assistant chat-agent-status">
             <div class="chat-typing">
               <span class="chat-typing-dot"></span>
               <span class="chat-typing-dot"></span>
               <span class="chat-typing-dot"></span>
             </div>
-            <div class="chat-agent-status-text">${agentStatusText.value}</div>
+            <div class="chat-agent-status-text">${statusText}</div>
           </div>
         `}
       </div>
