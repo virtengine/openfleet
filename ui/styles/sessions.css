@@ -35,8 +35,9 @@
   background: rgba(5, 6, 8, 0.5);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.2s ease;
+  transition: opacity 0.28s cubic-bezier(0.32, 0.72, 0, 1);
   z-index: 140;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .session-drawer-backdrop.open {
@@ -93,9 +94,11 @@
     bottom: calc(var(--nav-height) + var(--safe-bottom));
     width: min(88vw, 360px);
     transform: translateX(-100%);
-    transition: transform 0.24s ease;
+    transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+    will-change: transform;
     z-index: 160;
     box-shadow: 12px 0 40px rgba(0, 0, 0, 0.35);
+    background: var(--bg-secondary);
   }
   .session-split.drawer-open .session-pane {
     transform: translateX(0);
@@ -150,7 +153,7 @@
   display: flex;
   align-items: center;
   padding: 0;
-  border-bottom: 1px solid var(--border, var(--border));
+  border-bottom: 1px solid var(--border);
   background: var(--bg-primary);
   flex-shrink: 0;
 }
@@ -177,11 +180,23 @@
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .session-drawer-btn:hover {
   color: var(--text-primary);
   border-color: var(--border-strong);
+}
+
+.session-drawer-btn:active {
+  transform: scale(0.96);
+}
+
+/* On tablet+, the session pane is inline — hide the hamburger drawer toggle */
+@media (min-width: 769px) {
+  .session-drawer-btn {
+    display: none;
+  }
 }
 
 .chat-shell-title {
@@ -749,7 +764,10 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  scroll-padding-bottom: 80px;
   padding: 20px 16px 48px;
   display: flex;
   flex-direction: column;
@@ -821,6 +839,11 @@
   background: var(--bg-card);
   align-self: flex-start;
   box-shadow: var(--shadow-sm);
+  /* CSS containment — tells the browser each bubble is layout-independent,
+     reducing style recalc and layout thrashing on long message lists */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 80px;
+  contain: layout style;
 }
 
 .chat-bubble.user {
@@ -897,10 +920,27 @@
   justify-content: center;
   pointer-events: none;
   z-index: 6;
+  animation: fadeSlideUp 0.2s ease;
 }
 
 .chat-jump-latest .btn {
   pointer-events: auto;
+  border-radius: var(--radius-full);
+  padding: 6px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(8px);
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.chat-jump-latest .btn:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-lg);
+}
+
+.chat-jump-latest .btn:active {
+  transform: scale(0.96);
 }
 
 /* ─── Code blocks ─── */
@@ -1253,8 +1293,8 @@ ul.md-list li::before {
   right: 0;
   max-height: 240px;
   overflow-y: auto;
-  background: var(--bg-card, var(--bg-card));
-  border: 1px solid var(--border, var(--border));
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   box-shadow: var(--shadow-lg, 0 4px 24px rgba(0,0,0,.35));
   z-index: 9999;
@@ -1345,7 +1385,7 @@ ul.md-list li::before {
 .chat-input-area {
   position: relative;
   padding: 16px 16px;
-  border-top: 1px solid var(--border, var(--border));
+  border-top: 1px solid var(--border);
   background: var(--bg-surface, var(--bg-card));
   flex-shrink: 0;
 }
@@ -1391,20 +1431,12 @@ ul.md-list li::before {
   padding: 0 0 calc(12px + var(--safe-bottom, 0px));
 }
 
-.app-shell[data-tab="chat"] .chat-view-embedded .chat-messages {
-  padding: 0 0 16px;
-}
-
-.app-shell[data-tab="chat"] .chat-input-area {
-  padding: 0 0 calc(12px + var(--safe-bottom, 0px));
-}
-
 .chat-input-wrapper {
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  background: var(--bg-card, var(--bg-card));
-  border: 1px solid var(--border, var(--border));
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 24px;
   padding: 8px 8px 8px 16px;
   transition: border-color 0.15s, box-shadow 0.15s;

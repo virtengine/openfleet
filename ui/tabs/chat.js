@@ -386,6 +386,16 @@ export function ChatTab() {
     } catch { /* signal read error - ignore */ }
   }, [isMobile]);
 
+  /* ── Auto-focus textarea when switching sessions (desktop only) ── */
+  useEffect(() => {
+    if (!sessionId || isMobile) return;
+    // Delay focus to let the ChatView mount first
+    const timer = setTimeout(() => {
+      if (textareaRef.current) textareaRef.current.focus();
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [sessionId, isMobile]);
+
   /* ── Slash command filtering ──
      Use useMemo with no signal deps to avoid subscribing ChatTab to
      activeAgentInfo. The commands list only matters when the user is
