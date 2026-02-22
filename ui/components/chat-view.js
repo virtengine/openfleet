@@ -4,6 +4,7 @@
  *  tracking, and pending/retry message support.
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
+import { memo } from "preact/compat";
 import { useState, useEffect, useRef, useCallback, useMemo } from "preact/hooks";
 import htm from "htm";
 import { apiFetch } from "../modules/api.js";
@@ -151,8 +152,23 @@ function renderMarkdown(text) {
   return result;
 }
 
+/* ─── Markdown render cache — avoids re-parsing identical content ─── */
+const _mdCache = new Map();
+const MD_CACHE_MAX = 500;
+function cachedRenderMarkdown(text) {
+  if (_mdCache.has(text)) return _mdCache.get(text);
+  const html = renderMarkdown(text);
+  if (_mdCache.size >= MD_CACHE_MAX) {
+    // Evict oldest quarter when full
+    const keys = Array.from(_mdCache.keys()).slice(0, MD_CACHE_MAX >> 2);
+    for (const k of keys) _mdCache.delete(k);
+  }
+  _mdCache.set(text, html);
+  return html;
+}
+
 /* ─── Code block copy button ─── */
-function CodeBlock({ code }) {
+const CodeBlock = memo(function CodeBlock({ code }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = useCallback(() => {
     try {
@@ -170,10 +186,10 @@ function CodeBlock({ code }) {
       <pre><code>${code}</code></pre>
     </div>
   `;
-}
+});
 
 /* ─── Render message content with code block + markdown support ─── */
-function MessageContent({ text }) {
+const MessageContent = memo(function MessageContent({ text }) {
   if (!text) return null;
   const parts = text.split(/(```[\s\S]*?```)/g);
   return html`${parts.map((part, i) => {
@@ -181,9 +197,9 @@ function MessageContent({ text }) {
       const code = part.slice(3, -3).replace(/^\w+\n/, "");
       return html`<${CodeBlock} key=${i} code=${code} />`;
     }
-    return html`<div key=${i} class="md-rendered" dangerouslySetInnerHTML=${{ __html: renderMarkdown(part) }} />`;
+    return html`<div key=${i} class="md-rendered" dangerouslySetInnerHTML=${{ __html: cachedRenderMarkdown(part) }} />`;
   })}`;
-}
+});
 
 /* ─── Stream helpers ─── */
 function categorizeMessage(msg) {
@@ -205,6 +221,42 @@ function formatMessageLine(msg) {
         : "";
   return `[${timestamp}] ${String(kind).toUpperCase()}: ${content}`;
 }
+
+/* ─── Memoized ChatBubble — only re-renders if msg identity changes ─── */
+const ChatBubble = memo(function ChatBubble({ msg }) {
+  const isTool = msg.type === "tool_call" || msg.type === "tool_result";
+  const isError = msg.type === "error" || msg.type === "stream_error";
+  const role = msg.role ||
+    (isTool || isError ? "system" : msg.type === "system" ? "system" : "assistant");
+  const bubbleClass = isError
+    ? "error"
+    : isTool
+      ? "tool"
+      : role === "user"
+        ? "user"
+        : role === "system"
+          ? "system"
+          : "assistant";
+  const label =
+    isTool
+      ? msg.type === "tool_call" ? "TOOL CALL" : "TOOL RESULT"
+      : isError ? "ERROR" : null;
+  return html`
+    <div class="chat-bubble ${bubbleClass}">
+      ${role === "system" && !isTool
+        ? html`<div class="chat-system-text">${msg.content}</div>`
+        : html`
+            ${label ? html`<div class="chat-bubble-label">${label}</div>` : null}
+            <div class="chat-bubble-content">
+              <${MessageContent} text=${msg.content} />
+            </div>
+            <div class="chat-bubble-time">
+              ${msg.timestamp ? formatRelative(msg.timestamp) : ""}
+            </div>
+          `}
+    </div>
+  `;
+}, (prev, next) => prev.msg === next.msg);
 
 /* ─── Chat View component ─── */
 export function ChatView({ sessionId, readOnly = false, embedded = false }) {
@@ -406,7 +458,9 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     const newMessages = nextCount > prevCount;
     lastMessageCount.current = nextCount;
     if (!paused && autoScroll) {
-      el.scrollTop = el.scrollHeight;
+      // Use smooth scroll for small increments, instant for large jumps
+      const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+      el.scrollTo({ top: el.scrollHeight, behavior: gap < 800 ? "smooth" : "instant" });
       return;
     }
     if (newMessages && !autoScroll) {
@@ -754,50 +808,12 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             </button>
           </div>
         `}
-        ${visibleMessages.map((msg) => {
-          const isTool =
-            msg.type === "tool_call" || msg.type === "tool_result";
-          const isError = msg.type === "error" || msg.type === "stream_error";
-          const role = msg.role ||
-            (isTool || isError ? "system" : msg.type === "system" ? "system" : "assistant");
-          const bubbleClass = isError
-            ? "error"
-            : isTool
-              ? "tool"
-              : role === "user"
-                ? "user"
-                : role === "system"
-                  ? "system"
-                  : "assistant";
-          const label =
-            isTool
-              ? msg.type === "tool_call"
-                ? "TOOL CALL"
-                : "TOOL RESULT"
-              : isError
-                ? "ERROR"
-                : null;
-          return html`
-            <div
-              key=${msg.id || msg.timestamp}
-              class="chat-bubble ${bubbleClass}"
-            >
-              ${role === "system" && !isTool
-                ? html`<div class="chat-system-text">${msg.content}</div>`
-                : html`
-                    ${label
-                      ? html`<div class="chat-bubble-label">${label}</div>`
-                      : null}
-                    <div class="chat-bubble-content">
-                      <${MessageContent} text=${msg.content} />
-                    </div>
-                    <div class="chat-bubble-time">
-                      ${msg.timestamp ? formatRelative(msg.timestamp) : ""}
-                    </div>
-                  `}
-            </div>
-          `;
-        })} 
+        ${visibleMessages.map((msg) => html`
+          <${ChatBubble}
+            key=${msg.id || msg.timestamp}
+            msg=${msg}
+          />`
+        )} 
 
         ${/* Pending messages (optimistic rendering) — use .peek() to avoid
               subscribing ChatView to pendingMessages signal. Pending messages
@@ -844,12 +860,12 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             class="btn btn-primary btn-sm"
             onClick=${() => {
               const el = messagesRef.current;
-              if (el) el.scrollTop = el.scrollHeight;
+              if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
               setAutoScroll(true);
               setUnreadCount(0);
             }}
           >
-            Jump to latest${unreadCount ? ` (${unreadCount})` : ""}
+            ↓ Jump to latest${unreadCount ? ` (${unreadCount})` : ""}
           </button>
         </div>
       `}

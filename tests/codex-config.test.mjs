@@ -20,7 +20,7 @@ describe("codex-config defaults", () => {
       "[features]",
       "child_agents_md = false",
       "memory_tool = false",
-      "collab = false",
+      "multi_agent = false",
       "shell_tool = false",
       "unified_exec = false",
       "undo = false",
@@ -31,7 +31,7 @@ describe("codex-config defaults", () => {
 
     expect(toml).toContain("child_agents_md = true");
     expect(toml).toContain("memory_tool = true");
-    expect(toml).toContain("collab = true");
+    expect(toml).toContain("multi_agent = true");
     expect(toml).toContain("shell_tool = true");
     expect(toml).toContain("unified_exec = true");
     expect(toml).toContain("undo = false");

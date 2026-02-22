@@ -222,7 +222,7 @@ const THREAD_OPTIONS = {
   skipGitRepoCheck: true,
   webSearchMode: "live",
   approvalPolicy: "never",
-  // Note: sub-agent features (child_agents_md, collab, memory_tool, etc.)
+  // Note: sub-agent features (child_agents_md, multi_agent, memory_tool, etc.)
   // are configured via ~/.codex/config.toml [features] section, not SDK ThreadOptions.
   // codex-config.mjs ensureFeatureFlags() handles this during setup.
 };
@@ -247,7 +247,7 @@ async function getThread() {
       config: {
         features: {
           child_agents_md: true,
-          collab: true,
+          multi_agent: true,
           memory_tool: true,
           undo: true,
           steer: true,
@@ -746,7 +746,7 @@ export async function initCodexShell() {
       config: {
         features: {
           child_agents_md: true,
-          collab: true,
+          multi_agent: true,
           memory_tool: true,
           undo: true,
           steer: true,

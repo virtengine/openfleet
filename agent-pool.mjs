@@ -570,7 +570,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     ...(codexOpts.config || {}),
     features: {
       child_agents_md: true,
-      collab: true,
+      multi_agent: true,
       memory_tool: true,
       undo: true,
       steer: true,

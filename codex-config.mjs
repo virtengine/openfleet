@@ -100,7 +100,7 @@ const buildAgentsBlock = (_maxThreads) =>
 const RECOMMENDED_FEATURES = {
   // Sub-agents & collaboration
   child_agents_md:        { default: true, envVar: "CODEX_FEATURES_CHILD_AGENTS_MD",   comment: "Enable sub-agent discovery via CODEX.md" },
-  collab:                 { default: true, envVar: "CODEX_FEATURES_COLLAB",             comment: "Enable collaboration mode" },
+  multi_agent:                 { default: true, envVar: "CODEX_FEATURES_MULTI_AGENT",             comment: "Enable collaboration mode" },
   collaboration_modes:    { default: true, envVar: "CODEX_FEATURES_COLLABORATION_MODES", comment: "Enable collaboration mode selection" },
 
   // Continuity & recovery
@@ -128,7 +128,7 @@ const RECOMMENDED_FEATURES = {
 const CRITICAL_ALWAYS_ON_FEATURES = new Set([
   "child_agents_md",
   "memory_tool",
-  "collab",
+  "multi_agent",
   "collaboration_modes",
   "shell_tool",
   "unified_exec",
