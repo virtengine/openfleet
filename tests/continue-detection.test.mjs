@@ -55,9 +55,9 @@ describe("SessionTracker.getProgressStatus", () => {
       item: { type: "agent_message", text: "did something" },
     });
 
-    // Hack lastActivityAt to simulate idle
+    // Hack lastActivityAt to simulate idle (150ms is between idle=100ms and stalled=200ms thresholds)
     const session = tracker.getSession("task-1");
-    session.lastActivityAt = Date.now() - 200; // > 100ms threshold
+    session.lastActivityAt = Date.now() - 150;
 
     const status = tracker.getProgressStatus("task-1");
     expect(status.status).toBe("idle");
@@ -68,9 +68,9 @@ describe("SessionTracker.getProgressStatus", () => {
   it("returns nudge recommendation when idle with 0 events", () => {
     tracker.startSession("task-1", "Test");
 
-    // Make idle without any events
+    // Make idle without any events (150ms is between idle=100ms and stalled=200ms thresholds)
     const session = tracker.getSession("task-1");
-    session.lastActivityAt = Date.now() - 200;
+    session.lastActivityAt = Date.now() - 150;
 
     const status = tracker.getProgressStatus("task-1");
     expect(status.status).toBe("idle");
