@@ -265,17 +265,33 @@ function isEnvEnabled(value, defaultValue = false) {
 
 // ── Git helpers ──────────────────────────────────────────────────────────────
 
-function detectRepoSlug() {
-  try {
-    const remote = execSync("git remote get-url origin", {
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "ignore"],
-    }).trim();
-    const match = remote.match(/github\.com[/:]([^/]+\/[^/.]+)/);
-    return match ? match[1] : null;
-  } catch {
-    return null;
+function detectRepoSlug(repoRoot = "") {
+  const tryResolve = (cwd) => {
+    try {
+      const remote = execSync("git remote get-url origin", {
+        cwd,
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "ignore"],
+      }).trim();
+      const match = remote.match(/github\.com[/:]([^/]+\/[^/.]+)/);
+      return match ? match[1] : null;
+    } catch {
+      return null;
+    }
+  };
+
+  // First try current working directory
+  const direct = tryResolve(process.cwd());
+  if (direct) return direct;
+
+  // Fall back to detected repo root if provided (or detectable)
+  const root = repoRoot || detectRepoRoot();
+  if (root) {
+    const viaRoot = tryResolve(root);
+    if (viaRoot) return viaRoot;
   }
+
+  return null;
 }
 
 function detectRepoRoot() {

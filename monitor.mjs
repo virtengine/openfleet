@@ -5863,7 +5863,7 @@ const dependabotMergeAttempted = new Set();
  */
 async function checkAndMergeDependabotPRs() {
   if (!dependabotAutoMerge) return;
-  if (!repoSlug) {
+  if (!repoSlug || repoSlug === "unknown/unknown") {
     console.warn("[dependabot] auto-merge disabled — no repo slug configured");
     return;
   }
@@ -12035,6 +12035,10 @@ function restartGitHubReconciler() {
       : "") ||
     repoSlug ||
     "unknown/unknown";
+  if (!repo || repo === "unknown/unknown") {
+    console.warn("[gh-reconciler] disabled — missing repo slug");
+    return;
+  }
 
   ghReconciler = startGitHubReconciler({
     repoSlug: repo,

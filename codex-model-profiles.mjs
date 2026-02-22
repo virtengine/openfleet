@@ -1,3 +1,7 @@
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
+
 const DEFAULT_ACTIVE_PROFILE = "xl";
 const DEFAULT_SUBAGENT_PROFILE = "m";
 
@@ -63,6 +67,19 @@ function profileRecord(env, profileName, globalProvider) {
   };
 }
 
+function readCodexConfigTopLevelModel() {
+  try {
+    const configPath = resolve(homedir(), ".codex", "config.toml");
+    if (!existsSync(configPath)) return "";
+    const content = readFileSync(configPath, "utf8");
+    const head = content.split(/\n\[/)[0] || "";
+    const match = head.match(/^\s*model\s*=\s*"([^"]+)"/m);
+    return match ? match[1].trim() : "";
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Resolve codex model/provider profile configuration from env vars.
  * Applies active profile values onto runtime env keys (`CODEX_MODEL`,
@@ -86,6 +103,8 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
 
   const env = { ...sourceEnv };
 
+  const configModel = readCodexConfigTopLevelModel();
+
   if (active.model) {
     env.CODEX_MODEL = active.model;
   }
@@ -95,6 +114,21 @@ export function resolveCodexProfileRuntime(envInput = process.env) {
 
   const profileApiKey = active.apiKey;
   const resolvedProvider = active.provider || globalProvider;
+
+  // Azure deployments often differ from default model names.
+  // If the env is using Azure and the model is still the default,
+  // prefer the top-level ~/.codex/config.toml model when present.
+  const activeModelExplicit =
+    Boolean(readProfileField(sourceEnv, activeProfile, "MODEL")) ||
+    Boolean(clean(sourceEnv.CODEX_MODEL));
+  if (
+    resolvedProvider === "azure" &&
+    configModel &&
+    (!activeModelExplicit || clean(env.CODEX_MODEL) === "gpt-5.3-codex")
+  ) {
+    env.CODEX_MODEL = configModel;
+    active.model = configModel;
+  }
 
   if (profileApiKey) {
     if (resolvedProvider === "azure") {

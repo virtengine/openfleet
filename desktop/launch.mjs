@@ -15,6 +15,8 @@ const chromeSandbox = resolve(
   "chrome-sandbox",
 );
 
+process.title = "bosun-desktop-launcher";
+
 function shouldDisableSandbox() {
   if (process.env.BOSUN_DESKTOP_DISABLE_SANDBOX === "1") return true;
   if (process.platform !== "linux") return false;

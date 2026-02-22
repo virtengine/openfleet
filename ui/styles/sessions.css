@@ -56,6 +56,14 @@
   .session-split > * {
     min-height: 0;
   }
+
+  /* Ensure session sidebar is always visible on desktop regardless of drawer state */
+  .session-pane {
+    position: static !important;
+    transform: none !important;
+    width: auto !important;
+    z-index: auto !important;
+  }
 }
 
 @media (min-width: 1200px) {
@@ -1422,7 +1430,9 @@ ul.md-list li::before {
 
 /* ═══ Chat Input Area (bottom bar) ═══ */
 .chat-input-area {
-  position: relative;
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
   padding: 16px 16px;
   border-top: 1px solid var(--border);
   background: var(--bg-surface, var(--bg-card));
@@ -1441,14 +1451,14 @@ ul.md-list li::before {
   border: none;
   border-radius: 0;
   background: transparent;
-  padding: 16px 12px;
+  padding: 20px 24px;
 }
 
 /* ═══ Session Detail as flex column (messages grow, input pinned) ═══ */
 .session-detail > .chat-view-embedded {
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
 }
@@ -1463,7 +1473,7 @@ ul.md-list li::before {
 }
 
 .app-shell[data-tab="chat"] .chat-view-embedded .chat-messages {
-  padding: 0 0 16px;
+  padding: 16px 20px 16px;
 }
 
 .app-shell[data-tab="chat"] .chat-input-area {

@@ -216,6 +216,9 @@ export class GitHubReconciler {
     if (backend !== "github") {
       return { status: "skipped", reason: `backend=${backend || "unknown"}` };
     }
+    if (!this.repoSlug || this.repoSlug === "unknown/unknown") {
+      return { status: "skipped", reason: "missing-repo" };
+    }
 
     const summary = {
       status: "ok",
@@ -350,6 +353,10 @@ export class GitHubReconciler {
   start() {
     if (this.running) return this;
     this.running = true;
+    if (!this.repoSlug || this.repoSlug === "unknown/unknown") {
+      console.warn(`${TAG} disabled (missing repo slug)`);
+      return this;
+    }
     console.log(
       `${TAG} started (repo=${this.repoSlug}, interval=${this.intervalMs}ms, lookback=${this.mergedLookbackHours}h)`,
     );

@@ -9,6 +9,8 @@ import { homedir } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+process.title = "bosun-desktop";
+
 let mainWindow = null;
 let shuttingDown = false;
 let uiServerStarted = false;

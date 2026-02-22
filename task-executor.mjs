@@ -3168,7 +3168,7 @@ class TaskExecutor {
         tasks = tasks.filter((t) => t.status === "todo");
         if (tasks.length !== before) {
           console.debug(
-            `${TAG} filtered ${before - tasks.length} non-todo tasks (VK returned ${before}, kept ${tasks.length})`,
+            `${TAG} filtered ${before - tasks.length} non-todo tasks (API returned ${before}, kept ${tasks.length})`,
           );
         }
       }

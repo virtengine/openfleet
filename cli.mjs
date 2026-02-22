@@ -721,15 +721,23 @@ async function main() {
     );
   }
 
+  // Auto-start sentinel in daemon mode when Telegram credentials are available
+  const hasTelegramCreds = !!(
+    (process.env.TELEGRAM_BOT_TOKEN || readEnvCredentials().TELEGRAM_BOT_TOKEN) &&
+    (process.env.TELEGRAM_CHAT_ID || readEnvCredentials().TELEGRAM_CHAT_ID)
+  );
   const sentinelRequested =
     args.includes("--sentinel") ||
-    parseBoolEnv(process.env.BOSUN_SENTINEL_AUTO_START, false);
+    parseBoolEnv(process.env.BOSUN_SENTINEL_AUTO_START, false) ||
+    (IS_DAEMON_CHILD && hasTelegramCreds);
   if (sentinelRequested) {
     const sentinel = await ensureSentinelRunning({ quiet: false });
     if (!sentinel.ok) {
       const mode = args.includes("--sentinel")
         ? "requested by --sentinel"
-        : "requested by BOSUN_SENTINEL_AUTO_START";
+        : IS_DAEMON_CHILD && hasTelegramCreds
+          ? "auto-started in daemon mode (Telegram credentials detected)"
+          : "requested by BOSUN_SENTINEL_AUTO_START";
       const strictSentinel = parseBoolEnv(
         process.env.BOSUN_SENTINEL_STRICT,
         false,

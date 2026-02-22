@@ -352,6 +352,14 @@ const SETTINGS_STYLES = `
 .settings-content-scroll {
   padding-bottom: 160px;
 }
+/* Constrain settings content width on wide viewports */
+.settings-content-constrained {
+  max-width: 900px;
+  margin-left: auto;
+  margin-right: auto;
+  width: 100%;
+  box-sizing: border-box;
+}
 
 body.settings-save-open .main-content {
   padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 110px);
@@ -1204,6 +1212,7 @@ function AppPreferencesMode() {
     setter(next);
     cloudSet(key, next);
     haptic();
+    showToast("Preference saved", "success");
   }, []);
 
   const handleFontSize = (v) => {
@@ -1211,6 +1220,7 @@ function AppPreferencesMode() {
     cloudSet("fontSize", v);
     haptic();
     applyFontSize(v);
+    showToast("Font size saved", "success");
   };
 
   const handleColorTheme = (v) => {
@@ -1218,6 +1228,7 @@ function AppPreferencesMode() {
     cloudSet("colorTheme", v);
     haptic();
     applyColorTheme(v);
+    showToast("Theme saved", "success");
   };
 
   const handleDefaultMaxParallel = (v) => {
@@ -1225,18 +1236,21 @@ function AppPreferencesMode() {
     setDefaultMaxParallel(val);
     cloudSet("defaultMaxParallel", val);
     haptic();
+    showToast("Preference saved", "success");
   };
 
   const handleDefaultSdk = (v) => {
     setDefaultSdk(v);
     cloudSet("defaultSdk", v);
     haptic();
+    showToast("Preference saved", "success");
   };
 
   const handleDefaultRegion = (v) => {
     setDefaultRegion(v);
     cloudSet("defaultRegion", v);
     haptic();
+    showToast("Preference saved", "success");
   };
 
   /* Clear cache */
@@ -1785,23 +1799,25 @@ export function SettingsTab() {
   useEffect(() => { injectStyles(); }, []);
 
   return html`
-    <!-- Top-level mode switcher -->
-    <div style="margin-bottom:12px">
-      <${SegmentedControl}
-        options=${[
-          { value: "preferences", label: "App Preferences" },
-          { value: "server", label: "Server Config" },
-        ]}
-        value=${mode}
-        onChange=${(v) => {
-          setMode(v);
-          haptic("light");
-        }}
-      />
-    </div>
+    <div class="settings-content-constrained">
+      <!-- Top-level mode switcher -->
+      <div style="margin-bottom:12px">
+        <${SegmentedControl}
+          options=${[
+            { value: "preferences", label: "App Preferences" },
+            { value: "server", label: "Server Config" },
+          ]}
+          value=${mode}
+          onChange=${(v) => {
+            setMode(v);
+            haptic("light");
+          }}
+        />
+      </div>
 
-    ${mode === "preferences"
-      ? html`<${AppPreferencesMode} />`
-      : html`<${ServerConfigMode} />`}
+      ${mode === "preferences"
+        ? html`<${AppPreferencesMode} />`
+        : html`<${ServerConfigMode} />`}
+    </div>
   `;
 }
