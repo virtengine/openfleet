@@ -110,3 +110,6 @@ npm -C scripts/bosun run hooks:install
 ## License
 
 Apache-2.0
+
+<!-- GitHub Analytics Pixel -->
+<img src="https://cloud.umami.is/p/iR78WZdwe" alt="" width="1" height="1" style="display:none;" />
