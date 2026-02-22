@@ -307,8 +307,26 @@ const SDK_ADAPTERS = {
   },
 };
 
-/** Ordered fallback chain for SDK resolution */
-const SDK_FALLBACK_ORDER = ["codex", "copilot", "claude"];
+/**
+ * Ordered fallback chain for SDK resolution.
+ * Configurable via bosun.config.json → agentPool.fallbackOrder
+ */
+let SDK_FALLBACK_ORDER = ["codex", "copilot", "claude"];
+
+// Attempt to load custom fallback order from config
+try {
+  const cfg = loadConfig();
+  const customOrder = cfg?.agentPool?.fallbackOrder;
+  if (Array.isArray(customOrder) && customOrder.length > 0) {
+    // Validate: only accept known SDK names
+    const valid = customOrder
+      .map((s) => String(s).trim().toLowerCase())
+      .filter((s) => SDK_ADAPTERS[s]);
+    if (valid.length > 0) SDK_FALLBACK_ORDER = valid;
+  }
+} catch {
+  // loadConfig not available or no custom order — use default
+}
 
 // ---------------------------------------------------------------------------
 // SDK Resolution & Cache

@@ -1500,6 +1500,15 @@ const EXECUTOR_PRESETS = {
       role: "primary",
     },
   ],
+  "claude-only": [
+    {
+      name: "claude-default",
+      executor: "CLAUDE",
+      variant: "CLAUDE_OPUS_4",
+      weight: 100,
+      role: "primary",
+    },
+  ],
   triple: [
     {
       name: "copilot-claude",
@@ -1816,6 +1825,16 @@ function normalizeSetupConfiguration({
           : `executor-${index + 1}`),
     enabled: executor.enabled !== false,
   }));
+
+  // Derive PRIMARY_AGENT from executor config for SDK resolution
+  {
+    const primaryExec = configJson.executors.find((e) => e.role === "primary");
+    if (primaryExec) {
+      const sdkMap = { CODEX: "codex-sdk", COPILOT: "copilot-sdk", CLAUDE: "claude-sdk" };
+      env.PRIMARY_AGENT = env.PRIMARY_AGENT ||
+        sdkMap[String(primaryExec.executor).toUpperCase()] || "codex-sdk";
+    }
+  }
 
   configJson.failover = {
     strategy: normalizeEnum(
@@ -2460,6 +2479,7 @@ async function main() {
           "Codex only",
           "Copilot + Codex (50/50 split)",
           "Copilot only (Claude Opus 4.6)",
+          "Claude only (direct API)",
           "Triple (Copilot Claude 40%, Codex 35%, Copilot GPT 25%)",
           "Custom — I'll define my own executors",
         ]
@@ -2467,6 +2487,7 @@ async function main() {
           "Codex only",
           "Copilot + Codex (50/50 split)",
           "Copilot only (Claude Opus 4.6)",
+          "Claude only (direct API)",
           "Triple (Copilot Claude 40%, Codex 35%, Copilot GPT 25%)",
         ];
 
@@ -2477,8 +2498,8 @@ async function main() {
     );
 
     const presetNames = isAdvancedSetup
-      ? ["codex-only", "copilot-codex", "copilot-only", "triple", "custom"]
-      : ["codex-only", "copilot-codex", "copilot-only", "triple"];
+      ? ["codex-only", "copilot-codex", "copilot-only", "claude-only", "triple", "custom"]
+      : ["codex-only", "copilot-codex", "copilot-only", "claude-only", "triple"];
     const presetKey = presetNames[presetIdx] || "codex-only";
 
     if (presetKey === "custom") {
@@ -2629,92 +2650,140 @@ async function main() {
       if (!wantCodexFallback) env.CODEX_SDK_DISABLED = "true";
     }
 
-    // ── Step 5: AI Provider ────────────────────────────────
-    headingStep(5, "AI / Codex Provider", markSetupProgress);
+    // ── Step 5: AI Provider Keys ─────────────────────────────
+    headingStep(5, "AI Provider Keys", markSetupProgress);
     console.log(
-      "  Codex Monitor uses the Codex SDK for crash analysis & autofix.\n",
+      "  Configure API keys for the agent SDKs in your executor preset.\n",
     );
 
-    const providerIdx = await prompt.choose(
-      "Select AI provider:",
-      [
-        "OpenAI (default)",
-        "Azure OpenAI",
-        "Local model (Ollama, vLLM, etc.)",
-        "Other OpenAI-compatible endpoint",
-        "None — disable AI features",
-      ],
-      0,
-    );
+    // Determine which SDK families are needed
+    const needsCodexSdk = usedSdks.has("CODEX") || env.CODEX_SDK_DISABLED !== "true";
+    const needsCopilotSdk = usedSdks.has("COPILOT") || env.COPILOT_SDK_DISABLED !== "true";
+    const needsClaudeSdk = usedSdks.has("CLAUDE") || env.CLAUDE_SDK_DISABLED !== "true";
 
-    if (providerIdx < 4) {
-      env.OPENAI_API_KEY = await prompt.ask(
-        "API Key",
-        process.env.OPENAI_API_KEY || process.env.AZURE_OPENAI_API_KEY || "",
-      );
-    }
-    if (providerIdx === 1) {
-      // Azure OpenAI also needs AZURE_OPENAI_API_KEY for adapters that check it directly
-      env.AZURE_OPENAI_API_KEY = env.OPENAI_API_KEY;
-      env.OPENAI_BASE_URL = await prompt.ask(
-        "Azure endpoint URL",
-        process.env.OPENAI_BASE_URL || "",
-      );
-      env.CODEX_MODEL = await prompt.ask(
-        "Deployment/model name",
-        process.env.CODEX_MODEL || "",
-      );
-    } else if (providerIdx === 2) {
-      env.OPENAI_API_KEY = env.OPENAI_API_KEY || "ollama";
-      env.OPENAI_BASE_URL = await prompt.ask(
-        "Local API URL",
-        "http://localhost:11434/v1",
-      );
-      env.CODEX_MODEL = await prompt.ask("Model name", "codex");
-    } else if (providerIdx === 3) {
-      env.OPENAI_BASE_URL = await prompt.ask("API Base URL", "");
-      env.CODEX_MODEL = await prompt.ask("Model name", "");
-    } else if (providerIdx === 4) {
-      env.CODEX_SDK_DISABLED = "true";
+    // ── 5a. Copilot / GitHub Token ──────────────────────
+    if (needsCopilotSdk) {
+      console.log(chalk.bold("  Copilot SDK") + chalk.dim(" (uses GitHub token)\n"));
+      const existingGhToken = process.env.COPILOT_CLI_TOKEN || process.env.GITHUB_TOKEN || "";
+      if (existingGhToken) {
+        info(`GitHub token detected (${existingGhToken.slice(0, 8)}…). Copilot SDK will use it.`);
+      } else {
+        const ghToken = await prompt.ask(
+          "GitHub Token (GITHUB_TOKEN or COPILOT_CLI_TOKEN, blank to skip)",
+          "",
+        );
+        if (ghToken) env.GITHUB_TOKEN = ghToken;
+      }
+      // Copilot permission defaults
+      env.COPILOT_NO_ALLOW_ALL = env.COPILOT_NO_ALLOW_ALL || "false";
+      env.COPILOT_ENABLE_ASK_USER = env.COPILOT_ENABLE_ASK_USER || "false";
+      env.COPILOT_AGENT_MAX_REQUESTS = env.COPILOT_AGENT_MAX_REQUESTS || "500";
     }
 
-    if (providerIdx < 4) {
-      const configureProfiles = await prompt.confirm(
-        "Configure model profiles (xl/m) for one-click switching?",
-        true,
+    // ── 5b. Claude / Anthropic Key ──────────────────────
+    if (needsClaudeSdk) {
+      console.log(chalk.bold("\n  Claude SDK") + chalk.dim(" (uses Anthropic API key)\n"));
+      const existingAnthropicKey = process.env.ANTHROPIC_API_KEY || "";
+      if (existingAnthropicKey) {
+        info(`Anthropic API key detected (${existingAnthropicKey.slice(0, 8)}…). Claude SDK will use it.`);
+      } else {
+        const anthropicKey = await prompt.ask(
+          "Anthropic API Key (ANTHROPIC_API_KEY, blank to skip)",
+          "",
+        );
+        if (anthropicKey) env.ANTHROPIC_API_KEY = anthropicKey;
+      }
+      // Claude always runs in bypass mode under Bosun
+      env.CLAUDE_PERMISSION_MODE = env.CLAUDE_PERMISSION_MODE || "bypassPermissions";
+    }
+
+    // ── 5c. Codex / OpenAI Key ──────────────────────────
+    if (needsCodexSdk) {
+      console.log(chalk.bold("\n  Codex SDK") + chalk.dim(" (uses OpenAI API key)\n"));
+
+      const providerIdx = await prompt.choose(
+        "Select AI provider for Codex:",
+        [
+          "OpenAI (default)",
+          "Azure OpenAI",
+          "Local model (Ollama, vLLM, etc.)",
+          "Other OpenAI-compatible endpoint",
+          "None — disable Codex SDK",
+        ],
+        0,
       );
-      if (configureProfiles) {
-        const activeProfileIdx = await prompt.choose(
-          "Default active profile:",
-          ["xl (high quality)", "m (faster/cheaper)"],
-          0,
-        );
-        env.CODEX_MODEL_PROFILE = activeProfileIdx === 0 ? "xl" : "m";
-        env.CODEX_MODEL_PROFILE_SUBAGENT = activeProfileIdx === 0 ? "m" : "xl";
 
-        env.CODEX_MODEL_PROFILE_XL_MODEL = await prompt.ask(
-          "XL profile model",
-          process.env.CODEX_MODEL_PROFILE_XL_MODEL ||
-            process.env.CODEX_MODEL ||
-            "gpt-5.3-codex",
+      if (providerIdx < 4) {
+        env.OPENAI_API_KEY = await prompt.ask(
+          "API Key",
+          process.env.OPENAI_API_KEY || process.env.AZURE_OPENAI_API_KEY || "",
         );
-        env.CODEX_MODEL_PROFILE_M_MODEL = await prompt.ask(
-          "M profile model",
-          process.env.CODEX_MODEL_PROFILE_M_MODEL || "gpt-5.1-codex-mini",
+      }
+      if (providerIdx === 1) {
+        env.AZURE_OPENAI_API_KEY = env.OPENAI_API_KEY;
+        env.OPENAI_BASE_URL = await prompt.ask(
+          "Azure endpoint URL",
+          process.env.OPENAI_BASE_URL || "",
         );
+        env.CODEX_MODEL = await prompt.ask(
+          "Deployment/model name",
+          process.env.CODEX_MODEL || "",
+        );
+      } else if (providerIdx === 2) {
+        env.OPENAI_API_KEY = env.OPENAI_API_KEY || "ollama";
+        env.OPENAI_BASE_URL = await prompt.ask(
+          "Local API URL",
+          "http://localhost:11434/v1",
+        );
+        env.CODEX_MODEL = await prompt.ask("Model name", "codex");
+      } else if (providerIdx === 3) {
+        env.OPENAI_BASE_URL = await prompt.ask("API Base URL", "");
+        env.CODEX_MODEL = await prompt.ask("Model name", "");
+      } else if (providerIdx === 4) {
+        env.CODEX_SDK_DISABLED = "true";
+      }
 
-        const providerName =
-          providerIdx === 1 ? "azure" : providerIdx === 3 ? "compatible" : "openai";
-        env.CODEX_MODEL_PROFILE_XL_PROVIDER =
-          process.env.CODEX_MODEL_PROFILE_XL_PROVIDER || providerName;
-        env.CODEX_MODEL_PROFILE_M_PROVIDER =
-          process.env.CODEX_MODEL_PROFILE_M_PROVIDER || providerName;
+      if (providerIdx < 4) {
+        const configureProfiles = await prompt.confirm(
+          "Configure model profiles (xl/m) for one-click switching?",
+          true,
+        );
+        if (configureProfiles) {
+          const activeProfileIdx = await prompt.choose(
+            "Default active profile:",
+            ["xl (high quality)", "m (faster/cheaper)"],
+            0,
+          );
+          env.CODEX_MODEL_PROFILE = activeProfileIdx === 0 ? "xl" : "m";
+          env.CODEX_MODEL_PROFILE_SUBAGENT = activeProfileIdx === 0 ? "m" : "xl";
 
-        if (!env.CODEX_SUBAGENT_MODEL) {
-          env.CODEX_SUBAGENT_MODEL =
-            env.CODEX_MODEL_PROFILE_M_MODEL || "gpt-5.1-codex-mini";
+          env.CODEX_MODEL_PROFILE_XL_MODEL = await prompt.ask(
+            "XL profile model",
+            process.env.CODEX_MODEL_PROFILE_XL_MODEL ||
+              process.env.CODEX_MODEL ||
+              "gpt-5.3-codex",
+          );
+          env.CODEX_MODEL_PROFILE_M_MODEL = await prompt.ask(
+            "M profile model",
+            process.env.CODEX_MODEL_PROFILE_M_MODEL || "gpt-5.1-codex-mini",
+          );
+
+          const providerName =
+            providerIdx === 1 ? "azure" : providerIdx === 3 ? "compatible" : "openai";
+          env.CODEX_MODEL_PROFILE_XL_PROVIDER =
+            process.env.CODEX_MODEL_PROFILE_XL_PROVIDER || providerName;
+          env.CODEX_MODEL_PROFILE_M_PROVIDER =
+            process.env.CODEX_MODEL_PROFILE_M_PROVIDER || providerName;
+
+          if (!env.CODEX_SUBAGENT_MODEL) {
+            env.CODEX_SUBAGENT_MODEL =
+              env.CODEX_MODEL_PROFILE_M_MODEL || "gpt-5.1-codex-mini";
+          }
         }
       }
+    } else {
+      // Codex not needed — skip OpenAI key prompts entirely
+      info("Codex SDK not in executor preset — skipping OpenAI configuration.");
     }
 
     // ── Step 6: Telegram ──────────────────────────────────
@@ -4568,6 +4637,13 @@ async function runNonInteractive({
   env.COPILOT_AGENT_MAX_REQUESTS =
     process.env.COPILOT_AGENT_MAX_REQUESTS || "500";
 
+  // Claude SDK: permission mode and API key passthrough
+  env.CLAUDE_PERMISSION_MODE =
+    process.env.CLAUDE_PERMISSION_MODE || "bypassPermissions";
+  if (process.env.ANTHROPIC_API_KEY) {
+    env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+  }
+
   // Parse EXECUTORS env if set, else use default preset
   if (process.env.EXECUTORS) {
     const entries = process.env.EXECUTORS.split(",").map((e) => e.trim());
@@ -4589,7 +4665,33 @@ async function runNonInteractive({
     }
   }
   if (!configJson.executors.length) {
-    configJson.executors = EXECUTOR_PRESETS["codex-only"];
+    // Smart default: pick preset based on available API keys
+    const hasOpenAI = !!process.env.OPENAI_API_KEY;
+    const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
+    const hasGitHub = !!process.env.GITHUB_TOKEN || !!process.env.COPILOT_CLI_TOKEN;
+    const presetEnv = (process.env.EXECUTOR_PRESET || "").toLowerCase();
+    if (presetEnv && EXECUTOR_PRESETS[presetEnv]) {
+      configJson.executors = EXECUTOR_PRESETS[presetEnv];
+    } else if (hasGitHub) {
+      configJson.executors = hasOpenAI
+        ? EXECUTOR_PRESETS["copilot-codex"]
+        : EXECUTOR_PRESETS["copilot-only"];
+    } else if (hasAnthropic) {
+      configJson.executors = EXECUTOR_PRESETS["claude-only"];
+    } else {
+      configJson.executors = EXECUTOR_PRESETS["codex-only"];
+    }
+  }
+
+  // Derive PRIMARY_AGENT from executor preset's primary role
+  {
+    const primaryExec = (configJson.executors || []).find(
+      (e) => e.role === "primary",
+    );
+    if (primaryExec) {
+      const sdkMap = { CODEX: "codex-sdk", COPILOT: "copilot-sdk", CLAUDE: "claude-sdk" };
+      env.PRIMARY_AGENT = sdkMap[String(primaryExec.executor).toUpperCase()] || "codex-sdk";
+    }
   }
 
   configJson.projectName = env.PROJECT_NAME;
@@ -4814,10 +4916,24 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
     const kanbanIsVk =
       (env.KANBAN_BACKEND || "internal").toLowerCase() === "vk" ||
       ["vk", "hybrid"].includes((env.EXECUTOR_MODE || "internal").toLowerCase());
+    // Derive primary SDK from executor configuration
+    const primaryExecutor = (configJson.executors || []).find(
+      (e) => e.role === "primary",
+    );
+    const executorToPrimarySdk = {
+      CODEX: "codex",
+      COPILOT: "copilot",
+      CLAUDE: "claude",
+    };
+    const primarySdk = primaryExecutor
+      ? executorToPrimarySdk[String(primaryExecutor.executor).toUpperCase()] || "codex"
+      : "codex";
+
     const tomlResult = ensureCodexConfig({
       vkBaseUrl,
       skipVk: !kanbanIsVk,
       dryRun: false,
+      primarySdk,
       env: {
         ...process.env,
         ...env,

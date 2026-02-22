@@ -21,12 +21,12 @@ const DEFAULT_CAPABILITIES_BY_PRIMARY = {
   },
   copilot: {
     steering: false,
-    subagents: false,
+    subagents: true,
     vscodeTools: true,
   },
   claude: {
     steering: false,
-    subagents: false,
+    subagents: true,
     vscodeTools: false,
   },
 };

@@ -55,25 +55,38 @@ const AGENT_SDK_CAPS_HEADER = "[agent_sdk.capabilities]";
 const AGENTS_HEADER = "[agents]";
 const DEFAULT_AGENT_MAX_THREADS = 12;
 
-const DEFAULT_AGENT_SDK_BLOCK = [
-  "",
-  "# ── Agent SDK selection (added by bosun) ──",
-  AGENT_SDK_HEADER,
-  "# Primary agent SDK used for in-process automation.",
-  '# Supported: "codex", "copilot", "claude"',
-  'primary = "codex"',
-  "# Max concurrent agent threads per Codex session.",
-  `max_threads = ${DEFAULT_AGENT_MAX_THREADS}`,
-  "",
-  AGENT_SDK_CAPS_HEADER,
-  "# Live steering updates during an active run.",
-  "steering = true",
-  "# Ability to spawn subagents/child tasks.",
-  "subagents = true",
-  "# Access to VS Code tools (Copilot extension).",
-  "vscode_tools = false",
-  "",
-].join("\n");
+/**
+ * Build the default [agent_sdk] TOML block.
+ * @param {string} [primary="codex"]  The primary SDK: "codex", "copilot", or "claude"
+ * @returns {string}
+ */
+function buildDefaultAgentSdkBlock(primary = "codex") {
+  const caps = {
+    codex:   { steering: true,  subagents: true,  vscodeTools: false },
+    copilot: { steering: false, subagents: true,  vscodeTools: true  },
+    claude:  { steering: false, subagents: true,  vscodeTools: false },
+  };
+  const c = caps[primary] || caps.codex;
+  return [
+    "",
+    "# ── Agent SDK selection (added by bosun) ──",
+    AGENT_SDK_HEADER,
+    "# Primary agent SDK used for in-process automation.",
+    '# Supported: "codex", "copilot", "claude"',
+    `primary = "${primary}"`,
+    "# Max concurrent agent threads per Codex session.",
+    `max_threads = ${DEFAULT_AGENT_MAX_THREADS}`,
+    "",
+    AGENT_SDK_CAPS_HEADER,
+    "# Live steering updates during an active run.",
+    `steering = ${c.steering}`,
+    "# Ability to spawn subagents/child tasks.",
+    `subagents = ${c.subagents}`,
+    "# Access to VS Code tools (Copilot extension).",
+    `vscode_tools = ${c.vscodeTools}`,
+    "",
+  ].join("\n");
+}
 
 /**
  * @deprecated No longer used — max_threads is now managed under [agent_sdk].
@@ -411,7 +424,7 @@ function formatTomlArray(values) {
   return `[${values.map((value) => `"${String(value).replace(/"/g, '\\"')}"`).join(", ")}]`;
 }
 
-function normalizeWritableRoots(input, { repoRoot, additionalRoots } = {}) {
+function normalizeWritableRoots(input, { repoRoot, additionalRoots, validateExistence = false } = {}) {
   const roots = new Set();
   const addRoot = (value) => {
     const trimmed = String(value || "").trim();
@@ -420,6 +433,16 @@ function normalizeWritableRoots(input, { repoRoot, additionalRoots } = {}) {
     // at Codex launch time and cause "writable root does not exist" errors
     // (e.g. /home/user/.codex/.git). Only accept absolute paths.
     if (!trimmed.startsWith("/")) return;
+    // When validateExistence is true, skip paths that don't exist on disk.
+    // This prevents the sandbox from failing to start with phantom roots.
+    if (validateExistence && !existsSync(trimmed)) return;
+    roots.add(trimmed);
+  };
+  // Always-add: these are primary roots (repo root, parent) that should be
+  // present even if validateExistence is true — they're the intended CWD.
+  const addPrimaryRoot = (value) => {
+    const trimmed = String(value || "").trim();
+    if (!trimmed || !trimmed.startsWith("/")) return;
     roots.add(trimmed);
   };
   if (Array.isArray(input)) {
@@ -437,15 +460,18 @@ function normalizeWritableRoots(input, { repoRoot, additionalRoots } = {}) {
     if (!repo) return;
     const r = String(repo).trim();
     if (!r || !r.startsWith("/")) return;
-    addRoot(r);
+    // Repo root and parent are always added (they're primary working dirs)
+    addPrimaryRoot(r);
     const gitDir = resolve(r, ".git");
     // Only add .git if it actually exists (prevents phantom writable roots)
     if (existsSync(gitDir)) addRoot(gitDir);
     const cacheWorktrees = resolve(r, ".cache", "worktrees");
-    addRoot(cacheWorktrees);
-    addRoot(resolve(r, ".cache"));
+    // Only add .cache subdirs if they exist — avoid phantom roots
+    if (existsSync(cacheWorktrees)) addRoot(cacheWorktrees);
+    const cacheDir = resolve(r, ".cache");
+    if (existsSync(cacheDir)) addRoot(cacheDir);
     const parent = dirname(r);
-    if (parent && parent !== r) addRoot(parent);
+    if (parent && parent !== r) addPrimaryRoot(parent);
   };
 
   addRepoRootPaths(repoRoot);
@@ -515,13 +541,17 @@ export function ensureGitAncestor(dir) {
  * @returns {string[]} Merged writable roots
  */
 export function buildTaskWritableRoots({ worktreePath, repoRoot, existingRoots = [] } = {}) {
-  const roots = new Set(existingRoots.filter(r => r && r.startsWith("/")));
+  const roots = new Set(existingRoots.filter(r => r && r.startsWith("/") && existsSync(r)));
   const addIfExists = (p) => {
+    if (p && p.startsWith("/") && existsSync(p)) roots.add(p);
+  };
+  // Add path even if it doesn't exist yet (will be created by the task)
+  const addRoot = (p) => {
     if (p && p.startsWith("/")) roots.add(p);
   };
 
   if (worktreePath) {
-    addIfExists(worktreePath);
+    addRoot(worktreePath); // Worktree dir itself may be about to be created
     // Worktrees have a .git file pointing to main repo — resolve the actual git dir
     const ancestor = ensureGitAncestor(worktreePath);
     if (ancestor.gitDir) addIfExists(ancestor.gitDir);
@@ -531,7 +561,7 @@ export function buildTaskWritableRoots({ worktreePath, repoRoot, existingRoots =
     }
   }
   if (repoRoot) {
-    addIfExists(repoRoot);
+    addRoot(repoRoot);
     const gitDir = resolve(repoRoot, ".git");
     if (existsSync(gitDir)) addIfExists(gitDir);
     addIfExists(resolve(repoRoot, ".cache", "worktrees"));
@@ -557,7 +587,7 @@ export function ensureSandboxWorkspaceWrite(toml, options = {}) {
     excludeSlashTmp = false,
   } = options;
 
-  const desiredRoots = normalizeWritableRoots(writableRoots, { repoRoot, additionalRoots });
+  const desiredRoots = normalizeWritableRoots(writableRoots, { repoRoot, additionalRoots, validateExistence: true });
   if (!hasSandboxWorkspaceWrite(toml)) {
     if (desiredRoots.length === 0) {
       return { toml, changed: false, added: false, rootsAdded: [] };
@@ -609,13 +639,18 @@ export function ensureSandboxWorkspaceWrite(toml, options = {}) {
   const match = section.match(rootsRegex);
   if (match) {
     const existingRoots = parseTomlArrayLiteral(match[1]);
-    const merged = normalizeWritableRoots(existingRoots, { repoRoot });
+    // Filter out stale roots that no longer exist on disk
+    const validExisting = existingRoots.filter((r) => r === "/tmp" || existsSync(r));
+    const merged = normalizeWritableRoots(validExisting, { repoRoot, validateExistence: true });
     for (const root of desiredRoots) {
       if (!merged.includes(root)) {
         merged.push(root);
         rootsAdded.push(root);
       }
     }
+    // Track any roots that were removed due to non-existence
+    const staleRemoved = existingRoots.filter((r) => r !== "/tmp" && !existsSync(r));
+    if (staleRemoved.length > 0) changed = true;
     const formatted = formatTomlArray(merged);
     if (formatted !== match[1]) {
       section = section.replace(rootsRegex, `writable_roots = ${formatted}`);
@@ -640,6 +675,39 @@ export function ensureSandboxWorkspaceWrite(toml, options = {}) {
     added: false,
     rootsAdded,
   };
+}
+
+/**
+ * Prune writable_roots in [sandbox_workspace_write] that no longer exist on disk.
+ * Returns the updated TOML and a list of removed paths.
+ * @param {string} toml
+ * @returns {{ toml: string, changed: boolean, removed: string[] }}
+ */
+export function pruneStaleSandboxRoots(toml) {
+  if (!hasSandboxWorkspaceWrite(toml)) {
+    return { toml, changed: false, removed: [] };
+  }
+  const header = "[sandbox_workspace_write]";
+  const headerIdx = toml.indexOf(header);
+  if (headerIdx === -1) return { toml, changed: false, removed: [] };
+  const afterHeader = headerIdx + header.length;
+  const nextSection = toml.indexOf("\n[", afterHeader);
+  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
+  let section = toml.substring(afterHeader, sectionEnd);
+
+  const rootsRegex = /^writable_roots\s*=\s*(\[[^\]]*\])\s*$/m;
+  const match = section.match(rootsRegex);
+  if (!match) return { toml, changed: false, removed: [] };
+
+  const existing = parseTomlArrayLiteral(match[1]);
+  const valid = existing.filter((r) => r === "/tmp" || existsSync(r));
+  const removed = existing.filter((r) => r !== "/tmp" && !existsSync(r));
+  if (removed.length === 0) return { toml, changed: false, removed: [] };
+
+  section = section.replace(rootsRegex, `writable_roots = ${formatTomlArray(valid)}`);
+  const updatedToml =
+    toml.substring(0, afterHeader) + section + toml.substring(sectionEnd);
+  return { toml: updatedToml, changed: true, removed };
 }
 
 /**
@@ -810,9 +878,12 @@ export function hasAgentSdkConfig(toml) {
 
 /**
  * Build the default agent SDK block.
+ * @param {object}  [opts]
+ * @param {string}  [opts.primary="codex"]  Primary SDK: "codex", "copilot", or "claude"
+ * @returns {string}
  */
-export function buildAgentSdkBlock() {
-  return DEFAULT_AGENT_SDK_BLOCK;
+export function buildAgentSdkBlock({ primary = "codex" } = {}) {
+  return buildDefaultAgentSdkBlock(primary);
 }
 
 /**
@@ -1054,12 +1125,14 @@ export function ensureRetrySettings(toml, providerName) {
  * @param {boolean} [opts.skipVk]
  * @param {boolean} [opts.dryRun]  If true, returns result without writing
  * @param {object}  [opts.env]     Environment overrides (defaults to process.env)
+ * @param {string}  [opts.primarySdk]  Primary agent SDK: "codex", "copilot", or "claude"
  */
 export function ensureCodexConfig({
   vkBaseUrl = "http://127.0.0.1:54089",
   skipVk = false,
   dryRun = false,
   env = process.env,
+  primarySdk,
 } = {}) {
   const result = {
     path: CONFIG_PATH,
@@ -1075,6 +1148,7 @@ export function ensureCodexConfig({
     sandboxWorkspaceAdded: false,
     sandboxWorkspaceUpdated: false,
     sandboxWorkspaceRootsAdded: [],
+    sandboxStaleRootsRemoved: [],
     shellEnvAdded: false,
     commonMcpAdded: false,
     profileProvidersAdded: [],
@@ -1155,8 +1229,21 @@ export function ensureCodexConfig({
 
   // ── 1b. Ensure agent SDK selection block ──────────────────
 
+  // Resolve which SDK should be primary:
+  //   1. Explicit primarySdk parameter
+  //   2. PRIMARY_AGENT env var (e.g. "copilot-sdk" → "copilot")
+  //   3. Default: "codex"
+  const resolvedPrimary = (() => {
+    if (primarySdk && ["codex", "copilot", "claude"].includes(primarySdk)) {
+      return primarySdk;
+    }
+    const envPrimary = (env.PRIMARY_AGENT || "").trim().toLowerCase().replace(/-sdk$/, "");
+    if (["codex", "copilot", "claude"].includes(envPrimary)) return envPrimary;
+    return "codex";
+  })();
+
   if (!hasAgentSdkConfig(toml)) {
-    toml += buildAgentSdkBlock();
+    toml += buildAgentSdkBlock({ primary: resolvedPrimary });
     result.agentSdkAdded = true;
   }
 
@@ -1240,6 +1327,14 @@ export function ensureCodexConfig({
       result.sandboxWorkspaceAdded = ensured.added;
       result.sandboxWorkspaceUpdated = !ensured.added;
       result.sandboxWorkspaceRootsAdded = ensured.rootsAdded || [];
+    }
+
+    // Prune any writable_roots that no longer exist on disk
+    const pruned = pruneStaleSandboxRoots(toml);
+    if (pruned.changed) {
+      toml = pruned.toml;
+      result.sandboxWorkspaceUpdated = true;
+      result.sandboxStaleRootsRemoved = pruned.removed;
     }
   }
 
@@ -1406,6 +1501,15 @@ export function printConfigSummary(result, log = console.log) {
     log(
       `     Writable roots: ${result.sandboxWorkspaceRootsAdded.join(", ")}`,
     );
+  }
+
+  if (result.sandboxStaleRootsRemoved && result.sandboxStaleRootsRemoved.length > 0) {
+    log(
+      `  🗑️  Pruned ${result.sandboxStaleRootsRemoved.length} stale writable root(s) that no longer exist`,
+    );
+    for (const r of result.sandboxStaleRootsRemoved) {
+      log(`     - ${r}`);
+    }
   }
 
   if (result.shellEnvAdded) {
