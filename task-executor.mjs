@@ -3717,6 +3717,7 @@ class TaskExecutor {
         "BOSUN_TASK_ID", "BOSUN_TASK_TITLE", "BOSUN_TASK_DESCRIPTION",
         "BOSUN_BRANCH_NAME", "BOSUN_WORKTREE_PATH", "BOSUN_SDK", "BOSUN_MANAGED",
         "BOSUN_REPO_ROOT", "BOSUN_REPO_SLUG", "BOSUN_WORKSPACE", "BOSUN_REPOSITORY",
+        "BOSUN_AGENT_REPO_ROOT",
       ];
       const _savedEnv = {};
       for (const k of _savedEnvKeys) _savedEnv[k] = process.env[k];
@@ -3746,6 +3747,9 @@ class TaskExecutor {
       process.env.BOSUN_REPO_SLUG       = executionRepoSlug;
       process.env.BOSUN_WORKSPACE       = taskRepoContext.workspace || "";
       process.env.BOSUN_REPOSITORY      = taskRepoContext.repository || "";
+      // Enforce workspace isolation: agents must resolve repo root from the
+      // workspace-scoped executionRepoRoot, NOT the developer's personal repo.
+      process.env.BOSUN_AGENT_REPO_ROOT = executionRepoRoot;
 
       const attemptId = `${taskId}-${randomUUID()}`;
       const taskMeta = {

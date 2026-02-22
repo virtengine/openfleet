@@ -136,6 +136,7 @@ describe("codex-config defaults", () => {
     expect(result.toml).toContain("[sandbox_workspace_write]");
     expect(result.toml).toContain('"/tmp"');
     expect(result.toml).toContain('"/tmp/virtengine"');
-    expect(result.toml).toContain('"/tmp/virtengine/.git"');
+    // .git is only added when the directory actually exists on disk
+    // (normalizeWritableRoots rejects phantom .git paths)
   });
 });

@@ -593,6 +593,37 @@ if (effectiveRepoRoot && process.cwd() !== effectiveRepoRoot) {
   }
 }
 
+// ── Periodic Workspace Sync ─────────────────────────────────────────────────
+// Every 30 minutes, fetch latest changes for all workspace repos so agents
+// always work against recent upstream. Only runs if workspaces are configured.
+const WORKSPACE_SYNC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+let workspaceSyncTimer = null;
+{
+  const wsArray = config.repositories?.filter((r) => r.workspace) || [];
+  if (wsArray.length > 0) {
+    const workspaceIds = [...new Set(wsArray.map((r) => r.workspace).filter(Boolean))];
+    const doWorkspaceSync = () => {
+      for (const wsId of workspaceIds) {
+        try {
+          const results = pullWorkspaceRepos(config.configDir, wsId);
+          const failed = results.filter((r) => !r.success);
+          if (failed.length > 0) {
+            console.warn(`[monitor] workspace sync: ${failed.length} repo(s) failed in ${wsId}`);
+          } else {
+            console.log(`[monitor] workspace sync: ${wsId} up to date (${results.length} repos)`);
+          }
+        } catch (err) {
+          console.warn(`[monitor] workspace sync failed for ${wsId}: ${err.message}`);
+        }
+      }
+    };
+    workspaceSyncTimer = setInterval(doWorkspaceSync, WORKSPACE_SYNC_INTERVAL_MS);
+    // Unref so the timer doesn't keep the process alive during shutdown
+    if (workspaceSyncTimer?.unref) workspaceSyncTimer.unref();
+    console.log(`[monitor] workspace sync: scheduled every ${WORKSPACE_SYNC_INTERVAL_MS / 60000} min for ${workspaceIds.length} workspace(s)`);
+  }
+}
+
 console.log(`[monitor] task planner mode: ${plannerMode}`);
 console.log(`[monitor] kanban backend: ${kanbanBackend}`);
 console.log(`[monitor] executor mode: ${executorMode}`);

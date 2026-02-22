@@ -13,8 +13,8 @@
  * append or patch well-known sections rather than rewriting the whole file.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
+import { resolve, dirname, parse } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
@@ -416,6 +416,10 @@ function normalizeWritableRoots(input, { repoRoot, additionalRoots } = {}) {
   const addRoot = (value) => {
     const trimmed = String(value || "").trim();
     if (!trimmed) return;
+    // Reject bare relative paths like ".git" — they resolve relative to CWD
+    // at Codex launch time and cause "writable root does not exist" errors
+    // (e.g. /home/user/.codex/.git). Only accept absolute paths.
+    if (!trimmed.startsWith("/")) return;
     roots.add(trimmed);
   };
   if (Array.isArray(input)) {
@@ -428,14 +432,17 @@ function normalizeWritableRoots(input, { repoRoot, additionalRoots } = {}) {
       .forEach(addRoot);
   }
 
-  // Add paths for primary repo root
+  // Add paths for a repo root — only if it's a non-empty absolute path
   const addRepoRootPaths = (repo) => {
     if (!repo) return;
-    const r = String(repo);
-    if (!r) return;
+    const r = String(repo).trim();
+    if (!r || !r.startsWith("/")) return;
     addRoot(r);
-    addRoot(resolve(r, ".git"));
-    addRoot(resolve(r, ".cache", "worktrees"));
+    const gitDir = resolve(r, ".git");
+    // Only add .git if it actually exists (prevents phantom writable roots)
+    if (existsSync(gitDir)) addRoot(gitDir);
+    const cacheWorktrees = resolve(r, ".cache", "worktrees");
+    addRoot(cacheWorktrees);
     addRoot(resolve(r, ".cache"));
     const parent = dirname(r);
     if (parent && parent !== r) addRoot(parent);
@@ -451,8 +458,88 @@ function normalizeWritableRoots(input, { repoRoot, additionalRoots } = {}) {
   }
 
   // /tmp is needed for sandbox temp files, pip installs, etc.
-  addRoot("/tmp");
+  roots.add("/tmp");
 
+  return Array.from(roots);
+}
+
+/**
+ * Validate that a directory has a valid .git ancestor (regular repo or worktree).
+ * In worktrees, .git is a file containing "gitdir: <path>" — follow the reference
+ * to find the actual git object store. Returns the resolved .git directory path
+ * or null if not found.
+ * @param {string} dir - Directory to check
+ * @returns {{ gitDir: string|null, mainWorktreeRoot: string|null, isWorktree: boolean }}
+ */
+export function ensureGitAncestor(dir) {
+  if (!dir) return { gitDir: null, mainWorktreeRoot: null, isWorktree: false };
+  let current = resolve(dir);
+  const { root } = parse(current);
+  while (current !== root) {
+    const gitPath = resolve(current, ".git");
+    if (existsSync(gitPath)) {
+      try {
+        const stat = statSync(gitPath);
+        if (stat.isDirectory()) {
+          // Regular git repo
+          return { gitDir: gitPath, mainWorktreeRoot: current, isWorktree: false };
+        }
+        if (stat.isFile()) {
+          // Worktree: .git is a file with "gitdir: <relative-or-absolute-path>"
+          const content = readFileSync(gitPath, "utf8").trim();
+          const match = content.match(/^gitdir:\s*(.+)$/);
+          if (match) {
+            const gitdirRef = resolve(current, match[1].trim());
+            // Worktree gitdir points to <main-repo>/.git/worktrees/<name>
+            // Walk up 2 levels to get the main .git directory
+            const mainGitDir = resolve(gitdirRef, "..", "..");
+            const mainRepoRoot = dirname(mainGitDir);
+            return {
+              gitDir: mainGitDir,
+              mainWorktreeRoot: mainRepoRoot,
+              isWorktree: true,
+            };
+          }
+        }
+      } catch { /* permission error, race, etc. */ }
+    }
+    current = dirname(current);
+  }
+  return { gitDir: null, mainWorktreeRoot: null, isWorktree: false };
+}
+
+/**
+ * Build writable roots for a specific task's execution context.
+ * Combines the global config roots with task-specific paths (worktree, repo root).
+ * @param {{ worktreePath?: string, repoRoot?: string, existingRoots?: string[] }} opts
+ * @returns {string[]} Merged writable roots
+ */
+export function buildTaskWritableRoots({ worktreePath, repoRoot, existingRoots = [] } = {}) {
+  const roots = new Set(existingRoots.filter(r => r && r.startsWith("/")));
+  const addIfExists = (p) => {
+    if (p && p.startsWith("/")) roots.add(p);
+  };
+
+  if (worktreePath) {
+    addIfExists(worktreePath);
+    // Worktrees have a .git file pointing to main repo — resolve the actual git dir
+    const ancestor = ensureGitAncestor(worktreePath);
+    if (ancestor.gitDir) addIfExists(ancestor.gitDir);
+    if (ancestor.mainWorktreeRoot) {
+      addIfExists(resolve(ancestor.mainWorktreeRoot, ".git"));
+      addIfExists(resolve(ancestor.mainWorktreeRoot, ".cache", "worktrees"));
+    }
+  }
+  if (repoRoot) {
+    addIfExists(repoRoot);
+    const gitDir = resolve(repoRoot, ".git");
+    if (existsSync(gitDir)) addIfExists(gitDir);
+    addIfExists(resolve(repoRoot, ".cache", "worktrees"));
+    addIfExists(resolve(repoRoot, ".cache"));
+    const parent = dirname(repoRoot);
+    if (parent && parent !== repoRoot) addIfExists(parent);
+  }
+  roots.add("/tmp");
   return Array.from(roots);
 }
 
@@ -1114,7 +1201,7 @@ export function ensureCodexConfig({
   // ── 1f. Ensure sandbox workspace-write defaults ───────────
 
   {
-    // Determine primary repo root and any workspace roots
+    // Determine primary repo root — prefer workspace agent root
     const primaryRepoRoot = env.BOSUN_AGENT_REPO_ROOT || env.REPO_ROOT || "";
     const additionalRoots = [];
     // If agent repo root differs from REPO_ROOT, include both
@@ -1122,6 +1209,27 @@ export function ensureCodexConfig({
         env.BOSUN_AGENT_REPO_ROOT !== env.REPO_ROOT) {
       additionalRoots.push(env.REPO_ROOT);
     }
+    // Enumerate ALL workspace repo paths so every repo's .git/.cache is writable
+    try {
+      // Inline workspace config read (sync) — avoids async import in sync function
+      const configDirGuess = env.BOSUN_DIR || resolve(homedir(), "bosun");
+      const bosunConfigPath = resolve(configDirGuess, "bosun.config.json");
+      if (existsSync(bosunConfigPath)) {
+        const bosunCfg = JSON.parse(readFileSync(bosunConfigPath, "utf8"));
+        const wsDir = resolve(configDirGuess, "workspaces");
+        const allWs = Array.isArray(bosunCfg.workspaces) ? bosunCfg.workspaces : [];
+        for (const ws of allWs) {
+          const wsPath = resolve(wsDir, ws.id || ws.name || "");
+          for (const repo of ws.repos || []) {
+            const repoPath = resolve(wsPath, repo.name);
+            if (repoPath && !additionalRoots.includes(repoPath) &&
+                repoPath !== primaryRepoRoot) {
+              additionalRoots.push(repoPath);
+            }
+          }
+        }
+      }
+    } catch { /* workspace config read failed — skip */ }
     const ensured = ensureSandboxWorkspaceWrite(toml, {
       writableRoots: env.CODEX_SANDBOX_WRITABLE_ROOTS || "",
       repoRoot: primaryRepoRoot,

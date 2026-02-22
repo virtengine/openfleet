@@ -118,6 +118,7 @@ function showHelp() {
     --workspace-add <name>      Create a new workspace
     --workspace-switch <id>     Switch active workspace
     --workspace-add-repo        Add repo to workspace (interactive)
+    --workspace-health          Run workspace health diagnostics
 
   TASK MANAGEMENT
     task list [--status s] [--json]  List tasks with optional filters
@@ -912,6 +913,17 @@ async function main() {
       process.exit(1);
     }
     process.exit(0);
+  }
+
+  // Handle --workspace-health / --verify-workspace
+  if (args.includes("--workspace-health") || args.includes("--verify-workspace") || args.includes("workspace-health")) {
+    const { runWorkspaceHealthCheck, formatWorkspaceHealthReport } =
+      await import("./config-doctor.mjs");
+    const configDirArg = getArgValue("--config-dir");
+    const configDir = configDirArg || process.env.BOSUN_DIR || resolve(os.homedir(), "bosun");
+    const result = runWorkspaceHealthCheck({ configDir });
+    console.log(formatWorkspaceHealthReport(result));
+    process.exit(result.ok ? 0 : 1);
   }
 
   // Handle --setup

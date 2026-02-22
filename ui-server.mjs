@@ -3435,6 +3435,18 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/workspace-health") {
+    try {
+      const { runWorkspaceHealthCheck } = await import("./config-doctor.mjs");
+      const configDir = resolveUiConfigDir();
+      const result = runWorkspaceHealthCheck({ configDir });
+      jsonResponse(res, 200, { ok: result.ok, data: result });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/worktrees") {
     try {
       const worktrees = listActiveWorktrees(repoRoot);
