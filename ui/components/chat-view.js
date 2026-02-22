@@ -538,7 +538,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     setInput(e.target.value);
     const el = e.target;
     el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 100) + 'px';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
   }, []);
 
   const toggleFilter = useCallback((key) => {

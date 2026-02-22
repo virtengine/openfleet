@@ -584,6 +584,12 @@
 .chat-stream-dot.executing,
 .chat-stream-dot.streaming {
   background: var(--accent);
+  animation: streamDotPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes streamDotPulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(218, 119, 86, 0.1); }
+  50% { box-shadow: 0 0 0 6px rgba(218, 119, 86, 0.25); }
 }
 
 .chat-stream-dot.paused {
@@ -768,11 +774,30 @@
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
   scroll-padding-bottom: 80px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
   padding: 20px 16px 48px;
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
   align-items: stretch;
+}
+
+.chat-messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-messages::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+.chat-messages::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
 }
 
 .chat-load-earlier {
@@ -909,6 +934,19 @@
   font-size: 10px;
   opacity: 0.6;
   margin-top: 4px;
+}
+
+/* Subtle entrance for bubbles — only the last few get the animation
+   (content-visibility: auto on older bubbles skips them for free) */
+.chat-bubble:last-child,
+.chat-bubble:nth-last-child(2),
+.chat-bubble:nth-last-child(3) {
+  animation: chatBubbleIn 0.18s ease-out;
+}
+
+@keyframes chatBubbleIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .chat-jump-latest {
@@ -1445,8 +1483,8 @@ ul.md-list li::before {
 }
 
 .chat-input-wrapper:focus-within {
-  border-color: var(--accent, var(--color-primary, #3b82f6));
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft, rgba(218, 119, 86, 0.12));
 }
 
 .chat-textarea {
@@ -1462,6 +1500,7 @@ ul.md-list li::before {
   min-height: 24px;
   max-height: 120px;
   padding: 4px 0;
+  scrollbar-width: thin;
 }
 
 .chat-textarea::placeholder {
@@ -1783,4 +1822,77 @@ ul.md-list li::before {
   padding: 1px 6px;
   background: rgba(245, 158, 11, 0.1);
   border-radius: 4px;
+}
+
+/* ═══ Mobile Chat Refinements ═══ */
+@media (max-width: 768px) {
+  .chat-shell-inner {
+    padding: 8px 10px;
+    gap: 8px;
+  }
+
+  .chat-shell-name {
+    font-size: 13px;
+  }
+
+  .chat-shell-meta {
+    font-size: 10px;
+  }
+
+  .chat-input-wrapper {
+    padding: 6px 6px 6px 12px;
+    border-radius: 20px;
+  }
+
+  .chat-textarea {
+    font-size: 16px; /* prevent iOS zoom on focus */
+    max-height: 100px;
+  }
+
+  .chat-input-area .chat-send-btn {
+    width: 34px;
+    height: 34px;
+    font-size: 15px;
+  }
+
+  .chat-input-hint {
+    font-size: 10px;
+    padding: 3px 2px 0;
+  }
+
+  .chat-bubble {
+    padding: 8px 12px;
+    font-size: 14px;
+  }
+
+  .chat-bubble.user {
+    max-width: min(85%, 480px);
+  }
+
+  .chat-messages {
+    padding: 12px 10px 40px;
+    gap: 8px;
+  }
+}
+
+/* ═══ Desktop Chat Refinements ═══ */
+@media (min-width: 1200px) {
+  .chat-messages {
+    padding: 24px 20px 48px;
+    gap: 10px;
+  }
+
+  .chat-shell-inner {
+    max-width: 1080px;
+    padding: 12px 16px;
+  }
+
+  /* Wider input area on large screens */
+  .chat-input-wrapper {
+    max-width: min(840px, 100%);
+  }
+
+  .chat-input-hint {
+    max-width: min(840px, 100%);
+  }
 }
