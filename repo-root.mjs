@@ -68,3 +68,72 @@ export function resolveRepoRoot(options = {}) {
 
   return resolve(cwd);
 }
+
+/**
+ * Resolve the repo root for agent execution (workspace-aware).
+ *
+ * Priority:
+ *  1. Explicit BOSUN_AGENT_REPO_ROOT env var.
+ *  2. Workspace primary repo path (if .git exists).
+ *  3. REPO_ROOT env var fallback.
+ *  4. git rev-parse detection.
+ *
+ * This function is specifically for determining where agents execute,
+ * keeping the developer's working copy untouched.
+ */
+export function resolveAgentRepoRoot(options = {}) {
+  // 1. Explicit agent repo root override
+  const agentRoot = process.env.BOSUN_AGENT_REPO_ROOT;
+  if (agentRoot) {
+    const resolved = resolve(agentRoot);
+    if (existsSync(resolved)) return resolved;
+  }
+
+  // 2. Check workspace primary repo (with .git validation)
+  const workspaceRepo = _resolveWorkspacePrimaryRepo();
+  if (workspaceRepo) return workspaceRepo;
+
+  // 3. Fall back to standard resolution
+  return resolveRepoRoot(options);
+}
+
+/**
+ * Resolve the workspace primary repo path by reading bosun config.
+ * Returns the path only if the directory has a .git (valid clone).
+ * @returns {string|null}
+ */
+function _resolveWorkspacePrimaryRepo() {
+  const CONFIG_FILES = ["bosun.config.json", ".bosun.json", "bosun.json"];
+  const configDir =
+    process.env.BOSUN_DIR ||
+    resolve(process.env.HOME || process.env.USERPROFILE || "", "bosun");
+
+  for (const cfgName of CONFIG_FILES) {
+    for (const dir of [configDir, __dirname]) {
+      const cfgPath = resolve(dir, cfgName);
+      if (!existsSync(cfgPath)) continue;
+      try {
+        const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+        const workspaces = cfg.workspaces;
+        if (!Array.isArray(workspaces) || workspaces.length === 0) continue;
+
+        const activeWsId = process.env.BOSUN_WORKSPACE || cfg.activeWorkspace || cfg.defaultWorkspace || "";
+        const ws = (activeWsId
+          ? workspaces.find((w) => w.id === activeWsId)
+          : null) || workspaces[0];
+        if (!ws?.repos?.length) continue;
+
+        const wsPath = ws.path || resolve(dir, "workspaces", ws.id);
+        const primaryRepo = ws.repos.find((r) => r.primary) ||
+          (ws.activeRepo ? ws.repos.find((r) => r.name === ws.activeRepo) : null) ||
+          ws.repos[0];
+        if (!primaryRepo?.name) continue;
+
+        const repoPath = resolve(wsPath, primaryRepo.name);
+        const gitPath = resolve(repoPath, ".git");
+        if (existsSync(gitPath)) return repoPath;
+      } catch { /* skip invalid config */ }
+    }
+  }
+  return null;
+}

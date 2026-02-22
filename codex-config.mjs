@@ -411,7 +411,7 @@ function formatTomlArray(values) {
   return `[${values.map((value) => `"${String(value).replace(/"/g, '\\"')}"`).join(", ")}]`;
 }
 
-function normalizeWritableRoots(input, { repoRoot } = {}) {
+function normalizeWritableRoots(input, { repoRoot, additionalRoots } = {}) {
   const roots = new Set();
   const addRoot = (value) => {
     const trimmed = String(value || "").trim();
@@ -428,17 +428,25 @@ function normalizeWritableRoots(input, { repoRoot } = {}) {
       .forEach(addRoot);
   }
 
-  if (repoRoot) {
-    const repo = String(repoRoot);
-    if (repo) {
-      addRoot(repo);
-      addRoot(resolve(repo, ".git"));
-      // Worktree checkout paths (used by task-executor)
-      addRoot(resolve(repo, ".cache", "worktrees"));
-      // Cache directories for agent work logs, build artifacts, etc.
-      addRoot(resolve(repo, ".cache"));
-      const parent = dirname(repo);
-      if (parent && parent !== repo) addRoot(parent);
+  // Add paths for primary repo root
+  const addRepoRootPaths = (repo) => {
+    if (!repo) return;
+    const r = String(repo);
+    if (!r) return;
+    addRoot(r);
+    addRoot(resolve(r, ".git"));
+    addRoot(resolve(r, ".cache", "worktrees"));
+    addRoot(resolve(r, ".cache"));
+    const parent = dirname(r);
+    if (parent && parent !== r) addRoot(parent);
+  };
+
+  addRepoRootPaths(repoRoot);
+
+  // Add paths for additional workspace repo roots
+  if (Array.isArray(additionalRoots)) {
+    for (const root of additionalRoots) {
+      addRepoRootPaths(root);
     }
   }
 
@@ -456,12 +464,13 @@ export function ensureSandboxWorkspaceWrite(toml, options = {}) {
   const {
     writableRoots = [],
     repoRoot,
+    additionalRoots,
     networkAccess = true,
     excludeTmpdirEnvVar = false,
     excludeSlashTmp = false,
   } = options;
 
-  const desiredRoots = normalizeWritableRoots(writableRoots, { repoRoot });
+  const desiredRoots = normalizeWritableRoots(writableRoots, { repoRoot, additionalRoots });
   if (!hasSandboxWorkspaceWrite(toml)) {
     if (desiredRoots.length === 0) {
       return { toml, changed: false, added: false, rootsAdded: [] };
@@ -1105,9 +1114,18 @@ export function ensureCodexConfig({
   // ── 1f. Ensure sandbox workspace-write defaults ───────────
 
   {
+    // Determine primary repo root and any workspace roots
+    const primaryRepoRoot = env.BOSUN_AGENT_REPO_ROOT || env.REPO_ROOT || "";
+    const additionalRoots = [];
+    // If agent repo root differs from REPO_ROOT, include both
+    if (env.BOSUN_AGENT_REPO_ROOT && env.REPO_ROOT &&
+        env.BOSUN_AGENT_REPO_ROOT !== env.REPO_ROOT) {
+      additionalRoots.push(env.REPO_ROOT);
+    }
     const ensured = ensureSandboxWorkspaceWrite(toml, {
       writableRoots: env.CODEX_SANDBOX_WRITABLE_ROOTS || "",
-      repoRoot: env.REPO_ROOT || "",
+      repoRoot: primaryRepoRoot,
+      additionalRoots,
     });
     if (ensured.changed) {
       toml = ensured.toml;

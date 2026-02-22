@@ -42,14 +42,26 @@
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.mjs";
-import { resolveRepoRoot } from "./repo-root.mjs";
+import { resolveRepoRoot, resolveAgentRepoRoot } from "./repo-root.mjs";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-/** Repository root for the active workspace */
-const REPO_ROOT = resolveRepoRoot();
+/**
+ * Repository root for the active workspace.
+ * Uses lazy resolution so workspace config changes are picked up per-call.
+ * Prefers workspace-aware agent root over raw REPO_ROOT.
+ */
+let _cachedRepoRoot = null;
+function getAgentRepoRoot() {
+  if (!_cachedRepoRoot) {
+    _cachedRepoRoot = resolveAgentRepoRoot();
+  }
+  return _cachedRepoRoot;
+}
+/** @deprecated Use getAgentRepoRoot() — kept for backward compat */
+const REPO_ROOT = resolveAgentRepoRoot();
 
 /** Default timeout: 6 hours — agents should run until the stream-based watchdog detects real issues */
 const DEFAULT_TIMEOUT_MS = 6 * 60 * 60 * 1000;

@@ -186,6 +186,7 @@ import {
   getTask as getInternalTask,
   getTasksByStatus as getInternalTasksByStatus,
   updateTask as updateInternalTask,
+  addTask as addInternalTask,
   recordAgentAttempt,
   recordErrorPattern,
   getStorePath,
@@ -205,6 +206,7 @@ import { createSyncEngine } from "./sync-engine.mjs";
 import { createErrorDetector } from "./error-detector.mjs";
 import { createAgentSupervisor } from "./agent-supervisor.mjs";
 import { getSessionTracker } from "./session-tracker.mjs";
+import { pullWorkspaceRepos } from "./workspace-manager.mjs";
 import {
   startGitHubReconciler,
   stopGitHubReconciler,
@@ -471,6 +473,7 @@ let {
   primaryAgentEnabled,
   agentPoolEnabled,
   repoRoot,
+  agentRepoRoot,
   statusPath,
   telegramPollLockPath,
   telegramToken,
@@ -529,12 +532,64 @@ let githubReconcile = githubReconcileConfig || {
 // The daemon is spawned with cwd=homedir (to avoid deleted worktree paths).
 // Re-anchor CWD to repoRoot so child processes (esp. Codex CLI) inherit a
 // trusted git directory, preventing "Not inside a trusted directory" errors.
-if (repoRoot && process.cwd() !== repoRoot) {
+// Prefer agentRepoRoot (workspace-aware) over raw repoRoot.
+const effectiveRepoRoot = agentRepoRoot || repoRoot;
+if (effectiveRepoRoot && process.cwd() !== effectiveRepoRoot) {
   try {
-    process.chdir(repoRoot);
-    console.log(`[monitor] changed CWD to repo root: ${repoRoot}`);
+    process.chdir(effectiveRepoRoot);
+    console.log(`[monitor] changed CWD to repo root: ${effectiveRepoRoot}`);
+    if (agentRepoRoot && agentRepoRoot !== repoRoot) {
+      console.log(`[monitor] agent repo root (workspace): ${agentRepoRoot}`);
+      console.log(`[monitor] developer repo root: ${repoRoot}`);
+    }
   } catch (err) {
-    console.warn(`[monitor] could not chdir to ${repoRoot}: ${err.message}`);
+    console.warn(`[monitor] could not chdir to ${effectiveRepoRoot}: ${err.message}`);
+    // Fall back to repoRoot if agentRepoRoot failed
+    if (agentRepoRoot && repoRoot && agentRepoRoot !== repoRoot) {
+      try {
+        process.chdir(repoRoot);
+        console.log(`[monitor] fell back to developer repo root: ${repoRoot}`);
+      } catch (e2) {
+        console.warn(`[monitor] could not chdir to fallback ${repoRoot}: ${e2.message}`);
+      }
+    }
+  }
+}
+
+// ── Workspace Bootstrap ─────────────────────────────────────────────────────
+// If workspaces are configured, ensure workspace repos are cloned and have .git
+// before any agent execution begins.
+{
+  const wsArray = config.repositories?.filter((r) => r.workspace) || [];
+  if (wsArray.length > 0) {
+    const workspaceIds = [...new Set(wsArray.map((r) => r.workspace).filter(Boolean))];
+    for (const wsId of workspaceIds) {
+      const wsRepos = wsArray.filter((r) => r.workspace === wsId);
+      let needsClone = false;
+      for (const repo of wsRepos) {
+        const gitPath = resolve(repo.path, ".git");
+        if (!existsSync(gitPath)) {
+          console.log(`[monitor] workspace repo missing .git: ${repo.path}`);
+          needsClone = true;
+          break;
+        }
+      }
+      if (needsClone) {
+        try {
+          const results = pullWorkspaceRepos(config.configDir, wsId);
+          for (const r of results) {
+            if (r.success) {
+              console.log(`[monitor] ✓ workspace repo ready: ${r.name}`);
+            } else {
+              console.warn(`[monitor] ⚠ workspace repo failed: ${r.name} — ${r.error}`);
+            }
+          }
+        } catch (err) {
+          console.warn(`[monitor] workspace bootstrap failed for ${wsId}: ${err.message}`);
+          console.warn(`[monitor] falling back to REPO_ROOT for agent execution`);
+        }
+      }
+    }
   }
 }
 
@@ -12066,6 +12121,7 @@ if (isExecutorDisabled()) {
             return getInternalTasksByStatus(normalized);
           },
           getTask: (taskId) => getInternalTask(taskId),
+          addTask: (taskData) => addInternalTask(taskData),
           updateTaskStatus: (taskId, status) =>
             setInternalTaskStatus(taskId, status, "agent-endpoint"),
           update: (taskId, updates) => updateInternalTask(taskId, updates),

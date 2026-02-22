@@ -188,6 +188,14 @@ function detectGitTopLevel(candidatePath) {
 function resolveDefaultRepoRoot(repoRoot) {
   if (repoRoot) return resolve(repoRoot);
 
+  // Check workspace-aware agent repo root first
+  const agentRoot = process.env.BOSUN_AGENT_REPO_ROOT || "";
+  if (agentRoot) {
+    const resolved = resolve(agentRoot);
+    const fromAgent = detectGitTopLevel(resolved) || resolved;
+    if (fromAgent) return fromAgent;
+  }
+
   const envRoot =
     process.env.VE_REPO_ROOT || process.env.BOSUN_REPO_ROOT || "";
   const fromEnv = detectGitTopLevel(envRoot) || (envRoot ? resolve(envRoot) : null);

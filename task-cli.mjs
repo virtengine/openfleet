@@ -493,6 +493,17 @@ async function cliCreate(args) {
       data.description = await readStdin();
     }
 
+    // Read description from file if --desc-file <path> is provided
+    const descFile = getArgValue(args, "--desc-file");
+    if (descFile) {
+      const descPath = resolve(descFile);
+      if (!existsSync(descPath)) {
+        console.error(`  Error: description file not found: ${descPath}`);
+        process.exit(1);
+      }
+      data.description = readFileSync(descPath, "utf8");
+    }
+
     const result = await taskCreate(data);
     if (hasFlag(args, "--json")) {
       console.log(JSON.stringify(result, null, 2));

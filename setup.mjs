@@ -4679,6 +4679,37 @@ async function runNonInteractive({
     delete configJson.vkAutoConfig;
   }
 
+  // ── Workspace bootstrap ────────────────────────────────────────────────
+  // If workspaces are configured, auto-clone repos and verify .git
+  if (Array.isArray(configJson.workspaces) && configJson.workspaces.length > 0) {
+    for (const ws of configJson.workspaces) {
+      if (!ws.id || !ws.repos?.length) continue;
+      try {
+        const { pullWorkspaceRepos } = await import("./workspace-manager.mjs");
+        const results = pullWorkspaceRepos(configDir, ws.id);
+        for (const r of results) {
+          if (r.success) {
+            info(`  ✓ Workspace repo ready: ${r.name}`);
+          } else {
+            warn(`  ⚠ Workspace repo ${r.name}: ${r.error}`);
+          }
+        }
+        // Set BOSUN_AGENT_REPO_ROOT to workspace primary repo
+        const primaryRepo = ws.repos.find((r) => r.primary) || ws.repos[0];
+        if (primaryRepo) {
+          const wsPath = resolve(configDir, "workspaces", ws.id);
+          const primaryRepoPath = resolve(wsPath, primaryRepo.name);
+          if (existsSync(resolve(primaryRepoPath, ".git"))) {
+            env.BOSUN_AGENT_REPO_ROOT = primaryRepoPath;
+            info(`  Agent repo root: ${primaryRepoPath}`);
+          }
+        }
+      } catch (err) {
+        warn(`  Workspace bootstrap for ${ws.id} failed: ${err.message}`);
+      }
+    }
+  }
+
   normalizeSetupConfiguration({ env, configJson, repoRoot, slug, configDir });
   await writeConfigFiles({ env, configJson, repoRoot, configDir });
 }

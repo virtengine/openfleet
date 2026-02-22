@@ -23,6 +23,7 @@ import {
   getAgentPromptDefinitions,
   resolveAgentPrompts,
 } from "./agent-prompts.mjs";
+import { resolveAgentRepoRoot } from "./repo-root.mjs";
 import { applyAllCompatibility } from "./compat.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -863,8 +864,15 @@ export function loadConfig(argv = process.argv, options = {}) {
     repositories[0] ||
     null;
 
-  let repoRoot =
-    repoRootOverride || selectedRepository?.path || detectRepoRoot();
+  // Resolve repoRoot with workspace-awareness:
+  // When workspaces configured and the workspace repo has .git, prefer it
+  // over REPO_ROOT (env); REPO_ROOT becomes "developer root" for config only.
+  const selectedRepoPath = selectedRepository?.path || "";
+  const selectedRepoHasGit = selectedRepoPath && existsSync(resolve(selectedRepoPath, ".git"));
+  let repoRoot = (selectedRepoHasGit ? selectedRepoPath : null) || repoRootOverride || detectRepoRoot();
+
+  // Resolve agent execution root (workspace-aware, separate from developer root)
+  const agentRepoRoot = resolveAgentRepoRoot();
 
   // Load .env from config dir — Bosun's .env is the primary source of truth
   // for Bosun-specific configuration, so it should override any stale shell
@@ -923,7 +931,11 @@ export function loadConfig(argv = process.argv, options = {}) {
     repositories.find((repo) => repo.primary) ||
     repositories[0] ||
     null;
-  repoRoot = repoRootOverride || selectedRepository?.path || detectRepoRoot();
+  {
+    const selPath = selectedRepository?.path || "";
+    const selHasGit = selPath && existsSync(resolve(selPath, ".git"));
+    repoRoot = (selHasGit ? selPath : null) || repoRootOverride || detectRepoRoot();
+  }
 
   if (resolve(repoRoot) !== resolve(initialRepoRoot)) {
     loadDotEnv(repoRoot, { override: envOverride });
@@ -1747,6 +1759,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     selectedRepository,
     workspacesDir,
     activeWorkspace,
+    agentRepoRoot,
 
     // Agent prompts
     agentPrompts,
@@ -1838,5 +1851,6 @@ export {
   loadAgentPrompts,
   parseEnvBoolean,
   getAgentPromptDefinitions,
+  resolveAgentRepoRoot,
 };
 export default loadConfig;
