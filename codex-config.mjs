@@ -312,6 +312,51 @@ export function hasSandboxPermissions(toml) {
   return /^sandbox_permissions\s*=/m.test(toml);
 }
 
+function stripSandboxPermissions(toml) {
+  let next = toml.replace(
+    /^\s*#\s*Sandbox permissions.*(?:\r?\n)?/gim,
+    "",
+  );
+  next = next.replace(/^\s*sandbox_permissions\s*=.*(?:\r?\n)?/gim, "");
+  return next;
+}
+
+function extractSandboxPermissionsValue(toml) {
+  const match = toml.match(/^\s*sandbox_permissions\s*=\s*(.+)$/m);
+  if (!match) return "";
+  const raw = String(match[1] || "").split("#")[0].trim();
+  if (!raw) return "";
+  if (raw.startsWith("[")) {
+    const values = parseTomlArrayLiteral(raw);
+    return values.join(",");
+  }
+  const quoted = raw.match(/^"(.*)"$/) || raw.match(/^'(.*)'$/);
+  if (quoted) return quoted[1];
+  return raw;
+}
+
+function insertTopLevelSandboxPermissions(toml, permValue) {
+  const block = buildSandboxPermissions(permValue).trim();
+  const tableIdx = toml.search(/^\s*\[/m);
+  if (tableIdx === -1) {
+    return `${toml.trimEnd()}\n\n${block}\n`;
+  }
+  const head = toml.slice(0, tableIdx).trimEnd();
+  const tail = toml.slice(tableIdx).trimStart();
+  return `${head}\n\n${block}\n\n${tail}`;
+}
+
+function ensureTopLevelSandboxPermissions(toml, envValue) {
+  const existingValue = extractSandboxPermissionsValue(toml);
+  const permValue = envValue || existingValue || "disk-full-write-access";
+  const stripped = stripSandboxPermissions(toml);
+  const updated = insertTopLevelSandboxPermissions(stripped, permValue);
+  return {
+    toml: updated,
+    changed: updated !== toml,
+  };
+}
+
 /**
  * Build a [features] block with the recommended flags.
  * Reads environment overrides: set CODEX_FEATURES_<NAME>=false to disable.
@@ -1291,10 +1336,13 @@ export function ensureCodexConfig({
 
   // ── 1e. Ensure sandbox permissions ────────────────────────
 
-  if (!hasSandboxPermissions(toml)) {
+  {
     const envPerms = env.CODEX_SANDBOX_PERMISSIONS || "";
-    toml = toml.trimEnd() + "\n" + buildSandboxPermissions(envPerms || undefined);
-    result.sandboxAdded = true;
+    const ensured = ensureTopLevelSandboxPermissions(toml, envPerms);
+    if (ensured.changed) {
+      toml = ensured.toml;
+      result.sandboxAdded = true;
+    }
   }
 
   // ── 1f. Ensure sandbox workspace-write defaults ───────────
