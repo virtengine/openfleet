@@ -13,9 +13,15 @@
  *   GET  /api/status          — JSON status endpoint
  *   GET  /api/installations   — list App installations (requires App JWT)
  *
- * GitHub App settings:
- *   Callback URL:  http://127.0.0.1:54317/github/callback
- *   Setup URL:     http://127.0.0.1:54317/github/setup
+ * GitHub App settings (https://github.com/settings/apps/bosun-botswain):
+ *   Callback URL:  http://127.0.0.1:54317/github/callback  ← ONLY URL needed
+ *
+ * Notes:
+ *   - Setup URL is UNAVAILABLE when "Request user authorization during installation"
+ *     is enabled — GitHub redirects to the Callback URL instead (passing
+ *     installation_id + setup_action=install). This route already handles it.
+ *   - Device Flow checkbox is GREYED OUT until the Callback URL is saved.
+ *     Order: set Callback URL → Save → then enable Device Flow.
  *
  * @module github-oauth-portal
  */
@@ -334,12 +340,14 @@ async function handleHome(req, res) {
 
   const urlsSection = `
     <div class="card">
-      <div class="card-title">URLs to register in GitHub App settings</div>
-      <h3>Callback URL</h3>
+      <div class="card-title">URL to register in GitHub App settings</div>
+      <h3>Callback URL <span class="tag tag-green">required</span></h3>
       ${urlRow(cbUrl)}
-      <h3>Setup URL</h3>
-      ${urlRow(setupUrl)}
-      <p style="margin-top:12px">Navigate to <a href="https://github.com/settings/apps/${GITHUB_APP_NAME}" target="_blank">GitHub App settings → ${GITHUB_APP_NAME}</a> and paste the URLs above.</p>
+      <div class="alert alert-info" style="margin-top:12px">
+        <strong>Setup URL</strong> — leave blank. When <em>Request user authorization (OAuth) during installation</em> is enabled, GitHub redirects to the Callback URL instead, passing <code>installation_id</code> &amp; <code>setup_action=install</code>. This portal handles that automatically.<br><br>
+        <strong>Device Flow greyed out?</strong> Paste the Callback URL above, click <strong>Save changes</strong>, then the Device Flow checkbox will become clickable.
+      </div>
+      <p style="margin-top:12px">Navigate to <a href="https://github.com/settings/apps/${GITHUB_APP_NAME}" target="_blank">GitHub App settings → ${GITHUB_APP_NAME}</a> and paste the Callback URL above.</p>
     </div>
   `;
 
@@ -380,8 +388,14 @@ async function handleHome(req, res) {
     <div class="card">
       <div class="card-title">Quick Start</div>
       <ol>
-        <li>In <a href="https://github.com/settings/apps/${GITHUB_APP_NAME}" target="_blank">GitHub App settings</a>, set the Callback URL and Setup URL to the values above.</li>
-        <li>Set env vars: <code>BOSUN_GITHUB_CLIENT_ID</code>, <code>BOSUN_GITHUB_CLIENT_SECRET</code></li>
+        <li>In <a href="https://github.com/settings/apps/${GITHUB_APP_NAME}" target="_blank">GitHub App settings</a>:<ul style="margin-top:6px">
+          <li>Set <strong>Callback URL</strong> to the value above and click <strong>Save changes</strong>.</li>
+          <li>Enable <strong>Request user authorization (OAuth) during installation</strong> ✓</li>
+          <li>Enable <strong>Device Flow</strong> ✓ (only available after Callback URL is saved)</li>
+          <li>Leave <strong>Setup URL</strong> blank — it is disabled &amp; not needed.</li>
+          <li>Leave <strong>Redirect on update</strong> unchecked (Setup URL is unavailable).</li>
+        </ul></li>
+        <li>Set env vars: <code>BOSUN_GITHUB_CLIENT_ID</code> (already in .env.example), optionally <code>BOSUN_GITHUB_CLIENT_SECRET</code> (not needed for Device Flow)</li>
         <li>Click <strong>Install / Authorize GitHub App</strong> below.</li>
         <li>After authorization, Bosun saves your token to <code>~/.bosun/github-auth-state.json</code>.</li>
       </ol>
@@ -878,9 +892,10 @@ export async function startOAuthPortal(options = {}) {
 
       if (!quiet) {
         console.log(`[oauth-portal] Running at http://${host}:${_port}`);
-        console.log(`[oauth-portal]   Callback URL: http://${host}:${_port}/github/callback`);
-        console.log(`[oauth-portal]   Setup URL:    http://${host}:${_port}/github/setup`);
-        console.log(`[oauth-portal]   Webhook URL:  http://<public-host>/webhook  (needs public URL or ngrok)`);
+        console.log(`[oauth-portal]   Callback URL: http://${host}:${_port}/github/callback  ← register in GitHub App settings`);
+        console.log(`[oauth-portal]   Setup URL:    (leave blank — superseded by Callback URL when OAuth-at-install is ON)`);
+        console.log(`[oauth-portal]   Device Flow:  enable AFTER saving Callback URL in GitHub App settings`);
+        console.log(`[oauth-portal]   Webhook URL:  http://<public-host>/webhook  (requires ngrok or public URL)`);
       }
 
       resolve({

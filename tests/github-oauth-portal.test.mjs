@@ -175,7 +175,8 @@ describe("github-oauth-portal", () => {
     expect(text).toContain("<!DOCTYPE html>");
     expect(text).toContain("Bosun");
     expect(text).toContain("github/callback");
-    expect(text).toContain("github/setup");
+    expect(text).toContain("Device Flow");
+    expect(text).toContain("Setup URL");
   });
 
   it("GET / shows authenticated user when state is saved", async () => {
