@@ -4,6 +4,7 @@
  * ────────────────────────────────────────────────────────────── */
 
 import { h } from "preact";
+import { createPortal } from "preact/compat";
 import {
   useState,
   useEffect,
@@ -319,7 +320,7 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
     ? `transform: translateY(${dragY}px); opacity: ${Math.max(0.2, 1 - dragY / 400)}`
     : "";
 
-  return html`
+  const content = html`
     <div
       class="modal-overlay ${visible ? "modal-overlay-visible" : ""}"
       onClick=${(e) => {
@@ -354,6 +355,7 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
       </div>
     </div>
   `;
+  return createPortal(content, document.body);
 }
 
 /* ═══════════════════════════════════════════════

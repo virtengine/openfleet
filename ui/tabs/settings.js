@@ -90,26 +90,44 @@ const SETTINGS_STYLES = `
 /* Floating save bar */
 .settings-save-bar {
   position: fixed;
-  bottom: calc(var(--nav-height) + var(--safe-bottom) + 10px);
-  left: 0; right: 0;
-  z-index: 1000;
+  bottom: calc(var(--nav-height, 60px) + var(--safe-bottom, 0px) + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 999;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
   row-gap: 8px;
-  padding: 12px 16px;
-  padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
+  padding: 10px 16px;
+  min-width: 240px;
+  max-width: 480px;
+  width: auto;
   background: var(--glass-bg, rgba(30,30,46,0.95));
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border-top: 1px solid var(--border, rgba(255,255,255,0.08));
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  transition: all 0.2s ease;
   animation: slideUp 0.25s ease;
 }
+.settings-save-bar--dirty {
+  border-color: var(--accent, #5b6eae);
+  box-shadow: 0 4px 20px rgba(91, 110, 174, 0.25);
+}
+.settings-save-bar--clean .save-bar-info {
+  color: var(--text-hint, #666);
+  font-size: 12px;
+}
+.setting-modified-dot--clean {
+  background: var(--text-hint, #666) !important;
+  opacity: 0.4;
+}
 @keyframes slideUp {
-  from { transform: translateY(100%); opacity: 0; }
-  to   { transform: translateY(0);    opacity: 1; }
+  from { transform: translateX(-50%) translateY(20px); opacity: 0; }
+  to   { transform: translateX(-50%) translateY(0);    opacity: 1; }
 }
 .settings-save-bar .save-bar-info {
   display: flex;
@@ -129,7 +147,7 @@ const SETTINGS_STYLES = `
 }
 @media (min-width: 1200px) {
   .settings-save-bar {
-    bottom: 0;
+    bottom: 16px;
   }
 }
 /* Individual setting row */
@@ -359,6 +377,7 @@ const SETTINGS_STYLES = `
   margin-right: auto;
   width: 100%;
   box-sizing: border-box;
+  padding-bottom: 80px;
 }
 
 body.settings-save-open .main-content {
@@ -1069,15 +1088,14 @@ function ServerConfigMode() {
       <//>
     `}
 
-    <!-- Floating save bar -->
-    ${changeCount > 0 &&
-    html`
-      <div class="settings-save-bar">
-        <div class="save-bar-info">
-          <span class="setting-modified-dot"></span>
-          <span>${changeCount} unsaved change${changeCount !== 1 ? "s" : ""}</span>
-        </div>
-        <div class="save-bar-actions">
+    <!-- Floating save bar - always visible -->
+    <div class=${`settings-save-bar ${changeCount > 0 ? 'settings-save-bar--dirty' : 'settings-save-bar--clean'}`}>
+      <div class="save-bar-info">
+        <span class=${`setting-modified-dot ${changeCount === 0 ? 'setting-modified-dot--clean' : ''}`}></span>
+        <span>${changeCount > 0 ? `${changeCount} unsaved change${changeCount !== 1 ? "s" : ""}` : "All changes saved"}</span>
+      </div>
+      <div class="save-bar-actions">
+        ${changeCount > 0 && html`
           <button class="btn btn-ghost btn-sm" onClick=${handleDiscard}>
             Discard
           </button>
@@ -1088,9 +1106,9 @@ function ServerConfigMode() {
           >
             ${saving ? html`<${Spinner} size=${14} /> Saving…` : "Save Changes"}
           </button>
-        </div>
+        `}
       </div>
-    `}
+    </div>
 
     <!-- Confirm dialog with diff -->
     ${confirmOpen &&
@@ -1176,33 +1194,38 @@ function AppPreferencesMode() {
   /* Load prefs from CloudStorage on mount */
   useEffect(() => {
     (async () => {
-      const [fs, ct, nu, ne, nc, dm, dmp, ds, dr] = await Promise.all([
-        cloudGet("fontSize"),
-        cloudGet("colorTheme"),
-        cloudGet("notifyUpdates"),
-        cloudGet("notifyErrors"),
-        cloudGet("notifyComplete"),
-        cloudGet("debugMode"),
-        cloudGet("defaultMaxParallel"),
-        cloudGet("defaultSdk"),
-        cloudGet("defaultRegion"),
-      ]);
-      if (fs) {
-        setFontSize(fs);
-        applyFontSize(fs);
+      try {
+        const [fs, ct, nu, ne, nc, dm, dmp, ds, dr] = await Promise.all([
+          cloudGet("fontSize"),
+          cloudGet("colorTheme"),
+          cloudGet("notifyUpdates"),
+          cloudGet("notifyErrors"),
+          cloudGet("notifyComplete"),
+          cloudGet("debugMode"),
+          cloudGet("defaultMaxParallel"),
+          cloudGet("defaultSdk"),
+          cloudGet("defaultRegion"),
+        ]);
+        if (fs) {
+          setFontSize(fs);
+          applyFontSize(fs);
+        }
+        if (ct) {
+          setColorTheme(ct);
+          applyColorTheme(ct);
+        }
+        if (nu != null) setNotifyUpdates(nu);
+        if (ne != null) setNotifyErrors(ne);
+        if (nc != null) setNotifyComplete(nc);
+        if (dm != null) setDebugMode(dm);
+        if (dmp != null) setDefaultMaxParallel(dmp);
+        if (ds) setDefaultSdk(ds);
+        if (dr) setDefaultRegion(dr);
+      } catch (err) {
+        console.warn('[AppPrefs] Failed to load preferences:', err);
+      } finally {
+        setLoaded(true);
       }
-      if (ct) {
-        setColorTheme(ct);
-        applyColorTheme(ct);
-      }
-      if (nu != null) setNotifyUpdates(nu);
-      if (ne != null) setNotifyErrors(ne);
-      if (nc != null) setNotifyComplete(nc);
-      if (dm != null) setDebugMode(dm);
-      if (dmp != null) setDefaultMaxParallel(dmp);
-      if (ds) setDefaultSdk(ds);
-      if (dr) setDefaultRegion(dr);
-      setLoaded(true);
     })();
   }, []);
 
@@ -1211,6 +1234,7 @@ function AppPreferencesMode() {
     const next = !getter;
     setter(next);
     cloudSet(key, next);
+    console.log('[AppPrefs] Saved:', key, next);
     haptic();
     showToast("Preference saved", "success");
   }, []);
@@ -1218,6 +1242,7 @@ function AppPreferencesMode() {
   const handleFontSize = (v) => {
     setFontSize(v);
     cloudSet("fontSize", v);
+    console.log('[AppPrefs] Saved: fontSize', v);
     haptic();
     applyFontSize(v);
     showToast("Font size saved", "success");
@@ -1226,6 +1251,7 @@ function AppPreferencesMode() {
   const handleColorTheme = (v) => {
     setColorTheme(v);
     cloudSet("colorTheme", v);
+    console.log('[AppPrefs] Saved: colorTheme', v);
     haptic();
     applyColorTheme(v);
     showToast("Theme saved", "success");
@@ -1235,6 +1261,7 @@ function AppPreferencesMode() {
     const val = Math.max(1, Math.min(20, Number(v)));
     setDefaultMaxParallel(val);
     cloudSet("defaultMaxParallel", val);
+    console.log('[AppPrefs] Saved: defaultMaxParallel', val);
     haptic();
     showToast("Preference saved", "success");
   };
@@ -1242,6 +1269,7 @@ function AppPreferencesMode() {
   const handleDefaultSdk = (v) => {
     setDefaultSdk(v);
     cloudSet("defaultSdk", v);
+    console.log('[AppPrefs] Saved: defaultSdk', v);
     haptic();
     showToast("Preference saved", "success");
   };
@@ -1249,6 +1277,7 @@ function AppPreferencesMode() {
   const handleDefaultRegion = (v) => {
     setDefaultRegion(v);
     cloudSet("defaultRegion", v);
+    console.log('[AppPrefs] Saved: defaultRegion', v);
     haptic();
     showToast("Preference saved", "success");
   };
@@ -1312,7 +1341,7 @@ function AppPreferencesMode() {
       : "";
 
   return html`
-    ${!loaded && html`<${Card} title="Loading Settings…"><${SkeletonCard} /><//>`}
+
 
     <!-- ─── Account ─── -->
     <${Collapsible} title="👤 Account" defaultOpen=${true}>
