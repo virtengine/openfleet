@@ -63,6 +63,8 @@ import {
 } from "./modules/api.js";
 import {
   connected,
+  statusData,
+  executorData,
   refreshTab,
   toasts,
   initWsInvalidationListener,
@@ -123,6 +125,60 @@ try {
   const stateMod = await import("./modules/state.js");
   if (stateMod.dataFreshness) dataFreshness = stateMod.dataFreshness;
 } catch { /* use placeholder signals */ }
+
+/* ── Shared components ── */
+
+/**
+ * AnimatedNumber — smoothly counts from previous to new value using rAF.
+ */
+function AnimatedNumber({ value, duration = 600, className = "" }) {
+  const displayRef = useRef(value);
+  const rafRef = useRef(null);
+  const [display, setDisplay] = useState(value);
+
+  useEffect(() => {
+    const from = displayRef.current;
+    const to = value;
+    if (from === to) return;
+    const start = performance.now();
+    const animate = (now) => {
+      const t = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - t, 3); // ease out cubic
+      const current = Math.round(from + (to - from) * eased);
+      displayRef.current = current;
+      setDisplay(current);
+      if (t < 1) rafRef.current = requestAnimationFrame(animate);
+    };
+    rafRef.current = requestAnimationFrame(animate);
+    return () => rafRef.current && cancelAnimationFrame(rafRef.current);
+  }, [value, duration]);
+
+  return html`<span class="${className}">${display}</span>`;
+}
+
+/**
+ * KeyboardShortcutsModal — shows available keyboard shortcuts.
+ */
+function KeyboardShortcutsModal({ onClose }) {
+  const shortcuts = [
+    { key: "1–8", desc: "Switch tabs" },
+    { key: "c",   desc: "Create task (on Dashboard)" },
+    { key: "?",   desc: "Show keyboard shortcuts" },
+    { key: "Esc", desc: "Close modal / palette" },
+  ];
+  return html`
+    <${Modal} title="Keyboard Shortcuts" onClose=${onClose}>
+      <div class="shortcuts-list">
+        ${shortcuts.map((s) => html`
+          <div class="shortcut-item" key=${s.key}>
+            <kbd class="shortcut-key">${s.key}</kbd>
+            <span class="shortcut-desc">${s.desc}</span>
+          </div>
+        `)}
+      </div>
+    <//>  
+  `;
+}
 
 /* ── Backend health helpers ── */
 
@@ -460,10 +516,18 @@ function SidebarNav() {
         ${TAB_CONFIG.map((tab) => {
           const isActive = activeTab.value === tab.id;
           const isHome = tab.id === "dashboard";
+          const sCounts = statusData.value?.counts || {};
+          const badge =
+            tab.id === "tasks"
+              ? Number(sCounts.running || sCounts.inprogress || 0) + Number(sCounts.inreview || sCounts.review || 0)
+              : tab.id === "agents"
+                ? Number(executorData.value?.data?.activeSlots || 0)
+                : 0;
           return html`
             <button
               key=${tab.id}
               class="sidebar-nav-item ${isActive ? "active" : ""}"
+              style="position:relative"
               aria-label=${tab.label}
               aria-current=${isActive ? "page" : null}
               onClick=${() =>
@@ -474,6 +538,7 @@ function SidebarNav() {
             >
               ${ICONS[tab.icon]}
               <span>${tab.label}</span>
+              ${badge > 0 ? html`<span class="nav-badge">${badge}</span>` : null}
             </button>
           `;
         })}
@@ -705,15 +770,20 @@ function getTabsById(ids) {
 
 function BottomNav({ compact, moreOpen, onToggleMore, onNavigate }) {
   const primaryTabs = getTabsById(PRIMARY_NAV_TABS);
+  const sCounts = statusData.value?.counts || {};
+  const tasksBadge = Number(sCounts.running || sCounts.inprogress || 0) + Number(sCounts.inreview || sCounts.review || 0);
+  const agentsBadge = Number(executorData.value?.data?.activeSlots || 0);
   return html`
     <nav class=${`bottom-nav ${compact ? "compact" : ""}`}>
       ${primaryTabs.map((tab) => {
         const isHome = tab.id === "dashboard";
         const isActive = activeTab.value === tab.id;
+        const badge = tab.id === "tasks" ? tasksBadge : tab.id === "agents" ? agentsBadge : 0;
         return html`
           <button
             key=${tab.id}
             class="nav-item ${isActive ? "active" : ""}"
+            style="position:relative"
             aria-label=${`Go to ${tab.label}`}
             type="button"
             onClick=${() =>
@@ -724,6 +794,7 @@ function BottomNav({ compact, moreOpen, onToggleMore, onNavigate }) {
           >
             ${ICONS[tab.icon]}
             <span class="nav-label">${tab.label}</span>
+            ${badge > 0 ? html`<span class="nav-badge">${badge}</span>` : null}
           </button>
         `;
       })}
@@ -805,6 +876,7 @@ function MoreSheet({ open, onClose, onNavigate }) {
 function App() {
   useBackendHealth();
   const { open: paletteOpen, onClose: paletteClose } = useCommandPalette();
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const mainRef = useRef(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const scrollVisibilityRef = useRef(false);
@@ -987,7 +1059,10 @@ function App() {
 
   useEffect(() => {
     if (typeof globalThis === "undefined") return;
-    const handler = () => setIsMoreOpen(false);
+    const handler = () => {
+      setIsMoreOpen(false);
+      setShowShortcuts(false);
+    };
     globalThis.addEventListener("ve:close-modals", handler);
     return () => globalThis.removeEventListener("ve:close-modals", handler);
   }, []);
@@ -1038,9 +1113,24 @@ function App() {
         return;
       }
 
+      // "c" to create task (when not in a form element)
+      if (e.key === "c") {
+        e.preventDefault();
+        globalThis.dispatchEvent(new CustomEvent("ve:create-task"));
+        return;
+      }
+
+      // "?" to toggle keyboard shortcuts help
+      if (e.key === "?") {
+        e.preventDefault();
+        setShowShortcuts((v) => !v);
+        return;
+      }
+
       // Escape to close modals/palette
       if (e.key === "Escape") {
         globalThis.dispatchEvent(new CustomEvent("ve:close-modals"));
+        setShowShortcuts(false);
       }
     }
     document.addEventListener("keydown", handleGlobalKeys);
@@ -1245,6 +1335,7 @@ function App() {
           ${backendDown.value ? html`<${OfflineBanner} />` : null}
           <${ToastContainer} />
           <${CommandPalette} open=${paletteOpen} onClose=${paletteClose} />
+          ${showShortcuts ? html`<${KeyboardShortcutsModal} onClose=${() => setShowShortcuts(false)} />` : null}
           <${PullToRefresh} onRefresh=${() => refreshTab(activeTab.value)}>
             <main class="main-content" ref=${mainRef}>
               <${TabErrorBoundary} key=${activeTab.value} tabName=${activeTab.value}>
