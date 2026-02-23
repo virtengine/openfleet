@@ -687,15 +687,6 @@
         return { data: STATE.status };
       if (route === '/api/executor')
         return { data: { ...STATE.status, maxParallel: STATE.maxParallel, paused: STATE.paused, executors: STATE.executors, activeSlots: STATE.executors.filter(e => e.status === 'active').length, sdk: 'auto' } };
-      if (route === '/api/executor/models')
-        return {
-          ok: true,
-          registry: {
-            codex: ['gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5.1-codex-max'],
-            copilot: ['claude-opus-4.6', 'claude-sonnet-4.6', 'claude-sonnet-4.5', 'claude-haiku-4.5', 'gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex', 'gpt-5.1-codex-mini'],
-            claude: ['claude-opus-4.6', 'claude-sonnet-4.6', 'claude-sonnet-4.5', 'claude-haiku-4.5', 'claude-code'],
-          },
-        };
       if (route === '/api/telemetry/summary')
         return { data: { status: 'ok', updatedAt: Date.now(), totals: { tasks: STATE.tasks.length, executors: STATE.executors.length } } };
       if (route === '/api/telemetry/errors')

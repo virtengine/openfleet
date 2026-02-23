@@ -603,7 +603,7 @@ describe("constants", () => {
       executor: "COPILOT",
       variant: "CLAUDE_CODE",
     });
-    expect(Object.keys(MODEL_ALIASES).length).toBeGreaterThanOrEqual(8);
+    expect(Object.keys(MODEL_ALIASES)).toHaveLength(8);
   });
 });
 

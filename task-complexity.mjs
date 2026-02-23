@@ -98,93 +98,13 @@ export const DEFAULT_MODEL_PROFILES = Object.freeze({
 export const MODEL_ALIASES = Object.freeze({
   "gpt-5.1-codex-mini": { executor: "CODEX", variant: "GPT51_CODEX_MINI" },
   "gpt-5.2-codex": { executor: "CODEX", variant: "DEFAULT" },
-  "gpt-5.3-codex": { executor: "CODEX", variant: "DEFAULT" },
-  "gpt-5.1-codex": { executor: "CODEX", variant: "DEFAULT" },
   "gpt-5.1-codex-max": { executor: "CODEX", variant: "GPT51_CODEX_MAX" },
   "claude-opus-4.6": { executor: "COPILOT", variant: "CLAUDE_OPUS_4_6" },
-  "claude-sonnet-4.6": { executor: "COPILOT", variant: "CLAUDE_SONNET_4_6" },
   "opus-4.6": { executor: "COPILOT", variant: "CLAUDE_OPUS_4_6" },
   "sonnet-4.5": { executor: "COPILOT", variant: "CLAUDE_SONNET_4_5" },
   "haiku-4.5": { executor: "COPILOT", variant: "CLAUDE_HAIKU_4_5" },
   "claude-code": { executor: "COPILOT", variant: "CLAUDE_CODE" },
 });
-
-export const EXECUTOR_MODEL_REGISTRY = Object.freeze({
-  codex: Object.freeze([
-    "gpt-5.3-codex",
-    "gpt-5.2-codex",
-    "gpt-5.1-codex",
-    "gpt-5.1-codex-mini",
-    "gpt-5.1-codex-max",
-  ]),
-  copilot: Object.freeze([
-    "claude-opus-4.6",
-    "claude-sonnet-4.6",
-    "claude-sonnet-4.5",
-    "claude-haiku-4.5",
-    "gpt-5.3-codex",
-    "gpt-5.2-codex",
-    "gpt-5.1-codex",
-    "gpt-5.1-codex-mini",
-  ]),
-  claude: Object.freeze([
-    "claude-opus-4.6",
-    "claude-sonnet-4.6",
-    "claude-sonnet-4.5",
-    "claude-haiku-4.5",
-    "claude-code",
-  ]),
-});
-
-const EXECUTOR_KEY_ALIASES = Object.freeze({
-  codex: "codex",
-  "codex-sdk": "codex",
-  "codex-cli": "codex",
-  copilot: "copilot",
-  "copilot-sdk": "copilot",
-  "copilot-cli": "copilot",
-  claude: "claude",
-  "claude-sdk": "claude",
-  "claude-code": "claude",
-  "claudecode-sdk": "claude",
-  "claudecode-cli": "claude",
-  "CODEX": "codex",
-  "COPILOT": "copilot",
-  "CLAUDE": "claude",
-});
-
-export function normalizeExecutorKey(executor) {
-  const raw = String(executor || "").trim();
-  if (!raw) return null;
-  return EXECUTOR_KEY_ALIASES[raw] || EXECUTOR_KEY_ALIASES[raw.toLowerCase()] || null;
-}
-
-export function getExecutorModelRegistry() {
-  return EXECUTOR_MODEL_REGISTRY;
-}
-
-export function getModelsForExecutor(executor) {
-  const key = normalizeExecutorKey(executor);
-  if (!key) return [];
-  return [...(EXECUTOR_MODEL_REGISTRY[key] || [])];
-}
-
-export function isModelAllowedForExecutor(executor, model, allowedModels = null) {
-  const normalizedModel = String(model || "").trim();
-  if (!normalizedModel) return false;
-  const key = normalizeExecutorKey(executor);
-  if (!key) return false;
-
-  const fromConfig =
-    allowedModels && typeof allowedModels === "object"
-      ? allowedModels[key]
-      : null;
-  const candidates = Array.isArray(fromConfig) && fromConfig.length > 0
-    ? fromConfig
-    : EXECUTOR_MODEL_REGISTRY[key] || [];
-
-  return candidates.includes(normalizedModel);
-}
 
 /**
  * Keywords in task titles/descriptions that bump complexity up or down.
