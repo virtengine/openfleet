@@ -407,16 +407,18 @@ export function ensureFeatureFlags(toml, envOverrides = process.env) {
 
 /**
  * Build the sandbox_permissions top-level key.
- * Default: ["disk-full-write-access"] for agentic workloads.
+ * Default: "disk-full-write-access" for agentic workloads.
+ *
+ * Codex CLI expects sandbox_permissions as a plain string, NOT an array.
  *
  * @param {string} [envValue]  CODEX_SANDBOX_PERMISSIONS env var value
  * @returns {string}  TOML line(s)
  */
 export function buildSandboxPermissions(envValue) {
-  const perms = envValue
-    ? envValue.split(",").map((s) => `"${s.trim()}"`)
-    : ['"disk-full-write-access"'];
-  return `\n# Sandbox permissions (added by bosun)\nsandbox_permissions = [${perms.join(", ")}]\n`;
+  const perm = envValue
+    ? envValue.split(",").map((s) => s.trim()).filter(Boolean).join(",")
+    : "disk-full-write-access";
+  return `\n# Sandbox permissions (added by bosun)\nsandbox_permissions = "${perm}"\n`;
 }
 
 function parseTomlArrayLiteral(raw) {

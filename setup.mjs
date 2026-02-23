@@ -145,6 +145,24 @@ function writeSetupProgress(configDir, data) {
   }
 }
 
+/**
+ * Save a snapshot of env and configJson alongside setup progress so the user
+ * can resume where they left off if setup crashes or is interrupted.
+ */
+function writeSetupSnapshot(configDir, { step, label, env, configJson }) {
+  writeSetupProgress(configDir, {
+    status: "incomplete",
+    step,
+    total: SETUP_TOTAL_STEPS,
+    label,
+    updatedAt: new Date().toISOString(),
+    snapshot: {
+      env: env || {},
+      configJson: configJson || {},
+    },
+  });
+}
+
 function clearSetupProgress(configDir) {
   const progressPath = getSetupProgressPath(configDir);
   if (!existsSync(progressPath)) return;
@@ -776,6 +794,8 @@ function printExecutorModelReference() {
 function buildRepositoryChoices(configJson, repoRoot) {
   const choices = [];
   const seen = new Set();
+  // Track slugs that already appear under a workspace
+  const workspaceSlugs = new Set();
 
   const pushChoice = (input) => {
     if (!input) return;
@@ -798,6 +818,7 @@ function buildRepositoryChoices(configJson, repoRoot) {
       workspace,
       value: key,
     });
+    if (workspace && key) workspaceSlugs.add(key);
   };
 
   if (Array.isArray(configJson?.workspaces)) {
@@ -815,8 +836,11 @@ function buildRepositoryChoices(configJson, repoRoot) {
     }
   }
 
+  // Only add standalone repos that aren't already covered by a workspace
   if (Array.isArray(configJson?.repositories)) {
     for (const repo of configJson.repositories) {
+      const key = String(repo?.slug || repo?.name || "").trim();
+      if (key && workspaceSlugs.has(key)) continue;
       pushChoice(repo);
     }
   }
@@ -2171,7 +2195,11 @@ async function main() {
   const slug = detectRepoSlug();
   const projectName = detectProjectName(repoRoot);
   const setupProgress = readSetupProgress(configDir);
+  let resumeFromStep = 0;
+  let resumedEnv = null;
+  let resumedConfigJson = null;
   const markSetupProgress = (step, label) => {
+    // We save a full snapshot (including env/configJson) so resume can restore state
     writeSetupProgress(configDir, {
       status: "incomplete",
       step,
@@ -2180,16 +2208,41 @@ async function main() {
       updatedAt: new Date().toISOString(),
     });
   };
+  /** Save a full snapshot of env and configJson at the current step. */
+  const saveSetupSnapshot = (step, label, env, configJson) => {
+    writeSetupSnapshot(configDir, { step, label, env, configJson });
+  };
 
-  if (setupProgress?.status === "incomplete") {
+  if (setupProgress?.status === "incomplete" && setupProgress.step > 1) {
     const label = setupProgress.label ? ` — ${setupProgress.label}` : "";
     const timestamp = setupProgress.updatedAt
       ? ` (last updated ${setupProgress.updatedAt})`
       : "";
+    console.log();
     info(
-      `Detected a previous setup that ended at step ${setupProgress.step}${label}${timestamp}.`,
+      `Detected an incomplete setup that ended at step ${setupProgress.step} of ${SETUP_TOTAL_STEPS}${label}${timestamp}.`,
     );
-    info("Setup writes .env/config files at the end, so partial runs do not persist changes.");
+    if (setupProgress.snapshot?.env) {
+      // We have a snapshot — offer to resume
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const resumeAnswer = await new Promise((res) => {
+        rl.question(
+          "  Resume where you left off? [Y/n]: ",
+          (answer) => { rl.close(); res((answer || "Y").trim().toLowerCase()); },
+        );
+      });
+      if (resumeAnswer !== "n" && resumeAnswer !== "no") {
+        resumeFromStep = setupProgress.step;
+        resumedEnv = setupProgress.snapshot.env;
+        resumedConfigJson = setupProgress.snapshot.configJson;
+        info(`Resuming from step ${resumeFromStep}. Previously collected values will be restored.`);
+      } else {
+        info("Starting fresh setup from the beginning.");
+        clearSetupProgress(configDir);
+      }
+    } else {
+      info("No saved state found from previous run — starting fresh.");
+    }
     console.log();
   }
 
@@ -2274,6 +2327,16 @@ async function main() {
     agentPrompts: {},
   };
 
+  // Restore snapshot state if resuming from a previous incomplete setup
+  if (resumedEnv) {
+    Object.assign(env, resumedEnv);
+    // Restore cross-step flags from snapshot
+    if (env._CLONE_WORKSPACES === "1") cloneWorkspacesAfterSetup = true;
+  }
+  if (resumedConfigJson) {
+    Object.assign(configJson, resumedConfigJson);
+  }
+
   env.REPO_ROOT = process.env.REPO_ROOT || repoRoot;
 
   if (isNonInteractive) {
@@ -2291,16 +2354,28 @@ async function main() {
   let aborted = false;
   let cloneWorkspacesAfterSetup = false;
 
+  // Variables set in early steps that later steps depend on.
+  // Declared as `let` so they can be restored from a resume snapshot.
+  let setupProfile = env._SETUP_PROFILE || "recommended";
+  let isAdvancedSetup = setupProfile === "advanced";
+
   try {
     // ── Step 2: Setup Mode + Project Identity ─────────────
+    if (resumeFromStep > 2) {
+      info(`Skipping step 2 (restored from previous run).`);
+      // Restore isAdvancedSetup from env snapshot
+      setupProfile = env._SETUP_PROFILE || "recommended";
+      isAdvancedSetup = setupProfile === "advanced";
+    } else {
     headingStep(2, "Setup Mode & Project Identity", markSetupProgress);
     const setupProfileIdx = await prompt.choose(
       "How much setup detail do you want?",
       SETUP_PROFILES.map((profile) => profile.label),
       0,
     );
-    const setupProfile = SETUP_PROFILES[setupProfileIdx]?.key || "recommended";
-    const isAdvancedSetup = setupProfile === "advanced";
+    setupProfile = SETUP_PROFILES[setupProfileIdx]?.key || "recommended";
+    isAdvancedSetup = setupProfile === "advanced";
+    env._SETUP_PROFILE = setupProfile;
     info(
       isAdvancedSetup
         ? "Advanced mode enabled — all sections will prompt for detailed overrides."
@@ -2313,8 +2388,13 @@ async function main() {
       process.env.GITHUB_REPO || slug || "",
     );
     configJson.projectName = env.PROJECT_NAME;
+    saveSetupSnapshot(2, "Setup Mode & Project Identity", env, configJson);
+    } // end step 2
 
     // ── Step 3: Workspace & Repository ─────────────────────
+    if (resumeFromStep > 3) {
+      info(`Skipping step 3 (restored from previous run).`);
+    } else {
     headingStep(3, "Workspace & Repository Configuration", markSetupProgress);
 
     const useWorkspaces = await prompt.confirm(
@@ -2419,6 +2499,7 @@ async function main() {
         "Clone/pull workspace repos now (recommended)?",
         true,
       );
+      env._CLONE_WORKSPACES = cloneWorkspacesAfterSetup ? "1" : "0";
     } else {
       // Single-repo mode (classic) — still works as before
       const multiRepo = isAdvancedSetup
@@ -2469,8 +2550,13 @@ async function main() {
         }
       }
     }
+    saveSetupSnapshot(3, "Workspace & Repository Configuration", env, configJson);
+    } // end step 3
 
     // ── Step 4: Executor Configuration ─────────────────────
+    if (resumeFromStep > 4) {
+      info(`Skipping step 4 (restored from previous run).`);
+    } else {
     headingStep(4, "Executor / Agent Configuration", markSetupProgress);
     console.log("  Executors are the AI agents that work on tasks.\n");
 
@@ -2649,8 +2735,18 @@ async function main() {
       );
       if (!wantCodexFallback) env.CODEX_SDK_DISABLED = "true";
     }
+    saveSetupSnapshot(4, "Executor / Agent Configuration", env, configJson);
+    } // end step 4
+
+    // Recompute usedSdks from configJson (works for both fresh and resumed runs)
+    const usedSdks = new Set(
+      (configJson.executors || []).map((e) => String(e.executor).toUpperCase()),
+    );
 
     // ── Step 5: AI Provider Keys ─────────────────────────────
+    if (resumeFromStep > 5) {
+      info(`Skipping step 5 (restored from previous run).`);
+    } else {
     headingStep(5, "AI Provider Keys", markSetupProgress);
     console.log(
       "  Configure API keys for the agent SDKs in your executor preset.\n",
@@ -2785,8 +2881,13 @@ async function main() {
       // Codex not needed — skip OpenAI key prompts entirely
       info("Codex SDK not in executor preset — skipping OpenAI configuration.");
     }
+    saveSetupSnapshot(5, "AI Provider Keys", env, configJson);
+    } // end step 5
 
     // ── Step 6: Telegram ──────────────────────────────────
+    if (resumeFromStep > 6) {
+      info(`Skipping step 6 (restored from previous run).`);
+    } else {
     headingStep(6, "Telegram Notifications", markSetupProgress);
     console.log(
       "  The Telegram bot sends real-time notifications and lets you\n" +
@@ -3013,8 +3114,13 @@ async function main() {
         }
       }
     }
+    saveSetupSnapshot(6, "Telegram Notifications", env, configJson);
+    } // end step 6
 
     // ── Step 7: Kanban + Execution ─────────────────────────
+    if (resumeFromStep > 7) {
+      info(`Skipping step 7 (restored from previous run).`);
+    } else {
     headingStep(7, "Kanban & Execution", markSetupProgress);
     const repoChoices = buildRepositoryChoices(configJson, repoRoot);
     let selectedRepoChoice = repoChoices[0] || null;
@@ -3055,7 +3161,7 @@ async function main() {
       }
       console.log();
       info(
-        "If you need different task backends per repo, run separate bosun instances with different configs.",
+        "The kanban board manages tasks for this workspace. Individual tasks can target specific repos within the workspace.",
       );
       console.log();
     } else if (selectedRepoChoice?.value) {
@@ -3368,6 +3474,7 @@ async function main() {
         githubTaskModeDefault === "issues" ? 1 : 0,
       );
       let githubTaskMode = githubTaskModeIdx === 1 ? "issues" : "kanban";
+      const detectedLogin = detectGitHubUserLogin(repoRoot);
       if (skipGitHubProjectSetup && githubTaskMode === "kanban") {
         const downgrade = await prompt.confirm(
           "GitHub auth is missing. Switch to Issues-only mode for now?",
@@ -3410,8 +3517,6 @@ async function main() {
         }
       }
       env.GITHUB_PROJECT_MODE = githubTaskMode;
-
-      const detectedLogin = detectGitHubUserLogin(repoRoot);
       if (!env.GITHUB_DEFAULT_ASSIGNEE) {
         env.GITHUB_DEFAULT_ASSIGNEE =
           process.env.GITHUB_DEFAULT_ASSIGNEE ||
@@ -3430,8 +3535,8 @@ async function main() {
       if (!existingScopeLabels.includes(canonicalLabel)) {
         existingScopeLabels.unshift(canonicalLabel);
       }
-      if (!existingScopeLabels.includes("codex-mointor")) {
-        existingScopeLabels.push("codex-mointor");
+      if (!existingScopeLabels.includes("codex-monitor")) {
+        existingScopeLabels.push("codex-monitor");
       }
       env.BOSUN_TASK_LABEL = canonicalLabel;
       env.BOSUN_TASK_LABELS = existingScopeLabels.join(",");
@@ -4383,8 +4488,13 @@ async function main() {
       info("Skipping VK auto-configuration (VK not selected).");
       delete configJson.vkAutoConfig;
     }
+    saveSetupSnapshot(7, "Kanban & Execution", env, configJson);
+    } // end step 7
 
     // ── Step 8: Optional Channels ─────────────────────────
+    if (resumeFromStep > 8) {
+      info(`Skipping step 8 (restored from previous run).`);
+    } else {
     headingStep(8, "Optional Channels (WhatsApp & Container)", markSetupProgress);
 
     console.log(
@@ -4446,8 +4556,13 @@ async function main() {
     } else {
       env.CONTAINER_ENABLED = "false";
     }
+    saveSetupSnapshot(8, "Optional Channels", env, configJson);
+    } // end step 8
 
     // ── Step 9: Desktop Shortcut ──────────────────────────
+    if (resumeFromStep > 9) {
+      info(`Skipping step 9 (restored from previous run).`);
+    } else {
     headingStep(9, "Desktop Shortcut", markSetupProgress);
 
     const {
@@ -4477,6 +4592,8 @@ async function main() {
       );
       env._DESKTOP_SHORTCUT = enableDesktopShortcut ? "1" : "0";
     }
+    saveSetupSnapshot(9, "Desktop Shortcut", env, configJson);
+    } // end step 9
 
     // ── Step 10: Startup Service ───────────────────────────
     headingStep(10, "Startup Service", markSetupProgress);
