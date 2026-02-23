@@ -66,19 +66,7 @@
   }
 }
 
-@media (min-width: 1200px) {
-  .app-shell[data-has-rail="true"] .session-split {
-    grid-template-columns: 1fr;
-  }
-
-  .app-shell[data-has-rail="true"] .session-pane {
-    display: none;
-  }
-
-  .app-shell[data-has-rail="true"] .chat-shell-header .session-drawer-btn {
-    display: none;
-  }
-}
+/* Rail no longer hides the session pane on desktop — sessions always visible */
 
 @media (max-width: 768px) {
   .session-split {
@@ -1907,4 +1895,31 @@ ul.md-list li::before {
   .chat-input-hint {
     max-width: min(840px, 100%);
   }
+}
+
+/* ── Focus mode exit FAB ── */
+.focus-exit-fab {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 10001;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: #ef4444;
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px rgba(239, 68, 68, 0.4);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.focus-exit-fab:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 20px rgba(239, 68, 68, 0.5);
 }
