@@ -1174,6 +1174,14 @@
   padding-left: calc(var(--safe-left));
   padding-right: calc(var(--safe-right));
   padding-bottom: calc(var(--nav-height, 60px) + var(--safe-bottom, 0px));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.app-shell[data-tab="chat"] .main-content > * {
+  min-height: 0;
 }
 
 .inspector-log-line {

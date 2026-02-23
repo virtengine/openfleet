@@ -15,7 +15,14 @@ import htm from "htm";
 
 const html = htm.bind(h);
 
-import { haptic, showConfirm, showAlert } from "../modules/telegram.js";
+import {
+  haptic,
+  showConfirm,
+  showAlert,
+  cloudStorageGet,
+  cloudStorageSet,
+  cloudStorageRemove,
+} from "../modules/telegram.js";
 import { apiFetch, wsConnected } from "../modules/api.js";
 import {
   connected,
@@ -403,54 +410,67 @@ function injectStyles() {
 /* ─── CloudStorage helpers (for App Preferences mode) ─── */
 function cloudGet(key) {
   return new Promise((resolve) => {
-    const tg = globalThis.Telegram?.WebApp;
-    if (tg?.CloudStorage) {
-      tg.CloudStorage.getItem(key, (err, val) => {
-        if (err || val == null) resolve(null);
-        else {
+    cloudStorageGet(key)
+      .then((val) => {
+        if (val == null) {
           try {
-            resolve(JSON.parse(val));
+            const v = localStorage.getItem("ve_settings_" + key);
+            resolve(v != null ? JSON.parse(v) : null);
           } catch {
-            resolve(val);
+            resolve(null);
           }
+          return;
+        }
+        try {
+          resolve(JSON.parse(val));
+        } catch {
+          resolve(val);
+        }
+      })
+      .catch(() => {
+        try {
+          const v = localStorage.getItem("ve_settings_" + key);
+          resolve(v != null ? JSON.parse(v) : null);
+        } catch {
+          resolve(null);
         }
       });
-    } else {
-      try {
-        const v = localStorage.getItem("ve_settings_" + key);
-        resolve(v != null ? JSON.parse(v) : null);
-      } catch {
-        resolve(null);
-      }
-    }
   });
 }
 
 function cloudSet(key, value) {
-  const tg = globalThis.Telegram?.WebApp;
   const str = JSON.stringify(value);
-  if (tg?.CloudStorage) {
-    tg.CloudStorage.setItem(key, str, () => {});
-  } else {
+  cloudStorageSet(key, str).then((ok) => {
+    if (ok) return;
     try {
       localStorage.setItem("ve_settings_" + key, str);
     } catch {
       /* noop */
     }
-  }
+  }).catch(() => {
+    try {
+      localStorage.setItem("ve_settings_" + key, str);
+    } catch {
+      /* noop */
+    }
+  });
 }
 
 function cloudRemove(key) {
-  const tg = globalThis.Telegram?.WebApp;
-  if (tg?.CloudStorage) {
-    tg.CloudStorage.removeItem(key, () => {});
-  } else {
+  cloudStorageRemove(key).then((ok) => {
+    if (ok) return;
     try {
       localStorage.removeItem("ve_settings_" + key);
     } catch {
       /* noop */
     }
-  }
+  }).catch(() => {
+    try {
+      localStorage.removeItem("ve_settings_" + key);
+    } catch {
+      /* noop */
+    }
+  });
 }
 
 /* ─── Version info ─── */

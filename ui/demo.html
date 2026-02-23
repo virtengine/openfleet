@@ -687,15 +687,55 @@
         return { data: STATE.status };
       if (route === '/api/executor')
         return { data: { ...STATE.status, maxParallel: STATE.maxParallel, paused: STATE.paused, executors: STATE.executors, activeSlots: STATE.executors.filter(e => e.status === 'active').length, sdk: 'auto' } };
-      if (route === '/api/executor/models')
-        return {
-          ok: true,
-          registry: {
-            codex: ['gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5.1-codex-max'],
-            copilot: ['claude-opus-4.6', 'claude-sonnet-4.6', 'claude-sonnet-4.5', 'claude-haiku-4.5', 'gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex', 'gpt-5.1-codex-mini'],
-            claude: ['claude-opus-4.6', 'claude-sonnet-4.6', 'claude-sonnet-4.5', 'claude-haiku-4.5', 'claude-code'],
-          },
+      if (!STATE.triggerTemplates) {
+        STATE.triggerTemplates = {
+          enabled: false,
+          defaults: { executor: 'auto', model: 'auto' },
+          planner: { lastSuccessAt: null, lastFailureAt: null, lastError: null },
+          templates: [
+            {
+              id: 'task-planner',
+              name: 'Task Planner',
+              description: 'Create planning tasks when backlog is low.',
+              enabled: false,
+              action: 'task-planner',
+              minIntervalMinutes: 360,
+              trigger: { anyOf: [{ kind: 'metric', metric: 'backlogRemaining', operator: 'eq', value: 0 }] },
+              config: { plannerMode: 'kanban', defaultTaskCount: 30, executor: 'auto', model: 'auto' },
+              state: { last_success_at: null, last_error: null },
+              stats: { spawnedTotal: 0, activeCount: 0, doneCount: 0, runningAgents: [], recentSpawned: [] },
+            },
+            {
+              id: 'daily-review-digest',
+              name: 'Daily Review Digest',
+              description: 'Create a daily review digest task.',
+              enabled: false,
+              action: 'create-task',
+              minIntervalMinutes: 1440,
+              trigger: { anyOf: [{ kind: 'interval', minutes: 1440 }] },
+              config: { title: '[m] Daily review digest', priority: 'medium', executor: 'auto', model: 'auto' },
+              state: { last_success_at: null, last_error: null },
+              stats: { spawnedTotal: 0, activeCount: 0, doneCount: 0, runningAgents: [], recentSpawned: [] },
+            },
+          ],
         };
+      }
+      if (route === '/api/triggers/templates') {
+        return { ok: true, data: STATE.triggerTemplates };
+      }
+      if (route === '/api/triggers/templates/update') {
+        if (typeof body?.enabled === 'boolean') STATE.triggerTemplates.enabled = body.enabled;
+        if (body?.defaults && typeof body.defaults === 'object') {
+          STATE.triggerTemplates.defaults = { ...STATE.triggerTemplates.defaults, ...body.defaults };
+        }
+        if (body?.template && body.template.id) {
+          const idx = STATE.triggerTemplates.templates.findIndex((t) => t.id === body.template.id);
+          if (idx >= 0) STATE.triggerTemplates.templates[idx] = { ...STATE.triggerTemplates.templates[idx], ...body.template };
+          else STATE.triggerTemplates.templates.push(body.template);
+        }
+        addLog('info', 'config', 'Trigger templates updated');
+        return { ok: true, data: STATE.triggerTemplates };
+      }
       if (route === '/api/telemetry/summary')
         return { data: { status: 'ok', updatedAt: Date.now(), totals: { tasks: STATE.tasks.length, executors: STATE.executors.length } } };
       if (route === '/api/telemetry/errors')
@@ -971,6 +1011,15 @@
         return { data: STATE.gitBranches };
       if (route === '/api/git/diff')
         return { data: STATE.gitDiff };
+      if (route === '/api/recent-commits')
+        return {
+          ok: true,
+          data: [
+            { sha: 'a1b2c3d', subject: 'feat(ui): add task assignment controls', authorName: 'bosun-demo', authoredDate: new Date(Date.now() - 2 * hr).toISOString() },
+            { sha: 'd4e5f6g', subject: 'fix(api): stabilize shared state sync retries', authorName: 'bosun-demo', authoredDate: new Date(Date.now() - 6 * hr).toISOString() },
+            { sha: 'h7i8j9k', subject: 'test(hooks): cover prepush timeout behavior', authorName: 'bosun-demo', authoredDate: new Date(Date.now() - 24 * hr).toISOString() },
+          ],
+        };
 
       // ── Sessions ──
       if (route === '/api/sessions' && method === 'GET') {
