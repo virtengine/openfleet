@@ -1,0 +1,67 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Bash(git:*)",
+      "Bash(gh:*)",
+      "Bash(go:*)",
+      "Bash(make:*)",
+      "Bash(cd:*)",
+      "Bash(ls:*)",
+      "WebFetch(domain:*)",
+      "go *",
+      "Edit",
+      "MultiEdit",
+      "Read",
+      "Write",
+      "computer:*"
+    ],
+    "deny": []
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\agent-hook-bridge.mjs --agent claude --event UserPromptSubmit"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\agent-hook-bridge.mjs --agent claude --event PreToolUse"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\agent-hook-bridge.mjs --agent claude --event PostToolUse"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\agent-hook-bridge.mjs --agent claude --event Stop"
+          }
+        ]
+      }
+    ]
+  }
+}
