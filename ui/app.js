@@ -43,6 +43,7 @@ import {
   connectWebSocket,
   disconnectWebSocket,
   wsConnected,
+  loadingCount,
 } from "./modules/api.js";
 import {
   connected,
@@ -124,17 +125,48 @@ if (typeof document !== "undefined" && !document.getElementById("offline-banner-
   gap: 12px;
   padding: 12px 16px;
   margin: 8px 16px;
-  background: rgba(239, 68, 68, 0.08);
   border: 1px solid rgba(239, 68, 68, 0.2);
   border-radius: 14px;
   box-shadow: var(--shadow-sm);
   backdrop-filter: blur(6px);
   animation: slideDown 0.3s ease-out;
+  transition: background 0.4s ease, border-color 0.4s ease;
+}
+.offline-banner.tone-orange {
+  background: rgba(249, 115, 22, 0.08);
+  border-color: rgba(249, 115, 22, 0.25);
+}
+.offline-banner.tone-red {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.3);
 }
 .offline-banner-icon { font-size: 20px; }
 .offline-banner-content { flex: 1; }
-.offline-banner-title { font-weight: 600; font-size: 13px; color: #ef4444; }
+.offline-banner-title { font-weight: 600; font-size: 13px; }
+.tone-orange .offline-banner-title { color: #f97316; }
+.tone-red .offline-banner-title    { color: #ef4444; }
 .offline-banner-meta { font-size: 12px; opacity: 0.7; margin-top: 2px; }
+.offline-reconnect-bar {
+  height: 2px; border-radius: 2px; margin-top: 6px;
+  background: rgba(249,115,22,0.18);
+  overflow: hidden;
+}
+.offline-reconnect-fill {
+  height: 100%; border-radius: 2px;
+  background: #f97316;
+  transition: width 1s linear;
+}
+.tone-red .offline-reconnect-fill { background: #ef4444; }
+.offline-dot {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  animation: offlinePulse 1.6s ease-in-out infinite;
+}
+.offline-dot.orange { background: #f97316; }
+.offline-dot.red    { background: #ef4444; }
+@keyframes offlinePulse {
+  0%,100% { opacity:1; transform:scale(1); }
+  50%     { opacity:0.5; transform:scale(1.3); }
+}
 `;
   document.head.appendChild(style);
 }
@@ -203,16 +235,38 @@ function OfflineBanner() {
       }
     } catch { /* handled by signal */ }
   }, []);
+
+  const retryCount = backendRetryCount.value;
+  const isPersistent = retryCount > 3;
+  const tone = isPersistent ? "red" : "orange";
+  const title = isPersistent
+    ? "Persistent connection failure"
+    : "Backend Unreachable";
+
+  // Reconnect countdown drives the progress bar
+  const countdown = wsReconnectIn.value;
+  const maxWait = 15; // max backoff seconds
+  const reconnectPct = countdown != null && countdown > 0
+    ? Math.round(((maxWait - Math.min(countdown, maxWait)) / maxWait) * 100)
+    : 100;
+
   return html`
-    <div class="offline-banner">
-      <div class="offline-banner-icon">⚠️</div>
+    <div class="offline-banner tone-${tone}">
+      <div class="offline-dot ${tone}"></div>
       <div class="offline-banner-content">
-        <div class="offline-banner-title">Backend Unreachable</div>
+        <div class="offline-banner-title">${title}</div>
         <div class="offline-banner-meta">${backendError.value || "Connection lost"}</div>
         ${backendLastSeen.value
           ? html`<div class="offline-banner-meta">Last connected: ${formatTimeAgo(backendLastSeen.value)}</div>`
           : null}
-        <div class="offline-banner-meta">Retry attempt #${backendRetryCount.value}</div>
+        <div class="offline-banner-meta">
+          ${countdown != null && countdown > 0
+            ? `Reconnecting in ${countdown}s…`
+            : `Retry attempt #${retryCount}`}
+        </div>
+        <div class="offline-reconnect-bar">
+          <div class="offline-reconnect-fill" style="width:${reconnectPct}%"></div>
+        </div>
       </div>
       <button class="btn btn-ghost btn-sm" onClick=${manualRetry}>Retry</button>
     </div>
@@ -224,7 +278,7 @@ import { Component } from "preact";
 class TabErrorBoundary extends Component {
   constructor(props) {
     super(props);
-    this.state = { error: null };
+    this.state = { error: null, showStack: false };
   }
   static getDerivedStateFromError(error) {
     return { error };
@@ -234,23 +288,43 @@ class TabErrorBoundary extends Component {
   }
   render() {
     if (this.state.error) {
-      const retry = () => this.setState({ error: null });
+      const retry = () => this.setState({ error: null, showStack: false });
+      const err = this.state.error;
+      const tabName = this.props.tabName || "";
+      const errorMsg = err?.message || "An unexpected error occurred while rendering this tab.";
+      const stack = err?.stack || "";
+      const copyError = () => {
+        const text = `${errorMsg}\n\n${stack}`;
+        navigator?.clipboard?.writeText(text).catch(() => {});
+      };
+      const toggleStack = () => this.setState((s) => ({ showStack: !s.showStack }));
       return html`
-        <div style="padding:24px;text-align:center;color:var(--text-secondary);">
-          <div style="font-size:32px;margin-bottom:12px;">⚠️</div>
-          <div style="font-size:14px;font-weight:600;margin-bottom:8px;">
-            Something went wrong
+        <div class="tab-error-boundary">
+          <div class="tab-error-pulse">
+            <span style="font-size:20px;color:#ef4444;">⚠</span>
           </div>
-          <div style="font-size:12px;opacity:0.7;margin-bottom:16px;max-width:400px;margin-left:auto;margin-right:auto;">
-            ${this.state.error?.message || "An unexpected error occurred while rendering this tab."}
+          <div>
+            <div style="font-size:14px;font-weight:600;margin-bottom:4px;color:var(--text-primary);">
+              Something went wrong${tabName ? ` in ${tabName}` : ""}
+            </div>
+            <div style="font-size:12px;color:var(--text-secondary);max-width:400px;">
+              ${errorMsg}
+            </div>
           </div>
-          <button class="btn btn-primary btn-sm" onClick=${retry}>
-            Retry
-          </button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;">
+            <button class="btn btn-primary btn-sm" onClick=${retry}>Retry</button>
+            <button class="btn btn-ghost btn-sm" onClick=${copyError}>Copy Error</button>
+            ${stack ? html`<button class="btn btn-ghost btn-sm" onClick=${toggleStack}>
+              ${this.state.showStack ? "Hide Stack" : "Stack Trace"}
+            </button>` : null}
+          </div>
+          ${this.state.showStack && stack ? html`
+            <div class="tab-error-stack">${stack}</div>
+          ` : null}
         </div>
       `;
     }
-    return this.props.children;
+    return html`<div class="tab-content-enter">${this.props.children}</div>`;
   }
 }
 
@@ -712,6 +786,26 @@ function App() {
   const mainRef = useRef(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const scrollVisibilityRef = useRef(false);
+
+  // ── Top loading bar state ──
+  const [loadingPct, setLoadingPct] = useState(0);
+  const [loadingVisible, setLoadingVisible] = useState(false);
+  const loadingTimerRef = useRef(null);
+  const isLoading = loadingCount.value > 0;
+  useEffect(() => {
+    if (isLoading) {
+      if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+      setLoadingVisible(true);
+      setLoadingPct(70);
+    } else {
+      setLoadingPct(100);
+      loadingTimerRef.current = setTimeout(() => {
+        setLoadingVisible(false);
+        setLoadingPct(0);
+      }, 500);
+    }
+    return () => {};
+  }, [isLoading]);
   const [isMoreOpen, setIsMoreOpen] = useState(false);
   const resizeRef = useRef(null);
   const [isCompactNav, setIsCompactNav] = useState(() => {
@@ -1055,6 +1149,7 @@ function App() {
   }, []);
 
   return html`
+    <div class="top-loading-bar" style="width: ${loadingPct}%; opacity: ${loadingVisible ? 1 : 0}"></div>
     <div
       class="app-shell"
       style=${shellStyle}
@@ -1130,7 +1225,7 @@ function App() {
           <${CommandPalette} open=${paletteOpen} onClose=${paletteClose} />
           <${PullToRefresh} onRefresh=${() => refreshTab(activeTab.value)}>
             <main class="main-content" ref=${mainRef}>
-              <${TabErrorBoundary} key=${activeTab.value}>
+              <${TabErrorBoundary} key=${activeTab.value} tabName=${activeTab.value}>
                 <${CurrentTab} />
               <//>
             </main>

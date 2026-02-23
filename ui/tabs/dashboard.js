@@ -189,6 +189,7 @@ export function CreateTaskModal({ onClose }) {
 export function DashboardTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
+  const [uptime, setUptime] = useState(null);
   const status = statusData.value;
   const executor = executorData.value;
   const project = projectSummary.value;
@@ -219,6 +220,44 @@ export function DashboardTab() {
     blocked ? ` · ${blocked} blocked` : ""
   }`;
 
+  // ── Dynamic headline ──
+  const headline =
+    totalActive === 0
+      ? "Fleet idle"
+      : blocked > 0
+        ? "Needs attention"
+        : "All systems running";
+  const headlineClass =
+    totalActive === 0
+      ? "dashboard-headline-idle"
+      : blocked > 0
+        ? "dashboard-headline-error"
+        : "dashboard-headline-ok";
+
+  // ── Hero badge: all tasks done and nothing pending ──
+  const fleetAtRest = totalTasks > 0 && done > 0 && backlog === 0 && totalActive === 0;
+
+  // ── Uptime fetch on mount ──
+  useEffect(() => {
+    let active = true;
+    apiFetch("/api/health", { _silent: true })
+      .then((res) => {
+        if (!active) return;
+        const secs = Number(res?.uptime || 0);
+        if (!secs) return;
+        const d = Math.floor(secs / 86400);
+        const h = Math.floor((secs % 86400) / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        const parts = [];
+        if (d > 0) parts.push(`${d}d`);
+        if (h > 0) parts.push(`${h}h`);
+        if (m > 0 && d === 0) parts.push(`${m}m`);
+        setUptime(parts.length ? `up ${parts.join(" ")}` : "up < 1m");
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
+
   const overviewMetrics = [
     {
       label: "Total tasks",
@@ -226,6 +265,7 @@ export function DashboardTab() {
       color: "var(--text-primary)",
       trend: getTrend("total"),
       spark: "total",
+      tab: "tasks",
     },
     {
       label: "In progress",
@@ -233,6 +273,7 @@ export function DashboardTab() {
       color: "var(--color-inprogress)",
       trend: getTrend("running"),
       spark: "running",
+      tab: "tasks",
     },
     {
       label: "Done",
@@ -240,6 +281,7 @@ export function DashboardTab() {
       color: "var(--color-done)",
       trend: getTrend("done"),
       spark: "done",
+      tab: "tasks",
     },
     {
       label: "Error rate",
@@ -247,8 +289,12 @@ export function DashboardTab() {
       color: "var(--color-error)",
       trend: -getTrend("errors"),
       spark: "errors",
+      tab: "tasks",
     },
   ];
+
+  // ── Live fleet ticker data (3 most recent tasks) ──
+  const tickerTasks = (tasksData.value || []).slice(0, 3);
 
   const workItems = [
     { label: "Running", value: running, color: "var(--color-inprogress)" },
@@ -416,17 +462,40 @@ export function DashboardTab() {
   if (!status && !executor)
     return html`<${Card} title="Loading…"><${SkeletonCard} count=${4} /><//>`;
 
+  /* ── Welcome empty state ── */
+  if (totalTasks === 0 && !executor) {
+    return html`
+      <div class="dashboard-shell">
+        <${Card} className="dashboard-card">
+          <div class="dashboard-welcome-card">
+            <div class="dashboard-welcome-icon">🎛️</div>
+            <div class="dashboard-welcome-title">Welcome to VirtEngine Control Center</div>
+            <div class="dashboard-welcome-desc">
+              Your AI development fleet is ready. Create your first task to get started.
+            </div>
+            <button class="btn btn-primary" onClick=${() => setShowCreate(true)}>
+              ➕ Create your first task
+            </button>
+          </div>
+        <//>
+        ${showCreate &&
+          html`<${CreateTaskModal} onClose=${() => setShowCreate(false)} />`}
+      </div>
+    `;
+  }
+
   return html`
     <div class="dashboard-shell">
       <div class="dashboard-header">
         <div class="dashboard-header-text">
           <div class="dashboard-eyebrow">Pulse</div>
-          <div class="dashboard-title">Calm system overview</div>
+          <div class="dashboard-title ${headlineClass}">${headline}</div>
           <div class="dashboard-subtitle">${headerLine}</div>
         </div>
         <div class="dashboard-header-meta">
           <span class="dashboard-chip">Mode ${mode}</span>
           <span class="dashboard-chip">SDK ${defaultSdk}</span>
+          ${uptime ? html`<span class="dashboard-chip">${uptime}</span>` : null}
           ${executor
             ? executor.paused
               ? html`<${Badge} status="error" text="Paused" />`
@@ -490,6 +559,24 @@ export function DashboardTab() {
               Resume
             </button>
           </div>
+          ${tickerTasks.length > 0 ? html`
+            <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
+              <div style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-secondary);margin-bottom:6px;display:flex;align-items:center;gap:5px;">
+                <span style="width:6px;height:6px;border-radius:50%;background:var(--color-done);animation:errorPulse 2s ease-in-out infinite;display:inline-block;"></span>
+                Live
+              </div>
+              <div class="fleet-ticker-wrap">
+                <div class="fleet-ticker-inner">
+                  ${tickerTasks.map((task) => html`
+                    <div class="fleet-ticker-item">
+                      <${Badge} status=${task.status} text=${task.status} />
+                      <span>${truncate(task.title || "(untitled)", 38)}</span>
+                    </div>
+                  `)}
+                </div>
+              </div>
+            </div>
+          ` : null}
         <//>
 
         <${Card}
@@ -498,29 +585,46 @@ export function DashboardTab() {
           >`}
           className="dashboard-card dashboard-overview"
         >
-          <div class="dashboard-metric-grid">
-            ${overviewMetrics.map(
-              (metric) => html`
-                <div class="dashboard-metric">
-                  <div class="dashboard-metric-label">${metric.label}</div>
-                  <div
-                    class="dashboard-metric-value"
-                    style="color: ${metric.color}"
-                  >
-                    ${metric.value} ${trend(metric.trend)}
-                  </div>
-                  <div class="dashboard-metric-spark">
-                    <${MiniSparkline}
-                      data=${sparkData(metric.spark)}
-                      color=${metric.color}
-                      height=${20}
-                      width=${90}
-                    />
-                  </div>
-                </div>
-              `,
-            )}
-          </div>
+          ${fleetAtRest
+            ? html`
+              <div class="fleet-rest-badge">
+                <div class="fleet-rest-icon">✓</div>
+                <div class="fleet-rest-label">Fleet at rest</div>
+                <div class="fleet-rest-sub">${done} task${done !== 1 ? "s" : ""} completed · zero pending</div>
+              </div>
+            `
+            : html`
+              <div class="dashboard-metric-grid">
+                ${overviewMetrics.map(
+                  (metric) => html`
+                    <div
+                      class="dashboard-metric"
+                      style="cursor:pointer;"
+                      role="button"
+                      tabindex="0"
+                      onClick=${() => navigateTo(metric.tab || "tasks")}
+                      onKeyDown=${(e) => e.key === "Enter" && navigateTo(metric.tab || "tasks")}
+                    >
+                      <div class="dashboard-metric-label">${metric.label}</div>
+                      <div
+                        class="dashboard-metric-value"
+                        style="color: ${metric.color}"
+                      >
+                        ${metric.value} ${trend(metric.trend)}
+                      </div>
+                      <div class="dashboard-metric-spark">
+                        <${MiniSparkline}
+                          data=${sparkData(metric.spark)}
+                          color=${metric.color}
+                          height=${20}
+                          width=${90}
+                        />
+                      </div>
+                    </div>
+                  `,
+                )}
+              </div>
+            `}
           ${segments.length > 0 && html`
             <div class="dashboard-work-layout" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
               <div class="dashboard-work-list">

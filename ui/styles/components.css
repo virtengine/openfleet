@@ -3876,3 +3876,206 @@ select.input {
   vertical-align: baseline;
   font-size: inherit;
 }
+
+/* ═══════════════════════════════════════════════
+ *  Tab transition animations
+ * ═══════════════════════════════════════════════ */
+
+@keyframes tabFadeSlideIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.tab-content-enter {
+  animation: tabFadeSlideIn 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ═══════════════════════════════════════════════
+ *  Top loading bar
+ * ═══════════════════════════════════════════════ */
+
+.top-loading-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 3px;
+  z-index: 99999;
+  background: linear-gradient(90deg, var(--accent), #8b5cf6);
+  transition: width 0.3s ease, opacity 0.4s ease;
+  pointer-events: none;
+  border-radius: 0 2px 2px 0;
+}
+
+/* ═══════════════════════════════════════════════
+ *  Dashboard headline variants
+ * ═══════════════════════════════════════════════ */
+
+.dashboard-headline-ok    { color: var(--color-done); }
+.dashboard-headline-warn  { color: var(--color-inreview); }
+.dashboard-headline-error { color: var(--color-error); }
+.dashboard-headline-idle  { color: var(--text-secondary); }
+
+/* ═══════════════════════════════════════════════
+ *  Fleet ticker
+ * ═══════════════════════════════════════════════ */
+
+.fleet-ticker-wrap {
+  overflow: hidden;
+  position: relative;
+  height: 20px;
+}
+
+@keyframes tickerScroll {
+  0%   { transform: translateY(0);     }
+  33%  { transform: translateY(-20px); }
+  66%  { transform: translateY(-40px); }
+  100% { transform: translateY(0);     }
+}
+
+.fleet-ticker-inner {
+  display: flex;
+  flex-direction: column;
+  animation: tickerScroll 6s steps(1) infinite;
+}
+
+.fleet-ticker-item {
+  height: 20px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ═══════════════════════════════════════════════
+ *  Tab Error Boundary improvements
+ * ═══════════════════════════════════════════════ */
+
+.tab-error-boundary {
+  padding: 32px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+}
+
+.tab-error-pulse {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: errorPulse 2s ease-in-out infinite;
+}
+
+@keyframes errorPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.3); }
+  50%       { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
+}
+
+.tab-error-stack {
+  max-height: 120px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-align: left;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* ═══════════════════════════════════════════════
+ *  Offline banner — pulsing reconnect dot
+ * ═══════════════════════════════════════════════ */
+
+.offline-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  animation: offlinePulse 1.6s ease-in-out infinite;
+}
+
+.offline-dot.orange { background: #f97316; }
+.offline-dot.red    { background: #ef4444; }
+
+@keyframes offlinePulse {
+  0%, 100% { opacity: 1; transform: scale(1);    }
+  50%       { opacity: 0.5; transform: scale(1.3); }
+}
+
+/* ═══════════════════════════════════════════════
+ *  Dashboard — hero "Fleet at rest" badge
+ * ═══════════════════════════════════════════════ */
+
+.fleet-rest-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 20px 0 8px;
+  text-align: center;
+}
+
+.fleet-rest-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(34, 197, 94, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  color: var(--color-done);
+}
+
+.fleet-rest-label {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--color-done);
+}
+
+.fleet-rest-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* ═══════════════════════════════════════════════
+ *  Dashboard welcome card
+ * ═══════════════════════════════════════════════ */
+
+.dashboard-welcome-card {
+  text-align: center;
+  padding: 40px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.dashboard-welcome-icon {
+  font-size: 52px;
+  margin-bottom: 8px;
+}
+
+.dashboard-welcome-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.dashboard-welcome-desc {
+  font-size: 14px;
+  color: var(--text-secondary);
+  max-width: 340px;
+  line-height: 1.6;
+}
