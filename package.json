@@ -143,6 +143,7 @@
     "fetch-runtime.mjs",
     "fleet-coordinator.mjs",
     "github-app-auth.mjs",
+    "github-auth-manager.mjs",
     "github-oauth-portal.mjs",
     "github-reconciler.mjs",
     "get-telegram-chat-id.mjs",
