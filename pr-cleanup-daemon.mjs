@@ -23,9 +23,9 @@ const exec = promisify(execCallback);
  * Check if a branch is already checked out in an existing git worktree.
  * Returns the worktree path if claimed, or null if free.
  */
-async function getWorktreeForBranch(branch) {
+async function getWorktreeForBranch(branch, repoRoot) {
   try {
-    const { stdout } = await exec(`git worktree list --porcelain`);
+    const { stdout } = await exec(`git worktree list --porcelain`, { cwd: repoRoot });
     // Each worktree block is separated by a blank line.
     // Look for a line like: branch refs/heads/<branch>
     const blocks = stdout.split(/\n\n/);
@@ -64,6 +64,7 @@ class PRCleanupDaemon {
       ...CONFIG,
       ...(config && typeof config === "object" ? config : {}),
     };
+    this.repoRoot = this.config.repoRoot || process.cwd();
     this.cleanupQueue = [];
     this.activeCleanups = new Map(); // pr# → cleanup state
     this.lastRunStartedAt = 0;
@@ -157,6 +158,7 @@ class PRCleanupDaemon {
     try {
       const { stdout } = await exec(
         `gh pr list --json number,title,mergeable,labels,statusCheckRollup,headRefName --limit 50`,
+        { cwd: this.repoRoot },
       );
       const allPRs = JSON.parse(stdout);
 
@@ -377,10 +379,10 @@ class PRCleanupDaemon {
       tmpDir = await mkdtemp(join(tmpdir(), "pr-merge-"));
 
       // Fetch all relevant refs
-      await exec(`git fetch origin ${pr.headRefName} main`);
+      await exec(`git fetch origin ${pr.headRefName} main`, { cwd: this.repoRoot });
 
       // Guard: skip if the branch is already claimed by another worktree
-      const existingWt = await getWorktreeForBranch(pr.headRefName);
+      const existingWt = await getWorktreeForBranch(pr.headRefName, this.repoRoot);
       if (existingWt) {
         console.warn(
           `[pr-cleanup-daemon] WARN: Branch "${pr.headRefName}" is in an active worktree at ${existingWt} — skipping conflict resolution`,
@@ -391,6 +393,7 @@ class PRCleanupDaemon {
       // Create worktree on the PR branch
       await exec(
         `git worktree add "${tmpDir}" "origin/${pr.headRefName}" --detach`,
+        { cwd: this.repoRoot },
       );
       await exec(
         `git checkout -B "${pr.headRefName}" "origin/${pr.headRefName}"`,
@@ -455,13 +458,13 @@ class PRCleanupDaemon {
     } finally {
       if (tmpDir) {
         try {
-          await exec(`git worktree remove "${tmpDir}" --force`);
+          await exec(`git worktree remove "${tmpDir}" --force`, { cwd: this.repoRoot });
         } catch {
           try {
             await rm(tmpDir, { recursive: true, force: true });
           } catch {}
           try {
-            await exec(`git worktree prune`);
+            await exec(`git worktree prune`, { cwd: this.repoRoot });
           } catch {}
         }
       }
@@ -499,10 +502,10 @@ class PRCleanupDaemon {
       tmpDir = await mkdtemp(join(tmpdir(), "pr-cleanup-"));
 
       // Fetch latest refs first
-      await exec(`git fetch origin ${pr.headRefName}`);
+      await exec(`git fetch origin ${pr.headRefName}`, { cwd: this.repoRoot });
 
       // Guard: skip if the branch is already claimed by another worktree
-      const existingWt = await getWorktreeForBranch(pr.headRefName);
+      const existingWt = await getWorktreeForBranch(pr.headRefName, this.repoRoot);
       if (existingWt) {
         console.warn(
           `[pr-cleanup-daemon] WARN: Branch "${pr.headRefName}" is in an active worktree at ${existingWt} — skipping CI re-trigger`,
@@ -513,6 +516,7 @@ class PRCleanupDaemon {
       // Create a temporary worktree for the PR branch
       await exec(
         `git worktree add "${tmpDir}" "origin/${pr.headRefName}" --detach`,
+        { cwd: this.repoRoot },
       );
 
       // Checkout the branch properly inside the worktree
@@ -538,14 +542,14 @@ class PRCleanupDaemon {
       // Clean up the temporary worktree
       if (tmpDir) {
         try {
-          await exec(`git worktree remove "${tmpDir}" --force`);
+          await exec(`git worktree remove "${tmpDir}" --force`, { cwd: this.repoRoot });
         } catch {
           // If worktree remove fails, try manual cleanup
           try {
             await rm(tmpDir, { recursive: true, force: true });
           } catch {}
           try {
-            await exec(`git worktree prune`);
+            await exec(`git worktree prune`, { cwd: this.repoRoot });
           } catch {}
         }
       }
@@ -605,7 +609,7 @@ class PRCleanupDaemon {
     }
 
     try {
-      await exec(`gh pr merge ${pr.number} --auto --squash --delete-branch`);
+      await exec(`gh pr merge ${pr.number} --auto --squash --delete-branch`, { cwd: this.repoRoot });
       this.stats.autoMerges++;
       console.log(`[pr-cleanup-daemon] ✓ Auto-merged PR #${pr.number}`);
     } catch (err) {
@@ -626,7 +630,7 @@ class PRCleanupDaemon {
     try {
       // Use GitHub API to get the list of changed files and estimate conflict scope
       // This avoids the need for local checkout entirely
-      const { stdout } = await exec(`gh pr diff ${pr.number} --name-only`);
+      const { stdout } = await exec(`gh pr diff ${pr.number} --name-only`, { cwd: this.repoRoot });
       const changedFiles = stdout.trim().split("\n").filter(Boolean);
 
       // Estimate: each changed file could have ~10 lines of conflicts on average
@@ -641,8 +645,8 @@ class PRCleanupDaemon {
       let tmpDir;
       try {
         tmpDir = await mkdtemp(join(tmpdir(), "pr-conflict-"));
-        await exec(`git fetch origin ${pr.headRefName} main`);
-        await exec(`git worktree add "${tmpDir}" "origin/main" --detach`);
+        await exec(`git fetch origin ${pr.headRefName} main`, { cwd: this.repoRoot });
+        await exec(`git worktree add "${tmpDir}" "origin/main" --detach`, { cwd: this.repoRoot });
 
         // Attempt merge to count conflicts
         try {
@@ -675,13 +679,13 @@ class PRCleanupDaemon {
       } finally {
         if (tmpDir) {
           try {
-            await exec(`git worktree remove "${tmpDir}" --force`);
+            await exec(`git worktree remove "${tmpDir}" --force`, { cwd: this.repoRoot });
           } catch {
             try {
               await rm(tmpDir, { recursive: true, force: true });
             } catch {}
             try {
-              await exec(`git worktree prune`);
+              await exec(`git worktree prune`, { cwd: this.repoRoot });
             } catch {}
           }
         }
@@ -704,6 +708,7 @@ class PRCleanupDaemon {
       const child = spawn("node", args, {
         stdio: "inherit",
         env: process.env,
+        cwd: this.repoRoot,
       });
 
       child.on("exit", (code) => {
@@ -726,6 +731,7 @@ class PRCleanupDaemon {
     try {
       const { stdout } = await exec(
         `gh pr list --json number,title,mergeable,statusCheckRollup,headRefName,autoMergeRequest --limit 30`,
+        { cwd: this.repoRoot },
       );
       const allPRs = JSON.parse(stdout);
 
@@ -767,6 +773,7 @@ class PRCleanupDaemon {
             try {
               await exec(
                 `gh pr merge ${pr.number} --auto --squash --delete-branch`,
+                { cwd: this.repoRoot },
               );
               console.log(
                 `[pr-cleanup-daemon] ⏳ Auto-merge queued for PR #${pr.number} (CI pending)`,
@@ -787,7 +794,7 @@ class PRCleanupDaemon {
 
         // All green + mergeable → merge now
         try {
-          await exec(`gh pr merge ${pr.number} --squash --delete-branch`);
+          await exec(`gh pr merge ${pr.number} --squash --delete-branch`, { cwd: this.repoRoot });
           this.stats.autoMerges++;
           console.log(
             `[pr-cleanup-daemon] ✅ Auto-merged green PR #${pr.number}: ${pr.title}`,
@@ -797,6 +804,7 @@ class PRCleanupDaemon {
           try {
             await exec(
               `gh pr merge ${pr.number} --auto --squash --delete-branch`,
+              { cwd: this.repoRoot },
             );
             console.log(
               `[pr-cleanup-daemon] ⏳ Auto-merge enabled for PR #${pr.number}`,
@@ -854,6 +862,7 @@ class PRCleanupDaemon {
     try {
       const { stdout } = await exec(
         `gh pr view ${prNumber} --json mergeable,statusCheckRollup`,
+        { cwd: this.repoRoot },
       );
       return JSON.parse(stdout);
     } catch (err) {
