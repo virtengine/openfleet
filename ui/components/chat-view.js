@@ -268,6 +268,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const [autoScroll, setAutoScroll] = useState(true);
   const [unreadCount, setUnreadCount] = useState(0);
   const [visibleCount, setVisibleCount] = useState(200);
+  const [showStreamMeta, setShowStreamMeta] = useState(false);
   const [filters, setFilters] = useState({
     tool: false,
     result: false,
@@ -704,15 +705,12 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             >
               ${paused ? "Resume" : "Pause"}
             </button>
-            <button class="btn btn-ghost btn-xs" onClick=${handleCopyStream} title="Copy stream">
-              Copy
-            </button>
-            <button class="btn btn-ghost btn-xs" onClick=${handleExportStream} title="Export stream">
-              Export
+            <button class="btn btn-ghost btn-xs" onClick=${() => setShowStreamMeta((prev) => !prev)} title="Toggle filters">
+              ${showStreamMeta ? "Hide filters" : "Filters"}
             </button>
           </div>
         </div>
-        <div class="chat-stream-meta">
+        <div class="chat-stream-meta ${showStreamMeta ? 'expanded' : ''}">
           <div class="chat-stream-filters">
             <button
               class="chat-filter-chip ${activeFilters.length === 0 ? "active" : ""}"

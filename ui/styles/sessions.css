@@ -161,7 +161,7 @@
   width: 100%;
   max-width: 980px;
   margin: 0 auto;
-  padding: 12px 12px;
+  padding: 8px 16px;
 }
 
 .session-drawer-btn {
@@ -555,10 +555,10 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 12px 12px 6px;
+  gap: 8px;
+  padding: 6px 16px;
   border-bottom: 1px solid var(--border);
-  background: var(--bg-secondary);
+  background: var(--bg-primary);
 }
 
 .chat-stream-status {
@@ -569,11 +569,11 @@
 }
 
 .chat-stream-dot {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   border-radius: 999px;
   background: var(--text-hint);
-  box-shadow: 0 0 0 4px rgba(218, 119, 86, 0.1);
+  box-shadow: 0 0 0 3px rgba(218, 119, 86, 0.1);
 }
 
 .chat-stream-dot.thinking,
@@ -629,12 +629,16 @@
 }
 
 .chat-stream-meta {
-  display: flex;
+  display: none;
   flex-direction: column;
-  gap: 8px;
-  padding: 6px 12px 10px;
+  gap: 6px;
+  padding: 4px 16px 6px;
   border-bottom: 1px solid var(--border);
-  background: var(--bg-secondary);
+  background: var(--bg-primary);
+}
+
+.chat-stream-meta.expanded {
+  display: flex;
 }
 
 .chat-stream-filters {
@@ -772,11 +776,14 @@
   scroll-padding-bottom: 80px;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
-  padding: 20px 16px 48px;
+  padding: 24px 24px 48px;
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
+  gap: 6px;
   align-items: stretch;
+  max-width: 860px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 .chat-messages::-webkit-scrollbar {
@@ -850,16 +857,16 @@
 /* ─── Bubbles ─── */
 .chat-bubble {
   width: 100%;
-  max-width: min(760px, 100%);
-  padding: 10px 14px;
-  border-radius: var(--radius-md);
-  font-size: 13px;
-  line-height: 1.5;
+  max-width: 100%;
+  padding: 12px 16px;
+  border-radius: 18px;
+  font-size: 14px;
+  line-height: 1.6;
   word-wrap: break-word;
-  border: 1px solid transparent;
+  border: none;
   background: var(--bg-card);
   align-self: flex-start;
-  box-shadow: var(--shadow-sm);
+  box-shadow: none;
   /* CSS containment — tells the browser each bubble is layout-independent,
      reducing style recalc and layout thrashing on long message lists */
   content-visibility: auto;
@@ -870,17 +877,20 @@
 .chat-bubble.user {
   align-self: flex-end;
   width: auto;
-  max-width: min(560px, 100%);
-  background: rgba(218, 119, 86, 0.16);
-  border-color: rgba(218, 119, 86, 0.35);
+  max-width: min(75%, 560px);
+  background: rgba(218, 119, 86, 0.14);
+  border: none;
   color: var(--text-primary);
+  border-radius: 18px 18px 4px 18px;
 }
 
 .chat-bubble.assistant {
   align-self: flex-start;
-  background: var(--bg-card);
+  background: rgba(255, 255, 255, 0.03);
   color: var(--text-primary);
-  border-color: var(--border);
+  border: none;
+  border-radius: 18px 18px 18px 4px;
+  padding: 12px 4px;
 }
 
 .chat-bubble.system {
@@ -889,21 +899,25 @@
   background: transparent;
   padding: 6px 12px;
   box-shadow: none;
+  border: none;
 }
 
 .chat-bubble.tool {
   align-self: center;
-  background: rgba(218, 119, 86, 0.08);
-  border: 1px solid rgba(218, 119, 86, 0.28);
+  background: rgba(218, 119, 86, 0.06);
+  border: 1px solid rgba(218, 119, 86, 0.15);
   color: var(--text-primary);
   font-family: var(--font-mono);
+  border-radius: 12px;
+  font-size: 12px;
 }
 
 .chat-bubble.error {
   align-self: center;
-  background: rgba(229, 83, 75, 0.12);
-  border: 1px solid rgba(229, 83, 75, 0.4);
+  background: rgba(229, 83, 75, 0.08);
+  border: 1px solid rgba(229, 83, 75, 0.25);
   color: var(--text-primary);
+  border-radius: 12px;
 }
 
 .chat-system-text {
@@ -914,6 +928,7 @@
 }
 
 .chat-bubble-label {
+  display: none;
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
@@ -922,14 +937,19 @@
   margin-bottom: 4px;
 }
 
+.chat-bubble.tool .chat-bubble-label,
+.chat-bubble.error .chat-bubble-label {
+  display: block;
+}
+
 .chat-bubble-content {
   white-space: pre-wrap;
 }
 
 .chat-bubble-time {
   font-size: 10px;
-  opacity: 0.6;
-  margin-top: 4px;
+  opacity: 0.4;
+  margin-top: 6px;
 }
 
 /* Subtle entrance for bubbles — only the last few get the animation
