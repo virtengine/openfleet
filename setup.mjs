@@ -659,6 +659,42 @@ function parseRepoSlugFromUrl(value) {
   return "";
 }
 
+function normalizeRepoKey(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+  const parsed = parseRepoSlugFromUrl(trimmed);
+  const normalized = parsed || trimmed;
+  return normalized.trim().toLowerCase();
+}
+
+function buildWorkspaceChoices(configJson) {
+  const choices = [];
+  const seen = new Set();
+  if (!Array.isArray(configJson?.workspaces)) return choices;
+  for (const ws of configJson.workspaces) {
+    const id = String(ws?.id || "").trim();
+    const name = String(ws?.name || id || "").trim();
+    const label = name || id;
+    const key = String(id || name || "").trim();
+    if (!key) continue;
+    const normalized = key.toLowerCase();
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    choices.push({
+      id: id || name,
+      name,
+      label,
+      repos: Array.isArray(ws?.repos) ? ws.repos : [],
+    });
+  }
+  return choices;
+}
+
+function findWorkspacePrimaryRepo(workspace) {
+  const repos = Array.isArray(workspace?.repos) ? workspace.repos : [];
+  return repos.find((repo) => repo?.primary) || repos[0] || null;
+}
+
 function detectRepoSlug(cwd) {
   try {
     const remote = execSync("git remote get-url origin", {
@@ -791,11 +827,22 @@ function printExecutorModelReference() {
   console.log();
 }
 
-function buildRepositoryChoices(configJson, repoRoot) {
+function buildRepositoryChoices(configJson, repoRoot, options = {}) {
   const choices = [];
   const seen = new Set();
-  // Track slugs that already appear under a workspace
   const workspaceSlugs = new Set();
+  const workspaceFilter = String(options.workspaceId || "")
+    .trim()
+    .toLowerCase();
+  const includeWorkspacePrefix = options.includeWorkspacePrefix !== false;
+
+  const recordWorkspaceRepo = (repo) => {
+    if (!repo) return;
+    const slugKey = normalizeRepoKey(repo.slug);
+    const nameKey = normalizeRepoKey(repo.name);
+    if (slugKey) workspaceSlugs.add(slugKey);
+    if (nameKey) workspaceSlugs.add(nameKey);
+  };
 
   const pushChoice = (input) => {
     if (!input) return;
@@ -803,11 +850,14 @@ function buildRepositoryChoices(configJson, repoRoot) {
     const slug = String(input.slug || "").trim();
     const workspace = String(input.workspace || input.workspaceId || "").trim();
     if (!name && !slug) return;
-    const key = slug || name;
-    if (seen.has(`${workspace}:${key}`)) return;
-    seen.add(`${workspace}:${key}`);
+    const key = normalizeRepoKey(slug || name);
+    if (!key) return;
+    const normalizedWorkspace = workspace.toLowerCase();
+    const seenKey = `${normalizedWorkspace}:${key}`;
+    if (seen.has(seenKey)) return;
+    seen.add(seenKey);
     const labelParts = [];
-    if (workspace) labelParts.push(`ws:${workspace}`);
+    if (workspace && includeWorkspacePrefix) labelParts.push(`ws:${workspace}`);
     labelParts.push(name || slug);
     if (slug && name && slug !== name) labelParts.push(`(${slug})`);
     const label = labelParts.join(" ");
@@ -816,9 +866,8 @@ function buildRepositoryChoices(configJson, repoRoot) {
       name,
       slug,
       workspace,
-      value: key,
+      value: slug || name,
     });
-    if (workspace && key) workspaceSlugs.add(key);
   };
 
   if (Array.isArray(configJson?.workspaces)) {
@@ -826,7 +875,10 @@ function buildRepositoryChoices(configJson, repoRoot) {
       const wsId = String(ws?.id || "").trim();
       const wsName = String(ws?.name || wsId || "").trim();
       const wsLabel = wsName || wsId;
+      const wsKey = String(wsId || wsName || "").trim().toLowerCase();
+      if (workspaceFilter && wsKey !== workspaceFilter) continue;
       for (const repo of ws?.repos || []) {
+        recordWorkspaceRepo(repo);
         pushChoice({
           name: repo?.name,
           slug: repo?.slug,
@@ -837,10 +889,13 @@ function buildRepositoryChoices(configJson, repoRoot) {
   }
 
   // Only add standalone repos that aren't already covered by a workspace
-  if (Array.isArray(configJson?.repositories)) {
+  if (!workspaceFilter && Array.isArray(configJson?.repositories)) {
     for (const repo of configJson.repositories) {
-      const key = String(repo?.slug || repo?.name || "").trim();
-      if (key && workspaceSlugs.has(key)) continue;
+      const slugKey = normalizeRepoKey(repo?.slug);
+      const nameKey = normalizeRepoKey(repo?.name);
+      if ((slugKey && workspaceSlugs.has(slugKey)) || (nameKey && workspaceSlugs.has(nameKey))) {
+        continue;
+      }
       pushChoice(repo);
     }
   }
@@ -2200,12 +2255,14 @@ async function main() {
   let resumedConfigJson = null;
   const markSetupProgress = (step, label) => {
     // We save a full snapshot (including env/configJson) so resume can restore state
+    const existing = readSetupProgress(configDir);
     writeSetupProgress(configDir, {
       status: "incomplete",
       step,
       total: SETUP_TOTAL_STEPS,
       label,
       updatedAt: new Date().toISOString(),
+      snapshot: existing?.snapshot || undefined,
     });
   };
   /** Save a full snapshot of env and configJson at the current step. */

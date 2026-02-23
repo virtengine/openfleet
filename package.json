@@ -151,6 +151,7 @@
     "prepublish-check.mjs",
     "presence.mjs",
     "primary-agent.mjs",
+    "repo-config.mjs",
     "repo-root.mjs",
     "restart-controller.mjs",
     "review-agent.mjs",
