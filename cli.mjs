@@ -66,6 +66,7 @@ function showHelp() {
 
   COMMANDS
     --setup                     Run the interactive setup wizard
+    --where                     Show the resolved bosun config directory
     --doctor                    Validate bosun .env/config setup
     --help                      Show this help
     --version                   Show version
@@ -201,6 +202,48 @@ function showHelp() {
   DOCS
     https://www.npmjs.com/package/bosun
 `);
+}
+
+function isWslInteropRuntime() {
+  return Boolean(
+    process.env.WSL_DISTRO_NAME ||
+      process.env.WSL_INTEROP ||
+      (process.platform === "win32" &&
+        String(process.env.HOME || "")
+          .trim()
+          .startsWith("/home/")),
+  );
+}
+
+function resolveConfigDirForCli() {
+  if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
+  const preferWindowsDirs =
+    process.platform === "win32" && !isWslInteropRuntime();
+  const baseDir = preferWindowsDirs
+    ? process.env.APPDATA ||
+      process.env.LOCALAPPDATA ||
+      process.env.USERPROFILE ||
+      process.env.HOME ||
+      process.cwd()
+    : process.env.HOME ||
+      process.env.XDG_CONFIG_HOME ||
+      process.env.USERPROFILE ||
+      process.env.APPDATA ||
+      process.env.LOCALAPPDATA ||
+      process.cwd();
+  return resolve(baseDir, "bosun");
+}
+
+function printConfigLocations() {
+  const configDir = resolveConfigDirForCli();
+  const envPath = resolve(configDir, ".env");
+  const configPath = resolve(configDir, "bosun.config.json");
+  const workspacesPath = resolve(configDir, "workspaces");
+  console.log("\n  Bosun config directory");
+  console.log(`  ${configDir}`);
+  console.log(`  .env: ${envPath}`);
+  console.log(`  bosun.config.json: ${configPath}`);
+  console.log(`  workspaces: ${workspacesPath}\n`);
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -569,6 +612,12 @@ async function main() {
   // Handle --version
   if (args.includes("--version") || args.includes("-v")) {
     console.log(`bosun v${VERSION}`);
+    process.exit(0);
+  }
+
+  // Handle --where
+  if (args.includes("--where") || args.includes("where")) {
+    printConfigLocations();
     process.exit(0);
   }
 

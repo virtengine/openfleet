@@ -2249,6 +2249,12 @@ async function main() {
   const configDir = resolveConfigDir(repoRoot);
   const slug = detectRepoSlug();
   const projectName = detectProjectName(repoRoot);
+  console.log();
+  info(`Bosun config directory: ${configDir}`);
+  info(`Workspace root: ${resolve(configDir, "workspaces")}`);
+  if (process.env.BOSUN_DIR) {
+    info(`BOSUN_DIR override detected: ${process.env.BOSUN_DIR}`);
+  }
   const setupProgress = readSetupProgress(configDir);
   let resumeFromStep = 0;
   let resumedEnv = null;
@@ -2410,6 +2416,12 @@ async function main() {
   const prompt = createPrompt();
   let aborted = false;
   let cloneWorkspacesAfterSetup = false;
+  const headingStepWithSnapshot = (step, label) => {
+    headingStep(step, label, markSetupProgress);
+    if (step > 1) {
+      saveSetupSnapshot(step, label, env, configJson);
+    }
+  };
 
   // Variables set in early steps that later steps depend on.
   // Declared as `let` so they can be restored from a resume snapshot.
@@ -2424,7 +2436,7 @@ async function main() {
       setupProfile = env._SETUP_PROFILE || "recommended";
       isAdvancedSetup = setupProfile === "advanced";
     } else {
-    headingStep(2, "Setup Mode & Project Identity", markSetupProgress);
+    headingStepWithSnapshot(2, "Setup Mode & Project Identity");
     const setupProfileIdx = await prompt.choose(
       "How much setup detail do you want?",
       SETUP_PROFILES.map((profile) => profile.label),
@@ -2452,7 +2464,7 @@ async function main() {
     if (resumeFromStep > 3) {
       info(`Skipping step 3 (restored from previous run).`);
     } else {
-    headingStep(3, "Workspace & Repository Configuration", markSetupProgress);
+    headingStepWithSnapshot(3, "Workspace & Repository Configuration");
 
     const useWorkspaces = await prompt.confirm(
       "Set up multi-repo workspaces? (organizes repos into ~/bosun/workspaces/)",
@@ -2614,7 +2626,7 @@ async function main() {
     if (resumeFromStep > 4) {
       info(`Skipping step 4 (restored from previous run).`);
     } else {
-    headingStep(4, "Executor / Agent Configuration", markSetupProgress);
+    headingStepWithSnapshot(4, "Executor / Agent Configuration");
     console.log("  Executors are the AI agents that work on tasks.\n");
 
     const presetOptions = isAdvancedSetup
@@ -2804,7 +2816,7 @@ async function main() {
     if (resumeFromStep > 5) {
       info(`Skipping step 5 (restored from previous run).`);
     } else {
-    headingStep(5, "AI Provider Keys", markSetupProgress);
+    headingStepWithSnapshot(5, "AI Provider Keys");
     console.log(
       "  Configure API keys for the agent SDKs in your executor preset.\n",
     );
@@ -2945,7 +2957,7 @@ async function main() {
     if (resumeFromStep > 6) {
       info(`Skipping step 6 (restored from previous run).`);
     } else {
-    headingStep(6, "Telegram Notifications", markSetupProgress);
+    headingStepWithSnapshot(6, "Telegram Notifications");
     console.log(
       "  The Telegram bot sends real-time notifications and lets you\n" +
         "  control the orchestrator via /status, /tasks, /restart, etc.\n",
@@ -3178,10 +3190,73 @@ async function main() {
     if (resumeFromStep > 7) {
       info(`Skipping step 7 (restored from previous run).`);
     } else {
-    headingStep(7, "Kanban & Execution", markSetupProgress);
+    headingStepWithSnapshot(7, "Kanban & Execution");
+    const workspaceChoices = buildWorkspaceChoices(configJson);
     const repoChoices = buildRepositoryChoices(configJson, repoRoot);
     let selectedRepoChoice = repoChoices[0] || null;
-    if (repoChoices.length > 1) {
+    let selectedWorkspaceChoice = null;
+
+    if (workspaceChoices.length > 0) {
+      console.log(
+        chalk.dim(
+          "  Multiple workspaces detected. Select which workspace this bosun instance should manage tasks for.",
+        ),
+      );
+      const workspaceLabels = workspaceChoices.map((choice) => choice.label);
+      workspaceLabels.push("Decide later (skip)");
+      const defaultWorkspaceIdx = (() => {
+        const active = String(
+          configJson.activeWorkspace ||
+            configJson.defaultWorkspace ||
+            "",
+        )
+          .trim()
+          .toLowerCase();
+        if (active) {
+          const matchIdx = workspaceChoices.findIndex((choice) => {
+            const id = String(choice.id || "").trim().toLowerCase();
+            const name = String(choice.name || "").trim().toLowerCase();
+            return active === id || active === name;
+          });
+          if (matchIdx >= 0) return matchIdx;
+        }
+        return 0;
+      })();
+      const selectedIdx = await prompt.choose(
+        "Primary workspace for task board",
+        workspaceLabels,
+        Math.min(defaultWorkspaceIdx, workspaceChoices.length - 1),
+      );
+      if (selectedIdx >= 0 && selectedIdx < workspaceChoices.length) {
+        selectedWorkspaceChoice = workspaceChoices[selectedIdx];
+        const selectedWorkspaceId =
+          selectedWorkspaceChoice.id || selectedWorkspaceChoice.name || "";
+        if (selectedWorkspaceId) {
+          configJson.activeWorkspace = selectedWorkspaceId;
+          configJson.defaultWorkspace = selectedWorkspaceId;
+          env.BOSUN_WORKSPACE = selectedWorkspaceId;
+        }
+        const primaryRepo = findWorkspacePrimaryRepo(selectedWorkspaceChoice);
+        if (primaryRepo) {
+          selectedRepoChoice = {
+            name: primaryRepo.name,
+            slug: primaryRepo.slug,
+            workspace: selectedWorkspaceChoice.label,
+            value: primaryRepo.slug || primaryRepo.name,
+          };
+          if (selectedRepoChoice?.value) {
+            configJson.defaultRepository = selectedRepoChoice.value;
+          }
+        }
+      } else {
+        selectedWorkspaceChoice = null;
+      }
+      console.log();
+      info(
+        "The kanban board manages tasks for this workspace. Individual tasks can target specific repos within the workspace.",
+      );
+      console.log();
+    } else if (repoChoices.length > 1) {
       console.log(
         chalk.dim(
           "  Multiple repositories detected. Select which repo this bosun instance should manage tasks for.",
@@ -3216,11 +3291,6 @@ async function main() {
       } else {
         selectedRepoChoice = null;
       }
-      console.log();
-      info(
-        "The kanban board manages tasks for this workspace. Individual tasks can target specific repos within the workspace.",
-      );
-      console.log();
     } else if (selectedRepoChoice?.value) {
       configJson.defaultRepository = selectedRepoChoice.value;
     }
@@ -3418,6 +3488,12 @@ async function main() {
       selectedExecutorMode === "hybrid";
 
     if (selectedKanbanBackend === "github") {
+      const githubRepoChoices = selectedWorkspaceChoice
+        ? buildRepositoryChoices(configJson, repoRoot, {
+            workspaceId: selectedWorkspaceChoice.id || selectedWorkspaceChoice.name,
+            includeWorkspacePrefix: false,
+          })
+        : repoChoices;
       const primaryRepoSlug =
         selectedRepoChoice?.slug ||
         configJson.repositories?.find((repo) => repo.primary && repo.slug)?.slug ||
@@ -3437,22 +3513,25 @@ async function main() {
         "Pick the repo that should receive tasks (issues/projects). If you have multiple orgs, use the owner for that repo.",
       );
       let repoInput = repoSlugDefault;
-      if (repoChoices.length > 1) {
-        const repoLabels = repoChoices.map((choice) => choice.label);
+      if (githubRepoChoices.length > 1) {
+        const repoLabels = githubRepoChoices.map((choice) => choice.label);
         repoLabels.push("Enter manually");
         const repoIdx = await prompt.choose(
           "Select GitHub repo for tasks",
           repoLabels,
-          repoChoices.findIndex(
+          githubRepoChoices.findIndex(
             (choice) => choice.slug && choice.slug === repoSlugDefault,
           ) >= 0
-            ? repoChoices.findIndex(
+            ? githubRepoChoices.findIndex(
                 (choice) => choice.slug && choice.slug === repoSlugDefault,
               )
             : 0,
         );
-        if (repoIdx >= 0 && repoIdx < repoChoices.length) {
-          repoInput = repoChoices[repoIdx]?.slug || repoChoices[repoIdx]?.name || repoSlugDefault;
+        if (repoIdx >= 0 && repoIdx < githubRepoChoices.length) {
+          repoInput =
+            githubRepoChoices[repoIdx]?.slug ||
+            githubRepoChoices[repoIdx]?.name ||
+            repoSlugDefault;
         } else {
           repoInput = await prompt.ask(
             "GitHub repository for tasks (owner/repo or URL)",
@@ -3515,10 +3594,17 @@ async function main() {
         }
       }
 
+      let detectedLogin = "";
+      try {
+        detectedLogin = detectGitHubUserLogin(repoRoot);
+      } catch (err) {
+        warn(`Could not detect GitHub login: ${formatGhErrorReason(err)}`);
+      }
+
       const githubTaskModeDefault = String(
         process.env.GITHUB_PROJECT_MODE ||
           configJson.kanban?.github?.mode ||
-          "kanban",
+          (skipGitHubProjectSetup ? "issues" : "kanban"),
       )
         .trim()
         .toLowerCase();
@@ -3531,7 +3617,6 @@ async function main() {
         githubTaskModeDefault === "issues" ? 1 : 0,
       );
       let githubTaskMode = githubTaskModeIdx === 1 ? "issues" : "kanban";
-      const detectedLogin = detectGitHubUserLogin(repoRoot);
       if (skipGitHubProjectSetup && githubTaskMode === "kanban") {
         const downgrade = await prompt.confirm(
           "GitHub auth is missing. Switch to Issues-only mode for now?",
@@ -3544,7 +3629,11 @@ async function main() {
         const scopes = getGitHubAuthScopes(repoRoot);
         const missingScopes = [];
         if (!scopes.includes("project")) missingScopes.push("project");
-        if (env.GITHUB_REPO_OWNER && env.GITHUB_REPO_OWNER !== detectedLogin) {
+        if (
+          detectedLogin &&
+          env.GITHUB_REPO_OWNER &&
+          env.GITHUB_REPO_OWNER !== detectedLogin
+        ) {
           if (!scopes.includes("read:org")) missingScopes.push("read:org");
         }
         if (missingScopes.length > 0) {
@@ -3608,80 +3697,113 @@ async function main() {
             configJson.kanban?.github?.projectTitle ||
             "Bosun",
         );
-        const resolvedProject = resolveOrCreateGitHubProject({
-          owner: env.GITHUB_PROJECT_OWNER,
-          title: env.GITHUB_PROJECT_TITLE,
-          cwd: repoRoot,
-          repoOwner: env.GITHUB_REPO_OWNER,
-          githubLogin: detectedLogin,
-        });
-        if (resolvedProject.number) {
-          env.GITHUB_PROJECT_NUMBER = resolvedProject.number;
-          const linkedOwner = resolvedProject.owner || env.GITHUB_PROJECT_OWNER;
-          if (linkedOwner) {
-            env.GITHUB_PROJECT_OWNER = linkedOwner;
-          }
-          success(
-            `GitHub Project linked: ${env.GITHUB_PROJECT_OWNER}#${resolvedProject.number} (${env.GITHUB_PROJECT_TITLE})`,
-          );
-
-          const fields = getGitHubProjectFields({
+        let resolvedProject = null;
+        try {
+          resolvedProject = resolveOrCreateGitHubProject({
             owner: env.GITHUB_PROJECT_OWNER,
-            number: resolvedProject.number,
+            title: env.GITHUB_PROJECT_TITLE,
             cwd: repoRoot,
+            repoOwner: env.GITHUB_REPO_OWNER,
+            githubLogin: detectedLogin,
           });
-          const statusField = fields.find(
-            (field) =>
-              String(field?.name || "").trim().toLowerCase() === "status",
+        } catch (err) {
+          warn(
+            `GitHub Projects setup failed: ${formatGhErrorReason(err) || "unknown error"}.`,
           );
-          if (statusField && Array.isArray(statusField.options)) {
-            const { mapping, missing, fallbacks } = resolveProjectStatusMapping(
-              statusField.options,
-            );
-            const statusEnvKeys = {
-              todo: "GITHUB_PROJECT_STATUS_TODO",
-              inprogress: "GITHUB_PROJECT_STATUS_INPROGRESS",
-              inreview: "GITHUB_PROJECT_STATUS_INREVIEW",
-              done: "GITHUB_PROJECT_STATUS_DONE",
-              cancelled: "GITHUB_PROJECT_STATUS_CANCELLED",
-            };
-            for (const [key, value] of Object.entries(mapping)) {
-              const envKey = statusEnvKeys[key];
-              if (!envKey || !value) continue;
-              if (!env[envKey] && !process.env[envKey]) {
-                env[envKey] = value;
-              }
-            }
+          const projectActionIdx = await prompt.choose(
+            "Proceed without Projects?",
+            [
+              "Use Issues-only for now",
+              "Continue without project",
+              "Exit setup",
+            ],
+            0,
+          );
+          if (projectActionIdx === 0) {
+            githubTaskMode = "issues";
+            env.GITHUB_PROJECT_MODE = githubTaskMode;
+          } else if (projectActionIdx === 2) {
+            aborted = true;
+            return;
+          }
+        }
 
-            if (fallbacks.length > 0) {
-              const fallbackSummary = fallbacks
-                .map((entry) => `${entry.key} → ${entry.value}`)
-                .join(", ");
+        if (githubTaskMode === "kanban") {
+          if (resolvedProject?.number) {
+            env.GITHUB_PROJECT_NUMBER = resolvedProject.number;
+            const linkedOwner =
+              resolvedProject.owner || env.GITHUB_PROJECT_OWNER;
+            if (linkedOwner) {
+              env.GITHUB_PROJECT_OWNER = linkedOwner;
+            }
+            success(
+              `GitHub Project linked: ${env.GITHUB_PROJECT_OWNER}#${resolvedProject.number} (${env.GITHUB_PROJECT_TITLE})`,
+            );
+
+            let fields = [];
+            try {
+              fields = getGitHubProjectFields({
+                owner: env.GITHUB_PROJECT_OWNER,
+                number: resolvedProject.number,
+                cwd: repoRoot,
+              });
+            } catch (err) {
               warn(
-                `GitHub Project Status options missing. Using fallbacks: ${fallbackSummary}.`,
+                `Failed to read GitHub Project fields: ${formatGhErrorReason(err)}`,
               );
             }
-            if (missing.length > 0) {
+            const statusField = fields.find(
+              (field) =>
+                String(field?.name || "").trim().toLowerCase() === "status",
+            );
+            if (statusField && Array.isArray(statusField.options)) {
+              const { mapping, missing, fallbacks } =
+                resolveProjectStatusMapping(statusField.options);
+              const statusEnvKeys = {
+                todo: "GITHUB_PROJECT_STATUS_TODO",
+                inprogress: "GITHUB_PROJECT_STATUS_INPROGRESS",
+                inreview: "GITHUB_PROJECT_STATUS_INREVIEW",
+                done: "GITHUB_PROJECT_STATUS_DONE",
+                cancelled: "GITHUB_PROJECT_STATUS_CANCELLED",
+              };
+              for (const [key, value] of Object.entries(mapping)) {
+                const envKey = statusEnvKeys[key];
+                if (!envKey || !value) continue;
+                if (!env[envKey] && !process.env[envKey]) {
+                  env[envKey] = value;
+                }
+              }
+
+              if (fallbacks.length > 0) {
+                const fallbackSummary = fallbacks
+                  .map((entry) => `${entry.key} → ${entry.value}`)
+                  .join(", ");
+                warn(
+                  `GitHub Project Status options missing. Using fallbacks: ${fallbackSummary}.`,
+                );
+              }
+              if (missing.length > 0) {
+                warn(
+                  `GitHub Project Status options still missing: ${missing.join(
+                    ", ",
+                  )}. Add them in GitHub or set GITHUB_PROJECT_STATUS_* overrides.`,
+                );
+              } else {
+                info("GitHub Project Status mapping verified.");
+              }
+            } else if (fields.length > 0) {
               warn(
-                `GitHub Project Status options still missing: ${missing.join(
-                  ", ",
-                )}. Add them in GitHub or set GITHUB_PROJECT_STATUS_* overrides.`,
+                "GitHub Project has no Status field metadata. Status sync may be limited.",
               );
-            } else {
-              info("GitHub Project Status mapping verified.");
             }
           } else {
+            const reasonSuffix = resolvedProject?.reason
+              ? ` Reason: ${resolvedProject.reason}`
+              : "";
             warn(
-              "GitHub Project has no Status field metadata. Status sync may be limited.",
+              `Could not auto-detect/create GitHub Project. Issues will still be created and can be linked later.${reasonSuffix}`,
             );
           }
-        } else {
-          const reasonSuffix = resolvedProject.reason
-            ? ` Reason: ${resolvedProject.reason}`
-            : "";
-          warn(
-            `Could not auto-detect/create GitHub Project. Issues will still be created and can be linked later.${reasonSuffix}`,
-          );
         }
       } else if (githubTaskMode === "kanban" && skipGitHubProjectSetup) {
         warn(
@@ -4552,7 +4674,7 @@ async function main() {
     if (resumeFromStep > 8) {
       info(`Skipping step 8 (restored from previous run).`);
     } else {
-    headingStep(8, "Optional Channels (WhatsApp & Container)", markSetupProgress);
+    headingStepWithSnapshot(8, "Optional Channels (WhatsApp & Container)");
 
     console.log(
       chalk.dim(
@@ -4620,7 +4742,7 @@ async function main() {
     if (resumeFromStep > 9) {
       info(`Skipping step 9 (restored from previous run).`);
     } else {
-    headingStep(9, "Desktop Shortcut", markSetupProgress);
+    headingStepWithSnapshot(9, "Desktop Shortcut");
 
     const {
       getDesktopShortcutStatus,
@@ -4653,7 +4775,7 @@ async function main() {
     } // end step 9
 
     // ── Step 10: Startup Service ───────────────────────────
-    headingStep(10, "Startup Service", markSetupProgress);
+    headingStepWithSnapshot(10, "Startup Service");
 
     const { getStartupStatus, getStartupMethodName } =
       await import("./startup-service.mjs");
