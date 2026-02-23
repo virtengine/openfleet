@@ -26,6 +26,10 @@ import {
 } from "./agent-prompts.mjs";
 import { resolveAgentRepoRoot } from "./repo-root.mjs";
 import { applyAllCompatibility } from "./compat.mjs";
+import {
+  normalizeExecutorKey,
+  getModelsForExecutor,
+} from "./task-complexity.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -268,6 +272,173 @@ function isEnvEnabled(value, defaultValue = false) {
   return parseEnvBoolean(value, defaultValue);
 }
 
+function parseListValue(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item || "").trim())
+      .filter(Boolean);
+  }
+  return String(value || "")
+    .split(/[,|]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeExecutorModels(executor, models) {
+  const normalizedExecutor = normalizeExecutorKey(executor);
+  if (!normalizedExecutor) return [];
+  const input = parseListValue(models);
+  const known = new Set(getModelsForExecutor(normalizedExecutor));
+  if (input.length === 0) {
+    return [...known];
+  }
+  return input.filter((model) => known.has(model));
+}
+
+function normalizeExecutorEntry(entry, index = 0, total = 1) {
+  if (!entry || typeof entry !== "object") return null;
+  const executorType = String(entry.executor || "").trim().toUpperCase();
+  if (!executorType) return null;
+  const variant = String(entry.variant || "DEFAULT").trim() || "DEFAULT";
+  const normalized = normalizeExecutorKey(executorType) || "codex";
+  const weight = Number(entry.weight);
+  const safeWeight = Number.isFinite(weight) ? weight : Math.floor(100 / Math.max(1, total));
+  const role =
+    String(entry.role || "").trim() ||
+    (index === 0 ? "primary" : index === 1 ? "backup" : `executor-${index + 1}`);
+  const name =
+    String(entry.name || "").trim() ||
+    `${normalized}-${String(variant || "default").toLowerCase()}`;
+  const models = normalizeExecutorModels(executorType, entry.models);
+
+  return {
+    name,
+    executor: executorType,
+    variant,
+    weight: safeWeight,
+    role,
+    enabled: entry.enabled !== false,
+    models,
+  };
+}
+
+function buildDefaultTriggerTemplates({
+  plannerMode,
+  plannerPerCapitaThreshold,
+  plannerIdleSlotThreshold,
+  plannerDedupHours,
+} = {}) {
+  return [
+    {
+      id: "task-planner",
+      name: "Task Planner",
+      description: "Create planning tasks when backlog/slot metrics indicate replenishment.",
+      enabled: false,
+      action: "task-planner",
+      trigger: {
+        anyOf: [
+          {
+            kind: "metric",
+            metric: "backlogPerCapita",
+            operator: "lt",
+            value: plannerPerCapitaThreshold,
+          },
+          {
+            kind: "metric",
+            metric: "idleSlots",
+            operator: "gte",
+            value: plannerIdleSlotThreshold,
+          },
+          {
+            kind: "metric",
+            metric: "backlogRemaining",
+            operator: "eq",
+            value: 0,
+          },
+        ],
+      },
+      minIntervalMinutes: Math.max(1, Number(plannerDedupHours || 6) * 60),
+      config: {
+        plannerMode,
+        defaultTaskCount: Number(process.env.TASK_PLANNER_DEFAULT_COUNT || "30"),
+        executor: "auto",
+        model: "auto",
+      },
+    },
+    {
+      id: "daily-review-digest",
+      name: "Daily Review Digest",
+      description: "Create a daily review task for fleet health and backlog quality.",
+      enabled: false,
+      action: "create-task",
+      trigger: {
+        anyOf: [
+          {
+            kind: "interval",
+            minutes: 24 * 60,
+          },
+        ],
+      },
+      minIntervalMinutes: 24 * 60,
+      config: {
+        title: "[m] Daily review digest",
+        description:
+          "Review active backlog, blocked tasks, and stale work. Capture next actions and priority adjustments.",
+        priority: "medium",
+        executor: "auto",
+        model: "auto",
+      },
+    },
+    {
+      id: "stale-task-followup",
+      name: "Stale Task Follow-up",
+      description: "Create a follow-up task when stale in-progress work accumulates.",
+      enabled: false,
+      action: "create-task",
+      trigger: {
+        anyOf: [
+          {
+            kind: "metric",
+            metric: "staleInProgressCount",
+            operator: "gte",
+            value: 1,
+          },
+        ],
+      },
+      minIntervalMinutes: 60,
+      config: {
+        title: "[m] Follow up stale in-progress tasks",
+        description:
+          "Audit stale in-progress tasks, unblock owners, or split work to recover flow.",
+        priority: "high",
+        staleHours: Number(process.env.STALE_TASK_AGE_HOURS || "24"),
+        executor: "auto",
+        model: "auto",
+      },
+    },
+  ];
+}
+
+function resolveTriggerSystemConfig(configData, defaults) {
+  const configTrigger =
+    configData && typeof configData.triggerSystem === "object"
+      ? configData.triggerSystem
+      : configData && typeof configData.triggers === "object"
+        ? configData.triggers
+        : {};
+  const templates = Array.isArray(configTrigger.templates)
+    ? configTrigger.templates
+    : defaults.templates;
+  return Object.freeze({
+    enabled: isEnvEnabled(
+      process.env.TASK_TRIGGER_SYSTEM_ENABLED ?? configTrigger.enabled,
+      false,
+    ),
+    templates,
+    defaults: defaults.defaults,
+  });
+}
+
 // ── Git helpers ──────────────────────────────────────────────────────────────
 
 function detectRepoSlug(repoRoot = "") {
@@ -421,7 +592,7 @@ const DEFAULT_EXECUTORS = {
 };
 
 function parseExecutorsFromEnv() {
-  // EXECUTORS=CODEX:DEFAULT:100
+  // EXECUTORS=CODEX:DEFAULT:100:gpt-5.2-codex|gpt-5.1-codex-mini
   const raw = process.env.EXECUTORS;
   if (!raw) return null;
   const entries = raw.split(",").map((e) => e.trim());
@@ -430,13 +601,16 @@ function parseExecutorsFromEnv() {
   for (let i = 0; i < entries.length; i++) {
     const parts = entries[i].split(":");
     if (parts.length < 2) continue;
+    const executorType = parts[0].toUpperCase();
+    const models = normalizeExecutorModels(executorType, parts[3] || "");
     executors.push({
       name: `${parts[0].toLowerCase()}-${parts[1].toLowerCase()}`,
-      executor: parts[0].toUpperCase(),
+      executor: executorType,
       variant: parts[1],
       weight: parts[2] ? Number(parts[2]) : Math.floor(100 / entries.length),
       role: roles[i] || `executor-${i + 1}`,
       enabled: true,
+      models,
     });
   }
   return executors.length ? executors : null;
@@ -522,8 +696,11 @@ function loadExecutorConfig(configDir, configData) {
     }
   }
 
-  const executors =
+  const baseExecutors =
     fromEnv || fromFile?.executors || DEFAULT_EXECUTORS.executors;
+  const executors = (Array.isArray(baseExecutors) ? baseExecutors : [])
+    .map((entry, index, arr) => normalizeExecutorEntry(entry, index, arr.length))
+    .filter(Boolean);
   const failover = fromFile?.failover || {
     strategy:
       process.env.FAILOVER_STRATEGY || DEFAULT_EXECUTORS.failover.strategy,
@@ -1483,6 +1660,23 @@ export function loadConfig(argv = process.argv, options = {}) {
     ? plannerDedupHours * 60 * 60 * 1000
     : 24 * 60 * 60 * 1000;
 
+  const triggerSystemDefaults = Object.freeze({
+    templates: buildDefaultTriggerTemplates({
+      plannerMode,
+      plannerPerCapitaThreshold,
+      plannerIdleSlotThreshold,
+      plannerDedupHours,
+    }),
+    defaults: Object.freeze({
+      executor: "auto",
+      model: "auto",
+    }),
+  });
+  const triggerSystem = resolveTriggerSystemConfig(
+    configData,
+    triggerSystemDefaults,
+  );
+
   // ── GitHub Reconciler ───────────────────────────────────
   const ghReconcileEnabled = isEnvEnabled(
     process.env.GH_RECONCILE_ENABLED ?? configData.ghReconcileEnabled,
@@ -1749,6 +1943,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     plannerIdleSlotThreshold,
     plannerDedupHours,
     plannerDedupMs,
+    triggerSystem,
 
     // GitHub Reconciler
     githubReconcile: {
