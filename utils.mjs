@@ -217,3 +217,63 @@ export async function spawnAsync(cmd, args = [], options = {}) {
 export function yieldToEventLoop() {
   return new Promise((resolve) => setImmediate(resolve));
 }
+
+/**
+ * withRetry — run an async fn with exponential backoff on failure.
+ *
+ * @template T
+ * @param {() => Promise<T>} fn         — async operation to retry
+ * @param {object} [opts]
+ * @param {number} [opts.maxAttempts=3]  — total attempts
+ * @param {number} [opts.baseMs=1000]    — initial delay
+ * @param {number} [opts.maxMs=30000]    — cap delay
+ * @param {(err: Error, attempt: number) => boolean} [opts.retryIf] — optional guard
+ * @returns {Promise<T>}
+ */
+export async function withRetry(fn, opts = {}) {
+  const { maxAttempts = 3, baseMs = 1000, maxMs = 30000, retryIf } = opts;
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= maxAttempts) break;
+      if (retryIf && !retryIf(err, attempt)) break;
+      const jitter = Math.random() * 0.3 + 0.85; // 0.85–1.15x
+      const delay = Math.min(baseMs * Math.pow(2, attempt - 1) * jitter, maxMs);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * memoizeWithTtl — cache the result of a zero-args async factory for `ttlMs`.
+ * Returns a getter function that resolves the cached value or refreshes it.
+ *
+ * @template T
+ * @param {() => Promise<T>} factory
+ * @param {number} ttlMs
+ * @returns {() => Promise<T>}
+ */
+export function memoizeWithTtl(factory, ttlMs) {
+  let cache = null;
+  let expiry = 0;
+  let pending = null;
+  return async function get() {
+    const now = Date.now();
+    if (cache !== null && now < expiry) return cache;
+    if (pending) return pending;
+    pending = factory().then((v) => {
+      cache = v;
+      expiry = Date.now() + ttlMs;
+      pending = null;
+      return v;
+    }).catch((e) => {
+      pending = null;
+      throw e;
+    });
+    return pending;
+  };
+}

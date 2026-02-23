@@ -240,6 +240,22 @@ export const PATTERN_SEVERITY = {
   unknown: "low",
 };
 
+// ── Remediation hints ──────────────────────────────────────────────────────
+
+/**
+ * Human-readable remediation hints for each error type.
+ * Surfaced in UI and Telegram notifications to guide users.
+ */
+const REMEDIATION_HINTS = {
+  rate_limit: "Wait a few minutes before retrying. Consider reducing MAX_PARALLEL.",
+  oom: "Reduce MAX_PARALLEL or increase available memory. Use --max-old-space-size.",
+  oom_kill: "Process was killed by the OS. Reduce memory usage or increase system RAM.",
+  git_conflict: "Manual conflict resolution required. Run: git mergetool",
+  push_failure: "Rebase failed or push rejected. Run: git rebase --abort then try again.",
+  auth_error: "Authentication failed. Check your API tokens and credentials.",
+  api_error: "Network connectivity issue. Check your internet connection.",
+};
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Safely truncate a string for logging / details. */
@@ -364,6 +380,7 @@ export class ErrorDetector {
     return {
       ...result,
       severity: PATTERN_SEVERITY[result.pattern] ?? "low",
+      remediation: REMEDIATION_HINTS[result.pattern] || null,
     };
   }
 

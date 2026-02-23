@@ -68,7 +68,7 @@ import {
   collectDiffStats,
 } from "./diff-stats.mjs";
 import { createAnomalyDetector } from "./anomaly-detector.mjs";
-import { normalizeDedupKey, yieldToEventLoop } from "./utils.mjs";
+import { normalizeDedupKey, yieldToEventLoop, withRetry } from "./utils.mjs";
 import {
   resolveExecutorForTask,
   executorToSdk,
@@ -3169,10 +3169,20 @@ class TaskExecutor {
         return;
       }
 
-      // Fetch todo tasks
+      // Fetch todo tasks (with transient-error retry)
       let tasks;
       try {
-        tasks = await listTasks(projectId, { status: "todo" });
+        tasks = await withRetry(
+          () => listTasks(projectId, { status: "todo" }),
+          {
+            maxAttempts: 3,
+            baseMs: 2000,
+            retryIf: (err) => {
+              const cat = categorizeError(err);
+              return cat === "transient" || cat === "network";
+            },
+          },
+        );
         this._resetListTasksBackoff();
       } catch (err) {
         this._noteListTasksFailure(err);
@@ -3252,14 +3262,19 @@ class TaskExecutor {
       for (const task of toDispatch) {
         // Normalize task id
         task.id = task.id || task.task_id;
-        // Fire and forget — executeTask handles its own lifecycle
-        this.executeTask(task).catch((err) => {
-          console.error(
-            `${TAG} unhandled error in executeTask for "${task.title}": ${err.message}`,
-          );
-        });
-        // Yield between slot dispatches so WebSocket/HTTP work can proceed
-        await yieldToEventLoop();
+        try {
+          // Fire and forget — executeTask handles its own lifecycle
+          this.executeTask(task).catch((err) => {
+            console.error(
+              `${TAG} unhandled error in executeTask for "${task.title}": ${err.message}`,
+            );
+          });
+        } catch (err) {
+          console.warn(`${TAG} slot ${task.id} dispatch error: ${err.message}`);
+        } finally {
+          // ALWAYS yield, even on error, to prevent event loop starvation
+          await yieldToEventLoop();
+        }
       }
     } catch (err) {
       console.error(`${TAG} poll loop error: ${err.message}`);

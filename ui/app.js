@@ -3,12 +3,28 @@
  *  Modular SPA for Telegram Mini App (no build step)
  * ────────────────────────────────────────────────────────────── */
 
+// ── Error telemetry ring buffer (max 50 entries, persisted to sessionStorage) ──
+const MAX_ERROR_LOG = 50;
+function getErrorLog() {
+  try { return JSON.parse(sessionStorage.getItem("ve_error_log") || "[]"); } catch { return []; }
+}
+function appendErrorLog(entry) {
+  try {
+    const log = getErrorLog();
+    log.unshift({ ...entry, ts: Date.now() });
+    if (log.length > MAX_ERROR_LOG) log.length = MAX_ERROR_LOG;
+    sessionStorage.setItem("ve_error_log", JSON.stringify(log));
+  } catch { /* quota exceeded */ }
+}
+
 /* ── Global error handlers — catch unhandled errors before they freeze the UI ── */
 globalThis.addEventListener?.("error", (e) => {
   console.error("[ve:global-error]", e.error || e.message);
+  appendErrorLog({ type: "global", message: e.message, stack: e.error?.stack });
 });
 globalThis.addEventListener?.("unhandledrejection", (e) => {
   console.error("[ve:unhandled-rejection]", e.reason);
+  appendErrorLog({ type: "rejection", message: String(e.reason?.message || e.reason) });
 });
 
 import { h, render as preactRender } from "preact";
@@ -285,6 +301,7 @@ class TabErrorBoundary extends Component {
   }
   componentDidCatch(error, info) {
     console.error("[TabErrorBoundary] Caught error:", error, info);
+    appendErrorLog({ type: "render", tab: this.props.tabName, message: error?.message, stack: error?.stack });
   }
   render() {
     if (this.state.error) {
@@ -317,6 +334,11 @@ class TabErrorBoundary extends Component {
             ${stack ? html`<button class="btn btn-ghost btn-sm" onClick=${toggleStack}>
               ${this.state.showStack ? "Hide Stack" : "Stack Trace"}
             </button>` : null}
+            <button class="btn btn-ghost btn-sm" onClick=${() => {
+              console.group("[ve:error-log]");
+              getErrorLog().forEach((e, i) => console.log(i, e));
+              console.groupEnd();
+            }}>Error Log</button>
           </div>
           ${this.state.showStack && stack ? html`
             <div class="tab-error-stack">${stack}</div>
