@@ -44,6 +44,8 @@
     "./telegram-bot": "./telegram-bot.mjs",
     "./ui-server": "./ui-server.mjs",
     "./workspace-manager": "./workspace-manager.mjs",
+    "./github-app-auth": "./github-app-auth.mjs",
+    "./github-oauth-portal": "./github-oauth-portal.mjs",
     "./workspace-registry": "./workspace-registry.mjs",
     "./shared-workspace-registry": "./shared-workspace-registry.mjs",
     "./workspace-reaper": "./workspace-reaper.mjs",
@@ -64,7 +66,10 @@
     "./whatsapp-channel": "./whatsapp-channel.mjs",
     "./container-runner": "./container-runner.mjs",
     "./compat": "./compat.mjs",
-    "./task-cli": "./task-cli.mjs"
+    "./task-cli": "./task-cli.mjs",
+    "./github-oauth-portal": "./github-oauth-portal.mjs",
+    "./github-auth-manager": "./github-auth-manager.mjs",
+    "./git-commit-helpers": "./git-commit-helpers.mjs"
   },
   "bin": {
     "bosun": "cli.mjs",
@@ -137,6 +142,8 @@
     "error-detector.mjs",
     "fetch-runtime.mjs",
     "fleet-coordinator.mjs",
+    "github-app-auth.mjs",
+    "github-oauth-portal.mjs",
     "github-reconciler.mjs",
     "get-telegram-chat-id.mjs",
     "git-safety.mjs",
