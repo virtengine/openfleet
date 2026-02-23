@@ -16,7 +16,6 @@
 import {
   getTask,
   getAllTasks,
-  addTask,
   updateTask,
   getDirtyTasks,
   markSynced,
@@ -29,6 +28,7 @@ import {
   getKanbanAdapter,
   getKanbanBackendName,
   listTasks,
+  createTask as createExternalTask,
   updateTaskStatus as updateExternalStatus,
 } from "./kanban-adapter.mjs";
 
@@ -585,6 +585,11 @@ export class SyncEngine {
         baseBranchCandidate &&
         String(baseBranchCandidate) !== String(metaBaseBranch);
 
+      const shouldCreateExternal = this.#shouldCreateExternalTask(
+        task,
+        backendName,
+      );
+
       // Check shared state for conflicts before pushing
       if (SHARED_STATE_ENABLED) {
         try {
@@ -618,9 +623,48 @@ export class SyncEngine {
           // Continue with push on error (graceful degradation)
         }
       }
+      let pushId = task.externalId || task.id;
+
+      if (shouldCreateExternal) {
+        try {
+          const created = await this.#createExternalTask(task, baseBranchCandidate);
+          const createdId = this.#extractExternalTaskId(created);
+          if (!isIdValidForBackend(createdId, backendName)) {
+            throw new Error(
+              `external create returned incompatible id for ${backendName}: ${createdId || "<empty>"}`,
+            );
+          }
+
+          const plannerMeta = {
+            ...(task.meta?.planner || {}),
+            externalSyncPending: false,
+            externalCreatedAt: new Date().toISOString(),
+            externalTaskId: String(createdId),
+          };
+          updateTask(task.id, {
+            externalId: String(createdId),
+            externalBackend: backendName,
+            meta: {
+              ...(task.meta || {}),
+              planner: plannerMeta,
+            },
+          });
+
+          pushId = String(createdId);
+          console.log(
+            TAG,
+            `Created external task for ${task.id} → ${pushId} (${backendName})`,
+          );
+        } catch (err) {
+          const msg = `External create failed for ${task.id}: ${err.message}`;
+          console.warn(TAG, msg);
+          result.errors.push(msg);
+          continue;
+        }
+      }
+
       // Skip tasks whose IDs are incompatible with the active backend.
       // e.g. VK UUID tasks cannot be pushed to GitHub Issues (needs numeric IDs).
-      const pushId = task.externalId || task.id;
       if (!isIdValidForBackend(pushId, backendName)) {
         // If the task originated from a different backend, silently clear dirty
         // flag — it will be synced when that backend is active.
@@ -973,6 +1017,28 @@ export class SyncEngine {
     return await updateExternalStatus(taskId, status);
   }
 
+  async #createExternalTask(task, baseBranchCandidate = null) {
+    const payload = {
+      title: task.title || "Untitled task",
+      description: task.description || "",
+      status: "todo",
+      assignee: task.assignee || null,
+      priority: task.priority || null,
+      tags: Array.isArray(task.tags) ? task.tags : [],
+      labels: Array.isArray(task.tags) ? task.tags : [],
+      ...(baseBranchCandidate ? { baseBranch: baseBranchCandidate } : {}),
+    };
+
+    if (
+      this.#kanbanAdapter &&
+      typeof this.#kanbanAdapter.createTask === "function"
+    ) {
+      return await this.#kanbanAdapter.createTask(this.#projectId, payload);
+    }
+
+    return await createExternalTask(this.#projectId, payload);
+  }
+
   async #updateExternalPatch(taskId, patch) {
     if (
       this.#kanbanAdapter &&
@@ -1020,6 +1086,25 @@ export class SyncEngine {
       msg.includes("invalid issue number") ||
       msg.includes("expected a numeric id")
     );
+  }
+
+  #shouldCreateExternalTask(task, backend) {
+    if (!task || backend === "internal") return false;
+    if (task.externalId) return false;
+    const plannerMeta = task.meta?.planner;
+    if (!plannerMeta || typeof plannerMeta !== "object") return false;
+    return plannerMeta.externalSyncPending === true;
+  }
+
+  #extractExternalTaskId(created) {
+    if (!created) return null;
+    if (created.id != null && String(created.id).trim()) {
+      return String(created.id).trim();
+    }
+    if (created.externalId != null && String(created.externalId).trim()) {
+      return String(created.externalId).trim();
+    }
+    return null;
   }
 
   /** Simple async sleep. */

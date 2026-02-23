@@ -65,6 +65,7 @@ describe("kanban-adapter github backend", () => {
   const originalName = process.env.GITHUB_REPO_NAME;
   const originalProjectMode = process.env.GITHUB_PROJECT_MODE;
   const originalTaskLabelEnforce = process.env.BOSUN_ENFORCE_TASK_LABEL;
+  const originalDefaultAssignee = process.env.GITHUB_DEFAULT_ASSIGNEE;
 
   beforeEach(() => {
     execFileMock.mockReset();
@@ -72,6 +73,7 @@ describe("kanban-adapter github backend", () => {
     delete process.env.GITHUB_REPOSITORY;
     delete process.env.GITHUB_REPO_OWNER;
     delete process.env.GITHUB_REPO_NAME;
+    delete process.env.GITHUB_DEFAULT_ASSIGNEE;
     process.env.GITHUB_PROJECT_MODE = "issues";
     process.env.BOSUN_ENFORCE_TASK_LABEL = "true";
     loadConfigMock.mockReturnValue({
@@ -106,6 +108,11 @@ describe("kanban-adapter github backend", () => {
       delete process.env.BOSUN_ENFORCE_TASK_LABEL;
     } else {
       process.env.BOSUN_ENFORCE_TASK_LABEL = originalTaskLabelEnforce;
+    }
+    if (originalDefaultAssignee === undefined) {
+      delete process.env.GITHUB_DEFAULT_ASSIGNEE;
+    } else {
+      process.env.GITHUB_DEFAULT_ASSIGNEE = originalDefaultAssignee;
     }
   });
 
@@ -149,7 +156,8 @@ describe("kanban-adapter github backend", () => {
   });
 
   it("creates issue from URL output and resolves it via issue view", async () => {
-    mockGh('{"name":"bosun"}\n');
+    process.env.GITHUB_DEFAULT_ASSIGNEE = "alice";
+    mockGh("ok");
     mockGh("https://github.com/acme/widgets/issues/55\n");
     mockGh(
       JSON.stringify({
@@ -184,7 +192,42 @@ describe("kanban-adapter github backend", () => {
     expect(issueCreateCall[1]).toContain("--label");
     expect(issueCreateCall[1]).toContain("bosun");
     expect(issueCreateCall[1]).toContain("--assignee");
-    expect(issueCreateCall[1]).toContain("acme");
+    expect(issueCreateCall[1]).toContain("alice");
+  });
+
+  it("does not default assignee to repo owner when user resolution fails", async () => {
+    mockGh("ok");
+    mockGhError(new Error("gh api unavailable"));
+    mockGh("https://github.com/acme/widgets/issues/77\n");
+    mockGh(
+      JSON.stringify({
+        number: 77,
+        title: "new task",
+        body: "desc",
+        state: "open",
+        url: "https://github.com/acme/widgets/issues/77",
+        labels: [],
+        assignees: [],
+      }),
+    );
+    mockGh("[]");
+
+    const adapter = getKanbanAdapter();
+    const task = await adapter.createTask("ignored-project-id", {
+      title: "new task",
+      description: "desc",
+    });
+
+    expect(task?.id).toBe("77");
+    const issueCreateCall = execFileMock.mock.calls.find(
+      (call) =>
+        Array.isArray(call[1]) &&
+        call[1].includes("issue") &&
+        call[1].includes("create"),
+    );
+    expect(issueCreateCall).toBeTruthy();
+    expect(issueCreateCall[1]).not.toContain("--assignee");
+    expect(issueCreateCall[1]).not.toContain("acme");
   });
 
   it("filters listTasks to codex-scoped labels when enforcement is enabled", async () => {

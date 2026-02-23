@@ -210,6 +210,15 @@ function categorizeMessage(msg) {
   return "message";
 }
 
+function isThinkingTraceMessage(msg) {
+  if (!msg) return false;
+  const category = categorizeMessage(msg);
+  if (category === "tool" || category === "result" || category === "error") {
+    return true;
+  }
+  return (msg.type || "").toLowerCase() === "system";
+}
+
 function formatMessageLine(msg) {
   const timestamp = msg?.timestamp || "";
   const kind = msg?.role || msg?.type || "message";
@@ -257,6 +266,38 @@ const ChatBubble = memo(function ChatBubble({ msg }) {
     </div>
   `;
 }, (prev, next) => prev.msg === next.msg);
+
+const ThinkingPanel = memo(function ThinkingPanel({ entries }) {
+  if (!Array.isArray(entries) || entries.length === 0) return null;
+  return html`
+    <details class="chat-thinking-panel">
+      <summary class="chat-thinking-summary">
+        🧠 Thinking · ${entries.length} ${entries.length === 1 ? "step" : "steps"}
+      </summary>
+      <div class="chat-thinking-body">
+        ${entries.map((entry, index) => {
+          const category = categorizeMessage(entry);
+          const label =
+            category === "tool"
+              ? "Tool"
+              : category === "result"
+                ? "Result"
+                : category === "error"
+                  ? "Error"
+                  : "System";
+          return html`
+            <div class="chat-thinking-item" key=${entry.id || entry.timestamp || `thinking-${index}`}>
+              <div class="chat-thinking-item-label">${label}</div>
+              <div class="chat-thinking-item-content">
+                <${MessageContent} text=${entry.content || ""} />
+              </div>
+            </div>
+          `;
+        })}
+      </div>
+    </details>
+  `;
+});
 
 /* ─── Chat View component ─── */
 export function ChatView({ sessionId, readOnly = false, embedded = false }) {
@@ -351,22 +392,59 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     }
   }, [messages.length]);
 
-  /* Same approach for status signals — use .peek() to avoid creating signal
-     subscriptions. The status bar cosmetics don't justify re-rendering the
-     entire 200-message list. We piggyback on the messages.length change
-     (which already triggers a re-render) to refresh these values. */
+  /* Keep status indicators fully live while an agent is active. */
   let errorCount = 0;
   let statusState = "idle";
   let statusText = "";
   try {
-    errorCount = totalErrorCount.peek() || 0;
-    statusState = paused ? "paused" : (agentStatus.peek()?.state || "idle");
-    statusText = paused ? "Stream paused" : (agentStatusText.peek() || "Ready");
+    errorCount = totalErrorCount.value || 0;
+    statusState = paused ? "paused" : (agentStatus.value?.state || "idle");
+    statusText = paused ? "Stream paused" : (agentStatusText.value || "Ready");
   } catch (err) {
     console.warn("[ChatView] Failed to read status signals:", err);
     statusState = paused ? "paused" : "idle";
     statusText = paused ? "Stream paused" : "Ready";
   }
+
+  const renderItems = useMemo(() => {
+    const items = [];
+    let pendingThinking = [];
+    let panelIndex = 0;
+
+    const flushThinking = (anchor = "") => {
+      if (pendingThinking.length === 0) return;
+      const seed = pendingThinking[0]?.id || pendingThinking[0]?.timestamp || panelIndex;
+      items.push({
+        kind: "thinking",
+        key: `thinking-${sessionId || "session"}-${seed}-${anchor}-${panelIndex}`,
+        entries: pendingThinking,
+      });
+      pendingThinking = [];
+      panelIndex += 1;
+    };
+
+    for (const msg of visibleMessages) {
+      if (isThinkingTraceMessage(msg)) {
+        pendingThinking.push(msg);
+        continue;
+      }
+
+      const isAssistantMessage =
+        (msg.role || "") === "assistant" || (msg.type || "") === "agent_message";
+      if (isAssistantMessage) {
+        flushThinking(msg.id || msg.timestamp || "assistant");
+      }
+
+      items.push({
+        kind: "message",
+        key: msg.id || msg.timestamp || `msg-${items.length}`,
+        msg,
+      });
+    }
+
+    flushThinking("tail");
+    return items;
+  }, [visibleMessages, sessionId]);
 
   const refreshMessages = useCallback(async () => {
     if (!sessionId) return;
@@ -461,7 +539,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     if (!paused && autoScroll) {
       // Use smooth scroll for small increments, instant for large jumps
       const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
-      el.scrollTo({ top: el.scrollHeight, behavior: gap < 800 ? "smooth" : "instant" });
+      el.scrollTo({ top: el.scrollHeight, behavior: gap < 800 ? "smooth" : "auto" });
       return;
     }
     if (newMessages && !autoScroll) {
@@ -806,12 +884,10 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             </button>
           </div>
         `}
-        ${visibleMessages.map((msg) => html`
-          <${ChatBubble}
-            key=${msg.id || msg.timestamp}
-            msg=${msg}
-          />`
-        )} 
+        ${renderItems.map((item) => item.kind === "thinking"
+          ? html`<${ThinkingPanel} key=${item.key} entries=${item.entries} />`
+          : html`<${ChatBubble} key=${item.key} msg=${item.msg} />`
+        )}
 
         ${/* Pending messages (optimistic rendering) — use .peek() to avoid
               subscribing ChatView to pendingMessages signal. Pending messages

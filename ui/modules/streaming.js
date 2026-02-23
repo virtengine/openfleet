@@ -536,7 +536,7 @@ export const agentStatusText = computed(() => {
 });
 
 let _idleTimer = null;
-const IDLE_TIMEOUT = 5000;
+const IDLE_TIMEOUT = 45000;
 
 /**
  * Internal: transition agent state and reset idle timer.
@@ -600,6 +600,12 @@ export function startAgentStatusTracking() {
     const role = message.role;
     const type = message.type;
     const adapter = payload.session?.type || "";
+    const sessionStatus = payload.session?.status || "active";
+
+    if (sessionStatus !== "active") {
+      _setAgentState("idle", "");
+      return;
+    }
 
     if (role === "assistant" || type === "agent_message") {
       _setAgentState("streaming", adapter);
@@ -607,7 +613,7 @@ export function startAgentStatusTracking() {
       _setAgentState("executing", adapter);
     } else if (type === "tool_result") {
       _setAgentState("streaming", adapter);
-    } else if (type === "error" || type === "system") {
+    } else if (type === "error" || type === "stream_error") {
       _setAgentState("idle", "");
     }
   });
