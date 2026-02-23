@@ -361,6 +361,36 @@ const AGENT_SELECTOR_STYLES = `
     padding: 8px 12px;
   }
 }
+
+/* ── Native Agent Select ── */
+.agent-picker-native {
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--tg-theme-secondary-bg-color, #1e1e2e);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  color: var(--tg-theme-text-color, #fff);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 28px 5px 28px;
+  cursor: pointer;
+  min-width: 120px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%23999' d='M1 3l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  transition: border-color 0.2s ease;
+}
+.agent-picker-native:hover {
+  border-color: rgba(255,255,255,0.15);
+}
+.agent-picker-native:focus {
+  outline: none;
+  border-color: var(--tg-theme-button-color, #3b82f6);
+}
+.agent-picker-native option {
+  background: #1a1a2e;
+  color: #fff;
+}
 `;
 
 let _agentStylesInjected = false;
@@ -480,106 +510,41 @@ export function AgentModeSelector() {
  * ═══════════════════════════════════════════════ */
 
 export function AgentPicker() {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef(null);
   const agents = availableAgents.value;
-  const current = activeAgentInfo.value;
+  const current = activeAgent.value;
   const loading = agentSelectorLoading.value;
 
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("pointerdown", handler, true);
-    return () => document.removeEventListener("pointerdown", handler, true);
-  }, [open]);
-
-  // Close on Escape
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [open]);
-
-  const handleToggle = useCallback(() => {
-    haptic("light");
-    setOpen((v) => !v);
-  }, []);
-
-  const handleSelect = useCallback((agentId) => {
-    if (agentId === activeAgent.value) {
-      setOpen(false);
-      return;
-    }
+  const handleChange = useCallback((e) => {
+    const agentId = e.target.value;
+    if (agentId === activeAgent.value) return;
     haptic("medium");
     switchAgent(agentId);
-    setOpen(false);
   }, []);
 
-  const currentIcon = current ? (AGENT_ICONS[current.id] || "🔌") : "🔌";
-  const currentName = current ? current.name : (loading ? "Loading…" : "Select Agent");
+  const currentIcon = AGENT_ICONS[current] || "⚡";
 
   return html`
-    <div class="agent-picker-wrap" ref=${wrapRef}>
-      <button
-        class="agent-picker-btn ${open ? "open" : ""}"
-        onClick=${handleToggle}
-        aria-haspopup="listbox"
-        aria-expanded=${open}
+    <div class="agent-picker-wrap">
+      <span class="picker-icon" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none;z-index:1">${currentIcon}</span>
+      <select
+        class="agent-picker-native"
+        value=${current}
+        onChange=${handleChange}
+        disabled=${loading}
         title="Select AI agent"
       >
-        <span class="picker-icon">${currentIcon}</span>
-        <span>${currentName}</span>
-        <span class="agent-picker-chevron">▾</span>
-      </button>
-
-      ${open && html`
-        <div class="agent-picker-backdrop" onClick=${() => setOpen(false)} />
-        <div class="agent-picker-dropdown" role="listbox" aria-label="Available agents">
-          ${agents.length === 0 && html`
-            <div style="padding: 12px; text-align: center; color: var(--tg-theme-hint-color, #888); font-size: 12px;">
-              ${loading ? "Loading agents…" : "No agents available"}
-            </div>
-          `}
-          ${agents.map((agent) => {
-            const isActive = agent.id === activeAgent.value;
-            const icon = AGENT_ICONS[agent.id] || "🔌";
-            const statusClass = agent.busy ? "busy" : agent.available ? "available" : "offline";
-            const providerColor = PROVIDER_COLORS[agent.provider] || "#6b7280";
-
-            return html`
-              <button
-                key=${agent.id}
-                class="agent-picker-item ${isActive ? "active" : ""}"
-                role="option"
-                aria-selected=${isActive}
-                onClick=${() => handleSelect(agent.id)}
-              >
-                <div class="agent-picker-item-icon">${icon}</div>
-                <div class="agent-picker-item-info">
-                  <div class="agent-picker-item-name">${agent.name}</div>
-                  <div class="agent-picker-item-provider">
-                    <span
-                      class="agent-provider-badge"
-                      style="background: ${providerColor}"
-                    >${agent.provider}</span>
-                  </div>
-                </div>
-                <div class="agent-picker-item-end">
-                  <span class="agent-picker-status-dot ${statusClass}"
-                        title=${statusClass} />
-                  ${isActive && html`<span class="agent-picker-check">✓</span>`}
-                </div>
-              </button>
-            `;
-          })}
-        </div>
-      `}
+        ${agents.length === 0 && html`
+          <option disabled>${loading ? "Loading…" : "No agents"}</option>
+        `}
+        ${agents.map((agent) => {
+          const statusLabel = agent.busy ? " (busy)" : !agent.available ? " (offline)" : "";
+          return html`
+            <option key=${agent.id} value=${agent.id}>
+              ${agent.name} · ${agent.provider}${statusLabel}
+            </option>
+          `;
+        })}
+      </select>
     </div>
   `;
 }
