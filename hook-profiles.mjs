@@ -552,6 +552,10 @@ function buildDisableEnv(hookConfig) {
   };
 }
 
+function normalizePathForOutput(value) {
+  return String(value || "").replace(/\\/g, "/");
+}
+
 export function scaffoldAgentHookFiles(repoRoot, options = {}) {
   const root = resolve(repoRoot || process.cwd());
   const targets = normalizeHookTargets(options.targets);
@@ -585,13 +589,13 @@ export function scaffoldAgentHookFiles(repoRoot, options = {}) {
     const codexPath = resolve(root, ".codex", "hooks.json");
     const existedBefore = existsSync(codexPath);
     if (existedBefore && !overwriteExisting) {
-      result.skipped.push(relative(root, codexPath));
+      result.skipped.push(normalizePathForOutput(relative(root, codexPath)));
     } else {
       writeJson(codexPath, codexHookConfig);
       if (existedBefore) {
-        result.updated.push(relative(root, codexPath));
+        result.updated.push(normalizePathForOutput(relative(root, codexPath)));
       } else {
-        result.written.push(relative(root, codexPath));
+        result.written.push(normalizePathForOutput(relative(root, codexPath)));
       }
     }
   }
@@ -610,18 +614,18 @@ export function scaffoldAgentHookFiles(repoRoot, options = {}) {
       hasLegacyBridgeInCopilotConfig(existingCopilot);
 
     if (existedBefore && !overwriteExisting && !forceLegacyMigration) {
-      result.skipped.push(relative(root, copilotPath));
+      result.skipped.push(normalizePathForOutput(relative(root, copilotPath)));
     } else {
       writeJson(copilotPath, config);
       if (existedBefore) {
-        result.updated.push(relative(root, copilotPath));
+        result.updated.push(normalizePathForOutput(relative(root, copilotPath)));
         if (forceLegacyMigration) {
           result.warnings.push(
-            `${relative(root, copilotPath)} contained legacy bridge path and was auto-updated`,
+            `${normalizePathForOutput(relative(root, copilotPath))} contained legacy bridge path and was auto-updated`,
           );
         }
       } else {
-        result.written.push(relative(root, copilotPath));
+        result.written.push(normalizePathForOutput(relative(root, copilotPath)));
       }
     }
   }
@@ -634,15 +638,15 @@ export function scaffoldAgentHookFiles(repoRoot, options = {}) {
 
     if (existing === null && existsSync(claudePath)) {
       result.warnings.push(
-        `${relative(root, claudePath)} exists but is not valid JSON; skipped`,
+        `${normalizePathForOutput(relative(root, claudePath))} exists but is not valid JSON; skipped`,
       );
     } else {
       const merged = mergeClaudeSettings(existing, generated);
       writeJson(claudePath, merged);
       if (existedBefore) {
-        result.updated.push(relative(root, claudePath));
+        result.updated.push(normalizePathForOutput(relative(root, claudePath)));
       } else {
-        result.written.push(relative(root, claudePath));
+        result.written.push(normalizePathForOutput(relative(root, claudePath)));
       }
     }
   }
