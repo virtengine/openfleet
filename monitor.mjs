@@ -501,6 +501,7 @@ let {
   plannerIdleSlotThreshold,
   plannerDedupMs,
   plannerMode: configPlannerMode,
+  triggerSystem: configTriggerSystem,
   agentPrompts,
   executorConfig: configExecutorConfig,
   scheduler: executorScheduler,
@@ -521,6 +522,10 @@ let {
 let watchPath = resolve(configWatchPath);
 let codexEnabled = config.codexEnabled;
 let plannerMode = configPlannerMode; // "codex-sdk" | "kanban" | "disabled"
+let triggerSystemConfig =
+  configTriggerSystem && typeof configTriggerSystem === "object"
+    ? configTriggerSystem
+    : { enabled: false, templates: [], defaults: { executor: "auto", model: "auto" } };
 let kanbanBackend = String(kanbanConfig?.backend || "internal").toLowerCase();
 let executorMode = configExecutorMode || getExecutorMode();
 let githubReconcile = githubReconcileConfig || {
@@ -7925,6 +7930,8 @@ async function materializePlannerTasksToKanban(tasks) {
       continue;
     }
     const baseBranch = task.baseBranch || task.base_branch || extractModuleBaseBranchFromTitle(task.title);
+    const executionOverride =
+      task.execution && typeof task.execution === "object" ? task.execution : {};
     const plannerMeta = {
       source: "task-planner",
       plannerMode: "codex-sdk",
@@ -7942,6 +7949,16 @@ async function materializePlannerTasksToKanban(tasks) {
       syncDirty: true,
       meta: {
         planner: plannerMeta,
+        execution: {
+          sdk:
+            executionOverride.sdk && executionOverride.sdk !== "auto"
+              ? String(executionOverride.sdk).trim()
+              : undefined,
+          model:
+            executionOverride.model && executionOverride.model !== "auto"
+              ? String(executionOverride.model).trim()
+              : undefined,
+        },
         ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
       },
     });
@@ -8017,7 +8034,7 @@ function startTaskPlannerStatusLoop() {
   }, 25_000);
 }
 
-async function maybeTriggerTaskPlanner(reason, details) {
+async function maybeTriggerTaskPlanner(reason, details, options = {}) {
   if (internalTaskExecutor?.isPaused?.()) {
     console.log("[monitor] task planner skipped: executor paused");
     return;
@@ -8046,7 +8063,7 @@ async function maybeTriggerTaskPlanner(reason, details) {
     return;
   }
   try {
-    const result = await triggerTaskPlanner(reason, details);
+    const result = await triggerTaskPlanner(reason, details, options);
     console.log(
       `[monitor] task planner result: ${result?.status || "unknown"} (${reason})`,
     );
@@ -8721,6 +8738,31 @@ async function checkStatusMilestones() {
   const backlogPerCapita =
     maxParallel > 0 ? backlogRemaining / maxParallel : backlogRemaining;
   const idleSlots = Math.max(0, maxParallel - running);
+  const staleTaskAgeHours = Number(process.env.STALE_TASK_AGE_HOURS || "24");
+  const staleTaskCutoffMs =
+    Date.now() - Math.max(1, staleTaskAgeHours) * 60 * 60 * 1000;
+  const staleInProgressCount = (getInternalTasksByStatus("inprogress") || []).filter(
+    (task) => {
+      const updatedAt =
+        Date.parse(task?.updated_at || task?.updatedAt || task?.meta?.updatedAt || 0) ||
+        Date.parse(task?.created_at || task?.createdAt || 0);
+      return Number.isFinite(updatedAt) && updatedAt > 0 && updatedAt <= staleTaskCutoffMs;
+    },
+  ).length;
+
+  const triggerContext = {
+    backlogRemaining,
+    backlogPerCapita,
+    running,
+    review,
+    error,
+    idleSlots,
+    maxParallel,
+    staleInProgressCount,
+  };
+
+  await evaluateTriggerTemplates(triggerContext);
+  const triggerSystemEnabled = Boolean(triggerSystemConfig?.enabled);
 
   // Fleet-aware backlog depth check: if fleet is active, check if we need
   // more tasks to keep all workstations busy
@@ -8732,7 +8774,7 @@ async function checkStatusMilestones() {
     });
     if (depth.shouldGenerate && depth.deficit > 0) {
       // Only coordinator triggers planner to avoid duplicates
-      if (isFleetCoordinator()) {
+      if (isFleetCoordinator() && triggerSystemEnabled) {
         await maybeTriggerTaskPlanner("fleet-deficit", {
           backlogRemaining,
           targetDepth: depth.targetDepth,
@@ -8771,15 +8813,17 @@ async function checkStatusMilestones() {
     await sendTelegramMessage(
       "All tasks completed. Orchestrator backlog is empty.",
     );
-    await maybeTriggerTaskPlanner("backlog-empty", {
-      backlogRemaining,
-      backlogPerCapita,
-      running,
-      review,
-      error,
-      idleSlots,
-      maxParallel,
-    });
+    if (triggerSystemEnabled) {
+      await maybeTriggerTaskPlanner("backlog-empty", {
+        backlogRemaining,
+        backlogPerCapita,
+        running,
+        review,
+        error,
+        idleSlots,
+        maxParallel,
+      });
+    }
     return;
   }
 
@@ -8801,16 +8845,18 @@ async function checkStatusMilestones() {
         )} per slot). Triggering task planner.`,
       );
     }
-    await maybeTriggerTaskPlanner("backlog-per-capita", {
-      backlogRemaining,
-      backlogPerCapita,
-      running,
-      review,
-      error,
-      idleSlots,
-      maxParallel,
-      threshold: plannerPerCapitaThreshold,
-    });
+    if (triggerSystemEnabled) {
+      await maybeTriggerTaskPlanner("backlog-per-capita", {
+        backlogRemaining,
+        backlogPerCapita,
+        running,
+        review,
+        error,
+        idleSlots,
+        maxParallel,
+        threshold: plannerPerCapitaThreshold,
+      });
+    }
     return;
   } else {
     // Conditions no longer met — reset so we re-notify next time
@@ -8824,18 +8870,214 @@ async function checkStatusMilestones() {
         `Agents idle: ${idleSlots} slot(s) available (running ${running}/${maxParallel}). Triggering task planner.`,
       );
     }
-    await maybeTriggerTaskPlanner("idle-slots", {
-      backlogRemaining,
-      backlogPerCapita,
-      running,
-      review,
-      error,
-      idleSlots,
-      maxParallel,
-      threshold: plannerIdleSlotThreshold,
-    });
+    if (triggerSystemEnabled) {
+      await maybeTriggerTaskPlanner("idle-slots", {
+        backlogRemaining,
+        backlogPerCapita,
+        running,
+        review,
+        error,
+        idleSlots,
+        maxParallel,
+        threshold: plannerIdleSlotThreshold,
+      });
+    }
   } else {
     idleAgentsNotified = false;
+  }
+}
+
+function compareTriggerMetric(left, operator, right) {
+  switch (String(operator || "eq").toLowerCase()) {
+    case "lt":
+      return left < right;
+    case "lte":
+      return left <= right;
+    case "gt":
+      return left > right;
+    case "gte":
+      return left >= right;
+    case "neq":
+      return left !== right;
+    case "eq":
+    default:
+      return left === right;
+  }
+}
+
+function getTriggerTemplateState(state, templateId) {
+  const map = state?.trigger_templates;
+  if (!map || typeof map !== "object") return null;
+  return map[templateId] || null;
+}
+
+async function updateTriggerTemplateState(templateId, patch) {
+  const current = (await readPlannerState()) || {};
+  const templates =
+    current.trigger_templates && typeof current.trigger_templates === "object"
+      ? { ...current.trigger_templates }
+      : {};
+  templates[templateId] = {
+    ...(templates[templateId] || {}),
+    ...patch,
+  };
+  await writePlannerState({
+    ...current,
+    trigger_templates: templates,
+  });
+}
+
+function resolveTemplateMinIntervalMs(template) {
+  const minIntervalMinutes = Number(template?.minIntervalMinutes || 0);
+  if (Number.isFinite(minIntervalMinutes) && minIntervalMinutes > 0) {
+    return minIntervalMinutes * 60 * 1000;
+  }
+  return plannerDedupMs;
+}
+
+function evaluateTemplateCondition(condition, context, lastSuccessMs) {
+  if (!condition || typeof condition !== "object") return false;
+  const kind = String(condition.kind || "metric").toLowerCase();
+  if (kind === "interval") {
+    const minutes = Number(condition.minutes || 0);
+    if (!Number.isFinite(minutes) || minutes <= 0) return false;
+    if (!Number.isFinite(lastSuccessMs) || lastSuccessMs <= 0) return true;
+    return Date.now() - lastSuccessMs >= minutes * 60 * 1000;
+  }
+  const metric = String(condition.metric || "").trim();
+  if (!metric || !(metric in context)) return false;
+  const left = Number(context[metric]);
+  const right = Number(condition.value);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+  return compareTriggerMetric(left, condition.operator, right);
+}
+
+async function evaluateTriggerTemplates(context) {
+  const system = triggerSystemConfig || {};
+  if (!system.enabled) return;
+  const templates = Array.isArray(system.templates) ? system.templates : [];
+  if (templates.length === 0) return;
+
+  const state = (await readPlannerState()) || {};
+
+  for (const template of templates) {
+    if (!template || template.enabled !== true) continue;
+    const templateId = String(template.id || template.name || "").trim();
+    if (!templateId) continue;
+
+    const templateState = getTriggerTemplateState(state, templateId);
+    const lastSuccessMs = Date.parse(templateState?.last_success_at || 0);
+    const minIntervalMs = resolveTemplateMinIntervalMs(template);
+    if (Number.isFinite(lastSuccessMs) && lastSuccessMs > 0) {
+      const elapsed = Date.now() - lastSuccessMs;
+      if (elapsed < minIntervalMs) {
+        continue;
+      }
+    }
+
+    const rules = Array.isArray(template?.trigger?.anyOf)
+      ? template.trigger.anyOf
+      : [];
+    if (rules.length === 0) continue;
+
+    const shouldRun = rules.some((condition) =>
+      evaluateTemplateCondition(condition, context, lastSuccessMs),
+    );
+    if (!shouldRun) continue;
+
+    try {
+      const action = String(template.action || "").toLowerCase();
+      const templateConfig =
+        template.config && typeof template.config === "object"
+          ? template.config
+          : {};
+      const defaultExecutor =
+        system.defaults && typeof system.defaults === "object"
+          ? String(system.defaults.executor || "auto")
+          : "auto";
+      const defaultModel =
+        system.defaults && typeof system.defaults === "object"
+          ? String(system.defaults.model || "auto")
+          : "auto";
+      const executorOverride =
+        String(templateConfig.executor || defaultExecutor || "auto").trim();
+      const modelOverride =
+        String(templateConfig.model || defaultModel || "auto").trim();
+
+      if (action === "task-planner") {
+        await maybeTriggerTaskPlanner(`trigger:${templateId}`, {
+          templateId,
+          ...context,
+        }, {
+          preferredMode:
+            templateConfig.plannerMode === "kanban" ||
+            templateConfig.plannerMode === "codex-sdk"
+              ? templateConfig.plannerMode
+              : undefined,
+          taskCount: Number(templateConfig.defaultTaskCount || 0) || undefined,
+          executorSdk:
+            executorOverride && executorOverride !== "auto"
+              ? executorOverride
+              : undefined,
+          model:
+            modelOverride && modelOverride !== "auto"
+              ? modelOverride
+              : undefined,
+        });
+      } else if (action === "create-task") {
+        const title = String(templateConfig.title || "").trim();
+        if (!title) continue;
+        const dedup = normalizePlannerTitleForComparison(title);
+        const existing = [
+          ...(getInternalTasksByStatus("todo") || []),
+          ...(getInternalTasksByStatus("inprogress") || []),
+          ...(getInternalTasksByStatus("inreview") || []),
+        ].some((task) => normalizePlannerTitleForComparison(task?.title) === dedup);
+        if (!existing) {
+          addInternalTask({
+            id: randomUUID(),
+            title,
+            description: String(templateConfig.description || "").trim(),
+            status: "todo",
+            priority: String(templateConfig.priority || "").trim() || undefined,
+            projectId: process.env.INTERNAL_EXECUTOR_PROJECT_ID || "internal",
+            syncDirty: true,
+            meta: {
+              triggerTemplate: {
+                id: templateId,
+                source: "trigger-system",
+                createdAt: new Date().toISOString(),
+              },
+              execution: {
+                executor:
+                  executorOverride && executorOverride !== "auto"
+                    ? executorOverride
+                    : undefined,
+                model:
+                  modelOverride && modelOverride !== "auto"
+                    ? modelOverride
+                    : undefined,
+              },
+            },
+          });
+        }
+      }
+
+      await updateTriggerTemplateState(templateId, {
+        last_triggered_at: new Date().toISOString(),
+        last_success_at: new Date().toISOString(),
+        last_error: null,
+      });
+    } catch (err) {
+      await updateTriggerTemplateState(templateId, {
+        last_triggered_at: new Date().toISOString(),
+        last_error: err?.message || String(err || "unknown"),
+        last_failure_at: new Date().toISOString(),
+      });
+      console.warn(
+        `[monitor] trigger template failed (${template?.id || template?.name || "unknown"}): ${err?.message || err}`,
+      );
+    }
   }
 }
 
@@ -8848,6 +9090,8 @@ async function triggerTaskPlanner(
     notify = true,
     preferredMode,
     allowCodexWhenDisabled = false,
+    executorSdk,
+    model,
   } = {},
 ) {
   if (internalTaskExecutor?.isPaused?.()) {
@@ -8882,6 +9126,8 @@ async function triggerTaskPlanner(
           taskCount,
           userPrompt,
           notify,
+          executorSdk,
+          model,
         });
       } catch (kanbanErr) {
         const message = kanbanErr?.message || String(kanbanErr || "");
@@ -8913,6 +9159,8 @@ async function triggerTaskPlanner(
           userPrompt,
           notify,
           allowWhenDisabled: allowCodexWhenDisabled,
+          executorSdk,
+          model,
         });
       }
     } else if (effectiveMode === "codex-sdk") {
@@ -8922,6 +9170,8 @@ async function triggerTaskPlanner(
           userPrompt,
           notify,
           allowWhenDisabled: allowCodexWhenDisabled,
+          executorSdk,
+          model,
         });
       } catch (codexErr) {
         const codexMessage = codexErr?.message || String(codexErr || "");
@@ -8945,6 +9195,8 @@ async function triggerTaskPlanner(
           taskCount,
           userPrompt,
           notify,
+          executorSdk,
+          model,
         });
       }
     } else {
@@ -8978,7 +9230,7 @@ async function triggerTaskPlanner(
 async function triggerTaskPlannerViaKanban(
   reason,
   details,
-  { taskCount, userPrompt, notify = true } = {},
+  { taskCount, userPrompt, notify = true, executorSdk, model } = {},
 ) {
   const defaultPlannerTaskCount = Number(
     process.env.TASK_PLANNER_DEFAULT_COUNT || "30",
@@ -9089,6 +9341,11 @@ async function triggerTaskPlannerViaKanban(
         externalSyncPending: true,
         createdAt: new Date().toISOString(),
       },
+      execution: {
+        sdk:
+          executorSdk && executorSdk !== "auto" ? String(executorSdk).trim() : undefined,
+        model: model && model !== "auto" ? String(model).trim() : undefined,
+      },
     },
   });
 
@@ -9126,7 +9383,14 @@ async function triggerTaskPlannerViaKanban(
 async function triggerTaskPlannerViaCodex(
   reason,
   details,
-  { taskCount, userPrompt, notify = true, allowWhenDisabled = false } = {},
+  {
+    taskCount,
+    userPrompt,
+    notify = true,
+    allowWhenDisabled = false,
+    executorSdk,
+    model,
+  } = {},
 ) {
   if (!codexEnabled && !allowWhenDisabled) {
     throw new Error(
@@ -9214,7 +9478,16 @@ async function triggerTaskPlannerViaCodex(
   );
 
   const { created, skipped } = await materializePlannerTasksToKanban(
-    parsedTasks,
+    parsedTasks.map((task) => ({
+      ...task,
+      execution: {
+        sdk:
+          executorSdk && executorSdk !== "auto"
+            ? String(executorSdk).trim()
+            : undefined,
+        model: model && model !== "auto" ? String(model).trim() : undefined,
+      },
+    })),
   );
 
   console.log(`[monitor] task planner output saved: ${outPath}`);
@@ -9670,13 +9943,14 @@ async function handleExit(code, signal, logPath) {
       logText.includes("All tasks completed");
 
     if (isEmptyBacklog) {
-      console.log(
-        "[monitor] clean exit with empty backlog — triggering task planner",
-      );
-      // Trigger task planner to create more tasks
-      await maybeTriggerTaskPlanner("backlog-empty-exit", {
-        reason: "Orchestrator exited cleanly with empty backlog",
-      });
+      if (triggerSystemConfig?.enabled) {
+        console.log(
+          "[monitor] clean exit with empty backlog — triggering task planner",
+        );
+        await maybeTriggerTaskPlanner("backlog-empty-exit", {
+          reason: "Orchestrator exited cleanly with empty backlog",
+        });
+      }
       // Wait before restarting so the planner has time to create tasks
       const plannerWaitMs = 2 * 60 * 1000; // 2 minutes
       console.log(
@@ -11429,6 +11703,10 @@ function applyConfig(nextConfig, options = {}) {
   plannerIdleSlotThreshold = nextConfig.plannerIdleSlotThreshold;
   plannerDedupMs = nextConfig.plannerDedupMs;
   plannerMode = nextConfig.plannerMode || "codex-sdk";
+  triggerSystemConfig =
+    nextConfig.triggerSystem && typeof nextConfig.triggerSystem === "object"
+      ? nextConfig.triggerSystem
+      : { enabled: false, templates: [], defaults: { executor: "auto", model: "auto" } };
   githubReconcile = nextConfig.githubReconcile || githubReconcile;
   agentPrompts = nextConfig.agentPrompts;
   configExecutorConfig = nextConfig.executorConfig;

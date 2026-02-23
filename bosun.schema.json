@@ -88,7 +88,10 @@
                   "description": "Map internal statuses to project board column names",
                   "properties": {
                     "todo": { "type": "string", "default": "Todo" },
-                    "inprogress": { "type": "string", "default": "In Progress" },
+                    "inprogress": {
+                      "type": "string",
+                      "default": "In Progress"
+                    },
                     "inreview": { "type": "string", "default": "In Review" },
                     "done": { "type": "string", "default": "Done" },
                     "cancelled": { "type": "string", "default": "Cancelled" }
@@ -221,6 +224,81 @@
       "type": "string",
       "enum": ["codex-sdk", "kanban", "disabled"]
     },
+    "triggerSystem": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "templates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "enabled": { "type": "boolean", "default": false },
+              "action": {
+                "type": "string",
+                "enum": ["task-planner", "create-task"]
+              },
+              "minIntervalMinutes": { "type": "number", "minimum": 1 },
+              "trigger": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "anyOf": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": ["metric", "interval"]
+                        },
+                        "metric": { "type": "string" },
+                        "operator": {
+                          "type": "string",
+                          "enum": ["lt", "lte", "gt", "gte", "eq", "neq"]
+                        },
+                        "value": { "type": ["number", "string", "boolean"] },
+                        "minutes": { "type": "number", "minimum": 1 }
+                      }
+                    }
+                  }
+                }
+              },
+              "config": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "plannerMode": {
+                    "type": "string",
+                    "enum": ["codex-sdk", "kanban", "disabled"]
+                  },
+                  "defaultTaskCount": { "type": "number", "minimum": 1 },
+                  "title": { "type": "string" },
+                  "description": { "type": "string" },
+                  "priority": { "type": "string" },
+                  "executor": { "type": "string" },
+                  "model": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "executor": { "type": "string" },
+            "model": { "type": "string" }
+          }
+        }
+      }
+    },
     "activeWorkspace": {
       "type": "string",
       "description": "ID of the currently active workspace"
@@ -249,11 +327,23 @@
               "additionalProperties": true,
               "required": ["name"],
               "properties": {
-                "name": { "type": "string", "description": "Repository directory name" },
+                "name": {
+                  "type": "string",
+                  "description": "Repository directory name"
+                },
                 "url": { "type": "string", "description": "Git clone URL" },
-                "slug": { "type": "string", "description": "GitHub slug (org/repo)" },
-                "primary": { "type": "boolean", "description": "Whether this is the primary repo" },
-                "branch": { "type": "string", "description": "Default branch to track" }
+                "slug": {
+                  "type": "string",
+                  "description": "GitHub slug (org/repo)"
+                },
+                "primary": {
+                  "type": "boolean",
+                  "description": "Whether this is the primary repo"
+                },
+                "branch": {
+                  "type": "string",
+                  "description": "Default branch to track"
+                }
               }
             }
           },
@@ -399,6 +489,10 @@
         "name": { "type": "string" },
         "executor": { "type": "string" },
         "variant": { "type": "string" },
+        "models": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
         "weight": { "type": "number" },
         "role": { "type": "string" },
         "enabled": { "type": "boolean" }
