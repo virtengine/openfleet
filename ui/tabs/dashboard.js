@@ -6,6 +6,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useRef,
 } from "preact/hooks";
 import htm from "htm";
 
@@ -95,6 +96,32 @@ const QUICK_ACTIONS = [
     targetTab: "control",
   },
 ];
+
+/* ─── AnimatedNumber ─── */
+function AnimatedNumber({ value, duration = 600, className = "" }) {
+  const displayRef = useRef(value);
+  const rafRef = useRef(null);
+  const [display, setDisplay] = useState(value);
+
+  useEffect(() => {
+    const from = displayRef.current;
+    const to = value;
+    if (from === to) return;
+    const start = performance.now();
+    const animate = (now) => {
+      const t = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - t, 3);
+      const current = Math.round(from + (to - from) * eased);
+      displayRef.current = current;
+      setDisplay(current);
+      if (t < 1) rafRef.current = requestAnimationFrame(animate);
+    };
+    rafRef.current = requestAnimationFrame(animate);
+    return () => rafRef.current && cancelAnimationFrame(rafRef.current);
+  }, [value, duration]);
+
+  return html`<span class="${className}">${display}</span>`;
+}
 
 /* ─── CreateTaskModal ─── */
 export function CreateTaskModal({ onClose }) {
@@ -190,6 +217,11 @@ export function DashboardTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
   const [uptime, setUptime] = useState(null);
+  // New state
+  const [now, setNow] = useState(() => new Date());
+  const [recentCommits, setRecentCommits] = useState([]);
+  const [flashKey, setFlashKey] = useState(0);
+  const prevCounts = useRef(null);
   const status = statusData.value;
   const executor = executorData.value;
   const project = projectSummary.value;
@@ -216,6 +248,19 @@ export function DashboardTab() {
   const slotPct = execData?.maxParallel
     ? ((execData.activeSlots || 0) / execData.maxParallel) * 100
     : 0;
+
+  // ── Health score (0–100) ──
+  let healthScore = 100;
+  if (executor?.paused) healthScore -= 20;
+  healthScore -= Math.min(40, errorRateValue * 2);
+  if ((execData?.activeSlots ?? 0) === 0 && backlog > 0) healthScore -= 10;
+  if (slotPct > 50 && blocked === 0) healthScore += 10;
+  healthScore = Math.min(100, Math.max(0, Math.round(healthScore)));
+
+  // ── Clock ──
+  const timeStr = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const tzStr = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
   const headerLine = `${totalActive} active · ${backlog} backlog · ${done} done${
     blocked ? ` · ${blocked} blocked` : ""
   }`;
@@ -257,6 +302,36 @@ export function DashboardTab() {
       .catch(() => {});
     return () => { active = false; };
   }, []);
+
+  // ── Listen for ve:create-task keyboard shortcut ──
+  useEffect(() => {
+    const handler = () => setShowCreate(true);
+    window.addEventListener("ve:create-task", handler);
+    return () => window.removeEventListener("ve:create-task", handler);
+  }, []);
+
+  // ── Real-time clock ──
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // ── Recent commits (graceful 404) ──
+  useEffect(() => {
+    apiFetch("/api/recent-commits", { _silent: true })
+      .then((data) => { if (Array.isArray(data)) setRecentCommits(data.slice(0, 3)); })
+      .catch(() => {});
+  }, []);
+
+  // ── Flash metrics on counts change ──
+  useEffect(() => {
+    const current = JSON.stringify(counts);
+    const previous = JSON.stringify(prevCounts.current);
+    if (previous !== current) {
+      prevCounts.current = counts;
+      setFlashKey((k) => k + 1);
+    }
+  });
 
   const overviewMetrics = [
     {
@@ -496,6 +571,9 @@ export function DashboardTab() {
           <span class="dashboard-chip">Mode ${mode}</span>
           <span class="dashboard-chip">SDK ${defaultSdk}</span>
           ${uptime ? html`<span class="dashboard-chip">${uptime}</span>` : null}
+          <span class="dashboard-chip dashboard-chip-clock">
+            ${timeStr} <span class="dashboard-chip-tz">${tzStr}</span>
+          </span>
           ${executor
             ? executor.paused
               ? html`<${Badge} status="error" text="Paused" />`
@@ -517,6 +595,10 @@ export function DashboardTab() {
             <div class="dashboard-status-value">
               ${executor?.paused ? "Paused" : "Running"}
             </div>
+          </div>
+          <div class="dashboard-health-score">
+            <div class="health-score-value" style="color: ${healthScore >= 80 ? 'var(--color-done)' : healthScore >= 50 ? 'var(--color-inreview)' : 'var(--color-error)'}">${healthScore}</div>
+            <div class="health-score-label">Health Score</div>
           </div>
           <div class="dashboard-health-grid">
             <div class="dashboard-health-item">
@@ -594,7 +676,7 @@ export function DashboardTab() {
               </div>
             `
             : html`
-              <div class="dashboard-metric-grid">
+              <div class="dashboard-metric-grid stat-flash" key=${flashKey}>
                 ${overviewMetrics.map(
                   (metric) => html`
                     <div
@@ -610,7 +692,9 @@ export function DashboardTab() {
                         class="dashboard-metric-value"
                         style="color: ${metric.color}"
                       >
-                        ${metric.value} ${trend(metric.trend)}
+                        ${typeof metric.value === "number"
+                          ? html`<${AnimatedNumber} value=${metric.value} />`
+                          : metric.value} ${trend(metric.trend)}
                       </div>
                       <div class="dashboard-metric-spark">
                         <${MiniSparkline}
@@ -797,6 +881,23 @@ export function DashboardTab() {
 
       ${showCreate &&
       html`<${CreateTaskModal} onClose=${() => setShowCreate(false)} />`}
+
+      ${recentCommits.length > 0 && html`
+        <${Card}
+          title=${html`<span class="dashboard-card-title"><span class="dashboard-title-icon">${ICONS.git || '🔀'}</span>Recent Commits</span>`}
+          className="dashboard-card dashboard-commits-card"
+        >
+          <div class="dashboard-commits">
+            ${recentCommits.map((c) => html`
+              <div class="dashboard-commit-item" key=${c.hash || c.message}>
+                <div class="dashboard-commit-hash">${(c.hash || '').slice(0, 7)}</div>
+                <div class="dashboard-commit-msg">${truncate(c.message || c.msg || '', 60)}</div>
+                <div class="dashboard-commit-meta">${c.author || ''} · ${formatRelative(c.date || c.timestamp)}</div>
+              </div>
+            `)}
+          </div>
+        <//>  
+      `}
 
       ${showStartModal &&
       html`
