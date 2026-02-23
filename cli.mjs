@@ -5,7 +5,8 @@
  *
  * Usage:
  *   bosun                        # start with default config
- *   bosun --setup                # run setup wizard
+ *   bosun --setup                # launch web setup wizard
+ *   bosun --setup-terminal       # terminal setup wizard
  *   bosun --args "-MaxParallel 6" # pass orchestrator args
  *   bosun --help                 # show help
  *
@@ -65,7 +66,8 @@ function showHelp() {
     bosun [options]
 
   COMMANDS
-    --setup                     Run the interactive setup wizard
+    --setup                     Launch the web-based setup wizard (default)
+    --setup-terminal            Run the legacy terminal setup wizard
     --where                     Show the resolved bosun config directory
     --doctor                    Validate bosun .env/config setup
     --help                      Show this help
@@ -194,7 +196,8 @@ function showHelp() {
 
   EXAMPLES
     bosun                                          # start with defaults
-    bosun --setup                                  # interactive setup
+    bosun --setup                                  # web setup wizard
+    bosun --setup-terminal                          # terminal setup wizard
     bosun --script ./my-orchestrator.sh             # custom script
     bosun --args "-MaxParallel 4" --no-telegram-bot # custom args
     bosun --no-codex --no-autofix                  # minimal mode
@@ -497,9 +500,10 @@ function startDaemon() {
       env: {
         ...process.env,
         BOSUN_DAEMON: "1",
-        // Propagate the bosun package directory so repo-root detection works
+        // Propagate the bosun config directory so repo-root detection works
         // even when the daemon child's cwd is not inside a git repo.
-        BOSUN_DIR: process.env.BOSUN_DIR || fileURLToPath(new URL(".", import.meta.url)),
+        // Use the proper config dir (APPDATA/bosun or ~/bosun), NOT __dirname.
+        BOSUN_DIR: process.env.BOSUN_DIR || resolveConfigDirForCli(),
         // Propagate REPO_ROOT if available; otherwise resolve from cwd before detaching
         ...(process.env.REPO_ROOT
           ? {}
@@ -983,15 +987,22 @@ async function main() {
     process.exit(result.ok ? 0 : 1);
   }
 
-  // Handle --setup
-  if (args.includes("--setup") || args.includes("setup")) {
+  // Handle --setup-terminal (legacy terminal wizard)
+  if (args.includes("--setup-terminal")) {
     const configDirArg = getArgValue("--config-dir");
-    if (configDirArg) {
-      process.env.BOSUN_DIR = configDirArg;
-    }
+    if (configDirArg) process.env.BOSUN_DIR = configDirArg;
     const { runSetup } = await import("./setup.mjs");
     await runSetup();
     process.exit(0);
+  }
+
+  // Handle --setup (web wizard — default)
+  if (args.includes("--setup") || args.includes("setup")) {
+    const configDirArg = getArgValue("--config-dir");
+    if (configDirArg) process.env.BOSUN_DIR = configDirArg;
+    const { startSetupServer } = await import("./setup-web-server.mjs");
+    await startSetupServer();
+    // Server keeps running until setup completes
   }
 
   // Handle --whatsapp-auth
@@ -1007,13 +1018,13 @@ async function main() {
   if (!IS_DAEMON_CHILD) {
     const { shouldRunSetup } = await import("./setup.mjs");
     if (shouldRunSetup()) {
-      console.log("\n  🚀 First run detected — launching setup wizard...\n");
       const configDirArg = getArgValue("--config-dir");
       if (configDirArg) {
         process.env.BOSUN_DIR = configDirArg;
       }
-      const { runSetup } = await import("./setup.mjs");
-      await runSetup();
+      console.log("\n  🚀 First run detected — launching setup wizard...\n");
+      const { startSetupServer } = await import("./setup-web-server.mjs");
+      await startSetupServer();
       console.log("\n  Setup complete! Starting bosun...\n");
     }
   }

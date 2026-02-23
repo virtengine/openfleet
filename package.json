@@ -1,6 +1,6 @@
 {
   "name": "bosun",
-  "version": "0.29.8",
+  "version": "0.30.0",
   "description": "AI-powered orchestrator supervisor — manages AI agent executors with failover, auto-restarts on failure, analyzes crashes with Codex SDK, creates PRs via Vibe-Kanban API, and sends Telegram notifications. Supports N executors with weighted distribution, multi-repo projects, and auto-setup.",
   "type": "module",
   "license": "Apache 2.0",
@@ -158,6 +158,7 @@
     "sdk-conflict-resolver.mjs",
     "session-tracker.mjs",
     "setup.mjs",
+    "setup-web-server.mjs",
     "pwsh-runtime.mjs",
     "shared-knowledge.mjs",
     "shared-state-manager.mjs",

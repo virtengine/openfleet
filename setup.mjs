@@ -101,20 +101,24 @@ function isPathInside(parent, child) {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-function resolveConfigDir(repoRoot) {
+function resolveConfigDir(_repoRoot) {
+  // 1. Explicit env override
   const explicit = process.env.BOSUN_DIR;
   if (explicit) return resolve(explicit);
-  const repoPath = resolve(repoRoot || process.cwd());
-  const packageDir = resolve(__dirname);
-  if (isPathInside(repoPath, packageDir) || hasConfigFiles(packageDir)) {
-    return packageDir;
-  }
-  const baseDir =
-    process.env.APPDATA ||
-    process.env.LOCALAPPDATA ||
-    process.env.HOME ||
-    process.env.USERPROFILE ||
-    process.cwd();
+
+  // 2. Platform-aware user home directory — never write config into the
+  //    bosun package directory (could be node_modules, wiped on npm install).
+  const isWindows = process.platform === "win32";
+  const baseDir = isWindows
+    ? process.env.APPDATA ||
+      process.env.LOCALAPPDATA ||
+      process.env.USERPROFILE ||
+      process.env.HOME ||
+      homedir()
+    : process.env.HOME ||
+      process.env.XDG_CONFIG_HOME ||
+      process.env.USERPROFILE ||
+      homedir();
   return resolve(baseDir, "bosun");
 }
 
@@ -3594,6 +3598,15 @@ async function main() {
         }
       }
 
+      // If backend was switched away from github during repo validation, skip remaining GitHub-specific setup
+      if (selectedKanbanBackend !== "github") {
+        configJson.kanban = {
+          backend: selectedKanbanBackend,
+          syncPolicy: selectedSyncPolicy,
+        };
+        info("Backend switched from GitHub. Skipping GitHub-specific configuration.");
+      } else {
+
       let detectedLogin = "";
       try {
         detectedLogin = detectGitHubUserLogin(repoRoot);
@@ -3825,6 +3838,7 @@ async function main() {
       info(
         "GitHub backend configured. bosun-scoped issues are auto-assigned/labeled and can be linked to a Projects kanban board.",
       );
+      } // end github-still-active else
     }
 
     if (selectedKanbanBackend === "jira") {
@@ -4071,8 +4085,8 @@ async function main() {
       if (!jiraScopeLabels.includes(canonicalLabel)) {
         jiraScopeLabels.unshift(canonicalLabel);
       }
-      if (!jiraScopeLabels.includes("codex-mointor")) {
-        jiraScopeLabels.push("codex-mointor");
+      if (!jiraScopeLabels.includes("codex-monitor")) {
+        jiraScopeLabels.push("codex-monitor");
       }
       env.BOSUN_TASK_LABEL = canonicalLabel;
       env.BOSUN_TASK_LABELS = jiraScopeLabels.join(",");
@@ -4667,6 +4681,142 @@ async function main() {
       info("Skipping VK auto-configuration (VK not selected).");
       delete configJson.vkAutoConfig;
     }
+
+    // ── Per-workspace kanban wiring ───────────────────────
+    // When multiple workspaces exist, offer to wire kanban/project config for
+    // each workspace beyond the primary one already configured above.
+    if (
+      workspaceChoices.length > 1 &&
+      (selectedKanbanBackend === "github" || selectedKanbanBackend === "jira")
+    ) {
+      const selectedWsId = String(
+        selectedWorkspaceChoice?.id || selectedWorkspaceChoice?.name || "",
+      )
+        .trim()
+        .toLowerCase();
+      const remainingWorkspaces = workspaceChoices.filter((ws) => {
+        const wsId = String(ws.id || ws.name || "").trim().toLowerCase();
+        return wsId && wsId !== selectedWsId;
+      });
+
+      if (remainingWorkspaces.length > 0) {
+        console.log();
+        heading("Per-Workspace Project Wiring");
+        info(
+          `You have ${remainingWorkspaces.length} additional workspace(s). Each can have its own project/board.`,
+        );
+
+        for (const ws of remainingWorkspaces) {
+          const wsLabel = ws.label || ws.name || ws.id;
+          const wireUp = await prompt.confirm(
+            `Configure kanban project for workspace "${wsLabel}"?`,
+            true,
+          );
+          if (!wireUp) continue;
+
+          const wsRepos = Array.isArray(ws.repos) ? ws.repos : [];
+          const primaryRepo = wsRepos.find((r) => r?.primary) || wsRepos[0] || null;
+          const primarySlug = primaryRepo?.slug || "";
+
+          if (selectedKanbanBackend === "github") {
+            let wsRepoSlug = primarySlug;
+            if (!wsRepoSlug) {
+              wsRepoSlug = await prompt.ask(
+                `  GitHub repo slug for "${wsLabel}" (owner/repo)`,
+                "",
+              );
+            }
+            const parsedSlug = parseRepoSlugFromUrl(wsRepoSlug) || wsRepoSlug;
+            const [wsOwner, wsRepoName] = String(parsedSlug || "").split("/", 2);
+
+            let wsProjectNumber = "";
+            let wsProjectTitle = "";
+            let wsProjectOwner = wsOwner || "";
+
+            if (wsOwner && wsRepoName && !skipGitHubProjectSetup) {
+              wsProjectTitle = await prompt.ask(
+                `  GitHub Project title for "${wsLabel}"`,
+                wsLabel,
+              );
+              wsProjectOwner = await prompt.ask(
+                `  GitHub Project owner for "${wsLabel}"`,
+                wsOwner,
+              );
+
+              try {
+                let wsLogin = "";
+                try {
+                  wsLogin = detectGitHubUserLogin(repoRoot);
+                } catch {
+                  // ignore
+                }
+                const wsProject = resolveOrCreateGitHubProject({
+                  owner: wsProjectOwner,
+                  title: wsProjectTitle,
+                  cwd: repoRoot,
+                  repoOwner: wsOwner,
+                  githubLogin: wsLogin,
+                });
+                if (wsProject?.number) {
+                  wsProjectNumber = wsProject.number;
+                  if (wsProject.owner) wsProjectOwner = wsProject.owner;
+                  success(
+                    `  Linked GitHub Project for "${wsLabel}": ${wsProjectOwner}#${wsProjectNumber}`,
+                  );
+                } else {
+                  warn(
+                    `  Could not auto-detect/create GitHub Project for "${wsLabel}".${wsProject?.reason ? ` ${wsProject.reason}` : ""}`,
+                  );
+                }
+              } catch (err) {
+                warn(
+                  `  GitHub Projects setup failed for "${wsLabel}": ${formatGhErrorReason(err) || "unknown error"}`,
+                );
+              }
+            }
+
+            // Persist per-workspace kanban config
+            const wsObj = configJson.workspaces?.find(
+              (w) =>
+                String(w?.id || "").toLowerCase() ===
+                String(ws.id || "").toLowerCase(),
+            );
+            if (wsObj) {
+              wsObj.kanban = {
+                backend: "github",
+                github: {
+                  repo: parsedSlug || "",
+                  repoOwner: wsOwner || "",
+                  repoName: wsRepoName || "",
+                  projectOwner: wsProjectOwner,
+                  projectTitle: wsProjectTitle,
+                  projectNumber: wsProjectNumber,
+                },
+              };
+            }
+          } else if (selectedKanbanBackend === "jira") {
+            const wsJiraProject = await prompt.ask(
+              `  Jira project key for "${wsLabel}"`,
+              "",
+            );
+            const wsObj = configJson.workspaces?.find(
+              (w) =>
+                String(w?.id || "").toLowerCase() ===
+                String(ws.id || "").toLowerCase(),
+            );
+            if (wsObj) {
+              wsObj.kanban = {
+                backend: "jira",
+                jira: {
+                  projectKey: wsJiraProject.trim().toUpperCase(),
+                },
+              };
+            }
+          }
+        }
+      }
+    }
+
     saveSetupSnapshot(7, "Kanban & Execution", env, configJson);
     } // end step 7
 
