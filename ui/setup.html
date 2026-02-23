@@ -410,6 +410,7 @@ function SelectWithCustom({ options, value, onChange, placeholder }) {
   const handleSelect = (e) => {
     if (e.target.value === "__custom__") {
       setIsCustom(true);
+      setCustomValue(value || "");
       setTimeout(() => inputRef.current?.focus(), 50);
     } else {
       setIsCustom(false);
@@ -418,9 +419,12 @@ function SelectWithCustom({ options, value, onChange, placeholder }) {
     }
   };
 
-  const handleCustomChange = (e) => {
-    setCustomValue(e.target.value);
-    onChange(e.target.value);
+  const commitCustom = () => {
+    if (customValue.trim()) onChange(customValue.trim());
+  };
+
+  const handleCustomKeyDown = (e) => {
+    if (e.key === "Enter") { commitCustom(); e.target.blur(); }
   };
 
   return html`
@@ -435,8 +439,10 @@ function SelectWithCustom({ options, value, onChange, placeholder }) {
           ref=${inputRef}
           type="text"
           value=${customValue}
-          oninput=${handleCustomChange}
-          placeholder="Enter custom value..."
+          oninput=${(e) => setCustomValue(e.target.value)}
+          onblur=${commitCustom}
+          onkeydown=${handleCustomKeyDown}
+          placeholder="Enter model slug..."
         />
         <button class="btn btn-sm" onclick=${() => { setIsCustom(false); onChange(options[0]?.value || ""); }}>
           Cancel
@@ -469,8 +475,8 @@ function App() {
   const [repoSlug, setRepoSlug] = useState("");
   const [repoRoot, setRepoRoot] = useState("");
   const [executors, setExecutors] = useState([
-    { name: "primary", executor: "COPILOT", model: "claude-sonnet-4", weight: 70, role: "primary" },
-    { name: "backup", executor: "CODEX", model: "o3", weight: 30, role: "backup" },
+    { name: "primary", executor: "COPILOT", model: "claude-opus-4.6", weight: 70, role: "primary" },
+    { name: "backup", executor: "CODEX", model: "gpt-5.2-codex", weight: 30, role: "backup" },
   ]);
   const [repos, setRepos] = useState([""]);
   const [kanbanBackend, setKanbanBackend] = useState("internal");
