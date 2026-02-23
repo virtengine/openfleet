@@ -12703,12 +12703,14 @@ if (isContainerEnabled()) {
 // ── Start PR Cleanup Daemon ──────────────────────────────────────────────────
 // Automatically resolves PR conflicts and CI failures every 30 minutes
 if (config.prCleanupEnabled !== false) {
-  console.log("[monitor] Starting PR cleanup daemon...");
+  const prRepoRoot = effectiveRepoRoot || repoRoot || process.cwd();
+  console.log(`[monitor] Starting PR cleanup daemon (repoRoot: ${prRepoRoot})...`);
   prCleanupDaemon = new PRCleanupDaemon({
     intervalMs: 30 * 60 * 1000, // 30 minutes
     maxConcurrentCleanups: 3,
     dryRun: false,
     autoMerge: true,
+    repoRoot: prRepoRoot,
   });
   prCleanupDaemon.start();
 }

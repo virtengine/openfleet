@@ -17,6 +17,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname, basename, relative, isAbsolute } from "node:path";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
 import { resolveAgentSdkConfig } from "./agent-sdk.mjs";
 import {
   ensureAgentPromptWorkspace,
@@ -60,6 +61,10 @@ function isWslInteropRuntime() {
 }
 
 function resolveConfigDir(repoRoot) {
+  // 1. Explicit env override
+  if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
+
+  // 2. Platform-aware user home
   const preferWindowsDirs =
     process.platform === "win32" && !isWslInteropRuntime();
   const baseDir = preferWindowsDirs
@@ -67,13 +72,13 @@ function resolveConfigDir(repoRoot) {
       process.env.LOCALAPPDATA ||
       process.env.USERPROFILE ||
       process.env.HOME ||
-      process.cwd()
+      os.homedir()
     : process.env.HOME ||
       process.env.XDG_CONFIG_HOME ||
       process.env.USERPROFILE ||
       process.env.APPDATA ||
       process.env.LOCALAPPDATA ||
-      process.cwd();
+      os.homedir();
   return resolve(baseDir, "bosun");
 }
 
@@ -353,7 +358,11 @@ function detectRepoRoot() {
     }
   }
 
-  // 5. Final fallback to cwd
+  // 5. Final fallback — warn and return cwd.  This is unlikely to be a valid
+  // git repo (e.g. when the daemon spawns with cwd=homedir), but returning
+  // null would crash downstream callers like resolve(repoRoot).  The warning
+  // helps diagnose "not a git repository" errors from child processes.
+  console.warn("[config] detectRepoRoot: no git repository found — falling back to cwd:", process.cwd());
   return process.cwd();
 }
 
