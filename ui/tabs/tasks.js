@@ -202,7 +202,6 @@ export function StartTaskModal({
 }) {
   const [sdk, setSdk] = useState(defaultSdk || "auto");
   const [model, setModel] = useState("");
-  const [modelRegistry, setModelRegistry] = useState({});
   const [taskIdInput, setTaskIdInput] = useState(task?.id || "");
   const [starting, setStarting] = useState(false);
 
@@ -216,15 +215,25 @@ export function StartTaskModal({
 
   const canModel = sdk && sdk !== "auto";
 
-  useEffect(() => {
-    apiFetch("/api/executor/models", { _silent: true })
-      .then((res) => {
-        if (res?.registry && typeof res.registry === "object") {
-          setModelRegistry(res.registry);
-        }
-      })
-      .catch(() => {});
-  }, []);
+  const EXECUTOR_MODELS = {
+    codex: [
+      "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex",
+      "gpt-5.1-codex-mini", "gpt-5.1-codex-max",
+      "gpt-5.2", "gpt-5.1", "gpt-5-mini",
+    ],
+    copilot: [
+      "claude-opus-4.6", "claude-sonnet-4.6", "claude-opus-4.5", "claude-sonnet-4.5",
+      "claude-sonnet-4", "claude-haiku-4.5",
+      "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5.1-codex", "gpt-5.1-codex-mini",
+      "gpt-5.2", "gpt-5.1", "gpt-5-mini",
+      "gemini-3.1-pro", "gemini-3-pro", "gemini-3-flash", "gemini-2.5-pro",
+      "grok-code-fast-1",
+    ],
+    claude: [
+      "claude-opus-4.6", "claude-sonnet-4.6", "claude-opus-4.5",
+      "claude-sonnet-4.5", "claude-sonnet-4", "claude-haiku-4.5",
+    ],
+  };
 
   const resolvedTaskId = (task?.id || taskIdInput || "").trim();
 
@@ -238,7 +247,6 @@ export function StartTaskModal({
     try {
       await onStart?.({
         taskId: resolvedTaskId,
-        executor: sdk && sdk !== "auto" ? sdk : undefined,
         sdk: sdk && sdk !== "auto" ? sdk : undefined,
         model: model.trim() ? model.trim() : undefined,
       });
@@ -287,7 +295,7 @@ export function StartTaskModal({
           <div class="card-subtitle">Model Override (optional)</div>
           <select class="input" value=${model} disabled=${!canModel} onChange=${(e) => setModel(e.target.value)}>
             <option value="">Auto (default)</option>
-            ${canModel && (modelRegistry[sdk] || []).map((m) => html`<option value=${m}>${m}</option>`)}
+            ${canModel && (EXECUTOR_MODELS[sdk] || []).map(m => html`<option value=${m}>${m}</option>`)}
           </select>
         </div>
         <div class="modal-form-field modal-form-span">
@@ -1168,7 +1176,7 @@ export function TasksTab() {
     ).catch(() => {});
   };
 
-  const startTask = async ({ taskId, executor, sdk, model }) => {
+  const startTask = async ({ taskId, sdk, model }) => {
     haptic("medium");
     let res = null;
     try {
@@ -1176,7 +1184,6 @@ export function TasksTab() {
         method: "POST",
         body: JSON.stringify({
           taskId,
-          ...(executor ? { executor } : {}),
           ...(sdk ? { sdk } : {}),
           ...(model ? { model } : {}),
         }),
@@ -1846,9 +1853,6 @@ function CreateTaskModalInline({ onClose }) {
   const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId.value || "");
   const [repository, setRepository] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [executor, setExecutor] = useState("auto");
-  const [model, setModel] = useState("");
-  const [modelRegistry, setModelRegistry] = useState({});
   const activeWsId = activeWorkspaceId.value || "";
 
   const workspaceOptions = managedWorkspaces.value || [];
@@ -1862,13 +1866,6 @@ function CreateTaskModalInline({ onClose }) {
     if (!workspaceOptions.length) {
       loadWorkspaces().catch(() => {});
     }
-    apiFetch("/api/executor/models", { _silent: true })
-      .then((res) => {
-        if (res?.registry && typeof res.registry === "object") {
-          setModelRegistry(res.registry);
-        }
-      })
-      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -1908,8 +1905,6 @@ function CreateTaskModalInline({ onClose }) {
           status: draft ? "draft" : "todo",
           workspace: workspaceId || undefined,
           repository: repository || undefined,
-          ...(executor && executor !== "auto" ? { executor } : {}),
-          ...(model ? { model } : {}),
         }),
       });
       showToast("Task created", "success");
@@ -1941,8 +1936,6 @@ function CreateTaskModalInline({ onClose }) {
     draft,
     workspaceId,
     repository,
-    executor,
-    model,
   ]);
 
   const parsedTags = normalizeTagInput(tagsInput);
@@ -2046,32 +2039,6 @@ function CreateTaskModalInline({ onClose }) {
             ${parsedTags.map((tag) => html`<span class="tag-chip">#${tag}</span>`)}
           </div>
         `}
-
-        <div class="input-row">
-          <select
-            class="input"
-            value=${executor}
-            onChange=${(e) => {
-              setExecutor(e.target.value);
-              setModel("");
-            }}
-          >
-            ${["auto", "codex", "copilot", "claude"].map(
-              (opt) => html`<option value=${opt}>Executor: ${opt}</option>`,
-            )}
-          </select>
-          <select
-            class="input"
-            value=${model}
-            disabled=${executor === "auto"}
-            onChange=${(e) => setModel(e.target.value)}
-          >
-            <option value="">Model: auto</option>
-            ${executor !== "auto" && (modelRegistry[executor] || []).map(
-              (entry) => html`<option value=${entry}>${entry}</option>`,
-            )}
-          </select>
-        </div>
 
         <!-- Advanced toggle -->
         <button

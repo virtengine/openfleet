@@ -25,8 +25,6 @@ const ENV_KEYS = [
   "JIRA_STATUS_TODO",
   "JIRA_LABEL_IGNORE",
   "JIRA_CUSTOM_FIELD_OWNER_ID",
-  "EXECUTORS",
-  "TASK_TRIGGER_SYSTEM_ENABLED",
 ];
 
 describe("loadConfig validation and edge cases", () => {
@@ -137,46 +135,6 @@ describe("loadConfig validation and edge cases", () => {
     );
     expect(typeof config.jira).toBe("object");
     expect(typeof config.jira.projectKey).toBe("string");
-    expect(typeof config.triggerSystem).toBe("object");
-    expect(Array.isArray(config.triggerSystem.templates)).toBe(true);
-  });
-
-  it("parses executor model lists from EXECUTORS env", () => {
-    process.env.EXECUTORS =
-      "CODEX:DEFAULT:60:gpt-5.2-codex|gpt-5.1-codex-mini,COPILOT:CLAUDE_OPUS_4_6:40:claude-opus-4.6";
-
-    const config = loadConfig([
-      "node",
-      "bosun",
-      "--config-dir",
-      tempConfigDir,
-      "--repo-root",
-      tempConfigDir,
-    ]);
-
-    expect(config.executorConfig.executors[0].models).toEqual([
-      "gpt-5.2-codex",
-      "gpt-5.1-codex-mini",
-    ]);
-    expect(config.executorConfig.executors[1].models).toEqual([
-      "claude-opus-4.6",
-    ]);
-  });
-
-  it("keeps trigger system disabled by default", () => {
-    delete process.env.TASK_TRIGGER_SYSTEM_ENABLED;
-    const config = loadConfig([
-      "node",
-      "bosun",
-      "--config-dir",
-      tempConfigDir,
-      "--repo-root",
-      tempConfigDir,
-    ]);
-    expect(config.triggerSystem?.enabled).toBe(false);
-    expect(
-      (config.triggerSystem?.templates || []).every((template) => template.enabled === false),
-    ).toBe(true);
   });
 
   it("treats empty telegram credentials as disabled", () => {

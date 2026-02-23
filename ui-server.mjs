@@ -96,11 +96,6 @@ import {
   switchPrimaryAgent,
   getPrimaryAgentInfo,
 } from "./primary-agent.mjs";
-import {
-  getExecutorModelRegistry,
-  getModelsForExecutor,
-  normalizeExecutorKey,
-} from "./task-complexity.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
@@ -174,12 +169,6 @@ function parseExecutorsValue(value) {
     const parts = entries[i].split(":").map((part) => part.trim());
     if (parts.length < 2) continue;
     const weight = parts[2] ? Number(parts[2]) : Math.floor(100 / entries.length);
-    const models = parts[3]
-      ? parts[3]
-          .split("|")
-          .map((model) => model.trim())
-          .filter(Boolean)
-      : [];
     executors.push({
       name: `${parts[0].toLowerCase()}-${parts[1].toLowerCase()}`,
       executor: parts[0].toUpperCase(),
@@ -187,7 +176,6 @@ function parseExecutorsValue(value) {
       weight: Number.isFinite(weight) ? weight : 0,
       role: roles[i] || `executor-${i + 1}`,
       enabled: true,
-      models,
     });
   }
   return executors.length ? executors : value;
@@ -365,7 +353,6 @@ const CONFIG_PATH_OVERRIDES = {
   EXECUTOR_MODE: ["internalExecutor", "mode"],
   PROJECT_REQUIREMENTS_PROFILE: ["projectRequirements", "profile"],
   TASK_PLANNER_DEDUP_HOURS: ["plannerDedupHours"],
-  TASK_TRIGGER_SYSTEM_ENABLED: ["triggerSystem", "enabled"],
 };
 const ROOT_PREFIX_ALLOWLIST = [
   "TELEGRAM_",
@@ -632,7 +619,7 @@ const SETTINGS_KNOWN_KEYS = [
   "COPILOT_MODEL", "COPILOT_CLI_TOKEN",
   "KANBAN_BACKEND", "KANBAN_SYNC_POLICY", "BOSUN_TASK_LABEL",
   "BOSUN_ENFORCE_TASK_LABEL", "STALE_TASK_AGE_HOURS",
-  "TASK_PLANNER_MODE", "TASK_TRIGGER_SYSTEM_ENABLED", "TASK_PLANNER_DEDUP_HOURS",
+  "TASK_PLANNER_MODE", "TASK_PLANNER_DEDUP_HOURS",
   "TASK_BRANCH_MODE", "TASK_BRANCH_AUTO_MODULE", "TASK_UPSTREAM_SYNC_MAIN",
   "MODULE_BRANCH_PREFIX", "DEFAULT_TARGET_BRANCH",
   "BOSUN_PROMPT_PLANNER",
@@ -2784,24 +2771,6 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (path === "/api/executor/models") {
-    const requestedExecutor = String(url.searchParams.get("executor") || "").trim();
-    const normalizedExecutor = normalizeExecutorKey(requestedExecutor);
-    if (normalizedExecutor) {
-      jsonResponse(res, 200, {
-        ok: true,
-        executor: normalizedExecutor,
-        models: getModelsForExecutor(normalizedExecutor),
-      });
-      return;
-    }
-    jsonResponse(res, 200, {
-      ok: true,
-      registry: getExecutorModelRegistry(),
-    });
-    return;
-  }
-
   if (path === "/api/executor/pause") {
     const executor = uiDeps.getInternalExecutor?.();
     if (!executor) {
@@ -2979,14 +2948,13 @@ async function handleApi(req, res, url) {
       const body = await readJsonBody(req);
       const taskId = body?.taskId || body?.id;
       const sdk = typeof body?.sdk === "string" ? body.sdk.trim() : "";
-      const executorOverride = typeof body?.executor === "string" ? body.executor.trim() : "";
       const model = typeof body?.model === "string" ? body.model.trim() : "";
       if (!taskId) {
         jsonResponse(res, 400, { ok: false, error: "taskId is required" });
         return;
       }
-      const runtimeExecutor = uiDeps.getInternalExecutor?.();
-      if (!runtimeExecutor) {
+      const executor = uiDeps.getInternalExecutor?.();
+      if (!executor) {
         jsonResponse(res, 400, {
           ok: false,
           error:
@@ -3001,7 +2969,7 @@ async function handleApi(req, res, url) {
         return;
       }
 
-      const status = runtimeExecutor.getStatus?.() || {};
+      const status = executor.getStatus?.() || {};
       const freeSlots =
         (status.maxParallel || 0) - (status.activeSlots || 0);
 
@@ -3035,9 +3003,8 @@ async function handleApi(req, res, url) {
           `[telegram-ui] failed to mark task ${taskId} inprogress: ${err.message}`,
         );
       }
-      const wasPaused = runtimeExecutor.isPaused?.();
-      runtimeExecutor.executeTask(task, {
-        ...(executorOverride ? { executor: executorOverride } : {}),
+      const wasPaused = executor.isPaused?.();
+      executor.executeTask(task, {
         ...(sdk ? { sdk } : {}),
         ...(model ? { model } : {}),
         force: true,
@@ -3206,8 +3173,6 @@ async function handleApi(req, res, url) {
       const tags = normalizeTagsInput(body?.tags);
       const wantsDraft = Boolean(body?.draft) || body?.status === "draft";
       const baseBranch = normalizeBranchInput(body?.baseBranch ?? body?.base_branch);
-      const executorOverride = String(body?.executor || body?.sdk || "").trim();
-      const modelOverride = String(body?.model || "").trim();
       const activeWorkspace = getActiveManagedWorkspace(resolveUiConfigDir());
       const defaultRepository =
         activeWorkspace?.activeRepo ||
@@ -3237,14 +3202,7 @@ async function handleApi(req, res, url) {
           ...(tags.length ? { tags } : {}),
           ...(wantsDraft ? { draft: true } : {}),
           ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
-          execution: {
-            sdk: executorOverride || undefined,
-            executor: executorOverride || undefined,
-            model: modelOverride || undefined,
-          },
         },
-        ...(executorOverride ? { sdk: executorOverride, executor: executorOverride } : {}),
-        ...(modelOverride ? { model: modelOverride } : {}),
       };
       const created = await adapter.createTask(projectId, taskData);
       jsonResponse(res, 200, { ok: true, data: created });
