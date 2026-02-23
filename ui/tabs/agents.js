@@ -1280,9 +1280,6 @@ export function AgentsTab() {
         </div>
       `}
 
-      <div class="fleet-span">
-        <${SessionsPanel} />
-      </div>
     </div>
 
     ${selectedAgent && html`
