@@ -263,6 +263,9 @@ const PRIORITY_RANK = {
   low: 1,
 };
 
+const FIRE_PRIORITY_SET = new Set(["fire", "critical"]);
+const FIRE_TAG_SET = new Set(["fire", "urgent", "p0"]);
+
 const REQUIREMENTS_PROFILES = new Set([
   "simple-feature",
   "feature",
@@ -1270,6 +1273,131 @@ function getTaskLabelSet(task) {
       )
       .filter(Boolean),
   );
+}
+
+function getTaskTagSet(task) {
+  const tags = Array.isArray(task?.tags)
+    ? task.tags
+    : Array.isArray(task?.meta?.tags)
+      ? task.meta.tags
+      : [];
+  return new Set(
+    tags
+      .map((entry) => String(entry || "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+function isFireTask(task) {
+  if (!task) return false;
+  const priority = String(task?.priority || "").trim().toLowerCase();
+  if (FIRE_PRIORITY_SET.has(priority)) return true;
+  if (task?.fire === true || task?.meta?.fire === true) return true;
+  const labelSet = getTaskLabelSet(task);
+  for (const label of labelSet) {
+    if (FIRE_TAG_SET.has(label)) return true;
+  }
+  const tagSet = getTaskTagSet(task);
+  for (const tag of tagSet) {
+    if (FIRE_TAG_SET.has(tag)) return true;
+  }
+  return false;
+}
+
+const BACKLOG_ORDER_KEYS = [
+  "backlog_order",
+  "backlogOrder",
+  "order",
+  "sort_order",
+  "sortOrder",
+  "sort",
+  "position",
+  "pos",
+  "rank",
+  "index",
+  "order_index",
+  "orderIndex",
+  "sort_index",
+  "sortIndex",
+  "priority_order",
+  "priorityOrder",
+];
+
+function parseOrderValue(value) {
+  if (value == null) return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const text = String(value).trim();
+  if (!text) return null;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getBacklogOrderValue(task) {
+  if (!task) return null;
+  for (const key of BACKLOG_ORDER_KEYS) {
+    if (task[key] != null) {
+      const parsed = parseOrderValue(task[key]);
+      if (parsed != null) return parsed;
+    }
+  }
+  const meta = task?.meta || {};
+  for (const key of BACKLOG_ORDER_KEYS) {
+    if (meta[key] != null) {
+      const parsed = parseOrderValue(meta[key]);
+      if (parsed != null) return parsed;
+    }
+  }
+  return null;
+}
+
+function getCreatedTimestamp(task) {
+  if (!task) return null;
+  const raw = task.created_at || task.createdAt || task.created;
+  if (!raw) return null;
+  const ts = Date.parse(raw);
+  return Number.isFinite(ts) ? ts : null;
+}
+
+function getUpdatedTimestamp(task) {
+  if (!task) return null;
+  const raw = task.updated_at || task.updatedAt || task.updated;
+  if (!raw) return null;
+  const ts = Date.parse(raw);
+  return Number.isFinite(ts) ? ts : null;
+}
+
+function sortEligibleTasks(tasks) {
+  return tasks
+    .map((task, index) => ({
+      task,
+      index,
+      isFire: isFireTask(task),
+      backlogOrder: getBacklogOrderValue(task),
+      createdAt: getCreatedTimestamp(task),
+      updatedAt: getUpdatedTimestamp(task),
+    }))
+    .sort((a, b) => {
+      if (a.isFire !== b.isFire) return a.isFire ? -1 : 1;
+      if (a.backlogOrder != null || b.backlogOrder != null) {
+        if (a.backlogOrder == null) return 1;
+        if (b.backlogOrder == null) return -1;
+        if (a.backlogOrder !== b.backlogOrder) {
+          return a.backlogOrder - b.backlogOrder;
+        }
+      }
+      if (a.createdAt != null || b.createdAt != null) {
+        if (a.createdAt == null) return 1;
+        if (b.createdAt == null) return -1;
+        if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+      }
+      if (a.updatedAt != null || b.updatedAt != null) {
+        if (a.updatedAt == null) return 1;
+        if (b.updatedAt == null) return -1;
+        if (a.updatedAt !== b.updatedAt) return a.updatedAt - b.updatedAt;
+      }
+      return a.index - b.index;
+    })
+    .map((entry) => entry.task);
 }
 
 function isDraftTask(task) {
@@ -3289,8 +3417,9 @@ class TaskExecutor {
 
       // Fill remaining slots
       const remaining = this.maxParallel - this._activeSlots.size;
+      const ordered = sortEligibleTasks(eligible);
       const toDispatch = this._selectTasksForBaseBranchLimit(
-        eligible,
+        ordered,
         remaining,
       );
 

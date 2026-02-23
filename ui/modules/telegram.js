@@ -12,6 +12,58 @@ export function getTg() {
   return globalThis.Telegram?.WebApp || null;
 }
 
+function parseVersion(version) {
+  const raw = String(version || "0").trim();
+  const [maj = "0", min = "0"] = raw.split(".");
+  return {
+    major: Number.parseInt(maj, 10) || 0,
+    minor: Number.parseInt(min, 10) || 0,
+  };
+}
+
+function isVersionAtLeast(version, requiredMajor, requiredMinor = 0) {
+  const { major, minor } = parseVersion(version);
+  if (major > requiredMajor) return true;
+  if (major < requiredMajor) return false;
+  return minor >= requiredMinor;
+}
+
+function canUse(feature) {
+  const tg = getTg();
+  if (!tg) return false;
+  const version = tg.version || "0";
+  const check = (major, minor = 0) => {
+    if (typeof tg.isVersionAtLeast === "function") {
+      try {
+        return tg.isVersionAtLeast(`${major}.${minor}`);
+      } catch {
+        return isVersionAtLeast(version, major, minor);
+      }
+    }
+    return isVersionAtLeast(version, major, minor);
+  };
+  switch (feature) {
+    case "backButton": return check(6, 1);
+    case "settingsButton": return check(6, 1);
+    case "haptic": return check(6, 1);
+    case "cloudStorage": return check(6, 9);
+    case "verticalSwipes": return check(7, 7);
+    case "closingConfirmation": return check(6, 2);
+    case "headerColor": return check(6, 1);
+    case "backgroundColor": return check(6, 1);
+    case "bottomBarColor": return check(6, 1);
+    default: return true;
+  }
+}
+
+function safeInvoke(fn, fallback = undefined) {
+  try {
+    return fn();
+  } catch {
+    return fallback;
+  }
+}
+
 /** Whether the app is running inside a Telegram WebView */
 export const isTelegramContext = !!getTg();
 
@@ -25,11 +77,8 @@ export const colorScheme = signal(getTg()?.colorScheme || "dark");
  * @param {'light'|'medium'|'heavy'|'rigid'|'soft'} type
  */
 export function haptic(type = "light") {
-  try {
-    getTg()?.HapticFeedback?.impactOccurred(type);
-  } catch {
-    /* noop outside Telegram */
-  }
+  if (!canUse("haptic")) return;
+  safeInvoke(() => getTg()?.HapticFeedback?.impactOccurred(type));
 }
 
 /* ─── Initialization ─── */
@@ -43,41 +92,35 @@ export function initTelegramApp() {
   const tg = getTg();
   if (!tg) return;
 
-  tg.ready();
-  tg.expand();
+  safeInvoke(() => tg.ready());
+  safeInvoke(() => tg.expand());
 
   // Bot API 8.0+ fullscreen — only on mobile (desktop Telegram doesn't need it)
   const platform = (tg.platform || "").toLowerCase();
   const isMobile = platform === "ios" || platform === "android" || platform === "android_x";
   if (isMobile) {
-    try {
-      tg.requestFullscreen?.();
-    } catch {
-      /* not supported */
-    }
+    safeInvoke(() => tg.requestFullscreen?.());
   }
 
   // Bot API 7.7+ disable vertical swipes for custom scroll
-  try {
-    tg.disableVerticalSwipes?.();
-  } catch {
-    /* not supported */
+  if (canUse("verticalSwipes")) {
+    safeInvoke(() => tg.disableVerticalSwipes?.());
   }
 
   // Closing confirmation
-  try {
-    tg.enableClosingConfirmation?.();
-  } catch {
-    /* not supported */
+  if (canUse("closingConfirmation")) {
+    safeInvoke(() => tg.enableClosingConfirmation?.());
   }
 
   // Apply colours
-  try {
-    tg.setHeaderColor?.("secondary_bg_color");
-    tg.setBackgroundColor?.("bg_color");
-    tg.setBottomBarColor?.("secondary_bg_color");
-  } catch {
-    /* not supported */
+  if (canUse("headerColor")) {
+    safeInvoke(() => tg.setHeaderColor?.("secondary_bg_color"));
+  }
+  if (canUse("backgroundColor")) {
+    safeInvoke(() => tg.setBackgroundColor?.("bg_color"));
+  }
+  if (canUse("bottomBarColor")) {
+    safeInvoke(() => tg.setBottomBarColor?.("secondary_bg_color"));
   }
 
   // Apply theme params to CSS custom properties
@@ -123,8 +166,8 @@ export function onThemeChange(callback) {
     applyTgTheme();
     callback();
   };
-  tg.onEvent("themeChanged", handler);
-  return () => tg.offEvent("themeChanged", handler);
+  safeInvoke(() => tg.onEvent("themeChanged", handler));
+  return () => safeInvoke(() => tg.offEvent("themeChanged", handler));
 }
 
 /**
@@ -135,8 +178,8 @@ export function onThemeChange(callback) {
 export function onViewportChange(callback) {
   const tg = getTg();
   if (!tg) return () => {};
-  tg.onEvent("viewportChanged", callback);
-  return () => tg.offEvent("viewportChanged", callback);
+  safeInvoke(() => tg.onEvent("viewportChanged", callback));
+  return () => safeInvoke(() => tg.offEvent("viewportChanged", callback));
 }
 
 /* ─── MainButton Helpers ─── */
@@ -179,21 +222,17 @@ export function hideMainButton() {
  */
 export function showBackButton(onClick) {
   const tg = getTg();
-  if (!tg?.BackButton) return;
-  tg.BackButton.onClick(onClick);
-  tg.BackButton.show();
+  if (!tg?.BackButton || !canUse("backButton")) return;
+  safeInvoke(() => tg.BackButton.onClick(onClick));
+  safeInvoke(() => tg.BackButton.show());
 }
 
 /** Hide the Telegram BackButton and clear its handler. */
 export function hideBackButton() {
   const tg = getTg();
-  if (!tg?.BackButton) return;
-  tg.BackButton.hide();
-  try {
-    tg.BackButton.offClick(tg.BackButton._callback);
-  } catch {
-    /* noop */
-  }
+  if (!tg?.BackButton || !canUse("backButton")) return;
+  safeInvoke(() => tg.BackButton.hide());
+  safeInvoke(() => tg.BackButton.offClick(tg.BackButton._callback));
 }
 
 /* ─── SettingsButton ─── */
@@ -204,9 +243,9 @@ export function hideBackButton() {
  */
 export function showSettingsButton(onClick) {
   const tg = getTg();
-  if (!tg?.SettingsButton) return;
-  tg.SettingsButton.onClick(onClick);
-  tg.SettingsButton.show();
+  if (!tg?.SettingsButton || !canUse("settingsButton")) return;
+  safeInvoke(() => tg.SettingsButton.onClick(onClick));
+  safeInvoke(() => tg.SettingsButton.show());
 }
 
 /* ─── Cloud Storage ─── */
@@ -218,15 +257,19 @@ export function showSettingsButton(onClick) {
  */
 export async function cloudStorageGet(key) {
   const tg = getTg();
-  if (!tg?.CloudStorage) return null;
+  if (!tg?.CloudStorage || !canUse("cloudStorage")) return null;
   return new Promise((resolve) => {
-    tg.CloudStorage.getItem(key, (err, val) => {
-      if (err) {
-        resolve(null);
-        return;
-      }
-      resolve(val ?? null);
-    });
+    const ok = safeInvoke(() => {
+      tg.CloudStorage.getItem(key, (err, val) => {
+        if (err) {
+          resolve(null);
+          return;
+        }
+        resolve(val ?? null);
+      });
+      return true;
+    }, false);
+    if (!ok) resolve(null);
   });
 }
 
@@ -238,11 +281,15 @@ export async function cloudStorageGet(key) {
  */
 export async function cloudStorageSet(key, value) {
   const tg = getTg();
-  if (!tg?.CloudStorage) return false;
+  if (!tg?.CloudStorage || !canUse("cloudStorage")) return false;
   return new Promise((resolve) => {
-    tg.CloudStorage.setItem(key, value, (err) => {
-      resolve(!err);
-    });
+    const ok = safeInvoke(() => {
+      tg.CloudStorage.setItem(key, value, (err) => {
+        resolve(!err);
+      });
+      return true;
+    }, false);
+    if (!ok) resolve(false);
   });
 }
 
@@ -253,11 +300,15 @@ export async function cloudStorageSet(key, value) {
  */
 export async function cloudStorageRemove(key) {
   const tg = getTg();
-  if (!tg?.CloudStorage) return false;
+  if (!tg?.CloudStorage || !canUse("cloudStorage")) return false;
   return new Promise((resolve) => {
-    tg.CloudStorage.removeItem(key, (err) => {
-      resolve(!err);
-    });
+    const ok = safeInvoke(() => {
+      tg.CloudStorage.removeItem(key, (err) => {
+        resolve(!err);
+      });
+      return true;
+    }, false);
+    if (!ok) resolve(false);
   });
 }
 
@@ -287,7 +338,11 @@ export function showConfirm(message) {
       resolve(window.confirm(message));
       return;
     }
-    tg.showConfirm(message, resolve);
+    const ok = safeInvoke(() => {
+      tg.showConfirm(message, resolve);
+      return true;
+    }, false);
+    if (!ok) resolve(window.confirm(message));
   });
 }
 
@@ -304,7 +359,14 @@ export function showAlert(message) {
       resolve();
       return;
     }
-    tg.showAlert(message, resolve);
+    const ok = safeInvoke(() => {
+      tg.showAlert(message, resolve);
+      return true;
+    }, false);
+    if (!ok) {
+      window.alert(message);
+      resolve();
+    }
   });
 }
 
@@ -317,10 +379,21 @@ export function showAlert(message) {
 export function openLink(url) {
   const tg = getTg();
   if (tg?.openLink) {
-    tg.openLink(url);
-    return;
+    const ok = safeInvoke(() => {
+      tg.openLink(url);
+      return true;
+    }, false);
+    if (ok) return;
   }
   window.open(url, "_blank");
+}
+
+export function supportsTelegramFeature(feature) {
+  return canUse(feature);
+}
+
+export function getTelegramVersion() {
+  return getTg()?.version || "0";
 }
 
 /* ─── Platform ─── */

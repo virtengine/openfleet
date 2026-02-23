@@ -44,6 +44,9 @@ const AUTO_ACTION_LABELS = {
   "agent:executor-resumed": "Executor Resumed",
 };
 
+const SCROLL_BOTTOM_TOLERANCE_PX = 6;
+const SCROLL_BOTTOM_RATIO = 0.995;
+
 function formatAutoAction(event) {
   if (!event) return null;
   const label =
@@ -320,6 +323,18 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const lastMessageCount = useRef(0);
   const filterKey = `${filters.tool}-${filters.result}-${filters.error}`;
 
+  const isScrollPinnedToBottom = useCallback((el) => {
+    if (!el) return true;
+    const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    if (maxScrollTop <= SCROLL_BOTTOM_TOLERANCE_PX) return true;
+    const distanceFromBottom = maxScrollTop - el.scrollTop;
+    const scrollRatio = maxScrollTop > 0 ? el.scrollTop / maxScrollTop : 1;
+    return (
+      distanceFromBottom <= SCROLL_BOTTOM_TOLERANCE_PX ||
+      scrollRatio >= SCROLL_BOTTOM_RATIO
+    );
+  }, []);
+
   let messages = [];
   try {
     messages = sessionMessages.value || [];
@@ -380,6 +395,20 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
   const hasMoreMessages = filteredMessages.length > visibleCount;
 
+  const streamActivityKey = useMemo(() => {
+    if (filteredMessages.length === 0) return "empty";
+    const last = filteredMessages[filteredMessages.length - 1] || {};
+    const id = last.id || last.timestamp || filteredMessages.length;
+    const role = last.role || last.type || "message";
+    const contentLen =
+      typeof last.content === "string"
+        ? last.content.length
+        : last.content
+          ? JSON.stringify(last.content).length
+          : 0;
+    return `${filteredMessages.length}:${id}:${role}:${contentLen}`;
+  }, [filteredMessages]);
+
   /* Use .peek() for auto-actions — these are low-priority decorations, not
      worth triggering a full ChatView re-render for. The component will pick
      them up on the next render triggered by messages or other signals. */
@@ -435,9 +464,10 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         flushThinking(msg.id || msg.timestamp || "assistant");
       }
 
+      const baseKey = msg.id || msg.timestamp || "msg";
       items.push({
         kind: "message",
-        key: msg.id || msg.timestamp || `msg-${items.length}`,
+        key: `message-${baseKey}-${items.length}`,
         msg,
       });
     }
@@ -513,6 +543,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   useEffect(() => {
     setVisibleCount(200);
     setUnreadCount(0);
+    setAutoScroll(true);
   }, [sessionId, filterKey]);
 
   /* Track scroll position to decide auto-scroll + unread */
@@ -520,13 +551,13 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     const el = messagesRef.current;
     if (!el) return undefined;
     const onScroll = () => {
-      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-      setAutoScroll(nearBottom);
-      if (nearBottom) setUnreadCount(0);
+      const pinnedToBottom = isScrollPinnedToBottom(el);
+      setAutoScroll(pinnedToBottom);
+      if (pinnedToBottom) setUnreadCount(0);
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
-  }, [sessionId]);
+  }, [sessionId, isScrollPinnedToBottom]);
 
   /* Auto-scroll to bottom when new messages arrive */
   useEffect(() => {
@@ -545,7 +576,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     if (newMessages && !autoScroll) {
       setUnreadCount((prev) => prev + (nextCount - prevCount));
     }
-  }, [messages.length, paused, autoScroll]);
+  }, [messages.length, streamActivityKey, paused, autoScroll]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();

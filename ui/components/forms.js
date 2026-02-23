@@ -86,9 +86,9 @@ export function Collapsible({ title, defaultOpen = true, children }) {
 /**
  * Wraps content with pull-to-refresh gesture detection.
  * Shows a spinner while refreshing.
- * @param {{onRefresh: () => Promise<void>, children?: any}} props
+ * @param {{onRefresh: () => Promise<void>, children?: any, disabled?: boolean}} props
  */
-export function PullToRefresh({ onRefresh, children }) {
+export function PullToRefresh({ onRefresh, children, disabled = false }) {
   const [refreshing, setRefreshing] = useState(false);
   const [pullDistance, setPullDistance] = useState(0);
   const containerRef = useRef(null);
@@ -116,24 +116,27 @@ export function PullToRefresh({ onRefresh, children }) {
   }, [onRefresh, refreshing]);
 
   const handleTouchStart = useCallback((e) => {
+    if (disabled) return;
     if (!containerRef.current) return;
     const scrollContainer = containerRef.current.querySelector('.main-content') || containerRef.current;
     if (scrollContainer.scrollTop <= 0) {
       startYRef.current = e.touches[0].clientY;
       pullingRef.current = true;
     }
-  }, []);
+  }, [disabled]);
 
   const handleTouchMove = useCallback((e) => {
+    if (disabled) return;
     if (!pullingRef.current) return;
     const diff = e.touches[0].clientY - startYRef.current;
     if (diff > 0) {
       // Apply diminishing returns to pull distance
       setPullDistance(Math.min(diff * 0.4, THRESHOLD * 1.5));
     }
-  }, []);
+  }, [disabled]);
 
   const handleTouchEnd = useCallback(async () => {
+    if (disabled) return;
     if (!pullingRef.current) return;
     pullingRef.current = false;
 
@@ -147,7 +150,7 @@ export function PullToRefresh({ onRefresh, children }) {
       }
     }
     setPullDistance(0);
-  }, [onRefresh, pullDistance]);
+  }, [disabled, onRefresh, pullDistance]);
 
   return html`
     <div
@@ -168,7 +171,7 @@ export function PullToRefresh({ onRefresh, children }) {
           ${ICONS.refresh}
         </button>
       `}
-      ${(refreshing || pullDistance > 0) &&
+      {!disabled && (refreshing || pullDistance > 0) &&
       html`
         <div
           class="ptr-indicator"

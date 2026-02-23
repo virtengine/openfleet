@@ -202,7 +202,6 @@ export function StartTaskModal({
 }) {
   const [sdk, setSdk] = useState(defaultSdk || "auto");
   const [model, setModel] = useState("");
-  const [modelRegistry, setModelRegistry] = useState({});
   const [taskIdInput, setTaskIdInput] = useState(task?.id || "");
   const [starting, setStarting] = useState(false);
 
@@ -216,15 +215,25 @@ export function StartTaskModal({
 
   const canModel = sdk && sdk !== "auto";
 
-  useEffect(() => {
-    apiFetch("/api/executor/models", { _silent: true })
-      .then((res) => {
-        if (res?.registry && typeof res.registry === "object") {
-          setModelRegistry(res.registry);
-        }
-      })
-      .catch(() => {});
-  }, []);
+  const EXECUTOR_MODELS = {
+    codex: [
+      "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex",
+      "gpt-5.1-codex-mini", "gpt-5.1-codex-max",
+      "gpt-5.2", "gpt-5.1", "gpt-5-mini",
+    ],
+    copilot: [
+      "claude-opus-4.6", "claude-sonnet-4.6", "claude-opus-4.5", "claude-sonnet-4.5",
+      "claude-sonnet-4", "claude-haiku-4.5",
+      "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5.1-codex", "gpt-5.1-codex-mini",
+      "gpt-5.2", "gpt-5.1", "gpt-5-mini",
+      "gemini-3.1-pro", "gemini-3-pro", "gemini-3-flash", "gemini-2.5-pro",
+      "grok-code-fast-1",
+    ],
+    claude: [
+      "claude-opus-4.6", "claude-sonnet-4.6", "claude-opus-4.5",
+      "claude-sonnet-4.5", "claude-sonnet-4", "claude-haiku-4.5",
+    ],
+  };
 
   const resolvedTaskId = (task?.id || taskIdInput || "").trim();
 
@@ -238,7 +247,6 @@ export function StartTaskModal({
     try {
       await onStart?.({
         taskId: resolvedTaskId,
-        executor: sdk && sdk !== "auto" ? sdk : undefined,
         sdk: sdk && sdk !== "auto" ? sdk : undefined,
         model: model.trim() ? model.trim() : undefined,
       });
@@ -287,7 +295,7 @@ export function StartTaskModal({
           <div class="card-subtitle">Model Override (optional)</div>
           <select class="input" value=${model} disabled=${!canModel} onChange=${(e) => setModel(e.target.value)}>
             <option value="">Auto (default)</option>
-            ${canModel && (modelRegistry[sdk] || []).map((m) => html`<option value=${m}>${m}</option>`)}
+            ${canModel && (EXECUTOR_MODELS[sdk] || []).map(m => html`<option value=${m}>${m}</option>`)}
           </select>
         </div>
         <div class="modal-form-field modal-form-span">
@@ -299,6 +307,326 @@ export function StartTaskModal({
             ${starting ? "Starting…" : "▶ Start Task"}
           </button>
         </div>
+      </div>
+    <//>
+  `;
+}
+
+function TriggerTemplateCard({
+  template,
+  saving,
+  onToggleEnabled,
+  onSaveTemplate,
+}) {
+  const [editing, setEditing] = useState(false);
+  const [error, setError] = useState("");
+  const [name, setName] = useState(template?.name || "");
+  const [description, setDescription] = useState(template?.description || "");
+  const [action, setAction] = useState(template?.action || "task-planner");
+  const [minIntervalMinutes, setMinIntervalMinutes] = useState(
+    template?.minIntervalMinutes || "",
+  );
+  const [triggerJson, setTriggerJson] = useState(
+    JSON.stringify(template?.trigger || { anyOf: [] }, null, 2),
+  );
+  const [configJson, setConfigJson] = useState(
+    JSON.stringify(template?.config || {}, null, 2),
+  );
+
+  useEffect(() => {
+    setName(template?.name || "");
+    setDescription(template?.description || "");
+    setAction(template?.action || "task-planner");
+    setMinIntervalMinutes(template?.minIntervalMinutes || "");
+    setTriggerJson(JSON.stringify(template?.trigger || { anyOf: [] }, null, 2));
+    setConfigJson(JSON.stringify(template?.config || {}, null, 2));
+    setError("");
+  }, [template?.id, template?.name, template?.description, template?.action, template?.enabled]);
+
+  const state = template?.state || {};
+  const stats = template?.stats || {};
+  const recentSpawned = Array.isArray(stats.recentSpawned)
+    ? stats.recentSpawned
+    : [];
+  const runningAgents = Array.isArray(stats.runningAgents)
+    ? stats.runningAgents
+    : [];
+
+  const handleSave = async () => {
+    try {
+      setError("");
+      const parsedTrigger = JSON.parse(triggerJson || "{}");
+      const parsedConfig = JSON.parse(configJson || "{}");
+      await onSaveTemplate({
+        ...template,
+        name: String(name || "").trim() || template?.id,
+        description: String(description || "").trim(),
+        action,
+        minIntervalMinutes:
+          Number.isFinite(Number(minIntervalMinutes)) &&
+          Number(minIntervalMinutes) > 0
+            ? Number(minIntervalMinutes)
+            : undefined,
+        trigger: parsedTrigger,
+        config: parsedConfig,
+      });
+      setEditing(false);
+    } catch (err) {
+      setError(err?.message || "Invalid JSON in template fields");
+    }
+  };
+
+  return html`
+    <div class="card" style="margin-bottom:10px;padding:10px 12px;">
+      <div class="flex-between" style="gap:10px;align-items:flex-start;">
+        <div style="min-width:0;">
+          <div class="card-subtitle" style="font-size:13px;">${template?.name || template?.id}</div>
+          <div class="meta-text" style="font-size:11px;word-break:break-all;">${template?.id || ""}</div>
+        </div>
+        <label class="meta-text" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input
+            type="checkbox"
+            checked=${template?.enabled === true}
+            disabled=${saving}
+            onChange=${(event) => onToggleEnabled(template, event.target.checked)}
+          />
+          enabled
+        </label>
+      </div>
+
+      ${template?.description && html`<div class="meta-text" style="margin-top:6px;">${template.description}</div>`}
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px;margin-top:8px;">
+        <span class="pill">spawned: ${stats.spawnedTotal || 0}</span>
+        <span class="pill">active: ${stats.activeCount || 0}</span>
+        <span class="pill">running: ${runningAgents.length}</span>
+        <span class="pill">action: ${template?.action || "task-planner"}</span>
+      </div>
+
+      <div class="meta-text" style="margin-top:8px;">
+        Last success: ${state?.last_success_at ? formatRelative(state.last_success_at) : "never"}
+        ${state?.last_error ? ` · Last error: ${truncate(state.last_error, 100)}` : ""}
+      </div>
+
+      ${runningAgents.length > 0 && html`
+        <div class="meta-text" style="margin-top:8px;font-weight:600;">Running agents</div>
+        <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px;">
+          ${runningAgents.map((entry) => html`
+            <div class="meta-text" style="font-size:11px;">
+              ${entry.taskId} · ${entry.sdk || "auto"}${entry.model ? ` · ${entry.model}` : ""}
+            </div>
+          `)}
+        </div>
+      `}
+
+      ${recentSpawned.length > 0 && html`
+        <div class="meta-text" style="margin-top:8px;font-weight:600;">Recent spawned tasks</div>
+        <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px;">
+          ${recentSpawned.map((entry) => html`
+            <div class="meta-text" style="font-size:11px;">
+              ${entry.id} · ${entry.status || "todo"} · ${entry.createdAt ? formatRelative(entry.createdAt) : "unknown"}
+            </div>
+          `)}
+        </div>
+      `}
+
+      ${editing && html`
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;">
+          <input class="input" value=${name} onInput=${(e) => setName(e.target.value)} placeholder="Template name" />
+          <input class="input" value=${description} onInput=${(e) => setDescription(e.target.value)} placeholder="Description" />
+          <div class="input-row">
+            <select class="input" value=${action} onChange=${(e) => setAction(e.target.value)}>
+              <option value="task-planner">task-planner</option>
+              <option value="create-task">create-task</option>
+            </select>
+            <input
+              class="input"
+              type="number"
+              min="1"
+              value=${minIntervalMinutes}
+              onInput=${(e) => setMinIntervalMinutes(e.target.value)}
+              placeholder="Min interval (minutes)"
+            />
+          </div>
+          <textarea class="input" rows="6" value=${triggerJson} onInput=${(e) => setTriggerJson(e.target.value)}></textarea>
+          <textarea class="input" rows="6" value=${configJson} onInput=${(e) => setConfigJson(e.target.value)}></textarea>
+          ${error && html`<div class="meta-text" style="color:var(--color-error);">${error}</div>`}
+        </div>
+      `}
+
+      <div class="btn-row" style="margin-top:10px;">
+        <button class="btn btn-ghost btn-sm" onClick=${() => setEditing((prev) => !prev)}>
+          ${editing ? "Close Editor" : "Edit"}
+        </button>
+        ${editing && html`
+          <button class="btn btn-primary btn-sm" disabled=${saving} onClick=${handleSave}>
+            ${saving ? "Saving…" : "Save Template"}
+          </button>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+function TriggerTemplatesModal({ onClose }) {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [enabled, setEnabled] = useState(false);
+  const [defaults, setDefaults] = useState({ executor: "auto", model: "auto" });
+  const [templates, setTemplates] = useState([]);
+  const [planner, setPlanner] = useState({});
+
+  const loadTemplates = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await apiFetch("/api/triggers/templates", { _silent: true });
+      const data = res?.data || {};
+      setEnabled(data.enabled === true);
+      setDefaults(
+        data.defaults && typeof data.defaults === "object"
+          ? data.defaults
+          : { executor: "auto", model: "auto" },
+      );
+      setTemplates(Array.isArray(data.templates) ? data.templates : []);
+      setPlanner(data.planner || {});
+    } catch (err) {
+      setError(err?.message || "Failed to load templates");
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    loadTemplates();
+  }, []);
+
+  const persistUpdate = async (payload) => {
+    setSaving(true);
+    setError("");
+    try {
+      const res = await apiFetch("/api/triggers/templates/update", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      const data = res?.data || {};
+      setEnabled(data.enabled === true);
+      setDefaults(
+        data.defaults && typeof data.defaults === "object"
+          ? data.defaults
+          : { executor: "auto", model: "auto" },
+      );
+      setTemplates(Array.isArray(data.templates) ? data.templates : []);
+      setPlanner(data.planner || {});
+      showToast("Template settings updated", "success");
+      scheduleRefresh(200);
+    } catch (err) {
+      setError(err?.message || "Failed to update templates");
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggleSystem = async (nextEnabled) => {
+    setEnabled(nextEnabled);
+    try {
+      await persistUpdate({ enabled: nextEnabled });
+    } catch {
+      setEnabled((prev) => !prev);
+    }
+  };
+
+  const handleSaveDefaults = async () => {
+    await persistUpdate({ defaults });
+  };
+
+  const handleToggleTemplate = async (template, nextEnabled) => {
+    await persistUpdate({ template: { ...template, enabled: nextEnabled } });
+  };
+
+  const handleSaveTemplate = async (template) => {
+    await persistUpdate({ template });
+  };
+
+  return html`
+    <${Modal}
+      title="Trigger Templates"
+      onClose=${onClose}
+      contentClassName="modal-content-wide"
+    >
+      <div class="flex-col" style="gap:10px;">
+        <div class="card" style="padding:10px 12px;">
+          <div class="flex-between" style="gap:10px;align-items:center;">
+            <div>
+              <div class="card-subtitle">Trigger System</div>
+              <div class="meta-text">Enable/disable the full trigger template engine.</div>
+            </div>
+            <label class="meta-text" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+              <input
+                type="checkbox"
+                checked=${enabled}
+                disabled=${saving}
+                onChange=${(event) => handleToggleSystem(event.target.checked)}
+              />
+              ${enabled ? "enabled" : "disabled"}
+            </label>
+          </div>
+
+          <div class="input-row" style="margin-top:10px;">
+            <select
+              class="input"
+              value=${defaults.executor || "auto"}
+              onChange=${(e) => setDefaults({ ...defaults, executor: e.target.value })}
+              disabled=${saving}
+            >
+              ${["auto", "codex", "copilot", "claude"].map(
+                (opt) => html`<option value=${opt}>default executor: ${opt}</option>`,
+              )}
+            </select>
+            <input
+              class="input"
+              value=${defaults.model || "auto"}
+              disabled=${saving}
+              onInput=${(e) => setDefaults({ ...defaults, model: e.target.value })}
+              placeholder="default model (auto)"
+            />
+          </div>
+          <div class="btn-row" style="margin-top:8px;">
+            <button class="btn btn-secondary btn-sm" disabled=${saving} onClick=${handleSaveDefaults}>
+              Save Defaults
+            </button>
+            <button class="btn btn-ghost btn-sm" disabled=${loading || saving} onClick=${loadTemplates}>
+              Refresh
+            </button>
+          </div>
+
+          <div class="meta-text" style="margin-top:8px;">
+            Planner last success: ${planner?.lastSuccessAt ? formatRelative(planner.lastSuccessAt) : "never"}
+            ${planner?.lastError ? ` · Last error: ${truncate(planner.lastError, 120)}` : ""}
+          </div>
+        </div>
+
+        ${error && html`<div class="meta-text" style="color:var(--color-error);">${error}</div>`}
+
+        ${loading && html`<${SkeletonCard} />`}
+
+        ${!loading && templates.length === 0 && html`
+          <${EmptyState}
+            message="No trigger templates found"
+            description="Add templates in bosun.config.json under triggerSystem.templates."
+          />
+        `}
+
+        ${!loading && templates.map((template) => html`
+          <${TriggerTemplateCard}
+            key=${template.id}
+            template=${template}
+            saving=${saving}
+            onToggleEnabled=${handleToggleTemplate}
+            onSaveTemplate=${handleSaveTemplate}
+          />
+        `)}
       </div>
     <//>
   `;
@@ -705,6 +1033,22 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             Updated: ${formatRelative(task.updated_at)}
           </div>
         `}
+        ${task?.meta?.triggerTemplate?.id &&
+        html`
+          <div class="meta-text modal-form-span">
+            Trigger Template: ${task.meta.triggerTemplate.id}
+          </div>
+        `}
+        ${(task?.meta?.execution?.sdk || task?.meta?.execution?.model) &&
+        html`
+          <div class="meta-text modal-form-span">
+            Execution Override:
+            ${task?.meta?.execution?.sdk || "auto"}
+            ${task?.meta?.execution?.model
+              ? html` · ${task.meta.execution.model}`
+              : ""}
+          </div>
+        `}
         ${task?.assignee &&
         html` <div class="meta-text modal-form-span">Assignee: ${task.assignee}</div> `}
         ${task?.branch &&
@@ -772,6 +1116,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
 /* ─── TasksTab ─── */
 export function TasksTab() {
   const [showCreate, setShowCreate] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
   const [detailTask, setDetailTask] = useState(null);
   const [startTarget, setStartTarget] = useState(null);
   const [startAnyOpen, setStartAnyOpen] = useState(false);
@@ -1168,7 +1513,7 @@ export function TasksTab() {
     ).catch(() => {});
   };
 
-  const startTask = async ({ taskId, executor, sdk, model }) => {
+  const startTask = async ({ taskId, sdk, model }) => {
     haptic("medium");
     let res = null;
     try {
@@ -1176,7 +1521,6 @@ export function TasksTab() {
         method: "POST",
         body: JSON.stringify({
           taskId,
-          ...(executor ? { executor } : {}),
           ...(sdk ? { sdk } : {}),
           ...(model ? { model } : {}),
         }),
@@ -1315,12 +1659,23 @@ export function TasksTab() {
           <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
           <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
         </div>
-        <button
-          class="btn btn-ghost btn-sm"
-          onClick=${toggleCompletedFilter}
-        >
-          ${completedOnly ? "Show All" : "Show Completed"}
-        </button>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button
+            class="btn btn-ghost btn-sm"
+            onClick=${() => {
+              haptic();
+              setShowTemplates(true);
+            }}
+          >
+            ⚡ Templates
+          </button>
+          <button
+            class="btn btn-ghost btn-sm"
+            onClick=${toggleCompletedFilter}
+          >
+            ${completedOnly ? "Show All" : "Show Completed"}
+          </button>
+        </div>
       </div>
       ${hasActiveSlots &&
       html`
@@ -1415,6 +1770,12 @@ export function TasksTab() {
             onClick=${() => { setActionsOpen(false); setStartAnyOpen(true); }}
           >
             ▶ Start Task
+          </button>
+          <button
+            class="actions-dropdown-item"
+            onClick=${() => { setActionsOpen(false); setShowTemplates(true); }}
+          >
+            ⚡ Trigger Templates
           </button>
           <button class="actions-dropdown-item" onClick=${handleExportCSV}>📊 Export CSV</button>
           <button class="actions-dropdown-item" onClick=${handleExportJSON}>📋 Export JSON</button>
@@ -1831,6 +2192,12 @@ export function TasksTab() {
         onStart=${startTask}
       />
     `}
+    ${showTemplates &&
+    html`
+      <${TriggerTemplatesModal}
+        onClose=${() => setShowTemplates(false)}
+      />
+    `}
   `;
 }
 
@@ -1846,9 +2213,6 @@ function CreateTaskModalInline({ onClose }) {
   const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId.value || "");
   const [repository, setRepository] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [executor, setExecutor] = useState("auto");
-  const [model, setModel] = useState("");
-  const [modelRegistry, setModelRegistry] = useState({});
   const activeWsId = activeWorkspaceId.value || "";
 
   const workspaceOptions = managedWorkspaces.value || [];
@@ -1862,13 +2226,6 @@ function CreateTaskModalInline({ onClose }) {
     if (!workspaceOptions.length) {
       loadWorkspaces().catch(() => {});
     }
-    apiFetch("/api/executor/models", { _silent: true })
-      .then((res) => {
-        if (res?.registry && typeof res.registry === "object") {
-          setModelRegistry(res.registry);
-        }
-      })
-      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -1908,8 +2265,6 @@ function CreateTaskModalInline({ onClose }) {
           status: draft ? "draft" : "todo",
           workspace: workspaceId || undefined,
           repository: repository || undefined,
-          ...(executor && executor !== "auto" ? { executor } : {}),
-          ...(model ? { model } : {}),
         }),
       });
       showToast("Task created", "success");
@@ -1941,8 +2296,6 @@ function CreateTaskModalInline({ onClose }) {
     draft,
     workspaceId,
     repository,
-    executor,
-    model,
   ]);
 
   const parsedTags = normalizeTagInput(tagsInput);
@@ -2046,32 +2399,6 @@ function CreateTaskModalInline({ onClose }) {
             ${parsedTags.map((tag) => html`<span class="tag-chip">#${tag}</span>`)}
           </div>
         `}
-
-        <div class="input-row">
-          <select
-            class="input"
-            value=${executor}
-            onChange=${(e) => {
-              setExecutor(e.target.value);
-              setModel("");
-            }}
-          >
-            ${["auto", "codex", "copilot", "claude"].map(
-              (opt) => html`<option value=${opt}>Executor: ${opt}</option>`,
-            )}
-          </select>
-          <select
-            class="input"
-            value=${model}
-            disabled=${executor === "auto"}
-            onChange=${(e) => setModel(e.target.value)}
-          >
-            <option value="">Model: auto</option>
-            ${executor !== "auto" && (modelRegistry[executor] || []).map(
-              (entry) => html`<option value=${entry}>${entry}</option>`,
-            )}
-          </select>
-        </div>
 
         <!-- Advanced toggle -->
         <button

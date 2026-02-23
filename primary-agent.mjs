@@ -6,6 +6,9 @@
  */
 
 import { loadConfig } from "./config.mjs";
+import { ensureCodexConfig, printConfigSummary } from "./codex-config.mjs";
+import { ensureRepoConfigs, printRepoConfigSummary } from "./repo-config.mjs";
+import { resolveRepoRoot } from "./repo-root.mjs";
 import { getSessionTracker } from "./session-tracker.mjs";
 import {
   execCodexPrompt,
@@ -149,6 +152,58 @@ let primaryProfile = null;
 let primaryFallbackReason = null;
 let initialized = false;
 
+function normalizePrimarySdkName(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/-sdk$/, "");
+}
+
+function ensurePrimaryAgentConfigs(primaryName) {
+  const primarySdk = normalizePrimarySdkName(primaryName) || "codex";
+  let repoRoot = "";
+  try {
+    repoRoot = resolveRepoRoot();
+  } catch {
+    repoRoot = "";
+  }
+
+  if (repoRoot) {
+    if (!process.env.REPO_ROOT) process.env.REPO_ROOT = repoRoot;
+    if (!process.env.BOSUN_AGENT_REPO_ROOT) {
+      process.env.BOSUN_AGENT_REPO_ROOT = repoRoot;
+    }
+    try {
+      const repoResult = ensureRepoConfigs(repoRoot, { primarySdk });
+      const logLines = [];
+      printRepoConfigSummary(repoResult, (msg) => logLines.push(msg));
+      if (logLines.some((line) => line.includes("created") || line.includes("updated"))) {
+        console.log("[primary-agent] Repo config refresh:");
+        for (const line of logLines) console.log(`[primary-agent] ${line}`);
+      }
+    } catch (err) {
+      console.warn(
+        `[primary-agent] failed to ensure repo config for ${repoRoot}: ${err?.message || err}`,
+      );
+    }
+  }
+
+  try {
+    const codexResult = ensureCodexConfig({
+      env: process.env,
+      primarySdk,
+    });
+    if (!codexResult?.noChanges) {
+      console.log("[primary-agent] Codex config refresh:");
+      printConfigSummary(codexResult, (msg) => console.log(`[primary-agent] ${msg}`));
+    }
+  } catch (err) {
+    console.warn(
+      `[primary-agent] failed to ensure Codex config: ${err?.message || err}`,
+    );
+  }
+}
+
 function normalizePrimaryAgent(value) {
   const raw = String(value || "")
     .trim()
@@ -251,10 +306,13 @@ export async function initPrimaryAgent(nameOrConfig = null) {
     setPrimaryAgent("codex-sdk");
   }
 
+  ensurePrimaryAgentConfigs(activeAdapter.name);
+
   const ok = await activeAdapter.init();
   if (activeAdapter.name === "copilot-sdk" && ok === false) {
     primaryFallbackReason = "Copilot SDK unavailable — falling back to Codex";
     setPrimaryAgent("codex-sdk");
+    ensurePrimaryAgentConfigs(activeAdapter.name);
     await activeAdapter.init();
   }
 
