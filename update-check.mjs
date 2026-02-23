@@ -20,6 +20,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
+import { get as httpsGet } from "node:https";
 import os from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -103,18 +104,39 @@ async function writeCache(data) {
 // ── Registry query ───────────────────────────────────────────────────────────
 
 async function fetchLatestVersion() {
-  // Try native fetch (Node 18+), fall back to npm view
+  // Use node:https instead of fetch() to avoid the undici connection-pool
+  // handles that cause a libuv assertion crash on Windows:
+  //   Assertion failed: !(handle->flags & UV_HANDLE_CLOSING) [src\win\async.c:76]
+  // undici keeps internal uv_async_t handles alive after fetch() completes;
+  // calling process.exit() then tears them down mid-close.
   try {
-    const res = await fetch(`https://registry.npmjs.org/${PKG_NAME}/latest`, {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(10000),
+    const version = await new Promise((resolve, reject) => {
+      const req = httpsGet(
+        `https://registry.npmjs.org/${PKG_NAME}/latest`,
+        { headers: { Accept: "application/json" }, timeout: 10000 },
+        (res) => {
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            res.resume(); // drain
+            return resolve(null);
+          }
+          let body = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => { body += chunk; });
+          res.on("end", () => {
+            try {
+              resolve(JSON.parse(body).version || null);
+            } catch {
+              resolve(null);
+            }
+          });
+        },
+      );
+      req.on("error", () => resolve(null));
+      req.on("timeout", () => { req.destroy(); resolve(null); });
     });
-    if (res.ok) {
-      const data = await res.json();
-      return data.version || null;
-    }
+    if (version) return version;
   } catch {
-    // fetch failed, try npm view
+    // https.get failed, try npm view
   }
 
   try {
