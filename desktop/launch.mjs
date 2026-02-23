@@ -42,6 +42,7 @@ function ensureElectronInstalled() {
   const result = spawnSync("npm", ["install"], {
     cwd: desktopDir,
     stdio: "inherit",
+    shell: process.platform === "win32",
     env: process.env,
   });
   return result.status === 0 && existsSync(electronBin);
@@ -60,6 +61,7 @@ function launch() {
 
   const child = spawn(electronBin, args, {
     stdio: "inherit",
+    shell: process.platform === "win32",
     env: {
       ...process.env,
       BOSUN_DESKTOP: "1",

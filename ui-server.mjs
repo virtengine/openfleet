@@ -110,7 +110,7 @@ let _configValidator = null;
 function resolveConfigPath() {
   return process.env.BOSUN_CONFIG_PATH
     ? resolve(process.env.BOSUN_CONFIG_PATH)
-    : resolve(__dirname, "bosun.config.json");
+    : resolve(resolveUiConfigDir(), "bosun.config.json");
 }
 
 function getConfigSchema() {
@@ -660,7 +660,7 @@ const SETTINGS_KNOWN_SET = new Set(SETTINGS_KNOWN_KEYS);
 let _settingsLastUpdateTime = 0;
 
 function updateEnvFile(changes) {
-  const envPath = resolve(__dirname, '.env');
+  const envPath = resolve(resolveUiConfigDir(), '.env');
   let content = '';
   try { content = readFileSync(envPath, 'utf8'); } catch { content = ''; }
 
@@ -4339,7 +4339,7 @@ async function handleApi(req, res, url) {
           data[key] = val || "";
         }
       }
-      const envPath = resolve(__dirname, ".env");
+      const envPath = resolve(resolveUiConfigDir(), ".env");
       const configPath = resolveConfigPath();
       const configExists = existsSync(configPath);
       const configSchema = getConfigSchema();
