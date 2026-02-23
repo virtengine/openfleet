@@ -546,6 +546,8 @@ let uiServer = null;
 let uiServerUrl = null;
 let uiServerTls = false;
 let wsServer = null;
+/** Auto-open browser: only once per process, never during tests */
+let _browserOpened = false;
 const wsClients = new Set();
 let sessionListenerAttached = false;
 /** @type {ReturnType<typeof setInterval>|null} */
@@ -5468,8 +5470,19 @@ export async function startTelegramUiServer(options = {}) {
   console.log(`[telegram-ui] LAN access: ${protocol}://${lanIp}:${actualPort}`);
   console.log(`[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`);
 
-  // Auto-open browser (skip in desktop/embedded mode)
-  if (process.env.BOSUN_DESKTOP !== "1" && !options.skipAutoOpen) {
+  // Auto-open browser:
+  //  - skip in desktop/Electron mode (BOSUN_DESKTOP=1)
+  //  - skip when caller passes skipAutoOpen
+  //  - skip during Vitest / Jest test runs (avoids opening 20+ tabs during `npm test`)
+  //  - only open ONCE per process (singleton guard — prevents loops on server restart)
+  const isTestRun = process.env.VITEST || process.env.NODE_ENV === "test" || process.env.JEST_WORKER_ID;
+  if (
+    process.env.BOSUN_DESKTOP !== "1" &&
+    !options.skipAutoOpen &&
+    !_browserOpened &&
+    !isTestRun
+  ) {
+    _browserOpened = true;
     const openUrl = `${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`;
     try {
       const { exec } = await import("node:child_process");
