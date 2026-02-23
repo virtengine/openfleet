@@ -691,9 +691,11 @@ export function ChatTab() {
           html`
             <div class="chat-shell-header">
               <div class="chat-shell-inner">
-                <button class="session-drawer-btn" onClick=${handleBack}>
-                  ☰ Sessions
-                </button>
+                ${isMobile && html`
+                  <button class="session-drawer-btn" onClick=${handleBack}>
+                    ☰ Sessions
+                  </button>
+                `}
                 <div class="chat-shell-title">
                   <div class="chat-shell-name">${sessionTitle}</div>
                   <div class="chat-shell-meta">${sessionMeta || "Session"}</div>
@@ -784,6 +786,13 @@ export function ChatTab() {
           </div>
         </div>
       </div>
+      ${focusMode && html`
+        <button 
+          class="focus-exit-fab"
+          onClick=${() => setFocusMode(false)}
+          title="Exit focus mode"
+        >✕</button>
+      `}
       ${isMobile &&
       html`
         <div
