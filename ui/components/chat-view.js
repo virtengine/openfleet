@@ -435,9 +435,10 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         flushThinking(msg.id || msg.timestamp || "assistant");
       }
 
+      const baseKey = msg.id || msg.timestamp || "msg";
       items.push({
         kind: "message",
-        key: msg.id || msg.timestamp || `msg-${items.length}`,
+        key: `message-${baseKey}-${items.length}`,
         msg,
       });
     }

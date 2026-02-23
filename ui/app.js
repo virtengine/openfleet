@@ -23,11 +23,17 @@ globalThis.addEventListener?.("error", (e) => {
   appendErrorLog({ type: "global", message: e.message, stack: e.error?.stack });
 });
 globalThis.addEventListener?.("unhandledrejection", (e) => {
+  const reason = e?.reason;
+  const message = String(reason?.message || reason || "");
+  if (/WebAppMethodUnsupported/i.test(message)) {
+    e.preventDefault?.();
+    return;
+  }
   console.error("[ve:unhandled-rejection]", e.reason);
   appendErrorLog({ type: "rejection", message: String(e.reason?.message || e.reason) });
 });
 
-import { h, render as preactRender } from "preact";
+import { h, render as preactRender, Component } from "preact";
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import { signal } from "@preact/signals";
 import htm from "htm";
@@ -49,7 +55,6 @@ import {
   initTelegramApp,
   onThemeChange,
   getTg,
-  isTelegramContext,
   showSettingsButton,
   getTelegramUser,
   colorScheme,
@@ -66,22 +71,12 @@ import {
   statusData,
   executorData,
   refreshTab,
-  toasts,
   initWsInvalidationListener,
   loadNotificationPrefs,
   applyStoredDefaults,
 } from "./modules/state.js";
 import { activeTab, navigateTo, TAB_CONFIG } from "./modules/router.js";
 import { formatRelative } from "./modules/utils.js";
-
-function getNavHint() {
-  if (typeof globalThis === "undefined") return "";
-  const isCoarse = globalThis.matchMedia?.("(pointer: coarse)")?.matches;
-  if (isCoarse) return "Swipe left/right to switch tabs";
-  const isHover = globalThis.matchMedia?.("(hover: hover)")?.matches;
-  if (isHover) return "Press 1-8 to switch tabs";
-  return "";
-}
 
 /* ── Component imports ── */
 import { ToastContainer, Modal } from "./components/shared.js";
@@ -94,7 +89,7 @@ import {
   sessionsData,
   initSessionWsListener,
 } from "./components/session-list.js";
-import { WorkspaceSwitcher, loadWorkspaces } from "./components/workspace-switcher.js";
+import { WorkspaceSwitcher } from "./components/workspace-switcher.js";
 import { DiffViewer } from "./components/diff-viewer.js";
 import {
   CommandPalette,
@@ -346,7 +341,6 @@ function OfflineBanner() {
 }
 
 /* ── Error Boundary — catches render errors in child components ── */
-import { Component } from "preact";
 class TabErrorBoundary extends Component {
   constructor(props) {
     super(props);
@@ -366,6 +360,7 @@ class TabErrorBoundary extends Component {
       const tabName = this.props.tabName || "";
       const errorMsg = err?.message || "An unexpected error occurred while rendering this tab.";
       const stack = err?.stack || "";
+      const stackToggleLabel = this.state.showStack ? "Hide Stack" : "Stack Trace";
       const copyError = () => {
         const text = `${errorMsg}\n\n${stack}`;
         navigator?.clipboard?.writeText(text).catch(() => {});
@@ -388,7 +383,7 @@ class TabErrorBoundary extends Component {
             <button class="btn btn-primary btn-sm" onClick=${retry}>Retry</button>
             <button class="btn btn-ghost btn-sm" onClick=${copyError}>Copy Error</button>
             ${stack ? html`<button class="btn btn-ghost btn-sm" onClick=${toggleStack}>
-              ${this.state.showStack ? "Hide Stack" : "Stack Trace"}
+              ${stackToggleLabel}
             </button>` : null}
             <button class="btn btn-ghost btn-sm" onClick=${() => {
               console.group("[ve:error-log]");
@@ -424,14 +419,10 @@ const TAB_COMPONENTS = {
  * ═══════════════════════════════════════════════ */
 function Header() {
   const isConn = connected.value;
-  const wsConn = wsConnected.value;
   const user = getTelegramUser();
   const latency = wsLatency.value;
   const reconnect = wsReconnectIn.value;
   const freshnessRaw = dataFreshness.value;
-  const navHint = getNavHint();
-  const tabMeta = TAB_CONFIG.find((tab) => tab.id === activeTab.value);
-  const subLabel = tabMeta?.label || "";
   let freshness = null;
   if (typeof freshnessRaw === "number") {
     freshness = Number.isFinite(freshnessRaw) ? freshnessRaw : null;
@@ -517,12 +508,12 @@ function SidebarNav() {
           const isActive = activeTab.value === tab.id;
           const isHome = tab.id === "dashboard";
           const sCounts = statusData.value?.counts || {};
-          const badge =
-            tab.id === "tasks"
-              ? Number(sCounts.running || sCounts.inprogress || 0) + Number(sCounts.inreview || sCounts.review || 0)
-              : tab.id === "agents"
-                ? Number(executorData.value?.data?.activeSlots || 0)
-                : 0;
+          let badge = 0;
+          if (tab.id === "tasks") {
+            badge = Number(sCounts.running || sCounts.inprogress || 0) + Number(sCounts.inreview || sCounts.review || 0);
+          } else if (tab.id === "agents") {
+            badge = Number(executorData.value?.data?.activeSlots || 0);
+          }
           return html`
             <button
               key=${tab.id}
@@ -623,6 +614,33 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
     : "No messages yet.";
   const [smartLogs, setSmartLogs] = useState([]);
   const [logState, setLogState] = useState("idle");
+  const lastActiveLabel = lastActive ? formatRelative(lastActive) : "—";
+  const apiStatusLabel = connected.value ? "Connected" : "Offline";
+  const wsStatusLabel = wsConnected.value ? "Live" : "Closed";
+  const backendLastSeenLabel = backendLastSeen.value
+    ? formatRelative(backendLastSeen.value)
+    : "—";
+  let smartLogsContent = html`
+    <div class="inspector-scroll">
+      ${smartLogs.map(
+        (entry, idx) => html`
+          <div key=${idx} class="inspector-log-line ${entry.level}">
+            <span class="inspector-log-level">
+              ${entry.level.toUpperCase()}
+            </span>
+            <span class="inspector-log-text">
+              ${entry.line.length > 220 ? entry.line.slice(-220) : entry.line}
+            </span>
+          </div>
+        `,
+      )}
+    </div>
+  `;
+  if (logState === "error") {
+    smartLogsContent = html`<div class="inspector-empty">Log stream unavailable.</div>`;
+  } else if (smartLogs.length === 0) {
+    smartLogsContent = html`<div class="inspector-empty">No noteworthy logs right now.</div>`;
+  }
 
   useEffect(() => {
     if (!isSessionTab) return;
@@ -694,7 +712,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
               <div class="inspector-kv"><span>Session</span><strong>${session.title || session.taskId || session.id}</strong></div>
               <div class="inspector-kv"><span>Status</span><strong>${status}</strong></div>
               <div class="inspector-kv"><span>Type</span><strong>${type}</strong></div>
-              <div class="inspector-kv"><span>Last Active</span><strong>${lastActive ? formatRelative(lastActive) : "—"}</strong></div>
+              <div class="inspector-kv"><span>Last Active</span><strong>${lastActiveLabel}</strong></div>
               <div class="inspector-kv"><span>Preview</span><strong>${preview}</strong></div>
             `
           : html`<div class="inspector-empty">Select a session to see context.</div>`}
@@ -708,26 +726,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
             </div>
             <div class="inspector-section">
               <div class="inspector-title">Smart Logs</div>
-              ${logState === "error"
-                ? html`<div class="inspector-empty">Log stream unavailable.</div>`
-                : smartLogs.length === 0
-                  ? html`<div class="inspector-empty">No noteworthy logs right now.</div>`
-                  : html`
-                      <div class="inspector-scroll">
-                          ${smartLogs.map(
-                            (entry, idx) => html`
-                              <div key=${idx} class="inspector-log-line ${entry.level}">
-                                <span class="inspector-log-level">
-                                  ${entry.level.toUpperCase()}
-                                </span>
-                                <span class="inspector-log-text">
-                                  ${entry.line.length > 220 ? entry.line.slice(-220) : entry.line}
-                                </span>
-                              </div>
-                            `,
-                          )}
-                        </div>
-                      `}
+              ${smartLogsContent}
               <button class="btn btn-ghost btn-sm" onClick=${() => navigateTo("logs")}>
                 Open Logs
               </button>
@@ -736,9 +735,9 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
         : html`
             <div class="inspector-section">
               <div class="inspector-title">System Pulse</div>
-              <div class="inspector-kv"><span>API</span><strong>${connected.value ? "Connected" : "Offline"}</strong></div>
-              <div class="inspector-kv"><span>WebSocket</span><strong>${wsConnected.value ? "Live" : "Closed"}</strong></div>
-              <div class="inspector-kv"><span>Last Seen</span><strong>${backendLastSeen.value ? formatRelative(backendLastSeen.value) : "—"}</strong></div>
+              <div class="inspector-kv"><span>API</span><strong>${apiStatusLabel}</strong></div>
+              <div class="inspector-kv"><span>WebSocket</span><strong>${wsStatusLabel}</strong></div>
+              <div class="inspector-kv"><span>Last Seen</span><strong>${backendLastSeenLabel}</strong></div>
             </div>
           `}
       ${showResizer
@@ -778,7 +777,9 @@ function BottomNav({ compact, moreOpen, onToggleMore, onNavigate }) {
       ${primaryTabs.map((tab) => {
         const isHome = tab.id === "dashboard";
         const isActive = activeTab.value === tab.id;
-        const badge = tab.id === "tasks" ? tasksBadge : tab.id === "agents" ? agentsBadge : 0;
+        let badge = 0;
+        if (tab.id === "tasks") badge = tasksBadge;
+        else if (tab.id === "agents") badge = agentsBadge;
         return html`
           <button
             key=${tab.id}
@@ -903,27 +904,30 @@ function App() {
   const [isMoreOpen, setIsMoreOpen] = useState(false);
   const resizeRef = useRef(null);
   const [isCompactNav, setIsCompactNav] = useState(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return false;
-    return window.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`).matches;
+    const win = globalThis.window;
+    if (!win?.matchMedia) return false;
+    return win.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`).matches;
   });
   const [isDesktop, setIsDesktop] = useState(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return false;
-    return window.matchMedia(`(min-width: ${DESKTOP_MIN_WIDTH}px)`).matches;
+    const win = globalThis.window;
+    if (!win?.matchMedia) return false;
+    return win.matchMedia(`(min-width: ${DESKTOP_MIN_WIDTH}px)`).matches;
   });
   const [isTablet, setIsTablet] = useState(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return false;
-    const w = window.innerWidth;
+    const win = globalThis.window;
+    if (!win?.matchMedia) return false;
+    const w = win.innerWidth;
     return w >= TABLET_MIN_WIDTH && w < DESKTOP_MIN_WIDTH;
   });
   const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const [inspectorDrawerOpen, setInspectorDrawerOpen] = useState(false);
   const [railWidth, setRailWidth] = useState(() => {
-    if (typeof window === "undefined") return 320;
+    if (!globalThis.window) return 320;
     const stored = Number(localStorage.getItem("ve-rail-width"));
     return Number.isFinite(stored) ? stored : 320;
   });
   const [inspectorWidth, setInspectorWidth] = useState(() => {
-    if (typeof window === "undefined") return 320;
+    if (!globalThis.window) return 320;
     const stored = Number(localStorage.getItem("ve-inspector-width"));
     return Number.isFinite(stored) ? stored : 320;
   });
@@ -949,8 +953,8 @@ function App() {
   const handleResizeEnd = useCallback(() => {
     resizeRef.current = null;
     document.body.classList.remove("is-resizing");
-    window.removeEventListener("pointermove", handleResizeMove);
-    window.removeEventListener("pointerup", handleResizeEnd);
+    globalThis.removeEventListener?.("pointermove", handleResizeMove);
+    globalThis.removeEventListener?.("pointerup", handleResizeEnd);
   }, [handleResizeMove]);
 
   const handleResizeStart = useCallback(
@@ -965,8 +969,8 @@ function App() {
         startInspector: inspectorWidth,
       };
       document.body.classList.add("is-resizing");
-      window.addEventListener("pointermove", handleResizeMove);
-      window.addEventListener("pointerup", handleResizeEnd);
+      globalThis.addEventListener?.("pointermove", handleResizeMove);
+      globalThis.addEventListener?.("pointerup", handleResizeEnd);
     },
     [isDesktop, railWidth, inspectorWidth, handleResizeMove, handleResizeEnd],
   );
@@ -977,53 +981,50 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const query = window.matchMedia(`(min-width: ${DESKTOP_MIN_WIDTH}px)`);
+    const win = globalThis.window;
+    if (!win?.matchMedia) return;
+    const query = win.matchMedia(`(min-width: ${DESKTOP_MIN_WIDTH}px)`);
     const update = () => setIsDesktop(query.matches);
     update();
-    if (query.addEventListener) query.addEventListener("change", update);
-    else query.addListener(update);
+    query.addEventListener?.("change", update);
     return () => {
-      if (query.removeEventListener) query.removeEventListener("change", update);
-      else query.removeListener(update);
+      query.removeEventListener?.("change", update);
     };
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const tabletQuery = window.matchMedia(
+    const win = globalThis.window;
+    if (!win?.matchMedia) return;
+    const tabletQuery = win.matchMedia(
       `(min-width: ${TABLET_MIN_WIDTH}px) and (max-width: ${DESKTOP_MIN_WIDTH - 1}px)`,
     );
     const update = () => setIsTablet(tabletQuery.matches);
     update();
-    if (tabletQuery.addEventListener) tabletQuery.addEventListener("change", update);
-    else tabletQuery.addListener(update);
+    tabletQuery.addEventListener?.("change", update);
     return () => {
-      if (tabletQuery.removeEventListener) tabletQuery.removeEventListener("change", update);
-      else tabletQuery.removeListener(update);
+      tabletQuery.removeEventListener?.("change", update);
     };
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const query = window.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`);
+    const win = globalThis.window;
+    if (!win?.matchMedia) return;
+    const query = win.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`);
     const update = () => setIsCompactNav(query.matches);
     update();
-    if (query.addEventListener) query.addEventListener("change", update);
-    else query.addListener(update);
+    query.addEventListener?.("change", update);
     return () => {
-      if (query.removeEventListener) query.removeEventListener("change", update);
-      else query.removeListener(update);
+      query.removeEventListener?.("change", update);
     };
   }, []);
 
   useEffect(() => {
-    if (!isDesktop || typeof window === "undefined") return;
+    if (!isDesktop || !globalThis.window) return;
     localStorage.setItem("ve-rail-width", String(railWidth));
   }, [railWidth, isDesktop]);
 
   useEffect(() => {
-    if (!isDesktop || typeof window === "undefined") return;
+    if (!isDesktop || !globalThis.window) return;
     localStorage.setItem("ve-inspector-width", String(inspectorWidth));
   }, [inspectorWidth, isDesktop]);
 
@@ -1103,7 +1104,7 @@ function App() {
       if (document.activeElement?.isContentEditable) return;
 
       // Number keys 1-8 to switch tabs
-      const num = parseInt(e.key, 10);
+      const num = Number.parseInt(e.key, 10);
       if (num >= 1 && num <= 8 && !e.metaKey && !e.ctrlKey && !e.altKey) {
         const tabCfg = TAB_CONFIG[num - 1];
         if (tabCfg) {
@@ -1259,6 +1260,21 @@ function App() {
     setSidebarDrawerOpen(false);
     setInspectorDrawerOpen(false);
   }, []);
+  const sidebarToggleLabel = sidebarDrawerOpen ? "Close sidebar" : "Open sidebar";
+  const inspectorToggleLabel = inspectorDrawerOpen
+    ? "Close inspector"
+    : "Open inspector";
+  const inspectorToggleButton = showInspectorToggle
+    ? html`
+        <button
+          class="btn btn-ghost btn-sm tablet-toggle"
+          onClick=${toggleInspector}
+          aria-label=${inspectorToggleLabel}
+        >
+          📋 Inspector
+        </button>
+      `
+    : null;
 
   return html`
     <div class="top-loading-bar" style="width: ${loadingPct}%; opacity: ${loadingVisible ? 1 : 0}"></div>
@@ -1313,21 +1329,11 @@ function App() {
                   <button
                     class="btn btn-ghost btn-sm tablet-toggle"
                     onClick=${toggleSidebar}
-                    aria-label=${sidebarDrawerOpen ? "Close sidebar" : "Open sidebar"}
+                    aria-label=${sidebarToggleLabel}
                   >
                     ☰ Navigation
                   </button>
-                  ${showInspectorToggle
-                    ? html`
-                        <button
-                          class="btn btn-ghost btn-sm tablet-toggle"
-                          onClick=${toggleInspector}
-                          aria-label=${inspectorDrawerOpen ? "Close inspector" : "Open inspector"}
-                        >
-                          📋 Inspector
-                        </button>
-                      `
-                    : null}
+                  ${inspectorToggleButton}
                 </div>
               `
             : null}

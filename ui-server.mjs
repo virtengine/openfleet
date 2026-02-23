@@ -86,6 +86,7 @@ import {
   SETTINGS_SCHEMA,
   validateSetting,
 } from "./ui/modules/settings-schema.js";
+import { loadConfig } from "./config.mjs";
 import {
   getAvailableAgents,
   getAgentMode,
@@ -96,11 +97,6 @@ import {
   switchPrimaryAgent,
   getPrimaryAgentInfo,
 } from "./primary-agent.mjs";
-import {
-  getExecutorModelRegistry,
-  getModelsForExecutor,
-  normalizeExecutorKey,
-} from "./task-complexity.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
@@ -109,8 +105,339 @@ const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const logsDir = resolve(__dirname, "logs");
 const agentLogsDir = resolve(repoRoot, ".cache", "agent-logs");
 const CONFIG_SCHEMA_PATH = resolve(__dirname, "bosun.schema.json");
+const PLANNER_STATE_PATH = resolve(
+  repoRoot,
+  ".bosun",
+  ".cache",
+  "task-planner-state.json",
+);
 let _configSchema = null;
 let _configValidator = null;
+
+function normalizeTriggerTemplateId(template = {}) {
+  return String(template?.id || template?.name || "")
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeTriggerTemplate(template = {}) {
+  const id = normalizeTriggerTemplateId(template);
+  if (!id) return null;
+  return {
+    ...template,
+    id,
+    name: String(template?.name || id).trim() || id,
+    enabled: template?.enabled === true,
+    action:
+      String(template?.action || "task-planner").trim() === "create-task"
+        ? "create-task"
+        : "task-planner",
+    minIntervalMinutes:
+      Number.isFinite(Number(template?.minIntervalMinutes)) &&
+      Number(template?.minIntervalMinutes) > 0
+        ? Number(template.minIntervalMinutes)
+        : undefined,
+    trigger:
+      template?.trigger && typeof template.trigger === "object"
+        ? template.trigger
+        : { anyOf: [] },
+    config:
+      template?.config && typeof template.config === "object"
+        ? template.config
+        : {},
+  };
+}
+
+function readConfigDocument() {
+  const configPath = resolveConfigPath();
+  let configData = { $schema: "./bosun.schema.json" };
+  if (existsSync(configPath)) {
+    try {
+      configData = JSON.parse(readFileSync(configPath, "utf8"));
+    } catch {
+      configData = { $schema: "./bosun.schema.json" };
+    }
+  }
+  if (!configData || typeof configData !== "object") {
+    configData = { $schema: "./bosun.schema.json" };
+  }
+  if (!configData.$schema) {
+    configData.$schema = "./bosun.schema.json";
+  }
+  return { configPath, configData };
+}
+
+function resolveUiTriggerSystem() {
+  try {
+    const cfg = loadConfig([
+      "node",
+      "bosun",
+      "--repo-root",
+      repoRoot,
+      "--config-dir",
+      resolveUiConfigDir(),
+    ]);
+    const triggerSystem =
+      cfg?.triggerSystem && typeof cfg.triggerSystem === "object"
+        ? cfg.triggerSystem
+        : {};
+    return {
+      enabled: triggerSystem.enabled === true,
+      defaults:
+        triggerSystem.defaults && typeof triggerSystem.defaults === "object"
+          ? {
+              executor: String(triggerSystem.defaults.executor || "auto"),
+              model: String(triggerSystem.defaults.model || "auto"),
+            }
+          : { executor: "auto", model: "auto" },
+      templates: Array.isArray(triggerSystem.templates)
+        ? triggerSystem.templates
+            .map((template) => normalizeTriggerTemplate(template))
+            .filter(Boolean)
+        : [],
+    };
+  } catch {
+    return {
+      enabled: false,
+      defaults: { executor: "auto", model: "auto" },
+      templates: [],
+    };
+  }
+}
+
+async function readPlannerTemplateState() {
+  try {
+    const raw = await readFile(PLANNER_STATE_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function getTemplateIdFromTask(task = {}) {
+  return String(task?.meta?.triggerTemplate?.id || "")
+    .trim()
+    .toLowerCase();
+}
+
+async function collectTriggerTemplateTaskStats(templates = []) {
+  const statsByTemplateId = {};
+  for (const template of templates) {
+    const id = normalizeTriggerTemplateId(template);
+    if (!id) continue;
+    statsByTemplateId[id] = {
+      spawnedTotal: 0,
+      activeCount: 0,
+      doneCount: 0,
+      runningAgents: [],
+      recentSpawned: [],
+    };
+  }
+  if (Object.keys(statsByTemplateId).length === 0) {
+    return statsByTemplateId;
+  }
+
+  try {
+    const adapter = getKanbanAdapter();
+    const projects = await adapter.listProjects();
+    const activeProject =
+      projects?.[0]?.id || projects?.[0]?.project_id || "";
+    if (!activeProject) return statsByTemplateId;
+
+    const tasks = await adapter.listTasks(activeProject, {});
+    const taskById = new Map();
+
+    for (const task of tasks) {
+      if (!task?.id) continue;
+      const taskId = String(task.id);
+      taskById.set(taskId, task);
+      const templateId = getTemplateIdFromTask(task);
+      if (!templateId || !statsByTemplateId[templateId]) continue;
+
+      const bucket = statsByTemplateId[templateId];
+      bucket.spawnedTotal += 1;
+
+      const status = String(task?.status || "").toLowerCase();
+      if (["todo", "draft", "inprogress", "inreview", "error"].includes(status)) {
+        bucket.activeCount += 1;
+      }
+      if (["done", "cancelled"].includes(status)) {
+        bucket.doneCount += 1;
+      }
+
+      const createdAt =
+        task?.meta?.triggerTemplate?.createdAt ||
+        task?.created_at ||
+        task?.createdAt ||
+        task?.updated_at ||
+        task?.updatedAt ||
+        null;
+
+      bucket.recentSpawned.push({
+        id: taskId,
+        title: task?.title || "",
+        status: task?.status || "",
+        createdAt,
+        executor:
+          task?.meta?.execution?.sdk ||
+          task?.meta?.execution?.executor ||
+          task?.sdk ||
+          task?.executor ||
+          "",
+        model: task?.meta?.execution?.model || task?.model || "",
+      });
+    }
+
+    const runtimeExecutor = uiDeps.getInternalExecutor?.();
+    const activeSlots = runtimeExecutor?.getStatus?.()?.slots || [];
+    for (const slot of activeSlots) {
+      const slotTaskId = String(slot?.taskId || slot?.task_id || "").trim();
+      if (!slotTaskId) continue;
+      const task = taskById.get(slotTaskId);
+      if (!task) continue;
+      const templateId = getTemplateIdFromTask(task);
+      if (!templateId || !statsByTemplateId[templateId]) continue;
+      statsByTemplateId[templateId].runningAgents.push({
+        taskId: slotTaskId,
+        taskTitle: slot?.taskTitle || task?.title || "",
+        sdk: slot?.sdk || slot?.executor || "",
+        model: slot?.model || "",
+        startedAt: slot?.startedAt || slot?.started_at || null,
+      });
+    }
+
+    for (const bucket of Object.values(statsByTemplateId)) {
+      bucket.recentSpawned = bucket.recentSpawned
+        .sort((a, b) => {
+          const ta = Date.parse(a?.createdAt || 0) || 0;
+          const tb = Date.parse(b?.createdAt || 0) || 0;
+          return tb - ta;
+        })
+        .slice(0, 6);
+    }
+  } catch {
+    return statsByTemplateId;
+  }
+
+  return statsByTemplateId;
+}
+
+async function getTriggerTemplatePayload() {
+  const triggerSystem = resolveUiTriggerSystem();
+  const plannerState = await readPlannerTemplateState();
+  const plannerTemplateMap =
+    plannerState?.trigger_templates &&
+    typeof plannerState.trigger_templates === "object"
+      ? plannerState.trigger_templates
+      : {};
+  const statsByTemplateId = await collectTriggerTemplateTaskStats(
+    triggerSystem.templates,
+  );
+
+  const templates = triggerSystem.templates.map((template) => {
+    const templateId = normalizeTriggerTemplateId(template);
+    return {
+      ...template,
+      state:
+        plannerTemplateMap[templateId] &&
+        typeof plannerTemplateMap[templateId] === "object"
+          ? plannerTemplateMap[templateId]
+          : {},
+      stats: statsByTemplateId[templateId] || {
+        spawnedTotal: 0,
+        activeCount: 0,
+        doneCount: 0,
+        runningAgents: [],
+        recentSpawned: [],
+      },
+    };
+  });
+
+  return {
+    enabled: triggerSystem.enabled === true,
+    defaults: triggerSystem.defaults || { executor: "auto", model: "auto" },
+    templates,
+    planner: {
+      lastTriggeredAt: plannerState?.last_triggered_at || null,
+      lastSuccessAt: plannerState?.last_success_at || null,
+      lastFailureAt: plannerState?.last_failure_at || null,
+      lastError: plannerState?.last_error || null,
+    },
+  };
+}
+
+function persistTriggerTemplateUpdate(body = {}) {
+  const { configPath, configData } = readConfigDocument();
+  const current =
+    configData?.triggerSystem && typeof configData.triggerSystem === "object"
+      ? configData.triggerSystem
+      : {};
+  const runtime = resolveUiTriggerSystem();
+
+  const nextTriggerSystem = {
+    enabled:
+      current.enabled === true ||
+      (current.enabled == null && runtime.enabled === true),
+    templates: Array.isArray(current.templates)
+      ? current.templates
+          .map((template) => normalizeTriggerTemplate(template))
+          .filter(Boolean)
+      : [...runtime.templates],
+    defaults:
+      current.defaults && typeof current.defaults === "object"
+        ? {
+            executor: String(current.defaults.executor || runtime.defaults.executor || "auto"),
+            model: String(current.defaults.model || runtime.defaults.model || "auto"),
+          }
+        : { ...runtime.defaults },
+  };
+
+  if (typeof body.enabled === "boolean") {
+    nextTriggerSystem.enabled = body.enabled;
+    process.env.TASK_TRIGGER_SYSTEM_ENABLED = body.enabled ? "true" : "false";
+  }
+
+  if (body.defaults && typeof body.defaults === "object") {
+    nextTriggerSystem.defaults = {
+      executor: String(
+        body.defaults.executor || nextTriggerSystem.defaults.executor || "auto",
+      ),
+      model: String(
+        body.defaults.model || nextTriggerSystem.defaults.model || "auto",
+      ),
+    };
+  }
+
+  if (body.template && typeof body.template === "object") {
+    const normalized = normalizeTriggerTemplate(body.template);
+    if (!normalized) {
+      throw new Error("template.id is required");
+    }
+    const index = nextTriggerSystem.templates.findIndex(
+      (template) => normalizeTriggerTemplateId(template) === normalized.id,
+    );
+    if (index >= 0) {
+      nextTriggerSystem.templates[index] = {
+        ...nextTriggerSystem.templates[index],
+        ...normalized,
+      };
+    } else {
+      nextTriggerSystem.templates.push(normalized);
+    }
+  }
+
+  configData.triggerSystem = nextTriggerSystem;
+  const validator = getConfigValidator();
+  if (typeof validator === "function" && !validator(configData)) {
+    const firstError = validator.errors?.[0];
+    const detail = firstError?.message || "Invalid trigger system config";
+    throw new Error(`Schema validation failed: ${detail}`);
+  }
+
+  writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
+  return configPath;
+}
 
 function resolveConfigPath() {
   return process.env.BOSUN_CONFIG_PATH
@@ -174,12 +501,6 @@ function parseExecutorsValue(value) {
     const parts = entries[i].split(":").map((part) => part.trim());
     if (parts.length < 2) continue;
     const weight = parts[2] ? Number(parts[2]) : Math.floor(100 / entries.length);
-    const models = parts[3]
-      ? parts[3]
-          .split("|")
-          .map((model) => model.trim())
-          .filter(Boolean)
-      : [];
     executors.push({
       name: `${parts[0].toLowerCase()}-${parts[1].toLowerCase()}`,
       executor: parts[0].toUpperCase(),
@@ -187,7 +508,6 @@ function parseExecutorsValue(value) {
       weight: Number.isFinite(weight) ? weight : 0,
       role: roles[i] || `executor-${i + 1}`,
       enabled: true,
-      models,
     });
   }
   return executors.length ? executors : value;
@@ -365,7 +685,6 @@ const CONFIG_PATH_OVERRIDES = {
   EXECUTOR_MODE: ["internalExecutor", "mode"],
   PROJECT_REQUIREMENTS_PROFILE: ["projectRequirements", "profile"],
   TASK_PLANNER_DEDUP_HOURS: ["plannerDedupHours"],
-  TASK_TRIGGER_SYSTEM_ENABLED: ["triggerSystem", "enabled"],
 };
 const ROOT_PREFIX_ALLOWLIST = [
   "TELEGRAM_",
@@ -632,7 +951,7 @@ const SETTINGS_KNOWN_KEYS = [
   "COPILOT_MODEL", "COPILOT_CLI_TOKEN",
   "KANBAN_BACKEND", "KANBAN_SYNC_POLICY", "BOSUN_TASK_LABEL",
   "BOSUN_ENFORCE_TASK_LABEL", "STALE_TASK_AGE_HOURS",
-  "TASK_PLANNER_MODE", "TASK_TRIGGER_SYSTEM_ENABLED", "TASK_PLANNER_DEDUP_HOURS",
+  "TASK_PLANNER_MODE", "TASK_PLANNER_DEDUP_HOURS",
   "TASK_BRANCH_MODE", "TASK_BRANCH_AUTO_MODULE", "TASK_UPSTREAM_SYNC_MAIN",
   "MODULE_BRANCH_PREFIX", "DEFAULT_TARGET_BRANCH",
   "BOSUN_PROMPT_PLANNER",
@@ -2784,21 +3103,28 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (path === "/api/executor/models") {
-    const requestedExecutor = String(url.searchParams.get("executor") || "").trim();
-    const normalizedExecutor = normalizeExecutorKey(requestedExecutor);
-    if (normalizedExecutor) {
-      jsonResponse(res, 200, {
-        ok: true,
-        executor: normalizedExecutor,
-        models: getModelsForExecutor(normalizedExecutor),
-      });
-      return;
+  if (path === "/api/triggers/templates") {
+    try {
+      const data = await getTriggerTemplatePayload();
+      jsonResponse(res, 200, { ok: true, data });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
     }
-    jsonResponse(res, 200, {
-      ok: true,
-      registry: getExecutorModelRegistry(),
-    });
+    return;
+  }
+
+  if (path === "/api/triggers/templates/update") {
+    try {
+      const body = await readJsonBody(req);
+      persistTriggerTemplateUpdate(body || {});
+      const data = await getTriggerTemplatePayload();
+      jsonResponse(res, 200, { ok: true, data });
+      broadcastUiEvent(["tasks", "overview"], "invalidate", {
+        reason: "trigger-template-updated",
+      });
+    } catch (err) {
+      jsonResponse(res, 400, { ok: false, error: err.message });
+    }
     return;
   }
 
@@ -2979,14 +3305,13 @@ async function handleApi(req, res, url) {
       const body = await readJsonBody(req);
       const taskId = body?.taskId || body?.id;
       const sdk = typeof body?.sdk === "string" ? body.sdk.trim() : "";
-      const executorOverride = typeof body?.executor === "string" ? body.executor.trim() : "";
       const model = typeof body?.model === "string" ? body.model.trim() : "";
       if (!taskId) {
         jsonResponse(res, 400, { ok: false, error: "taskId is required" });
         return;
       }
-      const runtimeExecutor = uiDeps.getInternalExecutor?.();
-      if (!runtimeExecutor) {
+      const executor = uiDeps.getInternalExecutor?.();
+      if (!executor) {
         jsonResponse(res, 400, {
           ok: false,
           error:
@@ -3001,7 +3326,7 @@ async function handleApi(req, res, url) {
         return;
       }
 
-      const status = runtimeExecutor.getStatus?.() || {};
+      const status = executor.getStatus?.() || {};
       const freeSlots =
         (status.maxParallel || 0) - (status.activeSlots || 0);
 
@@ -3035,9 +3360,8 @@ async function handleApi(req, res, url) {
           `[telegram-ui] failed to mark task ${taskId} inprogress: ${err.message}`,
         );
       }
-      const wasPaused = runtimeExecutor.isPaused?.();
-      runtimeExecutor.executeTask(task, {
-        ...(executorOverride ? { executor: executorOverride } : {}),
+      const wasPaused = executor.isPaused?.();
+      executor.executeTask(task, {
         ...(sdk ? { sdk } : {}),
         ...(model ? { model } : {}),
         force: true,
@@ -3206,8 +3530,6 @@ async function handleApi(req, res, url) {
       const tags = normalizeTagsInput(body?.tags);
       const wantsDraft = Boolean(body?.draft) || body?.status === "draft";
       const baseBranch = normalizeBranchInput(body?.baseBranch ?? body?.base_branch);
-      const executorOverride = String(body?.executor || body?.sdk || "").trim();
-      const modelOverride = String(body?.model || "").trim();
       const activeWorkspace = getActiveManagedWorkspace(resolveUiConfigDir());
       const defaultRepository =
         activeWorkspace?.activeRepo ||
@@ -3237,14 +3559,7 @@ async function handleApi(req, res, url) {
           ...(tags.length ? { tags } : {}),
           ...(wantsDraft ? { draft: true } : {}),
           ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
-          execution: {
-            sdk: executorOverride || undefined,
-            executor: executorOverride || undefined,
-            model: modelOverride || undefined,
-          },
         },
-        ...(executorOverride ? { sdk: executorOverride, executor: executorOverride } : {}),
-        ...(modelOverride ? { model: modelOverride } : {}),
       };
       const created = await adapter.createTask(projectId, taskData);
       jsonResponse(res, 200, { ok: true, data: created });
@@ -4341,6 +4656,16 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/recent-commits") {
+    try {
+      const commits = getRecentCommits(process.cwd(), 6);
+      jsonResponse(res, 200, { ok: true, data: commits });
+    } catch (err) {
+      jsonResponse(res, 200, { ok: true, data: [], error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/health") {
     jsonResponse(res, 200, {
       ok: true,
@@ -5240,7 +5565,18 @@ async function handleApi(req, res, url) {
         const tracker = getSessionTracker();
         const session = tracker.getSessionById(sessionId);
         if (!session) {
-          jsonResponse(res, 404, { ok: false, error: "Session not found" });
+          jsonResponse(res, 200, {
+            ok: true,
+            diff: {
+              files: [],
+              totalFiles: 0,
+              totalAdditions: 0,
+              totalDeletions: 0,
+              formatted: "(session not found)",
+            },
+            summary: "(session not found)",
+            commits: [],
+          });
           return;
         }
         const worktreePath = session.metadata?.worktreePath;

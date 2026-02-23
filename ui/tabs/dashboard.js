@@ -319,7 +319,14 @@ export function DashboardTab() {
   // ── Recent commits (graceful 404) ──
   useEffect(() => {
     apiFetch("/api/recent-commits", { _silent: true })
-      .then((data) => { if (Array.isArray(data)) setRecentCommits(data.slice(0, 3)); })
+      .then((res) => {
+        const commits = Array.isArray(res?.data)
+          ? res.data
+          : Array.isArray(res)
+            ? res
+            : [];
+        setRecentCommits(commits.slice(0, 3));
+      })
       .catch(() => {});
   }, []);
 

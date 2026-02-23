@@ -7,6 +7,7 @@ import { signal } from "@preact/signals";
 import { apiFetch, onWsMessage } from "./api.js";
 import { cloneValue } from "./utils.js";
 import { generateId } from "./utils.js";
+import { cloudStorageGet } from "./telegram.js";
 
 /* ═══════════════════════════════════════════════════════════════
  *  CLOUD STORAGE HELPER — mirrors settings.js pattern
@@ -15,21 +16,28 @@ import { generateId } from "./utils.js";
 /** @param {string} key @returns {Promise<any>} */
 function _cloudGet(key) {
   return new Promise((resolve) => {
-    const tg = globalThis.Telegram?.WebApp;
-    if (tg?.CloudStorage) {
-      tg.CloudStorage.getItem(key, (err, val) => {
-        if (err || val == null) resolve(null);
-        else {
-          try { resolve(JSON.parse(val)); }
-          catch { resolve(val); }
+    cloudStorageGet(key)
+      .then((val) => {
+        if (val == null) {
+          try {
+            const v = localStorage.getItem("ve_settings_" + key);
+            resolve(v != null ? JSON.parse(v) : null);
+          } catch {
+            resolve(null);
+          }
+          return;
+        }
+        try { resolve(JSON.parse(val)); }
+        catch { resolve(val); }
+      })
+      .catch(() => {
+        try {
+          const v = localStorage.getItem("ve_settings_" + key);
+          resolve(v != null ? JSON.parse(v) : null);
+        } catch {
+          resolve(null);
         }
       });
-    } else {
-      try {
-        const v = localStorage.getItem("ve_settings_" + key);
-        resolve(v != null ? JSON.parse(v) : null);
-      } catch { resolve(null); }
-    }
   });
 }
 

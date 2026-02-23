@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,6 +23,7 @@ describe("ui-server mini app", () => {
     "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
     "PROJECT_REQUIREMENTS_PROFILE",
     "TASK_PLANNER_DEDUP_HOURS",
+    "TASK_TRIGGER_SYSTEM_ENABLED",
     "EXECUTORS",
     "BOSUN_PROMPT_PLANNER",
     "FLEET_ENABLED",
@@ -362,6 +363,124 @@ describe("ui-server mini app", () => {
     } else {
       expect(existsSync(configPath)).toBe(false);
     }
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns trigger template payload with history/stat fields", async () => {
+    const mod = await import("../ui-server.mjs");
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-trigger-config-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          triggerSystem: {
+            enabled: false,
+            defaults: { executor: "auto", model: "auto" },
+            templates: [
+              {
+                id: "task-planner",
+                name: "Task Planner",
+                enabled: false,
+                action: "task-planner",
+                trigger: { anyOf: [{ kind: "metric", metric: "backlogRemaining", operator: "eq", value: 0 }] },
+                config: { plannerMode: "kanban", defaultTaskCount: 10 },
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/triggers/templates`);
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.data).toBeTruthy();
+    expect(Array.isArray(json.data.templates)).toBe(true);
+    expect(json.data.templates.length).toBeGreaterThan(0);
+    expect(json.data.templates[0].stats).toBeDefined();
+    expect(json.data.templates[0].state).toBeDefined();
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("persists trigger template updates to config", async () => {
+    const mod = await import("../ui-server.mjs");
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-trigger-config-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          triggerSystem: {
+            enabled: false,
+            defaults: { executor: "auto", model: "auto" },
+            templates: [
+              {
+                id: "task-planner",
+                name: "Task Planner",
+                enabled: false,
+                action: "task-planner",
+                trigger: { anyOf: [{ kind: "metric", metric: "backlogRemaining", operator: "eq", value: 0 }] },
+                config: { plannerMode: "kanban", defaultTaskCount: 10 },
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/triggers/templates/update`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        enabled: true,
+        template: {
+          id: "task-planner",
+          enabled: true,
+          description: "updated from test",
+          minIntervalMinutes: 45,
+        },
+      }),
+    });
+    const json = await response.json();
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.data.enabled).toBe(true);
+
+    const saved = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(saved.triggerSystem.enabled).toBe(true);
+    const updatedTemplate = (saved.triggerSystem.templates || []).find(
+      (template) => template.id === "task-planner",
+    );
+    expect(updatedTemplate?.enabled).toBe(true);
+    expect(updatedTemplate?.description).toBe("updated from test");
+    expect(updatedTemplate?.minIntervalMinutes).toBe(45);
 
     rmSync(tmpDir, { recursive: true, force: true });
   });

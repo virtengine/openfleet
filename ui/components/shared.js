@@ -155,20 +155,14 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
 
   // BackButton integration
   useEffect(() => {
-    const tg = getTg();
-    if (!tg?.BackButton) return;
-
     const handler = () => {
       onClose();
-      tg.BackButton.hide();
-      tg.BackButton.offClick(handler);
+      hideBackButton();
     };
-    tg.BackButton.show();
-    tg.BackButton.onClick(handler);
+    showBackButton(handler);
 
     return () => {
-      tg.BackButton.hide();
-      tg.BackButton.offClick(handler);
+      hideBackButton();
     };
   }, [onClose]);
 
