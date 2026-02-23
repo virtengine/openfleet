@@ -73,6 +73,7 @@ import {
   resolveExecutorForTask,
   executorToSdk,
   formatComplexityDecision,
+  normalizeExecutorKey,
 } from "./task-complexity.mjs";
 import { evaluateBranchSafetyForPush, normalizeBaseBranch } from "./git-safety.mjs";
 import {
@@ -184,6 +185,40 @@ function normalizeSdkOverride(value) {
   if (raw === "claude-sdk") return "claude";
   if (["codex", "copilot", "claude"].includes(raw)) return raw;
   return null;
+}
+
+function resolveTaskExecutionOverrides(task = {}, options = {}) {
+  const fromTask = task && typeof task === "object" ? task : {};
+  const meta = fromTask.meta && typeof fromTask.meta === "object" ? fromTask.meta : {};
+  const execution =
+    meta.execution && typeof meta.execution === "object" ? meta.execution : {};
+
+  const explicitSdk =
+    normalizeSdkOverride(options?.sdk) ||
+    normalizeSdkOverride(fromTask?.sdk) ||
+    normalizeSdkOverride(fromTask?.executor) ||
+    normalizeSdkOverride(meta?.sdk) ||
+    normalizeSdkOverride(meta?.executor) ||
+    normalizeSdkOverride(execution?.sdk) ||
+    normalizeSdkOverride(execution?.executor) ||
+    (() => {
+      const normalized = normalizeExecutorKey(execution?.executor || meta?.executor || fromTask?.executor);
+      return normalized ? normalizeSdkOverride(normalized) : null;
+    })();
+
+  const explicitModel =
+    normalizeModel(options?.model) ||
+    normalizeModel(fromTask?.model) ||
+    normalizeModel(meta?.model) ||
+    normalizeModel(execution?.model);
+
+  return {
+    sdk: explicitSdk,
+    model: explicitModel,
+    explicit: Boolean(
+      (explicitSdk && explicitSdk !== "auto") || explicitModel,
+    ),
+  };
 }
 
 // ── Stream-Based Health Monitoring Constants ──────────────────────────────
@@ -3418,8 +3453,9 @@ class TaskExecutor {
     let resolvedSdk = this.sdk;
     let executorProfile = null;
     let complexityInfo = null;
-    const overrideSdk = normalizeSdkOverride(options?.sdk);
-    const overrideModel = normalizeModel(options?.model);
+    const resolvedOverrides = resolveTaskExecutionOverrides(task, options);
+    const overrideSdk = resolvedOverrides.sdk;
+    const overrideModel = resolvedOverrides.model;
 
     if (this.sdk === "auto" && this._executorScheduler) {
       // Pick executor profile from scheduler (weighted/round-robin/primary)
@@ -3448,14 +3484,14 @@ class TaskExecutor {
       normalizeModel(process.env.ANTHROPIC_MODEL);
 
     let selectedModel = normalizeModel(executorProfile?.model);
-    if (resolvedSdk === "copilot" && configuredCopilotModel) {
+    if (resolvedSdk === "copilot" && configuredCopilotModel && !overrideModel) {
       if (selectedModel && selectedModel !== configuredCopilotModel) {
         console.log(
           `${TAG} overriding complexity model "${selectedModel}" with COPILOT_MODEL="${configuredCopilotModel}" for task "${taskTitle}"`,
         );
       }
       selectedModel = configuredCopilotModel;
-    } else if (resolvedSdk === "claude" && configuredClaudeModel) {
+    } else if (resolvedSdk === "claude" && configuredClaudeModel && !overrideModel) {
       if (selectedModel && selectedModel !== configuredClaudeModel) {
         console.log(
           `${TAG} overriding complexity model "${selectedModel}" with CLAUDE_MODEL="${configuredClaudeModel}" for task "${taskTitle}"`,
