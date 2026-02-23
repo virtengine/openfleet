@@ -1353,7 +1353,10 @@ function App() {
           <${ToastContainer} />
           <${CommandPalette} open=${paletteOpen} onClose=${paletteClose} />
           ${showShortcuts ? html`<${KeyboardShortcutsModal} onClose=${() => setShowShortcuts(false)} />` : null}
-          <${PullToRefresh} onRefresh=${() => refreshTab(activeTab.value)}>
+          <${PullToRefresh}
+            onRefresh=${() => refreshTab(activeTab.value)}
+            disabled=${activeTab.value === "chat"}
+          >
             <main class="main-content" ref=${mainRef}>
               <${TabErrorBoundary} key=${activeTab.value} tabName=${activeTab.value}>
                 <${CurrentTab} />

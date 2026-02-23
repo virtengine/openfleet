@@ -14,7 +14,10 @@
       "MultiEdit",
       "Read",
       "Write",
-      "computer:*"
+      "computer:*",
+      "mcp__vibe_kanban__*",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:bosun.ai)"
     ],
     "deny": []
   },
