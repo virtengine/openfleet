@@ -14,6 +14,8 @@ export const wsLatency = signal(null);
 export const wsReconnectIn = signal(null);
 /** Reactive signal: number of reconnections since last user-initiated action */
 export const wsReconnectCount = signal(0);
+/** Reactive signal: count of in-flight apiFetch calls (drives top loading bar) */
+export const loadingCount = signal(0);
 
 /* ─── REST API Client ─── */
 
@@ -37,6 +39,7 @@ export async function apiFetch(path, options = {}) {
   const silent = options._silent;
   delete options._silent;
 
+  loadingCount.value += 1;
   try {
     const res = await fetch(path, { ...options, headers });
     if (!res.ok) {
@@ -57,6 +60,8 @@ export async function apiFetch(path, options = {}) {
       }
     }
     throw err;
+  } finally {
+    loadingCount.value = Math.max(0, loadingCount.value - 1);
   }
 }
 
