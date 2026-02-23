@@ -9372,6 +9372,7 @@ function formatCodexResult(result) {
   }
   if (typeof result === "object") {
     const candidates = [
+      result.finalResponse,
       result.output,
       result.text,
       result.message,
@@ -12748,6 +12749,8 @@ export {
   appendKnowledgeEntry,
   buildKnowledgeEntry,
   formatKnowledgeSummary,
+  extractPlannerTasksFromOutput,
+  formatCodexResult,
   // Container runner re-exports
   getContainerStatus,
   isContainerEnabled,
