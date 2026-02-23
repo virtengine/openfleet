@@ -7823,7 +7823,7 @@ async function cmdKanban(chatId, backendArg) {
       "  /kanban internal  Internal task-store (primary)",
       "  /kanban vk        Vibe-Kanban (secondary)",
       "  /kanban github     GitHub Issues",
-      "  /kanban jira       Jira (stub)",
+      "  /kanban jira       Jira",
     ];
     await sendReply(chatId, lines.join("\n"));
     return;

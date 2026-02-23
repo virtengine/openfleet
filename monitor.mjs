@@ -216,6 +216,7 @@ import {
   setKanbanBackend,
   listTasks as listKanbanTasks,
   updateTaskStatus as updateKanbanTaskStatus,
+  updateTask as updateKanbanTask,
   listProjects as listKanbanProjects,
   createTask as createKanbanTask,
 } from "./kanban-adapter.mjs";
@@ -9026,8 +9027,20 @@ async function triggerTaskPlannerViaKanban(
       `[monitor] task planner task already exists in backlog — skipping: "${existingPlanner.title}" (${existingPlanner.id})`,
     );
     // Best-effort: keep backlog task aligned with current requirements
-    // Note: For now, we skip updating existing tasks as not all backends support partial updates
-    // TODO: Implement backend-specific update logic if needed
+    // Update description if the backend supports it, so the agent gets fresh context
+    try {
+      await updateKanbanTask(existingPlanner.id, {
+        description: desiredDescription,
+      });
+      console.log(
+        `[monitor] updated description of existing planner task: "${existingPlanner.title}" (${existingPlanner.id})`,
+      );
+    } catch (updateErr) {
+      // Not all backends support partial description updates — log and continue
+      console.log(
+        `[monitor] could not update existing planner task description (${updateErr.message || updateErr}) — skipping`,
+      );
+    }
 
     const taskUrl = buildTaskUrl(existingPlanner, projectId);
     if (notify) {
