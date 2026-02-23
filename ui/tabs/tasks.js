@@ -214,6 +214,27 @@ export function StartTaskModal({
   }, [task?.id, task?.meta?.codex?.isIgnored, task?.meta?.labels]);
 
   const canModel = sdk && sdk !== "auto";
+
+  const EXECUTOR_MODELS = {
+    codex: [
+      "gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.1-codex",
+      "gpt-5.1-codex-mini", "gpt-5.1-codex-max",
+      "gpt-5.2", "gpt-5.1", "gpt-5-mini",
+    ],
+    copilot: [
+      "claude-opus-4.6", "claude-sonnet-4.6", "claude-opus-4.5", "claude-sonnet-4.5",
+      "claude-sonnet-4", "claude-haiku-4.5",
+      "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5.1-codex", "gpt-5.1-codex-mini",
+      "gpt-5.2", "gpt-5.1", "gpt-5-mini",
+      "gemini-3.1-pro", "gemini-3-pro", "gemini-3-flash", "gemini-2.5-pro",
+      "grok-code-fast-1",
+    ],
+    claude: [
+      "claude-opus-4.6", "claude-sonnet-4.6", "claude-opus-4.5",
+      "claude-sonnet-4.5", "claude-sonnet-4", "claude-haiku-4.5",
+    ],
+  };
+
   const resolvedTaskId = (task?.id || taskIdInput || "").trim();
 
   const handleStart = async () => {
@@ -272,13 +293,10 @@ export function StartTaskModal({
         </div>
         <div class="modal-form-field">
           <div class="card-subtitle">Model Override (optional)</div>
-          <input
-            class="input"
-            placeholder=${canModel ? "e.g. gpt-5.3-codex" : "Select SDK to enable"}
-            value=${model}
-            disabled=${!canModel}
-            onInput=${(e) => setModel(e.target.value)}
-          />
+          <select class="input" value=${model} disabled=${!canModel} onChange=${(e) => setModel(e.target.value)}>
+            <option value="">Auto (default)</option>
+            ${canModel && (EXECUTOR_MODELS[sdk] || []).map(m => html`<option value=${m}>${m}</option>`)}
+          </select>
         </div>
         <div class="modal-form-field modal-form-span">
           <button
