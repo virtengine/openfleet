@@ -1178,30 +1178,23 @@ export function TasksTab() {
 
   const startTask = async ({ taskId, sdk, model }) => {
     haptic("medium");
-    const prev = cloneValue(tasks);
     let res = null;
-    await runOptimistic(
-      () => {
-        tasksData.value = tasksData.value.map((t) =>
-          t.id === taskId ? { ...t, status: "inprogress" } : t,
-        );
-      },
-      async () => {
-        res = await apiFetch("/api/tasks/start", {
-          method: "POST",
-          body: JSON.stringify({
-            taskId,
-            ...(sdk ? { sdk } : {}),
-            ...(model ? { model } : {}),
-          }),
-        });
-        return res;
-      },
-      () => {
-        tasksData.value = prev;
-      },
-    ).catch(() => {});
-    if (res?.wasPaused) {
+    try {
+      res = await apiFetch("/api/tasks/start", {
+        method: "POST",
+        body: JSON.stringify({
+          taskId,
+          ...(sdk ? { sdk } : {}),
+          ...(model ? { model } : {}),
+        }),
+      });
+    } catch {
+      return;
+    }
+
+    if (res?.queued) {
+      showToast("Task queued (waiting for free slot)", "info");
+    } else if (res?.wasPaused) {
       showToast("Task started (executor paused — force-dispatched)", "warning");
     } else if (res) {
       showToast("Task started", "success");

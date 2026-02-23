@@ -771,6 +771,7 @@
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
   scroll-padding-bottom: 80px;
@@ -950,6 +951,58 @@
   font-size: 10px;
   opacity: 0.4;
   margin-top: 6px;
+}
+
+.chat-thinking-panel {
+  align-self: stretch;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  margin: 2px 0 4px;
+  overflow: hidden;
+}
+
+.chat-thinking-summary {
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: 8px 12px;
+  list-style: none;
+}
+
+.chat-thinking-summary::-webkit-details-marker {
+  display: none;
+}
+
+.chat-thinking-body {
+  border-top: 1px solid var(--border);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-thinking-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.chat-thinking-item-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-hint);
+}
+
+.chat-thinking-item-content {
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 /* Subtle entrance for bubbles — only the last few get the animation
@@ -1441,7 +1494,7 @@ ul.md-list li::before {
   position: sticky;
   bottom: 0;
   z-index: 10;
-  padding: 16px 16px;
+  padding: 16px 16px calc(16px + var(--chat-keyboard-offset, 0px));
   border-top: 1px solid var(--border);
   background: var(--bg-surface, var(--bg-card));
   flex-shrink: 0;
@@ -1466,7 +1519,7 @@ ul.md-list li::before {
 .session-detail > .chat-view-embedded {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -1481,11 +1534,11 @@ ul.md-list li::before {
 }
 
 .app-shell[data-tab="chat"] .chat-view-embedded .chat-messages {
-  padding: 16px 20px 16px;
+  padding: 16px 20px calc(16px + var(--chat-keyboard-offset, 0px));
 }
 
 .app-shell[data-tab="chat"] .chat-input-area {
-  padding: 0 0 calc(12px + var(--safe-bottom, 0px));
+  padding: 0 0 calc(12px + var(--safe-bottom, 0px) + var(--chat-keyboard-offset, 0px));
 }
 
 .chat-input-wrapper {
