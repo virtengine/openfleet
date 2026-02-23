@@ -58,11 +58,21 @@ function runNpmCommand(args, options = {}) {
       if (process.platform !== "win32") {
         return execFileSync(process.execPath, [candidate, ...args], safeOptions);
       }
+      // On Windows, .cmd/.bat files are batch scripts that must be interpreted
+      // by cmd.exe.  Without shell:true, execFileSync can fail with EINVAL on
+      // certain Node/nvm-for-windows configurations.
+      if (candidate.endsWith(".cmd") || candidate.endsWith(".bat")) {
+        return execFileSync(candidate, args, { ...safeOptions, shell: true });
+      }
       return execFileSync(candidate, args, safeOptions);
     }
   }
 
   const fallback = process.platform === "win32" ? "npm.cmd" : "npm";
+  // The fallback path also needs shell:true on Windows for .cmd resolution.
+  if (process.platform === "win32") {
+    return execFileSync(fallback, args, { ...safeOptions, shell: true });
+  }
   return execFileSync(fallback, args, safeOptions);
 }
 
