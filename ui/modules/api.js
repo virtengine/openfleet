@@ -30,7 +30,7 @@ export const loadingCount = signal(0);
  * @param {RequestInit & {_silent?: boolean}} options
  * @returns {Promise<any>} parsed JSON body
  */
-export async function apiFetch(path, options = {}) {
+export function apiFetch(path, options = {}) {
   const headers = { ...options.headers };
   headers["Content-Type"] = headers["Content-Type"] || "application/json";
 
@@ -42,45 +42,59 @@ export async function apiFetch(path, options = {}) {
   const silent = options._silent;
   delete options._silent;
 
+  // Deduplicate concurrent identical GETs
+  const isGet = !options.method || options.method === "GET";
+  if (isGet && !options.body) {
+    if (_inflight.has(path)) {
+      return _inflight.get(path);
+    }
+  }
+
   // Retry config for network-level failures only (not 4xx/5xx HTTP errors)
   const MAX_FETCH_RETRIES = 2;
   const FETCH_RETRY_BASE_MS = 800;
 
-  loadingCount.value += 1;
-  let res;
-  let fetchAttempt = 0;
-  try {
-    while (fetchAttempt <= MAX_FETCH_RETRIES) {
-      try {
-        res = await fetch(path, { ...options, headers });
-        break; // success — exit retry loop
-      } catch (networkErr) {
-        fetchAttempt++;
-        if (fetchAttempt > MAX_FETCH_RETRIES || silent) throw networkErr;
-        await new Promise((r) => setTimeout(r, FETCH_RETRY_BASE_MS * fetchAttempt));
+  const promise = (async () => {
+    loadingCount.value += 1;
+    let res;
+    let fetchAttempt = 0;
+    try {
+      while (fetchAttempt <= MAX_FETCH_RETRIES) {
+        try {
+          res = await fetch(path, { ...options, headers });
+          break; // success — exit retry loop
+        } catch (networkErr) {
+          fetchAttempt++;
+          if (fetchAttempt > MAX_FETCH_RETRIES || silent) throw networkErr;
+          await new Promise((r) => setTimeout(r, FETCH_RETRY_BASE_MS * fetchAttempt));
+        }
       }
-    }
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(text || `Request failed (${res.status})`);
-    }
-    return await res.json();
-  } catch (err) {
-    // Re-throw so callers can catch, but don't toast on silent requests
-    if (!silent) {
-      // Dispatch a custom event so the state layer can show a toast
-      try {
-        globalThis.dispatchEvent(
-          new CustomEvent("ve:api-error", { detail: { message: err.message } }),
-        );
-      } catch {
-        /* noop */
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Request failed (${res.status})`);
       }
+      return await res.json();
+    } catch (err) {
+      // Re-throw so callers can catch, but don't toast on silent requests
+      if (!silent) {
+        // Dispatch a custom event so the state layer can show a toast
+        try {
+          globalThis.dispatchEvent(
+            new CustomEvent("ve:api-error", { detail: { message: err.message } }),
+          );
+        } catch {
+          /* noop */
+        }
+      }
+      throw err;
+    } finally {
+      loadingCount.value = Math.max(0, loadingCount.value - 1);
+      if (isGet && !options.body) _inflight.delete(path);
     }
-    throw err;
-  } finally {
-    loadingCount.value = Math.max(0, loadingCount.value - 1);
-  }
+  })();
+
+  if (isGet && !options.body) _inflight.set(path, promise);
+  return promise;
 }
 
 /* ─── Command Sending ─── */
