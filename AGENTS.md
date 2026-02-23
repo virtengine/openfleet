@@ -39,6 +39,9 @@
   | config.mjs | Unified config loader (CLI/env/.env/json/defaults) | `scripts/bosun/config.mjs:4` |
   | hook-profiles.mjs | Setup-time multi-agent hook scaffolding (Codex/Claude/Copilot) | `scripts/bosun/hook-profiles.mjs:1` |
   | agent-hook-bridge.mjs | Bridges Claude/Copilot hook callbacks to bosun hook events | `scripts/bosun/agent-hook-bridge.mjs:1` |
+  | github-app-auth.mjs | GitHub App JWT, installation tokens, OAuth, webhook verification | `scripts/bosun/github-app-auth.mjs:1` |
+  | github-auth-manager.mjs | Unified auth manager: OAuth > App installation > gh CLI > env | `scripts/bosun/github-auth-manager.mjs:1` |
+  | git-commit-helpers.mjs | Commit message & PR body helpers — Bosun Bot co-author credit | `scripts/bosun/git-commit-helpers.mjs:1` |
 
 ```mermaid
 flowchart TD
@@ -188,25 +191,25 @@ When bosun launches an agent for a task it injects **both** naming conventions
 so any agent instruction set (VirtEngine AGENTS.md, custom copilot-instructions,
 vibe-kanban task files, etc.) can detect the Bosun context:
 
-| Variable | Alias(es) | Value |
-|---|---|---|
-| `BOSUN_TASK_ID` | `VE_TASK_ID` | Kanban task ID |
-| `BOSUN_TASK_TITLE` | `VE_TASK_TITLE`, `VK_TITLE` | Task title |
-| `BOSUN_TASK_DESCRIPTION` | `VE_TASK_DESCRIPTION`, `VK_DESCRIPTION` | Task description/body |
-| `BOSUN_BRANCH_NAME` | `VE_BRANCH_NAME` | Git branch for the task |
-| `BOSUN_WORKTREE_PATH` | `VE_WORKTREE_PATH` | Absolute path to worktree |
-| `BOSUN_SDK` | `VE_SDK` | SDK in use (codex / copilot / claude) |
-| `BOSUN_MANAGED` | `VE_MANAGED` | Always `"1"` inside a Bosun session |
+| Variable                 | Alias(es)                               | Value                                 |
+| ------------------------ | --------------------------------------- | ------------------------------------- |
+| `BOSUN_TASK_ID`          | `VE_TASK_ID`                            | Kanban task ID                        |
+| `BOSUN_TASK_TITLE`       | `VE_TASK_TITLE`, `VK_TITLE`             | Task title                            |
+| `BOSUN_TASK_DESCRIPTION` | `VE_TASK_DESCRIPTION`, `VK_DESCRIPTION` | Task description/body                 |
+| `BOSUN_BRANCH_NAME`      | `VE_BRANCH_NAME`                        | Git branch for the task               |
+| `BOSUN_WORKTREE_PATH`    | `VE_WORKTREE_PATH`                      | Absolute path to worktree             |
+| `BOSUN_SDK`              | `VE_SDK`                                | SDK in use (codex / copilot / claude) |
+| `BOSUN_MANAGED`          | `VE_MANAGED`                            | Always `"1"` inside a Bosun session   |
 
 These are set in `scripts/bosun/task-executor.mjs` before `execWithRetry` and
 are also forwarded to all hook subprocesses via `scripts/bosun/agent-hooks.mjs`.
 
 **Safe instruction appending:** bosun only injects task context env vars and
-appends a "Bosun Task Agent" section to the built-in prompt templates.  It does
+appends a "Bosun Task Agent" section to the built-in prompt templates. It does
 **not** override or clear any user-supplied `BOSUN_PROMPT_*` env vars or custom
-`bosun.config.json` `agentPrompts` keys.  If a user has a custom
+`bosun.config.json` `agentPrompts` keys. If a user has a custom
 `task-executor.md` in `.bosun/agents/` that file takes full precedence; bosun's
-defaults only apply when no custom file exists.  References:
+defaults only apply when no custom file exists. References:
 `scripts/bosun/agent-prompts.mjs:resolveAgentPrompts`.
 
 ### Shared state configuration
@@ -218,6 +221,70 @@ defaults only apply when no custom file exists.  References:
   - `SHARED_STATE_MAX_RETRIES` (default: `3`) — Max attempts before ignoring task (`scripts/bosun/.env.example:22`)
   - `TASK_CLAIM_OWNER_STALE_TTL_MS` (default: `600000` = 10 min) — Local claim staleness threshold (`scripts/bosun/.env.example:24`)
   - References: `scripts/bosun/task-claims.mjs:58`, `scripts/bosun/sync-engine.mjs:42`, `scripts/bosun/ve-orchestrator.mjs:13`
+
+## GitHub App (Bosun Bot)
+
+Bosun has a GitHub App called **Bosun[botswain]** (`bosun-botswain[bot]`, user ID `262908237`).
+App URL: https://github.com/apps/bosun-botswain
+
+### Authentication modules
+
+| Module                    | Purpose                                                                  |
+| ------------------------- | ------------------------------------------------------------------------ |
+| `github-app-auth.mjs`     | Low-level: JWT signing, installation tokens, OAuth, webhook verification |
+| `github-auth-manager.mjs` | High-level: unified token resolution with fallback chain                 |
+| `git-commit-helpers.mjs`  | Commit message & PR body helpers with bot co-author credit               |
+
+### Auth priority (github-auth-manager.mjs)
+
+1. `~/.bosun/github-auth-state.json` OAuth user token (or `BOSUN_GITHUB_USER_TOKEN` env var)
+2. GitHub App installation token (auto-resolved when `owner`+`repo` + App env vars are set)
+3. `gh auth token` — gh CLI token
+4. `GITHUB_TOKEN` / `GH_TOKEN` environment variables
+
+### Required env vars (GitHub App)
+
+| Variable                        | Purpose                                        |
+| ------------------------------- | ---------------------------------------------- |
+| `BOSUN_GITHUB_APP_ID`           | Numeric App ID (e.g. `2911413`)                |
+| `BOSUN_GITHUB_PRIVATE_KEY_PATH` | Path to `.pem` downloaded from App settings    |
+| `BOSUN_GITHUB_CLIENT_ID`        | OAuth Client ID (for device flow)              |
+| `BOSUN_GITHUB_CLIENT_SECRET`    | OAuth Client Secret (for web flow)             |
+| `BOSUN_GITHUB_WEBHOOK_SECRET`   | Webhook HMAC secret                            |
+| `BOSUN_GITHUB_USER_TOKEN`       | Override: OAuth user token (skips file lookup) |
+
+### Bosun Bot Co-author credit
+
+When Bosun creates commits, it appends a `Co-authored-by` trailer so that
+`bosun-botswain[bot]` appears in GitHub's Contributors graph:
+
+```
+Co-authored-by: bosun-botswain[bot] <262908237+bosun-botswain[bot]@users.noreply.github.com>
+```
+
+Use helpers from `git-commit-helpers.mjs`:
+
+```javascript
+import {
+  appendBosunCoAuthor,
+  buildCommitMessage,
+  appendBosunPrCredit,
+} from "./git-commit-helpers.mjs";
+
+const msg = buildCommitMessage("feat: add thing", "Extended description");
+// → "feat: add thing\n\nExtended description\n\nCo-authored-by: bosun-botswain[bot] <...>"
+
+const prBody = appendBosunPrCredit("My PR description");
+// → "My PR description\n\n---\n*Created by [Bosun Bot](...)*"
+```
+
+### Checking auth status
+
+```javascript
+import { getAuthStatus, hasAnyAuth } from "./github-auth-manager.mjs";
+const status = await getAuthStatus();
+console.log(status.message); // e.g. "GitHub OAuth user token — authenticated as @myuser"
+```
 
 ## Testing
 

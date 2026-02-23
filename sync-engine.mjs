@@ -809,11 +809,11 @@ export class SyncEngine {
           TAG,
           `${this.#consecutiveFailures} consecutive failures — slowing sync to ${this.#syncIntervalMs}ms`,
         );
-        if (this.#sendTelegram) {
-          this.#sendTelegram(
+        void this
+          .#notifyTelegram(
             `⚠️ Sync engine: ${this.#consecutiveFailures} consecutive failures, backing off to 5 min interval`,
-          ).catch(() => {});
-        }
+          )
+          .catch(() => {});
       }
     } else {
       // Successful sync — reset failures and restore normal interval
@@ -1121,15 +1121,22 @@ export class SyncEngine {
       context,
       timestamp: new Date().toISOString(),
     };
-    if (this.#sendTelegram) {
-      this.#sendTelegram(`⚠️ ${message}`).catch(() => {});
-    }
+    void this.#notifyTelegram(`⚠️ ${message}`).catch(() => {});
     if (typeof this.#onAlert === "function") {
       try {
         this.#onAlert(payload);
       } catch {
         // best effort
       }
+    }
+  }
+
+  #notifyTelegram(message) {
+    if (!this.#sendTelegram) return Promise.resolve();
+    try {
+      return Promise.resolve(this.#sendTelegram(message));
+    } catch (err) {
+      return Promise.reject(err);
     }
   }
 }

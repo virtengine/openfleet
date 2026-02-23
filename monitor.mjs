@@ -392,7 +392,14 @@ function writeAnomalySignal(anomaly) {
 configureFromArgs(process.argv.slice(2));
 
 // ── Load unified configuration ──────────────────────────────────────────────
-let config = loadConfig();
+let config;
+try {
+  config = loadConfig();
+} catch (err) {
+  const message = err?.message || String(err);
+  console.error(`[monitor] configuration error: ${message}`);
+  process.exit(1);
+}
 
 // Install console interceptor with log file (after config provides logDir)
 {
@@ -633,6 +640,15 @@ let workspaceSyncTimer = null;
 
 console.log(`[monitor] task planner mode: ${plannerMode}`);
 console.log(`[monitor] kanban backend: ${kanbanBackend}`);
+if (config?.kanbanSource) {
+  const src = config.kanbanSource;
+  const sourceLabel = src.sourcePath
+    ? `${src.source} (${src.sourcePath})`
+    : src.source;
+  console.log(
+    `[monitor] kanban backend source: ${sourceLabel} (raw=${src.rawValue})`,
+  );
+}
 console.log(`[monitor] executor mode: ${executorMode}`);
 let primaryAgentName = primaryAgent;
 let primaryAgentReady = primaryAgentEnabled;
@@ -3323,10 +3339,16 @@ async function createPRViaVK(attemptId, prOpts = {}) {
     return { success: false, error: "repo_id_missing", _elapsedMs: 0 };
   }
 
+  const bosunCredit = "\n\n---\n*Created by [Bosun Bot](https://github.com/apps/bosun-botswain)*";
+  const rawDescription = prOpts.description || "";
+  const description = rawDescription.includes("bosun-botswain")
+    ? rawDescription
+    : rawDescription.trimEnd() + bosunCredit;
+
   const body = {
     repo_id: repoId,
     title: prOpts.title || "",
-    description: prOpts.description || "",
+    description,
     draft: prOpts.draft ?? true,
     base: prOpts.base || process.env.VK_TARGET_BRANCH || "origin/main",
   };
@@ -3659,12 +3681,18 @@ function getConfiguredKanbanProjectId(backend) {
       : null) ||
     repoSlug ||
     null;
+  const jiraProjectKey =
+    process.env.JIRA_PROJECT_KEY || config?.jira?.projectKey || null;
   return (
     process.env.INTERNAL_EXECUTOR_PROJECT_ID ||
     internalExecutorConfig?.projectId ||
     config?.kanban?.projectId ||
     process.env.KANBAN_PROJECT_ID ||
-    (backend === "github" ? githubProjectId : null)
+    (backend === "github"
+      ? githubProjectId
+      : backend === "jira"
+        ? jiraProjectKey
+        : null)
   );
 }
 
@@ -5356,6 +5384,9 @@ function buildEpicMergeBody(tasks, headName, baseName) {
   if (safeTasks.length > maxList) {
     lines.push(`- ...and ${safeTasks.length - maxList} more`);
   }
+  lines.push("");
+  lines.push("---");
+  lines.push("*Created by [Bosun Bot](https://github.com/apps/bosun-botswain)*");
   return lines.join("\n");
 }
 
@@ -11688,9 +11719,18 @@ function applyConfig(nextConfig, options = {}) {
   vkRecoveryCooldownMin = nextConfig.vkRecoveryCooldownMin;
   vkSpawnEnabled = nextConfig.vkSpawnEnabled;
   vkEnsureIntervalMs = nextConfig.vkEnsureIntervalMs;
-  kanbanBackend = String(nextConfig.kanban?.backend || kanbanBackend || "github")
+  kanbanBackend = String(nextConfig.kanban?.backend || kanbanBackend || "internal")
     .trim()
     .toLowerCase();
+  if (nextConfig?.kanbanSource) {
+    const src = nextConfig.kanbanSource;
+    const sourceLabel = src.sourcePath
+      ? `${src.source} (${src.sourcePath})`
+      : src.source;
+    console.log(
+      `[monitor] kanban backend source: ${sourceLabel} (raw=${src.rawValue})`,
+    );
+  }
   try {
     setKanbanBackend(kanbanBackend);
   } catch (err) {
@@ -12035,12 +12075,22 @@ try {
   const vkPort = config.vkRecoveryPort || "54089";
   const vkBaseUrl = config.vkEndpointUrl || `http://127.0.0.1:${vkPort}`;
   const skipVk = !isVkRuntimeRequired();
+  const allowRuntimeCodexMutation = isTruthyFlag(
+    process.env.BOSUN_ALLOW_RUNTIME_GLOBAL_CODEX_MUTATION,
+  );
   const tomlResult = ensureCodexConfig({
     vkBaseUrl,
     skipVk,
+    dryRun: !allowRuntimeCodexMutation,
   });
   if (!tomlResult.noChanges) {
-    console.log("[monitor] updated ~/.codex/config.toml:");
+    if (!allowRuntimeCodexMutation) {
+      console.log(
+        "[monitor] Codex config drift detected (runtime is read-only; run `node cli.mjs --setup` to apply).",
+      );
+    } else {
+      console.log("[monitor] updated ~/.codex/config.toml:");
+    }
     printConfigSummary(tomlResult);
   }
 } catch (err) {
@@ -12776,21 +12826,7 @@ if (isExecutorDisabled()) {
           `[monitor] sync engine skipped — kanban backend is "internal" (no external to sync)`,
         );
       } else {
-      const githubProjectId =
-        process.env.GITHUB_REPOSITORY ||
-        (process.env.GITHUB_REPO_OWNER && process.env.GITHUB_REPO_NAME
-          ? `${process.env.GITHUB_REPO_OWNER}/${process.env.GITHUB_REPO_NAME}`
-          : null) ||
-        repoSlug ||
-        null;
-      const projectId =
-        process.env.INTERNAL_EXECUTOR_PROJECT_ID ||
-        internalExecutorConfig?.projectId ||
-        config?.kanban?.projectId ||
-        process.env.KANBAN_PROJECT_ID ||
-        (activeKanbanBackend === "github"
-          ? githubProjectId
-          : process.env.VK_PROJECT_ID || null);
+      const projectId = getConfiguredKanbanProjectId(activeKanbanBackend);
       if (projectId) {
         syncEngine = createSyncEngine({
           projectId,
@@ -12798,12 +12834,12 @@ if (isExecutorDisabled()) {
           syncPolicy: kanbanConfig?.syncPolicy || "internal-primary",
           sendTelegram:
             telegramToken && telegramChatId
-              ? (msg) => void sendTelegramMessage(msg)
+              ? (msg) => sendTelegramMessage(msg)
               : null,
           onAlert:
             telegramToken && telegramChatId
               ? (event) =>
-                  void sendTelegramMessage(
+                  sendTelegramMessage(
                     `⚠️ Project sync alert: ${event?.message || "unknown"}`,
                   )
               : null,

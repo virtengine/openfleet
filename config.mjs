@@ -162,6 +162,80 @@ function loadDotEnvFile(envPath, options = {}) {
   }
 }
 
+function readEnvValueFromFile(envPath, key) {
+  if (!envPath || !existsSync(envPath)) return undefined;
+  const lines = readFileSync(envPath, "utf8").split("\n");
+  let found;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx === -1) continue;
+    const parsedKey = trimmed.slice(0, eqIdx).trim();
+    if (parsedKey !== key) continue;
+    let value = trimmed.slice(eqIdx + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    found = value;
+  }
+  return found;
+}
+
+function resolveKanbanBackendSource({ envPaths = [], configFilePath, configData }) {
+  const key = "KANBAN_BACKEND";
+  let source = "default";
+  let sourcePath = null;
+
+  if (process.env[key] != null && String(process.env[key]).trim() !== "") {
+    let envFileMatch = null;
+    for (const envPath of envPaths) {
+      const value = readEnvValueFromFile(envPath, key);
+      if (value != null && String(value).trim() !== "") {
+        envFileMatch = envPath;
+      }
+    }
+    if (envFileMatch) {
+      source = "env-file";
+      sourcePath = envFileMatch;
+    } else {
+      source = "process-env";
+    }
+  } else if (configData?.kanban?.backend != null) {
+    source = "config-file";
+    sourcePath = configFilePath || null;
+  }
+
+  return Object.freeze({
+    key,
+    rawValue:
+      process.env[key] || configData?.kanban?.backend || "internal",
+    source,
+    sourcePath,
+  });
+}
+
+function validateKanbanBackendConfig({ kanbanBackend, kanban, jira }) {
+  if (kanbanBackend !== "jira") return;
+  const missing = [];
+  if (!jira?.baseUrl) missing.push("JIRA_BASE_URL");
+  if (!jira?.email) missing.push("JIRA_EMAIL");
+  if (!jira?.apiToken) missing.push("JIRA_API_TOKEN");
+  const hasProjectKey = Boolean(jira?.projectKey || kanban?.projectId);
+  if (!hasProjectKey) {
+    missing.push("JIRA_PROJECT_KEY (or KANBAN_PROJECT_ID)");
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `[config] KANBAN_BACKEND=jira requires ${missing.join(", ")}. ` +
+        `Either configure Jira credentials/project key or switch KANBAN_BACKEND=internal.`,
+    );
+  }
+}
+
 function loadConfigFile(configDir) {
   for (const name of CONFIG_FILES) {
     const p = resolve(configDir, name);
@@ -1147,6 +1221,11 @@ export function loadConfig(argv = process.argv, options = {}) {
     resolve(configDir, ".env"),
     resolve(repoRoot, ".env"),
   ].filter((p, i, arr) => arr.indexOf(p) === i);
+  const kanbanSource = resolveKanbanBackendSource({
+    envPaths,
+    configFilePath: configFile.path,
+    configData,
+  });
 
   // ── Project identity ─────────────────────────────────────
   const projectName =
@@ -1461,6 +1540,7 @@ export function loadConfig(argv = process.argv, options = {}) {
         "",
     }),
   });
+  validateKanbanBackendConfig({ kanbanBackend, kanban, jira });
 
   const internalExecutorConfig = configData.internalExecutor || {};
   const projectRequirements = {
@@ -1900,6 +1980,7 @@ export function loadConfig(argv = process.argv, options = {}) {
     internalExecutor,
     executorMode: internalExecutor.mode,
     kanban,
+    kanbanSource,
     githubProjectSync,
     jira,
     projectRequirements,

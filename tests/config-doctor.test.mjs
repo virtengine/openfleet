@@ -43,6 +43,36 @@ describe("config-doctor", () => {
     }
   });
 
+  it("detects missing Jira config when KANBAN_BACKEND=jira", () => {
+    const saved = {
+      KANBAN_BACKEND: process.env.KANBAN_BACKEND,
+      JIRA_BASE_URL: process.env.JIRA_BASE_URL,
+      JIRA_EMAIL: process.env.JIRA_EMAIL,
+      JIRA_API_TOKEN: process.env.JIRA_API_TOKEN,
+      JIRA_PROJECT_KEY: process.env.JIRA_PROJECT_KEY,
+      KANBAN_PROJECT_ID: process.env.KANBAN_PROJECT_ID,
+    };
+    try {
+      process.env.KANBAN_BACKEND = "jira";
+      process.env.JIRA_BASE_URL = "";
+      process.env.JIRA_EMAIL = "";
+      process.env.JIRA_API_TOKEN = "";
+      process.env.JIRA_PROJECT_KEY = "";
+      process.env.KANBAN_PROJECT_ID = "";
+
+      const result = runConfigDoctor();
+      const hasJiraMissingError = result.errors.some(
+        (issue) => issue.code === "JIRA_BACKEND_REQUIRED",
+      );
+      expect(hasJiraMissingError).toBe(true);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   // ── API Key Validation ──────────────────────────────────────────────
 
   describe("API key validation", () => {

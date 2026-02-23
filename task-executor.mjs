@@ -2618,7 +2618,7 @@ class TaskExecutor {
             timeout: 15000,
           });
           execSync(
-            `git commit -m "feat: auto-commit orphaned agent work" --no-verify`,
+            `git commit -m "feat: auto-commit orphaned agent work\n\nCo-authored-by: bosun-botswain[bot] <262908237+bosun-botswain[bot]@users.noreply.github.com>" --no-verify`,
             { cwd: wtPath, stdio: "pipe", timeout: 15000 },
           );
           console.log(

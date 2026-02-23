@@ -10,6 +10,7 @@ import { ensureCodexConfig, printConfigSummary } from "./codex-config.mjs";
 import { ensureRepoConfigs, printRepoConfigSummary } from "./repo-config.mjs";
 import { resolveRepoRoot } from "./repo-root.mjs";
 import { getSessionTracker } from "./session-tracker.mjs";
+import { execPooledPrompt } from "./agent-pool.mjs";
 import {
   execCodexPrompt,
   steerCodexPrompt,
@@ -161,6 +162,9 @@ function normalizePrimarySdkName(value) {
 
 function ensurePrimaryAgentConfigs(primaryName) {
   const primarySdk = normalizePrimarySdkName(primaryName) || "codex";
+  const allowRuntimeCodexMutation = envFlagEnabled(
+    process.env.BOSUN_ALLOW_RUNTIME_GLOBAL_CODEX_MUTATION,
+  );
   let repoRoot = "";
   try {
     repoRoot = resolveRepoRoot();
@@ -192,9 +196,16 @@ function ensurePrimaryAgentConfigs(primaryName) {
     const codexResult = ensureCodexConfig({
       env: process.env,
       primarySdk,
+      dryRun: !allowRuntimeCodexMutation,
     });
     if (!codexResult?.noChanges) {
-      console.log("[primary-agent] Codex config refresh:");
+      if (!allowRuntimeCodexMutation) {
+        console.log(
+          "[primary-agent] Codex config drift detected (runtime is read-only; run `node cli.mjs --setup` to apply).",
+        );
+      } else {
+        console.log("[primary-agent] Codex config refresh:");
+      }
       printConfigSummary(codexResult, (msg) => console.log(`[primary-agent] ${msg}`));
     }
   } catch (err) {
@@ -329,6 +340,34 @@ const MAX_FAILOVER_ATTEMPTS = 2;
 /** Ordered fallback chain — if the current adapter times out, try the next */
 const FALLBACK_ORDER = ["codex-sdk", "copilot-sdk", "claude-sdk"];
 
+function mapAdapterToPoolSdk(adapterName) {
+  const normalized = String(adapterName || "").trim().toLowerCase();
+  if (normalized === "copilot-sdk") return "copilot";
+  if (normalized === "claude-sdk") return "claude";
+  return "codex";
+}
+
+function shouldUseIsolatedPoolExecution(adapter, options = {}) {
+  if (options.forceIsolated === true) return true;
+  if (options.allowConcurrent === false) return false;
+  if (!adapter || typeof adapter.isBusy !== "function") return false;
+  if (!adapter.isBusy()) return false;
+
+  const requestedSessionId = options.sessionId
+    ? String(options.sessionId)
+    : "";
+  let activeSessionId = "";
+  try {
+    const info = adapter.getInfo ? adapter.getInfo() : null;
+    activeSessionId = String(info?.sessionId || info?.threadId || "");
+  } catch {
+    activeSessionId = "";
+  }
+
+  if (!requestedSessionId || !activeSessionId) return true;
+  return requestedSessionId !== activeSessionId;
+}
+
 /**
  * Wrap a promise with a timeout. Rejects with a clear error when exceeded.
  */
@@ -371,6 +410,28 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     _sessionType: sessionType,
     _mode: effectiveMode,
   });
+
+  if (shouldUseIsolatedPoolExecution(activeAdapter, options)) {
+    const pooled = await execPooledPrompt(framedMessage, {
+      timeoutMs,
+      onEvent: options.onEvent,
+      abortController: options.abortController,
+      cwd: options.cwd,
+      model: options.model,
+      sdk: mapAdapterToPoolSdk(activeAdapter.name),
+    });
+    const pooledText =
+      typeof pooled === "string"
+        ? pooled
+        : pooled?.finalResponse || pooled?.text || pooled?.message || JSON.stringify(pooled);
+    tracker.recordEvent(sessionId, {
+      role: "assistant",
+      content: pooledText,
+      timestamp: new Date().toISOString(),
+      _sessionType: sessionType,
+    });
+    return pooled;
+  }
 
   // Build ordered list of adapters to try: current first, then fallbacks
   const adaptersToTry = [activeAdapter.name];
