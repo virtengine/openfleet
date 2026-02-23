@@ -5468,6 +5468,21 @@ export async function startTelegramUiServer(options = {}) {
   console.log(`[telegram-ui] LAN access: ${protocol}://${lanIp}:${actualPort}`);
   console.log(`[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`);
 
+  // Auto-open browser (skip in desktop/embedded mode)
+  if (process.env.BOSUN_DESKTOP !== "1" && !options.skipAutoOpen) {
+    const openUrl = `${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`;
+    try {
+      const { exec } = await import("node:child_process");
+      if (process.platform === "win32") {
+        exec(`start "" "${openUrl}"`);
+      } else if (process.platform === "darwin") {
+        exec(`open "${openUrl}"`);
+      } else {
+        exec(`xdg-open "${openUrl}"`);
+      }
+    } catch { /* ignore auto-open failure */ }
+  }
+
   // Check firewall rules for the UI port
   firewallState = await checkFirewall(actualPort);
   if (firewallState) {
