@@ -132,6 +132,7 @@ const GIT_CONFLICT_PATTERNS = [
   /rebase.*conflict/i,
   /cannot.*merge|unable to merge/i,
   /both modified/i,
+  /cannot rebase|rebase failed/i,
 ];
 
 export const PUSH_FAILURE_PATTERNS = [
@@ -173,6 +174,20 @@ export const LINT_FAILURE_PATTERNS = [
   /gofmt.*differ|goimports.*differ/i,
 ];
 
+// ── OOM / SIGKILL patterns ──────────────────────────────────────────────────────
+
+export const OOM_KILL_PATTERNS = [
+  /SIGKILL/,
+  /killed.*out.?of.?memory|oom.?kill/i,
+  /out of memory: kill process/i,
+];
+
+export const OOM_PATTERNS = [
+  /heap out of memory|javascript heap/i,
+  /fatal error.*allocation failed|allocation failure/i,
+  /process out of memory/i,
+];
+
 /**
  * Ordered list of pattern groups to check. Earlier entries win on ties.
  * Each entry: [patternName, regexArray, baseConfidence]
@@ -187,6 +202,8 @@ const PATTERN_GROUPS = [
   ["request_error", REQUEST_ERROR_PATTERNS, 0.91], // Client errors (400/404/422) — needs prompt fix
   ["api_error", API_ERROR_PATTERNS, 0.9],
   ["session_expired", SESSION_EXPIRED_PATTERNS, 0.9],
+  ["oom_kill", OOM_KILL_PATTERNS, 0.97],           // SIGKILL / OS-level OOM kill — critical
+  ["oom", OOM_PATTERNS, 0.95],                     // JavaScript heap OOM — critical
   ["codex_sandbox", CODEX_SANDBOX_PATTERNS, 0.88], // Codex sandbox failures
   ["push_failure", PUSH_FAILURE_PATTERNS, 0.85],
   ["test_failure", TEST_FAILURE_PATTERNS, 0.83],
@@ -194,6 +211,34 @@ const PATTERN_GROUPS = [
   ["build_failure", BUILD_FAILURE_PATTERNS, 0.8],
   ["git_conflict", GIT_CONFLICT_PATTERNS, 0.85],
 ];
+
+/**
+ * Severity level for each error pattern type.
+ * 'low' | 'medium' | 'high' | 'critical'
+ * @type {Record<string, 'low'|'medium'|'high'|'critical'>}
+ */
+export const PATTERN_SEVERITY = {
+  auth_error: "high",
+  content_policy: "high",
+  plan_stuck: "low",
+  rate_limit: "medium",
+  token_overflow: "medium",
+  model_error: "high",
+  request_error: "medium",
+  api_error: "medium",
+  session_expired: "medium",
+  oom_kill: "critical",
+  oom: "critical",
+  codex_sandbox: "high",
+  push_failure: "medium",
+  test_failure: "medium",
+  lint_failure: "low",
+  build_failure: "medium",
+  git_conflict: "medium",
+  permission_wait: "low",
+  empty_response: "low",
+  unknown: "low",
+};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -224,12 +269,14 @@ const PATTERN_DESCRIPTIONS = {
   test_failure: "Unit or integration test failure",
   lint_failure: "Lint or code formatting failure",
   push_failure: "Git push or pre-push hook failure",
-  git_conflict: "Git merge conflict detected",
+  git_conflict: "Git merge or rebase conflict detected",
   auth_error: "API key invalid, expired, or missing — NOT retryable",
   model_error: "Model not found, deprecated, or unavailable",
   request_error: "Bad request (400/404/422) — invalid payload or endpoint",
   content_policy: "Content policy / safety filter violation — NOT retryable",
   codex_sandbox: "Codex CLI sandbox or permission error",
+  oom_kill: "Process killed by OS due to out-of-memory (SIGKILL)",
+  oom: "JavaScript heap out-of-memory error",
   permission_wait: "Agent waiting for human input/permission",
   empty_response: "Agent produced no meaningful output",
   unknown: "Unclassified error",
@@ -271,7 +318,7 @@ export class ErrorDetector {
    *
    * @param {string} output  Agent stdout / response text
    * @param {string} [error] Agent stderr or error message
-   * @returns {{ pattern: string, confidence: number, details: string, rawMatch: string|null }}
+   * @returns {{ pattern: string, confidence: number, details: string, rawMatch: string|null, severity: 'low'|'medium'|'high'|'critical' }}
    */
   classify(output, error) {
     const combined = [output, error].filter(Boolean).join("\n");
@@ -281,6 +328,7 @@ export class ErrorDetector {
         confidence: 0,
         details: "No output to analyse",
         rawMatch: null,
+        severity: PATTERN_SEVERITY.unknown ?? "low",
       };
     }
 
@@ -307,14 +355,16 @@ export class ErrorDetector {
       }
     }
 
-    return (
-      best || {
-        pattern: "unknown",
-        confidence: 0.3,
-        details: PATTERN_DESCRIPTIONS.unknown,
-        rawMatch: null,
-      }
-    );
+    const result = best || {
+      pattern: "unknown",
+      confidence: 0.3,
+      details: PATTERN_DESCRIPTIONS.unknown,
+      rawMatch: null,
+    };
+    return {
+      ...result,
+      severity: PATTERN_SEVERITY[result.pattern] ?? "low",
+    };
   }
 
   // ── recordError ─────────────────────────────────────────────────────────

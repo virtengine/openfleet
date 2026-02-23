@@ -68,7 +68,7 @@ import {
   collectDiffStats,
 } from "./diff-stats.mjs";
 import { createAnomalyDetector } from "./anomaly-detector.mjs";
-import { normalizeDedupKey } from "./utils.mjs";
+import { normalizeDedupKey, yieldToEventLoop } from "./utils.mjs";
 import {
   resolveExecutorForTask,
   executorToSdk,
@@ -113,6 +113,23 @@ const CODEX_TASK_LABELS = (() => {
 
 /** Watchdog interval: how often to check for stalled agent slots */
 const WATCHDOG_INTERVAL_MS = 60_000; // 1 minute
+
+// ── Error categorization ───────────────────────────────────────────────────
+
+/**
+ * Categorize an error for smarter retry/backoff decisions.
+ * @param {unknown} err
+ * @returns {'transient'|'auth'|'network'|'conflict'|'permanent'|'unknown'}
+ */
+function categorizeError(err) {
+  const msg = (err?.message || err?.stderr || String(err ?? "")).toLowerCase();
+  if (/rate.?limit|too many requests|429/i.test(msg)) return "transient";
+  if (/auth|token|unauthorized|forbidden|403|401/i.test(msg)) return "auth";
+  if (/network|econnrefused|enotfound|etimedout|econnreset|socket/i.test(msg)) return "network";
+  if (/conflict|merge conflict|rebase conflict|CONFLICT/i.test(msg)) return "conflict";
+  if (/fatal|crash|exit code 1|exit code 127|SIGKILL/i.test(msg)) return "permanent";
+  return "unknown";
+}
 
 /**
  * Returns the Co-authored-by trailer for bosun-botswain[bot], or empty string
@@ -3241,6 +3258,8 @@ class TaskExecutor {
             `${TAG} unhandled error in executeTask for "${task.title}": ${err.message}`,
           );
         });
+        // Yield between slot dispatches so WebSocket/HTTP work can proceed
+        await yieldToEventLoop();
       }
     } catch (err) {
       console.error(`${TAG} poll loop error: ${err.message}`);
@@ -4793,6 +4812,15 @@ class TaskExecutor {
         recordErrorPattern(task.id, classification.pattern);
       } catch {
         /* best-effort */
+      }
+
+      // Category-specific backoff to avoid hammering services under stress
+      const errCategory = categorizeError(result.error || "");
+      console.log(`${TAG} error category for "${task.title}": ${errCategory}`);
+      if (errCategory === "transient") {
+        await new Promise((r) => setTimeout(r, 5_000));
+      } else if (errCategory === "network") {
+        await new Promise((r) => setTimeout(r, 15_000));
       }
 
       // If plan-stuck, use recovery prompt instead of generic retry

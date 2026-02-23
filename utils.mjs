@@ -170,3 +170,50 @@ export function parsePrNumberFromUrl(url) {
   const num = Number(match[1]);
   return Number.isFinite(num) ? num : null;
 }
+
+// ── Async process helpers ─────────────────────────────────────────────────
+
+/**
+ * spawnAsync — Promise-based alternative to spawnSync.
+ * Doesn't block the event loop. Resolves { stdout, stderr, status }
+ * or rejects with an Error enriched with those same properties.
+ *
+ * @param {string} cmd
+ * @param {string[]} args
+ * @param {import('node:child_process').SpawnOptions} options
+ * @returns {Promise<{ stdout: string, stderr: string, status: number }>}
+ */
+export async function spawnAsync(cmd, args = [], options = {}) {
+  const { spawn } = await import("node:child_process");
+  return new Promise((resolve, reject) => {
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    const proc = spawn(cmd, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+    proc.stdout.on("data", (d) => stdoutChunks.push(d));
+    proc.stderr.on("data", (d) => stderrChunks.push(d));
+    proc.on("close", (code) => {
+      const stdout = Buffer.concat(stdoutChunks).toString("utf8");
+      const stderr = Buffer.concat(stderrChunks).toString("utf8");
+      if (code !== 0) {
+        const err = Object.assign(
+          new Error(`spawnAsync: ${cmd} ${args.join(" ")} exited ${code}\n${stderr || stdout}`),
+          { stdout, stderr, status: code },
+        );
+        reject(err);
+      } else {
+        resolve({ stdout, stderr, status: code });
+      }
+    });
+    proc.on("error", reject);
+  });
+}
+
+/**
+ * yieldToEventLoop — allow other microtasks/macrotasks to proceed.
+ * Use between iterations of long synchronous-ish loops to prevent
+ * event loop starvation when many agent slots are active.
+ * @returns {Promise<void>}
+ */
+export function yieldToEventLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
