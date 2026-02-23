@@ -6,6 +6,9 @@
 import { signal } from "@preact/signals";
 import { getInitData } from "./telegram.js";
 
+/** Map of in-flight GET request promises, keyed by path */
+const _inflight = new Map();
+
 /** Reactive signal: whether the WebSocket is currently connected */
 export const wsConnected = signal(false);
 /** Reactive signal: WebSocket round-trip latency in ms (null if unknown) */
@@ -39,9 +42,24 @@ export async function apiFetch(path, options = {}) {
   const silent = options._silent;
   delete options._silent;
 
+  // Retry config for network-level failures only (not 4xx/5xx HTTP errors)
+  const MAX_FETCH_RETRIES = 2;
+  const FETCH_RETRY_BASE_MS = 800;
+
   loadingCount.value += 1;
+  let res;
+  let fetchAttempt = 0;
   try {
-    const res = await fetch(path, { ...options, headers });
+    while (fetchAttempt <= MAX_FETCH_RETRIES) {
+      try {
+        res = await fetch(path, { ...options, headers });
+        break; // success — exit retry loop
+      } catch (networkErr) {
+        fetchAttempt++;
+        if (fetchAttempt > MAX_FETCH_RETRIES || silent) throw networkErr;
+        await new Promise((r) => setTimeout(r, FETCH_RETRY_BASE_MS * fetchAttempt));
+      }
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(text || `Request failed (${res.status})`);
