@@ -233,7 +233,7 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
     const el = contentRef.current;
     if (el) el.style.transition = "";
     if (dragY > 150) {
-      getTg()?.HapticFeedback?.impactOccurred("light");
+      haptic("light");
       onClose();
     }
     setDragY(0);
@@ -281,7 +281,7 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
       try { el.releasePointerCapture(e.pointerId); } catch { /* no-op */ }
     }
     if (dragY > 150) {
-      getTg()?.HapticFeedback?.impactOccurred("light");
+      haptic("light");
       onClose();
     }
     setDragY(0);

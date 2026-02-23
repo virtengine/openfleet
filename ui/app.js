@@ -17,10 +17,20 @@ function appendErrorLog(entry) {
   } catch { /* quota exceeded */ }
 }
 
+function maybeRemountUi(message) {
+  if (!/insertBefore/i.test(message || "")) return;
+  const remount = globalThis.__veRemountApp;
+  if (typeof remount === "function") {
+    console.warn("[ve] attempting UI remount after render error");
+    remount();
+  }
+}
+
 /* ── Global error handlers — catch unhandled errors before they freeze the UI ── */
 globalThis.addEventListener?.("error", (e) => {
   console.error("[ve:global-error]", e.error || e.message);
   appendErrorLog({ type: "global", message: e.message, stack: e.error?.stack });
+  maybeRemountUi(e?.message || e?.error?.message || "");
 });
 globalThis.addEventListener?.("unhandledrejection", (e) => {
   const reason = e?.reason;
@@ -31,6 +41,7 @@ globalThis.addEventListener?.("unhandledrejection", (e) => {
   }
   console.error("[ve:unhandled-rejection]", e.reason);
   appendErrorLog({ type: "rejection", message: String(e.reason?.message || e.reason) });
+  maybeRemountUi(message);
 });
 
 import { h, render as preactRender, Component } from "preact";
@@ -1386,4 +1397,6 @@ function App() {
 }
 
 /* ─── Mount ─── */
-preactRender(html`<${App} />`, document.getElementById("app"));
+const mountApp = () => preactRender(html`<${App} />`, document.getElementById("app"));
+globalThis.__veRemountApp = mountApp;
+mountApp();

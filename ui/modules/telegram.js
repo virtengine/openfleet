@@ -32,16 +32,26 @@ function canUse(feature) {
   const tg = getTg();
   if (!tg) return false;
   const version = tg.version || "0";
+  const check = (major, minor = 0) => {
+    if (typeof tg.isVersionAtLeast === "function") {
+      try {
+        return tg.isVersionAtLeast(`${major}.${minor}`);
+      } catch {
+        return isVersionAtLeast(version, major, minor);
+      }
+    }
+    return isVersionAtLeast(version, major, minor);
+  };
   switch (feature) {
-    case "backButton": return isVersionAtLeast(version, 6, 1);
-    case "settingsButton": return isVersionAtLeast(version, 6, 1);
-    case "haptic": return isVersionAtLeast(version, 6, 1);
-    case "cloudStorage": return isVersionAtLeast(version, 6, 9);
-    case "verticalSwipes": return isVersionAtLeast(version, 7, 7);
-    case "closingConfirmation": return isVersionAtLeast(version, 6, 2);
-    case "headerColor": return isVersionAtLeast(version, 6, 1);
-    case "backgroundColor": return isVersionAtLeast(version, 6, 1);
-    case "bottomBarColor": return isVersionAtLeast(version, 6, 1);
+    case "backButton": return check(6, 1);
+    case "settingsButton": return check(6, 1);
+    case "haptic": return check(6, 1);
+    case "cloudStorage": return check(6, 9);
+    case "verticalSwipes": return check(7, 7);
+    case "closingConfirmation": return check(6, 2);
+    case "headerColor": return check(6, 1);
+    case "backgroundColor": return check(6, 1);
+    case "bottomBarColor": return check(6, 1);
     default: return true;
   }
 }
