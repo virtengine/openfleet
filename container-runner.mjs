@@ -31,6 +31,10 @@ const containerTimeout = parseInt(
   process.env.CONTAINER_TIMEOUT_MS || "1800000",
   10,
 ); // 30 min default
+const containerRuntimeCheckTimeout = Math.max(
+  500,
+  parseInt(process.env.CONTAINER_RUNTIME_CHECK_TIMEOUT_MS || "3000", 10),
+);
 const containerMaxOutput = parseInt(
   process.env.CONTAINER_MAX_OUTPUT_SIZE || "10485760",
   10,
@@ -84,11 +88,17 @@ export function checkContainerRuntime() {
   try {
     if (containerRuntime === "container") {
       // macOS Apple Container
-      execSync("container system status", { stdio: "pipe" });
+      execSync("container system status", {
+        stdio: "pipe",
+        timeout: containerRuntimeCheckTimeout,
+      });
       return { available: true, runtime: "container", platform: "macos" };
     }
     // Docker or Podman
-    execSync(`${containerRuntime} info`, { stdio: "pipe", timeout: 10000 });
+    execSync(`${containerRuntime} info`, {
+      stdio: "pipe",
+      timeout: containerRuntimeCheckTimeout,
+    });
     return {
       available: true,
       runtime: containerRuntime,
@@ -110,7 +120,10 @@ export function ensureContainerRuntime() {
   if (containerRuntime === "container") {
     // macOS Apple Container — may need explicit start
     try {
-      execSync("container system status", { stdio: "pipe" });
+      execSync("container system status", {
+        stdio: "pipe",
+        timeout: containerRuntimeCheckTimeout,
+      });
     } catch {
       console.log("[container] Starting Apple Container system...");
       try {
