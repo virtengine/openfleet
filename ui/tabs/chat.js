@@ -324,6 +324,52 @@ export function ChatTab() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return undefined;
+    }
+
+    const root = document.documentElement;
+    const viewport = window.visualViewport;
+
+    const updateKeyboardOffset = () => {
+      if (!viewport) {
+        root.style.setProperty("--chat-keyboard-offset", "0px");
+        return;
+      }
+
+      const keyboardOffset = Math.max(
+        0,
+        Math.round(window.innerHeight - viewport.height - viewport.offsetTop),
+      );
+      root.style.setProperty("--chat-keyboard-offset", `${keyboardOffset}px`);
+      if (keyboardOffset > 0) {
+        root.setAttribute("data-chat-keyboard-open", "true");
+      } else {
+        root.removeAttribute("data-chat-keyboard-open");
+      }
+    };
+
+    updateKeyboardOffset();
+
+    if (!viewport) return () => {
+      root.style.setProperty("--chat-keyboard-offset", "0px");
+      root.removeAttribute("data-chat-keyboard-open");
+    };
+
+    viewport.addEventListener("resize", updateKeyboardOffset);
+    viewport.addEventListener("scroll", updateKeyboardOffset);
+    window.addEventListener("orientationchange", updateKeyboardOffset);
+
+    return () => {
+      viewport.removeEventListener("resize", updateKeyboardOffset);
+      viewport.removeEventListener("scroll", updateKeyboardOffset);
+      window.removeEventListener("orientationchange", updateKeyboardOffset);
+      root.style.setProperty("--chat-keyboard-offset", "0px");
+      root.removeAttribute("data-chat-keyboard-open");
+    };
+  }, []);
+
+  useEffect(() => {
     if (typeof document === "undefined") return undefined;
     if (focusMode) {
       document.documentElement.dataset.chatFocus = "true";

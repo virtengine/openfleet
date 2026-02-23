@@ -2968,6 +2968,30 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 404, { ok: false, error: "Task not found." });
         return;
       }
+
+      const status = executor.getStatus?.() || {};
+      const freeSlots =
+        (status.maxParallel || 0) - (status.activeSlots || 0);
+
+      if (freeSlots <= 0) {
+        jsonResponse(res, 202, {
+          ok: true,
+          taskId,
+          queued: true,
+          started: false,
+          reason: "No free slots",
+        });
+        broadcastUiEvent(
+          ["tasks", "overview", "executor", "agents"],
+          "invalidate",
+          {
+            reason: "task-queued",
+            taskId,
+          },
+        );
+        return;
+      }
+
       try {
         if (typeof adapter.updateTaskStatus === "function") {
           await adapter.updateTaskStatus(taskId, "inprogress");
@@ -2989,7 +3013,13 @@ async function handleApi(req, res, url) {
           `[telegram-ui] failed to execute task ${taskId}: ${error.message}`,
         );
       });
-      jsonResponse(res, 200, { ok: true, taskId, wasPaused });
+      jsonResponse(res, 200, {
+        ok: true,
+        taskId,
+        queued: false,
+        started: true,
+        wasPaused,
+      });
       broadcastUiEvent(
         ["tasks", "overview", "executor", "agents"],
         "invalidate",

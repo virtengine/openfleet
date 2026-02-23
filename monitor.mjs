@@ -1,4 +1,5 @@
 import { execSync, spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -7902,10 +7903,8 @@ function extractPlannerTasksFromOutput(output, maxTasks) {
   return normalized;
 }
 
-async function materializePlannerTasksToKanban(projectId, tasks) {
-  const existingOpenTasks = await listKanbanTasks(projectId, {
-    status: "todo",
-  });
+async function materializePlannerTasksToKanban(tasks) {
+  const existingOpenTasks = getInternalTasksByStatus("todo");
   const existingTitles = new Set(
     (Array.isArray(existingOpenTasks) ? existingOpenTasks : [])
       .map((task) => normalizePlannerTitleForComparison(task?.title))
@@ -7925,16 +7924,26 @@ async function materializePlannerTasksToKanban(projectId, tasks) {
       skipped.push({ title: task.title, reason: "duplicate_title" });
       continue;
     }
-    const createdTask = await createKanbanTask(projectId, {
+    const baseBranch = task.baseBranch || task.base_branch || extractModuleBaseBranchFromTitle(task.title);
+    const plannerMeta = {
+      source: "task-planner",
+      plannerMode: "codex-sdk",
+      kind: "planned-task",
+      externalSyncPending: true,
+      createdAt: new Date().toISOString(),
+    };
+    const createdTask = addInternalTask({
+      id: randomUUID(),
       title: task.title,
       description: task.description,
       status: "todo",
-      // Honour explicit baseBranch from planner JSON, then fall back to
-      // module auto-detection via conventional commit scope in the title.
-      ...(() => {
-        const b = task.baseBranch || task.base_branch || extractModuleBaseBranchFromTitle(task.title);
-        return b ? { baseBranch: b } : {};
-      })(),
+      projectId: process.env.INTERNAL_EXECUTOR_PROJECT_ID || "internal",
+      ...(baseBranch ? { baseBranch } : {}),
+      syncDirty: true,
+      meta: {
+        planner: plannerMeta,
+        ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
+      },
     });
     if (createdTask?.id) {
       created.push({ id: createdTask.id, title: task.title });
@@ -8987,13 +8996,6 @@ async function triggerTaskPlannerViaKanban(
     details,
     numTasks,
   );
-  // Get project ID using the kanban adapter
-  const projectId = await findKanbanProjectId();
-  if (!projectId) {
-    throw new Error(
-      `Cannot reach kanban backend (${getActiveKanbanBackend()}) or no project found`,
-    );
-  }
 
   const desiredTitle = userPrompt
     ? `[${plannerTaskSizeLabel}] Plan next tasks (${reason || "backlog-empty"}) — ${userPrompt.slice(0, 60)}${userPrompt.length > 60 ? "…" : ""}`
@@ -9008,7 +9010,7 @@ async function triggerTaskPlannerViaKanban(
 
   // Check for existing planner tasks to avoid duplicates
   // Only block on TODO tasks whose title matches the exact format we create
-  const existingTasks = await listKanbanTasks(projectId, { status: "todo" });
+  const existingTasks = getInternalTasksByStatus("todo");
   const existingPlanner = (
     Array.isArray(existingTasks) ? existingTasks : []
   ).find((t) => {
@@ -9042,7 +9044,7 @@ async function triggerTaskPlannerViaKanban(
       );
     }
 
-    const taskUrl = buildTaskUrl(existingPlanner, projectId);
+    const taskUrl = null;
     if (notify) {
       const suffix = taskUrl ? `\n${taskUrl}` : "";
       await sendTelegramMessage(
@@ -9061,7 +9063,7 @@ async function triggerTaskPlannerViaKanban(
       taskId: existingPlanner.id,
       taskTitle: existingPlanner.title,
       taskUrl,
-      projectId,
+      projectId: process.env.INTERNAL_EXECUTOR_PROJECT_ID || "internal",
     };
   }
 
@@ -9071,7 +9073,24 @@ async function triggerTaskPlannerViaKanban(
     status: "todo",
   };
 
-  const createdTask = await createKanbanTask(projectId, taskData);
+  const createdTask = addInternalTask({
+    id: randomUUID(),
+    title: taskData.title,
+    description: taskData.description,
+    status: "todo",
+    projectId: process.env.INTERNAL_EXECUTOR_PROJECT_ID || "internal",
+    syncDirty: true,
+    meta: {
+      planner: {
+        source: "task-planner",
+        plannerMode: "kanban",
+        kind: "planner-request",
+        triggerReason: reason || "manual",
+        externalSyncPending: true,
+        createdAt: new Date().toISOString(),
+      },
+    },
+  });
 
   if (createdTask && createdTask.id) {
     console.log(`[monitor] task planner task created: ${createdTask.id}`);
@@ -9082,7 +9101,7 @@ async function triggerTaskPlannerViaKanban(
       last_result: "kanban_task_created",
     });
     const createdId = createdTask.id;
-    const createdUrl = buildTaskUrl(createdTask, projectId);
+    const createdUrl = null;
     if (notify) {
       const suffix = createdUrl ? `\n${createdUrl}` : "";
       await sendTelegramMessage(
@@ -9094,7 +9113,7 @@ async function triggerTaskPlannerViaKanban(
       taskId: createdId,
       taskTitle: taskData.title,
       taskUrl: createdUrl,
-      projectId,
+      projectId: process.env.INTERNAL_EXECUTOR_PROJECT_ID || "internal",
     };
   }
   throw new Error("Task creation failed");
@@ -9194,14 +9213,7 @@ async function triggerTaskPlannerViaCodex(
     "utf8",
   );
 
-  const projectId = await findKanbanProjectId();
-  if (!projectId) {
-    throw new Error(
-      `Task planner produced ${parsedTasks.length} tasks, but no kanban project is reachable for backend "${getActiveKanbanBackend()}"`,
-    );
-  }
   const { created, skipped } = await materializePlannerTasksToKanban(
-    projectId,
     parsedTasks,
   );
 
@@ -9228,7 +9240,7 @@ async function triggerTaskPlannerViaCodex(
     status: "completed",
     outputPath: outPath,
     artifactPath,
-    projectId,
+    projectId: process.env.INTERNAL_EXECUTOR_PROJECT_ID || "internal",
     parsedTaskCount: parsedTasks.length,
     createdTaskCount: created.length,
     skippedTaskCount: skipped.length,

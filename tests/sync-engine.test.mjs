@@ -16,6 +16,7 @@ const mockKanban = vi.hoisted(() => ({
   getKanbanAdapter: vi.fn(),
   getKanbanBackendName: vi.fn(() => "vk"),
   listTasks: vi.fn(() => Promise.resolve([])),
+  createTask: vi.fn(() => Promise.resolve({})),
   updateTaskStatus: vi.fn(() => Promise.resolve({})),
 }));
 
@@ -385,6 +386,57 @@ describe("sync-engine UUID-to-GitHub ID mismatch handling", () => {
       "28c1b2e9-0e9e-4eeb-83ac-90c80e7f4a2e",
     );
     expect(result.pushed).toBe(1);
+  });
+
+  it("creates external task for planner-marked internal tasks before push", async () => {
+    mockKanban.getKanbanBackendName.mockReturnValue("github");
+    mockTaskStore.getDirtyTasks.mockReturnValue([
+      {
+        id: "28c1b2e9-0e9e-4eeb-83ac-90c80e7f4a2e",
+        title: "[m] fix(sync): planner-created task",
+        description: "ensure sync creates external issue",
+        status: "inreview",
+        syncDirty: true,
+        meta: {
+          planner: {
+            source: "task-planner",
+            externalSyncPending: true,
+          },
+        },
+      },
+    ]);
+    mockKanban.createTask.mockResolvedValue({ id: "212" });
+    mockKanban.updateTaskStatus.mockResolvedValue({});
+
+    const engine = new SyncEngine({ projectId: "proj-1" });
+    const result = await engine.pushToExternal();
+
+    expect(mockKanban.createTask).toHaveBeenCalledWith(
+      "proj-1",
+      expect.objectContaining({
+        title: "[m] fix(sync): planner-created task",
+        status: "todo",
+      }),
+    );
+    expect(mockTaskStore.updateTask).toHaveBeenCalledWith(
+      "28c1b2e9-0e9e-4eeb-83ac-90c80e7f4a2e",
+      expect.objectContaining({
+        externalId: "212",
+        externalBackend: "github",
+        meta: expect.objectContaining({
+          planner: expect.objectContaining({
+            externalSyncPending: false,
+            externalTaskId: "212",
+          }),
+        }),
+      }),
+    );
+    expect(mockKanban.updateTaskStatus).toHaveBeenCalledWith("212", "inreview");
+    expect(mockTaskStore.markSynced).toHaveBeenCalledWith(
+      "28c1b2e9-0e9e-4eeb-83ac-90c80e7f4a2e",
+    );
+    expect(result.pushed).toBe(1);
+    expect(result.errors).toHaveLength(0);
   });
 
   it("handles invalid-id-format error gracefully as fallback", async () => {

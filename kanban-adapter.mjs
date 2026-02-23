@@ -903,7 +903,7 @@ class GitHubIssuesAdapter {
       process.env.BOSUN_TASK_LABEL || "bosun";
     this._taskScopeLabels = normalizeLabels(
       process.env.BOSUN_TASK_LABELS ||
-        `${this._canonicalTaskLabel},codex-mointor`,
+        `${this._canonicalTaskLabel},codex-monitor`,
     );
     this._enforceTaskLabel = parseBooleanEnv(
       process.env.BOSUN_ENFORCE_TASK_LABEL,
@@ -915,7 +915,7 @@ class GitHubIssuesAdapter {
       true,
     );
     this._defaultAssignee =
-      process.env.GITHUB_DEFAULT_ASSIGNEE || this._owner || null;
+      String(process.env.GITHUB_DEFAULT_ASSIGNEE || "").trim() || null;
 
     this._projectMode = String(process.env.GITHUB_PROJECT_MODE || "issues")
       .trim()

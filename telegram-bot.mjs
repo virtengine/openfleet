@@ -789,6 +789,20 @@ function getBrowserUiUrl() {
   const base = telegramUiUrl;
   if (!base) return null;
   const token = getSessionToken();
+
+  // Prefer LAN for browser opens when available (same-network path),
+  // and fall back to the configured/public URL.
+  try {
+    const parsed = new URL(base);
+    const lanIp = getLocalLanIp?.();
+    if (lanIp && parsed.port) {
+      const lanBase = `${parsed.protocol}//${lanIp}:${parsed.port}`;
+      return appendTokenToUrl(lanBase, token) || lanBase;
+    }
+  } catch {
+    // fall through to base URL
+  }
+
   if (!token) return base;
   return appendTokenToUrl(base, token) || base;
 }
@@ -3042,6 +3056,7 @@ async function refreshMenuButton() {
 
 const FAST_COMMANDS = new Set([
   "/menu",
+  "/background",
   "/status",
   "/tasks",
   "/agents",
@@ -3063,39 +3078,36 @@ const FAST_COMMANDS = new Set([
 ]);
 
 function getTelegramWebAppUrl(url) {
-  // Prefer cloudflared tunnel URL (valid cert, works in Telegram Mini App)
+  // Telegram Mini App must be HTTPS and publicly reachable.
+  // Priority: explicit env URL -> tunnel URL -> provided URL.
+  const explicit =
+    process.env.TELEGRAM_WEBAPP_URL || process.env.TELEGRAM_UI_BASE_URL || "";
   const tUrl = getTunnelUrl();
-  if (tUrl) {
-    const normalizedTunnel = String(tUrl || "").trim().replace(/\/+$/, "");
-    return appendTokenToUrl(normalizedTunnel, getSessionToken()) || normalizedTunnel;
+  const candidates = [explicit, tUrl, url];
+
+  for (const candidate of candidates) {
+    const normalized = String(candidate || "")
+      .trim()
+      .replace(/\/+$/, "");
+    if (!normalized) continue;
+    try {
+      const parsed = new URL(normalized);
+      if (parsed.protocol !== "https:") continue;
+      const normalizedUrl = parsed.toString().replace(/\/+$/, "");
+      return appendTokenToUrl(normalizedUrl, getSessionToken()) || normalizedUrl;
+    } catch {
+      // try next candidate
+    }
   }
 
-  const normalized = String(url || "")
-    .trim()
-    .replace(/\/+$/, "");
-  if (!normalized) return null;
-  try {
-    const parsed = new URL(normalized);
-    if (parsed.protocol !== "https:") {
-      if (telegramWebAppUrlWarned !== normalized) {
-        telegramWebAppUrlWarned = normalized;
-        console.warn(
-          `[telegram-bot] mini app URL must be HTTPS for Telegram WebApp buttons; got "${normalized}". Falling back to normal URL buttons only.`,
-        );
-      }
-      return null;
-    }
-    const normalizedUrl = parsed.toString().replace(/\/+$/, "");
-    return appendTokenToUrl(normalizedUrl, getSessionToken()) || normalizedUrl;
-  } catch {
-    if (telegramWebAppUrlWarned !== normalized) {
-      telegramWebAppUrlWarned = normalized;
-      console.warn(
-        `[telegram-bot] mini app URL is invalid: "${normalized}". Falling back to normal URL buttons only.`,
-      );
-    }
-    return null;
+  const warnSource = String(explicit || tUrl || url || "").trim();
+  if (warnSource && telegramWebAppUrlWarned !== warnSource) {
+    telegramWebAppUrlWarned = warnSource;
+    console.warn(
+      `[telegram-bot] mini app URL requires a valid HTTPS URL. Got "${warnSource}". Falling back to browser URL buttons only.`,
+    );
   }
+  return null;
 }
 
 function appendTokenToUrl(inputUrl, token) {
@@ -4142,6 +4154,11 @@ Object.assign(UI_SCREENS, {
           },
           uiButton("✖", "cb:close_menu"),
         ]);
+        if (telegramUiUrl) {
+          rows.unshift([
+            { text: "🌐 Open in Browser", url: getBrowserUiUrl() || telegramUiUrl },
+          ]);
+        }
       } else if (telegramUiUrl) {
         rows.unshift([
           { text: "🌐 Open Control Center", url: getBrowserUiUrl() || telegramUiUrl },
