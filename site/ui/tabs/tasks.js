@@ -15,7 +15,6 @@ const html = htm.bind(h);
 
 import { haptic, showConfirm } from "../modules/telegram.js";
 import { apiFetch, sendCommandToChat } from "../modules/api.js";
-import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import { signal } from "@preact/signals";
 import {
   tasksData,
@@ -40,7 +39,6 @@ import {
   cloneValue,
   formatRelative,
   truncate,
-  formatBytes,
   debounce,
   exportAsCSV,
   exportAsJSON,
@@ -194,65 +192,6 @@ function getTaskBaseBranch(task) {
     task.meta?.base_branch ||
     ""
   );
-}
-
-function attachmentKey(att) {
-  if (!att) return "";
-  return att.url || att.filePath || att.relativePath || att.name || "";
-}
-
-function normalizeTaskAttachments(task) {
-  if (!task) return [];
-  const combined = []
-    .concat(Array.isArray(task.attachments) ? task.attachments : [])
-    .concat(Array.isArray(task.meta?.attachments) ? task.meta.attachments : []);
-  const seen = new Set();
-  const out = [];
-  for (const att of combined) {
-    const key = attachmentKey(att);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    out.push(att);
-  }
-  return out;
-}
-
-function isBosunStateComment(text) {
-  const raw = String(text || "").toLowerCase();
-  return raw.includes("bosun-state") || raw.includes("codex:ignore");
-}
-
-function normalizeTaskComments(task) {
-  if (!task) return [];
-  const raw = Array.isArray(task.comments)
-    ? task.comments
-    : Array.isArray(task.meta?.comments)
-      ? task.meta.comments
-      : [];
-  return raw
-    .map((comment) => {
-      const body = typeof comment === "string"
-        ? comment
-        : comment.body || comment.text || comment.content || "";
-      const trimmed = String(body || "").trim();
-      if (!trimmed || isBosunStateComment(trimmed)) return null;
-      return {
-        id: comment?.id || null,
-        author: comment?.author || comment?.user || comment?.by || null,
-        createdAt: comment?.createdAt || comment?.created_at || null,
-        body: trimmed,
-      };
-    })
-    .filter(Boolean);
-}
-
-function isImageAttachment(att) {
-  const kind = String(att?.kind || "").toLowerCase();
-  if (kind === "image") return true;
-  const type = String(att?.contentType || "").toLowerCase();
-  if (type.startsWith("image/")) return true;
-  const name = String(att?.name || att?.filename || "").toLowerCase();
-  return /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name);
 }
 
 export function StartTaskModal({
@@ -884,7 +823,7 @@ export function TaskProgressModal({ task, onClose }) {
                        font-weight:${active ? "600" : "400"};"
               >
                 <span style="font-size:14px;flex-shrink:0;">
-                  ${done ? resolveIcon("✅") : active ? resolveIcon("🔄") : ICONS.dot}
+                  ${done ? "✅" : active ? "⟳" : "○"}
                 </span>
                 <span>${step.label}</span>
                 ${active && html`
@@ -916,11 +855,11 @@ export function TaskProgressModal({ task, onClose }) {
           class="btn btn-ghost btn-sm"
           onClick=${() => { haptic(); sendCommandToChat("/steer " + task.id); onClose(); }}
           title="Guide the agent mid-task"
-        >${iconText("💬 Steer")}</button>
+        >💬 Steer</button>
         <button
           class="btn btn-ghost btn-sm"
           onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}
-        >${iconText("📄 Logs")}</button>
+        >📄 Logs</button>
         <button class="btn btn-secondary btn-sm" onClick=${handleMarkReview}>
           → Move to Review
         </button>
@@ -929,7 +868,7 @@ export function TaskProgressModal({ task, onClose }) {
           style="color:var(--color-error)"
           onClick=${handleCancel}
           disabled=${cancelling}
-        >${cancelling ? "Cancelling…" : iconText("✕ Cancel")}</button>
+        >${cancelling ? "Cancelling…" : "✕ Cancel"}</button>
       </div>
     <//>
   `;
@@ -966,7 +905,6 @@ export function TaskReviewModal({ task, onClose, onStart }) {
   const branchLabel = liveTask?.branch || task.branch || "—";
   const agentLabel = liveTask?.assignee || task.assignee || "Agent";
   const updatedRelative = liveTask?.updated ? formatRelative(liveTask.updated) : "—";
-  const reviewAttachments = normalizeTaskAttachments(liveTask || task);
 
   /* Derive simulated CI checks */
   const checks = useMemo(() => {
@@ -991,7 +929,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
       tasksData.value = tasksData.value.map((t) =>
         t.id === task.id ? { ...t, status: "done" } : t,
       );
-      showToast("Task marked done", "success");
+      showToast("Task marked done ✓", "success");
       scheduleRefresh(200);
       onClose();
     } catch { /* toast via apiFetch */ }
@@ -1041,7 +979,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
     >
       
       <div class="tr-hero">
-        <span class="tr-review-icon">${resolveIcon("🔍")}</span>
+        <span class="tr-review-icon">🔍</span>
         <div class="tr-hero-title">
           <div class="tr-hero-status-label">In Review</div>
           ${prNumber && html`
@@ -1097,12 +1035,12 @@ export function TaskReviewModal({ task, onClose, onStart }) {
       
       <div class="tr-section">
         <div class="tr-section-title">
-          Checks ${allPass ? iconText("— ✅ All passing") : ""}
+          Checks ${allPass ? "— ✅ All passing" : ""}
         </div>
         <div class="tr-checks-row">
           ${checks.map((c) => html`
             <div class="tr-check-item ${c.status}" key=${c.label}>
-              ${resolveIcon(c.status === "pass" ? "✅" : c.status === "fail" ? "❌" : "⏳")}
+              ${c.status === "pass" ? "✅" : c.status === "fail" ? "❌" : "⏳"}
               ${c.label}
             </div>
           `)}
@@ -1118,34 +1056,6 @@ export function TaskReviewModal({ task, onClose, onStart }) {
           </div>
         </div>
       `}
-      ${reviewAttachments.length > 0 && html`
-        <div class="tr-section">
-          <div class="tr-section-title">Attachments</div>
-          <div class="task-attachments-list">
-            ${reviewAttachments.map((att, index) => {
-              const name = att.name || att.filename || "attachment";
-              const url = att.url || att.filePath || att.path || "";
-              const size = att.size ? formatBytes(att.size) : "";
-              const isImage = isImageAttachment(att);
-              return html`
-                <div class="task-attachment-item" key=${att.id || `${name}-${index}`}>
-                  ${isImage && url
-                    ? html`<img class="task-attachment-thumb" src=${url} alt=${name} />`
-                    : html`<span class="task-attachment-icon">${resolveIcon("📎")}</span>`}
-                  <div class="task-attachment-meta">
-                    ${url
-                      ? html`<a class="task-attachment-name" href=${url} target="_blank" rel="noopener">${name}</a>`
-                      : html`<span class="task-attachment-name">${name}</span>`}
-                    <div class="task-attachment-sub">
-                      ${(att.kind || "file")}${size ? ` · ${size}` : ""}
-                    </div>
-                  </div>
-                </div>
-              `;
-            })}
-          </div>
-        </div>
-      `}
 
       
       <div class="btn-row tr-actions">
@@ -1154,25 +1064,25 @@ export function TaskReviewModal({ task, onClose, onStart }) {
           onClick=${handleMarkDone}
           disabled=${merging}
           title="Mark as merged / done"
-        >${iconText("✓ Mark Done")}</button>
+        >✓ Mark Done</button>
         <button class="btn btn-secondary btn-sm" onClick=${handleReopen}>
           ↩ Reopen as Active
         </button>
         <button
           class="btn btn-ghost btn-sm"
           onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}
-        >${iconText("📄 Logs")}</button>
+        >📄 Logs</button>
         ${prNumber && html`
           <button
             class="btn btn-ghost btn-sm"
             onClick=${() => { haptic(); sendCommandToChat("/diff " + branchLabel); onClose(); }}
-          >${iconText("🔎 Diff")}</button>
+          >🔎 Diff</button>
         `}
         <button
           class="btn btn-ghost btn-sm"
           style="color:var(--color-error)"
           onClick=${handleCancel}
-        >${iconText("✕ Cancel")}</button>
+        >✕ Cancel</button>
       </div>
     <//>
   `;
@@ -1188,13 +1098,6 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   const [tagsInput, setTagsInput] = useState(
     getTaskTags(task).join(", "),
   );
-  const [attachments, setAttachments] = useState(
-    normalizeTaskAttachments(task),
-  );
-  const [comments, setComments] = useState(
-    normalizeTaskComments(task),
-  );
-  const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [draft, setDraft] = useState(
     Boolean(task?.draft || task?.status === "draft"),
   );
@@ -1207,7 +1110,6 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     task?.workspace || activeWorkspaceId.value || "",
   );
   const [repository, setRepository] = useState(task?.repository || "");
-  const attachmentInputRef = useRef(null);
   const activeWsId = activeWorkspaceId.value || "";
   const canDispatch = Boolean(onStart && task?.id);
 
@@ -1225,8 +1127,6 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     setStatus(task?.status || "todo");
     setPriority(task?.priority || "");
     setTagsInput(getTaskTags(task).join(", "));
-    setAttachments(normalizeTaskAttachments(task));
-    setComments(normalizeTaskComments(task));
     setDraft(Boolean(task?.draft || task?.status === "draft"));
     setManualOverride(isTaskManual(task));
     setManualReason(getManualReason(task));
@@ -1363,48 +1263,6 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     if (onStart) onStart(task);
   };
 
-  const uploadAttachments = async (files) => {
-    if (!task?.id || uploadingAttachment) return;
-    const list = Array.from(files || []).filter(Boolean);
-    if (!list.length) return;
-    setUploadingAttachment(true);
-    try {
-      const form = new FormData();
-      form.append("taskId", task.id);
-      if (task?.backend) form.append("backend", task.backend);
-      for (const file of list) {
-        form.append("file", file, file.name || "attachment");
-      }
-      const res = await apiFetch("/api/tasks/attachments/upload", {
-        method: "POST",
-        body: form,
-      });
-      if (Array.isArray(res?.attachments)) {
-        setAttachments(res.attachments);
-      } else {
-        showToast("Attachment upload failed", "error");
-      }
-    } catch {
-      showToast("Attachment upload failed", "error");
-    } finally {
-      setUploadingAttachment(false);
-    }
-  };
-
-  const handleAttachmentPick = (e) => {
-    const files = e.target?.files;
-    if (files && files.length) uploadAttachments(files);
-    if (e.target) e.target.value = "";
-  };
-
-  const handleAttachmentPaste = (e) => {
-    const files = e.clipboardData?.files;
-    if (files && files.length) {
-      e.preventDefault();
-      uploadAttachments(files);
-    }
-  };
-
   const handleRetry = async () => {
     haptic("medium");
     try {
@@ -1525,78 +1383,6 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             className="textarea-mic-btn"
           />
         </div>
-        <div
-          class="task-attachments-block modal-form-span"
-          onPaste=${handleAttachmentPaste}
-        >
-          <div class="task-attachments-header">
-            <div class="task-attachments-title">Attachments</div>
-            <div class="task-attachments-actions">
-              <button
-                class="btn btn-ghost btn-sm"
-                type="button"
-                onClick=${() => attachmentInputRef.current && attachmentInputRef.current.click()}
-                disabled=${uploadingAttachment}
-              >
-                Upload
-              </button>
-            </div>
-          </div>
-          <input
-            ref=${attachmentInputRef}
-            type="file"
-            multiple
-            style="display:none"
-            onChange=${handleAttachmentPick}
-          />
-          ${attachments.length === 0 && !uploadingAttachment && html`
-            <div class="meta-text">No attachments uploaded.</div>
-          `}
-          ${uploadingAttachment && html`
-            <div class="meta-text">Uploading attachments...</div>
-          `}
-          ${attachments.length > 0 && html`
-            <div class="task-attachments-list">
-              ${attachments.map((att, index) => {
-                const name = att.name || att.filename || "attachment";
-                const url = att.url || att.filePath || att.path || "";
-                const size = att.size ? formatBytes(att.size) : "";
-                const isImage = isImageAttachment(att);
-                return html`
-                  <div class="task-attachment-item" key=${att.id || `${name}-${index}`}>
-                    ${isImage && url
-                      ? html`<img class="task-attachment-thumb" src=${url} alt=${name} />`
-                      : html`<span class="task-attachment-icon">${resolveIcon("📎")}</span>`}
-                    <div class="task-attachment-meta">
-                      ${url
-                        ? html`<a class="task-attachment-name" href=${url} target="_blank" rel="noopener">${name}</a>`
-                        : html`<span class="task-attachment-name">${name}</span>`}
-                      <div class="task-attachment-sub">
-                        ${(att.kind || "file")}${size ? ` · ${size}` : ""}
-                      </div>
-                    </div>
-                  </div>
-                `;
-              })}
-            </div>
-          `}
-        </div>
-        ${comments.length > 0 && html`
-          <div class="task-comments-block modal-form-span">
-            <div class="task-attachments-title">Comments</div>
-            <div class="task-comments-list">
-              ${comments.map((comment, index) => html`
-                <div class="task-comment-item" key=${comment.id || `comment-${index}`}>
-                  <div class="task-comment-meta">
-                    ${comment.author ? `@${comment.author}` : "comment"}
-                    ${comment.createdAt ? ` · ${formatRelative(comment.createdAt)}` : ""}
-                  </div>
-                  <div class="task-comment-body">${comment.body}</div>
-                </div>
-              `)}
-            </div>
-          </div>
-        `}
         <button
           type="button"
           class="btn btn-ghost btn-sm task-rewrite-btn modal-form-span"
@@ -1614,7 +1400,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
               if (res?.data) {
                 if (res.data.title) setTitle(res.data.title);
                 if (res.data.description) setDescription(res.data.description);
-                showToast("Task description improved", "success");
+                showToast("Task description improved ✨", "success");
                 haptic("medium");
               }
             } catch { /* toast via apiFetch */ }
@@ -1623,8 +1409,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           title="Use AI to expand and improve this task description"
         >
           ${rewriting
-            ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon("⏳")}</span> Improving…`
-            : html`${iconText("✨ Improve with AI")}`
+            ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">⏳</span> Improving…`
+            : html`✨ Improve with AI`
           }
         </button>
         <input
@@ -1786,7 +1572,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             onClick=${handleSave}
             disabled=${saving}
           >
-            ${saving ? "Saving…" : iconText("💾 Save")}
+            ${saving ? "Saving…" : "💾 Save"}
           </button>
           <button
             class="btn btn-ghost btn-sm"
@@ -1798,7 +1584,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             class="btn btn-ghost btn-sm"
             onClick=${() => handleStatusUpdate("done")}
           >
-            ${iconText("✓ Done")}
+            ✓ Done
           </button>
           ${task?.status !== "cancelled" &&
           html`
@@ -1807,7 +1593,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
               style="color:var(--color-error)"
               onClick=${handleCancel}
             >
-              ${iconText("✕ Cancel")}
+              ✕ Cancel
             </button>
           `}
         </div>
@@ -1821,7 +1607,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
               sendCommandToChat("/logs " + task.id);
             }}
           >
-            ${iconText("📄 View Agent Logs")}
+            📄 View Agent Logs
           </button>
         `}
       </div>
@@ -2485,16 +2271,16 @@ export function TasksTab() {
             class="actions-dropdown-item"
             onClick=${() => { setActionsOpen(false); setStartAnyOpen(true); }}
           >
-            ${iconText("▶ Start Task")}
+            ▶ Start Task
           </button>
           <button
             class="actions-dropdown-item"
             onClick=${() => { setActionsOpen(false); setShowTemplates(true); }}
           >
-            ${iconText("⚡ Trigger Templates")}
+            ⚡ Trigger Templates
           </button>
-          <button class="actions-dropdown-item" onClick=${handleExportCSV}>${iconText("📊 Export CSV")}</button>
-          <button class="actions-dropdown-item" onClick=${handleExportJSON}>${iconText("📋 Export JSON")}</button>
+          <button class="actions-dropdown-item" onClick=${handleExportCSV}>📊 Export CSV</button>
+          <button class="actions-dropdown-item" onClick=${handleExportJSON}>📋 Export JSON</button>
         </div>
       `}
     </div>
@@ -2681,10 +2467,10 @@ export function TasksTab() {
         <div class="btn-row batch-action-bar">
           <span class="pill">${selectedIds.size} selected</span>
           <button class="btn btn-primary btn-sm" onClick=${handleBatchDone}>
-            ${iconText("✓ Done All")}
+            ✓ Done All
           </button>
           <button class="btn btn-danger btn-sm" onClick=${handleBatchCancel}>
-            ${iconText("✕ Cancel All")}
+            ✕ Cancel All
           </button>
           <button
             class="btn btn-ghost btn-sm"
@@ -2716,7 +2502,7 @@ export function TasksTab() {
           <span class="snapshot-lbl">${m.label}</span>
         </button>
       `)}
-      <span class="snapshot-view-tag">${iconText(isKanban ? "⬛ Board" : "☰ List")}</span>
+      <span class="snapshot-view-tag">${isKanban ? "⬛ Board" : "☰ List"}</span>
     </div>
 
     <style>
@@ -2958,7 +2744,7 @@ function CreateTaskModalInline({ onClose }) {
       if (res?.data) {
         if (res.data.title) setTitle(res.data.title);
         if (res.data.description) setDescription(res.data.description);
-        showToast("Task description improved", "success");
+        showToast("Task description improved ✨", "success");
         haptic("medium");
       }
     } catch {
@@ -3061,7 +2847,7 @@ function CreateTaskModalInline({ onClose }) {
       onClick=${handleSubmit}
       disabled=${submitting}
     >
-      ${submitting ? "Creating…" : iconText("✓ Create Task")}
+      ${submitting ? "Creating…" : "✓ Create Task"}
     </button>
   `;
 
@@ -3123,8 +2909,8 @@ function CreateTaskModalInline({ onClose }) {
           title="Use AI to expand and improve this task description"
         >
           ${rewriting
-            ? html`<span class="spin-icon" style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon("⏳")}</span> Improving…`
-            : html`${iconText("✨ Improve with AI")}`
+            ? html`<span class="spin-icon" style="display:inline-block;animation:spin 0.8s linear infinite">⏳</span> Improving…`
+            : html`✨ Improve with AI`
           }
         </button>
 
@@ -3134,7 +2920,7 @@ function CreateTaskModalInline({ onClose }) {
             { value: "low", label: "Low" },
             { value: "medium", label: "Med" },
             { value: "high", label: "High" },
-            { value: "critical", label: "Critical" },
+            { value: "critical", label: "🔥" },
           ]}
           value=${priority}
           onChange=${(v) => { haptic(); setPriority(v); }}

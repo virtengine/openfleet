@@ -1,13 +1,13 @@
 import { execSync, spawn, spawnSync } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, watchFile, unwatchFile } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, writeFileSync, watchFile, unwatchFile } from "node:fs";
 import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { get as httpsGet } from "node:https";
 import { createServer as createHttpsServer } from "node:https";
 import { networkInterfaces } from "node:os";
 import { connect as netConnect } from "node:net";
-import { resolve, extname, dirname, basename, relative } from "node:path";
+import { resolve, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { arch as osArch, platform as osPlatform } from "node:os";
@@ -98,11 +98,6 @@ import {
   switchPrimaryAgent,
   getPrimaryAgentInfo,
 } from "./primary-agent.mjs";
-import {
-  addTaskAttachment,
-  listTaskAttachments,
-  mergeTaskAttachments,
-} from "./task-attachments.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
@@ -977,18 +972,8 @@ const MIME_TYPES = {
   ".js": "application/javascript; charset=utf-8",
   ".mjs": "application/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
-  ".md": "text/markdown; charset=utf-8",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp",
-  ".pdf": "application/pdf",
-  ".txt": "text/plain; charset=utf-8",
-  ".csv": "text/csv; charset=utf-8",
-  ".zip": "application/zip",
 };
 
 let uiServer = null;
@@ -3088,86 +3073,6 @@ async function readJsonBody(req) {
   });
 }
 
-const ATTACHMENTS_ROOT = resolve(repoRoot, ".bosun", ".cache", "attachments");
-const _maxAttachMb = Number(process.env.BOSUN_ATTACHMENT_MAX_MB || "25");
-const MAX_ATTACHMENT_BYTES =
-  (Number.isFinite(_maxAttachMb) ? _maxAttachMb : 25) * 1024 * 1024;
-
-function sanitizePathSegment(value) {
-  return String(value || "").replace(/[^a-zA-Z0-9._-]+/g, "_");
-}
-
-function resolveAttachmentUrl(relPath) {
-  return `/api/attachments/${String(relPath || "").replace(/\\/g, "/")}`;
-}
-
-async function readMultipartForm(req, maxBytes = MAX_ATTACHMENT_BYTES) {
-  const contentType = String(req.headers["content-type"] || "");
-  const boundaryMatch = contentType.match(/boundary=([^;]+)/i);
-  if (!boundaryMatch) {
-    throw new Error("Missing multipart boundary");
-  }
-  const boundary = `--${boundaryMatch[1]}`;
-  const chunks = [];
-  let total = 0;
-  await new Promise((resolveBody, rejectBody) => {
-    req.on("data", (chunk) => {
-      total += chunk.length;
-      if (total > maxBytes) {
-        rejectBody(new Error("payload too large"));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", resolveBody);
-    req.on("error", rejectBody);
-  });
-
-  const buffer = Buffer.concat(chunks);
-  const body = buffer.toString("latin1");
-  const parts = body.split(boundary).slice(1, -1);
-  const fields = {};
-  const files = [];
-
-  for (const part of parts) {
-    const trimmed = part.startsWith("\r\n") ? part.slice(2) : part;
-    const headerEnd = trimmed.indexOf("\r\n\r\n");
-    if (headerEnd === -1) continue;
-    const headerText = trimmed.slice(0, headerEnd);
-    let contentText = trimmed.slice(headerEnd + 4);
-    if (contentText.endsWith("\r\n")) contentText = contentText.slice(0, -2);
-    const headers = {};
-    for (const line of headerText.split("\r\n")) {
-      const idx = line.indexOf(":");
-      if (idx === -1) continue;
-      const key = line.slice(0, idx).trim().toLowerCase();
-      const value = line.slice(idx + 1).trim();
-      headers[key] = value;
-    }
-    const disposition = headers["content-disposition"] || "";
-    const nameMatch = disposition.match(/name=\"([^\"]+)\"/i);
-    if (!nameMatch) continue;
-    const fieldName = nameMatch[1];
-    const filenameMatch = disposition.match(/filename=\"([^\"]*)\"/i);
-    if (filenameMatch && filenameMatch[1]) {
-      const filename = filenameMatch[1];
-      const contentTypeHeader = headers["content-type"] || "";
-      const data = Buffer.from(contentText, "latin1");
-      files.push({
-        fieldName,
-        filename,
-        contentType: contentTypeHeader,
-        data,
-      });
-    } else {
-      fields[fieldName] = contentText;
-    }
-  }
-
-  return { fields, files };
-}
-
 function normalizeTagsInput(input) {
   if (!input) return [];
   const values = Array.isArray(input)
@@ -3342,32 +3247,6 @@ async function handleApi(req, res, url) {
   }
 
   const path = url.pathname;
-  if (path.startsWith("/api/attachments/") && req.method === "GET") {
-    const rel = decodeURIComponent(path.slice("/api/attachments/".length));
-    const root = ATTACHMENTS_ROOT;
-    const filePath = resolve(root, rel);
-    if (!filePath.startsWith(root)) {
-      textResponse(res, 403, "Forbidden");
-      return;
-    }
-    if (!existsSync(filePath)) {
-      textResponse(res, 404, "Not Found");
-      return;
-    }
-    const ext = extname(filePath).toLowerCase();
-    const contentType = MIME_TYPES[ext] || "application/octet-stream";
-    res.writeHead(200, {
-      "Content-Type": contentType,
-      "Access-Control-Allow-Origin": "*",
-      "Cache-Control": "no-store",
-    });
-    try {
-      createReadStream(filePath).pipe(res);
-    } catch (err) {
-      textResponse(res, 500, `Failed to read attachment: ${err.message}`);
-    }
-    return;
-  }
   if (path === "/api/status") {
     const data = await readStatusSnapshot();
     jsonResponse(res, 200, { ok: true, data });
@@ -3577,93 +3456,6 @@ async function handleApi(req, res, url) {
       const task = await adapter.getTask(taskId);
       const enriched = await applySharedStateToTasks(task ? [task] : []);
       jsonResponse(res, 200, { ok: true, data: enriched[0] || null });
-    } catch (err) {
-      jsonResponse(res, 500, { ok: false, error: err.message });
-    }
-    return;
-  }
-
-  if (path === "/api/tasks/attachments/upload" && req.method === "POST") {
-    try {
-      const { fields, files } = await readMultipartForm(req);
-      const taskId = String(fields?.taskId || fields?.id || "").trim();
-      if (!taskId) {
-        jsonResponse(res, 400, { ok: false, error: "taskId required" });
-        return;
-      }
-      if (!files.length) {
-        jsonResponse(res, 400, { ok: false, error: "file required" });
-        return;
-      }
-
-      const adapter = getKanbanAdapter();
-      let task = null;
-      try {
-        task = await adapter.getTask(taskId);
-      } catch {
-        task = null;
-      }
-      const backend =
-        String(fields?.backend || task?.backend || adapter?.name || "internal")
-          .trim()
-          .toLowerCase();
-
-      const safeTask = sanitizePathSegment(taskId);
-      const safeBackend = sanitizePathSegment(backend || "internal");
-      const targetDir = resolve(ATTACHMENTS_ROOT, "tasks", safeBackend, safeTask);
-      mkdirSync(targetDir, { recursive: true });
-
-      const added = [];
-      for (const file of files) {
-        const originalName = file.filename || "attachment";
-        const ext = extname(originalName).toLowerCase();
-        const base = sanitizePathSegment(basename(originalName, ext)) || "attachment";
-        const unique = `${Date.now()}-${randomBytes(4).toString("hex")}`;
-        const storedName = `${base}-${unique}${ext}`;
-        const filePath = resolve(targetDir, storedName);
-        writeFileSync(filePath, file.data);
-        const relPath = relative(ATTACHMENTS_ROOT, filePath);
-        const contentType =
-          file.contentType || MIME_TYPES[ext] || "application/octet-stream";
-        const kind =
-          contentType.startsWith("image/") ||
-          [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].includes(ext)
-            ? "image"
-            : "file";
-        const attachment = {
-          name: originalName,
-          filePath,
-          relativePath: relPath,
-          url: resolveAttachmentUrl(relPath),
-          size: file.data.length,
-          contentType,
-          kind,
-          source: "upload",
-          sourceType: "task",
-          createdAt: new Date().toISOString(),
-        };
-        const stored = addTaskAttachment(taskId, backend, attachment);
-        if (stored) added.push(stored);
-      }
-
-      let taskAfter = null;
-      try {
-        taskAfter = await adapter.getTask(taskId);
-      } catch {
-        taskAfter = null;
-      }
-      const existing = []
-        .concat(Array.isArray(taskAfter?.attachments) ? taskAfter.attachments : [])
-        .concat(Array.isArray(taskAfter?.meta?.attachments) ? taskAfter.meta.attachments : []);
-      const merged = mergeTaskAttachments(
-        existing,
-        listTaskAttachments(taskId, backend),
-      );
-      jsonResponse(res, 200, { ok: true, taskId, backend, added, attachments: merged });
-      broadcastUiEvent(["tasks", "overview"], "invalidate", {
-        reason: "task-attachment-upload",
-        taskId,
-      });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -6022,59 +5814,6 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    if (action === "attachments" && req.method === "POST") {
-      try {
-        const tracker = getSessionTracker();
-        const session = tracker.getSessionById(sessionId);
-        if (!session) {
-          jsonResponse(res, 404, { ok: false, error: "Session not found" });
-          return;
-        }
-        const { files } = await readMultipartForm(req);
-        if (!files.length) {
-          jsonResponse(res, 400, { ok: false, error: "file required" });
-          return;
-        }
-        const safeSession = sanitizePathSegment(sessionId);
-        const targetDir = resolve(ATTACHMENTS_ROOT, "sessions", safeSession);
-        mkdirSync(targetDir, { recursive: true });
-        const added = [];
-        for (const file of files) {
-          const originalName = file.filename || "attachment";
-          const ext = extname(originalName).toLowerCase();
-          const base = sanitizePathSegment(basename(originalName, ext)) || "attachment";
-          const unique = `${Date.now()}-${randomBytes(4).toString("hex")}`;
-          const storedName = `${base}-${unique}${ext}`;
-          const filePath = resolve(targetDir, storedName);
-          writeFileSync(filePath, file.data);
-          const relPath = relative(ATTACHMENTS_ROOT, filePath);
-          const contentType =
-            file.contentType || MIME_TYPES[ext] || "application/octet-stream";
-          const kind =
-            contentType.startsWith("image/") ||
-            [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].includes(ext)
-              ? "image"
-              : "file";
-          added.push({
-            name: originalName,
-            filePath,
-            relativePath: relPath,
-            url: resolveAttachmentUrl(relPath),
-            size: file.data.length,
-            contentType,
-            kind,
-            source: "upload",
-            sourceType: "session",
-            createdAt: new Date().toISOString(),
-          });
-        }
-        jsonResponse(res, 200, { ok: true, attachments: added });
-      } catch (err) {
-        jsonResponse(res, 500, { ok: false, error: err.message });
-      }
-      return;
-    }
-
     if (action === "message" && req.method === "POST") {
       try {
         const tracker = getSessionTracker();
@@ -6089,14 +5828,11 @@ async function handleApi(req, res, url) {
         }
         const body = await readJsonBody(req);
         const content = body?.content;
-        const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
-        const attachmentsAppended = body?.attachmentsAppended === true;
-        if (!content && attachments.length === 0) {
+        if (!content) {
           jsonResponse(res, 400, { ok: false, error: "content is required" });
           return;
         }
         const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const messageContent = typeof content === "string" ? content : "";
 
         // Per-message mode override (e.g. { "content": "...", "mode": "ask" })
         const messageMode = body?.mode || undefined;
@@ -6109,13 +5845,7 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 200, { ok: true, messageId });
           broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
           try {
-            await exec(messageContent, {
-              sessionId,
-              sessionType: "primary",
-              mode: messageMode,
-              attachments,
-              attachmentsAppended,
-            });
+            await exec(content, { sessionId, sessionType: "primary", mode: messageMode });
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
           } catch (execErr) {
             // Record error as system message so user sees feedback
@@ -6129,12 +5859,7 @@ async function handleApi(req, res, url) {
           }
         } else {
           // No agent — record user event and acknowledge
-          tracker.recordEvent(sessionId, {
-            role: "user",
-            content: messageContent,
-            attachments,
-            timestamp: new Date().toISOString(),
-          });
+          tracker.recordEvent(sessionId, { role: "user", content, timestamp: new Date().toISOString() });
           jsonResponse(res, 200, { ok: true, messageId });
           broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
         }

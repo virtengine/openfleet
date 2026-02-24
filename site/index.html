@@ -5,11 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Bosun — Autonomous AI Fleet Supervisor</title>
   <meta name="description" content="Bosun is the open-source control plane for AI coding agents. Route tasks, manage executors, automate PRs, and ship code autonomously." />
-  <meta name="theme-color" content="#0b1020" />
+  <meta name="theme-color" content="#0a0b12" />
   <meta name="robots" content="index, follow" />
   <meta name="keywords" content="Bosun, VirtEngine, autonomous coding agents, AI orchestration, developer automation, task routing, PR automation, fleet supervisor" />
   <link rel="canonical" href="https://bosun.virtengine.com/" />
 
+  <!-- Open Graph -->
   <meta property="og:title" content="Bosun — Autonomous AI Fleet Supervisor" />
   <meta property="og:description" content="The open-source control plane for AI coding agents. Ship code autonomously." />
   <meta property="og:type" content="website" />
@@ -22,11 +23,13 @@
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
 
+  <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Bosun — Autonomous AI Fleet Supervisor" />
   <meta name="twitter:description" content="Route tasks, manage executors, automate PRs, and ship code autonomously." />
   <meta name="twitter:image" content="https://bosun.virtengine.com/social-card.png" />
 
+  <!-- Structured Data -->
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -45,1198 +48,30 @@
   }
   </script>
 
+  <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&family=Lora:ital,wght@1,400;1,500;1,600;1,700&family=Satisfy&display=swap" rel="stylesheet" />
 
+  <!-- jQuery Terminal CSS -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jquery.terminal@2.42.2/css/jquery.terminal.min.css" />
+
+  <!-- Main CSS -->
+  <link rel="stylesheet" href="css/main.css" />
+
+  <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png" />
-
-  <style>
-    :root {
-      --bg: #06080d;
-      --surface: #0d121b;
-      --surface-muted: #101826;
-      --ink: #edf2ff;
-      --ink-soft: #b7c1d9;
-      --ink-muted: #8e98b4;
-      --line: #1f2a3d;
-      --line-strong: #2a3750;
-      --accent: #7ea4ff;
-      --accent-dark: #5f88ea;
-      --radius: 14px;
-      --radius-sm: 10px;
-      --shadow: 0 16px 36px rgba(1, 4, 12, 0.45);
-      --max: 1350px;
-      --mono: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
-      --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-    }
-
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    html { scroll-behavior: smooth; }
-    body {
-      font-family: var(--sans);
-      color: var(--ink);
-      background: var(--bg);
-      line-height: 1.65;
-      min-height: 100vh;
-    }
-
-    a { color: inherit; text-decoration: none; }
-    .container { width: min(var(--max), calc(100% - 48px)); margin: 0 auto; }
-    section { padding: 84px 0; }
-
-    .grid-bg, .hero__particles, .hero__glow { display: none !important; }
-
-    .scroll-progress {
-      position: fixed;
-      inset: 0 auto auto 0;
-      width: 0;
-      height: 3px;
-      z-index: 1200;
-      background: #7ea4ff;
-    }
-
-    .nav {
-      position: sticky;
-      top: 0;
-      z-index: 1100;
-      border-bottom: 1px solid transparent;
-      background: rgba(6, 8, 13, 0.92);
-      backdrop-filter: blur(8px);
-    }
-    .nav--scrolled { border-bottom-color: var(--line); }
-    .nav__inner {
-      width: min(var(--max), calc(100% - 48px));
-      margin: 0 auto;
-      min-height: 74px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 24px;
-    }
-    .nav__brand {
-      font-size: 1.35rem;
-      font-weight: 800;
-      color: #eef3ff;
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      letter-spacing: -0.02em;
-    }
-    .nav__brand-icon {
-      width: 34px;
-      height: 34px;
-      border: 1px solid var(--line-strong);
-      border-radius: 8px;
-      background: #0b111a;
-      padding: 4px;
-    }
-    .nav__links {
-      list-style: none;
-      display: flex;
-      align-items: center;
-      gap: 22px;
-    }
-    .nav__links a {
-      font-size: 0.95rem;
-      color: #aab6d0;
-      font-weight: 550;
-    }
-    .nav__links a:hover,
-    .nav__links .nav__link--active { color: #eef3ff; }
-    .nav__cta {
-      padding: 10px 14px;
-      border-radius: 10px;
-      background: var(--accent);
-      color: #0b1020 !important;
-      border: 1px solid #8aacff;
-      font-weight: 600;
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .nav__toggle {
-      display: none;
-      border: 1px solid var(--line);
-      background: #0b111a;
-      color: #e8eefc;
-      border-radius: 10px;
-      width: 40px;
-      height: 40px;
-      font-size: 20px;
-    }
-
-    .hero {
-      padding-top: 44px;
-      min-height: auto;
-    }
-    .hero__title-block { max-width: 960px; }
-    .hero__badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      border: 1px solid var(--line-strong);
-      background: #0d141f;
-      color: var(--ink-soft);
-      border-radius: 999px;
-      padding: 8px 14px;
-      font-family: var(--mono);
-      font-size: 0.8rem;
-      font-weight: 600;
-      margin-bottom: 22px;
-    }
-    .pulse-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #7ea4ff;
-      display: inline-block;
-    }
-    .hero__headline {
-      font-size: clamp(2.4rem, 5vw, 4.3rem);
-      line-height: 1.05;
-      letter-spacing: -0.03em;
-      margin-bottom: 14px;
-      color: #f3f6ff;
-    }
-    .hero__headline-accent { font-style: normal; color: #7ea4ff; }
-    .hero__typed {
-      min-height: 30px;
-      font-family: var(--mono);
-      color: #b7c1d9;
-      font-size: 1.02rem;
-      margin-bottom: 26px;
-      font-weight: 600;
-    }
-    #hero-typed {
-      color: #7ea4ff;
-      display: inline-block;
-      min-width: 12ch;
-    }
-    #typed-cursor { display: none; }
-    .hero__layout {
-      margin-top: 30px;
-      display: block;
-    }
-    .hero__intro { display: none; }
-    .hero__subtitle {
-      color: var(--ink-soft);
-      font-size: 1.02rem;
-      margin-bottom: 18px;
-    }
-    .hero__bullets {
-      list-style: none;
-      display: grid;
-      gap: 10px;
-      margin-bottom: 24px;
-    }
-    .hero__bullets li {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #101725;
-      padding: 10px 12px;
-      color: #d4def4;
-      font-weight: 520;
-    }
-
-    .hero__install {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      justify-content: center;
-      margin-bottom: 16px;
-    }
-    .install-cmd {
-      min-width: 0;
-      width: min(100%, 640px);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-family: var(--mono);
-      border: 1px solid #27354f;
-      border-radius: 10px;
-      background: #0b1221;
-      color: #e2ecff;
-      padding: 10px 12px;
-      cursor: pointer;
-      position: relative;
-    }
-    .install-cmd__prompt { color: #7dd3fc; font-weight: 700; }
-    .install-cmd__copy { margin-left: auto; color: #9cc0ff; }
-    .install-cmd__tooltip {
-      position: absolute;
-      inset: auto 12px -32px auto;
-      background: #111827;
-      color: #fff;
-      border-radius: 8px;
-      padding: 5px 8px;
-      font-size: 0.75rem;
-      opacity: 0;
-      transition: opacity 0.2s;
-      pointer-events: none;
-    }
-    .install-cmd__tooltip--visible { opacity: 1; }
-
-    .hero__version-tag {
-      display: inline-block;
-      color: #9aa7c2;
-      font-size: 0.88rem;
-      border-bottom: 1px solid #2a3750;
-      padding-bottom: 2px;
-    }
-
-    .btn {
-      border-radius: 10px;
-      border: 1px solid var(--line-strong);
-      padding: 10px 14px;
-      font-size: 0.9rem;
-      font-weight: 620;
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .btn--primary {
-      background: var(--accent);
-      color: #0b1020;
-      border-color: #8aacff;
-    }
-    .btn--ghost {
-      background: #0f1725;
-      color: #d8e2f9;
-    }
-    .btn--sm { padding: 8px 12px; font-size: 0.82rem; }
-
-    .hero__demo {
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      padding: 18px;
-      position: relative;
-      overflow: hidden;
-    }
-    .demo-tabs {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      border-bottom: 1px solid var(--line);
-      padding-bottom: 12px;
-      margin-bottom: 14px;
-    }
-    .demo-tab {
-      border: 1px solid var(--line-strong);
-      border-radius: 10px;
-      background: #0f1724;
-      color: #aeb9d3;
-      font-size: 0.86rem;
-      font-weight: 620;
-      padding: 8px 10px;
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      cursor: pointer;
-    }
-    .demo-tab svg { color: #4661a8; }
-    .demo-tab--active {
-      background: #131f33;
-      color: #f2f6ff;
-      border-color: #415682;
-    }
-
-    .demo-panel { display: none; }
-    .demo-panel--active { display: block; }
-
-    .desktop-demo-window,
-    .terminal-window,
-    .telegram-demo-window,
-    .miniapp-demo-window {
-      border: 1px solid #2a3750;
-      border-radius: 12px;
-      background: #0b111a;
-      overflow: hidden;
-      width: 100%;
-    }
-
-    .terminal-window {
-      max-width: 800px;
-      margin: 0 auto;
-    }
-
-    .desktop-demo-window__chrome,
-    .terminal-window__titlebar,
-    .telegram-demo-window__chrome {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      border-bottom: 1px solid var(--line);
-      background: #0f1724;
-      padding: 10px 12px;
-    }
-
-    .terminal-window__dots,
-    .telegram-demo-window__dots {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .terminal-window__dot {
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-    }
-    .terminal-window__dot--red { background: #ff5f57; }
-    .terminal-window__dot--yellow { background: #febc2e; }
-    .terminal-window__dot--green { background: #28c840; }
-    .desktop-demo-window__url {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex: 1;
-    }
-    .desktop-demo-window__nav-btns {
-      display: flex;
-      gap: 4px;
-      color: #41506a;
-      font-size: 1.1rem;
-    }
-    .desktop-demo-window__url-bar {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      background: #0a1020;
-      border: 1px solid #1f2a3d;
-      border-radius: 6px;
-      padding: 4px 10px;
-      color: #8ea3cf;
-      font-size: 0.82rem;
-      flex: 1;
-    }
-    .desktop-demo-window__body {
-      min-height: 620px;
-    }
-    .desktop-demo-window__iframe {
-      width: 100%;
-      height: min(72vh, 780px);
-      min-height: 620px;
-      border: 0;
-      background: #0a0f17;
-    }
-
-    .cli-demo-layout {
-      display: grid;
-      grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
-      gap: 14px;
-      align-items: stretch;
-    }
-    .cli-demo-context {
-      border: 1px solid #22304a;
-      border-radius: 12px;
-      background: #0f1726;
-      padding: 14px;
-      color: #b3c0dc;
-      display: grid;
-      align-content: start;
-      gap: 10px;
-    }
-    .cli-demo-context h3 {
-      color: #ecf2ff;
-      font-size: 0.96rem;
-      margin-bottom: 2px;
-    }
-    .cli-demo-context p {
-      font-size: 0.88rem;
-      line-height: 1.5;
-    }
-    .desktop-demo-window__context {
-      border-right: 1px solid #1f2a3d;
-      background: #0b111a;
-      padding: 16px;
-      display: grid;
-      align-content: start;
-      gap: 12px;
-    }
-    .desktop-demo-window__context-title {
-      font-size: 0.78rem;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: #8ea3cf;
-      font-weight: 700;
-    }
-    .desktop-demo-window__context-item {
-      border: 1px solid #23304a;
-      border-radius: 10px;
-      background: #0f1725;
-      padding: 10px;
-      color: #c7d3ef;
-      font-size: 0.88rem;
-      line-height: 1.45;
-    }
-    .terminal-window__title { color: #41506a; font-size: 0.86rem; margin-top: 8px; }
-    .terminal-window__body {
-      min-height: 390px;
-      max-height: 460px;
-      overflow: auto;
-      background: #0b1221;
-      color: #d9e6ff;
-      padding: 12px;
-    }
-
-    .telegram-demo-window__top {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      color: #334155;
-    }
-    .telegram-demo-window__app-name { font-size: 0.9rem; font-weight: 650; }
-    #telegram-chat-container { min-height: 390px; }
-
-    .miniapp-demo-window { padding: 14px; background: #eef3fb; }
-    .miniapp-demo-window__overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(15, 23, 42, 0.6);
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.2s;
-      z-index: 1090;
-    }
-    .miniapp-demo-window__overlay.is-visible {
-      opacity: 1;
-      pointer-events: auto;
-    }
-    .miniapp-demo-window__phone {
-      width: min(100%, 360px);
-      border: 1px solid #b6c6de;
-      border-radius: 20px;
-      background: #fff;
-      overflow: hidden;
-      margin: 0 auto;
-      box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
-      position: relative;
-      z-index: 1091;
-    }
-    .miniapp-demo-window__phone.is-fullscreen {
-      width: min(96vw, 1180px);
-      height: min(94vh, 920px);
-      border-radius: 16px;
-      position: fixed;
-      inset: 3vh 2vw auto;
-      margin: 0;
-    }
-    .miniapp-demo-window__screen { background: #fff; }
-    .miniapp-demo-window__notch {
-      width: 140px;
-      height: 20px;
-      border-radius: 0 0 14px 14px;
-      background: #0b1221;
-      margin: 0 auto;
-    }
-    .miniapp-demo-window__tg-header {
-      display: flex;
-      align-items: center;
-      gap: 9px;
-      padding: 9px 12px;
-      border-bottom: 1px solid var(--line);
-      font-size: 0.86rem;
-      color: #334155;
-      background: #f9fbff;
-    }
-    .miniapp-demo-window__tg-dots { margin-left: auto; }
-    .miniapp-demo-window__iframe {
-      width: 100%;
-      height: 560px;
-      border: 0;
-      background: #fff;
-    }
-    .miniapp-demo-window__phone.is-fullscreen .miniapp-demo-window__iframe {
-      height: calc(94vh - 78px);
-    }
-    .miniapp-demo-window__expand {
-      margin-left: auto;
-      background: #fff;
-      border: 1px solid var(--line-strong);
-      border-radius: 8px;
-      width: 28px;
-      height: 28px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-    }
-    .miniapp-demo-window__expand-icon { width: 16px; height: 16px; }
-    .miniapp-demo-window__expand-icon--exit { display: none; }
-    .miniapp-demo-window__expand.is-fullscreen .miniapp-demo-window__expand-icon--enter { display: none; }
-    .miniapp-demo-window__expand.is-fullscreen .miniapp-demo-window__expand-icon--exit { display: block; }
-    .miniapp-demo-window__caption {
-      margin-top: 12px;
-      text-align: center;
-      color: #475569;
-      font-size: 0.84rem;
-      font-weight: 560;
-    }
-    .miniapp-demo-window__live-dot {
-      display: inline-block;
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #2563eb;
-      margin-right: 6px;
-    }
-
-    .stats {
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: #fff;
-      padding: 20px;
-      display: grid;
-      grid-template-columns: repeat(5, 1fr);
-      gap: 14px;
-      box-shadow: var(--shadow);
-    }
-    .stat {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: var(--surface-muted);
-      text-align: center;
-      padding: 14px 10px;
-    }
-    .stat__value {
-      font-size: 1.45rem;
-      letter-spacing: -0.03em;
-      font-weight: 780;
-      color: #0b1f4d;
-      margin-bottom: 2px;
-    }
-    .stat__label { color: #475569; font-size: 0.83rem; font-weight: 620; }
-
-    .section-header { max-width: 780px; margin-bottom: 28px; }
-    .section-header__label {
-      font-size: 0.75rem;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: #4f6fb1;
-      font-weight: 700;
-      display: inline-block;
-      margin-bottom: 9px;
-    }
-    .section-header__title {
-      font-size: clamp(1.8rem, 4.3vw, 2.8rem);
-      letter-spacing: -0.03em;
-      line-height: 1.12;
-      color: #0d172d;
-      margin-bottom: 10px;
-    }
-    .section-header__desc { color: var(--ink-soft); font-size: 1.01rem; }
-    .gradient-text { color: #1e40af; }
-
-    .features-grid,
-    .integrations-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 16px;
-    }
-
-    .feature-card,
-    .integration-card,
-    .step,
-    .arch-layer,
-    .code-showcase,
-    .pr-showcase,
-    .cta-section .container,
-    .arch-diagram {
-      background: #fff;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-    }
-
-    .feature-card {
-      padding: 20px;
-      transform-style: preserve-3d;
-      transition: border-color 0.2s;
-    }
-    .feature-card:hover { border-color: #9db0d3; }
-    .feature-card__icon {
-      width: 100%;
-      border: 1px solid #d1dcec;
-      border-radius: 10px;
-      padding: 12px;
-      margin-bottom: 14px;
-      background: #f2f6fd;
-    }
-    .feature-card__icon svg { width: 100%; height: 52px; color: #3156a9; }
-    .feature-card__title { font-size: 1.05rem; margin-bottom: 8px; color: #0f172a; }
-    .feature-card__desc { font-size: 0.94rem; color: #415069; }
-
-    #security-visualizer {
-      min-height: 320px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: #fff;
-      box-shadow: var(--shadow);
-      padding: 10px;
-    }
-
-    .arch-diagram { padding: 22px; }
-    .arch-flow {
-      display: grid;
-      grid-template-columns: 1fr auto 1fr auto 1fr;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 20px;
-    }
-    .arch-node {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: var(--surface-muted);
-      padding: 14px;
-    }
-    .arch-node__icon {
-      width: 100%;
-      height: 40px;
-      border-radius: 8px;
-      border: 1px solid #ced9ea;
-      background: #ffffff;
-      margin-bottom: 8px;
-      position: relative;
-      overflow: hidden;
-    }
-    .arch-node__icon::before,
-    .arch-node__icon::after {
-      content: '';
-      position: absolute;
-      border-radius: 999px;
-      background: #d9e4f6;
-    }
-    .arch-node__icon::before { width: 80px; height: 80px; right: -20px; top: -36px; }
-    .arch-node__icon::after { width: 58px; height: 58px; left: -18px; bottom: -24px; }
-    .arch-node__label { font-weight: 700; color: #0f172a; }
-    .arch-node__sub { color: #475569; font-size: 0.84rem; }
-    .arch-arrow {
-      color: #4263a7;
-      text-align: center;
-      font-size: 1.35rem;
-      font-weight: 700;
-    }
-    .arch-layers {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 14px;
-    }
-    .arch-layer { padding: 18px; }
-    .arch-layer__title {
-      font-weight: 700;
-      color: #0f172a;
-      margin-bottom: 10px;
-      font-size: 1.02rem;
-    }
-    .arch-layer__items {
-      padding-left: 18px;
-      color: #42516a;
-      display: grid;
-      gap: 6px;
-      font-size: 0.92rem;
-    }
-
-    .integration-card {
-      padding: 18px;
-      background: #fff;
-    }
-    .integration-card__icon {
-      width: 100%;
-      height: 50px;
-      border: 1px solid #d0dced;
-      border-radius: 10px;
-      background: #f4f7fd;
-      margin-bottom: 11px;
-      position: relative;
-      overflow: hidden;
-    }
-    .integration-card__icon::before,
-    .integration-card__icon::after {
-      content: '';
-      position: absolute;
-      border-radius: 999px;
-      background: #dce6f7;
-    }
-    .integration-card__icon::before { width: 72px; height: 72px; top: -38px; left: -12px; }
-    .integration-card__icon::after { width: 54px; height: 54px; right: -16px; bottom: -24px; }
-    .integration-card__name { font-weight: 700; color: #0f172a; margin-bottom: 6px; }
-    .integration-card__desc { color: #475569; font-size: 0.92rem; }
-
-    .steps {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 14px;
-    }
-    .step { padding: 18px; }
-    .step__number {
-      width: 34px;
-      height: 34px;
-      border-radius: 10px;
-      background: #e8eefb;
-      color: #1e3a8a;
-      font-weight: 760;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      margin-bottom: 10px;
-    }
-    .step__title { font-size: 1.1rem; margin-bottom: 6px; color: #0f172a; }
-    .step__desc { color: #44536c; font-size: 0.94rem; margin-bottom: 10px; }
-    .step__code {
-      font-family: var(--mono);
-      font-size: 0.83rem;
-      background: #0b1221;
-      color: #d8e6ff;
-      border-radius: 10px;
-      padding: 10px;
-      border: 1px solid #1c2f53;
-    }
-
-    .showcase-tabs,
-    .code-showcase__tabs {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-bottom: 14px;
-    }
-    .showcase-tab,
-    .code-tab {
-      border: 1px solid var(--line-strong);
-      border-radius: 10px;
-      padding: 8px 12px;
-      background: #fff;
-      color: #334155;
-      font-size: 0.84rem;
-      font-weight: 650;
-      cursor: pointer;
-    }
-    .showcase-tab--active,
-    .code-tab--active {
-      background: #eaf0fb;
-      color: #0f172a;
-      border-color: #9db0d3;
-    }
-
-    .showcase-feed { display: none; }
-    .showcase-feed--active { display: block; }
-    .pr-showcase { padding: 12px; min-height: 120px; }
-    .pr-showcase__loading,
-    .pr-showcase__error {
-      color: #475569;
-      padding: 16px;
-      text-align: center;
-    }
-
-    .pr-card {
-      display: flex;
-      gap: 10px;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 11px;
-      background: #fff;
-      margin-bottom: 9px;
-      transition: border-color 0.2s;
-    }
-    .pr-card:hover { border-color: #a4b6d5; }
-    .pr-card__state {
-      width: 24px;
-      height: 24px;
-      border-radius: 8px;
-      background: #ecf2ff;
-      color: #27489d;
-      font-size: 0.8rem;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      margin-top: 1px;
-    }
-    .pr-card__title { color: #0f172a; font-weight: 650; margin-bottom: 4px; }
-    .pr-card__meta {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      font-size: 0.8rem;
-      color: #52617a;
-    }
-    .pr-card__labels { margin-top: 7px; display: flex; gap: 6px; flex-wrap: wrap; }
-    .pr-card__label {
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 2px 7px;
-      font-size: 0.74rem;
-      font-weight: 600;
-    }
-    .commit-avatar { border-radius: 50%; }
-    .commit-label {
-      border: 1px solid #c3d0e6;
-      background: #edf2fc;
-      border-radius: 999px;
-      padding: 1px 6px;
-      color: #2b4d9f;
-      font-weight: 700;
-    }
-
-    .code-showcase { padding: 16px; }
-    .code-showcase__body {
-      background: #0b1221;
-      border: 1px solid #1d3158;
-      border-radius: 12px;
-      overflow: auto;
-    }
-    .code-showcase__panel {
-      display: none;
-      padding: 16px;
-      margin: 0;
-      min-height: 320px;
-      color: #dbe8ff;
-      font-family: var(--mono);
-      font-size: 0.84rem;
-      line-height: 1.55;
-      white-space: pre;
-    }
-    .code-showcase__panel--active { display: block; }
-    .keyword { color: #93c5fd; }
-    .string { color: #c4b5fd; }
-    .number { color: #86efac; }
-    .comment { color: #9ca3af; }
-
-    .cta-section .container {
-      padding: 34px;
-      text-align: center;
-    }
-    .cta-section h2 {
-      font-size: clamp(1.8rem, 4vw, 2.7rem);
-      margin-bottom: 8px;
-      color: #0f172a;
-      letter-spacing: -0.03em;
-    }
-    .cta-section p {
-      max-width: 650px;
-      margin: 0 auto 20px;
-      color: #475569;
-      font-size: 1rem;
-    }
-    .hero__actions {
-      display: flex;
-      justify-content: center;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-
-    .footer {
-      padding: 36px 0 48px;
-      border-top: 1px solid var(--line);
-      background: #f2f6fb;
-    }
-    .footer__inner {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 16px;
-      flex-wrap: wrap;
-    }
-    .footer__left {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      color: #475569;
-      font-size: 0.9rem;
-      font-weight: 550;
-    }
-    .footer__links {
-      list-style: none;
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      flex-wrap: wrap;
-    }
-    .footer__links a {
-      font-size: 0.88rem;
-      color: #334155;
-      font-weight: 600;
-    }
-
-    .reveal {
-      opacity: 0;
-      transform: translateY(12px);
-      transition: opacity 0.4s ease, transform 0.4s ease;
-    }
-    .reveal--visible {
-      opacity: 1;
-      transform: none;
-    }
-    .reveal--delay-1 { transition-delay: 0.06s; }
-    .reveal--delay-2 { transition-delay: 0.12s; }
-    .reveal--delay-3 { transition-delay: 0.18s; }
-    .reveal--delay-4 { transition-delay: 0.24s; }
-
-    .stats {
-      background: #0d121b;
-      border-color: #1f2a3d;
-    }
-    .stat {
-      border-color: #22304a;
-      background: #0f1725;
-    }
-    .stat__value { color: #dbe6ff; }
-    .stat__label { color: #9eabc5; }
-
-    .section-header__label { color: #8ea3cf; }
-    .section-header__title { color: #ecf2ff; }
-    .section-header__desc { color: #aab6cf; }
-    .gradient-text { color: #9bb7ff; }
-
-    .feature-card,
-    .integration-card,
-    .step,
-    .arch-layer,
-    .code-showcase,
-    .pr-showcase,
-    .cta-section .container,
-    .arch-diagram {
-      background: #0d121b;
-      border-color: #1f2a3d;
-      box-shadow: none;
-    }
-
-    .feature-card__title,
-    .integration-card__name,
-    .step__title,
-    .arch-layer__title,
-    .arch-node__label,
-    .cta-section h2,
-    .pr-card__title {
-      color: #ecf2ff;
-    }
-    .feature-card__desc,
-    .integration-card__desc,
-    .step__desc,
-    .arch-layer__items,
-    .arch-node__sub,
-    .cta-section p,
-    .pr-card__meta,
-    .pr-showcase__loading,
-    .pr-showcase__error {
-      color: #aab6cf;
-    }
-
-    .feature-card__icon,
-    .integration-card__icon,
-    .arch-node__icon {
-      border-color: #24314a;
-      background: #0f1726;
-    }
-    .feature-card__icon svg { display: none; }
-    .feature-card__icon::before,
-    .feature-card__icon::after {
-      content: '';
-      display: block;
-      border-radius: 999px;
-      background: #23324d;
-    }
-    .feature-card__icon::before {
-      width: 72%;
-      height: 14px;
-      margin: 12px auto 8px;
-    }
-    .feature-card__icon::after {
-      width: 52%;
-      height: 14px;
-      margin: 0 auto 10px;
-      background: #314b78;
-    }
-
-    #security-visualizer {
-      background: #0d121b;
-      border-color: #1f2a3d;
-      box-shadow: none;
-    }
-
-    .arch-node,
-    .pr-card {
-      background: #0f1726;
-      border-color: #24314a;
-    }
-    .arch-arrow { color: #8ea3cf; }
-    .step__number {
-      background: #19273f;
-      color: #b9ccf7;
-    }
-
-    .showcase-tab,
-    .code-tab {
-      background: #0f1724;
-      color: #aeb9d3;
-      border-color: #2a3750;
-    }
-    .showcase-tab--active,
-    .code-tab--active {
-      background: #141f33;
-      color: #f2f6ff;
-      border-color: #415682;
-    }
-    .code-showcase__body {
-      background: #0a111d;
-      border-color: #1e2d47;
-    }
-    .code-showcase__panel { color: #d7e4ff; }
-
-    .telegram-demo-window__top,
-    .terminal-window__title {
-      color: #b4c1dc;
-    }
-    .telegram-demo-window__layout {
-      display: grid;
-      grid-template-columns: minmax(220px, 280px) minmax(280px, 400px);
-      gap: 16px;
-      align-items: start;
-      justify-content: center;
-      padding: 16px;
-      background: #0b111a;
-    }
-    .telegram-demo-window__context {
-      border: 1px solid #23304a;
-      border-radius: 12px;
-      background: #0f1726;
-      padding: 14px;
-      color: #b2c0db;
-      min-height: 390px;
-    }
-    .telegram-demo-window__context h3 {
-      color: #ecf2ff;
-      font-size: 1rem;
-      margin-bottom: 8px;
-    }
-    .telegram-demo-window__context p {
-      font-size: 0.9rem;
-      line-height: 1.55;
-      margin-bottom: 10px;
-    }
-    .telegram-demo-window__phone-shell {
-      border: 1px solid #2a3750;
-      border-radius: 18px;
-      overflow: hidden;
-      background: #0b1220;
-      width: min(100%, 390px);
-      margin: 0 auto;
-      box-shadow: 0 16px 34px rgba(0, 0, 0, 0.45);
-    }
-    #telegram-chat-container {
-      min-height: 620px;
-      max-height: 620px;
-      overflow: hidden;
-      background: #0b1220;
-    }
-
-    .miniapp-demo-window {
-      padding: 14px;
-      background: #0b111a;
-    }
-    .miniapp-demo-window__phone {
-      border-color: #2a3750;
-      background: #0b1220;
-      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
-    }
-    .miniapp-demo-window__screen,
-    .miniapp-demo-window__iframe {
-      background: #0b1220;
-    }
-    .miniapp-demo-window__tg-header {
-      border-bottom: 1px solid #22304a;
-      color: #b4c1dc;
-      background: #0f1725;
-    }
-    .miniapp-demo-window__caption { color: #9eabc5; }
-
-    .cta-section .container {
-      background: #0d121b;
-      border-color: #1f2a3d;
-    }
-    .footer {
-      border-top: 1px solid #1f2a3d;
-      background: #080d14;
-    }
-    .footer__left,
-    .footer__links a {
-      color: #9eabc5;
-    }
-
-    @media (max-width: 1080px) {
-      .hero__layout { grid-template-columns: 1fr; }
-      .features-grid,
-      .integrations-grid,
-      .arch-layers,
-      .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-      .arch-flow { grid-template-columns: 1fr; }
-      .arch-arrow { transform: rotate(90deg); }
-      .telegram-demo-window__layout {
-        grid-template-columns: 1fr;
-      }
-      .cli-demo-layout {
-        grid-template-columns: 1fr;
-      }
-      .cli-demo-context {
-        min-height: auto;
-      }
-      .telegram-demo-window__context {
-        min-height: auto;
-      }
-    }
-
-    @media (max-width: 760px) {
-      .container,
-      .nav__inner { width: calc(100% - 28px); }
-      section { padding: 68px 0; }
-      .nav__toggle { display: inline-flex; align-items: center; justify-content: center; }
-      .nav__links {
-        position: absolute;
-        top: 72px;
-        right: 14px;
-        min-width: 220px;
-        flex-direction: column;
-        align-items: stretch;
-        gap: 8px;
-        background: #0e1522;
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        box-shadow: var(--shadow);
-        padding: 10px;
-        display: none;
-      }
-      .nav__links--open { display: flex; }
-      .nav__cta { justify-content: center; }
-      .features-grid,
-      .integrations-grid,
-      .arch-layers,
-      .steps,
-      .stats { grid-template-columns: 1fr; }
-      .hero__actions { flex-direction: column; }
-      .hero__actions .btn { justify-content: center; }
-      .desktop-demo-window__iframe,
-      .miniapp-demo-window__iframe,
-      .terminal-window__body,
-      #telegram-chat-container { min-height: 340px; }
-      .desktop-demo-window__body {
-        min-height: auto;
-      }
-    }
-  </style>
 </head>
 <body>
 
+  <!-- Grid background -->
   <div class="grid-bg"></div>
 
+  <!-- ═══ Navigation ════════════════════════════════════════════════════ -->
   <nav class="nav">
     <div class="nav__inner">
       <a href="#" class="nav__brand">
-        <img src="logo.svg" class="nav__brand-icon" aria-hidden="true" alt="Bosun logo" />
+        <img class="nav__brand-icon" src="logo.svg" alt="Bosun" width="48" height="48" />
         Bosun
       </a>
 
@@ -1249,7 +84,7 @@
         <li><a href="docs/">Docs</a></li>
         <li>
           <a href="https://github.com/virtengine/bosun#readme" class="nav__cta" target="_blank" rel="noopener">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
             GitHub
           </a>
         </li>
@@ -1257,8 +92,10 @@
     </div>
   </nav>
 
+  <!-- Scroll progress bar -->
   <div class="scroll-progress" id="scroll-progress"></div>
 
+  <!-- ═══ Hero ══════════════════════════════════════════════════════════ -->
   <section class="hero" id="hero">
     <canvas class="hero__particles" id="hero-particles"></canvas>
     <div class="hero__glow hero__glow--cyan"></div>
@@ -1268,163 +105,146 @@
       <div class="hero__title-block">
         <a href="https://www.npmjs.com/package/bosun" class="hero__badge">
           <span class="pulse-dot"></span>
-          <span data-version>v0.0</span> — now available
+          <span class="hero__badge-text"><span data-version>v0.0.0</span> · Live</span>
         </a>
-        <h1 class="hero__headline">Your AI Fleet,<br><em class="hero__headline-accent"><span id="hero-typed">supervized</span>.</em></h1>
-        <div class="hero__typed">
-          <span>Open-source orchestration for autonomous AI coding agents.</span><span class="typed-cursor" id="typed-cursor">|</span>
-        </div>
-
-        <div class="hero__install">
+        <h1 class="hero__headline">
+          Your AI Fleet,<br>
+          <span class="hero__headline-accent"><span id="hero-typed"></span></span><span class="typed-cursor" id="typed-cursor">|</span>
+        </h1>
+        <div class="hero__install hero__install--center">
           <div class="install-cmd" title="Click to copy">
             <span class="install-cmd__prompt">$</span>
             <span class="install-cmd__text">npm install -g bosun</span>
-            <span class="install-cmd__copy">Copy</span>
+            <span class="install-cmd__copy" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" />
+                <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+              </svg>
+            </span>
             <span class="install-cmd__tooltip">Copied!</span>
           </div>
-          <a href="docs/" class="btn btn--ghost btn--sm">Documentation</a>
-          <a href="https://github.com/virtengine/bosun#readme" class="btn btn--ghost btn--sm" target="_blank" rel="noopener">GitHub</a>
-          <a href="https://www.npmjs.com/package/bosun" class="hero__version-tag">
-            <span data-version>v0.0</span> · Bosun by VirtEngine · Apache 2.0
-          </a>
         </div>
       </div>
 
       <div class="hero__layout">
+
+        <!-- RIGHT: demo panels -->
         <div class="hero__demo" id="demo">
           <div class="miniapp-demo-window__overlay" aria-hidden="true"></div>
 
-          <div class="demo-tabs reveal">
-            <button class="demo-tab" data-demo="desktop">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-              Desktop
-            </button>
-            <button class="demo-tab" data-demo="cli">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-              CLI Terminal
-            </button>
-            <button class="demo-tab" data-demo="telegram">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
-              Telegram
-            </button>
-            <button class="demo-tab" data-demo="mobile">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
-              Mobile
-            </button>
-          </div>
+        <!-- ── Channel Tabs ──────────────────────────────────────────── -->
+        <div class="demo-tabs reveal">
+          <button class="demo-tab" data-demo="desktop">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            Desktop
+          </button>
+          <button class="demo-tab" data-demo="cli">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+            CLI Terminal
+          </button>
+          <button class="demo-tab" data-demo="telegram">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+            Telegram
+          </button>
+          <button class="demo-tab" data-demo="mobile">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+            Mobile
+          </button>
+        </div>
 
-          <div class="demo-panel" id="demo-panel-desktop">
-            <div class="desktop-demo-window reveal">
-              <div class="desktop-demo-window__chrome">
-                <div class="terminal-window__dots">
+        <!-- ── Desktop Panel (browser chrome + MiniApp iframe) ───────── -->
+        <div class="demo-panel" id="demo-panel-desktop">
+          <div class="desktop-demo-window reveal">
+            <div class="desktop-demo-window__chrome">
+              <div class="desktop-demo-window__title">
+                <span class="desktop-demo-window__app">Bosun Desktop</span>
+                <span class="desktop-demo-window__meta">Electron</span>
+              </div>
+              <button class="desktop-demo-window__expand" type="button" aria-label="Enter fullscreen" aria-pressed="false">
+                <svg class="desktop-demo-window__expand-icon desktop-demo-window__expand-icon--enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H3v5"/><path d="M16 3h5v5"/><path d="M8 21H3v-5"/><path d="M16 21h5v-5"/></svg>
+                <svg class="desktop-demo-window__expand-icon desktop-demo-window__expand-icon--exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H3v6"/><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M15 21h6v-6"/></svg>
+              </button>
+            </div>
+            <iframe
+              id="desktop-miniapp-iframe"
+              src="ui/demo.html"
+              class="desktop-demo-window__iframe"
+              loading="lazy"
+              title="Bosun MiniApp Demo — Desktop"
+            ></iframe>
+          </div>
+        </div>
+
+        <!-- ── CLI Panel (jQuery Terminal) ────────────────────────────── -->
+        <div class="demo-panel" id="demo-panel-cli">
+          <div class="terminal-window reveal">
+            <div class="terminal-window__titlebar">
+              <div class="terminal-window__dots">
+                <div class="terminal-window__dot terminal-window__dot--red"></div>
+                <div class="terminal-window__dot terminal-window__dot--yellow"></div>
+                <div class="terminal-window__dot terminal-window__dot--green"></div>
+              </div>
+              <div class="terminal-window__title">bosun — bash — 120×35</div>
+            </div>
+            <div class="terminal-window__body" id="demo-terminal"></div>
+          </div>
+        </div>
+
+        <!-- ── Telegram Chat Panel ───────────────────────────────────── -->
+        <div class="demo-panel" id="demo-panel-telegram">
+          <div class="telegram-demo-window reveal">
+            <div class="telegram-demo-window__chrome">
+              <div class="telegram-demo-window__top">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                <span class="telegram-demo-window__app-name">Telegram</span>
+                <div class="telegram-demo-window__dots">
                   <div class="terminal-window__dot terminal-window__dot--red"></div>
                   <div class="terminal-window__dot terminal-window__dot--yellow"></div>
                   <div class="terminal-window__dot terminal-window__dot--green"></div>
                 </div>
-                <div class="desktop-demo-window__url">
-                  <div class="desktop-demo-window__nav-btns">
-                    <span>‹</span><span>›</span>
-                  </div>
-                  <div class="desktop-demo-window__url-bar">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    bosun.virtengine.com
-                  </div>
-                </div>
               </div>
-              <div class="desktop-demo-window__body">
+            </div>
+            <div id="telegram-chat-container"></div>
+          </div>
+        </div>
+
+        <!-- ── Mobile Panel (phone frame + fullscreen) ───────────────── -->
+        <div class="demo-panel" id="demo-panel-mobile">
+          <div class="miniapp-demo-window reveal">
+            <div class="miniapp-demo-window__phone">
+              <div class="miniapp-demo-window__notch"></div>
+              <div class="miniapp-demo-window__screen">
+                <div class="miniapp-demo-window__tg-header">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                  <span>Bosun</span>
+                  <button class="miniapp-demo-window__expand" type="button" aria-label="Enter fullscreen" aria-pressed="false">
+                    <svg class="miniapp-demo-window__expand-icon miniapp-demo-window__expand-icon--enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H3v5"/><path d="M16 3h5v5"/><path d="M8 21H3v-5"/><path d="M16 21h5v-5"/></svg>
+                    <svg class="miniapp-demo-window__expand-icon miniapp-demo-window__expand-icon--exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H3v6"/><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M15 21h6v-6"/></svg>
+                  </button>
+                  <div class="miniapp-demo-window__tg-dots">⋮</div>
+                </div>
                 <iframe
-                  id="desktop-miniapp-iframe"
+                  id="miniapp-iframe"
                   src="ui/demo.html"
-                  class="desktop-demo-window__iframe"
+                  class="miniapp-demo-window__iframe"
                   loading="lazy"
-                  title="Bosun MiniApp Demo — Desktop"
+                  title="Bosun MiniApp Demo — Mobile"
                 ></iframe>
               </div>
             </div>
+            <p class="miniapp-demo-window__caption">
+              <span class="miniapp-demo-window__live-dot"></span>
+              Live from source — auto-updates when the real MiniApp changes
+            </p>
           </div>
-
-          <div class="demo-panel" id="demo-panel-cli">
-            <div class="cli-demo-layout reveal">
-              <aside class="cli-demo-context" aria-label="CLI context">
-                <h3>Command Execution Surface</h3>
-                <p>Live terminal playback of Bosun orchestration, assignment, PR, and merge flows.</p>
-                <p>Use this view to understand the CLI lifecycle without opening a separate terminal window.</p>
-              </aside>
-              <div class="terminal-window">
-                <div class="terminal-window__titlebar">
-                  <div class="terminal-window__dots">
-                    <div class="terminal-window__dot terminal-window__dot--red"></div>
-                    <div class="terminal-window__dot terminal-window__dot--yellow"></div>
-                    <div class="terminal-window__dot terminal-window__dot--green"></div>
-                  </div>
-                  <div class="terminal-window__title">bosun — bash — 120×35</div>
-                </div>
-                <div class="terminal-window__body" id="demo-terminal"></div>
-              </div>
-            </div>
-          </div>
-
-          <div class="demo-panel" id="demo-panel-telegram">
-            <div class="telegram-demo-window reveal">
-              <div class="telegram-demo-window__chrome">
-                <div class="telegram-demo-window__top">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-                  <span class="telegram-demo-window__app-name">Telegram</span>
-                  <div class="telegram-demo-window__dots">
-                    <div class="terminal-window__dot terminal-window__dot--red"></div>
-                    <div class="terminal-window__dot terminal-window__dot--yellow"></div>
-                    <div class="terminal-window__dot terminal-window__dot--green"></div>
-                  </div>
-                </div>
-              </div>
-              <div class="telegram-demo-window__layout">
-                <aside class="telegram-demo-window__context" aria-label="Telegram context">
-                  <h3>Telegram Command Surface</h3>
-                  <p>Native command flows, inline buttons, and operational alerts with the same command model used in production.</p>
-                  <p>The right panel is intentionally mobile-sized to mirror in-app Telegram behavior.</p>
-                </aside>
-                <div class="telegram-demo-window__phone-shell">
-                  <div id="telegram-chat-container"></div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="demo-panel" id="demo-panel-mobile">
-            <div class="miniapp-demo-window reveal">
-              <div class="miniapp-demo-window__phone">
-                <div class="miniapp-demo-window__notch"></div>
-                <div class="miniapp-demo-window__screen">
-                  <div class="miniapp-demo-window__tg-header">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-                    <span>Bosun</span>
-                    <button class="miniapp-demo-window__expand" type="button" aria-label="Enter fullscreen" aria-pressed="false">
-                      <svg class="miniapp-demo-window__expand-icon miniapp-demo-window__expand-icon--enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H3v5"/><path d="M16 3h5v5"/><path d="M8 21H3v-5"/><path d="M16 21h5v-5"/></svg>
-                      <svg class="miniapp-demo-window__expand-icon miniapp-demo-window__expand-icon--exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3H3v6"/><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M15 21h6v-6"/></svg>
-                    </button>
-                    <div class="miniapp-demo-window__tg-dots">⋮</div>
-                  </div>
-                  <iframe
-                    id="miniapp-iframe"
-                    src="ui/demo.html"
-                    class="miniapp-demo-window__iframe"
-                    loading="lazy"
-                    title="Bosun MiniApp Demo — Mobile"
-                  ></iframe>
-                </div>
-              </div>
-              <p class="miniapp-demo-window__caption">
-                <span class="miniapp-demo-window__live-dot"></span>
-                Live from source — auto-updates when the real MiniApp changes
-              </p>
-            </div>
-          </div>
+        </div>
 
         </div>
       </div>
     </div>
   </section>
 
+  <!-- ═══ Stats ═════════════════════════════════════════════════════════ -->
   <section class="container">
     <div class="stats reveal">
       <div class="stat">
@@ -1450,6 +270,7 @@
     </div>
   </section>
 
+  <!-- ═══ Features ══════════════════════════════════════════════════════ -->
   <section id="features">
     <div class="container">
       <div class="section-header reveal">
@@ -1464,7 +285,12 @@
       <div class="features-grid">
         <div class="feature-card reveal reveal--delay-1">
           <div class="feature-card__icon" aria-hidden="true">
-            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="8" width="32" height="36" rx="6" stroke="currentColor"/><rect x="44" y="8" width="32" height="36" rx="6" stroke="currentColor"/><rect x="86" y="8" width="32" height="36" rx="6" stroke="currentColor"/><path d="M34 26H44M76 26H86" stroke="currentColor"/></svg>
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="2" y="8" width="32" height="36" rx="6" stroke="currentColor"/>
+              <rect x="44" y="8" width="32" height="36" rx="6" stroke="currentColor"/>
+              <rect x="86" y="8" width="32" height="36" rx="6" stroke="currentColor"/>
+              <path d="M34 26H44M76 26H86" stroke="currentColor"/>
+            </svg>
           </div>
           <h3 class="feature-card__title">Multi-Executor Routing</h3>
           <p class="feature-card__desc">
@@ -1475,7 +301,11 @@
 
         <div class="feature-card reveal reveal--delay-2">
           <div class="feature-card__icon" aria-hidden="true">
-            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M16 26h88" stroke="currentColor"/><path d="M89 15l15 11-15 11" stroke="currentColor"/><path d="M31 37L16 26l15-11" stroke="currentColor"/></svg>
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M16 26h88" stroke="currentColor"/>
+              <path d="M89 15l15 11-15 11" stroke="currentColor"/>
+              <path d="M31 37L16 26l15-11" stroke="currentColor"/>
+            </svg>
           </div>
           <h3 class="feature-card__title">Smart PR Lifecycle</h3>
           <p class="feature-card__desc">
@@ -1486,7 +316,10 @@
 
         <div class="feature-card reveal reveal--delay-3">
           <div class="feature-card__icon" aria-hidden="true">
-            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M60 10l22 8v12c0 8-6 14-22 19-16-5-22-11-22-19V18l22-8z" stroke="currentColor"/><path d="M48 27l8 8 16-16" stroke="currentColor"/></svg>
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M60 10l22 8v12c0 8-6 14-22 19-16-5-22-11-22-19V18l22-8z" stroke="currentColor"/>
+              <path d="M48 27l8 8 16-16" stroke="currentColor"/>
+            </svg>
           </div>
           <h3 class="feature-card__title">Self-Healing Recovery</h3>
           <p class="feature-card__desc">
@@ -1497,7 +330,10 @@
 
         <div class="feature-card reveal reveal--delay-1">
           <div class="feature-card__icon" aria-hidden="true">
-            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="14" y="10" width="92" height="32" rx="6" stroke="currentColor"/><path d="M30 20h60M30 30h42" stroke="currentColor"/></svg>
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="14" y="10" width="92" height="32" rx="6" stroke="currentColor"/>
+              <path d="M30 20h60M30 30h42" stroke="currentColor"/>
+            </svg>
           </div>
           <h3 class="feature-card__title">Flexible Task Boards</h3>
           <p class="feature-card__desc">
@@ -1508,7 +344,11 @@
 
         <div class="feature-card reveal reveal--delay-2">
           <div class="feature-card__icon" aria-hidden="true">
-            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="12" y="8" width="40" height="36" rx="7" stroke="currentColor"/><rect x="68" y="8" width="40" height="36" rx="7" stroke="currentColor"/><path d="M52 26h16" stroke="currentColor"/></svg>
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="12" y="8" width="40" height="36" rx="7" stroke="currentColor"/>
+              <rect x="68" y="8" width="40" height="36" rx="7" stroke="currentColor"/>
+              <path d="M52 26h16" stroke="currentColor"/>
+            </svg>
           </div>
           <h3 class="feature-card__title">Telegram Control Center</h3>
           <p class="feature-card__desc">
@@ -1519,7 +359,12 @@
 
         <div class="feature-card reveal reveal--delay-3">
           <div class="feature-card__icon" aria-hidden="true">
-            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="26" cy="26" r="12" stroke="currentColor"/><circle cx="60" cy="26" r="12" stroke="currentColor"/><circle cx="94" cy="26" r="12" stroke="currentColor"/><path d="M38 26h10M72 26h10" stroke="currentColor"/></svg>
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="26" cy="26" r="12" stroke="currentColor"/>
+              <circle cx="60" cy="26" r="12" stroke="currentColor"/>
+              <circle cx="94" cy="26" r="12" stroke="currentColor"/>
+              <path d="M38 26h10M72 26h10" stroke="currentColor"/>
+            </svg>
           </div>
           <h3 class="feature-card__title">Multi-Agent Coordination</h3>
           <p class="feature-card__desc">
@@ -1530,7 +375,12 @@
 
         <div class="feature-card reveal reveal--delay-1">
           <div class="feature-card__icon" aria-hidden="true">
-            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 38h96" stroke="currentColor"/><rect x="20" y="24" width="14" height="14" rx="3" stroke="currentColor"/><rect x="44" y="18" width="14" height="20" rx="3" stroke="currentColor"/><rect x="68" y="12" width="14" height="26" rx="3" stroke="currentColor"/></svg>
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12 38h96" stroke="currentColor"/>
+              <rect x="20" y="24" width="14" height="14" rx="3" stroke="currentColor"/>
+              <rect x="44" y="18" width="14" height="20" rx="3" stroke="currentColor"/>
+              <rect x="68" y="12" width="14" height="26" rx="3" stroke="currentColor"/>
+            </svg>
           </div>
           <h3 class="feature-card__title">Fleet Coordination</h3>
           <p class="feature-card__desc">
@@ -1541,7 +391,11 @@
 
         <div class="feature-card reveal reveal--delay-2">
           <div class="feature-card__icon" aria-hidden="true">
-            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="28" y="10" width="64" height="32" rx="8" stroke="currentColor"/><path d="M44 26h32" stroke="currentColor"/><path d="M52 16h16" stroke="currentColor"/></svg>
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="28" y="10" width="64" height="32" rx="8" stroke="currentColor"/>
+              <path d="M44 26h32" stroke="currentColor"/>
+              <path d="M52 16h16" stroke="currentColor"/>
+            </svg>
           </div>
           <h3 class="feature-card__title">Container Isolation</h3>
           <p class="feature-card__desc">
@@ -1552,7 +406,10 @@
 
         <div class="feature-card reveal reveal--delay-3">
           <div class="feature-card__icon" aria-hidden="true">
-            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="60" cy="26" r="16" stroke="currentColor"/><path d="M60 15v22M49 26h22" stroke="currentColor"/></svg>
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="60" cy="26" r="16" stroke="currentColor"/>
+              <path d="M60 15v22M49 26h22" stroke="currentColor"/>
+            </svg>
           </div>
           <h3 class="feature-card__title">Setup Wizard</h3>
           <p class="feature-card__desc">
@@ -1564,6 +421,7 @@
     </div>
   </section>
 
+  <!-- ═══ Security ══════════════════════════════════════════════════════ -->
   <section id="security">
     <div class="container">
       <div class="section-header reveal">
@@ -1579,6 +437,7 @@
     </div>
   </section>
 
+  <!-- ═══ Architecture ══════════════════════════════════════════════════ -->
   <section id="architecture">
     <div class="container">
       <div class="section-header reveal">
@@ -1592,19 +451,38 @@
       <div class="arch-diagram reveal">
         <div class="arch-flow">
           <div class="arch-node">
-            <div class="arch-node__icon"></div>
+            <div class="arch-node__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="4" width="14" height="16" rx="2"/>
+                <path d="M9 2h6v4H9z"/>
+                <path d="M8 10h8M8 14h6"/>
+              </svg>
+            </div>
             <div class="arch-node__label">Task Board</div>
             <div class="arch-node__sub">GitHub / Jira / Internal</div>
           </div>
           <div class="arch-arrow">→</div>
           <div class="arch-node">
-            <div class="arch-node__icon"></div>
+            <div class="arch-node__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="8" y="8" width="8" height="8" rx="1.5"/>
+                <path d="M3 9h2M3 15h2M19 9h2M19 15h2M9 3v2M15 3v2M9 19v2M15 19v2"/>
+              </svg>
+            </div>
             <div class="arch-node__label">Supervisor</div>
             <div class="arch-node__sub">monitor.mjs</div>
           </div>
           <div class="arch-arrow">→</div>
           <div class="arch-node">
-            <div class="arch-node__icon"></div>
+            <div class="arch-node__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="4" y="8" width="16" height="10" rx="2"/>
+                <path d="M12 4v4"/>
+                <circle cx="9" cy="13" r="1"/>
+                <circle cx="15" cy="13" r="1"/>
+                <path d="M8 18h8"/>
+              </svg>
+            </div>
             <div class="arch-node__label">Agent Pool</div>
             <div class="arch-node__sub">Copilot / Codex / Claude</div>
           </div>
@@ -1612,7 +490,15 @@
 
         <div class="arch-layers">
           <div class="arch-layer reveal reveal--delay-1">
-            <div class="arch-layer__title">Orchestration</div>
+            <div class="arch-layer__title">
+              <svg class="arch-layer__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 6h16M4 12h16M4 18h16"/>
+                <circle cx="9" cy="6" r="2"/>
+                <circle cx="15" cy="12" r="2"/>
+                <circle cx="7" cy="18" r="2"/>
+              </svg>
+              Orchestration
+            </div>
             <ul class="arch-layer__items">
               <li>Task routing &amp; weighted distribution</li>
               <li>Executor failover &amp; cooldowns</li>
@@ -1623,7 +509,15 @@
           </div>
 
           <div class="arch-layer reveal reveal--delay-2">
-            <div class="arch-layer__title">Coordination</div>
+            <div class="arch-layer__title">
+              <svg class="arch-layer__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="6" cy="12" r="2"/>
+                <circle cx="12" cy="6" r="2"/>
+                <circle cx="18" cy="12" r="2"/>
+                <path d="M7.7 10.7l2.6-2.6M13.7 7.7l2.6 2.6M8 12h8"/>
+              </svg>
+              Coordination
+            </div>
             <ul class="arch-layer__items">
               <li>Shared state with atomic claims</li>
               <li>Heartbeat-based liveness detection</li>
@@ -1634,7 +528,13 @@
           </div>
 
           <div class="arch-layer reveal reveal--delay-3">
-            <div class="arch-layer__title">Control Surfaces</div>
+            <div class="arch-layer__title">
+              <svg class="arch-layer__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="5" width="18" height="14" rx="2"/>
+                <path d="M7 9l2 2-2 2M11 13h4"/>
+              </svg>
+              Control Surfaces
+            </div>
             <ul class="arch-layer__items">
               <li>Telegram Bot with 30+ commands</li>
               <li>Mini App (7-tab web dashboard)</li>
@@ -1648,6 +548,7 @@
     </div>
   </section>
 
+  <!-- ═══ Integrations ══════════════════════════════════════════════════ -->
   <section id="integrations">
     <div class="container">
       <div class="section-header reveal">
@@ -1657,42 +558,79 @@
 
       <div class="integrations-grid">
         <div class="integration-card reveal reveal--delay-1">
-          <div class="integration-card__icon" aria-hidden="true"></div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.42 2.865 8.167 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.252-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.268.098-2.642 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844c.85.004 1.705.115 2.503.337 1.909-1.296 2.748-1.026 2.748-1.026.546 1.374.203 2.389.1 2.642.64.7 1.028 1.595 1.028 2.688 0 3.848-2.338 4.695-4.566 4.943.36.309.68.92.68 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0 0 22 12.017C22 6.484 17.523 2 12 2z"/>
+            </svg>
+          </div>
           <div class="integration-card__name">GitHub</div>
           <div class="integration-card__desc">Issues, Projects v2, PRs, CI checks</div>
         </div>
         <div class="integration-card reveal reveal--delay-2">
-          <div class="integration-card__icon" aria-hidden="true"></div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 2L11 13"/>
+              <path d="M22 2L15 22l-4-9-9-4 20-7z"/>
+            </svg>
+          </div>
           <div class="integration-card__name">Telegram</div>
           <div class="integration-card__desc">Bot, Mini App, Sentinel watchdog</div>
         </div>
         <div class="integration-card reveal reveal--delay-3">
-          <div class="integration-card__icon" aria-hidden="true"></div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <path d="M3 9h18M9 21V9"/>
+            </svg>
+          </div>
           <div class="integration-card__name">Jira</div>
           <div class="integration-card__desc">Full status mapping &amp; custom fields</div>
         </div>
         <div class="integration-card reveal reveal--delay-4">
-          <div class="integration-card__icon" aria-hidden="true"></div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/>
+            </svg>
+          </div>
           <div class="integration-card__name">WhatsApp</div>
           <div class="integration-card__desc">Optional notification channel</div>
         </div>
         <div class="integration-card reveal reveal--delay-1">
-          <div class="integration-card__icon" aria-hidden="true"></div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4a2 2 0 0 0 1-1.73z"/>
+              <path d="M3.3 7L12 12l8.7-5M12 22V12"/>
+            </svg>
+          </div>
           <div class="integration-card__name">Docker / Podman</div>
           <div class="integration-card__desc">Container-isolated agent execution</div>
         </div>
         <div class="integration-card reveal reveal--delay-2">
-          <div class="integration-card__icon" aria-hidden="true"></div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="7" y="7" width="10" height="10" rx="2"/>
+              <path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/>
+            </svg>
+          </div>
           <div class="integration-card__name">Copilot</div>
           <div class="integration-card__desc">Claude Opus, GPT, agent sessions</div>
         </div>
         <div class="integration-card reveal reveal--delay-3">
-          <div class="integration-card__icon" aria-hidden="true"></div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="5" width="20" height="14" rx="2"/>
+              <path d="M6 9l3 3-3 3M11 15h5"/>
+            </svg>
+          </div>
           <div class="integration-card__name">Codex</div>
           <div class="integration-card__desc">OpenAI Codex SDK &amp; persistent sessions</div>
         </div>
         <div class="integration-card reveal reveal--delay-4">
-          <div class="integration-card__icon" aria-hidden="true"></div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 18H7a5 5 0 1 1 1-9.9A6 6 0 0 1 20 13a4 4 0 0 1-2 5z"/>
+            </svg>
+          </div>
           <div class="integration-card__name">Cloudflare Tunnel</div>
           <div class="integration-card__desc">Persistent HTTPS for Mini App</div>
         </div>
@@ -1700,6 +638,7 @@
     </div>
   </section>
 
+  <!-- ═══ Quick Start ═══════════════════════════════════════════════════ -->
   <section id="quickstart">
     <div class="container">
       <div class="section-header reveal">
@@ -1732,6 +671,7 @@
     </div>
   </section>
 
+  <!-- ═══ Live Showcase ════════════════════════════════════════════════ -->
   <section id="showcase">
     <div class="container">
       <div class="section-header reveal">
@@ -1743,11 +683,26 @@
         </p>
       </div>
 
+      <!-- Feed tabs -->
       <div class="showcase-tabs reveal" id="showcase-tabs">
-        <button class="showcase-tab showcase-tab--active" data-feed="prs">Open PRs</button>
-        <button class="showcase-tab" data-feed="commits">Bosun Commits</button>
+        <button class="showcase-tab showcase-tab--active" data-feed="prs">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 19V5"/>
+            <path d="M5 12l7-7 7 7"/>
+          </svg>
+          Open PRs
+        </button>
+        <button class="showcase-tab" data-feed="commits">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="7" width="18" height="13" rx="2"/>
+            <path d="M3 7l9 6 9-6"/>
+            <path d="M12 13v7"/>
+          </svg>
+          Bosun Commits
+        </button>
       </div>
 
+      <!-- PR feed -->
       <div class="pr-showcase reveal showcase-feed showcase-feed--active" id="pr-showcase" data-feed-panel="prs">
         <div class="pr-showcase__loading">
           <span class="pr-showcase__spinner"></span>
@@ -1755,6 +710,7 @@
         </div>
       </div>
 
+      <!-- Bosun commit feed -->
       <div class="pr-showcase reveal showcase-feed" id="commit-showcase" data-feed-panel="commits">
         <div class="pr-showcase__loading">
           <span class="pr-showcase__spinner"></span>
@@ -1770,6 +726,7 @@
     </div>
   </section>
 
+  <!-- ═══ Code Showcase ═══════════════════════════════════════════════ -->
   <section id="code-showcase">
     <div class="container">
       <div class="section-header reveal">
@@ -1851,6 +808,7 @@
     </div>
   </section>
 
+  <!-- ═══ CTA ═════════════════════════════════════════════════════════ -->
   <section class="cta-section">
     <div class="container">
       <h2 class="reveal">Ready to <span class="gradient-text">automate your fleet</span>?</h2>
@@ -1861,7 +819,7 @@
       <div class="hero__actions reveal">
         <a href="docs/getting-started.html" class="btn btn--primary">
           Read the Docs
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
         </a>
         <a href="https://github.com/virtengine/bosun#readme" class="btn btn--ghost" target="_blank" rel="noopener">
           View on GitHub
@@ -1873,24 +831,13 @@
     </div>
   </section>
 
+  <!-- ═══ Footer ════════════════════════════════════════════════════════ -->
   <footer class="footer">
     <div class="container">
       <div class="footer__inner">
         <div class="footer__left">
-          <svg viewBox="0 0 100 100" width="24" height="24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <g stroke="#28468f" fill="none" stroke-linecap="round">
-              <circle cx="50" cy="50" r="38" stroke-width="6"/>
-              <circle cx="50" cy="50" r="16" stroke-width="4"/>
-              <line x1="66" y1="50" x2="84" y2="50" stroke-width="4"/>
-              <line x1="34" y1="50" x2="16" y2="50" stroke-width="4"/>
-              <line x1="50" y1="66" x2="50" y2="84" stroke-width="4"/>
-              <line x1="50" y1="34" x2="50" y2="16" stroke-width="4"/>
-            </g>
-            <circle cx="50" cy="50" r="7" fill="#28468f"/>
-          </svg>
-          <a href="https://github.com/virtengine/bosun#readme" target="_blank" rel="noopener">
-            <span data-version>v0.0</span> · Bosun by <span>VirtEngine</span> · Apache 2.0
-          </a>
+          <img src="logo.svg" width="24" height="24" alt="Bosun" style="opacity:0.7;vertical-align:middle;margin-right:0.3rem;" />
+          <span class="footer__brand">Bosun</span>
         </div>
         <ul class="footer__links">
           <li><a href="docs/">Docs</a></li>
@@ -1902,6 +849,7 @@
     </div>
   </footer>
 
+  <!-- ═══ Scripts ═══════════════════════════════════════════════════════ -->
   <script src="js/particles.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jquery.terminal@2.42.2/js/jquery.terminal.min.js"></script>
@@ -1912,5 +860,7 @@
   <script src="js/analytics.js"></script>
   <script src="js/main.js"></script>
 
+  <!-- Fallback analytics pixel for adblocker detection -->
+  <img src="https://cloud.umami.is/p/f3XJugzIu" alt="" width="1" height="1" style="display:none;" />
 </body>
 </html>

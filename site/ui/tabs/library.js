@@ -23,7 +23,7 @@ import { SearchInput, SegmentedControl, Toggle } from "../components/forms.js";
 
 const LIBRARY_STYLES = `
 /* ── Library Tab ────────────────────────────────────── */
-.library-root { padding: 12px; max-width: var(--content-max); margin: 0 auto; }
+.library-root { padding: 12px; max-width: 1200px; margin: 0 auto; }
 .library-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .library-header h2 { margin: 0; font-size: 1.2em; flex: 1; min-width: 120px; }
 

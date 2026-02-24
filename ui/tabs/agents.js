@@ -855,12 +855,8 @@ export function AgentsTab() {
   const agents = agentsData?.value || [];
   const execData = executor?.data;
   const slots = execData?.slots || [];
-  const maxParallel = execData?.maxParallel || (slots.length || 0);
-  const derivedActiveSlots = slots.filter((slot) => {
-    const status = String(slot?.status || "").toLowerCase();
-    return status === "running" || status === "busy";
-  }).length;
-  const activeSlots = slots.length ? derivedActiveSlots : (execData?.activeSlots || 0);
+  const maxParallel = execData?.maxParallel || 0;
+  const activeSlots = execData?.activeSlots || 0;
 
   const [expandedSlot, setExpandedSlot] = useState(null);
   const [selectedAgent, setSelectedAgent] = useState(null);
@@ -882,10 +878,6 @@ export function AgentsTab() {
       selectedSessionId.value = activeSession.id;
     }
   }, [sessionsData.value, selectedSessionId.value]);
-
-  useEffect(() => {
-    loadSessions({ type: "task" });
-  }, []);
 
   useEffect(() => {
     if (!workspaceTarget) return;
@@ -1116,7 +1108,7 @@ export function AgentsTab() {
             <div class="meta-text mb-sm">Tap a slot to open the workspace.</div>
             <div class="slot-grid">
               ${Array.from(
-                { length: Math.max(maxParallel, slots.length, activeSlots, 1) },
+                { length: Math.max(maxParallel, slots.length, 1) },
                 (_, i) => {
                   const slot = slots[i];
                   const st = slot ? slot.status || "busy" : "idle";
@@ -1262,9 +1254,7 @@ export function AgentsTab() {
                   </div>
                 `,
               )
-            : html`<${EmptyState} message=${activeSlots > 0
-              ? "Active slots reported, but slot details haven't arrived yet."
-              : "No active agents."} />`}
+            : html`<${EmptyState} message="No active agents." />`}
         <//>
       <//>
       </div>

@@ -32,10 +32,7 @@ export const loadingCount = signal(0);
  */
 export function apiFetch(path, options = {}) {
   const headers = { ...options.headers };
-  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
-  if (!isFormData) {
-    headers["Content-Type"] = headers["Content-Type"] || "application/json";
-  }
+  headers["Content-Type"] = headers["Content-Type"] || "application/json";
 
   const initData = getInitData();
   if (initData) {

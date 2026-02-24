@@ -705,114 +705,6 @@ select.input {
   gap: 8px;
 }
 
-/* ─── Task Attachments & Comments ─── */
-.task-attachments-block {
-  border: 1px dashed var(--border);
-  border-radius: 12px;
-  padding: 10px;
-  background: var(--bg-card);
-}
-
-.task-attachments-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.task-attachments-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.task-attachments-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 8px;
-}
-
-.task-attachment-item {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  padding: 8px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: var(--bg-secondary);
-}
-
-.task-attachment-thumb {
-  width: 44px;
-  height: 44px;
-  object-fit: cover;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-}
-
-.task-attachment-icon {
-  font-size: 18px;
-}
-
-.task-attachment-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.task-attachment-name {
-  font-weight: 600;
-  color: var(--text-primary);
-  text-decoration: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 180px;
-}
-
-.task-attachment-name:hover {
-  text-decoration: underline;
-}
-
-.task-attachment-sub {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.task-comments-block {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 10px;
-  background: var(--bg-card);
-}
-
-.task-comments-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.task-comment-item {
-  padding: 8px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: var(--bg-secondary);
-}
-
-.task-comment-meta {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-bottom: 4px;
-}
-
-.task-comment-body {
-  font-size: 13px;
-  color: var(--text-primary);
-  white-space: pre-wrap;
-  line-height: 1.5;
-}
-
 /* ─── Create Task Form ─── */
 .create-task-form {
   gap: 10px;
@@ -2338,7 +2230,7 @@ select.input {
   display: flex;
   flex-direction: column;
   gap: 24px;
-  max-width: var(--content-max);
+  max-width: 1200px;
   margin: 0 auto;
   padding: 16px;
 }

@@ -28,10 +28,6 @@ import {
   addComment,
 } from "./kanban-adapter.mjs";
 import {
-  listTaskAttachments,
-  mergeTaskAttachments,
-} from "./task-attachments.mjs";
-import {
   launchOrResumeThread,
   execWithRetry,
   invalidateThread,
@@ -116,148 +112,6 @@ const CODEX_TASK_LABELS = (() => {
   return new Set(labels.length > 0 ? labels : ["bosun"]);
 })();
 
-function parseNumberEnv(name, fallback) {
-  const value = Number(process.env[name]);
-  return Number.isFinite(value) ? value : fallback;
-}
-
-function sanitizePathSegment(value) {
-  return String(value || "").replace(/[^a-zA-Z0-9._-]+/g, "_");
-}
-
-function truncateText(text, maxChars) {
-  const raw = String(text || "");
-  if (!maxChars || raw.length <= maxChars) return raw;
-  return `${raw.slice(0, Math.max(0, maxChars - 3))}...`;
-}
-
-function isBosunStateComment(text) {
-  const raw = String(text || "").toLowerCase();
-  if (!raw) return false;
-  return raw.includes("bosun-state") || raw.includes("codex:ignore");
-}
-
-function normalizeTaskComments(task, maxComments, maxChars) {
-  const rawComments = Array.isArray(task?.comments)
-    ? task.comments
-    : Array.isArray(task?.meta?.comments)
-      ? task.meta.comments
-      : [];
-  const normalized = rawComments
-    .map((comment) => {
-      if (comment == null) return null;
-      const body = typeof comment === "string"
-        ? comment
-        : comment.body || comment.text || comment.content || "";
-      const trimmed = String(body || "").trim();
-      if (!trimmed || isBosunStateComment(trimmed)) return null;
-      return {
-        id: typeof comment === "object" ? comment.id || null : null,
-        author: typeof comment === "object"
-          ? comment.author || comment.user || comment.by || null
-          : null,
-        createdAt: typeof comment === "object"
-          ? comment.createdAt || comment.created_at || null
-          : null,
-        body: truncateText(trimmed.replace(/\s+/g, " "), maxChars),
-      };
-    })
-    .filter(Boolean);
-  if (!Number.isFinite(maxComments) || maxComments <= 0) return [];
-  if (normalized.length <= maxComments) return normalized;
-  return normalized.slice(-maxComments);
-}
-
-function formatBytes(bytes) {
-  if (bytes == null || Number.isNaN(Number(bytes))) return "";
-  const value = Number(bytes);
-  if (value <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const idx = Math.min(
-    units.length - 1,
-    Math.floor(Math.log(value) / Math.log(1024)),
-  );
-  const size = value / Math.pow(1024, idx);
-  return `${size < 10 ? size.toFixed(1) : Math.round(size)} ${units[idx]}`;
-}
-
-function normalizeTaskAttachments(task, backend, maxAttachments) {
-  const base = []
-    .concat(Array.isArray(task?.attachments) ? task.attachments : [])
-    .concat(Array.isArray(task?.meta?.attachments) ? task.meta.attachments : []);
-  const local = listTaskAttachments(task?.id || task?.task_id, backend);
-  const merged = mergeTaskAttachments(base, local);
-  if (!Number.isFinite(maxAttachments) || maxAttachments <= 0) return [];
-  if (merged.length <= maxAttachments) return merged;
-  return merged.slice(0, maxAttachments);
-}
-
-function formatAttachmentLine(attachment) {
-  if (!attachment) return "";
-  const name = attachment.name || attachment.filename || attachment.title || "attachment";
-  const kind = attachment.kind ? ` (${attachment.kind})` : "";
-  const sizeText = attachment.size ? `, ${formatBytes(attachment.size)}` : "";
-  const source = attachment.source ? ` | ${attachment.source}` : "";
-  const location =
-    attachment.filePath ||
-    attachment.path ||
-    attachment.url ||
-    attachment.uri ||
-    "";
-  const suffix = location ? ` — ${location}` : "";
-  return `- ${name}${kind}${sizeText}${source}${suffix}`;
-}
-
-function formatCommentLine(comment) {
-  const author = comment.author ? `@${comment.author}` : "comment";
-  const timestamp = comment.createdAt ? ` (${comment.createdAt})` : "";
-  return `- ${author}${timestamp}: ${comment.body}`;
-}
-
-function buildTaskContextBlock(task, backend) {
-  const maxComments = parseNumberEnv("BOSUN_TASK_CONTEXT_MAX_COMMENTS", 8);
-  const maxCommentChars = parseNumberEnv("BOSUN_TASK_CONTEXT_MAX_COMMENT_CHARS", 1200);
-  const maxAttachments = parseNumberEnv("BOSUN_TASK_CONTEXT_MAX_ATTACHMENTS", 20);
-  const comments = normalizeTaskComments(task, maxComments, maxCommentChars);
-  const attachments = normalizeTaskAttachments(task, backend, maxAttachments);
-  if (comments.length === 0 && attachments.length === 0) {
-    return { block: "", comments, attachments };
-  }
-  const lines = ["## Task Context"];
-  if (comments.length > 0) {
-    lines.push("### Comments");
-    for (const comment of comments) {
-      lines.push(formatCommentLine(comment));
-    }
-  }
-  if (attachments.length > 0) {
-    lines.push("### Attachments");
-    for (const attachment of attachments) {
-      lines.push(formatAttachmentLine(attachment));
-    }
-  }
-  return { block: lines.join("\n"), comments, attachments };
-}
-
-function writeTaskContextFile(task, payload, repoRoot) {
-  if (!payload || !repoRoot) return null;
-  const taskId = task?.id || task?.task_id;
-  if (!taskId) return null;
-  const dir = resolve(repoRoot, ".bosun", ".cache", "task-context");
-  try {
-    mkdirSync(dir, { recursive: true });
-  } catch {
-    return null;
-  }
-  const safeId = sanitizePathSegment(taskId);
-  const filePath = resolve(dir, `${safeId}.json`);
-  try {
-    writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf8");
-  } catch {
-    return null;
-  }
-  return filePath;
-}
 /** Watchdog interval: how often to check for stalled agent slots */
 const WATCHDOG_INTERVAL_MS = 60_000; // 1 minute
 
@@ -4020,43 +3874,7 @@ class TaskExecutor {
       slot.worktreePath = wt.path;
       this._upsertRuntimeSlot(slot);
 
-      // 4. Build task context (comments + attachments) and persist for agents.
-      const taskBackend = task.backend || getKanbanBackendName() || "internal";
-      const taskContextResult = buildTaskContextBlock(task, taskBackend);
-      const taskContextPayload = {
-        taskId,
-        backend: taskBackend,
-        title: task.title || "",
-        description: task.description || task.body || "",
-        taskUrl: task.taskUrl || task.meta?.task_url || task.url || null,
-        comments: taskContextResult.comments,
-        attachments: taskContextResult.attachments,
-        generatedAt: new Date().toISOString(),
-      };
-      const taskContextFile = writeTaskContextFile(
-        task,
-        taskContextPayload,
-        executionRepoRoot,
-      );
-      const taskAttachmentsDir = resolve(
-        executionRepoRoot,
-        ".bosun",
-        ".cache",
-        "attachments",
-      );
-
-      task._taskContextBlock = taskContextResult.block;
-      task._taskContextPayload = taskContextPayload;
-      task._taskContextFile = taskContextFile;
-      task.meta = {
-        ...(task.meta || {}),
-        taskContextBlock: taskContextResult.block,
-        taskContext: taskContextPayload,
-      };
-      slot.taskContextBlock = taskContextResult.block;
-      slot.taskContextFile = taskContextFile;
-
-      // 5. Record pre-execution HEAD hash (to detect if agent made NEW commits)
+      // 4. Record pre-execution HEAD hash (to detect if agent made NEW commits)
       const preExecHead =
         spawnSync("git", ["rev-parse", "HEAD"], {
           cwd: wt.path,
@@ -4064,7 +3882,7 @@ class TaskExecutor {
           timeout: 5000,
         }).stdout?.trim() || "";
 
-      // 6. Build prompt
+      // 5. Build prompt
       const prompt = this._buildTaskPrompt(task, wt.path, {
         retryReason: options?.retryReason,
         branch,
@@ -4074,14 +3892,14 @@ class TaskExecutor {
         repository: taskRepoContext.repository,
       });
 
-      // 6b. Create per-task AbortController for watchdog integration
+      // 5b. Create per-task AbortController for watchdog integration
       const taskAbortController = new AbortController();
       this._slotAbortControllers.set(taskId, taskAbortController);
 
       // Reset idle-continue counter for this task
       this._idleContinueCounts.delete(taskId);
 
-      // 7. Execute agent
+      // 6. Execute agent
       console.log(
         `${TAG} executing task "${taskTitle}" in ${wt.path} on branch ${branch} (sdk=${resolvedSdk})`,
       );
