@@ -10,11 +10,17 @@
     (function() {
       var shim = document.createElement("script");
       shim.async = true;
-      shim.src = "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js";
+      shim.src = "/vendor/es-module-shims.js";
       shim.onerror = function() {
         var fallback = document.createElement("script");
         fallback.async = true;
-        fallback.src = "https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.min.js";
+        fallback.src = "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js";
+        fallback.onerror = function() {
+          var fallback2 = document.createElement("script");
+          fallback2.async = true;
+          fallback2.src = "https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.min.js";
+          document.head.appendChild(fallback2);
+        };
         document.head.appendChild(fallback);
       };
       document.head.appendChild(shim);
@@ -37,28 +43,29 @@
     } catch(e) {}
   </script>
   <!-- Import map: ensures all modules share a single Preact instance.
-       esm.sh is primary because its ?deps= param forces @preact/signals to
-       re-use the SAME preact instance (jsdelivr +esm bundles an internal copy
-       of preact, creating two instances that break signals/hooks). -->
+       Primary source: /vendor/ (served from local node_modules — works offline/LAN).
+       If a vendor file is missing (first run before npm install), the server
+       transparently redirects to esm.sh. The importmap-fallback below is a
+       last-resort CDN backup if the whole server-side vendor route fails. -->
   <script type="importmap">
   {
     "imports": {
-      "preact":          "https://esm.sh/preact@10.25.4",
-      "preact/hooks":    "https://esm.sh/preact@10.25.4/hooks",
-      "preact/compat":   "https://esm.sh/preact@10.25.4/compat",
-      "htm":             "https://esm.sh/htm@3.1.1",
-      "@preact/signals": "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4"
+      "preact":          "/vendor/preact.js",
+      "preact/hooks":    "/vendor/preact-hooks.js",
+      "preact/compat":   "/vendor/preact-compat.js",
+      "htm":             "/vendor/htm.js",
+      "@preact/signals": "/vendor/preact-signals.js"
     }
   }
   </script>
   <script type="importmap-shim">
   {
     "imports": {
-      "preact":          "https://esm.sh/preact@10.25.4",
-      "preact/hooks":    "https://esm.sh/preact@10.25.4/hooks",
-      "preact/compat":   "https://esm.sh/preact@10.25.4/compat",
-      "htm":             "https://esm.sh/htm@3.1.1",
-      "@preact/signals": "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4"
+      "preact":          "/vendor/preact.js",
+      "preact/hooks":    "/vendor/preact-hooks.js",
+      "preact/compat":   "/vendor/preact-compat.js",
+      "htm":             "/vendor/htm.js",
+      "@preact/signals": "/vendor/preact-signals.js"
     }
   }
   </script>
@@ -139,7 +146,7 @@
         await loadApp(false);
       } catch (err) {
         if (!shimReady || !window.importShim) {
-          bootErr('⚠️ Failed to load app modules.<br><small style="color:#888">Check your internet connection (CDN: esm.sh) or try refreshing.</small>');
+          bootErr('⚠️ Failed to load app modules.<br><small style="color:#888">Try refreshing. If this persists, run <code>npm install</code> in the bosun directory.</small>');
           return;
         }
         console.warn("[ui] Primary CDN failed, switching to fallback.", err);
@@ -148,7 +155,7 @@
           await loadApp(true);
         } catch (fallbackErr) {
           console.error("[ui] Fallback CDN failed.", fallbackErr);
-          bootErr('⚠️ Failed to load app modules.<br><small style="color:#888">Both CDNs failed (esm.sh + jsdelivr). Check your connection or refresh.</small>');
+          bootErr('⚠️ Failed to load app modules.<br><small style="color:#888">Local vendor and CDN fallback both failed. Run <code>npm install</code> in the bosun directory or check your connection.</small>');
         }
       }
     })();
@@ -161,7 +168,7 @@
       var el = document.getElementById('boot-loader');
       if (el) {
         var s = document.getElementById('boot-status');
-        if (s) s.innerHTML = '⚠️ Failed to load app modules.<br><small style="color:#888">Check your internet connection (CDN: esm.sh) or try refreshing.</small>';
+        if (s) s.innerHTML = '⚠️ Failed to load app modules.<br><small style="color:#888">Try refreshing. If this persists, run <code>npm install</code> in the bosun directory.</small>';
       }
     }, 12000);
   </script>
