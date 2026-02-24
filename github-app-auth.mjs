@@ -18,7 +18,9 @@
  */
 
 import { createSign, createHmac, timingSafeEqual } from "node:crypto";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, dirname } from "node:path";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -378,4 +380,84 @@ export function isOAuthConfigured() {
 export function getAppId() {
   const v = String(process.env.BOSUN_GITHUB_APP_ID || "").trim();
   return v || null;
+}
+
+// ── OAuth state persistence ───────────────────────────────────────────────────
+
+const AUTH_STATE_PATH = join(homedir(), ".bosun", "github-auth-state.json");
+
+/**
+ * Saves OAuth user token state to ~/.bosun/github-auth-state.json.
+ *
+ * @param {{ user: object, accessToken: string, tokenType: string, scope: string, savedAt: string, installationIds: number[] }} state
+ */
+export function saveOAuthState(state) {
+  const dir = dirname(AUTH_STATE_PATH);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  writeFileSync(AUTH_STATE_PATH, JSON.stringify(state, null, 2), "utf8");
+}
+
+/**
+ * Loads saved OAuth state from ~/.bosun/github-auth-state.json.
+ * Returns null if not found or invalid JSON.
+ *
+ * @returns {{ user: object, accessToken: string, tokenType: string, scope: string, savedAt: string, installationIds: number[] }|null}
+ */
+export function loadOAuthState() {
+  try {
+    if (!existsSync(AUTH_STATE_PATH)) return null;
+    const raw = readFileSync(AUTH_STATE_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns the current user access token.
+ * Preference order: saved state → BOSUN_GITHUB_USER_TOKEN env var → null.
+ *
+ * @returns {string|null}
+ */
+export function getUserToken() {
+  const state = loadOAuthState();
+  if (state?.accessToken) return state.accessToken;
+  const envToken = process.env.BOSUN_GITHUB_USER_TOKEN || "";
+  return envToken || null;
+}
+
+/**
+ * Returns the best available GitHub API token for use with a given repo.
+ *
+ * Priority:
+ *   1. User OAuth token (from saved state or BOSUN_GITHUB_USER_TOKEN)
+ *   2. Installation token for the given owner/repo (requires App config)
+ *   3. GITHUB_TOKEN or GH_TOKEN env vars (gh CLI fallback)
+ *   4. null
+ *
+ * @param {{ owner?: string, repo?: string }} [opts]
+ * @returns {Promise<string|null>}
+ */
+export async function getBestToken({ owner, repo } = {}) {
+  // 1. User OAuth token
+  const userToken = getUserToken();
+  if (userToken) return userToken;
+
+  // 2. Installation token (requires App to be configured and owner/repo known)
+  if (owner && repo && isAppConfigured()) {
+    try {
+      const { token } = await getInstallationTokenForRepo(owner, repo);
+      return token;
+    } catch {
+      // fall through
+    }
+  }
+
+  // 3. gh CLI fallback
+  const cliToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
+  return cliToken || null;
 }

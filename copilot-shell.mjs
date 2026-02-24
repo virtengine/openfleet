@@ -13,6 +13,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 import { resolveRepoRoot } from "./repo-root.mjs";
+import { getGitHubToken } from "./github-auth-manager.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
@@ -318,32 +319,39 @@ async function loadCopilotSdk() {
 
 /**
  * Detect GitHub token from multiple sources (auth passthrough).
- * Priority: ENV > gh CLI > undefined (SDK will use default auth).
+ * Priority: Copilot-specific ENV > github-auth-manager (OAuth/App/gh-CLI/env) > undefined
  */
-function detectGitHubToken() {
-  // 1. Direct token env vars (highest priority)
-  const envToken =
-    process.env.COPILOT_CLI_TOKEN ||
-    process.env.GITHUB_TOKEN ||
-    process.env.GH_TOKEN ||
-    process.env.GITHUB_PAT;
-  if (envToken) {
-    console.log("[copilot-shell] using token from environment");
-    return envToken;
+async function detectGitHubToken() {
+  // 1. Copilot-specific token env var (highest priority, no round-trips)
+  const copilotEnvToken = process.env.COPILOT_CLI_TOKEN || process.env.GITHUB_PAT;
+  if (copilotEnvToken) {
+    console.log("[copilot-shell] using Copilot token from environment");
+    return copilotEnvToken;
   }
 
-  // 2. Try to read from gh CLI auth
+  // 2. Use unified auth manager (OAuth > App installation > gh CLI > GITHUB_TOKEN/GH_TOKEN)
+  try {
+    const { token, type } = await getGitHubToken().catch(() => ({
+      token: process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "",
+      type: "env",
+    }));
+    if (token) {
+      console.log(`[copilot-shell] using token from auth manager (${type})`);
+      return token;
+    }
+  } catch {
+    // fall through
+  }
+
+  // 3. gh CLI is authenticated — SDK will use it automatically
   try {
     execSync("gh auth status", { stdio: "pipe", encoding: "utf8" });
-    console.log("[copilot-shell] detected gh CLI authentication");
-    // gh CLI is authenticated - SDK will use it automatically
+    console.log("[copilot-shell] gh CLI is authenticated — using SDK default auth");
     return undefined;
   } catch {
     // gh not authenticated or not installed
   }
 
-  // 3. VS Code auth detection could be added here
-  // For now, return undefined to let SDK use default auth flow
   console.log("[copilot-shell] no pre-auth detected, using SDK default auth");
   return undefined;
 }
@@ -383,7 +391,7 @@ async function ensureClientStarted() {
     process.env.GITHUB_COPILOT_CLI_PATH ||
     undefined;
   const cliUrl = process.env.COPILOT_CLI_URL || undefined;
-  const token = detectGitHubToken();
+  const token = await detectGitHubToken();
   const transport = resolveCopilotTransport();
 
   // Session mode: "local" (default) uses stdio for full model access + MCP + sub-agents.

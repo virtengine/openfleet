@@ -8995,7 +8995,7 @@ async function cmdBackground(chatId, args) {
       chatId,
       `🛰️ Background task queued: "${task.slice(0, 80)}${task.length > 80 ? "…" : ""}"`,
     );
-    await handleFreeText(task, chatId, { background: true });
+    void handleFreeText(task, chatId, { background: true, isolated: true });
     return;
   }
 
@@ -9232,8 +9232,9 @@ function buildStreamMessage({
 
 async function handleFreeText(text, chatId, options = {}) {
   const backgroundMode = !!options.background;
+  const isolatedMode = !!options.isolated;
   // ── Follow-up steering: if agent is busy, queue message as follow-up ──
-  if (isPrimaryBusy() && activeAgentSession) {
+  if (!isolatedMode && isPrimaryBusy() && activeAgentSession) {
     if (!activeAgentSession.followUpQueue) {
       activeAgentSession.followUpQueue = [];
     }
@@ -9270,7 +9271,7 @@ async function handleFreeText(text, chatId, options = {}) {
   }
 
   // ── Block if agent is busy but no session (shouldn't happen normally) ──
-  if (isPrimaryBusy()) {
+  if (!isolatedMode && isPrimaryBusy()) {
     await sendReply(
       chatId,
       "⏳ Agent is executing a task. Please wait for it to finish...",
@@ -9504,6 +9505,10 @@ async function handleFreeText(text, chatId, options = {}) {
       onEvent,
       sendRawEvents: true, // request raw events alongside formatted ones
       abortController,
+      allowConcurrent: true,
+      forceIsolated: isolatedMode,
+      sessionId: `telegram-${chatId}`,
+      sessionType: "telegram",
     });
 
     if (editTimer) clearTimeout(editTimer);

@@ -340,6 +340,27 @@ export function runConfigDoctor(options = {}) {
     }
   }
 
+  if (backend === "jira") {
+    const missing = [];
+    if (!effective.JIRA_BASE_URL) missing.push("JIRA_BASE_URL");
+    if (!effective.JIRA_EMAIL) missing.push("JIRA_EMAIL");
+    if (!effective.JIRA_API_TOKEN) missing.push("JIRA_API_TOKEN");
+    const hasProjectKey = Boolean(
+      effective.JIRA_PROJECT_KEY || effective.KANBAN_PROJECT_ID,
+    );
+    if (!hasProjectKey) {
+      missing.push("JIRA_PROJECT_KEY (or KANBAN_PROJECT_ID)");
+    }
+    if (missing.length > 0) {
+      issues.errors.push({
+        code: "JIRA_BACKEND_REQUIRED",
+        message: `KANBAN_BACKEND=jira is missing required config: ${missing.join(", ")}`,
+        fix:
+          "Set required JIRA_* variables (and project key), or switch KANBAN_BACKEND=internal.",
+      });
+    }
+  }
+
   const vkNeeded = backend === "vk" || mode === "vk" || mode === "hybrid";
   if (vkNeeded) {
     const vkBaseUrl = effective.VK_BASE_URL || "";

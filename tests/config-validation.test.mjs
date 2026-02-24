@@ -27,6 +27,7 @@ const ENV_KEYS = [
   "JIRA_CUSTOM_FIELD_OWNER_ID",
   "EXECUTORS",
   "TASK_TRIGGER_SYSTEM_ENABLED",
+  "KANBAN_BACKEND",
 ];
 
 describe("loadConfig validation and edge cases", () => {
@@ -246,5 +247,24 @@ describe("loadConfig validation and edge cases", () => {
     expect(config.jira.statusMapping.todo).toBe("Backlog");
     expect(config.jira.labels.ignore).toBe("codex-ignore");
     expect(config.jira.sharedStateFields.ownerId).toBe("customfield_10042");
+  });
+
+  it("fails fast when jira backend is selected without required jira config", () => {
+    process.env.KANBAN_BACKEND = "jira";
+    process.env.JIRA_BASE_URL = "";
+    process.env.JIRA_EMAIL = "";
+    process.env.JIRA_API_TOKEN = "";
+    process.env.JIRA_PROJECT_KEY = "";
+
+    expect(() =>
+      loadConfig([
+        "node",
+        "bosun",
+        "--config-dir",
+        tempConfigDir,
+        "--repo-root",
+        tempConfigDir,
+      ]),
+    ).toThrow(/KANBAN_BACKEND=jira requires/i);
   });
 });
