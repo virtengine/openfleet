@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; img-src * data: blob:; connect-src *;" />
   <title>Bosun — AI Agent Orchestration</title>
 
@@ -30,7 +30,13 @@
   <!-- Fonts (match site) -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Lora:ital@1&display=swap" rel="stylesheet" />
+
+  <!-- Override MiniApp base styles that block page scroll -->
+  <style>
+    html { height: auto !important; overflow-y: auto !important; overflow-x: hidden !important; }
+    body { overflow-x: hidden !important; overflow-y: auto !important; height: auto !important; }
+  </style>
 
   <style>
     /* ═══ BOSUN LANDING PAGE ═══════════════════════════════════════════ */
@@ -56,9 +62,10 @@
     body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.6; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
 
     /* ── Nav ── */
-    .site-nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; display: flex; align-items: center; padding: 0 24px; height: 52px; background: rgba(9,9,11,0.88); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border-bottom: 1px solid var(--border); }
-    .nav-logo { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; color: var(--text); text-decoration: none; letter-spacing: -0.01em; margin-right: auto; }
-    .nav-logo-mark { width: 26px; height: 26px; background: var(--accent); border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+    .site-nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; display: flex; align-items: center; padding: 0 24px; height: 56px; background: rgba(9,9,11,0.92); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border-bottom: 1px solid var(--border); }
+    .nav-logo { display: flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 700; color: #4ade80; text-decoration: none; letter-spacing: -0.01em; margin-right: auto; }
+    .nav-logo svg { flex-shrink: 0; }
+    .nav-logo-mark { display: none; }
     .nav-links { display: flex; align-items: center; gap: 4px; margin: 0 16px; }
     .nav-link { font-size: 13.5px; color: var(--text-muted); text-decoration: none; padding: 6px 10px; border-radius: 6px; transition: color 0.15s, background 0.15s; }
     .nav-link:hover { color: var(--text); background: rgba(255,255,255,0.05); }
@@ -71,19 +78,21 @@
     .btn-primary { background: var(--accent); color: #fff; border: 1px solid transparent; }
     .btn-primary:hover { background: var(--accent-hover); }
     .btn-lg { padding: 9px 24px; font-size: 14px; }
+    .btn-github { background: #16a34a; color: #fff; border: 1px solid #15803d; font-weight: 600; }
+    .btn-github:hover { background: #15803d; border-color: #166534; }
 
     /* ── Hero ── */
     .hero { padding: 120px 24px 64px; text-align: center; max-width: 780px; margin: 0 auto; }
     .hero-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--text-muted); background: var(--surface); border: 1px solid var(--border); padding: 4px 12px; border-radius: 100px; margin-bottom: 28px; letter-spacing: 0.03em; text-transform: uppercase; }
     .hero-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: #22c55e; flex-shrink: 0; }
     .hero-title { font-size: clamp(40px, 6vw, 68px); font-weight: 700; letter-spacing: -0.03em; line-height: 1.08; color: var(--text); margin-bottom: 20px; }
-    .hero-title em { font-style: normal; color: var(--accent); }
+    .hero-title em { font-family: 'Lora', Georgia, serif; font-style: italic; font-weight: 400; color: var(--accent); letter-spacing: -0.01em; }
     .hero-sub { font-size: 17px; color: var(--text-muted); line-height: 1.65; max-width: 520px; margin: 0 auto 36px; }
     .hero-actions { display: flex; align-items: center; gap: 12px; justify-content: center; flex-wrap: wrap; }
 
     /* ── Demo Section ── */
     .demo-section { max-width: 1140px; margin: 0 auto; padding: 0 24px 96px; }
-    .demo-tabs-row { display: flex; align-items: center; gap: 2px; margin-bottom: 16px; }
+    .demo-tabs-row { display: flex; align-items: center; justify-content: center; gap: 2px; margin-bottom: 16px; }
     .demo-tabs { display: flex; align-items: center; gap: 2px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 4px; }
     .demo-tab { padding: 7px 18px; border-radius: 7px; font-size: 13px; font-weight: 500; cursor: pointer; border: none; background: transparent; color: var(--text-muted); transition: all 0.15s; white-space: nowrap; font-family: var(--font); }
     .demo-tab:hover { color: var(--text); }
@@ -1330,20 +1339,32 @@
   <!-- ═══ NAV ════════════════════════════════════════════════════════ -->
   <nav class="site-nav">
     <a href="#" class="nav-logo">
-      <div class="nav-logo-mark">⚓</div>
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="14" cy="14" r="12.5" stroke="#3dd6f5" stroke-width="1.5" fill="none"/>
+        <circle cx="14" cy="14" r="3.5" fill="#3dd6f5"/>
+        <circle cx="14" cy="14" r="2" fill="#09090b"/>
+        <line x1="14" y1="1.5" x2="14" y2="5.5" stroke="#3dd6f5" stroke-width="1.8" stroke-linecap="round"/>
+        <line x1="14" y1="22.5" x2="14" y2="26.5" stroke="#3dd6f5" stroke-width="1.8" stroke-linecap="round"/>
+        <line x1="1.5" y1="14" x2="5.5" y2="14" stroke="#3dd6f5" stroke-width="1.8" stroke-linecap="round"/>
+        <line x1="22.5" y1="14" x2="26.5" y2="14" stroke="#3dd6f5" stroke-width="1.8" stroke-linecap="round"/>
+        <line x1="5.2" y1="5.2" x2="8.1" y2="8.1" stroke="#3dd6f5" stroke-width="1.8" stroke-linecap="round"/>
+        <line x1="19.9" y1="19.9" x2="22.8" y2="22.8" stroke="#3dd6f5" stroke-width="1.8" stroke-linecap="round"/>
+        <line x1="22.8" y1="5.2" x2="19.9" y2="8.1" stroke="#3dd6f5" stroke-width="1.8" stroke-linecap="round"/>
+        <line x1="8.1" y1="19.9" x2="5.2" y2="22.8" stroke="#3dd6f5" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
       Bosun
     </a>
     <div class="nav-links">
+      <a href="#features" class="nav-link">Features</a>
+      <a href="https://github.com/virtengine/bosun/wiki" class="nav-link" target="_blank">Architecture</a>
+      <a href="https://github.com/virtengine/bosun#integrations" class="nav-link" target="_blank">Integrations</a>
       <a href="https://github.com/virtengine/bosun#readme" class="nav-link" target="_blank">Docs</a>
-      <a href="https://github.com/virtengine/bosun" class="nav-link" target="_blank">GitHub</a>
-      <a href="#demo" class="nav-link">Demo</a>
     </div>
     <div class="nav-actions">
-      <a href="https://github.com/virtengine/bosun" class="btn btn-ghost" target="_blank">
+      <a href="https://github.com/virtengine/bosun" class="btn btn-github" target="_blank">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
-        Star on GitHub
+        GitHub
       </a>
-      <a href="#demo" class="btn btn-primary btn-lg">Try Demo →</a>
     </div>
   </nav>
 
@@ -1351,20 +1372,16 @@
   <section class="hero">
     <div class="hero-badge">
       <span class="hero-badge-dot"></span>
-      Open source &nbsp;·&nbsp; v0.26
+      Open source &nbsp;·&nbsp; v0.32
     </div>
     <h1 class="hero-title">
-      Your AI fleet,<br/>
-      <em>fully orchestrated.</em>
+      Your AI Fleet,<br/>
+      <em>supervized</em>
     </h1>
     <p class="hero-sub">
       Bosun dispatches tasks to Claude, Codex, or any AI coding agent—managing
       git worktrees, PRs, retries, and reviews while you focus on what matters.
     </p>
-    <div class="hero-actions">
-      <a href="#demo" class="btn btn-primary btn-lg">Try the live demo</a>
-      <a href="https://github.com/virtengine/bosun" class="btn btn-ghost btn-lg" target="_blank">GitHub →</a>
-    </div>
   </section>
 
   <!-- ═══ DEMO ══════════════════════════════════════════════════════════ -->
@@ -1482,7 +1499,7 @@
   </section>
 
   <!-- ═══ FEATURES ════════════════════════════════════════════════════ -->
-  <section class="features">
+  <section class="features" id="features">
     <div class="features-grid">
       <div class="feature">
         <div class="feature-icon">⚡</div>
