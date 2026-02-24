@@ -247,6 +247,37 @@
     .executor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .executor-grid .form-group { margin-bottom: 0; }
 
+    /* ── Connection Cards (multi-profile API keys) ───────────────────── */
+    .connections-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .connections-header label { margin-bottom: 0; }
+    .connection-card {
+      background: var(--bg-card, rgba(255,255,255,0.03));
+      border: 1px solid var(--border-primary);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      margin-bottom: 8px;
+    }
+    .connection-card-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .connection-label {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .connections-empty {
+      color: var(--text-dim);
+      font-size: 0.8rem;
+      padding: 10px 0;
+      text-align: center;
+    }
+
     /* ── Buttons ─────────────────────────────────────────────────────── */
     .btn {
       display: inline-flex; align-items: center; gap: 6px;
@@ -475,8 +506,8 @@ function App() {
   const [repoSlug, setRepoSlug] = useState("");
   const [repoRoot, setRepoRoot] = useState("");
   const [executors, setExecutors] = useState([
-    { name: "primary", executor: "COPILOT", model: "claude-opus-4.6", weight: 70, role: "primary", authMode: "oauth", apiKey: "", baseUrl: "" },
-    { name: "backup", executor: "CODEX", model: "gpt-5.3-codex", weight: 30, role: "backup", authMode: "oauth", apiKey: "", baseUrl: "" },
+    { name: "primary", executor: "COPILOT", model: "claude-opus-4.6", weight: 70, role: "primary", authMode: "oauth", apiKey: "", baseUrl: "", connections: [] },
+    { name: "backup", executor: "CODEX", model: "gpt-5.3-codex", weight: 30, role: "backup", authMode: "oauth", apiKey: "", baseUrl: "", connections: [] },
   ]);
   const [probedModels, setProbedModels] = useState({});
   const [repos, setRepos] = useState([""]);
@@ -562,6 +593,20 @@ function App() {
             const hasApiKey =
               ((execType === "CODEX" || execType === "OPENAI") && !!env.OPENAI_API_KEY) ||
               ((execType === "CLAUDE_CODE" || execType === "ANTHROPIC") && !!env.ANTHROPIC_API_KEY);
+            // For Codex/OpenAI: build multi-connection array from env — primary key +
+            // any CODEX_MODEL_PROFILE_<NAME>_API_KEY vars saved in a previous setup.
+            let connections = [];
+            if ((execType === "CODEX" || execType === "OPENAI") && hasApiKey) {
+              const primary = { id: Date.now() + Math.random(), name: "default", apiKey: env.OPENAI_API_KEY || "", baseUrl: env.OPENAI_BASE_URL || "" };
+              connections = [primary];
+              for (const [k, v] of Object.entries(env)) {
+                const m = k.match(/^CODEX_MODEL_PROFILE_([A-Z0-9_]+)_API_KEY$/);
+                if (m) {
+                  const pName = m[1].toLowerCase().replace(/_/g, "-");
+                  connections.push({ id: Date.now() + Math.random(), name: pName, apiKey: v, baseUrl: env[`CODEX_MODEL_PROFILE_${m[1]}_BASE_URL`] || "" });
+                }
+              }
+            }
             return {
               name: idx === 0 ? "primary" : `executor-${idx + 1}`,
               executor: execType,
@@ -573,6 +618,7 @@ function App() {
                        (execType === "CLAUDE_CODE" || execType === "ANTHROPIC") ? (env.ANTHROPIC_API_KEY || "") : "",
               baseUrl: (execType === "CODEX" || execType === "OPENAI") ? (env.OPENAI_BASE_URL || "") :
                         (execType === "CLAUDE_CODE" || execType === "ANTHROPIC") ? (env.ANTHROPIC_BASE_URL || "") : "",
+              connections,
             };
           });
           if (parsed.length > 0) { setExecutors(parsed); envLoaded = true; }
@@ -658,16 +704,22 @@ function App() {
       .join(",");
 
   const buildExecutorsConfig = () =>
-    executors.map((ex) => ({
-      name: ex.name,
-      executor: ex.executor,
-      variant: (ex.model || "DEFAULT").toUpperCase().replaceAll("-", "_"),
-      weight: Number(ex.weight) || 50,
-      role: ex.role,
-      authMode: ex.authMode || "oauth",
-      apiKey: ex.authMode === "api-key" ? (ex.apiKey || "") : "",
-      baseUrl: ex.authMode === "api-key" ? (ex.baseUrl || "") : "",
-    }));
+    executors.map((ex) => {
+      const connections = (ex.connections || []).filter((c) => c.apiKey || c.baseUrl);
+      return {
+        name: ex.name,
+        executor: ex.executor,
+        variant: (ex.model || "DEFAULT").toUpperCase().replaceAll("-", "_"),
+        weight: Number(ex.weight) || 50,
+        role: ex.role,
+        authMode: ex.authMode || "oauth",
+        // Legacy single-key fields (used by CLAUDE_CODE and as fallback)
+        apiKey: ex.authMode === "api-key" ? (ex.apiKey || "") : "",
+        baseUrl: ex.authMode === "api-key" ? (ex.baseUrl || "") : "",
+        // Multi-connection profiles (CODEX / OPENAI)
+        connections: ex.authMode === "api-key" && connections.length > 0 ? connections : [],
+      };
+    });
 
   // ── Apply config ───────────────────────────────────────────────────────────
 
@@ -746,6 +798,10 @@ function App() {
 
   // ── Executor management ────────────────────────────────────────────────────
 
+  // Whether an executor type supports multiple named API-key connections
+  const supportsMultiConnections = (execType) =>
+    execType === "CODEX" || execType === "OPENAI";
+
   const addExecutor = () => {
     setExecutors((prev) => [
       ...prev,
@@ -758,6 +814,7 @@ function App() {
         authMode: "oauth",
         apiKey: "",
         baseUrl: "",
+        connections: [],
       },
     ]);
   };
@@ -770,10 +827,57 @@ function App() {
     setExecutors((prev) => {
       const updated = [...prev];
       updated[idx] = { ...updated[idx], [field]: value };
-      // When executor type changes, update model to default for that type
+      // When executor type changes, update model to default + reset connections if type changes
       if (field === "executor") {
         updated[idx].model = getDefaultModelForExecutor(value);
+        // Clear connections if switching away from a multi-connection executor type
+        if (!supportsMultiConnections(value)) {
+          updated[idx].connections = [];
+        }
       }
+      // Auto-initialise connections when switching to api-key mode on a multi-profile executor
+      if (field === "authMode" && value === "api-key") {
+        const type = updated[idx].executor;
+        if (supportsMultiConnections(type) && !(updated[idx].connections || []).length) {
+          updated[idx].connections = [{
+            id: Date.now(),
+            name: "default",
+            apiKey: updated[idx].apiKey || "",
+            baseUrl: updated[idx].baseUrl || "",
+          }];
+        }
+      }
+      return updated;
+    });
+  };
+
+  // ── Connection management (within an executor) ─────────────────────────────
+
+  const addConnection = (exIdx) => {
+    setExecutors((prev) => {
+      const updated = [...prev];
+      const conns = [...(updated[exIdx].connections || [])];
+      conns.push({ id: Date.now() + Math.random(), name: "", apiKey: "", baseUrl: "" });
+      updated[exIdx] = { ...updated[exIdx], connections: conns };
+      return updated;
+    });
+  };
+
+  const removeConnection = (exIdx, connIdx) => {
+    setExecutors((prev) => {
+      const updated = [...prev];
+      const conns = (updated[exIdx].connections || []).filter((_, i) => i !== connIdx);
+      updated[exIdx] = { ...updated[exIdx], connections: conns };
+      return updated;
+    });
+  };
+
+  const updateConnection = (exIdx, connIdx, field, value) => {
+    setExecutors((prev) => {
+      const updated = [...prev];
+      const conns = [...(updated[exIdx].connections || [])];
+      conns[connIdx] = { ...conns[connIdx], [field]: value };
+      updated[exIdx] = { ...updated[exIdx], connections: conns };
       return updated;
     });
   };
@@ -782,11 +886,15 @@ function App() {
     const ex = executors[idx];
     if (!ex) return;
     setProbedModels((prev) => ({ ...prev, [idx]: { loading: true, models: [], source: "" } }));
+    // Use first connection's key/URL when available (multi-profile executors)
+    const primaryConn = (ex.connections || [])[0];
+    const probeApiKey  = primaryConn?.apiKey  || ex.apiKey  || "";
+    const probeBaseUrl = primaryConn?.baseUrl || ex.baseUrl || "";
     try {
       const result = await apiPost("models/probe", {
         executor: ex.executor,
-        apiKey: ex.apiKey || "",
-        baseUrl: ex.baseUrl || "",
+        apiKey: probeApiKey,
+        baseUrl: probeBaseUrl,
       });
       setProbedModels((prev) => ({
         ...prev,
@@ -1047,25 +1155,88 @@ function App() {
                 : "Your API key will be saved to .env in BOSUN_HOME (never committed to git)."}
             </div>
           </div>
-          ${authMode === "api-key" && html`
-            <div class="form-group" style="grid-column:1/-1">
-              <label>API Key</label>
-              <input type="password" value=${ex.apiKey || ""}
-                oninput=${(e) => updateExecutor(i, "apiKey", e.target.value)}
-                placeholder="${ex.executor === "CLAUDE_CODE" ? "sk-ant-..." : "sk-..."}" />
-              <div class="hint">
-                For Codex: <code style="font-family:var(--font-mono)">OPENAI_API_KEY</code>.
-                For Claude Code: <code style="font-family:var(--font-mono)">ANTHROPIC_API_KEY</code>.
-              </div>
-            </div>
-            <div class="form-group" style="grid-column:1/-1">
-              <label>Base URL <span style="font-weight:400;color:var(--text-dim)">(optional)</span></label>
-              <input type="text" value=${ex.baseUrl || ""}
-                oninput=${(e) => updateExecutor(i, "baseUrl", e.target.value)}
-                placeholder="https://api.openai.com  or  https://<resource>.openai.azure.com/" />
-              <div class="hint">Leave blank for the default endpoint. Set for Azure, self-hosted, or OpenAI-compatible APIs.</div>
-            </div>
-          `}
+          ${authMode === "api-key" && (() => {
+            const execType = ex.executor || "COPILOT";
+            const multiOk  = supportsMultiConnections(execType);
+            const conns    = ex.connections || [];
+            if (multiOk) {
+              // ── Multi-connection UI (Codex / OpenAI) ──────────────────────
+              return html`
+                <div class="form-group" style="grid-column:1/-1">
+                  <div class="connections-header">
+                    <label style="margin-bottom:0">API Connections</label>
+                    <button class="btn btn-sm" onclick=${() => addConnection(i)}>+ Add Connection</button>
+                  </div>
+                  <div class="hint" style="margin-bottom:10px">
+                    The first connection is the primary key (<code style="font-family:var(--font-mono)">OPENAI_API_KEY</code>).
+                    Additional connections become named Codex model profiles for load balancing across endpoints.
+                  </div>
+                  ${conns.length === 0 && html`
+                    <div class="connections-empty">No connections yet — click "+ Add Connection" to add one.</div>
+                  `}
+                  ${conns.map((conn, ci) => {
+                    const profileEnvBase = (conn.name || `profile${ci + 1}`).toUpperCase().replace(/-/g, "_");
+                    const isPrimary = ci === 0;
+                    return html`
+                      <div class="connection-card">
+                        <div class="connection-card-header">
+                          <span class="connection-label">${isPrimary ? "⭐ Primary" : `☁ Profile ${ci + 1}`}: ${conn.name || (isPrimary ? "default" : "(unnamed)")}</span>
+                          <button class="btn btn-sm btn-danger"
+                            onclick=${() => removeConnection(i, ci)}>✕ Remove</button>
+                        </div>
+                        <div class="executor-grid">
+                          <div class="form-group">
+                            <label>Profile Name</label>
+                            <input type="text" value=${conn.name || ""}
+                              placeholder=${isPrimary ? "default" : "e.g. azure-sweden"}
+                              oninput=${(e) => updateConnection(i, ci, "name", e.target.value)} />
+                            ${!isPrimary && html`
+                              <div class="hint">Saved as <code style="font-family:var(--font-mono)">CODEX_MODEL_PROFILE_${profileEnvBase}_*</code></div>
+                            `}
+                          </div>
+                          <div class="form-group">
+                            <label>API Key</label>
+                            <input type="password" value=${conn.apiKey || ""}
+                              placeholder="sk-..."
+                              oninput=${(e) => updateConnection(i, ci, "apiKey", e.target.value)} />
+                          </div>
+                          <div class="form-group" style="grid-column:1/-1">
+                            <label>Base URL <span style="font-weight:400;color:var(--text-dim)">(optional)</span></label>
+                            <input type="text" value=${conn.baseUrl || ""}
+                              placeholder="https://api.openai.com  or  https://<resource>.openai.azure.com/openai/v1"
+                              oninput=${(e) => updateConnection(i, ci, "baseUrl", e.target.value)} />
+                            <div class="hint">Leave blank for the default endpoint. Set for Azure, self-hosted, or OpenAI-compatible APIs.</div>
+                          </div>
+                        </div>
+                      </div>
+                    `;
+                  })}
+                </div>
+              `;
+            } else {
+              // ── Single-key UI (Claude Code; Copilot uses OAuth so this block
+              //    is unreachable for it but kept for safety) ────────────────
+              return html`
+                <div class="form-group" style="grid-column:1/-1">
+                  <label>API Key</label>
+                  <input type="password" value=${ex.apiKey || ""}
+                    oninput=${(e) => updateExecutor(i, "apiKey", e.target.value)}
+                    placeholder=${execType === "CLAUDE_CODE" ? "sk-ant-..." : "sk-..."} />
+                  <div class="hint">
+                    For Claude Code: <code style="font-family:var(--font-mono)">ANTHROPIC_API_KEY</code>.
+                    Multiple API connections are not supported for this executor type.
+                  </div>
+                </div>
+                <div class="form-group" style="grid-column:1/-1">
+                  <label>Base URL <span style="font-weight:400;color:var(--text-dim)">(optional)</span></label>
+                  <input type="text" value=${ex.baseUrl || ""}
+                    oninput=${(e) => updateExecutor(i, "baseUrl", e.target.value)}
+                    placeholder="https://api.anthropic.com" />
+                  <div class="hint">Leave blank for the default endpoint.</div>
+                </div>
+              `;
+            }
+          })()}
           <div class="form-group">
             <label style="display:flex;align-items:center;justify-content:space-between">
               <span>Model</span>
