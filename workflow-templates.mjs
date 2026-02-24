@@ -6,16 +6,21 @@
  * previously required custom code or env-var configuration.
  *
  * Templates:
- *   1. frontend-agent      — Front-end agent with screenshot validation
- *   2. task-planner         — Auto-replenish backlog when tasks run low
- *   3. task-replenish       — Experimental periodic task replenishment
- *   4. review-agent         — Automated PR review flow
- *   5. build-and-deploy     — Build, test, and deploy pipeline
- *   6. error-recovery       — Auto-fix after agent crash/failure
- *   7. custom-agent-profile — Template for creating custom agent profiles
+ *   1. pr-merge-strategy   — Automated PR merge decision (7 outcomes)
+ *   2. pr-triage            — Classify, label, and detect breaking changes
+ *   3. review-agent         — Automated PR review flow
+ *   4. frontend-agent       — Front-end agent with screenshot validation
+ *   5. task-planner         — Auto-replenish backlog when tasks run low
+ *   6. task-replenish       — Experimental periodic task replenishment
+ *   7. build-and-deploy     — Build, test, and deploy pipeline
+ *   8. error-recovery       — Auto-fix after agent crash/failure
+ *   9. custom-agent-profile — Template for creating custom agent profiles
+ *
+ * Categories: github, agents, planning, ci-cd, reliability, custom
  *
  * EXPORTS:
  *   WORKFLOW_TEMPLATES     — Array of all built-in templates
+ *   TEMPLATE_CATEGORIES    — Category metadata (label, icon, order)
  *   getTemplate(id)        — Get a single template by ID
  *   installTemplate(id, engine) — Install a template into the workflow engine
  *   listTemplates()        — List all available templates
@@ -399,7 +404,7 @@ const REVIEW_AGENT_TEMPLATE = {
   description:
     "Automatically runs code review when a PR is opened or updated. " +
     "Checks build, tests, and code quality, then posts review comments.",
-  category: "agents",
+  category: "github",
   enabled: true,
   trigger: "trigger.pr_event",
   variables: {},
@@ -640,14 +645,256 @@ const CUSTOM_AGENT_TEMPLATE = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  TEMPLATE 8: PR Merge Strategy
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+const PR_MERGE_STRATEGY_TEMPLATE = {
+  id: "template-pr-merge-strategy",
+  name: "PR Merge Strategy",
+  description:
+    "Automated PR merge decision workflow. Analyzes diffs, CI status, " +
+    "and agent output to decide: merge, prompt agent, re-attempt, " +
+    "close, request manual review, or wait. Based on Bosun's merge-strategy engine.",
+  category: "github",
+  enabled: true,
+  trigger: "trigger.pr_event",
+  variables: {
+    ciTimeoutMs: 300000,
+    cooldownSec: 60,
+    maxRetries: 3,
+    baseBranch: "main",
+  },
+  nodes: [
+    // Row 1: Trigger
+    node("trigger", "trigger.pr_event", "PR Ready for Review", {
+      event: "review_requested",
+    }, { x: 400, y: 50 }),
+
+    // Row 2: Gather context (parallel)
+    node("check-ci", "validation.build", "Check CI Status", {
+      command: "gh pr checks {{prNumber}} --json name,state,conclusion",
+    }, { x: 150, y: 200 }),
+
+    node("get-diff", "action.run_command", "Get Diff Stats", {
+      command: "git diff --stat {{baseBranch}}...HEAD",
+    }, { x: 650, y: 200 }),
+
+    // Row 3: CI gate
+    node("ci-passed", "condition.expression", "CI Passed?", {
+      expression: "$ctx.getNodeOutput('check-ci')?.passed === true",
+    }, { x: 150, y: 350, outputs: ["yes", "no"] }),
+
+    node("wait-for-ci", "action.delay", "Wait for CI", {
+      delayMs: "{{ciTimeoutMs}}",
+      reason: "CI is still running",
+    }, { x: 150, y: 500 }),
+
+    // Row 3b: Analyze merge (main path)
+    node("analyze", "action.run_agent", "Analyze Merge Strategy", {
+      prompt: `# PR Merge Strategy Analysis
+
+Review PR #{{prNumber}} on branch {{branch}}.
+
+## Decision Options:
+1. **merge_after_ci_pass** — Code looks correct, CI is green, merge it.
+2. **prompt** — Agent needs to do more work (provide specific instructions).
+3. **close_pr** — PR should be closed (bad approach, duplicate, etc.).
+4. **re_attempt** — Start task over with fresh agent.
+5. **manual_review** — Escalate to human reviewer.
+6. **wait** — CI still running, wait before deciding.
+7. **noop** — No action needed.
+
+Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optional details>" }`,
+      timeoutMs: 900000,
+    }, { x: 400, y: 350 }),
+
+    // Row 4: Decision router
+    node("decision-router", "condition.switch", "Route Decision", {
+      field: "action",
+      cases: {
+        merge_after_ci_pass: "merge",
+        prompt: "prompt-agent",
+        close_pr: "close",
+        re_attempt: "retry",
+        manual_review: "escalate",
+        wait: "wait-for-ci",
+      },
+    }, { x: 400, y: 520, outputs: ["merge", "prompt-agent", "close", "retry", "escalate", "wait-for-ci", "default"] }),
+
+    // Row 5: Action branches
+    node("do-merge", "action.run_command", "Auto-Merge PR", {
+      command: "gh pr merge {{prNumber}} --auto --squash",
+    }, { x: 100, y: 680 }),
+
+    node("do-prompt", "action.run_agent", "Prompt Agent", {
+      prompt: "Continue working on the PR. Instructions: {{decision.message}}",
+      timeoutMs: 3600000,
+    }, { x: 300, y: 680 }),
+
+    node("do-close", "action.run_command", "Close PR", {
+      command: "gh pr close {{prNumber}} --comment \"{{decision.reason}}\"",
+    }, { x: 500, y: 680 }),
+
+    node("do-retry", "action.run_agent", "Re-attempt Task", {
+      prompt: "Start the task over from scratch. Previous attempt failed: {{decision.reason}}",
+      timeoutMs: 3600000,
+    }, { x: 700, y: 680 }),
+
+    node("do-escalate", "notify.telegram", "Escalate to Human", {
+      message: "👀 PR #{{prNumber}} needs manual review: {{decision.reason}}",
+    }, { x: 900, y: 680 }),
+
+    // Row 6: Completion
+    node("notify-complete", "notify.log", "Log Result", {
+      message: "PR #{{prNumber}} merge strategy: {{decision.action}} — {{decision.reason}}",
+      level: "info",
+    }, { x: 400, y: 850 }),
+  ],
+  edges: [
+    // Trigger → parallel context gathering
+    edge("trigger", "check-ci"),
+    edge("trigger", "get-diff"),
+    // Context → analysis
+    edge("check-ci", "ci-passed"),
+    edge("ci-passed", "wait-for-ci", { condition: "$output?.result !== true", port: "no" }),
+    edge("ci-passed", "analyze", { condition: "$output?.result === true", port: "yes" }),
+    edge("get-diff", "analyze"),
+    edge("wait-for-ci", "analyze"),
+    // Analysis → decision
+    edge("analyze", "decision-router"),
+    // Decision → branches
+    edge("decision-router", "do-merge", { port: "merge" }),
+    edge("decision-router", "do-prompt", { port: "prompt-agent" }),
+    edge("decision-router", "do-close", { port: "close" }),
+    edge("decision-router", "do-retry", { port: "retry" }),
+    edge("decision-router", "do-escalate", { port: "escalate" }),
+    edge("decision-router", "wait-for-ci", { port: "wait-for-ci" }),
+    // All branches → completion
+    edge("do-merge", "notify-complete"),
+    edge("do-prompt", "notify-complete"),
+    edge("do-close", "notify-complete"),
+    edge("do-retry", "notify-complete"),
+    edge("do-escalate", "notify-complete"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-02-24T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "pr", "merge", "strategy", "automation"],
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TEMPLATE 9: PR Triage & Labels
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+const PR_TRIAGE_TEMPLATE = {
+  id: "template-pr-triage",
+  name: "PR Triage & Labels",
+  description:
+    "Automatically triage incoming PRs: classify by size, detect breaking " +
+    "changes, add labels, and assign reviewers based on CODEOWNERS.",
+  category: "github",
+  enabled: true,
+  trigger: "trigger.pr_event",
+  variables: {
+    smallThreshold: 50,
+    largeThreshold: 500,
+  },
+  nodes: [
+    node("trigger", "trigger.pr_event", "PR Opened", {
+      event: "opened",
+    }, { x: 400, y: 50 }),
+
+    node("get-stats", "action.run_command", "Get PR Stats", {
+      command: "gh pr view {{prNumber}} --json additions,deletions,files,labels,title,body",
+    }, { x: 400, y: 180 }),
+
+    node("classify-size", "condition.switch", "Classify Size", {
+      expression: "($ctx.getNodeOutput('get-stats')?.additions || 0) + ($ctx.getNodeOutput('get-stats')?.deletions || 0)",
+      cases: { small: "<{{smallThreshold}}", large: ">{{largeThreshold}}" },
+      default: "medium",
+    }, { x: 400, y: 330, outputs: ["small", "medium", "large"] }),
+
+    node("label-small", "action.run_command", "Label: Size/S", {
+      command: "gh pr edit {{prNumber}} --add-label \"size/S\"",
+    }, { x: 150, y: 480 }),
+
+    node("label-medium", "action.run_command", "Label: Size/M", {
+      command: "gh pr edit {{prNumber}} --add-label \"size/M\"",
+    }, { x: 400, y: 480 }),
+
+    node("label-large", "action.run_command", "Label: Size/L", {
+      command: "gh pr edit {{prNumber}} --add-label \"size/L\"",
+    }, { x: 650, y: 480 }),
+
+    node("detect-breaking", "action.run_agent", "Detect Breaking Changes", {
+      prompt: "Analyze the diff for PR #{{prNumber}} and determine if there are any breaking changes. Respond with JSON: { \"breaking\": true/false, \"reason\": \"...\" }",
+      timeoutMs: 300000,
+    }, { x: 400, y: 630 }),
+
+    node("is-breaking", "condition.expression", "Breaking?", {
+      expression: "$ctx.getNodeOutput('detect-breaking')?.breaking === true",
+    }, { x: 400, y: 780, outputs: ["yes", "no"] }),
+
+    node("label-breaking", "action.run_command", "Label: Breaking", {
+      command: "gh pr edit {{prNumber}} --add-label \"breaking-change\"",
+    }, { x: 200, y: 920 }),
+
+    node("done", "notify.log", "Triage Complete", {
+      message: "PR #{{prNumber}} triaged — size: {{size}}, breaking: {{breaking}}",
+      level: "info",
+    }, { x: 400, y: 1050 }),
+  ],
+  edges: [
+    edge("trigger", "get-stats"),
+    edge("get-stats", "classify-size"),
+    edge("classify-size", "label-small", { port: "small" }),
+    edge("classify-size", "label-medium", { port: "medium" }),
+    edge("classify-size", "label-large", { port: "large" }),
+    edge("label-small", "detect-breaking"),
+    edge("label-medium", "detect-breaking"),
+    edge("label-large", "detect-breaking"),
+    edge("detect-breaking", "is-breaking"),
+    edge("is-breaking", "label-breaking", { condition: "$output?.result === true", port: "yes" }),
+    edge("is-breaking", "done", { condition: "$output?.result !== true", port: "no" }),
+    edge("label-breaking", "done"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-02-24T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "pr", "triage", "labels", "automation"],
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  EXPORTS
 // ═══════════════════════════════════════════════════════════════════════════
 
+/** Category metadata for UI grouping. */
+export const TEMPLATE_CATEGORIES = Object.freeze({
+  github:      { label: "GitHub",       icon: "🐙", order: 1 },
+  agents:      { label: "Agents",       icon: "🤖", order: 2 },
+  planning:    { label: "Planning",     icon: "📋", order: 3 },
+  "ci-cd":     { label: "CI / CD",      icon: "🔄", order: 4 },
+  reliability: { label: "Reliability",  icon: "🛡️", order: 5 },
+  custom:      { label: "Custom",       icon: "⚙️", order: 6 },
+});
+
 export const WORKFLOW_TEMPLATES = Object.freeze([
+  PR_MERGE_STRATEGY_TEMPLATE,
+  PR_TRIAGE_TEMPLATE,
+  REVIEW_AGENT_TEMPLATE,
   FRONTEND_AGENT_TEMPLATE,
   TASK_PLANNER_TEMPLATE,
   TASK_REPLENISH_TEMPLATE,
-  REVIEW_AGENT_TEMPLATE,
   BUILD_DEPLOY_TEMPLATE,
   ERROR_RECOVERY_TEMPLATE,
   CUSTOM_AGENT_TEMPLATE,
@@ -667,15 +914,21 @@ export function getTemplate(id) {
  * @returns {Array<{id, name, description, category, tags}>}
  */
 export function listTemplates() {
-  return WORKFLOW_TEMPLATES.map((t) => ({
-    id: t.id,
-    name: t.name,
-    description: t.description,
-    category: t.category,
-    tags: t.metadata?.tags || [],
-    nodeCount: t.nodes?.length || 0,
-    edgeCount: t.edges?.length || 0,
-  }));
+  return WORKFLOW_TEMPLATES.map((t) => {
+    const cat = TEMPLATE_CATEGORIES[t.category] || TEMPLATE_CATEGORIES.custom;
+    return {
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      category: t.category,
+      categoryLabel: cat.label,
+      categoryIcon: cat.icon,
+      categoryOrder: cat.order,
+      tags: t.metadata?.tags || [],
+      nodeCount: t.nodes?.length || 0,
+      edgeCount: t.edges?.length || 0,
+    };
+  });
 }
 
 /**

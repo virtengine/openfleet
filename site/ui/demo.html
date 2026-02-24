@@ -836,6 +836,113 @@
         instances: [{ id: 'inst-1', host: 'dev-machine', pid: 12345, started: now - 3 * hr, role: 'primary' }],
         coordinator: { id: 'inst-1', host: 'dev-machine', elected: now - 3 * hr },
       },
+      // ── Workflow data ──
+      workflows: [
+        {
+          id: 'wf-pr-merge-auto',
+          name: 'PR Merge Strategy',
+          description: 'Automated PR merge decision: analyze, decide, act.',
+          category: 'github',
+          enabled: true,
+          nodeCount: 6,
+          trigger: 'trigger.pr_event',
+          nodes: [
+            { id: 'trigger', type: 'trigger.pr_event', label: 'PR Ready', config: { event: 'review_requested' }, position: { x: 400, y: 50 } },
+            { id: 'check-ci', type: 'validation.build', label: 'Check CI', config: { command: 'gh pr checks' }, position: { x: 200, y: 200 } },
+            { id: 'analyze', type: 'action.run_agent', label: 'Analyze Strategy', config: {}, position: { x: 400, y: 350 } },
+            { id: 'do-merge', type: 'action.run_command', label: 'Auto-Merge', config: { command: 'gh pr merge --auto --squash' }, position: { x: 200, y: 520 } },
+            { id: 'do-prompt', type: 'action.run_agent', label: 'Prompt Agent', config: {}, position: { x: 400, y: 520 } },
+            { id: 'notify', type: 'notify.log', label: 'Log Result', config: {}, position: { x: 400, y: 680 } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger', target: 'check-ci' },
+            { id: 'e2', source: 'check-ci', target: 'analyze' },
+            { id: 'e3', source: 'analyze', target: 'do-merge', condition: 'merge' },
+            { id: 'e4', source: 'analyze', target: 'do-prompt', condition: 'prompt' },
+            { id: 'e5', source: 'do-merge', target: 'notify' },
+            { id: 'e6', source: 'do-prompt', target: 'notify' },
+          ],
+          variables: { baseBranch: 'main', ciTimeoutMs: 300000 },
+          metadata: { createdAt: new Date(now - 7 * 24 * hr).toISOString(), updatedAt: new Date(now - 1 * hr).toISOString() },
+        },
+        {
+          id: 'wf-error-recovery',
+          name: 'Error Recovery',
+          description: 'Auto-fix after agent crash — analyze, retry, escalate.',
+          category: 'reliability',
+          enabled: true,
+          nodeCount: 4,
+          trigger: 'trigger.event',
+          nodes: [
+            { id: 'trigger', type: 'trigger.event', label: 'Agent Failed', config: { eventType: 'task.failed' }, position: { x: 400, y: 50 } },
+            { id: 'check', type: 'condition.expression', label: 'Retries Left?', config: {}, position: { x: 400, y: 200 } },
+            { id: 'retry', type: 'action.run_agent', label: 'Retry Task', config: {}, position: { x: 200, y: 350 } },
+            { id: 'escalate', type: 'notify.telegram', label: 'Escalate', config: {}, position: { x: 600, y: 350 } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger', target: 'check' },
+            { id: 'e2', source: 'check', target: 'retry', condition: 'retries > 0' },
+            { id: 'e3', source: 'check', target: 'escalate', condition: 'retries == 0' },
+          ],
+          variables: { maxRetries: 3 },
+          metadata: { createdAt: new Date(now - 5 * 24 * hr).toISOString(), updatedAt: new Date(now - 2 * hr).toISOString() },
+        },
+      ],
+      workflowTemplates: [
+        { id: 'template-pr-merge-strategy', name: 'PR Merge Strategy', description: 'Automated PR merge decision workflow with 7 outcome paths.', category: 'github', categoryLabel: 'GitHub', categoryIcon: '🐙', categoryOrder: 1, tags: ['github', 'pr', 'merge', 'strategy'], nodeCount: 14, edgeCount: 16 },
+        { id: 'template-pr-triage', name: 'PR Triage & Labels', description: 'Auto-classify PRs by size, detect breaking changes, assign labels.', category: 'github', categoryLabel: 'GitHub', categoryIcon: '🐙', categoryOrder: 1, tags: ['github', 'pr', 'triage', 'labels'], nodeCount: 11, edgeCount: 12 },
+        { id: 'template-review-agent', name: 'Review Agent', description: 'Automated PR code review: build, test, agent analysis.', category: 'github', categoryLabel: 'GitHub', categoryIcon: '🐙', categoryOrder: 1, tags: ['github', 'review', 'pr'], nodeCount: 6, edgeCount: 6 },
+        { id: 'template-frontend-agent', name: 'Frontend Agent', description: 'Front-end dev agent with screenshot validation.', category: 'agents', categoryLabel: 'Agents', categoryIcon: '🤖', categoryOrder: 2, tags: ['agent', 'frontend', 'screenshot'], nodeCount: 8, edgeCount: 9 },
+        { id: 'template-task-planner', name: 'Task Planner', description: 'Auto-replenish backlog when tasks run low.', category: 'planning', categoryLabel: 'Planning', categoryIcon: '📋', categoryOrder: 3, tags: ['planning', 'backlog'], nodeCount: 7, edgeCount: 7 },
+        { id: 'template-task-replenish', name: 'Task Replenish', description: 'Periodic task replenishment on cron schedule.', category: 'planning', categoryLabel: 'Planning', categoryIcon: '📋', categoryOrder: 3, tags: ['planning', 'cron'], nodeCount: 7, edgeCount: 6 },
+        { id: 'template-build-deploy', name: 'Build & Deploy', description: 'CI/CD pipeline: build → test → lint → deploy.', category: 'ci-cd', categoryLabel: 'CI / CD', categoryIcon: '🔄', categoryOrder: 4, tags: ['ci', 'cd', 'deploy'], nodeCount: 6, edgeCount: 5 },
+        { id: 'template-error-recovery', name: 'Error Recovery', description: 'Auto-fix after agent crash or failure.', category: 'reliability', categoryLabel: 'Reliability', categoryIcon: '🛡️', categoryOrder: 5, tags: ['error', 'recovery', 'autofix'], nodeCount: 5, edgeCount: 4 },
+        { id: 'template-custom-agent', name: 'Custom Agent', description: 'Starter template for creating custom agent profiles.', category: 'agents', categoryLabel: 'Agents', categoryIcon: '🤖', categoryOrder: 2, tags: ['custom', 'agent', 'starter'], nodeCount: 6, edgeCount: 6 },
+      ],
+      workflowNodeTypes: [
+        { type: 'trigger.task_assigned', category: 'trigger', description: 'Fires when a task is assigned to an agent' },
+        { type: 'trigger.pr_event', category: 'trigger', description: 'Fires on PR open/update/merge events' },
+        { type: 'trigger.cron', category: 'trigger', description: 'Fires on a cron schedule' },
+        { type: 'trigger.event', category: 'trigger', description: 'Fires on a named event' },
+        { type: 'trigger.webhook', category: 'trigger', description: 'Fires on incoming webhook' },
+        { type: 'trigger.file_change', category: 'trigger', description: 'Fires when files change' },
+        { type: 'trigger.manual', category: 'trigger', description: 'Manual trigger' },
+        { type: 'condition.expression', category: 'condition', description: 'Evaluate a JS expression' },
+        { type: 'condition.switch', category: 'condition', description: 'Multi-branch switch on a field' },
+        { type: 'condition.file_exists', category: 'condition', description: 'Check if a file/path exists' },
+        { type: 'condition.approval', category: 'condition', description: 'Wait for human approval' },
+        { type: 'action.run_agent', category: 'action', description: 'Execute an AI agent with a prompt' },
+        { type: 'action.run_command', category: 'action', description: 'Run a shell command' },
+        { type: 'action.git_commit', category: 'action', description: 'Stage and commit changes' },
+        { type: 'action.create_pr', category: 'action', description: 'Create a pull request' },
+        { type: 'action.update_task_status', category: 'action', description: 'Update task status' },
+        { type: 'action.delay', category: 'action', description: 'Wait for a duration' },
+        { type: 'action.http_request', category: 'action', description: 'Make an HTTP request' },
+        { type: 'action.file_write', category: 'action', description: 'Write content to a file' },
+        { type: 'action.assign_agent', category: 'action', description: 'Assign an agent to a task' },
+        { type: 'action.merge_pr', category: 'action', description: 'Merge a pull request' },
+        { type: 'validation.build', category: 'validation', description: 'Run build and check exit code' },
+        { type: 'validation.tests', category: 'validation', description: 'Run test suite' },
+        { type: 'validation.lint', category: 'validation', description: 'Run linter' },
+        { type: 'validation.type_check', category: 'validation', description: 'Run type checker' },
+        { type: 'validation.security_scan', category: 'validation', description: 'Run security scanner' },
+        { type: 'transform.map', category: 'transform', description: 'Transform data with a function' },
+        { type: 'transform.filter', category: 'transform', description: 'Filter data by condition' },
+        { type: 'transform.aggregate', category: 'transform', description: 'Aggregate outputs from multiple nodes' },
+        { type: 'notify.telegram', category: 'notify', description: 'Send Telegram notification' },
+        { type: 'notify.log', category: 'notify', description: 'Write to agent log' },
+        { type: 'notify.webhook', category: 'notify', description: 'POST to a webhook URL' },
+        { type: 'agent.spawn', category: 'agent', description: 'Spawn a new agent instance' },
+        { type: 'agent.pool_exec', category: 'agent', description: 'Execute via agent pool' },
+        { type: 'agent.review', category: 'agent', description: 'Run review agent' },
+        { type: 'loop.for_each', category: 'loop', description: 'Iterate over a list' },
+      ],
+      workflowRuns: [
+        { runId: 'run-001', workflowId: 'wf-pr-merge-auto', status: 'completed', nodeCount: 6, duration: 42000, errorCount: 0, startedAt: new Date(now - 2 * hr).toISOString() },
+        { runId: 'run-002', workflowId: 'wf-pr-merge-auto', status: 'completed', nodeCount: 6, duration: 38000, errorCount: 0, startedAt: new Date(now - 6 * hr).toISOString() },
+        { runId: 'run-003', workflowId: 'wf-error-recovery', status: 'failed', nodeCount: 3, duration: 15000, errorCount: 1, startedAt: new Date(now - 12 * hr).toISOString() },
+        { runId: 'run-004', workflowId: 'wf-pr-merge-auto', status: 'completed', nodeCount: 6, duration: 55000, errorCount: 0, startedAt: new Date(now - 24 * hr).toISOString() },
+      ],
     };
 
     /* ── Helper: find task by ID ───────────────────────────────────── */
@@ -1237,6 +1344,55 @@
       }
       if (route === '/api/workspaces/scan') {
         return { ok: true, data: STATE.managedWorkspaces, scanned: STATE.managedWorkspaces.length, added: 0, updated: 0 };
+      }
+
+      // ── Workflows ──
+      if (route === '/api/workflows') {
+        return { ok: true, workflows: STATE.workflows.map(w => ({ id: w.id, name: w.name, description: w.description, category: w.category, enabled: w.enabled !== false, nodeCount: w.nodeCount || (w.nodes || []).length, trigger: (w.nodes || [])[0]?.type || 'manual' })) };
+      }
+      if (route === '/api/workflows/save') {
+        const wf = body || {};
+        wf.id = wf.id || 'wf-' + Math.random().toString(36).slice(2, 9);
+        wf.metadata = { ...wf.metadata, updatedAt: new Date().toISOString(), createdAt: wf.metadata?.createdAt || new Date().toISOString() };
+        wf.nodeCount = (wf.nodes || []).length;
+        const idx = STATE.workflows.findIndex(w => w.id === wf.id);
+        if (idx >= 0) STATE.workflows[idx] = wf; else STATE.workflows.push(wf);
+        return { ok: true, workflow: wf };
+      }
+      if (route === '/api/workflows/templates') {
+        return { ok: true, templates: STATE.workflowTemplates };
+      }
+      if (route === '/api/workflows/node-types') {
+        return { ok: true, nodeTypes: STATE.workflowNodeTypes };
+      }
+      if (route === '/api/workflows/install-template') {
+        const tpl = STATE.workflowTemplates.find(t => t.id === body?.templateId);
+        if (!tpl) return { ok: false, error: 'Template not found' };
+        const wf = { id: 'wf-' + Math.random().toString(36).slice(2, 9), name: tpl.name, description: tpl.description, category: tpl.category, enabled: true, nodeCount: tpl.nodeCount, trigger: 'trigger.pr_event', nodes: [], edges: [], variables: body?.overrides || {}, metadata: { installedFrom: tpl.id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } };
+        STATE.workflows.push(wf);
+        return { ok: true, workflow: wf };
+      }
+      if (route === '/api/workflows/runs') {
+        return { ok: true, runs: STATE.workflowRuns };
+      }
+      if (route.startsWith('/api/workflows/') && !route.includes('/save') && !route.includes('/templates') && !route.includes('/install') && !route.includes('/node-types') && !route.includes('/runs')) {
+        const segs = route.replace('/api/workflows/', '').split('/');
+        const wfId = segs[0];
+        const action = segs[1] || '';
+        if (action === 'execute') {
+          const run = { runId: 'run-' + Math.random().toString(36).slice(2, 6), workflowId: wfId, status: 'completed', nodeCount: 6, duration: 30000 + Math.floor(Math.random() * 30000), errorCount: 0, startedAt: new Date().toISOString() };
+          STATE.workflowRuns.unshift(run);
+          return { ok: true, result: run };
+        }
+        if (action === 'runs') {
+          return { ok: true, runs: STATE.workflowRuns.filter(r => r.workflowId === wfId) };
+        }
+        if (method === 'DELETE') {
+          STATE.workflows = STATE.workflows.filter(w => w.id !== wfId);
+          return { ok: true };
+        }
+        const wf = STATE.workflows.find(w => w.id === wfId);
+        return wf ? { ok: true, workflow: wf } : { ok: false, error: 'Workflow not found' };
       }
 
       // ── Shared Workspaces ──

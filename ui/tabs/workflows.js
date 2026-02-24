@@ -935,48 +935,79 @@ function WorkflowListView() {
       `}
 
       ${wfs.length === 0 && html`
-        <div style="text-align: center; padding: 40px 20px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; margin-bottom: 24px;">
-          <div style="font-size: 36px; margin-bottom: 12px;">🔨</div>
+        <div style="text-align: center; padding: 40px 20px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; margin-bottom: 24px; border: 1px solid var(--color-border, #2a3040);">
+          <div style="font-size: 36px; margin-bottom: 12px;">🔄</div>
           <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">No Workflows Yet</div>
-          <div style="font-size: 13px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 16px;">
-            Create a workflow from scratch or install a template to get started.
+          <div style="font-size: 13px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 16px; max-width: 400px; margin-left: auto; margin-right: auto; line-height: 1.5;">
+            Workflows automate your development pipeline — from PR merging
+            to error recovery. Install a template below or create one from scratch.
+          </div>
+          <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
+            <button class="wf-btn wf-btn-primary" onClick=${() => {
+              const newWf = { name: "New Workflow", description: "", category: "custom", enabled: true, nodes: [], edges: [], variables: {} };
+              saveWorkflow(newWf).then(wf => { if (wf) { activeWorkflow.value = wf; viewMode.value = "canvas"; } });
+            }}>+ Create Blank</button>
+            ${tmpls.length > 0 && html`
+              <button class="wf-btn" style="border-color: #f59e0b60; color: #f59e0b;" onClick=${() => installTemplate(tmpls[0]?.id)}>
+                ⚡ Quick Install: ${tmpls[0]?.name}
+              </button>
+            `}
           </div>
         </div>
       `}
 
-      <!-- Templates -->
+      <!-- Templates (grouped by category) -->
       <div>
         <h3 style="font-size: 14px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
           Templates (${tmpls.length})
         </h3>
-        <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
-          ${tmpls.map(t => html`
-            <div key=${t.id} class="wf-card wf-template-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a304080);">
-              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                <span style="font-size: 14px;">${getNodeMeta(t.category === "agents" ? "agent" : t.category === "planning" ? "trigger" : "action")?.icon}</span>
-                <span style="font-weight: 600; font-size: 14px; flex: 1;">${t.name}</span>
+        ${(() => {
+          // Group templates by category
+          const groups = {};
+          tmpls.forEach(t => {
+            const key = t.category || "custom";
+            if (!groups[key]) groups[key] = { label: t.categoryLabel || key, icon: t.categoryIcon || "⚙️", order: t.categoryOrder || 99, items: [] };
+            groups[key].items.push(t);
+          });
+          const sorted = Object.entries(groups).sort((a, b) => a[1].order - b[1].order);
+          return sorted.map(([cat, group]) => html`
+            <div key=${cat} style="margin-bottom: 20px;">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
+                <span style="font-size: 16px;">${group.icon}</span>
+                <span style="font-size: 13px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">${group.label}</span>
+                <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">(${group.items.length})</span>
               </div>
-              <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 10px; line-height: 1.4;">
-                ${t.description?.slice(0, 100)}${(t.description?.length || 0) > 100 ? "…" : ""}
-              </div>
-              <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;">
-                ${(t.tags || []).map(tag => html`
-                  <span key=${tag} class="wf-badge" style="font-size: 10px; padding: 2px 6px;">${tag}</span>
+              <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
+                ${group.items.map(t => html`
+                  <div key=${t.id} class="wf-card wf-template-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a304080);">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                      <span style="font-size: 14px;">${t.categoryIcon || group.icon}</span>
+                      <span style="font-weight: 600; font-size: 14px; flex: 1;">${t.name}</span>
+                    </div>
+                    <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 10px; line-height: 1.4;">
+                      ${t.description?.slice(0, 120)}${(t.description?.length || 0) > 120 ? "…" : ""}
+                    </div>
+                    <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;">
+                      ${(t.tags || []).map(tag => html`
+                        <span key=${tag} class="wf-badge" style="font-size: 10px; padding: 2px 6px;">${tag}</span>
+                      `)}
+                    </div>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                      <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">${t.nodeCount} nodes</span>
+                      <div style="flex: 1;"></div>
+                      <button
+                        class="wf-btn wf-btn-primary wf-btn-sm"
+                        onClick=${() => installTemplate(t.id)}
+                      >
+                        Install →
+                      </button>
+                    </div>
+                  </div>
                 `)}
               </div>
-              <div style="display: flex; gap: 8px; align-items: center;">
-                <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">${t.nodeCount} nodes</span>
-                <div style="flex: 1;"></div>
-                <button
-                  class="wf-btn wf-btn-primary wf-btn-sm"
-                  onClick=${() => installTemplate(t.id)}
-                >
-                  Install →
-                </button>
-              </div>
             </div>
-          `)}
-        </div>
+          `);
+        })()}
       </div>
     </div>
   `;

@@ -4926,7 +4926,7 @@ async function handleApi(req, res, url) {
       const wfMod = await getWorkflowEngine();
       if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
       const engine = wfMod.getWorkflowEngine();
-      const all = engine.listWorkflows();
+      const all = engine.list();
       jsonResponse(res, 200, { ok: true, workflows: all.map(w => ({
         id: w.id, name: w.name, description: w.description, category: w.category,
         enabled: w.enabled !== false, nodeCount: (w.nodes || []).length,
@@ -4944,7 +4944,7 @@ async function handleApi(req, res, url) {
       const wfMod = await getWorkflowEngine();
       if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
       const engine = wfMod.getWorkflowEngine();
-      const saved = await engine.saveWorkflow(body);
+      const saved = await engine.save(body);
       jsonResponse(res, 200, { ok: true, workflow: saved });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -5025,7 +5025,7 @@ async function handleApi(req, res, url) {
       const engine = wfMod.getWorkflowEngine();
 
       if (action === "execute" && req.method === "POST") {
-        const result = await engine.executeWorkflow(workflowId);
+        const result = await engine.execute(workflowId);
         jsonResponse(res, 200, { ok: true, result });
         return;
       }
@@ -5037,13 +5037,13 @@ async function handleApi(req, res, url) {
       }
 
       if (req.method === "DELETE") {
-        await engine.deleteWorkflow(workflowId);
+        await engine.delete(workflowId);
         jsonResponse(res, 200, { ok: true });
         return;
       }
 
       // GET — return full workflow definition
-      const all = engine.listWorkflows();
+      const all = engine.list();
       const wf = all.find(w => w.id === workflowId);
       if (!wf) { jsonResponse(res, 404, { ok: false, error: "Workflow not found" }); return; }
       jsonResponse(res, 200, { ok: true, workflow: wf });

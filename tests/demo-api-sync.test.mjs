@@ -116,20 +116,14 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/github/device/start", // Device Flow initiation — server-only (calls GitHub API)
   "/api/github/device/poll",  // Device Flow polling — server-only (calls GitHub API)
   "/api/workspace-health",     // Workspace health diagnostics — server-only
-  "/api/workflows",             // Workflow engine — server-only (dynamic module import)
-  "/api/workflows/save",        // Workflow save — server-only
-  "/api/workflows/templates",   // Workflow templates — server-only
-  "/api/workflows/install-template", // Template installation — server-only
-  "/api/workflows/node-types",  // Node type registry — server-only
-  "/api/workflows/runs",        // Workflow run history — server-only
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────
 const INTENTIONALLY_SKIPPED_ACTIONS = new Set([
   "delete",   // Demo doesn't need session deletion
   "rename",   // Demo doesn't need session renaming
-  "execute",  // Workflow engine action (not a session action)
-  "runs",     // Workflow engine action (not a session action)
+  "execute",  // Workflow :id/execute action (not a session action)
+  "runs",     // Workflow :id/runs action (not a session action)
 ]);
 
 describe("demo.html ↔ ui-server.mjs API sync", () => {
