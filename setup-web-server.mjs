@@ -125,6 +125,12 @@ function resolveConfigDir() {
   const explicit = process.env.BOSUN_DIR;
   if (explicit) return resolve(explicit);
 
+  // If there's already a bosun config in cwd (e.g. running from repo root), use that.
+  const cwd = process.cwd();
+  if ([".env", "bosun.config.json", ".bosun.json", "bosun.json"].some((f) => existsSync(resolve(cwd, f)))) {
+    return cwd;
+  }
+
   const isWindows = process.platform === "win32";
   const baseDir = isWindows
     ? process.env.APPDATA || process.env.LOCALAPPDATA || process.env.USERPROFILE || homedir()
@@ -374,6 +380,10 @@ function handleApply(body) {
 
     if (env.telegramToken) envMap.TELEGRAM_BOT_TOKEN = env.telegramToken;
     if (env.telegramChatId) envMap.TELEGRAM_CHAT_ID = env.telegramChatId;
+    if (env.jiraUrl) envMap.JIRA_URL = env.jiraUrl;
+    if (env.jiraProjectKey) envMap.JIRA_PROJECT_KEY = env.jiraProjectKey;
+    if (env.jiraApiToken) envMap.JIRA_API_TOKEN = env.jiraApiToken;
+    if (env.githubProjectNumber) envMap.GITHUB_PROJECT_NUMBER = String(env.githubProjectNumber);
 
     for (const [key, value] of Object.entries(envMap)) {
       if (value !== undefined && value !== null && value !== "") {

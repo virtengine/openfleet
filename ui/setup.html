@@ -486,6 +486,12 @@ function App() {
   const [maxRetries, setMaxRetries] = useState(3);
   const [failoverStrategy, setFailoverStrategy] = useState("next-in-line");
   const [completedSteps, setCompletedSteps] = useState(new Set());
+  const [loadedFromEnv, setLoadedFromEnv] = useState(false);
+  const [telegramEnabled, setTelegramEnabled] = useState(false);
+  const [jiraUrl, setJiraUrl] = useState("");
+  const [jiraProjectKey, setJiraProjectKey] = useState("");
+  const [jiraApiToken, setJiraApiToken] = useState("");
+  const [githubProjectNumber, setGithubProjectNumber] = useState("");
 
   // ── Load initial data ──────────────────────────────────────────────────────
 
@@ -520,6 +526,40 @@ function App() {
       } else if (d.repoRoot) {
         setRepos([d.repoRoot]);
       }
+
+      // ── Pre-fill from existing .env ──────────────────────────────────────
+      const env = statusData.existingEnv || {};
+      let envLoaded = false;
+      if (env.PROJECT_NAME) { setProjectName(env.PROJECT_NAME); envLoaded = true; }
+      if (env.GITHUB_REPO) { setRepoSlug(env.GITHUB_REPO); envLoaded = true; }
+      if (env.REPO_ROOT) { setRepoRoot(env.REPO_ROOT); envLoaded = true; }
+      if (env.KANBAN_BACKEND) { setKanbanBackend(env.KANBAN_BACKEND); envLoaded = true; }
+      if (env.TELEGRAM_BOT_TOKEN) { setTelegramToken(env.TELEGRAM_BOT_TOKEN); setTelegramEnabled(true); envLoaded = true; }
+      if (env.TELEGRAM_CHAT_ID) { setTelegramChatId(env.TELEGRAM_CHAT_ID); envLoaded = true; }
+      if (env.JIRA_URL) { setJiraUrl(env.JIRA_URL); envLoaded = true; }
+      if (env.JIRA_PROJECT_KEY) { setJiraProjectKey(env.JIRA_PROJECT_KEY); envLoaded = true; }
+      if (env.JIRA_API_TOKEN) { setJiraApiToken(env.JIRA_API_TOKEN); envLoaded = true; }
+      if (env.GITHUB_PROJECT_NUMBER) { setGithubProjectNumber(env.GITHUB_PROJECT_NUMBER); envLoaded = true; }
+      if (env.EXECUTORS) {
+        try {
+          const parsed = env.EXECUTORS.split(",").map((part, idx) => {
+            const segments = part.trim().split(":");
+            const execType = segments[0] || "COPILOT";
+            const variant = segments[1] || "DEFAULT";
+            const weight = Number(segments[2]) || 50;
+            const model = variant === "DEFAULT" ? "" : variant.toLowerCase().replaceAll("_", "-");
+            return {
+              name: idx === 0 ? "primary" : `executor-${idx + 1}`,
+              executor: execType,
+              model,
+              weight,
+              role: idx === 0 ? "primary" : "backup",
+            };
+          });
+          if (parsed.length > 0) { setExecutors(parsed); envLoaded = true; }
+        } catch { /* ignore parse errors */ }
+      }
+      if (envLoaded) setLoadedFromEnv(true);
 
       setLoading(false);
     }).catch((err) => {
@@ -575,8 +615,12 @@ function App() {
           maxParallel,
           maxRetries,
           failoverStrategy,
-          telegramToken,
-          telegramChatId,
+          telegramToken: telegramEnabled ? telegramToken : "",
+          telegramChatId: telegramEnabled ? telegramChatId : "",
+          jiraUrl,
+          jiraProjectKey,
+          jiraApiToken,
+          githubProjectNumber,
         },
         configJson: {
           projectName,
@@ -912,10 +956,38 @@ function App() {
       <div class="hint">
         ${kanbanBackend === "internal" ? "Uses a local SQLite database for fast, offline task tracking." :
           kanbanBackend === "github" ? "Syncs with GitHub Projects. Requires a GitHub repo configured above." :
-          kanbanBackend === "jira" ? "Two-way sync with Jira boards. Additional Jira config will be needed." :
+          kanbanBackend === "jira" ? "Two-way sync with Jira boards. Configure your Jira connection below." :
           "Custom backend — make sure you have the integration module."}
       </div>
     </div>
+    ${kanbanBackend === "jira" && html`
+      <div class="form-group">
+        <label>Jira URL <span class="required">*</span></label>
+        <input type="text" value=${jiraUrl} oninput=${(e) => setJiraUrl(e.target.value)}
+          placeholder="https://yourorg.atlassian.net" />
+        <div class="hint">Your Jira instance base URL.</div>
+      </div>
+      <div class="form-group">
+        <label>Jira Project Key <span class="required">*</span></label>
+        <input type="text" value=${jiraProjectKey} oninput=${(e) => setJiraProjectKey(e.target.value)}
+          placeholder="PROJ" />
+        <div class="hint">The Jira project key (e.g. PROJ, DEV, MYAPP).</div>
+      </div>
+      <div class="form-group">
+        <label>Jira API Token</label>
+        <input type="password" value=${jiraApiToken} oninput=${(e) => setJiraApiToken(e.target.value)}
+          placeholder="Jira API token..." />
+        <div class="hint">Create at <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank">Atlassian API tokens</a>. Used as the password with your Jira email.</div>
+      </div>
+    `}
+    ${kanbanBackend === "github" && html`
+      <div class="form-group">
+        <label>GitHub Project Number</label>
+        <input type="number" value=${githubProjectNumber} oninput=${(e) => setGithubProjectNumber(e.target.value)}
+          placeholder="1" />
+        <div class="hint">The number in the GitHub Projects URL: github.com/org/repo/projects/<strong>1</strong></div>
+      </div>
+    `}
     <div class="nav-buttons">
       <button class="btn" onclick=${goPrev}>← Back</button>
       <button class="btn btn-primary" onclick=${goNext}>Continue →</button>
@@ -928,17 +1000,28 @@ function App() {
     <h2>Notifications</h2>
     <p class="step-desc">Optional: configure Telegram notifications for task progress, errors, and PR updates.</p>
     <div class="form-group">
-      <label>Telegram Bot Token</label>
-      <input type="password" value=${telegramToken} oninput=${(e) => setTelegramToken(e.target.value)}
-        placeholder="123456:ABCdefGHIjklMNO..." />
-      <div class="hint">Create a bot via <a href="https://t.me/botfather" target="_blank">@BotFather</a>. Leave blank to skip.</div>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+        <input type="checkbox" checked=${telegramEnabled}
+          onchange=${(e) => setTelegramEnabled(e.target.checked)}
+          style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+        Enable Telegram Notifications
+        ${telegramEnabled && loadedFromEnv ? html`<span style="font-size:0.7rem;color:var(--success);margin-left:4px">● loaded from .env</span>` : null}
+      </label>
     </div>
-    <div class="form-group">
-      <label>Telegram Chat ID</label>
-      <input type="text" value=${telegramChatId} oninput=${(e) => setTelegramChatId(e.target.value)}
-        placeholder="-1001234567890" />
-      <div class="hint">Use <code style="font-family:var(--font-mono)">bosun --get-chat-id</code> to find your chat ID after the bot is running.</div>
-    </div>
+    ${telegramEnabled && html`
+      <div class="form-group">
+        <label>Telegram Bot Token</label>
+        <input type="password" value=${telegramToken} oninput=${(e) => setTelegramToken(e.target.value)}
+          placeholder="123456:ABCdefGHIjklMNO..." />
+        <div class="hint">Create a bot via <a href="https://t.me/botfather" target="_blank">@BotFather</a>.</div>
+      </div>
+      <div class="form-group">
+        <label>Telegram Chat ID</label>
+        <input type="text" value=${telegramChatId} oninput=${(e) => setTelegramChatId(e.target.value)}
+          placeholder="-1001234567890" />
+        <div class="hint">Use <code style="font-family:var(--font-mono)">bosun --get-chat-id</code> to find your chat ID after the bot is running.</div>
+      </div>
+    `}
     <div class="nav-buttons">
       <button class="btn" onclick=${goPrev}>← Back</button>
       <button class="btn btn-primary" onclick=${goNext}>Continue →</button>
@@ -992,17 +1075,22 @@ function App() {
   };
 
   // ── Step Router ────────────────────────────────────────────────────────────
+  // NOTE: Steps are called as plain functions (not <${Component} />) so Preact
+  // diffs them inline — prevents the component-identity churn that causes
+  // inputs to lose focus on every keystroke.
 
-  const steps = [
-    StepPrerequisites,
-    StepProfile,
-    StepExecutors,
-    StepRepos,
-    StepKanban,
-    StepNotifications,
-    StepReview,
-  ];
-  const CurrentStep = steps[step] || StepPrerequisites;
+  const renderStep = () => {
+    switch (step) {
+      case 0: return StepPrerequisites();
+      case 1: return StepProfile();
+      case 2: return StepExecutors();
+      case 3: return StepRepos();
+      case 4: return StepKanban();
+      case 5: return StepNotifications();
+      case 6: return StepReview();
+      default: return StepPrerequisites();
+    }
+  };
 
   return html`
     <div class="setup-container">
@@ -1015,9 +1103,15 @@ function App() {
         <div class="setup-title">Bosun Setup</div>
         <div class="setup-subtitle">v${status?.version || ""} — Configure your AI orchestrator</div>
       </div>
+      ${loadedFromEnv && html`
+        <div style="background:var(--success-bg);border:1px solid rgba(34,197,94,.3);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.8rem;color:var(--success);display:flex;align-items:center;gap:8px">
+          <span>✓</span>
+          <span>Existing config detected — fields pre-filled from your <code style="font-family:var(--font-mono);color:var(--success)">.env</code>. Review each step and press Continue, or adjust as needed.</span>
+        </div>
+      `}
       <${ProgressBar} />
       <div class="step-panel">
-        <${CurrentStep} />
+        ${renderStep()}
       </div>
     </div>
   `;
