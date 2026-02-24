@@ -512,9 +512,8 @@ export function ControlTab() {
   }, [retryTaskId, refreshTaskOptions]);
 
   return html`
-    ${!executor && !config && html`<${Card} title="Loading…"><${SkeletonCard} /><//>`}
-
     <div class="control-layout">
+      ${!executor && !config && html`<${Card} title="Loading…" className="control-skeleton"><${SkeletonCard} /><//>`}
       <div class="control-main">
         <${Card}
           title="Control Unit"
