@@ -56,7 +56,7 @@ const backendDown = signal(false);
 const backendError = signal("");
 const backendLastSeen = signal(null);
 const backendRetryCount = signal(0);
-const DESKTOP_MIN_WIDTH = 1200;
+const DESKTOP_MIN_WIDTH = 1400;
 const TABLET_MIN_WIDTH = 768;
 const COMPACT_NAV_MAX_WIDTH = 520;
 const RAIL_ICON_WIDTH = 54;
@@ -529,7 +529,7 @@ function SidebarNav({ collapsed = false, onToggle }) {
       ${!collapsed && html`
         <div class="sidebar-actions">
           <button class="btn btn-primary btn-block" onClick=${() => createSession({ type: "primary" })}>
-            <span class="btn-icon">${resolveIcon("✨")}</span> New Session
+            <span class="btn-icon">${resolveIcon("➕")}</span> New Session
           </button>
           <button class="btn btn-ghost btn-block" onClick=${() => navigateTo("tasks")}>
             <span class="btn-icon">${resolveIcon("📋")}</span> View Tasks
@@ -543,7 +543,7 @@ function SidebarNav({ collapsed = false, onToggle }) {
             onClick=${() => createSession({ type: "primary" })}
             title="New Session"
             aria-label="New Session"
-          >${resolveIcon("✨")}</button>
+          >${resolveIcon("➕")}</button>
         </div>
       `}
       <nav class="sidebar-nav" aria-label="Main navigation">
@@ -863,7 +863,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
  *  Bottom Navigation
  * ═══════════════════════════════════════════════ */
 const PRIMARY_NAV_TABS = ["dashboard", "chat", "tasks", "agents"];
-const MORE_NAV_TABS = ["control", "infra", "logs", "settings"];
+const MORE_NAV_TABS = ["control", "infra", "logs", "workflows", "settings"];
 
 function getTabsById(ids) {
   return ids

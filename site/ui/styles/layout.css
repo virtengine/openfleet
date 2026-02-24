@@ -638,7 +638,7 @@
   display: none;
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   :root {
     --sidebar-width: 220px;
   }
@@ -788,7 +788,7 @@
 }
 
 /* ═══════════════════════════════════════════════
- *  Tablet Breakpoint (768px – 1199px)
+ *  Tablet Breakpoint (768px – 1399px)
  *  Sidebar & Inspector as slide-over drawers
  * ═══════════════════════════════════════════════ */
 
@@ -868,7 +868,7 @@
   display: none;
 }
 
-@media (min-width: 768px) and (max-width: 1199px) {
+@media (min-width: 768px) and (max-width: 1399px) {
   .tablet-action-bar {
     display: flex;
     gap: 8px;
@@ -1162,7 +1162,7 @@
   padding: 1px 10px;
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .app-shell[data-has-rail="true"] .main-content {
     max-width: none;
   }
@@ -1302,7 +1302,7 @@ body.is-resizing * {
   user-select: none;
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .session-rail,
   .inspector {
     position: relative;
@@ -1350,7 +1350,7 @@ body.is-resizing * {
   }
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .inspector .diff-viewer {
     max-height: 260px;
     overflow-y: auto;
@@ -1397,7 +1397,7 @@ body.is-resizing * {
   background: var(--bg-hover, rgba(148,163,184,0.12));
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .sidebar-collapse-btn {
     display: flex;
   }
@@ -1408,32 +1408,38 @@ body.is-resizing * {
   }
 
   /* ── Icon-only sidebar styles ── */
-  .sidebar.sidebar-icon-only {
+  .sidebar.sidebar-icon-only,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar {
     padding: 12px 8px;
     align-items: center;
     overflow: visible;
   }
 
-  .sidebar.sidebar-icon-only .sidebar-brand-row {
+  .sidebar.sidebar-icon-only .sidebar-brand-row,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-brand-row {
     flex-direction: column;
     align-items: center;
     gap: 4px;
   }
 
-  .sidebar.sidebar-icon-only .sidebar-brand-row .sidebar-title {
+  .sidebar.sidebar-icon-only .sidebar-brand-row .sidebar-title,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-brand-row .sidebar-title {
     display: none;
   }
 
-  .sidebar.sidebar-icon-only .sidebar-actions {
+  .sidebar.sidebar-icon-only .sidebar-actions,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-actions {
     display: none;
   }
 
-  .sidebar.sidebar-icon-only .sidebar-nav {
+  .sidebar.sidebar-icon-only .sidebar-nav,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-nav {
     width: 100%;
     align-items: center;
   }
 
-  .sidebar.sidebar-icon-only .sidebar-nav-item {
+  .sidebar.sidebar-icon-only .sidebar-nav-item,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-nav-item {
     display: flex;
     justify-content: center;
     align-items: center;
@@ -1444,15 +1450,18 @@ body.is-resizing * {
     overflow: visible;
   }
 
-  .sidebar.sidebar-icon-only .sidebar-nav-item span:not(.nav-icon) {
+  .sidebar.sidebar-icon-only .sidebar-nav-item span:not(.nav-icon),
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-nav-item span:not(.nav-icon) {
     display: none;
   }
 
-  .sidebar.sidebar-icon-only .sidebar-footer .sidebar-user {
+  .sidebar.sidebar-icon-only .sidebar-footer .sidebar-user,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-footer .sidebar-user {
     display: none;
   }
 
-  .sidebar.sidebar-icon-only .sidebar-footer {
+  .sidebar.sidebar-icon-only .sidebar-footer,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-footer {
     align-items: center;
     padding: 0;
   }
@@ -1461,7 +1470,8 @@ body.is-resizing * {
     display: none;
   }
 
-  .sidebar.sidebar-icon-only .sidebar-actions-icon {
+  .sidebar.sidebar-icon-only .sidebar-actions-icon,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-actions-icon {
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -1494,7 +1504,7 @@ body.is-resizing * {
    SessionRail: icon-only collapsed mode
 ═══════════════════════════════════════════════════════ */
 
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   /* ── Override --rail-width when rail is collapsed ── */
   .app-shell[data-rail-collapsed="true"] {
     --rail-width: 54px;
