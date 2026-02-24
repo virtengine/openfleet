@@ -127,6 +127,7 @@
     "codex-config.mjs",
     "bosun.config.example.json",
     "bosun.schema.json",
+    "bosun-skills.mjs",
     "codex-model-profiles.mjs",
     "codex-shell.mjs",
     "config.mjs",
