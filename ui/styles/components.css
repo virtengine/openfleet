@@ -4855,36 +4855,6 @@ select.input {
 }
 
 /* ════════════════════════════════════════════════════════════
- *  Control Tab Layout
- * ════════════════════════════════════════════════════════════ */
-.control-layout {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  min-height: 0;
-}
-
-.control-main {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  min-height: 0;
-}
-
-@media (min-width: 900px) {
-  .control-layout {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: var(--space-md);
-    align-items: start;
-  }
-
-  .control-main {
-    display: contents; /* let cards flow into the grid */
-  }
-}
-
-/* ════════════════════════════════════════════════════════════
  *  Task Progress Modal (.tp-*)
  * ════════════════════════════════════════════════════════════ */
 .task-progress-modal .modal-body {
