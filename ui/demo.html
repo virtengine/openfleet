@@ -786,19 +786,30 @@
       sessions: SEED_SESSIONS,
       sessionDiffs: SESSION_DIFFS,
       worktrees: [
-        { branch: 'bs/001-chat-input-sticky', path: '/worktrees/bs001', active: false, taskId: 'bs-001' },
-        { branch: 'bs/003-commits-api', path: '/worktrees/bs003', active: true, taskId: 'bs-003' },
-        { branch: 'bs/004-bot-controls', path: '/worktrees/bs004', active: true, taskId: 'bs-004' },
-        { branch: 'bs/008-api-tests', path: '/worktrees/bs008', active: true, taskId: 'bs-008' },
+        { branch: 'docs/bosun-improvement-plan', path: '/worktrees/bs-improvement', active: true, taskId: 'bosun-7' },
+        { branch: 've/751-security-bulk-remediation', path: '/worktrees/ve-751', active: false, taskId: 've-751' },
+        { branch: 'bs/12-error-correlation', path: '/worktrees/bs-12', active: true, taskId: 'bosun-12' },
+        { branch: 'bs/11-agent-logging-enrich', path: '/worktrees/bs-11', active: true, taskId: 'bosun-11' },
+        { branch: 've/760-market-order-expiry', path: '/worktrees/ve-760', active: true, taskId: 've-760' },
+        { branch: 've/761-escrow-batch', path: '/worktrees/ve-761', active: true, taskId: 've-761' },
       ],
       managedWorkspaces: [
-        { id: 'ws-bosun', name: 'bosun', path: '/home/demo/repos/bosun', active: true, repos: [
-          { name: 'bosun', url: 'https://github.com/virtengine/bosun.git', branch: 'main', primary: true },
-        ], createdAt: now - 30*24*hr },
+        {
+          id: 'ws-multi',
+          name: 'virtengine-workspace',
+          path: '/home/demo/repos/virtengine-workspace',
+          active: true,
+          repos: [
+            { name: 'bosun', url: 'https://github.com/virtengine/bosun.git', branch: 'main', primary: true },
+            { name: 'virtengine', url: 'https://github.com/virtengine/virtengine.git', branch: 'main', primary: false },
+          ],
+          createdAt: now - 30 * 24 * hr,
+        },
       ],
-      activeWorkspaceId: 'ws-bosun',
+      activeWorkspaceId: 'ws-multi',
       sharedWorkspaces: [
-        { id: 'sw-1', name: 'bosun-dev', claimedBy: 'copilot-claude', claimedAt: now - 1*hr, expiresAt: now + 1*hr },
+        { id: 'sw-1', name: 'bosun-dev', claimedBy: 'copilot-claude', claimedAt: now - 1 * hr, expiresAt: now + 1 * hr },
+        { id: 'sw-2', name: 'virtengine-dev', claimedBy: 'codex-sdk', claimedAt: now - 30 * min, expiresAt: now + 90 * min },
       ],
       agentMode: 'agent',
       activeAgentId: 'codex-sdk',
@@ -807,12 +818,23 @@
         { id: 'copilot-claude', name: 'Copilot Claude', provider: 'anthropic', available: true, busy: false, capabilities: ['code', 'review', 'plan'] },
         { id: 'codex-mini', name: 'Codex Mini', provider: 'openai', available: true, busy: false, capabilities: ['code'] },
       ],
-      gitBranches: ['main', 've/abc123-market-order-expiry', 've/ghi789-escrow-batch', 've/jkl012-hpc-gpu-metering', 've/vwx234-mfa-tests'],
-      gitDiff: '--- a/x/escrow/keeper/batch.go\n+++ b/x/escrow/keeper/batch.go\n@@ -0,0 +1,42 @@\n+package keeper\n+\n+// BatchSettle processes pending settlements in batch.\n+func (k Keeper) BatchSettle(ctx sdk.Context) error {\n+    // ... implementation\n+    return nil\n+}',
+      gitBranches: [
+        'main',
+        'docs/bosun-improvement-plan',
+        've/751-security-bulk-remediation',
+        've/760-market-order-expiry',
+        've/761-escrow-batch',
+        've/762-veid-token-fix',
+        'bs/12-error-correlation',
+        'bs/11-agent-logging-enrich',
+        'bs/13-weekly-report',
+        'fix/kanban-repo-filters',
+      ],
+      gitDiff: '--- a/bosun/ui/components/kanban-board.js\n+++ b/bosun/ui/components/kanban-board.js\n@@ -1,5 +1,8 @@\n-// Kanban Board Component — Trello-style\n+// Kanban Board Component — GitHub Projects-style\n+import { useState } from \"preact/hooks\";\n+\n+function getTaskRepo(task) { ... }\n+function KanbanFilter({ tasks, filters, onFilterChange }) { ... }',
       agentLogFiles: ['copilot-claude-42.log', 'codex-default-43.log', 'monitor.log'],
       presence: {
-        instances: [{ id: 'inst-1', host: 'dev-machine', pid: 12345, started: now - 3*hr, role: 'primary' }],
-        coordinator: { id: 'inst-1', host: 'dev-machine', elected: now - 3*hr },
+        instances: [{ id: 'inst-1', host: 'dev-machine', pid: 12345, started: now - 3 * hr, role: 'primary' }],
+        coordinator: { id: 'inst-1', host: 'dev-machine', elected: now - 3 * hr },
       },
     };
 
@@ -829,19 +851,19 @@
     let replyCursor = 0;
     const RESPONSE_SETS = [
       [
-        { type: 'tool_call', content: 'rg "BatchSettle" x/escrow -n' },
-        { type: 'tool_result', content: 'x/escrow/keeper/batch.go:12 BatchSettle\nx/escrow/types/msgs.go:87 MsgTriggerSettlement' },
-        { role: 'assistant', content: 'I found a stubbed `BatchSettle` entry point. I can wire the iterator and add a guard in the msg server. Want me to push the patch?' },
+        { type: 'tool_call', content: 'rg "KanbanFilter" bosun/ui/components -n' },
+        { type: 'tool_result', content: 'bosun/ui/components/kanban-board.js:28 function KanbanFilter\nbosun/ui/components/kanban-board.js:112 <KanbanFilter' },
+        { role: 'assistant', content: 'Found the `KanbanFilter` component. I can add the repo badge dropdown and wire it to the `task.repo` field. Want me to push the patch?' },
       ],
       [
-        { type: 'tool_call', content: 'rg "GPU" x/hpc -n' },
-        { type: 'tool_result', content: 'x/hpc/keeper/metering.go:44 TrackGPU\nx/hpc/types/config.go:18 GPUMeteringEnabled' },
-        { role: 'assistant', content: 'GPU metering hooks are already scaffolded. I can add the config toggle + emit usage events, plus a short docs note.' },
+        { type: 'tool_call', content: 'rg "ProcessOrder" x/market -n' },
+        { type: 'tool_result', content: 'x/market/keeper/order.go:118 func (k Keeper) ProcessOrder\nx/market/keeper/order_test.go:45 TestProcessOrder' },
+        { role: 'assistant', content: 'Order processor has an expiry stub. I can wire the TTL check from module params and add settlement-on-expiry logic with tests.' },
       ],
       [
-        { type: 'tool_call', content: 'git status --short' },
-        { type: 'tool_result', content: ' M tests/mfa/integration.test.ts\n M docs/mfa/README.md' },
-        { role: 'assistant', content: 'Updated the MFA test names and added a short docs note. Ready for review.' },
+        { type: 'tool_call', content: 'git log --oneline -5' },
+        { type: 'tool_result', content: 'a1b2c3d feat(kanban): add repo badge and filter bar\n4e5f6a7 fix(ui): health card text contrast\n8b9c0d1 feat(site): landing page redesign\ne2f3a4b fix(security): bulk remediation 287/300 alerts' },
+        { role: 'assistant', content: 'Latest commits look good. Kanban filters landed, health card contrast fixed, landing page redesigned. Ready for PR review.' },
       ],
     ];
 
@@ -1430,9 +1452,12 @@
         setInterval(() => {
           if (!fake.onmessage) return;
           const updates = [
-            { type: 'task-update', task: { id: 've-ghi789', status: 'inprogress' } },
+            { type: 'task-update', task: { id: 'bosun-7', status: 'inprogress' } },
             { type: 'log', entry: { ts: Date.now(), level: 'info', source: 'monitor', msg: 'Health check passed — all systems nominal' } },
             { type: 'executor-update', executor: { name: 'copilot-claude', load: 55 + Math.floor(Math.random() * 25) } },
+            { type: 'task-update', task: { id: 've-760', status: 'inprogress' } },
+            { type: 'log', entry: { ts: Date.now(), level: 'info', source: 'sync', msg: 'Workspace sync complete — 2 repos up to date' } },
+            { type: 'executor-update', executor: { name: 'codex-sdk', load: 40 + Math.floor(Math.random() * 30) } },
           ];
           fake.onmessage({ data: JSON.stringify(updates[updateIdx % updates.length]) });
           updateIdx++;
@@ -1739,14 +1764,15 @@
 
     const CMDS = {
       status: () => `<strong>📊 Fleet Status</strong> — <code>● RUNNING</code><br/><br/>`+
-        `⏱ Uptime: <code>2h 34m 12s</code><br/>`+
+        `⏱ Uptime: <code>6d 14h 22m</code><br/>`+
         `🔧 Mode: <code>internal</code><br/>`+
-        `⚡ Max Parallel: <code>6</code><br/><br/>`+
-        `<strong>Today</strong><br/>`+
-        `✅ Completed: <strong>13</strong> · 🔀 PRs merged: <strong>11</strong> · ❌ Failures: <strong>1</strong> (auto-retried)<br/><br/>`+
+        `⚡ Max Parallel: <code>6</code><br/>`+
+        `📂 Repos: <code>bosun</code> + <code>virtengine</code><br/><br/>`+
+        `<strong>This Week</strong><br/>`+
+        `✅ Completed: <strong>27</strong> · 🔀 PRs merged: <strong>22</strong> · ❌ Failures: <strong>2</strong> (auto-retried)<br/><br/>`+
         `<strong>Executors</strong><br/>`+
-        `├─ <code>copilot-claude</code> 🟢 load: 67% tasks: 8<br/>`+
-        `└─ <code>codex-default</code> 🟢 load: 42% tasks: 5`,
+        `├─ <code>copilot-claude</code> 🟢 load: 67% tasks: 16<br/>`+
+        `└─ <code>codex-default</code> 🟢 load: 42% tasks: 11`,
 
       tasks: () => {
         if (!TASKS.length) return '<strong>📋 Tasks</strong><br/>No tasks found.';
@@ -1812,46 +1838,54 @@
       },
 
       branches: () => `<strong>🌿 Active Branches</strong><br/><br/>`+
-        `├─ <code>ve/abc123-market-order-expiry</code> (merged)<br/>`+
-        `├─ <code>ve/def456-veid-token-fix</code> (merged)<br/>`+
-        `├─ <code>ve/ghi789-escrow-batch</code> 🔵 active<br/>`+
-        `├─ <code>ve/jkl012-hpc-gpu-metering</code> 🔵 active<br/>`+
-        `└─ <code>ve/vwx234-mfa-tests</code> 📝 in review`,
+        `<strong>virtengine/bosun</strong><br/>`+
+        `├─ <code>docs/bosun-improvement-plan</code> 🔵 active (PR #17)<br/>`+
+        `├─ <code>bs/12-error-correlation</code> 🔵 active<br/>`+
+        `├─ <code>bs/11-agent-logging-enrich</code> 🔵 active<br/>`+
+        `├─ <code>fix/kanban-repo-filters</code> 🔵 active<br/>`+
+        `└─ <code>bs/13-weekly-report</code> ⏳ draft<br/><br/>`+
+        `<strong>virtengine/virtengine</strong><br/>`+
+        `├─ <code>ve/760-market-order-expiry</code> 🔵 active<br/>`+
+        `├─ <code>ve/761-escrow-batch</code> 🔵 active<br/>`+
+        `├─ <code>ve/762-veid-token-fix</code> 📝 in review<br/>`+
+        `└─ <code>ve/751-security-bulk-remediation</code> (merged, PR #751)`,
 
       diff: () => `<strong>📝 Git Diff Summary</strong> (staged)<br/><br/>`+
-        `<code>x/market/keeper/order.go</code>  +47 -12<br/>`+
-        `<code>x/market/types/msgs.go</code>     +23 -0<br/>`+
-        `<code>x/market/keeper/keeper.go</code>  +8  -2<br/><br/>`+
-        `3 files changed, 78 insertions(+), 14 deletions(-)`,
+        `<code>bosun/ui/components/kanban-board.js</code>  +124 -18<br/>`+
+        `<code>bosun/ui/styles/kanban.css</code>          +156 -3<br/>`+
+        `<code>bosun/ui/demo.html</code>                 +312 -89<br/><br/>`+
+        `3 files changed, 592 insertions(+), 110 deletions(-)`,
 
       git_log: () => `<strong>📖 Git Log</strong><br/><br/>`+
-        `<code>a3f8e91</code> feat(market): add order expiry (#187)<br/>`+
-        `<code>7bc2d44</code> fix(veid): token validation (#188)<br/>`+
-        `<code>1e9f077</code> refactor(escrow): batch settlement (#189)<br/>`+
-        `<code>4da8b33</code> chore(deps): bump cosmos-sdk v0.53.2<br/>`+
-        `<code>9cd0e51</code> ci: fix lint on portal workflow`,
+        `<code>a1b2c3d</code> feat(kanban): add repo badge and filter bar (PR #17)<br/>`+
+        `<code>4e5f6a7</code> fix(ui): health card text contrast<br/>`+
+        `<code>8b9c0d1</code> feat(site): landing page redesign<br/>`+
+        `<code>e2f3a4b</code> fix(security): bulk remediation 287/300 alerts (PR #751)<br/>`+
+        `<code>f5a6b7c</code> feat(oauth): GitHub App auth setup (PR #10)`,
 
       shell: () => `<strong>💻 Shell</strong> — <code>ls logs/</code><br/><br/>`+
         `<code>daemon.log  monitor.log  agent-42.log  agent-43.log  agent-44.log  telegram.log</code>`,
 
       history: () => `<strong>🧠 Session History</strong><br/><br/>`+
-        `├─ Session #14: feat(market) order expiry — 23 turns<br/>`+
-        `├─ Session #15: fix(veid) token validation — 11 turns<br/>`+
-        `├─ Session #16: refactor(escrow) batch settle — 31 turns<br/>`+
-        `└─ Session #17: feat(hpc) GPU metering — <em>in progress</em><br/><br/>`+
-        `Total: 4 sessions today, 65 turns`,
+        `├─ Session #1: Landing page redesign (bosun PR #17) — <em>in progress</em><br/>`+
+        `├─ Session #2: Market order expiry (virtengine) — <em>in progress</em><br/>`+
+        `├─ Session #6: Security bulk remediation (PR #751) — ✅ done<br/>`+
+        `├─ Session #7: Kanban filters + repo badge — <em>in progress</em><br/>`+
+        `└─ Session #8: MiniApp redesign (PR #754) — ✅ done<br/><br/>`+
+        `Total: 8 sessions this week, 142 turns`,
 
       threads: () => `<strong>🧵 Active Threads</strong><br/><br/>`+
-        `├─ Thread #1: <code>ve/44-escrow-batch</code> 🟢 (31 turns)<br/>`+
-        `├─ Thread #2: <code>ve/45-hpc-gpu</code> 🟢 (8 turns)<br/>`+
-        `└─ Thread #3: <code>primary-agent</code> 🟡 idle<br/><br/>`+
-        `Total: 3 threads (2 active)`,
+        `├─ Thread #1: <code>docs/bosun-improvement-plan</code> 🟢 (18 turns)<br/>`+
+        `├─ Thread #2: <code>ve/760-market-order-expiry</code> 🟢 (12 turns)<br/>`+
+        `├─ Thread #3: <code>bs/12-error-correlation</code> 🟢 (6 turns)<br/>`+
+        `└─ Thread #4: <code>primary-agent</code> 🟡 idle<br/><br/>`+
+        `Total: 4 threads (3 active)`,
       threads_clear: () => `<strong>🧵 Registry cleared.</strong> All idle threads removed.`,
 
       steer: () => `<strong>🧭 Steer Agent</strong><br/><br/>Use: <code>/steer &lt;directive&gt;</code><br/><br/>Example:<br/><code>/steer focus on adding tests first</code><br/><code>/steer skip the CLI and focus on keeper only</code>`,
       stop: () => `<strong>🛑 Stop Agent</strong><br/><br/>No active agents running right now.`,
 
-      kanban: () => `<strong>📊 Kanban Board</strong><br/><br/>📝 Draft: 1<br/>📋 Todo: 2<br/>🔵 In Progress: 2<br/>📝 In Review: 1<br/>✅ Done: 2<br/><br/>Total: 8 tasks`,
+      kanban: () => `<strong>📊 Kanban Board</strong><br/><br/>📝 Draft: 2<br/>📋 Todo: 3<br/>🔵 In Progress: 4<br/>📝 In Review: 2<br/>✅ Done: 8<br/>❌ Error: 1<br/><br/>Total: 20 tasks across 2 repos`,
 
       pause: () => `<strong>⏸ Task processing paused.</strong><br/><br/>No new tasks will be dispatched. Active tasks continue.<br/>Use Resume to restart.`,
       resume: () => `<strong>▶️ Task processing resumed.</strong><br/><br/>Fleet is picking up tasks from the backlog.`,
@@ -1876,9 +1910,9 @@
       tasks_blocked: () => '<strong>⛔ Blocked</strong><br/><br/>No blocked tasks.',
       tasks_done: () => tasksByStatus('Done', ['done']),
 
-      agentlogs_escrow: () => `<strong>📂 Agent Logs — ve/44-escrow-batch</strong><br/><br/><pre>[14:32] Starting session...\n[14:33] Reading x/escrow/keeper/keeper.go\n[14:35] Implementing batch settlement\n[14:41] PR #189 created\n[14:44] CI checks passing</pre>`,
-      agentlogs_hpc: () => `<strong>📂 Agent Logs — ve/45-hpc-gpu</strong><br/><br/><pre>[14:35] Starting session...\n[14:36] Reading x/hpc/types/resource.go\n[14:38] Adding GPU metering struct\n[14:40] Writing tests...</pre>`,
-      agentlogs_docs: () => `<strong>📂 Agent Logs — ve/46-docs-guide</strong><br/><br/><pre>[Queued — not yet started]</pre>`,
+      agentlogs_escrow: () => `<strong>📂 Agent Logs — docs/bosun-improvement-plan</strong><br/><br/><pre>[09:12] Starting session for bosun PR #17\n[09:14] Reading site/indexv2.html\n[09:18] Refactoring demo tabs for mobile\n[09:24] Added helm SVG hero\n[09:30] CI queued on PR #17</pre>`,
+      agentlogs_hpc: () => `<strong>📂 Agent Logs — ve/760-market-order-expiry</strong><br/><br/><pre>[10:05] Starting session...\n[10:06] Reading x/market/keeper/order.go\n[10:10] Implementing auto-expiry TTL\n[10:15] Writing order_test.go...</pre>`,
+      agentlogs_docs: () => `<strong>📂 Agent Logs — bs/12-error-correlation</strong><br/><br/><pre>[Queued — not yet started]</pre>`,
 
       kill_thread_44: () => `<strong>🗑 Thread Invalidated</strong><br/><br/>Thread <code>ve/44-escrow-batch</code> has been invalidated. Session will restart on next dispatch.`,
       kill_thread_45: () => `<strong>🗑 Thread Invalidated</strong><br/><br/>Thread <code>ve/45-hpc-gpu</code> has been invalidated.`,
@@ -1909,7 +1943,7 @@
       route_task: () => `<strong>🎯 Route Task</strong><br/><br/>Next queued task will be routed using weighted random policy across online executors.`,
       container: () => `<strong>📦 Container Status</strong><br/><br/>Container Mode: <code>disabled</code><br/>Available: Docker, Podman<br/><br/>Enable with <code>CONTAINER_MODE=docker</code>`,
 
-      integration_github: () => `<strong>🐙 GitHub</strong> — ✅ Connected<br/><br/>Org: <code>virtengine-gh</code><br/>Repo: <code>virtengine</code><br/>Kanban: bidirectional sync`,
+      integration_github: () => `<strong>🐙 GitHub</strong> — ✅ Connected<br/><br/>Org: <code>virtengine</code><br/>Repos: <code>bosun</code>, <code>virtengine</code><br/>Kanban: bidirectional sync`,
       integration_telegram: () => `<strong>📱 Telegram</strong> — ✅ Bot active<br/><br/>Bot: <code>@bosun_bot</code><br/>MiniApp: enabled<br/>Sticky menu: active`,
       integration_vscode: () => `<strong>💻 VS Code</strong> — ✅ Copilot extension linked<br/><br/>Agent: copilot-claude<br/>MCP servers: connected`,
       integration_whatsapp: () => `<strong>📱 WhatsApp</strong> — Not configured<br/><br/>Run <code>bosun --whatsapp-auth</code> to set up.`,

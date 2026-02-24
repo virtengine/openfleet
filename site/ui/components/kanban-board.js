@@ -1,8 +1,8 @@
 /* ─────────────────────────────────────────────────────────────
- *  Kanban Board Component — Trello-style drag-and-drop task board
+ *  Kanban Board Component — GitHub Projects-style task board
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
-import { useState, useCallback, useRef, useEffect } from "preact/hooks";
+import { useState, useCallback, useRef, useEffect, useMemo } from "preact/hooks";
 import htm from "htm";
 import { signal, computed } from "@preact/signals";
 import { tasksData, tasksLoaded, showToast, runOptimistic, loadTasks } from "../modules/state.js";
@@ -337,6 +337,8 @@ function KanbanCard({ task, onOpen }) {
   const priorityLabel = PRIORITY_LABELS[task.priority] || null;
   const tags = getTaskTags(task);
   const baseBranch = getTaskBaseBranch(task);
+  const repoName = task.repo || task.repository || "";
+  const issueNum = task.issueNumber || task.issue_number || (typeof task.id === "string" && /^\d+$/.test(task.id) ? task.id : null);
 
   return html`
     <div
@@ -353,9 +355,17 @@ function KanbanCard({ task, onOpen }) {
         onOpen(task.id);
       }}
     >
-      ${priorityLabel && html`
-        <span class="kanban-card-badge" style="background:${priorityColor}">${priorityLabel}</span>
-      `}
+      <div class="kanban-card-header">
+        ${repoName && html`
+          <span class="kanban-card-repo">${repoName}</span>
+        `}
+        ${(issueNum || task.pr) && html`
+          <span class="kanban-card-issue">${task.pr ? `#${task.pr}` : `#${issueNum}`}</span>
+        `}
+        ${priorityLabel && html`
+          <span class="kanban-card-badge" style="background:${priorityColor}">${priorityLabel}</span>
+        `}
+      </div>
       <div class="kanban-card-title">${truncate(task.title || "(untitled)", 80)}</div>
       ${task.description && html`
         <div class="kanban-card-desc">${truncate(task.description, 72)}</div>
@@ -369,6 +379,7 @@ function KanbanCard({ task, onOpen }) {
         </div>
       `}
       <div class="kanban-card-meta">
+        ${task.assignee && html`<span class="kanban-card-assignee" title=${task.assignee}>${task.assignee.split("-")[0]}</span>`}
         <span class="kanban-card-id">${typeof task.id === "string" ? truncate(task.id, 12) : task.id}</span>
         ${task.created_at && html`<span>${formatRelative(task.created_at)}</span>`}
       </div>
@@ -495,20 +506,165 @@ function KanbanColumn({ col, tasks, onOpen }) {
   `;
 }
 
-/* ─── KanbanBoard (main export) ─── */
-export function KanbanBoard({ onOpenTask }) {
-  const cols = columnData.value;
+/* ─── KanbanFilter ─── */
+function KanbanFilter({ tasks, filters, onFilterChange }) {
+  const repos = useMemo(() => {
+    const set = new Set();
+    (tasks || []).forEach((t) => {
+      if (t.repo || t.repository) set.add(t.repo || t.repository);
+    });
+    return [...set].sort();
+  }, [tasks]);
+
+  const assignees = useMemo(() => {
+    const set = new Set();
+    (tasks || []).forEach((t) => {
+      if (t.assignee) set.add(t.assignee);
+    });
+    return [...set].sort();
+  }, [tasks]);
+
+  const priorities = ["critical", "high", "medium", "low"];
+
+  const [showDropdown, setShowDropdown] = useState(null);
+
+  const toggleDropdown = useCallback((name) => {
+    setShowDropdown((prev) => (prev === name ? null : name));
+  }, []);
+
+  const setFilter = useCallback((key, value) => {
+    onFilterChange({ ...filters, [key]: value });
+    setShowDropdown(null);
+  }, [filters, onFilterChange]);
+
+  const clearAll = useCallback(() => {
+    onFilterChange({ repo: "", assignee: "", priority: "", search: "" });
+    setShowDropdown(null);
+  }, [onFilterChange]);
+
+  const hasFilters = filters.repo || filters.assignee || filters.priority || filters.search;
 
   return html`
-    <div class="kanban-board">
-      ${COLUMNS.map((col) => html`
-        <${KanbanColumn}
-          key=${col.id}
-          col=${col}
-          tasks=${cols[col.id] || []}
-          onOpen=${onOpenTask}
+    <div class="kanban-filter-bar">
+      <div class="kanban-filter-search">
+        <span class="kanban-filter-icon">🔍</span>
+        <input
+          type="text"
+          class="kanban-filter-input"
+          placeholder="Filter by keyword or field"
+          value=${filters.search || ""}
+          onInput=${(e) => onFilterChange({ ...filters, search: e.target.value })}
         />
-      `)}
+      </div>
+      <div class="kanban-filter-chips">
+        ${repos.length > 1 && html`
+          <div class="kanban-filter-dropdown-wrap">
+            <button
+              class="kanban-filter-chip ${filters.repo ? 'active' : ''}"
+              onClick=${() => toggleDropdown("repo")}
+            >
+              📦 ${filters.repo || "Repository"}
+            </button>
+            ${showDropdown === "repo" && html`
+              <div class="kanban-filter-dropdown">
+                <button class="kanban-filter-option ${!filters.repo ? 'selected' : ''}" onClick=${() => setFilter("repo", "")}>All repositories</button>
+                ${repos.map((r) => html`
+                  <button class="kanban-filter-option ${filters.repo === r ? 'selected' : ''}" onClick=${() => setFilter("repo", r)}>${r}</button>
+                `)}
+              </div>
+            `}
+          </div>
+        `}
+        <div class="kanban-filter-dropdown-wrap">
+          <button
+            class="kanban-filter-chip ${filters.priority ? 'active' : ''}"
+            onClick=${() => toggleDropdown("priority")}
+          >
+            ◉ ${filters.priority ? PRIORITY_LABELS[filters.priority] || filters.priority : "Priority"}
+          </button>
+          ${showDropdown === "priority" && html`
+            <div class="kanban-filter-dropdown">
+              <button class="kanban-filter-option ${!filters.priority ? 'selected' : ''}" onClick=${() => setFilter("priority", "")}>All priorities</button>
+              ${priorities.map((p) => html`
+                <button class="kanban-filter-option ${filters.priority === p ? 'selected' : ''}" onClick=${() => setFilter("priority", p)}>
+                  <span class="kanban-card-priority" style="background:${PRIORITY_COLORS[p]}"></span>
+                  ${p.charAt(0).toUpperCase() + p.slice(1)}
+                </button>
+              `)}
+            </div>
+          `}
+        </div>
+        ${assignees.length > 0 && html`
+          <div class="kanban-filter-dropdown-wrap">
+            <button
+              class="kanban-filter-chip ${filters.assignee ? 'active' : ''}"
+              onClick=${() => toggleDropdown("assignee")}
+            >
+              👤 ${filters.assignee || "Assignee"}
+            </button>
+            ${showDropdown === "assignee" && html`
+              <div class="kanban-filter-dropdown">
+                <button class="kanban-filter-option ${!filters.assignee ? 'selected' : ''}" onClick=${() => setFilter("assignee", "")}>All assignees</button>
+                ${assignees.map((a) => html`
+                  <button class="kanban-filter-option ${filters.assignee === a ? 'selected' : ''}" onClick=${() => setFilter("assignee", a)}>${a}</button>
+                `)}
+              </div>
+            `}
+          </div>
+        `}
+        ${hasFilters && html`
+          <button class="kanban-filter-chip clear" onClick=${clearAll}>✕ Clear</button>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+/* ─── KanbanBoard (main export) ─── */
+export function KanbanBoard({ onOpenTask }) {
+  const [filters, setFilters] = useState({ repo: "", assignee: "", priority: "", search: "" });
+  const allTasks = tasksData.value || [];
+
+  const filteredTasks = useMemo(() => {
+    let tasks = allTasks;
+    if (filters.repo) tasks = tasks.filter((t) => (t.repo || t.repository) === filters.repo);
+    if (filters.assignee) tasks = tasks.filter((t) => t.assignee === filters.assignee);
+    if (filters.priority) tasks = tasks.filter((t) => t.priority === filters.priority);
+    if (filters.search) {
+      const q = filters.search.toLowerCase();
+      tasks = tasks.filter((t) =>
+        (t.title || "").toLowerCase().includes(q) ||
+        (t.id || "").toString().toLowerCase().includes(q) ||
+        (t.repo || "").toLowerCase().includes(q) ||
+        (t.assignee || "").toLowerCase().includes(q)
+      );
+    }
+    return tasks;
+  }, [allTasks, filters]);
+
+  const cols = useMemo(() => {
+    const result = {};
+    for (const col of COLUMNS) result[col.id] = [];
+    for (const task of filteredTasks) {
+      const col = getColumnForStatus(task.status);
+      if (result[col]) result[col].push(task);
+    }
+    return result;
+  }, [filteredTasks]);
+
+  return html`
+    <div class="kanban-container">
+      <${KanbanFilter} tasks=${allTasks} filters=${filters} onFilterChange=${setFilters} />
+      <div class="kanban-board">
+        ${COLUMNS.map((col) => html`
+          <${KanbanColumn}
+            key=${col.id}
+            col=${col}
+            tasks=${cols[col.id] || []}
+            onOpen=${onOpenTask}
+          />
+        `)}
+      </div>
     </div>
   `;
 }
