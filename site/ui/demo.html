@@ -2314,7 +2314,7 @@
 
       // ── Workflows ──
       if (route === '/api/workflows') {
-        return { ok: true, workflows: STATE.workflows.map(w => ({ id: w.id, name: w.name, description: w.description, category: w.category, enabled: w.enabled !== false, nodeCount: w.nodeCount || (w.nodes || []).length, trigger: (w.nodes || [])[0]?.type || 'manual' })) };
+        return { ok: true, workflows: STATE.workflows.map(w => ({ id: w.id, name: w.name, description: w.description, category: w.category, enabled: w.enabled !== false, nodeCount: w.nodeCount || (w.nodes || []).length, trigger: (w.nodes || [])[0]?.type || 'manual', nodes: w.nodes || [], edges: w.edges || [] })) };
       }
       if (route === '/api/workflows/save') {
         const wf = body || {};

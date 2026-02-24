@@ -182,7 +182,7 @@ function WorkflowCanvas({ workflow, onSave }) {
   useEffect(() => {
     setNodes(workflow?.nodes || []);
     setEdges(workflow?.edges || []);
-  }, [workflow?.id]);
+  }, [workflow?.id, workflow?.nodes?.length, workflow?.edges?.length]);
 
   // Canvas dimensions
   const NODE_W = 220;
@@ -1267,7 +1267,12 @@ function WorkflowListView() {
           <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
             ${wfs.map(wf => html`
               <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
-                   onClick=${() => { activeWorkflow.value = wf; viewMode.value = "canvas"; apiFetch("/api/workflows/" + wf.id).then(d => { if (d?.workflow) activeWorkflow.value = d.workflow; }); }}>
+                   onClick=${() => {
+                     apiFetch("/api/workflows/" + wf.id).then(d => {
+                       activeWorkflow.value = d?.workflow || wf;
+                       viewMode.value = "canvas";
+                     }).catch(() => { activeWorkflow.value = wf; viewMode.value = "canvas"; });
+                   }}>
                 <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
                   <span style="font-size: 14px;">${getNodeMeta(wf.trigger || "action")?.icon || "⬡"}</span>
                   <span style="font-weight: 600; font-size: 14px; flex: 1;">${wf.name}</span>
