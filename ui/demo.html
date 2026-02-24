@@ -1661,6 +1661,154 @@
       }
     }
 
+    function buildDemoSlots() {
+      const agents = Array.isArray(STATE.agents) ? STATE.agents : [];
+      const sorted = agents.slice().sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+      return sorted.map((agent, i) => ({
+        index: agent.index ?? i,
+        id: agent.id,
+        agentInstanceId: agent.id,
+        taskId: agent.taskId,
+        taskTitle: agent.taskTitle,
+        branch: agent.branch,
+        status: agent.status || 'busy',
+        sdk: agent.type || agent.sdk || 'codex',
+        model: agent.model || 'o4-mini',
+        sessionId: agent.sessionId || null,
+        startedAt: agent.startedAt || Date.now() - (30 + i * 12) * min,
+        lastHeartbeat: agent.lastHeartbeat || Date.now() - (10 + i * 5) * 1000,
+        attempt: agent.attempt || 1,
+        completedCount: agent.completedCount ?? (4 + i),
+        avgDurationMs: agent.avgDurationMs ?? (12 + i * 5) * 60000,
+        lastError: agent.lastError || null,
+      }));
+    }
+
+    function buildContextForQuery(query) {
+      const q = String(query || '').trim();
+      if (!q) {
+        return { query: q, context: null, diagnostics: { reasons: ['no-query'], hints: ['Provide a task id or branch name.'] } };
+      }
+      const queryLower = q.toLowerCase();
+      const slots = buildDemoSlots();
+      const slotMatch = slots.find((slot) => {
+        const taskId = String(slot.taskId || '').toLowerCase();
+        const branch = String(slot.branch || '').toLowerCase();
+        const sessionId = String(slot.sessionId || '').toLowerCase();
+        return taskId === queryLower || branch.includes(queryLower) || sessionId.includes(queryLower);
+      });
+      const sessionMatch = STATE.sessions.find((s) => {
+        const id = String(s.id || '').toLowerCase();
+        const taskId = String(s.taskId || '').toLowerCase();
+        const branch = String(s.branch || '').toLowerCase();
+        return id === queryLower || taskId === queryLower || branch.includes(queryLower);
+      }) || null;
+      const worktreeMatch = STATE.worktrees.find((w) => {
+        const branch = String(w.branch || '').toLowerCase();
+        const taskId = String(w.taskId || '').toLowerCase();
+        return branch.includes(queryLower) || taskId === queryLower;
+      }) || null;
+
+      const sessionInfo = sessionMatch
+        ? {
+            id: sessionMatch.id,
+            taskId: sessionMatch.taskId,
+            status: sessionMatch.status,
+            branch: sessionMatch.branch,
+            preview: sessionMatch.lastMessage || '',
+          }
+        : null;
+      const slotInfo = slotMatch
+        ? {
+            taskId: slotMatch.taskId,
+            taskTitle: slotMatch.taskTitle,
+            branch: slotMatch.branch,
+            status: slotMatch.status,
+            sdk: slotMatch.sdk,
+            model: slotMatch.model,
+            index: slotMatch.index,
+          }
+        : null;
+
+      const matches = {
+        worktrees: worktreeMatch
+          ? [{ name: worktreeMatch.branch || worktreeMatch.taskId || 'worktree', path: worktreeMatch.path }]
+          : [],
+        slots: slotInfo ? [slotInfo] : [],
+        sessions: sessionInfo ? [sessionInfo] : [],
+      };
+
+      const diff = sessionMatch ? (STATE.sessionDiffs[sessionMatch.id] || null) : null;
+      const diffFiles = diff?.files || [];
+      const changedFiles = diffFiles.map((file) => ({
+        code: file.status === 'added' ? 'A' : file.status === 'removed' ? 'D' : 'M',
+        file: file.filename,
+      }));
+      const gitStatus = changedFiles.map((file) => `${file.code} ${file.file}`).join('\n');
+      const gitDiffStat = diffFiles.map((file) => {
+        const delta = (file.additions || 0) + (file.deletions || 0);
+        return `${file.filename} | ${delta} ${'+'.repeat(Math.min(5, file.additions || 0))}${'-'.repeat(Math.min(5, file.deletions || 0))}`;
+      }).join('\n');
+      const recentCommits = [
+        { hash: 'c7d4e91', message: `Update ${sessionMatch?.title || 'workspace'}`, time: '2h ago' },
+        { hash: '8a3f2c1', message: 'Add tests + tighten errors', time: '5h ago' },
+        { hash: 'e39aa3c', message: 'Refactor UI layout', time: '1d ago' },
+      ];
+      const gitLogDetailed = recentCommits.map((c) => `${c.hash}||${c.message}||${c.time}`).join('\n');
+
+      const context = sessionMatch || worktreeMatch
+        ? {
+            name: worktreeMatch?.branch || sessionMatch?.branch || q,
+            path: worktreeMatch?.path || `/worktrees/${(sessionMatch?.branch || q).replace(/[^a-z0-9-]/gi, '-').toLowerCase()}`,
+            gitBranch: worktreeMatch?.branch || sessionMatch?.branch || 'main',
+            gitStatus,
+            gitLogDetailed,
+            gitDiffStat,
+            gitAheadBehind: '1 0',
+            changedFiles,
+            recentCommits,
+            diffSummary: gitDiffStat,
+          }
+        : null;
+
+      const actionHistory = (sessionMatch?.messages || [])
+        .filter((msg) => msg?.type === 'tool_call' || msg?.type === 'tool_result' || msg?.type === 'error')
+        .slice(-12)
+        .map((msg) => ({
+          type: msg.type,
+          tool: msg.meta?.toolName || (msg.type === 'tool_result' ? 'RESULT' : 'TOOL'),
+          detail: msg.content || '',
+          content: msg.content || '',
+          timestamp: msg.timestamp || msg.createdAt || Date.now(),
+        }));
+
+      const fileAccessSummary = diffFiles.length
+        ? {
+            files: diffFiles.map((file) => ({ path: file.filename, kinds: ['write'] })),
+            counts: { read: 0, write: diffFiles.length, other: 0 },
+          }
+        : null;
+
+      const diagnostics = context || sessionInfo || slotInfo
+        ? { searched: { activeSlots: slots.length, activeWorktrees: STATE.worktrees.length, sessions: STATE.sessions.length } }
+        : {
+            reasons: ['no-matching-slots-or-worktrees'],
+            hints: ['Try a task id, branch name, or session id.'],
+            searched: { activeSlots: slots.length, activeWorktrees: STATE.worktrees.length, sessions: STATE.sessions.length },
+          };
+
+      return {
+        query: q,
+        context,
+        session: sessionInfo,
+        slot: slotInfo,
+        matches,
+        diagnostics,
+        actionHistory,
+        fileAccessSummary,
+      };
+    }
+
     /* ── Agent action scripts: realistic sequences per task type ──── */
     const AGENT_SCRIPTS = {
       'bosun-12': [
@@ -2086,22 +2234,52 @@
     // Boot the simulation after a short delay (let the UI load first)
     setTimeout(startSimulation, 2500);
 
+    const ASK_SCRIPT = [
+      { role: 'assistant', content: 'Short answer: I can help with that quickly. Here is the key takeaway and the safest next step.' },
+      { role: 'assistant', content: 'Want a deeper dive or a patch? Tell me your constraints and I’ll expand.' },
+    ];
+
+    const PLAN_SCRIPT = [
+      {
+        role: 'assistant',
+        content: [
+          'Plan:',
+          '1. Confirm the target behavior and constraints.',
+          '2. Identify the minimal code paths and add tests first.',
+          '3. Implement the change with guard rails.',
+          '4. Validate locally and summarize next steps.',
+        ].join('\n'),
+      },
+    ];
+
+    function enqueueScriptSteps(session, steps) {
+      let delay = 600;
+      steps.forEach((step) => {
+        setTimeout(() => {
+          appendMessage(session, makeMsg(step.role || 'assistant', step.content, Date.now(), step.type));
+          pushLiveLog('info', 'agent', `${session.title}: ${step.type || 'message'}`);
+        }, delay);
+        delay += 900 + Math.random() * 900;
+      });
+    }
+
     /* ── User-initiated chat still works via scheduleResponses ─────── */
-    function scheduleResponses(session) {
-      // For user messages, just pick the task's script or generic response
+    function scheduleResponses(session, payloadMode) {
+      const mode = String(payloadMode || session?.metadata?.mode || STATE.agentMode || 'agent').toLowerCase();
+      if (mode === 'ask') {
+        enqueueScriptSteps(session, ASK_SCRIPT);
+        return;
+      }
+      if (mode === 'plan') {
+        enqueueScriptSteps(session, PLAN_SCRIPT);
+        return;
+      }
+      // For agent mode, pick the task's script or generic response
       const taskId = session.taskId;
       const script = AGENT_SCRIPTS[taskId];
       if (script && script.length > 0) {
-        // Send a few contextual steps
         const steps = script.slice(0, 3);
-        let delay = 600;
-        steps.forEach((step) => {
-          setTimeout(() => {
-            appendMessage(session, makeMsg(step.role || 'assistant', step.content, Date.now(), step.type));
-            pushLiveLog('info', 'agent', `${session.title}: ${step.type || 'message'}`);
-          }, delay);
-          delay += 1000 + Math.random() * 1000;
-        });
+        enqueueScriptSteps(session, steps);
       } else {
         setTimeout(() => {
           appendMessage(session, makeMsg('assistant', 'Acknowledged. I\'ll look into that and report back.', Date.now()));
@@ -2119,8 +2297,21 @@
       // ── Status & Executor ──
       if (route === '/api/status')
         return { data: STATE.status };
-      if (route === '/api/executor')
-        return { data: { ...STATE.status, maxParallel: STATE.maxParallel, paused: STATE.paused, executors: STATE.executors, activeSlots: STATE.executors.filter(e => e.status === 'active').length, sdk: 'auto' } };
+      if (route === '/api/executor') {
+        const slots = buildDemoSlots();
+        const activeSlots = slots.filter((slot) => ['running', 'busy'].includes(String(slot.status || '').toLowerCase())).length;
+        return {
+          data: {
+            ...STATE.status,
+            maxParallel: STATE.maxParallel,
+            paused: STATE.paused,
+            executors: STATE.executors,
+            activeSlots,
+            slots,
+            sdk: 'auto',
+          },
+        };
+      }
       if (!STATE.triggerTemplates) {
         STATE.triggerTemplates = {
           enabled: false,
@@ -2394,7 +2585,7 @@
       }
       if (route === '/api/agent-context') {
         const q = params.get('query') || '';
-        return { data: { query: q, branch: q, files: ['keeper.go', 'types.go', 'msg_server.go'], recentCommits: ['feat: initial implementation', 'fix: lint errors'], worktree: '/worktrees/' + q.slice(0, 6) } };
+        return { data: buildContextForQuery(q) };
       }
 
       // ── Health ──
@@ -2550,8 +2741,20 @@
 
       // ── Sessions ──
       if (route === '/api/sessions' && method === 'GET') {
+        const typeFilter = String(params.get('type') || '').toLowerCase();
+        let sessions = STATE.sessions;
+        if (typeFilter) {
+          if (typeFilter === 'primary') {
+            sessions = sessions.filter((s) => {
+              const t = String(s.type || '').toLowerCase();
+              return t !== 'task' && t !== 'review';
+            });
+          } else {
+            sessions = sessions.filter((s) => String(s.type || '').toLowerCase() === typeFilter);
+          }
+        }
         return {
-          sessions: STATE.sessions.map((s) => ({
+          sessions: sessions.map((s) => ({
             id: s.id,
             title: s.title,
             type: s.type,
@@ -2572,10 +2775,12 @@
         const sid = route.split('/')[3];
         const ses = STATE.sessions.find(s => s.id === sid);
         const content = String(body?.content || body?.text || body?.message || '');
+        const mode = body?.mode;
+        if (ses && mode) ses.metadata = { ...(ses.metadata || {}), mode };
         if (ses && content) {
           appendMessage(ses, makeMsg('user', content, Date.now()));
           ses.status = ses.status === 'archived' ? 'active' : ses.status;
-          scheduleResponses(ses);
+          scheduleResponses(ses, mode);
         }
         return { ok: true, session: ses || null };
       }
@@ -2597,6 +2802,7 @@
           id,
           title: body?.title || 'New Session',
           type: body?.type || 'manual',
+          metadata: { mode: body?.mode || 'agent' },
           status: 'active',
           taskId: body?.taskId || null,
           branch: body?.branch || null,
@@ -2768,8 +2974,8 @@
     <div class="bot-panel-header">
       <button class="bot-panel-back" id="bot-panel-back" title="Back">←</button>
       <div class="bot-panel-title" id="bot-panel-title">Bosun Control Center</div>
-      <button class="bot-panel-home" id="bot-panel-home" title="Home">🏠</button>
-      <button class="bot-panel-close" id="bot-panel-close" title="Close">✕</button>
+      <button class="bot-panel-home" id="bot-panel-home" title="Home" aria-label="Home"></button>
+      <button class="bot-panel-close" id="bot-panel-close" title="Close" aria-label="Close"></button>
     </div>
     <div class="bot-panel-body" id="bot-panel-body"></div>
     <div class="bot-panel-result" id="bot-panel-result"></div>
@@ -2780,7 +2986,10 @@
   <script type="module" src="app.js"></script>
 
   <!-- ═══ BOT MENU ENGINE (multi-layer screen navigation) ═══════════ -->
-  <script>
+  <script type="module">
+  import { render } from "preact";
+  import { resolveIcon } from "./modules/icon-utils.js";
+
   (function() {
     'use strict';
 
@@ -2793,6 +3002,73 @@
     const bodyEl    = document.getElementById('bot-panel-body');
     const resultEl  = document.getElementById('bot-panel-result');
     const kbEl      = document.getElementById('bot-panel-keyboard');
+
+    const iconCache = new Map();
+
+    function iconMarkup(iconKey) {
+      if (iconCache.has(iconKey)) return iconCache.get(iconKey);
+      const vnode = resolveIcon(iconKey);
+      if (!vnode) return "";
+      const temp = document.createElement("span");
+      render(vnode, temp);
+      const html = temp.innerHTML;
+      temp.replaceChildren();
+      iconCache.set(iconKey, html);
+      return html;
+    }
+
+    function buildIconFragment(text) {
+      const str = String(text ?? "");
+      let buffer = "";
+      let hasIcon = false;
+      const frag = document.createDocumentFragment();
+      for (const ch of str) {
+        if (ch === "\uFE0E" || ch === "\uFE0F") continue;
+        const icon = iconMarkup(ch);
+        if (icon) {
+          if (buffer) {
+            frag.appendChild(document.createTextNode(buffer));
+            buffer = "";
+          }
+          const span = document.createElement("span");
+          span.className = "icon-inline";
+          span.innerHTML = icon;
+          frag.appendChild(span);
+          hasIcon = true;
+        } else {
+          buffer += ch;
+        }
+      }
+      if (buffer) frag.appendChild(document.createTextNode(buffer));
+      return hasIcon ? frag : null;
+    }
+
+    function setIconText(el, text) {
+      if (!el) return;
+      const frag = buildIconFragment(text);
+      if (!frag) {
+        el.textContent = text ?? "";
+        return;
+      }
+      el.textContent = "";
+      el.appendChild(frag);
+    }
+
+    function iconizeHtml(html) {
+      const container = document.createElement("div");
+      container.innerHTML = html || "";
+      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
+      const nodes = [];
+      while (walker.nextNode()) nodes.push(walker.currentNode);
+      nodes.forEach((node) => {
+        const frag = buildIconFragment(node.nodeValue);
+        if (frag) node.replaceWith(frag);
+      });
+      return container.innerHTML;
+    }
+
+    homeBtn.innerHTML = `<span class="icon-inline">${iconMarkup("home")}</span>`;
+    closeBtn.innerHTML = `<span class="icon-inline">${iconMarkup("close")}</span>`;
 
     let panelOpen = false;
     let currentScreen = 'home';
@@ -3231,8 +3507,8 @@
       if (!screen) return;
 
       currentScreen = screenId;
-      titleEl.textContent = screen.title;
-      bodyEl.innerHTML = screen.body;
+      setIconText(titleEl, screen.title);
+      setIconText(bodyEl, screen.body);
 
       // Hide result when navigating
       resultEl.classList.remove('visible');
@@ -3256,7 +3532,7 @@
           row.forEach(btn => {
             const b = document.createElement('button');
             b.className = 'bot-kb-btn';
-            b.textContent = btn.text;
+            setIconText(b, btn.text);
 
             if (btn.go) {
               // Navigate to sub-screen
@@ -3271,7 +3547,7 @@
                 setTimeout(() => b.classList.remove('cmd-flash'), 200);
                 const handler = CMDS[btn.cmd];
                 if (handler) {
-                  resultEl.innerHTML = handler();
+                  resultEl.innerHTML = iconizeHtml(handler());
                   resultEl.classList.add('visible');
                   // Also navigate to the tab if it maps
                   const tabMap = { status: 'dashboard', tasks: 'tasks', agents: 'agents', logs: 'logs', executor: 'control', health: 'dashboard' };
@@ -3297,17 +3573,17 @@
 
           const backB = document.createElement('button');
           backB.className = 'bot-kb-btn nav-btn';
-          backB.textContent = '⬅️ Back';
+          setIconText(backB, 'Back');
           backB.addEventListener('click', goBack);
 
           const homeB = document.createElement('button');
           homeB.className = 'bot-kb-btn nav-btn';
-          homeB.textContent = '🏠 Home';
+          setIconText(homeB, 'Home');
           homeB.addEventListener('click', goHome);
 
           const closeB = document.createElement('button');
           closeB.className = 'bot-kb-btn close-btn';
-          closeB.textContent = '✖ Close';
+          setIconText(closeB, 'Close');
           closeB.addEventListener('click', closePanel);
 
           navRow.appendChild(backB);
