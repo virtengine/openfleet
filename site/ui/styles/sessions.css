@@ -2099,11 +2099,48 @@ ul.md-list li::before {
 /* ─── Desktop: flat padding on input, no nav-height offset needed ─── */
 @media (min-width: 1200px) {
   .app-shell[data-tab="chat"] .chat-input-area {
+    position: sticky;
+    bottom: 0;
     padding: 12px 16px 16px;
+    /* sticky works on desktop because .session-detail overflow:hidden is
+       replaced by flex layout — messages scroll, shell doesn't clip */
   }
 
   .app-shell[data-tab="chat"] .chat-view-embedded .chat-messages {
     padding: 20px 24px 32px;
+  }
+
+  /* Ensure session-split fully fills the flex parent so input stays pinned */
+  .app-shell[data-tab="chat"] .session-split {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .app-shell[data-has-rail="true"][data-tab="chat"] .session-split {
+    flex: 1;
+    min-height: 0;
+  }
+}
+
+/* ─── Mobile: blend chat input seamlessly with bottom navbar ─── */
+@media (max-width: 767px) {
+  .app-shell[data-tab="chat"] .chat-input-area {
+    border-top: none;
+    background: var(--bg-primary);
+    padding-top: 6px;
+    /* keyboard offset still applied; decorative 12px removed to snug up to nav */
+    padding-bottom: calc(var(--chat-keyboard-offset, 0px) + var(--safe-bottom, 0px));
+    /* round the bottom to softly continue into the floating nav */
+    border-radius: 0 0 var(--radius-xl, 20px) var(--radius-xl, 20px);
+  }
+
+  /* Add a subtle top accent line instead of the hard border */
+  .app-shell[data-tab="chat"] .chat-input-area::before {
+    content: '';
+    display: block;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-strong, rgba(255,255,255,0.08)) 20%, var(--border-strong, rgba(255,255,255,0.08)) 80%, transparent);
+    margin-bottom: 6px;
   }
 }
 

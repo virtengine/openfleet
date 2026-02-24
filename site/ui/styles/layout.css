@@ -1174,6 +1174,17 @@
   /* Desktop: nav is hidden so no bottom reserve needed for chat */
   .app-shell[data-tab="chat"] .main-content {
     padding-bottom: 0;
+    /* flex:1 flows height down to the session-split so the input can stick */
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* PullToRefresh container must also flex to pass height down */
+  .app-shell[data-tab="chat"] .pull-to-refresh-container {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
 }
 

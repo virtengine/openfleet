@@ -1,6 +1,4 @@
 ---
-trigger: always_on
-glob:
-description:
+trigger: model_decision
 ---
 
