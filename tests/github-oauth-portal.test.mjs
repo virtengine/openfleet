@@ -296,7 +296,7 @@ describe("github-oauth-portal", () => {
     result.webhookEvents.on("bosun:command:retry", () => events.push("retry"));
     result.webhookEvents.on("bosun:mention", () => events.push("mention"));
 
-    const comment = "/bosun status\n/bosun run task-123\n/bosun retry\n@bosun-botswain hello";
+    const comment = "/bosun status\n/bosun run task-123\n/bosun retry\n@bosun-ve hello";
     const body = JSON.stringify({
       action: "created",
       comment: { body: comment },

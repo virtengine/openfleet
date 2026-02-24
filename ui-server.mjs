@@ -2677,7 +2677,7 @@ function _processAppWebhookEvent(eventType, payload, deliveryId) {
 
 /**
  * Handles the OAuth redirect from GitHub after a user installs/authorizes
- * the Bosun[botswain] GitHub App.
+ * the Bosun[VE] GitHub App.
  *
  * Flow:
  *   1. GitHub redirects: GET /api/github/callback?code=xxx&installation_id=yyy
@@ -2727,7 +2727,7 @@ async function handleGitHubOAuthCallback(req, res) {
       headers: {
         Accept: "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "bosun-botswain",
+        "User-Agent": "bosun-ve",
       },
       body: tokenBody.toString(),
     });
@@ -2750,7 +2750,7 @@ async function handleGitHubOAuthCallback(req, res) {
           Authorization: `Bearer ${accessToken}`,
           Accept: "application/vnd.github+json",
           "X-GitHub-Api-Version": "2022-11-28",
-          "User-Agent": "bosun-botswain",
+          "User-Agent": "bosun-ve",
         },
       });
       if (userRes.ok) {
@@ -2825,7 +2825,7 @@ async function handleDeviceFlowStart(req, res) {
       headers: {
         Accept: "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "bosun-botswain",
+        "User-Agent": "bosun-ve",
       },
       body: body.toString(),
     });
@@ -2907,7 +2907,7 @@ async function handleDeviceFlowPoll(req, res) {
       headers: {
         Accept: "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "bosun-botswain",
+        "User-Agent": "bosun-ve",
       },
       body: body.toString(),
     });
@@ -2930,7 +2930,7 @@ async function handleDeviceFlowPoll(req, res) {
             Authorization: `Bearer ${accessToken}`,
             Accept: "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "bosun-botswain",
+            "User-Agent": "bosun-ve",
           },
         });
         if (userRes.ok) {
@@ -5018,9 +5018,9 @@ async function handleApi(req, res, url) {
       ok: true,
       data: {
         appId: appId || null,
-        appSlug: "bosun-botswain",
-        botUsername: "bosun-botswain[bot]",
-        appUrl: "https://github.com/apps/bosun-botswain",
+        appSlug: "bosun-ve",
+        botUsername: "bosun-ve[bot]",
+        appUrl: "https://github.com/apps/bosun-ve",
         configured: {
           appId: Boolean(appId),
           privateKey: Boolean(privateKeyPath),

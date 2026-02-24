@@ -3339,9 +3339,9 @@ async function createPRViaVK(attemptId, prOpts = {}) {
     return { success: false, error: "repo_id_missing", _elapsedMs: 0 };
   }
 
-  const bosunCredit = "\n\n---\n*Created by [Bosun Bot](https://github.com/apps/bosun-botswain)*";
+  const bosunCredit = "\n\n---\n*Created by [Bosun Bot](https://github.com/apps/bosun-ve)*";
   const rawDescription = prOpts.description || "";
-  const description = rawDescription.includes("bosun-botswain")
+  const description = rawDescription.includes("bosun-ve")
     ? rawDescription
     : rawDescription.trimEnd() + bosunCredit;
 
@@ -5386,7 +5386,7 @@ function buildEpicMergeBody(tasks, headName, baseName) {
   }
   lines.push("");
   lines.push("---");
-  lines.push("*Created by [Bosun Bot](https://github.com/apps/bosun-botswain)*");
+  lines.push("*Created by [Bosun Bot](https://github.com/apps/bosun-ve)*");
   return lines.join("\n");
 }
 

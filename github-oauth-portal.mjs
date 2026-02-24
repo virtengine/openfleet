@@ -1,5 +1,5 @@
 /**
- * github-oauth-portal.mjs — Self-contained OAuth setup portal for Bosun[botswain]
+ * github-oauth-portal.mjs — Self-contained OAuth setup portal for Bosun[VE]
  *
  * Serves a local HTTP portal on port 54317 (bound to 127.0.0.1) that guides
  * users through GitHub App installation and OAuth authorisation.
@@ -13,7 +13,7 @@
  *   GET  /api/status          — JSON status endpoint
  *   GET  /api/installations   — list App installations (requires App JWT)
  *
- * GitHub App settings (https://github.com/settings/apps/bosun-botswain):
+ * GitHub App settings (https://github.com/settings/apps/bosun-ve):
  *   Callback URL:  http://127.0.0.1:54317/github/callback  ← ONLY URL needed
  *
  * Notes:
@@ -54,7 +54,7 @@ import {
 
 const DEFAULT_PORT = 54317;
 const DEFAULT_HOST = "127.0.0.1";
-const GITHUB_APP_NAME = "bosun-botswain";
+const GITHUB_APP_NAME = "bosun-ve";
 const GITHUB_APP_URL = `https://github.com/apps/${GITHUB_APP_NAME}`;
 const GITHUB_APP_INSTALL_URL = `${GITHUB_APP_URL}/installations/new`;
 const STATE_FILE = join(homedir(), ".bosun", "github-auth-state.json");
@@ -271,7 +271,7 @@ function htmlPage(title, bodyHtml) {
 <body>
   <div class="logo">⚓</div>
   <h1>Bosun</h1>
-  <div class="subtitle">GitHub App OAuth Setup Portal · <code>bosun-botswain</code></div>
+  <div class="subtitle">GitHub App OAuth Setup Portal · <code>bosun-ve</code></div>
   ${bodyHtml}
   <script>
     function copyToClipboard(text, btn) {
@@ -569,7 +569,7 @@ async function handleSetup(req, res) {
             Authorization: `Bearer ${jwt}`,
             Accept: "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "bosun-botswain",
+            "User-Agent": "bosun-ve",
           },
         },
       );
@@ -703,7 +703,7 @@ function handleWebhookEvent(eventType, payload) {
 }
 
 const CMD_RE = /\/bosun[ \t]+(\w+)(?:[ \t]+(\S+))?/g;
-const MENTION_RE = /@bosun-botswain/i;
+const MENTION_RE = /@bosun-ve/i;
 
 function processBosunCommand(body, payload) {
   if (MENTION_RE.test(body)) {
@@ -766,7 +766,7 @@ async function handleApiInstallations(req, res) {
         Authorization: `Bearer ${jwt}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "bosun-botswain",
+        "User-Agent": "bosun-ve",
       },
     });
 

@@ -133,17 +133,17 @@ function categorizeError(err) {
 }
 
 /**
- * Returns the Co-authored-by trailer for bosun-botswain[bot], or empty string
+ * Returns the Co-authored-by trailer for bosun-ve[bot], or empty string
  * if the GitHub App ID is not configured. Used to attribute agent commits to
  * the Bosun GitHub App so the bot shows up as a contributor.
  *
  * To enable: set BOSUN_GITHUB_APP_ID=<your-app-id> in .env
- * App noreply email format: <id>+bosun-botswain[bot]@users.noreply.github.com
+ * App noreply email format: <id>+bosun-ve[bot]@users.noreply.github.com
  */
 function getBosunCoAuthorLine() {
   const appId = String(process.env.BOSUN_GITHUB_APP_ID || "").trim();
   if (!appId) return "";
-  return `Co-authored-by: bosun-botswain[bot] <${appId}+bosun-botswain[bot]@users.noreply.github.com>`;
+  return `Co-authored-by: bosun-ve[bot] <${appId}+bosun-ve[bot]@users.noreply.github.com>`;
 }
 
 /**
@@ -2618,7 +2618,7 @@ class TaskExecutor {
             timeout: 15000,
           });
           execSync(
-            `git commit -m "feat: auto-commit orphaned agent work\n\nCo-authored-by: bosun-botswain[bot] <262908237+bosun-botswain[bot]@users.noreply.github.com>" --no-verify`,
+            `git commit -m "feat: auto-commit orphaned agent work\n\nCo-authored-by: bosun-ve[bot] <262908237+bosun-ve[bot]@users.noreply.github.com>" --no-verify`,
             { cwd: wtPath, stdio: "pipe", timeout: 15000 },
           );
           console.log(

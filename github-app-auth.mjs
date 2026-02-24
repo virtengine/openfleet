@@ -2,7 +2,7 @@
 /**
  * github-app-auth.mjs — GitHub App JWT + Installation Token helpers
  *
- * Provides credential helpers for the Bosun[botswain] GitHub App:
+ * Provides credential helpers for the Bosun[VE] GitHub App:
  *   - signAppJWT()                        — RS256 JWT proving Bosun IS the app
  *   - getInstallationToken(installationId) — short-lived install access token
  *   - getInstallationTokenForRepo(owner,repo) — auto-resolves install from repo
@@ -90,7 +90,7 @@ export async function getInstallationToken(installationId) {
         Authorization: `Bearer ${jwt}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "bosun-botswain",
+        "User-Agent": "bosun-ve",
       },
     },
   );
@@ -123,7 +123,7 @@ export async function getInstallationTokenForRepo(owner, repo) {
         Authorization: `Bearer ${jwt}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "bosun-botswain",
+        "User-Agent": "bosun-ve",
       },
     },
   );
@@ -163,7 +163,7 @@ export async function startDeviceFlow(scope = "repo") {
     headers: {
       Accept: "application/json",
       "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": "bosun-botswain",
+      "User-Agent": "bosun-ve",
     },
     body: body.toString(),
   });
@@ -217,7 +217,7 @@ export async function pollDeviceToken(deviceCode) {
     headers: {
       Accept: "application/json",
       "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": "bosun-botswain",
+      "User-Agent": "bosun-ve",
     },
     body: body.toString(),
   });
@@ -281,7 +281,7 @@ export async function exchangeOAuthCode(code) {
     headers: {
       Accept: "application/json",
       "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": "bosun-botswain",
+      "User-Agent": "bosun-ve",
     },
     body: body.toString(),
   });
@@ -318,7 +318,7 @@ export async function getOAuthUser(accessToken) {
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "bosun-botswain",
+      "User-Agent": "bosun-ve",
     },
   });
   if (!res.ok) {
