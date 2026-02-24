@@ -34,7 +34,10 @@ body {
 
 #app {
   height: 100%;
-  overflow: hidden;
+  /* overflow:clip — does NOT create a BFC scroll container, so wheel events
+     propagate freely to the inner .main-content scrollable element. Body
+     already handles outer overflow; #app only needs visual clipping. */
+  overflow: clip;
   display: flex;
   flex-direction: column;
   position: relative;

@@ -51,7 +51,7 @@
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&family=Lora:ital,wght@1,400;1,500;1,600;1,700&display=swap" rel="stylesheet" />
 
   <!-- jQuery Terminal CSS -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jquery.terminal@2.42.2/css/jquery.terminal.min.css" />
@@ -59,7 +59,7 @@
   <!-- Main CSS -->
   <link rel="stylesheet" href="css/main.css" />
 
-  <!-- Favicon (inline SVG) -->
+  <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png" />
 </head>
 <body>
@@ -71,7 +71,43 @@
   <nav class="nav">
     <div class="nav__inner">
       <a href="#" class="nav__brand">
-        <img src="logo.png" alt="Bosun" class="nav__brand-icon" />
+        <svg class="nav__brand-icon" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <defs>
+            <linearGradient id="helm-g" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#2dd4bf"/>
+              <stop offset="100%" stop-color="#06b6d4"/>
+            </linearGradient>
+          </defs>
+          <g stroke="url(#helm-g)" fill="none" stroke-linecap="round">
+            <!-- Outer ring -->
+            <circle cx="50" cy="50" r="42" stroke-width="5"/>
+            <!-- Inner ring -->
+            <circle cx="50" cy="50" r="18" stroke-width="4"/>
+            <!-- 8 Spokes -->
+            <line x1="68" y1="50" x2="87" y2="50" stroke-width="3.5"/>
+            <line x1="62.73" y1="62.73" x2="76.17" y2="76.17" stroke-width="3.5"/>
+            <line x1="50" y1="68" x2="50" y2="87" stroke-width="3.5"/>
+            <line x1="37.27" y1="62.73" x2="23.83" y2="76.17" stroke-width="3.5"/>
+            <line x1="32" y1="50" x2="13" y2="50" stroke-width="3.5"/>
+            <line x1="37.27" y1="37.27" x2="23.83" y2="23.83" stroke-width="3.5"/>
+            <line x1="50" y1="32" x2="50" y2="13" stroke-width="3.5"/>
+            <line x1="62.73" y1="37.27" x2="76.17" y2="23.83" stroke-width="3.5"/>
+          </g>
+          <!-- Center donut -->
+          <circle cx="50" cy="50" r="7" fill="url(#helm-g)"/>
+          <circle cx="50" cy="50" r="2.5" fill="#09090b"/>
+          <!-- Handle circles at spoke endpoints -->
+          <g fill="url(#helm-g)">
+            <circle cx="92" cy="50" r="5.5"/>
+            <circle cx="79.70" cy="79.70" r="5.5"/>
+            <circle cx="50" cy="92" r="5.5"/>
+            <circle cx="20.30" cy="79.70" r="5.5"/>
+            <circle cx="8" cy="50" r="5.5"/>
+            <circle cx="20.30" cy="20.30" r="5.5"/>
+            <circle cx="50" cy="8" r="5.5"/>
+            <circle cx="79.70" cy="20.30" r="5.5"/>
+          </g>
+        </svg>
         Bosun
       </a>
 
@@ -103,7 +139,11 @@
 
     <div class="container">
       <div class="hero__title-block">
-        <h1 class="hero__headline">Fleet Supervisor</h1>
+        <a href="https://www.npmjs.com/package/bosun" class="hero__badge">
+          <span class="pulse-dot"></span>
+          <span data-version>v0.0</span> — now available
+        </a>
+        <h1 class="hero__headline">Your AI Fleet,<br><em class="hero__headline-accent">supervized.</em></h1>
         <div class="hero__typed">
           <span id="hero-typed"></span><span class="typed-cursor" id="typed-cursor">|</span>
         </div>
@@ -137,9 +177,6 @@
             <a href="https://github.com/virtengine/bosun#readme" class="btn btn--ghost btn--sm" target="_blank" rel="noopener">GitHub</a>
           </div>
 
-          <div class="hero__ctas">
-          </div>
-
           <a href="https://www.npmjs.com/package/bosun" class="hero__version-tag">
             <span data-version>v0.0</span> · Bosun by VirtEngine · Apache 2.0
           </a>
@@ -151,26 +188,55 @@
 
         <!-- ── Channel Tabs ──────────────────────────────────────────── -->
         <div class="demo-tabs reveal">
-          <button class="demo-tab demo-tab--active" data-demo="cli">
+          <button class="demo-tab" data-demo="desktop">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            Desktop
+          </button>
+          <button class="demo-tab" data-demo="cli">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
             CLI Terminal
           </button>
           <button class="demo-tab" data-demo="telegram">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
-            Telegram Chat
+            Telegram
           </button>
-          <button class="demo-tab" data-demo="miniapp">
+          <button class="demo-tab" data-demo="mobile">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
-            MiniApp
-          </button>
-          <button class="demo-tab" data-demo="whatsapp">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
-            WhatsApp
+            Mobile
           </button>
         </div>
 
-        <!-- ── CLI Panel (existing terminal) ─────────────────────────── -->
-        <div class="demo-panel demo-panel--active" id="demo-panel-cli">
+        <!-- ── Desktop Panel (browser chrome + MiniApp iframe) ───────── -->
+        <div class="demo-panel" id="demo-panel-desktop">
+          <div class="desktop-demo-window reveal">
+            <div class="desktop-demo-window__chrome">
+              <div class="terminal-window__dots">
+                <div class="terminal-window__dot terminal-window__dot--red"></div>
+                <div class="terminal-window__dot terminal-window__dot--yellow"></div>
+                <div class="terminal-window__dot terminal-window__dot--green"></div>
+              </div>
+              <div class="desktop-demo-window__url">
+                <div class="desktop-demo-window__nav-btns">
+                  <span>‹</span><span>›</span>
+                </div>
+                <div class="desktop-demo-window__url-bar">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  bosun.virtengine.com
+                </div>
+              </div>
+            </div>
+            <iframe
+              id="desktop-miniapp-iframe"
+              src="ui/demo.html"
+              class="desktop-demo-window__iframe"
+              loading="lazy"
+              title="Bosun MiniApp Demo — Desktop"
+            ></iframe>
+          </div>
+        </div>
+
+        <!-- ── CLI Panel (jQuery Terminal) ────────────────────────────── -->
+        <div class="demo-panel" id="demo-panel-cli">
           <div class="terminal-window reveal">
             <div class="terminal-window__titlebar">
               <div class="terminal-window__dots">
@@ -202,8 +268,8 @@
           </div>
         </div>
 
-        <!-- ── MiniApp Panel ─────────────────────────────────────────── -->
-        <div class="demo-panel" id="demo-panel-miniapp">
+        <!-- ── Mobile Panel (phone frame + fullscreen) ───────────────── -->
+        <div class="demo-panel" id="demo-panel-mobile">
           <div class="miniapp-demo-window reveal">
             <div class="miniapp-demo-window__phone">
               <div class="miniapp-demo-window__notch"></div>
@@ -222,118 +288,13 @@
                   src="ui/demo.html"
                   class="miniapp-demo-window__iframe"
                   loading="lazy"
-                  title="Bosun MiniApp Demo"
+                  title="Bosun MiniApp Demo — Mobile"
                 ></iframe>
               </div>
             </div>
             <p class="miniapp-demo-window__caption">
               <span class="miniapp-demo-window__live-dot"></span>
               Live from source — auto-updates when the real MiniApp changes
-            </p>
-          </div>
-        </div>
-
-        <!-- ── WhatsApp Panel ────────────────────────────────────────── -->
-        <div class="demo-panel" id="demo-panel-whatsapp">
-          <div class="whatsapp-demo-window reveal">
-            <div class="whatsapp-demo-window__header">
-              <div class="whatsapp-demo-window__avatar" style="background:#25d366;display:flex;align-items:center;justify-content:center;font-size:1.4rem;">🤖</div>
-              <div class="whatsapp-demo-window__header-info">
-                <div class="whatsapp-demo-window__name">Bosun Alerts</div>
-                <div class="whatsapp-demo-window__status">online</div>
-              </div>
-            </div>
-            <div class="whatsapp-demo-window__messages">
-              <div class="whatsapp-demo-window__date">Today</div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">🚀 <b>Fleet Started</b><br>Bosun v0.26.2 online<br>Board: github · Agents: 2 · Max Parallel: 6<br><span style="font-size:0.8em;color:#8696a0">workstation-1 · 09:14</span></div>
-                  <div class="wa-msg__time">09:14</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">📋 <b>3 Tasks Dispatched</b><br>#42 feat(market): add order expiry → copilot-claude<br>#43 fix(veid): token validation → codex-default<br>#44 refactor(escrow): batch settle → copilot-claude</div>
-                  <div class="wa-msg__time">09:15</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">✅ <b>PR Merged</b><br>#43 fix(veid): token validation<br>PR #188 → main ✓ · CI: 3/3 passed<br>codex-default · 9m 44s</div>
-                  <div class="wa-msg__time">09:27</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">⚠️ <b>Auto-fix Applied</b><br>#44 refactor(escrow): batch settle<br>Lint warning fixed automatically<br><span style="font-size:0.8em;color:#8696a0">pushed fix commit to PR #189</span></div>
-                  <div class="wa-msg__time">09:31</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">✅ <b>PR Merged</b><br>#42 feat(market): add order expiry<br>PR #187 → main ✓ · CI: 3/3 passed<br>copilot-claude · 18m 02s</div>
-                  <div class="wa-msg__time">09:33</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">✅ <b>PR Merged</b><br>#44 refactor(escrow): batch settle<br>PR #189 → main ✓ · 1 auto-fix applied<br>copilot-claude · 22m 11s</div>
-                  <div class="wa-msg__time">09:37</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--user">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">status?</div>
-                  <div class="wa-msg__time">09:41 ✓✓</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">📊 <b>Fleet Status</b> — Running<br><br>⏱ Uptime: 27m<br>✅ 3 tasks done · 3 PRs merged<br>🔵 2 in progress (#45 #46)<br>⏳ 4 queued<br><br>Executors: 2/2 active · load: 45%</div>
-                  <div class="wa-msg__time">09:41</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">📊 <b>10:00 Digest</b><br><br>✅ 7 tasks completed<br>🔀 6 PRs merged<br>⚡ 1 auto-fix applied<br>🤖 2 agents active<br>💚 All systems healthy</div>
-                  <div class="wa-msg__time">10:00</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--user">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">pause tasks</div>
-                  <div class="wa-msg__time">10:04 ✓✓</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">⏸ <b>Task Dispatch Paused</b><br>No new tasks will be dispatched.<br>Active tasks continue running.<br><span style="font-size:0.8em;color:#8696a0">Reply "resume" to restart dispatch</span></div>
-                  <div class="wa-msg__time">10:04</div>
-                </div>
-              </div>
-
-            </div>
-            <div class="whatsapp-demo-window__footer">
-              <div class="whatsapp-demo-window__input-placeholder">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8696a0" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/></svg>
-                <span>Type a message</span>
-              </div>
-              <div class="whatsapp-demo-window__mic">🎤</div>
-            </div>
-            <p class="whatsapp-demo-window__caption">
-              WhatsApp delivers real-time push notifications for task events, PR merges, CI status, and fleet digests. Natural language queries work too.
-              <br><span style="color:var(--text-muted);">Enable with: <code>bosun --whatsapp-auth</code></span>
             </p>
           </div>
         </div>
@@ -790,7 +751,12 @@
     <div class="container">
       <div class="footer__inner">
         <div class="footer__left">
-          <img src="logo.png" alt="Bosun" style="width:24px;height:24px;object-fit:contain;vertical-align:middle;margin-right:0.3rem;opacity:0.8;">
+          <svg viewBox="0 0 100 100" width="24" height="24" xmlns="http://www.w3.org/2000/svg" style="opacity:0.7;vertical-align:middle;margin-right:0.3rem;" aria-hidden="true">
+            <defs><linearGradient id="helm-g-ft" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#2dd4bf"/><stop offset="100%" stop-color="#06b6d4"/></linearGradient></defs>
+            <g stroke="url(#helm-g-ft)" fill="none" stroke-linecap="round"><circle cx="50" cy="50" r="42" stroke-width="5"/><circle cx="50" cy="50" r="18" stroke-width="4"/><line x1="68" y1="50" x2="87" y2="50" stroke-width="3.5"/><line x1="62.73" y1="62.73" x2="76.17" y2="76.17" stroke-width="3.5"/><line x1="50" y1="68" x2="50" y2="87" stroke-width="3.5"/><line x1="37.27" y1="62.73" x2="23.83" y2="76.17" stroke-width="3.5"/><line x1="32" y1="50" x2="13" y2="50" stroke-width="3.5"/><line x1="37.27" y1="37.27" x2="23.83" y2="23.83" stroke-width="3.5"/><line x1="50" y1="32" x2="50" y2="13" stroke-width="3.5"/><line x1="62.73" y1="37.27" x2="76.17" y2="23.83" stroke-width="3.5"/></g>
+            <circle cx="50" cy="50" r="7" fill="url(#helm-g-ft)"/><circle cx="50" cy="50" r="2.5" fill="#09090b"/>
+            <g fill="url(#helm-g-ft)"><circle cx="92" cy="50" r="5.5"/><circle cx="79.70" cy="79.70" r="5.5"/><circle cx="50" cy="92" r="5.5"/><circle cx="20.30" cy="79.70" r="5.5"/><circle cx="8" cy="50" r="5.5"/><circle cx="20.30" cy="20.30" r="5.5"/><circle cx="50" cy="8" r="5.5"/><circle cx="79.70" cy="20.30" r="5.5"/></g>
+          </svg>
           <a href="https://github.com/virtengine/bosun#readme" target="_blank" rel="noopener">
             <span data-version>v0.0</span> · Bosun by <span>VirtEngine</span> · Apache 2.0
           </a>

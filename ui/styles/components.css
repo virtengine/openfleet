@@ -1185,6 +1185,10 @@ select.input {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Explicitly allow pan-y so Chrome's compositor correctly forwards both touch
+     and touchpad/wheel scroll events down to the .main-content child. */
+  touch-action: pan-y;
+  overflow: visible;
 }
 
 /* ─── Cards need breathing room ─── */

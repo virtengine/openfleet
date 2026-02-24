@@ -215,24 +215,17 @@
     reveals.forEach((el) => observer.observe(el));
   }
 
-  /* ── Terminal initialization (lazy, on scroll into view) ─────────────── */
-  const terminalBody = document.querySelector('.terminal-window__body');
-  if (terminalBody && typeof $ !== 'undefined' && $.fn.terminal) {
-    let termInit = false;
-    const termObserver = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting && !termInit) {
-          termInit = true;
-          window.initBosunTerminal('.terminal-window__body', {
-            autoDemo: true,
-            greeting: true,
-          });
-          termObserver.disconnect();
-        }
-      },
-      { threshold: 0.2 }
-    );
-    termObserver.observe(terminalBody);
+  /* ── Terminal initialization (lazy, on tab click only) ─────────────── */
+  var termInit = false;
+  function lazyInitTerminal() {
+    var terminalBody = document.querySelector('.terminal-window__body');
+    if (terminalBody && !termInit && typeof $ !== 'undefined' && $.fn.terminal && typeof window.initBosunTerminal === 'function') {
+      termInit = true;
+      window.initBosunTerminal('.terminal-window__body', {
+        autoDemo: true,
+        greeting: true,
+      });
+    }
   }
 
   /* ── MiniApp fullscreen toggle ───────────────────────────────────────── */
@@ -305,28 +298,42 @@
   var tgChatInitialized = false;
   var securityInitialized = false;
 
+  function activateDemoTab(target) {
+    demoTabs.forEach(function (t) { t.classList.remove('demo-tab--active'); });
+    demoPanels.forEach(function (p) { p.classList.remove('demo-panel--active'); });
+
+    var matchingTab = document.querySelector('.demo-tab[data-demo="' + target + '"]');
+    if (matchingTab) matchingTab.classList.add('demo-tab--active');
+
+    var panel = document.getElementById('demo-panel-' + target);
+    if (panel) panel.classList.add('demo-panel--active');
+
+    track('demo_tab', { tab: target });
+
+    // Lazy-init CLI terminal on first reveal
+    if (target === 'cli') {
+      lazyInitTerminal();
+    }
+
+    // Lazy-init Telegram chat on first reveal
+    if (target === 'telegram' && !tgChatInitialized && typeof window.initTelegramChatDemo === 'function') {
+      tgChatInitialized = true;
+      window.initTelegramChatDemo('#telegram-chat-container');
+    }
+  }
+
   demoTabs.forEach(function (tab) {
     tab.addEventListener('click', function () {
-      var target = tab.dataset.demo;
-
-      // Update active tab
-      demoTabs.forEach(function (t) { t.classList.remove('demo-tab--active'); });
-      tab.classList.add('demo-tab--active');
-
-      // Switch panel
-      demoPanels.forEach(function (p) { p.classList.remove('demo-panel--active'); });
-      var panel = document.getElementById('demo-panel-' + target);
-      if (panel) panel.classList.add('demo-panel--active');
-
-      track('demo_tab', { tab: target });
-
-      // Lazy-init Telegram chat on first reveal
-      if (target === 'telegram' && !tgChatInitialized && typeof window.initTelegramChatDemo === 'function') {
-        tgChatInitialized = true;
-        window.initTelegramChatDemo('#telegram-chat-container');
-      }
+      activateDemoTab(tab.dataset.demo);
     });
   });
+
+  /* ── Viewport-based default demo tab ─────────────────────────────────── */
+  if (demoTabs.length) {
+    var isMobile = window.innerWidth < 768;
+    var defaultTab = isMobile ? 'mobile' : 'desktop';
+    activateDemoTab(defaultTab);
+  }
 
   /* ── Security Section Initialization (lazy on scroll) ────────────────── */
   var securityContainer = document.getElementById('security-visualizer');

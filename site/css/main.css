@@ -228,17 +228,13 @@ section {
 
 
 .nav__brand-icon {
-    width: 66.6px;
-    height: 66.6px;
-    margin-right: 6.66px;
-    padding: 0.666px;
+    width: 48px;
+    height: 48px;
+    margin-right: 0.35rem;
     border-radius: 0;
     background: none;
-    display: grid;
-    place-items: center;
-    font-size: 0.9rem;
-    font-weight: 900;
-    object-fit: contain;
+    display: block;
+    flex-shrink: 0;
 }
 
 .nav__links {
@@ -401,8 +397,16 @@ section {
   font-size: 0.8rem;
   font-weight: 500;
   color: var(--cyan);
-  margin-bottom: 2rem;
+  margin-bottom: 1.5rem;
   font-family: var(--font-mono);
+  text-decoration: none;
+  transition: border-color 0.3s ease, background 0.3s ease;
+}
+
+.hero__badge:hover {
+  border-color: var(--cyan);
+  background: rgba(96, 204, 93, 0.12);
+  color: var(--cyan);
 }
 
 .hero__badge .pulse-dot {
@@ -501,7 +505,7 @@ section {
   text-align: left;
 }
 
-/* ── Hero headline (replaces the old hero__title + typed combo) ──────── */
+/* ── Hero headline ──────────────────────────────────────────────────── */
 .hero__headline {
   font-size: clamp(2.5rem, 5vw, 4rem);
   font-weight: 800;
@@ -516,6 +520,15 @@ section {
 
 .hero__headline .gradient-text {
   display: inline-block;
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.hero__headline-accent {
+  font-family: 'Lora', Georgia, serif;
+  font-style: italic;
+  font-weight: 600;
   background: var(--gradient-primary);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -1102,6 +1115,91 @@ body.is-miniapp-fullscreen {
   overflow: hidden;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   DESKTOP DEMO — Browser chrome with live iframe
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.desktop-demo-window {
+  max-width: 960px;
+  margin: 0 auto;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  background: rgba(10, 10, 18, 0.8);
+  backdrop-filter: blur(20px);
+  box-shadow:
+    0 25px 50px -12px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.05);
+  transition: all 0.4s var(--ease-spring);
+}
+
+.desktop-demo-window:hover {
+  transform: translateY(-4px);
+  box-shadow:
+    0 35px 60px -12px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.desktop-demo-window__chrome {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 1rem;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.desktop-demo-window__url {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.desktop-demo-window__nav-btns {
+  display: flex;
+  gap: 0.35rem;
+  color: var(--text-muted);
+  font-size: 1rem;
+  user-select: none;
+}
+
+.desktop-demo-window__nav-btns span {
+  opacity: 0.4;
+}
+
+.desktop-demo-window__url-bar {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+}
+
+.desktop-demo-window__url-bar svg {
+  color: var(--green);
+  flex-shrink: 0;
+}
+
+.desktop-demo-window__iframe {
+  width: 100%;
+  height: 560px;
+  border: none;
+  background: #0b0f14;
+}
+
+@media (max-width: 768px) {
+  .desktop-demo-window__iframe {
+    height: 440px;
+  }
+}
+
 /* ── Architecture Section ──────────────────────────────────────────────── */
 .arch-diagram {
   max-width: 960px;
@@ -1440,8 +1538,8 @@ body.is-miniapp-fullscreen {
   }
 
   .nav__brand-icon {
-    width: 56px;
-    height: 56px;
+    width: 40px;
+    height: 40px;
   }
 
   .nav__links {

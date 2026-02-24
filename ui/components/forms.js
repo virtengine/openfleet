@@ -171,7 +171,7 @@ export function PullToRefresh({ onRefresh, children, disabled = false }) {
           ${ICONS.refresh}
         </button>
       `}
-      {!disabled && (refreshing || pullDistance > 0) &&
+      ${!disabled && (refreshing || pullDistance > 0) &&
       html`
         <div
           class="ptr-indicator"

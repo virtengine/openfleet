@@ -623,7 +623,10 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-md);
-  overflow: hidden;
+  /* overflow:clip clips border-radius visually without creating a scroll-blocking
+     BFC (unlike overflow:hidden). This lets mouse-wheel events reach the inner
+     .main-content scroll container rather than being silently consumed here. */
+  overflow: clip;
 }
 
 .sidebar,
