@@ -10,6 +10,7 @@ import htm from "htm";
 import { apiFetch } from "../modules/api.js";
 import { showToast } from "../modules/state.js";
 import { formatRelative, truncate } from "../modules/utils.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   sessionMessages,
   loadSessionMessages,
@@ -184,7 +185,7 @@ const CodeBlock = memo(function CodeBlock({ code }) {
   return html`
     <div class="chat-code-block">
       <button class="chat-code-copy" onClick=${handleCopy}>
-        ${copied ? "✓" : "📋"}
+        ${resolveIcon(copied ? "✓" : "📋")}
       </button>
       <pre><code>${code}</code></pre>
     </div>
@@ -275,7 +276,7 @@ const ThinkingPanel = memo(function ThinkingPanel({ entries }) {
   return html`
     <details class="chat-thinking-panel">
       <summary class="chat-thinking-summary">
-        🧠 Thinking · ${entries.length} ${entries.length === 1 ? "step" : "steps"}
+        ${iconText(`🧠 Thinking · ${entries.length} ${entries.length === 1 ? "step" : "steps"}`)}
       </summary>
       <div class="chat-thinking-body">
         ${entries.map((entry, index) => {
@@ -700,7 +701,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   if (!sessionId) {
     return html`
       <div class="chat-view chat-empty-state">
-        <div class="session-empty-icon">💬</div>
+        <div class="session-empty-icon">${resolveIcon("💬")}</div>
         <div class="session-empty-text">
           Select a session to view the live stream.
           <div class="session-empty-subtext">Create a new session or pick one on the left.</div>
@@ -776,7 +777,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         </div>
         <div class="chat-toolbar-actions">
           <button class="btn btn-ghost btn-sm" onClick=${refreshMessages}>
-            🔄 Refresh
+            ${iconText("🔄 Refresh")}
           </button>
           <button
             class="btn btn-ghost btn-sm"
@@ -785,7 +786,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             ${paused ? "▶ Resume" : "⏸ Pause"}
           </button>
           <button class="btn btn-ghost btn-sm" onClick=${handleCopyStream}>
-            📋 Copy
+            ${iconText("📋 Copy")}
           </button>
           <button class="btn btn-ghost btn-sm" onClick=${handleExportStream}>
             ⬇️ Export
@@ -894,7 +895,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         `}
         ${!loading && messages.length === 0 && html`
           <div class="chat-empty-state-inline">
-            <div class="session-empty-icon">🛰️</div>
+            <div class="session-empty-icon">${resolveIcon("🛰")}</div>
             <div class="session-empty-text">
               No messages yet.
               <div class="session-empty-subtext">
@@ -905,7 +906,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         `}
         ${messages.length > 0 && filteredMessages.length === 0 && html`
           <div class="chat-empty-state-inline">
-            <div class="session-empty-icon">🧰</div>
+            <div class="session-empty-icon">${resolveIcon("🧰")}</div>
             <div class="session-empty-text">
               No messages match these filters.
               <div class="session-empty-subtext">Try clearing filters or wait for new tool events.</div>
@@ -939,7 +940,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
                               <button class="btn btn-ghost btn-xs chat-retry-btn"
                                 onClick=${() => retryPendingMessage(pm.tempId)}>↻ Retry</button>`
                       : pm.status === "failed"
-                        ? html`<span class="chat-pending-err">✘ Failed${pm.error ? `: ${pm.error}` : ""}</span>
+                        ? html`<span class="chat-pending-err">${iconText(`✘ Failed${pm.error ? `: ${pm.error}` : ""}`)}</span>
                                 <button class="btn btn-ghost btn-xs chat-retry-btn"
                                   onClick=${() => retryPendingMessage(pm.tempId)}>↻ Retry</button>`
                         : ""}
@@ -998,7 +999,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             disabled=${!input.trim() || sending}
             onClick=${handleSend}
           >
-            ➤
+            ${resolveIcon("➤")}
           </button>
         </div>
       </div>

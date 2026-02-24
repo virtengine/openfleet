@@ -5,25 +5,26 @@ import { h } from "preact";
 import { useState, useEffect, useCallback } from "preact/hooks";
 import htm from "htm";
 import { apiFetch } from "../modules/api.js";
+import { resolveIcon } from "../modules/icon-utils.js";
 
 const html = htm.bind(h);
 
 /* ─── File type icons ─── */
 const EXT_ICONS = {
-  js: "📜", mjs: "📜", cjs: "📜",
-  ts: "🔷", tsx: "🔷",
-  json: "📋", yaml: "📋", yml: "📋", toml: "📋",
-  css: "🎨", scss: "🎨", less: "🎨",
-  html: "🌐", htm: "🌐",
-  md: "📝", txt: "📄",
-  py: "🐍", rb: "💎", go: "🔵", rs: "🦀",
-  sh: "🐚", bash: "🐚", ps1: "🐚",
-  sql: "🗃️", graphql: "🗃️",
+  js: "terminal", mjs: "terminal", cjs: "terminal",
+  ts: "terminal", tsx: "terminal",
+  json: "file", yaml: "file", yml: "file", toml: "file",
+  css: "palette", scss: "palette", less: "palette",
+  html: "globe", htm: "globe",
+  md: "edit", txt: "file",
+  py: "terminal", rb: "terminal", go: "terminal", rs: "terminal",
+  sh: "terminal", bash: "terminal", ps1: "terminal",
+  sql: "archive", graphql: "archive",
 };
 
 function fileIcon(filename) {
   const ext = (filename || "").split(".").pop().toLowerCase();
-  return EXT_ICONS[ext] || "📄";
+  return resolveIcon(EXT_ICONS[ext] || "file") || EXT_ICONS[ext] || "file";
 }
 
 /* ─── Parse unified diff into lines ─── */
@@ -126,7 +127,7 @@ export function DiffViewer({ sessionId }) {
   if (!sessionId) {
     return html`
       <div class="diff-viewer diff-empty">
-        <div class="session-empty-icon">📝</div>
+        <div class="session-empty-icon">${resolveIcon("📝")}</div>
         <div class="session-empty-text">Select a session to view diffs</div>
       </div>
     `;
@@ -144,7 +145,7 @@ export function DiffViewer({ sessionId }) {
     return html`
       <div class="diff-viewer">
         <div class="session-empty">
-          <div class="session-empty-icon">📝</div>
+          <div class="session-empty-icon">${resolveIcon("📝")}</div>
           <div class="session-empty-text">Diff not available</div>
           <button class="btn btn-primary btn-sm" onClick=${handleRetry}>
             Retry

@@ -9,6 +9,7 @@ import { tasksData, tasksLoaded, showToast, runOptimistic, loadTasks } from "../
 import { apiFetch } from "../modules/api.js";
 import { haptic } from "../modules/telegram.js";
 import { formatRelative, truncate, cloneValue } from "../modules/utils.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
 
 const html = htm.bind(h);
 
@@ -547,7 +548,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
   return html`
     <div class="kanban-filter-bar">
       <div class="kanban-filter-search">
-        <span class="kanban-filter-icon">🔍</span>
+        <span class="kanban-filter-icon">${resolveIcon("🔍")}</span>
         <input
           type="text"
           class="kanban-filter-input"
@@ -563,7 +564,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
               class="kanban-filter-chip ${filters.repo ? 'active' : ''}"
               onClick=${() => toggleDropdown("repo")}
             >
-              📦 ${filters.repo || "Repository"}
+              ${iconText(`📦 ${filters.repo || "Repository"}`)}
             </button>
             ${showDropdown === "repo" && html`
               <div class="kanban-filter-dropdown">
@@ -600,7 +601,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
               class="kanban-filter-chip ${filters.assignee ? 'active' : ''}"
               onClick=${() => toggleDropdown("assignee")}
             >
-              👤 ${filters.assignee || "Assignee"}
+              ${iconText(`👤 ${filters.assignee || "Assignee"}`)}
             </button>
             ${showDropdown === "assignee" && html`
               <div class="kanban-filter-dropdown">
@@ -613,7 +614,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
           </div>
         `}
         ${hasFilters && html`
-          <button class="kanban-filter-chip clear" onClick=${clearAll}>✕ Clear</button>
+          <button class="kanban-filter-chip clear" onClick=${clearAll}>${iconText("✕ Clear")}</button>
         `}
       </div>
     </div>

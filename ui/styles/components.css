@@ -5167,3 +5167,23 @@ select.input {
   background: var(--color-inreview, #6366f1);
   border-color: var(--color-inreview, #6366f1);
 }
+
+/* ── Inline icon helpers ─────────────────────────────────────────────── */
+.icon-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.icon-inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.icon-inline svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.7;
+}

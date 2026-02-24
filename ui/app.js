@@ -64,6 +64,7 @@ const SIDEBAR_ICON_WIDTH = 54;
 
 /* ── Module imports ── */
 import { ICONS } from "./modules/icons.js";
+import { iconText, resolveIcon } from "./modules/icon-utils.js";
 import {
   initTelegramApp,
   onThemeChange,
@@ -528,10 +529,10 @@ function SidebarNav({ collapsed = false, onToggle }) {
       ${!collapsed && html`
         <div class="sidebar-actions">
           <button class="btn btn-primary btn-block" onClick=${() => createSession({ type: "primary" })}>
-            <span class="btn-icon">✨</span> New Session
+            <span class="btn-icon">${resolveIcon("✨")}</span> New Session
           </button>
           <button class="btn btn-ghost btn-block" onClick=${() => navigateTo("tasks")}>
-            <span class="btn-icon">📋</span> View Tasks
+            <span class="btn-icon">${resolveIcon("📋")}</span> View Tasks
           </button>
         </div>
       `}
@@ -542,7 +543,7 @@ function SidebarNav({ collapsed = false, onToggle }) {
             onClick=${() => createSession({ type: "primary" })}
             title="New Session"
             aria-label="New Session"
-          >✨</button>
+          >${resolveIcon("✨")}</button>
         </div>
       `}
       <nav class="sidebar-nav" aria-label="Main navigation">
@@ -977,7 +978,7 @@ function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
             aria-label="Open Bot Controls"
             onClick=${() => { onClose(); onOpenBot?.(); }}
           >
-            <span class="more-menu-bot-icon">🤖</span>
+            <span class="more-menu-bot-icon">${resolveIcon("🤖")}</span>
             <div class="more-menu-bot-text">
               <span class="more-menu-bot-label">Bot Controls</span>
               <span class="more-menu-bot-sub">Commands, executor, routing</span>
@@ -1129,7 +1130,7 @@ function BotControlsSheet({ open, onClose }) {
 
   return html`
     <${Modal}
-      title=${currentDef.title}
+      title=${iconText(currentDef.title)}
       open=${open}
       onClose=${handleBotClose}
       contentClassName="bot-controls-content"
@@ -1142,13 +1143,13 @@ function BotControlsSheet({ open, onClose }) {
             </button>
             ${navStack.length > 1 ? html`
               <button class="btn btn-ghost btn-sm" type="button" onClick=${botGoHome} aria-label="Go to home">
-                🏠 Home
+                ${iconText("🏠 Home")}
               </button>
             ` : null}
           </div>
         ` : null}
 
-        ${currentDef.body ? html`<p class="bot-controls-body">${currentDef.body}</p>` : null}
+        ${currentDef.body ? html`<p class="bot-controls-body">${iconText(currentDef.body)}</p>` : null}
 
         ${cmdLoading ? html`
           <div class="bot-controls-spinner">
@@ -1158,11 +1159,11 @@ function BotControlsSheet({ open, onClose }) {
         ` : null}
 
         ${cmdError && !cmdLoading ? html`
-          <div class="bot-controls-result bot-controls-result-error">❌ ${cmdError}</div>
+          <div class="bot-controls-result bot-controls-result-error">${iconText(`❌ ${cmdError}`)}</div>
         ` : null}
 
         ${cmdOutput && !cmdLoading && !cmdError ? html`
-          <div class="bot-controls-result"><pre>${cmdOutput}</pre></div>
+          <div class="bot-controls-result"><pre>${iconText(cmdOutput)}</pre></div>
         ` : null}
 
         <div class="bot-controls-keyboard">
@@ -1176,7 +1177,7 @@ function BotControlsSheet({ open, onClose }) {
                   disabled=${cmdLoading}
                   onClick=${() => btn.go ? botNavigateTo(btn.go) : runBotCommand(btn.cmd)}
                 >
-                  ${btn.text}
+                  ${iconText(btn.text)}
                 </button>
               `)}
             </div>

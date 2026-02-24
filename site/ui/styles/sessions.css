@@ -2142,6 +2142,22 @@ ul.md-list li::before {
     background: linear-gradient(90deg, transparent, var(--border-strong, rgba(255,255,255,0.08)) 20%, var(--border-strong, rgba(255,255,255,0.08)) 80%, transparent);
     margin-bottom: 6px;
   }
+
+  .app-shell[data-tab="chat"] .chat-input-toolbar {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+  }
+
+  .app-shell[data-tab="chat"] .chat-input-hint {
+    color: var(--text-secondary);
+  }
+
+  .app-shell[data-tab="chat"] ~ .bottom-nav {
+    background: var(--glass-bg);
+    border-color: var(--glass-border);
+    backdrop-filter: var(--glass-blur);
+  }
 }
 
 /* ─── Sessions button (show-sessions) visibility rules ─── */
@@ -2158,3 +2174,4 @@ ul.md-list li::before {
 .app-shell[data-rail-collapsed="true"] .session-drawer-btn-rail {
   display: inline-flex;
 }
+

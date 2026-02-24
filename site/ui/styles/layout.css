@@ -1205,6 +1205,19 @@
   min-height: 0;
 }
 
+@media (max-width: 768px) {
+  .app-shell[data-tab="chat"] .main-panel {
+    border-radius: 0;
+    border: none;
+    box-shadow: none;
+    background: var(--bg-primary);
+  }
+
+  .app-shell[data-tab="chat"] .main-content {
+    background: var(--bg-primary);
+  }
+}
+
 .inspector-log-line {
   display: flex;
   align-items: flex-start;

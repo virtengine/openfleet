@@ -15,6 +15,7 @@ import { signal, computed, effect } from "@preact/signals";
 import htm from "htm";
 import { apiFetch } from "../modules/api.js";
 import { haptic } from "../modules/telegram.js";
+import { resolveIcon } from "../modules/icon-utils.js";
 import {
   aliveAgentCount,
   staleAgentCount,
@@ -564,7 +565,7 @@ export function AgentModeSelector() {
           title=${m.description}
           onClick=${() => handleSelect(m.id)}
         >
-          <span class="mode-icon">${m.icon}</span>
+          <span class="mode-icon">${resolveIcon(m.icon) || m.icon}</span>
           ${m.label}
         </button>
       `)}
@@ -593,7 +594,9 @@ export function AgentPicker() {
 
   return html`
     <div class="agent-picker-wrap">
-      <span class="picker-icon" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none;z-index:1">${currentIcon}</span>
+      <span class="picker-icon" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none;z-index:1">
+        ${resolveIcon(currentIcon) || currentIcon}
+      </span>
       <select
         class="agent-picker-native"
         value=${current}
@@ -638,7 +641,7 @@ export function AgentStatusBadge() {
       <span class="agent-status-label">${cfg.label}</span>
       ${alive > 0 && html`<span class="agent-count-badge" title="${alive} agent(s) active" style="background:#2ea043;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:4px;">${alive}</span>`}
       ${stale > 0 && html`<span class="agent-count-badge" title="${stale} agent(s) stale" style="background:#d29922;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;">⚠${stale}</span>`}
-      ${errors > 0 && html`<span class="agent-count-badge" title="${errors} error(s)" style="background:#f85149;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;">✕${errors}</span>`}
+      ${errors > 0 && html`<span class="agent-count-badge" title="${errors} error(s)" style="background:#f85149;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;">${resolveIcon("✕")}${errors}</span>`}
     </div>
   `;
 }
