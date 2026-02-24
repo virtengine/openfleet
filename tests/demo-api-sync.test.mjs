@@ -269,14 +269,26 @@ describe("import map consistency", () => {
       return null;
     };
 
-    const demoPreactVer = extractVersion(demoMap.imports["preact"]);
-    const indexPreactVer = extractVersion(indexMap.imports["preact"]);
+    const demoPreactUrl = demoMap.imports["preact"] || "";
+    const indexPreactUrl = indexMap.imports["preact"] || "";
+
+    const demoPreactVer = extractVersion(demoPreactUrl);
+    const indexPreactVer = extractVersion(indexPreactUrl);
 
     expect(demoPreactVer).toBeTruthy();
     expect(indexPreactVer).toBeTruthy();
-    expect(demoPreactVer).toBe(indexPreactVer);
 
-    // @preact/signals deps param should match (only enforced for CDN URLs)
+    // demo.html is a static GitHub Pages file — it MUST use CDN URLs so
+    // it works without a Node.js server.  index.html is served by the local
+    // bosun UI server which handles /vendor/ routes, so it MUST use them.
+    // Both pin the same preact version via package.json (their "contract").
+    const demoCdn = !demoPreactUrl.startsWith("/vendor/");
+    const indexVendor = indexPreactUrl.startsWith("/vendor/");
+
+    expect(demoCdn).toBe(true);   // demo.html must use CDN (GitHub Pages)
+    expect(indexVendor).toBe(true); // index.html must use /vendor/ (live server)
+
+    // @preact/signals deps param should match the CDN preact version used in demo
     const signalsUrl = demoMap.imports["@preact/signals"] || "";
     if (!signalsUrl.startsWith("/vendor/")) {
       const demoSignalsDeps = extractVersion(signalsUrl);

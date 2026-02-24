@@ -1618,6 +1618,110 @@ export function printConfigSummary(result, log = console.log) {
   log(`     Config: ${result.path}`);
 }
 
+// ── Trusted Projects ─────────────────────────────────────────────────────────
+
+/**
+ * Escape a string for use inside a double-quoted TOML basic string.
+ * Handles backslashes (Windows paths) and double-quote characters.
+ */
+function tomlEscapeStr(s) {
+  return String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+/**
+ * Format an array of strings as a TOML array literal, correctly escaping
+ * backslashes so Windows paths are stored faithfully.
+ *
+ * Example output:  ["C:\\Users\\jon\\bosun", "/home/jon/bosun"]
+ */
+function formatTomlArrayEscaped(values) {
+  return `[${values.map((v) => `"${tomlEscapeStr(v)}"`).join(", ")}]`;
+}
+
+/**
+ * Parse a TOML basic-string array literal, unescaping backslash sequences.
+ */
+function parseTomlArrayLiteralEscaped(raw) {
+  if (!raw) return [];
+  const inner = raw.trim().replace(/^\[/, "").replace(/\]$/, "");
+  if (!inner.trim()) return [];
+  // Split on commas that are NOT inside quotes
+  const items = [];
+  let buf = "";
+  let inStr = false;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (ch === "\\" && inStr) { buf += ch + (inner[++i] || ""); continue; }
+    if (ch === '"') { inStr = !inStr; buf += ch; continue; }
+    if (ch === "," && !inStr) { items.push(buf.trim()); buf = ""; continue; }
+    buf += ch;
+  }
+  if (buf.trim()) items.push(buf.trim());
+  return items
+    .map((item) => item.replace(/^"(.*)"$/s, "$1"))              // strip outer quotes
+    .map((item) => item.replace(/\\(["\\])/g, "$1"))             // unescape \" and \\
+    .filter(Boolean);
+}
+
+/**
+ * Ensure the given directory paths are listed in the `trusted_projects`
+ * top-level key in ~/.codex/config.toml.
+ *
+ * Codex refuses to load a per-project .codex/config.toml unless the project
+ * directory appears in this list — producing warnings like:
+ *   "⚠ Project config.toml files are disabled … add <dir> as a trusted project"
+ *
+ * Paths are stored as-is (forward or back slashes preserved) with proper TOML
+ * escaping so Windows paths survive round-trips through the file.
+ *
+ * @param {string[]} paths   Absolute directories to trust (e.g. [bosunHome])
+ * @param {{ dryRun?: boolean }} [opts]
+ * @returns {{ added: string[], already: string[], path: string }}
+ */
+export function ensureTrustedProjects(paths, { dryRun = false } = {}) {
+  const result = { added: [], already: [], path: CONFIG_PATH };
+  const desired = (paths || []).map((p) => resolve(p)).filter(Boolean);
+  if (desired.length === 0) return result;
+
+  let toml = readCodexConfig() || "";
+
+  // Parse existing trusted_projects (multi-line arrays may span lines)
+  const existingMatch = toml.match(/^trusted_projects\s*=\s*(\[[^\]]*\])/m);
+  const existing = existingMatch ? parseTomlArrayLiteralEscaped(existingMatch[1]) : [];
+
+  let changed = false;
+  for (const p of desired) {
+    if (existing.includes(p)) {
+      result.already.push(p);
+    } else {
+      existing.push(p);
+      result.added.push(p);
+      changed = true;
+    }
+  }
+
+  if (!changed) return result;
+  if (dryRun) return result;
+
+  const newLine = `trusted_projects = ${formatTomlArrayEscaped(existing)}`;
+
+  if (existingMatch) {
+    toml = toml.replace(/^trusted_projects\s*=\s*\[[^\]]*\]/m, newLine);
+  } else {
+    // Insert before the first section header (or at top if no sections)
+    const firstSection = toml.search(/^\[/m);
+    if (firstSection === -1) {
+      toml = `${newLine}\n${toml}`;
+    } else {
+      toml = `${toml.slice(0, firstSection)}${newLine}\n\n${toml.slice(firstSection)}`;
+    }
+  }
+
+  mkdirSync(CODEX_DIR, { recursive: true });
+  writeFileSync(CONFIG_PATH, toml, "utf8");
+  return result;
+}
+
 // ── Internal Helpers ─────────────────────────────────────────────────────────
 
 function escapeRegex(str) {

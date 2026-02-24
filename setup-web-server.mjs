@@ -20,6 +20,7 @@ import { createRequire } from "node:module";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import { scaffoldSkills } from "./bosun-skills.mjs";
+import { ensureCodexConfig, ensureTrustedProjects } from "./codex-config.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -157,7 +158,9 @@ function getCommandVersion(cmd) {
  * configs, workspaces, and tooling.  Resolution order:
  *   1. BOSUN_HOME env var  (set by bosun after first run)
  *   2. BOSUN_DIR env var   (legacy compat)
- *   3. cwd if it already has a bosun config marker (backward compat)
+ *   3. cwd if it already has a bosun.config.json AND is not inside a git repo
+ *      we don't own (safety: prevents "bosun --setup" from contaminating whatever
+ *      repo the user happened to be in when they ran the command)
  *   4. ~/bosun             (cross-platform stable default)
  */
 function resolveConfigDir() {
@@ -165,8 +168,18 @@ function resolveConfigDir() {
   if (process.env.BOSUN_DIR)  return resolve(process.env.BOSUN_DIR);
 
   const cwd = process.cwd();
-  if ([".env", "bosun.config.json", ".bosun.json", "bosun.json"].some((f) => existsSync(resolve(cwd, f)))) {
-    return cwd;
+
+  // Only treat CWD as an existing bosun home when:
+  //  (a) it has a bosun.config.json (unambiguous marker — a generic .env is NOT enough
+  //      because many repos ship one and we must not corrupt them), AND
+  //  (b) it does NOT appear to be a foreign git repository
+  //      (i.e. there is no .git directory that was initialised by someone else).
+  const hasBosunConfig = existsSync(resolve(cwd, "bosun.config.json"));
+  if (hasBosunConfig) {
+    // Confirm it looks like an intentional bosun home (has .env too, or is ~/bosun)
+    const isExpectedHome = resolve(homedir(), "bosun") === cwd ||
+      existsSync(resolve(cwd, ".env"));
+    if (isExpectedHome) return cwd;
   }
 
   // Stable default: ~/bosun — same path on every OS
@@ -174,7 +187,43 @@ function resolveConfigDir() {
 }
 
 /**
- * Resolve the workspaces root directory.
+ * Ensure the given directory is listed in Claude Code's global
+ * ~/.claude/settings.json under permissions.additionalDirectories.
+ *
+ * Claude Code uses this list to decide which directories outside the current
+ * project root are readable/writable without per-session permission prompts.
+ *
+ * @param {string} dirPath  Absolute path to add
+ * @returns {{ added: boolean, path: string }}
+ */
+function ensureClaudeAdditionalDirectory(dirPath) {
+  const claudeDir = resolve(homedir(), ".claude");
+  const settingsPath = resolve(claudeDir, "settings.json");
+  const targetPath = resolve(dirPath);
+
+  try {
+    mkdirSync(claudeDir, { recursive: true });
+    let settings = {};
+    if (existsSync(settingsPath)) {
+      try { settings = JSON.parse(readFileSync(settingsPath, "utf8")); } catch { /* keep empty */ }
+    }
+
+    const perms = settings.permissions || (settings.permissions = {});
+    const additional = perms.additionalDirectories || (perms.additionalDirectories = []);
+
+    if (!additional.includes(targetPath)) {
+      additional.push(targetPath);
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf8");
+      return { added: true, path: settingsPath };
+    }
+    return { added: false, path: settingsPath };
+  } catch (err) {
+    console.warn("[setup] could not update ~/.claude/settings.json:", err.message);
+    return { added: false, path: settingsPath };
+  }
+}
+
+/**
  * All projects live under here; global shared configs also live here.
  * Default: BOSUN_HOME/workspaces
  */
@@ -633,6 +682,45 @@ function handleApply(body) {
 
     const configPath = resolve(bosunHome, "bosun.config.json");
     writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
+
+    // ── Trust the BOSUN_HOME in every agent CLI ─────────────────────────────
+    // Without this, running a codex agent from bosunHome is rejected with:
+    //   "⚠ Project config.toml files are disabled…"
+    // We also register bosunHome with Claude Code so it won't prompt for
+    // permission when accessing the workspace directories.
+
+    // 1. Codex: add bosunHome to trusted_projects in ~/.codex/config.toml
+    try {
+      const trustedResult = ensureTrustedProjects([bosunHome, workspacesDir]);
+      if (trustedResult.added.length > 0) {
+        console.log("  ✅ Codex: trusted bosun home directory:", trustedResult.added.join(", "));
+      }
+    } catch (err) {
+      console.warn("[setup] could not update codex trusted_projects:", err.message);
+    }
+
+    // 2. Claude Code: add bosunHome to additionalDirectories
+    try {
+      const claudeResult = ensureClaudeAdditionalDirectory(bosunHome);
+      const claudeWs = ensureClaudeAdditionalDirectory(workspacesDir);
+      if (claudeResult.added || claudeWs.added) {
+        console.log("  ✅ Claude: added bosun directories to additionalDirectories");
+      }
+    } catch (err) {
+      console.warn("[setup] could not update claude settings:", err.message);
+    }
+
+    // 3. Call ensureCodexConfig to ensure ~/.codex/config.toml has all bosun
+    //    recommended settings (MCP servers, sandbox, feature flags, etc.).
+    try {
+      ensureCodexConfig({
+        vkBaseUrl: process.env.VK_BASE_URL || "http://127.0.0.1:54089",
+        skipVk: (env.kanbanBackend || "") !== "internal" && (env.kanbanBackend || "") !== "",
+        env: { ...process.env, BOSUN_HOME: bosunHome, BOSUN_WORKSPACES_DIR: workspacesDir },
+      });
+    } catch (err) {
+      console.warn("[setup] could not update codex global config:", err.message);
+    }
 
     return { ok: true, bosunHome, workspacesDir, envPath, configPath };
   } catch (err) {
