@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; img-src * data: blob:; connect-src *;" />
   <title>Bosun MiniApp — Demo Mode</title>
-  <link rel="icon" type="image/png" href="../favicon.png" />
 
   <!-- Telegram WebApp SDK is fully mocked below — no real SDK needed -->
 
@@ -89,11 +88,8 @@
     html { height: 100%; margin: 0; }
     body { height: 100%; margin: 0; font-family: "Instrument Sans", -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif; background: #0b0f14; color: #e8edf2; overflow: hidden; }
 
-    /* Demo banner */
-    .demo-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 99999; background: linear-gradient(135deg, #60cc5d, #4caf50); color: #000; text-align: center; font-size: 11px; font-weight: 700; padding: 3px 8px; letter-spacing: 0.05em; text-transform: uppercase; }
-
     /* ── MAIN CONTAINER ── */
-    .demo-container { position: fixed; top: 22px; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; background: #0b0f14; }
+    .demo-container { position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; background: #0b0f14; }
 
     /* MiniApp header (Telegram-style) */
     .miniapp-header { display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: #17212b; border-bottom: 1px solid #1b2838; flex-shrink: 0; z-index: 10; }
@@ -726,7 +722,7 @@
     }
 
     /* ── API Route Handler (comprehensive — catches ALL /api/* calls) */
-    async function handleApi(path, method, body) {
+    function handleApi(path, method, body) {
       // Normalize: strip query string for route matching
       const [route, qs] = path.split('?');
       const params = new URLSearchParams(qs || '');
@@ -1096,9 +1092,9 @@
         return {
           ok: true,
           data: [
-            { sha: 'a1b2c3d', subject: 'feat(ui): add task assignment controls', authorName: 'bosun-demo', authoredDate: new Date(Date.now() - 2 * hr).toISOString() },
-            { sha: 'd4e5f6g', subject: 'fix(api): stabilize shared state sync retries', authorName: 'bosun-demo', authoredDate: new Date(Date.now() - 6 * hr).toISOString() },
-            { sha: 'h7i8j9k', subject: 'test(hooks): cover prepush timeout behavior', authorName: 'bosun-demo', authoredDate: new Date(Date.now() - 24 * hr).toISOString() },
+            { hash: 'f464d9a', message: 'fix(ui): stretch chat to bottom, remove bot-fab, fix Bot Controls', author: 'bosun-agent', date: new Date(Date.now() - 1 * hr).toISOString() },
+            { hash: 'e39aa3c', message: 'feat(ui): VS Code-style collapsible sidebar and session rail', author: 'bosun-agent', date: new Date(Date.now() - 4 * hr).toISOString() },
+            { hash: 'c2d8f7b', message: 'fix(api): stabilize shared state sync retries', author: 'bosun-agent', date: new Date(Date.now() - 8 * hr).toISOString() },
           ],
         };
 
@@ -1231,18 +1227,11 @@
           try { body = JSON.parse(options.body); } catch {}
         }
         const method = (options?.method || 'GET').toUpperCase();
-        return Promise.resolve(handleApi(path, method, body))
-          .then((data) => new Response(JSON.stringify(data), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          }))
-          .catch((error) => new Response(JSON.stringify({
-            ok: false,
-            error: error?.message || 'Demo API error',
-          }), {
-            status: 500,
-            headers: { 'Content-Type': 'application/json' },
-          }));
+        const data = handleApi(path, method, body);
+        return Promise.resolve(new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
       }
 
       // Pass through non-API requests (fonts, CDN, ES modules, etc.)

@@ -170,7 +170,7 @@ function AnimatedNumber({ value, duration = 600, className = "" }) {
 function KeyboardShortcutsModal({ onClose }) {
   const shortcuts = [
     { key: "1–8", desc: "Switch tabs" },
-    { key: "n",   desc: "Create task (on Dashboard)" },
+    { key: "c",   desc: "Create task (on Dashboard)" },
     { key: "?",   desc: "Show keyboard shortcuts" },
     { key: "Esc", desc: "Close modal / palette" },
   ];
@@ -1478,8 +1478,8 @@ function App() {
         return;
       }
 
-      // "n" to create task (when not in a form element)
-      if (e.key.toLowerCase() === "n" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      // "c" to create task (when not in a form element)
+      if (e.key === "c") {
         e.preventDefault();
         globalThis.dispatchEvent(new CustomEvent("ve:create-task"));
         return;
