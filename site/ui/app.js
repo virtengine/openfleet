@@ -170,7 +170,7 @@ function AnimatedNumber({ value, duration = 600, className = "" }) {
 function KeyboardShortcutsModal({ onClose }) {
   const shortcuts = [
     { key: "1–8", desc: "Switch tabs" },
-    { key: "c",   desc: "Create task (on Dashboard)" },
+    { key: "n",   desc: "Create task (on Dashboard)" },
     { key: "?",   desc: "Show keyboard shortcuts" },
     { key: "Esc", desc: "Close modal / palette" },
   ];
@@ -1107,7 +1107,14 @@ function BotControlsSheet({ open, onClose }) {
         _silent: true,
       });
       if (result?.ok) {
-        setCmdOutput(result.data ? String(result.data) : `✅ ${cmd} executed.`);
+        const d = result.data;
+        if (d?.content) {
+          setCmdOutput(d.content);
+        } else if (d?.executed === false && d?.error) {
+          setCmdError(d.error);
+        } else {
+          setCmdOutput(`✅ ${cmd} sent.`);
+        }
       } else {
         setCmdError(result?.error || "Command failed");
       }
@@ -1471,8 +1478,8 @@ function App() {
         return;
       }
 
-      // "c" to create task (when not in a form element)
-      if (e.key === "c") {
+      // "n" to create task (when not in a form element)
+      if (e.key.toLowerCase() === "n" && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         globalThis.dispatchEvent(new CustomEvent("ve:create-task"));
         return;

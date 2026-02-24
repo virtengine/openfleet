@@ -104,7 +104,7 @@
   .session-split.drawer-open .session-pane {
     transform: translateX(0);
   }
-  .session-split.has-active-session > .session-detail {
+  .session-split > .session-detail {
     flex: 1;
     height: 100%;
   }

@@ -5155,6 +5155,8 @@ async function handleApi(req, res, url) {
         "/kanban",
         "/region",
         "/deploy",
+        "/agents",
+        "/executor",
         "/help",
         "/starttask",
         "/stoptask",

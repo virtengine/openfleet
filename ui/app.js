@@ -1107,7 +1107,14 @@ function BotControlsSheet({ open, onClose }) {
         _silent: true,
       });
       if (result?.ok) {
-        setCmdOutput(result.data ? String(result.data) : `✅ ${cmd} executed.`);
+        const d = result.data;
+        if (d?.content) {
+          setCmdOutput(d.content);
+        } else if (d?.executed === false && d?.error) {
+          setCmdError(d.error);
+        } else {
+          setCmdOutput(`✅ ${cmd} sent.`);
+        }
       } else {
         setCmdError(result?.error || "Command failed");
       }

@@ -108,13 +108,6 @@
     .miniapp-content { flex: 1; min-height: 0; overflow: clip; position: relative; display: flex; flex-direction: column; }
     .miniapp-content #app { flex: 1; min-height: 0; height: auto; }
 
-    /* ── BOT MENU FAB (Floating Action Button) ── */
-    .bot-fab { position: fixed; bottom: 90px; right: 16px; z-index: 9000; width: 48px; height: 48px; border-radius: 50%; border: none; background: linear-gradient(135deg, #4cc9f0, #3a9ec7); color: #fff; font-size: 22px; cursor: pointer; box-shadow: 0 4px 16px rgba(76, 201, 240, 0.35), 0 2px 4px rgba(0,0,0,0.3); transition: transform 0.2s, box-shadow 0.2s, background 0.2s; display: flex; align-items: center; justify-content: center; }
-    .bot-fab:hover { transform: scale(1.08); box-shadow: 0 6px 24px rgba(76, 201, 240, 0.45), 0 3px 8px rgba(0,0,0,0.3); }
-    .bot-fab:active { transform: scale(0.95); }
-    .bot-fab.panel-open { background: #ef5350; transform: rotate(45deg); }
-    .bot-fab.panel-open:hover { background: #f44336; }
-
     /* ── BOT MENU PANEL (slide-up, multi-layer) ── */
     .bot-panel { position: fixed; bottom: 0; left: 0; right: 0; z-index: 8999; background: #0e1621; border-top: 1px solid #1b2838; border-radius: 16px 16px 0 0; box-shadow: 0 -8px 32px rgba(0,0,0,0.5); max-height: 65vh; display: flex; flex-direction: column; transform: translateY(100%); opacity: 0; pointer-events: none; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s; }
     .bot-panel.open { transform: translateY(0); opacity: 1; pointer-events: auto; }
@@ -1336,9 +1329,6 @@
     </div>
   </div>
 
-  <!-- Bot Menu FAB -->
-  <button class="bot-fab" id="bot-fab" title="Bot Menu">🤖</button>
-
   <!-- Bot Menu Panel (multi-layer navigation) -->
   <div class="bot-panel" id="bot-panel">
     <div class="bot-panel-header">
@@ -1902,21 +1892,17 @@
     function openPanel() {
       panelOpen = true;
       panel.classList.add('open');
-      fab.classList.add('panel-open');
-      fab.textContent = '✕';
       renderScreen('home');
     }
 
     function closePanel() {
       panelOpen = false;
       panel.classList.remove('open');
-      fab.classList.remove('panel-open');
-      fab.textContent = '🤖';
       navStack.length = 0;
     }
 
     // ── Event listeners ──
-    fab.addEventListener('click', () => panelOpen ? closePanel() : openPanel());
+    fab?.addEventListener('click', () => panelOpen ? closePanel() : openPanel());
     backBtn.addEventListener('click', goBack);
     homeBtn.addEventListener('click', goHome);
     closeBtn.addEventListener('click', closePanel);
