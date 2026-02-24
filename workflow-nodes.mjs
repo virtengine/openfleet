@@ -25,76 +25,6 @@ import { randomUUID } from "node:crypto";
 
 const TAG = "[workflow-nodes]";
 
-function isBosunStateComment(text) {
-  const raw = String(text || "").toLowerCase();
-  return raw.includes("bosun-state") || raw.includes("codex:ignore");
-}
-
-function normalizeTaskComments(task, maxComments = 6) {
-  if (!task) return [];
-  const raw = Array.isArray(task.comments)
-    ? task.comments
-    : Array.isArray(task.meta?.comments)
-      ? task.meta.comments
-      : [];
-  const normalized = raw
-    .map((comment) => {
-      const body = typeof comment === "string"
-        ? comment
-        : comment.body || comment.text || comment.content || "";
-      const trimmed = String(body || "").trim();
-      if (!trimmed || isBosunStateComment(trimmed)) return null;
-      return {
-        author: comment?.author || comment?.user || null,
-        createdAt: comment?.createdAt || comment?.created_at || null,
-        body: trimmed.replace(/\s+/g, " ").slice(0, 600),
-      };
-    })
-    .filter(Boolean);
-  if (normalized.length <= maxComments) return normalized;
-  return normalized.slice(-maxComments);
-}
-
-function normalizeTaskAttachments(task, maxAttachments = 10) {
-  if (!task) return [];
-  const combined = []
-    .concat(Array.isArray(task.attachments) ? task.attachments : [])
-    .concat(Array.isArray(task.meta?.attachments) ? task.meta.attachments : []);
-  if (combined.length <= maxAttachments) return combined;
-  return combined.slice(0, maxAttachments);
-}
-
-function formatAttachmentLine(att) {
-  const name = att.name || att.filename || att.title || "attachment";
-  const kind = att.kind ? ` (${att.kind})` : "";
-  const location = att.url || att.filePath || att.path || "";
-  const suffix = location ? ` — ${location}` : "";
-  return `- ${name}${kind}${suffix}`;
-}
-
-function formatCommentLine(comment) {
-  const author = comment.author ? `@${comment.author}` : "comment";
-  const when = comment.createdAt ? ` (${comment.createdAt})` : "";
-  return `- ${author}${when}: ${comment.body}`;
-}
-
-function buildTaskContextBlock(task) {
-  if (!task) return "";
-  const comments = normalizeTaskComments(task);
-  const attachments = normalizeTaskAttachments(task);
-  if (!comments.length && !attachments.length) return "";
-  const lines = ["## Task Context"];
-  if (comments.length) {
-    lines.push("### Comments");
-    for (const comment of comments) lines.push(formatCommentLine(comment));
-  }
-  if (attachments.length) {
-    lines.push("### Attachments");
-    for (const attachment of attachments) lines.push(formatAttachmentLine(attachment));
-  }
-  return lines.join("\n");
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 //  TRIGGERS — Events that initiate a workflow
 // ═══════════════════════════════════════════════════════════════════════════
@@ -418,7 +348,6 @@ registerNodeType("action.run_agent", {
       cwd: { type: "string", description: "Working directory for the agent" },
       timeoutMs: { type: "number", default: 3600000, description: "Agent timeout in ms" },
       agentProfile: { type: "string", description: "Agent profile name (e.g., 'frontend', 'backend')" },
-      includeTaskContext: { type: "boolean", default: true, description: "Append task comments/attachments if available" },
     },
     required: ["prompt"],
   },
@@ -427,24 +356,13 @@ registerNodeType("action.run_agent", {
     const sdk = node.config?.sdk || "auto";
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const timeoutMs = node.config?.timeoutMs || 3600000;
-    const includeTaskContext = node.config?.includeTaskContext !== false;
-    let finalPrompt = prompt;
-    if (includeTaskContext) {
-      const explicitContext =
-        ctx.data?.taskContext ||
-        ctx.data?.taskContextBlock ||
-        null;
-      const task = ctx.data?.task || ctx.data?.taskDetail || ctx.data?.taskInfo || null;
-      const contextBlock = explicitContext || buildTaskContextBlock(task);
-      if (contextBlock) finalPrompt = `${prompt}\n\n${contextBlock}`;
-    }
 
     ctx.log(node.id, `Running agent (${sdk}) in ${cwd}`);
 
     // Use the engine's service injection to call agent pool
     const agentPool = engine.services?.agentPool;
     if (agentPool?.launchEphemeralThread) {
-      const result = await agentPool.launchEphemeralThread(finalPrompt, cwd, timeoutMs);
+      const result = await agentPool.launchEphemeralThread(prompt, cwd, timeoutMs);
       ctx.log(node.id, `Agent completed: success=${result.success}`);
 
       // Propagate session/thread IDs for downstream chaining
@@ -468,7 +386,7 @@ registerNodeType("action.run_agent", {
     ctx.log(node.id, "Agent pool not available, using shell fallback");
     try {
       const output = execSync(
-        `node -e "import('./agent-pool.mjs').then(m => m.launchEphemeralThread(process.argv[1], process.argv[2], ${timeoutMs}).then(r => console.log(JSON.stringify(r))))" "${finalPrompt.replace(/"/g, '\\"')}" "${cwd}"`,
+        `node -e "import('./agent-pool.mjs').then(m => m.launchEphemeralThread(process.argv[1], process.argv[2], ${timeoutMs}).then(r => console.log(JSON.stringify(r))))" "${prompt.replace(/"/g, '\\"')}" "${cwd}"`,
         { cwd: resolve(dirname(new URL(import.meta.url).pathname)), timeout: timeoutMs + 30000, encoding: "utf8" }
       );
       return JSON.parse(output);

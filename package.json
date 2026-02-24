@@ -182,7 +182,6 @@
     "task-assessment.mjs",
     "task-complexity.mjs",
     "task-claims.mjs",
-    "task-attachments.mjs",
     "task-executor.mjs",
     "task-store.mjs",
     "telegram-bot.mjs",

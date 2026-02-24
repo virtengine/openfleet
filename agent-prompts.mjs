@@ -240,7 +240,6 @@ You are the always-on reliability guardian for bosun in devmode.
 
 ## Description
 {{TASK_DESCRIPTION}}
-{{TASK_CONTEXT}}
 
 ## Environment
 - Working Directory: {{WORKTREE_PATH}}
@@ -327,7 +326,6 @@ Please:
 
 Original task description:
 {{TASK_DESCRIPTION}}
-{{TASK_CONTEXT}}
 `,
   taskExecutorContinueHasCommits: `# {{TASK_ID}} — CONTINUE (Verify and Push)
 
@@ -338,7 +336,6 @@ You already made commits.
 2. If passing, push: git push origin HEAD
 3. If failing, fix issues, commit, and push.
 4. Task is not complete until push succeeds.
-{{TASK_CONTEXT}}
 `,
   taskExecutorContinueHasEdits: `# {{TASK_ID}} — CONTINUE (Commit and Push)
 
@@ -349,7 +346,6 @@ You made file edits but no commit yet.
 2. Run relevant tests.
 3. Commit with conventional format.
 4. Push: git push origin HEAD
-{{TASK_CONTEXT}}
 `,
   taskExecutorContinueNoProgress: `# CONTINUE - Resume Implementation
 
@@ -364,7 +360,6 @@ Execute now:
 
 Task: {{TASK_TITLE}}
 Description: {{TASK_DESCRIPTION}}
-{{TASK_CONTEXT}}
 `,
   reviewer: `You are a senior code reviewer for a production software project.
 
@@ -390,7 +385,6 @@ Review the following PR diff for CRITICAL issues ONLY.
 
 ## Task Description
 {{TASK_DESCRIPTION}}
-{{TASK_CONTEXT}}
 
 ## Response Format
 Respond with JSON only:

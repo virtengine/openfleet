@@ -58,45 +58,6 @@ const MODE_PREFIXES = {
   plan: "[MODE: plan] Create a detailed plan for the following request but do NOT execute it. Outline the steps, files involved, and approach without making any changes.\n\n",
 };
 
-function normalizeAttachments(input) {
-  if (!Array.isArray(input)) return [];
-  return input.filter(Boolean);
-}
-
-function formatBytes(bytes) {
-  if (bytes == null || Number.isNaN(Number(bytes))) return "";
-  const value = Number(bytes);
-  if (value <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const idx = Math.min(
-    units.length - 1,
-    Math.floor(Math.log(value) / Math.log(1024)),
-  );
-  const size = value / Math.pow(1024, idx);
-  return `${size < 10 ? size.toFixed(1) : Math.round(size)} ${units[idx]}`;
-}
-
-function formatAttachmentLine(attachment) {
-  const name = attachment.name || attachment.filename || attachment.title || "attachment";
-  const kind = attachment.kind ? ` (${attachment.kind})` : "";
-  const sizeText = attachment.size ? `, ${formatBytes(attachment.size)}` : "";
-  const location =
-    attachment.filePath ||
-    attachment.path ||
-    attachment.url ||
-    attachment.uri ||
-    "";
-  const suffix = location ? ` — ${location}` : "";
-  return `- ${name}${kind}${sizeText}${suffix}`;
-}
-
-function appendAttachmentsToPrompt(message, attachments) {
-  const list = normalizeAttachments(attachments);
-  if (!list.length) return { message, appended: false };
-  const lines = ["", "Attachments:", ...list.map(formatAttachmentLine)];
-  return { message: `${message}${lines.join("\n")}`, appended: true };
-}
-
 const ADAPTERS = {
   "codex-sdk": {
     name: "codex-sdk",
@@ -435,22 +396,16 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     "primary";
   const timeoutMs = options.timeoutMs || PRIMARY_EXEC_TIMEOUT_MS;
   const tracker = getSessionTracker();
-  const attachments = normalizeAttachments(options.attachments);
-  const attachmentsAppended = options.attachmentsAppended === true;
 
   // Apply mode prefix (options.mode overrides the global setting for this call)
   const effectiveMode = options.mode || agentMode;
   const modePrefix = MODE_PREFIXES[effectiveMode] || "";
-  const messageWithAttachments = attachments.length && !attachmentsAppended
-    ? appendAttachmentsToPrompt(userMessage, attachments).message
-    : userMessage;
-  const framedMessage = modePrefix ? modePrefix + messageWithAttachments : messageWithAttachments;
+  const framedMessage = modePrefix ? modePrefix + userMessage : userMessage;
 
   // Record user message (original, without mode prefix)
   tracker.recordEvent(sessionId, {
     role: "user",
     content: userMessage,
-    attachments: attachments.length ? attachments : undefined,
     timestamp: new Date().toISOString(),
     _sessionType: sessionType,
     _mode: effectiveMode,

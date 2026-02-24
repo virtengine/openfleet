@@ -32,12 +32,10 @@ const DEFAULT_MAX_CONCURRENT = 2;
  * Build the structured review prompt.
  * @param {string} diff - PR diff content
  * @param {string} taskDescription - Task description for context
- * @param {string} [taskContext] - Additional task context (comments/attachments)
  * @param {string} [template]
  * @returns {string}
  */
-function buildReviewPrompt(diff, taskDescription, taskContext, template) {
-  const taskContextBlock = taskContext ? `\n${taskContext}` : "";
+function buildReviewPrompt(diff, taskDescription, template) {
   const fallback = `You are a senior code reviewer for this software project.
 
 Review the following PR diff for CRITICAL issues ONLY:
@@ -63,7 +61,6 @@ ${diff}
 
 ## Task Description:
 ${taskDescription || "(no description provided)"}
-${taskContextBlock}
 
 ## Response Format:
 Respond with ONLY a JSON object (no markdown, no explanation):
@@ -88,7 +85,6 @@ If no critical issues found, return:
     {
       DIFF: diff,
       TASK_DESCRIPTION: taskDescription || "(no description provided)",
-      TASK_CONTEXT: taskContextBlock,
     },
     fallback,
   );
@@ -246,7 +242,7 @@ export class ReviewAgent {
   /** @type {Map<string, Promise>} */
   #activeReviews = new Map();
 
-  /** @type {Array<{ id: string, title: string, branchName: string, prUrl: string, description: string, taskContext?: string }>} */
+  /** @type {Array<{ id: string, title: string, branchName: string, prUrl: string, description: string }>} */
   #queue = [];
 
   /** @type {Set<string>} - task IDs already reviewed or in-flight */
@@ -310,7 +306,7 @@ export class ReviewAgent {
   /**
    * Queue a task for review.
    * Deduplicates by task ID — same task won't be reviewed twice.
-   * @param {{ id: string, title: string, branchName: string, prUrl: string, description: string, taskContext?: string }} task
+   * @param {{ id: string, title: string, branchName: string, prUrl: string, description: string }} task
    */
   async queueReview(task) {
     if (!task?.id) {
@@ -428,7 +424,7 @@ export class ReviewAgent {
 
   /**
    * Run a single review.
-   * @param {{ id: string, title: string, branchName: string, prUrl: string, description: string, taskContext?: string }} task
+   * @param {{ id: string, title: string, branchName: string, prUrl: string, description: string }} task
    */
   async #runReview(task) {
     console.log(`${TAG} starting review for "${task.title}" (${task.id})`);
@@ -464,7 +460,6 @@ export class ReviewAgent {
     const prompt = buildReviewPrompt(
       diff,
       task.description,
-      task.taskContext || "",
       this.#promptTemplate,
     );
 
