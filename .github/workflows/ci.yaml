@@ -29,5 +29,8 @@ jobs:
       - name: Prepublish check (files array + import validation)
         run: node prepublish-check.mjs
 
+      - name: Run build
+        run: npm run build
+
       - name: Run tests
         run: npm test
