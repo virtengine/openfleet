@@ -90,10 +90,10 @@ body {
   left: 0;
   width: 0;
   height: 3px;
-  background: var(--gradient-primary);
+  background: var(--text-accent);
   z-index: 1100;
   transition: width 0.1s linear;
-  box-shadow: 0 0 8px rgba(96, 204, 93, 0.5);
+  box-shadow: none;
 }
 
 a {
@@ -107,7 +107,7 @@ a:hover {
 }
 
 ::selection {
-  background: rgba(96, 204, 93, 0.25);
+  background: rgba(126, 164, 255, 0.3);
   color: #fff;
 }
 
@@ -120,14 +120,18 @@ img {
 .grid-bg {
   position: fixed;
   inset: 0;
-  background-image:
-    linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+  display: none;
+  background-image: none;
   background-size: 60px 60px;
   pointer-events: none;
   z-index: 0;
-  mask-image: radial-gradient(ellipse at 50% 30%, black 20%, transparent 70%);
-  -webkit-mask-image: radial-gradient(ellipse at 50% 30%, black 20%, transparent 70%);
+  mask-image: none;
+  -webkit-mask-image: none;
+}
+
+.hero__particles,
+.hero__glow {
+  display: none;
 }
 
 /* ── Typography ────────────────────────────────────────────────────────── */
@@ -195,15 +199,16 @@ section {
   z-index: 1000;
   padding: 1.5rem 0;
   transition: all 0.3s ease;
+  background: transparent;
   backdrop-filter: blur(0px);
   -webkit-backdrop-filter: blur(0px);
 }
 
 .nav--scrolled {
-  background: rgba(6, 6, 11, 0.85);
-  backdrop-filter: blur(20px) saturate(1.5);
-  -webkit-backdrop-filter: blur(20px) saturate(1.5);
-  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(10, 11, 18, 0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--border-default);
   padding: 0.9rem 0;
 }
 
@@ -263,8 +268,8 @@ section {
   left: 0;
   width: 0;
   height: 2px;
-  background: var(--gradient-primary);
-  transition: width 0.3s var(--ease-out);
+  background: var(--text-accent);
+  transition: width 0.2s ease;
   border-radius: 1px;
 }
 
@@ -285,18 +290,18 @@ section {
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 1.25rem;
-  background: var(--gradient-primary);
-  color: #000 !important;
+  background: var(--text-accent);
+  color: #0a0b12 !important;
   font-weight: 600;
   font-size: 0.9rem;
   border-radius: 8px;
-  transition: all 0.3s var(--ease-spring);
+  transition: all 0.2s ease;
 }
 
 .nav__cta:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 20px rgba(96, 204, 93, 0.3);
-  color: #000 !important;
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(10, 11, 18, 0.45);
+  color: #0a0b12 !important;
 }
 
 /* Mobile nav toggle */
