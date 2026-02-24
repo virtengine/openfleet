@@ -98,6 +98,7 @@
     "test:watch": "vitest",
     "preinstall": "node -e \"try{var r=require('child_process').execSync('npm ls -g codex-monitor --json --depth=0',{encoding:'utf8',stdio:['pipe','pipe','pipe']});var d=JSON.parse(r).dependencies;if(d&&d['codex-monitor']){console.log('\\n  Removing old codex-monitor package...');require('child_process').execSync('npm uninstall -g codex-monitor',{stdio:'inherit',timeout:30000});console.log('  \\u2705 Migrated to bosun. codex-monitor aliases still work.\\n')}}catch(e){}\"",
     "postinstall": "node postinstall.mjs",
+    "prepare": "node vendor-sync.mjs",
     "sentinel": "node telegram-sentinel.mjs",
     "sentinel:stop": "node -e \"import('./telegram-sentinel.mjs').then(m => m.stopSentinel())\"",
     "sentinel:status": "node -e \"import('./telegram-sentinel.mjs').then(m => console.log(JSON.stringify(m.getSentinelStatus(), null, 2)))\"",
@@ -108,7 +109,8 @@
     "publish:minor": "node publish.mjs --bump minor",
     "publish:major": "node publish.mjs --bump major",
     "publish:minor:dry": "node publish.mjs --bump minor --dry-run",
-    "publish:major:dry": "node publish.mjs --bump major --dry-run"
+    "publish:major:dry": "node publish.mjs --bump major --dry-run",
+    "vendor:sync": "node vendor-sync.mjs"
   },
   "files": [
     ".env.example",
@@ -212,7 +214,9 @@
     "whatsapp-channel.mjs",
     "container-runner.mjs",
     "daemon-restart-policy.mjs",
-    "publish.mjs"
+    "publish.mjs",
+    "vendor-sync.mjs",
+    "ui/vendor/"
   ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",

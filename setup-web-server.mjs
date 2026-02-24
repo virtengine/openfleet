@@ -25,21 +25,47 @@ import { ensureCodexConfig, ensureTrustedProjects } from "./codex-config.mjs";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Vendor file serving (hoisting-safe) ───────────────────────────────────────────
-// Use Node's own module-resolution (createRequire) so we correctly locate
-// packages even when npm hoists them in a global install.
+// Resolution order:
+//   1. ui/vendor/ bundled files — shipped in the npm tarball, zero CDN dependency
+//   2. Node module resolution via createRequire — handles global install hoisting
+//   3. CDN redirect — last resort
 const _require = createRequire(import.meta.url);
+const BUNDLED_VENDOR_DIR = resolve(__dirname, "ui", "vendor");
 
 const VENDOR_FILES = {
-  "preact.js":           { specifier: "preact/dist/preact.module.js",           cdn: "https://esm.sh/preact@10.25.4" },
-  "preact-hooks.js":     { specifier: "preact/hooks/dist/hooks.module.js",       cdn: "https://esm.sh/preact@10.25.4/hooks" },
-  "preact-compat.js":    { specifier: "preact/compat/dist/compat.module.js",     cdn: "https://esm.sh/preact@10.25.4/compat" },
-  "htm.js":              { specifier: "htm/dist/htm.module.js",                  cdn: "https://esm.sh/htm@3.1.1" },
-  "preact-signals.js":   { specifier: "@preact/signals/dist/signals.module.js", cdn: "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4" },
-  "es-module-shims.js":  { specifier: "es-module-shims/dist/es-module-shims.js", cdn: "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js" },
+  "preact.js":                { specifier: "preact/dist/preact.module.js",                  cdn: "https://esm.sh/preact@10.25.4" },
+  "preact-hooks.js":          { specifier: "preact/hooks/dist/hooks.module.js",              cdn: "https://esm.sh/preact@10.25.4/hooks" },
+  "preact-compat.js":         { specifier: "preact/compat/dist/compat.module.js",            cdn: "https://esm.sh/preact@10.25.4/compat" },
+  "htm.js":                   { specifier: "htm/dist/htm.module.js",                         cdn: "https://esm.sh/htm@3.1.1" },
+  "preact-signals-core.js":   { specifier: "@preact/signals-core/dist/signals-core.module.js", cdn: "https://cdn.jsdelivr.net/npm/@preact/signals-core@1.8.0/dist/signals-core.module.js" },
+  "preact-signals.js":        { specifier: "@preact/signals/dist/signals.module.js",         cdn: "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4" },
+  "es-module-shims.js":       { specifier: "es-module-shims/dist/es-module-shims.js",        cdn: "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js" },
 };
 
 function resolveVendorPath(specifier) {
-  try { return _require.resolve(specifier); } catch { return null; }
+  // Direct resolution first (works when package exports allow the sub-path)
+  try { return _require.resolve(specifier); } catch (e) {
+    if (e.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") return null;
+  }
+  // ERR_PACKAGE_PATH_NOT_EXPORTED: walk up from the package main entry to find the file
+  const isScoped = specifier.startsWith("@");
+  const firstSlash = specifier.indexOf("/");
+  const secondSlash = isScoped ? specifier.indexOf("/", firstSlash + 1) : firstSlash;
+  if (secondSlash === -1) return null;
+  const pkgName = specifier.slice(0, secondSlash);
+  const filePath = specifier.slice(secondSlash + 1);
+  try {
+    const pkgMain = _require.resolve(pkgName);
+    let dir = dirname(pkgMain);
+    while (dir !== dirname(dir)) {
+      if (existsSync(resolve(dir, "package.json"))) {
+        const candidate = resolve(dir, filePath);
+        return existsSync(candidate) ? candidate : null;
+      }
+      dir = dirname(dir);
+    }
+  } catch { /* not installed */ }
+  return null;
 }
 
 /** Returns { ok, files: [{name, resolved, available}] } */
@@ -755,7 +781,7 @@ async function handleRequest(req, res) {
   }
 
   // Vendor library files for the setup UI
-  // Uses createRequire-based resolution to handle npm hoisting in global installs.
+  // Priority: bundled ui/vendor/ → node_modules resolution → CDN redirect
   if (url.pathname.startsWith("/vendor/")) {
     const name = url.pathname.replace(/^\/vendor\//, "");
     const entry = VENDOR_FILES[name];
@@ -764,20 +790,32 @@ async function handleRequest(req, res) {
       res.end("Not Found");
       return;
     }
+    const vendorHeaders = {
+      "Content-Type": "application/javascript; charset=utf-8",
+      "Cache-Control": "public, max-age=86400",
+      "Access-Control-Allow-Origin": "*",
+    };
+    // ── 1. Bundled static file ─────────────────────────────────────────────
+    const bundledPath = resolve(BUNDLED_VENDOR_DIR, name);
+    if (existsSync(bundledPath)) {
+      try {
+        const data = readFileSync(bundledPath);
+        res.writeHead(200, { ...vendorHeaders, "X-Bosun-Vendor": "bundled" });
+        res.end(data);
+        return;
+      } catch { /* fall through */ }
+    }
+    // ── 2. node_modules resolution ────────────────────────────────────────
     const localPath = resolveVendorPath(entry.specifier);
     if (localPath && existsSync(localPath)) {
       try {
         const data = readFileSync(localPath);
-        res.writeHead(200, {
-          "Content-Type": "application/javascript; charset=utf-8",
-          "Cache-Control": "public, max-age=86400",
-          "Access-Control-Allow-Origin": "*",
-        });
+        res.writeHead(200, { ...vendorHeaders, "X-Bosun-Vendor": "node_modules" });
         res.end(data);
         return;
       } catch { /* fall through to CDN */ }
     }
-    // CDN fallback
+    // ── 3. CDN fallback ───────────────────────────────────────────────────
     res.writeHead(302, { Location: entry.cdn, "Cache-Control": "no-store" });
     res.end();
     return;

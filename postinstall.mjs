@@ -396,6 +396,23 @@ async function main() {
   } catch {
     // Non-blocking; hooks can be installed via `npm run hooks:install`
   }
+
+  // Sync vendor files into ui/vendor/ so the UI works fully offline.
+  // Non-blocking — a missing vendor file just falls back to node_modules or CDN.
+  try {
+    const { syncVendorFiles } = await import("./vendor-sync.mjs");
+    const { ok, results } = await syncVendorFiles({ silent: true });
+    const synced = results.filter((r) => r.source).length;
+    if (ok) {
+      console.log(`  ✅ Vendor files bundled into ui/vendor/ (${synced}/${results.length} files)`);
+    } else {
+      const missing = results.filter((r) => !r.source).map((r) => r.name);
+      console.warn(`  ⚠️  Some vendor files could not be bundled: ${missing.join(", ")}`);
+      console.warn("     The UI server will fall back to CDN for those files.");
+    }
+  } catch (err) {
+    console.warn(`  ⚠️  vendor-sync skipped: ${err.message}`);
+  }
 }
 
 main().catch((err) => {

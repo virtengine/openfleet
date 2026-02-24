@@ -106,33 +106,59 @@ const uiRoot = resolve(__dirname, "ui");
 // ── Vendor module map ─────────────────────────────────────────────────────────
 // Served at /vendor/<name>.js — no auth required (public browser libraries).
 //
-// We use createRequire rooted at *this file* so Node's own module-resolution
-// algorithm locates each package, regardless of whether npm hoisted it to a
-// parent node_modules (common in global installs: npm install -g bosun).
-// Falls back to CDN redirect when the package is not installed.
+// Resolution order (most reliable → least reliable):
+//   1. ui/vendor/<name>  — bundled static files shipped inside the npm package
+//   2. node_modules      — createRequire resolution (handles npm hoisting)
+//   3. CDN redirect      — last resort for airgap / first-run edge cases
 const _require = createRequire(import.meta.url);
+const BUNDLED_VENDOR_DIR = resolve(__dirname, "ui", "vendor");
 
 function resolveVendorPath(specifier) {
+  // Direct resolution first (works when package exports allow the sub-path)
   try {
     return _require.resolve(specifier);
-  } catch {
-    return null;
+  } catch (e) {
+    if (e.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") return null;
   }
+  // ERR_PACKAGE_PATH_NOT_EXPORTED: resolve package root via main entry then locate file
+  const isScoped = specifier.startsWith("@");
+  const firstSlash = specifier.indexOf("/");
+  const secondSlash = isScoped ? specifier.indexOf("/", firstSlash + 1) : firstSlash;
+  if (secondSlash === -1) return null;
+  const pkgName = specifier.slice(0, secondSlash);
+  const filePath = specifier.slice(secondSlash + 1);
+  try {
+    const pkgMain = _require.resolve(pkgName);
+    let dir = dirname(pkgMain);
+    while (dir !== dirname(dir)) {
+      if (existsSync(resolve(dir, "package.json"))) {
+        const candidate = resolve(dir, filePath);
+        return existsSync(candidate) ? candidate : null;
+      }
+      dir = dirname(dir);
+    }
+  } catch { /* not installed */ }
+  return null;
 }
 
 const VENDOR_FILES = {
-  "preact.js":           { specifier: "preact/dist/preact.module.js",           cdn: "https://esm.sh/preact@10.25.4" },
-  "preact-hooks.js":     { specifier: "preact/hooks/dist/hooks.module.js",       cdn: "https://esm.sh/preact@10.25.4/hooks" },
-  "preact-compat.js":    { specifier: "preact/compat/dist/compat.module.js",     cdn: "https://esm.sh/preact@10.25.4/compat" },
-  "htm.js":              { specifier: "htm/dist/htm.module.js",                  cdn: "https://esm.sh/htm@3.1.1" },
-  "preact-signals.js":   { specifier: "@preact/signals/dist/signals.module.js", cdn: "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4" },
-  "es-module-shims.js":  { specifier: "es-module-shims/dist/es-module-shims.js", cdn: "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js" },
+  "preact.js":                { specifier: "preact/dist/preact.module.js",                  cdn: "https://esm.sh/preact@10.25.4" },
+  "preact-hooks.js":          { specifier: "preact/hooks/dist/hooks.module.js",              cdn: "https://esm.sh/preact@10.25.4/hooks" },
+  "preact-compat.js":         { specifier: "preact/compat/dist/compat.module.js",            cdn: "https://esm.sh/preact@10.25.4/compat" },
+  "htm.js":                   { specifier: "htm/dist/htm.module.js",                         cdn: "https://esm.sh/htm@3.1.1" },
+  "preact-signals-core.js":   { specifier: "@preact/signals-core/dist/signals-core.module.js", cdn: "https://cdn.jsdelivr.net/npm/@preact/signals-core@1.8.0/dist/signals-core.module.js" },
+  "preact-signals.js":        { specifier: "@preact/signals/dist/signals.module.js",         cdn: "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4" },
+  "es-module-shims.js":       { specifier: "es-module-shims/dist/es-module-shims.js",        cdn: "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js" },
 };
 
 /**
- * Serve a front-end vendor file from node_modules.
+ * Serve a front-end vendor file.
  * No authentication required — these are public browser libraries.
- * If the local file is missing (first install not run yet), redirects to CDN.
+ *
+ * Priority:
+ *   1. ui/vendor/ bundled file (ships in the npm tarball — fully offline)
+ *   2. node_modules via createRequire (global install, hoisted packages)
+ *   3. 302 → CDN (last resort; first-run before vendor-sync has run)
  */
 async function handleVendor(req, res, url) {
   const name = url.pathname.replace(/^\/vendor\//, "");
@@ -141,25 +167,41 @@ async function handleVendor(req, res, url) {
     textResponse(res, 404, "Not Found");
     return;
   }
+
+  const headers = {
+    "Content-Type": "application/javascript; charset=utf-8",
+    "Cache-Control": "max-age=86400, stale-while-revalidate=604800",
+    "Access-Control-Allow-Origin": "*",
+  };
+
+  // ── 1. Bundled static file ──────────────────────────────────────────────────
+  const bundledPath = resolve(BUNDLED_VENDOR_DIR, name);
+  if (existsSync(bundledPath)) {
+    try {
+      const data = await readFile(bundledPath);
+      res.writeHead(200, { ...headers, "X-Bosun-Vendor": "bundled" });
+      res.end(data);
+      return;
+    } catch { /* fall through */ }
+  }
+
+  // ── 2. node_modules resolution ──────────────────────────────────────────────
   const localPath = resolveVendorPath(entry.specifier);
   if (localPath && existsSync(localPath)) {
     try {
       const data = await readFile(localPath);
-      res.writeHead(200, {
-        "Content-Type": "application/javascript; charset=utf-8",
-        "Cache-Control": "max-age=86400, stale-while-revalidate=604800",
-        "Access-Control-Allow-Origin": "*",
-        "X-Bosun-Vendor": "local",
-      });
+      res.writeHead(200, { ...headers, "X-Bosun-Vendor": "node_modules" });
       res.end(data);
+      return;
     } catch (err) {
       textResponse(res, 500, `Vendor error: ${err.message}`);
+      return;
     }
-  } else {
-    // Package not installed yet (e.g. first-run before npm install) — redirect to CDN
-    res.writeHead(302, { Location: entry.cdn, "Cache-Control": "no-store" });
-    res.end();
   }
+
+  // ── 3. CDN fallback ─────────────────────────────────────────────────────────
+  res.writeHead(302, { Location: entry.cdn, "Cache-Control": "no-store" });
+  res.end();
 }
 const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const logsDir = resolve(__dirname, "logs");

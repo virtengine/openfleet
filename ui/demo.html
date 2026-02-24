@@ -6,18 +6,66 @@
   <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; img-src * data: blob:; connect-src *;" />
   <title>Bosun — AI Agent Orchestration</title>
 
-  <!-- Telegram WebApp SDK is fully mocked below — no real SDK needed -->
+  <!-- es-module-shims: load from bundled vendor first, CDN as fallback -->
+  <script>
+    (function() {
+      var shim = document.createElement("script");
+      shim.async = true;
+      shim.src = "./vendor/es-module-shims.js";
+      shim.onerror = function() {
+        var fb = document.createElement("script");
+        fb.async = true;
+        fb.src = "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js";
+        fb.onerror = function() {
+          var fb2 = document.createElement("script");
+          fb2.async = true;
+          fb2.src = "https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.min.js";
+          document.head.appendChild(fb2);
+        };
+        document.head.appendChild(fb);
+      };
+      document.head.appendChild(shim);
+    })();
+  </script>
 
-  <!-- Import map — uses CDN so demo.html works both from GitHub Pages
-       (static hosting, no /vendor/ server) and from a live bosun instance. -->
+  <!-- Import map — primary: bundled vendor files (committed to git, served from
+       GitHub Pages at ./vendor/ and from bosun server at /vendor/).
+       The importmap-fallback JSON block below is used by the CDN fallback script
+       if vendor files fail to load. -->
   <script type="importmap">
   {
     "imports": {
-      "preact":          "https://esm.sh/preact@10.25.4",
-      "preact/hooks":    "https://esm.sh/preact@10.25.4/hooks",
-      "preact/compat":   "https://esm.sh/preact@10.25.4/compat",
-      "htm":             "https://esm.sh/htm@3.1.1",
-      "@preact/signals": "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4"
+      "preact":                  "./vendor/preact.js",
+      "preact/hooks":            "./vendor/preact-hooks.js",
+      "preact/compat":           "./vendor/preact-compat.js",
+      "htm":                     "./vendor/htm.js",
+      "@preact/signals-core":    "./vendor/preact-signals-core.js",
+      "@preact/signals":         "./vendor/preact-signals.js"
+    }
+  }
+  </script>
+  <script type="importmap-shim">
+  {
+    "imports": {
+      "preact":                  "./vendor/preact.js",
+      "preact/hooks":            "./vendor/preact-hooks.js",
+      "preact/compat":           "./vendor/preact-compat.js",
+      "htm":                     "./vendor/htm.js",
+      "@preact/signals-core":    "./vendor/preact-signals-core.js",
+      "@preact/signals":         "./vendor/preact-signals.js"
+    }
+  }
+  </script>
+  <!-- CDN fallback — used if the bundled vendor files are unavailable -->
+  <script type="application/json" id="importmap-fallback">
+  {
+    "imports": {
+      "preact":                  "https://esm.sh/preact@10.25.4",
+      "preact/hooks":            "https://esm.sh/preact@10.25.4/hooks",
+      "preact/compat":           "https://esm.sh/preact@10.25.4/compat",
+      "htm":                     "https://esm.sh/htm@3.1.1",
+      "@preact/signals-core":    "https://cdn.jsdelivr.net/npm/@preact/signals-core@1.8.0/+esm",
+      "@preact/signals":         "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4"
     }
   }
   </script>
