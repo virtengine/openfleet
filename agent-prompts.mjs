@@ -745,17 +745,38 @@ export function getDefaultPromptTemplate(key) {
   return DEFAULT_PROMPTS[key] || "";
 }
 
-export function renderPromptTemplate(template, values = {}) {
+export function renderPromptTemplate(template, values = {}, rootDir) {
   if (typeof template !== "string") return "";
   const normalized = {};
   for (const [k, v] of Object.entries(values || {})) {
     normalized[String(k).trim().toUpperCase()] = normalizeTemplateValue(v);
   }
 
-  return template.replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (full, key) => {
+  // Resolve namespaced library refs: {{prompt:name}}, {{agent:name}}, {{skill:name}}
+  let result = template;
+  if (rootDir && _libraryResolver) {
+    try {
+      result = _libraryResolver(result, rootDir, {});
+    } catch {
+      // library resolver failed — skip namespaced refs
+    }
+  }
+
+  return result.replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (full, key) => {
     const hit = normalized[String(key).toUpperCase()];
     return hit == null ? "" : hit;
   });
+}
+
+/**
+ * Register the library reference resolver. Called by library-manager or at
+ * startup to enable {{prompt:name}}, {{agent:name}}, {{skill:name}} syntax.
+ *
+ * @param {(template: string, rootDir: string, vars: Object) => string} resolver
+ */
+let _libraryResolver = null;
+export function setLibraryResolver(resolver) {
+  _libraryResolver = typeof resolver === "function" ? resolver : null;
 }
 
 export function resolvePromptTemplate(template, values, fallback) {

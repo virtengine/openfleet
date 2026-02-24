@@ -761,6 +761,31 @@
       'ses-008': { files: [] },
     };
 
+    /* ── Library Seed Data ──────────────────────────────── */
+    const SEED_LIBRARY = [
+      { id: "orchestrator", type: "prompt", name: "Orchestrator", description: "Primary task execution prompt for autonomous task agents.", filename: "orchestrator.md", tags: ["task", "execution", "core"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 30*24*hr).toISOString(), updatedAt: new Date(now - 2*24*hr).toISOString() },
+      { id: "task-planner", type: "prompt", name: "Task Planner", description: "Backlog planning prompt used by task planner runs.", filename: "task-planner.md", tags: ["planning", "backlog", "triage"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 28*24*hr).toISOString(), updatedAt: new Date(now - 5*24*hr).toISOString() },
+      { id: "reviewer", type: "prompt", name: "Reviewer", description: "Prompt used by automated review agent.", filename: "reviewer.md", tags: ["review", "pr", "quality"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 25*24*hr).toISOString(), updatedAt: new Date(now - 1*24*hr).toISOString() },
+      { id: "conflict-resolver", type: "prompt", name: "Conflict Resolver", description: "Prompt used for rebase conflict follow-up guidance.", filename: "conflict-resolver.md", tags: ["merge", "conflict", "rebase"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 20*24*hr).toISOString(), updatedAt: new Date(now - 3*24*hr).toISOString() },
+      { id: "frontend-agent", type: "prompt", name: "Frontend Agent", description: "Front-end specialist agent with screenshot-based validation.", filename: "frontend-agent.md", tags: ["frontend", "ui", "portal", "css"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 15*24*hr).toISOString(), updatedAt: new Date(now - hr).toISOString() },
+      { id: "ui-agent", type: "agent", name: "UI Agent", description: "Front-end specialist for portal and UI tasks. Auto-selected for feat(portal) tasks.", filename: "ui-agent.json", tags: ["ui", "frontend", "portal", "css", "web"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 10*24*hr).toISOString(), updatedAt: new Date(now - hr).toISOString() },
+      { id: "backend-agent", type: "agent", name: "Backend Agent", description: "Backend/API specialist. Auto-selected for feat(api) tasks.", filename: "backend-agent.json", tags: ["api", "server", "backend", "database"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 10*24*hr).toISOString(), updatedAt: new Date(now - 2*hr).toISOString() },
+      { id: "devops-agent", type: "agent", name: "DevOps Agent", description: "CI/CD and infrastructure specialist.", filename: "devops-agent.json", tags: ["ci", "cd", "build", "deploy"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 10*24*hr).toISOString(), updatedAt: new Date(now - 4*hr).toISOString() },
+      { id: "background-task-execution", type: "skill", name: "Background Task Execution", description: "Ensure background tasks complete reliably without stalling.", filename: "background-task-execution.md", tags: ["background", "task", "reliability", "heartbeat"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 30*24*hr).toISOString(), updatedAt: new Date(now - 7*24*hr).toISOString() },
+      { id: "bosun-agent-endpoint-api", type: "skill", name: "Bosun Agent Endpoint API", description: "Agent REST API reference for task lifecycle operations.", filename: "bosun-agent-endpoint-api.md", tags: ["api", "endpoint", "agent", "lifecycle"], scope: "bosun", workspace: null, meta: {}, createdAt: new Date(now - 30*24*hr).toISOString(), updatedAt: new Date(now - 7*24*hr).toISOString() },
+    ];
+    const SEED_SCOPES = [
+      { name: "portal", source: "git+folder", count: 42 },
+      { name: "bosun", source: "git+folder", count: 38 },
+      { name: "market", source: "git", count: 22 },
+      { name: "veid", source: "git", count: 18 },
+      { name: "api", source: "git+folder", count: 15 },
+      { name: "escrow", source: "git", count: 12 },
+      { name: "desktop", source: "folder", count: 0 },
+      { name: "site", source: "folder", count: 0 },
+      { name: "scripts", source: "folder", count: 0 },
+    ];
+
     /* ── Internal State (mutable — actions modify this in-place) ──── */
     const STATE = {
       tasks: SEED_TASKS,
@@ -771,6 +796,8 @@
       health: SEED_HEALTH,
       infra: SEED_INFRA,
       project: SEED_PROJECT,
+      library: SEED_LIBRARY,
+      libraryScopes: SEED_SCOPES,
       paused: false,
       maxParallel: 6,
       settings: {
@@ -2659,6 +2686,68 @@
           qualityScore: null, reviewVerdict: null, reviewIssueCount: 0,
           recentSituations: [{ situation: 'healthy', ts: Date.now() }],
         };
+
+      // ── Library API ──
+      if (route === '/api/library') {
+        let list = STATE.library;
+        const params = new URL('http://x' + path).searchParams;
+        const type = params.get('type');
+        const search = params.get('search');
+        if (type) list = list.filter(e => e.type === type);
+        if (search) {
+          const q = search.toLowerCase();
+          list = list.filter(e => e.name.toLowerCase().includes(q) || e.description.toLowerCase().includes(q) || e.tags.some(t => t.includes(q)));
+        }
+        return { ok: true, data: list };
+      }
+      if (route === '/api/library/entry' && method === 'GET') {
+        const params = new URL('http://x' + path).searchParams;
+        const id = params.get('id');
+        const entry = STATE.library.find(e => e.id === id);
+        if (!entry) return { ok: false, error: 'Not found' };
+        return { ok: true, data: { ...entry, content: entry.type === 'agent' ? { name: entry.name, description: entry.description, titlePatterns: [], scopes: entry.tags, sdk: null } : `# ${entry.name}\n\n${entry.description}\n\nDemo content for ${entry.name}.` } };
+      }
+      if (route === '/api/library/entry' && method === 'POST') {
+        const id = body.id || body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        const existing = STATE.library.findIndex(e => e.id === id);
+        const entry = { id, type: body.type, name: body.name, description: body.description || '', filename: body.filename || id + (body.type === 'agent' ? '.json' : '.md'), tags: body.tags || [], scope: body.scope || 'global', workspace: null, meta: {}, createdAt: existing >= 0 ? STATE.library[existing].createdAt : new Date().toISOString(), updatedAt: new Date().toISOString() };
+        if (existing >= 0) STATE.library[existing] = entry; else STATE.library.push(entry);
+        return { ok: true, data: entry };
+      }
+      if (route === '/api/library/entry' && method === 'DELETE') {
+        const id = body?.id;
+        const idx = STATE.library.findIndex(e => e.id === id);
+        if (idx < 0) return { ok: false, error: 'Not found' };
+        STATE.library.splice(idx, 1);
+        return { ok: true, deleted: id };
+      }
+      if (route === '/api/library/profiles')
+        return { ok: true, data: STATE.library.filter(e => e.type === 'agent') };
+      if (route === '/api/library/match-profile') {
+        const title = new URL('http://x' + path).searchParams.get('title') || body?.title || '';
+        const profiles = STATE.library.filter(e => e.type === 'agent');
+        let best = null, bestScore = 0;
+        for (const p of profiles) {
+          let score = 0;
+          for (const tag of p.tags) { if (title.toLowerCase().includes(tag)) score += 2; }
+          if (score > bestScore) { bestScore = score; best = { ...p, score }; }
+        }
+        return { ok: true, data: best };
+      }
+      if (route === '/api/library/scopes')
+        return { ok: true, data: STATE.libraryScopes };
+      if (route === '/api/library/rebuild')
+        return { ok: true, data: { count: STATE.library.length, added: 0, removed: 0 } };
+      if (route === '/api/library/init')
+        return { ok: true, data: { entries: STATE.library.length, added: 0, scaffolded: 3, skipped: 0 } };
+      if (route === '/api/library/resolve') {
+        let tpl = body?.template || '';
+        tpl = tpl.replace(/\{\{\s*(prompt|agent|skill):([A-Za-z0-9_-]+)\s*\}\}/gi, (_, type, name) => {
+          const entry = STATE.library.find(e => e.id === name.toLowerCase());
+          return entry ? `[${entry.name} content]` : `<!-- ${type}:${name} not found -->`;
+        });
+        return { ok: true, data: tpl };
+      }
 
       // ── Catch-all: return empty success for any unhandled /api/ route ──
       console.debug('[demo] Unhandled API route:', method, path);

@@ -296,6 +296,18 @@ export const ICONS = {
     <path d="M10 18l-3-10" />
   </svg>`,
 
+  book: html`<svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+  </svg>`,
+
   /* ── Terminal / Code ── */
   terminal: html`<svg
     viewBox="0 0 24 24"

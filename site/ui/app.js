@@ -121,6 +121,7 @@ import { LogsTab } from "./tabs/logs.js";
 import { TelemetryTab } from "./tabs/telemetry.js";
 import { SettingsTab } from "./tabs/settings.js";
 import { WorkflowsTab } from "./tabs/workflows.js";
+import { LibraryTab } from "./tabs/library.js";
 
 /* ── Placeholder signals for connection quality (may be provided by api.js) ── */
 let wsLatency = signal(null);
@@ -427,6 +428,7 @@ const TAB_COMPONENTS = {
   logs: LogsTab,
   telemetry: TelemetryTab,
   workflows: WorkflowsTab,
+  library: LibraryTab,
   settings: SettingsTab,
 };
 
