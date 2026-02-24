@@ -1185,6 +1185,41 @@ function isTlsDisabled() {
 }
 
 /**
+ * Locate the openssl binary.
+ * On Windows, Git for Windows bundles openssl but doesn't add it to PATH by
+ * default. We probe several well-known install locations as a fallback.
+ * Returns the resolved path or "openssl" (rely on PATH) as a last resort.
+ */
+function findOpenssl() {
+  // 1. Check system PATH first
+  try {
+    const cmd = osPlatform() === "win32" ? "where openssl 2>nul" : "which openssl 2>/dev/null";
+    const found = execSync(cmd, { encoding: "utf8", timeout: 3000, stdio: ["pipe", "pipe", "pipe"] }).trim();
+    if (found) return found.split(/\r?\n/)[0];
+  } catch { /* not on PATH */ }
+
+  // 2. Windows-specific fallbacks (Git for Windows, standalone OpenSSL installers)
+  if (osPlatform() === "win32") {
+    const candidates = [
+      "C:\\Program Files\\Git\\usr\\bin\\openssl.exe",
+      "C:\\Program Files (x86)\\Git\\usr\\bin\\openssl.exe",
+      "C:\\Program Files\\OpenSSL-Win64\\bin\\openssl.exe",
+      "C:\\Program Files\\OpenSSL\\bin\\openssl.exe",
+      // Chocolatey
+      "C:\\ProgramData\\chocolatey\\bin\\openssl.exe",
+      // Scoop
+      `${process.env.USERPROFILE || "C:\\Users\\user"}\\scoop\\apps\\openssl\\current\\bin\\openssl.exe`,
+    ];
+    for (const p of candidates) {
+      if (existsSync(p)) return p;
+    }
+  }
+
+  // 3. Last resort — let the OS resolve it (will fail with a clear error)
+  return "openssl";
+}
+
+/**
  * Ensures a self-signed TLS certificate exists in .cache/tls/.
  * Generates one via openssl if missing or expired (valid for 825 days).
  * Returns { key, cert } buffers or null if generation fails.
@@ -1212,11 +1247,12 @@ function ensureSelfSignedCert() {
       }
     }
 
-    // Generate self-signed cert via openssl
+    // Locate openssl — checks PATH then Windows-specific fallback locations
+    const opensslBin = findOpenssl();
     const lanIp = getLocalLanIp();
     const subjectAltName = `DNS:localhost,IP:127.0.0.1,IP:${lanIp}`;
     execSync(
-      `openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 ` +
+      `"${opensslBin}" req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 ` +
         `-keyout "${TLS_KEY_PATH}" -out "${TLS_CERT_PATH}" ` +
         `-days 825 -nodes -batch ` +
         `-subj "/CN=bosun" ` +
@@ -1232,8 +1268,11 @@ function ensureSelfSignedCert() {
       cert: readFileSync(TLS_CERT_PATH),
     };
   } catch (err) {
+    const hint = osPlatform() === "win32"
+      ? " Install Git for Windows (https://git-scm.com) to get openssl, or set TELEGRAM_UI_TLS_DISABLE=true and let Cloudflare provide HTTPS."
+      : " Install openssl (e.g. `apt install openssl` / `brew install openssl`).";
     console.warn(
-      `[telegram-ui] TLS cert generation failed, falling back to HTTP: ${err.message}`,
+      `[telegram-ui] TLS cert generation failed — falling back to HTTP.${hint}\n  Error: ${err.message}`,
     );
     return null;
   }
@@ -1544,10 +1583,15 @@ async function startTunnel(localPort) {
   // ── SECURITY: Block tunnel when auth is disabled ─────────────────────
   if (isAllowUnsafe()) {
     console.error(
-      "[telegram-ui] ⛔ REFUSING to start tunnel — TELEGRAM_UI_ALLOW_UNSAFE=true\n" +
+      "[telegram-ui] ⛔ REFUSING to start Cloudflare tunnel — TELEGRAM_UI_ALLOW_UNSAFE=true\n" +
       "  A public tunnel with no authentication lets ANYONE on the internet\n" +
       "  control your agents, read secrets, and execute commands.\n" +
-      "  Either set TELEGRAM_UI_ALLOW_UNSAFE=false or TELEGRAM_UI_TUNNEL=disabled.",
+      "\n" +
+      "  To get the tunnel working, choose one option:\n" +
+      "    Option A (recommended): Remove TELEGRAM_UI_ALLOW_UNSAFE from your .env\n" +
+      "      and configure Telegram bot auth (set TELEGRAM_BOT_TOKEN).\n" +
+      "    Option B: Keep ALLOW_UNSAFE=true but disable the tunnel:\n" +
+      "      Set TELEGRAM_UI_TUNNEL=disabled in your .env (LAN-only access).",
     );
     return null;
   }
