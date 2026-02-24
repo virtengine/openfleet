@@ -1195,6 +1195,330 @@ registerNodeType("loop.for_each", {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  SESSION / AGENT MANAGEMENT — Direct session control
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerNodeType("action.continue_session", {
+  describe: () => "Re-attach to an existing agent session and send a continuation prompt",
+  schema: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", description: "Session ID to continue (supports {{variables}})" },
+      prompt: { type: "string", description: "Continuation prompt for the agent" },
+      timeoutMs: { type: "number", default: 1800000, description: "Timeout for continuation in ms" },
+      strategy: { type: "string", enum: ["continue", "retry", "refine", "finish_up"], default: "continue", description: "Continuation strategy" },
+    },
+    required: ["prompt"],
+  },
+  async execute(node, ctx, engine) {
+    const sessionId = ctx.resolve(node.config?.sessionId || ctx.data?.sessionId || "");
+    const prompt = ctx.resolve(node.config?.prompt || "Continue working on the current task.");
+    const timeout = node.config?.timeoutMs || 1800000;
+    const strategy = node.config?.strategy || "continue";
+
+    ctx.log(node.id, `Continuing session ${sessionId} (strategy: ${strategy})`);
+
+    const agentPool = engine.services?.agentPool;
+    if (agentPool?.continueSession) {
+      const result = await agentPool.continueSession(sessionId, prompt, { timeout, strategy });
+      return { success: result.success, output: result.output, sessionId, strategy };
+    }
+
+    // Fallback: use ephemeral thread with continuation context
+    if (agentPool?.launchEphemeralThread) {
+      const continuation = strategy === "retry"
+        ? `Start over on this task. Previous attempt failed.\n\n${prompt}`
+        : strategy === "refine"
+        ? `Refine your previous work. Specifically:\n\n${prompt}`
+        : strategy === "finish_up"
+        ? `Wrap up the current task. Commit, create PR, ensure tests pass.\n\n${prompt}`
+        : `Continue where you left off.\n\n${prompt}`;
+
+      const result = await agentPool.launchEphemeralThread(continuation, ctx.data?.worktreePath || process.cwd(), timeout);
+      return { success: result.success, output: result.output, sessionId, strategy, fallback: true };
+    }
+
+    return { success: false, error: "Agent pool not available" };
+  },
+});
+
+registerNodeType("action.restart_agent", {
+  describe: () => "Kill and restart an agent session from scratch",
+  schema: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", description: "Session ID to restart" },
+      reason: { type: "string", description: "Reason for restart (logged and given as context)" },
+      sdk: { type: "string", enum: ["codex", "copilot", "claude", "auto"], default: "auto" },
+      prompt: { type: "string", description: "New prompt for the restarted agent" },
+      cwd: { type: "string", description: "Working directory" },
+      timeoutMs: { type: "number", default: 3600000 },
+    },
+    required: ["prompt"],
+  },
+  async execute(node, ctx, engine) {
+    const sessionId = ctx.resolve(node.config?.sessionId || ctx.data?.sessionId || "");
+    const reason = ctx.resolve(node.config?.reason || "workflow restart");
+    const prompt = ctx.resolve(node.config?.prompt || "");
+    const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+
+    ctx.log(node.id, `Restarting agent session ${sessionId}: ${reason}`);
+
+    const agentPool = engine.services?.agentPool;
+
+    // Try to kill existing session first
+    if (sessionId && agentPool?.killSession) {
+      try {
+        await agentPool.killSession(sessionId);
+        ctx.log(node.id, `Killed previous session ${sessionId}`);
+      } catch (err) {
+        ctx.log(node.id, `Could not kill session ${sessionId}: ${err.message}`, "warn");
+      }
+    }
+
+    // Launch new session
+    if (agentPool?.launchEphemeralThread) {
+      const result = await agentPool.launchEphemeralThread(
+        `Previous attempt failed (reason: ${reason}). Starting fresh.\n\n${prompt}`,
+        cwd,
+        node.config?.timeoutMs || 3600000
+      );
+      return { success: result.success, output: result.output, newSessionId: result.sessionId, previousSessionId: sessionId };
+    }
+
+    return { success: false, error: "Agent pool not available" };
+  },
+});
+
+registerNodeType("action.bosun_cli", {
+  describe: () => "Run a bosun CLI command (task, monitor, agent, etc.)",
+  schema: {
+    type: "object",
+    properties: {
+      subcommand: { type: "string", enum: [
+        "task list", "task create", "task get", "task update", "task delete",
+        "task stats", "task plan", "task import",
+        "agent list", "agent continue", "agent kill",
+        "--daemon-status", "--echo-logs",
+        "config show", "config doctor",
+      ], description: "Bosun CLI subcommand" },
+      args: { type: "string", description: "Additional arguments (e.g., --status todo --json)" },
+      parseJson: { type: "boolean", default: true, description: "Parse JSON output automatically" },
+    },
+    required: ["subcommand"],
+  },
+  async execute(node, ctx) {
+    const sub = node.config?.subcommand || "";
+    const args = ctx.resolve(node.config?.args || "");
+    const cmd = `bosun ${sub} ${args}`.trim();
+
+    ctx.log(node.id, `Running: ${cmd}`);
+    try {
+      const output = execSync(cmd, { encoding: "utf8", timeout: 60000, stdio: "pipe" });
+      let parsed = output?.trim();
+      if (node.config?.parseJson !== false) {
+        try { parsed = JSON.parse(parsed); } catch { /* not JSON, keep as string */ }
+      }
+      return { success: true, output: parsed, command: cmd };
+    } catch (err) {
+      return { success: false, error: err.message, command: cmd };
+    }
+  },
+});
+
+registerNodeType("action.handle_rate_limit", {
+  describe: () => "Intelligently handle API rate limits with exponential backoff and provider rotation",
+  schema: {
+    type: "object",
+    properties: {
+      provider: { type: "string", description: "API provider that was rate limited (auto-detected if empty)" },
+      baseDelayMs: { type: "number", default: 60000, description: "Base delay before retry (ms)" },
+      maxDelayMs: { type: "number", default: 600000, description: "Maximum delay cap (ms)" },
+      maxRetries: { type: "number", default: 5, description: "Maximum retry attempts" },
+      fallbackProvider: { type: "string", enum: ["codex", "copilot", "claude", "none"], default: "none", description: "Alternative provider to try" },
+      strategy: { type: "string", enum: ["wait", "rotate", "skip"], default: "wait", description: "Rate limit strategy" },
+    },
+  },
+  async execute(node, ctx) {
+    const attempt = ctx.data?._rateLimitAttempt || 0;
+    const maxRetries = node.config?.maxRetries || 5;
+    const strategy = node.config?.strategy || "wait";
+
+    if (attempt >= maxRetries) {
+      ctx.log(node.id, `Rate limit: exhausted ${maxRetries} retries`, "error");
+      return { success: false, action: "exhausted", attempts: attempt };
+    }
+
+    if (strategy === "skip") {
+      ctx.log(node.id, "Rate limit: skipping (strategy=skip)");
+      return { success: true, action: "skipped" };
+    }
+
+    if (strategy === "rotate" && node.config?.fallbackProvider && node.config.fallbackProvider !== "none") {
+      ctx.log(node.id, `Rate limit: rotating to ${node.config.fallbackProvider}`);
+      ctx.data._activeProvider = node.config.fallbackProvider;
+      return { success: true, action: "rotated", provider: node.config.fallbackProvider };
+    }
+
+    // Exponential backoff
+    const baseDelay = node.config?.baseDelayMs || 60000;
+    const maxDelay = node.config?.maxDelayMs || 600000;
+    const delay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
+
+    ctx.log(node.id, `Rate limit: waiting ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+    await new Promise((r) => setTimeout(r, delay));
+
+    ctx.data._rateLimitAttempt = attempt + 1;
+    return { success: true, action: "waited", delayMs: delay, attempt: attempt + 1 };
+  },
+});
+
+registerNodeType("action.ask_user", {
+  describe: () => "Pause workflow and ask the user for input via Telegram or UI",
+  schema: {
+    type: "object",
+    properties: {
+      question: { type: "string", description: "Question to ask the user" },
+      options: { type: "array", items: { type: "string" }, description: "Quick-reply options (optional)" },
+      timeoutMs: { type: "number", default: 3600000, description: "How long to wait for response" },
+      channel: { type: "string", enum: ["telegram", "ui", "both"], default: "both", description: "Where to ask" },
+      variable: { type: "string", default: "userResponse", description: "Variable name to store the response" },
+    },
+    required: ["question"],
+  },
+  async execute(node, ctx, engine) {
+    const question = ctx.resolve(node.config?.question || "");
+    const options = node.config?.options || [];
+    const channel = node.config?.channel || "both";
+    const timeout = node.config?.timeoutMs || 3600000;
+
+    ctx.log(node.id, `Asking user: ${question}`);
+
+    // Send via Telegram if configured
+    if ((channel === "telegram" || channel === "both") && engine.services?.telegram?.sendMessage) {
+      const optionsText = options.length ? `\n\nOptions: ${options.join(" | ")}` : "";
+      await engine.services.telegram.sendMessage(undefined, `❓ **Workflow Question**\n\n${question}${optionsText}`);
+    }
+
+    // Store question for UI polling
+    ctx.data._pendingQuestion = { question, options, askedAt: Date.now(), timeout };
+
+    // In real implementation, this would await a response
+    // For now, return the question for the UI to handle
+    const varName = node.config?.variable || "userResponse";
+    const response = ctx.data[varName] || null;
+
+    return {
+      asked: true,
+      question,
+      options,
+      response,
+      variable: varName,
+      channel,
+    };
+  },
+});
+
+registerNodeType("action.analyze_errors", {
+  describe: () => "Run the error detector on recent logs and classify failures",
+  schema: {
+    type: "object",
+    properties: {
+      logSource: { type: "string", enum: ["agent", "build", "test", "all"], default: "all", description: "Which logs to analyze" },
+      timeWindowMs: { type: "number", default: 3600000, description: "How far back to look (ms)" },
+      minSeverity: { type: "string", enum: ["info", "warn", "error", "fatal"], default: "error" },
+      outputVariable: { type: "string", default: "errorAnalysis", description: "Variable to store analysis" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const source = node.config?.logSource || "all";
+    const timeWindow = node.config?.timeWindowMs || 3600000;
+    const minSeverity = node.config?.minSeverity || "error";
+
+    ctx.log(node.id, `Analyzing errors from ${source} (last ${timeWindow}ms)`);
+
+    // Try to use the anomaly detector service
+    const detector = engine.services?.anomalyDetector;
+    if (detector?.analyzeRecent) {
+      const analysis = await detector.analyzeRecent({ source, timeWindow, minSeverity });
+      if (node.config?.outputVariable) {
+        ctx.data[node.config.outputVariable] = analysis;
+      }
+      return { success: true, ...analysis };
+    }
+
+    // Fallback: check for recent error files in .bosun/
+    const errorDir = resolve(process.cwd(), ".bosun", "errors");
+    const errors = [];
+    if (existsSync(errorDir)) {
+      const { readdirSync, statSync } = await import("node:fs");
+      const cutoff = Date.now() - timeWindow;
+      for (const file of readdirSync(errorDir)) {
+        const filePath = resolve(errorDir, file);
+        const stat = statSync(filePath);
+        if (stat.mtimeMs > cutoff) {
+          try {
+            const content = readFileSync(filePath, "utf8");
+            errors.push({ file, content: content.slice(0, 2000), time: stat.mtimeMs });
+          } catch { /* skip unreadable */ }
+        }
+      }
+    }
+
+    const analysis = {
+      errorCount: errors.length,
+      errors: errors.slice(0, 10),
+      source,
+      timeWindow,
+      analyzedAt: Date.now(),
+    };
+
+    if (node.config?.outputVariable) {
+      ctx.data[node.config.outputVariable] = analysis;
+    }
+
+    return { success: true, ...analysis };
+  },
+});
+
+registerNodeType("action.refresh_worktree", {
+  describe: () => "Refresh git worktree state — fetch, pull, or reset to clean state",
+  schema: {
+    type: "object",
+    properties: {
+      operation: { type: "string", enum: ["fetch", "pull", "reset_hard", "clean", "checkout_main"], default: "fetch" },
+      cwd: { type: "string", description: "Working directory" },
+      branch: { type: "string", description: "Branch to operate on" },
+    },
+    required: ["operation"],
+  },
+  async execute(node, ctx) {
+    const op = node.config?.operation || "fetch";
+    const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
+    const branch = ctx.resolve(node.config?.branch || "main");
+
+    const commands = {
+      fetch: "git fetch --all --prune",
+      pull: `git pull origin ${branch} --rebase`,
+      reset_hard: "git reset --hard HEAD && git clean -fd",
+      clean: "git clean -fd",
+      checkout_main: `git checkout ${branch} && git pull origin ${branch}`,
+    };
+
+    const cmd = commands[op];
+    if (!cmd) throw new Error(`Unknown worktree operation: ${op}`);
+
+    ctx.log(node.id, `Refreshing worktree (${op}): ${cmd}`);
+    try {
+      const output = execSync(cmd, { cwd, encoding: "utf8", timeout: 120000, shell: true });
+      return { success: true, output: output?.trim(), operation: op };
+    } catch (err) {
+      return { success: false, error: err.message, operation: op };
+    }
+  },
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  Export all registered types for introspection
 // ═══════════════════════════════════════════════════════════════════════════
 

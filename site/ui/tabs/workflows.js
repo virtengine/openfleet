@@ -711,6 +711,106 @@ function NodePalette({ nodeTypes: types, onSelect, onClose }) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
+ *  Smart Presets — real bosun commands and agent prompts
+ * ═══════════════════════════════════════════════════════════════ */
+
+const COMMAND_PRESETS = {
+  testing: [
+    { label: "Run Tests", cmd: "npm test", icon: "🧪" },
+    { label: "Run Single File", cmd: 'npx vitest run tests/{{testFile}}', icon: "🎯" },
+    { label: "Syntax Check", cmd: "npm run syntax:check", icon: "✅" },
+  ],
+  build: [
+    { label: "Build Project", cmd: "npm run build", icon: "🔨" },
+    { label: "Build Watch", cmd: "npm run build -- --watch", icon: "👁️" },
+    { label: "Type Check", cmd: "npx tsc --noEmit", icon: "📐" },
+  ],
+  git: [
+    { label: "Diff Stats", cmd: "git diff --stat main...HEAD", icon: "📊" },
+    { label: "Git Status", cmd: "git status --porcelain", icon: "📋" },
+    { label: "Stage All", cmd: "git add -A", icon: "📥" },
+    { label: "Commit", cmd: 'git commit -m "{{commitMessage}}"', icon: "💾" },
+    { label: "Push", cmd: "git push --set-upstream origin HEAD", icon: "🚀" },
+  ],
+  github: [
+    { label: "Check CI", cmd: "gh pr checks --json name,state,conclusion", icon: "🔍" },
+    { label: "Merge PR (squash)", cmd: "gh pr merge --auto --squash", icon: "🔀" },
+    { label: "Close PR", cmd: 'gh pr close --comment "{{reason}}"', icon: "🚫" },
+    { label: "PR Diff", cmd: "gh pr diff --stat", icon: "📊" },
+    { label: "Create PR", cmd: 'gh pr create --title "{{title}}" --body "{{body}}" --base main', icon: "📝" },
+    { label: "Add Label", cmd: 'gh pr edit --add-label "{{label}}"', icon: "🏷️" },
+    { label: "Request Review", cmd: 'gh pr edit --add-reviewer {{reviewer}}', icon: "👀" },
+  ],
+  bosun: [
+    { label: "List Tasks", cmd: "bosun task list --status todo --json", icon: "📋" },
+    { label: "Count Tasks", cmd: "bosun task list --status todo --count", icon: "#️⃣" },
+    { label: "Task Stats", cmd: "bosun task stats --json", icon: "📈" },
+    { label: "Plan Tasks", cmd: "bosun task plan --count 5", icon: "🧠" },
+    { label: "Create Task", cmd: 'bosun task create --title "{{title}}" --status todo', icon: "➕" },
+    { label: "Monitor Status", cmd: "bosun --daemon-status", icon: "💓" },
+  ],
+  session: [
+    { label: "Continue Session", cmd: 'bosun agent continue --session "{{sessionId}}" --prompt "continue"', icon: "▶️" },
+    { label: "Restart Agent", cmd: 'bosun agent restart --session "{{sessionId}}"', icon: "🔄" },
+    { label: "Kill Agent", cmd: 'bosun agent kill --session "{{sessionId}}"', icon: "⛔" },
+    { label: "List Sessions", cmd: "bosun agent list --json", icon: "📡" },
+  ],
+  screenshots: [
+    { label: "Desktop Screenshot", cmd: "bosun screenshot --viewport 1280x720", icon: "🖥️" },
+    { label: "Mobile Screenshot", cmd: "bosun screenshot --viewport 375x812", icon: "📱" },
+    { label: "All Viewports", cmd: "bosun screenshot --viewport desktop,mobile", icon: "📸" },
+  ],
+};
+
+const AGENT_PROMPT_PRESETS = [
+  { label: "▶️ Continue Working", prompt: "Continue working on the current task. Pick up where you left off. Review your previous output and continue.", category: "session" },
+  { label: "🔧 Fix Errors", prompt: "Fix the following errors. Do NOT introduce new issues:\n\n{{lastError}}\n\nTask: {{taskTitle}}\nFiles changed: {{changedFiles}}", category: "fix" },
+  { label: "🔍 PR Review", prompt: "Review this PR for quality, bugs, security issues, test coverage, and documentation.\n\nProvide:\n1. Summary of changes\n2. Issues found (critical/warning/info)\n3. Verdict: APPROVE, REQUEST_CHANGES, or COMMENT", category: "review" },
+  { label: "🔀 Merge Decision", prompt: "Analyze this PR and decide the merge strategy. Consider: CI status, diff size, code quality, test coverage.\n\nDecide exactly ONE action:\n- merge_after_ci_pass: Ready to merge\n- prompt: Agent needs to continue working (explain what)\n- close_pr: PR should be closed (explain why)\n- re_attempt: Task should be restarted from scratch\n- manual_review: Needs human review (explain why)\n- wait: CI still running, check back later\n- noop: No action needed", category: "strategy" },
+  { label: "🎨 Frontend Implement", prompt: "Implement the following frontend changes:\n\nTask: {{taskTitle}}\n{{taskDescription}}\n\nRequirements:\n- Must pass build (npm run build) with 0 warnings\n- Must pass lint (npm run lint)\n- Match the provided design specs\n- Add/update tests if applicable", category: "implement" },
+  { label: "📋 Plan Tasks", prompt: "Analyze the codebase and create {{planCount}} actionable improvement tasks.\n\nFor each task provide:\n- title: Concise action-oriented title\n- description: What needs to change and why\n- priority: 1-5 (1=highest)\n- tags: Relevant labels\n- complexity: low, medium, or high\n\nFocus on: code quality, missing tests, documentation gaps, performance improvements, and technical debt.", category: "planning" },
+  { label: "🐛 Analyze Failure", prompt: "Analyze this agent failure and suggest a fix:\n\nError: {{lastError}}\nTask: {{taskTitle}}\nAttempt: {{retryCount}}/{{maxRetries}}\n\nProvide:\n1. Root cause analysis\n2. Concrete fix steps\n3. Should we retry or escalate?", category: "fix" },
+  { label: "🛡️ Error Recovery", prompt: "The previous agent attempt failed. Here's what happened:\n\n{{lastError}}\n\nOriginal task: {{taskTitle}}\n\nApproach this differently:\n1. Identify what went wrong\n2. Try an alternative approach\n3. Ensure tests pass before committing", category: "fix" },
+  { label: "📊 Code Analysis", prompt: "Analyze the codebase for:\n\n1. Code complexity hotspots\n2. Test coverage gaps\n3. Security vulnerabilities\n4. Performance bottlenecks\n5. Documentation completeness\n\nOutput a structured JSON report.", category: "review" },
+  { label: "🧹 Refactor", prompt: "Refactor {{targetFile}} to:\n\n1. Reduce complexity\n2. Extract reusable functions\n3. Improve naming conventions\n4. Add JSDoc comments\n5. Ensure all existing tests still pass\n\nDo NOT change external behavior.", category: "implement" },
+];
+
+const TRIGGER_EVENT_PRESETS = [
+  { label: "Task Failed", value: "task.failed", icon: "❌" },
+  { label: "Task Completed", value: "task.completed", icon: "✅" },
+  { label: "Task Assigned", value: "task.assigned", icon: "👤" },
+  { label: "PR Merged", value: "pr.merged", icon: "🔀" },
+  { label: "PR Opened", value: "pr.opened", icon: "📬" },
+  { label: "Agent Started", value: "agent.started", icon: "🤖" },
+  { label: "Agent Crashed", value: "agent.crashed", icon: "💥" },
+  { label: "Rate Limited", value: "rate.limited", icon: "🚦" },
+  { label: "Build Failed", value: "build.failed", icon: "🔨" },
+  { label: "Deploy Completed", value: "deploy.completed", icon: "🚀" },
+  { label: "Session Ended", value: "session.ended", icon: "🔌" },
+];
+
+const CRON_PRESETS = [
+  { label: "Every 5 min", value: "*/5 * * * *" },
+  { label: "Every 15 min", value: "*/15 * * * *" },
+  { label: "Every 30 min", value: "*/30 * * * *" },
+  { label: "Every hour", value: "0 * * * *" },
+  { label: "Every 6 hours", value: "0 */6 * * *" },
+  { label: "Daily at midnight", value: "0 0 * * *" },
+  { label: "Weekdays 9am", value: "0 9 * * 1-5" },
+];
+
+const EXPRESSION_PRESETS = [
+  { label: "CI Passed", expr: "$ctx.getNodeOutput('check-ci')?.passed === true" },
+  { label: "Previous Succeeded", expr: "$output?.success === true" },
+  { label: "Retries Left", expr: "($data?.retryCount || 0) < ($data?.maxRetries || 3)" },
+  { label: "Has Errors", expr: "$data?.errorCount > 0" },
+  { label: "Is Draft PR", expr: "$data?.pr?.draft === true" },
+  { label: "Large Diff", expr: "($data?.additions + $data?.deletions) > 500" },
+  { label: "Task Tagged", expr: "($data?.tags || []).includes('{{tag}}')" },
+  { label: "Branch Match", expr: "/^(feat|fix)\\//.test($data?.branch || '')" },
+];
+
+/* ═══════════════════════════════════════════════════════════════
  *  Node Config Editor (right side panel)
  * ═══════════════════════════════════════════════════════════════ */
 
@@ -721,16 +821,26 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
   const typeInfo = (types || []).find(nt => nt.type === node.type);
   const schema = typeInfo?.schema?.properties || {};
   const config = node.config || {};
+  const [presetExpanded, setPresetExpanded] = useState(true);
 
   const onFieldChange = useCallback((key, value) => {
     onUpdate({ [key]: value });
   }, [onUpdate]);
 
+  const applyPreset = useCallback((overrides) => {
+    onUpdate(overrides);
+    haptic?.("light");
+  }, [onUpdate]);
+
+  // Determine which smart section to render
+  const nodeCategory = node.type.split(".")[0];
+  const nodeAction = node.type.split(".")[1] || "";
+
   return html`
-    <div class="wf-config-panel" style="position: absolute; top: 0; right: 0; width: 340px; height: 100%; background: var(--color-bg, #0d1117); border-left: 1px solid var(--color-border, #2a3040); z-index: 25; overflow-y: auto; padding: 16px;">
+    <div class="wf-config-panel" style="position: absolute; top: 0; right: 0; width: 380px; height: 100%; background: var(--color-bg, #0d1117); border-left: 1px solid var(--color-border, #2a3040); z-index: 25; overflow-y: auto; padding: 16px;">
 
       <!-- Header -->
-      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px;">
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
         <span style="font-size: 20px;">${meta.icon}</span>
         <div style="flex: 1;">
           <input
@@ -746,12 +856,250 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
 
       <!-- Description -->
       ${typeInfo?.description && html`
-        <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 16px; padding: 8px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px;">
+        <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; padding: 8px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px;">
           ${typeInfo.description}
         </div>
       `}
 
-      <!-- Config fields -->
+      <!-- ═══ Smart Presets: action.run_command ═══ -->
+      ${node.type === "action.run_command" && html`
+        <div class="wf-preset-section" style="margin-bottom: 14px;">
+          <div
+            style="display: flex; align-items: center; gap: 6px; cursor: pointer; margin-bottom: 8px; opacity: 0.9;"
+            onClick=${() => setPresetExpanded(!presetExpanded)}
+          >
+            <span style="font-size: 11px; color: #f59e0b;">⚡</span>
+            <span style="font-size: 12px; font-weight: 600; color: #f59e0b;">Quick Commands</span>
+            <span style="font-size: 10px; margin-left: auto; color: #6b7280;">${presetExpanded ? "▼" : "▶"}</span>
+          </div>
+          ${presetExpanded && Object.entries(COMMAND_PRESETS).map(([group, items]) => html`
+            <div key=${group} style="margin-bottom: 6px;">
+              <div style="font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; padding-left: 4px;">${group}</div>
+              <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+                ${items.map(p => html`
+                  <button
+                    key=${p.label}
+                    onClick=${() => applyPreset({ command: p.cmd })}
+                    class="wf-preset-btn"
+                    title=${p.cmd}
+                    style="padding: 3px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: ${config.command === p.cmd ? '#1e3a5f' : '#1a1f2e'}; color: ${config.command === p.cmd ? '#60a5fa' : '#c9d1d9'}; cursor: pointer; white-space: nowrap; transition: all 0.1s;"
+                  >
+                    ${p.icon} ${p.label}
+                  </button>
+                `)}
+              </div>
+            </div>
+          `)}
+        </div>
+      `}
+
+      <!-- ═══ Smart Presets: action.run_agent / agent.* ═══ -->
+      ${(node.type === "action.run_agent" || nodeCategory === "agent") && html`
+        <div class="wf-preset-section" style="margin-bottom: 14px;">
+          <div
+            style="display: flex; align-items: center; gap: 6px; cursor: pointer; margin-bottom: 8px;"
+            onClick=${() => setPresetExpanded(!presetExpanded)}
+          >
+            <span style="font-size: 11px; color: #a78bfa;">🤖</span>
+            <span style="font-size: 12px; font-weight: 600; color: #a78bfa;">Agent Prompt Templates</span>
+            <span style="font-size: 10px; margin-left: auto; color: #6b7280;">${presetExpanded ? "▼" : "▶"}</span>
+          </div>
+          ${presetExpanded && html`
+            <div style="display: flex; flex-direction: column; gap: 3px; max-height: 200px; overflow-y: auto; padding-right: 4px;">
+              ${AGENT_PROMPT_PRESETS.map(p => html`
+                <button
+                  key=${p.label}
+                  onClick=${() => applyPreset({ prompt: p.prompt })}
+                  class="wf-preset-btn"
+                  style="padding: 6px 10px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: #1a1f2e; color: #c9d1d9; cursor: pointer; text-align: left; transition: all 0.1s; line-height: 1.3;"
+                >
+                  <div style="font-weight: 500;">${p.label}</div>
+                  <div style="font-size: 10px; color: #6b7280; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${p.prompt.split("\n")[0].slice(0, 60)}…</div>
+                </button>
+              `)}
+            </div>
+          `}
+          ${(node.type === "action.run_agent") && html`
+            <div style="margin-top: 8px; padding: 6px 8px; background: #1a1f2e; border-radius: 6px; border-left: 3px solid #a78bfa;">
+              <div style="font-size: 10px; color: #a78bfa; font-weight: 600; margin-bottom: 2px;">💡 Agent Variables</div>
+              <div style="font-size: 10px; color: #6b7280; font-family: monospace; line-height: 1.6;">
+                ${"{{taskTitle}}"} · ${"{{taskDescription}}"} · ${"{{lastError}}"}<br/>
+                ${"{{branch}}"} · ${"{{changedFiles}}"} · ${"{{retryCount}}"}<br/>
+                ${"{{sessionId}}"} · ${"{{maxRetries}}"} · ${"{{planCount}}"}
+              </div>
+            </div>
+          `}
+        </div>
+      `}
+
+      <!-- ═══ Smart Presets: trigger.event ═══ -->
+      ${node.type === "trigger.event" && html`
+        <div class="wf-preset-section" style="margin-bottom: 14px;">
+          <div style="font-size: 12px; font-weight: 600; color: #34d399; margin-bottom: 6px;">⚡ Event Types</div>
+          <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+            ${TRIGGER_EVENT_PRESETS.map(p => html`
+              <button
+                key=${p.value}
+                onClick=${() => applyPreset({ eventType: p.value })}
+                style="padding: 3px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: ${config.eventType === p.value ? '#0d3320' : '#1a1f2e'}; color: ${config.eventType === p.value ? '#34d399' : '#c9d1d9'}; cursor: pointer; white-space: nowrap;"
+              >
+                ${p.icon} ${p.label}
+              </button>
+            `)}
+          </div>
+        </div>
+      `}
+
+      <!-- ═══ Smart Presets: trigger.cron / trigger.schedule ═══ -->
+      ${(node.type === "trigger.cron" || node.type === "trigger.schedule") && html`
+        <div class="wf-preset-section" style="margin-bottom: 14px;">
+          <div style="font-size: 12px; font-weight: 600; color: #34d399; margin-bottom: 6px;">⏱️ Schedule Presets</div>
+          <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+            ${CRON_PRESETS.map(p => html`
+              <button
+                key=${p.value}
+                onClick=${() => applyPreset({ cron: p.value })}
+                style="padding: 3px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: ${config.cron === p.value ? '#0d3320' : '#1a1f2e'}; color: ${config.cron === p.value ? '#34d399' : '#c9d1d9'}; cursor: pointer; white-space: nowrap;"
+              >
+                ${p.label}
+              </button>
+            `)}
+          </div>
+        </div>
+      `}
+
+      <!-- ═══ Smart Presets: trigger.pr_event ═══ -->
+      ${node.type === "trigger.pr_event" && html`
+        <div class="wf-preset-section" style="margin-bottom: 14px;">
+          <div style="font-size: 12px; font-weight: 600; color: #34d399; margin-bottom: 6px;">🐙 PR Events</div>
+          <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+            ${["opened", "merged", "review_requested", "changes_requested", "approved", "closed"].map(ev => html`
+              <button
+                key=${ev}
+                onClick=${() => applyPreset({ event: ev })}
+                style="padding: 3px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: ${config.event === ev ? '#0d3320' : '#1a1f2e'}; color: ${config.event === ev ? '#34d399' : '#c9d1d9'}; cursor: pointer; white-space: nowrap;"
+              >
+                ${ev.replace(/_/g, " ")}
+              </button>
+            `)}
+          </div>
+        </div>
+      `}
+
+      <!-- ═══ Smart Presets: condition.expression ═══ -->
+      ${node.type === "condition.expression" && html`
+        <div class="wf-preset-section" style="margin-bottom: 14px;">
+          <div style="font-size: 12px; font-weight: 600; color: #f472b6; margin-bottom: 6px;">🔣 Expression Presets</div>
+          <div style="display: flex; flex-direction: column; gap: 3px;">
+            ${EXPRESSION_PRESETS.map(p => html`
+              <button
+                key=${p.label}
+                onClick=${() => applyPreset({ expression: p.expr })}
+                style="padding: 4px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: #1a1f2e; color: #c9d1d9; cursor: pointer; text-align: left;"
+              >
+                <span style="font-weight: 500;">${p.label}</span>
+                <span style="font-size: 10px; color: #6b7280; margin-left: 6px; font-family: monospace;">${p.expr.slice(0, 45)}${p.expr.length > 45 ? "…" : ""}</span>
+              </button>
+            `)}
+          </div>
+          <div style="margin-top: 6px; padding: 6px 8px; background: #1a1f2e; border-radius: 6px; border-left: 3px solid #f472b6;">
+            <div style="font-size: 10px; color: #f472b6; font-weight: 600;">Context Variables</div>
+            <div style="font-size: 10px; color: #6b7280; font-family: monospace; line-height: 1.6;">
+              <b>$data</b> — workflow input data<br/>
+              <b>$ctx</b> — execution context<br/>
+              <b>$output</b> — all node outputs map<br/>
+              <b>$ctx.getNodeOutput('id')</b> — specific node result
+            </div>
+          </div>
+        </div>
+      `}
+
+      <!-- ═══ Smart Presets: condition.switch ═══ -->
+      ${node.type === "condition.switch" && html`
+        <div style="margin-bottom: 14px; padding: 6px 8px; background: #1a1f2e; border-radius: 6px; border-left: 3px solid #f472b6;">
+          <div style="font-size: 10px; color: #f472b6; font-weight: 600;">Switch Node</div>
+          <div style="font-size: 10px; color: #6b7280; line-height: 1.5;">
+            Routes workflow to different edges based on the value of a field.<br/>
+            Connect edges with <b>conditions</b> matching case names.
+          </div>
+        </div>
+      `}
+
+      <!-- ═══ Smart Presets: notify.telegram ═══ -->
+      ${node.type === "notify.telegram" && html`
+        <div class="wf-preset-section" style="margin-bottom: 14px;">
+          <div style="font-size: 12px; font-weight: 600; color: #38bdf8; margin-bottom: 6px;">📨 Message Templates</div>
+          <div style="display: flex; flex-direction: column; gap: 3px;">
+            ${[
+              { label: "✅ Task Done", msg: "✅ Task completed: {{taskTitle}}" },
+              { label: "❌ Task Failed", msg: "🚨 Task {{taskTitle}} failed after {{retryCount}} attempts. Manual intervention needed." },
+              { label: "🔀 PR Merged", msg: "🔀 PR merged: {{prTitle}} → {{baseBranch}}" },
+              { label: "📝 Review Done", msg: "📝 PR review complete for {{branch}}: {{verdict}}" },
+              { label: "📋 Tasks Planned", msg: "📋 Task planner added {{newTaskCount}} tasks to backlog" },
+              { label: "🚀 Deployed", msg: "🚀 Deployment to production completed for {{branch}}" },
+              { label: "👀 Needs Review", msg: "👀 PR needs manual review: {{reason}}" },
+              { label: "🚦 Rate Limited", msg: "🚦 Agent rate limited. Cooling down for {{cooldownSec}}s. Provider: {{provider}}" },
+            ].map(p => html`
+              <button
+                key=${p.label}
+                onClick=${() => applyPreset({ message: p.msg })}
+                style="padding: 4px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: #1a1f2e; color: #c9d1d9; cursor: pointer; text-align: left;"
+              >
+                ${p.label}
+              </button>
+            `)}
+          </div>
+        </div>
+      `}
+
+      <!-- ═══ Smart Presets: notify.log ═══ -->
+      ${node.type === "notify.log" && html`
+        <div style="margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 4px;">
+          ${["info", "warn", "error", "debug"].map(lv => html`
+            <button
+              key=${lv}
+              onClick=${() => applyPreset({ level: lv })}
+              style="padding: 3px 10px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: ${config.level === lv ? '#1e293b' : '#1a1f2e'}; color: ${lv === 'error' ? '#ef4444' : lv === 'warn' ? '#f59e0b' : lv === 'debug' ? '#6b7280' : '#60a5fa'}; cursor: pointer;"
+            >
+              ${lv.toUpperCase()}
+            </button>
+          `)}
+        </div>
+      `}
+
+      <!-- ═══ Smart Presets: validation nodes ═══ -->
+      ${nodeCategory === "validation" && html`
+        <div class="wf-preset-section" style="margin-bottom: 14px;">
+          <div style="font-size: 12px; font-weight: 600; color: #34d399; margin-bottom: 6px;">✅ Validation Commands</div>
+          <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+            ${[
+              ...(nodeAction === "build" ? [
+                { label: "npm run build", cmd: "npm run build" },
+                { label: "Zero Warnings", cmd: "npm run build", extra: { zeroWarnings: true } },
+              ] : []),
+              ...(nodeAction === "tests" ? [
+                { label: "npm test", cmd: "npm test" },
+                { label: "Vitest", cmd: "npx vitest run" },
+                { label: "Jest", cmd: "npx jest" },
+              ] : []),
+              ...(nodeAction === "lint" ? [
+                { label: "npm run lint", cmd: "npm run lint" },
+                { label: "ESLint", cmd: "npx eslint ." },
+              ] : []),
+            ].map(p => html`
+              <button
+                key=${p.label}
+                onClick=${() => applyPreset({ command: p.cmd, ...(p.extra || {}) })}
+                style="padding: 3px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: ${config.command === p.cmd ? '#0d3320' : '#1a1f2e'}; color: ${config.command === p.cmd ? '#34d399' : '#c9d1d9'}; cursor: pointer;"
+              >
+                ${p.label}
+              </button>
+            `)}
+          </div>
+        </div>
+      `}
+
+      <!-- ═══ Config Fields (schema-driven) ═══ -->
       <div style="display: flex; flex-direction: column; gap: 12px;">
         ${Object.entries(schema).map(([key, fieldSchema]) => {
           const value = config[key] ?? fieldSchema.default ?? "";
@@ -761,7 +1109,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
           return html`
             <div key=${key} class="wf-config-field">
               <label style="display: block; font-size: 12px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 4px;">
-                ${key.replace(/_/g, " ")}
+                ${key.replace(/([A-Z])/g, " $1").replace(/_/g, " ").trim()}
                 ${isRequired && html`<span style="color: #ef4444;">*</span>`}
               </label>
               ${fieldSchema.description && html`
@@ -784,6 +1132,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
                   value=${value}
                   onInput=${(e) => onFieldChange(key, Number(e.target.value))}
                   class="wf-input"
+                  placeholder=${fieldSchema.default != null ? `Default: ${fieldSchema.default}` : ""}
                 />
               ` : fieldSchema.enum ? html`
                 <select
@@ -791,14 +1140,16 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
                   onChange=${(e) => onFieldChange(key, e.target.value)}
                   class="wf-input"
                 >
+                  <option value="">— select —</option>
                   ${fieldSchema.enum.map(opt => html`<option key=${opt} value=${opt}>${opt}</option>`)}
                 </select>
-              ` : (typeof value === "string" && value.length > 80) || key === "prompt" || key === "expression" || key === "template" || key === "command" || key === "body" ? html`
+              ` : (typeof value === "string" && value.length > 80) || key === "prompt" || key === "expression" || key === "template" || key === "command" || key === "body" || key === "message" || key === "filter" ? html`
                 <textarea
                   value=${typeof value === "object" ? JSON.stringify(value, null, 2) : value}
                   onInput=${(e) => onFieldChange(key, e.target.value)}
                   class="wf-input wf-textarea"
-                  rows="4"
+                  rows=${key === "prompt" ? "6" : "4"}
+                  placeholder=${fieldSchema.default != null ? String(fieldSchema.default) : ""}
                 />
               ` : html`
                 <input
@@ -806,12 +1157,21 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
                   value=${typeof value === "object" ? JSON.stringify(value) : value}
                   onInput=${(e) => onFieldChange(key, e.target.value)}
                   class="wf-input"
+                  placeholder=${fieldSchema.default != null ? String(fieldSchema.default) : ""}
                 />
               `}
             </div>
           `;
         })}
       </div>
+
+      <!-- No schema fields hint -->
+      ${Object.keys(schema).length === 0 && html`
+        <div style="padding: 12px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px; text-align: center; margin-bottom: 12px;">
+          <div style="font-size: 12px; color: #6b7280;">This node has no configurable fields.</div>
+          <div style="font-size: 10px; color: #4b5563; margin-top: 4px;">It executes with defaults or inherits from workflow context.</div>
+        </div>
+      `}
 
       <!-- Continue on Error toggle -->
       <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--color-border, #2a3040);">
@@ -853,7 +1213,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
       <!-- Raw JSON -->
       <details style="margin-top: 16px;">
         <summary style="cursor: pointer; font-size: 12px; color: var(--color-text-secondary, #6b7280);">Raw JSON</summary>
-        <pre style="font-size: 10px; color: #8b95a5; background: #1a1f2e; padding: 8px; border-radius: 6px; overflow-x: auto; margin-top: 6px;">${JSON.stringify(node, null, 2)}</pre>
+        <pre style="font-size: 10px; color: #8b95a5; background: #1a1f2e; padding: 8px; border-radius: 6px; overflow-x: auto; margin-top: 6px; white-space: pre-wrap; word-break: break-all;">${JSON.stringify(node, null, 2)}</pre>
       </details>
     </div>
   `;
@@ -1132,6 +1492,9 @@ export function WorkflowsTab() {
         font-family: inherit;
       }
       .wf-context-menu button:hover { background: var(--color-bg-secondary, #1a1f2e); }
+      .wf-preset-btn:hover { border-color: #3b82f6 !important; background: #1e293b !important; }
+      .wf-preset-section { animation: wf-fade-in 0.15s ease; }
+      @keyframes wf-fade-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
       .wf-canvas-container { height: calc(100vh - 140px); min-height: 500px; }
       @media (min-width: 1200px) { .wf-canvas-container { height: calc(100vh - 120px); min-height: 700px; } }
     </style>
