@@ -83,16 +83,16 @@
 </head>
 <body>
   <div id="app">
-    <div id="boot-loader" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:'Sora',sans-serif;color:#9aa3b2;background:#0b0f14;background-image:radial-gradient(circle at 20% 10%,rgba(76,201,240,.18),transparent 55%),radial-gradient(circle at 80% 0%,rgba(94,234,212,.12),transparent 45%),radial-gradient(circle at 50% 100%,rgba(59,130,246,.12),transparent 60%);overflow:hidden">
+    <div id="boot-loader" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:'Sora',sans-serif;color:#9aa3b2;background:#09090b;overflow:hidden">
       <style>
         .boot-logo{position:relative;width:80px;height:80px;margin-bottom:24px}
         .boot-ring{position:absolute;inset:0;border-radius:50%;border:2px solid rgba(99,102,241,.15);animation:boot-spin 3s linear infinite}
-        .boot-ring-inner{position:absolute;inset:8px;border-radius:50%;border:2px solid transparent;border-top-color:#6366f1;border-right-color:rgba(99,102,241,.4);animation:boot-spin 1.5s linear infinite reverse}
-        .boot-dot{position:absolute;top:50%;left:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#a78bfa);box-shadow:0 0 20px rgba(99,102,241,.5),0 0 40px rgba(99,102,241,.2);animation:boot-pulse 2s ease-in-out infinite}
-        .boot-title{font-size:22px;font-weight:700;letter-spacing:-.02em;background:linear-gradient(135deg,#f1f5f9,#94a3b8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:6px;animation:boot-fadeUp .6s ease .2s both}
-        .boot-subtitle{font-size:13px;color:#64748b;animation:boot-fadeUp .6s ease .4s both}
+        .boot-ring-inner{position:absolute;inset:8px;border-radius:50%;border:2px solid transparent;border-top-color:#6366f1;border-right-color:rgba(99,102,241,.3);animation:boot-spin 1.5s linear infinite reverse}
+        .boot-dot{position:absolute;top:50%;left:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:#6366f1;box-shadow:0 0 16px rgba(99,102,241,.4);animation:boot-pulse 2s ease-in-out infinite}
+        .boot-title{font-size:22px;font-weight:700;letter-spacing:-.02em;color:#f4f4f5;margin-bottom:6px;animation:boot-fadeUp .6s ease .2s both}
+        .boot-subtitle{font-size:13px;color:#52525b;animation:boot-fadeUp .6s ease .4s both}
         .boot-progress{width:120px;height:2px;background:rgba(255,255,255,.06);border-radius:2px;margin-top:20px;overflow:hidden;animation:boot-fadeUp .6s ease .6s both}
-        .boot-progress-bar{height:100%;width:0;background:linear-gradient(90deg,#6366f1,#a78bfa);border-radius:2px;animation:boot-load 2s ease-in-out .8s forwards}
+        .boot-progress-bar{height:100%;width:0;background:#6366f1;border-radius:2px;animation:boot-load 2s ease-in-out .8s forwards}
         @keyframes boot-spin{to{transform:rotate(360deg)}}
         @keyframes boot-pulse{0%,100%{transform:scale(1);opacity:.8}50%{transform:scale(1.2);opacity:1}}
         @keyframes boot-fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
