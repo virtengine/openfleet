@@ -1022,6 +1022,22 @@ function updateEnvFile(changes) {
   return Array.from(updated);
 }
 
+/**
+ * Disable unsafe UI access mode by writing TELEGRAM_UI_ALLOW_UNSAFE=false
+ * into the .env file and updating process.env immediately.
+ * Returns true on success, false if the write failed.
+ */
+export function disableUnsafeMode() {
+  try {
+    updateEnvFile({ TELEGRAM_UI_ALLOW_UNSAFE: 'false' });
+    process.env.TELEGRAM_UI_ALLOW_UNSAFE = 'false';
+    return true;
+  } catch (err) {
+    console.warn(`[telegram-ui] disableUnsafeMode: could not update .env: ${err.message}`);
+    return false;
+  }
+}
+
 function updateConfigFile(changes) {
   const schema = getConfigSchema();
   const configPath = resolveConfigPath();
