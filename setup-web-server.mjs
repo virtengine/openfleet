@@ -12,7 +12,7 @@
  */
 
 import { createServer } from "node:http";
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +26,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const DEFAULT_PORT = 3456;
 const MAX_PORT_ATTEMPTS = 20;
+const CALLBACK_PORT = Number(process.env.BOSUN_CALLBACK_PORT) || 54317;
 
 const MODELS = {
   copilot: [
@@ -626,6 +627,16 @@ async function handleRequest(req, res) {
     return;
   }
 
+  // Health check / relay-page detection
+  if (url.pathname === "/ping") {
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    });
+    res.end(JSON.stringify({ ok: true, server: "setup" }));
+    return;
+  }
+
   // API routes
   if (url.pathname.startsWith("/api/setup/")) {
     const route = url.pathname.replace("/api/setup/", "");
@@ -677,10 +688,30 @@ async function handleRequest(req, res) {
           // Shut down server after response is sent
           setTimeout(() => {
             console.log("\n  ✅ Setup complete — shutting down wizard server.\n");
+            if (callbackServer) callbackServer.close();
             server.close();
             process.exit(0);
           }, 500);
           return;
+        case "oauth-state": {
+          // The setup wizard polls this to detect when the GitHub OAuth callback
+          // has been received (possibly on a different port).
+          const pendingPath = oauthPendingPath();
+          if (existsSync(pendingPath)) {
+            try {
+              const raw = readFileSync(pendingPath, "utf8");
+              const data = JSON.parse(raw);
+              // Delete the file so it's only claimed once
+              try { unlinkSync(pendingPath); } catch { /* ignore */ }
+              jsonResponse(res, 200, { ok: true, pending: true, ...data });
+            } catch {
+              jsonResponse(res, 200, { ok: true, pending: false });
+            }
+          } else {
+            jsonResponse(res, 200, { ok: true, pending: false });
+          }
+          return;
+        }
         default:
           jsonResponse(res, 404, { ok: false, error: `Unknown route: ${route}` });
           return;
@@ -730,6 +761,166 @@ async function handleRequest(req, res) {
 }
 
 let server = null;
+let callbackServer = null;
+
+// Path for persisting a received OAuth code until the setup wizard claims it
+function oauthPendingPath() {
+  return resolve(homedir(), ".bosun", "pending-oauth.json");
+}
+
+/**
+ * Starts a small HTTP server on CALLBACK_PORT (default 54317) whose only job
+ * is to catch the GitHub OAuth redirect that GitHub fires after the user
+ * authorises the Bosun GitHub App from the Marketplace.
+ *
+ * Why a separate server?
+ *   • The setup wizard runs on a random port (default 3456).
+ *   • The GitHub App's OAuth callback URL is registered as
+ *     http://127.0.0.1:54317/github/callback in the GitHub App settings.
+ *   • When a brand-new user installs from the Marketplace the OAuth redirect
+ *     lands on port 54317 — but nothing is listening there unless we bind it.
+ *   • This catcher runs whenever `bosun --setup` is active so the redirect is
+ *     caught, the code is saved, and the user is bounced back to the wizard.
+ *
+ * @param {number} setupPort  The port the setup wizard is listening on
+ */
+async function startCallbackCatcher(setupPort) {
+  const WAITING_PAGE = (port) => `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bosun — GitHub App Setup</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+         background:#0d1117;color:#c9d1d9;display:flex;align-items:center;
+         justify-content:center;min-height:100vh;padding:20px}
+    .card{background:#161b22;border:1px solid #30363d;border-radius:12px;
+          padding:40px 48px;max-width:520px;width:100%;text-align:center}
+    h1{font-size:22px;margin-bottom:8px;color:#f0f6fc}
+    p{color:#8b949e;font-size:14px;line-height:1.6;margin-bottom:20px}
+    .step{background:#0d1117;border:1px solid #30363d;border-radius:8px;
+          padding:12px 16px;text-align:left;margin-bottom:10px;font-size:13px}
+    .step strong{color:#58a6ff}
+    code{background:#30363d;padding:2px 6px;border-radius:4px;font-size:12px;
+         color:#79c0ff}
+    .btn{display:inline-block;margin-top:16px;padding:10px 24px;
+         background:#238636;color:#fff;border-radius:6px;text-decoration:none;
+         font-size:14px;font-weight:600}
+    .logo{font-size:40px;margin-bottom:16px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">🚀</div>
+    <h1>Bosun GitHub App Setup</h1>
+    <p>Bosun needs to be running on your machine before you complete the GitHub Marketplace installation.</p>
+    <div class="step"><strong>Step 1:</strong> Open a terminal and run:<br><br><code>bosun --setup</code></div>
+    <div class="step"><strong>Step 2:</strong> Keep the setup wizard open, then return to the GitHub Marketplace and click <strong>Install</strong> again.</div>
+    <div class="step"><strong>Step 3:</strong> GitHub will redirect back here automatically and you'll be taken to the setup wizard.</div>
+    <a href="http://localhost:${port}" class="btn">Open Setup Wizard →</a>
+  </div>
+</body>
+</html>`;
+
+  const SUCCESS_PAGE = (setupPort) => `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bosun — Authorized!</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+         background:#0d1117;color:#c9d1d9;display:flex;align-items:center;
+         justify-content:center;min-height:100vh}
+    .card{text-align:center;padding:40px;max-width:420px}
+    .icon{font-size:56px;margin-bottom:16px}
+    h1{color:#f0f6fc;font-size:22px;margin-bottom:8px}
+    p{color:#8b949e;font-size:14px}
+  </style>
+  <meta http-equiv="refresh" content="2;url=http://localhost:${setupPort}/?oauth=success">
+</head>
+<body>
+  <div class="card">
+    <div class="icon">✅</div>
+    <h1>GitHub App Authorized!</h1>
+    <p>Redirecting you to the Bosun setup wizard…</p>
+  </div>
+</body>
+</html>`;
+
+  callbackServer = createServer((req, res) => {
+    const url = new URL(req.url || "/", `http://127.0.0.1:${CALLBACK_PORT}`);
+    const pathname = url.pathname;
+
+    // Health check for relay pages / JS polling
+    if (pathname === "/ping") {
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(JSON.stringify({ ok: true, setupPort }));
+      return;
+    }
+
+    // The actual OAuth callback GitHub redirects to
+    if (pathname === "/github/callback" || pathname === "/api/github/callback") {
+      const code = url.searchParams.get("code") || "";
+      const installationId = url.searchParams.get("installation_id") || "";
+      const setupAction = url.searchParams.get("setup_action") || "";
+
+      if (!code) {
+        // No code — user navigated here directly; show instructions
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(WAITING_PAGE(setupPort));
+        return;
+      }
+
+      // Persist the code so the setup wizard can pick it up via polling
+      try {
+        const dir = resolve(homedir(), ".bosun");
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+        writeFileSync(oauthPendingPath(), JSON.stringify({
+          code,
+          installation_id: installationId,
+          setup_action: setupAction,
+          received_at: new Date().toISOString(),
+        }), "utf8");
+      } catch { /* non-fatal — redirect still works */ }
+
+      // Redirect to setup wizard, passing the code as query params
+      const redir = new URL(`http://localhost:${setupPort}/`);
+      redir.searchParams.set("oauth_code", code);
+      if (installationId) redir.searchParams.set("installation_id", installationId);
+      if (setupAction) redir.searchParams.set("setup_action", setupAction);
+
+      // Show a brief success splash, then meta-refresh to setup wizard
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(SUCCESS_PAGE(setupPort));
+      return;
+    }
+
+    // Anything else → instructions page
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(WAITING_PAGE(setupPort));
+  });
+
+  try {
+    await tryListen(callbackServer, CALLBACK_PORT);
+    console.log(`  📡 GitHub OAuth callback listener: http://127.0.0.1:${CALLBACK_PORT}/github/callback`);
+    console.log(`     ↳ Keep this terminal open while installing from GitHub Marketplace.\n`);
+  } catch (err) {
+    if (err.code === "EADDRINUSE") {
+      // Another Bosun instance (or the main UI server) is already on this port — that's fine.
+      console.log(`  ℹ️  Port ${CALLBACK_PORT} is already in use (main Bosun server may be running).\n`);
+    } else {
+      console.warn(`  ⚠️  Could not start OAuth callback listener on port ${CALLBACK_PORT}: ${err.message}`);
+    }
+    callbackServer = null;
+  }
+}
 
 function tryListen(srv, port) {
   return new Promise((resolve, reject) => {
@@ -778,6 +969,10 @@ export async function startSetupServer(options = {}) {
   const url = `http://localhost:${actualPort}`;
   const version = getVersion();
 
+  // Start the OAuth callback catcher on the dedicated callback port so that
+  // GitHub Marketplace redirects land somewhere even before bosun is fully set up.
+  await startCallbackCatcher(actualPort);
+
   console.log(`
   ┌──────────────────────────────────────────────────┐
   │                                                  │
@@ -798,6 +993,7 @@ export async function startSetupServer(options = {}) {
     server.on("close", resolve);
     process.on("SIGINT", () => {
       console.log("\n  Setup cancelled.\n");
+      if (callbackServer) callbackServer.close();
       server.close();
       process.exit(0);
     });

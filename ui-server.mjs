@@ -5788,8 +5788,16 @@ export async function startTelegramUiServer(options = {}) {
       return;
     }
 
+    // Lightweight health check / relay-page detection — no auth required
+    if (url.pathname === "/ping") {
+      jsonResponse(res, 200, { ok: true, server: "bosun" });
+      return;
+    }
+
     // GitHub OAuth callback — public (no session auth required)
-    if (url.pathname === "/api/github/callback") {
+    // Accept both /github/callback (registered in GitHub App settings) and
+    // /api/github/callback (documented API path) so either works.
+    if (url.pathname === "/api/github/callback" || url.pathname === "/github/callback") {
       await handleGitHubOAuthCallback(req, res);
       return;
     }
