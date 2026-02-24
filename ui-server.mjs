@@ -9,6 +9,7 @@ import { networkInterfaces } from "node:os";
 import { connect as netConnect } from "node:net";
 import { resolve, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { arch as osArch, platform as osPlatform } from "node:os";
 import Ajv2020 from "ajv/dist/2020.js";
 
@@ -101,6 +102,65 @@ import {
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
 const uiRoot = resolve(__dirname, "ui");
+
+// ── Vendor module map ─────────────────────────────────────────────────────────
+// Served at /vendor/<name>.js — no auth required (public browser libraries).
+//
+// We use createRequire rooted at *this file* so Node's own module-resolution
+// algorithm locates each package, regardless of whether npm hoisted it to a
+// parent node_modules (common in global installs: npm install -g bosun).
+// Falls back to CDN redirect when the package is not installed.
+const _require = createRequire(import.meta.url);
+
+function resolveVendorPath(specifier) {
+  try {
+    return _require.resolve(specifier);
+  } catch {
+    return null;
+  }
+}
+
+const VENDOR_FILES = {
+  "preact.js":           { specifier: "preact/dist/preact.module.js",           cdn: "https://esm.sh/preact@10.25.4" },
+  "preact-hooks.js":     { specifier: "preact/hooks/dist/hooks.module.js",       cdn: "https://esm.sh/preact@10.25.4/hooks" },
+  "preact-compat.js":    { specifier: "preact/compat/dist/compat.module.js",     cdn: "https://esm.sh/preact@10.25.4/compat" },
+  "htm.js":              { specifier: "htm/dist/htm.module.js",                  cdn: "https://esm.sh/htm@3.1.1" },
+  "preact-signals.js":   { specifier: "@preact/signals/dist/signals.module.js", cdn: "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4" },
+  "es-module-shims.js":  { specifier: "es-module-shims/dist/es-module-shims.js", cdn: "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js" },
+};
+
+/**
+ * Serve a front-end vendor file from node_modules.
+ * No authentication required — these are public browser libraries.
+ * If the local file is missing (first install not run yet), redirects to CDN.
+ */
+async function handleVendor(req, res, url) {
+  const name = url.pathname.replace(/^\/vendor\//, "");
+  const entry = VENDOR_FILES[name];
+  if (!entry) {
+    textResponse(res, 404, "Not Found");
+    return;
+  }
+  const localPath = resolveVendorPath(entry.specifier);
+  if (localPath && existsSync(localPath)) {
+    try {
+      const data = await readFile(localPath);
+      res.writeHead(200, {
+        "Content-Type": "application/javascript; charset=utf-8",
+        "Cache-Control": "max-age=86400, stale-while-revalidate=604800",
+        "Access-Control-Allow-Origin": "*",
+        "X-Bosun-Vendor": "local",
+      });
+      res.end(data);
+    } catch (err) {
+      textResponse(res, 500, `Vendor error: ${err.message}`);
+    }
+  } else {
+    // Package not installed yet (e.g. first-run before npm install) — redirect to CDN
+    res.writeHead(302, { Location: entry.cdn, "Cache-Control": "no-store" });
+    res.end();
+  }
+}
 const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const logsDir = resolve(__dirname, "logs");
 const agentLogsDir = resolve(repoRoot, ".cache", "agent-logs");
@@ -5742,8 +5802,16 @@ export async function startTelegramUiServer(options = {}) {
       return;
     }
 
+    // Lightweight health check / relay-page detection — no auth required
+    if (url.pathname === "/ping") {
+      jsonResponse(res, 200, { ok: true, server: "bosun" });
+      return;
+    }
+
     // GitHub OAuth callback — public (no session auth required)
-    if (url.pathname === "/api/github/callback") {
+    // Accept both /github/callback (registered in GitHub App settings) and
+    // /api/github/callback (documented API path) so either works.
+    if (url.pathname === "/api/github/callback" || url.pathname === "/github/callback") {
       await handleGitHubOAuthCallback(req, res);
       return;
     }
@@ -5760,6 +5828,12 @@ export async function startTelegramUiServer(options = {}) {
 
     if (url.pathname.startsWith("/api/")) {
       await handleApi(req, res, url);
+      return;
+    }
+
+    // Vendor files (preact, htm, signals etc.) — served from node_modules, no auth needed
+    if (url.pathname.startsWith("/vendor/")) {
+      await handleVendor(req, res, url);
       return;
     }
 

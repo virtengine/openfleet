@@ -260,8 +260,13 @@ describe("import map consistency", () => {
 
   it("preact versions should be consistent across import maps", () => {
     const extractVersion = (url) => {
+      // CDN URL: extract from preact@X.Y.Z
       const m = url.match(/preact@([\d.]+)/);
-      return m ? m[1] : null;
+      if (m) return m[1];
+      // Vendor path: /vendor/preact.js — version is pinned in package.json;
+      // return the filename as a consistent identity token
+      if (url.startsWith("/vendor/")) return url;
+      return null;
     };
 
     const demoPreactVer = extractVersion(demoMap.imports["preact"]);
@@ -271,12 +276,13 @@ describe("import map consistency", () => {
     expect(indexPreactVer).toBeTruthy();
     expect(demoPreactVer).toBe(indexPreactVer);
 
-    // @preact/signals deps param should match
-    const demoSignalsDeps = extractVersion(
-      demoMap.imports["@preact/signals"] || "",
-    );
-    if (demoSignalsDeps) {
-      expect(demoSignalsDeps).toBe(demoPreactVer);
+    // @preact/signals deps param should match (only enforced for CDN URLs)
+    const signalsUrl = demoMap.imports["@preact/signals"] || "";
+    if (!signalsUrl.startsWith("/vendor/")) {
+      const demoSignalsDeps = extractVersion(signalsUrl);
+      if (demoSignalsDeps) {
+        expect(demoSignalsDeps).toBe(demoPreactVer);
+      }
     }
   });
 });

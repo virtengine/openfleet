@@ -354,9 +354,9 @@
   <script type="importmap">
   {
     "imports": {
-      "preact":          "https://esm.sh/preact@10.25.4",
-      "preact/hooks":    "https://esm.sh/preact@10.25.4/hooks",
-      "htm":             "https://esm.sh/htm@3.1.1"
+      "preact":          "/vendor/preact.js",
+      "preact/hooks":    "/vendor/preact-hooks.js",
+      "htm":             "/vendor/htm.js"
     }
   }
   </script>
@@ -496,6 +496,8 @@ function App() {
   const [jiraProjectKey, setJiraProjectKey] = useState("");
   const [jiraApiToken, setJiraApiToken] = useState("");
   const [githubProjectNumber, setGithubProjectNumber] = useState("");
+  const [oauthStatus, setOauthStatus] = useState(null); // null | "pending" | "received"
+  const [oauthInstallationId, setOauthInstallationId] = useState("");
 
   // ── Load initial data ──────────────────────────────────────────────────────
 
@@ -593,7 +595,48 @@ function App() {
     }
   }, [bosunHome]);
 
-  // ── Navigation ─────────────────────────────────────────────────────────────
+  // ── GitHub App OAuth callback detection ───────────────────────────────────
+  // When the user authorises the Bosun GitHub App from the Marketplace:
+  //   1. GitHub redirects to http://127.0.0.1:54317/github/callback?code=XXX
+  //   2. The callback catcher saves the code and bounces the browser back here
+  //      with ?oauth_code=XXX&installation_id=YYY in the URL
+  //   3. OR — if the user installs first and then runs setup — the callback
+  //      catcher wrote a file that we get via polling /api/setup/oauth-state
+  useEffect(() => {
+    // Check if GitHub just redirected back to us with the OAuth code
+    const params = new URLSearchParams(window.location.search);
+    const oauthCode = params.get("oauth_code");
+    const installId = params.get("installation_id");
+    const oauthOk   = params.get("oauth") === "success";
+    if (oauthCode || oauthOk) {
+      setOauthStatus("received");
+      if (installId) setOauthInstallationId(installId);
+      // Clean the URL params without a navigation so the wizard looks tidy
+      const clean = window.location.pathname;
+      window.history.replaceState({}, "", clean);
+    }
+
+    // Poll the setup server for a pending OAuth callback that may have been
+    // received on the callback-catcher (port 54317) while setup was open.
+    let pollTimer;
+    const poll = async () => {
+      try {
+        const r = await fetch("/api/setup/oauth-state");
+        if (!r.ok) return;
+        const data = await r.json();
+        if (data?.pending) {
+          setOauthStatus("received");
+          if (data.installation_id) setOauthInstallationId(data.installation_id);
+          clearInterval(pollTimer);
+        }
+      } catch { /* server may not have this endpoint yet — ignore */ }
+    };
+    pollTimer = setInterval(poll, 2000);
+    poll(); // immediate first check
+    return () => clearInterval(pollTimer);
+  }, []);
+
+
 
   const goNext = () => {
     setCompletedSteps((prev) => new Set([...prev, step]));
@@ -1185,6 +1228,37 @@ function App() {
   const StepNotifications = () => html`
     <h2>Notifications</h2>
     <p class="step-desc">Optional: configure Telegram notifications for task progress, errors, and PR updates.</p>
+
+    ${/* ── GitHub App installation callout ── */ ""}
+    <div style="background:rgba(56,139,253,.07);border:1px solid rgba(56,139,253,.25);border-radius:var(--radius-sm);padding:14px 16px;margin-bottom:20px">
+      <div style="display:flex;align-items:flex-start;gap:10px">
+        <span style="font-size:1.3em;line-height:1.2;flex-shrink:0">📦</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:0.9rem;color:var(--accent-light);margin-bottom:4px">GitHub App — Bosun[botswain]</div>
+          ${oauthStatus === "received"
+            ? html`<div style="color:#4ade80;font-size:0.82rem">
+                ✅ GitHub App authorized!
+                ${oauthInstallationId ? html` (Installation <code style="font-family:var(--font-mono)">${oauthInstallationId}</code>)` : null}
+              </div>`
+            : html`<div style="font-size:0.82rem;color:var(--text-secondary);line-height:1.5">
+                Install the Bosun GitHub App to enable rich PR integration and automatic task routing.
+                <strong style="color:var(--text-primary)"> Keep this setup wizard open</strong> while
+                you complete the Marketplace installation — the callback will be caught automatically.
+                <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                  <a href="https://github.com/apps/bosun-botswain" target="_blank" rel="noopener"
+                     style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:var(--accent);color:#fff;border-radius:5px;font-size:0.8rem;font-weight:600;text-decoration:none">
+                    🔗 Install from GitHub Marketplace
+                  </a>
+                  <span style="font-size:0.75rem;color:var(--text-dim)">
+                    <span class="spinner" style="width:10px;height:10px;border-width:2px;vertical-align:middle;margin-right:4px"></span>
+                    Waiting for authorization…
+                  </span>
+                </div>
+              </div>`
+          }
+        </div>
+      </div>
+    </div>
     <div class="form-group">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
         <input type="checkbox" checked=${telegramEnabled}
@@ -1294,6 +1368,16 @@ function App() {
         <div style="background:var(--success-bg);border:1px solid rgba(34,197,94,.3);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.8rem;color:var(--success);display:flex;align-items:center;gap:8px">
           <span>✓</span>
           <span>Existing config detected — fields pre-filled from your <code style="font-family:var(--font-mono);color:var(--success)">.env</code>. Review each step and press Continue, or adjust as needed.</span>
+        </div>
+      `}
+      ${oauthStatus === "received" && html`
+        <div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.35);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;font-size:0.85rem;color:#4ade80;display:flex;align-items:flex-start;gap:10px">
+          <span style="font-size:1.2em;line-height:1">✅</span>
+          <div>
+            <strong>GitHub App authorized!</strong>
+            ${oauthInstallationId && html` Installation ID: <code style="font-family:var(--font-mono);font-size:0.8em;color:#86efac">${oauthInstallationId}</code>.`}
+            ${" "}Complete the remaining steps to finish configuration.
+          </div>
         </div>
       `}
       <${ProgressBar} />
