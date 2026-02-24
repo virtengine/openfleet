@@ -770,7 +770,7 @@ export function TaskProgressModal({ task, onClose }) {
       onClose=${onClose}
       contentClassName="modal-content-wide task-progress-modal"
     >
-      ${${""}/* Hero row */}
+      
       <div class="tp-hero">
         <div class="tp-pulse-dot"></div>
         <div class="tp-hero-title">
@@ -779,7 +779,7 @@ export function TaskProgressModal({ task, onClose }) {
         <${Badge} status="inprogress" text="running" />
       </div>
 
-      ${${""}/* Meta strip */}
+      
       <div class="tp-meta-strip">
         <div class="tp-meta-item">
           <span class="tp-meta-label">Agent</span>
@@ -807,7 +807,7 @@ export function TaskProgressModal({ task, onClose }) {
         `}
       </div>
 
-      ${${""}/* Steps */}
+      
       <div class="tp-section">
         <div class="tp-section-title">Progress · step ${currentStep + 1} of ${steps.length}</div>
         <div style="display:flex;flex-direction:column;gap:6px;">
@@ -836,7 +836,7 @@ export function TaskProgressModal({ task, onClose }) {
         </div>
       </div>
 
-      ${${""}/* Live log tail */}
+      
       <div class="tp-section" style="padding-top:0;">
         <div class="tp-section-title">Live Log Tail</div>
         <div class="tp-log-container">
@@ -849,7 +849,7 @@ export function TaskProgressModal({ task, onClose }) {
         </div>
       </div>
 
-      ${${""}/* Action buttons */}
+      
       <div class="btn-row tp-actions">
         <button
           class="btn btn-ghost btn-sm"
@@ -977,7 +977,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
       onClose=${onClose}
       contentClassName="modal-content-wide task-review-modal"
     >
-      ${${""}/* Hero */}
+      
       <div class="tr-hero">
         <span class="tr-review-icon">🔍</span>
         <div class="tr-hero-title">
@@ -996,7 +996,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
         <${Badge} status="inreview" text="review" />
       </div>
 
-      ${${""}/* Meta grid */}
+      
       <div class="tr-meta-grid">
         <div class="tr-meta-item">
           <span class="tr-meta-label">Agent</span>
@@ -1032,7 +1032,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
         `}
       </div>
 
-      ${${""}/* CI Checks */}
+      
       <div class="tr-section">
         <div class="tr-section-title">
           Checks ${allPass ? "— ✅ All passing" : ""}
@@ -1047,7 +1047,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
         </div>
       </div>
 
-      ${${""}/* If task has description, show a summary */}
+      
       ${(liveTask?.description || task.description) && html`
         <div class="tr-section" style="padding-top:0;">
           <div class="tr-section-title">Description</div>
@@ -1057,7 +1057,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
         </div>
       `}
 
-      ${${""}/* Actions */}
+      
       <div class="btn-row tr-actions">
         <button
           class="btn btn-primary btn-sm"
