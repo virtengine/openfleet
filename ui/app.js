@@ -825,7 +825,7 @@ function BottomNav({ compact, moreOpen, onToggleMore, onNavigate }) {
   `;
 }
 
-function MoreSheet({ open, onClose, onNavigate }) {
+function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
   const primaryTabs = getTabsById(PRIMARY_NAV_TABS);
   const moreTabs = getTabsById(MORE_NAV_TABS);
   return html`
@@ -876,6 +876,212 @@ function MoreSheet({ open, onClose, onNavigate }) {
               `;
             })}
           </div>
+        </div>
+        <div class="more-menu-section">
+          <div class="more-menu-section-title">Quick Actions</div>
+          <button
+            class="more-menu-bot-btn"
+            type="button"
+            aria-label="Open Bot Controls"
+            onClick=${() => { onClose(); onOpenBot?.(); }}
+          >
+            <span class="more-menu-bot-icon">🤖</span>
+            <div class="more-menu-bot-text">
+              <span class="more-menu-bot-label">Bot Controls</span>
+              <span class="more-menu-bot-sub">Commands, executor, routing</span>
+            </div>
+            <span class="more-menu-bot-chevron">›</span>
+          </button>
+        </div>
+      </div>
+    <//>
+  `;
+}
+
+/* ═══════════════════════════════════════════════
+ *  Bot Controls — multi-level command panel
+ *  Triggered from the "More" sheet (not a floating FAB so it
+ *  doesn't obscure content on small screens / mobile).
+ * ═══════════════════════════════════════════════ */
+const BOT_SCREENS = {
+  home: {
+    title: "🎛️ Bosun Control Center",
+    body: "Manage your automation fleet.",
+    keyboard: [
+      [{ text: "📊 Status", cmd: "/status" }, { text: "📋 Tasks", cmd: "/tasks" }, { text: "🤖 Agents", cmd: "/agents" }],
+      [{ text: "⚙️ Executor", go: "executor" }, { text: "🛰 Routing", go: "routing" }, { text: "🌳 Workspaces", go: "workspaces" }],
+      [{ text: "📁 Logs", cmd: "/logs" }, { text: "🏥 Health", cmd: "/health" }, { text: "🔄 Refresh", cmd: "/status" }],
+    ],
+  },
+  executor: {
+    title: "⚙️ Executor",
+    parent: "home",
+    body: "Task execution slots, pause, resume, and parallelism.",
+    keyboard: [
+      [{ text: "📊 Status", cmd: "/executor" }, { text: "⏸ Pause", cmd: "/pause" }, { text: "▶️ Resume", cmd: "/resume" }],
+      [{ text: "🔢 Max Parallel", go: "maxparallel" }, { text: "🔁 Retry Active", cmd: "/retrytask" }],
+    ],
+  },
+  maxparallel: {
+    title: "🔢 Max Parallel Slots",
+    parent: "executor",
+    body: "Set the maximum number of concurrent task slots.",
+    keyboard: [
+      [{ text: "1", cmd: "/parallelism 1" }, { text: "2", cmd: "/parallelism 2" }, { text: "3", cmd: "/parallelism 3" }],
+      [{ text: "4", cmd: "/parallelism 4" }, { text: "6", cmd: "/parallelism 6" }, { text: "8", cmd: "/parallelism 8" }],
+      [{ text: "12", cmd: "/parallelism 12" }, { text: "16", cmd: "/parallelism 16" }],
+    ],
+  },
+  routing: {
+    title: "🛰 Routing & SDKs",
+    parent: "home",
+    body: "SDK routing, kanban binding, and version info.",
+    keyboard: [
+      [{ text: "🤖 SDK Status", cmd: "/sdk" }, { text: "📋 Kanban", cmd: "/kanban" }],
+      [{ text: "🌐 Version", cmd: "/version" }, { text: "❓ Help", cmd: "/help" }],
+    ],
+  },
+  workspaces: {
+    title: "🌳 Workspaces",
+    parent: "home",
+    body: "Git worktrees, logs, and task planning.",
+    keyboard: [
+      [{ text: "📊 Fleet Status", cmd: "/status" }, { text: "📁 Logs", cmd: "/logs" }],
+      [{ text: "🗺️ Planner", go: "planner" }, { text: "✅ Start Task", cmd: "/starttask" }],
+    ],
+  },
+  planner: {
+    title: "🗺️ Task Planner",
+    parent: "workspaces",
+    body: "Seed new tasks from the backlog into the active queue.",
+    keyboard: [
+      [{ text: "Plan 3", cmd: "/plan 3" }, { text: "Plan 5", cmd: "/plan 5" }, { text: "Plan 10", cmd: "/plan 10" }],
+    ],
+  },
+};
+
+function BotControlsSheet({ open, onClose }) {
+  const [screen, setScreen] = useState("home");
+  const [navStack, setNavStack] = useState([]);
+  const [cmdOutput, setCmdOutput] = useState(null);
+  const [cmdLoading, setCmdLoading] = useState(false);
+  const [cmdError, setCmdError] = useState(null);
+
+  const currentDef = BOT_SCREENS[screen] || BOT_SCREENS.home;
+
+  const botNavigateTo = useCallback((screenId) => {
+    setNavStack((s) => [...s, screen]);
+    setScreen(screenId);
+    setCmdOutput(null);
+    setCmdError(null);
+  }, [screen]);
+
+  const botGoBack = useCallback(() => {
+    setNavStack((s) => {
+      const next = [...s];
+      const prev = next.pop() || "home";
+      setScreen(prev);
+      setCmdOutput(null);
+      setCmdError(null);
+      return next;
+    });
+  }, []);
+
+  const botGoHome = useCallback(() => {
+    setNavStack([]);
+    setScreen("home");
+    setCmdOutput(null);
+    setCmdError(null);
+  }, []);
+
+  const handleBotClose = useCallback(() => {
+    onClose();
+    // Reset navigation state after the sheet's close animation (~300ms)
+    setTimeout(() => {
+      setScreen("home");
+      setNavStack([]);
+      setCmdOutput(null);
+      setCmdError(null);
+    }, 320);
+  }, [onClose]);
+
+  const runBotCommand = useCallback(async (cmd) => {
+    if (cmdLoading) return;
+    setCmdLoading(true);
+    setCmdOutput(null);
+    setCmdError(null);
+    try {
+      const result = await apiFetch("/api/command", {
+        method: "POST",
+        body: JSON.stringify({ command: cmd }),
+        _silent: true,
+      });
+      if (result?.ok) {
+        setCmdOutput(result.data ? String(result.data) : `✅ ${cmd} executed.`);
+      } else {
+        setCmdError(result?.error || "Command failed");
+      }
+    } catch (err) {
+      setCmdError(err.message || "Connection error — is bosun running?");
+    } finally {
+      setCmdLoading(false);
+    }
+  }, [cmdLoading]);
+
+  return html`
+    <${Modal}
+      title=${currentDef.title}
+      open=${open}
+      onClose=${handleBotClose}
+      contentClassName="bot-controls-content"
+    >
+      <div class="bot-controls">
+        ${navStack.length > 0 ? html`
+          <div class="bot-controls-breadcrumb">
+            <button class="btn btn-ghost btn-sm" type="button" onClick=${botGoBack} aria-label="Go back">
+              ← Back
+            </button>
+            ${navStack.length > 1 ? html`
+              <button class="btn btn-ghost btn-sm" type="button" onClick=${botGoHome} aria-label="Go to home">
+                🏠 Home
+              </button>
+            ` : null}
+          </div>
+        ` : null}
+
+        ${currentDef.body ? html`<p class="bot-controls-body">${currentDef.body}</p>` : null}
+
+        ${cmdLoading ? html`
+          <div class="bot-controls-spinner">
+            <div class="ptr-spinner-icon"></div>
+            <span>Running…</span>
+          </div>
+        ` : null}
+
+        ${cmdError && !cmdLoading ? html`
+          <div class="bot-controls-result bot-controls-result-error">❌ ${cmdError}</div>
+        ` : null}
+
+        ${cmdOutput && !cmdLoading && !cmdError ? html`
+          <div class="bot-controls-result"><pre>${cmdOutput}</pre></div>
+        ` : null}
+
+        <div class="bot-controls-keyboard">
+          ${currentDef.keyboard.map((row, ri) => html`
+            <div key=${ri} class="bot-kb-row">
+              ${row.map((btn, bi) => html`
+                <button
+                  key=${bi}
+                  type="button"
+                  class="bot-kb-btn ${btn.go ? "nav-btn" : ""}"
+                  disabled=${cmdLoading}
+                  onClick=${() => btn.go ? botNavigateTo(btn.go) : runBotCommand(btn.cmd)}
+                >
+                  ${btn.text}
+                </button>
+              `)}
+            </div>
+          `)}
         </div>
       </div>
     <//>
@@ -1060,6 +1266,11 @@ function App() {
 
   const closeMore = useCallback(() => setIsMoreOpen(false), []);
 
+  // ── Bot Controls sheet state ──
+  const [isBotOpen, setIsBotOpen] = useState(false);
+  const openBot  = useCallback(() => setIsBotOpen(true), []);
+  const closeBot = useCallback(() => setIsBotOpen(false), []);
+
   const handleNavigate = useCallback((tabId, options = {}) => {
     setIsMoreOpen(false);
     navigateTo(tabId, options);
@@ -1073,6 +1284,7 @@ function App() {
     if (typeof globalThis === "undefined") return;
     const handler = () => {
       setIsMoreOpen(false);
+      setIsBotOpen(false);
       setShowShortcuts(false);
     };
     globalThis.addEventListener("ve:close-modals", handler);
@@ -1081,6 +1293,7 @@ function App() {
 
   useEffect(() => {
     setIsMoreOpen(false);
+    setIsBotOpen(false);
     setSidebarDrawerOpen(false);
     setInspectorDrawerOpen(false);
   }, [activeTab.value]);
@@ -1395,6 +1608,11 @@ function App() {
       open=${isMoreOpen}
       onClose=${closeMore}
       onNavigate=${handleNavigate}
+      onOpenBot=${openBot}
+    />
+    <${BotControlsSheet}
+      open=${isBotOpen}
+      onClose=${closeBot}
     />
   `;
 }

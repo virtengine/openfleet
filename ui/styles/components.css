@@ -1191,6 +1191,193 @@ select.input {
   overflow: visible;
 }
 
+/* ═══════════════════════════════════════════════
+ *  Bot Controls — command panel launched from More sheet
+ * ═══════════════════════════════════════════════ */
+
+/* ─── Trigger button inside MoreSheet ─── */
+.more-menu-bot-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  color: var(--text-primary);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+  text-align: left;
+}
+
+.more-menu-bot-btn:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-strong);
+}
+
+.more-menu-bot-btn:active {
+  transform: scale(0.98);
+}
+
+.more-menu-bot-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(76, 201, 240, 0.12);
+  border-radius: var(--radius-md);
+}
+
+.more-menu-bot-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.more-menu-bot-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-bright);
+}
+
+.more-menu-bot-sub {
+  font-size: 11px;
+  color: var(--text-hint);
+}
+
+.more-menu-bot-chevron {
+  font-size: 20px;
+  color: var(--text-hint);
+  flex-shrink: 0;
+}
+
+/* ─── Sheet inner content ─── */
+.bot-controls-content {
+  padding: 0;
+}
+
+.bot-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 4px 4px;
+}
+
+/* ─── Back/Home breadcrumb nav ─── */
+.bot-controls-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ─── Screen body text ─── */
+.bot-controls-body {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* ─── Spinner ─── */
+.bot-controls-spinner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-hint);
+  padding: 8px 0;
+}
+
+/* ─── Command result area ─── */
+.bot-controls-result {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.bot-controls-result pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.bot-controls-result-error {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.06);
+  color: var(--color-error);
+}
+
+/* ─── Keyboard button grid ─── */
+.bot-controls-keyboard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bot-kb-row {
+  display: flex;
+  gap: 4px;
+}
+
+.bot-kb-btn {
+  flex: 1;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 9px 6px;
+  cursor: pointer;
+  transition: background var(--transition-fast), transform 0.1s;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bot-kb-btn:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-strong);
+}
+
+.bot-kb-btn:active {
+  background: var(--accent-subtle);
+  transform: scale(0.97);
+}
+
+.bot-kb-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Navigation buttons (→ another screen) — slightly muted style */
+.bot-kb-btn.nav-btn {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.bot-kb-btn.nav-btn:hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
 /* ─── Cards need breathing room ─── */
 .card + .card {
   margin-top: 12px;
