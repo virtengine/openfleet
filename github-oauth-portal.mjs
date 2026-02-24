@@ -605,11 +605,13 @@ async function handleSetup(req, res) {
     <div class="card">
       <div class="card-title">Next Steps</div>
       <ol>
-        <li>Configure <code>BOSUN_GITHUB_APP_ID</code> and <code>BOSUN_GITHUB_PRIVATE_KEY_PATH</code> to enable App JWT signing.</li>
-        <li>Set <code>BOSUN_GITHUB_WEBHOOK_SECRET</code> to the value in your App webhook settings.</li>
-        <li>Register the webhook URL (requires a public URL or ngrok tunnel — run <code>ngrok http 54317</code> and use the HTTPS URL + <code>/webhook</code>).</li>
+        <li>Set <code>BOSUN_GITHUB_APP_ID=2911413</code> and <code>BOSUN_GITHUB_PRIVATE_KEY_PATH</code> (path to your downloaded .pem file) to enable App JWT signing.</li>
         <li>Start Bosun: <code>node cli.mjs</code></li>
       </ol>
+      <div class="alert alert-info" style="margin-top:12px">
+        Webhook events (PR comments, issue mentions) are delivered by VirtEngine’s relay
+        to your Bosun instance automatically — no public URL or tunnel needed on your end.
+      </div>
       <div class="btn-row">
         <a class="btn btn-primary" href="/">← Back to portal</a>
       </div>
@@ -893,9 +895,8 @@ export async function startOAuthPortal(options = {}) {
       if (!quiet) {
         console.log(`[oauth-portal] Running at http://${host}:${_port}`);
         console.log(`[oauth-portal]   Callback URL: http://${host}:${_port}/github/callback  ← register in GitHub App settings`);
-        console.log(`[oauth-portal]   Setup URL:    (leave blank — superseded by Callback URL when OAuth-at-install is ON)`);
+        console.log(`[oauth-portal]   Setup URL:    leave blank (superseded by Callback URL when OAuth-at-install is ON)`);
         console.log(`[oauth-portal]   Device Flow:  enable AFTER saving Callback URL in GitHub App settings`);
-        console.log(`[oauth-portal]   Webhook URL:  http://<public-host>/webhook  (requires ngrok or public URL)`);
       }
 
       resolve({
