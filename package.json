@@ -67,7 +67,6 @@
     "./container-runner": "./container-runner.mjs",
     "./compat": "./compat.mjs",
     "./task-cli": "./task-cli.mjs",
-    "./github-oauth-portal": "./github-oauth-portal.mjs",
     "./github-auth-manager": "./github-auth-manager.mjs",
     "./git-commit-helpers": "./git-commit-helpers.mjs"
   },
@@ -110,6 +109,7 @@
     "publish:major": "node publish.mjs --bump major",
     "publish:minor:dry": "node publish.mjs --bump minor --dry-run",
     "publish:major:dry": "node publish.mjs --bump major --dry-run",
+    "vendorsync": "node vendor-sync.mjs",
     "vendor:sync": "node vendor-sync.mjs"
   },
   "files": [
