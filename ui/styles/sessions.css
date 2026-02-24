@@ -1538,10 +1538,15 @@ ul.md-list li::before {
 
 /* ═══ Chat Input Area (bottom bar) ═══ */
 .chat-input-area {
-  position: sticky;
-  bottom: 0;
-  z-index: 10;
-  padding: 16px 16px calc(16px + var(--chat-keyboard-offset, 0px));
+  /* position:relative so it participates in flex stacking (never sticky —
+     sticky breaks inside overflow:hidden ancestors, causing the input to
+     float in the middle of the screen instead of pinning to the bottom). */
+  position: relative;
+  z-index: 100;
+  padding: 12px 16px;
+  /* On mobile add keyboard + safe-bottom so the input lifts above the
+     on-screen keyboard when it appears. */
+  padding-bottom: calc(12px + var(--chat-keyboard-offset, 0px) + var(--safe-bottom, 0px));
   border-top: 1px solid var(--border);
   background: var(--bg-surface, var(--bg-card));
   flex-shrink: 0;
@@ -2065,24 +2070,22 @@ ul.md-list li::before {
 
 /* ─── Desktop: hide duplicate inner session-pane when rail is present ─── */
 @media (min-width: 1200px) {
-
   .app-shell[data-has-rail="true"][data-tab="chat"] .session-pane,
   .app-shell[data-has-rail="true"][data-tab="agents"] .session-pane {
     display: none !important;
   }
 
+  /* Switch from 2-column grid to single-column flex so session-detail fills
+     the full width and height once session-pane is hidden. */
   .app-shell[data-has-rail="true"][data-tab="chat"] .session-split,
   .app-shell[data-has-rail="true"][data-tab="agents"] .session-split {
-    display: block !important;
+    display: flex !important;
+    flex-direction: column;
+    min-height: 0;
   }
 }
 
-/* ─── Boost chat input z-index so it floats above any fixed overlays ─── */
-.chat-input-area {
-  z-index: 100;
-}
-
-/* ─── Desktop chat: remove excessive nav-height bottom padding ─── */
+/* ─── Desktop: flat padding on input, no nav-height offset needed ─── */
 @media (min-width: 1200px) {
   .app-shell[data-tab="chat"] .chat-input-area {
     padding: 12px 16px 16px;

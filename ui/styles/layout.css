@@ -1170,13 +1170,20 @@
   .app-shell[data-tab="tasks"] .main-content {
     max-width: none;
   }
+
+  /* Desktop: nav is hidden so no bottom reserve needed for chat */
+  .app-shell[data-tab="chat"] .main-content {
+    padding-bottom: 0;
+  }
 }
 
 .app-shell[data-tab="chat"] .main-content {
   padding-top: 0;
   padding-left: calc(var(--safe-left));
   padding-right: calc(var(--safe-right));
-  padding-bottom: calc(var(--nav-height, 60px) + var(--safe-bottom, 0px));
+  /* Reserve space at the bottom for the fixed nav bar plus the on-screen
+     keyboard height (--chat-keyboard-offset is set live by visualViewport). */
+  padding-bottom: calc(var(--nav-height, 60px) + var(--safe-bottom, 0px) + var(--chat-keyboard-offset, 0px));
   overflow: hidden;
   display: flex;
   flex-direction: column;
