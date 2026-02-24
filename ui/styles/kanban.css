@@ -1,5 +1,161 @@
 /* ─── Kanban Board Styles ─── */
 
+/* ─── Filter Bar (GitHub Projects-style) ─── */
+.kanban-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 0;
+}
+
+.kanban-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px 10px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.kanban-filter-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-card, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  padding: 6px 10px;
+  flex: 1;
+  min-width: 180px;
+  max-width: 320px;
+}
+
+.kanban-filter-icon {
+  font-size: 13px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.kanban-filter-input {
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  width: 100%;
+  min-width: 0;
+}
+
+.kanban-filter-input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.5;
+}
+
+.kanban-filter-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.kanban-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full, 999px);
+  background: var(--bg-card, rgba(255, 255, 255, 0.04));
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.kanban-filter-chip:hover {
+  border-color: var(--border-strong, rgba(255, 255, 255, 0.15));
+  color: var(--text-primary);
+}
+
+.kanban-filter-chip.active {
+  background: var(--accent, #3b82f6);
+  border-color: var(--accent, #3b82f6);
+  color: var(--accent-text, #fff);
+}
+
+.kanban-filter-chip.clear {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.kanban-filter-chip.clear:hover {
+  opacity: 1;
+  color: var(--color-critical, #dc2626);
+}
+
+.kanban-filter-dropdown-wrap {
+  position: relative;
+}
+
+.kanban-filter-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 100;
+  min-width: 180px;
+  background: var(--bg-primary, #0f172a);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.kanban-filter-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-sm, 4px);
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.kanban-filter-option:hover {
+  background: var(--bg-card, rgba(255, 255, 255, 0.06));
+}
+
+.kanban-filter-option.selected {
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--accent, #3b82f6);
+  font-weight: 600;
+}
+
+.kanban-filter-option .kanban-card-priority {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ─── Board Layout ─── */
+
 .kanban-board {
   display: flex;
   gap: 14px;
@@ -178,7 +334,55 @@ body.kanban-dragging .kanban-card {
   padding: 2px 6px;
   border-radius: var(--radius-sm, 4px);
   color: #fff;
+}
+
+/* ─── Card Header (repo badge + issue # + priority) ─── */
+.kanban-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.kanban-card-repo {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--surface-1, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  padding: 1px 6px;
+  letter-spacing: 0.02em;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kanban-card-issue {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent, #3b82f6);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.kanban-card-assignee {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent, #3b82f6);
+  color: var(--accent-text, #fff);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  flex-shrink: 0;
 }
 
 .kanban-card-title {
@@ -285,7 +489,7 @@ body.kanban-dragging .kanban-card {
   }
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .kanban-board {
     gap: 18px;
     padding: 12px 0 18px;
@@ -365,4 +569,39 @@ body.kanban-dragging .kanban-card {
 .view-toggle-btn.active {
   background: var(--accent);
   color: var(--accent-text);
+}
+
+/* ═══════════════════════════════════════════════
+ *  Desktop Premium Density Overrides
+ * ═══════════════════════════════════════════════ */
+@media (min-width: 1400px) {
+  .kanban-board {
+    gap: 12px;
+    padding: 8px 0 12px;
+  }
+
+  .kanban-column {
+    padding: 10px;
+    border-radius: var(--radius-md);
+  }
+
+  .kanban-card {
+    padding: 10px;
+    border-radius: var(--radius-sm);
+  }
+
+  .kanban-card-title {
+    font-size: 13px;
+  }
+
+  .kanban-card-desc,
+  .kanban-card-meta {
+    font-size: 11px;
+  }
+
+  .kanban-column-header {
+    font-size: 12px;
+    padding: 6px 4px;
+    margin-bottom: 6px;
+  }
 }

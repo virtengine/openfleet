@@ -53,12 +53,14 @@ import {
 import { ChatView } from "../components/chat-view.js";
 import { apiFetch } from "../modules/api.js";
 import { showToast } from "../modules/state.js";
+import { VoiceMicButton } from "../modules/voice.js";
 import {
   ChatInputToolbar,
   loadAvailableAgents,
   agentMode,
   activeAgent,
   activeAgentInfo,
+  yoloMode,
 } from "../components/agent-selector.js";
 import {
   addPendingMessage,
@@ -249,7 +251,7 @@ export function ChatTab() {
   });
   const [isDesktop, setIsDesktop] = useState(() => {
     try {
-      return globalThis.matchMedia?.("(min-width: 1200px)")?.matches ?? false;
+      return globalThis.matchMedia?.("(min-width: 1400px)")?.matches ?? false;
     } catch {
       return false;
     }
@@ -312,7 +314,7 @@ export function ChatTab() {
   }, []);
 
   useEffect(() => {
-    const mq = globalThis.matchMedia?.("(min-width: 1200px)");
+    const mq = globalThis.matchMedia?.("(min-width: 1400px)");
     if (!mq) return;
     const handler = (e) => setIsDesktop(e.matches);
     if (mq.addEventListener) mq.addEventListener("change", handler);
@@ -545,7 +547,7 @@ export function ChatTab() {
         const sendFn = async (sid, msg) => {
           await apiFetch(`/api/sessions/${sid}/message`, {
             method: "POST",
-            body: JSON.stringify({ content: msg, mode: agentMode.value }),
+            body: JSON.stringify({ content: msg, mode: agentMode.value, yolo: yoloMode.peek() }),
           });
         };
 
@@ -565,6 +567,7 @@ export function ChatTab() {
           prompt: content,
           agent: activeAgent.value,
           mode: agentMode.value,
+          yolo: yoloMode.peek(),
         });
         const newId = res?.session?.id;
         if (newId) {
@@ -574,7 +577,7 @@ export function ChatTab() {
           try {
             await apiFetch(`/api/sessions/${newId}/message`, {
               method: "POST",
-              body: JSON.stringify({ content, mode: agentMode.value }),
+              body: JSON.stringify({ content, mode: agentMode.value, yolo: yoloMode.peek() }),
             });
             confirmMessage(tempId);
           } catch (err) {
@@ -669,6 +672,18 @@ export function ChatTab() {
     await createSession({ type: "primary" });
   }
 
+  /* ── Show/expand sessions: on mobile toggles drawer, on desktop fires rail-expand event ── */
+  const handleShowSessions = useCallback(() => {
+    if (isMobile) {
+      setDrawerOpen(true);
+    } else if (isDesktop) {
+      globalThis.dispatchEvent?.(new CustomEvent("ve:expand-rail"));
+    } else {
+      // Tablet: toggle the session-pane drawer
+      setDrawerOpen((v) => !v);
+    }
+  }, [isMobile, isDesktop]);
+
   const handleBack = useCallback(() => {
     if (isMobile) {
       setDrawerOpen(true);
@@ -737,11 +752,10 @@ export function ChatTab() {
           html`
             <div class="chat-shell-header">
               <div class="chat-shell-inner">
-                ${isMobile && html`
-                  <button class="session-drawer-btn" onClick=${handleBack}>
-                    ☰ Sessions
-                  </button>
-                `}
+                <!-- Sessions toggle: shown on mobile always; on desktop only when rail is collapsed (CSS-controlled) -->
+                <button class="session-drawer-btn session-drawer-btn-rail" onClick=${handleShowSessions}>
+                  ☰ Sessions
+                </button>
                 <div class="chat-shell-title">
                   <div class="chat-shell-name">${sessionTitle}</div>
                   <div class="chat-shell-meta">${sessionMeta || "Session"}</div>
@@ -812,6 +826,14 @@ export function ChatTab() {
                 value=${inputValue}
                 onInput=${handleInputChange}
                 onKeyDown=${handleKeyDown}
+              />
+              <${VoiceMicButton}
+                onTranscript=${(t) => {
+                  setInputValue((prev) => (prev ? prev + " " + t : t));
+                  if (textareaRef.current) textareaRef.current.focus();
+                }}
+                disabled=${sending}
+                title="Voice input"
               />
               <button
                 class="chat-send-btn"

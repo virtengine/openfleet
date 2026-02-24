@@ -512,9 +512,8 @@ export function ControlTab() {
   }, [retryTaskId, refreshTaskOptions]);
 
   return html`
-    ${!executor && !config && html`<${Card} title="Loading…"><${SkeletonCard} /><//>`}
-
     <div class="control-layout">
+      ${!executor && !config && html`<${Card} title="Loading…" className="control-skeleton"><${SkeletonCard} /><//>`}
       <div class="control-main">
         <${Card}
           title="Control Unit"
@@ -756,7 +755,6 @@ export function ControlTab() {
             <div class="field-group">
               <div class="form-label">Retry task</div>
               <div class="input-row">
-                <div class="input-row">
                 <select
                   class=${retryTaskError ? "input input-error" : "input"}
                   value=${retryTaskId}

@@ -82,17 +82,17 @@
   const cursorEl = document.getElementById('typed-cursor');
   if (typedEl) {
     const phrases = [
-      'Task Ops.',
-      'PR Orchestration.',
-      'Release Ops.',
-      'Agent Ops.',
-      'Fleet Ops.',
+      'supervized',
+      'monitored',
+      'orchestrated',
+      'synchronized',
+      'autonomous',
     ];
     let phraseIdx = 0;
     let charIdx = 0;
     let deleting = false;
     let pauseUntil = 0;
-    const pauseDurationMs = 20000;
+    const pauseDurationMs = 10000;
 
     function typeLoop() {
       var phrase = phrases[phraseIdx];
@@ -116,7 +116,7 @@
         }
       }
 
-      var speed = deleting ? 120 + Math.random() * 60 : 140 + Math.random() * 80;
+      var speed = deleting ? 70 + Math.random() * 40 : 95 + Math.random() * 50;
       setTimeout(typeLoop, speed);
     }
 
@@ -176,10 +176,7 @@
   /* ── Inject package version in hero tag and footer ───────────────────── */
   const versionTargets = document.querySelectorAll('[data-version]');
   if (versionTargets.length > 0) {
-    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-    const sources = isLocal
-      ? ['../package.json', './package.json', 'https://raw.githubusercontent.com/virtengine/bosun/main/package.json']
-      : ['https://raw.githubusercontent.com/virtengine/bosun/main/package.json'];
+    const sources = ['https://raw.githubusercontent.com/virtengine/bosun/main/package.json'];
       
     const tryNext = () => {
       const next = sources.shift();
@@ -215,89 +212,107 @@
     reveals.forEach((el) => observer.observe(el));
   }
 
-  /* ── Terminal initialization (lazy, on scroll into view) ─────────────── */
-  const terminalBody = document.querySelector('.terminal-window__body');
-  if (terminalBody && typeof $ !== 'undefined' && $.fn.terminal) {
-    let termInit = false;
-    const termObserver = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting && !termInit) {
-          termInit = true;
-          window.initBosunTerminal('.terminal-window__body', {
-            autoDemo: true,
-            greeting: true,
-          });
-          termObserver.disconnect();
-        }
-      },
-      { threshold: 0.2 }
-    );
-    termObserver.observe(terminalBody);
+  /* ── Terminal initialization (lazy, on tab click only) ─────────────── */
+  var termInit = false;
+  function lazyInitTerminal() {
+    var terminalBody = document.querySelector('.terminal-window__body');
+    if (terminalBody && !termInit && typeof $ !== 'undefined' && $.fn.terminal && typeof window.initBosunTerminal === 'function') {
+      termInit = true;
+      window.initBosunTerminal('.terminal-window__body', {
+        autoDemo: true,
+        greeting: true,
+      });
+    }
   }
 
   /* ── MiniApp fullscreen toggle ───────────────────────────────────────── */
-  const miniappExpandBtn = document.querySelector('.miniapp-demo-window__expand');
-  const miniappPhone = document.querySelector('.miniapp-demo-window__phone');
   const miniappOverlay = document.querySelector('.miniapp-demo-window__overlay');
-  if (miniappExpandBtn && miniappPhone) {
+  const fullscreenControllers = [];
+
+  const updateFullscreenOverlay = () => {
+    const anyFullscreen = fullscreenControllers.some(({ target }) =>
+      target.classList.contains('is-fullscreen'),
+    ) || document.fullscreenElement;
+    if (miniappOverlay) miniappOverlay.classList.toggle('is-visible', Boolean(anyFullscreen));
+    document.body.classList.toggle('is-miniapp-fullscreen', Boolean(anyFullscreen));
+  };
+
+  const setupFullscreenToggle = (button, target, label) => {
+    if (!button || !target) return;
     let lastFullscreenState = null;
+
     const setFullscreen = (enabled) => {
-      miniappPhone.classList.toggle('is-fullscreen', enabled);
-      miniappExpandBtn.classList.toggle('is-fullscreen', enabled);
-      miniappExpandBtn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-      miniappExpandBtn.setAttribute('aria-label', enabled ? 'Exit fullscreen' : 'Enter fullscreen');
-      if (miniappOverlay) miniappOverlay.classList.toggle('is-visible', enabled);
-      document.body.classList.toggle('is-miniapp-fullscreen', enabled);
+      target.classList.toggle('is-fullscreen', enabled);
+      button.classList.toggle('is-fullscreen', enabled);
+      button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+      button.setAttribute('aria-label', enabled ? 'Exit fullscreen' : 'Enter fullscreen');
+      updateFullscreenOverlay();
       if (enabled !== lastFullscreenState) {
-        track('miniapp_fullscreen', { enabled: enabled ? 'true' : 'false' });
+        track('miniapp_fullscreen', { enabled: enabled ? 'true' : 'false', target: label });
         lastFullscreenState = enabled;
       }
     };
 
-    const syncFullscreenState = () => {
-      const isFs = document.fullscreenElement === miniappPhone;
-      setFullscreen(isFs);
-    };
-
-    miniappExpandBtn.addEventListener('click', () => {
-      const wantsFullscreen = !miniappPhone.classList.contains('is-fullscreen');
-      if (wantsFullscreen && document.fullscreenEnabled && miniappPhone.requestFullscreen) {
-        miniappPhone.requestFullscreen().catch(() => {
-          setFullscreen(true);
-        });
+    const toggle = () => {
+      const wantsFullscreen = !target.classList.contains('is-fullscreen');
+      if (wantsFullscreen && document.fullscreenEnabled && target.requestFullscreen) {
+        target.requestFullscreen().catch(() => setFullscreen(true));
         return;
       }
       if (!wantsFullscreen && document.fullscreenElement && document.exitFullscreen) {
-        document.exitFullscreen().catch(() => {
-          setFullscreen(false);
-        });
+        document.exitFullscreen().catch(() => setFullscreen(false));
         return;
       }
       setFullscreen(wantsFullscreen);
+    };
+
+    button.addEventListener('click', toggle);
+    document.addEventListener('fullscreenchange', () => {
+      const isFs = document.fullscreenElement === target;
+      if (isFs || target.classList.contains('is-fullscreen')) {
+        setFullscreen(isFs);
+      }
     });
 
-    if (miniappOverlay) {
-      miniappOverlay.addEventListener('click', () => {
-        if (document.fullscreenElement && document.exitFullscreen) {
-          document.exitFullscreen().catch(() => setFullscreen(false));
-        } else {
+    fullscreenControllers.push({ target, setFullscreen });
+  };
+
+  setupFullscreenToggle(
+    document.querySelector('.miniapp-demo-window__expand'),
+    document.querySelector('.miniapp-demo-window__phone'),
+    'mobile',
+  );
+  setupFullscreenToggle(
+    document.querySelector('.desktop-demo-window__expand'),
+    document.querySelector('.desktop-demo-window'),
+    'desktop',
+  );
+
+  if (miniappOverlay) {
+    miniappOverlay.addEventListener('click', () => {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+      fullscreenControllers.forEach(({ target, setFullscreen }) => {
+        if (target.classList.contains('is-fullscreen')) {
+          setFullscreen(false);
+        }
+      });
+    });
+  }
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+      fullscreenControllers.forEach(({ target, setFullscreen }) => {
+        if (target.classList.contains('is-fullscreen')) {
           setFullscreen(false);
         }
       });
     }
-
-    document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') {
-        if (document.fullscreenElement && document.exitFullscreen) {
-          document.exitFullscreen().catch(() => setFullscreen(false));
-        } else {
-          setFullscreen(false);
-        }
-      }
-    });
-
-    document.addEventListener('fullscreenchange', syncFullscreenState);
-  }
+  });
 
   /* ── Demo Tab Switching ──────────────────────────────────────────────── */
   var demoTabs = document.querySelectorAll('.demo-tab');
@@ -305,28 +320,42 @@
   var tgChatInitialized = false;
   var securityInitialized = false;
 
+  function activateDemoTab(target) {
+    demoTabs.forEach(function (t) { t.classList.remove('demo-tab--active'); });
+    demoPanels.forEach(function (p) { p.classList.remove('demo-panel--active'); });
+
+    var matchingTab = document.querySelector('.demo-tab[data-demo="' + target + '"]');
+    if (matchingTab) matchingTab.classList.add('demo-tab--active');
+
+    var panel = document.getElementById('demo-panel-' + target);
+    if (panel) panel.classList.add('demo-panel--active');
+
+    track('demo_tab', { tab: target });
+
+    // Lazy-init CLI terminal on first reveal
+    if (target === 'cli') {
+      lazyInitTerminal();
+    }
+
+    // Lazy-init Telegram chat on first reveal
+    if (target === 'telegram' && !tgChatInitialized && typeof window.initTelegramChatDemo === 'function') {
+      tgChatInitialized = true;
+      window.initTelegramChatDemo('#telegram-chat-container');
+    }
+  }
+
   demoTabs.forEach(function (tab) {
     tab.addEventListener('click', function () {
-      var target = tab.dataset.demo;
-
-      // Update active tab
-      demoTabs.forEach(function (t) { t.classList.remove('demo-tab--active'); });
-      tab.classList.add('demo-tab--active');
-
-      // Switch panel
-      demoPanels.forEach(function (p) { p.classList.remove('demo-panel--active'); });
-      var panel = document.getElementById('demo-panel-' + target);
-      if (panel) panel.classList.add('demo-panel--active');
-
-      track('demo_tab', { tab: target });
-
-      // Lazy-init Telegram chat on first reveal
-      if (target === 'telegram' && !tgChatInitialized && typeof window.initTelegramChatDemo === 'function') {
-        tgChatInitialized = true;
-        window.initTelegramChatDemo('#telegram-chat-container');
-      }
+      activateDemoTab(tab.dataset.demo);
     });
   });
+
+  /* ── Viewport-based default demo tab ─────────────────────────────────── */
+  if (demoTabs.length) {
+    var isMobile = window.innerWidth < 768;
+    var defaultTab = isMobile ? 'mobile' : 'desktop';
+    activateDemoTab(defaultTab);
+  }
 
   /* ── Security Section Initialization (lazy on scroll) ────────────────── */
   var securityContainer = document.getElementById('security-visualizer');

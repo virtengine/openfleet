@@ -83,5 +83,7 @@ export const TAB_CONFIG = [
   { id: "infra", label: "Infra", icon: "server" },
   { id: "logs", label: "Logs", icon: "terminal" },
   { id: "telemetry", label: "Telemetry", icon: "chart" },
+  { id: "workflows", label: "Flows", icon: "workflow" },
+  { id: "library", label: "Library", icon: "book" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];

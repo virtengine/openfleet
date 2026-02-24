@@ -10,6 +10,8 @@
   min-height: 0;
   height: 100%;
   flex: 1;
+  overflow: hidden;
+  /* Added to contain any growing children */
 }
 
 .session-pane {
@@ -17,6 +19,7 @@
   flex-direction: column;
   gap: var(--space-md);
   min-width: 0;
+  min-height: 0;
 }
 
 .session-detail {
@@ -31,6 +34,7 @@
 .session-split {
   position: relative;
   min-height: 0;
+  flex: 1;
 }
 
 .session-drawer-backdrop {
@@ -53,11 +57,13 @@
   .session-split {
     display: grid;
     grid-template-columns: 280px 1fr;
+    grid-template-rows: minmax(0, 1fr);
     gap: var(--space-md);
     min-height: 500px;
+    height: 100%; /* grid needs explicit height for 1fr rows to work */
   }
 
-  .session-split > * {
+  .session-split>* {
     min-height: 0;
   }
 
@@ -80,13 +86,16 @@
     height: 100%;
     min-height: 0;
   }
+
   .session-list {
     height: 100%;
     max-height: none;
   }
+
   .session-list-scroll {
     max-height: none;
   }
+
   /* Hide sidebar on mobile when a session is selected (ChatGPT-like) */
   .session-pane {
     position: fixed;
@@ -101,10 +110,12 @@
     box-shadow: 12px 0 40px rgba(0, 0, 0, 0.35);
     background: var(--bg-secondary);
   }
+
   .session-split.drawer-open .session-pane {
     transform: translateX(0);
   }
-  .session-split.has-active-session > .session-detail {
+
+  .session-split>.session-detail {
     flex: 1;
     height: 100%;
   }
@@ -589,8 +600,15 @@
 }
 
 @keyframes streamDotPulse {
-  0%, 100% { box-shadow: 0 0 0 4px rgba(218, 119, 86, 0.1); }
-  50% { box-shadow: 0 0 0 6px rgba(218, 119, 86, 0.25); }
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 4px rgba(218, 119, 86, 0.1);
+  }
+
+  50% {
+    box-shadow: 0 0 0 6px rgba(218, 119, 86, 0.25);
+  }
 }
 
 .chat-stream-dot.paused {
@@ -1019,8 +1037,15 @@
 }
 
 @keyframes chatBubbleIn {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .chat-jump-latest {
@@ -1108,9 +1133,17 @@
   margin: 4px 0;
 }
 
-.md-h1 { font-size: 1.3em; }
-.md-h2 { font-size: 1.15em; }
-.md-h3 { font-size: 1.05em; }
+.md-h1 {
+  font-size: 1.3em;
+}
+
+.md-h2 {
+  font-size: 1.15em;
+}
+
+.md-h3 {
+  font-size: 1.05em;
+}
 
 .md-blockquote {
   border-left: 3px solid var(--accent);
@@ -1193,8 +1226,18 @@ ul.md-list li::before {
 }
 
 @keyframes chat-typing-bounce {
-  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-  40% { transform: scale(1); opacity: 1; }
+
+  0%,
+  80%,
+  100% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 /* ─── Input bar ─── */
@@ -1392,7 +1435,7 @@ ul.md-list li::before {
   display: inline;
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .app-shell[data-has-rail="true"] .session-detail {
     min-height: 520px;
   }
@@ -1409,7 +1452,7 @@ ul.md-list li::before {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  box-shadow: var(--shadow-lg, 0 4px 24px rgba(0,0,0,.35));
+  box-shadow: var(--shadow-lg, 0 4px 24px rgba(0, 0, 0, .35));
   z-index: 9999;
 }
 
@@ -1424,7 +1467,7 @@ ul.md-list li::before {
 
 .slash-menu-item:hover,
 .slash-menu-item.active {
-  background: var(--bg-card-hover, rgba(255,255,255,.06));
+  background: var(--bg-card-hover, rgba(255, 255, 255, .06));
 }
 
 .slash-menu-item-icon {
@@ -1452,8 +1495,9 @@ ul.md-list li::before {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 100%;
-  min-height: 300px;
+  /* height: 100% removed — flex:1 on .session-detail>.chat-welcome handles sizing.
+     height:100% + flex:1 together overfill the container, pushing input off-screen. */
+  min-height: 200px;
   padding: 32px;
   text-align: center;
   gap: 16px;
@@ -1496,10 +1540,15 @@ ul.md-list li::before {
 
 /* ═══ Chat Input Area (bottom bar) ═══ */
 .chat-input-area {
-  position: sticky;
-  bottom: 0;
-  z-index: 10;
-  padding: 16px 16px calc(16px + var(--chat-keyboard-offset, 0px));
+  /* position:relative so it participates in flex stacking (never sticky —
+     sticky breaks inside overflow:hidden ancestors, causing the input to
+     float in the middle of the screen instead of pinning to the bottom). */
+  position: relative;
+  z-index: 100;
+  padding: 12px 16px;
+  /* On mobile add keyboard + safe-bottom so the input lifts above the
+     on-screen keyboard when it appears. */
+  padding-bottom: calc(12px + var(--chat-keyboard-offset, 0px) + var(--safe-bottom, 0px));
   border-top: 1px solid var(--border);
   background: var(--bg-surface, var(--bg-card));
   flex-shrink: 0;
@@ -1522,7 +1571,7 @@ ul.md-list li::before {
 }
 
 /* ═══ Session Detail as flex column (messages grow, input pinned) ═══ */
-.session-detail > .chat-view-embedded {
+.session-detail>.chat-view-embedded {
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -1530,22 +1579,23 @@ ul.md-list li::before {
   flex-direction: column;
 }
 
-.session-detail > .chat-welcome {
+.session-detail>.chat-welcome {
   flex: 1;
   min-height: 0;
+  overflow-y: auto;
 }
 
-.session-detail > .chat-input-area {
+.session-detail>.chat-input-area {
   flex-shrink: 0;
   margin-top: auto;
 }
 
 .app-shell[data-tab="chat"] .chat-view-embedded .chat-messages {
-  padding: 16px 20px calc(var(--nav-height, 60px) + var(--safe-bottom, 0px) + 112px + var(--chat-keyboard-offset, 0px));
+  padding: 16px 20px 24px;
 }
 
 .app-shell[data-tab="chat"] .chat-input-area {
-  padding: 0 0 calc(var(--nav-height, 60px) + var(--safe-bottom, 0px) + 8px + var(--chat-keyboard-offset, 0px));
+  padding: 12px 16px 16px;
 }
 
 .chat-input-wrapper {
@@ -1710,8 +1760,15 @@ ul.md-list li::before {
 }
 
 @keyframes session-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.6;
+  }
 }
 
 /* The actual session item (slides left) */
@@ -1724,11 +1781,20 @@ ul.md-list li::before {
 }
 
 .session-item.archived {
-  opacity: 0.6;
+  opacity: 0.7;
+}
+
+.session-item.archived .session-item-title {
+  text-decoration: line-through;
+  color: var(--text-secondary);
+}
+
+.session-item.archived .session-item-dot {
+  opacity: 0.4;
 }
 
 .session-item.archived:hover {
-  opacity: 0.85;
+  opacity: 0.9;
 }
 
 /* ═══ Inline Action Buttons (desktop hover) ═══ */
@@ -1847,8 +1913,15 @@ ul.md-list li::before {
 }
 
 @keyframes chat-pending-pulse {
-  0%, 100% { opacity: 0.7; }
-  50% { opacity: 0.4; }
+
+  0%,
+  100% {
+    opacity: 0.7;
+  }
+
+  50% {
+    opacity: 0.4;
+  }
 }
 
 .chat-pending-status {
@@ -1874,7 +1947,7 @@ ul.md-list li::before {
   font-size: 11px !important;
   padding: 1px 6px !important;
   min-height: unset !important;
-  border: 1px solid rgba(255,255,255,.12) !important;
+  border: 1px solid rgba(255, 255, 255, .12) !important;
 }
 
 /* ═══ Agent Status Indicator ═══ */
@@ -1925,7 +1998,8 @@ ul.md-list li::before {
   }
 
   .chat-textarea {
-    font-size: 16px; /* prevent iOS zoom on focus */
+    font-size: 16px;
+    /* prevent iOS zoom on focus */
     max-height: 100px;
   }
 
@@ -1956,7 +2030,7 @@ ul.md-list li::before {
 }
 
 /* ═══ Desktop Chat Refinements ═══ */
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .chat-messages {
     padding: 24px 20px 48px;
     gap: 10px;
@@ -1999,7 +2073,114 @@ ul.md-list li::before {
   transition: transform 0.2s ease, box-shadow 0.2s ease;
   -webkit-tap-highlight-color: transparent;
 }
+
 .focus-exit-fab:hover {
   transform: scale(1.1);
   box-shadow: 0 6px 20px rgba(239, 68, 68, 0.5);
 }
+
+/* ─── Desktop: hide duplicate inner session-pane when rail is present ─── */
+@media (min-width: 1400px) {
+  .app-shell[data-has-rail="true"][data-tab="chat"] .session-pane,
+  .app-shell[data-has-rail="true"][data-tab="agents"] .session-pane {
+    display: none !important;
+  }
+
+  /* Switch from 2-column grid to single-column flex so session-detail fills
+     the full width and height once session-pane is hidden. */
+  .app-shell[data-has-rail="true"][data-tab="chat"] .session-split,
+  .app-shell[data-has-rail="true"][data-tab="agents"] .session-split {
+    display: flex !important;
+    flex-direction: column;
+    min-height: 0;
+  }
+}
+
+/* ─── Desktop: flat padding on input, no nav-height offset needed ─── */
+@media (min-width: 1400px) {
+  .app-shell[data-tab="chat"] .chat-input-area {
+    position: sticky;
+    bottom: 0;
+    padding: 12px 16px 16px;
+    /* sticky works on desktop because .session-detail overflow:hidden is
+       replaced by flex layout — messages scroll, shell doesn't clip */
+  }
+
+  .app-shell[data-tab="chat"] .chat-view-embedded .chat-messages {
+    padding: 20px 24px 32px;
+  }
+
+  /* Ensure session-split fully fills the flex parent so input stays pinned */
+  .app-shell[data-tab="chat"] .session-split {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .app-shell[data-has-rail="true"][data-tab="chat"] .session-split {
+    flex: 1;
+    min-height: 0;
+  }
+}
+
+/* ─── Blend chat input seamlessly with bottom navbar ─── */
+@media (max-width: 1399px) {
+  .app-shell[data-tab="chat"] .chat-input-area {
+    border-top: none;
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.12);
+  }
+
+  .app-shell[data-tab="chat"] .chat-input-area::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -24px;
+    height: 24px;
+    background: linear-gradient(180deg, rgba(0, 0, 0, 0), var(--glass-bg));
+    pointer-events: none;
+  }
+
+  .app-shell[data-tab="chat"] .chat-input-toolbar {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    box-shadow: inset 0 1px 0 var(--glass-highlight);
+  }
+
+  .app-shell[data-tab="chat"] .chat-input-hint {
+    color: var(--text-secondary);
+  }
+
+  .app-shell[data-tab="chat"] ~ .bottom-nav {
+    background: var(--glass-bg);
+    border-color: var(--glass-border);
+    backdrop-filter: var(--glass-blur);
+  }
+}
+
+@media (max-width: 767px) {
+  .app-shell[data-tab="chat"] .chat-input-area {
+    padding-top: 6px;
+    /* keyboard offset still applied; decorative 12px removed to snug up to nav */
+    padding-bottom: calc(var(--chat-keyboard-offset, 0px) + var(--safe-bottom, 0px));
+    /* round the bottom to softly continue into the floating nav */
+    border-radius: 0 0 var(--radius-xl, 20px) var(--radius-xl, 20px);
+  }
+}
+
+/* ─── Sessions button (show-sessions) visibility rules ─── */
+.session-drawer-btn-rail {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .session-drawer-btn-rail {
+    display: inline-flex;
+  }
+}
+
+.app-shell[data-rail-collapsed="true"] .session-drawer-btn-rail {
+  display: inline-flex;
+}
+

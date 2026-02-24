@@ -447,7 +447,7 @@ function SwipeableSessionItem({
             ⋯
           </button>
         </div>
-        ${s.lastMessage &&
+        ${s.lastMessage && !isArchived &&
         html`
           <div class="session-item-preview">${truncate(s.lastMessage, 50)}</div>
         `}
