@@ -90,6 +90,10 @@ import {
 } from "./task-claims.mjs";
 import { initPresence, getPresenceState } from "./presence.mjs";
 import { getSharedState } from "./shared-state-manager.mjs";
+import {
+  listTaskAttachments,
+  mergeTaskAttachments,
+} from "./task-attachments.mjs";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -111,6 +115,149 @@ const CODEX_TASK_LABELS = (() => {
     .filter(Boolean);
   return new Set(labels.length > 0 ? labels : ["bosun"]);
 })();
+
+function parseNumberEnv(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function sanitizePathSegment(value) {
+  return String(value || "").replace(/[^a-zA-Z0-9._-]+/g, "_");
+}
+
+function truncateText(text, maxChars) {
+  const raw = String(text || "");
+  if (!maxChars || raw.length <= maxChars) return raw;
+  return `${raw.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function isBosunStateComment(text) {
+  const raw = String(text || "").toLowerCase();
+  if (!raw) return false;
+  return raw.includes("bosun-state") || raw.includes("codex:ignore");
+}
+
+function normalizeTaskComments(task, maxComments, maxChars) {
+  const rawComments = Array.isArray(task?.comments)
+    ? task.comments
+    : Array.isArray(task?.meta?.comments)
+      ? task.meta.comments
+      : [];
+  const normalized = rawComments
+    .map((comment) => {
+      if (comment == null) return null;
+      const body = typeof comment === "string"
+        ? comment
+        : comment.body || comment.text || comment.content || "";
+      const trimmed = String(body || "").trim();
+      if (!trimmed || isBosunStateComment(trimmed)) return null;
+      return {
+        id: typeof comment === "object" ? comment.id || null : null,
+        author: typeof comment === "object"
+          ? comment.author || comment.user || comment.by || null
+          : null,
+        createdAt: typeof comment === "object"
+          ? comment.createdAt || comment.created_at || null
+          : null,
+        body: truncateText(trimmed.replace(/\s+/g, " "), maxChars),
+      };
+    })
+    .filter(Boolean);
+  if (!Number.isFinite(maxComments) || maxComments <= 0) return [];
+  if (normalized.length <= maxComments) return normalized;
+  return normalized.slice(-maxComments);
+}
+
+function formatBytes(bytes) {
+  if (bytes == null || Number.isNaN(Number(bytes))) return "";
+  const value = Number(bytes);
+  if (value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const idx = Math.min(
+    units.length - 1,
+    Math.floor(Math.log(value) / Math.log(1024)),
+  );
+  const size = value / Math.pow(1024, idx);
+  return `${size < 10 ? size.toFixed(1) : Math.round(size)} ${units[idx]}`;
+}
+
+function normalizeTaskAttachments(task, backend, maxAttachments) {
+  const base = []
+    .concat(Array.isArray(task?.attachments) ? task.attachments : [])
+    .concat(Array.isArray(task?.meta?.attachments) ? task.meta.attachments : []);
+  const local = listTaskAttachments(task?.id || task?.task_id, backend);
+  const merged = mergeTaskAttachments(base, local);
+  if (!Number.isFinite(maxAttachments) || maxAttachments <= 0) return [];
+  if (merged.length <= maxAttachments) return merged;
+  return merged.slice(0, maxAttachments);
+}
+
+function formatAttachmentLine(attachment) {
+  if (!attachment) return "";
+  const name = attachment.name || attachment.filename || attachment.title || "attachment";
+  const kind = attachment.kind ? ` (${attachment.kind})` : "";
+  const sizeText = attachment.size ? `, ${formatBytes(attachment.size)}` : "";
+  const source = attachment.source ? ` • ${attachment.source}` : "";
+  const location =
+    attachment.filePath ||
+    attachment.path ||
+    attachment.url ||
+    attachment.uri ||
+    "";
+  const suffix = location ? ` — ${location}` : "";
+  return `- ${name}${kind}${sizeText}${source}${suffix}`;
+}
+
+function formatCommentLine(comment) {
+  const author = comment.author ? `@${comment.author}` : "comment";
+  const timestamp = comment.createdAt ? ` (${comment.createdAt})` : "";
+  return `- ${author}${timestamp}: ${comment.body}`;
+}
+
+function buildTaskContextBlock(task, backend) {
+  const maxComments = parseNumberEnv("BOSUN_TASK_CONTEXT_MAX_COMMENTS", 8);
+  const maxCommentChars = parseNumberEnv("BOSUN_TASK_CONTEXT_MAX_COMMENT_CHARS", 1200);
+  const maxAttachments = parseNumberEnv("BOSUN_TASK_CONTEXT_MAX_ATTACHMENTS", 20);
+  const comments = normalizeTaskComments(task, maxComments, maxCommentChars);
+  const attachments = normalizeTaskAttachments(task, backend, maxAttachments);
+  if (comments.length === 0 && attachments.length === 0) {
+    return { block: "", comments, attachments };
+  }
+  const lines = ["## Task Context"];
+  if (comments.length > 0) {
+    lines.push("### Comments");
+    for (const comment of comments) {
+      lines.push(formatCommentLine(comment));
+    }
+  }
+  if (attachments.length > 0) {
+    lines.push("### Attachments");
+    for (const attachment of attachments) {
+      lines.push(formatAttachmentLine(attachment));
+    }
+  }
+  return { block: lines.join("\n"), comments, attachments };
+}
+
+function writeTaskContextFile(task, payload, repoRoot) {
+  if (!payload || !repoRoot) return null;
+  const taskId = task?.id || task?.task_id;
+  if (!taskId) return null;
+  const dir = resolve(repoRoot, ".bosun", ".cache", "task-context");
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    return null;
+  }
+  const safeId = sanitizePathSegment(taskId);
+  const filePath = resolve(dir, `${safeId}.json`);
+  try {
+    writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf8");
+  } catch {
+    return null;
+  }
+  return filePath;
+}
 
 /** Watchdog interval: how often to check for stalled agent slots */
 const WATCHDOG_INTERVAL_MS = 60_000; // 1 minute
@@ -3513,7 +3660,7 @@ class TaskExecutor {
    */
   async executeTask(task, options = {}) {
     const taskId = task.id || task.task_id;
-    const taskTitle = task.title || "(untitled)";
+    let taskTitle = task.title || "(untitled)";
     if (this._paused && !options?.force) {
       console.log(
         `${TAG} executor paused — skipping task "${taskTitle}" (${taskId})`,
@@ -3525,6 +3672,59 @@ class TaskExecutor {
         `${TAG} executor paused but force=true — executing task "${taskTitle}" (${taskId})`,
       );
     }
+
+    // Allocate agentInstanceId synchronously (before any awaits) so that
+    // _activeSlots.has(taskId) is true immediately after executeTask() is called.
+    const _earlyRuntimeState =
+      task?.status === "inprogress"
+        ? this._slotRuntimeState.get(taskId) || null
+        : null;
+    const _earlyRecoveredAgentId = Number(_earlyRuntimeState?.agentInstanceId || 0);
+    const _earlyRecoveredStartedAt = Number(_earlyRuntimeState?.startedAt || 0);
+    const _earlyValidStartedAt =
+      Number.isFinite(_earlyRecoveredStartedAt) &&
+      _earlyRecoveredStartedAt > 0 &&
+      _earlyRecoveredStartedAt <= Date.now();
+
+    let agentInstanceId;
+    if (Number.isFinite(_earlyRecoveredAgentId) && _earlyRecoveredAgentId > 0) {
+      agentInstanceId = Math.floor(_earlyRecoveredAgentId);
+      this._nextAgentInstanceId = Math.max(
+        this._nextAgentInstanceId,
+        agentInstanceId + 1,
+      );
+    } else {
+      agentInstanceId = this._nextAgentInstanceId++;
+    }
+    // Reserve slot immediately so concurrent checks always see taskId as active
+    this._activeSlots.set(taskId, {
+      taskId,
+      taskTitle,
+      agentInstanceId,
+      startedAt: _earlyValidStartedAt ? _earlyRecoveredStartedAt : Date.now(),
+      status: "claiming",
+    });
+
+    // Refresh task details to include latest comments/attachments before execution.
+    try {
+      const refreshed = await getTask(taskId);
+      if (refreshed) {
+        task = {
+          ...task,
+          ...refreshed,
+          meta: {
+            ...(task?.meta || {}),
+            ...(refreshed?.meta || {}),
+          },
+        };
+        taskTitle = task.title || taskTitle;
+      }
+    } catch (err) {
+      console.warn(
+        `${TAG} failed to refresh task ${taskId}: ${err?.message || err}`,
+      );
+    }
+
     if (this._isBaseBranchLimitReached(task)) {
       const baseBranch = this._resolveTaskBaseBranch(task);
       console.log(
@@ -3644,28 +3844,10 @@ class TaskExecutor {
       );
     }
 
-    // 1b. Allocate slot
-    const recoveredRuntime =
-      task?.status === "inprogress"
-        ? this._slotRuntimeState.get(taskId) || null
-        : null;
-    const recoveredAgentId = Number(recoveredRuntime?.agentInstanceId || 0);
-    const recoveredStartedAt = Number(recoveredRuntime?.startedAt || 0);
-    const validRecoveredStartedAt =
-      Number.isFinite(recoveredStartedAt) &&
-      recoveredStartedAt > 0 &&
-      recoveredStartedAt <= Date.now();
-
-    let agentInstanceId = null;
-    if (Number.isFinite(recoveredAgentId) && recoveredAgentId > 0) {
-      agentInstanceId = Math.floor(recoveredAgentId);
-      this._nextAgentInstanceId = Math.max(
-        this._nextAgentInstanceId,
-        agentInstanceId + 1,
-      );
-    } else {
-      agentInstanceId = this._nextAgentInstanceId++;
-    }
+    // 1b. Allocate slot (agentInstanceId already assigned synchronously above)
+    const recoveredRuntime = _earlyRuntimeState;
+    const recoveredStartedAt = _earlyRecoveredStartedAt;
+    const validRecoveredStartedAt = _earlyValidStartedAt;
 
     /** @type {SlotInfo} */
     const slot = {
@@ -3874,7 +4056,41 @@ class TaskExecutor {
       slot.worktreePath = wt.path;
       this._upsertRuntimeSlot(slot);
 
-      // 4. Record pre-execution HEAD hash (to detect if agent made NEW commits)
+      // 4. Build task context (comments + attachments) and persist for agents.
+      const taskBackend = task.backend || getKanbanBackendName() || "internal";
+      const taskContextResult = buildTaskContextBlock(task, taskBackend);
+      const taskContextPayload = {
+        taskId,
+        backend: taskBackend,
+        title: task.title || "",
+        description: task.description || task.body || "",
+        taskUrl: task.taskUrl || task.meta?.task_url || task.url || null,
+        comments: taskContextResult.comments,
+        attachments: taskContextResult.attachments,
+        generatedAt: new Date().toISOString(),
+      };
+      const taskContextFile = writeTaskContextFile(
+        task,
+        taskContextPayload,
+        executionRepoRoot,
+      );
+      const taskAttachmentsDir = resolve(
+        executionRepoRoot,
+        ".bosun",
+        ".cache",
+        "attachments",
+      );
+
+      task._taskContextBlock = taskContextResult.block;
+      task._taskContextPayload = taskContextPayload;
+      task._taskContextFile = taskContextFile;
+      task.meta = {
+        ...(task.meta || {}),
+        taskContextBlock: taskContextResult.block,
+        taskContext: taskContextPayload,
+      };
+
+      // 5. Record pre-execution HEAD hash (to detect if agent made NEW commits)
       const preExecHead =
         spawnSync("git", ["rev-parse", "HEAD"], {
           cwd: wt.path,
@@ -3882,7 +4098,7 @@ class TaskExecutor {
           timeout: 5000,
         }).stdout?.trim() || "";
 
-      // 5. Build prompt
+      // 6. Build prompt
       const prompt = this._buildTaskPrompt(task, wt.path, {
         retryReason: options?.retryReason,
         branch,
@@ -3890,21 +4106,22 @@ class TaskExecutor {
         repoSlug: executionRepoSlug,
         workspace: taskRepoContext.workspace,
         repository: taskRepoContext.repository,
+        taskContextBlock: taskContextResult.block,
       });
 
-      // 5b. Create per-task AbortController for watchdog integration
+      // 6b. Create per-task AbortController for watchdog integration
       const taskAbortController = new AbortController();
       this._slotAbortControllers.set(taskId, taskAbortController);
 
       // Reset idle-continue counter for this task
       this._idleContinueCounts.delete(taskId);
 
-      // 6. Execute agent
+      // 7. Execute agent
       console.log(
         `${TAG} executing task "${taskTitle}" in ${wt.path} on branch ${branch} (sdk=${resolvedSdk})`,
       );
 
-      // 6a. Inject task context env vars so spawned agents (Codex/Copilot/Claude)
+      // 7a. Inject task context env vars so spawned agents (Codex/Copilot/Claude)
       // inherit the full Bosun task context regardless of which env-var naming
       // convention they read (VE_*, VK_*, or BOSUN_*).  We save and restore to
       // avoid polluting the parent process when running multiple parallel tasks.
@@ -3912,10 +4129,12 @@ class TaskExecutor {
         "VE_TASK_ID", "VE_TASK_TITLE", "VE_TASK_DESCRIPTION",
         "VE_BRANCH_NAME", "VE_WORKTREE_PATH", "VE_SDK", "VE_MANAGED",
         "VE_REPO_ROOT", "VE_REPO_SLUG", "VE_WORKSPACE", "VE_REPOSITORY",
+        "VE_TASK_CONTEXT_FILE", "VE_TASK_ATTACHMENTS_DIR",
         "VK_TITLE", "VK_DESCRIPTION",
         "BOSUN_TASK_ID", "BOSUN_TASK_TITLE", "BOSUN_TASK_DESCRIPTION",
         "BOSUN_BRANCH_NAME", "BOSUN_WORKTREE_PATH", "BOSUN_SDK", "BOSUN_MANAGED",
         "BOSUN_REPO_ROOT", "BOSUN_REPO_SLUG", "BOSUN_WORKSPACE", "BOSUN_REPOSITORY",
+        "BOSUN_TASK_CONTEXT_FILE", "BOSUN_TASK_ATTACHMENTS_DIR",
         "BOSUN_AGENT_REPO_ROOT",
       ];
       const _savedEnv = {};
@@ -3933,6 +4152,8 @@ class TaskExecutor {
       process.env.VE_REPO_SLUG          = executionRepoSlug;
       process.env.VE_WORKSPACE          = taskRepoContext.workspace || "";
       process.env.VE_REPOSITORY         = taskRepoContext.repository || "";
+      process.env.VE_TASK_CONTEXT_FILE  = taskContextFile || "";
+      process.env.VE_TASK_ATTACHMENTS_DIR = taskAttachmentsDir || "";
       process.env.VK_TITLE              = taskTitle;
       process.env.VK_DESCRIPTION        = String(task.description || task.body || "");
       process.env.BOSUN_TASK_ID         = taskId;
@@ -3946,6 +4167,8 @@ class TaskExecutor {
       process.env.BOSUN_REPO_SLUG       = executionRepoSlug;
       process.env.BOSUN_WORKSPACE       = taskRepoContext.workspace || "";
       process.env.BOSUN_REPOSITORY      = taskRepoContext.repository || "";
+      process.env.BOSUN_TASK_CONTEXT_FILE = taskContextFile || "";
+      process.env.BOSUN_TASK_ATTACHMENTS_DIR = taskAttachmentsDir || "";
       // Enforce workspace isolation: agents must resolve repo root from the
       // workspace-scoped executionRepoRoot, NOT the developer's personal repo.
       process.env.BOSUN_AGENT_REPO_ROOT = executionRepoRoot;
@@ -3963,7 +4186,7 @@ class TaskExecutor {
       };
       const gitContext = { branch };
 
-      // 6b. Start session tracking for review handoff
+      // 7b. Start session tracking for review handoff
       const sessionTracker = getSessionTracker();
       sessionTracker.startSession(taskId, taskTitle);
       startAgentWorkSession({
@@ -4031,7 +4254,7 @@ class TaskExecutor {
       // Track attempts on task for PR body
       task._executionResult = result;
 
-      // 6b. End session tracking and analyze session patterns
+      // 7c. End session tracking and analyze session patterns
       const sessionStatus = result.success ? "completed" : "failed";
       sessionTracker.endSession(taskId, sessionStatus);
 
@@ -4266,6 +4489,10 @@ class TaskExecutor {
     const promptRepoSlug = String(opts?.repoSlug || this.repoSlug || "").trim();
     const promptWorkspace = String(opts?.workspace || task?.workspace || task?.meta?.workspace || "").trim();
     const promptRepository = String(opts?.repository || task?.repository || task?.meta?.repository || "").trim();
+    const taskContextBlock = String(
+      opts?.taskContextBlock || task?._taskContextBlock || "",
+    ).trim();
+    const taskContext = taskContextBlock ? `\n${taskContextBlock}\n` : "";
     const branch =
       String(opts?.branch || "").trim() ||
       task.branchName ||
@@ -4295,6 +4522,8 @@ class TaskExecutor {
       `## Description`,
       task.description ||
         "No description provided. Check the task URL for details.",
+      taskContextBlock ? `` : "",
+      taskContextBlock ? taskContextBlock : "",
       ``,
       `## Environment`,
       `- Working Directory: ${worktreePath}`,
@@ -4382,6 +4611,7 @@ class TaskExecutor {
         TASK_DESCRIPTION:
           task.description ||
           "No description provided. Check the task URL for details.",
+        TASK_CONTEXT: taskContext,
         WORKTREE_PATH: worktreePath,
         BRANCH: branch,
         REPO_SLUG: promptRepoSlug || "unknown/unknown",
@@ -4407,6 +4637,8 @@ class TaskExecutor {
    * @private
    */
   _buildRetryPrompt(task, lastResult, attemptNumber) {
+    const taskContextBlock = String(task?._taskContextBlock || "").trim();
+    const taskContext = taskContextBlock ? `\n${taskContextBlock}` : "";
     // Check for plan-stuck pattern
     const classification = this._errorDetector.classify(
       lastResult?.output || "",
@@ -4472,6 +4704,7 @@ class TaskExecutor {
       ] : []),
       `Original task description:`,
       task.description || "See task URL for details.",
+      taskContextBlock ? taskContextBlock : "",
     ].join("\n");
     return this._resolveAgentPrompt(
       "taskExecutorRetry",
@@ -4486,6 +4719,7 @@ class TaskExecutor {
         CLASSIFICATION_PATTERN: classification.pattern,
         CLASSIFICATION_CONFIDENCE: classification.confidence.toFixed(2),
         TASK_DESCRIPTION: task.description || "See task URL for details.",
+        TASK_CONTEXT: taskContext,
       },
       fallbackPrompt,
     );
@@ -4503,6 +4737,8 @@ class TaskExecutor {
    * @private
    */
   _buildContinuePrompt(task, lastResult, attemptNumber) {
+    const taskContextBlock = String(task?._taskContextBlock || "").trim();
+    const taskContext = taskContextBlock ? `\n${taskContextBlock}` : "";
     // Check session for behavioral patterns to give targeted nudge
     try {
       const tracker = getSessionTracker();
@@ -4538,12 +4774,15 @@ class TaskExecutor {
         `2. If tests pass, push: git push origin HEAD`,
         `3. If tests fail, fix issues, commit, and push`,
         `4. The task is not done until the push succeeds`,
+        taskContextBlock ? `` : "",
+        taskContextBlock ? taskContextBlock : "",
       ].join("\n");
       return this._resolveAgentPrompt(
         "taskExecutorContinueHasCommits",
         {
           TASK_TITLE: task.title || "Untitled Task",
           TASK_DESCRIPTION: task.description || "",
+          TASK_CONTEXT: taskContext,
         },
         fallbackPrompt,
       );
@@ -4559,12 +4798,15 @@ class TaskExecutor {
         `2. Run tests: go test ./...  (or relevant test command)`,
         `3. Stage and commit: git add -A && git commit -m "feat(scope): description"`,
         `4. Push: git push origin HEAD`,
+        taskContextBlock ? `` : "",
+        taskContextBlock ? taskContextBlock : "",
       ].join("\n");
       return this._resolveAgentPrompt(
         "taskExecutorContinueHasEdits",
         {
           TASK_TITLE: task.title || "Untitled Task",
           TASK_DESCRIPTION: task.description || "",
+          TASK_CONTEXT: taskContext,
         },
         fallbackPrompt,
       );
@@ -4585,6 +4827,7 @@ class TaskExecutor {
       ``,
       `Task: ${task.title}`,
       task.description ? `Description: ${task.description}` : "",
+      taskContextBlock ? taskContextBlock : "",
     ]
       .filter(Boolean)
       .join("\n");
@@ -4593,6 +4836,7 @@ class TaskExecutor {
       {
         TASK_TITLE: task.title || "Untitled Task",
         TASK_DESCRIPTION: task.description || "",
+        TASK_CONTEXT: taskContext,
       },
       fallbackPrompt,
     );
@@ -5251,6 +5495,7 @@ class TaskExecutor {
         branchName: task.branchName || pr.branch,
         prUrl: pr.url,
         description: task.description,
+        taskContext: task._taskContextBlock || "",
         worktreePath,
         sessionMessages: execInfo.sessionSummary || "",
         diffStats,
