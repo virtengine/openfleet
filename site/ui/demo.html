@@ -103,17 +103,7 @@
        #app is a normal flex child (not absolute) so the full flex chain flows
        correctly all the way down to .main-content (the real scroll container). */
     .miniapp-content { flex: 1; min-height: 0; overflow: clip; position: relative; display: flex; flex-direction: column; }
-    .miniapp-content .demo-scale { flex: 1; min-height: 0; display: flex; }
-    .miniapp-content #app { flex: 1; min-height: 0; height: 100%; }
-
-    @media (min-width: 1200px) {
-      .demo-scale {
-        transform: scale(1.15);
-        transform-origin: top left;
-        width: calc(100% / 1.15);
-        height: calc(100% / 1.15);
-      }
-    }
+    .miniapp-content #app { flex: 1; min-height: 0; height: auto; }
 
     /* ── BOT MENU PANEL (slide-up, multi-layer) ── */
     .bot-panel { position: fixed; bottom: 0; left: 0; right: 0; z-index: 8999; background: #0e1621; border-top: 1px solid #1b2838; border-radius: 16px 16px 0 0; box-shadow: 0 -8px 32px rgba(0,0,0,0.5); max-height: 65vh; display: flex; flex-direction: column; transform: translateY(100%); opacity: 0; pointer-events: none; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s; }
@@ -454,7 +444,7 @@
 
     const formatTimestamp = (ts) => new Date(ts).toISOString();
     let msgCounter = 0;
-    function makeMsg(role, content, ts, type) {
+    function makeMsg(role, content, ts, type, attachments) {
       msgCounter += 1;
       const msg = {
         id: `msg-${msgCounter}`,
@@ -463,7 +453,20 @@
         timestamp: formatTimestamp(ts || Date.now()),
       };
       if (type) msg.type = type;
+      if (Array.isArray(attachments) && attachments.length) msg.attachments = attachments;
       return msg;
+    }
+
+    let attachmentCounter = 0;
+    function makeAttachment(name, kind, contentType, size) {
+      attachmentCounter += 1;
+      return {
+        id: `att-${attachmentCounter}`,
+        name: name || 'demo-attachment.txt',
+        kind: kind || 'file',
+        contentType: contentType || 'text/plain',
+        size: typeof size === 'number' ? size : 12 * 1024,
+      };
     }
 
     const SESSION_MESSAGES = {
@@ -771,31 +774,6 @@
       'ses-008': { files: [] },
     };
 
-    /* ── Library Seed Data ──────────────────────────────── */
-    const SEED_LIBRARY = [
-      { id: "orchestrator", type: "prompt", name: "Orchestrator", description: "Primary task execution prompt for autonomous task agents.", filename: "orchestrator.md", tags: ["task", "execution", "core"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 30*24*hr).toISOString(), updatedAt: new Date(now - 2*24*hr).toISOString() },
-      { id: "task-planner", type: "prompt", name: "Task Planner", description: "Backlog planning prompt used by task planner runs.", filename: "task-planner.md", tags: ["planning", "backlog", "triage"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 28*24*hr).toISOString(), updatedAt: new Date(now - 5*24*hr).toISOString() },
-      { id: "reviewer", type: "prompt", name: "Reviewer", description: "Prompt used by automated review agent.", filename: "reviewer.md", tags: ["review", "pr", "quality"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 25*24*hr).toISOString(), updatedAt: new Date(now - 1*24*hr).toISOString() },
-      { id: "conflict-resolver", type: "prompt", name: "Conflict Resolver", description: "Prompt used for rebase conflict follow-up guidance.", filename: "conflict-resolver.md", tags: ["merge", "conflict", "rebase"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 20*24*hr).toISOString(), updatedAt: new Date(now - 3*24*hr).toISOString() },
-      { id: "frontend-agent", type: "prompt", name: "Frontend Agent", description: "Front-end specialist agent with screenshot-based validation.", filename: "frontend-agent.md", tags: ["frontend", "ui", "portal", "css"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 15*24*hr).toISOString(), updatedAt: new Date(now - hr).toISOString() },
-      { id: "ui-agent", type: "agent", name: "UI Agent", description: "Front-end specialist for portal and UI tasks. Auto-selected for feat(portal) tasks.", filename: "ui-agent.json", tags: ["ui", "frontend", "portal", "css", "web"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 10*24*hr).toISOString(), updatedAt: new Date(now - hr).toISOString() },
-      { id: "backend-agent", type: "agent", name: "Backend Agent", description: "Backend/API specialist. Auto-selected for feat(api) tasks.", filename: "backend-agent.json", tags: ["api", "server", "backend", "database"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 10*24*hr).toISOString(), updatedAt: new Date(now - 2*hr).toISOString() },
-      { id: "devops-agent", type: "agent", name: "DevOps Agent", description: "CI/CD and infrastructure specialist.", filename: "devops-agent.json", tags: ["ci", "cd", "build", "deploy"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 10*24*hr).toISOString(), updatedAt: new Date(now - 4*hr).toISOString() },
-      { id: "background-task-execution", type: "skill", name: "Background Task Execution", description: "Ensure background tasks complete reliably without stalling.", filename: "background-task-execution.md", tags: ["background", "task", "reliability", "heartbeat"], scope: "global", workspace: null, meta: {}, createdAt: new Date(now - 30*24*hr).toISOString(), updatedAt: new Date(now - 7*24*hr).toISOString() },
-      { id: "bosun-agent-endpoint-api", type: "skill", name: "Bosun Agent Endpoint API", description: "Agent REST API reference for task lifecycle operations.", filename: "bosun-agent-endpoint-api.md", tags: ["api", "endpoint", "agent", "lifecycle"], scope: "bosun", workspace: null, meta: {}, createdAt: new Date(now - 30*24*hr).toISOString(), updatedAt: new Date(now - 7*24*hr).toISOString() },
-    ];
-    const SEED_SCOPES = [
-      { name: "portal", source: "git+folder", count: 42 },
-      { name: "bosun", source: "git+folder", count: 38 },
-      { name: "market", source: "git", count: 22 },
-      { name: "veid", source: "git", count: 18 },
-      { name: "api", source: "git+folder", count: 15 },
-      { name: "escrow", source: "git", count: 12 },
-      { name: "desktop", source: "folder", count: 0 },
-      { name: "site", source: "folder", count: 0 },
-      { name: "scripts", source: "folder", count: 0 },
-    ];
-
     /* ── Internal State (mutable — actions modify this in-place) ──── */
     const STATE = {
       tasks: SEED_TASKS,
@@ -806,8 +784,6 @@
       health: SEED_HEALTH,
       infra: SEED_INFRA,
       project: SEED_PROJECT,
-      library: SEED_LIBRARY,
-      libraryScopes: SEED_SCOPES,
       paused: false,
       maxParallel: 6,
       settings: {
@@ -921,7 +897,7 @@
             { id: 'e19', source: 'do-escalate',     target: 'notify-complete' },
           ],
           variables: { baseBranch: 'main', ciTimeoutMs: 300000, cooldownSec: 60, maxRetries: 3 },
-          metadata: { installedFrom: 'template-pr-merge-strategy', createdAt: new Date(now - 7 * 24 * hr).toISOString(), updatedAt: new Date(now - 1 * hr).toISOString() },
+          metadata: { createdAt: new Date(now - 7 * 24 * hr).toISOString(), updatedAt: new Date(now - 1 * hr).toISOString() },
         },
         // ─── 2. Review Agent (github) — 6 nodes, 6 edges ───
         {
@@ -949,7 +925,7 @@
             { id: 'e6', source: 'aggregate',  target: 'notify' },
           ],
           variables: {},
-          metadata: { installedFrom: 'template-review-agent', createdAt: new Date(now - 6 * 24 * hr).toISOString(), updatedAt: new Date(now - 3 * hr).toISOString() },
+          metadata: { createdAt: new Date(now - 6 * 24 * hr).toISOString(), updatedAt: new Date(now - 3 * hr).toISOString() },
         },
         // ─── 3. Error Recovery (reliability) — 5 nodes, 4 edges ───
         {
@@ -974,7 +950,7 @@
             { id: 'e4', source: 'analyze-error', target: 'retry-task' },
           ],
           variables: { maxRetries: 3 },
-          metadata: { installedFrom: 'template-error-recovery', createdAt: new Date(now - 5 * 24 * hr).toISOString(), updatedAt: new Date(now - 2 * hr).toISOString() },
+          metadata: { createdAt: new Date(now - 5 * 24 * hr).toISOString(), updatedAt: new Date(now - 2 * hr).toISOString() },
         },
         // ─── 4. Build & Deploy (ci-cd) — 6 nodes, 5 edges ───
         {
@@ -1001,7 +977,7 @@
             { id: 'e5', source: 'deploy',  target: 'notify' },
           ],
           variables: { deployCommand: 'npm run deploy', deployBranch: 'main' },
-          metadata: { installedFrom: 'template-build-deploy', createdAt: new Date(now - 4 * 24 * hr).toISOString(), updatedAt: new Date(now - 5 * hr).toISOString() },
+          metadata: { createdAt: new Date(now - 4 * 24 * hr).toISOString(), updatedAt: new Date(now - 5 * hr).toISOString() },
         },
         // ─── 5. Task Planner (planning) — 7 nodes, 7 edges ───
         {
@@ -1030,7 +1006,7 @@
             { id: 'e6', source: 'create-tasks', target: 'notify' },
           ],
           variables: { minTaskThreshold: 3, planCount: 5 },
-          metadata: { installedFrom: 'template-task-planner', createdAt: new Date(now - 3 * 24 * hr).toISOString(), updatedAt: new Date(now - 4 * hr).toISOString() },
+          metadata: { createdAt: new Date(now - 3 * 24 * hr).toISOString(), updatedAt: new Date(now - 4 * hr).toISOString() },
         },
         // ─── 6. Frontend Agent (agents) — 8 nodes, 9 edges ───
         {
@@ -1062,7 +1038,7 @@
             { id: 'e8', source: 'model-review', target: 'notify-fail', condition: 'failed' },
           ],
           variables: { devServerUrl: 'http://localhost:3000', evidenceDir: '.bosun/evidence' },
-          metadata: { installedFrom: 'template-frontend-agent', createdAt: new Date(now - 2 * 24 * hr).toISOString(), updatedAt: new Date(now - 30 * 60000).toISOString() },
+          metadata: { createdAt: new Date(now - 2 * 24 * hr).toISOString(), updatedAt: new Date(now - 30 * 60000).toISOString() },
         },
       ],
       workflowTemplates: [
@@ -1487,13 +1463,9 @@
             status: { type: 'string', enum: ['todo', 'in_progress', 'in_review', 'done', 'blocked', 'failed'], description: 'New status' },
             taskId: { type: 'string', description: 'Task ID (auto-detected from workflow context if empty)' },
           }}},
-        { type: 'action.delay', category: 'action', description: 'Wait for a duration (supports ms, seconds, minutes, hours)',
+        { type: 'action.delay', category: 'action', description: 'Wait for a duration',
           schema: { type: 'object', properties: {
-            ms: { type: 'number', description: 'Delay in milliseconds' },
-            seconds: { type: 'number', description: 'Delay in seconds' },
-            minutes: { type: 'number', description: 'Delay in minutes' },
-            hours: { type: 'number', description: 'Delay in hours' },
-            jitter: { type: 'number', default: 0, description: 'Random jitter % (0-100)' },
+            durationMs: { type: 'number', default: 5000, description: 'Delay in milliseconds' },
             reason: { type: 'string', description: 'Reason for delay (for logging)' },
           }}},
         { type: 'action.http_request', category: 'action', description: 'Make an HTTP request',
@@ -1663,29 +1635,6 @@
             items: { type: 'string', description: 'Data field containing items list' },
             itemVariable: { type: 'string', default: 'item', description: 'Loop variable name' },
             maxIterations: { type: 'number', default: 100 },
-          }}},
-
-        // ── NEW: ANOMALY & SCHEDULED TRIGGERS ────────────────────────
-        { type: 'trigger.anomaly', category: 'trigger', description: 'Fires when the anomaly detector reports a matching anomaly',
-          schema: { type: 'object', properties: {
-            anomalyType: { type: 'string', description: 'Anomaly type filter (e.g., error_spike, stuck_agent, build_failure)' },
-            minSeverity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], default: 'medium', description: 'Minimum severity to trigger' },
-            agentFilter: { type: 'string', description: 'Regex to match agent ID or name' },
-          }}},
-        { type: 'trigger.scheduled_once', category: 'trigger', description: 'Fires once at a specific time (persists across restarts)',
-          schema: { type: 'object', properties: {
-            runAt: { type: 'string', description: 'ISO 8601 datetime or relative (e.g., +30m, +2h)' },
-            reason: { type: 'string', description: 'Human-readable reason for the scheduled trigger' },
-          }}},
-
-        // ── NEW: FLOW CONTROL ────────────────────────────────────────
-        { type: 'flow.gate', category: 'flow', description: 'Pause execution until a condition is met or manual approval given',
-          schema: { type: 'object', properties: {
-            mode: { type: 'string', enum: ['manual', 'condition', 'timeout'], default: 'condition', description: 'Gate mode' },
-            condition: { type: 'string', description: 'JS expression that must return true to open gate (condition mode)' },
-            timeoutMs: { type: 'number', default: 300000, description: 'Max wait time (ms)' },
-            onTimeout: { type: 'string', enum: ['proceed', 'fail'], default: 'proceed', description: 'Action on timeout' },
-            reason: { type: 'string', description: 'Why this gate is waiting' },
           }}},
       ],
       workflowRuns: [
@@ -2478,6 +2427,21 @@
         const t = findTask(params.get('taskId'));
         return { data: t || null };
       }
+      if (route === '/api/tasks/attachments/upload') {
+        const taskId = body?.taskId || body?.id || params.get('taskId');
+        const t = findTask(taskId);
+        if (!t) return { ok: false, error: 'Task not found' };
+        const files = Array.isArray(body?.files) ? body.files : [];
+        const added = files.length
+          ? files.map((file) => makeAttachment(file.name, file.type?.startsWith('image/') ? 'image' : 'file', file.type, file.size))
+          : [makeAttachment()];
+        const current = Array.isArray(t.attachments) ? t.attachments : [];
+        t.attachments = [...current, ...added];
+        t.meta = { ...(t.meta || {}), attachments: t.attachments };
+        t.updated = Date.now();
+        addLog('info', 'tasks', `Attachment uploaded: ${t.title}`);
+        return { ok: true, taskId: t.id, backend: t.backend || 'demo', added, attachments: t.attachments };
+      }
       if (route === '/api/tasks/create') {
         const id = 've-' + Math.random().toString(36).slice(2, 8);
         const t = { id, title: body?.title || 'New task', status: 'todo', priority: body?.priority || 'medium', assignee: null, branch: null, pr: null, created: Date.now(), updated: Date.now() };
@@ -2741,10 +2705,7 @@
       if (route === '/api/workflows/install-template') {
         const tpl = STATE.workflowTemplates.find(t => t.id === body?.templateId);
         if (!tpl) return { ok: false, error: 'Template not found' };
-        // Dedup check: don't install if already installed
-        const alreadyInstalled = STATE.workflows.some(w => w.metadata?.installedFrom === tpl.id || w.name === tpl.name);
-        if (alreadyInstalled) return { ok: false, error: 'Template already installed' };
-        // Deep-clone nodes/edges from template
+        // Deep-clone nodes/edges from matching demo workflow or generate from template
         const donor = STATE.workflows.find(w => w.name === tpl.name);
         const wf = { id: 'wf-' + Math.random().toString(36).slice(2, 9), name: tpl.name, description: tpl.description, category: tpl.category, enabled: true, nodeCount: tpl.nodeCount, trigger: 'trigger.pr_event', nodes: JSON.parse(JSON.stringify(donor?.nodes || tpl.nodes || [])), edges: JSON.parse(JSON.stringify(donor?.edges || tpl.edges || [])), variables: body?.overrides || {}, metadata: { installedFrom: tpl.id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } };
         STATE.workflows.push(wf);
@@ -2842,14 +2803,27 @@
         const sid = route.split('/')[3];
         const ses = STATE.sessions.find(s => s.id === sid);
         const content = String(body?.content || body?.text || body?.message || '');
+        const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
         const mode = body?.mode;
         if (ses && mode) ses.metadata = { ...(ses.metadata || {}), mode };
-        if (ses && content) {
-          appendMessage(ses, makeMsg('user', content, Date.now()));
+        if (ses && (content || attachments.length)) {
+          appendMessage(ses, makeMsg('user', content, Date.now(), null, attachments));
           ses.status = ses.status === 'archived' ? 'active' : ses.status;
           scheduleResponses(ses, mode);
         }
         return { ok: true, session: ses || null };
+      }
+      if (route.match(/^\/api\/sessions\/[^/]+\/attachments$/) && method === 'POST') {
+        const attachments = [];
+        const files = Array.isArray(body?.files) ? body.files : [];
+        if (files.length) {
+          for (const file of files) {
+            attachments.push(makeAttachment(file.name, file.type?.startsWith('image/') ? 'image' : 'file', file.type, file.size));
+          }
+        } else {
+          attachments.push(makeAttachment());
+        }
+        return { ok: true, attachments };
       }
       if (route.match(/^\/api\/sessions\/[^/]+\/resume$/)) {
         const sid = route.split('/')[3];
@@ -2933,68 +2907,6 @@
           recentSituations: [{ situation: 'healthy', ts: Date.now() }],
         };
 
-      // ── Library API ──
-      if (route === '/api/library') {
-        let list = STATE.library;
-        const params = new URL('http://x' + path).searchParams;
-        const type = params.get('type');
-        const search = params.get('search');
-        if (type) list = list.filter(e => e.type === type);
-        if (search) {
-          const q = search.toLowerCase();
-          list = list.filter(e => e.name.toLowerCase().includes(q) || e.description.toLowerCase().includes(q) || e.tags.some(t => t.includes(q)));
-        }
-        return { ok: true, data: list };
-      }
-      if (route === '/api/library/entry' && method === 'GET') {
-        const params = new URL('http://x' + path).searchParams;
-        const id = params.get('id');
-        const entry = STATE.library.find(e => e.id === id);
-        if (!entry) return { ok: false, error: 'Not found' };
-        return { ok: true, data: { ...entry, content: entry.type === 'agent' ? { name: entry.name, description: entry.description, titlePatterns: [], scopes: entry.tags, sdk: null } : `# ${entry.name}\n\n${entry.description}\n\nDemo content for ${entry.name}.` } };
-      }
-      if (route === '/api/library/entry' && method === 'POST') {
-        const id = body.id || body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-        const existing = STATE.library.findIndex(e => e.id === id);
-        const entry = { id, type: body.type, name: body.name, description: body.description || '', filename: body.filename || id + (body.type === 'agent' ? '.json' : '.md'), tags: body.tags || [], scope: body.scope || 'global', workspace: null, meta: {}, createdAt: existing >= 0 ? STATE.library[existing].createdAt : new Date().toISOString(), updatedAt: new Date().toISOString() };
-        if (existing >= 0) STATE.library[existing] = entry; else STATE.library.push(entry);
-        return { ok: true, data: entry };
-      }
-      if (route === '/api/library/entry' && method === 'DELETE') {
-        const id = body?.id;
-        const idx = STATE.library.findIndex(e => e.id === id);
-        if (idx < 0) return { ok: false, error: 'Not found' };
-        STATE.library.splice(idx, 1);
-        return { ok: true, deleted: id };
-      }
-      if (route === '/api/library/profiles')
-        return { ok: true, data: STATE.library.filter(e => e.type === 'agent') };
-      if (route === '/api/library/match-profile') {
-        const title = new URL('http://x' + path).searchParams.get('title') || body?.title || '';
-        const profiles = STATE.library.filter(e => e.type === 'agent');
-        let best = null, bestScore = 0;
-        for (const p of profiles) {
-          let score = 0;
-          for (const tag of p.tags) { if (title.toLowerCase().includes(tag)) score += 2; }
-          if (score > bestScore) { bestScore = score; best = { ...p, score }; }
-        }
-        return { ok: true, data: best };
-      }
-      if (route === '/api/library/scopes')
-        return { ok: true, data: STATE.libraryScopes };
-      if (route === '/api/library/rebuild')
-        return { ok: true, data: { count: STATE.library.length, added: 0, removed: 0 } };
-      if (route === '/api/library/init')
-        return { ok: true, data: { entries: STATE.library.length, added: 0, scaffolded: 3, skipped: 0 } };
-      if (route === '/api/library/resolve') {
-        let tpl = body?.template || '';
-        tpl = tpl.replace(/\{\{\s*(prompt|agent|skill):([A-Za-z0-9_-]+)\s*\}\}/gi, (_, type, name) => {
-          const entry = STATE.library.find(e => e.id === name.toLowerCase());
-          return entry ? `[${entry.name} content]` : `<!-- ${type}:${name} not found -->`;
-        });
-        return { ok: true, data: tpl };
-      }
-
       // ── Catch-all: return empty success for any unhandled /api/ route ──
       console.debug('[demo] Unhandled API route:', method, path);
       return { ok: true, data: null };
@@ -3009,7 +2921,20 @@
       if (path.startsWith('/api/') || path.startsWith('/api?')) {
         let body = null;
         if (options?.body) {
-          try { body = JSON.parse(options.body); } catch {}
+          if (options.body instanceof FormData) {
+            body = {};
+            const files = [];
+            for (const [key, value] of options.body.entries()) {
+              if (value instanceof File) {
+                files.push({ name: value.name, size: value.size, type: value.type });
+              } else {
+                body[key] = value;
+              }
+            }
+            if (files.length) body.files = files;
+          } else {
+            try { body = JSON.parse(options.body); } catch {}
+          }
         }
         const method = (options?.method || 'GET').toUpperCase();
         return Promise.resolve(handleApi(path, method, body)).then(data => new Response(JSON.stringify(data), {
@@ -3103,8 +3028,8 @@
     <div class="bot-panel-header">
       <button class="bot-panel-back" id="bot-panel-back" title="Back">←</button>
       <div class="bot-panel-title" id="bot-panel-title">Bosun Control Center</div>
-      <button class="bot-panel-home" id="bot-panel-home" title="Home">🏠</button>
-      <button class="bot-panel-close" id="bot-panel-close" title="Close">✕</button>
+      <button class="bot-panel-home" id="bot-panel-home" title="Home" aria-label="Home"></button>
+      <button class="bot-panel-close" id="bot-panel-close" title="Close" aria-label="Close"></button>
     </div>
     <div class="bot-panel-body" id="bot-panel-body"></div>
     <div class="bot-panel-result" id="bot-panel-result"></div>
@@ -3115,7 +3040,10 @@
   <script type="module" src="app.js"></script>
 
   <!-- ═══ BOT MENU ENGINE (multi-layer screen navigation) ═══════════ -->
-  <script>
+  <script type="module">
+  import { render } from "preact";
+  import { resolveIcon } from "./modules/icon-utils.js";
+
   (function() {
     'use strict';
 
@@ -3128,6 +3056,73 @@
     const bodyEl    = document.getElementById('bot-panel-body');
     const resultEl  = document.getElementById('bot-panel-result');
     const kbEl      = document.getElementById('bot-panel-keyboard');
+
+    const iconCache = new Map();
+
+    function iconMarkup(iconKey) {
+      if (iconCache.has(iconKey)) return iconCache.get(iconKey);
+      const vnode = resolveIcon(iconKey);
+      if (!vnode) return "";
+      const temp = document.createElement("span");
+      render(vnode, temp);
+      const html = temp.innerHTML;
+      temp.replaceChildren();
+      iconCache.set(iconKey, html);
+      return html;
+    }
+
+    function buildIconFragment(text) {
+      const str = String(text ?? "");
+      let buffer = "";
+      let hasIcon = false;
+      const frag = document.createDocumentFragment();
+      for (const ch of str) {
+        if (ch === "\uFE0E" || ch === "\uFE0F") continue;
+        const icon = iconMarkup(ch);
+        if (icon) {
+          if (buffer) {
+            frag.appendChild(document.createTextNode(buffer));
+            buffer = "";
+          }
+          const span = document.createElement("span");
+          span.className = "icon-inline";
+          span.innerHTML = icon;
+          frag.appendChild(span);
+          hasIcon = true;
+        } else {
+          buffer += ch;
+        }
+      }
+      if (buffer) frag.appendChild(document.createTextNode(buffer));
+      return hasIcon ? frag : null;
+    }
+
+    function setIconText(el, text) {
+      if (!el) return;
+      const frag = buildIconFragment(text);
+      if (!frag) {
+        el.textContent = text ?? "";
+        return;
+      }
+      el.textContent = "";
+      el.appendChild(frag);
+    }
+
+    function iconizeHtml(html) {
+      const container = document.createElement("div");
+      container.innerHTML = html || "";
+      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
+      const nodes = [];
+      while (walker.nextNode()) nodes.push(walker.currentNode);
+      nodes.forEach((node) => {
+        const frag = buildIconFragment(node.nodeValue);
+        if (frag) node.replaceWith(frag);
+      });
+      return container.innerHTML;
+    }
+
+    homeBtn.innerHTML = `<span class="icon-inline">${iconMarkup("home")}</span>`;
+    closeBtn.innerHTML = `<span class="icon-inline">${iconMarkup("close")}</span>`;
 
     let panelOpen = false;
     let currentScreen = 'home';
@@ -3566,8 +3561,8 @@
       if (!screen) return;
 
       currentScreen = screenId;
-      titleEl.textContent = screen.title;
-      bodyEl.innerHTML = screen.body;
+      setIconText(titleEl, screen.title);
+      setIconText(bodyEl, screen.body);
 
       // Hide result when navigating
       resultEl.classList.remove('visible');
@@ -3591,7 +3586,7 @@
           row.forEach(btn => {
             const b = document.createElement('button');
             b.className = 'bot-kb-btn';
-            b.textContent = btn.text;
+            setIconText(b, btn.text);
 
             if (btn.go) {
               // Navigate to sub-screen
@@ -3606,7 +3601,7 @@
                 setTimeout(() => b.classList.remove('cmd-flash'), 200);
                 const handler = CMDS[btn.cmd];
                 if (handler) {
-                  resultEl.innerHTML = handler();
+                  resultEl.innerHTML = iconizeHtml(handler());
                   resultEl.classList.add('visible');
                   // Also navigate to the tab if it maps
                   const tabMap = { status: 'dashboard', tasks: 'tasks', agents: 'agents', logs: 'logs', executor: 'control', health: 'dashboard' };
@@ -3632,17 +3627,17 @@
 
           const backB = document.createElement('button');
           backB.className = 'bot-kb-btn nav-btn';
-          backB.textContent = '⬅️ Back';
+          setIconText(backB, 'Back');
           backB.addEventListener('click', goBack);
 
           const homeB = document.createElement('button');
           homeB.className = 'bot-kb-btn nav-btn';
-          homeB.textContent = '🏠 Home';
+          setIconText(homeB, 'Home');
           homeB.addEventListener('click', goHome);
 
           const closeB = document.createElement('button');
           closeB.className = 'bot-kb-btn close-btn';
-          closeB.textContent = '✖ Close';
+          setIconText(closeB, 'Close');
           closeB.addEventListener('click', closePanel);
 
           navRow.appendChild(backB);

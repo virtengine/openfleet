@@ -444,7 +444,7 @@
 
     const formatTimestamp = (ts) => new Date(ts).toISOString();
     let msgCounter = 0;
-    function makeMsg(role, content, ts, type) {
+    function makeMsg(role, content, ts, type, attachments) {
       msgCounter += 1;
       const msg = {
         id: `msg-${msgCounter}`,
@@ -453,7 +453,20 @@
         timestamp: formatTimestamp(ts || Date.now()),
       };
       if (type) msg.type = type;
+      if (Array.isArray(attachments) && attachments.length) msg.attachments = attachments;
       return msg;
+    }
+
+    let attachmentCounter = 0;
+    function makeAttachment(name, kind, contentType, size) {
+      attachmentCounter += 1;
+      return {
+        id: `att-${attachmentCounter}`,
+        name: name || 'demo-attachment.txt',
+        kind: kind || 'file',
+        contentType: contentType || 'text/plain',
+        size: typeof size === 'number' ? size : 12 * 1024,
+      };
     }
 
     const SESSION_MESSAGES = {
@@ -2414,6 +2427,21 @@
         const t = findTask(params.get('taskId'));
         return { data: t || null };
       }
+      if (route === '/api/tasks/attachments/upload') {
+        const taskId = body?.taskId || body?.id || params.get('taskId');
+        const t = findTask(taskId);
+        if (!t) return { ok: false, error: 'Task not found' };
+        const files = Array.isArray(body?.files) ? body.files : [];
+        const added = files.length
+          ? files.map((file) => makeAttachment(file.name, file.type?.startsWith('image/') ? 'image' : 'file', file.type, file.size))
+          : [makeAttachment()];
+        const current = Array.isArray(t.attachments) ? t.attachments : [];
+        t.attachments = [...current, ...added];
+        t.meta = { ...(t.meta || {}), attachments: t.attachments };
+        t.updated = Date.now();
+        addLog('info', 'tasks', `Attachment uploaded: ${t.title}`);
+        return { ok: true, taskId: t.id, backend: t.backend || 'demo', added, attachments: t.attachments };
+      }
       if (route === '/api/tasks/create') {
         const id = 've-' + Math.random().toString(36).slice(2, 8);
         const t = { id, title: body?.title || 'New task', status: 'todo', priority: body?.priority || 'medium', assignee: null, branch: null, pr: null, created: Date.now(), updated: Date.now() };
@@ -2775,14 +2803,27 @@
         const sid = route.split('/')[3];
         const ses = STATE.sessions.find(s => s.id === sid);
         const content = String(body?.content || body?.text || body?.message || '');
+        const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
         const mode = body?.mode;
         if (ses && mode) ses.metadata = { ...(ses.metadata || {}), mode };
-        if (ses && content) {
-          appendMessage(ses, makeMsg('user', content, Date.now()));
+        if (ses && (content || attachments.length)) {
+          appendMessage(ses, makeMsg('user', content, Date.now(), null, attachments));
           ses.status = ses.status === 'archived' ? 'active' : ses.status;
           scheduleResponses(ses, mode);
         }
         return { ok: true, session: ses || null };
+      }
+      if (route.match(/^\/api\/sessions\/[^/]+\/attachments$/) && method === 'POST') {
+        const attachments = [];
+        const files = Array.isArray(body?.files) ? body.files : [];
+        if (files.length) {
+          for (const file of files) {
+            attachments.push(makeAttachment(file.name, file.type?.startsWith('image/') ? 'image' : 'file', file.type, file.size));
+          }
+        } else {
+          attachments.push(makeAttachment());
+        }
+        return { ok: true, attachments };
       }
       if (route.match(/^\/api\/sessions\/[^/]+\/resume$/)) {
         const sid = route.split('/')[3];
@@ -2880,7 +2921,20 @@
       if (path.startsWith('/api/') || path.startsWith('/api?')) {
         let body = null;
         if (options?.body) {
-          try { body = JSON.parse(options.body); } catch {}
+          if (options.body instanceof FormData) {
+            body = {};
+            const files = [];
+            for (const [key, value] of options.body.entries()) {
+              if (value instanceof File) {
+                files.push({ name: value.name, size: value.size, type: value.type });
+              } else {
+                body[key] = value;
+              }
+            }
+            if (files.length) body.files = files;
+          } else {
+            try { body = JSON.parse(options.body); } catch {}
+          }
         }
         const method = (options?.method || 'GET').toUpperCase();
         return Promise.resolve(handleApi(path, method, body)).then(data => new Response(JSON.stringify(data), {

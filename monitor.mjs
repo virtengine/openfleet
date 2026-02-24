@@ -12474,6 +12474,7 @@ if (isExecutorDisabled()) {
                 title: task.title,
                 branchName: task.branchName || task.meta?.branch_name,
                 description: task.description || "",
+                taskContext: task?._taskContextBlock || task?.meta?.taskContextBlock || "",
               });
             } catch {
               /* best-effort */
@@ -12574,6 +12575,7 @@ if (isExecutorDisabled()) {
                   prNumber: body?.prNumber,
                   branchName: task.branch,
                   description: body?.description || "",
+                  taskContext: task.taskContext || task.taskContextBlock || "",
                 });
             }
           }
@@ -12779,6 +12781,7 @@ if (isExecutorDisabled()) {
                 branchName: task?.branchName || "",
                 prUrl: task?.prUrl || "",
                 description: task?.description || "",
+                taskContext: task?._taskContextBlock || task?.meta?.taskContextBlock || "",
                 worktreePath: null,
                 sessionMessages: "",
                 diffStats: "",
