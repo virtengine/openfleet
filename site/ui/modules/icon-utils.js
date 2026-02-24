@@ -89,6 +89,7 @@ export const EMOJI_ICON_MAP = {
   "✨": "star",
   "🔴": "dot",
   "🔵": "dot",
+  "⚪": "dot",
   "🔷": "diamond",
   "🖥": "monitor",
   "🗂": "folder",
@@ -116,6 +117,12 @@ export const EMOJI_ICON_MAP = {
   "🧵": "link",
   "🧹": "trash",
   "🪝": "link",
+  "♻": "repeat",
+  "♻️": "repeat",
+  "⬇": "download",
+  "⬇️": "download",
+  "⬆": "upload",
+  "⬆️": "upload",
   "▶": "play",
   "▶️": "play",
   "⏸": "pause",
@@ -162,3 +169,5 @@ export function iconText(text, { className = "" } = {}) {
 
   return html`<span class="icon-text ${className}">${parts}</span>`;
 }
+
+

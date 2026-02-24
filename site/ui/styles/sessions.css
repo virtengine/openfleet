@@ -2123,40 +2123,38 @@ ul.md-list li::before {
 }
 
 /* ─── Blend chat input seamlessly with bottom navbar ─── */
-@media (max-width: 1399px) {
-  .app-shell[data-tab="chat"] .chat-input-area {
-    border-top: none;
-    background: var(--glass-bg);
-    backdrop-filter: var(--glass-blur);
-    box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.12);
-  }
+.app-shell[data-tab="chat"] .chat-input-area {
+  border-top: none;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.12);
+}
 
-  .app-shell[data-tab="chat"] .chat-input-area::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: -24px;
-    height: 24px;
-    background: linear-gradient(180deg, rgba(0, 0, 0, 0), var(--glass-bg));
-    pointer-events: none;
-  }
+.app-shell[data-tab="chat"] .chat-input-area::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -24px;
+  height: 24px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0), var(--glass-bg));
+  pointer-events: none;
+}
 
-  .app-shell[data-tab="chat"] .chat-input-toolbar {
-    background: var(--glass-bg);
-    border: 1px solid var(--glass-border);
-    box-shadow: inset 0 1px 0 var(--glass-highlight);
-  }
+.app-shell[data-tab="chat"] .chat-input-toolbar {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
 
-  .app-shell[data-tab="chat"] .chat-input-hint {
-    color: var(--text-secondary);
-  }
+.app-shell[data-tab="chat"] .chat-input-hint {
+  color: var(--text-secondary);
+}
 
-  .app-shell[data-tab="chat"] ~ .bottom-nav {
-    background: var(--glass-bg);
-    border-color: var(--glass-border);
-    backdrop-filter: var(--glass-blur);
-  }
+.app-shell[data-tab="chat"] ~ .bottom-nav {
+  background: var(--glass-bg);
+  border-color: var(--glass-border);
+  backdrop-filter: var(--glass-blur);
 }
 
 @media (max-width: 767px) {
