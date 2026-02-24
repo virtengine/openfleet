@@ -181,7 +181,7 @@ export function DiffViewer({ sessionId }) {
             )
           : html`
               <div class="session-empty">
-                <div class="session-empty-icon">✨</div>
+                <div class="session-empty-icon">${resolveIcon("star")}</div>
                 <div class="session-empty-text">No changes yet</div>
               </div>
             `}

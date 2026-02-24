@@ -448,7 +448,8 @@ export function InfraTab() {
                     class="btn btn-secondary btn-sm"
                     onClick=${() => handlePullWorkspace(ws.id)}
                   >
-                    ⬇️ Pull
+                    <span class="btn-icon">${resolveIcon("download")}</span>
+                    Pull
                   </button>
                   <button
                     class="btn btn-danger btn-sm"

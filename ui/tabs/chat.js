@@ -508,7 +508,7 @@ export function ChatTab() {
             method: "POST",
             body: JSON.stringify({ command: cmdBase, args: cmdArgs }),
           });
-          const resultText = resp?.result || resp?.data || `✅ SDK command executed: ${cmdBase}`;
+          const resultText = resp?.result || resp?.data || `SDK command executed: ${cmdBase}`;
           if (sessionId) {
             const { sessionMessages } = await import("../components/session-list.js");
             const now = new Date().toISOString();
@@ -532,7 +532,7 @@ export function ChatTab() {
             const msgs = sessionMessages.value || [];
             const userMsg = { id: `cmd-${Date.now()}`, role: "user", content, timestamp: now };
             const resultText = data?.content || data?.error
-              || (data?.readOnly ? `✅ ${cmdBase} — see the relevant tab for details.` : `✅ Command executed: ${cmdBase}`);
+              || (data?.readOnly ? `${cmdBase} — see the relevant tab for details.` : `Command executed: ${cmdBase}`);
             const sysMsg = { id: `cmd-r-${Date.now()}`, role: "system", content: resultText, timestamp: now };
             sessionMessages.value = [...msgs, userMsg, sysMsg];
           } else {

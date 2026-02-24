@@ -853,7 +853,7 @@ function ServerConfigMode() {
                 type="button"
                 title=${secretVisible ? "Hide" : "Show"}
               >
-                ${resolveIcon(secretVisible ? "🙈" : "👁")}
+                <span class="icon-inline">${resolveIcon(secretVisible ? "eyeOff" : "eye")}</span>
               </button>
             </div>
           `;
@@ -948,7 +948,7 @@ function ServerConfigMode() {
     ${loadError &&
     html`
       <div class="settings-banner settings-banner-error">
-        <span>⚠️</span>
+        <span class="icon-inline">${resolveIcon("alert")}</span>
         <span class="settings-banner-text">
           <strong>Backend Unreachable</strong> — ${loadError}
         </span>
@@ -960,7 +960,7 @@ function ServerConfigMode() {
     !loadError &&
     html`
       <div class="settings-banner settings-banner-warn">
-        <span>${resolveIcon("🧠")}</span>
+        <span class="icon-inline">${resolveIcon("cpu")}</span>
         <span class="settings-banner-text">Connection lost — reconnecting…</span>
       </div>
     `}
@@ -968,7 +968,7 @@ function ServerConfigMode() {
     ${configSync &&
     html`
       <div class="settings-banner ${configSync.skipped?.length ? "settings-banner-warn" : "settings-banner-info"}">
-        <span>${resolveIcon("💾")}</span>
+        <span class="icon-inline">${resolveIcon("save")}</span>
         <span class="settings-banner-text">
           ${configSync.skipped?.length
             ? `Saved ${configSync.total} settings; synced ${configSync.updated} to config file.`
@@ -989,7 +989,7 @@ function ServerConfigMode() {
     !loadError &&
     html`
       <div class="settings-banner settings-banner-info">
-        <span>${resolveIcon("🧭")}</span>
+        <span class="icon-inline">${resolveIcon("compass")}</span>
         <span class="settings-banner-text">
           Settings are saved to <code>${serverMeta.envPath}</code> and synced to
           <code>${serverMeta.configPath}</code> for supported keys.
@@ -1153,7 +1153,7 @@ function ServerConfigMode() {
           ${hasRestartSetting &&
           html`
             <div class="settings-banner settings-banner-warn" style="margin-top:8px">
-              <span>${resolveIcon("🔄")}</span>
+              <span class="icon-inline">${resolveIcon("refresh")}</span>
               <span class="settings-banner-text">
                 Some changes require a restart. The server will auto-reload (~2 seconds).
               </span>
@@ -1751,7 +1751,7 @@ function GitHubDeviceFlowCard({ config }) {
     return html`
       <${Card}>
         <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
-          <span style="font-size:20px">${resolveIcon("🐙")}</span>
+          <span class="icon-inline" style="font-size:20px;">${resolveIcon("git")}</span>
           <div style="flex:1;min-width:0">
             <div style="font-size:13px;font-weight:600;color:var(--text-primary)">GitHub Connected</div>
             <div style="font-size:12px;color:var(--text-secondary)">Token is configured. Re-authenticate below if needed.</div>
@@ -1769,7 +1769,7 @@ function GitHubDeviceFlowCard({ config }) {
     return html`
       <${Card}>
         <div style="text-align:center;padding:12px 0">
-          <div style="font-size:32px;margin-bottom:8px">${resolveIcon("✅")}</div>
+          <div style="font-size:32px;margin-bottom:8px"><span class="icon-inline">${resolveIcon("check")}</span></div>
           <div style="font-size:15px;font-weight:600;color:var(--text-primary)">Signed in as ${ghUser}</div>
           <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">GitHub token saved to .env</div>
         </div>
@@ -1821,7 +1821,7 @@ function GitHubDeviceFlowCard({ config }) {
   return html`
     <${Card}>
       <div style="text-align:center;padding:16px 0">
-        <div style="font-size:32px;margin-bottom:8px">${resolveIcon("🐙")}</div>
+        <div style="font-size:32px;margin-bottom:8px"><span class="icon-inline">${resolveIcon("git")}</span></div>
         <div style="font-size:15px;font-weight:600;margin-bottom:4px;color:var(--text-primary)">
           Sign in with GitHub
         </div>

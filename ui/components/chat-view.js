@@ -981,7 +981,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         ${!isActive && session?.status &&
         html`
           <button class="btn btn-primary btn-sm chat-resume-btn" onClick=${handleResume}>
-            ▶ ${resumeLabel}
+            <span class="btn-icon">${resolveIcon("play")}</span>
+            ${resumeLabel}
           </button>
         `}
         <div class="chat-input-row">

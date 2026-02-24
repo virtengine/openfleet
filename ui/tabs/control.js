@@ -387,7 +387,7 @@ export function ControlTab() {
     sendCmd(cmd);
     setQuickCmdInput("");
     setQuickCmdFeedbackTone("success");
-    setQuickCmdFeedback("✓ Command sent to monitor");
+    setQuickCmdFeedback("Command sent to monitor");
     setTimeout(() => setQuickCmdFeedback(""), 4000);
   }, [quickCmdInput, quickCmdPrefix, sendCmd]);
 
