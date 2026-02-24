@@ -82,17 +82,17 @@
   const cursorEl = document.getElementById('typed-cursor');
   if (typedEl) {
     const phrases = [
-      'Task Ops.',
-      'PR Orchestration.',
-      'Release Ops.',
-      'Agent Ops.',
-      'Fleet Ops.',
+      'supervized',
+      'monitored',
+      'orchestrated',
+      'synchronized',
+      'autonomous',
     ];
     let phraseIdx = 0;
     let charIdx = 0;
     let deleting = false;
     let pauseUntil = 0;
-    const pauseDurationMs = 20000;
+    const pauseDurationMs = 10000;
 
     function typeLoop() {
       var phrase = phrases[phraseIdx];
@@ -116,7 +116,7 @@
         }
       }
 
-      var speed = deleting ? 120 + Math.random() * 60 : 140 + Math.random() * 80;
+      var speed = deleting ? 70 + Math.random() * 40 : 95 + Math.random() * 50;
       setTimeout(typeLoop, speed);
     }
 
@@ -176,10 +176,7 @@
   /* ── Inject package version in hero tag and footer ───────────────────── */
   const versionTargets = document.querySelectorAll('[data-version]');
   if (versionTargets.length > 0) {
-    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-    const sources = isLocal
-      ? ['../package.json', './package.json', 'https://raw.githubusercontent.com/virtengine/bosun/main/package.json']
-      : ['https://raw.githubusercontent.com/virtengine/bosun/main/package.json'];
+    const sources = ['https://raw.githubusercontent.com/virtengine/bosun/main/package.json'];
       
     const tryNext = () => {
       const next = sources.shift();

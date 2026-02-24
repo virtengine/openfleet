@@ -4902,6 +4902,157 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  /* ═══════════════════════════════════════════════════════════
+   *  Workflow API endpoints
+   * ═══════════════════════════════════════════════════════════ */
+
+  // Lazy-load workflow modules (they may not exist in older installs)
+  let _wfEngine, _wfNodes, _wfTemplates;
+  async function getWorkflowEngine() {
+    if (!_wfEngine) {
+      try {
+        _wfEngine = await import("./workflow-engine.mjs");
+        _wfNodes = await import("./workflow-nodes.mjs");
+        _wfTemplates = await import("./workflow-templates.mjs");
+      } catch (err) {
+        console.error("[workflows] Failed to load workflow modules:", err.message);
+      }
+    }
+    return _wfEngine;
+  }
+
+  if (path === "/api/workflows") {
+    try {
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const engine = wfMod.getWorkflowEngine();
+      const all = engine.listWorkflows();
+      jsonResponse(res, 200, { ok: true, workflows: all.map(w => ({
+        id: w.id, name: w.name, description: w.description, category: w.category,
+        enabled: w.enabled !== false, nodeCount: (w.nodes || []).length,
+        trigger: (w.nodes || [])[0]?.type || "manual",
+      })) });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workflows/save") {
+    try {
+      const body = await readJsonBody(req);
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const engine = wfMod.getWorkflowEngine();
+      const saved = await engine.saveWorkflow(body);
+      jsonResponse(res, 200, { ok: true, workflow: saved });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workflows/templates") {
+    try {
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const tplMod = _wfTemplates;
+      const list = tplMod.listTemplates();
+      jsonResponse(res, 200, { ok: true, templates: list.map(t => ({
+        id: t.id, name: t.name, description: t.description, category: t.category,
+        tags: t.tags || [], nodeCount: (t.nodes || []).length,
+      })) });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workflows/install-template") {
+    try {
+      const body = await readJsonBody(req);
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const tplMod = _wfTemplates;
+      const engine = wfMod.getWorkflowEngine();
+      const wf = await tplMod.installTemplate(body.templateId, engine, body.overrides);
+      jsonResponse(res, 200, { ok: true, workflow: wf });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workflows/node-types") {
+    try {
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const types = wfMod.listNodeTypes();
+      jsonResponse(res, 200, { ok: true, nodeTypes: types.map(nt => ({
+        type: nt.type,
+        category: nt.type.split(".")[0],
+        description: nt.description || "",
+        schema: nt.schema || {},
+      })) });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workflows/runs") {
+    try {
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const engine = wfMod.getWorkflowEngine();
+      const runs = engine.getRunHistory ? engine.getRunHistory() : [];
+      jsonResponse(res, 200, { ok: true, runs });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // Dynamic routes: /api/workflows/:id, /api/workflows/:id/execute, /api/workflows/:id/runs
+  if (path.startsWith("/api/workflows/") && !path.startsWith("/api/workflows/save") && !path.startsWith("/api/workflows/templates") && !path.startsWith("/api/workflows/install") && !path.startsWith("/api/workflows/node") && !path.startsWith("/api/workflows/runs")) {
+    const segments = path.replace("/api/workflows/", "").split("/");
+    const workflowId = segments[0];
+    const action = segments[1] || "";
+
+    try {
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const engine = wfMod.getWorkflowEngine();
+
+      if (action === "execute" && req.method === "POST") {
+        const result = await engine.executeWorkflow(workflowId);
+        jsonResponse(res, 200, { ok: true, result });
+        return;
+      }
+
+      if (action === "runs") {
+        const runs = engine.getRunHistory ? engine.getRunHistory(workflowId) : [];
+        jsonResponse(res, 200, { ok: true, runs });
+        return;
+      }
+
+      if (req.method === "DELETE") {
+        await engine.deleteWorkflow(workflowId);
+        jsonResponse(res, 200, { ok: true });
+        return;
+      }
+
+      // GET — return full workflow definition
+      const all = engine.listWorkflows();
+      const wf = all.find(w => w.id === workflowId);
+      if (!wf) { jsonResponse(res, 404, { ok: false, error: "Workflow not found" }); return; }
+      jsonResponse(res, 200, { ok: true, workflow: wf });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/health") {
     jsonResponse(res, 200, {
       ok: true,

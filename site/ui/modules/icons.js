@@ -277,6 +277,25 @@ export const ICONS = {
     <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
   </svg>`,
 
+  /* ── Workflow ── */
+  workflow: html`<svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <circle cx="5" cy="6" r="2" />
+    <circle cx="12" cy="6" r="2" />
+    <circle cx="19" cy="12" r="2" />
+    <circle cx="12" cy="18" r="2" />
+    <path d="M7 6h3" />
+    <path d="M14 6l3 4" />
+    <path d="M17 14l-3 2" />
+    <path d="M10 18l-3-10" />
+  </svg>`,
+
   /* ── Terminal / Code ── */
   terminal: html`<svg
     viewBox="0 0 24 24"

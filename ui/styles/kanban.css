@@ -366,3 +366,38 @@ body.kanban-dragging .kanban-card {
   background: var(--accent);
   color: var(--accent-text);
 }
+
+/* ═══════════════════════════════════════════════
+ *  Desktop Premium Density Overrides
+ * ═══════════════════════════════════════════════ */
+@media (min-width: 1200px) {
+  .kanban-board {
+    gap: 12px;
+    padding: 8px 0 12px;
+  }
+
+  .kanban-column {
+    padding: 10px;
+    border-radius: var(--radius-md);
+  }
+
+  .kanban-card {
+    padding: 10px;
+    border-radius: var(--radius-sm);
+  }
+
+  .kanban-card-title {
+    font-size: 13px;
+  }
+
+  .kanban-card-desc,
+  .kanban-card-meta {
+    font-size: 11px;
+  }
+
+  .kanban-column-header {
+    font-size: 12px;
+    padding: 6px 4px;
+    margin-bottom: 6px;
+  }
+}
