@@ -176,7 +176,10 @@
   /* ── Inject package version in hero tag and footer ───────────────────── */
   const versionTargets = document.querySelectorAll('[data-version]');
   if (versionTargets.length > 0) {
-    const sources = ['https://raw.githubusercontent.com/virtengine/bosun/main/package.json'];
+    const sources = [
+      'https://registry.npmjs.org/bosun/latest',
+      'https://raw.githubusercontent.com/virtengine/bosun/main/package.json',
+    ];
       
     const tryNext = () => {
       const next = sources.shift();
