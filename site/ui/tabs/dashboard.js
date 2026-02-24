@@ -895,13 +895,19 @@ export function DashboardTab() {
           className="dashboard-card dashboard-commits-card"
         >
           <div class="dashboard-commits">
-            ${recentCommits.map((c) => html`
-              <div class="dashboard-commit-item" key=${c.hash || c.message}>
-                <div class="dashboard-commit-hash">${(c.hash || '').slice(0, 7)}</div>
-                <div class="dashboard-commit-msg">${truncate(c.message || c.msg || '', 60)}</div>
-                <div class="dashboard-commit-meta">${c.author || ''} · ${formatRelative(c.date || c.timestamp)}</div>
-              </div>
-            `)}
+            ${recentCommits.map((c) => {
+              // Support both structured {hash,message,author,date} and legacy/alternate field names
+              const hash = (c.hash || c.sha || '').slice(0, 7);
+              const message = c.message || c.msg || c.subject || (typeof c === 'string' ? c.split(' ').slice(1).join(' ') : '');
+              const author = c.author || c.authorName || '';
+              const date = c.date || c.timestamp || c.authoredDate || '';
+              return html`
+              <div class="dashboard-commit-item" key=${hash || message}>
+                <div class="dashboard-commit-hash">${hash || '???'}</div>
+                <div class="dashboard-commit-msg">${truncate(message, 60)}</div>
+                ${(author || date) && html`<div class="dashboard-commit-meta">${author}${author && date ? ' · ' : ''}${date ? formatRelative(date) : ''}</div>`}
+              </div>`;
+            })}
           </div>
         <//>  
       `}

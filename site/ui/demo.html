@@ -263,14 +263,14 @@
     const hr = 3600000;
 
     const SEED_TASKS = [
-      { id: 've-abc123', title: 'feat(market): add order expiry validation', status: 'done', priority: 'high', assignee: 'copilot-claude', branch: 've/abc123-market-order-expiry', pr: 187, created: now - 4*hr, updated: now - 1*hr },
-      { id: 've-def456', title: 'fix(veid): token validation edge case', status: 'done', priority: 'medium', assignee: 'codex-default', branch: 've/def456-veid-token-fix', pr: 188, created: now - 3*hr, updated: now - 45*min },
-      { id: 've-ghi789', title: 'refactor(escrow): batch settlement pipeline', status: 'inprogress', priority: 'high', assignee: 'copilot-claude', branch: 've/ghi789-escrow-batch', pr: 189, created: now - 2*hr, updated: now - 15*min },
-      { id: 've-jkl012', title: 'feat(hpc): GPU resource metering', status: 'inprogress', priority: 'critical', assignee: 'codex-default', branch: 've/jkl012-hpc-gpu-metering', pr: null, created: now - 1*hr, updated: now - 5*min },
-      { id: 've-mno345', title: 'docs: update provider integration guide', status: 'todo', priority: 'low', assignee: null, branch: null, pr: null, created: now - 30*min, updated: now - 30*min },
-      { id: 've-pqr678', title: 'feat(provider): health check endpoint', status: 'todo', priority: 'medium', assignee: null, branch: null, pr: null, created: now - 20*min, updated: now - 20*min },
-      { id: 've-stu901', title: 'fix(roles): permission cascade bug', status: 'draft', priority: 'high', assignee: null, branch: null, pr: null, created: now - 10*min, updated: now - 10*min },
-      { id: 've-vwx234', title: 'test(mfa): add integration test suite', status: 'inreview', priority: 'medium', assignee: 'copilot-claude', branch: 've/vwx234-mfa-tests', pr: 190, created: now - 5*hr, updated: now - 30*min },
+      { id: 'bs-001', title: 'feat(ui): sticky chat input — always at bottom', status: 'done', priority: 'high', assignee: 'copilot-claude', branch: 'bs/001-chat-input-sticky', pr: 17, created: now - 4*hr, updated: now - 1*hr },
+      { id: 'bs-002', title: 'fix(dashboard): health card text contrast in Telegram', status: 'done', priority: 'medium', assignee: 'codex-default', branch: 'bs/002-health-card-contrast', pr: 18, created: now - 3*hr, updated: now - 45*min },
+      { id: 'bs-003', title: 'refactor(ui-server): structured recent-commits API', status: 'inprogress', priority: 'high', assignee: 'copilot-claude', branch: 'bs/003-commits-api', pr: 19, created: now - 2*hr, updated: now - 15*min },
+      { id: 'bs-004', title: 'feat(bot-controls): fix /agents and /executor commands', status: 'inprogress', priority: 'critical', assignee: 'codex-default', branch: 'bs/004-bot-controls', pr: null, created: now - 1*hr, updated: now - 5*min },
+      { id: 'bs-005', title: 'docs: update miniapp deployment guide', status: 'todo', priority: 'low', assignee: null, branch: null, pr: null, created: now - 30*min, updated: now - 30*min },
+      { id: 'bs-006', title: 'feat(kanban): task priority drag-and-drop', status: 'todo', priority: 'medium', assignee: null, branch: null, pr: null, created: now - 20*min, updated: now - 20*min },
+      { id: 'bs-007', title: 'fix(session-list): archived item title visibility', status: 'draft', priority: 'high', assignee: null, branch: null, pr: null, created: now - 10*min, updated: now - 10*min },
+      { id: 'bs-008', title: 'test(ui-server): add API integration tests', status: 'inreview', priority: 'medium', assignee: 'copilot-claude', branch: 'bs/008-api-tests', pr: 20, created: now - 5*hr, updated: now - 30*min },
     ];
 
     const SEED_STATUS = {
@@ -630,23 +630,19 @@
       sessions: SEED_SESSIONS,
       sessionDiffs: SESSION_DIFFS,
       worktrees: [
-        { branch: 've/abc123-market-order-expiry', path: '/worktrees/abc123', active: false, taskId: 've-abc123' },
-        { branch: 've/ghi789-escrow-batch', path: '/worktrees/ghi789', active: true, taskId: 've-ghi789' },
-        { branch: 've/jkl012-hpc-gpu-metering', path: '/worktrees/jkl012', active: true, taskId: 've-jkl012' },
-        { branch: 've/vwx234-mfa-tests', path: '/worktrees/vwx234', active: true, taskId: 've-vwx234' },
+        { branch: 'bs/001-chat-input-sticky', path: '/worktrees/bs001', active: false, taskId: 'bs-001' },
+        { branch: 'bs/003-commits-api', path: '/worktrees/bs003', active: true, taskId: 'bs-003' },
+        { branch: 'bs/004-bot-controls', path: '/worktrees/bs004', active: true, taskId: 'bs-004' },
+        { branch: 'bs/008-api-tests', path: '/worktrees/bs008', active: true, taskId: 'bs-008' },
       ],
       managedWorkspaces: [
-        { id: 'ws-virtengine', name: 'virtengine', path: '/home/demo/repos/virtengine', active: true, repos: [
-          { name: 'virtengine', url: 'https://github.com/virtengine-gh/virtengine.git', branch: 'main', primary: true },
-          { name: 'virtengine-go', url: 'https://github.com/virtengine/go.git', branch: 'main', primary: false },
+        { id: 'ws-bosun', name: 'bosun', path: '/home/demo/repos/bosun', active: true, repos: [
+          { name: 'bosun', url: 'https://github.com/virtengine/bosun.git', branch: 'main', primary: true },
         ], createdAt: now - 30*24*hr },
-        { id: 'ws-provider', name: 'provider-tools', path: '/home/demo/repos/provider-tools', active: false, repos: [
-          { name: 'provider-daemon', url: 'https://github.com/virtengine-gh/provider-daemon.git', branch: 'main', primary: true },
-        ], createdAt: now - 7*24*hr },
       ],
-      activeWorkspaceId: 'ws-virtengine',
+      activeWorkspaceId: 'ws-bosun',
       sharedWorkspaces: [
-        { id: 'sw-1', name: 'shared-escrow-dev', claimedBy: 'copilot-claude', claimedAt: now - 1*hr, expiresAt: now + 1*hr },
+        { id: 'sw-1', name: 'bosun-dev', claimedBy: 'copilot-claude', claimedAt: now - 1*hr, expiresAt: now + 1*hr },
       ],
       agentMode: 'agent',
       activeAgentId: 'codex-sdk',
@@ -722,7 +718,7 @@
     }
 
     /* ── API Route Handler (comprehensive — catches ALL /api/* calls) */
-    function handleApi(path, method, body) {
+    async function handleApi(path, method, body) {
       // Normalize: strip query string for route matching
       const [route, qs] = path.split('?');
       const params = new URLSearchParams(qs || '');
@@ -1227,8 +1223,7 @@
           try { body = JSON.parse(options.body); } catch {}
         }
         const method = (options?.method || 'GET').toUpperCase();
-        const data = handleApi(path, method, body);
-        return Promise.resolve(new Response(JSON.stringify(data), {
+        return Promise.resolve(handleApi(path, method, body)).then(data => new Response(JSON.stringify(data), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }));

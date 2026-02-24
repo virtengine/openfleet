@@ -1781,11 +1781,20 @@ ul.md-list li::before {
 }
 
 .session-item.archived {
-  opacity: 0.6;
+  opacity: 0.7;
+}
+
+.session-item.archived .session-item-title {
+  text-decoration: line-through;
+  color: var(--text-secondary);
+}
+
+.session-item.archived .session-item-dot {
+  opacity: 0.4;
 }
 
 .session-item.archived:hover {
-  opacity: 0.85;
+  opacity: 0.9;
 }
 
 /* ═══ Inline Action Buttons (desktop hover) ═══ */

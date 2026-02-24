@@ -4870,8 +4870,32 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/recent-commits") {
     try {
-      const commits = getRecentCommits(process.cwd(), 6);
-      jsonResponse(res, 200, { ok: true, data: commits });
+      // Return structured objects {hash,message,author,date} using a richer git format.
+      // Falls back to parsing --oneline strings if the richer format fails.
+      const proc = spawnSync(
+        "git",
+        ["log", "--format=%H\x1f%s\x1f%an\x1f%aI", "--max-count=6"],
+        { cwd: process.cwd(), encoding: "utf8", timeout: 10_000 },
+      );
+      if (proc.status === 0 && (proc.stdout || "").trim()) {
+        const commits = proc.stdout
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => {
+            const [hash, message, author, date] = line.split("\x1f");
+            return { hash: (hash || "").slice(0, 7), message: message || "", author: author || "", date: date || "" };
+          });
+        jsonResponse(res, 200, { ok: true, data: commits });
+      } else {
+        // Fallback: parse --oneline strings
+        const lines = getRecentCommits(process.cwd(), 6);
+        const commits = lines.map((l) => {
+          const sp = (l || "").indexOf(" ");
+          return { hash: sp > 0 ? l.slice(0, sp) : l.slice(0, 7), message: sp > 0 ? l.slice(sp + 1) : l, author: "", date: "" };
+        });
+        jsonResponse(res, 200, { ok: true, data: commits });
+      }
     } catch (err) {
       jsonResponse(res, 200, { ok: true, data: [], error: err.message });
     }

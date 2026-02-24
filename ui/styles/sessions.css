@@ -60,6 +60,7 @@
     grid-template-rows: minmax(0, 1fr);
     gap: var(--space-md);
     min-height: 500px;
+    height: 100%; /* grid needs explicit height for 1fr rows to work */
   }
 
   .session-split>* {
@@ -1494,8 +1495,9 @@ ul.md-list li::before {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 100%;
-  min-height: 300px;
+  /* height: 100% removed — flex:1 on .session-detail>.chat-welcome handles sizing.
+     height:100% + flex:1 together overfill the container, pushing input off-screen. */
+  min-height: 200px;
   padding: 32px;
   text-align: center;
   gap: 16px;
@@ -1779,11 +1781,20 @@ ul.md-list li::before {
 }
 
 .session-item.archived {
-  opacity: 0.6;
+  opacity: 0.7;
+}
+
+.session-item.archived .session-item-title {
+  text-decoration: line-through;
+  color: var(--text-secondary);
+}
+
+.session-item.archived .session-item-dot {
+  opacity: 0.4;
 }
 
 .session-item.archived:hover {
-  opacity: 0.85;
+  opacity: 0.9;
 }
 
 /* ═══ Inline Action Buttons (desktop hover) ═══ */
