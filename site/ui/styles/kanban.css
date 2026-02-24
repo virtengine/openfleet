@@ -374,15 +374,16 @@ body.kanban-dragging .kanban-card {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   background: var(--accent, #3b82f6);
-  color: var(--accent-text, #fff);
+  color: #fff;
   font-size: 9px;
   font-weight: 700;
-  text-transform: uppercase;
+  letter-spacing: -0.3px;
   flex-shrink: 0;
+  user-select: none;
 }
 
 .kanban-card-title {

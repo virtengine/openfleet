@@ -379,7 +379,18 @@ function KanbanCard({ task, onOpen }) {
         </div>
       `}
       <div class="kanban-card-meta">
-        ${task.assignee && html`<span class="kanban-card-assignee" title=${task.assignee}>${task.assignee.split("-")[0]}</span>`}
+        ${task.assignee && (() => {
+          const lc = task.assignee.toLowerCase();
+          const label = lc.startsWith('copilot') ? 'Co'
+            : lc.startsWith('codex') ? 'Cx'
+            : lc.startsWith('claude') ? 'Cl'
+            : task.assignee.replace(/[^a-zA-Z0-9]/g, '').slice(0, 2).toUpperCase() || '?';
+          const bg = lc.startsWith('copilot') ? '#7c3aed'
+            : lc.startsWith('codex') ? '#059669'
+            : lc.startsWith('claude') ? '#d97706'
+            : 'var(--accent, #3b82f6)';
+          return html`<span class="kanban-card-assignee" style="background:${bg}" title=${task.assignee}>${label}</span>`;
+        })()}
         <span class="kanban-card-id">${typeof task.id === "string" ? truncate(task.id, 12) : task.id}</span>
         ${task.created_at && html`<span>${formatRelative(task.created_at)}</span>`}
       </div>

@@ -55,7 +55,9 @@ export function apiFetch(path, options = {}) {
   const FETCH_RETRY_BASE_MS = 800;
 
   const promise = (async () => {
-    loadingCount.value += 1;
+    // Background / silent requests (polling, auto-refresh) must not drive the
+    // top loading bar — only user-initiated, non-silent calls should.
+    if (!silent) loadingCount.value += 1;
     let res;
     let fetchAttempt = 0;
     try {
@@ -88,7 +90,7 @@ export function apiFetch(path, options = {}) {
       }
       throw err;
     } finally {
-      loadingCount.value = Math.max(0, loadingCount.value - 1);
+      if (!silent) loadingCount.value = Math.max(0, loadingCount.value - 1);
       if (isGet && !options.body) _inflight.delete(path);
     }
   })();
