@@ -59,6 +59,8 @@ const backendRetryCount = signal(0);
 const DESKTOP_MIN_WIDTH = 1200;
 const TABLET_MIN_WIDTH = 768;
 const COMPACT_NAV_MAX_WIDTH = 520;
+const RAIL_ICON_WIDTH = 54;
+const SIDEBAR_ICON_WIDTH = 54;
 
 /* ── Module imports ── */
 import { ICONS } from "./modules/icons.js";
@@ -495,26 +497,53 @@ function Header() {
 /* ═══════════════════════════════════════════════
  *  Desktop Sidebar + Session Rail
  * ═══════════════════════════════════════════════ */
-function SidebarNav() {
+function SidebarNav({ collapsed = false, onToggle }) {
   const user = getTelegramUser();
   const isConn = connected.value;
+
+  const collapseIcon = collapsed
+    ? html`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 3l5 5-5 5"/></svg>`
+    : html`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 3l-5 5 5 5"/></svg>`;
+
   return html`
-    <aside class="sidebar">
-      <div class="sidebar-brand">
-        <div class="sidebar-logo">
-          <img src="logo.png" alt="Bosun" class="app-logo-img" />
+    <aside class="sidebar ${collapsed ? 'sidebar-icon-only' : ''}">
+      <div class="sidebar-brand-row">
+        <div class="sidebar-brand">
+          <div class="sidebar-logo">
+            <img src="logo.png" alt="Bosun" class="app-logo-img" />
+          </div>
+          ${!collapsed && html`<div class="sidebar-title">Bosun</div>`}
         </div>
-        <div class="sidebar-title">Bosun</div>
-      </div>
-      <div class="sidebar-actions">
-        <button class="btn btn-primary btn-block" onClick=${() => createSession({ type: "primary" })}>
-          <span class="btn-icon">✨</span> New Session
+        <button
+          class="sidebar-collapse-btn"
+          onClick=${onToggle}
+          title=${collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-label=${collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          ${collapseIcon}
         </button>
-        <button class="btn btn-ghost btn-block" onClick=${() => navigateTo("tasks")}>
-          <span class="btn-icon">📋</span> View Tasks
-        </button>
       </div>
-      <nav class="sidebar-nav">
+      ${!collapsed && html`
+        <div class="sidebar-actions">
+          <button class="btn btn-primary btn-block" onClick=${() => createSession({ type: "primary" })}>
+            <span class="btn-icon">✨</span> New Session
+          </button>
+          <button class="btn btn-ghost btn-block" onClick=${() => navigateTo("tasks")}>
+            <span class="btn-icon">📋</span> View Tasks
+          </button>
+        </div>
+      `}
+      ${collapsed && html`
+        <div class="sidebar-actions-icon">
+          <button
+            class="sidebar-icon-action"
+            onClick=${() => createSession({ type: "primary" })}
+            title="New Session"
+            aria-label="New Session"
+          >✨</button>
+        </div>
+      `}
+      <nav class="sidebar-nav" aria-label="Main navigation">
         ${TAB_CONFIG.map((tab) => {
           const isActive = activeTab.value === tab.id;
           const isHome = tab.id === "dashboard";
@@ -532,6 +561,7 @@ function SidebarNav() {
               style="position:relative"
               aria-label=${tab.label}
               aria-current=${isActive ? "page" : null}
+              title=${collapsed ? tab.label : undefined}
               onClick=${() =>
                 navigateTo(tab.id, {
                   resetHistory: isHome,
@@ -539,26 +569,26 @@ function SidebarNav() {
                 })}
             >
               ${ICONS[tab.icon]}
-              <span>${tab.label}</span>
+              ${!collapsed && html`<span>${tab.label}</span>`}
               ${badge > 0 ? html`<span class="nav-badge">${badge}</span>` : null}
             </button>
           `;
         })}
       </nav>
       <div class="sidebar-footer">
-        <div class="sidebar-status ${isConn ? "online" : "offline"}">
+        <div class="sidebar-status ${isConn ? "online" : "offline"}" title=${collapsed ? (isConn ? "Connected" : "Offline") : undefined}>
           <span class="sidebar-status-dot"></span>
-          ${isConn ? "Connected" : "Offline"}
+          ${!collapsed && (isConn ? "Connected" : "Offline")}
         </div>
-        ${user
+        ${!collapsed && (user
           ? html`<div class="sidebar-user">@${user.username || user.first_name || "operator"}</div>`
-          : html`<div class="sidebar-user">Operator Console</div>`}
+          : html`<div class="sidebar-user">Operator Console</div>`)}
       </div>
     </aside>
   `;
 }
 
-function SessionRail({ onResizeStart, onResizeReset, showResizer }) {
+function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onCollapse, onExpand }) {
   const [showArchived, setShowArchived] = useState(false);
   const sessions = sessionsData.value || [];
   const activeCount = sessions.filter(
@@ -585,13 +615,73 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer }) {
     if (next?.id) selectedSessionId.value = next.id;
   }, [sessionsData.value, selectedSessionId.value]);
 
+  if (collapsed) {
+    // Icon-only strip: colored dots for sessions + expand button
+    const dots = sessions.slice(0, 12);
+    const statusColor = (s) => {
+      if (s.status === "active" || s.status === "running") return "var(--color-done, #10b981)";
+      if (s.status === "error" || s.status === "failed") return "var(--color-error, #ef4444)";
+      if (s.status === "archived") return "rgba(255,255,255,0.2)";
+      return "rgba(255,255,255,0.35)";
+    };
+
+    return html`
+      <aside class="session-rail session-rail--collapsed" aria-label="Sessions (collapsed)">
+        <button
+          class="rail-expand-btn"
+          onClick=${onExpand}
+          title="Expand sessions panel"
+          aria-label="Expand sessions"
+        >
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="14" height="14">
+            <path d="M6 3l5 5-5 5"/>
+          </svg>
+        </button>
+        <div class="rail-dots">
+          ${dots.map((s) => html`
+            <div
+              key=${s.id}
+              class="rail-session-dot ${selectedSessionId.value === s.id ? 'selected' : ''}"
+              style="background: ${statusColor(s)}"
+              onClick=${() => { selectedSessionId.value = s.id; onExpand?.(); }}
+              title=${s.title || s.taskId || s.id}
+            />
+          `)}
+          ${sessions.length > 12 && html`
+            <div class="rail-dots-more" title="${sessions.length - 12} more sessions">
+              +${sessions.length - 12}
+            </div>
+          `}
+        </div>
+        <div class="rail-icon-footer">
+          <div
+            class="rail-active-count"
+            title="${activeCount} active session${activeCount !== 1 ? 's' : ''}"
+          >${activeCount > 0 ? activeCount : ''}</div>
+        </div>
+      </aside>
+    `;
+  }
+
   return html`
     <aside class="session-rail">
       <div class="rail-header">
-        <div class="rail-title">Sessions</div>
-        <div class="rail-meta">
-          ${activeCount} active · ${sessions.length} total
+        <div class="rail-header-inner">
+          <div class="rail-title">Sessions</div>
+          <div class="rail-meta">
+            ${activeCount} active · ${sessions.length} total
+          </div>
         </div>
+        <button
+          class="rail-collapse-btn"
+          onClick=${onCollapse}
+          title="Collapse sessions panel"
+          aria-label="Collapse sessions"
+        >
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="14" height="14">
+            <path d="M10 3l-5 5 5 5"/>
+          </svg>
+        </button>
       </div>
       <${SessionList}
         showArchived=${showArchived}
@@ -1139,15 +1229,25 @@ function App() {
   const [sidebarDrawerOpen, setSidebarDrawerOpen] = useState(false);
   const [inspectorDrawerOpen, setInspectorDrawerOpen] = useState(false);
   const [railWidth, setRailWidth] = useState(() => {
-    if (!globalThis.window) return 320;
+    if (!globalThis.window) return 280;
     const stored = Number(localStorage.getItem("ve-rail-width"));
-    return Number.isFinite(stored) ? stored : 320;
+    // Ensure a sensible default — never start at 0 or very small
+    return Number.isFinite(stored) && stored >= RAIL_ICON_WIDTH ? stored : 280;
   });
   const [inspectorWidth, setInspectorWidth] = useState(() => {
     if (!globalThis.window) return 320;
     const stored = Number(localStorage.getItem("ve-inspector-width"));
     return Number.isFinite(stored) ? stored : 320;
   });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (!globalThis.window) return false;
+    return localStorage.getItem("ve-sidebar-collapsed") === "true";
+  });
+  const [railCollapsed, setRailCollapsed] = useState(() => {
+    if (!globalThis.window) return false;
+    return localStorage.getItem("ve-rail-collapsed") === "true";
+  });
+  const railWidthBeforeCollapseRef = useRef(280);
 
   const clamp = useCallback((value, min, max) => {
     if (!Number.isFinite(value)) return min;
@@ -1159,7 +1259,7 @@ function App() {
     if (!state) return;
     const delta = event.clientX - state.startX;
     if (state.type === "rail") {
-      const next = clamp(state.startRail + delta, 240, 440);
+      const next = clamp(state.startRail + delta, RAIL_ICON_WIDTH, 440);
       setRailWidth(next);
     } else {
       const next = clamp(state.startInspector - delta, 260, 440);
@@ -1168,11 +1268,22 @@ function App() {
   }, [clamp]);
 
   const handleResizeEnd = useCallback(() => {
+    const state = resizeRef.current;
     resizeRef.current = null;
     document.body.classList.remove("is-resizing");
     globalThis.removeEventListener?.("pointermove", handleResizeMove);
     globalThis.removeEventListener?.("pointerup", handleResizeEnd);
-  }, [handleResizeMove]);
+
+    // Snap rail to icon mode if dragged to near-minimum
+    if (state?.type === "rail") {
+      if (railWidth <= RAIL_ICON_WIDTH + 20) {
+        railWidthBeforeCollapseRef.current = Math.max(state.startRail, 200);
+        setRailCollapsed(true);
+        setRailWidth(RAIL_ICON_WIDTH);
+        try { localStorage.setItem("ve-rail-collapsed", "true"); } catch {}
+      }
+    }
+  }, [handleResizeMove, railWidth]);
 
   const handleResizeStart = useCallback(
     (type, event) => {
@@ -1237,13 +1348,35 @@ function App() {
 
   useEffect(() => {
     if (!isDesktop || !globalThis.window) return;
-    localStorage.setItem("ve-rail-width", String(railWidth));
-  }, [railWidth, isDesktop]);
+    if (!railCollapsed) localStorage.setItem("ve-rail-width", String(railWidth));
+  }, [railWidth, isDesktop, railCollapsed]);
 
   useEffect(() => {
     if (!isDesktop || !globalThis.window) return;
     localStorage.setItem("ve-inspector-width", String(inspectorWidth));
   }, [inspectorWidth, isDesktop]);
+
+  useEffect(() => {
+    if (!globalThis.window) return;
+    try { localStorage.setItem("ve-sidebar-collapsed", String(sidebarCollapsed)); } catch {}
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    if (!globalThis.window) return;
+    try { localStorage.setItem("ve-rail-collapsed", String(railCollapsed)); } catch {}
+  }, [railCollapsed]);
+
+  // Listen for expand-rail from chat tab / other places
+  useEffect(() => {
+    const handler = () => {
+      if (!railCollapsed) return;
+      setRailCollapsed(false);
+      const restoredWidth = railWidthBeforeCollapseRef.current || 280;
+      setRailWidth(Math.max(restoredWidth, 200));
+    };
+    globalThis.addEventListener?.("ve:expand-rail", handler);
+    return () => globalThis.removeEventListener?.("ve:expand-rail", handler);
+  }, [railCollapsed]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -1465,7 +1598,8 @@ function App() {
 
   const shellStyle = isDesktop
     ? {
-        "--rail-width": `${railWidth}px`,
+        "--rail-width": railCollapsed ? `${RAIL_ICON_WIDTH}px` : `${railWidth}px`,
+        "--sidebar-width": sidebarCollapsed ? `${SIDEBAR_ICON_WIDTH}px` : undefined,
         "--inspector-width": `${inspectorWidth}px`,
       }
     : null;
@@ -1473,6 +1607,18 @@ function App() {
   const toggleSidebar = useCallback(() => {
     setSidebarDrawerOpen((v) => !v);
     setInspectorDrawerOpen(false);
+  }, []);
+
+  const toggleSidebarCollapsed = useCallback(() => setSidebarCollapsed((v) => !v), []);
+
+  const collapseRail = useCallback(() => {
+    railWidthBeforeCollapseRef.current = railWidth;
+    setRailCollapsed(true);
+  }, [railWidth]);
+
+  const expandRail = useCallback(() => {
+    setRailCollapsed(false);
+    setRailWidth(railWidthBeforeCollapseRef.current || 280);
   }, []);
 
   const toggleInspector = useCallback(() => {
@@ -1508,8 +1654,10 @@ function App() {
       data-tab=${activeTab.value}
       data-has-rail=${showSessionRail ? "true" : "false"}
       data-has-inspector=${showInspector ? "true" : "false"}
+      data-sidebar-collapsed=${sidebarCollapsed ? "true" : undefined}
+      data-rail-collapsed=${railCollapsed ? "true" : undefined}
     >
-      <${SidebarNav} />
+      <${SidebarNav} collapsed=${sidebarCollapsed} onToggle=${toggleSidebarCollapsed} />
 
       ${/* Sidebar drawer overlay for tablet */ ""}
       ${sidebarDrawerOpen && !isDesktop
@@ -1539,7 +1687,10 @@ function App() {
         ? html`<${SessionRail}
             onResizeStart=${handleResizeStart}
             onResizeReset=${handleResizeReset}
-            showResizer=${isDesktop}
+            showResizer=${isDesktop && !railCollapsed}
+            collapsed=${railCollapsed}
+            onCollapse=${collapseRail}
+            onExpand=${expandRail}
           />`
         : null}
       <div class="app-main">

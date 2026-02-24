@@ -3735,6 +3735,56 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/tasks/rewrite") {
+    // POST { title, description } → AI enriches the task description synchronously.
+    try {
+      const body = await readJsonBody(req);
+      const title = String(body?.title || "").trim();
+      const description = String(body?.description || "").trim();
+      if (!title) {
+        jsonResponse(res, 400, { ok: false, error: "title is required" });
+        return;
+      }
+      const exec = uiDeps.execPrimaryPrompt;
+      if (typeof exec !== "function") {
+        jsonResponse(res, 503, { ok: false, error: "Primary agent not available. Start bosun first." });
+        return;
+      }
+      const prompt =
+        `You are a software project assistant helping write backlog tasks for an autonomous coding agent.\n` +
+        `Rewrite and expand the following task so it is clear, actionable, and self-contained.\n` +
+        `Include:\n` +
+        `- Concise one-line title (kept on the TITLE: line)\n` +
+        `- Background / motivation (why this task matters)\n` +
+        `- Acceptance criteria (bullet list)\n` +
+        `- Implementation steps (numbered list)\n` +
+        `- Relevant files, modules, or directories likely involved (if inferable)\n` +
+        `- Edge cases or caveats\n\n` +
+        `TASK TITLE: ${title}\n` +
+        `CURRENT DESCRIPTION: ${description || "(none)"}\n\n` +
+        `Return exactly two sections:\n` +
+        `TITLE: <rewritten one-line title>\n` +
+        `DESCRIPTION:\n<full markdown description>`;
+
+      const result = await exec(prompt, { sessionType: "ephemeral", mode: "ask" });
+      const text =
+        typeof result === "string"
+          ? result
+          : result?.finalResponse || result?.text || result?.message || JSON.stringify(result);
+
+      // Parse structured output
+      const titleMatch = text.match(/^TITLE:\s*(.+)$/im);
+      const descMatch = text.match(/DESCRIPTION:\s*\n([\s\S]+)/im);
+      const newTitle = (titleMatch ? titleMatch[1] : title).trim().replace(/^["'`]|["'`]$/g, "");
+      const newDescription = (descMatch ? descMatch[1] : text).trim();
+
+      jsonResponse(res, 200, { ok: true, data: { title: newTitle, description: newDescription } });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/tasks/ignore") {
     try {
       const body = await readJsonBody(req);

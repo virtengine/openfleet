@@ -4434,3 +4434,123 @@ select.input {
   font-size: 13px;
   color: var(--text-secondary);
 }
+
+/* ─────────────────────────────────────────────────────────────
+ *  Voice-to-Text & AI Task Rewrite
+ * ────────────────────────────────────────────────────────────── */
+
+/* ── Task Rewrite (Improve with AI) button ── */
+.task-rewrite-btn {
+  color: var(--accent, #da7756);
+  border: 1px solid transparent;
+  border-radius: var(--radius-full, 999px);
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.task-rewrite-btn:hover:not(:disabled) {
+  background: var(--accent-soft, rgba(218, 119, 86, 0.10));
+  border-color: var(--accent, #da7756);
+}
+.task-rewrite-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── Input with inline mic button ── */
+.input-with-mic {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.input-with-mic .input {
+  padding-right: 40px !important;
+  flex: 1;
+}
+.mic-btn-inline {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: transparent;
+  color: var(--text-hint, #888);
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  padding: 0;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+  z-index: 1;
+}
+.mic-btn-inline:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: rgba(255,255,255,0.18);
+}
+.mic-btn-inline.listening {
+  background: rgba(239,68,68,0.15);
+  color: #ef4444;
+  border-color: rgba(239,68,68,0.45);
+  box-shadow: 0 0 0 3px rgba(239,68,68,0.12);
+  animation: micPulse 1.2s ease-in-out infinite;
+}
+.mic-btn-inline:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ── Textarea with mic button overlaid ── */
+.textarea-with-mic {
+  position: relative;
+}
+.textarea-with-mic .textarea-mic-btn {
+  position: absolute !important;
+  right: 6px !important;
+  top: 8px !important;
+  width: 26px !important;
+  height: 26px !important;
+  font-size: 13px !important;
+}
+
+/* ── Mic button base (injected by voice.js too, duplicated here as fallback) ── */
+@keyframes micPulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(239,68,68,0.12); }
+  50%       { box-shadow: 0 0 0 6px rgba(239,68,68,0.04); }
+}
+
+/* ── Chat input wrapper: accommodate mic btn ── */
+.chat-input-wrapper .mic-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: transparent;
+  color: var(--text-hint, #888);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  padding: 0;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.chat-input-wrapper .mic-btn:hover:not(:disabled) {
+  background: rgba(255,255,255,0.06);
+  color: var(--text-primary);
+}
+.chat-input-wrapper .mic-btn.listening {
+  background: rgba(239,68,68,0.15);
+  color: #ef4444;
+  border-color: rgba(239,68,68,0.4);
+  animation: micPulse 1.2s ease-in-out infinite;
+}
+.chat-input-wrapper .mic-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}

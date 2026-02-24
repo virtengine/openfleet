@@ -850,6 +850,38 @@
         STATE.tasks.unshift(t); addLog('success', 'kanban', `Task created: ${t.title}`);
         return { ok: true, data: t };
       }
+      if (route === '/api/tasks/rewrite') {
+        const origTitle = String(body?.title || '').trim();
+        const origDesc = String(body?.description || '').trim();
+        await new Promise(r => setTimeout(r, 800)); // simulate AI latency
+        const rewrittenDesc = [
+          '## Background',
+          `${origDesc || 'No description provided — details inferred from title.'}`,
+          '',
+          '## Acceptance Criteria',
+          '- [ ] Feature works end-to-end without regressions',
+          '- [ ] Unit tests cover the new logic',
+          '- [ ] UI feedback is clear (loading states, errors, success toasts)',
+          '',
+          '## Implementation Steps',
+          '1. Review existing related code and understand current structure',
+          '2. Implement the core logic changes',
+          '3. Add UI state for loading/error/success',
+          '4. Write or update tests',
+          '5. Update documentation / inline comments if needed',
+          '',
+          '## Relevant Files',
+          '- `bosun/ui/tabs/tasks.js` — task UI components',
+          '- `bosun/ui-server.mjs` — API endpoints',
+          '- `bosun/ui/modules/` — shared utilities',
+          '',
+          '## Edge Cases',
+          '- Handle API errors gracefully',
+          '- Works on both mobile (Telegram WebApp) and desktop',
+        ].join('\n');
+        addLog('info', 'ai', `Task rewritten: ${origTitle}`);
+        return { ok: true, data: { title: origTitle, description: rewrittenDesc } };
+      }
       if (route === '/api/tasks/update') {
         const t = findTask(body?.taskId || body?.id);
         if (t) { Object.assign(t, body, { updated: Date.now() }); addLog('info', 'kanban', `Task updated: ${t.title}`); }

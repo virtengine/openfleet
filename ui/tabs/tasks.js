@@ -54,6 +54,7 @@ import {
 } from "../components/shared.js";
 import { SegmentedControl, SearchInput, Toggle } from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
+import { VoiceMicButton, VoiceMicButtonInline } from "../modules/voice.js";
 import {
   workspaces as managedWorkspaces,
   activeWorkspaceId,
@@ -646,6 +647,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     Boolean(task?.draft || task?.status === "draft"),
   );
   const [saving, setSaving] = useState(false);
+  const [rewriting, setRewriting] = useState(false);
   const [manualOverride, setManualOverride] = useState(isTaskManual(task));
   const [manualBusy, setManualBusy] = useState(false);
   const [manualReason, setManualReason] = useState(getManualReason(task));
@@ -897,20 +899,65 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         `}
       </div>
 
-      <div class="flex-col gap-md modal-form-grid">
-        <input
-          class="input modal-form-span"
-          placeholder="Title"
-          value=${title}
-          onInput=${(e) => setTitle(e.target.value)}
-        />
-        <textarea
-          class="input modal-form-span"
-          rows="5"
-          placeholder="Description"
-          value=${description}
-          onInput=${(e) => setDescription(e.target.value)}
-        ></textarea>
+        <div class="flex-col gap-md modal-form-grid">
+        <div class="input-with-mic modal-form-span">
+          <input
+            class="input"
+            placeholder="Title"
+            value=${title}
+            onInput=${(e) => setTitle(e.target.value)}
+          />
+          <${VoiceMicButtonInline}
+            onTranscript=${(t) => setTitle((prev) => (prev ? prev + " " + t : t))}
+            disabled=${saving || rewriting}
+          />
+        </div>
+        <div class="textarea-with-mic modal-form-span" style="position:relative">
+          <textarea
+            class="input"
+            rows="5"
+            placeholder="Description"
+            value=${description}
+            onInput=${(e) => setDescription(e.target.value)}
+            style="padding-right:36px"
+          ></textarea>
+          <${VoiceMicButton}
+            onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
+            disabled=${saving || rewriting}
+            size="sm"
+            className="textarea-mic-btn"
+          />
+        </div>
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm task-rewrite-btn modal-form-span"
+          style="display:flex;align-items:center;gap:6px;align-self:flex-start;font-size:12px;padding:5px 10px;opacity:${!title.trim() ? 0.45 : 1}"
+          disabled=${!title.trim() || rewriting || saving}
+          onClick=${async () => {
+            if (!title.trim() || rewriting) return;
+            setRewriting(true);
+            haptic("medium");
+            try {
+              const res = await apiFetch("/api/tasks/rewrite", {
+                method: "POST",
+                body: JSON.stringify({ title: title.trim(), description: description.trim() }),
+              });
+              if (res?.data) {
+                if (res.data.title) setTitle(res.data.title);
+                if (res.data.description) setDescription(res.data.description);
+                showToast("Task description improved ✨", "success");
+                haptic("medium");
+              }
+            } catch { /* toast via apiFetch */ }
+            setRewriting(false);
+          }}
+          title="Use AI to expand and improve this task description"
+        >
+          ${rewriting
+            ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">⏳</span> Improving…`
+            : html`✨ Improve with AI`
+          }
+        </button>
         <input
           class="input modal-form-span"
           placeholder="Base branch (optional, e.g. feature/xyz)"
@@ -2210,9 +2257,31 @@ function CreateTaskModalInline({ onClose }) {
   const [tagsInput, setTagsInput] = useState("");
   const [draft, setDraft] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [rewriting, setRewriting] = useState(false);
   const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId.value || "");
   const [repository, setRepository] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const handleRewrite = async () => {
+    if (!title.trim() || rewriting) return;
+    setRewriting(true);
+    haptic("medium");
+    try {
+      const res = await apiFetch("/api/tasks/rewrite", {
+        method: "POST",
+        body: JSON.stringify({ title: title.trim(), description: description.trim() }),
+      });
+      if (res?.data) {
+        if (res.data.title) setTitle(res.data.title);
+        if (res.data.description) setDescription(res.data.description);
+        showToast("Task description improved ✨", "success");
+        haptic("medium");
+      }
+    } catch {
+      /* toast via apiFetch */
+    }
+    setRewriting(false);
+  };
   const activeWsId = activeWorkspaceId.value || "";
 
   const workspaceOptions = managedWorkspaces.value || [];
@@ -2322,28 +2391,58 @@ function CreateTaskModalInline({ onClose }) {
       <div class="flex-col create-task-form">
 
         <!-- Title — autofocus so keyboard opens immediately -->
-        <input
-          class="input"
-          placeholder="Task title *"
-          value=${title}
-          autoFocus=${true}
-          onInput=${(e) => setTitle(e.target.value)}
-          onKeyDown=${(e) => e.key === "Enter" && !e.shiftKey && handleSubmit()}
-        />
+        <div class="input-with-mic">
+          <input
+            class="input"
+            placeholder="Task title *"
+            value=${title}
+            autoFocus=${true}
+            onInput=${(e) => setTitle(e.target.value)}
+            onKeyDown=${(e) => e.key === "Enter" && !e.shiftKey && handleSubmit()}
+          />
+          <${VoiceMicButtonInline}
+            onTranscript=${(t) => setTitle((prev) => (prev ? prev + " " + t : t))}
+            disabled=${submitting || rewriting}
+          />
+        </div>
 
         <!-- Description — compact 2-row textarea -->
-        <textarea
-          class="input"
-          rows="2"
-          placeholder="What needs to be done? (optional)"
-          value=${description}
-          onInput=${(e) => {
-            setDescription(e.target.value);
-            // auto-grow up to 6 rows
-            e.target.style.height = "auto";
-            e.target.style.height = Math.min(e.target.scrollHeight, 6 * 24 + 16) + "px";
-          }}
-        ></textarea>
+        <div class="textarea-with-mic" style="position:relative">
+          <textarea
+            class="input"
+            rows="2"
+            placeholder="What needs to be done? (optional)"
+            value=${description}
+            onInput=${(e) => {
+              setDescription(e.target.value);
+              // auto-grow up to 6 rows
+              e.target.style.height = "auto";
+              e.target.style.height = Math.min(e.target.scrollHeight, 6 * 24 + 16) + "px";
+            }}
+            style="padding-right:36px"
+          ></textarea>
+          <${VoiceMicButton}
+            onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
+            disabled=${submitting || rewriting}
+            size="sm"
+            className="textarea-mic-btn"
+          />
+        </div>
+
+        <!-- Rewrite / Improve button -->
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm task-rewrite-btn"
+          style="display:flex;align-items:center;gap:6px;align-self:flex-start;font-size:12px;padding:5px 10px;opacity:${!title.trim() ? 0.45 : 1}"
+          disabled=${!title.trim() || rewriting || submitting}
+          onClick=${handleRewrite}
+          title="Use AI to expand and improve this task description"
+        >
+          ${rewriting
+            ? html`<span class="spin-icon" style="display:inline-block;animation:spin 0.8s linear infinite">⏳</span> Improving…`
+            : html`✨ Improve with AI`
+          }
+        </button>
 
         <!-- Priority — always visible, most commonly changed -->
         <${SegmentedControl}

@@ -133,10 +133,6 @@
 
   <!-- ═══ Hero ══════════════════════════════════════════════════════════ -->
   <section class="hero" id="hero">
-    <canvas class="hero__particles" id="hero-particles"></canvas>
-    <div class="hero__glow hero__glow--cyan"></div>
-    <div class="hero__glow hero__glow--purple"></div>
-
     <div class="container">
       <div class="hero__title-block">
         <a href="https://www.npmjs.com/package/bosun" class="hero__badge">
@@ -335,7 +331,7 @@
     <div class="container">
       <div class="section-header reveal">
         <span class="section-header__label">Features</span>
-        <h2 class="section-header__title">Everything you need to run an <span class="gradient-text">autonomous fleet</span></h2>
+        <h2 class="section-header__title">Everything you need to run an <span>autonomous fleet</span></h2>
         <p class="section-header__desc">
           From task routing to PR merging, Bosun handles the full lifecycle
           so your AI agents can focus on writing great code.
@@ -344,7 +340,9 @@
 
       <div class="features-grid">
         <div class="feature-card reveal reveal--delay-1">
-          <div class="feature-card__icon">🎯</div>
+          <div class="feature-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+          </div>
           <h3 class="feature-card__title">Multi-Executor Routing</h3>
           <p class="feature-card__desc">
             Weighted distribution across Copilot (Claude Opus, GPT), Codex, and Claude agents.
@@ -353,7 +351,9 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-2">
-          <div class="feature-card__icon feature-card__icon--purple">🔄</div>
+          <div class="feature-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21v-5h5"/></svg>
+          </div>
           <h3 class="feature-card__title">Smart PR Lifecycle</h3>
           <p class="feature-card__desc">
             Creates PRs, monitors CI, auto-rebases on conflict, and merges when all checks pass.
@@ -362,7 +362,9 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-3">
-          <div class="feature-card__icon feature-card__icon--green">🛡️</div>
+          <div class="feature-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
           <h3 class="feature-card__title">Self-Healing Recovery</h3>
           <p class="feature-card__desc">
             Autofix detects failure patterns, circuit breakers prevent loops, and stale claims
@@ -371,7 +373,9 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-1">
-          <div class="feature-card__icon feature-card__icon--amber">📋</div>
+          <div class="feature-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          </div>
           <h3 class="feature-card__title">Flexible Task Boards</h3>
           <p class="feature-card__desc">
             Built-in internal board, plus native adapters for GitHub Issues, GitHub Projects v2,
@@ -380,7 +384,9 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-2">
-          <div class="feature-card__icon feature-card__icon--pink">🤖</div>
+          <div class="feature-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          </div>
           <h3 class="feature-card__title">Telegram Control Center</h3>
           <p class="feature-card__desc">
             Full bot with 30+ commands, inline keyboards, live digest system, and a rich
@@ -389,7 +395,9 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-3">
-          <div class="feature-card__icon feature-card__icon--blue">👥</div>
+          <div class="feature-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          </div>
           <h3 class="feature-card__title">Multi-Agent Coordination</h3>
           <p class="feature-card__desc">
             Shared state with atomic claims, heartbeat liveness, and stale sweeps.
@@ -398,7 +406,9 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-1">
-          <div class="feature-card__icon">📊</div>
+          <div class="feature-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          </div>
           <h3 class="feature-card__title">Fleet Coordination</h3>
           <p class="feature-card__desc">
             Presence tracking, session management, workspace registry, and fleet-wide state
@@ -407,7 +417,9 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-2">
-          <div class="feature-card__icon feature-card__icon--purple">📦</div>
+          <div class="feature-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+          </div>
           <h3 class="feature-card__title">Container Isolation</h3>
           <p class="feature-card__desc">
             Optionally run agents inside Docker, Podman, or Apple Container sandboxes.
@@ -416,7 +428,9 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-3">
-          <div class="feature-card__icon feature-card__icon--green">⚙️</div>
+          <div class="feature-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </div>
           <h3 class="feature-card__title">Setup Wizard</h3>
           <p class="feature-card__desc">
             Interactive setup generates a complete .env with documentation.
@@ -432,7 +446,7 @@
     <div class="container">
       <div class="section-header reveal">
         <span class="section-header__label">Security</span>
-        <h2 class="section-header__title">Built <span class="gradient-text">secure by default</span></h2>
+        <h2 class="section-header__title">Built <span>secure by default</span></h2>
         <p class="section-header__desc">
           Every layer is locked down — from Telegram token verification to container-isolated
           agent execution. Click any card to see the technical details.
@@ -448,7 +462,7 @@
     <div class="container">
       <div class="section-header reveal">
         <span class="section-header__label">Architecture</span>
-        <h2 class="section-header__title">How Bosun <span class="gradient-text">works</span></h2>
+        <h2 class="section-header__title">How Bosun <span>works</span></h2>
         <p class="section-header__desc">
           A modular supervisor that orchestrates the entire journey from task to merged PR.
         </p>
@@ -457,19 +471,25 @@
       <div class="arch-diagram reveal">
         <div class="arch-flow">
           <div class="arch-node">
-            <div class="arch-node__icon">📋</div>
+            <div class="arch-node__icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            </div>
             <div class="arch-node__label">Task Board</div>
             <div class="arch-node__sub">GitHub / Jira / Internal</div>
           </div>
           <div class="arch-arrow">→</div>
           <div class="arch-node">
-            <div class="arch-node__icon">⚡</div>
+            <div class="arch-node__icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            </div>
             <div class="arch-node__label">Supervisor</div>
             <div class="arch-node__sub">monitor.mjs</div>
           </div>
           <div class="arch-arrow">→</div>
           <div class="arch-node">
-            <div class="arch-node__icon">🤖</div>
+            <div class="arch-node__icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg>
+            </div>
             <div class="arch-node__label">Agent Pool</div>
             <div class="arch-node__sub">Copilot / Codex / Claude</div>
           </div>
@@ -477,7 +497,10 @@
 
         <div class="arch-layers">
           <div class="arch-layer reveal reveal--delay-1">
-            <div class="arch-layer__title">🧠 Orchestration</div>
+            <div class="arch-layer__title">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 8px; vertical-align: middle;"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+              Orchestration
+            </div>
             <ul class="arch-layer__items">
               <li>Task routing &amp; weighted distribution</li>
               <li>Executor failover &amp; cooldowns</li>
@@ -488,7 +511,10 @@
           </div>
 
           <div class="arch-layer reveal reveal--delay-2">
-            <div class="arch-layer__title">🔗 Coordination</div>
+            <div class="arch-layer__title">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 8px; vertical-align: middle;"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              Coordination
+            </div>
             <ul class="arch-layer__items">
               <li>Shared state with atomic claims</li>
               <li>Heartbeat-based liveness detection</li>
@@ -499,7 +525,10 @@
           </div>
 
           <div class="arch-layer reveal reveal--delay-3">
-            <div class="arch-layer__title">📡 Control Surfaces</div>
+            <div class="arch-layer__title">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 8px; vertical-align: middle;"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+              Control Surfaces
+            </div>
             <ul class="arch-layer__items">
               <li>Telegram Bot with 30+ commands</li>
               <li>Mini App (7-tab web dashboard)</li>
@@ -518,47 +547,63 @@
     <div class="container">
       <div class="section-header reveal">
         <span class="section-header__label">Integrations</span>
-        <h2 class="section-header__title">Connects to your <span class="gradient-text">entire stack</span></h2>
+        <h2 class="section-header__title">Connects to your <span>entire stack</span></h2>
       </div>
 
       <div class="integrations-grid">
         <div class="integration-card reveal reveal--delay-1">
-          <div class="integration-card__icon">🐙</div>
+          <div class="integration-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
+          </div>
           <div class="integration-card__name">GitHub</div>
           <div class="integration-card__desc">Issues, Projects v2, PRs, CI checks</div>
         </div>
         <div class="integration-card reveal reveal--delay-2">
-          <div class="integration-card__icon">📱</div>
+          <div class="integration-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.198 2.433a2.242 2.242 0 0 0-1.022.215l-18.6 7.172a2.25 2.25 0 0 0-.126 4.15l4.92 1.536 1.388 4.52a2.25 2.25 0 0 0 4.24.192l2.48-4.33 4.92 1.536a2.25 2.25 0 0 0 2.81-1.44l3.6-11.472a2.25 2.25 0 0 0-2.61-2.88z"/></svg>
+          </div>
           <div class="integration-card__name">Telegram</div>
           <div class="integration-card__desc">Bot, Mini App, Sentinel watchdog</div>
         </div>
         <div class="integration-card reveal reveal--delay-3">
-          <div class="integration-card__icon">🔵</div>
+          <div class="integration-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
           <div class="integration-card__name">Jira</div>
           <div class="integration-card__desc">Full status mapping &amp; custom fields</div>
         </div>
         <div class="integration-card reveal reveal--delay-4">
-          <div class="integration-card__icon">💬</div>
+          <div class="integration-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+          </div>
           <div class="integration-card__name">WhatsApp</div>
           <div class="integration-card__desc">Optional notification channel</div>
         </div>
         <div class="integration-card reveal reveal--delay-1">
-          <div class="integration-card__icon">🐳</div>
+          <div class="integration-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+          </div>
           <div class="integration-card__name">Docker / Podman</div>
           <div class="integration-card__desc">Container-isolated agent execution</div>
         </div>
         <div class="integration-card reveal reveal--delay-2">
-          <div class="integration-card__icon">🧠</div>
+          <div class="integration-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 12 2.1 12a10 10 0 0 1 9.9-10v10z"/><path d="M12 12 2.1 12a10 10 0 0 0 9.9 10v-10z"/></svg>
+          </div>
           <div class="integration-card__name">Copilot</div>
           <div class="integration-card__desc">Claude Opus, GPT, agent sessions</div>
         </div>
         <div class="integration-card reveal reveal--delay-3">
-          <div class="integration-card__icon">⚡</div>
+          <div class="integration-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          </div>
           <div class="integration-card__name">Codex</div>
           <div class="integration-card__desc">OpenAI Codex SDK &amp; persistent sessions</div>
         </div>
         <div class="integration-card reveal reveal--delay-4">
-          <div class="integration-card__icon">🌐</div>
+          <div class="integration-card__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+          </div>
           <div class="integration-card__name">Cloudflare Tunnel</div>
           <div class="integration-card__desc">Persistent HTTPS for Mini App</div>
         </div>
@@ -571,7 +616,7 @@
     <div class="container">
       <div class="section-header reveal">
         <span class="section-header__label">Quick Start</span>
-        <h2 class="section-header__title">Up and running in <span class="gradient-text">3 steps</span></h2>
+        <h2 class="section-header__title">Up and running in <span>3 steps</span></h2>
       </div>
 
       <div class="steps">
@@ -604,7 +649,7 @@
     <div class="container">
       <div class="section-header reveal">
         <span class="section-header__label">Shipping Code</span>
-        <h2 class="section-header__title">Live from <span class="gradient-text">VirtEngine</span></h2>
+        <h2 class="section-header__title">Live from <span>VirtEngine</span></h2>
         <p class="section-header__desc">
           Real pull requests merged &amp; commits shipped by Bosun's AI agents.
           Powered by Codex, Copilot, and Claude — shipping production code daily.
@@ -646,7 +691,7 @@
     <div class="container">
       <div class="section-header reveal">
         <span class="section-header__label">Configuration</span>
-        <h2 class="section-header__title">Simple to <span class="gradient-text">configure</span></h2>
+        <h2 class="section-header__title">Simple to <span>configure</span></h2>
         <p class="section-header__desc">
           A single <code>.env</code> file controls everything. Or use the setup wizard for zero-config starts.
         </p>
@@ -726,7 +771,7 @@
   <!-- ═══ CTA ═════════════════════════════════════════════════════════ -->
   <section class="cta-section">
     <div class="container">
-      <h2 class="reveal">Ready to <span class="gradient-text">automate your fleet</span>?</h2>
+      <h2 class="reveal">Ready to <span>automate your fleet</span>?</h2>
       <p class="reveal">
         Open source, extensible, and built for production.
         Start shipping faster with autonomous AI agents today.
@@ -772,7 +817,6 @@
   </footer>
 
   <!-- ═══ Scripts ═══════════════════════════════════════════════════════ -->
-  <script src="js/particles.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jquery.terminal@2.42.2/js/jquery.terminal.min.js"></script>
   <script src="js/terminal-sim.js"></script>

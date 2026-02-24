@@ -42,6 +42,11 @@ export const agentSelectorLoading = signal(false);
 /** Agent runtime status (set externally or via WS events) */
 export const agentStatus = signal("idle"); // "idle" | "thinking" | "executing" | "streaming"
 
+/** Yolo (auto-approve) mode — skips confirmation prompts in supported agents */
+export const yoloMode = signal(false);
+// Hydrate from localStorage in browser
+try { if (typeof localStorage !== "undefined") yoloMode.value = localStorage.getItem("ve-yolo-mode") === "true"; } catch {}
+
 /** Computed: resolved active agent object */
 export const activeAgentInfo = computed(() => {
   const agents = availableAgents.value;
@@ -362,6 +367,69 @@ const AGENT_SELECTOR_STYLES = `
   }
 }
 
+/* ── Yolo Toggle ── */
+.yolo-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid rgba(255, 165, 0, 0.25);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--tg-theme-hint-color, #888);
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+  white-space: nowrap;
+  line-height: 1.2;
+  user-select: none;
+  flex-shrink: 0;
+}
+.yolo-toggle:hover {
+  background: rgba(255, 165, 0, 0.07);
+  border-color: rgba(255, 165, 0, 0.4);
+  color: #ffb347;
+}
+.yolo-toggle.active {
+  background: rgba(255, 140, 0, 0.14);
+  border-color: rgba(255, 140, 0, 0.55);
+  color: #ffa537;
+  box-shadow: 0 0 8px rgba(255, 140, 0, 0.2);
+}
+.yolo-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+.yolo-checkbox {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  border: 1.5px solid currentColor;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.yolo-toggle.active .yolo-checkbox {
+  background: #ffa537;
+  border-color: #ffa537;
+}
+.yolo-checkbox::after {
+  content: '';
+  display: none;
+}
+.yolo-toggle.active .yolo-checkbox::after {
+  content: '✓';
+  display: block;
+  font-size: 9px;
+  color: #1a1200;
+  font-weight: 800;
+  line-height: 1;
+}
+
 /* ── Native Agent Select ── */
 .agent-picker-native {
   appearance: none;
@@ -580,6 +648,32 @@ export function AgentStatusBadge() {
  *  Combines all selectors into a single row
  * ═══════════════════════════════════════════════ */
 
+function YoloToggle() {
+  const isYolo = yoloMode.value;
+
+  const toggle = useCallback(() => {
+    const next = !yoloMode.peek();
+    yoloMode.value = next;
+    try { localStorage.setItem("ve-yolo-mode", String(next)); } catch {}
+    haptic(next ? "medium" : "light");
+  }, []);
+
+  return html`
+    <button
+      class="yolo-toggle ${isYolo ? 'active' : ''}"
+      onClick=${toggle}
+      title=${isYolo
+        ? 'Yolo ON — agent will auto-approve actions (disable to require confirmations)'
+        : 'Enable Yolo mode — agent will skip confirmation prompts'}
+      aria-pressed=${isYolo}
+    >
+      <span class="yolo-checkbox" aria-hidden="true"></span>
+      <span class="yolo-icon">⚡</span>
+      Yolo
+    </button>
+  `;
+}
+
 export function ChatInputToolbar() {
   // Inject styles on first mount
   useEffect(() => {
@@ -598,6 +692,7 @@ export function ChatInputToolbar() {
     <div class="chat-input-toolbar">
       <${AgentPicker} />
       <${AgentModeSelector} />
+      <${YoloToggle} />
       <div class="chat-input-toolbar-spacer" />
       <${AgentStatusBadge} />
     </div>
