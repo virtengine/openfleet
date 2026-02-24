@@ -70,6 +70,7 @@ import {
   getSessionToken,
   getTunnelUrl,
   onTunnelUrlChange,
+  disableUnsafeMode,
 } from "./ui-server.mjs";
 import {
   loadWorkspaceRegistry,
@@ -2091,6 +2092,10 @@ async function handleCallbackQuery(query) {
     enqueueCommand(() => handleCommand("/stop --confirm", chatId));
     return;
   }
+  if (data === "cb:do_disable_unsafe") {
+    enqueueCommand(() => cmdDisableUnsafeAccess(chatId, "", query.message?.message_id));
+    return;
+  }
   if (data === "cb:dismiss") {
     // Delete the message with the buttons
     if (query.message?.message_id) {
@@ -2710,6 +2715,9 @@ const COMMANDS = {
   "/branches": { handler: cmdBranches, desc: "Recent git branches" },
   "/diff": { handler: cmdDiff, desc: "Git diff summary (staged)" },
   "/restart": { handler: cmdRestart, desc: "Restart orchestrator process" },
+  // Hidden — no desc so it's excluded from /help, /helpfull, and Telegram autocomplete.
+  // Only surfaces in the security warning when TELEGRAM_UI_ALLOW_UNSAFE=true.
+  "/disable-unsafe-access": { handler: cmdDisableUnsafeAccess },
   "/retry": {
     handler: cmdRetry,
     desc: "Start fresh session for stuck task: /retry [reason]",
@@ -7062,6 +7070,37 @@ async function cmdDiff(chatId, _args) {
   }
 }
 
+/**
+ * Hidden command — not listed in /help or Telegram autocomplete.
+ * Writes TELEGRAM_UI_ALLOW_UNSAFE=false into .env and prompts a restart.
+ * Surfaced only via the security warning message button.
+ */
+async function cmdDisableUnsafeAccess(chatId, _args, editMessageId) {
+  const ok = disableUnsafeMode();
+  // Delete the warning message if we came from an inline button
+  if (editMessageId) {
+    try { await deleteDirect(chatId, editMessageId); } catch { /* best effort */ }
+  }
+  if (ok) {
+    await sendReply(
+      chatId,
+      "✅ *Unsafe access disabled.*\n\n"
+        + "`TELEGRAM_UI_ALLOW_UNSAFE=false` has been written to your .env file.\n\n"
+        + "Send /restart to restart Bosun — Cloudflare tunnel will start automatically on the next boot.",
+      { parse_mode: "Markdown" },
+    );
+  } else {
+    await sendReply(
+      chatId,
+      "❌ Could not write to .env automatically.\n\n"
+        + "Please edit your .env file manually:\n"
+        + "`TELEGRAM_UI_ALLOW_UNSAFE=false`\n\n"
+        + "Then send /restart.",
+      { parse_mode: "Markdown" },
+    );
+  }
+}
+
 async function cmdRestart(chatId, args) {
   const confirmFlag = /--confirm\b/i.test(String(args || ""));
   if (!confirmFlag) {
@@ -10503,21 +10542,30 @@ export async function startTelegramBot() {
     );
     if (_isUnsafe) {
       const _tunnelMode = (process.env.TELEGRAM_UI_TUNNEL || "auto").toLowerCase();
-      const _tunnelActive = _tunnelMode !== "disabled" && _tunnelMode !== "off" && _tunnelMode !== "0";
-      const severity = _tunnelActive
-        ? "⛔ *CRITICAL SECURITY WARNING*"
-        : "⚠️ *Security Warning*";
-      const tunnelNote = _tunnelActive
-        ? "\n\n🔴 *Tunnel is active* — your UI is exposed to the *public internet*. Anyone who discovers the URL can control your machine, execute code, and read secrets."
-        : "";
+      const _tunnelWanted = _tunnelMode !== "disabled" && _tunnelMode !== "off" && _tunnelMode !== "0";
+      const title = _tunnelWanted
+        ? "⛔ *Unsafe UI Access + Cloudflare Tunnel conflict detected*"
+        : "⚠️ *Unsafe UI Access enabled*";
+      const body = _tunnelWanted
+        ? "*Unsafe UI access was enabled alongside Cloudflare tunnel — the tunnel has been disabled* until unsafe access is turned off.\n\n"
+          + "With both active, anyone on the internet could control your agents, execute code, and read your secrets.\n\n"
+          + "Tap the button below (or send `/disable-unsafe-access` then `/restart`) to re-enable the tunnel."
+        : "Authentication is *completely disabled* on the web UI. "
+          + "Anyone with the local URL can send commands to agents and access API keys.\n\n"
+          + "Tap the button below (or send `/disable-unsafe-access`) to re-enable auth.";
       await sendDirect(
         telegramChatId,
-        `${severity}\n\n` +
-          "`TELEGRAM_UI_ALLOW_UNSAFE=true` — authentication is *completely disabled* on the web UI. " +
-          "Anyone with the URL can send commands to agents, modify settings, and access API keys." +
-          tunnelNote +
-          "\n\nTo fix: set `TELEGRAM_UI_ALLOW_UNSAFE=false` in your .env and restart.",
-        { parse_mode: "Markdown" },
+        `${title}\n\n${body}`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: "🔒 Disable Unsafe Access", callback_data: "cb:do_disable_unsafe" },
+              ],
+            ],
+          },
+        },
       );
     }
   }

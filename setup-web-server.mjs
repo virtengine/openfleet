@@ -18,6 +18,7 @@ import { resolve, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
+import { scaffoldSkills } from "./bosun-skills.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -121,15 +122,35 @@ function getCommandVersion(cmd) {
   }
 }
 
+/**
+ * Resolve the Bosun Home directory — the single root where bosun stores all its
+ * configs, workspaces, and tooling.  Resolution order:
+ *   1. BOSUN_HOME env var  (set by bosun after first run)
+ *   2. BOSUN_DIR env var   (legacy compat)
+ *   3. cwd if it already has a bosun config marker (backward compat)
+ *   4. ~/bosun             (cross-platform stable default)
+ */
 function resolveConfigDir() {
-  const explicit = process.env.BOSUN_DIR;
-  if (explicit) return resolve(explicit);
+  if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
+  if (process.env.BOSUN_DIR)  return resolve(process.env.BOSUN_DIR);
 
-  const isWindows = process.platform === "win32";
-  const baseDir = isWindows
-    ? process.env.APPDATA || process.env.LOCALAPPDATA || process.env.USERPROFILE || homedir()
-    : process.env.HOME || process.env.XDG_CONFIG_HOME || homedir();
-  return resolve(baseDir, "bosun");
+  const cwd = process.cwd();
+  if ([".env", "bosun.config.json", ".bosun.json", "bosun.json"].some((f) => existsSync(resolve(cwd, f)))) {
+    return cwd;
+  }
+
+  // Stable default: ~/bosun — same path on every OS
+  return resolve(homedir(), "bosun");
+}
+
+/**
+ * Resolve the workspaces root directory.
+ * All projects live under here; global shared configs also live here.
+ * Default: BOSUN_HOME/workspaces
+ */
+function resolveWorkspacesDir(bosunHome) {
+  if (process.env.BOSUN_WORKSPACES_DIR) return resolve(process.env.BOSUN_WORKSPACES_DIR);
+  return resolve(bosunHome || resolveConfigDir(), "workspaces");
 }
 
 function hasSetupMarkers(dir) {
@@ -269,6 +290,8 @@ function handleStatus() {
     ok: true,
     configured,
     configDir,
+    bosunHome: configDir,
+    workspacesDir: resolveWorkspacesDir(configDir),
     repoRoot,
     slug,
     projectName,
@@ -282,7 +305,8 @@ function handleDefaults() {
   const repoRoot = detectRepoRoot();
   const slug = detectRepoSlug();
   const projectName = detectProjectName(repoRoot);
-  const configDir = resolveConfigDir();
+  const bosunHome = resolveConfigDir();
+  const workspacesDir = resolveWorkspacesDir(bosunHome);
 
   return {
     ok: true,
@@ -290,7 +314,9 @@ function handleDefaults() {
       projectName: projectName || slug?.split("/").pop() || "my-project",
       repoSlug: slug,
       repoRoot,
-      configDir,
+      configDir: bosunHome,
+      bosunHome,
+      workspacesDir,
       executor: "COPILOT",
       model: "claude-sonnet-4",
       kanbanBackend: "internal",
@@ -309,6 +335,83 @@ function handleModels() {
 
 function handleExecutors() {
   return { ok: true, executors: EXECUTOR_TYPES, kanbanBackends: KANBAN_BACKENDS };
+}
+
+/**
+ * Attempt to fetch the live model list from an OpenAI-compatible endpoint.
+ * Falls back to the static MODELS list if the probe fails.
+ */
+async function handleModelsProbe(body) {
+  const { executor = "CODEX", apiKey = "", baseUrl = "" } = body || {};
+
+  // Copilot and Claude Code use OAuth — we can't probe their model lists from
+  // the server side. Return the static list with a note.
+  if (executor === "COPILOT" || executor === "CLAUDE_CODE") {
+    const key = executor === "COPILOT" ? "copilot" : "claude";
+    return {
+      ok: true,
+      models: MODELS[key] || [],
+      source: "static",
+      note: `${executor} uses OAuth authentication. Models listed are known-good values; your actual available models depend on your subscription.`,
+    };
+  }
+
+  // For OpenAI / compatible endpoints, try GET /v1/models
+  const resolvedBase = (baseUrl || "https://api.openai.com").replace(/\/+$/, "");
+  const endpoint = `${resolvedBase}/v1/models`;
+
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
+    const resp = await fetch(endpoint, { headers, signal: controller.signal });
+    clearTimeout(timeout);
+
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+    }
+
+    const data = await resp.json();
+    const ids = (data.data || [])
+      .map((m) => m.id)
+      .filter((id) => typeof id === "string" && id.length > 0)
+      .sort();
+
+    if (!ids.length) {
+      throw new Error("Response contained no models");
+    }
+
+    // Mark the first id as recommended; preserve static recommendations where
+    // they overlap with the live list.
+    const staticRecommended = new Set(
+      (MODELS.codex || []).filter((m) => m.recommended).map((m) => m.value),
+    );
+
+    const models = ids.map((id) => ({
+      value: id,
+      label: id,
+      recommended: staticRecommended.has(id),
+      live: true,
+    }));
+
+    // If none are recommended, recommend the first
+    if (!models.some((m) => m.recommended) && models.length > 0) {
+      models[0].recommended = true;
+    }
+
+    return { ok: true, models, source: "live", endpoint };
+  } catch (err) {
+    // Probe failed — return static list with a warning
+    return {
+      ok: true,
+      models: MODELS.codex || [],
+      source: "static",
+      warning: `Could not reach ${endpoint}: ${err.message}. Showing static model list.`,
+    };
+  }
 }
 
 function handleValidate(body) {
@@ -349,31 +452,127 @@ function handleValidate(body) {
 
 function handleApply(body) {
   try {
-    const configDir = resolveConfigDir();
-    mkdirSync(configDir, { recursive: true });
-
     const { env = {}, configJson = {} } = body || {};
 
-    // Build .env file
+    // Resolve home + workspaces dirs — prefer what the user chose in the wizard
+    const bosunHome    = env.bosunHome    ? resolve(env.bosunHome)    : resolveConfigDir();
+    const workspacesDir = env.workspacesDir ? resolve(env.workspacesDir) : resolveWorkspacesDir(bosunHome);
+
+    // ── Create directory scaffold ───────────────────────────────────────────
+    mkdirSync(bosunHome, { recursive: true });
+    mkdirSync(workspacesDir, { recursive: true });
+
+    // Global Codex CLI settings (shared across all workspaces)
+    const codexDir = resolve(workspacesDir, ".codex");
+    mkdirSync(codexDir, { recursive: true });
+    const codexConfigPath = resolve(codexDir, "config.json");
+    if (!existsSync(codexConfigPath)) {
+      writeFileSync(codexConfigPath, JSON.stringify({
+        "$schema": "https://openai.github.io/codex/schemas/config.json",
+        fullAutoErrorMode: "ask",
+        notify: false,
+        history: { enabled: true, maxItems: 1000 },
+        dangerouslyAllowFilePatterns: ["AGENTS.md", ".bosun/"],
+      }, null, 2) + "\n", "utf8");
+    }
+
+    // Global VS Code / Copilot settings (shared across all workspaces)
+    const vscodeDir = resolve(workspacesDir, ".vscode");
+    mkdirSync(vscodeDir, { recursive: true });
+    const vscodeSettingsPath = resolve(vscodeDir, "settings.json");
+    if (!existsSync(vscodeSettingsPath)) {
+      writeFileSync(vscodeSettingsPath, JSON.stringify({
+        "github.copilot.enable": { "*": true },
+        "github.copilot.editor.enableAutoCompletions": true,
+        "chat.agent.enabled": true,
+        "github.copilot.advanced": { "listCount": 10 },
+      }, null, 2) + "\n", "utf8");
+    }
+
+    // Global hook templates + shared prompt library
+    mkdirSync(resolve(workspacesDir, ".bosun", "hooks"),   { recursive: true });
+    mkdirSync(resolve(workspacesDir, ".bosun", "prompts"), { recursive: true });
+
+    // Scaffold built-in skills knowledge base
+    try {
+      scaffoldSkills(bosunHome);
+    } catch (error_) {
+      console.warn("[setup] skills scaffold warning:", error_.message);
+    }
+
+    // Self-documenting README
+    const workspacesReadme = resolve(workspacesDir, "README.md");
+    if (!existsSync(workspacesReadme)) {
+      writeFileSync(workspacesReadme, [
+        "# Bosun Workspaces",
+        "",
+        "Managed by [Bosun](https://github.com/virtengine/bosun).",
+        "",
+        "Each sub-directory here is a **workspace** (project). Bosun clones the repos",
+        "it needs to work on into each workspace folder and manages hooks, prompts, and",
+        "configs for each one.",
+        "",
+        "## Global settings (apply to every workspace)",
+        "",
+        "| Path | Purpose |",
+        "|------|---------|",
+        "| `.codex/config.json` | OpenAI Codex CLI config |",
+        "| `.vscode/settings.json` | VS Code / Copilot settings |",
+        "| `.bosun/hooks/` | Git hook templates (override per workspace) |",
+        "| `.bosun/prompts/` | Shared agent prompt library |",
+        "",
+        "## Per-workspace settings",
+        "",
+        "Create `<workspace>/.bosun/config.json` to override any global setting for",
+        "that workspace only. Hooks in `<workspace>/.bosun/hooks/` take priority over",
+        "the global templates above.",
+      ].join("\n") + "\n", "utf8");
+    }
+
+    // ── Build .env ──────────────────────────────────────────────────────────
     const envLines = [
       "# Generated by bosun setup wizard",
       `# ${new Date().toISOString()}`,
+      "",
+      "# Bosun home — root for all bosun data",
+      `BOSUN_HOME=${bosunHome}`,
+      `BOSUN_WORKSPACES_DIR=${workspacesDir}`,
       "",
     ];
 
     const envMap = {
       PROJECT_NAME: env.projectName || "",
       GITHUB_REPO: env.repoSlug || "",
-      REPO_ROOT: env.repoRoot || "",
-      ORCHESTRATOR_SCRIPT: env.orchestratorScript || "",
       ORCHESTRATOR_ARGS: env.orchestratorArgs || `-MaxParallel ${env.maxParallel || 6}`,
       EXECUTORS: env.executors || "",
       KANBAN_BACKEND: env.kanbanBackend || "internal",
-      VK_PROJECT_DIR: configDir,
+      VK_PROJECT_DIR: bosunHome,
     };
 
-    if (env.telegramToken) envMap.TELEGRAM_BOT_TOKEN = env.telegramToken;
-    if (env.telegramChatId) envMap.TELEGRAM_CHAT_ID = env.telegramChatId;
+    if (env.telegramToken)       envMap.TELEGRAM_BOT_TOKEN      = env.telegramToken;
+    if (env.telegramChatId)      envMap.TELEGRAM_CHAT_ID         = env.telegramChatId;
+    if (env.jiraUrl)             envMap.JIRA_URL                 = env.jiraUrl;
+    if (env.jiraProjectKey)      envMap.JIRA_PROJECT_KEY         = env.jiraProjectKey;
+    if (env.jiraApiToken)        envMap.JIRA_API_TOKEN           = env.jiraApiToken;
+    if (env.githubProjectNumber) envMap.GITHUB_PROJECT_NUMBER    = String(env.githubProjectNumber);
+
+    // Write executor-specific API keys for any executor configured with api-key auth mode.
+    // Executors using OAuth login (codex auth login / gh auth login / claude login)
+    // do NOT need env vars — omitting them lets the executor use its stored credentials.
+    if (Array.isArray(configJson.executors)) {
+      for (const ex of configJson.executors) {
+        if (ex?.authMode !== "api-key") continue;
+        const type = (ex.executor || "").toUpperCase();
+        if (type === "CODEX" || type === "OPENAI") {
+          if (ex.apiKey)   envMap.OPENAI_API_KEY  = ex.apiKey;
+          if (ex.baseUrl)  envMap.OPENAI_BASE_URL = ex.baseUrl;
+        } else if (type === "CLAUDE_CODE" || type === "ANTHROPIC") {
+          if (ex.apiKey)  envMap.ANTHROPIC_API_KEY = ex.apiKey;
+          if (ex.baseUrl) envMap.ANTHROPIC_BASE_URL = ex.baseUrl;
+        }
+        // COPILOT uses gh auth — no API key env vars needed.
+      }
+    }
 
     for (const [key, value] of Object.entries(envMap)) {
       if (value !== undefined && value !== null && value !== "") {
@@ -381,12 +580,14 @@ function handleApply(body) {
       }
     }
 
-    const envPath = resolve(configDir, ".env");
+    const envPath = resolve(bosunHome, ".env");
     writeFileSync(envPath, envLines.join("\n") + "\n", "utf8");
 
-    // Build bosun.config.json
+    // ── Build bosun.config.json ─────────────────────────────────────────────
     const config = {
       projectName: configJson.projectName || env.projectName || "my-project",
+      bosunHome,
+      workspacesDir,
       executors: configJson.executors || [],
       failover: configJson.failover || {
         strategy: env.failoverStrategy || "next-in-line",
@@ -398,12 +599,12 @@ function handleApply(body) {
     };
 
     if (configJson.repos?.length) config.repos = configJson.repos;
-    if (configJson.kanban) config.kanban = configJson.kanban;
+    if (configJson.kanban)        config.kanban = configJson.kanban;
 
-    const configPath = resolve(configDir, "bosun.config.json");
+    const configPath = resolve(bosunHome, "bosun.config.json");
     writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
 
-    return { ok: true, configDir, envPath, configPath };
+    return { ok: true, bosunHome, workspacesDir, envPath, configPath };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -442,6 +643,13 @@ async function handleRequest(req, res) {
           return;
         case "models":
           jsonResponse(res, 200, handleModels());
+          return;
+        case "models/probe":
+          if (req.method !== "POST") {
+            jsonResponse(res, 405, { ok: false, error: "POST required" });
+            return;
+          }
+          jsonResponse(res, 200, await handleModelsProbe(await readBody(req)));
           return;
         case "executors":
           jsonResponse(res, 200, handleExecutors());
