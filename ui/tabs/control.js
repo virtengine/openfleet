@@ -54,6 +54,25 @@ const MAX_OUTPUTS = 3;
 const POLL_INTERVAL = 2000;
 const MAX_POLLS = 7;
 
+const normalizeHistoryEntry = (entry) => {
+  if (entry == null) return "";
+  if (typeof entry === "string") return entry.trim();
+  return String(entry).trim();
+};
+
+const normalizeOutputText = (value) => {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map((v) => (v == null ? "" : String(v))).join("\n");
+  if (typeof value === "object") {
+    if (typeof value.logs === "string") return value.logs;
+    if (Array.isArray(value.logs)) return value.logs.join("\n");
+    if (typeof value.data === "string") return value.data;
+    if (Array.isArray(value.data)) return value.data.join("\n");
+  }
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+};
+
 /* ─── ControlTab ─── */
 export function ControlTab() {
   const executor = executorData.value;
@@ -121,7 +140,12 @@ export function ControlTab() {
       const saved = localStorage.getItem(HISTORY_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) setCmdHistory(parsed.slice(0, MAX_HISTORY));
+        if (Array.isArray(parsed)) {
+          const cleaned = parsed
+            .map((item) => normalizeHistoryEntry(item))
+            .filter(Boolean);
+          if (cleaned.length) setCmdHistory(cleaned.slice(0, MAX_HISTORY));
+        }
       }
     } catch (_) { /* ignore corrupt data */ }
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
@@ -167,8 +191,10 @@ export function ControlTab() {
 
   /* ── Command history helper (persistent) ── */
   const pushHistory = useCallback((cmd) => {
+    const normalized = normalizeHistoryEntry(cmd);
+    if (!normalized) return;
     setCmdHistory((prev) => {
-      const next = [cmd, ...prev.filter((c) => c !== cmd)].slice(0, MAX_HISTORY);
+      const next = [normalized, ...prev.filter((c) => c !== normalized)].slice(0, MAX_HISTORY);
       try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)); } catch (_) {}
       return next;
     });
@@ -186,7 +212,8 @@ export function ControlTab() {
       pollCount++;
       try {
         const res = await apiFetch('/api/logs?lines=15', { _silent: true });
-        const text = typeof res === 'string' ? res : (res?.logs || res?.data || JSON.stringify(res, null, 2));
+        const payload = typeof res === 'string' ? res : (res?.logs ?? res?.data ?? res);
+        const text = normalizeOutputText(payload);
         if (text === lastContent || pollCount >= MAX_POLLS) {
           clearInterval(pollRef.current);
           pollRef.current = null;

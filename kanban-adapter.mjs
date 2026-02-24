@@ -63,6 +63,10 @@ import {
   removeTask as removeInternalTask,
   updateTask as patchInternalTask,
 } from "./task-store.mjs";
+import {
+  listTaskAttachments,
+  mergeTaskAttachments,
+} from "./task-attachments.mjs";
 import { randomUUID } from "node:crypto";
 
 const TAG = "[kanban]";
@@ -269,6 +273,149 @@ function extractPrFromText(text) {
   return null;
 }
 
+function isBosunStateComment(text) {
+  const raw = String(text || "").toLowerCase();
+  if (!raw) return false;
+  return raw.includes("bosun-state") || raw.includes("codex:ignore");
+}
+
+function normalizeAttachmentName(name, url) {
+  const raw = String(name || "").trim();
+  if (raw && !/^(?:https?:)?\/\//i.test(raw)) return raw;
+  if (!url) return raw || "attachment";
+  try {
+    const parsed = new URL(url);
+    const base = decodeURIComponent(parsed.pathname.split("/").pop() || "");
+    return base || raw || "attachment";
+  } catch {
+    const parts = String(url).split("/").filter(Boolean);
+    return parts[parts.length - 1] || raw || "attachment";
+  }
+}
+
+function guessAttachmentKind(url, name, isImage) {
+  const text = `${url || ""} ${name || ""}`.toLowerCase();
+  if (isImage) return "image";
+  if (/\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(text)) return "image";
+  return "file";
+}
+
+function guessContentType(name, kind) {
+  const text = String(name || "").toLowerCase();
+  if (kind === "image") {
+    if (text.endsWith(".png")) return "image/png";
+    if (text.endsWith(".jpg") || text.endsWith(".jpeg")) return "image/jpeg";
+    if (text.endsWith(".gif")) return "image/gif";
+    if (text.endsWith(".webp")) return "image/webp";
+    if (text.endsWith(".svg")) return "image/svg+xml";
+  }
+  if (text.endsWith(".pdf")) return "application/pdf";
+  if (text.endsWith(".json")) return "application/json";
+  if (text.endsWith(".csv")) return "text/csv";
+  if (text.endsWith(".txt") || text.endsWith(".log")) return "text/plain";
+  if (text.endsWith(".zip")) return "application/zip";
+  if (text.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (text.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  return kind === "image" ? "image/*" : "application/octet-stream";
+}
+
+function isLikelyAttachmentUrl(url, isImage = false) {
+  if (!url) return false;
+  const text = String(url).toLowerCase();
+  if (isImage) return true;
+  if (text.includes("user-images.githubusercontent.com")) return true;
+  if (text.includes("github.com/user-attachments")) return true;
+  if (text.includes("/attachments/")) return true;
+  if (text.includes("/files/")) return true;
+  return /\.(png|jpe?g|gif|webp|bmp|svg|pdf|json|csv|txt|log|zip|gz|tgz|xz|tar|rar|7z|docx?|xlsx?|pptx?)(\?|#|$)/i.test(text);
+}
+
+function extractMarkdownLinks(text) {
+  const raw = String(text || "");
+  if (!raw) return [];
+  const results = [];
+  const imageRe = /!\[([^\]]*)\]\(([^)]+)\)/g;
+  const linkRe = /\[([^\]]+)\]\(([^)]+)\)/g;
+  const htmlImgRe = /<img[^>]+src=["']([^"']+)["'][^>]*>/gi;
+  const htmlLinkRe = /<a[^>]+href=["']([^"']+)["'][^>]*>/gi;
+  const urlRe = /\bhttps?:\/\/[^\s<>()]+/gi;
+
+  let match;
+  while ((match = imageRe.exec(raw))) {
+    const url = String(match[2] || "").trim().split(/\s+/)[0];
+    if (url) results.push({ url, label: match[1] || "", isImage: true });
+  }
+  while ((match = linkRe.exec(raw))) {
+    const url = String(match[2] || "").trim().split(/\s+/)[0];
+    if (url) results.push({ url, label: match[1] || "", isImage: false });
+  }
+  while ((match = htmlImgRe.exec(raw))) {
+    const url = String(match[1] || "").trim();
+    if (url) results.push({ url, label: "", isImage: true });
+  }
+  while ((match = htmlLinkRe.exec(raw))) {
+    const url = String(match[1] || "").trim();
+    if (url) results.push({ url, label: "", isImage: false });
+  }
+  while ((match = urlRe.exec(raw))) {
+    const url = String(match[0] || "").trim();
+    if (url) results.push({ url, label: "", isImage: false });
+  }
+
+  return results;
+}
+
+function extractAttachmentsFromText(text, meta = {}) {
+  const links = extractMarkdownLinks(text);
+  const attachments = [];
+  for (const link of links) {
+    if (!isLikelyAttachmentUrl(link.url, link.isImage)) continue;
+    const name = normalizeAttachmentName(link.label, link.url);
+    const kind = guessAttachmentKind(link.url, name, link.isImage);
+    attachments.push({
+      id: meta?.id || null,
+      name,
+      url: link.url,
+      kind,
+      contentType: meta?.contentType || guessContentType(name, kind),
+      size: meta?.size ?? null,
+      source: meta?.source || "unknown",
+      sourceType: meta?.sourceType || null,
+      commentId: meta?.commentId || null,
+      author: meta?.author || null,
+      createdAt: meta?.createdAt || null,
+    });
+  }
+  return attachments;
+}
+
+function normalizeCommentList(comments) {
+  if (!Array.isArray(comments)) return [];
+  return comments
+    .map((comment) => {
+      const body =
+        comment?.body ||
+        comment?.bodyText ||
+        comment?.body_html ||
+        comment?.text ||
+        "";
+      const trimmed = String(body || "").trim();
+      if (!trimmed || isBosunStateComment(trimmed)) return null;
+      return {
+        id: comment?.id || comment?.databaseId || null,
+        author:
+          comment?.author?.login ||
+          comment?.author?.displayName ||
+          comment?.author?.name ||
+          null,
+        createdAt: comment?.createdAt || comment?.created || null,
+        body: trimmed,
+        url: comment?.url || null,
+      };
+    })
+    .filter(Boolean);
+}
+
 class InternalAdapter {
   constructor() {
     this.name = "internal";
@@ -290,6 +437,18 @@ class InternalAdapter {
         task.meta?.base_branch ||
         extractBaseBranchFromLabels(labelBag) ||
         extractBaseBranchFromText(task.description || task.body || ""),
+    );
+    const rawComments = Array.isArray(task.meta?.comments)
+      ? task.meta.comments
+      : [];
+    const normalizedComments = normalizeCommentList(rawComments);
+    const existingAttachments = []
+      .concat(Array.isArray(task.attachments) ? task.attachments : [])
+      .concat(Array.isArray(task.meta?.attachments) ? task.meta.attachments : []);
+    const localAttachments = listTaskAttachments(task.id, "internal");
+    const mergedAttachments = mergeTaskAttachments(
+      existingAttachments,
+      localAttachments,
     );
     return {
       id: String(task.id || ""),
@@ -317,7 +476,13 @@ class InternalAdapter {
       createdAt: task.createdAt || null,
       updatedAt: task.updatedAt || null,
       backend: "internal",
-      meta: task.meta || {},
+      attachments: mergedAttachments,
+      comments: normalizedComments,
+      meta: {
+        ...(task.meta || {}),
+        comments: normalizedComments,
+        attachments: mergedAttachments,
+      },
     };
   }
 
@@ -3027,6 +3192,28 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
       extractBaseBranchFromLabels(labels) ||
         extractBaseBranchFromText(issue.body || ""),
     );
+    const comments = normalizeCommentList(
+      Array.isArray(issue.comments) ? issue.comments : [],
+    );
+    const descriptionAttachments = extractAttachmentsFromText(issue.body || "", {
+      source: "github",
+      sourceType: "issue",
+      createdAt: issue.createdAt || issue.created_at || null,
+    });
+    const commentAttachments = comments.flatMap((comment) =>
+      extractAttachmentsFromText(comment.body, {
+        source: "github",
+        sourceType: "comment",
+        commentId: comment.id,
+        author: comment.author,
+        createdAt: comment.createdAt,
+      }),
+    );
+    const localAttachments = listTaskAttachments(issue.number, "github");
+    const mergedAttachments = mergeTaskAttachments(
+      mergeTaskAttachments(descriptionAttachments, commentAttachments),
+      localAttachments,
+    );
 
     return {
       id: String(issue.number || ""),
@@ -3045,10 +3232,14 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
       baseBranch,
       branchName: branchMatch?.[1] || null,
       prNumber: prMatch?.[1] || null,
+      attachments: mergedAttachments,
+      comments,
       meta: {
         ...issue,
         task_url: issue.url || null,
         tags,
+        comments,
+        attachments: mergedAttachments,
         ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
         codex: codexMeta,
       },
@@ -3358,6 +3549,66 @@ class JiraAdapter {
         normalizedFieldValues[lcKey] = fieldValue;
       }
     }
+    const rawComments = Array.isArray(fields.comment?.comments)
+      ? fields.comment.comments
+      : [];
+    const comments = rawComments
+      .map((comment) => {
+        const body = this._commentToText(comment?.body).trim();
+        if (!body || isBosunStateComment(body)) return null;
+        return {
+          id: comment?.id || null,
+          author:
+            comment?.author?.displayName ||
+            comment?.author?.emailAddress ||
+            comment?.author?.accountId ||
+            null,
+          createdAt: comment?.created || null,
+          body,
+          url: comment?.self || null,
+        };
+      })
+      .filter(Boolean);
+    const commentAttachments = comments.flatMap((comment) =>
+      extractAttachmentsFromText(comment.body, {
+        source: "jira",
+        sourceType: "comment",
+        commentId: comment.id,
+        author: comment.author,
+        createdAt: comment.createdAt,
+      }),
+    );
+    const rawAttachments = Array.isArray(fields.attachment)
+      ? fields.attachment
+      : [];
+    const jiraAttachments = rawAttachments
+      .map((attachment) => {
+        const name = attachment?.filename || attachment?.name || "attachment";
+        const url = attachment?.content || attachment?.self || attachment?.thumbnail;
+        if (!url) return null;
+        const kind = guessAttachmentKind(
+          url,
+          name,
+          String(attachment?.mimeType || "").startsWith("image/"),
+        );
+        return {
+          id: attachment?.id || null,
+          name,
+          url,
+          kind,
+          contentType: attachment?.mimeType || guessContentType(name, kind),
+          size: attachment?.size ?? null,
+          source: "jira",
+          sourceType: "attachment",
+          createdAt: attachment?.created || null,
+        };
+      })
+      .filter(Boolean);
+    const localAttachments = listTaskAttachments(issueKey, "jira");
+    const mergedAttachments = mergeTaskAttachments(
+      mergeTaskAttachments(jiraAttachments, commentAttachments),
+      localAttachments,
+    );
     return {
       id: issueKey,
       title: fields.summary || "",
@@ -3378,11 +3629,15 @@ class JiraAdapter {
       taskUrl: issueKey ? `${this._baseUrl}/browse/${issueKey}` : null,
       createdAt: fields.created || null,
       updatedAt: fields.updated || null,
+      attachments: mergedAttachments,
+      comments,
       meta: {
         ...issue,
         labels,
         fields: normalizedFieldValues,
         tags,
+        comments,
+        attachments: mergedAttachments,
         ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
         codex: codexMeta,
       },
@@ -3546,7 +3801,7 @@ class JiraAdapter {
     const fieldList =
       fields.length > 0
         ? fields.join(",")
-        : "summary,description,status,assignee,priority,project,labels,comment,created,updated";
+        : "summary,description,status,assignee,priority,project,labels,comment,attachment,created,updated";
     return this._jira(
       `/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=${encodeURIComponent(fieldList)}`,
     );
@@ -3735,7 +3990,7 @@ class JiraAdapter {
     const data = await this._searchIssues(
       jql,
       maxResults,
-      "summary,description,status,assignee,priority,project,labels,comment,created,updated",
+      "summary,description,status,assignee,priority,project,labels,comment,attachment,created,updated",
     );
     let tasks = (Array.isArray(data?.issues) ? data.issues : []).map((issue) =>
       this._normaliseIssue(issue),

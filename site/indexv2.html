@@ -67,7 +67,7 @@
       --radius: 14px;
       --radius-sm: 10px;
       --shadow: 0 16px 36px rgba(1, 4, 12, 0.45);
-      --max: 1360px;
+      --max: 1350px;
       --mono: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
       --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
     }
@@ -245,10 +245,12 @@
       flex-wrap: wrap;
       gap: 10px;
       align-items: center;
+      justify-content: center;
       margin-bottom: 16px;
     }
     .install-cmd {
-      min-width: 100%;
+      min-width: 0;
+      width: min(100%, 640px);
       display: flex;
       align-items: center;
       gap: 8px;
@@ -354,6 +356,12 @@
       border-radius: 12px;
       background: #0b111a;
       overflow: hidden;
+      width: 100%;
+    }
+
+    .terminal-window {
+      max-width: 800px;
+      margin: 0 auto;
     }
 
     .desktop-demo-window__chrome,
