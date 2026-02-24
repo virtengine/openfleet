@@ -174,6 +174,15 @@ export function installTemplate(templateId, engine, overrides = {}) {
   const template = getTemplate(templateId);
   if (!template) throw new Error(`Template "${templateId}" not found`);
 
+  // Dedup check: prevent installing a template that's already installed
+  const existing = engine.list();
+  const alreadyInstalled = existing.some(
+    (wf) => wf.metadata?.installedFrom === templateId || wf.name === template.name
+  );
+  if (alreadyInstalled) {
+    throw new Error(`Template "${template.name}" is already installed`);
+  }
+
   // Deep clone
   const def = JSON.parse(JSON.stringify(template));
   def.id = randomUUID(); // New unique ID

@@ -37,6 +37,12 @@
   flex-shrink: 0;
 }
 
+.kanban-filter-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
+
 .kanban-filter-input {
   border: none;
   background: transparent;

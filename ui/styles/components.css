@@ -1280,6 +1280,12 @@ select.input {
   border-radius: var(--radius-md);
 }
 
+.more-menu-bot-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
+
 .more-menu-bot-text {
   flex: 1;
   min-width: 0;
@@ -3897,6 +3903,13 @@ select.input {
   font-size: 1.1em;
 }
 
+.btn-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+  vertical-align: -0.15em;
+}
+
 /* ═══════════════════════════════════════════════
  *  Snapshot Bar  (replaces Work Summary card)
  * ═══════════════════════════════════════════════ */
@@ -4413,6 +4426,12 @@ select.input {
   color: var(--color-done);
 }
 
+.fleet-rest-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
+
 .fleet-rest-label {
   font-size: 15px;
   font-weight: 700;
@@ -4442,6 +4461,12 @@ select.input {
   margin-bottom: 8px;
 }
 
+.dashboard-welcome-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
+
 .dashboard-welcome-title {
   font-size: 22px;
   font-weight: 700;
@@ -4453,6 +4478,12 @@ select.input {
   color: var(--text-secondary);
   max-width: 340px;
   line-height: 1.6;
+}
+
+.settings-empty-search-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
 }
 
 /* ═══════════════════════════════════════════════
@@ -4681,6 +4712,12 @@ select.input {
   z-index: 1;
 }
 
+.mic-btn-inline svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
+
 .mic-btn-inline:hover:not(:disabled) {
   color: var(--text-primary);
   border-color: rgba(255, 255, 255, 0.18);
@@ -4743,6 +4780,12 @@ select.input {
   padding: 0;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
   -webkit-tap-highlight-color: transparent;
+}
+
+.chat-input-wrapper .mic-btn svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
 }
 
 .chat-input-wrapper .mic-btn:hover:not(:disabled) {
@@ -5028,6 +5071,12 @@ select.input {
   font-size: 22px;
   flex-shrink: 0;
   margin-top: 1px;
+}
+
+.tr-review-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
 }
 
 .tr-hero-title {

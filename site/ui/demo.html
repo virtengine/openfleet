@@ -921,7 +921,7 @@
             { id: 'e19', source: 'do-escalate',     target: 'notify-complete' },
           ],
           variables: { baseBranch: 'main', ciTimeoutMs: 300000, cooldownSec: 60, maxRetries: 3 },
-          metadata: { createdAt: new Date(now - 7 * 24 * hr).toISOString(), updatedAt: new Date(now - 1 * hr).toISOString() },
+          metadata: { installedFrom: 'template-pr-merge-strategy', createdAt: new Date(now - 7 * 24 * hr).toISOString(), updatedAt: new Date(now - 1 * hr).toISOString() },
         },
         // ─── 2. Review Agent (github) — 6 nodes, 6 edges ───
         {
@@ -949,7 +949,7 @@
             { id: 'e6', source: 'aggregate',  target: 'notify' },
           ],
           variables: {},
-          metadata: { createdAt: new Date(now - 6 * 24 * hr).toISOString(), updatedAt: new Date(now - 3 * hr).toISOString() },
+          metadata: { installedFrom: 'template-review-agent', createdAt: new Date(now - 6 * 24 * hr).toISOString(), updatedAt: new Date(now - 3 * hr).toISOString() },
         },
         // ─── 3. Error Recovery (reliability) — 5 nodes, 4 edges ───
         {
@@ -974,7 +974,7 @@
             { id: 'e4', source: 'analyze-error', target: 'retry-task' },
           ],
           variables: { maxRetries: 3 },
-          metadata: { createdAt: new Date(now - 5 * 24 * hr).toISOString(), updatedAt: new Date(now - 2 * hr).toISOString() },
+          metadata: { installedFrom: 'template-error-recovery', createdAt: new Date(now - 5 * 24 * hr).toISOString(), updatedAt: new Date(now - 2 * hr).toISOString() },
         },
         // ─── 4. Build & Deploy (ci-cd) — 6 nodes, 5 edges ───
         {
@@ -1001,7 +1001,7 @@
             { id: 'e5', source: 'deploy',  target: 'notify' },
           ],
           variables: { deployCommand: 'npm run deploy', deployBranch: 'main' },
-          metadata: { createdAt: new Date(now - 4 * 24 * hr).toISOString(), updatedAt: new Date(now - 5 * hr).toISOString() },
+          metadata: { installedFrom: 'template-build-deploy', createdAt: new Date(now - 4 * 24 * hr).toISOString(), updatedAt: new Date(now - 5 * hr).toISOString() },
         },
         // ─── 5. Task Planner (planning) — 7 nodes, 7 edges ───
         {
@@ -1030,7 +1030,7 @@
             { id: 'e6', source: 'create-tasks', target: 'notify' },
           ],
           variables: { minTaskThreshold: 3, planCount: 5 },
-          metadata: { createdAt: new Date(now - 3 * 24 * hr).toISOString(), updatedAt: new Date(now - 4 * hr).toISOString() },
+          metadata: { installedFrom: 'template-task-planner', createdAt: new Date(now - 3 * 24 * hr).toISOString(), updatedAt: new Date(now - 4 * hr).toISOString() },
         },
         // ─── 6. Frontend Agent (agents) — 8 nodes, 9 edges ───
         {
@@ -1062,7 +1062,7 @@
             { id: 'e8', source: 'model-review', target: 'notify-fail', condition: 'failed' },
           ],
           variables: { devServerUrl: 'http://localhost:3000', evidenceDir: '.bosun/evidence' },
-          metadata: { createdAt: new Date(now - 2 * 24 * hr).toISOString(), updatedAt: new Date(now - 30 * 60000).toISOString() },
+          metadata: { installedFrom: 'template-frontend-agent', createdAt: new Date(now - 2 * 24 * hr).toISOString(), updatedAt: new Date(now - 30 * 60000).toISOString() },
         },
       ],
       workflowTemplates: [
@@ -1487,9 +1487,13 @@
             status: { type: 'string', enum: ['todo', 'in_progress', 'in_review', 'done', 'blocked', 'failed'], description: 'New status' },
             taskId: { type: 'string', description: 'Task ID (auto-detected from workflow context if empty)' },
           }}},
-        { type: 'action.delay', category: 'action', description: 'Wait for a duration',
+        { type: 'action.delay', category: 'action', description: 'Wait for a duration (supports ms, seconds, minutes, hours)',
           schema: { type: 'object', properties: {
-            durationMs: { type: 'number', default: 5000, description: 'Delay in milliseconds' },
+            ms: { type: 'number', description: 'Delay in milliseconds' },
+            seconds: { type: 'number', description: 'Delay in seconds' },
+            minutes: { type: 'number', description: 'Delay in minutes' },
+            hours: { type: 'number', description: 'Delay in hours' },
+            jitter: { type: 'number', default: 0, description: 'Random jitter % (0-100)' },
             reason: { type: 'string', description: 'Reason for delay (for logging)' },
           }}},
         { type: 'action.http_request', category: 'action', description: 'Make an HTTP request',
@@ -1659,6 +1663,29 @@
             items: { type: 'string', description: 'Data field containing items list' },
             itemVariable: { type: 'string', default: 'item', description: 'Loop variable name' },
             maxIterations: { type: 'number', default: 100 },
+          }}},
+
+        // ── NEW: ANOMALY & SCHEDULED TRIGGERS ────────────────────────
+        { type: 'trigger.anomaly', category: 'trigger', description: 'Fires when the anomaly detector reports a matching anomaly',
+          schema: { type: 'object', properties: {
+            anomalyType: { type: 'string', description: 'Anomaly type filter (e.g., error_spike, stuck_agent, build_failure)' },
+            minSeverity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], default: 'medium', description: 'Minimum severity to trigger' },
+            agentFilter: { type: 'string', description: 'Regex to match agent ID or name' },
+          }}},
+        { type: 'trigger.scheduled_once', category: 'trigger', description: 'Fires once at a specific time (persists across restarts)',
+          schema: { type: 'object', properties: {
+            runAt: { type: 'string', description: 'ISO 8601 datetime or relative (e.g., +30m, +2h)' },
+            reason: { type: 'string', description: 'Human-readable reason for the scheduled trigger' },
+          }}},
+
+        // ── NEW: FLOW CONTROL ────────────────────────────────────────
+        { type: 'flow.gate', category: 'flow', description: 'Pause execution until a condition is met or manual approval given',
+          schema: { type: 'object', properties: {
+            mode: { type: 'string', enum: ['manual', 'condition', 'timeout'], default: 'condition', description: 'Gate mode' },
+            condition: { type: 'string', description: 'JS expression that must return true to open gate (condition mode)' },
+            timeoutMs: { type: 'number', default: 300000, description: 'Max wait time (ms)' },
+            onTimeout: { type: 'string', enum: ['proceed', 'fail'], default: 'proceed', description: 'Action on timeout' },
+            reason: { type: 'string', description: 'Why this gate is waiting' },
           }}},
       ],
       workflowRuns: [
@@ -2523,7 +2550,10 @@
       if (route === '/api/workflows/install-template') {
         const tpl = STATE.workflowTemplates.find(t => t.id === body?.templateId);
         if (!tpl) return { ok: false, error: 'Template not found' };
-        // Deep-clone nodes/edges from matching demo workflow or generate from template
+        // Dedup check: don't install if already installed
+        const alreadyInstalled = STATE.workflows.some(w => w.metadata?.installedFrom === tpl.id || w.name === tpl.name);
+        if (alreadyInstalled) return { ok: false, error: 'Template already installed' };
+        // Deep-clone nodes/edges from template
         const donor = STATE.workflows.find(w => w.name === tpl.name);
         const wf = { id: 'wf-' + Math.random().toString(36).slice(2, 9), name: tpl.name, description: tpl.description, category: tpl.category, enabled: true, nodeCount: tpl.nodeCount, trigger: 'trigger.pr_event', nodes: JSON.parse(JSON.stringify(donor?.nodes || tpl.nodes || [])), edges: JSON.parse(JSON.stringify(donor?.edges || tpl.edges || [])), variables: body?.overrides || {}, metadata: { installedFrom: tpl.id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } };
         STATE.workflows.push(wf);

@@ -34,6 +34,8 @@ const draggingNode = signal(null);
 const connectingFrom = signal(null);
 const isLoading = signal(false);
 const viewMode = signal("list"); // "list" | "canvas" | "runs"
+const workflowListSearch = signal("");
+const workflowListFilter = signal("");
 
 /* ═══════════════════════════════════════════════════════════════
  *  API Helpers
@@ -1227,6 +1229,46 @@ function WorkflowListView() {
   const wfs = workflows.value || [];
   const tmpls = templates.value || [];
 
+  // ── Search & Filter via signals ──
+  const searchQuery = workflowListSearch.value;
+  const filterCategory = workflowListFilter.value;
+  const setSearchQuery = (v) => { workflowListSearch.value = v; };
+  const setFilterCategory = (v) => { workflowListFilter.value = v; };
+
+  // ── Dedup: build set of template IDs already installed ──
+  const installedTemplateIds = new Set();
+  wfs.forEach((wf) => {
+    if (wf.metadata?.installedFrom) installedTemplateIds.add(wf.metadata.installedFrom);
+    // Also match by name as fallback for legacy data
+    installedTemplateIds.add(wf.name);
+  });
+
+  // Filter workflows by search
+  const sq = (searchQuery || "").toLowerCase().trim();
+  const filteredWfs = sq
+    ? wfs.filter((wf) => {
+        const haystack = `${wf.name} ${wf.description || ""} ${wf.category || ""} ${(wf.tags || []).join(" ")}`.toLowerCase();
+        return haystack.includes(sq);
+      })
+    : wfs;
+
+  // Filter & dedup templates: hide already-installed, apply search + category
+  const availableTemplates = tmpls.filter((t) => {
+    // Dedup: hide templates already installed
+    if (installedTemplateIds.has(t.id) || installedTemplateIds.has(t.name)) return false;
+    // Search filter
+    if (sq) {
+      const haystack = `${t.name} ${t.description || ""} ${t.category || ""} ${(t.tags || []).join(" ")}`.toLowerCase();
+      if (!haystack.includes(sq)) return false;
+    }
+    // Category filter
+    if (filterCategory && (t.category || "custom") !== filterCategory) return false;
+    return true;
+  });
+
+  // Collect unique categories for filter pills
+  const allCategories = [...new Set(tmpls.map((t) => t.category || "custom"))].sort();
+
   return html`
     <div style="padding: 0 4px;">
 
@@ -1258,14 +1300,50 @@ function WorkflowListView() {
         </button>
       </div>
 
+      <!-- Search & Filter Bar -->
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap;">
+        <div style="position: relative; flex: 1; min-width: 200px; max-width: 400px;">
+          <input
+            type="text"
+            placeholder="Search workflows & templates…"
+            value=${searchQuery}
+            onInput=${(e) => setSearchQuery(e.target.value)}
+            style="width: 100%; padding: 8px 12px 8px 32px; border-radius: 8px; border: 1px solid var(--color-border, #2a3040); background: var(--color-bg-secondary, #1a1f2e); color: var(--color-text, #e0e0e0); font-size: 13px; outline: none;"
+          />
+          <span style="position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 14px; opacity: 0.5;">🔍</span>
+        </div>
+        ${allCategories.length > 1 && html`
+          <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+            <button
+              class="wf-btn wf-btn-sm"
+              style=${!filterCategory ? "background: var(--color-accent, #6366f1); color: white;" : ""}
+              onClick=${() => setFilterCategory("")}
+            >All</button>
+            ${allCategories.map((cat) => html`
+              <button
+                key=${cat}
+                class="wf-btn wf-btn-sm"
+                style=${filterCategory === cat ? "background: var(--color-accent, #6366f1); color: white;" : ""}
+                onClick=${() => setFilterCategory(filterCategory === cat ? "" : cat)}
+              >${cat}</button>
+            `)}
+          </div>
+        `}
+        ${sq && html`
+          <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">
+            ${filteredWfs.length + availableTemplates.length} results
+          </span>
+        `}
+      </div>
+
       <!-- Active Workflows -->
-      ${wfs.length > 0 && html`
+      ${filteredWfs.length > 0 && html`
         <div style="margin-bottom: 24px;">
           <h3 style="font-size: 14px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
-            Your Workflows (${wfs.length})
+            Your Workflows (${filteredWfs.length})
           </h3>
           <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
-            ${wfs.map(wf => html`
+            ${filteredWfs.map(wf => html`
               <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
                    onClick=${() => {
                      apiFetch("/api/workflows/" + wf.id).then(d => {
@@ -1299,37 +1377,48 @@ function WorkflowListView() {
         </div>
       `}
 
-      ${wfs.length === 0 && html`
+      ${filteredWfs.length === 0 && html`
         <div style="text-align: center; padding: 40px 20px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; margin-bottom: 24px; border: 1px solid var(--color-border, #2a3040);">
-          <div style="font-size: 36px; margin-bottom: 12px;">🔄</div>
-          <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">No Workflows Yet</div>
+          <div style="font-size: 36px; margin-bottom: 12px;">${sq ? "🔍" : "🔄"}</div>
+          <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">${sq ? "No Matching Workflows" : "No Workflows Yet"}</div>
           <div style="font-size: 13px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 16px; max-width: 400px; margin-left: auto; margin-right: auto; line-height: 1.5;">
-            Workflows automate your development pipeline — from PR merging
-            to error recovery. Install a template below or create one from scratch.
+            ${sq
+              ? "Try a different search term or clear the search to see all workflows."
+              : "Workflows automate your development pipeline — from PR merging to error recovery. Install a template below or create one from scratch."}
           </div>
           <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
-            <button class="wf-btn wf-btn-primary" onClick=${() => {
-              const newWf = { name: "New Workflow", description: "", category: "custom", enabled: true, nodes: [], edges: [], variables: {} };
-              saveWorkflow(newWf).then(wf => { if (wf) { activeWorkflow.value = wf; viewMode.value = "canvas"; } });
-            }}>+ Create Blank</button>
-            ${tmpls.length > 0 && html`
-              <button class="wf-btn" style="border-color: #f59e0b60; color: #f59e0b;" onClick=${() => installTemplate(tmpls[0]?.id)}>
-                ⚡ Quick Install: ${tmpls[0]?.name}
-              </button>
-            `}
+            ${sq
+              ? html`<button class="wf-btn" onClick=${() => setSearchQuery("")}>Clear Search</button>`
+              : html`
+                <button class="wf-btn wf-btn-primary" onClick=${() => {
+                  const newWf = { name: "New Workflow", description: "", category: "custom", enabled: true, nodes: [], edges: [], variables: {} };
+                  saveWorkflow(newWf).then(wf => { if (wf) { activeWorkflow.value = wf; viewMode.value = "canvas"; } });
+                }}>+ Create Blank</button>
+                ${availableTemplates.length > 0 && html`
+                  <button class="wf-btn" style="border-color: #f59e0b60; color: #f59e0b;" onClick=${() => installTemplate(availableTemplates[0]?.id)}>
+                    ⚡ Quick Install: ${availableTemplates[0]?.name}
+                  </button>
+                `}
+              `
+            }
           </div>
         </div>
       `}
 
-      <!-- Templates (grouped by category) -->
+      <!-- Templates (grouped by category, deduped against installed) -->
       <div>
         <h3 style="font-size: 14px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
-          Templates (${tmpls.length})
+          Available Templates (${availableTemplates.length})${tmpls.length !== availableTemplates.length ? html` <span style="font-size: 11px; font-weight: 400; opacity: 0.6;">· ${tmpls.length - availableTemplates.length} installed</span>` : ""}
         </h3>
+        ${availableTemplates.length === 0 && html`
+          <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px;">
+            ${sq ? "No templates match your search." : "All templates are installed! 🎉"}
+          </div>
+        `}
         ${(() => {
           // Group templates by category
           const groups = {};
-          tmpls.forEach(t => {
+          availableTemplates.forEach(t => {
             const key = t.category || "custom";
             if (!groups[key]) groups[key] = { label: t.categoryLabel || key, icon: t.categoryIcon || "⚙️", order: t.categoryOrder || 99, items: [] };
             groups[key].items.push(t);

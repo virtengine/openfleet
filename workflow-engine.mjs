@@ -154,6 +154,35 @@ export class WorkflowContext {
     this.logs = [];
     this.errors = [];
     this.variables = {};
+    this.retryAttempts = new Map();
+  }
+
+  /** Get current retry count for a node */
+  getRetryCount(nodeId) {
+    return this.retryAttempts.get(nodeId) || 0;
+  }
+
+  /** Increment and return the new retry count for a node */
+  incrementRetry(nodeId) {
+    const count = this.getRetryCount(nodeId) + 1;
+    this.retryAttempts.set(nodeId, count);
+    return count;
+  }
+
+  /**
+   * Fork this context for sub-execution (e.g. loop iteration).
+   * Creates a shallow clone with deep-copied data and fresh node tracking.
+   */
+  fork(overrides = {}) {
+    const forked = new WorkflowContext({ ...this.data, ...overrides });
+    forked.id = this.id; // Same run
+    forked.startedAt = this.startedAt;
+    forked.variables = { ...this.variables };
+    // Copy existing node outputs so forked context can reference upstream nodes
+    for (const [k, v] of this.nodeOutputs) {
+      forked.nodeOutputs.set(k, v);
+    }
+    return forked;
   }
 
   /** Set output from a node */
@@ -193,26 +222,27 @@ export class WorkflowContext {
     if (typeof template !== "string") return template;
     return template.replace(/\{\{(\w[\w.]*)\}\}/g, (match, path) => {
       const parts = path.split(".");
+
+      // Try context data first
       let value = this.data;
       for (const part of parts) {
-        if (value == null) return match;
+        if (value == null) break;
         value = value[part];
       }
-      if (value == null) {
-        // Also check node outputs
-        const [nodeId, ...rest] = parts;
-        const nodeOut = this.nodeOutputs.get(nodeId);
-        if (nodeOut != null) {
-          let val = nodeOut;
-          for (const p of rest) {
-            if (val == null) return match;
-            val = val[p];
-          }
-          if (val != null) return String(val);
+      if (value != null) return String(value);
+
+      // Fall back to node outputs (e.g. {{step1.count}} → nodeOutputs["step1"].count)
+      const [nodeId, ...rest] = parts;
+      const nodeOut = this.nodeOutputs.get(nodeId);
+      if (nodeOut != null) {
+        let val = nodeOut;
+        for (const p of rest) {
+          if (val == null) return match;
+          val = val[p];
         }
-        return match;
+        if (val != null) return String(val);
       }
-      return String(value);
+      return match;
     });
   }
 
@@ -225,6 +255,7 @@ export class WorkflowContext {
       data: this.data,
       nodeOutputs: Object.fromEntries(this.nodeOutputs),
       nodeStatuses: Object.fromEntries(this.nodeStatuses),
+      retryAttempts: Object.fromEntries(this.retryAttempts),
       logs: this.logs,
       errors: this.errors,
     };
@@ -521,26 +552,44 @@ export class WorkflowEngine extends EventEmitter {
           ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
           this.emit("node:start", { nodeId, type: node.type, label: node.label });
 
-          try {
-            const result = await this._executeNode(node, ctx, opts);
-            ctx.setNodeOutput(nodeId, result);
-            ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
-            executed.add(nodeId);
-            this.emit("node:complete", { nodeId, type: node.type });
-            return { nodeId, result };
-          } catch (err) {
-            ctx.error(nodeId, err);
-            ctx.setNodeStatus(nodeId, NodeStatus.FAILED);
-            executed.add(nodeId);
-            this.emit("node:error", { nodeId, error: err.message });
+          // Retry loop — uses per-node maxRetries or global MAX_NODE_RETRIES
+          const maxRetries = (node.config?.retryable === false) ? 0 : (node.config?.maxRetries ?? MAX_NODE_RETRIES);
+          let lastErr;
 
-            // Check if node has error handling config
-            if (node.config?.continueOnError) {
-              ctx.setNodeOutput(nodeId, { error: err.message, _failed: true });
-              return { nodeId, result: null, error: err.message };
+          for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+              if (attempt > 0) {
+                ctx.incrementRetry(nodeId);
+                const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
+                ctx.log(nodeId, `Retry ${attempt}/${maxRetries} after ${backoffMs}ms`, "warn");
+                this.emit("node:retry", { nodeId, attempt, maxRetries, backoffMs });
+                await new Promise((r) => setTimeout(r, backoffMs));
+                ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
+              }
+              const result = await this._executeNode(node, ctx, opts);
+              ctx.setNodeOutput(nodeId, result);
+              ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
+              executed.add(nodeId);
+              this.emit("node:complete", { nodeId, type: node.type });
+              lastErr = null;
+              return { nodeId, result };
+            } catch (err) {
+              lastErr = err;
             }
-            throw err; // Propagate to stop workflow
           }
+
+          // All retries exhausted
+          ctx.error(nodeId, lastErr);
+          ctx.setNodeStatus(nodeId, NodeStatus.FAILED);
+          executed.add(nodeId);
+          this.emit("node:error", { nodeId, error: lastErr.message, retries: ctx.getRetryCount(nodeId) });
+
+          // Check if node has error handling config
+          if (node.config?.continueOnError) {
+            ctx.setNodeOutput(nodeId, { error: lastErr.message, _failed: true });
+            return { nodeId, result: null, error: lastErr.message };
+          }
+          throw lastErr; // Propagate to stop workflow
         })
       );
 
@@ -559,7 +608,67 @@ export class WorkflowEngine extends EventEmitter {
 
       // Find newly ready nodes (all incoming edges satisfied)
       for (const nodeId of batch) {
+        const node = nodeMap.get(nodeId);
         const edges = adjacency.get(nodeId) || [];
+
+        // Handle loop.for_each: iterate downstream subgraph per item
+        if (node?.type === "loop.for_each" && ctx.getNodeStatus(nodeId) === NodeStatus.COMPLETED) {
+          const loopOutput = ctx.getNodeOutput(nodeId);
+          const items = loopOutput?.items || [];
+          const varName = loopOutput?.variable || "item";
+
+          if (items.length > 0) {
+            // Collect direct downstream target IDs from this loop node
+            const downstreamIds = edges.map((e) => e.target);
+            const iterationResults = [];
+
+            for (let i = 0; i < items.length; i++) {
+              const item = items[i];
+              this.emit("loop:iteration", { nodeId, index: i, total: items.length });
+
+              // Fork context with loop variable injected
+              const forked = ctx.fork({ [varName]: item, _loopIndex: i, _loopTotal: items.length });
+
+              // Execute each downstream node in the forked context
+              for (const targetId of downstreamIds) {
+                const targetNode = nodeMap.get(targetId);
+                if (!targetNode) continue;
+                try {
+                  forked.setNodeStatus(targetId, NodeStatus.RUNNING);
+                  const result = await this._executeNode(targetNode, forked, opts);
+                  forked.setNodeOutput(targetId, result);
+                  forked.setNodeStatus(targetId, NodeStatus.COMPLETED);
+                } catch (err) {
+                  forked.error(targetId, err);
+                  forked.setNodeStatus(targetId, NodeStatus.FAILED);
+                  if (!targetNode.config?.continueOnError) break;
+                }
+              }
+              iterationResults.push(forked.data);
+              // Merge forked logs/errors back
+              ctx.logs.push(...forked.logs);
+              ctx.errors.push(...forked.errors);
+            }
+
+            // Mark downstream nodes as completed in main context & store aggregated results
+            for (const targetId of downstreamIds) {
+              executed.add(targetId);
+              ctx.setNodeStatus(targetId, NodeStatus.COMPLETED);
+              ctx.setNodeOutput(targetId, { _loopResults: iterationResults, iterations: items.length });
+            }
+            // Also queue any nodes downstream of the loop body
+            for (const targetId of downstreamIds) {
+              const targetEdges = adjacency.get(targetId) || [];
+              for (const te of targetEdges) {
+                const nd = (inDegree.get(te.target) || 1) - 1;
+                inDegree.set(te.target, nd);
+                if (nd <= 0 && !executed.has(te.target)) ready.add(te.target);
+              }
+            }
+            continue; // Skip normal edge processing for loop node
+          }
+        }
+
         for (const edge of edges) {
           // Check edge condition
           if (edge.condition) {

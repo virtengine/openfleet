@@ -135,6 +135,12 @@
   font-size: 20px;
 }
 
+.stream-empty-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
+
 .stream-empty-text {
   font-size: 12px;
   text-align: center;

@@ -159,6 +159,83 @@ registerNodeType("trigger.task_assigned", {
   },
 });
 
+registerNodeType("trigger.anomaly", {
+  describe: () => "Fires when the anomaly detector reports an anomaly matching the configured criteria",
+  schema: {
+    type: "object",
+    properties: {
+      anomalyType: { type: "string", description: "Anomaly type filter (e.g., 'error_spike', 'stuck_agent', 'build_failure')" },
+      minSeverity: { type: "string", enum: ["low", "medium", "high", "critical"], default: "medium", description: "Minimum severity to trigger" },
+      agentFilter: { type: "string", description: "Regex to match agent ID or name" },
+    },
+  },
+  async execute(node, ctx) {
+    const expected = node.config?.anomalyType;
+    const actual = ctx.data?.anomalyType || ctx.data?.type;
+    const typeMatch = !expected || expected === actual;
+
+    // Severity ranking
+    const severityRank = { low: 1, medium: 2, high: 3, critical: 4 };
+    const minSev = severityRank[node.config?.minSeverity || "medium"] || 2;
+    const actualSev = severityRank[ctx.data?.severity] || 0;
+    const sevMatch = actualSev >= minSev;
+
+    // Agent filter
+    let agentMatch = true;
+    if (node.config?.agentFilter && ctx.data?.agentId) {
+      try {
+        agentMatch = new RegExp(node.config.agentFilter, "i").test(ctx.data.agentId);
+      } catch { agentMatch = false; }
+    }
+
+    const triggered = typeMatch && sevMatch && agentMatch;
+    return {
+      triggered,
+      anomaly: ctx.data,
+      anomalyType: actual,
+      severity: ctx.data?.severity,
+      agentId: ctx.data?.agentId,
+    };
+  },
+});
+
+registerNodeType("trigger.scheduled_once", {
+  describe: () => "Fires once at or after a specific scheduled time (persistent — survives restarts)",
+  schema: {
+    type: "object",
+    properties: {
+      runAt: { type: "string", description: "ISO 8601 datetime or relative expression (e.g., '+30m', '+2h')" },
+      reason: { type: "string", description: "Human-readable reason for the scheduled trigger" },
+    },
+    required: ["runAt"],
+  },
+  async execute(node, ctx) {
+    const rawRunAt = ctx.resolve(node.config?.runAt || "");
+    let runAtMs;
+
+    // Parse relative time expressions: +30m, +2h, +1d
+    const relMatch = rawRunAt.match(/^\+(\d+)([smhd])$/);
+    if (relMatch) {
+      const multipliers = { s: 1000, m: 60000, h: 3600000, d: 86400000 };
+      runAtMs = Date.now() + (parseInt(relMatch[1], 10) * (multipliers[relMatch[2]] || 60000));
+    } else {
+      runAtMs = new Date(rawRunAt).getTime();
+    }
+
+    if (isNaN(runAtMs)) {
+      return { triggered: false, reason: "invalid_runAt", raw: rawRunAt };
+    }
+
+    const triggered = Date.now() >= runAtMs;
+    return {
+      triggered,
+      runAt: new Date(runAtMs).toISOString(),
+      reason: node.config?.reason || "",
+      remainingMs: triggered ? 0 : runAtMs - Date.now(),
+    };
+  },
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  CONDITIONS — Branching / routing logic
 // ═══════════════════════════════════════════════════════════════════════════
@@ -287,11 +364,21 @@ registerNodeType("action.run_agent", {
     if (agentPool?.launchEphemeralThread) {
       const result = await agentPool.launchEphemeralThread(prompt, cwd, timeoutMs);
       ctx.log(node.id, `Agent completed: success=${result.success}`);
+
+      // Propagate session/thread IDs for downstream chaining
+      const threadId = result.threadId || result.sessionId || null;
+      if (threadId) {
+        ctx.data.sessionId = threadId;
+        ctx.data.threadId = threadId;
+      }
+
       return {
         success: result.success,
         output: result.output,
         sdk: result.sdk,
         items: result.items,
+        threadId,
+        sessionId: threadId,
       };
     }
 
@@ -562,18 +649,38 @@ registerNodeType("action.set_variable", {
 });
 
 registerNodeType("action.delay", {
-  describe: () => "Wait for a specified duration before continuing",
+  describe: () => "Wait for a specified duration before continuing (supports ms, seconds, minutes, hours)",
   schema: {
     type: "object",
     properties: {
-      ms: { type: "number", default: 1000, description: "Delay in milliseconds" },
+      ms: { type: "number", description: "Delay in milliseconds (direct)" },
+      seconds: { type: "number", description: "Delay in seconds" },
+      minutes: { type: "number", description: "Delay in minutes" },
+      hours: { type: "number", description: "Delay in hours" },
+      jitter: { type: "number", default: 0, description: "Random jitter percentage (0-100) to add/subtract from delay" },
+      reason: { type: "string", description: "Human-readable reason for the delay (logged)" },
     },
   },
   async execute(node, ctx) {
-    const ms = node.config?.ms || 1000;
-    ctx.log(node.id, `Waiting ${ms}ms`);
-    await new Promise((r) => setTimeout(r, ms));
-    return { waited: ms };
+    // Compute total delay from all duration fields
+    let totalMs = node.config?.ms || 0;
+    if (node.config?.seconds) totalMs += node.config.seconds * 1000;
+    if (node.config?.minutes) totalMs += node.config.minutes * 60_000;
+    if (node.config?.hours) totalMs += node.config.hours * 3_600_000;
+    if (totalMs <= 0) totalMs = 1000; // Default 1s
+
+    // Apply jitter
+    const jitterPct = Math.min(Math.max(node.config?.jitter || 0, 0), 100);
+    if (jitterPct > 0) {
+      const jitterRange = totalMs * (jitterPct / 100);
+      totalMs += Math.floor(Math.random() * jitterRange * 2 - jitterRange);
+      totalMs = Math.max(totalMs, 100); // Floor at 100ms
+    }
+
+    const reason = node.config?.reason || "";
+    ctx.log(node.id, `Waiting ${totalMs}ms${reason ? ` (${reason})` : ""}`);
+    await new Promise((r) => setTimeout(r, totalMs));
+    return { waited: totalMs, reason };
   },
 });
 
@@ -1158,6 +1265,81 @@ registerNodeType("agent.evidence_collect", {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  FLOW CONTROL — Gates, barriers, and routing
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerNodeType("flow.gate", {
+  describe: () => "Pause workflow execution until a condition is met or manual approval is given",
+  schema: {
+    type: "object",
+    properties: {
+      mode: {
+        type: "string",
+        enum: ["manual", "condition", "timeout"],
+        default: "condition",
+        description: "Gate mode: manual (requires approval), condition (auto-check expression), timeout (wait then proceed)",
+      },
+      condition: { type: "string", description: "JS expression that must return true to open gate (condition mode)" },
+      timeoutMs: { type: "number", default: 300000, description: "Max wait time before gate auto-opens or fails (ms)" },
+      onTimeout: { type: "string", enum: ["proceed", "fail"], default: "proceed", description: "Action when timeout is reached" },
+      pollIntervalMs: { type: "number", default: 5000, description: "How often to re-evaluate the condition (ms)" },
+      reason: { type: "string", description: "Human-readable description of what this gate is waiting for" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const mode = node.config?.mode || "condition";
+    const timeoutMs = node.config?.timeoutMs || 300000;
+    const onTimeout = node.config?.onTimeout || "proceed";
+    const reason = ctx.resolve(node.config?.reason || "Waiting at gate");
+    const pollInterval = node.config?.pollIntervalMs || 5000;
+
+    ctx.log(node.id, `Gate (${mode}): ${reason}`);
+    ctx.setNodeStatus?.(node.id, "waiting");
+    engine?.emit?.("node:waiting", { nodeId: node.id, mode, reason });
+
+    if (mode === "timeout") {
+      // Simple wait
+      await new Promise((r) => setTimeout(r, timeoutMs));
+      return { gateOpened: true, mode, waited: timeoutMs, reason };
+    }
+
+    if (mode === "condition" && node.config?.condition) {
+      // Poll-based condition check
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        try {
+          const fn = new Function("$data", "$ctx", `return (${node.config.condition});`);
+          if (fn(ctx.data, ctx)) {
+            const waited = Date.now() - start;
+            return { gateOpened: true, mode, waited, reason };
+          }
+        } catch { /* condition eval failed, keep waiting */ }
+        await new Promise((r) => setTimeout(r, pollInterval));
+      }
+      // Timeout reached
+      if (onTimeout === "fail") {
+        throw new Error(`Gate timed out after ${timeoutMs}ms: ${reason}`);
+      }
+      return { gateOpened: true, mode, timedOut: true, waited: timeoutMs, reason };
+    }
+
+    // Manual mode or fallback: wait for external approval via context variable
+    const approvalKey = `_gate_${node.id}_approved`;
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (ctx.data[approvalKey] || ctx.variables[approvalKey]) {
+        return { gateOpened: true, mode: "manual", waited: Date.now() - start, reason };
+      }
+      await new Promise((r) => setTimeout(r, pollInterval));
+    }
+    if (onTimeout === "fail") {
+      throw new Error(`Manual gate timed out after ${timeoutMs}ms: ${reason}`);
+    }
+    return { gateOpened: true, mode: "manual", timedOut: true, waited: timeoutMs, reason };
+  },
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  LOOP / ITERATION
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1221,7 +1403,13 @@ registerNodeType("action.continue_session", {
     const agentPool = engine.services?.agentPool;
     if (agentPool?.continueSession) {
       const result = await agentPool.continueSession(sessionId, prompt, { timeout, strategy });
-      return { success: result.success, output: result.output, sessionId, strategy };
+
+      // Propagate session ID for downstream chaining
+      const threadId = result.threadId || sessionId;
+      ctx.data.sessionId = threadId;
+      ctx.data.threadId = threadId;
+
+      return { success: result.success, output: result.output, sessionId: threadId, strategy };
     }
 
     // Fallback: use ephemeral thread with continuation context
@@ -1235,7 +1423,15 @@ registerNodeType("action.continue_session", {
         : `Continue where you left off.\n\n${prompt}`;
 
       const result = await agentPool.launchEphemeralThread(continuation, ctx.data?.worktreePath || process.cwd(), timeout);
-      return { success: result.success, output: result.output, sessionId, strategy, fallback: true };
+
+      // Propagate new session ID from fallback
+      const threadId = result.threadId || result.sessionId || sessionId;
+      if (threadId) {
+        ctx.data.sessionId = threadId;
+        ctx.data.threadId = threadId;
+      }
+
+      return { success: result.success, output: result.output, sessionId: threadId, strategy, fallback: true };
     }
 
     return { success: false, error: "Agent pool not available" };
@@ -1283,7 +1479,15 @@ registerNodeType("action.restart_agent", {
         cwd,
         node.config?.timeoutMs || 3600000
       );
-      return { success: result.success, output: result.output, newSessionId: result.sessionId, previousSessionId: sessionId };
+
+      // Propagate new session/thread IDs for downstream chaining
+      const newThreadId = result.threadId || result.sessionId || null;
+      if (newThreadId) {
+        ctx.data.sessionId = newThreadId;
+        ctx.data.threadId = newThreadId;
+      }
+
+      return { success: result.success, output: result.output, newSessionId: newThreadId, previousSessionId: sessionId, threadId: newThreadId };
     }
 
     return { success: false, error: "Agent pool not available" };

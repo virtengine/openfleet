@@ -14,7 +14,7 @@ import { apiFetch } from "../modules/api.js";
 import { showToast, refreshTab } from "../modules/state.js";
 import { navigateTo } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
-import { iconText, resolveIcon } from "../modules/icon-utils.js";
+import { resolveIcon } from "../modules/icon-utils.js";
 import { formatRelative } from "../modules/utils.js";
 import { Card, Badge, EmptyState } from "../components/shared.js";
 
@@ -691,7 +691,9 @@ function NodePalette({ nodeTypes: types, onSelect, onClose }) {
           style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--color-border, #2a3040); background: var(--color-bg-secondary, #1a1f2e); color: white; font-size: 13px; outline: none;"
           autofocus
         />
-        <button onClick=${onClose} class="wf-btn wf-btn-sm" style="font-size: 16px; line-height: 1;">${resolveIcon("✕")}</button>
+        <button onClick=${onClose} class="wf-btn wf-btn-sm" style="font-size: 16px; line-height: 1;">
+          <span class="icon-inline">${resolveIcon("✕")}</span>
+        </button>
       </div>
 
       ${Object.entries(filtered).map(([cat, items]) => {
@@ -702,7 +704,7 @@ function NodePalette({ nodeTypes: types, onSelect, onClose }) {
               style="display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 6px; cursor: pointer; color: ${meta.color}; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;"
               onClick=${() => setExpandedCat(expandedCat === cat ? null : cat)}
             >
-              <span>${resolveIcon(meta.icon) || ICONS.dot}</span>
+              <span class="icon-inline">${resolveIcon(meta.icon) || ICONS.dot}</span>
               <span>${meta.label}</span>
               <span style="margin-left: auto; font-size: 10px; opacity: 0.5;">${items.length}</span>
               <span style="font-size: 10px;">${expandedCat === cat ? ICONS.chevronDown : ICONS.arrowRight}</span>
@@ -860,7 +862,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
 
       <!-- Header -->
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
-        <span style="font-size: 20px;">${resolveIcon(meta.icon) || meta.icon}</span>
+        <span class="icon-inline" style="font-size: 20px;">${resolveIcon(meta.icon) || ICONS.dot}</span>
         <div style="flex: 1;">
           <input
             type="text"
@@ -870,7 +872,9 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
           />
           <div style="font-size: 11px; color: ${meta.color}; font-family: monospace;">${node.type}</div>
         </div>
-        <button onClick=${onClose} class="wf-btn wf-btn-sm">${resolveIcon("✕")}</button>
+        <button onClick=${onClose} class="wf-btn wf-btn-sm">
+          <span class="icon-inline">${resolveIcon("✕")}</span>
+        </button>
       </div>
 
       <!-- Description -->
@@ -887,7 +891,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
             style="display: flex; align-items: center; gap: 6px; cursor: pointer; margin-bottom: 8px; opacity: 0.9;"
             onClick=${() => setPresetExpanded(!presetExpanded)}
           >
-            <span style="font-size: 11px; color: #f59e0b;">${resolveIcon("zap")}</span>
+            <span class="icon-inline" style="font-size: 11px; color: #f59e0b;">${resolveIcon("zap")}</span>
             <span style="font-size: 12px; font-weight: 600; color: #f59e0b;">Quick Commands</span>
             <span style="font-size: 10px; margin-left: auto; color: #6b7280;">${presetExpanded ? ICONS.chevronDown : ICONS.arrowRight}</span>
           </div>
@@ -920,7 +924,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
             style="display: flex; align-items: center; gap: 6px; cursor: pointer; margin-bottom: 8px;"
             onClick=${() => setPresetExpanded(!presetExpanded)}
           >
-            <span style="font-size: 11px; color: #a78bfa;">${resolveIcon("bot")}</span>
+            <span class="icon-inline" style="font-size: 11px; color: #a78bfa;">${resolveIcon("bot")}</span>
             <span style="font-size: 12px; font-weight: 600; color: #a78bfa;">Agent Prompt Templates</span>
             <span style="font-size: 10px; margin-left: auto; color: #6b7280;">${presetExpanded ? ICONS.chevronDown : ICONS.arrowRight}</span>
           </div>
@@ -1327,7 +1331,7 @@ function WorkflowListView() {
                      }).catch(() => { activeWorkflow.value = wf; viewMode.value = "canvas"; });
                    }}>
                 <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                  <span style="font-size: 14px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
+                  <span class="icon-inline" style="font-size: 14px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
                   <span style="font-weight: 600; font-size: 14px; flex: 1;">${wf.name}</span>
                   <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
                     ${wf.enabled ? "Active" : "Disabled"}
@@ -1344,10 +1348,10 @@ function WorkflowListView() {
                   <span>${wf.category || "custom"}</span>
                   <div style="flex: 1;"></div>
                   <button class="wf-btn wf-btn-sm" style="font-size: 11px;" onClick=${(e) => { e.stopPropagation(); executeWorkflow(wf.id); }}>
-                    ${resolveIcon("play")}
+                    <span class="icon-inline">${resolveIcon("play")}</span>
                   </button>
                   <button class="wf-btn wf-btn-sm wf-btn-danger" style="font-size: 11px;" onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
-                    ${resolveIcon("trash")}
+                    <span class="icon-inline">${resolveIcon("trash")}</span>
                   </button>
                 </div>
               </div>
@@ -1358,7 +1362,9 @@ function WorkflowListView() {
 
       ${wfs.length === 0 && html`
         <div style="text-align: center; padding: 40px 20px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; margin-bottom: 24px; border: 1px solid var(--color-border, #2a3040);">
-          <div style="font-size: 36px; margin-bottom: 12px;">${resolveIcon("refresh")}</div>
+          <div style="font-size: 36px; margin-bottom: 12px;">
+            <span class="icon-inline">${resolveIcon("refresh")}</span>
+          </div>
           <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">No Workflows Yet</div>
           <div style="font-size: 13px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 16px; max-width: 400px; margin-left: auto; margin-right: auto; line-height: 1.5;">
             Workflows automate your development pipeline — from PR merging
@@ -1396,7 +1402,7 @@ function WorkflowListView() {
           return sorted.map(([cat, group]) => html`
             <div key=${cat} style="margin-bottom: 20px;">
               <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
-                <span style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
+                <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
                 <span style="font-size: 13px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">${group.label}</span>
                 <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">(${group.items.length})</span>
               </div>
@@ -1404,11 +1410,11 @@ function WorkflowListView() {
                 ${group.items.map(t => html`
                   <div key=${t.id} class="wf-card wf-template-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a304080);">
                     <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                      <span style="font-size: 14px;">${resolveIcon(t.categoryIcon || group.icon) || ICONS.dot}</span>
+                      <span class="icon-inline" style="font-size: 14px;">${resolveIcon(t.categoryIcon || group.icon) || ICONS.dot}</span>
                       <span style="font-weight: 600; font-size: 14px; flex: 1;">${t.name}</span>
                       ${t.recommended && html`
                         <span class="wf-badge" style="background: #10b98125; color: #10b981; border-color: #10b98140; font-size: 10px; padding: 2px 8px; font-weight: 600; letter-spacing: 0.3px; display: inline-flex; align-items: center; gap: 4px;">
-                          ${resolveIcon("star")}
+                          <span class="icon-inline">${resolveIcon("star")}</span>
                           Recommended
                         </span>
                       `}
@@ -1463,7 +1469,7 @@ function RunHistoryView() {
       <div style="display: flex; flex-direction: column; gap: 8px;">
         ${runs.map(run => html`
           <div key=${run.runId} style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px; padding: 12px; border: 1px solid var(--color-border, #2a3040); display: flex; align-items: center; gap: 12px;">
-            <span style="font-size: 16px;">
+            <span class="icon-inline" style="font-size: 16px;">
               ${run.status === "completed" ? resolveIcon("check") : run.status === "failed" ? resolveIcon("close") : resolveIcon("clock")}
             </span>
             <div style="flex: 1;">

@@ -486,6 +486,12 @@
   opacity: 0.6;
 }
 
+.session-empty-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
+
 .session-empty-text {
   font-size: 13px;
   color: var(--text-secondary);
@@ -1122,6 +1128,12 @@
   background: rgba(255, 255, 255, 0.2);
 }
 
+.chat-code-copy svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
+
 /* ─── Markdown rendering ─── */
 .md-rendered {
   white-space: normal;
@@ -1511,6 +1523,12 @@ ul.md-list li::before {
   margin-bottom: 8px;
 }
 
+.chat-welcome-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
+
 .chat-welcome-title {
   font-size: 20px;
   font-weight: 700;
@@ -1749,6 +1767,12 @@ ul.md-list li::before {
 .session-action-icon {
   font-size: 16px;
   line-height: 1;
+}
+
+.session-action-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
 }
 
 .session-action-label {

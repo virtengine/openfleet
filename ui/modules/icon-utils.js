@@ -146,7 +146,9 @@ export const EMOJI_ICON_MAP = {
 export function resolveIcon(icon) {
   if (!icon) return null;
   if (ICONS[icon]) return ICONS[icon];
-  const mapped = EMOJI_ICON_MAP[icon];
+  const normalized = String(icon).replace(/[\uFE0E\uFE0F]/g, "");
+  if (ICONS[normalized]) return ICONS[normalized];
+  const mapped = EMOJI_ICON_MAP[icon] || EMOJI_ICON_MAP[normalized];
   if (mapped && ICONS[mapped]) return ICONS[mapped];
   return null;
 }
