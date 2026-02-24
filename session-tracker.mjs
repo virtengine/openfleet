@@ -225,6 +225,7 @@ export class SessionTracker {
         content: String(event.content).slice(0, MAX_MESSAGE_CHARS),
         timestamp: event.timestamp || new Date().toISOString(),
         turnIndex: event.turnIndex ?? session.turnCount,
+        attachments: Array.isArray(event.attachments) ? event.attachments : undefined,
       };
       session.turnCount++;
       session.messages.push(msg);

@@ -9,7 +9,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "preact/hooks"
 import htm from "htm";
 import { apiFetch } from "../modules/api.js";
 import { showToast } from "../modules/state.js";
-import { formatRelative, truncate } from "../modules/utils.js";
+import { formatRelative, truncate, formatBytes } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   sessionMessages,
@@ -235,6 +235,38 @@ function formatMessageLine(msg) {
   return `[${timestamp}] ${String(kind).toUpperCase()}: ${content}`;
 }
 
+function AttachmentList({ attachments }) {
+  const list = Array.isArray(attachments) ? attachments.filter(Boolean) : [];
+  if (!list.length) return null;
+  return html`
+    <div class="chat-attachment-list">
+      ${list.map((att, index) => {
+        const name = att.name || att.filename || att.title || "attachment";
+        const size = att.size ? formatBytes(att.size) : "";
+        const contentType = att.contentType || "";
+        const kind = att.kind || (contentType.startsWith("image/") ? "image" : "file");
+        const url = att.url || att.downloadUrl || att.filePath || att.path || "";
+        const isImage = kind === "image";
+        return html`
+          <div class="chat-attachment-item" key=${att.id || `${name}-${index}`}>
+            ${isImage && url
+              ? html`<img class="chat-attachment-thumb" src=${url} alt=${name} />`
+              : html`<span class="chat-attachment-icon">${resolveIcon("📎")}</span>`}
+            <div class="chat-attachment-meta">
+              ${url
+                ? html`<a class="chat-attachment-name" href=${url} target="_blank" rel="noopener">${name}</a>`
+                : html`<span class="chat-attachment-name">${name}</span>`}
+              <div class="chat-attachment-sub">
+                ${kind}${size ? ` · ${size}` : ""}
+              </div>
+            </div>
+          </div>
+        `;
+      })}
+    </div>
+  `;
+}
+
 /* ─── Memoized ChatBubble — only re-renders if msg identity changes ─── */
 const ChatBubble = memo(function ChatBubble({ msg }) {
   const isTool = msg.type === "tool_call" || msg.type === "tool_result";
@@ -262,6 +294,7 @@ const ChatBubble = memo(function ChatBubble({ msg }) {
             ${label ? html`<div class="chat-bubble-label">${label}</div>` : null}
             <div class="chat-bubble-content">
               <${MessageContent} text=${msg.content} />
+              <${AttachmentList} attachments=${msg.attachments} />
             </div>
             <div class="chat-bubble-time">
               ${msg.timestamp ? formatRelative(msg.timestamp) : ""}
@@ -314,6 +347,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const [unreadCount, setUnreadCount] = useState(0);
   const [visibleCount, setVisibleCount] = useState(200);
   const [showStreamMeta, setShowStreamMeta] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState([]);
+  const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [filters, setFilters] = useState({
     tool: false,
     result: false,
@@ -321,6 +356,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   });
   const messagesRef = useRef(null);
   const inputRef = useRef(null);
+  const fileInputRef = useRef(null);
   const lastMessageCount = useRef(0);
   const filterKey = `${filters.tool}-${filters.result}-${filters.error}`;
 
@@ -547,6 +583,11 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     setAutoScroll(true);
   }, [sessionId, filterKey]);
 
+  useEffect(() => {
+    setPendingAttachments([]);
+    setUploadingAttachments(false);
+  }, [sessionId]);
+
   /* Track scroll position to decide auto-scroll + unread */
   useEffect(() => {
     const el = messagesRef.current;
@@ -579,25 +620,76 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     }
   }, [messages.length, streamActivityKey, paused, autoScroll]);
 
+  const uploadAttachments = useCallback(async (files) => {
+    if (!sessionId || uploadingAttachments) return;
+    const list = Array.from(files || []).filter(Boolean);
+    if (!list.length) return;
+    setUploadingAttachments(true);
+    try {
+      const form = new FormData();
+      for (const file of list) {
+        form.append("file", file, file.name || "attachment");
+      }
+      const res = await apiFetch(`/api/sessions/${sessionId}/attachments`, {
+        method: "POST",
+        body: form,
+      });
+      if (res?.attachments?.length) {
+        setPendingAttachments((prev) => [...prev, ...res.attachments]);
+      } else {
+        showToast("Attachment upload failed", "error");
+      }
+    } catch {
+      showToast("Attachment upload failed", "error");
+    } finally {
+      setUploadingAttachments(false);
+    }
+  }, [sessionId, uploadingAttachments]);
+
+  const handleAttachmentInput = useCallback((e) => {
+    const files = e.target?.files;
+    if (files && files.length) {
+      uploadAttachments(files);
+    }
+    if (e.target) e.target.value = "";
+  }, [uploadAttachments]);
+
+  const handlePaste = useCallback((e) => {
+    const files = e.clipboardData?.files;
+    if (files && files.length) {
+      e.preventDefault();
+      uploadAttachments(files);
+    }
+  }, [uploadAttachments]);
+
+  const removeAttachment = useCallback((index) => {
+    setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if (!text || sending || readOnly) return;
+    if ((!text && pendingAttachments.length === 0) || sending || readOnly || uploadingAttachments) return;
 
     /* Optimistically add user message */
     const optimistic = {
       id: `opt-${Date.now()}`,
       role: "user",
       content: text,
+      attachments: pendingAttachments,
       timestamp: new Date().toISOString(),
     };
     sessionMessages.value = [...(sessionMessages.value || []), optimistic];
     setInput("");
+    setPendingAttachments([]);
     setSending(true);
 
     try {
       await apiFetch(`/api/sessions/${sessionId}/message`, {
         method: "POST",
-        body: JSON.stringify({ content: text }),
+        body: JSON.stringify({
+          content: text,
+          attachments: pendingAttachments,
+        }),
       });
       const res = await loadSessionMessages(sessionId);
       setLoadError(res?.ok ? null : res?.error || "unavailable");
@@ -606,7 +698,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     } finally {
       setSending(false);
     }
-  }, [input, sending, sessionId]);
+  }, [input, sending, sessionId, pendingAttachments, readOnly, uploadingAttachments]);
 
   const handleResume = useCallback(async () => {
     try {
@@ -931,6 +1023,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
               <div key=${pm.tempId} class="chat-bubble user chat-pending-msg ${pm.status}">
                 <div class="chat-bubble-content">
                   <${MessageContent} text=${pm.content} />
+                  <${AttachmentList} attachments=${pm.attachments} />
                 </div>
                 <div class="chat-bubble-time chat-pending-status">
                   ${pm.status === "sending"
@@ -984,7 +1077,40 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             ▶ ${resumeLabel}
           </button>
         `}
+        ${pendingAttachments.length > 0 && html`
+          <div class="chat-attachments-pending">
+            ${pendingAttachments.map((att, index) => html`
+              <div class="chat-attachment-chip" key=${att.id || `${att.name}-${index}`}>
+                <span class="chat-attachment-chip-name">${att.name || "attachment"}</span>
+                ${att.size ? html`<span class="chat-attachment-chip-size">${formatBytes(att.size)}</span>` : ""}
+                <button
+                  class="btn btn-ghost btn-xs chat-attachment-remove"
+                  onClick=${() => removeAttachment(index)}
+                  title="Remove attachment"
+                >✕</button>
+              </div>
+            `)}
+            ${uploadingAttachments && html`
+              <div class="chat-attachment-uploading">Uploading...</div>
+            `}
+          </div>
+        `}
         <div class="chat-input-row">
+          <input
+            ref=${fileInputRef}
+            type="file"
+            multiple
+            style="display:none"
+            onChange=${handleAttachmentInput}
+          />
+          <button
+            class="btn btn-ghost chat-attach-btn"
+            onClick=${() => fileInputRef.current && fileInputRef.current.click()}
+            disabled=${uploadingAttachments}
+            title="Attach file"
+          >
+            ${resolveIcon("📎")}
+          </button>
           <textarea
             ref=${inputRef}
             class="input chat-input"
@@ -993,10 +1119,11 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             value=${input}
             onInput=${handleInput}
             onKeyDown=${handleKeyDown}
+            onPaste=${handlePaste}
           />
           <button
             class="btn btn-primary chat-send-btn"
-            disabled=${!input.trim() || sending}
+            disabled=${(!input.trim() && pendingAttachments.length === 0) || sending || uploadingAttachments}
             onClick=${handleSend}
           >
             ${resolveIcon("➤")}
