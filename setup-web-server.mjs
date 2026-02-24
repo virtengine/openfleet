@@ -16,11 +16,40 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync, unlinkSync } from "
 import { readFile } from "node:fs/promises";
 import { resolve, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import { scaffoldSkills } from "./bosun-skills.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ── Vendor file serving (hoisting-safe) ───────────────────────────────────────────
+// Use Node's own module-resolution (createRequire) so we correctly locate
+// packages even when npm hoists them in a global install.
+const _require = createRequire(import.meta.url);
+
+const VENDOR_FILES = {
+  "preact.js":           { specifier: "preact/dist/preact.module.js",           cdn: "https://esm.sh/preact@10.25.4" },
+  "preact-hooks.js":     { specifier: "preact/hooks/dist/hooks.module.js",       cdn: "https://esm.sh/preact@10.25.4/hooks" },
+  "preact-compat.js":    { specifier: "preact/compat/dist/compat.module.js",     cdn: "https://esm.sh/preact@10.25.4/compat" },
+  "htm.js":              { specifier: "htm/dist/htm.module.js",                  cdn: "https://esm.sh/htm@3.1.1" },
+  "preact-signals.js":   { specifier: "@preact/signals/dist/signals.module.js", cdn: "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4" },
+  "es-module-shims.js":  { specifier: "es-module-shims/dist/es-module-shims.js", cdn: "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js" },
+};
+
+function resolveVendorPath(specifier) {
+  try { return _require.resolve(specifier); } catch { return null; }
+}
+
+/** Returns { ok, files: [{name, resolved, available}] } */
+function checkVendorFiles() {
+  const files = Object.entries(VENDOR_FILES).map(([name, { specifier, cdn }]) => {
+    const resolved = resolveVendorPath(specifier);
+    return { name, specifier, cdn, resolved, available: !!(resolved && existsSync(resolved)) };
+  });
+  const allOk = files.every((f) => f.available);
+  return { ok: allOk, files };
+}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -637,6 +666,35 @@ async function handleRequest(req, res) {
     return;
   }
 
+  // Vendor library files for the setup UI
+  // Uses createRequire-based resolution to handle npm hoisting in global installs.
+  if (url.pathname.startsWith("/vendor/")) {
+    const name = url.pathname.replace(/^\/vendor\//, "");
+    const entry = VENDOR_FILES[name];
+    if (!entry) {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      res.end("Not Found");
+      return;
+    }
+    const localPath = resolveVendorPath(entry.specifier);
+    if (localPath && existsSync(localPath)) {
+      try {
+        const data = readFileSync(localPath);
+        res.writeHead(200, {
+          "Content-Type": "application/javascript; charset=utf-8",
+          "Cache-Control": "public, max-age=86400",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(data);
+        return;
+      } catch { /* fall through to CDN */ }
+    }
+    // CDN fallback
+    res.writeHead(302, { Location: entry.cdn, "Cache-Control": "no-store" });
+    res.end();
+    return;
+  }
+
   // API routes
   if (url.pathname.startsWith("/api/setup/")) {
     const route = url.pathname.replace("/api/setup/", "");
@@ -645,6 +703,9 @@ async function handleRequest(req, res) {
       switch (route) {
         case "status":
           jsonResponse(res, 200, handleStatus());
+          return;
+        case "vendor-status":
+          jsonResponse(res, 200, checkVendorFiles());
           return;
         case "prerequisites":
           jsonResponse(res, 200, handlePrerequisites());

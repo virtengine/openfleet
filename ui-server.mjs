@@ -9,6 +9,7 @@ import { networkInterfaces } from "node:os";
 import { connect as netConnect } from "node:net";
 import { resolve, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { arch as osArch, platform as osPlatform } from "node:os";
 import Ajv2020 from "ajv/dist/2020.js";
 
@@ -101,18 +102,31 @@ import {
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
 const uiRoot = resolve(__dirname, "ui");
-const vendorRoot = resolve(__dirname, "node_modules");
 
-// ── Vendor module map — local node_modules path → CDN fallback ────────────────────────────
-// Served at /vendor/<name>.js. No auth required (public browser libraries).
-// Falls back to CDN via redirect if the package is not installed yet.
+// ── Vendor module map ─────────────────────────────────────────────────────────
+// Served at /vendor/<name>.js — no auth required (public browser libraries).
+//
+// We use createRequire rooted at *this file* so Node's own module-resolution
+// algorithm locates each package, regardless of whether npm hoisted it to a
+// parent node_modules (common in global installs: npm install -g bosun).
+// Falls back to CDN redirect when the package is not installed.
+const _require = createRequire(import.meta.url);
+
+function resolveVendorPath(specifier) {
+  try {
+    return _require.resolve(specifier);
+  } catch {
+    return null;
+  }
+}
+
 const VENDOR_FILES = {
-  "preact.js":           { local: "preact/dist/preact.module.js",              cdn: "https://esm.sh/preact@10.25.4" },
-  "preact-hooks.js":     { local: "preact/hooks/dist/hooks.module.js",          cdn: "https://esm.sh/preact@10.25.4/hooks" },
-  "preact-compat.js":    { local: "preact/compat/dist/compat.module.js",        cdn: "https://esm.sh/preact@10.25.4/compat" },
-  "htm.js":              { local: "htm/dist/htm.module.js",                     cdn: "https://esm.sh/htm@3.1.1" },
-  "preact-signals.js":   { local: "@preact/signals/dist/signals.module.js",    cdn: "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4" },
-  "es-module-shims.js":  { local: "es-module-shims/dist/es-module-shims.js",    cdn: "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js" },
+  "preact.js":           { specifier: "preact/dist/preact.module.js",           cdn: "https://esm.sh/preact@10.25.4" },
+  "preact-hooks.js":     { specifier: "preact/hooks/dist/hooks.module.js",       cdn: "https://esm.sh/preact@10.25.4/hooks" },
+  "preact-compat.js":    { specifier: "preact/compat/dist/compat.module.js",     cdn: "https://esm.sh/preact@10.25.4/compat" },
+  "htm.js":              { specifier: "htm/dist/htm.module.js",                  cdn: "https://esm.sh/htm@3.1.1" },
+  "preact-signals.js":   { specifier: "@preact/signals/dist/signals.module.js", cdn: "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4" },
+  "es-module-shims.js":  { specifier: "es-module-shims/dist/es-module-shims.js", cdn: "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js" },
 };
 
 /**
@@ -127,8 +141,8 @@ async function handleVendor(req, res, url) {
     textResponse(res, 404, "Not Found");
     return;
   }
-  const localPath = resolve(vendorRoot, entry.local);
-  if (existsSync(localPath)) {
+  const localPath = resolveVendorPath(entry.specifier);
+  if (localPath && existsSync(localPath)) {
     try {
       const data = await readFile(localPath);
       res.writeHead(200, {
