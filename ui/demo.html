@@ -8,15 +8,16 @@
 
   <!-- Telegram WebApp SDK is fully mocked below — no real SDK needed -->
 
-  <!-- Import map — same as the real app -->
+  <!-- Import map — uses CDN so demo.html works both from GitHub Pages
+       (static hosting, no /vendor/ server) and from a live bosun instance. -->
   <script type="importmap">
   {
     "imports": {
-      "preact":          "/vendor/preact.js",
-      "preact/hooks":    "/vendor/preact-hooks.js",
-      "preact/compat":   "/vendor/preact-compat.js",
-      "htm":             "/vendor/htm.js",
-      "@preact/signals": "/vendor/preact-signals.js"
+      "preact":          "https://esm.sh/preact@10.25.4",
+      "preact/hooks":    "https://esm.sh/preact@10.25.4/hooks",
+      "preact/compat":   "https://esm.sh/preact@10.25.4/compat",
+      "htm":             "https://esm.sh/htm@3.1.1",
+      "@preact/signals": "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4"
     }
   }
   </script>
@@ -1227,13 +1228,6 @@
 
   <!-- ═══ Telegram MiniApp (single view — loads immediately) ═══════════ -->
   <div class="demo-container">
-    <!-- Header -->
-    <div class="miniapp-header">
-      <div class="miniapp-header-icon">🤖</div>
-      <div class="miniapp-header-title">Telegram MiniApp</div>
-      <div class="miniapp-header-badge">DEMO</div>
-    </div>
-
     <!-- MiniApp content (wraps #app) -->
     <div class="miniapp-content">
       <div id="app">
