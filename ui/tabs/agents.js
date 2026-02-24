@@ -9,6 +9,7 @@ const html = htm.bind(h);
 
 import { haptic, showConfirm } from "../modules/telegram.js";
 import { apiFetch, sendCommandToChat } from "../modules/api.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   executorData,
   agentsData,
@@ -341,7 +342,7 @@ function WorkspaceViewer({ agent, onClose }) {
               ${sessionInfo.preview &&
                 html`<div class="meta-text mt-xs">${truncate(sessionInfo.preview, 120)}</div>`}
               <button class="btn btn-ghost btn-sm mt-sm" onClick=${() => setActiveTab("stream")}>
-                💬 View Stream
+                ${iconText("💬 View Stream")}
               </button>
             </div>
           `}
@@ -486,7 +487,7 @@ function WorkspaceViewer({ agent, onClose }) {
             html`<div class="meta-text mt-xs">Paused at ${snapshotMeta}</div>`}
           ${filteredEvents.length === 0 &&
             html`<div class="stream-empty">
-              <div class="stream-empty-icon">🛰️</div>
+              <div class="stream-empty-icon">${resolveIcon("🛰")}</div>
               <div class="stream-empty-text">
                 ${toolEvents.length === 0 ? "No tool events yet" : "No events match filters"}
               </div>
@@ -596,7 +597,7 @@ function WorkspaceViewer({ agent, onClose }) {
             html`<div class="meta-text mt-xs">Paused at ${snapshotMeta}</div>`}
           ${filteredFiles.length === 0 &&
             html`<div class="stream-empty">
-              <div class="stream-empty-icon">📂</div>
+              <div class="stream-empty-icon">${resolveIcon("📂")}</div>
               <div class="stream-empty-text">
                 ${summaryFiles.length === 0 ? "No file access recorded" : "No files match filters"}
               </div>
@@ -644,7 +645,7 @@ function WorkspaceViewer({ agent, onClose }) {
             ${sessionInfo.preview &&
               html`<div class="meta-text mt-xs">${truncate(sessionInfo.preview, 140)}</div>`}
             <button class="btn btn-ghost btn-sm mt-sm" onClick=${() => setActiveTab("stream")}>
-              💬 View Stream
+              ${iconText("💬 View Stream")}
             </button>
           </div>
         `}
@@ -721,21 +722,21 @@ function WorkspaceViewer({ agent, onClose }) {
                 ${agent.branch || "?"} · Slot ${(agent.index ?? 0) + 1} · ${formatDuration(agent.startedAt)}
               </div>
             </div>
-            <button class="btn btn-ghost btn-sm" onClick=${onClose}>✕</button>
+            <button class="btn btn-ghost btn-sm" onClick=${onClose}>${resolveIcon("✕")}</button>
           </div>
           <div class="session-detail-tabs workspace-tabs">
             <button
               class="session-detail-tab ${activeTab === "stream" ? "active" : ""}"
               onClick=${() => setActiveTab("stream")}
-            >💬 Stream</button>
+            >${iconText("💬 Stream")}</button>
             <button
               class="session-detail-tab ${activeTab === "changes" ? "active" : ""}"
               onClick=${() => setActiveTab("changes")}
-            >📝 Changes</button>
+            >${iconText("📝 Changes")}</button>
             <button
               class="session-detail-tab ${activeTab === "logs" ? "active" : ""}"
               onClick=${() => setActiveTab("logs")}
-            >📄 Logs</button>
+            >${iconText("📄 Logs")}</button>
           </div>
 
           ${activeTab === "stream" &&
@@ -744,7 +745,7 @@ function WorkspaceViewer({ agent, onClose }) {
               ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
               : html`
                   <div class="chat-view chat-empty-state">
-                    <div class="session-empty-icon">💬</div>
+                    <div class="session-empty-icon">${resolveIcon("💬")}</div>
                     <div class="session-empty-text">No session stream available</div>
                   </div>
                 `}
@@ -761,7 +762,7 @@ function WorkspaceViewer({ agent, onClose }) {
               onInput=${(e) => setSteerInput(e.target.value)}
               onKeyDown=${(e) => { if (e.key === "Enter") { e.preventDefault(); handleSteer(); } }}
             />
-            <button class="btn btn-primary btn-sm" onClick=${handleSteer}>🎯</button>
+            <button class="btn btn-primary btn-sm" onClick=${handleSteer}>${resolveIcon("🎯")}</button>
             <button
               class="btn btn-danger btn-sm"
               disabled=${agent.index == null}
@@ -841,7 +842,7 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
           disabled=${!canDispatch || dispatching}
           onClick=${handleDispatch}
         >
-          ${dispatching ? "Dispatching…" : "🚀 Dispatch"}
+          ${dispatching ? "Dispatching…" : iconText("🚀 Dispatch")}
         </button>
       </div>
     <//>
@@ -1080,7 +1081,7 @@ export function AgentsTab() {
 
           <div class="fleet-quick-actions">
             <button class="btn btn-primary btn-sm" onClick=${handleFocusDispatch}>
-              🚀 Dispatch
+              ${iconText("🚀 Dispatch")}
             </button>
             <button class="btn btn-secondary btn-sm" onClick=${handleFleetRefresh}>
               ↻ Refresh
@@ -1089,7 +1090,7 @@ export function AgentsTab() {
               class="btn btn-ghost btn-sm"
               onClick=${() => navigateTo("logs")}
             >
-              📄 Logs
+              ${iconText("📄 Logs")}
             </button>
           </div>
         <//>
@@ -1226,7 +1227,7 @@ export function AgentsTab() {
                             (slot.taskId || slot.branch || "").slice(0, 12),
                           )}
                       >
-                        📄 Logs
+                        ${iconText("📄 Logs")}
                       </button>
                       <button
                         class="btn btn-ghost btn-sm"
@@ -1235,13 +1236,13 @@ export function AgentsTab() {
                             `/steer focus on ${slot.taskTitle || slot.taskId}`,
                           )}
                       >
-                        🎯 Steer
+                        ${iconText("🎯 Steer")}
                       </button>
                       <button
                         class="btn btn-ghost btn-sm"
                         onClick=${() => openWorkspace(slot, i)}
                       >
-                        🔍 View
+                        ${iconText("🔍 View")}
                       </button>
                       <button
                         class="btn btn-danger btn-sm"
@@ -1396,13 +1397,13 @@ function ContextViewer({ sessionId }) {
     return html`<div class="chat-view chat-empty-state">
       <div class="session-empty-icon" style="color:var(--color-error)">⚠️</div>
       <div class="session-empty-text">${error}</div>
-      <button class="btn btn-primary btn-sm mt-sm" onClick=${() => { setLoading(true); setError(null); fetchContext(); }}>🔄 Retry</button>
+      <button class="btn btn-primary btn-sm mt-sm" onClick=${() => { setLoading(true); setError(null); fetchContext(); }}>${iconText("🔄 Retry")}</button>
     </div>`;
   }
 
   if (!ctx?.context) {
     return html`<div class="chat-view chat-empty-state">
-      <div class="session-empty-icon">📋</div>
+      <div class="session-empty-icon">${resolveIcon("📋")}</div>
       <div class="session-empty-text">No context available for this session</div>
     </div>`;
   }
@@ -1536,15 +1537,15 @@ function SessionsPanel() {
               <button
                 class="session-detail-tab ${detailTab === "chat" ? "active" : ""}"
                 onClick=${() => setDetailTab("chat")}
-              >💬 Chat</button>
+              >${iconText("💬 Chat")}</button>
               <button
                 class="session-detail-tab ${detailTab === "diff" ? "active" : ""}"
                 onClick=${() => setDetailTab("diff")}
-              >📝 Diff</button>
+              >${iconText("📝 Diff")}</button>
               <button
                 class="session-detail-tab ${detailTab === "context" ? "active" : ""}"
                 onClick=${() => setDetailTab("context")}
-              >📋 Context</button>
+              >${iconText("📋 Context")}</button>
             </div>
           `}
           ${detailTab === "chat" && html`<${ChatView} sessionId=${sessionId} />`}
@@ -1552,7 +1553,7 @@ function SessionsPanel() {
           ${detailTab === "context" && sessionId && html`<${ContextViewer} sessionId=${sessionId} />`}
           ${!sessionId && detailTab !== "chat" && html`
             <div class="chat-view chat-empty-state">
-              <div class="session-empty-icon">💬</div>
+              <div class="session-empty-icon">${resolveIcon("💬")}</div>
               <div class="session-empty-text">Select a session</div>
             </div>
           `}

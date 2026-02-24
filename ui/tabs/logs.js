@@ -36,6 +36,7 @@ import {
 } from "../modules/state.js";
 import { navigateTo } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
+import { iconText } from "../modules/icon-utils.js";
 import { formatBytes } from "../modules/utils.js";
 import { Card, Badge, EmptyState, SkeletonCard, Modal } from "../components/shared.js";
 import { SearchInput } from "../components/forms.js";
@@ -500,13 +501,13 @@ export function LogsTab() {
           class="btn btn-ghost btn-sm"
           onClick=${() => copyToClipboard(filteredLogText, "Logs")}
         >
-          📋 Copy
+          ${iconText("📋 Copy")}
         </button>
         <button
           class="btn btn-ghost btn-sm"
           onClick=${downloadLogs}
         >
-          💾 Download
+          ${iconText("💾 Download")}
         </button>
       </div>
     <//>
@@ -523,7 +524,7 @@ export function LogsTab() {
           }}
         />
         <button class="btn btn-secondary btn-sm" onClick=${handleAgentSearch}>
-          🔍 Search
+          ${iconText("🔍 Search")}
         </button>
       </div>
       <div class="range-row mb-md">
@@ -579,7 +580,7 @@ export function LogsTab() {
           class="btn btn-ghost btn-sm"
           onClick=${() => copyToClipboard(rawTailText, "Log tail")}
         >
-          📋 Copy
+          ${iconText("📋 Copy")}
         </button>
       </div>
     <//>
@@ -597,7 +598,7 @@ export function LogsTab() {
           }}
         />
         <button class="btn btn-secondary btn-sm" onClick=${handleContextLoad}>
-          📂 Load
+          ${iconText("📂 Load")}
         </button>
       </div>
       <div class="log-box">
@@ -630,7 +631,7 @@ export function LogsTab() {
                 "Context",
               )}
           >
-            📋 Copy
+            ${iconText("📋 Copy")}
           </button>
         </div>
       `}
@@ -652,7 +653,7 @@ export function LogsTab() {
           class="btn btn-ghost btn-sm"
           onClick=${() => copyToClipboard(gitDiff?.value || "", "Diff")}
         >
-          📋 Copy
+          ${iconText("📋 Copy")}
         </button>
       </div>
       <div class="log-box mb-md">
@@ -698,19 +699,19 @@ export function LogsTab() {
           <div class="btn-row mb-sm">
             ${(branchDetail.workspaceTarget || branchDetail.activeSlot || branchDetail.worktree) &&
             html`<button class="btn btn-primary btn-sm" onClick=${() => openWorkspace(branchDetail)}>
-              🔍 Open Workspace Viewer
+              ${iconText("🔍 Open Workspace Viewer")}
             </button>`}
             ${branchDetail.workspaceLink?.url &&
             html`<button
               class="btn btn-secondary btn-sm"
               onClick=${() => openLink(branchDetail.workspaceLink.url)}
             >
-              🔗 Open Workspace Link
+              ${iconText("🔗 Open Workspace Link")}
             </button>`}
             <button
               class="btn btn-ghost btn-sm"
               onClick=${() => copyToClipboard(branchDetail.diffStat || "", "Diff")}
-            >📋 Copy Diff</button>
+            >${iconText("📋 Copy Diff")}</button>
           </div>
           ${workspaceLink &&
           html`

@@ -18,6 +18,7 @@ import {
   scheduleRefresh,
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
+import { iconText } from "../modules/icon-utils.js";
 import { cloneValue, truncate } from "../modules/utils.js";
 import { Card, Badge, SkeletonCard, Spinner } from "../components/shared.js";
 import { SegmentedControl, Collapsible } from "../components/forms.js";
@@ -512,9 +513,8 @@ export function ControlTab() {
   }, [retryTaskId, refreshTaskOptions]);
 
   return html`
-    ${!executor && !config && html`<${Card} title="Loading…"><${SkeletonCard} /><//>`}
-
     <div class="control-layout">
+      ${!executor && !config && html`<${Card} title="Loading…" className="control-skeleton"><${SkeletonCard} /><//>`}
       <div class="control-main">
         <${Card}
           title="Control Unit"
@@ -756,7 +756,6 @@ export function ControlTab() {
             <div class="field-group">
               <div class="form-label">Retry task</div>
               <div class="input-row">
-                <div class="input-row">
                 <select
                   class=${retryTaskError ? "input input-error" : "input"}
                   value=${retryTaskId}
@@ -817,7 +816,7 @@ export function ControlTab() {
                     sendCmd(planFocus ? `/plan ${n} ${planFocus}` : `/plan ${n}`);
                   }}
                 >
-                  📋 Plan
+                  ${iconText("📋 Plan")}
                 </button>
               </div>
             </div>
@@ -887,12 +886,12 @@ export function ControlTab() {
                 style="flex:1"
               />
               <button class="btn btn-secondary btn-sm" onClick=${handleQuickCmd}>
-                ▶ Run
+                ${iconText("▶ Run")}
               </button>
             </div>
             ${quickCmdFeedback && html`
               <div class="form-hint ${quickCmdFeedbackTone === "error" ? "error" : "success"} mb-sm">
-                ${quickCmdFeedback}
+                ${iconText(quickCmdFeedback)}
               </div>
             `}
             <div class="meta-text">

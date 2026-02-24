@@ -20,25 +20,52 @@ import { createRequire } from "node:module";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import { scaffoldSkills } from "./bosun-skills.mjs";
+import { ensureCodexConfig, ensureTrustedProjects } from "./codex-config.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Vendor file serving (hoisting-safe) ───────────────────────────────────────────
-// Use Node's own module-resolution (createRequire) so we correctly locate
-// packages even when npm hoists them in a global install.
+// Resolution order:
+//   1. ui/vendor/ bundled files — shipped in the npm tarball, zero CDN dependency
+//   2. Node module resolution via createRequire — handles global install hoisting
+//   3. CDN redirect — last resort
 const _require = createRequire(import.meta.url);
+const BUNDLED_VENDOR_DIR = resolve(__dirname, "ui", "vendor");
 
 const VENDOR_FILES = {
-  "preact.js":           { specifier: "preact/dist/preact.module.js",           cdn: "https://esm.sh/preact@10.25.4" },
-  "preact-hooks.js":     { specifier: "preact/hooks/dist/hooks.module.js",       cdn: "https://esm.sh/preact@10.25.4/hooks" },
-  "preact-compat.js":    { specifier: "preact/compat/dist/compat.module.js",     cdn: "https://esm.sh/preact@10.25.4/compat" },
-  "htm.js":              { specifier: "htm/dist/htm.module.js",                  cdn: "https://esm.sh/htm@3.1.1" },
-  "preact-signals.js":   { specifier: "@preact/signals/dist/signals.module.js", cdn: "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4" },
-  "es-module-shims.js":  { specifier: "es-module-shims/dist/es-module-shims.js", cdn: "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js" },
+  "preact.js":                { specifier: "preact/dist/preact.module.js",                  cdn: "https://esm.sh/preact@10.25.4" },
+  "preact-hooks.js":          { specifier: "preact/hooks/dist/hooks.module.js",              cdn: "https://esm.sh/preact@10.25.4/hooks" },
+  "preact-compat.js":         { specifier: "preact/compat/dist/compat.module.js",            cdn: "https://esm.sh/preact@10.25.4/compat" },
+  "htm.js":                   { specifier: "htm/dist/htm.module.js",                         cdn: "https://esm.sh/htm@3.1.1" },
+  "preact-signals-core.js":   { specifier: "@preact/signals-core/dist/signals-core.module.js", cdn: "https://cdn.jsdelivr.net/npm/@preact/signals-core@1.8.0/dist/signals-core.module.js" },
+  "preact-signals.js":        { specifier: "@preact/signals/dist/signals.module.js",         cdn: "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4" },
+  "es-module-shims.js":       { specifier: "es-module-shims/dist/es-module-shims.js",        cdn: "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js" },
 };
 
 function resolveVendorPath(specifier) {
-  try { return _require.resolve(specifier); } catch { return null; }
+  // Direct resolution first (works when package exports allow the sub-path)
+  try { return _require.resolve(specifier); } catch (e) {
+    if (e.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") return null;
+  }
+  // ERR_PACKAGE_PATH_NOT_EXPORTED: walk up from the package main entry to find the file
+  const isScoped = specifier.startsWith("@");
+  const firstSlash = specifier.indexOf("/");
+  const secondSlash = isScoped ? specifier.indexOf("/", firstSlash + 1) : firstSlash;
+  if (secondSlash === -1) return null;
+  const pkgName = specifier.slice(0, secondSlash);
+  const filePath = specifier.slice(secondSlash + 1);
+  try {
+    const pkgMain = _require.resolve(pkgName);
+    let dir = dirname(pkgMain);
+    while (dir !== dirname(dir)) {
+      if (existsSync(resolve(dir, "package.json"))) {
+        const candidate = resolve(dir, filePath);
+        return existsSync(candidate) ? candidate : null;
+      }
+      dir = dirname(dir);
+    }
+  } catch { /* not installed */ }
+  return null;
 }
 
 /** Returns { ok, files: [{name, resolved, available}] } */
@@ -157,7 +184,9 @@ function getCommandVersion(cmd) {
  * configs, workspaces, and tooling.  Resolution order:
  *   1. BOSUN_HOME env var  (set by bosun after first run)
  *   2. BOSUN_DIR env var   (legacy compat)
- *   3. cwd if it already has a bosun config marker (backward compat)
+ *   3. cwd if it already has a bosun.config.json AND is not inside a git repo
+ *      we don't own (safety: prevents "bosun --setup" from contaminating whatever
+ *      repo the user happened to be in when they ran the command)
  *   4. ~/bosun             (cross-platform stable default)
  */
 function resolveConfigDir() {
@@ -165,8 +194,18 @@ function resolveConfigDir() {
   if (process.env.BOSUN_DIR)  return resolve(process.env.BOSUN_DIR);
 
   const cwd = process.cwd();
-  if ([".env", "bosun.config.json", ".bosun.json", "bosun.json"].some((f) => existsSync(resolve(cwd, f)))) {
-    return cwd;
+
+  // Only treat CWD as an existing bosun home when:
+  //  (a) it has a bosun.config.json (unambiguous marker — a generic .env is NOT enough
+  //      because many repos ship one and we must not corrupt them), AND
+  //  (b) it does NOT appear to be a foreign git repository
+  //      (i.e. there is no .git directory that was initialised by someone else).
+  const hasBosunConfig = existsSync(resolve(cwd, "bosun.config.json"));
+  if (hasBosunConfig) {
+    // Confirm it looks like an intentional bosun home (has .env too, or is ~/bosun)
+    const isExpectedHome = resolve(homedir(), "bosun") === cwd ||
+      existsSync(resolve(cwd, ".env"));
+    if (isExpectedHome) return cwd;
   }
 
   // Stable default: ~/bosun — same path on every OS
@@ -174,7 +213,43 @@ function resolveConfigDir() {
 }
 
 /**
- * Resolve the workspaces root directory.
+ * Ensure the given directory is listed in Claude Code's global
+ * ~/.claude/settings.json under permissions.additionalDirectories.
+ *
+ * Claude Code uses this list to decide which directories outside the current
+ * project root are readable/writable without per-session permission prompts.
+ *
+ * @param {string} dirPath  Absolute path to add
+ * @returns {{ added: boolean, path: string }}
+ */
+function ensureClaudeAdditionalDirectory(dirPath) {
+  const claudeDir = resolve(homedir(), ".claude");
+  const settingsPath = resolve(claudeDir, "settings.json");
+  const targetPath = resolve(dirPath);
+
+  try {
+    mkdirSync(claudeDir, { recursive: true });
+    let settings = {};
+    if (existsSync(settingsPath)) {
+      try { settings = JSON.parse(readFileSync(settingsPath, "utf8")); } catch { /* keep empty */ }
+    }
+
+    const perms = settings.permissions || (settings.permissions = {});
+    const additional = perms.additionalDirectories || (perms.additionalDirectories = []);
+
+    if (!additional.includes(targetPath)) {
+      additional.push(targetPath);
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf8");
+      return { added: true, path: settingsPath };
+    }
+    return { added: false, path: settingsPath };
+  } catch (err) {
+    console.warn("[setup] could not update ~/.claude/settings.json:", err.message);
+    return { added: false, path: settingsPath };
+  }
+}
+
+/**
  * All projects live under here; global shared configs also live here.
  * Default: BOSUN_HOME/workspaces
  */
@@ -634,6 +709,45 @@ function handleApply(body) {
     const configPath = resolve(bosunHome, "bosun.config.json");
     writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
 
+    // ── Trust the BOSUN_HOME in every agent CLI ─────────────────────────────
+    // Without this, running a codex agent from bosunHome is rejected with:
+    //   "⚠ Project config.toml files are disabled…"
+    // We also register bosunHome with Claude Code so it won't prompt for
+    // permission when accessing the workspace directories.
+
+    // 1. Codex: add bosunHome to trusted_projects in ~/.codex/config.toml
+    try {
+      const trustedResult = ensureTrustedProjects([bosunHome, workspacesDir]);
+      if (trustedResult.added.length > 0) {
+        console.log("  ✅ Codex: trusted bosun home directory:", trustedResult.added.join(", "));
+      }
+    } catch (err) {
+      console.warn("[setup] could not update codex trusted_projects:", err.message);
+    }
+
+    // 2. Claude Code: add bosunHome to additionalDirectories
+    try {
+      const claudeResult = ensureClaudeAdditionalDirectory(bosunHome);
+      const claudeWs = ensureClaudeAdditionalDirectory(workspacesDir);
+      if (claudeResult.added || claudeWs.added) {
+        console.log("  ✅ Claude: added bosun directories to additionalDirectories");
+      }
+    } catch (err) {
+      console.warn("[setup] could not update claude settings:", err.message);
+    }
+
+    // 3. Call ensureCodexConfig to ensure ~/.codex/config.toml has all bosun
+    //    recommended settings (MCP servers, sandbox, feature flags, etc.).
+    try {
+      ensureCodexConfig({
+        vkBaseUrl: process.env.VK_BASE_URL || "http://127.0.0.1:54089",
+        skipVk: (env.kanbanBackend || "") !== "internal" && (env.kanbanBackend || "") !== "",
+        env: { ...process.env, BOSUN_HOME: bosunHome, BOSUN_WORKSPACES_DIR: workspacesDir },
+      });
+    } catch (err) {
+      console.warn("[setup] could not update codex global config:", err.message);
+    }
+
     return { ok: true, bosunHome, workspacesDir, envPath, configPath };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -667,7 +781,7 @@ async function handleRequest(req, res) {
   }
 
   // Vendor library files for the setup UI
-  // Uses createRequire-based resolution to handle npm hoisting in global installs.
+  // Priority: bundled ui/vendor/ → node_modules resolution → CDN redirect
   if (url.pathname.startsWith("/vendor/")) {
     const name = url.pathname.replace(/^\/vendor\//, "");
     const entry = VENDOR_FILES[name];
@@ -676,20 +790,32 @@ async function handleRequest(req, res) {
       res.end("Not Found");
       return;
     }
+    const vendorHeaders = {
+      "Content-Type": "application/javascript; charset=utf-8",
+      "Cache-Control": "public, max-age=86400",
+      "Access-Control-Allow-Origin": "*",
+    };
+    // ── 1. Bundled static file ─────────────────────────────────────────────
+    const bundledPath = resolve(BUNDLED_VENDOR_DIR, name);
+    if (existsSync(bundledPath)) {
+      try {
+        const data = readFileSync(bundledPath);
+        res.writeHead(200, { ...vendorHeaders, "X-Bosun-Vendor": "bundled" });
+        res.end(data);
+        return;
+      } catch { /* fall through */ }
+    }
+    // ── 2. node_modules resolution ────────────────────────────────────────
     const localPath = resolveVendorPath(entry.specifier);
     if (localPath && existsSync(localPath)) {
       try {
         const data = readFileSync(localPath);
-        res.writeHead(200, {
-          "Content-Type": "application/javascript; charset=utf-8",
-          "Cache-Control": "public, max-age=86400",
-          "Access-Control-Allow-Origin": "*",
-        });
+        res.writeHead(200, { ...vendorHeaders, "X-Bosun-Vendor": "node_modules" });
         res.end(data);
         return;
       } catch { /* fall through to CDN */ }
     }
-    // CDN fallback
+    // ── 3. CDN fallback ───────────────────────────────────────────────────
     res.writeHead(302, { Location: entry.cdn, "Cache-Control": "no-store" });
     res.end();
     return;

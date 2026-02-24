@@ -224,8 +224,8 @@ defaults only apply when no custom file exists. References:
 
 ## GitHub App (Bosun Bot)
 
-Bosun has a GitHub App called **Bosun[botswain]** (`bosun-botswain[bot]`, user ID `262908237`).
-App URL: https://github.com/apps/bosun-botswain
+Bosun has a GitHub App called **Bosun[VE]** (`bosun-ve[bot]`, user ID `262908237`).
+App URL: https://github.com/apps/bosun-ve
 
 ### Authentication modules
 
@@ -256,10 +256,10 @@ App URL: https://github.com/apps/bosun-botswain
 ### Bosun Bot Co-author credit
 
 When Bosun creates commits, it appends a `Co-authored-by` trailer so that
-`bosun-botswain[bot]` appears in GitHub's Contributors graph:
+`bosun-ve[bot]` appears in GitHub's Contributors graph:
 
 ```
-Co-authored-by: bosun-botswain[bot] <262908237+bosun-botswain[bot]@users.noreply.github.com>
+Co-authored-by: bosun-ve[bot] <262908237+bosun-ve[bot]@users.noreply.github.com>
 ```
 
 Use helpers from `git-commit-helpers.mjs`:
@@ -272,7 +272,7 @@ import {
 } from "./git-commit-helpers.mjs";
 
 const msg = buildCommitMessage("feat: add thing", "Extended description");
-// → "feat: add thing\n\nExtended description\n\nCo-authored-by: bosun-botswain[bot] <...>"
+// → "feat: add thing\n\nExtended description\n\nCo-authored-by: bosun-ve[bot] <...>"
 
 const prBody = appendBosunPrCredit("My PR description");
 // → "My PR description\n\n---\n*Created by [Bosun Bot](...)*"

@@ -1,0 +1,229 @@
+@import "./styles/base.css";
+@import "./styles/layout.css";
+@import "./styles/components.css";
+@import "./styles/animations.css";
+
+/* ─── Agent Stream Enhancements ─── */
+.stream-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.stream-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.stream-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  padding: 4px 10px;
+  min-width: 180px;
+  flex: 1;
+}
+
+.stream-search .input {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 12px;
+}
+
+.input-compact {
+  height: 28px;
+  font-size: 12px;
+}
+
+.stream-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.stream-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  background: var(--bg-card);
+}
+
+.stream-item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.stream-item-tool {
+  font-size: 12px;
+  text-transform: none;
+}
+
+.stream-item-time {
+  color: var(--text-hint);
+  font-size: 11px;
+}
+
+.stream-item-body {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.stream-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+
+.stream-tag-tool_call {
+  background: rgba(59, 130, 246, 0.16);
+  color: var(--color-inprogress);
+  border-color: rgba(59, 130, 246, 0.4);
+}
+
+.stream-tag-tool_result {
+  background: rgba(16, 185, 129, 0.16);
+  color: var(--color-done);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.stream-tag-error {
+  background: rgba(239, 68, 68, 0.16);
+  color: var(--color-error);
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.stream-tag-file {
+  background: rgba(100, 116, 139, 0.14);
+  color: var(--text-secondary);
+  border-color: rgba(100, 116, 139, 0.35);
+}
+
+.stream-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+}
+
+.stream-empty-icon {
+  font-size: 20px;
+}
+
+.stream-empty-text {
+  font-size: 12px;
+  text-align: center;
+}
+
+/* ─── Telemetry Tab ─── */
+.telemetry-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.telemetry-tab .section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.telemetry-summary .metric-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.metric-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-hint);
+}
+
+.metric-value {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.telemetry-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.telemetry-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.telemetry-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.telemetry-label {
+  color: var(--text-secondary);
+}
+
+.telemetry-count {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.telemetry-alerts {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.telemetry-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.telemetry-alert-meta {
+  font-size: 12px;
+  color: var(--text-hint);
+  margin-top: 4px;
+}

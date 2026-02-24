@@ -82,7 +82,7 @@ async function verifyToken(token) {
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "bosun-botswain",
+        "User-Agent": "bosun-ve",
       },
     });
     if (!res.ok) return null;
@@ -162,7 +162,7 @@ export async function getAuthHeaders(options = {}) {
     Authorization: `Bearer ${token}`,
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": "bosun-botswain",
+    "User-Agent": "bosun-ve",
   };
 }
 

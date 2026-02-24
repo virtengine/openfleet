@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Bosun — Autonomous AI Fleet Supervisor</title>
   <meta name="description" content="Bosun is the open-source control plane for AI coding agents. Route tasks, manage executors, automate PRs, and ship code autonomously." />
-  <meta name="theme-color" content="#06060b" />
+  <meta name="theme-color" content="#0a0b12" />
   <meta name="robots" content="index, follow" />
   <meta name="keywords" content="Bosun, VirtEngine, autonomous coding agents, AI orchestration, developer automation, task routing, PR automation, fleet supervisor" />
   <link rel="canonical" href="https://bosun.virtengine.com/" />
@@ -51,7 +51,7 @@
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&family=Lora:ital,wght@1,400;1,500;1,600;1,700&family=Satisfy&display=swap" rel="stylesheet" />
 
   <!-- jQuery Terminal CSS -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jquery.terminal@2.42.2/css/jquery.terminal.min.css" />
@@ -59,7 +59,7 @@
   <!-- Main CSS -->
   <link rel="stylesheet" href="css/main.css" />
 
-  <!-- Favicon (inline SVG) -->
+  <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png" />
 </head>
 <body>
@@ -71,7 +71,7 @@
   <nav class="nav">
     <div class="nav__inner">
       <a href="#" class="nav__brand">
-        <img src="logo.png" alt="Bosun" class="nav__brand-icon" />
+        <img class="nav__brand-icon" src="logo.svg" alt="Bosun" width="48" height="48" />
         Bosun
       </a>
 
@@ -103,47 +103,30 @@
 
     <div class="container">
       <div class="hero__title-block">
-        <h1 class="hero__headline">Fleet Supervisor</h1>
-        <div class="hero__typed">
-          <span id="hero-typed"></span><span class="typed-cursor" id="typed-cursor">|</span>
+        <a href="https://www.npmjs.com/package/bosun" class="hero__badge">
+          <span class="pulse-dot"></span>
+          <span class="hero__badge-text"><span data-version>v0.0.0</span> · Live</span>
+        </a>
+        <h1 class="hero__headline">
+          Your AI Fleet,<br>
+          <span class="hero__headline-accent"><span id="hero-typed"></span></span><span class="typed-cursor" id="typed-cursor">|</span>
+        </h1>
+        <div class="hero__install hero__install--center">
+          <div class="install-cmd" title="Click to copy">
+            <span class="install-cmd__prompt">$</span>
+            <span class="install-cmd__text">npm install -g bosun</span>
+            <span class="install-cmd__copy" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" />
+                <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+              </svg>
+            </span>
+            <span class="install-cmd__tooltip">Copied!</span>
+          </div>
         </div>
       </div>
 
       <div class="hero__layout">
-
-        <!-- LEFT: intro -->
-        <div class="hero__intro">
-          <p class="hero__subtitle">
-            Bosun is the open-source supervisor for AI coding agents.
-            Route tasks, manage multi-executor pools, automate PR lifecycles,
-            and ship production code — without human intervention.
-          </p>
-
-          <ul class="hero__bullets">
-            <li>Multi-executor: Copilot, Codex, Claude</li>
-            <li>GitHub, Jira &amp; Vibe-Kanban integrated</li>
-            <li>Telegram + WhatsApp push alerts</li>
-            <li>Auto-fix lint, CI failures &amp; retry loops</li>
-          </ul>
-
-          <div class="hero__install">
-            <div class="install-cmd" title="Click to copy">
-              <span class="install-cmd__prompt">$</span>
-              <span class="install-cmd__text">npm install -g bosun</span>
-              <span class="install-cmd__copy">📋</span>
-              <span class="install-cmd__tooltip">Copied!</span>
-            </div>
-            <a href="docs/" class="btn btn--ghost btn--sm">Documentation</a>
-            <a href="https://github.com/virtengine/bosun#readme" class="btn btn--ghost btn--sm" target="_blank" rel="noopener">GitHub</a>
-          </div>
-
-          <div class="hero__ctas">
-          </div>
-
-          <a href="https://www.npmjs.com/package/bosun" class="hero__version-tag">
-            <span data-version>v0.0</span> · Bosun by VirtEngine · Apache 2.0
-          </a>
-        </div>
 
         <!-- RIGHT: demo panels -->
         <div class="hero__demo" id="demo">
@@ -151,26 +134,49 @@
 
         <!-- ── Channel Tabs ──────────────────────────────────────────── -->
         <div class="demo-tabs reveal">
-          <button class="demo-tab demo-tab--active" data-demo="cli">
+          <button class="demo-tab" data-demo="desktop">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            Desktop
+          </button>
+          <button class="demo-tab" data-demo="cli">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
             CLI Terminal
           </button>
           <button class="demo-tab" data-demo="telegram">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
-            Telegram Chat
+            Telegram
           </button>
-          <button class="demo-tab" data-demo="miniapp">
+          <button class="demo-tab" data-demo="mobile">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
-            MiniApp
-          </button>
-          <button class="demo-tab" data-demo="whatsapp">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
-            WhatsApp
+            Mobile
           </button>
         </div>
 
-        <!-- ── CLI Panel (existing terminal) ─────────────────────────── -->
-        <div class="demo-panel demo-panel--active" id="demo-panel-cli">
+        <!-- ── Desktop Panel (browser chrome + MiniApp iframe) ───────── -->
+        <div class="demo-panel" id="demo-panel-desktop">
+          <div class="desktop-demo-window reveal">
+            <div class="desktop-demo-window__chrome">
+              <div class="desktop-demo-window__title">
+                <span class="desktop-demo-window__app">Bosun Desktop</span>
+                <span class="desktop-demo-window__meta">Electron</span>
+              </div>
+              <button class="desktop-demo-window__expand" type="button" aria-label="Enter fullscreen" aria-pressed="false">
+                <svg class="desktop-demo-window__expand-icon desktop-demo-window__expand-icon--enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H3v5"/><path d="M16 3h5v5"/><path d="M8 21H3v-5"/><path d="M16 21h5v-5"/></svg>
+                <svg class="desktop-demo-window__expand-icon desktop-demo-window__expand-icon--exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H3v6"/><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M15 21h6v-6"/></svg>
+              </button>
+            </div>
+            <iframe
+              id="desktop-miniapp-iframe"
+              src="ui/demo.html"
+              class="desktop-demo-window__iframe"
+              loading="lazy"
+              title="Bosun MiniApp Demo — Desktop"
+            ></iframe>
+          </div>
+        </div>
+
+        <!-- ── CLI Panel (jQuery Terminal) ────────────────────────────── -->
+        <div class="demo-panel" id="demo-panel-cli">
           <div class="terminal-window reveal">
             <div class="terminal-window__titlebar">
               <div class="terminal-window__dots">
@@ -202,8 +208,8 @@
           </div>
         </div>
 
-        <!-- ── MiniApp Panel ─────────────────────────────────────────── -->
-        <div class="demo-panel" id="demo-panel-miniapp">
+        <!-- ── Mobile Panel (phone frame + fullscreen) ───────────────── -->
+        <div class="demo-panel" id="demo-panel-mobile">
           <div class="miniapp-demo-window reveal">
             <div class="miniapp-demo-window__phone">
               <div class="miniapp-demo-window__notch"></div>
@@ -222,118 +228,13 @@
                   src="ui/demo.html"
                   class="miniapp-demo-window__iframe"
                   loading="lazy"
-                  title="Bosun MiniApp Demo"
+                  title="Bosun MiniApp Demo — Mobile"
                 ></iframe>
               </div>
             </div>
             <p class="miniapp-demo-window__caption">
               <span class="miniapp-demo-window__live-dot"></span>
               Live from source — auto-updates when the real MiniApp changes
-            </p>
-          </div>
-        </div>
-
-        <!-- ── WhatsApp Panel ────────────────────────────────────────── -->
-        <div class="demo-panel" id="demo-panel-whatsapp">
-          <div class="whatsapp-demo-window reveal">
-            <div class="whatsapp-demo-window__header">
-              <div class="whatsapp-demo-window__avatar" style="background:#25d366;display:flex;align-items:center;justify-content:center;font-size:1.4rem;">🤖</div>
-              <div class="whatsapp-demo-window__header-info">
-                <div class="whatsapp-demo-window__name">Bosun Alerts</div>
-                <div class="whatsapp-demo-window__status">online</div>
-              </div>
-            </div>
-            <div class="whatsapp-demo-window__messages">
-              <div class="whatsapp-demo-window__date">Today</div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">🚀 <b>Fleet Started</b><br>Bosun v0.26.2 online<br>Board: github · Agents: 2 · Max Parallel: 6<br><span style="font-size:0.8em;color:#8696a0">workstation-1 · 09:14</span></div>
-                  <div class="wa-msg__time">09:14</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">📋 <b>3 Tasks Dispatched</b><br>#42 feat(market): add order expiry → copilot-claude<br>#43 fix(veid): token validation → codex-default<br>#44 refactor(escrow): batch settle → copilot-claude</div>
-                  <div class="wa-msg__time">09:15</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">✅ <b>PR Merged</b><br>#43 fix(veid): token validation<br>PR #188 → main ✓ · CI: 3/3 passed<br>codex-default · 9m 44s</div>
-                  <div class="wa-msg__time">09:27</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">⚠️ <b>Auto-fix Applied</b><br>#44 refactor(escrow): batch settle<br>Lint warning fixed automatically<br><span style="font-size:0.8em;color:#8696a0">pushed fix commit to PR #189</span></div>
-                  <div class="wa-msg__time">09:31</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">✅ <b>PR Merged</b><br>#42 feat(market): add order expiry<br>PR #187 → main ✓ · CI: 3/3 passed<br>copilot-claude · 18m 02s</div>
-                  <div class="wa-msg__time">09:33</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">✅ <b>PR Merged</b><br>#44 refactor(escrow): batch settle<br>PR #189 → main ✓ · 1 auto-fix applied<br>copilot-claude · 22m 11s</div>
-                  <div class="wa-msg__time">09:37</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--user">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">status?</div>
-                  <div class="wa-msg__time">09:41 ✓✓</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">📊 <b>Fleet Status</b> — Running<br><br>⏱ Uptime: 27m<br>✅ 3 tasks done · 3 PRs merged<br>🔵 2 in progress (#45 #46)<br>⏳ 4 queued<br><br>Executors: 2/2 active · load: 45%</div>
-                  <div class="wa-msg__time">09:41</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">📊 <b>10:00 Digest</b><br><br>✅ 7 tasks completed<br>🔀 6 PRs merged<br>⚡ 1 auto-fix applied<br>🤖 2 agents active<br>💚 All systems healthy</div>
-                  <div class="wa-msg__time">10:00</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--user">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">pause tasks</div>
-                  <div class="wa-msg__time">10:04 ✓✓</div>
-                </div>
-              </div>
-
-              <div class="wa-msg wa-msg--bot">
-                <div class="wa-msg__bubble">
-                  <div class="wa-msg__text">⏸ <b>Task Dispatch Paused</b><br>No new tasks will be dispatched.<br>Active tasks continue running.<br><span style="font-size:0.8em;color:#8696a0">Reply "resume" to restart dispatch</span></div>
-                  <div class="wa-msg__time">10:04</div>
-                </div>
-              </div>
-
-            </div>
-            <div class="whatsapp-demo-window__footer">
-              <div class="whatsapp-demo-window__input-placeholder">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8696a0" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/></svg>
-                <span>Type a message</span>
-              </div>
-              <div class="whatsapp-demo-window__mic">🎤</div>
-            </div>
-            <p class="whatsapp-demo-window__caption">
-              WhatsApp delivers real-time push notifications for task events, PR merges, CI status, and fleet digests. Natural language queries work too.
-              <br><span style="color:var(--text-muted);">Enable with: <code>bosun --whatsapp-auth</code></span>
             </p>
           </div>
         </div>
@@ -383,7 +284,14 @@
 
       <div class="features-grid">
         <div class="feature-card reveal reveal--delay-1">
-          <div class="feature-card__icon">🎯</div>
+          <div class="feature-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="2" y="8" width="32" height="36" rx="6" stroke="currentColor"/>
+              <rect x="44" y="8" width="32" height="36" rx="6" stroke="currentColor"/>
+              <rect x="86" y="8" width="32" height="36" rx="6" stroke="currentColor"/>
+              <path d="M34 26H44M76 26H86" stroke="currentColor"/>
+            </svg>
+          </div>
           <h3 class="feature-card__title">Multi-Executor Routing</h3>
           <p class="feature-card__desc">
             Weighted distribution across Copilot (Claude Opus, GPT), Codex, and Claude agents.
@@ -392,7 +300,13 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-2">
-          <div class="feature-card__icon feature-card__icon--purple">🔄</div>
+          <div class="feature-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M16 26h88" stroke="currentColor"/>
+              <path d="M89 15l15 11-15 11" stroke="currentColor"/>
+              <path d="M31 37L16 26l15-11" stroke="currentColor"/>
+            </svg>
+          </div>
           <h3 class="feature-card__title">Smart PR Lifecycle</h3>
           <p class="feature-card__desc">
             Creates PRs, monitors CI, auto-rebases on conflict, and merges when all checks pass.
@@ -401,7 +315,12 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-3">
-          <div class="feature-card__icon feature-card__icon--green">🛡️</div>
+          <div class="feature-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M60 10l22 8v12c0 8-6 14-22 19-16-5-22-11-22-19V18l22-8z" stroke="currentColor"/>
+              <path d="M48 27l8 8 16-16" stroke="currentColor"/>
+            </svg>
+          </div>
           <h3 class="feature-card__title">Self-Healing Recovery</h3>
           <p class="feature-card__desc">
             Autofix detects failure patterns, circuit breakers prevent loops, and stale claims
@@ -410,7 +329,12 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-1">
-          <div class="feature-card__icon feature-card__icon--amber">📋</div>
+          <div class="feature-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="14" y="10" width="92" height="32" rx="6" stroke="currentColor"/>
+              <path d="M30 20h60M30 30h42" stroke="currentColor"/>
+            </svg>
+          </div>
           <h3 class="feature-card__title">Flexible Task Boards</h3>
           <p class="feature-card__desc">
             Built-in internal board, plus native adapters for GitHub Issues, GitHub Projects v2,
@@ -419,7 +343,13 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-2">
-          <div class="feature-card__icon feature-card__icon--pink">🤖</div>
+          <div class="feature-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="12" y="8" width="40" height="36" rx="7" stroke="currentColor"/>
+              <rect x="68" y="8" width="40" height="36" rx="7" stroke="currentColor"/>
+              <path d="M52 26h16" stroke="currentColor"/>
+            </svg>
+          </div>
           <h3 class="feature-card__title">Telegram Control Center</h3>
           <p class="feature-card__desc">
             Full bot with 30+ commands, inline keyboards, live digest system, and a rich
@@ -428,7 +358,14 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-3">
-          <div class="feature-card__icon feature-card__icon--blue">👥</div>
+          <div class="feature-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="26" cy="26" r="12" stroke="currentColor"/>
+              <circle cx="60" cy="26" r="12" stroke="currentColor"/>
+              <circle cx="94" cy="26" r="12" stroke="currentColor"/>
+              <path d="M38 26h10M72 26h10" stroke="currentColor"/>
+            </svg>
+          </div>
           <h3 class="feature-card__title">Multi-Agent Coordination</h3>
           <p class="feature-card__desc">
             Shared state with atomic claims, heartbeat liveness, and stale sweeps.
@@ -437,7 +374,14 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-1">
-          <div class="feature-card__icon">📊</div>
+          <div class="feature-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12 38h96" stroke="currentColor"/>
+              <rect x="20" y="24" width="14" height="14" rx="3" stroke="currentColor"/>
+              <rect x="44" y="18" width="14" height="20" rx="3" stroke="currentColor"/>
+              <rect x="68" y="12" width="14" height="26" rx="3" stroke="currentColor"/>
+            </svg>
+          </div>
           <h3 class="feature-card__title">Fleet Coordination</h3>
           <p class="feature-card__desc">
             Presence tracking, session management, workspace registry, and fleet-wide state
@@ -446,7 +390,13 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-2">
-          <div class="feature-card__icon feature-card__icon--purple">📦</div>
+          <div class="feature-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="28" y="10" width="64" height="32" rx="8" stroke="currentColor"/>
+              <path d="M44 26h32" stroke="currentColor"/>
+              <path d="M52 16h16" stroke="currentColor"/>
+            </svg>
+          </div>
           <h3 class="feature-card__title">Container Isolation</h3>
           <p class="feature-card__desc">
             Optionally run agents inside Docker, Podman, or Apple Container sandboxes.
@@ -455,7 +405,12 @@
         </div>
 
         <div class="feature-card reveal reveal--delay-3">
-          <div class="feature-card__icon feature-card__icon--green">⚙️</div>
+          <div class="feature-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 120 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="60" cy="26" r="16" stroke="currentColor"/>
+              <path d="M60 15v22M49 26h22" stroke="currentColor"/>
+            </svg>
+          </div>
           <h3 class="feature-card__title">Setup Wizard</h3>
           <p class="feature-card__desc">
             Interactive setup generates a complete .env with documentation.
@@ -496,19 +451,38 @@
       <div class="arch-diagram reveal">
         <div class="arch-flow">
           <div class="arch-node">
-            <div class="arch-node__icon">📋</div>
+            <div class="arch-node__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="4" width="14" height="16" rx="2"/>
+                <path d="M9 2h6v4H9z"/>
+                <path d="M8 10h8M8 14h6"/>
+              </svg>
+            </div>
             <div class="arch-node__label">Task Board</div>
             <div class="arch-node__sub">GitHub / Jira / Internal</div>
           </div>
           <div class="arch-arrow">→</div>
           <div class="arch-node">
-            <div class="arch-node__icon">⚡</div>
+            <div class="arch-node__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="8" y="8" width="8" height="8" rx="1.5"/>
+                <path d="M3 9h2M3 15h2M19 9h2M19 15h2M9 3v2M15 3v2M9 19v2M15 19v2"/>
+              </svg>
+            </div>
             <div class="arch-node__label">Supervisor</div>
             <div class="arch-node__sub">monitor.mjs</div>
           </div>
           <div class="arch-arrow">→</div>
           <div class="arch-node">
-            <div class="arch-node__icon">🤖</div>
+            <div class="arch-node__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="4" y="8" width="16" height="10" rx="2"/>
+                <path d="M12 4v4"/>
+                <circle cx="9" cy="13" r="1"/>
+                <circle cx="15" cy="13" r="1"/>
+                <path d="M8 18h8"/>
+              </svg>
+            </div>
             <div class="arch-node__label">Agent Pool</div>
             <div class="arch-node__sub">Copilot / Codex / Claude</div>
           </div>
@@ -516,7 +490,15 @@
 
         <div class="arch-layers">
           <div class="arch-layer reveal reveal--delay-1">
-            <div class="arch-layer__title">🧠 Orchestration</div>
+            <div class="arch-layer__title">
+              <svg class="arch-layer__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 6h16M4 12h16M4 18h16"/>
+                <circle cx="9" cy="6" r="2"/>
+                <circle cx="15" cy="12" r="2"/>
+                <circle cx="7" cy="18" r="2"/>
+              </svg>
+              Orchestration
+            </div>
             <ul class="arch-layer__items">
               <li>Task routing &amp; weighted distribution</li>
               <li>Executor failover &amp; cooldowns</li>
@@ -527,7 +509,15 @@
           </div>
 
           <div class="arch-layer reveal reveal--delay-2">
-            <div class="arch-layer__title">🔗 Coordination</div>
+            <div class="arch-layer__title">
+              <svg class="arch-layer__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="6" cy="12" r="2"/>
+                <circle cx="12" cy="6" r="2"/>
+                <circle cx="18" cy="12" r="2"/>
+                <path d="M7.7 10.7l2.6-2.6M13.7 7.7l2.6 2.6M8 12h8"/>
+              </svg>
+              Coordination
+            </div>
             <ul class="arch-layer__items">
               <li>Shared state with atomic claims</li>
               <li>Heartbeat-based liveness detection</li>
@@ -538,7 +528,13 @@
           </div>
 
           <div class="arch-layer reveal reveal--delay-3">
-            <div class="arch-layer__title">📡 Control Surfaces</div>
+            <div class="arch-layer__title">
+              <svg class="arch-layer__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="5" width="18" height="14" rx="2"/>
+                <path d="M7 9l2 2-2 2M11 13h4"/>
+              </svg>
+              Control Surfaces
+            </div>
             <ul class="arch-layer__items">
               <li>Telegram Bot with 30+ commands</li>
               <li>Mini App (7-tab web dashboard)</li>
@@ -562,42 +558,79 @@
 
       <div class="integrations-grid">
         <div class="integration-card reveal reveal--delay-1">
-          <div class="integration-card__icon">🐙</div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.42 2.865 8.167 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.252-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.268.098-2.642 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844c.85.004 1.705.115 2.503.337 1.909-1.296 2.748-1.026 2.748-1.026.546 1.374.203 2.389.1 2.642.64.7 1.028 1.595 1.028 2.688 0 3.848-2.338 4.695-4.566 4.943.36.309.68.92.68 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0 0 22 12.017C22 6.484 17.523 2 12 2z"/>
+            </svg>
+          </div>
           <div class="integration-card__name">GitHub</div>
           <div class="integration-card__desc">Issues, Projects v2, PRs, CI checks</div>
         </div>
         <div class="integration-card reveal reveal--delay-2">
-          <div class="integration-card__icon">📱</div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 2L11 13"/>
+              <path d="M22 2L15 22l-4-9-9-4 20-7z"/>
+            </svg>
+          </div>
           <div class="integration-card__name">Telegram</div>
           <div class="integration-card__desc">Bot, Mini App, Sentinel watchdog</div>
         </div>
         <div class="integration-card reveal reveal--delay-3">
-          <div class="integration-card__icon">🔵</div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <path d="M3 9h18M9 21V9"/>
+            </svg>
+          </div>
           <div class="integration-card__name">Jira</div>
           <div class="integration-card__desc">Full status mapping &amp; custom fields</div>
         </div>
         <div class="integration-card reveal reveal--delay-4">
-          <div class="integration-card__icon">💬</div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/>
+            </svg>
+          </div>
           <div class="integration-card__name">WhatsApp</div>
           <div class="integration-card__desc">Optional notification channel</div>
         </div>
         <div class="integration-card reveal reveal--delay-1">
-          <div class="integration-card__icon">🐳</div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4a2 2 0 0 0 1-1.73z"/>
+              <path d="M3.3 7L12 12l8.7-5M12 22V12"/>
+            </svg>
+          </div>
           <div class="integration-card__name">Docker / Podman</div>
           <div class="integration-card__desc">Container-isolated agent execution</div>
         </div>
         <div class="integration-card reveal reveal--delay-2">
-          <div class="integration-card__icon">🧠</div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="7" y="7" width="10" height="10" rx="2"/>
+              <path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/>
+            </svg>
+          </div>
           <div class="integration-card__name">Copilot</div>
           <div class="integration-card__desc">Claude Opus, GPT, agent sessions</div>
         </div>
         <div class="integration-card reveal reveal--delay-3">
-          <div class="integration-card__icon">⚡</div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="5" width="20" height="14" rx="2"/>
+              <path d="M6 9l3 3-3 3M11 15h5"/>
+            </svg>
+          </div>
           <div class="integration-card__name">Codex</div>
           <div class="integration-card__desc">OpenAI Codex SDK &amp; persistent sessions</div>
         </div>
         <div class="integration-card reveal reveal--delay-4">
-          <div class="integration-card__icon">🌐</div>
+          <div class="integration-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 18H7a5 5 0 1 1 1-9.9A6 6 0 0 1 20 13a4 4 0 0 1-2 5z"/>
+            </svg>
+          </div>
           <div class="integration-card__name">Cloudflare Tunnel</div>
           <div class="integration-card__desc">Persistent HTTPS for Mini App</div>
         </div>
@@ -652,8 +685,21 @@
 
       <!-- Feed tabs -->
       <div class="showcase-tabs reveal" id="showcase-tabs">
-        <button class="showcase-tab showcase-tab--active" data-feed="prs">⬆ Open PRs</button>
-        <button class="showcase-tab" data-feed="commits">📦 Bosun Commits</button>
+        <button class="showcase-tab showcase-tab--active" data-feed="prs">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 19V5"/>
+            <path d="M5 12l7-7 7 7"/>
+          </svg>
+          Open PRs
+        </button>
+        <button class="showcase-tab" data-feed="commits">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="7" width="18" height="13" rx="2"/>
+            <path d="M3 7l9 6 9-6"/>
+            <path d="M12 13v7"/>
+          </svg>
+          Bosun Commits
+        </button>
       </div>
 
       <!-- PR feed -->
@@ -790,10 +836,8 @@
     <div class="container">
       <div class="footer__inner">
         <div class="footer__left">
-          <img src="logo.png" alt="Bosun" style="width:24px;height:24px;object-fit:contain;vertical-align:middle;margin-right:0.3rem;opacity:0.8;">
-          <a href="https://github.com/virtengine/bosun#readme" target="_blank" rel="noopener">
-            <span data-version>v0.0</span> · Bosun by <span>VirtEngine</span> · Apache 2.0
-          </a>
+          <img src="logo.svg" width="24" height="24" alt="Bosun" style="opacity:0.7;vertical-align:middle;margin-right:0.3rem;" />
+          <span class="footer__brand">Bosun</span>
         </div>
         <ul class="footer__links">
           <li><a href="docs/">Docs</a></li>

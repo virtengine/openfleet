@@ -623,7 +623,10 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-md);
-  overflow: hidden;
+  /* overflow:clip clips border-radius visually without creating a scroll-blocking
+     BFC (unlike overflow:hidden). This lets mouse-wheel events reach the inner
+     .main-content scroll container rather than being silently consumed here. */
+  overflow: clip;
 }
 
 .sidebar,
@@ -635,7 +638,7 @@
   display: none;
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   :root {
     --sidebar-width: 220px;
   }
@@ -785,7 +788,7 @@
 }
 
 /* ═══════════════════════════════════════════════
- *  Tablet Breakpoint (768px – 1199px)
+ *  Tablet Breakpoint (768px – 1399px)
  *  Sidebar & Inspector as slide-over drawers
  * ═══════════════════════════════════════════════ */
 
@@ -865,7 +868,7 @@
   display: none;
 }
 
-@media (min-width: 768px) and (max-width: 1199px) {
+@media (min-width: 768px) and (max-width: 1399px) {
   .tablet-action-bar {
     display: flex;
     gap: 8px;
@@ -1159,7 +1162,7 @@
   padding: 1px 10px;
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .app-shell[data-has-rail="true"] .main-content {
     max-width: none;
   }
@@ -1167,13 +1170,31 @@
   .app-shell[data-tab="tasks"] .main-content {
     max-width: none;
   }
+
+  /* Desktop: nav is hidden so no bottom reserve needed for chat */
+  .app-shell[data-tab="chat"] .main-content {
+    padding-bottom: 0;
+    /* flex:1 flows height down to the session-split so the input can stick */
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* PullToRefresh container must also flex to pass height down */
+  .app-shell[data-tab="chat"] .pull-to-refresh-container {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
 }
 
 .app-shell[data-tab="chat"] .main-content {
   padding-top: 0;
   padding-left: calc(var(--safe-left));
   padding-right: calc(var(--safe-right));
-  padding-bottom: calc(var(--nav-height, 60px) + var(--safe-bottom, 0px));
+  /* Reserve space at the bottom for the fixed nav bar plus the on-screen
+     keyboard height (--chat-keyboard-offset is set live by visualViewport). */
+  padding-bottom: calc(var(--nav-height, 60px) + var(--safe-bottom, 0px) + var(--chat-keyboard-offset, 0px));
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -1182,6 +1203,19 @@
 
 .app-shell[data-tab="chat"] .main-content > * {
   min-height: 0;
+}
+
+@media (max-width: 768px) {
+  .app-shell[data-tab="chat"] .main-panel {
+    border-radius: 0;
+    border: none;
+    box-shadow: none;
+    background: var(--bg-primary);
+  }
+
+  .app-shell[data-tab="chat"] .main-content {
+    background: var(--bg-primary);
+  }
 }
 
 .inspector-log-line {
@@ -1268,7 +1302,7 @@ body.is-resizing * {
   user-select: none;
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .session-rail,
   .inspector {
     position: relative;
@@ -1316,9 +1350,297 @@ body.is-resizing * {
   }
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .inspector .diff-viewer {
     max-height: 260px;
     overflow-y: auto;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   Sidebar: icon-only collapsed mode (VS Code style)
+═══════════════════════════════════════════════════════ */
+
+.sidebar {
+  transition: width 0.22s cubic-bezier(0.32, 0.72, 0, 1),
+              padding 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.sidebar-brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.sidebar-collapse-btn {
+  display: none; /* shown only on desktop */
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: color 0.15s, background 0.15s;
+  line-height: 1;
+}
+
+.sidebar-collapse-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover, rgba(148,163,184,0.12));
+}
+
+@media (min-width: 1400px) {
+  .sidebar-collapse-btn {
+    display: flex;
+  }
+
+  /* ── Override --sidebar-width CSS var when sidebar is collapsed ── */
+  .app-shell[data-sidebar-collapsed="true"] {
+    --sidebar-width: 54px;
+  }
+
+  /* ── Icon-only sidebar styles ── */
+  .sidebar.sidebar-icon-only,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar {
+    padding: 12px 8px;
+    align-items: center;
+    overflow: visible;
+  }
+
+  .sidebar.sidebar-icon-only .sidebar-brand-row,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-brand-row {
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .sidebar.sidebar-icon-only .sidebar-brand-row .sidebar-title,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-brand-row .sidebar-title {
+    display: none;
+  }
+
+  .sidebar.sidebar-icon-only .sidebar-actions,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-actions {
+    display: none;
+  }
+
+  .sidebar.sidebar-icon-only .sidebar-nav,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-nav {
+    width: 100%;
+    align-items: center;
+  }
+
+  .sidebar.sidebar-icon-only .sidebar-nav-item,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-nav-item {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 38px;
+    height: 38px;
+    border-radius: var(--radius-sm, 6px);
+    padding: 0;
+    overflow: visible;
+  }
+
+  .sidebar.sidebar-icon-only .sidebar-nav-item span:not(.nav-icon),
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-nav-item span:not(.nav-icon) {
+    display: none;
+  }
+
+  .sidebar.sidebar-icon-only .sidebar-footer .sidebar-user,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-footer .sidebar-user {
+    display: none;
+  }
+
+  .sidebar.sidebar-icon-only .sidebar-footer,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-footer {
+    align-items: center;
+    padding: 0;
+  }
+
+  .sidebar-actions-icon {
+    display: none;
+  }
+
+  .sidebar.sidebar-icon-only .sidebar-actions-icon,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar .sidebar-actions-icon {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: center;
+  }
+
+  .sidebar-icon-action {
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm, 6px);
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    font-size: 16px;
+    transition: color 0.15s, background 0.15s;
+  }
+
+  .sidebar-icon-action svg {
+    width: 1em;
+    height: 1em;
+    display: inline-block;
+  }
+
+  .sidebar-icon-action:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover, rgba(148,163,184,0.12));
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   SessionRail: icon-only collapsed mode
+═══════════════════════════════════════════════════════ */
+
+@media (min-width: 1400px) {
+  /* ── Override --rail-width when rail is collapsed ── */
+  .app-shell[data-rail-collapsed="true"] {
+    --rail-width: 54px;
+  }
+
+  .session-rail {
+    transition: width 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  /* ── Collapsed icon strip ── */
+  .session-rail.session-rail--collapsed {
+    padding: 8px 6px;
+    align-items: center;
+    overflow: visible;
+  }
+
+  .rail-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    flex-shrink: 0;
+    margin-bottom: 8px;
+  }
+
+  .rail-header-inner {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .rail-header h3 {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin: 0;
+  }
+
+  .rail-active-count {
+    font-size: 10px;
+    background: var(--accent, #3b82f6);
+    color: #fff;
+    border-radius: 10px;
+    padding: 1px 6px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+
+  .rail-collapse-btn,
+  .rail-expand-btn {
+    width: 26px;
+    height: 26px;
+    border-radius: var(--radius-sm, 6px);
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: color 0.15s, background 0.15s;
+    flex-shrink: 0;
+  }
+
+  .rail-collapse-btn:hover,
+  .rail-expand-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover, rgba(148,163,184,0.12));
+  }
+
+  /* ── Dot strip ── */
+  .rail-dots {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 4px 0;
+    width: 100%;
+  }
+
+  .rail-session-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+
+  .rail-session-dot:hover {
+    transform: scale(1.4);
+  }
+
+  .rail-session-dot.selected {
+    width: 12px;
+    height: 12px;
+    outline: 2px solid var(--text-primary);
+    outline-offset: 2px;
+  }
+
+  .rail-session-dot.active {
+    background: #22c55e;
+  }
+
+  .rail-session-dot.error {
+    background: #ef4444;
+  }
+
+  .rail-session-dot.archived {
+    background: rgba(100,116,139,0.4);
+  }
+
+  .rail-icon-footer {
+    flex-shrink: 0;
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  /* ── Collapsed full-rail: hide normal list ── */
+  .session-rail.session-rail--collapsed > :not(.rail-header):not(.rail-dots):not(.rail-icon-footer) {
+    display: none !important;
   }
 }

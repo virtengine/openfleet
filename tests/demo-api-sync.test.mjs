@@ -122,6 +122,8 @@ const INTENTIONALLY_SKIPPED = new Set([
 const INTENTIONALLY_SKIPPED_ACTIONS = new Set([
   "delete",   // Demo doesn't need session deletion
   "rename",   // Demo doesn't need session renaming
+  "execute",  // Workflow :id/execute action (not a session action)
+  "runs",     // Workflow :id/runs action (not a session action)
 ]);
 
 describe("demo.html ↔ ui-server.mjs API sync", () => {
@@ -263,22 +265,37 @@ describe("import map consistency", () => {
       // CDN URL: extract from preact@X.Y.Z
       const m = url.match(/preact@([\d.]+)/);
       if (m) return m[1];
-      // Vendor path: /vendor/preact.js — version is pinned in package.json;
-      // return the filename as a consistent identity token
-      if (url.startsWith("/vendor/")) return url;
+      // Vendor path: /vendor/preact.js or ./vendor/preact.js
+      // Version is pinned in package.json; return the filename as a stable identity token.
+      if (url.startsWith("/vendor/") || url.startsWith("./vendor/")) return url;
       return null;
     };
 
-    const demoPreactVer = extractVersion(demoMap.imports["preact"]);
-    const indexPreactVer = extractVersion(indexMap.imports["preact"]);
+    const demoPreactUrl = demoMap.imports["preact"] || "";
+    const indexPreactUrl = indexMap.imports["preact"] || "";
+
+    const demoPreactVer = extractVersion(demoPreactUrl);
+    const indexPreactVer = extractVersion(indexPreactUrl);
 
     expect(demoPreactVer).toBeTruthy();
     expect(indexPreactVer).toBeTruthy();
-    expect(demoPreactVer).toBe(indexPreactVer);
 
-    // @preact/signals deps param should match (only enforced for CDN URLs)
+    // index.html is served by the local bosun UI server which handles /vendor/
+    // routes — it MUST use them for zero-CDN operation.
+    const indexVendor = indexPreactUrl.startsWith("/vendor/");
+    expect(indexVendor).toBe(true); // index.html must use /vendor/ (live server)
+
+    // demo.html is a GitHub Pages static file. It may use either:
+    //   a) ./vendor/ relative paths — vendor files committed to git (preferred: offline-safe)
+    //   b) CDN URLs (esm.sh / jsDelivr) — fallback when vendor files aren't available
+    // It must NOT use bare unprefixed /vendor/ (that would require a live bosun server).
+    const demoUsesVendor = demoPreactUrl.startsWith("./vendor/");
+    const demoUsesCdn = !demoPreactUrl.startsWith("/vendor/") && !demoPreactUrl.startsWith("./vendor/");
+    expect(demoUsesVendor || demoUsesCdn).toBe(true); // must use ./vendor/ or CDN
+
+    // @preact/signals deps param should match the CDN preact version used in demo (only for CDN mode)
     const signalsUrl = demoMap.imports["@preact/signals"] || "";
-    if (!signalsUrl.startsWith("/vendor/")) {
+    if (!signalsUrl.startsWith("/vendor/") && !signalsUrl.startsWith("./vendor/")) {
       const demoSignalsDeps = extractVersion(signalsUrl);
       if (demoSignalsDeps) {
         expect(demoSignalsDeps).toBe(demoPreactVer);

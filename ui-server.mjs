@@ -106,33 +106,59 @@ const uiRoot = resolve(__dirname, "ui");
 // ── Vendor module map ─────────────────────────────────────────────────────────
 // Served at /vendor/<name>.js — no auth required (public browser libraries).
 //
-// We use createRequire rooted at *this file* so Node's own module-resolution
-// algorithm locates each package, regardless of whether npm hoisted it to a
-// parent node_modules (common in global installs: npm install -g bosun).
-// Falls back to CDN redirect when the package is not installed.
+// Resolution order (most reliable → least reliable):
+//   1. ui/vendor/<name>  — bundled static files shipped inside the npm package
+//   2. node_modules      — createRequire resolution (handles npm hoisting)
+//   3. CDN redirect      — last resort for airgap / first-run edge cases
 const _require = createRequire(import.meta.url);
+const BUNDLED_VENDOR_DIR = resolve(__dirname, "ui", "vendor");
 
 function resolveVendorPath(specifier) {
+  // Direct resolution first (works when package exports allow the sub-path)
   try {
     return _require.resolve(specifier);
-  } catch {
-    return null;
+  } catch (e) {
+    if (e.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") return null;
   }
+  // ERR_PACKAGE_PATH_NOT_EXPORTED: resolve package root via main entry then locate file
+  const isScoped = specifier.startsWith("@");
+  const firstSlash = specifier.indexOf("/");
+  const secondSlash = isScoped ? specifier.indexOf("/", firstSlash + 1) : firstSlash;
+  if (secondSlash === -1) return null;
+  const pkgName = specifier.slice(0, secondSlash);
+  const filePath = specifier.slice(secondSlash + 1);
+  try {
+    const pkgMain = _require.resolve(pkgName);
+    let dir = dirname(pkgMain);
+    while (dir !== dirname(dir)) {
+      if (existsSync(resolve(dir, "package.json"))) {
+        const candidate = resolve(dir, filePath);
+        return existsSync(candidate) ? candidate : null;
+      }
+      dir = dirname(dir);
+    }
+  } catch { /* not installed */ }
+  return null;
 }
 
 const VENDOR_FILES = {
-  "preact.js":           { specifier: "preact/dist/preact.module.js",           cdn: "https://esm.sh/preact@10.25.4" },
-  "preact-hooks.js":     { specifier: "preact/hooks/dist/hooks.module.js",       cdn: "https://esm.sh/preact@10.25.4/hooks" },
-  "preact-compat.js":    { specifier: "preact/compat/dist/compat.module.js",     cdn: "https://esm.sh/preact@10.25.4/compat" },
-  "htm.js":              { specifier: "htm/dist/htm.module.js",                  cdn: "https://esm.sh/htm@3.1.1" },
-  "preact-signals.js":   { specifier: "@preact/signals/dist/signals.module.js", cdn: "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4" },
-  "es-module-shims.js":  { specifier: "es-module-shims/dist/es-module-shims.js", cdn: "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js" },
+  "preact.js":                { specifier: "preact/dist/preact.module.js",                  cdn: "https://esm.sh/preact@10.25.4" },
+  "preact-hooks.js":          { specifier: "preact/hooks/dist/hooks.module.js",              cdn: "https://esm.sh/preact@10.25.4/hooks" },
+  "preact-compat.js":         { specifier: "preact/compat/dist/compat.module.js",            cdn: "https://esm.sh/preact@10.25.4/compat" },
+  "htm.js":                   { specifier: "htm/dist/htm.module.js",                         cdn: "https://esm.sh/htm@3.1.1" },
+  "preact-signals-core.js":   { specifier: "@preact/signals-core/dist/signals-core.module.js", cdn: "https://cdn.jsdelivr.net/npm/@preact/signals-core@1.8.0/dist/signals-core.module.js" },
+  "preact-signals.js":        { specifier: "@preact/signals/dist/signals.module.js",         cdn: "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4" },
+  "es-module-shims.js":       { specifier: "es-module-shims/dist/es-module-shims.js",        cdn: "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js" },
 };
 
 /**
- * Serve a front-end vendor file from node_modules.
+ * Serve a front-end vendor file.
  * No authentication required — these are public browser libraries.
- * If the local file is missing (first install not run yet), redirects to CDN.
+ *
+ * Priority:
+ *   1. ui/vendor/ bundled file (ships in the npm tarball — fully offline)
+ *   2. node_modules via createRequire (global install, hoisted packages)
+ *   3. 302 → CDN (last resort; first-run before vendor-sync has run)
  */
 async function handleVendor(req, res, url) {
   const name = url.pathname.replace(/^\/vendor\//, "");
@@ -141,25 +167,41 @@ async function handleVendor(req, res, url) {
     textResponse(res, 404, "Not Found");
     return;
   }
+
+  const headers = {
+    "Content-Type": "application/javascript; charset=utf-8",
+    "Cache-Control": "max-age=86400, stale-while-revalidate=604800",
+    "Access-Control-Allow-Origin": "*",
+  };
+
+  // ── 1. Bundled static file ──────────────────────────────────────────────────
+  const bundledPath = resolve(BUNDLED_VENDOR_DIR, name);
+  if (existsSync(bundledPath)) {
+    try {
+      const data = await readFile(bundledPath);
+      res.writeHead(200, { ...headers, "X-Bosun-Vendor": "bundled" });
+      res.end(data);
+      return;
+    } catch { /* fall through */ }
+  }
+
+  // ── 2. node_modules resolution ──────────────────────────────────────────────
   const localPath = resolveVendorPath(entry.specifier);
   if (localPath && existsSync(localPath)) {
     try {
       const data = await readFile(localPath);
-      res.writeHead(200, {
-        "Content-Type": "application/javascript; charset=utf-8",
-        "Cache-Control": "max-age=86400, stale-while-revalidate=604800",
-        "Access-Control-Allow-Origin": "*",
-        "X-Bosun-Vendor": "local",
-      });
+      res.writeHead(200, { ...headers, "X-Bosun-Vendor": "node_modules" });
       res.end(data);
+      return;
     } catch (err) {
       textResponse(res, 500, `Vendor error: ${err.message}`);
+      return;
     }
-  } else {
-    // Package not installed yet (e.g. first-run before npm install) — redirect to CDN
-    res.writeHead(302, { Location: entry.cdn, "Cache-Control": "no-store" });
-    res.end();
   }
+
+  // ── 3. CDN fallback ─────────────────────────────────────────────────────────
+  res.writeHead(302, { Location: entry.cdn, "Cache-Control": "no-store" });
+  res.end();
 }
 const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const logsDir = resolve(__dirname, "logs");
@@ -2677,7 +2719,7 @@ function _processAppWebhookEvent(eventType, payload, deliveryId) {
 
 /**
  * Handles the OAuth redirect from GitHub after a user installs/authorizes
- * the Bosun[botswain] GitHub App.
+ * the Bosun[VE] GitHub App.
  *
  * Flow:
  *   1. GitHub redirects: GET /api/github/callback?code=xxx&installation_id=yyy
@@ -2727,7 +2769,7 @@ async function handleGitHubOAuthCallback(req, res) {
       headers: {
         Accept: "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "bosun-botswain",
+        "User-Agent": "bosun-ve",
       },
       body: tokenBody.toString(),
     });
@@ -2750,7 +2792,7 @@ async function handleGitHubOAuthCallback(req, res) {
           Authorization: `Bearer ${accessToken}`,
           Accept: "application/vnd.github+json",
           "X-GitHub-Api-Version": "2022-11-28",
-          "User-Agent": "bosun-botswain",
+          "User-Agent": "bosun-ve",
         },
       });
       if (userRes.ok) {
@@ -2825,7 +2867,7 @@ async function handleDeviceFlowStart(req, res) {
       headers: {
         Accept: "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "bosun-botswain",
+        "User-Agent": "bosun-ve",
       },
       body: body.toString(),
     });
@@ -2907,7 +2949,7 @@ async function handleDeviceFlowPoll(req, res) {
       headers: {
         Accept: "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "bosun-botswain",
+        "User-Agent": "bosun-ve",
       },
       body: body.toString(),
     });
@@ -2930,7 +2972,7 @@ async function handleDeviceFlowPoll(req, res) {
             Authorization: `Bearer ${accessToken}`,
             Accept: "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "bosun-botswain",
+            "User-Agent": "bosun-ve",
           },
         });
         if (userRes.ok) {
@@ -3687,6 +3729,56 @@ async function handleApi(req, res, url) {
         reason: "task-created",
         taskId: created?.id || null,
       });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/tasks/rewrite") {
+    // POST { title, description } → AI enriches the task description synchronously.
+    try {
+      const body = await readJsonBody(req);
+      const title = String(body?.title || "").trim();
+      const description = String(body?.description || "").trim();
+      if (!title) {
+        jsonResponse(res, 400, { ok: false, error: "title is required" });
+        return;
+      }
+      const exec = uiDeps.execPrimaryPrompt;
+      if (typeof exec !== "function") {
+        jsonResponse(res, 503, { ok: false, error: "Primary agent not available. Start bosun first." });
+        return;
+      }
+      const prompt =
+        `You are a software project assistant helping write backlog tasks for an autonomous coding agent.\n` +
+        `Rewrite and expand the following task so it is clear, actionable, and self-contained.\n` +
+        `Include:\n` +
+        `- Concise one-line title (kept on the TITLE: line)\n` +
+        `- Background / motivation (why this task matters)\n` +
+        `- Acceptance criteria (bullet list)\n` +
+        `- Implementation steps (numbered list)\n` +
+        `- Relevant files, modules, or directories likely involved (if inferable)\n` +
+        `- Edge cases or caveats\n\n` +
+        `TASK TITLE: ${title}\n` +
+        `CURRENT DESCRIPTION: ${description || "(none)"}\n\n` +
+        `Return exactly two sections:\n` +
+        `TITLE: <rewritten one-line title>\n` +
+        `DESCRIPTION:\n<full markdown description>`;
+
+      const result = await exec(prompt, { sessionType: "ephemeral", mode: "ask" });
+      const text =
+        typeof result === "string"
+          ? result
+          : result?.finalResponse || result?.text || result?.message || JSON.stringify(result);
+
+      // Parse structured output
+      const titleMatch = text.match(/^TITLE:\s*(.+)$/im);
+      const descMatch = text.match(/DESCRIPTION:\s*\n([\s\S]+)/im);
+      const newTitle = (titleMatch ? titleMatch[1] : title).trim().replace(/^["'`]|["'`]$/g, "");
+      const newDescription = (descMatch ? descMatch[1] : text).trim();
+
+      jsonResponse(res, 200, { ok: true, data: { title: newTitle, description: newDescription } });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -4778,10 +4870,185 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/recent-commits") {
     try {
-      const commits = getRecentCommits(process.cwd(), 6);
-      jsonResponse(res, 200, { ok: true, data: commits });
+      // Return structured objects {hash,message,author,date} using a richer git format.
+      // Falls back to parsing --oneline strings if the richer format fails.
+      const proc = spawnSync(
+        "git",
+        ["log", "--format=%H\x1f%s\x1f%an\x1f%aI", "--max-count=6"],
+        { cwd: process.cwd(), encoding: "utf8", timeout: 10_000 },
+      );
+      if (proc.status === 0 && (proc.stdout || "").trim()) {
+        const commits = proc.stdout
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => {
+            const [hash, message, author, date] = line.split("\x1f");
+            return { hash: (hash || "").slice(0, 7), message: message || "", author: author || "", date: date || "" };
+          });
+        jsonResponse(res, 200, { ok: true, data: commits });
+      } else {
+        // Fallback: parse --oneline strings
+        const lines = getRecentCommits(process.cwd(), 6);
+        const commits = lines.map((l) => {
+          const sp = (l || "").indexOf(" ");
+          return { hash: sp > 0 ? l.slice(0, sp) : l.slice(0, 7), message: sp > 0 ? l.slice(sp + 1) : l, author: "", date: "" };
+        });
+        jsonResponse(res, 200, { ok: true, data: commits });
+      }
     } catch (err) {
       jsonResponse(res, 200, { ok: true, data: [], error: err.message });
+    }
+    return;
+  }
+
+  /* ═══════════════════════════════════════════════════════════
+   *  Workflow API endpoints
+   * ═══════════════════════════════════════════════════════════ */
+
+  // Lazy-load workflow modules (they may not exist in older installs)
+  let _wfEngine, _wfNodes, _wfTemplates;
+  async function getWorkflowEngine() {
+    if (!_wfEngine) {
+      try {
+        _wfEngine = await import("./workflow-engine.mjs");
+        _wfNodes = await import("./workflow-nodes.mjs");
+        _wfTemplates = await import("./workflow-templates.mjs");
+      } catch (err) {
+        console.error("[workflows] Failed to load workflow modules:", err.message);
+      }
+    }
+    return _wfEngine;
+  }
+
+  if (path === "/api/workflows") {
+    try {
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const engine = wfMod.getWorkflowEngine();
+      const all = engine.list();
+      jsonResponse(res, 200, { ok: true, workflows: all.map(w => ({
+        id: w.id, name: w.name, description: w.description, category: w.category,
+        enabled: w.enabled !== false, nodeCount: (w.nodes || []).length,
+        trigger: (w.nodes || [])[0]?.type || "manual",
+      })) });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workflows/save") {
+    try {
+      const body = await readJsonBody(req);
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const engine = wfMod.getWorkflowEngine();
+      const saved = await engine.save(body);
+      jsonResponse(res, 200, { ok: true, workflow: saved });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workflows/templates") {
+    try {
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const tplMod = _wfTemplates;
+      const list = tplMod.listTemplates();
+      jsonResponse(res, 200, { ok: true, templates: list.map(t => ({
+        id: t.id, name: t.name, description: t.description, category: t.category,
+        tags: t.tags || [], nodeCount: (t.nodes || []).length,
+      })) });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workflows/install-template") {
+    try {
+      const body = await readJsonBody(req);
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const tplMod = _wfTemplates;
+      const engine = wfMod.getWorkflowEngine();
+      const wf = await tplMod.installTemplate(body.templateId, engine, body.overrides);
+      jsonResponse(res, 200, { ok: true, workflow: wf });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workflows/node-types") {
+    try {
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const types = wfMod.listNodeTypes();
+      jsonResponse(res, 200, { ok: true, nodeTypes: types.map(nt => ({
+        type: nt.type,
+        category: nt.type.split(".")[0],
+        description: nt.description || "",
+        schema: nt.schema || {},
+      })) });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workflows/runs") {
+    try {
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const engine = wfMod.getWorkflowEngine();
+      const runs = engine.getRunHistory ? engine.getRunHistory() : [];
+      jsonResponse(res, 200, { ok: true, runs });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // Dynamic routes: /api/workflows/:id, /api/workflows/:id/execute, /api/workflows/:id/runs
+  if (path.startsWith("/api/workflows/") && !path.startsWith("/api/workflows/save") && !path.startsWith("/api/workflows/templates") && !path.startsWith("/api/workflows/install") && !path.startsWith("/api/workflows/node") && !path.startsWith("/api/workflows/runs")) {
+    const segments = path.replace("/api/workflows/", "").split("/");
+    const workflowId = segments[0];
+    const action = segments[1] || "";
+
+    try {
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const engine = wfMod.getWorkflowEngine();
+
+      if (action === "execute" && req.method === "POST") {
+        const result = await engine.execute(workflowId);
+        jsonResponse(res, 200, { ok: true, result });
+        return;
+      }
+
+      if (action === "runs") {
+        const runs = engine.getRunHistory ? engine.getRunHistory(workflowId) : [];
+        jsonResponse(res, 200, { ok: true, runs });
+        return;
+      }
+
+      if (req.method === "DELETE") {
+        await engine.delete(workflowId);
+        jsonResponse(res, 200, { ok: true });
+        return;
+      }
+
+      // GET — return full workflow definition
+      const all = engine.list();
+      const wf = all.find(w => w.id === workflowId);
+      if (!wf) { jsonResponse(res, 404, { ok: false, error: "Workflow not found" }); return; }
+      jsonResponse(res, 200, { ok: true, workflow: wf });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
     }
     return;
   }
@@ -5018,9 +5285,9 @@ async function handleApi(req, res, url) {
       ok: true,
       data: {
         appId: appId || null,
-        appSlug: "bosun-botswain",
-        botUsername: "bosun-botswain[bot]",
-        appUrl: "https://github.com/apps/bosun-botswain",
+        appSlug: "bosun-ve",
+        botUsername: "bosun-ve[bot]",
+        appUrl: "https://github.com/apps/bosun-ve",
         configured: {
           appId: Boolean(appId),
           privateKey: Boolean(privateKeyPath),
@@ -5063,6 +5330,8 @@ async function handleApi(req, res, url) {
         "/kanban",
         "/region",
         "/deploy",
+        "/agents",
+        "/executor",
         "/help",
         "/starttask",
         "/stoptask",

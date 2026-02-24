@@ -36,6 +36,7 @@ bosun --setup
 ```
 
 Requires:
+
 - Node.js 18+
 - Git
 - Bash (for `.sh` wrappers) or PowerShell 7+ (for `.ps1` wrappers)
@@ -60,6 +61,7 @@ Requires:
 **Source docs (markdown):** `_docs/` is the source of truth for long-form documentation. The website should be generated from the same markdown content so docs stay in sync.
 
 Key references:
+
 - [GitHub adapter enhancements](_docs/KANBAN_GITHUB_ENHANCEMENT.md)
 - [GitHub Projects v2 index](_docs/GITHUB_PROJECTS_V2_INDEX.md)
 - [GitHub Projects v2 quickstart](_docs/GITHUB_PROJECTS_V2_QUICKSTART.md)
@@ -79,6 +81,7 @@ Bosun enforces a strict quality pipeline in both local hooks and CI:
 
 - **Pre-commit hooks** auto-format and lint staged files.
 - **Pre-push hooks** run targeted checks based on changed files (Go, portal, docs).
+- **Demo load smoke test** runs in `npm test` and blocks push if `site/indexv2.html` or `site/ui/demo.html` fails to load required assets.
 - **Prepublish checks** validate package contents and release readiness.
 
 Local commands you can run any time:

@@ -1,0 +1,297 @@
+/* ─── VirtEngine Control Center — CSS Custom Properties ─── */
+/* Tuned for a Bosun-style desktop + responsive UI */
+
+:root {
+  /* Typography */
+  --font-ui: "Instrument Sans", "SF Pro Text", "SF Pro Display", -apple-system,
+    BlinkMacSystemFont, "IBM Plex Sans", "Segoe UI", sans-serif;
+  --font-mono: "DM Mono", "SF Mono", "JetBrains Mono", "IBM Plex Mono", monospace;
+
+  /* Bosun Brand Colors */
+  --color-primary: #da7756;
+  --color-primary-dim: #c66a4d;
+  --gradient-primary: linear-gradient(135deg, rgba(218, 119, 86, 0.9), rgba(198, 106, 77, 0.4));
+
+  /* Core colors (dark, with Telegram fallbacks) */
+  --bg-primary: var(--tg-theme-bg-color, #1f1e1c);
+  --bg-secondary: var(--tg-theme-secondary-bg-color, #262522);
+  --bg-card: var(--tg-theme-section-bg-color, #2b2a27);
+  --bg-surface: #23221f;
+  --bg-input: #2b2a27;
+  --bg-card-hover: rgba(255, 255, 255, 0.05);
+  --bg-elevated: #2a2926;
+  --surface-1: rgba(255, 255, 255, 0.02);
+  --surface-2: rgba(255, 255, 255, 0.04);
+  --surface-3: rgba(255, 255, 255, 0.06);
+
+  --text-primary: var(--tg-theme-text-color, #e8e5de);
+  --text-secondary: var(
+    --tg-theme-subtitle-text-color,
+    var(--tg-theme-hint-color, #b5b0a6)
+  );
+  --text-hint: var(--tg-theme-hint-color, #908b81);
+  --text-bright: #f6f2ea;
+  --text-muted: rgba(181, 176, 166, 0.82);
+
+  --accent: var(--tg-theme-button-color, #da7756);
+  --accent-text: var(--tg-theme-button-text-color, #1e1d1a);
+  --accent-hover: var(--tg-theme-accent-text-color, #e5886a);
+  --accent-soft: rgba(218, 119, 86, 0.18);
+
+  --link-color: var(--tg-theme-link-color, #e2a08a);
+  --destructive: var(--tg-theme-destructive-text-color, #e5534b);
+
+  --border: var(--tg-theme-section-separator-color, rgba(255, 255, 255, 0.08));
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --separator: rgba(255, 255, 255, 0.08);
+  --header-text: var(
+    --tg-theme-section-header-text-color,
+    var(--text-secondary)
+  );
+
+  /* Bottom bar */
+  --bottom-bar-bg: var(--tg-theme-bottom-bar-bg-color, #1f1e1c);
+
+  /* Safe areas from Telegram */
+  --safe-top: var(--tg-safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --safe-bottom: var(
+    --tg-safe-area-inset-bottom,
+    env(safe-area-inset-bottom, 0px)
+  );
+  --safe-left: var(--tg-safe-area-inset-left, env(safe-area-inset-left, 0px));
+  --safe-right: var(
+    --tg-safe-area-inset-right,
+    env(safe-area-inset-right, 0px)
+  );
+  --content-safe-top: var(--tg-content-safe-area-inset-top, 0px);
+  --content-safe-bottom: var(--tg-content-safe-area-inset-bottom, 0px);
+
+  /* Viewport from Telegram */
+  --viewport-height: var(--tg-viewport-height, 100vh);
+  --viewport-stable-height: var(--tg-viewport-stable-height, 100vh);
+
+  /* Spacing scale */
+  --space-2xs: 2px;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+
+  /* Semantic accent aliases */
+  --accent-primary: var(--accent);
+  --accent-success: var(--color-done);
+  --accent-warning: var(--color-inreview);
+  --accent-error: var(--color-error);
+  --accent-danger: var(--color-error);
+
+  /* Layout */
+  --header-height: calc(44px + var(--content-safe-top));
+  --nav-height: 56px;
+  --sidebar-width: 72px;
+  --rail-width: 300px;
+  --inspector-width: 300px;
+  --content-max: 1200px;
+  --shell-gap: 0px;
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 5px;
+  --radius-xl: 6px;
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(5, 10, 18, 0.35);
+  --shadow-md: 0 6px 16px rgba(5, 10, 18, 0.28);
+  --shadow-lg: 0 12px 28px rgba(5, 10, 18, 0.32);
+  --shadow-xl: 0 20px 48px rgba(5, 10, 18, 0.38);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+  /* Glass System */
+  --glass-bg: rgba(32, 31, 29, 0.92);
+  --glass-border: rgba(255, 255, 255, 0.06);
+  --glass-blur: blur(6px);
+  --glass-highlight: rgba(255, 255, 255, 0.02);
+
+  /* Glow System */
+  --accent-glow: rgba(218, 119, 86, 0.18);
+  --accent-subtle: rgba(218, 119, 86, 0.12);
+  --glow-progress: rgba(218, 119, 86, 0.18);
+  --glow-success: rgba(16, 185, 129, 0.15);
+  --glow-warning: rgba(245, 158, 11, 0.15);
+  --glow-error: rgba(239, 68, 68, 0.15);
+  --shadow-glow: 0 0 16px var(--accent-glow);
+  --shadow-glow-sm: 0 0 8px var(--accent-glow);
+  --border-glow: rgba(59, 130, 246, 0.25);
+
+  /* Status colors */
+  --color-todo: #64748b;
+  --color-inprogress: #3b82f6;
+  --color-inreview: #f59e0b;
+  --color-done: #10b981;
+  --color-error: #ef4444;
+  --color-cancelled: #64748b;
+  --color-critical: #ef4444;
+  --color-high: #f59e0b;
+  --color-medium: #3b82f6;
+  --color-low: #64748b;
+
+  /* Gradients */
+  --gradient-accent: linear-gradient(135deg, #da7756 0%, #e5886a 100%);
+  --gradient-accent-hover: linear-gradient(135deg, #e5886a 0%, #f0a384 100%);
+  --gradient-progress: linear-gradient(90deg, #da7756 0%, #f0a384 100%);
+  --gradient-hero: none;
+  --gradient-surface: linear-gradient(180deg, rgba(47, 46, 43, 0.96) 0%, rgba(32, 31, 29, 0.98) 100%);
+  --gradient-radial-glow: none;
+  --gradient-mesh: none;
+
+  --sidebar-bg: #262522;
+  --sidebar-hover: #302e2a;
+  --sidebar-active: #3a3834;
+
+  /* Backdrop */
+  --backdrop: rgba(5, 10, 18, 0.7);
+  --backdrop-blur: blur(10px);
+
+  /* Transitions */
+  --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-spring: 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+  --transition-bounce: 0.6s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+}
+
+/* Light theme - Telegram sets --tg-color-scheme */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg-primary: var(--tg-theme-bg-color, #f4f7fb);
+    --bg-secondary: var(--tg-theme-secondary-bg-color, #ffffff);
+    --bg-card: var(--tg-theme-section-bg-color, #ffffff);
+    --bg-surface: #edf2f7;
+    --bg-input: #ffffff;
+    --bg-card-hover: rgba(15, 23, 42, 0.04);
+    --bg-elevated: #ffffff;
+
+    --text-primary: var(--tg-theme-text-color, #1b2430);
+    --text-secondary: var(
+      --tg-theme-subtitle-text-color,
+      var(--tg-theme-hint-color, #5b6474)
+    );
+    --text-hint: var(--tg-theme-hint-color, #7b8598);
+    --text-bright: #0f172a;
+
+    --border: var(--tg-theme-section-separator-color, rgba(15, 23, 42, 0.12));
+    --border-strong: rgba(15, 23, 42, 0.18);
+
+    --glass-bg: rgba(255, 255, 255, 0.88);
+    --glass-border: rgba(15, 23, 42, 0.1);
+    --glass-highlight: rgba(15, 23, 42, 0.03);
+
+    --accent-glow: rgba(37, 99, 235, 0.12);
+    --accent-subtle: rgba(37, 99, 235, 0.08);
+    --gradient-hero: radial-gradient(circle at 20% 0%, rgba(37, 99, 235, 0.1), transparent 60%),
+      radial-gradient(circle at 80% 5%, rgba(14, 165, 233, 0.08), transparent 55%),
+      radial-gradient(circle at 50% 95%, rgba(59, 130, 246, 0.06), transparent 65%);
+    --gradient-mesh: radial-gradient(circle at 10% 20%, rgba(14, 165, 233, 0.08), transparent 60%),
+      radial-gradient(circle at 90% 10%, rgba(37, 99, 235, 0.06), transparent 50%),
+      radial-gradient(circle at 50% 100%, rgba(59, 130, 246, 0.05), transparent 65%);
+
+    --gradient-surface: linear-gradient(180deg, rgba(244, 247, 251, 0.96) 0%, rgba(237, 242, 247, 0.99) 100%);
+    --gradient-radial-glow: radial-gradient(circle at 50% 20%, rgba(37, 99, 235, 0.08), transparent 65%);
+
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+    --shadow-md: 0 6px 16px rgba(15, 23, 42, 0.07);
+    --shadow-lg: 0 12px 28px rgba(15, 23, 42, 0.08);
+    --shadow-xl: 0 20px 48px rgba(15, 23, 42, 0.1);
+    --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    --shadow-glow: 0 0 12px rgba(37, 99, 235, 0.12);
+    --shadow-glow-sm: 0 0 6px rgba(37, 99, 235, 0.12);
+
+    --backdrop: rgba(255, 255, 255, 0.7);
+  }
+}
+
+/* Manual light theme override (toggle in settings) */
+:root[data-theme="light"] {
+  --bg-primary: #f4f7fb;
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --bg-surface: #edf2f7;
+  --bg-input: #ffffff;
+  --bg-card-hover: rgba(15, 23, 42, 0.04);
+  --bg-elevated: #ffffff;
+
+  --text-primary: #1b2430;
+  --text-secondary: #5b6474;
+  --text-hint: #7b8598;
+  --text-bright: #0f172a;
+
+  --border: rgba(15, 23, 42, 0.12);
+  --border-strong: rgba(15, 23, 42, 0.18);
+
+  --glass-bg: rgba(255, 255, 255, 0.88);
+  --glass-border: rgba(15, 23, 42, 0.1);
+  --glass-highlight: rgba(15, 23, 42, 0.03);
+
+  --accent-glow: rgba(37, 99, 235, 0.12);
+  --accent-subtle: rgba(37, 99, 235, 0.08);
+  --gradient-hero: radial-gradient(circle at 20% 0%, rgba(37, 99, 235, 0.1), transparent 60%),
+    radial-gradient(circle at 80% 5%, rgba(14, 165, 233, 0.08), transparent 55%),
+    radial-gradient(circle at 50% 95%, rgba(59, 130, 246, 0.06), transparent 65%);
+  --gradient-mesh: radial-gradient(circle at 10% 20%, rgba(14, 165, 233, 0.08), transparent 60%),
+    radial-gradient(circle at 90% 10%, rgba(37, 99, 235, 0.06), transparent 50%),
+    radial-gradient(circle at 50% 100%, rgba(59, 130, 246, 0.05), transparent 65%);
+
+  --gradient-surface: linear-gradient(180deg, rgba(244, 247, 251, 0.96) 0%, rgba(237, 242, 247, 0.99) 100%);
+  --gradient-radial-glow: radial-gradient(circle at 50% 20%, rgba(37, 99, 235, 0.08), transparent 65%);
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 6px 16px rgba(15, 23, 42, 0.07);
+  --shadow-lg: 0 12px 28px rgba(15, 23, 42, 0.08);
+  --shadow-xl: 0 20px 48px rgba(15, 23, 42, 0.1);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  --shadow-glow: 0 0 12px rgba(37, 99, 235, 0.12);
+  --shadow-glow-sm: 0 0 6px rgba(37, 99, 235, 0.12);
+
+  --backdrop: rgba(255, 255, 255, 0.7);
+
+  color-scheme: light;
+}
+
+/* ─── Premium Desktop Scrollbars ─── */
+@media (min-width: 1400px) {
+  ::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--border-strong);
+    border-radius: 6px;
+    border: 3px solid var(--bg-primary); /* creates padding around the thumb */
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--text-muted);
+  }
+  
+  /* When inside cards or panels, use the local background for the border */
+  .card::-webkit-scrollbar-thumb,
+  .main-panel::-webkit-scrollbar-thumb,
+  .kanban-column::-webkit-scrollbar-thumb {
+    border-color: var(--bg-card);
+  }
+  .sidebar::-webkit-scrollbar-thumb,
+  .session-rail::-webkit-scrollbar-thumb,
+  .inspector::-webkit-scrollbar-thumb {
+    border-color: var(--bg-secondary);
+  }
+}
+
+/* ─── Global keyframes ─── */
+@keyframes fadeInOut {
+  0%, 100% { opacity: 0.5; }
+  50%       { opacity: 1; }
+}

@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Bosun logo">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#4ADCE8"/>
+      <stop offset="100%" stop-color="#2464F0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 8 spokes: center → endpoint dot (outer ring + inner ring drawn on top) -->
+  <line x1="50" y1="50" x2="50"   y2="6"    stroke="url(#g)" stroke-width="4"   stroke-linecap="round"/>
+  <line x1="50" y1="50" x2="81.1" y2="18.9" stroke="url(#g)" stroke-width="4"   stroke-linecap="round"/>
+  <line x1="50" y1="50" x2="94"   y2="50"   stroke="url(#g)" stroke-width="4"   stroke-linecap="round"/>
+  <line x1="50" y1="50" x2="81.1" y2="81.1" stroke="url(#g)" stroke-width="4"   stroke-linecap="round"/>
+  <line x1="50" y1="50" x2="50"   y2="94"   stroke="url(#g)" stroke-width="4"   stroke-linecap="round"/>
+  <line x1="50" y1="50" x2="18.9" y2="81.1" stroke="url(#g)" stroke-width="4"   stroke-linecap="round"/>
+  <line x1="50" y1="50" x2="6"    y2="50"   stroke="url(#g)" stroke-width="4"   stroke-linecap="round"/>
+  <line x1="50" y1="50" x2="18.9" y2="18.9" stroke="url(#g)" stroke-width="4"   stroke-linecap="round"/>
+
+  <!-- Outer ring (drawn over spokes) -->
+  <circle cx="50" cy="50" r="36"  fill="none" stroke="url(#g)" stroke-width="5.5"/>
+
+  <!-- Inner ring (drawn over spokes) -->
+  <circle cx="50" cy="50" r="16"  fill="none" stroke="url(#g)" stroke-width="4.5"/>
+
+  <!-- Center hub -->
+  <circle cx="50" cy="50" r="7"   fill="url(#g)"/>
+
+  <!-- 8 endpoint dots (at r=44 from center) -->
+  <circle cx="50"   cy="6"    r="4.5" fill="url(#g)"/>
+  <circle cx="81.1" cy="18.9" r="4.5" fill="url(#g)"/>
+  <circle cx="94"   cy="50"   r="4.5" fill="url(#g)"/>
+  <circle cx="81.1" cy="81.1" r="4.5" fill="url(#g)"/>
+  <circle cx="50"   cy="94"   r="4.5" fill="url(#g)"/>
+  <circle cx="18.9" cy="81.1" r="4.5" fill="url(#g)"/>
+  <circle cx="6"    cy="50"   r="4.5" fill="url(#g)"/>
+  <circle cx="18.9" cy="18.9" r="4.5" fill="url(#g)"/>
+</svg>

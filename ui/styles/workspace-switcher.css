@@ -613,6 +613,12 @@
   white-space: nowrap;
 }
 
+.ws-manager-btn svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
+
 .ws-manager-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;

@@ -1211,3 +1211,57 @@ export function createAnomalyDetector(options = {}) {
  */
 
 export default AnomalyDetector;
+
+// ── Workflow Engine Integration ─────────────────────────────────────────────
+
+/**
+ * Registered workflow engine reference for anomaly → workflow triggers.
+ * @type {import("./workflow-engine.mjs").WorkflowEngine | null}
+ */
+let _workflowEngine = null;
+
+/**
+ * Register a workflow engine to receive anomaly trigger events.
+ * When set, every anomaly emitted will also call engine.evaluateTriggers("anomaly", anomalyData).
+ *
+ * @param {import("./workflow-engine.mjs").WorkflowEngine} engine
+ */
+export function setWorkflowEngine(engine) {
+  _workflowEngine = engine;
+}
+
+/** Get the currently registered workflow engine (or null) */
+export function getWorkflowEngine() {
+  return _workflowEngine;
+}
+
+/**
+ * Create an onAnomaly callback that also fires workflow triggers.
+ * Wraps the user's original callback and additionally invokes
+ * evaluateTriggers on the registered workflow engine.
+ *
+ * @param {(anomaly: Anomaly) => void} [originalCallback]
+ * @returns {(anomaly: Anomaly) => void}
+ */
+export function wrapAnomalyCallback(originalCallback) {
+  return (anomaly) => {
+    // Always call the original callback
+    if (originalCallback) originalCallback(anomaly);
+
+    // Fire workflow triggers if engine is registered
+    if (_workflowEngine?.evaluateTriggers) {
+      try {
+        _workflowEngine.evaluateTriggers("anomaly", {
+          anomalyType: anomaly.type,
+          severity: anomaly.severity,
+          agentId: anomaly.processId || anomaly.shortId,
+          message: anomaly.message,
+          action: anomaly.action,
+          taskTitle: anomaly.taskTitle,
+          data: anomaly.data,
+          timestamp: Date.now(),
+        });
+      } catch { /* workflow trigger errors should not break anomaly detection */ }
+    }
+  };
+}

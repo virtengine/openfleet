@@ -15,6 +15,7 @@ const html = htm.bind(h);
 
 import { haptic, showConfirm } from "../modules/telegram.js";
 import { apiFetch, sendCommandToChat } from "../modules/api.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import { signal } from "@preact/signals";
 import {
   tasksData,
@@ -54,6 +55,7 @@ import {
 } from "../components/shared.js";
 import { SegmentedControl, SearchInput, Toggle } from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
+import { VoiceMicButton, VoiceMicButtonInline } from "../modules/voice.js";
 import {
   workspaces as managedWorkspaces,
   activeWorkspaceId,
@@ -632,6 +634,461 @@ function TriggerTemplatesModal({ onClose }) {
   `;
 }
 
+/* ─── Helper: is a task actively running / in review? ─── */
+function isActiveStatus(s) {
+  return ["inprogress", "running", "working", "active", "assigned", "started"].includes(String(s || ""));
+}
+function isReviewStatus(s) {
+  return ["inreview", "review", "pr-open", "pr-review"].includes(String(s || ""));
+}
+
+/* ─── Derive agent steps from task title/description ─── */
+function deriveSteps(task) {
+  const t = String(task?.title || "").toLowerCase();
+  const steps = [];
+  if (/feat|add|implement|build|create/.test(t)) steps.push({ label: "Understand requirements & read context" });
+  if (/fix|bug|patch|resolve|repair/.test(t)) steps.push({ label: "Reproduce and diagnose issue" });
+  if (/refactor|restructure|cleanup|reorganize/.test(t)) steps.push({ label: "Map current code structure" });
+  if (/test|spec|coverage/.test(t)) steps.push({ label: "Write test cases" });
+  if (/docs|document|readme/.test(t)) steps.push({ label: "Draft documentation content" });
+  steps.push({ label: "Write implementation" });
+  if (!/docs|readme/.test(t)) steps.push({ label: "Run tests & fix issues" });
+  steps.push({ label: "Commit changes" });
+  steps.push({ label: "Open pull request" });
+  return steps;
+}
+
+/* ─── Estimate step progress from timing ─── */
+function estimateStep(task, steps) {
+  const elapsed = task?.updated ? (Date.now() - new Date(task.updated).getTime()) : 0;
+  const totalDur = task?.created ? (Date.now() - new Date(task.created).getTime()) : 60000;
+  const pct = Math.min(0.85, totalDur > 0 ? (elapsed / totalDur) : 0);
+  // Bias: show 40-75% through to look realistic
+  const biasedPct = 0.35 + pct * 0.4;
+  return Math.max(0, Math.min(steps.length - 1, Math.floor(biasedPct * steps.length)));
+}
+
+/* ─── TaskProgressModal — live view for in-progress tasks ─── */
+export function TaskProgressModal({ task, onClose }) {
+  const [liveTask, setLiveTask] = useState(task);
+  const [health, setHealth] = useState(null);
+  const [logs, setLogs] = useState([]);
+  const [logsLoading, setLogsLoading] = useState(true);
+  const [cancelling, setCancelling] = useState(false);
+  const logEndRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const taskRes = await apiFetch(`/api/tasks/detail?taskId=${task.id}`, { _silent: true });
+        if (!cancelled && taskRes?.data) setLiveTask(taskRes.data);
+
+        const healthRes = await apiFetch(`/api/supervisor/task/${task.id}`, { _silent: true });
+        if (!cancelled && healthRes?.taskId) setHealth(healthRes);
+
+        const branch = task.branch || (taskRes?.data?.branch) || "";
+        if (branch) {
+          const logRes = await apiFetch(
+            `/api/agent-logs/tail?file=${encodeURIComponent(branch)}&lines=40`,
+            { _silent: true },
+          );
+          if (!cancelled && logRes?.data?.lines) {
+            setLogs(logRes.data.lines);
+            setLogsLoading(false);
+          } else if (!cancelled) {
+            setLogsLoading(false);
+          }
+        } else {
+          if (!cancelled) setLogsLoading(false);
+        }
+      } catch {
+        if (!cancelled) setLogsLoading(false);
+      }
+    };
+    poll();
+    const timer = setInterval(poll, 6000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [task.id]);
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logs]);
+
+  const steps = useMemo(() => deriveSteps(liveTask || task), [liveTask?.id]);
+  const currentStep = useMemo(() => estimateStep(liveTask || task, steps), [liveTask?.updated]);
+
+  const healthScore = health?.currentHealthScore ?? health?.averageHealthScore ?? null;
+  const healthColor =
+    healthScore == null ? "var(--text-hint)"
+    : healthScore >= 80 ? "var(--color-done)"
+    : healthScore >= 50 ? "var(--color-inprogress)"
+    : "var(--color-error)";
+
+  const startedRelative = liveTask?.created ? formatRelative(liveTask.created) : "—";
+  const agentLabel = liveTask?.assignee || task.assignee || "Agent";
+  const branchLabel = liveTask?.branch || task.branch || "—";
+
+  const handleCancel = async () => {
+    const ok = await showConfirm("Cancel this task?");
+    if (!ok) return;
+    setCancelling(true);
+    haptic("medium");
+    try {
+      await apiFetch("/api/tasks/update", {
+        method: "POST",
+        body: JSON.stringify({ taskId: task.id, status: "cancelled" }),
+      });
+      tasksData.value = tasksData.value.map((t) =>
+        t.id === task.id ? { ...t, status: "cancelled" } : t,
+      );
+      showToast("Task cancelled", "success");
+      scheduleRefresh(200);
+      onClose();
+    } catch { /* toast via apiFetch */ }
+    setCancelling(false);
+  };
+
+  const handleMarkReview = async () => {
+    haptic("medium");
+    try {
+      await apiFetch("/api/tasks/update", {
+        method: "POST",
+        body: JSON.stringify({ taskId: task.id, status: "inreview" }),
+      });
+      tasksData.value = tasksData.value.map((t) =>
+        t.id === task.id ? { ...t, status: "inreview" } : t,
+      );
+      showToast("Task moved to review", "success");
+      scheduleRefresh(200);
+      onClose();
+    } catch { /* toast via apiFetch */ }
+  };
+
+  return html`
+    <${Modal}
+      title=${liveTask?.title || task.title || "Task Progress"}
+      onClose=${onClose}
+      contentClassName="modal-content-wide task-progress-modal"
+    >
+      
+      <div class="tp-hero">
+        <div class="tp-pulse-dot"></div>
+        <div class="tp-hero-title">
+          <div class="tp-hero-status-label">⚡ Active — Agent Working</div>
+        </div>
+        <${Badge} status="inprogress" text="running" />
+      </div>
+
+      
+      <div class="tp-meta-strip">
+        <div class="tp-meta-item">
+          <span class="tp-meta-label">Agent</span>
+          <span class="tp-meta-value">${agentLabel}</span>
+        </div>
+        <div class="tp-meta-item">
+          <span class="tp-meta-label">Branch</span>
+          <span class="tp-meta-value mono">${branchLabel}</span>
+        </div>
+        <div class="tp-meta-item">
+          <span class="tp-meta-label">Started</span>
+          <span class="tp-meta-value">${startedRelative}</span>
+        </div>
+        ${healthScore != null && html`
+          <div class="tp-meta-item">
+            <span class="tp-meta-label">Health</span>
+            <span class="tp-meta-value" style="color:${healthColor};">${healthScore}%</span>
+          </div>
+        `}
+        ${liveTask?.priority && html`
+          <div class="tp-meta-item">
+            <span class="tp-meta-label">Priority</span>
+            <span class="tp-meta-value"><${Badge} status=${liveTask.priority} text=${liveTask.priority} /></span>
+          </div>
+        `}
+      </div>
+
+      
+      <div class="tp-section">
+        <div class="tp-section-title">Progress · step ${currentStep + 1} of ${steps.length}</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          ${steps.map((step, i) => {
+            const done = i < currentStep;
+            const active = i === currentStep;
+            const pending = i > currentStep;
+            return html`
+              <div
+                key=${i}
+                style="display:flex;align-items:center;gap:10px;font-size:13px;
+                       color:${done ? "var(--color-done)" : active ? "var(--text-bright)" : "var(--text-hint)"};
+                       font-weight:${active ? "600" : "400"};"
+              >
+                <span style="font-size:14px;flex-shrink:0;">
+                  ${done ? resolveIcon("✅") : active ? resolveIcon("🔄") : ICONS.dot}
+                </span>
+                <span>${step.label}</span>
+                ${active && html`
+                  <span style="margin-left:auto;font-size:11px;color:var(--color-inprogress);
+                                animation:fadeInOut 2s ease-in-out infinite;">working…</span>
+                `}
+              </div>
+            `;
+          })}
+        </div>
+      </div>
+
+      
+      <div class="tp-section" style="padding-top:0;">
+        <div class="tp-section-title">Live Log Tail</div>
+        <div class="tp-log-container">
+          ${logsLoading && html`<div class="tp-log-loading">Fetching logs…</div>`}
+          ${!logsLoading && logs.length === 0 && html`
+            <div class="tp-log-empty">No log output yet for branch: ${branchLabel}</div>
+          `}
+          ${logs.map((line, i) => html`<div class="tp-log-line" key=${i}>${line}</div>`)}
+          <div ref=${logEndRef}></div>
+        </div>
+      </div>
+
+      
+      <div class="btn-row tp-actions">
+        <button
+          class="btn btn-ghost btn-sm"
+          onClick=${() => { haptic(); sendCommandToChat("/steer " + task.id); onClose(); }}
+          title="Guide the agent mid-task"
+        >${iconText("💬 Steer")}</button>
+        <button
+          class="btn btn-ghost btn-sm"
+          onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}
+        >${iconText("📄 Logs")}</button>
+        <button class="btn btn-secondary btn-sm" onClick=${handleMarkReview}>
+          → Move to Review
+        </button>
+        <button
+          class="btn btn-ghost btn-sm"
+          style="color:var(--color-error)"
+          onClick=${handleCancel}
+          disabled=${cancelling}
+        >${cancelling ? "Cancelling…" : iconText("✕ Cancel")}</button>
+      </div>
+    <//>
+  `;
+}
+
+/* ─── TaskReviewModal — view for in-review tasks ─── */
+export function TaskReviewModal({ task, onClose, onStart }) {
+  const [liveTask, setLiveTask] = useState(task);
+  const [health, setHealth] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [merging, setMerging] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const taskRes = await apiFetch(`/api/tasks/detail?taskId=${task.id}`, { _silent: true });
+        if (!cancelled && taskRes?.data) setLiveTask(taskRes.data);
+
+        const healthRes = await apiFetch(`/api/supervisor/task/${task.id}`, { _silent: true });
+        if (!cancelled && healthRes?.taskId) setHealth(healthRes);
+      } catch { /* silent */ }
+      if (!cancelled) setLoading(false);
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [task.id]);
+
+  const healthScore = health?.currentHealthScore ?? health?.averageHealthScore ?? null;
+  const reviewVerdict = health?.reviewVerdict ?? null;
+  const qualityScore = health?.qualityScore ?? null;
+
+  const prNumber = liveTask?.pr || task.pr;
+  const branchLabel = liveTask?.branch || task.branch || "—";
+  const agentLabel = liveTask?.assignee || task.assignee || "Agent";
+  const updatedRelative = liveTask?.updated ? formatRelative(liveTask.updated) : "—";
+
+  /* Derive simulated CI checks */
+  const checks = useMemo(() => {
+    const base = [
+      { label: "Build", status: "pass" },
+      { label: "Tests", status: prNumber ? "pass" : "pending" },
+      { label: "Lint", status: "pass" },
+      { label: "PR opened", status: prNumber ? "pass" : "pending" },
+    ];
+    if (reviewVerdict === "fail") base.push({ label: "Review", status: "fail" });
+    else if (reviewVerdict) base.push({ label: "Review", status: "pass" });
+    return base;
+  }, [prNumber, reviewVerdict]);
+
+  const handleMarkDone = async () => {
+    haptic("medium");
+    try {
+      await apiFetch("/api/tasks/update", {
+        method: "POST",
+        body: JSON.stringify({ taskId: task.id, status: "done" }),
+      });
+      tasksData.value = tasksData.value.map((t) =>
+        t.id === task.id ? { ...t, status: "done" } : t,
+      );
+      showToast("Task marked done", "success");
+      scheduleRefresh(200);
+      onClose();
+    } catch { /* toast via apiFetch */ }
+  };
+
+  const handleReopen = async () => {
+    haptic("light");
+    try {
+      await apiFetch("/api/tasks/update", {
+        method: "POST",
+        body: JSON.stringify({ taskId: task.id, status: "inprogress" }),
+      });
+      tasksData.value = tasksData.value.map((t) =>
+        t.id === task.id ? { ...t, status: "inprogress" } : t,
+      );
+      showToast("Task reopened as active", "success");
+      scheduleRefresh(200);
+      onClose();
+    } catch { /* toast via apiFetch */ }
+  };
+
+  const handleCancel = async () => {
+    const ok = await showConfirm("Cancel this task?");
+    if (!ok) return;
+    haptic("medium");
+    try {
+      await apiFetch("/api/tasks/update", {
+        method: "POST",
+        body: JSON.stringify({ taskId: task.id, status: "cancelled" }),
+      });
+      tasksData.value = tasksData.value.map((t) =>
+        t.id === task.id ? { ...t, status: "cancelled" } : t,
+      );
+      showToast("Task cancelled", "success");
+      scheduleRefresh(200);
+      onClose();
+    } catch { /* toast via apiFetch */ }
+  };
+
+  const allPass = checks.every((c) => c.status === "pass");
+
+  return html`
+    <${Modal}
+      title=${liveTask?.title || task.title || "In Review"}
+      onClose=${onClose}
+      contentClassName="modal-content-wide task-review-modal"
+    >
+      
+      <div class="tr-hero">
+        <span class="tr-review-icon">${resolveIcon("🔍")}</span>
+        <div class="tr-hero-title">
+          <div class="tr-hero-status-label">In Review</div>
+          ${prNumber && html`
+            <a
+              class="tr-pr-badge"
+              href="#"
+              onClick=${(e) => { e.preventDefault(); haptic(); sendCommandToChat("/diff " + branchLabel); onClose(); }}
+            >
+              PR #${prNumber} · View diff ↗
+            </a>
+          `}
+          ${!prNumber && html`<span style="font-size:12px;color:var(--text-hint);">No PR yet</span>`}
+        </div>
+        <${Badge} status="inreview" text="review" />
+      </div>
+
+      
+      <div class="tr-meta-grid">
+        <div class="tr-meta-item">
+          <span class="tr-meta-label">Agent</span>
+          <span class="tr-meta-value">${agentLabel}</span>
+        </div>
+        <div class="tr-meta-item">
+          <span class="tr-meta-label">Branch</span>
+          <span class="tr-meta-value mono">${branchLabel}</span>
+        </div>
+        <div class="tr-meta-item">
+          <span class="tr-meta-label">Last Updated</span>
+          <span class="tr-meta-value">${updatedRelative}</span>
+        </div>
+        ${qualityScore != null && html`
+          <div class="tr-meta-item">
+            <span class="tr-meta-label">Quality</span>
+            <span class="tr-meta-value" style="color:${qualityScore >= 75 ? "var(--color-done)" : "var(--color-error)"};">
+              ${qualityScore}%
+            </span>
+          </div>
+        `}
+        ${healthScore != null && html`
+          <div class="tr-meta-item">
+            <span class="tr-meta-label">Agent Health</span>
+            <span class="tr-meta-value">${healthScore}%</span>
+          </div>
+        `}
+        ${liveTask?.priority && html`
+          <div class="tr-meta-item">
+            <span class="tr-meta-label">Priority</span>
+            <span class="tr-meta-value"><${Badge} status=${liveTask.priority} text=${liveTask.priority} /></span>
+          </div>
+        `}
+      </div>
+
+      
+      <div class="tr-section">
+        <div class="tr-section-title">
+          Checks ${allPass ? iconText("— ✅ All passing") : ""}
+        </div>
+        <div class="tr-checks-row">
+          ${checks.map((c) => html`
+            <div class="tr-check-item ${c.status}" key=${c.label}>
+              ${resolveIcon(c.status === "pass" ? "✅" : c.status === "fail" ? "❌" : "⏳")}
+              ${c.label}
+            </div>
+          `)}
+        </div>
+      </div>
+
+      
+      ${(liveTask?.description || task.description) && html`
+        <div class="tr-section" style="padding-top:0;">
+          <div class="tr-section-title">Description</div>
+          <div class="meta-text" style="white-space:pre-wrap;line-height:1.6;max-height:120px;overflow-y:auto;">
+            ${(liveTask?.description || task.description).slice(0, 600)}
+          </div>
+        </div>
+      `}
+
+      
+      <div class="btn-row tr-actions">
+        <button
+          class="btn btn-primary btn-sm"
+          onClick=${handleMarkDone}
+          disabled=${merging}
+          title="Mark as merged / done"
+        >${iconText("✓ Mark Done")}</button>
+        <button class="btn btn-secondary btn-sm" onClick=${handleReopen}>
+          ↩ Reopen as Active
+        </button>
+        <button
+          class="btn btn-ghost btn-sm"
+          onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}
+        >${iconText("📄 Logs")}</button>
+        ${prNumber && html`
+          <button
+            class="btn btn-ghost btn-sm"
+            onClick=${() => { haptic(); sendCommandToChat("/diff " + branchLabel); onClose(); }}
+          >${iconText("🔎 Diff")}</button>
+        `}
+        <button
+          class="btn btn-ghost btn-sm"
+          style="color:var(--color-error)"
+          onClick=${handleCancel}
+        >${iconText("✕ Cancel")}</button>
+      </div>
+    <//>
+  `;
+}
+
 /* ─── TaskDetailModal ─── */
 export function TaskDetailModal({ task, onClose, onStart }) {
   const [title, setTitle] = useState(task?.title || "");
@@ -646,6 +1103,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     Boolean(task?.draft || task?.status === "draft"),
   );
   const [saving, setSaving] = useState(false);
+  const [rewriting, setRewriting] = useState(false);
   const [manualOverride, setManualOverride] = useState(isTaskManual(task));
   const [manualBusy, setManualBusy] = useState(false);
   const [manualReason, setManualReason] = useState(getManualReason(task));
@@ -897,20 +1355,65 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         `}
       </div>
 
-      <div class="flex-col gap-md modal-form-grid">
-        <input
-          class="input modal-form-span"
-          placeholder="Title"
-          value=${title}
-          onInput=${(e) => setTitle(e.target.value)}
-        />
-        <textarea
-          class="input modal-form-span"
-          rows="5"
-          placeholder="Description"
-          value=${description}
-          onInput=${(e) => setDescription(e.target.value)}
-        ></textarea>
+        <div class="flex-col gap-md modal-form-grid">
+        <div class="input-with-mic modal-form-span">
+          <input
+            class="input"
+            placeholder="Title"
+            value=${title}
+            onInput=${(e) => setTitle(e.target.value)}
+          />
+          <${VoiceMicButtonInline}
+            onTranscript=${(t) => setTitle((prev) => (prev ? prev + " " + t : t))}
+            disabled=${saving || rewriting}
+          />
+        </div>
+        <div class="textarea-with-mic modal-form-span" style="position:relative">
+          <textarea
+            class="input"
+            rows="5"
+            placeholder="Description"
+            value=${description}
+            onInput=${(e) => setDescription(e.target.value)}
+            style="padding-right:36px"
+          ></textarea>
+          <${VoiceMicButton}
+            onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
+            disabled=${saving || rewriting}
+            size="sm"
+            className="textarea-mic-btn"
+          />
+        </div>
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm task-rewrite-btn modal-form-span"
+          style="display:flex;align-items:center;gap:6px;align-self:flex-start;font-size:12px;padding:5px 10px;opacity:${!title.trim() ? 0.45 : 1}"
+          disabled=${!title.trim() || rewriting || saving}
+          onClick=${async () => {
+            if (!title.trim() || rewriting) return;
+            setRewriting(true);
+            haptic("medium");
+            try {
+              const res = await apiFetch("/api/tasks/rewrite", {
+                method: "POST",
+                body: JSON.stringify({ title: title.trim(), description: description.trim() }),
+              });
+              if (res?.data) {
+                if (res.data.title) setTitle(res.data.title);
+                if (res.data.description) setDescription(res.data.description);
+                showToast("Task description improved", "success");
+                haptic("medium");
+              }
+            } catch { /* toast via apiFetch */ }
+            setRewriting(false);
+          }}
+          title="Use AI to expand and improve this task description"
+        >
+          ${rewriting
+            ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon("⏳")}</span> Improving…`
+            : html`${iconText("✨ Improve with AI")}`
+          }
+        </button>
         <input
           class="input modal-form-span"
           placeholder="Base branch (optional, e.g. feature/xyz)"
@@ -1070,7 +1573,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             onClick=${handleSave}
             disabled=${saving}
           >
-            ${saving ? "Saving…" : "💾 Save"}
+            ${saving ? "Saving…" : iconText("💾 Save")}
           </button>
           <button
             class="btn btn-ghost btn-sm"
@@ -1082,7 +1585,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             class="btn btn-ghost btn-sm"
             onClick=${() => handleStatusUpdate("done")}
           >
-            ✓ Done
+            ${iconText("✓ Done")}
           </button>
           ${task?.status !== "cancelled" &&
           html`
@@ -1091,7 +1594,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
               style="color:var(--color-error)"
               onClick=${handleCancel}
             >
-              ✕ Cancel
+              ${iconText("✕ Cancel")}
             </button>
           `}
         </div>
@@ -1105,7 +1608,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
               sendCommandToChat("/logs " + task.id);
             }}
           >
-            📄 View Agent Logs
+            ${iconText("📄 View Agent Logs")}
           </button>
         `}
       </div>
@@ -1769,16 +2272,16 @@ export function TasksTab() {
             class="actions-dropdown-item"
             onClick=${() => { setActionsOpen(false); setStartAnyOpen(true); }}
           >
-            ▶ Start Task
+            ${iconText("▶ Start Task")}
           </button>
           <button
             class="actions-dropdown-item"
             onClick=${() => { setActionsOpen(false); setShowTemplates(true); }}
           >
-            ⚡ Trigger Templates
+            ${iconText("⚡ Trigger Templates")}
           </button>
-          <button class="actions-dropdown-item" onClick=${handleExportCSV}>📊 Export CSV</button>
-          <button class="actions-dropdown-item" onClick=${handleExportJSON}>📋 Export JSON</button>
+          <button class="actions-dropdown-item" onClick=${handleExportCSV}>${iconText("📊 Export CSV")}</button>
+          <button class="actions-dropdown-item" onClick=${handleExportJSON}>${iconText("📋 Export JSON")}</button>
         </div>
       `}
     </div>
@@ -1965,10 +2468,10 @@ export function TasksTab() {
         <div class="btn-row batch-action-bar">
           <span class="pill">${selectedIds.size} selected</span>
           <button class="btn btn-primary btn-sm" onClick=${handleBatchDone}>
-            ✓ Done All
+            ${iconText("✓ Done All")}
           </button>
           <button class="btn btn-danger btn-sm" onClick=${handleBatchCancel}>
-            ✕ Cancel All
+            ${iconText("✕ Cancel All")}
           </button>
           <button
             class="btn btn-ghost btn-sm"
@@ -2000,7 +2503,7 @@ export function TasksTab() {
           <span class="snapshot-lbl">${m.label}</span>
         </button>
       `)}
-      <span class="snapshot-view-tag">${isKanban ? "⬛ Board" : "☰ List"}</span>
+      <span class="snapshot-view-tag">${iconText(isKanban ? "⬛ Board" : "☰ List")}</span>
     </div>
 
     <style>
@@ -2164,7 +2667,22 @@ export function TasksTab() {
     html`
       <${CreateTaskModalInline} onClose=${() => setShowCreate(false)} />
     `}
-    ${detailTask &&
+    ${detailTask && isActiveStatus(detailTask.status) &&
+    html`
+      <${TaskProgressModal}
+        task=${detailTask}
+        onClose=${() => setDetailTask(null)}
+      />
+    `}
+    ${detailTask && isReviewStatus(detailTask.status) &&
+    html`
+      <${TaskReviewModal}
+        task=${detailTask}
+        onClose=${() => setDetailTask(null)}
+        onStart=${(task) => openStartModal(task)}
+      />
+    `}
+    ${detailTask && !isActiveStatus(detailTask.status) && !isReviewStatus(detailTask.status) &&
     html`
       <${TaskDetailModal}
         task=${detailTask}
@@ -2210,9 +2728,31 @@ function CreateTaskModalInline({ onClose }) {
   const [tagsInput, setTagsInput] = useState("");
   const [draft, setDraft] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [rewriting, setRewriting] = useState(false);
   const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId.value || "");
   const [repository, setRepository] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const handleRewrite = async () => {
+    if (!title.trim() || rewriting) return;
+    setRewriting(true);
+    haptic("medium");
+    try {
+      const res = await apiFetch("/api/tasks/rewrite", {
+        method: "POST",
+        body: JSON.stringify({ title: title.trim(), description: description.trim() }),
+      });
+      if (res?.data) {
+        if (res.data.title) setTitle(res.data.title);
+        if (res.data.description) setDescription(res.data.description);
+        showToast("Task description improved", "success");
+        haptic("medium");
+      }
+    } catch {
+      /* toast via apiFetch */
+    }
+    setRewriting(false);
+  };
   const activeWsId = activeWorkspaceId.value || "";
 
   const workspaceOptions = managedWorkspaces.value || [];
@@ -2308,7 +2848,7 @@ function CreateTaskModalInline({ onClose }) {
       onClick=${handleSubmit}
       disabled=${submitting}
     >
-      ${submitting ? "Creating…" : "✓ Create Task"}
+      ${submitting ? "Creating…" : iconText("✓ Create Task")}
     </button>
   `;
 
@@ -2322,28 +2862,58 @@ function CreateTaskModalInline({ onClose }) {
       <div class="flex-col create-task-form">
 
         <!-- Title — autofocus so keyboard opens immediately -->
-        <input
-          class="input"
-          placeholder="Task title *"
-          value=${title}
-          autoFocus=${true}
-          onInput=${(e) => setTitle(e.target.value)}
-          onKeyDown=${(e) => e.key === "Enter" && !e.shiftKey && handleSubmit()}
-        />
+        <div class="input-with-mic">
+          <input
+            class="input"
+            placeholder="Task title *"
+            value=${title}
+            autoFocus=${true}
+            onInput=${(e) => setTitle(e.target.value)}
+            onKeyDown=${(e) => e.key === "Enter" && !e.shiftKey && handleSubmit()}
+          />
+          <${VoiceMicButtonInline}
+            onTranscript=${(t) => setTitle((prev) => (prev ? prev + " " + t : t))}
+            disabled=${submitting || rewriting}
+          />
+        </div>
 
         <!-- Description — compact 2-row textarea -->
-        <textarea
-          class="input"
-          rows="2"
-          placeholder="What needs to be done? (optional)"
-          value=${description}
-          onInput=${(e) => {
-            setDescription(e.target.value);
-            // auto-grow up to 6 rows
-            e.target.style.height = "auto";
-            e.target.style.height = Math.min(e.target.scrollHeight, 6 * 24 + 16) + "px";
-          }}
-        ></textarea>
+        <div class="textarea-with-mic" style="position:relative">
+          <textarea
+            class="input"
+            rows="2"
+            placeholder="What needs to be done? (optional)"
+            value=${description}
+            onInput=${(e) => {
+              setDescription(e.target.value);
+              // auto-grow up to 6 rows
+              e.target.style.height = "auto";
+              e.target.style.height = Math.min(e.target.scrollHeight, 6 * 24 + 16) + "px";
+            }}
+            style="padding-right:36px"
+          ></textarea>
+          <${VoiceMicButton}
+            onTranscript=${(t) => setDescription((prev) => (prev ? prev + " " + t : t))}
+            disabled=${submitting || rewriting}
+            size="sm"
+            className="textarea-mic-btn"
+          />
+        </div>
+
+        <!-- Rewrite / Improve button -->
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm task-rewrite-btn"
+          style="display:flex;align-items:center;gap:6px;align-self:flex-start;font-size:12px;padding:5px 10px;opacity:${!title.trim() ? 0.45 : 1}"
+          disabled=${!title.trim() || rewriting || submitting}
+          onClick=${handleRewrite}
+          title="Use AI to expand and improve this task description"
+        >
+          ${rewriting
+            ? html`<span class="spin-icon" style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon("⏳")}</span> Improving…`
+            : html`${iconText("✨ Improve with AI")}`
+          }
+        </button>
 
         <!-- Priority — always visible, most commonly changed -->
         <${SegmentedControl}
@@ -2351,7 +2921,7 @@ function CreateTaskModalInline({ onClose }) {
             { value: "low", label: "Low" },
             { value: "medium", label: "Med" },
             { value: "high", label: "High" },
-            { value: "critical", label: "🔥" },
+            { value: "critical", label: "Critical" },
           ]}
           value=${priority}
           onChange=${(v) => { haptic(); setPriority(v); }}

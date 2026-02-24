@@ -11,6 +11,7 @@ import htm from "htm";
 import { apiFetch } from "../modules/api.js";
 import { haptic } from "../modules/telegram.js";
 import { Modal } from "./shared.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
 
 const html = htm.bind(h);
 
@@ -172,13 +173,13 @@ function RepoRow({ repo, workspaceId }) {
         ${repo.name}
       </span>
       <span class="ws-manager-repo-status ${repo.exists ? "ok" : "err"}">
-        ${repo.exists ? "✓" : "✗ missing"}
+        ${repo.exists ? resolveIcon("✓") : iconText("✗ missing")}
       </span>
       <button
         class="ws-manager-btn ghost sm icon-btn"
         title="Remove repo"
         onClick=${() => { haptic("light"); setConfirming(true); }}
-      >✕</button>
+      >${resolveIcon("✕")}</button>
     </div>
   `;
 }
@@ -316,7 +317,7 @@ function WorkspaceCard({ ws }) {
             class="ws-manager-btn ghost sm danger-text"
             onClick=${() => { haptic("light"); setDelConfirm(true); }}
             title="Delete workspace"
-          >🗑</button>
+          >${resolveIcon("🗑")}</button>
         </div>
       </div>
 
@@ -424,7 +425,7 @@ export function WorkspaceManager({ open, onClose }) {
           onClick=${handleScan}
           disabled=${scanning}
           title="Scan disk for workspaces"
-        >${scanning ? "Scanning…" : "🔍 Scan Disk"}</button>
+        >${scanning ? "Scanning…" : iconText("🔍 Scan Disk")}</button>
       </div>
 
       ${loading && !wsList.length

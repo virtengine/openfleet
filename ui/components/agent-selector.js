@@ -15,6 +15,7 @@ import { signal, computed, effect } from "@preact/signals";
 import htm from "htm";
 import { apiFetch } from "../modules/api.js";
 import { haptic } from "../modules/telegram.js";
+import { resolveIcon } from "../modules/icon-utils.js";
 import {
   aliveAgentCount,
   staleAgentCount,
@@ -42,6 +43,11 @@ export const agentSelectorLoading = signal(false);
 /** Agent runtime status (set externally or via WS events) */
 export const agentStatus = signal("idle"); // "idle" | "thinking" | "executing" | "streaming"
 
+/** Yolo (auto-approve) mode — skips confirmation prompts in supported agents */
+export const yoloMode = signal(false);
+// Hydrate from localStorage in browser
+try { if (typeof localStorage !== "undefined") yoloMode.value = localStorage.getItem("ve-yolo-mode") === "true"; } catch {}
+
 /** Computed: resolved active agent object */
 export const activeAgentInfo = computed(() => {
   const agents = availableAgents.value;
@@ -54,15 +60,15 @@ export const activeAgentInfo = computed(() => {
  * ═══════════════════════════════════════════════ */
 
 const MODES = [
-  { id: "ask", label: "Ask", icon: "💬", description: "Ask a question" },
-  { id: "agent", label: "Agent", icon: "🤖", description: "Autonomous agent" },
-  { id: "plan", label: "Plan", icon: "📋", description: "Create a plan first" },
+  { id: "ask", label: "Ask", icon: "chat", description: "Ask a question" },
+  { id: "agent", label: "Agent", icon: "bot", description: "Autonomous agent" },
+  { id: "plan", label: "Plan", icon: "clipboard", description: "Create a plan first" },
 ];
 
 const AGENT_ICONS = {
-  "codex-sdk": "⚡",
-  "copilot-sdk": "🤖",
-  "claude-sdk": "🧠",
+  "codex-sdk": "zap",
+  "copilot-sdk": "bot",
+  "claude-sdk": "cpu",
 };
 
 const PROVIDER_COLORS = {
@@ -121,6 +127,11 @@ const AGENT_SELECTOR_STYLES = `
   font-size: 11px;
   line-height: 1;
 }
+.agent-mode-pill .mode-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
 
 /* ── Agent Picker Dropdown ── */
 .agent-picker-wrap {
@@ -154,6 +165,11 @@ const AGENT_SELECTOR_STYLES = `
 .agent-picker-btn .picker-icon {
   font-size: 13px;
   line-height: 1;
+}
+.agent-picker-btn .picker-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
 }
 .agent-picker-chevron {
   font-size: 9px;
@@ -362,6 +378,69 @@ const AGENT_SELECTOR_STYLES = `
   }
 }
 
+/* ── Yolo Toggle ── */
+.yolo-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid rgba(255, 165, 0, 0.25);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--tg-theme-hint-color, #888);
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+  white-space: nowrap;
+  line-height: 1.2;
+  user-select: none;
+  flex-shrink: 0;
+}
+.yolo-toggle:hover {
+  background: rgba(255, 165, 0, 0.07);
+  border-color: rgba(255, 165, 0, 0.4);
+  color: #ffb347;
+}
+.yolo-toggle.active {
+  background: rgba(255, 140, 0, 0.14);
+  border-color: rgba(255, 140, 0, 0.55);
+  color: #ffa537;
+  box-shadow: 0 0 8px rgba(255, 140, 0, 0.2);
+}
+.yolo-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+.yolo-checkbox {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  border: 1.5px solid currentColor;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.yolo-toggle.active .yolo-checkbox {
+  background: #ffa537;
+  border-color: #ffa537;
+}
+.yolo-checkbox::after {
+  content: '';
+  display: none;
+}
+.yolo-toggle.active .yolo-checkbox::after {
+  content: '✓';
+  display: block;
+  font-size: 9px;
+  color: #1a1200;
+  font-weight: 800;
+  line-height: 1;
+}
+
 /* ── Native Agent Select ── */
 .agent-picker-native {
   appearance: none;
@@ -496,7 +575,7 @@ export function AgentModeSelector() {
           title=${m.description}
           onClick=${() => handleSelect(m.id)}
         >
-          <span class="mode-icon">${m.icon}</span>
+          <span class="mode-icon">${resolveIcon(m.icon) || m.icon}</span>
           ${m.label}
         </button>
       `)}
@@ -521,11 +600,13 @@ export function AgentPicker() {
     switchAgent(agentId);
   }, []);
 
-  const currentIcon = AGENT_ICONS[current] || "⚡";
+  const currentIcon = AGENT_ICONS[current] || "zap";
 
   return html`
     <div class="agent-picker-wrap">
-      <span class="picker-icon" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none;z-index:1">${currentIcon}</span>
+      <span class="picker-icon" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none;z-index:1">
+        ${resolveIcon(currentIcon) || currentIcon}
+      </span>
       <select
         class="agent-picker-native"
         value=${current}
@@ -569,8 +650,8 @@ export function AgentStatusBadge() {
       />
       <span class="agent-status-label">${cfg.label}</span>
       ${alive > 0 && html`<span class="agent-count-badge" title="${alive} agent(s) active" style="background:#2ea043;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:4px;">${alive}</span>`}
-      ${stale > 0 && html`<span class="agent-count-badge" title="${stale} agent(s) stale" style="background:#d29922;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;">⚠${stale}</span>`}
-      ${errors > 0 && html`<span class="agent-count-badge" title="${errors} error(s)" style="background:#f85149;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;">✕${errors}</span>`}
+      ${stale > 0 && html`<span class="agent-count-badge" title="${stale} agent(s) stale" style="background:#d29922;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;"><span class="icon-inline">${resolveIcon("alert")}</span>${stale}</span>`}
+      ${errors > 0 && html`<span class="agent-count-badge" title="${errors} error(s)" style="background:#f85149;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;"><span class="icon-inline">${resolveIcon("close")}</span>${errors}</span>`}
     </div>
   `;
 }
@@ -579,6 +660,32 @@ export function AgentStatusBadge() {
  *  ChatInputToolbar
  *  Combines all selectors into a single row
  * ═══════════════════════════════════════════════ */
+
+function YoloToggle() {
+  const isYolo = yoloMode.value;
+
+  const toggle = useCallback(() => {
+    const next = !yoloMode.peek();
+    yoloMode.value = next;
+    try { localStorage.setItem("ve-yolo-mode", String(next)); } catch {}
+    haptic(next ? "medium" : "light");
+  }, []);
+
+  return html`
+    <button
+      class="yolo-toggle ${isYolo ? 'active' : ''}"
+      onClick=${toggle}
+      title=${isYolo
+        ? 'Yolo ON — agent will auto-approve actions (disable to require confirmations)'
+        : 'Enable Yolo mode — agent will skip confirmation prompts'}
+      aria-pressed=${isYolo}
+    >
+      <span class="yolo-checkbox" aria-hidden="true"></span>
+      <span class="yolo-icon">⚡</span>
+      Yolo
+    </button>
+  `;
+}
 
 export function ChatInputToolbar() {
   // Inject styles on first mount
@@ -598,6 +705,7 @@ export function ChatInputToolbar() {
     <div class="chat-input-toolbar">
       <${AgentPicker} />
       <${AgentModeSelector} />
+      <${YoloToggle} />
       <div class="chat-input-toolbar-spacer" />
       <${AgentStatusBadge} />
     </div>

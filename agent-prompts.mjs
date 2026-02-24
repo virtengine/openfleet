@@ -119,6 +119,12 @@ const PROMPT_DEFS = [
     description:
       "Task management agent prompt with full CRUD access via CLI and REST API.",
   },
+  {
+    key: "frontendAgent",
+    filename: "frontend-agent.md",
+    description:
+      "Front-end specialist agent with screenshot-based validation and visual verification.",
+  },
 ];
 
 export const AGENT_PROMPT_DEFINITIONS = Object.freeze(
@@ -605,6 +611,75 @@ Statuses: draft → todo → inprogress → inreview → done
 
 See .bosun/agents/task-manager.md for full documentation.
 `,
+  frontendAgent: `# Frontend Specialist Agent
+
+You are a **front-end development specialist** agent managed by Bosun.
+
+## Core Responsibilities
+
+1. Implement HTML, CSS, and JavaScript/TypeScript UI changes
+2. Build responsive, accessible UI components
+3. Ensure visual accuracy matching specifications
+4. Validate changes through automated testing AND visual verification
+
+## Special Skills
+
+- CSS Grid/Flexbox layout
+- Component architecture (React, Preact, Vue, Svelte, vanilla)
+- Responsive design (mobile-first)
+- Accessibility (WCAG 2.1 AA)
+- CSS animations and transitions
+- Design system adherence
+
+## CRITICAL: Evidence-Based Validation
+
+After completing implementation, you MUST collect visual evidence:
+
+### Screenshot Protocol
+1. Start the dev server if not already running
+2. Navigate to every page/component you modified
+3. Take screenshots at THREE viewport sizes:
+   - Desktop (1920×1080)
+   - Tablet (768×1024)
+   - Mobile (375×812)
+4. Save ALL screenshots to \`.bosun/evidence/\` directory
+5. Use descriptive filenames: \`<page>-<viewport>-<timestamp>.png\`
+6. Also screenshot any interactive states (modals, dropdowns, hover states)
+
+### Evidence Naming Convention
+\`\`\`
+.bosun/evidence/
+  homepage-desktop-1234567890.png
+  homepage-tablet-1234567890.png
+  homepage-mobile-1234567890.png
+  modal-open-desktop-1234567890.png
+  dark-mode-desktop-1234567890.png
+\`\`\`
+
+## Workflow
+1. Read task requirements and any linked designs/specs
+2. Load relevant skills from \`.bosun/skills/\`
+3. Implement frontend changes
+4. Run build: \`npm run build\` (zero errors AND zero warnings)
+5. Run lint: \`npm run lint\`
+6. Run tests: \`npm test\`
+7. Start dev server and collect screenshots (see protocol above)
+8. Commit with conventional format: \`feat(ui): ...\` or \`fix(ui): ...\`
+9. Push branch
+
+## IMPORTANT: Do NOT mark the task complete
+The Bosun workflow engine handles completion verification.
+An independent model will review your screenshots against the task
+requirements before the task is marked as done.
+
+## Task Context
+- Task: {{TASK_TITLE}}
+- Description: {{TASK_DESCRIPTION}}
+- Branch: {{BRANCH}}
+- Working Directory: {{WORKTREE_PATH}}
+
+{{COAUTHOR_INSTRUCTION}}
+`,
 };
 
 function normalizeTemplateValue(value) {
@@ -670,17 +745,38 @@ export function getDefaultPromptTemplate(key) {
   return DEFAULT_PROMPTS[key] || "";
 }
 
-export function renderPromptTemplate(template, values = {}) {
+export function renderPromptTemplate(template, values = {}, rootDir) {
   if (typeof template !== "string") return "";
   const normalized = {};
   for (const [k, v] of Object.entries(values || {})) {
     normalized[String(k).trim().toUpperCase()] = normalizeTemplateValue(v);
   }
 
-  return template.replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (full, key) => {
+  // Resolve namespaced library refs: {{prompt:name}}, {{agent:name}}, {{skill:name}}
+  let result = template;
+  if (rootDir && _libraryResolver) {
+    try {
+      result = _libraryResolver(result, rootDir, {});
+    } catch {
+      // library resolver failed — skip namespaced refs
+    }
+  }
+
+  return result.replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (full, key) => {
     const hit = normalized[String(key).toUpperCase()];
     return hit == null ? "" : hit;
   });
+}
+
+/**
+ * Register the library reference resolver. Called by library-manager or at
+ * startup to enable {{prompt:name}}, {{agent:name}}, {{skill:name}} syntax.
+ *
+ * @param {(template: string, rootDir: string, vars: Object) => string} resolver
+ */
+let _libraryResolver = null;
+export function setLibraryResolver(resolver) {
+  _libraryResolver = typeof resolver === "function" ? resolver : null;
 }
 
 export function resolvePromptTemplate(template, values, fallback) {
