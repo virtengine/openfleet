@@ -398,7 +398,7 @@ function WorkflowCanvas({ workflow, onSave }) {
   // ── Render ────────────────────────────────────────────────
 
   return html`
-    <div class="wf-canvas-container" style="position: relative; width: 100%; height: 100%; overflow: hidden; background: var(--color-bg-secondary, #0f1117);">
+    <div class="wf-canvas-container" style="position: relative; width: 100%; overflow: hidden; background: var(--color-bg-secondary, #0f1117);">
 
       <!-- Toolbar -->
       <div class="wf-toolbar" style="position: absolute; top: 12px; left: 12px; right: 12px; z-index: 20; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
@@ -432,7 +432,7 @@ function WorkflowCanvas({ workflow, onSave }) {
       <!-- SVG Canvas -->
       <svg
         ref=${canvasRef}
-        style="width: 100%; height: 100%; cursor: ${panStart ? 'grabbing' : dragState ? 'move' : 'default'};"
+        style="position: absolute; inset: 0; width: 100%; height: 100%; cursor: ${panStart ? 'grabbing' : dragState ? 'move' : 'default'};"
         onMouseDown=${onMouseDown}
         onMouseMove=${onMouseMove}
         onMouseUp=${onMouseUp}
@@ -454,8 +454,8 @@ function WorkflowCanvas({ workflow, onSave }) {
           </filter>
         </defs>
 
-        <!-- Background grid -->
-        <rect class="canvas-bg" width="100%" height="100%" fill="url(#grid-pattern)" />
+        <!-- Background grid — covers entire pannable area -->
+        <rect class="canvas-bg" x="-10000" y="-10000" width="30000" height="30000" fill="url(#grid-pattern)" />
 
         <g transform="translate(${pan.x} ${pan.y}) scale(${zoom})">
 
@@ -1132,8 +1132,8 @@ export function WorkflowsTab() {
         font-family: inherit;
       }
       .wf-context-menu button:hover { background: var(--color-bg-secondary, #1a1f2e); }
-      .wf-canvas-container { min-height: 600px; }
-      @media (min-width: 1200px) { .wf-canvas-container { min-height: 800px; } }
+      .wf-canvas-container { height: calc(100vh - 140px); min-height: 500px; }
+      @media (min-width: 1200px) { .wf-canvas-container { height: calc(100vh - 120px); min-height: 700px; } }
     </style>
 
     <div style="padding: 8px;">

@@ -836,68 +836,372 @@
         instances: [{ id: 'inst-1', host: 'dev-machine', pid: 12345, started: now - 3 * hr, role: 'primary' }],
         coordinator: { id: 'inst-1', host: 'dev-machine', elected: now - 3 * hr },
       },
-      // ── Workflow data ──
+      // ── Workflow data — fully wired demo workflows ──
       workflows: [
+        // ─── 1. PR Merge Strategy (github) — 14 nodes, 21 edges ───
         {
           id: 'wf-pr-merge-auto',
           name: 'PR Merge Strategy',
-          description: 'Automated PR merge decision: analyze, decide, act.',
+          description: 'Automated PR merge decision: analyze diffs, CI status, and agent output. Decides: merge, prompt, re-attempt, close, escalate, or wait.',
+          category: 'github',
+          enabled: true,
+          nodeCount: 14,
+          trigger: 'trigger.pr_event',
+          nodes: [
+            { id: 'trigger',          type: 'trigger.pr_event',       label: 'PR Ready for Review',   config: { event: 'review_requested' },                              position: { x: 400, y: 50 } },
+            { id: 'check-ci',         type: 'validation.build',       label: 'Check CI Status',       config: { command: 'gh pr checks --json name,state,conclusion' },    position: { x: 150, y: 200 } },
+            { id: 'get-diff',         type: 'action.run_command',     label: 'Get Diff Stats',        config: { command: 'git diff --stat main...HEAD' },                  position: { x: 650, y: 200 } },
+            { id: 'ci-passed',        type: 'condition.expression',   label: 'CI Passed?',            config: { expression: "$ctx.getNodeOutput('check-ci')?.passed" },    position: { x: 150, y: 350 } },
+            { id: 'wait-for-ci',      type: 'action.delay',           label: 'Wait for CI',           config: { delayMs: 300000, reason: 'CI still running' },             position: { x: 150, y: 500 } },
+            { id: 'analyze',          type: 'action.run_agent',       label: 'Analyze Merge Strategy',config: { prompt: 'Review PR and decide: merge, prompt, close, re_attempt, manual_review, wait, or noop.', timeoutMs: 900000 }, position: { x: 400, y: 350 } },
+            { id: 'decision-router',  type: 'condition.switch',       label: 'Route Decision',        config: { field: 'action', cases: { merge_after_ci_pass: 'merge', prompt: 'prompt-agent', close_pr: 'close', re_attempt: 'retry', manual_review: 'escalate', wait: 'wait-for-ci' } }, position: { x: 400, y: 520 } },
+            { id: 'do-merge',         type: 'action.run_command',     label: 'Auto-Merge PR',         config: { command: 'gh pr merge --auto --squash' },                  position: { x: 100, y: 680 } },
+            { id: 'do-prompt',        type: 'action.run_agent',       label: 'Prompt Agent',          config: { prompt: 'Continue working. Instructions: {{decision.message}}' }, position: { x: 300, y: 680 } },
+            { id: 'do-close',         type: 'action.run_command',     label: 'Close PR',              config: { command: 'gh pr close --comment "{{decision.reason}}"' },   position: { x: 500, y: 680 } },
+            { id: 'do-retry',         type: 'action.run_agent',       label: 'Re-attempt Task',       config: { prompt: 'Start over: {{decision.reason}}' },               position: { x: 700, y: 680 } },
+            { id: 'do-escalate',      type: 'notify.telegram',        label: 'Escalate to Human',     config: { message: '👀 PR needs manual review: {{decision.reason}}' }, position: { x: 900, y: 680 } },
+            { id: 'notify-complete',  type: 'notify.log',             label: 'Log Result',            config: { message: 'PR merge strategy: {{decision.action}}', level: 'info' }, position: { x: 400, y: 850 } },
+          ],
+          edges: [
+            { id: 'e1',  source: 'trigger',         target: 'check-ci' },
+            { id: 'e2',  source: 'trigger',         target: 'get-diff' },
+            { id: 'e3',  source: 'check-ci',        target: 'ci-passed' },
+            { id: 'e4',  source: 'ci-passed',       target: 'wait-for-ci',     condition: 'CI not passed' },
+            { id: 'e5',  source: 'ci-passed',       target: 'analyze',         condition: 'CI passed' },
+            { id: 'e6',  source: 'get-diff',        target: 'analyze' },
+            { id: 'e7',  source: 'wait-for-ci',     target: 'analyze' },
+            { id: 'e8',  source: 'analyze',         target: 'decision-router' },
+            { id: 'e9',  source: 'decision-router', target: 'do-merge',        condition: 'merge' },
+            { id: 'e10', source: 'decision-router', target: 'do-prompt',       condition: 'prompt' },
+            { id: 'e11', source: 'decision-router', target: 'do-close',        condition: 'close' },
+            { id: 'e12', source: 'decision-router', target: 'do-retry',        condition: 'retry' },
+            { id: 'e13', source: 'decision-router', target: 'do-escalate',     condition: 'escalate' },
+            { id: 'e14', source: 'decision-router', target: 'wait-for-ci',     condition: 'wait' },
+            { id: 'e15', source: 'do-merge',        target: 'notify-complete' },
+            { id: 'e16', source: 'do-prompt',       target: 'notify-complete' },
+            { id: 'e17', source: 'do-close',        target: 'notify-complete' },
+            { id: 'e18', source: 'do-retry',        target: 'notify-complete' },
+            { id: 'e19', source: 'do-escalate',     target: 'notify-complete' },
+          ],
+          variables: { baseBranch: 'main', ciTimeoutMs: 300000, cooldownSec: 60, maxRetries: 3 },
+          metadata: { createdAt: new Date(now - 7 * 24 * hr).toISOString(), updatedAt: new Date(now - 1 * hr).toISOString() },
+        },
+        // ─── 2. Review Agent (github) — 6 nodes, 6 edges ───
+        {
+          id: 'wf-review-agent',
+          name: 'Review Agent',
+          description: 'Auto code review on PR: parallel build + tests, then AI analysis, aggregate, and post.',
           category: 'github',
           enabled: true,
           nodeCount: 6,
           trigger: 'trigger.pr_event',
           nodes: [
-            { id: 'trigger', type: 'trigger.pr_event', label: 'PR Ready', config: { event: 'review_requested' }, position: { x: 400, y: 50 } },
-            { id: 'check-ci', type: 'validation.build', label: 'Check CI', config: { command: 'gh pr checks' }, position: { x: 200, y: 200 } },
-            { id: 'analyze', type: 'action.run_agent', label: 'Analyze Strategy', config: {}, position: { x: 400, y: 350 } },
-            { id: 'do-merge', type: 'action.run_command', label: 'Auto-Merge', config: { command: 'gh pr merge --auto --squash' }, position: { x: 200, y: 520 } },
-            { id: 'do-prompt', type: 'action.run_agent', label: 'Prompt Agent', config: {}, position: { x: 400, y: 520 } },
-            { id: 'notify', type: 'notify.log', label: 'Log Result', config: {}, position: { x: 400, y: 680 } },
+            { id: 'trigger',   type: 'trigger.pr_event',    label: 'PR Opened/Updated', config: { event: 'opened' },                               position: { x: 400, y: 50 } },
+            { id: 'run-build', type: 'validation.build',    label: 'Run Build',         config: { command: 'npm run build' },                       position: { x: 200, y: 200 } },
+            { id: 'run-tests', type: 'validation.tests',    label: 'Run Tests',         config: { command: 'npm test' },                            position: { x: 600, y: 200 } },
+            { id: 'run-review',type: 'action.run_agent',    label: 'Agent Review',      config: { prompt: 'Review changes for quality, bugs, test coverage, and docs.', timeoutMs: 900000 }, position: { x: 400, y: 350 } },
+            { id: 'aggregate', type: 'transform.aggregate', label: 'Collect Results',   config: { sources: ['run-build', 'run-tests', 'run-review'] }, position: { x: 400, y: 500 } },
+            { id: 'notify',    type: 'notify.telegram',     label: 'Post Review',       config: { message: '📝 PR review complete for {{branch}}' }, position: { x: 400, y: 640 } },
           ],
           edges: [
-            { id: 'e1', source: 'trigger', target: 'check-ci' },
-            { id: 'e2', source: 'check-ci', target: 'analyze' },
-            { id: 'e3', source: 'analyze', target: 'do-merge', condition: 'merge' },
-            { id: 'e4', source: 'analyze', target: 'do-prompt', condition: 'prompt' },
-            { id: 'e5', source: 'do-merge', target: 'notify' },
-            { id: 'e6', source: 'do-prompt', target: 'notify' },
+            { id: 'e1', source: 'trigger',    target: 'run-build' },
+            { id: 'e2', source: 'trigger',    target: 'run-tests' },
+            { id: 'e3', source: 'run-build',  target: 'run-review' },
+            { id: 'e4', source: 'run-tests',  target: 'run-review' },
+            { id: 'e5', source: 'run-review', target: 'aggregate' },
+            { id: 'e6', source: 'aggregate',  target: 'notify' },
           ],
-          variables: { baseBranch: 'main', ciTimeoutMs: 300000 },
-          metadata: { createdAt: new Date(now - 7 * 24 * hr).toISOString(), updatedAt: new Date(now - 1 * hr).toISOString() },
+          variables: {},
+          metadata: { createdAt: new Date(now - 6 * 24 * hr).toISOString(), updatedAt: new Date(now - 3 * hr).toISOString() },
         },
+        // ─── 3. Error Recovery (reliability) — 5 nodes, 4 edges ───
         {
           id: 'wf-error-recovery',
           name: 'Error Recovery',
-          description: 'Auto-fix after agent crash — analyze, retry, escalate.',
+          description: 'Auto-fix after agent crash — analyze logs, retry with fix, escalate if exhausted.',
           category: 'reliability',
           enabled: true,
-          nodeCount: 4,
+          nodeCount: 5,
           trigger: 'trigger.event',
           nodes: [
-            { id: 'trigger', type: 'trigger.event', label: 'Agent Failed', config: { eventType: 'task.failed' }, position: { x: 400, y: 50 } },
-            { id: 'check', type: 'condition.expression', label: 'Retries Left?', config: {}, position: { x: 400, y: 200 } },
-            { id: 'retry', type: 'action.run_agent', label: 'Retry Task', config: {}, position: { x: 200, y: 350 } },
-            { id: 'escalate', type: 'notify.telegram', label: 'Escalate', config: {}, position: { x: 600, y: 350 } },
+            { id: 'trigger',       type: 'trigger.event',          label: 'Agent Failed',      config: { eventType: 'task.failed' },                               position: { x: 400, y: 50 } },
+            { id: 'check-retries', type: 'condition.expression',   label: 'Retries Left?',     config: { expression: '($data?.retryCount || 0) < ($data?.maxRetries || 3)' }, position: { x: 400, y: 180 } },
+            { id: 'analyze-error', type: 'action.run_agent',       label: 'Analyze Failure',   config: { prompt: 'Analyze this error and suggest a fix:\n{{lastError}}\nTask: {{taskTitle}}', timeoutMs: 300000 }, position: { x: 200, y: 330 } },
+            { id: 'retry-task',    type: 'action.run_agent',       label: 'Retry Task',        config: { prompt: '{{taskExecutorRetryPrompt}}', timeoutMs: 3600000 }, position: { x: 200, y: 480 } },
+            { id: 'escalate',      type: 'notify.telegram',        label: 'Escalate to Human', config: { message: '🚨 Task {{taskTitle}} failed after {{maxRetries}} attempts. Manual intervention needed.' }, position: { x: 600, y: 180 } },
           ],
           edges: [
-            { id: 'e1', source: 'trigger', target: 'check' },
-            { id: 'e2', source: 'check', target: 'retry', condition: 'retries > 0' },
-            { id: 'e3', source: 'check', target: 'escalate', condition: 'retries == 0' },
+            { id: 'e1', source: 'trigger',       target: 'check-retries' },
+            { id: 'e2', source: 'check-retries', target: 'analyze-error',  condition: 'retries > 0' },
+            { id: 'e3', source: 'check-retries', target: 'escalate',       condition: 'retries == 0' },
+            { id: 'e4', source: 'analyze-error', target: 'retry-task' },
           ],
           variables: { maxRetries: 3 },
           metadata: { createdAt: new Date(now - 5 * 24 * hr).toISOString(), updatedAt: new Date(now - 2 * hr).toISOString() },
         },
+        // ─── 4. Build & Deploy (ci-cd) — 6 nodes, 5 edges ───
+        {
+          id: 'wf-build-deploy',
+          name: 'Build & Deploy',
+          description: 'CI/CD pipeline: build → test → lint → deploy → notify. Triggered on PR merge to main.',
+          category: 'ci-cd',
+          enabled: false,
+          nodeCount: 6,
+          trigger: 'trigger.event',
+          nodes: [
+            { id: 'trigger', type: 'trigger.event',       label: 'PR Merged to Main', config: { eventType: 'pr.merged', filter: "$event.branch === 'main'" }, position: { x: 400, y: 50 } },
+            { id: 'build',   type: 'validation.build',    label: 'Build',             config: { command: 'npm run build', zeroWarnings: true },               position: { x: 400, y: 180 } },
+            { id: 'test',    type: 'validation.tests',    label: 'Tests',             config: { command: 'npm test' },                                        position: { x: 400, y: 310 } },
+            { id: 'lint',    type: 'validation.lint',     label: 'Lint',              config: { command: 'npm run lint' },                                     position: { x: 400, y: 440 } },
+            { id: 'deploy',  type: 'action.run_command',  label: 'Deploy',            config: { command: 'npm run deploy' },                                   position: { x: 400, y: 570 } },
+            { id: 'notify',  type: 'notify.telegram',     label: 'Notify Deploy',     config: { message: '🚀 Deployment to production completed for {{branch}}' }, position: { x: 400, y: 700 } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger', target: 'build' },
+            { id: 'e2', source: 'build',   target: 'test' },
+            { id: 'e3', source: 'test',    target: 'lint' },
+            { id: 'e4', source: 'lint',    target: 'deploy' },
+            { id: 'e5', source: 'deploy',  target: 'notify' },
+          ],
+          variables: { deployCommand: 'npm run deploy', deployBranch: 'main' },
+          metadata: { createdAt: new Date(now - 4 * 24 * hr).toISOString(), updatedAt: new Date(now - 5 * hr).toISOString() },
+        },
+        // ─── 5. Task Planner (planning) — 7 nodes, 7 edges ───
+        {
+          id: 'wf-task-planner',
+          name: 'Task Planner',
+          description: 'Auto-replenish backlog: monitor task count, spawn planner agent when low, create tasks, notify.',
+          category: 'planning',
+          enabled: true,
+          nodeCount: 7,
+          trigger: 'trigger.cron',
+          nodes: [
+            { id: 'trigger',     type: 'trigger.cron',           label: 'Every 30 min',       config: { cron: '*/30 * * * *' },                                    position: { x: 400, y: 50 } },
+            { id: 'count-tasks', type: 'action.run_command',     label: 'Count Open Tasks',   config: { command: 'bosun task list --status todo --count' },          position: { x: 400, y: 180 } },
+            { id: 'check-low',   type: 'condition.expression',   label: 'Tasks Low?',         config: { expression: '$data?.count < 3' },                           position: { x: 400, y: 310 } },
+            { id: 'plan-tasks',  type: 'action.run_agent',       label: 'Plan New Tasks',     config: { prompt: 'Review the codebase and create 3-5 actionable improvement tasks.', timeoutMs: 600000 }, position: { x: 200, y: 460 } },
+            { id: 'create-tasks',type: 'action.run_command',     label: 'Create Tasks',       config: { command: 'bosun task create --from-plan' },                 position: { x: 200, y: 610 } },
+            { id: 'notify',      type: 'notify.telegram',        label: 'Notify Planner Done',config: { message: '📋 Task planner added new tasks to backlog' },    position: { x: 200, y: 760 } },
+            { id: 'skip',        type: 'notify.log',             label: 'Backlog OK',         config: { message: 'Backlog has enough tasks, skipping', level: 'debug' }, position: { x: 600, y: 460 } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger',      target: 'count-tasks' },
+            { id: 'e2', source: 'count-tasks',  target: 'check-low' },
+            { id: 'e3', source: 'check-low',    target: 'plan-tasks',   condition: 'count < 3' },
+            { id: 'e4', source: 'check-low',    target: 'skip',         condition: 'count >= 3' },
+            { id: 'e5', source: 'plan-tasks',   target: 'create-tasks' },
+            { id: 'e6', source: 'create-tasks', target: 'notify' },
+          ],
+          variables: { minTaskThreshold: 3, planCount: 5 },
+          metadata: { createdAt: new Date(now - 3 * 24 * hr).toISOString(), updatedAt: new Date(now - 4 * hr).toISOString() },
+        },
+        // ─── 6. Frontend Agent (agents) — 8 nodes, 9 edges ───
+        {
+          id: 'wf-frontend-agent',
+          name: 'Frontend Agent',
+          description: 'Frontend dev agent: implement UI changes, run build + lint, take screenshots, verify with model review.',
+          category: 'agents',
+          enabled: true,
+          nodeCount: 8,
+          trigger: 'trigger.task_assigned',
+          nodes: [
+            { id: 'trigger',         type: 'trigger.task_assigned', label: 'Task Assigned',      config: { agentType: 'frontend' },                                     position: { x: 400, y: 50 } },
+            { id: 'run-agent',       type: 'action.run_agent',      label: 'Run Frontend Agent', config: { prompt: 'Implement frontend changes for: {{taskTitle}}', timeoutMs: 7200000 }, position: { x: 400, y: 200 } },
+            { id: 'verify-build',    type: 'validation.build',      label: 'Verify Build',       config: { command: 'npm run build', zeroWarnings: true },                position: { x: 200, y: 350 } },
+            { id: 'verify-lint',     type: 'validation.lint',       label: 'Verify Lint',        config: { command: 'npm run lint' },                                     position: { x: 600, y: 350 } },
+            { id: 'screenshot',      type: 'action.run_command',    label: 'Take Screenshots',   config: { command: 'bosun screenshot --viewport desktop,mobile' },       position: { x: 400, y: 500 } },
+            { id: 'model-review',    type: 'action.run_agent',      label: 'Model Verification', config: { prompt: 'Verify screenshots match task requirements. Pass/fail.', timeoutMs: 300000 }, position: { x: 400, y: 650 } },
+            { id: 'mark-done',       type: 'action.update_task_status', label: 'Mark Done',      config: { status: 'done' },                                              position: { x: 200, y: 800 } },
+            { id: 'notify-fail',     type: 'notify.telegram',       label: 'Notify Failed',      config: { message: '❌ Frontend verification failed for {{taskTitle}}' }, position: { x: 600, y: 800 } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger',      target: 'run-agent' },
+            { id: 'e2', source: 'run-agent',    target: 'verify-build' },
+            { id: 'e3', source: 'run-agent',    target: 'verify-lint' },
+            { id: 'e4', source: 'verify-build', target: 'screenshot' },
+            { id: 'e5', source: 'verify-lint',  target: 'screenshot' },
+            { id: 'e6', source: 'screenshot',   target: 'model-review' },
+            { id: 'e7', source: 'model-review', target: 'mark-done',   condition: 'passed' },
+            { id: 'e8', source: 'model-review', target: 'notify-fail', condition: 'failed' },
+          ],
+          variables: { devServerUrl: 'http://localhost:3000', evidenceDir: '.bosun/evidence' },
+          metadata: { createdAt: new Date(now - 2 * 24 * hr).toISOString(), updatedAt: new Date(now - 30 * 60000).toISOString() },
+        },
       ],
       workflowTemplates: [
-        { id: 'template-pr-merge-strategy', name: 'PR Merge Strategy', description: 'Automated PR merge decision workflow with 7 outcome paths.', category: 'github', categoryLabel: 'GitHub', categoryIcon: '🐙', categoryOrder: 1, tags: ['github', 'pr', 'merge', 'strategy'], nodeCount: 14, edgeCount: 16 },
-        { id: 'template-pr-triage', name: 'PR Triage & Labels', description: 'Auto-classify PRs by size, detect breaking changes, assign labels.', category: 'github', categoryLabel: 'GitHub', categoryIcon: '🐙', categoryOrder: 1, tags: ['github', 'pr', 'triage', 'labels'], nodeCount: 11, edgeCount: 12 },
-        { id: 'template-review-agent', name: 'Review Agent', description: 'Automated PR code review: build, test, agent analysis.', category: 'github', categoryLabel: 'GitHub', categoryIcon: '🐙', categoryOrder: 1, tags: ['github', 'review', 'pr'], nodeCount: 6, edgeCount: 6 },
-        { id: 'template-frontend-agent', name: 'Frontend Agent', description: 'Front-end dev agent with screenshot validation.', category: 'agents', categoryLabel: 'Agents', categoryIcon: '🤖', categoryOrder: 2, tags: ['agent', 'frontend', 'screenshot'], nodeCount: 8, edgeCount: 9 },
-        { id: 'template-task-planner', name: 'Task Planner', description: 'Auto-replenish backlog when tasks run low.', category: 'planning', categoryLabel: 'Planning', categoryIcon: '📋', categoryOrder: 3, tags: ['planning', 'backlog'], nodeCount: 7, edgeCount: 7 },
-        { id: 'template-task-replenish', name: 'Task Replenish', description: 'Periodic task replenishment on cron schedule.', category: 'planning', categoryLabel: 'Planning', categoryIcon: '📋', categoryOrder: 3, tags: ['planning', 'cron'], nodeCount: 7, edgeCount: 6 },
-        { id: 'template-build-deploy', name: 'Build & Deploy', description: 'CI/CD pipeline: build → test → lint → deploy.', category: 'ci-cd', categoryLabel: 'CI / CD', categoryIcon: '🔄', categoryOrder: 4, tags: ['ci', 'cd', 'deploy'], nodeCount: 6, edgeCount: 5 },
-        { id: 'template-error-recovery', name: 'Error Recovery', description: 'Auto-fix after agent crash or failure.', category: 'reliability', categoryLabel: 'Reliability', categoryIcon: '🛡️', categoryOrder: 5, tags: ['error', 'recovery', 'autofix'], nodeCount: 5, edgeCount: 4 },
-        { id: 'template-custom-agent', name: 'Custom Agent', description: 'Starter template for creating custom agent profiles.', category: 'agents', categoryLabel: 'Agents', categoryIcon: '🤖', categoryOrder: 2, tags: ['custom', 'agent', 'starter'], nodeCount: 6, edgeCount: 6 },
+        {
+          id: 'template-pr-merge-strategy', name: 'PR Merge Strategy', description: 'Automated PR merge decision workflow with 7 outcome paths.', category: 'github', categoryLabel: 'GitHub', categoryIcon: '🐙', categoryOrder: 1, tags: ['github', 'pr', 'merge', 'strategy'], nodeCount: 14, edgeCount: 16,
+          nodes: [
+            { id: 'trigger', type: 'trigger.pr_event', label: 'PR Ready for Review', config: { event: 'review_requested' }, position: { x: 400, y: 50 } },
+            { id: 'check-ci', type: 'validation.build', label: 'Check CI Status', config: { command: 'gh pr checks' }, position: { x: 150, y: 200 } },
+            { id: 'get-diff', type: 'action.run_command', label: 'Get Diff Stats', config: { command: 'git diff --stat main...HEAD' }, position: { x: 650, y: 200 } },
+            { id: 'ci-passed', type: 'condition.expression', label: 'CI Passed?', config: {}, position: { x: 150, y: 350 } },
+            { id: 'wait-for-ci', type: 'action.delay', label: 'Wait for CI', config: { delayMs: 300000 }, position: { x: 150, y: 500 } },
+            { id: 'analyze', type: 'action.run_agent', label: 'Analyze Merge', config: { prompt: 'Decide: merge, prompt, close, retry, escalate, wait, noop' }, position: { x: 400, y: 350 } },
+            { id: 'decision-router', type: 'condition.switch', label: 'Route Decision', config: { field: 'action' }, position: { x: 400, y: 520 } },
+            { id: 'do-merge', type: 'action.run_command', label: 'Auto-Merge', config: { command: 'gh pr merge --auto --squash' }, position: { x: 100, y: 680 } },
+            { id: 'do-prompt', type: 'action.run_agent', label: 'Prompt Agent', config: {}, position: { x: 300, y: 680 } },
+            { id: 'do-close', type: 'action.run_command', label: 'Close PR', config: { command: 'gh pr close' }, position: { x: 500, y: 680 } },
+            { id: 'do-retry', type: 'action.run_agent', label: 'Re-attempt', config: {}, position: { x: 700, y: 680 } },
+            { id: 'do-escalate', type: 'notify.telegram', label: 'Escalate', config: {}, position: { x: 900, y: 680 } },
+            { id: 'notify-complete', type: 'notify.log', label: 'Log Result', config: {}, position: { x: 400, y: 850 } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger', target: 'check-ci' }, { id: 'e2', source: 'trigger', target: 'get-diff' },
+            { id: 'e3', source: 'check-ci', target: 'ci-passed' }, { id: 'e4', source: 'ci-passed', target: 'wait-for-ci', condition: 'CI not passed' },
+            { id: 'e5', source: 'ci-passed', target: 'analyze', condition: 'CI passed' }, { id: 'e6', source: 'get-diff', target: 'analyze' },
+            { id: 'e7', source: 'wait-for-ci', target: 'analyze' }, { id: 'e8', source: 'analyze', target: 'decision-router' },
+            { id: 'e9', source: 'decision-router', target: 'do-merge', condition: 'merge' }, { id: 'e10', source: 'decision-router', target: 'do-prompt', condition: 'prompt' },
+            { id: 'e11', source: 'decision-router', target: 'do-close', condition: 'close' }, { id: 'e12', source: 'decision-router', target: 'do-retry', condition: 'retry' },
+            { id: 'e13', source: 'decision-router', target: 'do-escalate', condition: 'escalate' },
+            { id: 'e14', source: 'do-merge', target: 'notify-complete' }, { id: 'e15', source: 'do-prompt', target: 'notify-complete' },
+            { id: 'e16', source: 'do-close', target: 'notify-complete' }, { id: 'e17', source: 'do-retry', target: 'notify-complete' },
+            { id: 'e18', source: 'do-escalate', target: 'notify-complete' },
+          ],
+        },
+        {
+          id: 'template-pr-triage', name: 'PR Triage & Labels', description: 'Auto-classify PRs by size, detect breaking changes, assign labels.', category: 'github', categoryLabel: 'GitHub', categoryIcon: '🐙', categoryOrder: 1, tags: ['github', 'pr', 'triage', 'labels'], nodeCount: 11, edgeCount: 12,
+          nodes: [
+            { id: 'trigger', type: 'trigger.pr_event', label: 'PR Opened', config: { event: 'opened' }, position: { x: 400, y: 50 } },
+            { id: 'get-stats', type: 'action.run_command', label: 'Get PR Stats', config: { command: 'gh pr view --json additions,deletions' }, position: { x: 400, y: 180 } },
+            { id: 'classify-size', type: 'condition.switch', label: 'Classify Size', config: { field: 'totalChanges' }, position: { x: 400, y: 330 } },
+            { id: 'label-small', type: 'action.run_command', label: 'Label: Size/S', config: { command: 'gh pr edit --add-label "size/S"' }, position: { x: 150, y: 480 } },
+            { id: 'label-medium', type: 'action.run_command', label: 'Label: Size/M', config: { command: 'gh pr edit --add-label "size/M"' }, position: { x: 400, y: 480 } },
+            { id: 'label-large', type: 'action.run_command', label: 'Label: Size/L', config: { command: 'gh pr edit --add-label "size/L"' }, position: { x: 650, y: 480 } },
+            { id: 'detect-breaking', type: 'action.run_agent', label: 'Detect Breaking', config: { prompt: 'Analyze diff for breaking changes' }, position: { x: 400, y: 630 } },
+            { id: 'is-breaking', type: 'condition.expression', label: 'Breaking?', config: {}, position: { x: 400, y: 780 } },
+            { id: 'label-breaking', type: 'action.run_command', label: 'Label: Breaking', config: { command: 'gh pr edit --add-label "breaking-change"' }, position: { x: 200, y: 920 } },
+            { id: 'done', type: 'notify.log', label: 'Triage Complete', config: {}, position: { x: 400, y: 1050 } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger', target: 'get-stats' }, { id: 'e2', source: 'get-stats', target: 'classify-size' },
+            { id: 'e3', source: 'classify-size', target: 'label-small', condition: 'small' }, { id: 'e4', source: 'classify-size', target: 'label-medium', condition: 'medium' },
+            { id: 'e5', source: 'classify-size', target: 'label-large', condition: 'large' },
+            { id: 'e6', source: 'label-small', target: 'detect-breaking' }, { id: 'e7', source: 'label-medium', target: 'detect-breaking' },
+            { id: 'e8', source: 'label-large', target: 'detect-breaking' }, { id: 'e9', source: 'detect-breaking', target: 'is-breaking' },
+            { id: 'e10', source: 'is-breaking', target: 'label-breaking', condition: 'breaking' }, { id: 'e11', source: 'is-breaking', target: 'done', condition: 'not breaking' },
+            { id: 'e12', source: 'label-breaking', target: 'done' },
+          ],
+        },
+        {
+          id: 'template-review-agent', name: 'Review Agent', description: 'Automated PR code review: build, test, agent analysis.', category: 'github', categoryLabel: 'GitHub', categoryIcon: '🐙', categoryOrder: 1, tags: ['github', 'review', 'pr'], nodeCount: 6, edgeCount: 6,
+          nodes: [
+            { id: 'trigger', type: 'trigger.pr_event', label: 'PR Opened', config: { event: 'opened' }, position: { x: 400, y: 50 } },
+            { id: 'run-build', type: 'validation.build', label: 'Run Build', config: { command: 'npm run build' }, position: { x: 200, y: 200 } },
+            { id: 'run-tests', type: 'validation.tests', label: 'Run Tests', config: { command: 'npm test' }, position: { x: 600, y: 200 } },
+            { id: 'run-review', type: 'action.run_agent', label: 'Agent Review', config: { prompt: 'Review for quality, bugs, coverage, docs.' }, position: { x: 400, y: 350 } },
+            { id: 'aggregate', type: 'transform.aggregate', label: 'Collect Results', config: {}, position: { x: 400, y: 500 } },
+            { id: 'notify', type: 'notify.telegram', label: 'Post Review', config: { message: '📝 PR review complete' }, position: { x: 400, y: 640 } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger', target: 'run-build' }, { id: 'e2', source: 'trigger', target: 'run-tests' },
+            { id: 'e3', source: 'run-build', target: 'run-review' }, { id: 'e4', source: 'run-tests', target: 'run-review' },
+            { id: 'e5', source: 'run-review', target: 'aggregate' }, { id: 'e6', source: 'aggregate', target: 'notify' },
+          ],
+        },
+        {
+          id: 'template-frontend-agent', name: 'Frontend Agent', description: 'Front-end dev agent with screenshot validation.', category: 'agents', categoryLabel: 'Agents', categoryIcon: '🤖', categoryOrder: 2, tags: ['agent', 'frontend', 'screenshot'], nodeCount: 8, edgeCount: 9,
+          nodes: [
+            { id: 'trigger', type: 'trigger.task_assigned', label: 'Task Assigned', config: { agentType: 'frontend' }, position: { x: 400, y: 50 } },
+            { id: 'run-agent', type: 'action.run_agent', label: 'Run Frontend Agent', config: { prompt: 'Implement: {{taskTitle}}' }, position: { x: 400, y: 200 } },
+            { id: 'verify-build', type: 'validation.build', label: 'Verify Build', config: { command: 'npm run build' }, position: { x: 200, y: 350 } },
+            { id: 'verify-lint', type: 'validation.lint', label: 'Verify Lint', config: { command: 'npm run lint' }, position: { x: 600, y: 350 } },
+            { id: 'screenshot', type: 'action.run_command', label: 'Screenshots', config: { command: 'bosun screenshot' }, position: { x: 400, y: 500 } },
+            { id: 'model-review', type: 'action.run_agent', label: 'Model Review', config: { prompt: 'Verify screenshots match requirements' }, position: { x: 400, y: 650 } },
+            { id: 'mark-done', type: 'action.update_task_status', label: 'Mark Done', config: { status: 'done' }, position: { x: 200, y: 800 } },
+            { id: 'notify-fail', type: 'notify.telegram', label: 'Notify Failed', config: { message: '❌ Verification failed' }, position: { x: 600, y: 800 } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger', target: 'run-agent' }, { id: 'e2', source: 'run-agent', target: 'verify-build' },
+            { id: 'e3', source: 'run-agent', target: 'verify-lint' }, { id: 'e4', source: 'verify-build', target: 'screenshot' },
+            { id: 'e5', source: 'verify-lint', target: 'screenshot' }, { id: 'e6', source: 'screenshot', target: 'model-review' },
+            { id: 'e7', source: 'model-review', target: 'mark-done', condition: 'passed' },
+            { id: 'e8', source: 'model-review', target: 'notify-fail', condition: 'failed' },
+          ],
+        },
+        {
+          id: 'template-task-planner', name: 'Task Planner', description: 'Auto-replenish backlog when tasks run low.', category: 'planning', categoryLabel: 'Planning', categoryIcon: '📋', categoryOrder: 3, tags: ['planning', 'backlog'], nodeCount: 7, edgeCount: 7,
+          nodes: [
+            { id: 'trigger', type: 'trigger.cron', label: 'Every 30 min', config: { cron: '*/30 * * * *' }, position: { x: 400, y: 50 } },
+            { id: 'count-tasks', type: 'action.run_command', label: 'Count Tasks', config: { command: 'bosun task list --status todo --count' }, position: { x: 400, y: 180 } },
+            { id: 'check-low', type: 'condition.expression', label: 'Tasks Low?', config: { expression: '$data?.count < 3' }, position: { x: 400, y: 310 } },
+            { id: 'plan-tasks', type: 'action.run_agent', label: 'Plan New Tasks', config: { prompt: 'Create 3-5 improvement tasks' }, position: { x: 200, y: 460 } },
+            { id: 'create-tasks', type: 'action.run_command', label: 'Create Tasks', config: {}, position: { x: 200, y: 610 } },
+            { id: 'notify', type: 'notify.telegram', label: 'Notify Done', config: { message: '📋 Tasks replenished' }, position: { x: 200, y: 760 } },
+            { id: 'skip', type: 'notify.log', label: 'Backlog OK', config: {}, position: { x: 600, y: 460 } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger', target: 'count-tasks' }, { id: 'e2', source: 'count-tasks', target: 'check-low' },
+            { id: 'e3', source: 'check-low', target: 'plan-tasks', condition: 'low' }, { id: 'e4', source: 'check-low', target: 'skip', condition: 'ok' },
+            { id: 'e5', source: 'plan-tasks', target: 'create-tasks' }, { id: 'e6', source: 'create-tasks', target: 'notify' },
+          ],
+        },
+        {
+          id: 'template-task-replenish', name: 'Task Replenish', description: 'Periodic task replenishment on cron schedule.', category: 'planning', categoryLabel: 'Planning', categoryIcon: '📋', categoryOrder: 3, tags: ['planning', 'cron'], nodeCount: 7, edgeCount: 6,
+          nodes: [
+            { id: 'trigger', type: 'trigger.cron', label: 'Cron Schedule', config: { cron: '0 */6 * * *' }, position: { x: 400, y: 50 } },
+            { id: 'scan', type: 'action.run_command', label: 'Scan Backlog', config: {}, position: { x: 400, y: 180 } },
+            { id: 'analyze', type: 'action.run_agent', label: 'Analyze Gaps', config: { prompt: 'Find missing tasks' }, position: { x: 400, y: 310 } },
+            { id: 'create', type: 'action.run_command', label: 'Create Tasks', config: {}, position: { x: 400, y: 440 } },
+            { id: 'prioritize', type: 'action.run_agent', label: 'Prioritize', config: {}, position: { x: 400, y: 570 } },
+            { id: 'notify', type: 'notify.telegram', label: 'Notify', config: {}, position: { x: 400, y: 700 } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger', target: 'scan' }, { id: 'e2', source: 'scan', target: 'analyze' },
+            { id: 'e3', source: 'analyze', target: 'create' }, { id: 'e4', source: 'create', target: 'prioritize' },
+            { id: 'e5', source: 'prioritize', target: 'notify' },
+          ],
+        },
+        {
+          id: 'template-build-deploy', name: 'Build & Deploy', description: 'CI/CD pipeline: build → test → lint → deploy.', category: 'ci-cd', categoryLabel: 'CI / CD', categoryIcon: '🔄', categoryOrder: 4, tags: ['ci', 'cd', 'deploy'], nodeCount: 6, edgeCount: 5,
+          nodes: [
+            { id: 'trigger', type: 'trigger.event', label: 'PR Merged', config: { eventType: 'pr.merged' }, position: { x: 400, y: 50 } },
+            { id: 'build', type: 'validation.build', label: 'Build', config: { command: 'npm run build' }, position: { x: 400, y: 180 } },
+            { id: 'test', type: 'validation.tests', label: 'Tests', config: { command: 'npm test' }, position: { x: 400, y: 310 } },
+            { id: 'lint', type: 'validation.lint', label: 'Lint', config: { command: 'npm run lint' }, position: { x: 400, y: 440 } },
+            { id: 'deploy', type: 'action.run_command', label: 'Deploy', config: { command: 'npm run deploy' }, position: { x: 400, y: 570 } },
+            { id: 'notify', type: 'notify.telegram', label: 'Notify', config: { message: '🚀 Deployed' }, position: { x: 400, y: 700 } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger', target: 'build' }, { id: 'e2', source: 'build', target: 'test' },
+            { id: 'e3', source: 'test', target: 'lint' }, { id: 'e4', source: 'lint', target: 'deploy' },
+            { id: 'e5', source: 'deploy', target: 'notify' },
+          ],
+        },
+        {
+          id: 'template-error-recovery', name: 'Error Recovery', description: 'Auto-fix after agent crash or failure.', category: 'reliability', categoryLabel: 'Reliability', categoryIcon: '🛡️', categoryOrder: 5, tags: ['error', 'recovery', 'autofix'], nodeCount: 5, edgeCount: 4,
+          nodes: [
+            { id: 'trigger', type: 'trigger.event', label: 'Agent Failed', config: { eventType: 'task.failed' }, position: { x: 400, y: 50 } },
+            { id: 'check-retries', type: 'condition.expression', label: 'Retries Left?', config: {}, position: { x: 400, y: 180 } },
+            { id: 'analyze-error', type: 'action.run_agent', label: 'Analyze Failure', config: {}, position: { x: 200, y: 330 } },
+            { id: 'retry-task', type: 'action.run_agent', label: 'Retry Task', config: {}, position: { x: 200, y: 480 } },
+            { id: 'escalate', type: 'notify.telegram', label: 'Escalate', config: {}, position: { x: 600, y: 180 } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger', target: 'check-retries' },
+            { id: 'e2', source: 'check-retries', target: 'analyze-error', condition: 'retries > 0' },
+            { id: 'e3', source: 'check-retries', target: 'escalate', condition: 'retries == 0' },
+            { id: 'e4', source: 'analyze-error', target: 'retry-task' },
+          ],
+        },
+        {
+          id: 'template-custom-agent', name: 'Custom Agent', description: 'Starter template for creating custom agent profiles.', category: 'agents', categoryLabel: 'Agents', categoryIcon: '🤖', categoryOrder: 2, tags: ['custom', 'agent', 'starter'], nodeCount: 6, edgeCount: 6,
+          nodes: [
+            { id: 'trigger', type: 'trigger.manual', label: 'Start', config: {}, position: { x: 400, y: 50 } },
+            { id: 'set-context', type: 'action.run_command', label: 'Set Context', config: {}, position: { x: 400, y: 180 } },
+            { id: 'run-agent', type: 'action.run_agent', label: 'Run Agent', config: { prompt: 'Task: {{taskTitle}}' }, position: { x: 400, y: 310 } },
+            { id: 'verify', type: 'validation.tests', label: 'Verify', config: { command: 'npm test' }, position: { x: 400, y: 440 } },
+            { id: 'check-result', type: 'condition.expression', label: 'Passed?', config: {}, position: { x: 400, y: 570 } },
+            { id: 'complete', type: 'action.update_task_status', label: 'Mark Done', config: { status: 'done' }, position: { x: 200, y: 700 } },
+            { id: 'fail-notify', type: 'notify.log', label: 'Log Failure', config: {}, position: { x: 600, y: 700 } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger', target: 'set-context' }, { id: 'e2', source: 'set-context', target: 'run-agent' },
+            { id: 'e3', source: 'run-agent', target: 'verify' }, { id: 'e4', source: 'verify', target: 'check-result' },
+            { id: 'e5', source: 'check-result', target: 'complete', condition: 'passed' },
+            { id: 'e6', source: 'check-result', target: 'fail-notify', condition: 'failed' },
+          ],
+        },
       ],
       workflowNodeTypes: [
         { type: 'trigger.task_assigned', category: 'trigger', description: 'Fires when a task is assigned to an agent' },
@@ -938,10 +1242,14 @@
         { type: 'loop.for_each', category: 'loop', description: 'Iterate over a list' },
       ],
       workflowRuns: [
-        { runId: 'run-001', workflowId: 'wf-pr-merge-auto', status: 'completed', nodeCount: 6, duration: 42000, errorCount: 0, startedAt: new Date(now - 2 * hr).toISOString() },
-        { runId: 'run-002', workflowId: 'wf-pr-merge-auto', status: 'completed', nodeCount: 6, duration: 38000, errorCount: 0, startedAt: new Date(now - 6 * hr).toISOString() },
+        { runId: 'run-001', workflowId: 'wf-pr-merge-auto', status: 'completed', nodeCount: 14, duration: 42000, errorCount: 0, startedAt: new Date(now - 2 * hr).toISOString() },
+        { runId: 'run-002', workflowId: 'wf-pr-merge-auto', status: 'completed', nodeCount: 14, duration: 38000, errorCount: 0, startedAt: new Date(now - 6 * hr).toISOString() },
         { runId: 'run-003', workflowId: 'wf-error-recovery', status: 'failed', nodeCount: 3, duration: 15000, errorCount: 1, startedAt: new Date(now - 12 * hr).toISOString() },
-        { runId: 'run-004', workflowId: 'wf-pr-merge-auto', status: 'completed', nodeCount: 6, duration: 55000, errorCount: 0, startedAt: new Date(now - 24 * hr).toISOString() },
+        { runId: 'run-004', workflowId: 'wf-pr-merge-auto', status: 'completed', nodeCount: 14, duration: 55000, errorCount: 0, startedAt: new Date(now - 24 * hr).toISOString() },
+        { runId: 'run-005', workflowId: 'wf-review-agent', status: 'completed', nodeCount: 6, duration: 28000, errorCount: 0, startedAt: new Date(now - 4 * hr).toISOString() },
+        { runId: 'run-006', workflowId: 'wf-build-deploy', status: 'completed', nodeCount: 6, duration: 92000, errorCount: 0, startedAt: new Date(now - 8 * hr).toISOString() },
+        { runId: 'run-007', workflowId: 'wf-task-planner', status: 'completed', nodeCount: 5, duration: 35000, errorCount: 0, startedAt: new Date(now - 3 * hr).toISOString() },
+        { runId: 'run-008', workflowId: 'wf-frontend-agent', status: 'completed', nodeCount: 8, duration: 180000, errorCount: 0, startedAt: new Date(now - 1 * hr).toISOString() },
       ],
     };
 
@@ -1256,6 +1564,7 @@
 
       if (_demoWS && _demoWS.onmessage) {
         _demoWS.onmessage({ data: JSON.stringify({ type: 'task-update', task: { id: taskId, status: 'inreview' } }) });
+        _demoWS.onmessage({ data: JSON.stringify({ type: 'invalidate', channels: ['tasks', 'overview'] }) });
       }
 
       // Trigger workflow run
@@ -1336,6 +1645,7 @@
       STATE.status.prsMerged = (STATE.status.prsMerged || 22) + 1;
 
       if (_demoWS && _demoWS.onmessage) {
+        _demoWS.onmessage({ data: JSON.stringify({ type: 'invalidate', channels: ['tasks', 'overview', 'agents'] }) });
         _demoWS.onmessage({ data: JSON.stringify({ type: 'task-update', task: { id: taskId, status: 'done' } }) });
       }
 
@@ -1625,20 +1935,28 @@
         const agent = STATE.availableAgents.find(a => a.id === STATE.activeAgentId) || STATE.availableAgents[0];
         return { ok: true, data: agent };
       }
-
-      // ── Agent Event Bus (mock) ──
+      // ── Agent Events (dynamic from simulation) ──
       if (route === '/api/agents/events') {
         const taskId = params.get('taskId');
         const type = params.get('type');
         const limit = parseInt(params.get('limit')) || 100;
-        let events = [
-          { type: 'agent:task-started', taskId: 'demo-task-1', payload: { title: 'Fix authentication bug', sdk: 'copilot-sdk' }, ts: now - 300000 },
-          { type: 'agent:heartbeat', taskId: 'demo-task-1', payload: { alive: true }, ts: now - 120000 },
-          { type: 'agent:error-classified', taskId: 'demo-task-1', payload: { pattern: 'build_failure', confidence: 0.92, action: 'retry_with_prompt' }, ts: now - 60000 },
-          { type: 'agent:auto-retry', taskId: 'demo-task-1', payload: { retryCount: 1, maxRetries: 5, pattern: 'build_failure' }, ts: now - 55000 },
-          { type: 'agent:task-completed', taskId: 'demo-task-1', payload: { title: 'Fix authentication bug', success: true, hasCommits: true, branch: 've/demo-task-1' }, ts: now - 10000 },
-          { type: 'agent:auto-review', taskId: 'demo-task-1', payload: { title: 'Fix authentication bug', branch: 've/demo-task-1' }, ts: now - 5000 },
-        ];
+        // Build events dynamically from current simulation state
+        let events = [];
+        for (const t of SEED_TASKS) {
+          const base = { taskId: t.id };
+          if (t.status === 'inprogress' || t.status === 'inreview' || t.status === 'done') {
+            events.push({ ...base, type: 'agent:task-started', payload: { title: t.title, sdk: t.assignee || 'copilot-claude' }, ts: (t.updated || now) - 120000 });
+            events.push({ ...base, type: 'agent:heartbeat', payload: { alive: true }, ts: (t.updated || now) - 30000 });
+          }
+          if (t.status === 'inreview') {
+            events.push({ ...base, type: 'agent:auto-review', payload: { title: t.title, branch: t.branch }, ts: t.updated || now });
+          }
+          if (t.status === 'done') {
+            events.push({ ...base, type: 'agent:task-completed', payload: { title: t.title, success: true, hasCommits: true, branch: t.branch }, ts: t.updated || now });
+          }
+        }
+        // Sort by timestamp
+        events.sort((a, b) => a.ts - b.ts);
         if (taskId) events = events.filter(e => e.taskId === taskId);
         if (type) events = events.filter(e => e.type === type);
         events = events.slice(-limit);
@@ -1647,25 +1965,22 @@
       if (route === '/api/agents/events/errors') {
         const taskId = params.get('taskId');
         if (taskId) {
-          return { ok: true, taskId, errors: [
-            { pattern: 'build_failure', ts: now - 60000, action: 'retry_with_prompt', confidence: 0.92 },
-          ]};
+          return { ok: true, taskId, errors: [] };
         }
-        return { ok: true, patterns: {
-          build_failure: { count: 3, lastSeen: now - 60000, tasks: ['demo-task-1', 'demo-task-2'] },
-          rate_limit: { count: 1, lastSeen: now - 180000, tasks: ['demo-task-2'] },
-        }};
+        return { ok: true, patterns: {} };
       }
       if (route === '/api/agents/events/liveness') {
-        return { ok: true, agents: [
-          { taskId: 'demo-task-1', lastHeartbeat: now - 30000, alive: true, staleSinceMs: null },
-          { taskId: 'demo-task-2', lastHeartbeat: now - 120000, alive: false, staleSinceMs: 120000 },
-        ]};
+        // Show active simulation tasks as live agents
+        const liveAgents = [];
+        for (const [tid] of activeSims) {
+          liveAgents.push({ taskId: tid, lastHeartbeat: now - 5000, alive: true, staleSinceMs: null });
+        }
+        return { ok: true, agents: liveAgents };
       }
       if (route === '/api/agents/events/status') {
-        return { ok: true, started: true, eventLogSize: 6, trackedAgents: 2, errorTrackedTasks: 2, autoActionTasks: 1, listenerCount: 0, liveness: [
-          { taskId: 'demo-task-1', lastHeartbeat: now - 30000, alive: true, staleSinceMs: null },
-        ], errorPatterns: {
+        return { ok: true, started: true, eventLogSize: liveLogBuffer.length, trackedAgents: activeSims.size, errorTrackedTasks: 0, autoActionTasks: activeSims.size, listenerCount: 0, liveness: [...activeSims.keys()].map(tid => ({
+          taskId: tid, lastHeartbeat: now - 5000, alive: true, staleSinceMs: null,
+        })), errorPatterns: {} , errorPatterns: {
           build_failure: { count: 3, lastSeen: now - 60000, tasks: ['demo-task-1'] },
         }};
       }
@@ -1788,7 +2103,9 @@
       if (route === '/api/workflows/install-template') {
         const tpl = STATE.workflowTemplates.find(t => t.id === body?.templateId);
         if (!tpl) return { ok: false, error: 'Template not found' };
-        const wf = { id: 'wf-' + Math.random().toString(36).slice(2, 9), name: tpl.name, description: tpl.description, category: tpl.category, enabled: true, nodeCount: tpl.nodeCount, trigger: 'trigger.pr_event', nodes: [], edges: [], variables: body?.overrides || {}, metadata: { installedFrom: tpl.id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } };
+        // Deep-clone nodes/edges from matching demo workflow or generate from template
+        const donor = STATE.workflows.find(w => w.name === tpl.name);
+        const wf = { id: 'wf-' + Math.random().toString(36).slice(2, 9), name: tpl.name, description: tpl.description, category: tpl.category, enabled: true, nodeCount: tpl.nodeCount, trigger: 'trigger.pr_event', nodes: JSON.parse(JSON.stringify(donor?.nodes || tpl.nodes || [])), edges: JSON.parse(JSON.stringify(donor?.edges || tpl.edges || [])), variables: body?.overrides || {}, metadata: { installedFrom: tpl.id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } };
         STATE.workflows.push(wf);
         return { ok: true, workflow: wf };
       }

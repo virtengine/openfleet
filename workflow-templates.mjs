@@ -239,6 +239,13 @@ After completing your implementation:
     createdAt: "2025-02-24T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["frontend", "agent", "validation", "screenshot"],
+    replaces: {
+      module: "agent-hooks.mjs",
+      functions: ["screenshotValidation", "evidenceCollection"],
+      calledFrom: ["monitor.mjs:startFreshSession"],
+      description: "Replaces hardcoded frontend agent profile with a visual workflow. " +
+        "Screenshot capture, model verification, and evidence collection are explicit steps.",
+    },
   },
 };
 
@@ -325,6 +332,13 @@ const TASK_PLANNER_TEMPLATE = {
     createdAt: "2025-02-24T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["planner", "backlog", "automation"],
+    replaces: {
+      module: "monitor.mjs",
+      functions: ["startTaskPlannerStatusLoop"],
+      calledFrom: ["monitor.mjs:startProcess"],
+      description: "Replaces the hardcoded task planner status loop. " +
+        "Task counting, gap analysis, and replenishment are visual workflow steps.",
+    },
   },
 };
 
@@ -389,6 +403,13 @@ const TASK_REPLENISH_TEMPLATE = {
     createdAt: "2025-02-24T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["replenish", "schedule", "backlog"],
+    replaces: {
+      module: "monitor.mjs",
+      functions: ["startTaskPlannerStatusLoop (scheduled variant)"],
+      calledFrom: ["monitor.mjs:startProcess"],
+      description: "Replaces the cron-based task replenishment loop in monitor. " +
+        "Backlog scanning and planner execution become visual workflow steps.",
+    },
   },
 };
 
@@ -456,6 +477,13 @@ Provide a structured review with specific file:line references.`,
     createdAt: "2025-02-24T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["review", "pr", "automation"],
+    replaces: {
+      module: "review-agent.mjs",
+      functions: ["ReviewAgent.runReview", "createReviewAgent"],
+      calledFrom: ["monitor.mjs:checkEpicBranches"],
+      description: "Replaces the ReviewAgent class with a visual workflow. " +
+        "Build, test, and AI review steps run in parallel with results aggregated.",
+    },
   },
 };
 
@@ -518,6 +546,13 @@ const BUILD_DEPLOY_TEMPLATE = {
     createdAt: "2025-02-24T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["ci", "cd", "deploy", "build"],
+    replaces: {
+      module: "monitor.mjs",
+      functions: ["preflight checks"],
+      calledFrom: ["preflight.mjs"],
+      description: "Replaces ad-hoc build/test/lint validation steps " +
+        "with a coordinated CI/CD pipeline workflow.",
+    },
   },
 };
 
@@ -574,6 +609,13 @@ const ERROR_RECOVERY_TEMPLATE = {
     createdAt: "2025-02-24T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["error", "recovery", "autofix"],
+    replaces: {
+      module: "monitor.mjs",
+      functions: ["runCodexRecovery"],
+      calledFrom: ["monitor.mjs:runMonitorMonitorCycle"],
+      description: "Replaces hardcoded error recovery logic. " +
+        "Retry/escalate decisions are now visual workflow branches.",
+    },
   },
 };
 
@@ -784,6 +826,14 @@ Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optio
     createdAt: "2025-02-24T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["github", "pr", "merge", "strategy", "automation"],
+    replaces: {
+      module: "merge-strategy.mjs",
+      functions: ["analyzeMergeStrategy", "executeDecision", "analyzeAndExecute"],
+      calledFrom: ["monitor.mjs:runMergeStrategyAnalysis"],
+      description: "Replaces hardcoded merge-strategy analysis and decision execution. " +
+        "All 7 decision outcomes (merge, prompt, close, re_attempt, manual_review, wait, noop) " +
+        "are encoded as visual workflow branches instead of imperative code.",
+    },
   },
 };
 
@@ -871,6 +921,14 @@ const PR_TRIAGE_TEMPLATE = {
     createdAt: "2025-02-24T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["github", "pr", "triage", "labels", "automation"],
+    replaces: {
+      module: "github-reconciler.mjs",
+      functions: ["PR labeling and classification logic"],
+      calledFrom: ["monitor.mjs:checkEpicBranches"],
+      description: "Replaces scattered PR classification logic with a structured " +
+        "triage workflow. Size classification, breaking change detection, " +
+        "and label assignment become explicit workflow nodes.",
+    },
   },
 };
 
@@ -911,7 +969,7 @@ export function getTemplate(id) {
 
 /**
  * List all available templates with metadata.
- * @returns {Array<{id, name, description, category, tags}>}
+ * @returns {Array<{id, name, description, category, tags, replaces?}>}
  */
 export function listTemplates() {
   return WORKFLOW_TEMPLATES.map((t) => {
@@ -927,6 +985,7 @@ export function listTemplates() {
       tags: t.metadata?.tags || [],
       nodeCount: t.nodes?.length || 0,
       edgeCount: t.edges?.length || 0,
+      replaces: t.metadata?.replaces || null,
     };
   });
 }

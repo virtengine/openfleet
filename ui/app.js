@@ -1481,14 +1481,14 @@ function App() {
       }
 
       // "c" to create task (when not in a form element)
-      if (e.key === "c") {
+      if (e.key === "c" && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         globalThis.dispatchEvent(new CustomEvent("ve:create-task"));
         return;
       }
 
       // "?" to toggle keyboard shortcuts help
-      if (e.key === "?") {
+      if (e.key === "?" && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         setShowShortcuts((v) => !v);
         return;
