@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bosun — Autonomous AI Fleet Supervisor</title>
+  <meta name="description" content="Bosun is the open-source control plane for AI coding agents. Route tasks, manage executors, automate PRs, and ship code autonomously." />
+  <meta name="theme-color" content="#06060b" />
+  <meta name="robots" content="index, follow" />
+  <meta name="keywords" content="Bosun, VirtEngine, autonomous coding agents, AI orchestration, developer automation, task routing, PR automation, fleet supervisor" />
+  <link rel="canonical" href="https://bosun.virtengine.com/" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Bosun — Autonomous AI Fleet Supervisor" />
+  <meta property="og:description" content="The open-source control plane for AI coding agents. Ship code autonomously." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://bosun.virtengine.com/" />
+  <meta property="og:site_name" content="Bosun" />
+  <meta property="og:locale" content="en_US" />
+  <meta property="og:image" content="https://bosun.virtengine.com/social-card.png" />
+  <meta property="og:image:secure_url" content="https://bosun.virtengine.com/social-card.png" />
+  <meta property="og:image:alt" content="Bosun — Autonomous AI Fleet Supervisor" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Bosun — Autonomous AI Fleet Supervisor" />
+  <meta name="twitter:description" content="Route tasks, manage executors, automate PRs, and ship code autonomously." />
+  <meta name="twitter:image" content="https://bosun.virtengine.com/social-card.png" />
+
+  <!-- Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Bosun",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Linux, macOS, Windows",
+    "description": "Open-source control plane for autonomous AI coding agents.",
+    "url": "https://bosun.virtengine.com/",
+    "image": "https://bosun.virtengine.com/social-card.png",
+    "publisher": {
+      "@type": "Organization",
+      "name": "VirtEngine",
+      "url": "https://virtengine.com/"
+    }
+  }
+  </script>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&family=Lora:ital,wght@1,400;1,500;1,600;1,700&display=swap" rel="stylesheet" />
+
+  <!-- jQuery Terminal CSS -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jquery.terminal@2.42.2/css/jquery.terminal.min.css" />
+
+  <!-- Main CSS -->
+  <link rel="stylesheet" href="css/mainv2.css" />
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png" />
+</head>
+<body>
+
+  <!-- Grid background -->
+  <div class="grid-bg"></div>
+
+  <!-- ═══ Navigation ════════════════════════════════════════════════════ -->
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="#" class="nav__brand">
+        <svg class="nav__brand-icon" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <defs>
+            <linearGradient id="helm-g" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#2dd4bf"/>
+              <stop offset="100%" stop-color="#06b6d4"/>
+            </linearGradient>
+          </defs>
+          <g stroke="url(#helm-g)" fill="none" stroke-linecap="round">
+            <!-- Outer ring -->
+            <circle cx="50" cy="50" r="42" stroke-width="5"/>
+            <!-- Inner ring -->
+            <circle cx="50" cy="50" r="18" stroke-width="4"/>
+            <!-- 8 Spokes -->
+            <line x1="68" y1="50" x2="87" y2="50" stroke-width="3.5"/>
+            <line x1="62.73" y1="62.73" x2="76.17" y2="76.17" stroke-width="3.5"/>
+            <line x1="50" y1="68" x2="50" y2="87" stroke-width="3.5"/>
+            <line x1="37.27" y1="62.73" x2="23.83" y2="76.17" stroke-width="3.5"/>
+            <line x1="32" y1="50" x2="13" y2="50" stroke-width="3.5"/>
+            <line x1="37.27" y1="37.27" x2="23.83" y2="23.83" stroke-width="3.5"/>
+            <line x1="50" y1="32" x2="50" y2="13" stroke-width="3.5"/>
+            <line x1="62.73" y1="37.27" x2="76.17" y2="23.83" stroke-width="3.5"/>
+          </g>
+          <!-- Center donut -->
+          <circle cx="50" cy="50" r="7" fill="url(#helm-g)"/>
+          <circle cx="50" cy="50" r="2.5" fill="#09090b"/>
+          <!-- Handle circles at spoke endpoints -->
+          <g fill="url(#helm-g)">
+            <circle cx="92" cy="50" r="5.5"/>
+            <circle cx="79.70" cy="79.70" r="5.5"/>
+            <circle cx="50" cy="92" r="5.5"/>
+            <circle cx="20.30" cy="79.70" r="5.5"/>
+            <circle cx="8" cy="50" r="5.5"/>
+            <circle cx="20.30" cy="20.30" r="5.5"/>
+            <circle cx="50" cy="8" r="5.5"/>
+            <circle cx="79.70" cy="20.30" r="5.5"/>
+          </g>
+        </svg>
+        Bosun
+      </a>
+
+      <button class="nav__toggle" aria-label="Toggle menu">☰</button>
+
+      <ul class="nav__links">
+        <li><a href="#features">Features</a></li>
+        <li><a href="#architecture">Architecture</a></li>
+        <li><a href="#integrations">Integrations</a></li>
+        <li><a href="docs/">Docs</a></li>
+        <li>
+          <a href="https://github.com/virtengine/bosun#readme" class="nav__cta" target="_blank" rel="noopener">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+            GitHub
+          </a>
+        </li>
+      </ul>
+    </div>
+  </nav>
+
+  <!-- Scroll progress bar -->
+  <div class="scroll-progress" id="scroll-progress"></div>
+
+  <!-- ═══ Hero ══════════════════════════════════════════════════════════ -->
+  <section class="hero" id="hero">
+    <canvas class="hero__particles" id="hero-particles"></canvas>
+    <div class="hero__glow hero__glow--cyan"></div>
+    <div class="hero__glow hero__glow--purple"></div>
+
+    <div class="container">
+      <div class="hero__title-block">
+        <a href="https://www.npmjs.com/package/bosun" class="hero__badge">
+          <span class="pulse-dot"></span>
+          <span data-version>v0.0</span> — now available
+        </a>
+        <h1 class="hero__headline">Your AI Fleet,<br><em class="hero__headline-accent">supervized.</em></h1>
+        <div class="hero__typed">
+          <span id="hero-typed"></span><span class="typed-cursor" id="typed-cursor">|</span>
+        </div>
+      </div>
+
+      <div class="hero__layout">
+
+        <!-- LEFT: intro -->
+        <div class="hero__intro">
+          <p class="hero__subtitle">
+            Bosun is the open-source supervisor for AI coding agents.
+            Route tasks, manage multi-executor pools, automate PR lifecycles,
+            and ship production code — without human intervention.
+          </p>
+
+          <ul class="hero__bullets">
+            <li>Multi-executor: Copilot, Codex, Claude</li>
+            <li>GitHub, Jira &amp; Vibe-Kanban integrated</li>
+            <li>Telegram + WhatsApp push alerts</li>
+            <li>Auto-fix lint, CI failures &amp; retry loops</li>
+          </ul>
+
+          <div class="hero__install">
+            <div class="install-cmd" title="Click to copy">
+              <span class="install-cmd__prompt">$</span>
+              <span class="install-cmd__text">npm install -g bosun</span>
+              <span class="install-cmd__copy">📋</span>
+              <span class="install-cmd__tooltip">Copied!</span>
+            </div>
+            <a href="docs/" class="btn btn--ghost btn--sm">Documentation</a>
+            <a href="https://github.com/virtengine/bosun#readme" class="btn btn--ghost btn--sm" target="_blank" rel="noopener">GitHub</a>
+          </div>
+
+          <a href="https://www.npmjs.com/package/bosun" class="hero__version-tag">
+            <span data-version>v0.0</span> · Bosun by VirtEngine · Apache 2.0
+          </a>
+        </div>
+
+        <!-- RIGHT: demo panels -->
+        <div class="hero__demo" id="demo">
+          <div class="miniapp-demo-window__overlay" aria-hidden="true"></div>
+
+        <!-- ── Channel Tabs ──────────────────────────────────────────── -->
+        <div class="demo-tabs reveal">
+          <button class="demo-tab" data-demo="desktop">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            Desktop
+          </button>
+          <button class="demo-tab" data-demo="cli">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+            CLI Terminal
+          </button>
+          <button class="demo-tab" data-demo="telegram">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+            Telegram
+          </button>
+          <button class="demo-tab" data-demo="mobile">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+            Mobile
+          </button>
+        </div>
+
+        <!-- ── Desktop Panel (browser chrome + MiniApp iframe) ───────── -->
+        <div class="demo-panel" id="demo-panel-desktop">
+          <div class="desktop-demo-window reveal">
+            <div class="desktop-demo-window__chrome">
+              <div class="terminal-window__dots">
+                <div class="terminal-window__dot terminal-window__dot--red"></div>
+                <div class="terminal-window__dot terminal-window__dot--yellow"></div>
+                <div class="terminal-window__dot terminal-window__dot--green"></div>
+              </div>
+              <div class="desktop-demo-window__url">
+                <div class="desktop-demo-window__nav-btns">
+                  <span>‹</span><span>›</span>
+                </div>
+                <div class="desktop-demo-window__url-bar">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  bosun.virtengine.com
+                </div>
+              </div>
+            </div>
+            <iframe
+              id="desktop-miniapp-iframe"
+              src="ui/demo.html"
+              class="desktop-demo-window__iframe"
+              loading="lazy"
+              title="Bosun MiniApp Demo — Desktop"
+            ></iframe>
+          </div>
+        </div>
+
+        <!-- ── CLI Panel (jQuery Terminal) ────────────────────────────── -->
+        <div class="demo-panel" id="demo-panel-cli">
+          <div class="terminal-window reveal">
+            <div class="terminal-window__titlebar">
+              <div class="terminal-window__dots">
+                <div class="terminal-window__dot terminal-window__dot--red"></div>
+                <div class="terminal-window__dot terminal-window__dot--yellow"></div>
+                <div class="terminal-window__dot terminal-window__dot--green"></div>
+              </div>
+              <div class="terminal-window__title">bosun — bash — 120×35</div>
+            </div>
+            <div class="terminal-window__body" id="demo-terminal"></div>
+          </div>
+        </div>
+
+        <!-- ── Telegram Chat Panel ───────────────────────────────────── -->
+        <div class="demo-panel" id="demo-panel-telegram">
+          <div class="telegram-demo-window reveal">
+            <div class="telegram-demo-window__chrome">
+              <div class="telegram-demo-window__top">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                <span class="telegram-demo-window__app-name">Telegram</span>
+                <div class="telegram-demo-window__dots">
+                  <div class="terminal-window__dot terminal-window__dot--red"></div>
+                  <div class="terminal-window__dot terminal-window__dot--yellow"></div>
+                  <div class="terminal-window__dot terminal-window__dot--green"></div>
+                </div>
+              </div>
+            </div>
+            <div id="telegram-chat-container"></div>
+          </div>
+        </div>
+
+        <!-- ── Mobile Panel (phone frame + fullscreen) ───────────────── -->
+        <div class="demo-panel" id="demo-panel-mobile">
+          <div class="miniapp-demo-window reveal">
+            <div class="miniapp-demo-window__phone">
+              <div class="miniapp-demo-window__notch"></div>
+              <div class="miniapp-demo-window__screen">
+                <div class="miniapp-demo-window__tg-header">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                  <span>Bosun</span>
+                  <button class="miniapp-demo-window__expand" type="button" aria-label="Enter fullscreen" aria-pressed="false">
+                    <svg class="miniapp-demo-window__expand-icon miniapp-demo-window__expand-icon--enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H3v5"/><path d="M16 3h5v5"/><path d="M8 21H3v-5"/><path d="M16 21h5v-5"/></svg>
+                    <svg class="miniapp-demo-window__expand-icon miniapp-demo-window__expand-icon--exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H3v6"/><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M15 21h6v-6"/></svg>
+                  </button>
+                  <div class="miniapp-demo-window__tg-dots">⋮</div>
+                </div>
+                <iframe
+                  id="miniapp-iframe"
+                  src="ui/demo.html"
+                  class="miniapp-demo-window__iframe"
+                  loading="lazy"
+                  title="Bosun MiniApp Demo — Mobile"
+                ></iframe>
+              </div>
+            </div>
+            <p class="miniapp-demo-window__caption">
+              <span class="miniapp-demo-window__live-dot"></span>
+              Live from source — auto-updates when the real MiniApp changes
+            </p>
+          </div>
+        </div>
+
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ Stats ═════════════════════════════════════════════════════════ -->
+  <section class="container">
+    <div class="stats reveal">
+      <div class="stat">
+        <div class="stat__value" data-target="40" data-suffix="+">0+</div>
+        <div class="stat__label">Modules</div>
+      </div>
+      <div class="stat">
+        <div class="stat__value" data-target="6">0</div>
+        <div class="stat__label">Executor Engines</div>
+      </div>
+      <div class="stat">
+        <div class="stat__value" data-target="4">0</div>
+        <div class="stat__label">Board Backends</div>
+      </div>
+      <div class="stat">
+        <div class="stat__value" data-target="4">0</div>
+        <div class="stat__label">Control Channels</div>
+      </div>
+      <div class="stat">
+        <div class="stat__value" data-target="100" data-suffix="%">0%</div>
+        <div class="stat__label">Open Source</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ Features ══════════════════════════════════════════════════════ -->
+  <section id="features">
+    <div class="container">
+      <div class="section-header reveal">
+        <span class="section-header__label">Features</span>
+        <h2 class="section-header__title">Everything you need to run an <span class="gradient-text">autonomous fleet</span></h2>
+        <p class="section-header__desc">
+          From task routing to PR merging, Bosun handles the full lifecycle
+          so your AI agents can focus on writing great code.
+        </p>
+      </div>
+
+      <div class="features-grid">
+        <div class="feature-card reveal reveal--delay-1">
+          <div class="feature-card__icon">🎯</div>
+          <h3 class="feature-card__title">Multi-Executor Routing</h3>
+          <p class="feature-card__desc">
+            Weighted distribution across Copilot (Claude Opus, GPT), Codex, and Claude agents.
+            Automatic failover with cooldown and retry limits.
+          </p>
+        </div>
+
+        <div class="feature-card reveal reveal--delay-2">
+          <div class="feature-card__icon feature-card__icon--purple">🔄</div>
+          <h3 class="feature-card__title">Smart PR Lifecycle</h3>
+          <p class="feature-card__desc">
+            Creates PRs, monitors CI, auto-rebases on conflict, and merges when all checks pass.
+            Full lifecycle automation from branch to merge.
+          </p>
+        </div>
+
+        <div class="feature-card reveal reveal--delay-3">
+          <div class="feature-card__icon feature-card__icon--green">🛡️</div>
+          <h3 class="feature-card__title">Self-Healing Recovery</h3>
+          <p class="feature-card__desc">
+            Autofix detects failure patterns, circuit breakers prevent loops, and stale claims
+            are automatically reclaimed via heartbeat monitoring.
+          </p>
+        </div>
+
+        <div class="feature-card reveal reveal--delay-1">
+          <div class="feature-card__icon feature-card__icon--amber">📋</div>
+          <h3 class="feature-card__title">Flexible Task Boards</h3>
+          <p class="feature-card__desc">
+            Built-in internal board, plus native adapters for GitHub Issues, GitHub Projects v2,
+            and Jira. Bidirectional sync keeps everything in agreement.
+          </p>
+        </div>
+
+        <div class="feature-card reveal reveal--delay-2">
+          <div class="feature-card__icon feature-card__icon--pink">🤖</div>
+          <h3 class="feature-card__title">Telegram Control Center</h3>
+          <p class="feature-card__desc">
+            Full bot with 30+ commands, inline keyboards, live digest system, and a rich
+            Mini App with 7 tabs — Dashboard, Tasks, Agents, Infra, Control, Logs, Settings.
+          </p>
+        </div>
+
+        <div class="feature-card reveal reveal--delay-3">
+          <div class="feature-card__icon feature-card__icon--blue">👥</div>
+          <h3 class="feature-card__title">Multi-Agent Coordination</h3>
+          <p class="feature-card__desc">
+            Shared state with atomic claims, heartbeat liveness, and stale sweeps.
+            Multiple workstations coordinate without duplicate work.
+          </p>
+        </div>
+
+        <div class="feature-card reveal reveal--delay-1">
+          <div class="feature-card__icon">📊</div>
+          <h3 class="feature-card__title">Fleet Coordination</h3>
+          <p class="feature-card__desc">
+            Presence tracking, session management, workspace registry, and fleet-wide state
+            persistence across multiple machines and agents.
+          </p>
+        </div>
+
+        <div class="feature-card reveal reveal--delay-2">
+          <div class="feature-card__icon feature-card__icon--purple">📦</div>
+          <h3 class="feature-card__title">Container Isolation</h3>
+          <p class="feature-card__desc">
+            Optionally run agents inside Docker, Podman, or Apple Container sandboxes.
+            Full image management and concurrent container limits.
+          </p>
+        </div>
+
+        <div class="feature-card reveal reveal--delay-3">
+          <div class="feature-card__icon feature-card__icon--green">⚙️</div>
+          <h3 class="feature-card__title">Setup Wizard</h3>
+          <p class="feature-card__desc">
+            Interactive setup generates a complete .env with documentation.
+            Recommended mode for quick starts, Advanced mode for full control.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ Security ══════════════════════════════════════════════════════ -->
+  <section id="security">
+    <div class="container">
+      <div class="section-header reveal">
+        <span class="section-header__label">Security</span>
+        <h2 class="section-header__title">Built <span class="gradient-text">secure by default</span></h2>
+        <p class="section-header__desc">
+          Every layer is locked down — from Telegram token verification to container-isolated
+          agent execution. Click any card to see the technical details.
+        </p>
+      </div>
+
+      <div id="security-visualizer"></div>
+    </div>
+  </section>
+
+  <!-- ═══ Architecture ══════════════════════════════════════════════════ -->
+  <section id="architecture">
+    <div class="container">
+      <div class="section-header reveal">
+        <span class="section-header__label">Architecture</span>
+        <h2 class="section-header__title">How Bosun <span class="gradient-text">works</span></h2>
+        <p class="section-header__desc">
+          A modular supervisor that orchestrates the entire journey from task to merged PR.
+        </p>
+      </div>
+
+      <div class="arch-diagram reveal">
+        <div class="arch-flow">
+          <div class="arch-node">
+            <div class="arch-node__icon">📋</div>
+            <div class="arch-node__label">Task Board</div>
+            <div class="arch-node__sub">GitHub / Jira / Internal</div>
+          </div>
+          <div class="arch-arrow">→</div>
+          <div class="arch-node">
+            <div class="arch-node__icon">⚡</div>
+            <div class="arch-node__label">Supervisor</div>
+            <div class="arch-node__sub">monitor.mjs</div>
+          </div>
+          <div class="arch-arrow">→</div>
+          <div class="arch-node">
+            <div class="arch-node__icon">🤖</div>
+            <div class="arch-node__label">Agent Pool</div>
+            <div class="arch-node__sub">Copilot / Codex / Claude</div>
+          </div>
+        </div>
+
+        <div class="arch-layers">
+          <div class="arch-layer reveal reveal--delay-1">
+            <div class="arch-layer__title">🧠 Orchestration</div>
+            <ul class="arch-layer__items">
+              <li>Task routing &amp; weighted distribution</li>
+              <li>Executor failover &amp; cooldowns</li>
+              <li>Smart PR lifecycle automation</li>
+              <li>Conflict resolution &amp; auto-rebase</li>
+              <li>Circuit breaker &amp; error recovery</li>
+            </ul>
+          </div>
+
+          <div class="arch-layer reveal reveal--delay-2">
+            <div class="arch-layer__title">🔗 Coordination</div>
+            <ul class="arch-layer__items">
+              <li>Shared state with atomic claims</li>
+              <li>Heartbeat-based liveness detection</li>
+              <li>Multi-workstation fleet sync</li>
+              <li>Workspace &amp; worktree management</li>
+              <li>Session &amp; presence tracking</li>
+            </ul>
+          </div>
+
+          <div class="arch-layer reveal reveal--delay-3">
+            <div class="arch-layer__title">📡 Control Surfaces</div>
+            <ul class="arch-layer__items">
+              <li>Telegram Bot with 30+ commands</li>
+              <li>Mini App (7-tab web dashboard)</li>
+              <li>WhatsApp channel (optional)</li>
+              <li>Interactive CLI shell mode</li>
+              <li>Sentinel watchdog companion</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ Integrations ══════════════════════════════════════════════════ -->
+  <section id="integrations">
+    <div class="container">
+      <div class="section-header reveal">
+        <span class="section-header__label">Integrations</span>
+        <h2 class="section-header__title">Connects to your <span class="gradient-text">entire stack</span></h2>
+      </div>
+
+      <div class="integrations-grid">
+        <div class="integration-card reveal reveal--delay-1">
+          <div class="integration-card__icon">🐙</div>
+          <div class="integration-card__name">GitHub</div>
+          <div class="integration-card__desc">Issues, Projects v2, PRs, CI checks</div>
+        </div>
+        <div class="integration-card reveal reveal--delay-2">
+          <div class="integration-card__icon">📱</div>
+          <div class="integration-card__name">Telegram</div>
+          <div class="integration-card__desc">Bot, Mini App, Sentinel watchdog</div>
+        </div>
+        <div class="integration-card reveal reveal--delay-3">
+          <div class="integration-card__icon">🔵</div>
+          <div class="integration-card__name">Jira</div>
+          <div class="integration-card__desc">Full status mapping &amp; custom fields</div>
+        </div>
+        <div class="integration-card reveal reveal--delay-4">
+          <div class="integration-card__icon">💬</div>
+          <div class="integration-card__name">WhatsApp</div>
+          <div class="integration-card__desc">Optional notification channel</div>
+        </div>
+        <div class="integration-card reveal reveal--delay-1">
+          <div class="integration-card__icon">🐳</div>
+          <div class="integration-card__name">Docker / Podman</div>
+          <div class="integration-card__desc">Container-isolated agent execution</div>
+        </div>
+        <div class="integration-card reveal reveal--delay-2">
+          <div class="integration-card__icon">🧠</div>
+          <div class="integration-card__name">Copilot</div>
+          <div class="integration-card__desc">Claude Opus, GPT, agent sessions</div>
+        </div>
+        <div class="integration-card reveal reveal--delay-3">
+          <div class="integration-card__icon">⚡</div>
+          <div class="integration-card__name">Codex</div>
+          <div class="integration-card__desc">OpenAI Codex SDK &amp; persistent sessions</div>
+        </div>
+        <div class="integration-card reveal reveal--delay-4">
+          <div class="integration-card__icon">🌐</div>
+          <div class="integration-card__name">Cloudflare Tunnel</div>
+          <div class="integration-card__desc">Persistent HTTPS for Mini App</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ Quick Start ═══════════════════════════════════════════════════ -->
+  <section id="quickstart">
+    <div class="container">
+      <div class="section-header reveal">
+        <span class="section-header__label">Quick Start</span>
+        <h2 class="section-header__title">Up and running in <span class="gradient-text">3 steps</span></h2>
+      </div>
+
+      <div class="steps">
+        <div class="step reveal reveal--delay-1">
+          <div class="step__number">1</div>
+          <h3 class="step__title">Install</h3>
+          <p class="step__desc">Install globally from npm. Requires Node.js 18+ and git.</p>
+          <div class="step__code">npm install -g bosun</div>
+        </div>
+
+        <div class="step reveal reveal--delay-2">
+          <div class="step__number">2</div>
+          <h3 class="step__title">Setup</h3>
+          <p class="step__desc">Run the interactive wizard. Choose Recommended mode for fast setup.</p>
+          <div class="step__code">bosun --setup</div>
+        </div>
+
+        <div class="step reveal reveal--delay-3">
+          <div class="step__number">3</div>
+          <h3 class="step__title">Launch</h3>
+          <p class="step__desc">Start the supervisor. It auto-connects to your configured board and agents.</p>
+          <div class="step__code">bosun</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ Live Showcase ════════════════════════════════════════════════ -->
+  <section id="showcase">
+    <div class="container">
+      <div class="section-header reveal">
+        <span class="section-header__label">Shipping Code</span>
+        <h2 class="section-header__title">Live from <span class="gradient-text">VirtEngine</span></h2>
+        <p class="section-header__desc">
+          Real pull requests merged &amp; commits shipped by Bosun's AI agents.
+          Powered by Codex, Copilot, and Claude — shipping production code daily.
+        </p>
+      </div>
+
+      <!-- Feed tabs -->
+      <div class="showcase-tabs reveal" id="showcase-tabs">
+        <button class="showcase-tab showcase-tab--active" data-feed="prs">⬆ Open PRs</button>
+        <button class="showcase-tab" data-feed="commits">📦 Bosun Commits</button>
+      </div>
+
+      <!-- PR feed -->
+      <div class="pr-showcase reveal showcase-feed showcase-feed--active" id="pr-showcase" data-feed-panel="prs">
+        <div class="pr-showcase__loading">
+          <span class="pr-showcase__spinner"></span>
+          Loading recent PRs from VirtEngine...
+        </div>
+      </div>
+
+      <!-- Bosun commit feed -->
+      <div class="pr-showcase reveal showcase-feed" id="commit-showcase" data-feed-panel="commits">
+        <div class="pr-showcase__loading">
+          <span class="pr-showcase__spinner"></span>
+          Loading recent commits to bosun...
+        </div>
+      </div>
+
+      <div class="pr-showcase__footer reveal" style="text-align: center; margin-top: 1.5rem;">
+        <a id="showcase-gh-link" href="https://github.com/virtengine/virtengine/pulls?q=is%3Apr+sort%3Aupdated-desc" class="btn btn--ghost btn--sm" target="_blank" rel="noopener">
+          View All PRs on GitHub →
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ Code Showcase ═══════════════════════════════════════════════ -->
+  <section id="code-showcase">
+    <div class="container">
+      <div class="section-header reveal">
+        <span class="section-header__label">Configuration</span>
+        <h2 class="section-header__title">Simple to <span class="gradient-text">configure</span></h2>
+        <p class="section-header__desc">
+          A single <code>.env</code> file controls everything. Or use the setup wizard for zero-config starts.
+        </p>
+      </div>
+
+      <div class="code-showcase reveal">
+        <div class="code-showcase__tabs">
+          <button class="code-tab code-tab--active" data-tab="env">.env</button>
+          <button class="code-tab" data-tab="config">bosun.config.json</button>
+          <button class="code-tab" data-tab="hooks">.codex/hooks.json</button>
+        </div>
+        <div class="code-showcase__body">
+          <pre class="code-showcase__panel code-showcase__panel--active" data-panel="env"><code><span class="comment"># ─── Bosun Environment Configuration ───</span>
+<span class="comment"># Core</span>
+<span class="keyword">PROJECT_NAME</span>=<span class="string">virtengine</span>
+<span class="keyword">GITHUB_REPO</span>=<span class="string">virtengine/virtengine</span>
+<span class="keyword">GITHUB_TOKEN</span>=<span class="string">ghp_xxxxxxxxxxxx</span>
+
+<span class="comment"># Executor Pool</span>
+<span class="keyword">EXECUTOR_MODE</span>=<span class="string">internal</span>
+<span class="keyword">EXECUTORS</span>=<span class="string">COPILOT:CLAUDE_OPUS_4_6:50,CODEX:DEFAULT:50</span>
+<span class="keyword">MAX_PARALLEL</span>=<span class="number">6</span>
+<span class="keyword">AGENT_TIMEOUT</span>=<span class="number">90</span>
+
+<span class="comment"># Task Board</span>
+<span class="keyword">KANBAN_BACKEND</span>=<span class="string">github</span>
+<span class="keyword">GITHUB_PROJECT_NUMBER</span>=<span class="number">4</span>
+
+<span class="comment"># Notifications</span>
+<span class="keyword">TELEGRAM_BOT_TOKEN</span>=<span class="string">7891234567:AAG...</span>
+<span class="keyword">TELEGRAM_CHAT_ID</span>=<span class="string">1234567890</span></code></pre>
+          <pre class="code-showcase__panel" data-panel="config"><code>{
+  <span class="keyword">"version"</span>: <span class="number">1</span>,
+  <span class="keyword">"executors"</span>: {
+    <span class="keyword">"pool"</span>: [
+      {
+        <span class="keyword">"name"</span>: <span class="string">"copilot-claude"</span>,
+        <span class="keyword">"sdk"</span>: <span class="string">"copilot"</span>,
+        <span class="keyword">"model"</span>: <span class="string">"claude-opus-4-6"</span>,
+        <span class="keyword">"weight"</span>: <span class="number">50</span>
+      },
+      {
+        <span class="keyword">"name"</span>: <span class="string">"codex-default"</span>,
+        <span class="keyword">"sdk"</span>: <span class="string">"codex"</span>,
+        <span class="keyword">"model"</span>: <span class="string">"o4-mini"</span>,
+        <span class="keyword">"weight"</span>: <span class="number">50</span>
+      }
+    ],
+    <span class="keyword">"failover"</span>: { <span class="keyword">"maxRetries"</span>: <span class="number">2</span>, <span class="keyword">"cooldown"</span>: <span class="number">300</span> }
+  }
+}</code></pre>
+          <pre class="code-showcase__panel" data-panel="hooks"><code>{
+  <span class="keyword">"hooks"</span>: [
+    {
+      <span class="keyword">"name"</span>: <span class="string">"prepush-go-vet"</span>,
+      <span class="keyword">"event"</span>: <span class="string">"PrePush"</span>,
+      <span class="keyword">"command"</span>: <span class="string">"go vet ./..."</span>,
+      <span class="keyword">"blocking"</span>: <span class="number">true</span>
+    },
+    {
+      <span class="keyword">"name"</span>: <span class="string">"precommit-gofmt"</span>,
+      <span class="keyword">"event"</span>: <span class="string">"PreCommit"</span>,
+      <span class="keyword">"command"</span>: <span class="string">"gofmt -w ."</span>
+    },
+    {
+      <span class="keyword">"name"</span>: <span class="string">"task-complete-audit"</span>,
+      <span class="keyword">"event"</span>: <span class="string">"TaskComplete"</span>,
+      <span class="keyword">"command"</span>: <span class="string">"./scripts/agent-preflight.sh"</span>
+    }
+  ]
+}</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ CTA ═════════════════════════════════════════════════════════ -->
+  <section class="cta-section">
+    <div class="container">
+      <h2 class="reveal">Ready to <span class="gradient-text">automate your fleet</span>?</h2>
+      <p class="reveal">
+        Open source, extensible, and built for production.
+        Start shipping faster with autonomous AI agents today.
+      </p>
+      <div class="hero__actions reveal">
+        <a href="docs/getting-started.html" class="btn btn--primary">
+          Read the Docs
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+        </a>
+        <a href="https://github.com/virtengine/bosun#readme" class="btn btn--ghost" target="_blank" rel="noopener">
+          View on GitHub
+        </a>
+        <a href="https://www.npmjs.com/package/bosun" class="btn btn--ghost" target="_blank" rel="noopener">
+          npm Package
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ Footer ════════════════════════════════════════════════════════ -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__inner">
+        <div class="footer__left">
+          <svg viewBox="0 0 100 100" width="24" height="24" xmlns="http://www.w3.org/2000/svg" style="opacity:0.7;vertical-align:middle;margin-right:0.3rem;" aria-hidden="true">
+            <defs><linearGradient id="helm-g-ft" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#2dd4bf"/><stop offset="100%" stop-color="#06b6d4"/></linearGradient></defs>
+            <g stroke="url(#helm-g-ft)" fill="none" stroke-linecap="round"><circle cx="50" cy="50" r="42" stroke-width="5"/><circle cx="50" cy="50" r="18" stroke-width="4"/><line x1="68" y1="50" x2="87" y2="50" stroke-width="3.5"/><line x1="62.73" y1="62.73" x2="76.17" y2="76.17" stroke-width="3.5"/><line x1="50" y1="68" x2="50" y2="87" stroke-width="3.5"/><line x1="37.27" y1="62.73" x2="23.83" y2="76.17" stroke-width="3.5"/><line x1="32" y1="50" x2="13" y2="50" stroke-width="3.5"/><line x1="37.27" y1="37.27" x2="23.83" y2="23.83" stroke-width="3.5"/><line x1="50" y1="32" x2="50" y2="13" stroke-width="3.5"/><line x1="62.73" y1="37.27" x2="76.17" y2="23.83" stroke-width="3.5"/></g>
+            <circle cx="50" cy="50" r="7" fill="url(#helm-g-ft)"/><circle cx="50" cy="50" r="2.5" fill="#09090b"/>
+            <g fill="url(#helm-g-ft)"><circle cx="92" cy="50" r="5.5"/><circle cx="79.70" cy="79.70" r="5.5"/><circle cx="50" cy="92" r="5.5"/><circle cx="20.30" cy="79.70" r="5.5"/><circle cx="8" cy="50" r="5.5"/><circle cx="20.30" cy="20.30" r="5.5"/><circle cx="50" cy="8" r="5.5"/><circle cx="79.70" cy="20.30" r="5.5"/></g>
+          </svg>
+          <a href="https://github.com/virtengine/bosun#readme" target="_blank" rel="noopener">
+            <span data-version>v0.0</span> · Bosun by <span>VirtEngine</span> · Apache 2.0
+          </a>
+        </div>
+        <ul class="footer__links">
+          <li><a href="docs/">Docs</a></li>
+          <li><a href="https://github.com/virtengine/bosun#readme" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/bosun" target="_blank" rel="noopener">npm</a></li>
+          <li><a href="https://github.com/virtengine/bosun/issues" target="_blank" rel="noopener">Issues</a></li>
+        </ul>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ═══ Scripts ═══════════════════════════════════════════════════════ -->
+  <script src="js/particles.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jquery.terminal@2.42.2/js/jquery.terminal.min.js"></script>
+  <script src="js/terminal-sim.js"></script>
+  <script src="js/telegram-chat-sim.js"></script>
+  <script src="js/security-viz.js"></script>
+  <script src="js/analytics-config.js"></script>
+  <script src="js/analytics.js"></script>
+  <script src="js/main.js"></script>
+
+  <!-- Fallback analytics pixel for adblocker detection -->
+  <img src="https://cloud.umami.is/p/f3XJugzIu" alt="" width="1" height="1" style="display:none;" />
+</body>
+</html>

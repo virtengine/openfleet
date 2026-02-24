@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark light" />
+  <title>Bosun — Task Orchestrator</title>
+  <link rel="icon" href="favicon.png" type="image/png" />
+  <script>
+    (function() {
+      var shim = document.createElement("script");
+      shim.async = true;
+      shim.src = "/vendor/es-module-shims.js";
+      shim.onerror = function() {
+        var fallback = document.createElement("script");
+        fallback.async = true;
+        fallback.src = "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js";
+        fallback.onerror = function() {
+          var fallback2 = document.createElement("script");
+          fallback2.async = true;
+          fallback2.src = "https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.min.js";
+          document.head.appendChild(fallback2);
+        };
+        document.head.appendChild(fallback);
+      };
+      document.head.appendChild(shim);
+    })();
+  </script>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles/kanban.css" />
+  <link rel="stylesheet" href="styles/sessions.css" />
+  <link rel="stylesheet" href="styles/workspace-switcher.css" />
+  <!-- Apply stored colour theme before paint to prevent flash -->
+  <script>
+    try {
+      var t = JSON.parse(localStorage.getItem('ve_settings_colorTheme'));
+      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+    } catch(e) {}
+  </script>
+  <!-- Import map: ensures all modules share a single Preact instance.
+       Primary source: /vendor/ (served from local node_modules — works offline/LAN).
+       If a vendor file is missing (first run before npm install), the server
+       transparently redirects to esm.sh. The importmap-fallback below is a
+       last-resort CDN backup if the whole server-side vendor route fails. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "preact":                  "/vendor/preact.js",
+      "preact/hooks":            "/vendor/preact-hooks.js",
+      "preact/compat":           "/vendor/preact-compat.js",
+      "htm":                     "/vendor/htm.js",
+      "@preact/signals-core":    "/vendor/preact-signals-core.js",
+      "@preact/signals":         "/vendor/preact-signals.js"
+    }
+  }
+  </script>
+  <script type="importmap-shim">
+  {
+    "imports": {
+      "preact":                  "/vendor/preact.js",
+      "preact/hooks":            "/vendor/preact-hooks.js",
+      "preact/compat":           "/vendor/preact-compat.js",
+      "htm":                     "/vendor/htm.js",
+      "@preact/signals-core":    "/vendor/preact-signals-core.js",
+      "@preact/signals":         "/vendor/preact-signals.js"
+    }
+  }
+  </script>
+  <script type="application/json" id="importmap-fallback">
+  {
+    "imports": {
+      "preact":                  "https://cdn.jsdelivr.net/npm/preact@10.25.4/+esm",
+      "preact/hooks":            "https://cdn.jsdelivr.net/npm/preact@10.25.4/hooks/+esm",
+      "preact/compat":           "https://cdn.jsdelivr.net/npm/preact@10.25.4/compat/+esm",
+      "htm":                     "https://cdn.jsdelivr.net/npm/htm@3.1.1/+esm",
+      "@preact/signals-core":    "https://cdn.jsdelivr.net/npm/@preact/signals-core@1.8.0/+esm",
+      "@preact/signals":         "https://cdn.jsdelivr.net/npm/@preact/signals@1.3.1/+esm"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <div id="boot-loader" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:'Sora',sans-serif;color:#9aa3b2;background:#09090b;overflow:hidden">
+      <style>
+        .boot-logo{position:relative;width:80px;height:80px;margin-bottom:24px}
+        .boot-ring{position:absolute;inset:0;border-radius:50%;border:2px solid rgba(99,102,241,.15);animation:boot-spin 3s linear infinite}
+        .boot-ring-inner{position:absolute;inset:8px;border-radius:50%;border:2px solid transparent;border-top-color:#6366f1;border-right-color:rgba(99,102,241,.3);animation:boot-spin 1.5s linear infinite reverse}
+        .boot-dot{position:absolute;top:50%;left:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:#6366f1;box-shadow:0 0 16px rgba(99,102,241,.4);animation:boot-pulse 2s ease-in-out infinite}
+        .boot-title{font-size:22px;font-weight:700;letter-spacing:-.02em;color:#f4f4f5;margin-bottom:6px;animation:boot-fadeUp .6s ease .2s both}
+        .boot-subtitle{font-size:13px;color:#52525b;animation:boot-fadeUp .6s ease .4s both}
+        .boot-progress{width:120px;height:2px;background:rgba(255,255,255,.06);border-radius:2px;margin-top:20px;overflow:hidden;animation:boot-fadeUp .6s ease .6s both}
+        .boot-progress-bar{height:100%;width:0;background:#6366f1;border-radius:2px;animation:boot-load 2s ease-in-out .8s forwards}
+        @keyframes boot-spin{to{transform:rotate(360deg)}}
+        @keyframes boot-pulse{0%,100%{transform:scale(1);opacity:.8}50%{transform:scale(1.2);opacity:1}}
+        @keyframes boot-fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes boot-load{0%{width:0}60%{width:70%}100%{width:100%}}
+      </style>
+      <div class="boot-logo">
+        <div class="boot-ring"></div>
+        <div class="boot-ring-inner"></div>
+        <div class="boot-dot"></div>
+      </div>
+      <div class="boot-title">Bosun</div>
+      <div class="boot-subtitle" id="boot-status">Initializing Task Orchestrator…</div>
+      <div class="boot-progress"><div class="boot-progress-bar"></div></div>
+    </div>
+  </div>
+  <script type="module">
+    const bootEl = document.getElementById("boot-loader");
+    const bootErr = (html) => {
+      if (bootEl) bootEl.innerHTML = html;
+    };
+    const applyFallbackImportMap = () => {
+      const fallback = document.getElementById("importmap-fallback");
+      if (!fallback) return;
+      const script = document.createElement("script");
+      script.type = "importmap-shim";
+      script.textContent = fallback.textContent;
+      document.head.appendChild(script);
+    };
+    const waitForShim = (timeoutMs = 1200) =>
+      new Promise((resolve) => {
+        if (window.importShim) return resolve(true);
+        const started = Date.now();
+        const tick = () => {
+          if (window.importShim) return resolve(true);
+          if (Date.now() - started > timeoutMs) return resolve(false);
+          setTimeout(tick, 50);
+        };
+        tick();
+      });
+    const loadApp = async (bust = false) => {
+      const base = new URL("app.js", import.meta.url).toString();
+      const url = bust ? `${base}?v=${Date.now()}` : base;
+      if (window.importShim) {
+        return window.importShim(url);
+      }
+      return import(url);
+    };
+    (async () => {
+      const shimReady = await waitForShim();
+      try {
+        await loadApp(false);
+      } catch (err) {
+        if (!shimReady || !window.importShim) {
+          bootErr('⚠️ Failed to load app modules.<br><small style="color:#888">Try refreshing. If this persists, run <code>npm install</code> in the bosun directory.</small>');
+          return;
+        }
+        console.warn("[ui] Primary CDN failed, switching to fallback.", err);
+        applyFallbackImportMap();
+        try {
+          await loadApp(true);
+        } catch (fallbackErr) {
+          console.error("[ui] Fallback CDN failed.", fallbackErr);
+          bootErr('⚠️ Failed to load app modules.<br><small style="color:#888">Local vendor and CDN fallback both failed. Run <code>npm install</code> in the bosun directory or check your connection.</small>');
+        }
+      }
+    })();
+  </script>
+  <script>
+    // Signal Telegram that the page has loaded (before ES modules finish loading)
+    try { if (window.Telegram && Telegram.WebApp) Telegram.WebApp.ready(); } catch(e) {}
+    // Fallback: if the ES module fails to load within 12s, show an error
+    setTimeout(function() {
+      var el = document.getElementById('boot-loader');
+      if (el) {
+        var s = document.getElementById('boot-status');
+        if (s) s.innerHTML = '⚠️ Failed to load app modules.<br><small style="color:#888">Try refreshing. If this persists, run <code>npm install</code> in the bosun directory.</small>';
+      }
+    }, 12000);
+  </script>
+  <script defer src="https://cloud.umami.is/script.js" data-website-id="24c5d605-7f25-4be5-875e-25c8f3cb4059"></script>
+  <img src="https://cloud.umami.is/p/dSHELgZaC" alt="" width="1" height="1" style="display:none;" />
+</body>
+</html>

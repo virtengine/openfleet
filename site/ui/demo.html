@@ -1,0 +1,1906 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; img-src * data: blob:; connect-src *;" />
+  <title>Bosun MiniApp — Demo Mode</title>
+
+  <!-- Telegram WebApp SDK is fully mocked below — no real SDK needed -->
+
+  <!-- es-module-shims: load from bundled vendor first, CDN as fallback -->
+  <script>
+    (function() {
+      var shim = document.createElement("script");
+      shim.async = true;
+      shim.src = "./vendor/es-module-shims.js";
+      shim.onerror = function() {
+        var fb = document.createElement("script");
+        fb.async = true;
+        fb.src = "https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js";
+        fb.onerror = function() {
+          var fb2 = document.createElement("script");
+          fb2.async = true;
+          fb2.src = "https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.min.js";
+          document.head.appendChild(fb2);
+        };
+        document.head.appendChild(fb);
+      };
+      document.head.appendChild(shim);
+    })();
+  </script>
+
+  <!-- Import map — primary: bundled vendor files (committed to git, served from
+       GitHub Pages at ./vendor/ and from bosun server at /vendor/).
+       The importmap-fallback JSON block below is used by the CDN fallback script
+       if vendor files fail to load. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "preact":                  "./vendor/preact.js",
+      "preact/hooks":            "./vendor/preact-hooks.js",
+      "preact/compat":           "./vendor/preact-compat.js",
+      "htm":                     "./vendor/htm.js",
+      "@preact/signals-core":    "./vendor/preact-signals-core.js",
+      "@preact/signals":         "./vendor/preact-signals.js"
+    }
+  }
+  </script>
+  <script type="importmap-shim">
+  {
+    "imports": {
+      "preact":                  "./vendor/preact.js",
+      "preact/hooks":            "./vendor/preact-hooks.js",
+      "preact/compat":           "./vendor/preact-compat.js",
+      "htm":                     "./vendor/htm.js",
+      "@preact/signals-core":    "./vendor/preact-signals-core.js",
+      "@preact/signals":         "./vendor/preact-signals.js"
+    }
+  }
+  </script>
+  <!-- CDN fallback — used if the bundled vendor files are unavailable -->
+  <script type="application/json" id="importmap-fallback">
+  {
+    "imports": {
+      "preact":                  "https://esm.sh/preact@10.25.4",
+      "preact/hooks":            "https://esm.sh/preact@10.25.4/hooks",
+      "preact/compat":           "https://esm.sh/preact@10.25.4/compat",
+      "htm":                     "https://esm.sh/htm@3.1.1",
+      "@preact/signals-core":    "https://cdn.jsdelivr.net/npm/@preact/signals-core@1.8.0/+esm",
+      "@preact/signals":         "https://esm.sh/@preact/signals@1.3.1?deps=preact@10.25.4"
+    }
+  }
+  </script>
+
+  <!-- Load the real MiniApp styles -->
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles/kanban.css" />
+  <link rel="stylesheet" href="styles/sessions.css" />
+
+  <!-- Fonts (match site) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ═══ DEMO LAYOUT — Telegram MiniApp (single view) ═══════════════ */
+    *, *::before, *::after { box-sizing: border-box; }
+    html { height: 100%; margin: 0; }
+    body { height: 100%; margin: 0; font-family: "Instrument Sans", -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif; background: #0b0f14; color: #e8edf2; overflow: hidden; }
+
+    /* Demo banner */
+    .demo-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 99999; background: linear-gradient(135deg, #60cc5d, #4caf50); color: #000; text-align: center; font-size: 11px; font-weight: 700; padding: 3px 8px; letter-spacing: 0.05em; text-transform: uppercase; }
+
+    /* ── MAIN CONTAINER ── */
+    .demo-container { position: fixed; top: 22px; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; background: #0b0f14; }
+
+    /* MiniApp header (Telegram-style) */
+    .miniapp-header { display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: #17212b; border-bottom: 1px solid #1b2838; flex-shrink: 0; z-index: 10; }
+    .miniapp-header-icon { width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg, #4cc9f0, #60cc5d); display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+    .miniapp-header-title { flex: 1; font-size: 15px; font-weight: 600; color: #fff; }
+    .miniapp-header-badge { font-size: 10px; color: #64748b; background: #1e293b; padding: 2px 7px; border-radius: 10px; }
+
+    /* MiniApp content — wraps #app, MUST allow scrolling.
+       overflow:clip clips border-radius visually without creating a BFC scroll
+       container that would silently eat mouse-wheel events.
+       #app is a normal flex child (not absolute) so the full flex chain flows
+       correctly all the way down to .main-content (the real scroll container). */
+    .miniapp-content { flex: 1; min-height: 0; overflow: clip; position: relative; display: flex; flex-direction: column; }
+    .miniapp-content #app { flex: 1; min-height: 0; height: auto; }
+
+    /* ── BOT MENU FAB (Floating Action Button) ── */
+    .bot-fab { position: fixed; bottom: 90px; right: 16px; z-index: 9000; width: 48px; height: 48px; border-radius: 50%; border: none; background: linear-gradient(135deg, #4cc9f0, #3a9ec7); color: #fff; font-size: 22px; cursor: pointer; box-shadow: 0 4px 16px rgba(76, 201, 240, 0.35), 0 2px 4px rgba(0,0,0,0.3); transition: transform 0.2s, box-shadow 0.2s, background 0.2s; display: flex; align-items: center; justify-content: center; }
+    .bot-fab:hover { transform: scale(1.08); box-shadow: 0 6px 24px rgba(76, 201, 240, 0.45), 0 3px 8px rgba(0,0,0,0.3); }
+    .bot-fab:active { transform: scale(0.95); }
+    .bot-fab.panel-open { background: #ef5350; transform: rotate(45deg); }
+    .bot-fab.panel-open:hover { background: #f44336; }
+
+    /* ── BOT MENU PANEL (slide-up, multi-layer) ── */
+    .bot-panel { position: fixed; bottom: 0; left: 0; right: 0; z-index: 8999; background: #0e1621; border-top: 1px solid #1b2838; border-radius: 16px 16px 0 0; box-shadow: 0 -8px 32px rgba(0,0,0,0.5); max-height: 65vh; display: flex; flex-direction: column; transform: translateY(100%); opacity: 0; pointer-events: none; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s; }
+    .bot-panel.open { transform: translateY(0); opacity: 1; pointer-events: auto; }
+
+    /* Panel header */
+    .bot-panel-header { display: flex; align-items: center; gap: 8px; padding: 10px 14px 6px; flex-shrink: 0; }
+    .bot-panel-back { background: none; border: none; color: #4cc9f0; font-size: 18px; cursor: pointer; padding: 4px 6px; border-radius: 6px; transition: background 0.15s; display: none; }
+    .bot-panel-back:hover { background: rgba(76, 201, 240, 0.1); }
+    .bot-panel-back.visible { display: block; }
+    .bot-panel-title { flex: 1; font-size: 14px; font-weight: 600; color: #fff; }
+    .bot-panel-home { background: none; border: none; color: #5b7083; font-size: 16px; cursor: pointer; padding: 4px 6px; border-radius: 6px; transition: color 0.15s; display: none; }
+    .bot-panel-home:hover { color: #4cc9f0; }
+    .bot-panel-home.visible { display: block; }
+    .bot-panel-close { background: none; border: none; color: #5b7083; font-size: 16px; cursor: pointer; padding: 4px 6px; border-radius: 6px; transition: color 0.15s; }
+    .bot-panel-close:hover { color: #ef5350; }
+
+    /* Panel body (scrollable text output) */
+    .bot-panel-body { padding: 4px 14px 8px; font-size: 13px; line-height: 1.5; color: #94a3b8; overflow-y: auto; flex-shrink: 1; min-height: 0; }
+    .bot-panel-body strong { color: #e8edf2; }
+    .bot-panel-body code { background: #182533; padding: 1px 4px; border-radius: 3px; font-size: 11.5px; font-family: 'JetBrains Mono', monospace; color: #4cc9f0; }
+    .bot-panel-body pre { background: #182533; padding: 8px; border-radius: 6px; font-size: 11px; margin: 6px 0; font-family: 'JetBrains Mono', monospace; overflow-x: auto; white-space: pre-wrap; color: #e8edf2; }
+
+    /* Panel keyboard (inline buttons) */
+    .bot-panel-keyboard { padding: 4px 8px 10px; flex-shrink: 0; }
+    .bot-kb-row { display: flex; gap: 2px; margin-bottom: 2px; }
+    .bot-kb-btn { flex: 1; background: #2b5278; border: none; border-radius: 5px; color: #fff; font-size: 12px; font-weight: 500; padding: 8px 3px; cursor: pointer; transition: background 0.12s, transform 0.1s; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .bot-kb-btn:hover { background: #3a6da0; }
+    .bot-kb-btn:active { background: #1d3f5e; transform: scale(0.97); }
+    .bot-kb-btn.nav-btn { background: #1e293b; color: #94a3b8; font-size: 11px; }
+    .bot-kb-btn.nav-btn:hover { background: #2d3a4d; color: #e8edf2; }
+    .bot-kb-btn.close-btn { background: transparent; color: #5b7083; font-size: 11px; }
+    .bot-kb-btn.close-btn:hover { color: #ef5350; background: rgba(239, 83, 80, 0.08); }
+    .bot-kb-btn.action-btn { background: #4cc9f0; color: #000; font-weight: 600; }
+    .bot-kb-btn.action-btn:hover { background: #5dd8ff; }
+    .bot-kb-btn.cmd-flash { background: #4cc9f0 !important; color: #000 !important; transition: none; }
+
+    /* Panel result area (shows command output) */
+    .bot-panel-result { display: none; padding: 4px 14px 8px; font-size: 13px; line-height: 1.5; color: #e8edf2; overflow-y: auto; max-height: 200px; border-top: 1px solid #1b2838; animation: resultIn 0.2s ease-out; }
+    .bot-panel-result.visible { display: block; }
+    .bot-panel-result strong { color: #fff; }
+    .bot-panel-result code { background: #182533; padding: 1px 4px; border-radius: 3px; font-size: 11.5px; font-family: 'JetBrains Mono', monospace; color: #4cc9f0; }
+    .bot-panel-result pre { background: #182533; padding: 8px; border-radius: 6px; font-size: 11px; margin: 6px 0; font-family: 'JetBrains Mono', monospace; overflow-x: auto; white-space: pre-wrap; }
+    @keyframes resultIn { from { opacity: 0; } to { opacity: 1; } }
+
+    /* Force dark theme */
+    :root:not([data-theme="light"]) { color-scheme: dark; }
+  </style>
+
+  <!-- ═══ DEMO MOCK LAYER ═══════════════════════════════════════════════
+       This script runs BEFORE the real app.js to mock:
+       1. Telegram.WebApp — provides fake theme, user, initData
+       2. fetch() — intercepts /api/* to return seed data
+       3. WebSocket — provides fake WS connection for live updates
+       ═══════════════════════════════════════════════════════════════════ -->
+  <script>
+  (function() {
+    'use strict';
+
+    /* ── Mock Telegram.WebApp ──────────────────────────────────────── */
+    const mockUser = {
+      id: 1337420,
+      first_name: 'Demo',
+      last_name: 'User',
+      username: 'demo_user',
+      language_code: 'en',
+      is_premium: true,
+    };
+
+    const theme = {
+      bg_color: '#0b0f14',
+      text_color: '#f1f5f9',
+      hint_color: '#64748b',
+      link_color: '#4cc9f0',
+      button_color: '#4cc9f0',
+      button_text_color: '#000000',
+      secondary_bg_color: '#131a24',
+      header_bg_color: '#0b0f14',
+      accent_text_color: '#4cc9f0',
+      section_bg_color: '#131a24',
+      section_header_text_color: '#94a3b8',
+      subtitle_text_color: '#94a3b8',
+      destructive_text_color: '#ef4444',
+      section_separator_color: '#1e293b',
+      bottom_bar_bg_color: '#0b0f14',
+    };
+
+    window.Telegram = {
+      WebApp: {
+        initData: 'demo_mode=true&user=' + encodeURIComponent(JSON.stringify(mockUser)),
+        initDataUnsafe: { user: mockUser, auth_date: Date.now() },
+        version: '8.0',
+        platform: 'web',
+        colorScheme: 'dark',
+        themeParams: theme,
+        isExpanded: true,
+        viewportHeight: window.innerHeight,
+        viewportStableHeight: window.innerHeight,
+        headerColor: theme.header_bg_color,
+        backgroundColor: theme.bg_color,
+        bottomBarColor: theme.bottom_bar_bg_color,
+        isClosingConfirmationEnabled: false,
+        isVerticalSwipesEnabled: false,
+        isFullscreen: true,
+        safeAreaInset: { top: 0, bottom: 0, left: 0, right: 0 },
+        contentSafeAreaInset: { top: 0, bottom: 0, left: 0, right: 0 },
+        BackButton: {
+          isVisible: false,
+          show() { this.isVisible = true; },
+          hide() { this.isVisible = false; },
+          onClick(cb) { this._cb = cb; },
+          offClick() { this._cb = null; },
+        },
+        MainButton: {
+          isVisible: false,
+          text: '',
+          color: theme.button_color,
+          textColor: theme.button_text_color,
+          isProgressVisible: false,
+          show() { this.isVisible = true; },
+          hide() { this.isVisible = false; },
+          setText(t) { this.text = t; },
+          onClick(cb) { this._cb = cb; },
+          offClick() { this._cb = null; },
+          showProgress() { this.isProgressVisible = true; },
+          hideProgress() { this.isProgressVisible = false; },
+          enable() {},
+          disable() {},
+        },
+        HapticFeedback: {
+          impactOccurred() {},
+          notificationOccurred() {},
+          selectionChanged() {},
+        },
+        ready() {},
+        expand() {},
+        close() {},
+        requestFullscreen() {},
+        disableVerticalSwipes() {},
+        enableClosingConfirmation() {},
+        setHeaderColor(c) { this.headerColor = c; },
+        setBackgroundColor(c) { this.backgroundColor = c; },
+        setBottomBarColor(c) { this.bottomBarColor = c; },
+        onEvent(name, cb) {},
+        offEvent(name, cb) {},
+        showConfirm(msg, cb) { if (cb) cb(true); },
+        showAlert(msg, cb) { if (cb) cb(); },
+        showPopup(params, cb) { if (cb) cb('ok'); },
+        openLink(url) { window.open(url, '_blank'); },
+        openTelegramLink(url) {},
+      },
+    };
+
+    /* ── Seed Data ─────────────────────────────────────────────────── */
+    const now = Date.now();
+    const min = 60000;
+    const hr = 3600000;
+
+    const SEED_TASKS = [
+      { id: 've-abc123', title: 'feat(market): add order expiry validation', status: 'done', priority: 'high', assignee: 'copilot-claude', branch: 've/abc123-market-order-expiry', pr: 187, created: now - 4*hr, updated: now - 1*hr },
+      { id: 've-def456', title: 'fix(veid): token validation edge case', status: 'done', priority: 'medium', assignee: 'codex-default', branch: 've/def456-veid-token-fix', pr: 188, created: now - 3*hr, updated: now - 45*min },
+      { id: 've-ghi789', title: 'refactor(escrow): batch settlement pipeline', status: 'inprogress', priority: 'high', assignee: 'copilot-claude', branch: 've/ghi789-escrow-batch', pr: 189, created: now - 2*hr, updated: now - 15*min },
+      { id: 've-jkl012', title: 'feat(hpc): GPU resource metering', status: 'inprogress', priority: 'critical', assignee: 'codex-default', branch: 've/jkl012-hpc-gpu-metering', pr: null, created: now - 1*hr, updated: now - 5*min },
+      { id: 've-mno345', title: 'docs: update provider integration guide', status: 'todo', priority: 'low', assignee: null, branch: null, pr: null, created: now - 30*min, updated: now - 30*min },
+      { id: 've-pqr678', title: 'feat(provider): health check endpoint', status: 'todo', priority: 'medium', assignee: null, branch: null, pr: null, created: now - 20*min, updated: now - 20*min },
+      { id: 've-stu901', title: 'fix(roles): permission cascade bug', status: 'draft', priority: 'high', assignee: null, branch: null, pr: null, created: now - 10*min, updated: now - 10*min },
+      { id: 've-vwx234', title: 'test(mfa): add integration test suite', status: 'inreview', priority: 'medium', assignee: 'copilot-claude', branch: 've/vwx234-mfa-tests', pr: 190, created: now - 5*hr, updated: now - 30*min },
+    ];
+
+    const SEED_STATUS = {
+      status: 'running',
+      uptime: '2h 34m 12s',
+      executorMode: 'internal',
+      board: 'github',
+      maxParallel: 6,
+      version: '0.26.2',
+      tasks: { completed: 13, failed: 1, retried: 2, active: 2, queued: 3 },
+      prs: { created: 15, merged: 11, pending: 2, ciFailures: 1 },
+      // counts consumed by dashboard metrics
+      counts: {
+        running: 2,
+        inprogress: 2,
+        inreview: 1,
+        review: 1,
+        done: 2,
+        todo: 2,
+        draft: 1,
+        error: 0,
+      },
+      backlog_remaining: 2,
+      // consumed by dashboard quality section
+      success_metrics: {
+        first_shot_rate: 72,
+        needed_fix: 3,
+        failed: 1,
+      },
+    };
+
+    const SEED_EXECUTORS = [
+      { name: 'copilot-claude', sdk: 'copilot', model: 'claude-opus-4-6', weight: 50, status: 'active', load: 67, tasksCompleted: 8, avgTime: '12m', uptime: '2h 34m', session: 'sk-...7f3a' },
+      { name: 'codex-default', sdk: 'codex', model: 'o4-mini', weight: 50, status: 'active', load: 42, tasksCompleted: 5, avgTime: '18m', uptime: '2h 34m', session: 'cx-...a91b' },
+    ];
+
+    const SEED_AGENTS = [
+      {
+        id: 'agent-001',
+        name: 'copilot-claude',
+        type: 'copilot',
+        model: 'claude-opus-4-6',
+        status: 'running',
+        taskId: 've-ghi789',
+        taskTitle: 'Escrow batch settlement pipeline',
+        branch: 've/ghi789-escrow-batch',
+        sessionId: 'ses-001',
+        index: 0,
+        startedAt: now - 80 * min,
+        lastHeartbeat: now - 30000,
+      },
+      {
+        id: 'agent-002',
+        name: 'codex-default',
+        type: 'codex',
+        model: 'o4-mini',
+        status: 'running',
+        taskId: 've-jkl012',
+        taskTitle: 'GPU resource metering',
+        branch: 've/jkl012-hpc-gpu-metering',
+        sessionId: 'ses-002',
+        index: 1,
+        startedAt: now - 52 * min,
+        lastHeartbeat: now - 15000,
+      },
+      {
+        id: 'agent-003',
+        name: 'review-agent',
+        type: 'codex',
+        model: 'o4-mini',
+        status: 'idle',
+        taskId: 've-vwx234',
+        taskTitle: 'Review MFA integration tests',
+        branch: 've/vwx234-mfa-tests',
+        sessionId: 'ses-003',
+        index: 2,
+        startedAt: now - 4 * hr,
+        lastHeartbeat: now - 240000,
+      },
+    ];
+
+    const SEED_LOGS = [
+      { ts: now - 20*min, level: 'info', source: 'monitor', msg: 'Polling github for new tasks...' },
+      { ts: now - 19*min, level: 'info', source: 'kanban', msg: 'Found 2 new tasks in backlog' },
+      { ts: now - 18*min, level: 'info', source: 'task-executor', msg: 'Routing #42 feat(market): add order expiry → copilot-claude' },
+      { ts: now - 17*min, level: 'info', source: 'task-executor', msg: 'Routing #43 fix(veid): token validation → codex-default' },
+      { ts: now - 14*min, level: 'info', source: 'worktree', msg: 'Created ve/abc123-market-order-expiry' },
+      { ts: now - 12*min, level: 'info', source: 'copilot', msg: 'Session started for #42' },
+      { ts: now - 10*min, level: 'success', source: 'pr', msg: 'PR #187 created — CI running...' },
+      { ts: now - 8*min, level: 'success', source: 'ci', msg: 'PR #187 — all checks passed' },
+      { ts: now - 7*min, level: 'success', source: 'merge', msg: 'PR #187 merged to main ✓' },
+      { ts: now - 5*min, level: 'info', source: 'health', msg: 'Health check: all systems nominal' },
+      { ts: now - 2*min, level: 'info', source: 'review-agent', msg: 'Reviewing PR #189...' },
+      { ts: now - 1*min, level: 'info', source: 'monitor', msg: 'Next poll in 60s...' },
+    ];
+
+    const SEED_HEALTH = {
+      overall: 'healthy',
+      components: [
+        { name: 'GitHub API', status: 'ok', latency: '142ms' },
+        { name: 'Telegram Bot', status: 'ok', latency: '89ms' },
+        { name: 'Codex SDK', status: 'ok', latency: '234ms' },
+        { name: 'Copilot SDK', status: 'ok', latency: '178ms' },
+        { name: 'Shared State', status: 'ok', latency: '12ms' },
+        { name: 'Worktree Manager', status: 'ok', latency: '45ms' },
+      ],
+    };
+
+    const SEED_INFRA = {
+      worktrees: [
+        { branch: 've/abc123-market-order-expiry', path: '/worktrees/abc123', active: false },
+        { branch: 've/ghi789-escrow-batch', path: '/worktrees/ghi789', active: true },
+        { branch: 've/jkl012-hpc-gpu-metering', path: '/worktrees/jkl012', active: true },
+        { branch: 've/vwx234-mfa-tests', path: '/worktrees/vwx234', active: true },
+      ],
+      containers: [],
+      tunnelStatus: 'active',
+      tunnelUrl: 'https://bosun-demo.trycloudflare.com',
+    };
+
+    const SEED_PROJECT = {
+      name: 'virtengine',
+      repo: 'virtengine/virtengine',
+      defaultBranch: 'main',
+      totalTasks: SEED_TASKS.length,
+      completedTasks: 2,
+      activePRs: 3,
+    };
+
+    const formatTimestamp = (ts) => new Date(ts).toISOString();
+    let msgCounter = 0;
+    function makeMsg(role, content, ts, type) {
+      msgCounter += 1;
+      const msg = {
+        id: `msg-${msgCounter}`,
+        role,
+        content,
+        timestamp: formatTimestamp(ts || Date.now()),
+      };
+      if (type) msg.type = type;
+      return msg;
+    }
+
+    const SESSION_MESSAGES = {
+      'ses-001': [
+        makeMsg('system', 'Session started for ve-ghi789 (escrow batch settlement).', now - 2 * hr, 'system'),
+        makeMsg('assistant', 'Mapping batch settlement flow and scanning keeper wiring.', now - 110 * min),
+        makeMsg('assistant', 'Found stubs in `x/escrow/keeper/batch.go` and `msg_server.go`.', now - 95 * min),
+        makeMsg('assistant', 'Drafted batch iterator and retry guard — running tests next.', now - 70 * min),
+        makeMsg('assistant', 'CI queued. Awaiting results.', now - 18 * min),
+      ],
+      'ses-002': [
+        makeMsg('system', 'Session started for ve-jkl012 (GPU resource metering).', now - 1 * hr, 'system'),
+        makeMsg('assistant', 'Reviewing resource meter hooks in `x/hpc`.', now - 52 * min),
+        makeMsg('assistant', 'Adding metering sample + config toggle for GPU pods.', now - 28 * min),
+        makeMsg('assistant', 'Drafted docs update for GPU metering flags.', now - 8 * min),
+      ],
+      'ses-003': [
+        makeMsg('system', 'Review session: ve-vwx234 integration tests.', now - 4 * hr, 'system'),
+        makeMsg('assistant', 'Two small nits: table-driven name clarity + lint import order.', now - 3 * hr),
+        makeMsg('assistant', 'Approved after updates. Merged to main.', now - 2 * hr),
+      ],
+      'ses-004': [
+        makeMsg('system', 'Provider health endpoint planning.', now - 90 * min, 'system'),
+        makeMsg('assistant', 'Queued backlog items, waiting on API approval.', now - 60 * min),
+      ],
+      'ses-005': [
+        makeMsg('system', 'Release checklist follow-up.', now - 6 * hr, 'system'),
+        makeMsg('assistant', 'Release checklist completed. Archived for later.', now - 5 * hr),
+      ],
+    };
+
+    const SEED_SESSIONS = [
+      {
+        id: 'ses-001',
+        title: 'Escrow Batch Settlement',
+        type: 'task',
+        status: 'running',
+        taskId: 've-ghi789',
+        branch: 've/ghi789-escrow-batch',
+        createdAt: now - 2 * hr,
+        updatedAt: now - 12 * min,
+        lastMessage: 'CI queued. Awaiting results.',
+        messages: SESSION_MESSAGES['ses-001'],
+      },
+      {
+        id: 'ses-002',
+        title: 'GPU Metering Rollout',
+        type: 'task',
+        status: 'running',
+        taskId: 've-jkl012',
+        branch: 've/jkl012-hpc-gpu-metering',
+        createdAt: now - 1 * hr,
+        updatedAt: now - 6 * min,
+        lastMessage: 'Drafted docs update for GPU metering flags.',
+        messages: SESSION_MESSAGES['ses-002'],
+      },
+      {
+        id: 'ses-003',
+        title: 'PR Review: MFA Tests',
+        type: 'review',
+        status: 'completed',
+        taskId: 've-vwx234',
+        branch: 've/vwx234-mfa-tests',
+        createdAt: now - 4 * hr,
+        updatedAt: now - 2 * hr,
+        lastMessage: 'Approved after updates. Merged to main.',
+        messages: SESSION_MESSAGES['ses-003'],
+      },
+      {
+        id: 'ses-004',
+        title: 'Provider Health Endpoint',
+        type: 'task',
+        status: 'paused',
+        taskId: 've-pqr678',
+        branch: 've/pqr678-provider-health',
+        createdAt: now - 90 * min,
+        updatedAt: now - 60 * min,
+        lastMessage: 'Queued backlog items, waiting on API approval.',
+        messages: SESSION_MESSAGES['ses-004'],
+      },
+      {
+        id: 'ses-005',
+        title: 'Release Checklist',
+        type: 'manual',
+        status: 'archived',
+        taskId: 've-rel001',
+        branch: 've/release-checklist',
+        createdAt: now - 6 * hr,
+        updatedAt: now - 5 * hr,
+        lastMessage: 'Release checklist completed. Archived for later.',
+        messages: SESSION_MESSAGES['ses-005'],
+      },
+    ];
+
+    const SESSION_DIFFS = {
+      'ses-001': {
+        files: [
+          {
+            filename: 'x/escrow/keeper/batch.go',
+            status: 'added',
+            additions: 42,
+            deletions: 0,
+            patch: [
+              '@@ -0,0 +1,42 @@',
+              '+package keeper',
+              '+',
+              '+// BatchSettle processes pending settlements in batch.',
+              '+func (k Keeper) BatchSettle(ctx sdk.Context) error {',
+              '+    iter := k.store.Iterator(ctx, k.settlementPrefix)',
+              '+    defer iter.Close()',
+              '+',
+              '+    for ; iter.Valid(); iter.Next() {',
+              '+        // settle',
+              '+    }',
+              '+    return nil',
+              '+}',
+            ].join('\n'),
+          },
+          {
+            filename: 'x/escrow/keeper/msg_server.go',
+            status: 'modified',
+            additions: 9,
+            deletions: 2,
+            patch: [
+              '@@ -118,6 +118,13 @@',
+              ' func (s msgServer) TriggerSettlement(...) {',
+              '+    if err := s.Keeper.BatchSettle(ctx); err != nil {',
+              '+        return nil, err',
+              '+    }',
+              '     return &types.MsgTriggerSettlementResponse{}, nil',
+              ' }',
+            ].join('\n'),
+          },
+        ],
+      },
+      'ses-002': {
+        files: [
+          {
+            filename: 'x/hpc/keeper/metering.go',
+            status: 'modified',
+            additions: 18,
+            deletions: 4,
+            patch: [
+              '@@ -44,8 +44,22 @@',
+              '-func (k Keeper) TrackCPU(...) {',
+              '+func (k Keeper) TrackGPU(ctx sdk.Context, pod Pod) error {',
+              '+    if !k.cfg.GPUMeteringEnabled {',
+              '+        return nil',
+              '+    }',
+              '+    // ... record usage',
+              '+    return nil',
+              '+}',
+            ].join('\n'),
+          },
+          {
+            filename: 'docs/hpc/gpu-metering.md',
+            status: 'added',
+            additions: 26,
+            deletions: 0,
+            patch: [
+              '@@ -0,0 +1,26 @@',
+              '+# GPU Metering',
+              '+',
+              '+Enable with `HPC_GPU_METERING=true` in bosun config.',
+              '+',
+              '+Usage is tracked per workload minute.',
+            ].join('\n'),
+          },
+        ],
+      },
+      'ses-003': {
+        files: [
+          {
+            filename: 'tests/mfa/integration.test.ts',
+            status: 'modified',
+            additions: 5,
+            deletions: 2,
+            patch: [
+              '@@ -88,7 +88,10 @@',
+              '-describe("MFA integration", () => {',
+              '+describe("MFA integration flow", () => {',
+              '   it("rejects invalid token", async () => {',
+              '     ...',
+              '   });',
+              ' });',
+            ].join('\n'),
+          },
+        ],
+      },
+      'ses-004': { files: [] },
+      'ses-005': { files: [] },
+    };
+
+    /* ── Internal State (mutable — actions modify this in-place) ──── */
+    const STATE = {
+      tasks: SEED_TASKS,
+      status: SEED_STATUS,
+      executors: SEED_EXECUTORS,
+      agents: SEED_AGENTS,
+      logs: SEED_LOGS,
+      health: SEED_HEALTH,
+      infra: SEED_INFRA,
+      project: SEED_PROJECT,
+      paused: false,
+      maxParallel: 6,
+      settings: {
+        maxParallel: 6,
+        executorMode: 'internal',
+        autoMerge: true,
+        autoRebase: true,
+        reviewAgent: true,
+        sentinelEnabled: false,
+        sdk: 'auto',
+        region: 'auto',
+      },
+      sessions: SEED_SESSIONS,
+      sessionDiffs: SESSION_DIFFS,
+      worktrees: [
+        { branch: 've/abc123-market-order-expiry', path: '/worktrees/abc123', active: false, taskId: 've-abc123' },
+        { branch: 've/ghi789-escrow-batch', path: '/worktrees/ghi789', active: true, taskId: 've-ghi789' },
+        { branch: 've/jkl012-hpc-gpu-metering', path: '/worktrees/jkl012', active: true, taskId: 've-jkl012' },
+        { branch: 've/vwx234-mfa-tests', path: '/worktrees/vwx234', active: true, taskId: 've-vwx234' },
+      ],
+      managedWorkspaces: [
+        { id: 'ws-virtengine', name: 'virtengine', path: '/home/demo/repos/virtengine', active: true, repos: [
+          { name: 'virtengine', url: 'https://github.com/virtengine-gh/virtengine.git', branch: 'main', primary: true },
+          { name: 'virtengine-go', url: 'https://github.com/virtengine/go.git', branch: 'main', primary: false },
+        ], createdAt: now - 30*24*hr },
+        { id: 'ws-provider', name: 'provider-tools', path: '/home/demo/repos/provider-tools', active: false, repos: [
+          { name: 'provider-daemon', url: 'https://github.com/virtengine-gh/provider-daemon.git', branch: 'main', primary: true },
+        ], createdAt: now - 7*24*hr },
+      ],
+      activeWorkspaceId: 'ws-virtengine',
+      sharedWorkspaces: [
+        { id: 'sw-1', name: 'shared-escrow-dev', claimedBy: 'copilot-claude', claimedAt: now - 1*hr, expiresAt: now + 1*hr },
+      ],
+      agentMode: 'agent',
+      activeAgentId: 'codex-sdk',
+      availableAgents: [
+        { id: 'codex-sdk', name: 'Codex SDK', provider: 'openai', available: true, busy: false, capabilities: ['code', 'test', 'refactor'] },
+        { id: 'copilot-claude', name: 'Copilot Claude', provider: 'anthropic', available: true, busy: false, capabilities: ['code', 'review', 'plan'] },
+        { id: 'codex-mini', name: 'Codex Mini', provider: 'openai', available: true, busy: false, capabilities: ['code'] },
+      ],
+      gitBranches: ['main', 've/abc123-market-order-expiry', 've/ghi789-escrow-batch', 've/jkl012-hpc-gpu-metering', 've/vwx234-mfa-tests'],
+      gitDiff: '--- a/x/escrow/keeper/batch.go\n+++ b/x/escrow/keeper/batch.go\n@@ -0,0 +1,42 @@\n+package keeper\n+\n+// BatchSettle processes pending settlements in batch.\n+func (k Keeper) BatchSettle(ctx sdk.Context) error {\n+    // ... implementation\n+    return nil\n+}',
+      agentLogFiles: ['copilot-claude-42.log', 'codex-default-43.log', 'monitor.log'],
+      presence: {
+        instances: [{ id: 'inst-1', host: 'dev-machine', pid: 12345, started: now - 3*hr, role: 'primary' }],
+        coordinator: { id: 'inst-1', host: 'dev-machine', elected: now - 3*hr },
+      },
+    };
+
+    /* ── Helper: find task by ID ───────────────────────────────────── */
+    function findTask(id) { return STATE.tasks.find(t => t.id === id); }
+    function addLog(level, source, msg) {
+      STATE.logs.unshift({ ts: Date.now(), level, source, msg });
+      if (STATE.logs.length > 100) STATE.logs.length = 100;
+    }
+    function formatLogLine(entry) {
+      return `[${formatTimestamp(entry.ts)}] [${entry.level}] ${entry.source}: ${entry.msg}`;
+    }
+
+    let replyCursor = 0;
+    const RESPONSE_SETS = [
+      [
+        { type: 'tool_call', content: 'rg "BatchSettle" x/escrow -n' },
+        { type: 'tool_result', content: 'x/escrow/keeper/batch.go:12 BatchSettle\nx/escrow/types/msgs.go:87 MsgTriggerSettlement' },
+        { role: 'assistant', content: 'I found a stubbed `BatchSettle` entry point. I can wire the iterator and add a guard in the msg server. Want me to push the patch?' },
+      ],
+      [
+        { type: 'tool_call', content: 'rg "GPU" x/hpc -n' },
+        { type: 'tool_result', content: 'x/hpc/keeper/metering.go:44 TrackGPU\nx/hpc/types/config.go:18 GPUMeteringEnabled' },
+        { role: 'assistant', content: 'GPU metering hooks are already scaffolded. I can add the config toggle + emit usage events, plus a short docs note.' },
+      ],
+      [
+        { type: 'tool_call', content: 'git status --short' },
+        { type: 'tool_result', content: ' M tests/mfa/integration.test.ts\n M docs/mfa/README.md' },
+        { role: 'assistant', content: 'Updated the MFA test names and added a short docs note. Ready for review.' },
+      ],
+    ];
+
+    function appendMessage(session, msg) {
+      session.messages.push(msg);
+      session.updatedAt = Date.now();
+      if (msg.content && msg.role !== 'system' && msg.type !== 'tool_call' && msg.type !== 'tool_result') {
+        session.lastMessage = msg.content;
+      }
+    }
+
+    function scheduleResponses(session) {
+      const set = RESPONSE_SETS[replyCursor % RESPONSE_SETS.length];
+      replyCursor += 1;
+      let delay = 600 + Math.random() * 600;
+      set.forEach((item) => {
+        const msg = makeMsg(
+          item.role || 'assistant',
+          item.content,
+          Date.now() + delay,
+          item.type,
+        );
+        const weight = Math.min(2200, Math.max(700, item.content.length * 18));
+        delay += weight + Math.random() * 500;
+        setTimeout(() => {
+          appendMessage(session, msg);
+          addLog('info', 'agent', `${session.title}: ${item.type ? item.type.replace('_', ' ') : 'message'} queued`);
+        }, delay);
+      });
+    }
+
+    /* ── API Route Handler (comprehensive — catches ALL /api/* calls) */
+    function handleApi(path, method, body) {
+      // Normalize: strip query string for route matching
+      const [route, qs] = path.split('?');
+      const params = new URLSearchParams(qs || '');
+
+      // ── Status & Executor ──
+      if (route === '/api/status')
+        return { data: STATE.status };
+      if (route === '/api/executor')
+        return { data: { ...STATE.status, maxParallel: STATE.maxParallel, paused: STATE.paused, executors: STATE.executors, activeSlots: STATE.executors.filter(e => e.status === 'active').length, sdk: 'auto' } };
+      if (!STATE.triggerTemplates) {
+        STATE.triggerTemplates = {
+          enabled: false,
+          defaults: { executor: 'auto', model: 'auto' },
+          planner: { lastSuccessAt: null, lastFailureAt: null, lastError: null },
+          templates: [
+            {
+              id: 'task-planner',
+              name: 'Task Planner',
+              description: 'Create planning tasks when backlog is low.',
+              enabled: false,
+              action: 'task-planner',
+              minIntervalMinutes: 360,
+              trigger: { anyOf: [{ kind: 'metric', metric: 'backlogRemaining', operator: 'eq', value: 0 }] },
+              config: { plannerMode: 'kanban', defaultTaskCount: 30, executor: 'auto', model: 'auto' },
+              state: { last_success_at: null, last_error: null },
+              stats: { spawnedTotal: 0, activeCount: 0, doneCount: 0, runningAgents: [], recentSpawned: [] },
+            },
+            {
+              id: 'daily-review-digest',
+              name: 'Daily Review Digest',
+              description: 'Create a daily review digest task.',
+              enabled: false,
+              action: 'create-task',
+              minIntervalMinutes: 1440,
+              trigger: { anyOf: [{ kind: 'interval', minutes: 1440 }] },
+              config: { title: '[m] Daily review digest', priority: 'medium', executor: 'auto', model: 'auto' },
+              state: { last_success_at: null, last_error: null },
+              stats: { spawnedTotal: 0, activeCount: 0, doneCount: 0, runningAgents: [], recentSpawned: [] },
+            },
+          ],
+        };
+      }
+      if (route === '/api/triggers/templates') {
+        return { ok: true, data: STATE.triggerTemplates };
+      }
+      if (route === '/api/triggers/templates/update') {
+        if (typeof body?.enabled === 'boolean') STATE.triggerTemplates.enabled = body.enabled;
+        if (body?.defaults && typeof body.defaults === 'object') {
+          STATE.triggerTemplates.defaults = { ...STATE.triggerTemplates.defaults, ...body.defaults };
+        }
+        if (body?.template && body.template.id) {
+          const idx = STATE.triggerTemplates.templates.findIndex((t) => t.id === body.template.id);
+          if (idx >= 0) STATE.triggerTemplates.templates[idx] = { ...STATE.triggerTemplates.templates[idx], ...body.template };
+          else STATE.triggerTemplates.templates.push(body.template);
+        }
+        addLog('info', 'config', 'Trigger templates updated');
+        return { ok: true, data: STATE.triggerTemplates };
+      }
+      if (route === '/api/telemetry/summary')
+        return { data: { status: 'ok', updatedAt: Date.now(), totals: { tasks: STATE.tasks.length, executors: STATE.executors.length } } };
+      if (route === '/api/telemetry/errors')
+        return { data: [] };
+      if (route === '/api/telemetry/executors')
+        return { data: STATE.executors.map((e) => ({ ...e, status: e.enabled ? 'active' : 'disabled' })) };
+      if (route === '/api/telemetry/alerts')
+        return { data: [] };
+      if (route === '/api/executor/pause') {
+        STATE.paused = true; addLog('info', 'executor', 'Executor paused');
+        return { ok: true, paused: true };
+      }
+      if (route === '/api/executor/resume') {
+        STATE.paused = false; addLog('info', 'executor', 'Executor resumed');
+        return { ok: true, paused: false };
+      }
+      if (route === '/api/executor/maxparallel') {
+        const mp = body?.maxParallel ?? STATE.maxParallel;
+        STATE.maxParallel = mp; STATE.status.maxParallel = mp;
+        addLog('info', 'executor', `Max parallel set to ${mp}`);
+        return { ok: true, maxParallel: mp };
+      }
+      if (route === '/api/executor/stop-slot') {
+        addLog('info', 'executor', `Slot stopped: ${body?.slotId || 'unknown'}`);
+        return { ok: true };
+      }
+      if (route === '/api/executor/dispatch') {
+        addLog('info', 'executor', `Manual dispatch: ${body?.taskId || 'unknown'}`);
+        return { ok: true, dispatched: body?.taskId };
+      }
+
+      // ── Tasks ──
+      if (route === '/api/tasks') {
+        let tasks = [...STATE.tasks];
+        const status = params.get('status');
+        const priority = params.get('priority');
+        const search = params.get('search');
+        const sort = params.get('sort');
+        if (status && status !== 'all') tasks = tasks.filter(t => t.status === status);
+        if (priority && priority !== 'all') tasks = tasks.filter(t => t.priority === priority);
+        if (search) tasks = tasks.filter(t => t.title.toLowerCase().includes(search.toLowerCase()));
+        if (sort === 'priority') tasks.sort((a, b) => { const o = {critical:0,high:1,medium:2,low:3}; return (o[a.priority]??9)-(o[b.priority]??9); });
+        if (sort === '-updated') tasks.sort((a, b) => b.updated - a.updated);
+        const page = parseInt(params.get('page')) || 1;
+        const pageSize = parseInt(params.get('pageSize') || params.get('limit')) || 50;
+        const total = tasks.length;
+        const paged = tasks.slice((page-1)*pageSize, page*pageSize);
+        return { data: paged, tasks: paged, total, totalPages: Math.max(1, Math.ceil(total/pageSize)), page, pageSize };
+      }
+      if (route === '/api/tasks/detail') {
+        const t = findTask(params.get('taskId'));
+        return { data: t || null };
+      }
+      if (route === '/api/tasks/create') {
+        const id = 've-' + Math.random().toString(36).slice(2, 8);
+        const t = { id, title: body?.title || 'New task', status: 'todo', priority: body?.priority || 'medium', assignee: null, branch: null, pr: null, created: Date.now(), updated: Date.now() };
+        STATE.tasks.unshift(t); addLog('success', 'kanban', `Task created: ${t.title}`);
+        return { ok: true, data: t };
+      }
+      if (route === '/api/tasks/update') {
+        const t = findTask(body?.taskId || body?.id);
+        if (t) { Object.assign(t, body, { updated: Date.now() }); addLog('info', 'kanban', `Task updated: ${t.title}`); }
+        return { ok: true, data: t || null };
+      }
+      if (route === '/api/tasks/edit') {
+        const t = findTask(body?.taskId || body?.id);
+        if (t) { if (body?.title) t.title = body.title; if (body?.priority) t.priority = body.priority; t.updated = Date.now(); }
+        return { ok: true, data: t || null };
+      }
+      if (route === '/api/tasks/start') {
+        const t = findTask(body?.taskId);
+        if (t) { t.status = 'inprogress'; t.updated = Date.now(); addLog('info', 'task-executor', `Task started: ${t.title}`); }
+        return { ok: true, data: t || null };
+      }
+      if (route === '/api/tasks/retry') {
+        const t = findTask(body?.taskId);
+        if (t) { t.status = 'todo'; t.updated = Date.now(); addLog('info', 'task-executor', `Task retried: ${t.title}`); }
+        return { ok: true, data: t || null };
+      }
+      if (route === '/api/tasks/ignore') {
+        const t = findTask(body?.taskId || body?.id);
+        if (t) { t.status = 'ignored'; t.updated = Date.now(); addLog('info', 'kanban', `Task ignored: ${t.title}`); }
+        return { ok: true, data: t || null };
+      }
+      if (route === '/api/tasks/unignore') {
+        const t = findTask(body?.taskId || body?.id);
+        if (t) { t.status = 'todo'; t.updated = Date.now(); addLog('info', 'kanban', `Task unignored: ${t.title}`); }
+        return { ok: true, data: t || null };
+      }
+
+      // ── Agents ──
+      if (route === '/api/agents')
+        return { data: STATE.agents };
+      if (route === '/api/agents/available')
+        return { ok: true, data: STATE.availableAgents };
+      if (route === '/api/agents/switch') {
+        const agentId = body?.agentId || body?.id;
+        if (agentId) STATE.activeAgentId = agentId;
+        return { ok: true, activeAgent: STATE.activeAgentId };
+      }
+      if (route === '/api/agents/mode') {
+        if (method === 'POST') {
+          if (body?.mode) STATE.agentMode = body.mode;
+          return { ok: true, mode: STATE.agentMode };
+        }
+        return { ok: true, mode: STATE.agentMode };
+      }
+      if (route === '/api/agents/sdk-command') {
+        const cmd = body?.command || '';
+        addLog('info', 'sdk', `SDK command: ${cmd}`);
+        return { ok: true, command: cmd, response: 'SDK command executed in demo mode: ' + cmd };
+      }
+      if (route === '/api/agents/info') {
+        const agent = STATE.availableAgents.find(a => a.id === STATE.activeAgentId) || STATE.availableAgents[0];
+        return { ok: true, data: agent };
+      }
+
+      // ── Agent Event Bus (mock) ──
+      if (route === '/api/agents/events') {
+        const taskId = params.get('taskId');
+        const type = params.get('type');
+        const limit = parseInt(params.get('limit')) || 100;
+        let events = [
+          { type: 'agent:task-started', taskId: 'demo-task-1', payload: { title: 'Fix authentication bug', sdk: 'copilot-sdk' }, ts: now - 300000 },
+          { type: 'agent:heartbeat', taskId: 'demo-task-1', payload: { alive: true }, ts: now - 120000 },
+          { type: 'agent:error-classified', taskId: 'demo-task-1', payload: { pattern: 'build_failure', confidence: 0.92, action: 'retry_with_prompt' }, ts: now - 60000 },
+          { type: 'agent:auto-retry', taskId: 'demo-task-1', payload: { retryCount: 1, maxRetries: 5, pattern: 'build_failure' }, ts: now - 55000 },
+          { type: 'agent:task-completed', taskId: 'demo-task-1', payload: { title: 'Fix authentication bug', success: true, hasCommits: true, branch: 've/demo-task-1' }, ts: now - 10000 },
+          { type: 'agent:auto-review', taskId: 'demo-task-1', payload: { title: 'Fix authentication bug', branch: 've/demo-task-1' }, ts: now - 5000 },
+        ];
+        if (taskId) events = events.filter(e => e.taskId === taskId);
+        if (type) events = events.filter(e => e.type === type);
+        events = events.slice(-limit);
+        return { ok: true, events };
+      }
+      if (route === '/api/agents/events/errors') {
+        const taskId = params.get('taskId');
+        if (taskId) {
+          return { ok: true, taskId, errors: [
+            { pattern: 'build_failure', ts: now - 60000, action: 'retry_with_prompt', confidence: 0.92 },
+          ]};
+        }
+        return { ok: true, patterns: {
+          build_failure: { count: 3, lastSeen: now - 60000, tasks: ['demo-task-1', 'demo-task-2'] },
+          rate_limit: { count: 1, lastSeen: now - 180000, tasks: ['demo-task-2'] },
+        }};
+      }
+      if (route === '/api/agents/events/liveness') {
+        return { ok: true, agents: [
+          { taskId: 'demo-task-1', lastHeartbeat: now - 30000, alive: true, staleSinceMs: null },
+          { taskId: 'demo-task-2', lastHeartbeat: now - 120000, alive: false, staleSinceMs: 120000 },
+        ]};
+      }
+      if (route === '/api/agents/events/status') {
+        return { ok: true, started: true, eventLogSize: 6, trackedAgents: 2, errorTrackedTasks: 2, autoActionTasks: 1, listenerCount: 0, liveness: [
+          { taskId: 'demo-task-1', lastHeartbeat: now - 30000, alive: true, staleSinceMs: null },
+        ], errorPatterns: {
+          build_failure: { count: 3, lastSeen: now - 60000, tasks: ['demo-task-1'] },
+        }};
+      }
+      if (route === '/api/executors')
+        return { executors: STATE.executors };
+
+      // ── Logs ──
+      if (route === '/api/logs') {
+        const lines = parseInt(params.get('lines')) || 50;
+        const entries = STATE.logs.slice(0, lines);
+        return { data: { lines: entries.map(formatLogLine) }, lines: entries.map(formatLogLine) };
+      }
+      if (route === '/api/agent-logs')
+        return { data: STATE.agentLogFiles };
+      if (route === '/api/agent-logs/tail') {
+        const file = params.get('file') || params.get('query') || '';
+        const n = parseInt(params.get('lines')) || 100;
+        const lines = Array.from({ length: Math.min(n, 20) }, (_, i) => {
+          const ts = new Date(now - (20 - i) * 30000).toISOString();
+          return `[${ts}] [info] Demo log line ${i + 1} from ${file || 'agent'}`;
+        });
+        return { data: { lines } };
+      }
+      if (route === '/api/agent-context') {
+        const q = params.get('query') || '';
+        return { data: { query: q, branch: q, files: ['keeper.go', 'types.go', 'msg_server.go'], recentCommits: ['feat: initial implementation', 'fix: lint errors'], worktree: '/worktrees/' + q.slice(0, 6) } };
+      }
+
+      // ── Health ──
+      if (route === '/api/health')
+        return STATE.health;
+
+      // ── Infrastructure ──
+      if (route === '/api/infra')
+        return { data: STATE.infra };
+      if (route === '/api/worktrees') {
+        if (route === '/api/worktrees') return { data: STATE.worktrees, stats: { total: STATE.worktrees.length, active: STATE.worktrees.filter(w => w.active).length } };
+      }
+      if (route === '/api/worktrees/prune') {
+        STATE.worktrees = STATE.worktrees.filter(w => w.active); addLog('info', 'worktree', 'Pruned inactive worktrees');
+        return { ok: true, pruned: 1 };
+      }
+      if (route === '/api/worktrees/release') {
+        const branch = body?.branch;
+        const wt = STATE.worktrees.find(w => w.branch === branch);
+        if (wt) wt.active = false;
+        return { ok: true };
+      }
+
+      // ── Managed Workspaces ──
+      if (route === '/api/workspaces')
+        return { ok: true, data: STATE.managedWorkspaces, activeId: STATE.activeWorkspaceId };
+      if (route === '/api/workspaces/active') {
+        if (method === 'POST' && body?.workspaceId) {
+          STATE.activeWorkspaceId = body.workspaceId;
+          return { ok: true, activeId: body.workspaceId };
+        }
+        const active = STATE.managedWorkspaces.find(w => w.id === STATE.activeWorkspaceId) || null;
+        return { ok: true, data: active };
+      }
+      if (route === '/api/workspaces/create') {
+        const name = body?.name || 'new-workspace';
+        const ws = { id: 'ws-' + Math.random().toString(36).slice(2, 7), name, path: '/home/demo/repos/' + name, active: false, repos: [], createdAt: Date.now() };
+        STATE.managedWorkspaces.push(ws);
+        return { ok: true, data: ws };
+      }
+      if (route === '/api/workspaces/delete') {
+        const wsId = body?.workspaceId || body?.id;
+        STATE.managedWorkspaces = STATE.managedWorkspaces.filter(w => w.id !== wsId);
+        if (STATE.activeWorkspaceId === wsId) STATE.activeWorkspaceId = STATE.managedWorkspaces[0]?.id || null;
+        return { ok: true, deleted: true };
+      }
+      if (route === '/api/workspaces/pull') {
+        const wsId = body?.workspaceId || body?.id;
+        const ws = STATE.managedWorkspaces.find(w => w.id === wsId);
+        return { ok: true, data: (ws?.repos || []).map(r => ({ repo: r.name, status: 'up-to-date', branch: r.branch })) };
+      }
+      if (route === '/api/workspaces/repos/add') {
+        const ws = STATE.managedWorkspaces.find(w => w.id === body?.workspaceId);
+        if (ws) {
+          const repo = { name: body?.name || body?.url?.split('/').pop()?.replace('.git','') || 'repo', url: body?.url, branch: body?.branch || 'main', primary: Boolean(body?.primary) };
+          ws.repos.push(repo);
+          return { ok: true, data: repo };
+        }
+        return { ok: false, error: 'workspace not found' };
+      }
+      if (route === '/api/workspaces/repos/remove') {
+        const ws = STATE.managedWorkspaces.find(w => w.id === body?.workspaceId);
+        if (ws) ws.repos = ws.repos.filter(r => r.name !== (body?.repoName || body?.name));
+        return { ok: true, removed: true };
+      }
+      if (route === '/api/workspaces/scan') {
+        return { ok: true, data: STATE.managedWorkspaces, scanned: STATE.managedWorkspaces.length, added: 0, updated: 0 };
+      }
+
+      // ── Shared Workspaces ──
+      if (route === '/api/shared-workspaces')
+        return { data: STATE.sharedWorkspaces };
+      if (route === '/api/shared-workspaces/claim') {
+        const ws = { id: 'sw-' + Math.random().toString(36).slice(2, 5), name: body?.name || 'workspace', claimedBy: body?.agent || 'demo', claimedAt: Date.now(), expiresAt: Date.now() + 2*hr };
+        STATE.sharedWorkspaces.push(ws);
+        return { ok: true, data: ws };
+      }
+      if (route === '/api/shared-workspaces/renew') {
+        const ws = STATE.sharedWorkspaces.find(w => w.id === body?.id);
+        if (ws) ws.expiresAt = Date.now() + 2*hr;
+        return { ok: true };
+      }
+      if (route === '/api/shared-workspaces/release') {
+        STATE.sharedWorkspaces = STATE.sharedWorkspaces.filter(w => w.id !== body?.id);
+        return { ok: true };
+      }
+
+      // ── Git ──
+      if (route === '/api/git/branches')
+        return { data: STATE.gitBranches };
+      if (route === '/api/git/diff')
+        return { data: STATE.gitDiff };
+      if (route === '/api/recent-commits')
+        return {
+          ok: true,
+          data: [
+            { sha: 'a1b2c3d', subject: 'feat(ui): add task assignment controls', authorName: 'bosun-demo', authoredDate: new Date(Date.now() - 2 * hr).toISOString() },
+            { sha: 'd4e5f6g', subject: 'fix(api): stabilize shared state sync retries', authorName: 'bosun-demo', authoredDate: new Date(Date.now() - 6 * hr).toISOString() },
+            { sha: 'h7i8j9k', subject: 'test(hooks): cover prepush timeout behavior', authorName: 'bosun-demo', authoredDate: new Date(Date.now() - 24 * hr).toISOString() },
+          ],
+        };
+
+      // ── Sessions ──
+      if (route === '/api/sessions' && method === 'GET') {
+        return {
+          sessions: STATE.sessions.map((s) => ({
+            id: s.id,
+            title: s.title,
+            type: s.type,
+            status: s.status,
+            taskId: s.taskId,
+            branch: s.branch,
+            createdAt: s.createdAt,
+            updatedAt: s.updatedAt,
+            lastMessage: s.lastMessage,
+          })),
+        };
+      }
+      if (route.match(/^\/api\/sessions\/[^/]+\/diff$/)) {
+        const sid = route.split('/')[3];
+        return { diff: STATE.sessionDiffs[sid] || { files: [] } };
+      }
+      if (route.match(/^\/api\/sessions\/[^/]+\/message$/)) {
+        const sid = route.split('/')[3];
+        const ses = STATE.sessions.find(s => s.id === sid);
+        const content = String(body?.content || body?.text || body?.message || '');
+        if (ses && content) {
+          appendMessage(ses, makeMsg('user', content, Date.now()));
+          ses.status = ses.status === 'archived' ? 'active' : ses.status;
+          scheduleResponses(ses);
+        }
+        return { ok: true, session: ses || null };
+      }
+      if (route.match(/^\/api\/sessions\/[^/]+\/resume$/)) {
+        const sid = route.split('/')[3];
+        const ses = STATE.sessions.find(s => s.id === sid);
+        if (ses) ses.status = 'active';
+        return { ok: true, session: ses || null };
+      }
+      if (route.match(/^\/api\/sessions\/[^/]+\/archive$/)) {
+        const sid = route.split('/')[3];
+        const ses = STATE.sessions.find(s => s.id === sid);
+        if (ses) ses.status = 'archived';
+        return { ok: true, session: ses || null };
+      }
+      if (route === '/api/sessions/create') {
+        const id = 'ses-' + Math.random().toString(36).slice(2, 6);
+        const s = {
+          id,
+          title: body?.title || 'New Session',
+          type: body?.type || 'manual',
+          status: 'active',
+          taskId: body?.taskId || null,
+          branch: body?.branch || null,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          lastMessage: 'Session created.',
+          messages: [
+            makeMsg('system', 'Session initialized in demo mode.', Date.now(), 'system'),
+          ],
+        };
+        STATE.sessions.unshift(s);
+        STATE.sessionDiffs[id] = { files: [] };
+        return { ok: true, session: s };
+      }
+      if (route.match(/^\/api\/sessions\/[^/]+$/) && method === 'GET') {
+        const sid = route.split('/')[3];
+        const ses = STATE.sessions.find(s => s.id === sid) || null;
+        return { session: ses };
+      }
+
+      // ── Settings & Config ──
+      if (route === '/api/settings')
+        return STATE.settings;
+      if (route === '/api/config/update') {
+        Object.assign(STATE.settings, body || {});
+        return { ok: true };
+      }
+
+      // ── Command ──
+      if (route === '/api/command') {
+        const cmd = body?.command || '';
+        addLog('info', 'command', `Executed: ${cmd}`);
+        return { ok: true, command: cmd, response: 'Command executed in demo mode: ' + cmd };
+      }
+
+      // ── Presence ──
+      if (route === '/api/presence')
+        return { data: STATE.presence };
+
+      // ── Project ──
+      if (route === '/api/project' || route === '/api/project-summary')
+        return { data: STATE.project };
+
+      // ── Supervisor ──
+      if (route === '/api/supervisor/status')
+        return {
+          systemHealth: { started: true, trackedTasks: STATE.tasks.filter(t => t.status === 'inprogress').length, averageHealth: 85, blockedTasks: 0, activeInterventions: 0 },
+          tasks: STATE.tasks.filter(t => t.status === 'inprogress').map(t => ({
+            taskId: t.id, interventionCount: 0, lastDecision: null,
+            averageHealthScore: 85, currentHealthScore: 85,
+            qualityScore: null, reviewVerdict: null, reviewIssueCount: 0,
+            recentSituations: [{ situation: 'healthy', ts: Date.now() }],
+          })),
+        };
+      if (route.match(/^\/api\/supervisor\/task\/[^/]+$/))
+        return {
+          taskId: route.split('/')[4],
+          interventionCount: 0, lastDecision: null,
+          averageHealthScore: 85, currentHealthScore: 85,
+          qualityScore: null, reviewVerdict: null, reviewIssueCount: 0,
+          recentSituations: [{ situation: 'healthy', ts: Date.now() }],
+        };
+
+      // ── Catch-all: return empty success for any unhandled /api/ route ──
+      console.debug('[demo] Unhandled API route:', method, path);
+      return { ok: true, data: null };
+    }
+
+    /* ── Intercept fetch() — ALL /api/ calls handled internally ───── */
+    const _realFetch = window.fetch;
+    window.fetch = function(url, options) {
+      const path = typeof url === 'string' ? url : url?.url || '';
+
+      // Intercept ALL /api/ calls — nothing reaches the network
+      if (path.startsWith('/api/') || path.startsWith('/api?')) {
+        let body = null;
+        if (options?.body) {
+          try { body = JSON.parse(options.body); } catch {}
+        }
+        const method = (options?.method || 'GET').toUpperCase();
+        const data = handleApi(path, method, body);
+        return Promise.resolve(new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+
+      // Pass through non-API requests (fonts, CDN, ES modules, etc.)
+      return _realFetch.apply(this, arguments);
+    };
+
+    /* ── Intercept WebSocket ───────────────────────────────────────── */
+    const _RealWS = window.WebSocket;
+    window.WebSocket = function(url, protocols) {
+      const fake = {
+        url: url,
+        readyState: 1, // OPEN
+        bufferedAmount: 0,
+        extensions: '',
+        protocol: '',
+        onopen: null,
+        onmessage: null,
+        onclose: null,
+        onerror: null,
+        send(data) { /* swallow */ },
+        close() {
+          this.readyState = 3;
+          if (this.onclose) this.onclose({ code: 1000, reason: 'Demo mode' });
+        },
+        addEventListener(type, handler) {
+          this['on' + type] = handler;
+        },
+        removeEventListener() {},
+      };
+
+      // Simulate open after microtask
+      setTimeout(() => {
+        fake.readyState = 1;
+        if (fake.onopen) fake.onopen({});
+
+        // Send pong responses
+        setInterval(() => {
+          if (fake.onmessage) {
+            fake.onmessage({ data: JSON.stringify({ type: 'pong', ts: Date.now() }) });
+          }
+        }, 5000);
+
+        // Simulate periodic task updates
+        let updateIdx = 0;
+        setInterval(() => {
+          if (!fake.onmessage) return;
+          const updates = [
+            { type: 'task-update', task: { id: 've-ghi789', status: 'inprogress' } },
+            { type: 'log', entry: { ts: Date.now(), level: 'info', source: 'monitor', msg: 'Health check passed — all systems nominal' } },
+            { type: 'executor-update', executor: { name: 'copilot-claude', load: 55 + Math.floor(Math.random() * 25) } },
+          ];
+          fake.onmessage({ data: JSON.stringify(updates[updateIdx % updates.length]) });
+          updateIdx++;
+        }, 8000);
+      }, 100);
+
+      return fake;
+    };
+    window.WebSocket.CONNECTING = 0;
+    window.WebSocket.OPEN = 1;
+    window.WebSocket.CLOSING = 2;
+    window.WebSocket.CLOSED = 3;
+
+  })();
+  </script>
+</head>
+<body>
+  <!-- Demo mode banner -->
+  <div class="demo-banner">⚡ Bosun Demo Mode — Seed Data</div>
+
+  <!-- ═══ Telegram MiniApp (single view — loads immediately) ═══════════ -->
+  <div class="demo-container">
+    <!-- MiniApp content (wraps #app) -->
+    <div class="miniapp-content">
+      <div id="app">
+        <div id="boot-loader" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;font-family:'Inter',sans-serif;color:#9aa3b8;background:#0b0f14;overflow:hidden">
+          <style>
+            .boot-ring{position:absolute;inset:0;border-radius:50%;border:2px solid rgba(76,201,240,.15);animation:boot-spin 3s linear infinite}
+            .boot-ring-inner{position:absolute;inset:8px;border-radius:50%;border:2px solid transparent;border-top-color:#4cc9f0;border-right-color:rgba(76,201,240,.4);animation:boot-spin 1.5s linear infinite reverse}
+            .boot-dot{position:absolute;top:50%;left:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:linear-gradient(135deg,#4cc9f0,#60cc5d);box-shadow:0 0 20px rgba(76,201,240,.5);animation:boot-pulse 2s ease-in-out infinite}
+            @keyframes boot-spin{to{transform:rotate(360deg)}}
+            @keyframes boot-pulse{0%,100%{transform:scale(1);opacity:.8}50%{transform:scale(1.2);opacity:1}}
+          </style>
+          <div style="position:relative;width:60px;height:60px;margin-bottom:16px">
+            <div class="boot-ring"></div>
+            <div class="boot-ring-inner"></div>
+            <div class="boot-dot"></div>
+          </div>
+          <div style="font-size:13px;color:#64748b">Loading Telegram MiniApp...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bot Menu FAB -->
+  <button class="bot-fab" id="bot-fab" title="Bot Menu">🤖</button>
+
+  <!-- Bot Menu Panel (multi-layer navigation) -->
+  <div class="bot-panel" id="bot-panel">
+    <div class="bot-panel-header">
+      <button class="bot-panel-back" id="bot-panel-back" title="Back">←</button>
+      <div class="bot-panel-title" id="bot-panel-title">Bosun Control Center</div>
+      <button class="bot-panel-home" id="bot-panel-home" title="Home">🏠</button>
+      <button class="bot-panel-close" id="bot-panel-close" title="Close">✕</button>
+    </div>
+    <div class="bot-panel-body" id="bot-panel-body"></div>
+    <div class="bot-panel-result" id="bot-panel-result"></div>
+    <div class="bot-panel-keyboard" id="bot-panel-keyboard"></div>
+  </div>
+
+  <!-- Load the real app.js immediately -->
+  <script type="module" src="app.js"></script>
+
+  <!-- ═══ BOT MENU ENGINE (multi-layer screen navigation) ═══════════ -->
+  <script>
+  (function() {
+    'use strict';
+
+    const fab       = document.getElementById('bot-fab');
+    const panel     = document.getElementById('bot-panel');
+    const backBtn   = document.getElementById('bot-panel-back');
+    const homeBtn   = document.getElementById('bot-panel-home');
+    const closeBtn  = document.getElementById('bot-panel-close');
+    const titleEl   = document.getElementById('bot-panel-title');
+    const bodyEl    = document.getElementById('bot-panel-body');
+    const resultEl  = document.getElementById('bot-panel-result');
+    const kbEl      = document.getElementById('bot-panel-keyboard');
+
+    let panelOpen = false;
+    let currentScreen = 'home';
+    const navStack = [];
+
+    // ── Expose seed data references ──
+    const TASKS    = window.SEED_TASKS    || [];
+    const AGENTS   = window.SEED_AGENTS   || [];
+    const LOGS     = window.SEED_LOGS     || [];
+    const SESSIONS = window.SEED_SESSIONS || [];
+    const INFRA    = window.SEED_INFRA    || {};
+
+    // ══════════════════════════════════════════════════════════════════
+    //  MULTI-LAYER SCREEN DEFINITIONS
+    //  Mirrors the real telegram-bot.mjs UI_SCREENS hierarchy
+    // ══════════════════════════════════════════════════════════════════
+
+    const SCREENS = {
+      // ─── HOME ───
+      home: {
+        title: '🎛️ Bosun Control Center',
+        body: 'Choose a section to manage your automation fleet.',
+        keyboard: [
+          [{ text: '📊 Overview', go: 'overview' }, { text: '🧭 Tasks', go: 'tasks' }, { text: '🤖 Agents', go: 'agents' }],
+          [{ text: '⚙️ Executor', go: 'executor' }, { text: '🛰 Routing', go: 'routing' }, { text: '🌳 Workspaces', go: 'workspaces' }],
+          [{ text: '📁 Logs & Git', go: 'logs_menu' }, { text: '🔌 Integrations', go: 'integrations' }],
+          [{ text: '🔄 Refresh', cmd: 'status' }, { text: '✖ Close', action: 'close' }],
+        ],
+      },
+
+      // ─── OVERVIEW (sub-menu) ───
+      overview: {
+        title: '📊 Overview',
+        parent: 'home',
+        body: 'Live status, health, and presence dashboards.',
+        keyboard: [
+          [{ text: '📊 Status', cmd: 'status' }, { text: '📋 Tasks', cmd: 'tasks' }, { text: '🤖 Agents', cmd: 'agents' }],
+          [{ text: '🏥 Health', cmd: 'health' }, { text: '⚠️ Anomalies', cmd: 'anomalies' }, { text: '👁 Presence', cmd: 'presence' }],
+          [{ text: '📝 Logs', cmd: 'logs' }, { text: '📈 Metrics', cmd: 'metrics' }],
+        ],
+      },
+
+      // ─── TASKS (sub-menu with deeper levels) ───
+      tasks: {
+        title: '🧭 Task Operations',
+        parent: 'home',
+        body: 'Pause/resume, plan, retry, cleanup, and guided starts.',
+        keyboard: [
+          [{ text: '⏸ Pause', cmd: 'pause' }, { text: '▶️ Resume', cmd: 'resume' }, { text: '🔄 Restart', cmd: 'restart' }],
+          [{ text: '📋 List Tasks', cmd: 'tasks' }, { text: '🧹 Cleanup', cmd: 'cleanup' }, { text: '📊 Status', cmd: 'status' }],
+          [{ text: '🗺️ Planner', go: 'planner' }, { text: '🔁 Retry', go: 'retry' }, { text: '⚙️ Executor', go: 'executor' }],
+          [{ text: '🗂 Task Lists', go: 'task_lists' }, { text: '▶️ Start Task', cmd: 'starttask' }],
+        ],
+      },
+      task_lists: {
+        title: '🗂 Task Lists',
+        parent: 'tasks',
+        body: 'Browse tasks by kanban status.',
+        keyboard: [
+          [{ text: '📥 Backlog', cmd: 'tasks_backlog' }, { text: '📝 Draft', cmd: 'tasks_draft' }],
+          [{ text: '✅ Todo', cmd: 'tasks_todo' }, { text: '🚧 Active', cmd: 'tasks_active' }],
+          [{ text: '🔍 Review', cmd: 'tasks_review' }, { text: '⛔ Blocked', cmd: 'tasks_blocked' }],
+          [{ text: '🏁 Done', cmd: 'tasks_done' }],
+        ],
+      },
+      planner: {
+        title: '🗺️ Task Planner',
+        parent: 'tasks',
+        body: 'Trigger the planner to seed new tasks from the backlog.',
+        keyboard: [
+          [{ text: 'Plan 3', cmd: 'plan3' }, { text: 'Plan 5', cmd: 'plan5' }, { text: 'Plan 10', cmd: 'plan10' }],
+        ],
+      },
+      retry: {
+        title: '🔁 Fresh Retry',
+        parent: 'tasks',
+        body: 'Start a fresh session retry for the active task.',
+        keyboard: [
+          [{ text: 'Manual', cmd: 'retry_manual' }, { text: 'Stuck', cmd: 'retry_stuck' }, { text: 'Rate Limit', cmd: 'retry_ratelimit' }],
+        ],
+      },
+
+      // ─── AGENTS (sub-menu with deeper levels) ───
+      agents: {
+        title: '🤖 Agents',
+        parent: 'home',
+        body: 'Monitor and steer running agents.',
+        keyboard: [
+          [{ text: '🤖 Agents', cmd: 'agents' }, { text: '📋 Tasks', cmd: 'tasks' }, { text: '📊 Status', cmd: 'status' }],
+          [{ text: '📂 Agent Logs', go: 'agent_logs' }, { text: '🧵 Threads', go: 'threads' }, { text: '🧠 History', cmd: 'history' }],
+          [{ text: '🧭 Steer', cmd: 'steer' }, { text: '🛑 Stop', cmd: 'stop' }, { text: '🛰 Background', go: 'background' }],
+        ],
+      },
+      agent_logs: {
+        title: '📂 Agent Logs',
+        parent: 'agents',
+        body: 'View logs from specific worktree agent sessions.',
+        keyboard: [
+          [{ text: 've/44-escrow-batch', cmd: 'agentlogs_escrow' }, { text: 've/45-hpc-gpu', cmd: 'agentlogs_hpc' }],
+          [{ text: 've/46-docs-guide', cmd: 'agentlogs_docs' }],
+        ],
+      },
+      threads: {
+        title: '🧵 Threads',
+        parent: 'agents',
+        body: 'Manage persistent agent threads.',
+        keyboard: [
+          [{ text: 'List Threads', cmd: 'threads' }, { text: 'Clear Registry', cmd: 'threads_clear' }],
+          [{ text: 'Kill Thread', go: 'threads_kill' }],
+        ],
+      },
+      threads_kill: {
+        title: '🗑 Kill Thread',
+        parent: 'threads',
+        body: 'Select a thread to invalidate.',
+        keyboard: [
+          [{ text: 've/44-escrow-batch', cmd: 'kill_thread_44' }, { text: 've/45-hpc-gpu', cmd: 'kill_thread_45' }],
+        ],
+      },
+      background: {
+        title: '🛰 Background Mode',
+        parent: 'agents',
+        body: 'Run tasks silently or background the active agent.',
+        keyboard: [
+          [{ text: 'Background Active', cmd: 'background_active' }, { text: 'New Background Task', cmd: 'background_new' }],
+          [{ text: '🧭 Steer', cmd: 'steer' }, { text: '🛑 Stop', cmd: 'stop' }],
+        ],
+      },
+
+      // ─── EXECUTOR (sub-menu) ───
+      executor: {
+        title: '⚙️ Executor',
+        parent: 'home',
+        body: 'Executor status, slots, and tuning.',
+        keyboard: [
+          [{ text: 'Status', cmd: 'executor' }, { text: 'Slots', cmd: 'executor_slots' }, { text: 'Mode', cmd: 'executor_mode' }],
+          [{ text: '📊 Max Parallel', go: 'maxparallel' }, { text: '⏸ Pause', cmd: 'pause' }, { text: '▶️ Resume', cmd: 'resume' }],
+        ],
+      },
+      maxparallel: {
+        title: '📊 Max Parallel',
+        parent: 'executor',
+        body: 'Set the max concurrent task slots.',
+        keyboard: [
+          [{ text: '0 (Pause)', cmd: 'mp_0' }, { text: '1', cmd: 'mp_1' }, { text: '2', cmd: 'mp_2' }],
+          [{ text: '3', cmd: 'mp_3' }, { text: '4', cmd: 'mp_4' }, { text: '6', cmd: 'mp_6' }],
+          [{ text: '8', cmd: 'mp_8' }, { text: '12', cmd: 'mp_12' }, { text: '16', cmd: 'mp_16' }],
+        ],
+      },
+
+      // ─── ROUTING (sub-menu with deeper levels) ───
+      routing: {
+        title: '🛰 Routing & Models',
+        parent: 'home',
+        body: 'Control model routing, SDKs, and workspace routing.',
+        keyboard: [
+          [{ text: '🤖 Model', go: 'model' }, { text: '📦 SDK', go: 'sdk' }, { text: '📋 Kanban', cmd: 'kanban' }],
+          [{ text: '🌍 Region', go: 'region' }, { text: '♻️ Auto Backlog', cmd: 'autobacklog' }, { text: '📐 Requirements', cmd: 'requirements' }],
+          [{ text: '🎯 Route Task', cmd: 'route_task' }, { text: '🏥 Health', cmd: 'health' }],
+        ],
+      },
+      model: {
+        title: '🤖 Model Override',
+        parent: 'routing',
+        body: 'Override the executor model for the next run.',
+        keyboard: [
+          [{ text: 'claude-opus-4-6', cmd: 'model_opus' }, { text: 'o4-mini', cmd: 'model_o4' }],
+          [{ text: 'gpt-5.2-codex', cmd: 'model_gpt5' }, { text: 'Default', cmd: 'model_default' }],
+        ],
+      },
+      sdk: {
+        title: '📦 SDK Selection',
+        parent: 'routing',
+        body: 'Choose which SDK backend to use.',
+        keyboard: [
+          [{ text: 'Copilot', cmd: 'sdk_copilot' }, { text: 'Codex', cmd: 'sdk_codex' }],
+          [{ text: 'Auto (default)', cmd: 'sdk_auto' }],
+        ],
+      },
+      region: {
+        title: '🌍 Region',
+        parent: 'routing',
+        body: 'Set the execution region for Codex.',
+        keyboard: [
+          [{ text: '🇺🇸 US East', cmd: 'region_us' }, { text: '🇸🇪 EU North', cmd: 'region_eu' }],
+          [{ text: '🌐 Auto (default)', cmd: 'region_auto' }],
+        ],
+      },
+
+      // ─── WORKSPACES ───
+      workspaces: {
+        title: '🌳 Workspaces',
+        parent: 'home',
+        body: 'Manage git worktrees and workspaces.',
+        keyboard: [
+          [{ text: '🌳 Worktrees', cmd: 'worktrees' }, { text: '🌿 Branches', cmd: 'branches' }],
+          [{ text: '📝 Git Diff', cmd: 'diff' }, { text: '📖 Git Log', cmd: 'git_log' }],
+          [{ text: '🧹 Cleanup', cmd: 'cleanup' }],
+        ],
+      },
+
+      // ─── LOGS & GIT ───
+      logs_menu: {
+        title: '📁 Logs & Git',
+        parent: 'home',
+        body: 'System logs, agent logs, and git operations.',
+        keyboard: [
+          [{ text: '📜 Recent Logs', cmd: 'logs' }, { text: '📂 Agent Logs', go: 'agent_logs' }],
+          [{ text: '📝 Git Diff', cmd: 'diff' }, { text: '📖 Git Log', cmd: 'git_log' }],
+          [{ text: '💻 Shell', cmd: 'shell' }],
+        ],
+      },
+
+      // ─── INTEGRATIONS ───
+      integrations: {
+        title: '🔌 Integrations',
+        parent: 'home',
+        body: 'Connected services and configuration.',
+        keyboard: [
+          [{ text: '🐙 GitHub', cmd: 'integration_github' }, { text: '📱 Telegram', cmd: 'integration_telegram' }],
+          [{ text: '💻 VS Code', cmd: 'integration_vscode' }, { text: '📱 WhatsApp', cmd: 'integration_whatsapp' }],
+          [{ text: '📦 Container', cmd: 'container' }, { text: '🔧 SDK Status', cmd: 'sdk_status' }],
+        ],
+      },
+    };
+
+    // ══════════════════════════════════════════════════════════════════
+    //  COMMAND RESPONSE GENERATORS
+    // ══════════════════════════════════════════════════════════════════
+
+    const CMDS = {
+      status: () => `<strong>📊 Fleet Status</strong> — <code>● RUNNING</code><br/><br/>`+
+        `⏱ Uptime: <code>2h 34m 12s</code><br/>`+
+        `🔧 Mode: <code>internal</code><br/>`+
+        `⚡ Max Parallel: <code>6</code><br/><br/>`+
+        `<strong>Today</strong><br/>`+
+        `✅ Completed: <strong>13</strong> · 🔀 PRs merged: <strong>11</strong> · ❌ Failures: <strong>1</strong> (auto-retried)<br/><br/>`+
+        `<strong>Executors</strong><br/>`+
+        `├─ <code>copilot-claude</code> 🟢 load: 67% tasks: 8<br/>`+
+        `└─ <code>codex-default</code> 🟢 load: 42% tasks: 5`,
+
+      tasks: () => {
+        if (!TASKS.length) return '<strong>📋 Tasks</strong><br/>No tasks found.';
+        const icons = { running: '🔵', queued: '⏳', done: '✅', failed: '❌', cancelled: '⚪' };
+        return '<strong>📋 Active Tasks</strong><br/><br/>' +
+          TASKS.map(t => `${icons[t.status]||'·'} <strong>${t.title}</strong> — <code>${t.status}</code>`).join('<br/>');
+      },
+
+      agents: () => {
+        if (!AGENTS.length) return '<strong>🤖 Agents</strong><br/>No agents configured.';
+        return '<strong>🤖 Agent Pool</strong><br/><br/>' +
+          AGENTS.map(a => {
+            const s = a.healthy === false ? '🔴' : '🟢';
+            return `${s} <strong>${a.name}</strong> — ${a.provider||'?'} · <code>${a.model||'?'}</code>`;
+          }).join('<br/>');
+      },
+
+      health: () => `<strong>💚 System Health</strong> — All Clear<br/><br/>`+
+        `✅ GitHub API <code>142ms</code><br/>`+
+        `✅ Telegram Bot <code>89ms</code><br/>`+
+        `✅ Codex SDK <code>234ms</code><br/>`+
+        `✅ Copilot SDK <code>178ms</code><br/>`+
+        `✅ Shared State <code>12ms</code><br/>`+
+        `✅ Worktree Manager <code>45ms</code>`,
+
+      anomalies: () => `<strong>🔍 Anomaly Detector</strong> — <code>All Clear</code><br/><br/>`+
+        `✅ No stuck agents<br/>✅ No repeated lint failures<br/>✅ No push loop detected<br/>✅ No memory pressure<br/><br/>`+
+        `Streak: <code>14</code> clean checks<br/>Last anomaly: <em>none today</em>`,
+
+      presence: () => `<strong>👥 Agent Presence</strong><br/><br/>`+
+        `🟢 <strong>workstation-1</strong> (this machine)<br/>`+
+        `   ├─ copilot-claude: busy (#44)<br/>`+
+        `   └─ codex-default: busy (#45)<br/><br/>`+
+        `Fleet: 1 workstation, 2 agents online`,
+
+      metrics: () => `<strong>📈 Fleet Metrics</strong> (24h)<br/><br/>`+
+        `<strong>Tasks</strong><br/>▓▓▓▓▓▓▓▓▓▓░░ 89% — 47 completed<br/>▓░░░░░░░░░░░  6% — 3 failed<br/><br/>`+
+        `<strong>PRs</strong><br/>Created: 52 | Merged: 44 | CI failures: 8 (auto-fixed: 6)`,
+
+      logs: () => {
+        if (!LOGS.length) return '<strong>📜 Logs</strong><br/>No recent logs.';
+        let html = '<strong>📜 Recent Logs</strong><br/><br/><pre>';
+        LOGS.slice(-8).forEach(l => {
+          html += `[${(l.level||'info').toUpperCase().padEnd(5)}] ${(l.source||'?').padEnd(10)} ${l.msg}\n`;
+        });
+        return html + '</pre>';
+      },
+
+      executor: () => `<strong>⚙️ Executor Pool</strong><br/><br/>`+
+        `Mode: <code>internal</code><br/>Max parallel: <code>6</code><br/><br/>`+
+        `1. copilot-claude (50%) — COPILOT:CLAUDE_OPUS_4_6<br/>`+
+        `2. codex-default (50%) — CODEX:DEFAULT`,
+
+      executor_slots: () => `<strong>⚙️ Executor Slots</strong><br/><br/>Active: <strong>2</strong> / 6<br/>Queued: <strong>3</strong><br/>Free: <strong>4</strong>`,
+      executor_mode: () => `<strong>⚙️ Mode:</strong> <code>internal</code><br/><br/>Available: internal, container, remote`,
+
+      worktrees: () => {
+        const wt = INFRA.worktrees || [];
+        if (!wt.length) return '<strong>🌳 Worktrees</strong><br/>No worktrees found.';
+        return '<strong>🌳 Git Worktrees</strong><br/><br/>' +
+          wt.map(w => `📁 <strong>${w.branch||w.path}</strong> — ${w.path}`).join('<br/>') +
+          `<br/><br/>Total: ${wt.length} worktrees`;
+      },
+
+      branches: () => `<strong>🌿 Active Branches</strong><br/><br/>`+
+        `├─ <code>ve/abc123-market-order-expiry</code> (merged)<br/>`+
+        `├─ <code>ve/def456-veid-token-fix</code> (merged)<br/>`+
+        `├─ <code>ve/ghi789-escrow-batch</code> 🔵 active<br/>`+
+        `├─ <code>ve/jkl012-hpc-gpu-metering</code> 🔵 active<br/>`+
+        `└─ <code>ve/vwx234-mfa-tests</code> 📝 in review`,
+
+      diff: () => `<strong>📝 Git Diff Summary</strong> (staged)<br/><br/>`+
+        `<code>x/market/keeper/order.go</code>  +47 -12<br/>`+
+        `<code>x/market/types/msgs.go</code>     +23 -0<br/>`+
+        `<code>x/market/keeper/keeper.go</code>  +8  -2<br/><br/>`+
+        `3 files changed, 78 insertions(+), 14 deletions(-)`,
+
+      git_log: () => `<strong>📖 Git Log</strong><br/><br/>`+
+        `<code>a3f8e91</code> feat(market): add order expiry (#187)<br/>`+
+        `<code>7bc2d44</code> fix(veid): token validation (#188)<br/>`+
+        `<code>1e9f077</code> refactor(escrow): batch settlement (#189)<br/>`+
+        `<code>4da8b33</code> chore(deps): bump cosmos-sdk v0.53.2<br/>`+
+        `<code>9cd0e51</code> ci: fix lint on portal workflow`,
+
+      shell: () => `<strong>💻 Shell</strong> — <code>ls logs/</code><br/><br/>`+
+        `<code>daemon.log  monitor.log  agent-42.log  agent-43.log  agent-44.log  telegram.log</code>`,
+
+      history: () => `<strong>🧠 Session History</strong><br/><br/>`+
+        `├─ Session #14: feat(market) order expiry — 23 turns<br/>`+
+        `├─ Session #15: fix(veid) token validation — 11 turns<br/>`+
+        `├─ Session #16: refactor(escrow) batch settle — 31 turns<br/>`+
+        `└─ Session #17: feat(hpc) GPU metering — <em>in progress</em><br/><br/>`+
+        `Total: 4 sessions today, 65 turns`,
+
+      threads: () => `<strong>🧵 Active Threads</strong><br/><br/>`+
+        `├─ Thread #1: <code>ve/44-escrow-batch</code> 🟢 (31 turns)<br/>`+
+        `├─ Thread #2: <code>ve/45-hpc-gpu</code> 🟢 (8 turns)<br/>`+
+        `└─ Thread #3: <code>primary-agent</code> 🟡 idle<br/><br/>`+
+        `Total: 3 threads (2 active)`,
+      threads_clear: () => `<strong>🧵 Registry cleared.</strong> All idle threads removed.`,
+
+      steer: () => `<strong>🧭 Steer Agent</strong><br/><br/>Use: <code>/steer &lt;directive&gt;</code><br/><br/>Example:<br/><code>/steer focus on adding tests first</code><br/><code>/steer skip the CLI and focus on keeper only</code>`,
+      stop: () => `<strong>🛑 Stop Agent</strong><br/><br/>No active agents running right now.`,
+
+      kanban: () => `<strong>📊 Kanban Board</strong><br/><br/>📝 Draft: 1<br/>📋 Todo: 2<br/>🔵 In Progress: 2<br/>📝 In Review: 1<br/>✅ Done: 2<br/><br/>Total: 8 tasks`,
+
+      pause: () => `<strong>⏸ Task processing paused.</strong><br/><br/>No new tasks will be dispatched. Active tasks continue.<br/>Use Resume to restart.`,
+      resume: () => `<strong>▶️ Task processing resumed.</strong><br/><br/>Fleet is picking up tasks from the backlog.`,
+      restart: () => `<strong>🔄 Restarting...</strong><br/><br/>No failed tasks to restart. All tasks healthy.`,
+      cleanup: () => `<strong>🧹 Cleanup Results</strong><br/><br/>✅ 0 stale orchestrators removed<br/>✅ 0 stuck pushes cleared<br/>✅ 1 worktree pruned<br/>✅ 0 orphaned branches cleaned`,
+      starttask: () => `<strong>▶️ Starting task #46</strong>...<br/><br/>📋 docs: update provider guide<br/>🤖 Assigned to: <code>codex-default</code><br/>🌿 Branch: <code>ve/46-docs-provider-guide</code><br/><br/>✅ Task dispatched.`,
+
+      plan3: () => `<strong>🗺️ Planning 3 tasks...</strong><br/><br/>1. feat(hpc): GPU resource metering<br/>2. fix(provider): health check endpoint<br/>3. docs: update provider guide<br/><br/>✅ 3 tasks queued.`,
+      plan5: () => `<strong>🗺️ Planning 5 tasks...</strong><br/><br/>1. feat(hpc): GPU resource metering<br/>2. fix(provider): health check<br/>3. docs: update provider guide<br/>4. refactor(roles): simplify permissions<br/>5. test(escrow): settlement edge cases<br/><br/>✅ 5 tasks queued.`,
+      plan10: () => `<strong>🗺️ Planning 10 tasks...</strong><br/><br/>✅ 10 tasks seeded from backlog and queued.`,
+
+      retry_manual: () => `<strong>🔁 Manual Retry</strong><br/><br/>Retrying active task with clean context... ✅ retry dispatched.`,
+      retry_stuck: () => `<strong>🔁 Stuck Retry</strong><br/><br/>Detecting stuck state... No stuck agents found.`,
+      retry_ratelimit: () => `<strong>🔁 Rate Limit Retry</strong><br/><br/>Waiting for rate limit cooldown... ✅ Retrying in 30s.`,
+
+      // Task list statuses
+      tasks_backlog: () => tasksByStatus('Backlog', ['queued']),
+      tasks_draft: () => '<strong>📝 Draft Tasks</strong><br/><br/>No draft tasks.',
+      tasks_todo: () => tasksByStatus('Todo', ['queued']),
+      tasks_active: () => tasksByStatus('Active', ['running']),
+      tasks_review: () => '<strong>🔍 Review</strong><br/><br/>No tasks in review.',
+      tasks_blocked: () => '<strong>⛔ Blocked</strong><br/><br/>No blocked tasks.',
+      tasks_done: () => tasksByStatus('Done', ['done']),
+
+      agentlogs_escrow: () => `<strong>📂 Agent Logs — ve/44-escrow-batch</strong><br/><br/><pre>[14:32] Starting session...\n[14:33] Reading x/escrow/keeper/keeper.go\n[14:35] Implementing batch settlement\n[14:41] PR #189 created\n[14:44] CI checks passing</pre>`,
+      agentlogs_hpc: () => `<strong>📂 Agent Logs — ve/45-hpc-gpu</strong><br/><br/><pre>[14:35] Starting session...\n[14:36] Reading x/hpc/types/resource.go\n[14:38] Adding GPU metering struct\n[14:40] Writing tests...</pre>`,
+      agentlogs_docs: () => `<strong>📂 Agent Logs — ve/46-docs-guide</strong><br/><br/><pre>[Queued — not yet started]</pre>`,
+
+      kill_thread_44: () => `<strong>🗑 Thread Invalidated</strong><br/><br/>Thread <code>ve/44-escrow-batch</code> has been invalidated. Session will restart on next dispatch.`,
+      kill_thread_45: () => `<strong>🗑 Thread Invalidated</strong><br/><br/>Thread <code>ve/45-hpc-gpu</code> has been invalidated.`,
+
+      background_active: () => `<strong>🛰 Backgrounded</strong><br/><br/>Active agent moved to background mode. It will continue working silently.`,
+      background_new: () => `<strong>🛰 New Background Task</strong><br/><br/>Describe the task to run in background mode.`,
+
+      mp_0: () => mpSet(0), mp_1: () => mpSet(1), mp_2: () => mpSet(2),
+      mp_3: () => mpSet(3), mp_4: () => mpSet(4), mp_6: () => mpSet(6),
+      mp_8: () => mpSet(8), mp_12: () => mpSet(12), mp_16: () => mpSet(16),
+
+      model_opus: () => `<strong>🤖 Model set:</strong> <code>claude-opus-4-6</code><br/>Next tasks will use this model.`,
+      model_o4: () => `<strong>🤖 Model set:</strong> <code>o4-mini</code>`,
+      model_gpt5: () => `<strong>🤖 Model set:</strong> <code>gpt-5.2-codex</code>`,
+      model_default: () => `<strong>🤖 Model reset to default</strong> routing policy.`,
+
+      sdk_copilot: () => `<strong>📦 SDK:</strong> <code>COPILOT</code> selected.`,
+      sdk_codex: () => `<strong>📦 SDK:</strong> <code>CODEX</code> selected.`,
+      sdk_auto: () => `<strong>📦 SDK:</strong> <code>AUTO</code> — round-robin.`,
+      sdk_status: () => `<strong>🔧 SDK Status</strong><br/><br/>✅ Copilot SDK: loaded<br/>✅ Codex SDK: loaded<br/>✅ GitHub CLI: authenticated<br/>✅ Telegram API: connected`,
+
+      region_us: () => `<strong>🌍 Region:</strong> <code>US East</code> selected.`,
+      region_eu: () => `<strong>🌍 Region:</strong> <code>EU North (Sweden)</code> selected.`,
+      region_auto: () => `<strong>🌍 Region:</strong> <code>Auto</code> — lowest latency.`,
+
+      autobacklog: () => `<strong>♻️ Auto Backlog:</strong> Enabled<br/><br/>New GitHub issues matching label filters will be auto-added to the kanban backlog.`,
+      requirements: () => `<strong>📐 Requirements:</strong><br/><br/>Task requirements are parsed from issue descriptions. Acceptance criteria extracted via LLM.`,
+      route_task: () => `<strong>🎯 Route Task</strong><br/><br/>Next queued task will be routed using weighted random policy across online executors.`,
+      container: () => `<strong>📦 Container Status</strong><br/><br/>Container Mode: <code>disabled</code><br/>Available: Docker, Podman<br/><br/>Enable with <code>CONTAINER_MODE=docker</code>`,
+
+      integration_github: () => `<strong>🐙 GitHub</strong> — ✅ Connected<br/><br/>Org: <code>virtengine-gh</code><br/>Repo: <code>virtengine</code><br/>Kanban: bidirectional sync`,
+      integration_telegram: () => `<strong>📱 Telegram</strong> — ✅ Bot active<br/><br/>Bot: <code>@bosun_bot</code><br/>MiniApp: enabled<br/>Sticky menu: active`,
+      integration_vscode: () => `<strong>💻 VS Code</strong> — ✅ Copilot extension linked<br/><br/>Agent: copilot-claude<br/>MCP servers: connected`,
+      integration_whatsapp: () => `<strong>📱 WhatsApp</strong> — Not configured<br/><br/>Run <code>bosun --whatsapp-auth</code> to set up.`,
+    };
+
+    function tasksByStatus(label, statuses) {
+      const icons = { running: '🔵', queued: '⏳', done: '✅', failed: '❌', cancelled: '⚪' };
+      const filtered = TASKS.filter(t => statuses.includes(t.status));
+      if (!filtered.length) return `<strong>${label}</strong><br/><br/>No tasks with this status.`;
+      return `<strong>${label} Tasks</strong> (${filtered.length})<br/><br/>` +
+        filtered.map(t => `${icons[t.status]||'·'} <strong>${t.title}</strong> — <code>${t.status}</code>`).join('<br/>');
+    }
+
+    function mpSet(n) {
+      return `<strong>⚡ Max Parallel set to <code>${n}</code></strong><br/><br/>${n === 0 ? 'Task processing effectively paused.' : `Up to ${n} tasks will run concurrently.`}`;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  PANEL NAVIGATION ENGINE
+    // ══════════════════════════════════════════════════════════════════
+
+    function renderScreen(screenId) {
+      const screen = SCREENS[screenId];
+      if (!screen) return;
+
+      currentScreen = screenId;
+      titleEl.textContent = screen.title;
+      bodyEl.innerHTML = screen.body;
+
+      // Hide result when navigating
+      resultEl.classList.remove('visible');
+      resultEl.innerHTML = '';
+
+      // Back / Home buttons
+      if (screen.parent) {
+        backBtn.classList.add('visible');
+        homeBtn.classList.add('visible');
+      } else {
+        backBtn.classList.remove('visible');
+        homeBtn.classList.remove('visible');
+      }
+
+      // Render keyboard
+      kbEl.innerHTML = '';
+      if (screen.keyboard) {
+        screen.keyboard.forEach(row => {
+          const rowEl = document.createElement('div');
+          rowEl.className = 'bot-kb-row';
+          row.forEach(btn => {
+            const b = document.createElement('button');
+            b.className = 'bot-kb-btn';
+            b.textContent = btn.text;
+
+            if (btn.go) {
+              // Navigate to sub-screen
+              b.addEventListener('click', () => {
+                navStack.push(currentScreen);
+                renderScreen(btn.go);
+              });
+            } else if (btn.cmd) {
+              // Execute command → show result
+              b.addEventListener('click', () => {
+                b.classList.add('cmd-flash');
+                setTimeout(() => b.classList.remove('cmd-flash'), 200);
+                const handler = CMDS[btn.cmd];
+                if (handler) {
+                  resultEl.innerHTML = handler();
+                  resultEl.classList.add('visible');
+                  // Also navigate to the tab if it maps
+                  const tabMap = { status: 'dashboard', tasks: 'tasks', agents: 'agents', logs: 'logs', executor: 'control', health: 'dashboard' };
+                  if (tabMap[btn.cmd] && window.__bosunSetTab) {
+                    window.__bosunSetTab(tabMap[btn.cmd]);
+                  }
+                }
+              });
+            } else if (btn.action === 'close') {
+              b.className = 'bot-kb-btn close-btn';
+              b.addEventListener('click', closePanel);
+            }
+
+            rowEl.appendChild(b);
+          });
+          kbEl.appendChild(rowEl);
+        });
+
+        // Auto-add nav row for non-home screens
+        if (screen.parent) {
+          const navRow = document.createElement('div');
+          navRow.className = 'bot-kb-row';
+
+          const backB = document.createElement('button');
+          backB.className = 'bot-kb-btn nav-btn';
+          backB.textContent = '⬅️ Back';
+          backB.addEventListener('click', goBack);
+
+          const homeB = document.createElement('button');
+          homeB.className = 'bot-kb-btn nav-btn';
+          homeB.textContent = '🏠 Home';
+          homeB.addEventListener('click', goHome);
+
+          const closeB = document.createElement('button');
+          closeB.className = 'bot-kb-btn close-btn';
+          closeB.textContent = '✖ Close';
+          closeB.addEventListener('click', closePanel);
+
+          navRow.appendChild(backB);
+          navRow.appendChild(homeB);
+          navRow.appendChild(closeB);
+          kbEl.appendChild(navRow);
+        }
+      }
+    }
+
+    function goBack() {
+      const screen = SCREENS[currentScreen];
+      if (navStack.length > 0) {
+        renderScreen(navStack.pop());
+      } else if (screen && screen.parent) {
+        renderScreen(screen.parent);
+      }
+    }
+
+    function goHome() {
+      navStack.length = 0;
+      renderScreen('home');
+    }
+
+    function openPanel() {
+      panelOpen = true;
+      panel.classList.add('open');
+      fab.classList.add('panel-open');
+      fab.textContent = '✕';
+      renderScreen('home');
+    }
+
+    function closePanel() {
+      panelOpen = false;
+      panel.classList.remove('open');
+      fab.classList.remove('panel-open');
+      fab.textContent = '🤖';
+      navStack.length = 0;
+    }
+
+    // ── Event listeners ──
+    fab.addEventListener('click', () => panelOpen ? closePanel() : openPanel());
+    backBtn.addEventListener('click', goBack);
+    homeBtn.addEventListener('click', goHome);
+    closeBtn.addEventListener('click', closePanel);
+
+    // Close panel on Escape
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && panelOpen) closePanel();
+    });
+
+    // Fallback: if ES modules fail to load within 12s, show an error
+    setTimeout(function() {
+      var el = document.getElementById('boot-loader');
+      if (el) el.innerHTML = '<div style="text-align:center;padding:40px;font-family:Inter,sans-serif;color:#94a3b8"><div style="font-size:18px;margin-bottom:8px">⚠️ Failed to load</div><div style="font-size:12px;color:#64748b">Try refreshing. If this persists, run npm install in the bosun directory.</div></div>';
+    }, 12000);
+
+  })();
+  </script>
+</body>
+</html>
