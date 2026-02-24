@@ -354,7 +354,7 @@ const AGENT_SELECTOR_STYLES = `
     display: none;
   }
 }
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .agent-mode-pill {
     padding: 6px 14px;
     font-size: 13px;

@@ -15,6 +15,7 @@ const html = htm.bind(h);
 
 import { haptic, showConfirm } from "../modules/telegram.js";
 import { apiFetch, sendCommandToChat } from "../modules/api.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import { signal } from "@preact/signals";
 import {
   tasksData,
@@ -823,7 +824,7 @@ export function TaskProgressModal({ task, onClose }) {
                        font-weight:${active ? "600" : "400"};"
               >
                 <span style="font-size:14px;flex-shrink:0;">
-                  ${done ? "✅" : active ? "⟳" : "○"}
+                  ${done ? resolveIcon("✅") : active ? resolveIcon("🔄") : ICONS.dot}
                 </span>
                 <span>${step.label}</span>
                 ${active && html`
@@ -855,11 +856,11 @@ export function TaskProgressModal({ task, onClose }) {
           class="btn btn-ghost btn-sm"
           onClick=${() => { haptic(); sendCommandToChat("/steer " + task.id); onClose(); }}
           title="Guide the agent mid-task"
-        >💬 Steer</button>
+        >${iconText("💬 Steer")}</button>
         <button
           class="btn btn-ghost btn-sm"
           onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}
-        >📄 Logs</button>
+        >${iconText("📄 Logs")}</button>
         <button class="btn btn-secondary btn-sm" onClick=${handleMarkReview}>
           → Move to Review
         </button>
@@ -868,7 +869,7 @@ export function TaskProgressModal({ task, onClose }) {
           style="color:var(--color-error)"
           onClick=${handleCancel}
           disabled=${cancelling}
-        >${cancelling ? "Cancelling…" : "✕ Cancel"}</button>
+        >${cancelling ? "Cancelling…" : iconText("✕ Cancel")}</button>
       </div>
     <//>
   `;
@@ -929,7 +930,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
       tasksData.value = tasksData.value.map((t) =>
         t.id === task.id ? { ...t, status: "done" } : t,
       );
-      showToast("Task marked done ✓", "success");
+      showToast("Task marked done", "success");
       scheduleRefresh(200);
       onClose();
     } catch { /* toast via apiFetch */ }
@@ -979,7 +980,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
     >
       
       <div class="tr-hero">
-        <span class="tr-review-icon">🔍</span>
+        <span class="tr-review-icon">${resolveIcon("🔍")}</span>
         <div class="tr-hero-title">
           <div class="tr-hero-status-label">In Review</div>
           ${prNumber && html`
@@ -1035,12 +1036,12 @@ export function TaskReviewModal({ task, onClose, onStart }) {
       
       <div class="tr-section">
         <div class="tr-section-title">
-          Checks ${allPass ? "— ✅ All passing" : ""}
+          Checks ${allPass ? iconText("— ✅ All passing") : ""}
         </div>
         <div class="tr-checks-row">
           ${checks.map((c) => html`
             <div class="tr-check-item ${c.status}" key=${c.label}>
-              ${c.status === "pass" ? "✅" : c.status === "fail" ? "❌" : "⏳"}
+              ${resolveIcon(c.status === "pass" ? "✅" : c.status === "fail" ? "❌" : "⏳")}
               ${c.label}
             </div>
           `)}
@@ -1064,25 +1065,25 @@ export function TaskReviewModal({ task, onClose, onStart }) {
           onClick=${handleMarkDone}
           disabled=${merging}
           title="Mark as merged / done"
-        >✓ Mark Done</button>
+        >${iconText("✓ Mark Done")}</button>
         <button class="btn btn-secondary btn-sm" onClick=${handleReopen}>
           ↩ Reopen as Active
         </button>
         <button
           class="btn btn-ghost btn-sm"
           onClick=${() => { haptic(); sendCommandToChat("/logs " + task.id); onClose(); }}
-        >📄 Logs</button>
+        >${iconText("📄 Logs")}</button>
         ${prNumber && html`
           <button
             class="btn btn-ghost btn-sm"
             onClick=${() => { haptic(); sendCommandToChat("/diff " + branchLabel); onClose(); }}
-          >🔎 Diff</button>
+          >${iconText("🔎 Diff")}</button>
         `}
         <button
           class="btn btn-ghost btn-sm"
           style="color:var(--color-error)"
           onClick=${handleCancel}
-        >✕ Cancel</button>
+        >${iconText("✕ Cancel")}</button>
       </div>
     <//>
   `;
@@ -1400,7 +1401,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
               if (res?.data) {
                 if (res.data.title) setTitle(res.data.title);
                 if (res.data.description) setDescription(res.data.description);
-                showToast("Task description improved ✨", "success");
+                showToast("Task description improved", "success");
                 haptic("medium");
               }
             } catch { /* toast via apiFetch */ }
@@ -1409,8 +1410,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           title="Use AI to expand and improve this task description"
         >
           ${rewriting
-            ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">⏳</span> Improving…`
-            : html`✨ Improve with AI`
+            ? html`<span style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon("⏳")}</span> Improving…`
+            : html`${iconText("✨ Improve with AI")}`
           }
         </button>
         <input
@@ -1572,7 +1573,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             onClick=${handleSave}
             disabled=${saving}
           >
-            ${saving ? "Saving…" : "💾 Save"}
+            ${saving ? "Saving…" : iconText("💾 Save")}
           </button>
           <button
             class="btn btn-ghost btn-sm"
@@ -1584,7 +1585,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             class="btn btn-ghost btn-sm"
             onClick=${() => handleStatusUpdate("done")}
           >
-            ✓ Done
+            ${iconText("✓ Done")}
           </button>
           ${task?.status !== "cancelled" &&
           html`
@@ -1593,7 +1594,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
               style="color:var(--color-error)"
               onClick=${handleCancel}
             >
-              ✕ Cancel
+              ${iconText("✕ Cancel")}
             </button>
           `}
         </div>
@@ -1607,7 +1608,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
               sendCommandToChat("/logs " + task.id);
             }}
           >
-            📄 View Agent Logs
+            ${iconText("📄 View Agent Logs")}
           </button>
         `}
       </div>
@@ -2271,16 +2272,16 @@ export function TasksTab() {
             class="actions-dropdown-item"
             onClick=${() => { setActionsOpen(false); setStartAnyOpen(true); }}
           >
-            ▶ Start Task
+            ${iconText("▶ Start Task")}
           </button>
           <button
             class="actions-dropdown-item"
             onClick=${() => { setActionsOpen(false); setShowTemplates(true); }}
           >
-            ⚡ Trigger Templates
+            ${iconText("⚡ Trigger Templates")}
           </button>
-          <button class="actions-dropdown-item" onClick=${handleExportCSV}>📊 Export CSV</button>
-          <button class="actions-dropdown-item" onClick=${handleExportJSON}>📋 Export JSON</button>
+          <button class="actions-dropdown-item" onClick=${handleExportCSV}>${iconText("📊 Export CSV")}</button>
+          <button class="actions-dropdown-item" onClick=${handleExportJSON}>${iconText("📋 Export JSON")}</button>
         </div>
       `}
     </div>
@@ -2467,10 +2468,10 @@ export function TasksTab() {
         <div class="btn-row batch-action-bar">
           <span class="pill">${selectedIds.size} selected</span>
           <button class="btn btn-primary btn-sm" onClick=${handleBatchDone}>
-            ✓ Done All
+            ${iconText("✓ Done All")}
           </button>
           <button class="btn btn-danger btn-sm" onClick=${handleBatchCancel}>
-            ✕ Cancel All
+            ${iconText("✕ Cancel All")}
           </button>
           <button
             class="btn btn-ghost btn-sm"
@@ -2502,7 +2503,7 @@ export function TasksTab() {
           <span class="snapshot-lbl">${m.label}</span>
         </button>
       `)}
-      <span class="snapshot-view-tag">${isKanban ? "⬛ Board" : "☰ List"}</span>
+      <span class="snapshot-view-tag">${iconText(isKanban ? "⬛ Board" : "☰ List")}</span>
     </div>
 
     <style>
@@ -2744,7 +2745,7 @@ function CreateTaskModalInline({ onClose }) {
       if (res?.data) {
         if (res.data.title) setTitle(res.data.title);
         if (res.data.description) setDescription(res.data.description);
-        showToast("Task description improved ✨", "success");
+        showToast("Task description improved", "success");
         haptic("medium");
       }
     } catch {
@@ -2847,7 +2848,7 @@ function CreateTaskModalInline({ onClose }) {
       onClick=${handleSubmit}
       disabled=${submitting}
     >
-      ${submitting ? "Creating…" : "✓ Create Task"}
+      ${submitting ? "Creating…" : iconText("✓ Create Task")}
     </button>
   `;
 
@@ -2909,8 +2910,8 @@ function CreateTaskModalInline({ onClose }) {
           title="Use AI to expand and improve this task description"
         >
           ${rewriting
-            ? html`<span class="spin-icon" style="display:inline-block;animation:spin 0.8s linear infinite">⏳</span> Improving…`
-            : html`✨ Improve with AI`
+            ? html`<span class="spin-icon" style="display:inline-block;animation:spin 0.8s linear infinite">${resolveIcon("⏳")}</span> Improving…`
+            : html`${iconText("✨ Improve with AI")}`
           }
         </button>
 
@@ -2920,7 +2921,7 @@ function CreateTaskModalInline({ onClose }) {
             { value: "low", label: "Low" },
             { value: "medium", label: "Med" },
             { value: "high", label: "High" },
-            { value: "critical", label: "🔥" },
+            { value: "critical", label: "Critical" },
           ]}
           value=${priority}
           onChange=${(v) => { haptic(); setPriority(v); }}

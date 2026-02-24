@@ -152,7 +152,7 @@ const SETTINGS_STYLES = `
   flex-wrap: wrap;
   margin-left: auto;
 }
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .settings-save-bar {
     bottom: 16px;
   }
@@ -390,7 +390,7 @@ const SETTINGS_STYLES = `
 body.settings-save-open .main-content {
   padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 110px);
 }
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   body.settings-save-open .main-content {
     padding-bottom: 140px;
   }

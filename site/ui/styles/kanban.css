@@ -489,7 +489,7 @@ body.kanban-dragging .kanban-card {
   }
 }
 
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .kanban-board {
     gap: 18px;
     padding: 12px 0 18px;
@@ -574,7 +574,7 @@ body.kanban-dragging .kanban-card {
 /* ═══════════════════════════════════════════════
  *  Desktop Premium Density Overrides
  * ═══════════════════════════════════════════════ */
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   .kanban-board {
     gap: 12px;
     padding: 8px 0 12px;

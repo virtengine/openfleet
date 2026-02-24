@@ -251,7 +251,7 @@ export function ChatTab() {
   });
   const [isDesktop, setIsDesktop] = useState(() => {
     try {
-      return globalThis.matchMedia?.("(min-width: 1200px)")?.matches ?? false;
+      return globalThis.matchMedia?.("(min-width: 1400px)")?.matches ?? false;
     } catch {
       return false;
     }
@@ -314,7 +314,7 @@ export function ChatTab() {
   }, []);
 
   useEffect(() => {
-    const mq = globalThis.matchMedia?.("(min-width: 1200px)");
+    const mq = globalThis.matchMedia?.("(min-width: 1400px)");
     if (!mq) return;
     const handler = (e) => setIsDesktop(e.matches);
     if (mq.addEventListener) mq.addEventListener("change", handler);

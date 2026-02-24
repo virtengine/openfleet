@@ -103,7 +103,17 @@
        #app is a normal flex child (not absolute) so the full flex chain flows
        correctly all the way down to .main-content (the real scroll container). */
     .miniapp-content { flex: 1; min-height: 0; overflow: clip; position: relative; display: flex; flex-direction: column; }
-    .miniapp-content #app { flex: 1; min-height: 0; height: auto; }
+    .miniapp-content .demo-scale { flex: 1; min-height: 0; display: flex; }
+    .miniapp-content #app { flex: 1; min-height: 0; height: 100%; }
+
+    @media (min-width: 1200px) {
+      .demo-scale {
+        transform: scale(1.15);
+        transform-origin: top left;
+        width: calc(100% / 1.15);
+        height: calc(100% / 1.15);
+      }
+    }
 
     /* ── BOT MENU PANEL (slide-up, multi-layer) ── */
     .bot-panel { position: fixed; bottom: 0; left: 0; right: 0; z-index: 8999; background: #0e1621; border-top: 1px solid #1b2838; border-radius: 16px 16px 0 0; box-shadow: 0 -8px 32px rgba(0,0,0,0.5); max-height: 65vh; display: flex; flex-direction: column; transform: translateY(100%); opacity: 0; pointer-events: none; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s; }

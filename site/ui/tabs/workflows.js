@@ -1504,7 +1504,7 @@ export function WorkflowsTab() {
       .wf-preset-section { animation: wf-fade-in 0.15s ease; }
       @keyframes wf-fade-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
       .wf-canvas-container { height: calc(100vh - 140px); min-height: 500px; }
-      @media (min-width: 1200px) { .wf-canvas-container { height: calc(100vh - 120px); min-height: 700px; } }
+      @media (min-width: 1400px) { .wf-canvas-container { height: calc(100vh - 120px); min-height: 700px; } }
     </style>
 
     <div style="padding: 8px;">

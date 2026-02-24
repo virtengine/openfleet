@@ -24,6 +24,7 @@ import {
   cloudStorageRemove,
 } from "../modules/telegram.js";
 import { apiFetch, wsConnected } from "../modules/api.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   connected,
   statusData,
@@ -852,7 +853,7 @@ function ServerConfigMode() {
                 type="button"
                 title=${secretVisible ? "Hide" : "Show"}
               >
-                ${secretVisible ? "🙈" : "👁️"}
+                ${resolveIcon(secretVisible ? "🙈" : "👁")}
               </button>
             </div>
           `;
@@ -959,7 +960,7 @@ function ServerConfigMode() {
     !loadError &&
     html`
       <div class="settings-banner settings-banner-warn">
-        <span>🧠</span>
+        <span>${resolveIcon("🧠")}</span>
         <span class="settings-banner-text">Connection lost — reconnecting…</span>
       </div>
     `}
@@ -967,7 +968,7 @@ function ServerConfigMode() {
     ${configSync &&
     html`
       <div class="settings-banner ${configSync.skipped?.length ? "settings-banner-warn" : "settings-banner-info"}">
-        <span>💾</span>
+        <span>${resolveIcon("💾")}</span>
         <span class="settings-banner-text">
           ${configSync.skipped?.length
             ? `Saved ${configSync.total} settings; synced ${configSync.updated} to config file.`
@@ -988,7 +989,7 @@ function ServerConfigMode() {
     !loadError &&
     html`
       <div class="settings-banner settings-banner-info">
-        <span>🧭</span>
+        <span>${resolveIcon("🧭")}</span>
         <span class="settings-banner-text">
           Settings are saved to <code>${serverMeta.envPath}</code> and synced to
           <code>${serverMeta.configPath}</code> for supported keys.
@@ -1032,7 +1033,7 @@ function ServerConfigMode() {
         if (filteredSettings.length === 0) {
           return html`
             <div class="settings-empty-search">
-              <div class="settings-empty-search-icon">🔍</div>
+              <div class="settings-empty-search-icon">${resolveIcon("🔍")}</div>
               <div>No settings match "<strong>${searchQuery}</strong>"</div>
               <div class="meta-text mt-sm">Try a different search term</div>
             </div>
@@ -1065,7 +1066,7 @@ function ServerConfigMode() {
                   haptic("light");
                 }}
               >
-                <span class="settings-category-tab-icon">${cat.icon}</span>
+                <span class="settings-category-tab-icon">${resolveIcon(cat.icon) || cat.icon}</span>
                 ${cat.label}
               </button>
             `,
@@ -1152,7 +1153,7 @@ function ServerConfigMode() {
           ${hasRestartSetting &&
           html`
             <div class="settings-banner settings-banner-warn" style="margin-top:8px">
-              <span>🔄</span>
+              <span>${resolveIcon("🔄")}</span>
               <span class="settings-banner-text">
                 Some changes require a restart. The server will auto-reload (~2 seconds).
               </span>
@@ -1364,7 +1365,7 @@ function AppPreferencesMode() {
 
 
     <!-- ─── Account ─── -->
-    <${Collapsible} title="👤 Account" defaultOpen=${true}>
+    <${Collapsible} title=${iconText("👤 Account")} defaultOpen=${true}>
       <${Card}>
         <div class="settings-row">
           ${user?.photo_url &&
@@ -1389,7 +1390,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── Appearance ─── -->
-    <${Collapsible} title="🎨 Appearance" defaultOpen=${false}>
+    <${Collapsible} title=${iconText("🎨 Appearance")} defaultOpen=${false}>
       <${Card}>
         <div class="card-subtitle mb-sm">Color Theme</div>
         <${SegmentedControl}
@@ -1420,7 +1421,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── Notifications ─── -->
-    <${Collapsible} title="🔔 Notifications" defaultOpen=${false}>
+    <${Collapsible} title=${iconText("🔔 Notifications")} defaultOpen=${false}>
       <${Card}>
         <${ListItem}
           title="Real-time Updates"
@@ -1459,7 +1460,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── Data & Storage ─── -->
-    <${Collapsible} title="💾 Data & Storage" defaultOpen=${false}>
+    <${Collapsible} title=${iconText("💾 Data & Storage")} defaultOpen=${false}>
       <${Card}>
         <${ListItem}
           title="WebSocket"
@@ -1480,7 +1481,7 @@ function AppPreferencesMode() {
           subtitle="Remove all stored preferences"
           trailing=${html`
             <button class="btn btn-ghost btn-sm" onClick=${handleClearCache}>
-              🗑 Clear
+              ${iconText("🗑 Clear")}
             </button>
           `}
         />
@@ -1535,7 +1536,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── Advanced ─── -->
-    <${Collapsible} title="🔧 Advanced" defaultOpen=${false}>
+    <${Collapsible} title=${iconText("🔧 Advanced")} defaultOpen=${false}>
       <${Card}>
         <${ListItem}
           title="Debug Mode"
@@ -1750,7 +1751,7 @@ function GitHubDeviceFlowCard({ config }) {
     return html`
       <${Card}>
         <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
-          <span style="font-size:20px">🐙</span>
+          <span style="font-size:20px">${resolveIcon("🐙")}</span>
           <div style="flex:1;min-width:0">
             <div style="font-size:13px;font-weight:600;color:var(--text-primary)">GitHub Connected</div>
             <div style="font-size:12px;color:var(--text-secondary)">Token is configured. Re-authenticate below if needed.</div>
@@ -1768,7 +1769,7 @@ function GitHubDeviceFlowCard({ config }) {
     return html`
       <${Card}>
         <div style="text-align:center;padding:12px 0">
-          <div style="font-size:32px;margin-bottom:8px">✅</div>
+          <div style="font-size:32px;margin-bottom:8px">${resolveIcon("✅")}</div>
           <div style="font-size:15px;font-weight:600;color:var(--text-primary)">Signed in as ${ghUser}</div>
           <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">GitHub token saved to .env</div>
         </div>
@@ -1820,7 +1821,7 @@ function GitHubDeviceFlowCard({ config }) {
   return html`
     <${Card}>
       <div style="text-align:center;padding:16px 0">
-        <div style="font-size:32px;margin-bottom:8px">🐙</div>
+        <div style="font-size:32px;margin-bottom:8px">${resolveIcon("🐙")}</div>
         <div style="font-size:15px;font-weight:600;margin-bottom:4px;color:var(--text-primary)">
           Sign in with GitHub
         </div>

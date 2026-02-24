@@ -2122,31 +2122,30 @@ ul.md-list li::before {
   }
 }
 
-/* ─── Mobile: blend chat input seamlessly with bottom navbar ─── */
-@media (max-width: 767px) {
+/* ─── Blend chat input seamlessly with bottom navbar ─── */
+@media (max-width: 1399px) {
   .app-shell[data-tab="chat"] .chat-input-area {
     border-top: none;
-    background: var(--bg-primary);
-    padding-top: 6px;
-    /* keyboard offset still applied; decorative 12px removed to snug up to nav */
-    padding-bottom: calc(var(--chat-keyboard-offset, 0px) + var(--safe-bottom, 0px));
-    /* round the bottom to softly continue into the floating nav */
-    border-radius: 0 0 var(--radius-xl, 20px) var(--radius-xl, 20px);
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.12);
   }
 
-  /* Add a subtle top accent line instead of the hard border */
   .app-shell[data-tab="chat"] .chat-input-area::before {
     content: '';
-    display: block;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--border-strong, rgba(255,255,255,0.08)) 20%, var(--border-strong, rgba(255,255,255,0.08)) 80%, transparent);
-    margin-bottom: 6px;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -24px;
+    height: 24px;
+    background: linear-gradient(180deg, rgba(0, 0, 0, 0), var(--glass-bg));
+    pointer-events: none;
   }
 
   .app-shell[data-tab="chat"] .chat-input-toolbar {
-    background: var(--bg-primary);
-    border: 1px solid var(--border);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    box-shadow: inset 0 1px 0 var(--glass-highlight);
   }
 
   .app-shell[data-tab="chat"] .chat-input-hint {
@@ -2157,6 +2156,16 @@ ul.md-list li::before {
     background: var(--glass-bg);
     border-color: var(--glass-border);
     backdrop-filter: var(--glass-blur);
+  }
+}
+
+@media (max-width: 767px) {
+  .app-shell[data-tab="chat"] .chat-input-area {
+    padding-top: 6px;
+    /* keyboard offset still applied; decorative 12px removed to snug up to nav */
+    padding-bottom: calc(var(--chat-keyboard-offset, 0px) + var(--safe-bottom, 0px));
+    /* round the bottom to softly continue into the floating nav */
+    border-radius: 0 0 var(--radius-xl, 20px) var(--radius-xl, 20px);
   }
 }
 

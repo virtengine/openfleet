@@ -978,7 +978,7 @@ function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
             aria-label="Open Bot Controls"
             onClick=${() => { onClose(); onOpenBot?.(); }}
           >
-            <span class="more-menu-bot-icon">${resolveIcon("🤖")}</span>
+            <span class="more-menu-bot-icon">${resolveIcon("bot")}</span>
             <div class="more-menu-bot-text">
               <span class="more-menu-bot-label">Bot Controls</span>
               <span class="more-menu-bot-sub">Commands, executor, routing</span>
@@ -1651,7 +1651,8 @@ function App() {
           onClick=${toggleInspector}
           aria-label=${inspectorToggleLabel}
         >
-          📋 Inspector
+          <span class="btn-icon">${resolveIcon("clipboard")}</span>
+          Inspector
         </button>
       `
     : null;

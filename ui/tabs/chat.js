@@ -54,6 +54,7 @@ import { ChatView } from "../components/chat-view.js";
 import { apiFetch } from "../modules/api.js";
 import { showToast } from "../modules/state.js";
 import { VoiceMicButton } from "../modules/voice.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   ChatInputToolbar,
   loadAvailableAgents,
@@ -129,7 +130,7 @@ function ChatWelcome({ onNewSession, onQuickCommand }) {
 
   return html`
     <div class="chat-welcome">
-      <div class="chat-welcome-icon">🤖</div>
+      <div class="chat-welcome-icon">${resolveIcon("🤖")}</div>
       <div class="chat-welcome-title">Welcome to Bosun</div>
       <div class="chat-welcome-subtitle">
         Select a session from the sidebar, start a new chat, or use a quick
@@ -143,7 +144,7 @@ function ChatWelcome({ onNewSession, onQuickCommand }) {
               class="btn btn-ghost btn-sm chat-welcome-btn"
               onClick=${a.action}
             >
-              <span>${a.icon}</span> ${a.label}
+              <span>${resolveIcon(a.icon) || a.icon}</span> ${a.label}
             </button>
           `,
         )}
@@ -172,7 +173,7 @@ function SlashMenu({ filter, onSelect, activeIndex, commands }) {
               onSelect(c.cmd);
             }}
           >
-            <span class="slash-menu-item-icon">${c.icon}</span>
+            <span class="slash-menu-item-icon">${resolveIcon(c.icon) || c.icon}</span>
             <span class="slash-menu-item-cmd">${c.cmd}</span>
             <span class="slash-menu-item-desc">${c.desc}</span>
             ${c.source === "sdk" && html`<span class="slash-menu-item-badge">SDK</span>`}
@@ -841,14 +842,14 @@ export function ChatTab() {
                 onClick=${handleSend}
                 title="Send (Enter)"
               >
-                ${sending ? "⏳" : "➤"}
+                ${resolveIcon(sending ? "⏳" : "➤")}
               </button>
             </div>
             <div class="chat-input-hint">
               <span>Shift+Enter for new line</span>
               <span>Type / for commands</span>
               ${offlineQueueSize.peek() > 0 && html`
-                <span class="chat-offline-badge">📤 ${offlineQueueSize.peek()} queued</span>
+                <span class="chat-offline-badge">${iconText(`📤 ${offlineQueueSize.peek()} queued`)}</span>
               `}
             </div>
           </div>
@@ -859,7 +860,7 @@ export function ChatTab() {
           class="focus-exit-fab"
           onClick=${() => setFocusMode(false)}
           title="Exit focus mode"
-        >✕</button>
+        >${resolveIcon("✕")}</button>
       `}
       ${isMobile &&
       html`

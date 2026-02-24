@@ -755,7 +755,6 @@ export function ControlTab() {
             <div class="field-group">
               <div class="form-label">Retry task</div>
               <div class="input-row">
-                <div class="input-row">
                 <select
                   class=${retryTaskError ? "input input-error" : "input"}
                   value=${retryTaskId}

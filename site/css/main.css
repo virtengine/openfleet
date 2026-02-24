@@ -49,7 +49,7 @@
 
   /* Spacing */
   --section-gap: 8rem;
-  --content-width: 1200px;
+  --content-width: 1350px;
   --content-narrow: 800px;
 
   /* Transitions */
@@ -325,11 +325,19 @@ section {
 .hero {
   min-height: 100vh;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   padding-top: 6rem;
-  padding-bottom: 4rem;
+  padding-bottom: 0;
   position: relative;
   overflow: hidden;
+}
+
+.hero .container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  z-index: 1;
+  flex: 1;
 }
 
 .hero__particles {
@@ -477,17 +485,38 @@ section {
   margin-bottom: 1.5rem;
 }
 
+.hero__install--center {
+  justify-content: center;
+  margin-bottom: 0;
+  width: 100%;
+}
+
+.hero__install--center .install-cmd {
+  max-width: 720px;
+  min-width: 0;
+  width: min(100%, 720px);
+  margin: 0 auto;
+}
+
 .hero__demo {
   margin-top: 0;
   padding-top: 0;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
 }
 
 .hero__layout {
   display: grid;
-  grid-template-columns: 450px 1fr;
-  gap: 5rem;
-  align-items: center;
+  grid-template-columns: 1fr;
+  gap: 2.5rem;
+  align-items: stretch;
   width: 100%;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
 }
 
 .hero__layout > * {
@@ -684,7 +713,7 @@ section {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  min-width: 100%;
+  min-width: 0;
   background: #0b1221;
   border: 1px solid #27354f;
   border-radius: 10px;
@@ -695,6 +724,7 @@ section {
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
   position: relative;
   max-width: 100%;
+  width: 100%;
   color: #e2ecff;
 }
 
@@ -751,6 +781,12 @@ section {
 
 .install-cmd__tooltip--visible {
   opacity: 1;
+}
+
+/* Override full-width install command when centered in hero */
+.hero__install--center .install-cmd {
+  min-width: 0;
+  width: fit-content;
 }
 
 /* ── Stats Row ─────────────────────────────────────────────────────────── */
@@ -898,7 +934,7 @@ section {
 }
 
 .terminal-window {
-  max-width: 960px;
+  max-width: 800px;
   margin: 0 auto;
   border-radius: 16px;
   border: 1px solid var(--border-default);
@@ -1087,6 +1123,11 @@ body.is-miniapp-fullscreen {
     0 25px 50px -12px rgba(0, 0, 0, 0.5),
     0 0 0 1px rgba(255, 255, 255, 0.05);
   transition: all 0.4s var(--ease-spring);
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
 }
 
 .desktop-demo-window:hover {
@@ -1137,8 +1178,6 @@ body.is-miniapp-fullscreen {
   color: #d6ffe7;
   display: grid;
   place-items: center;
-  font-size: 18px;
-  font-weight: 700;
   cursor: pointer;
   transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
 }
@@ -1150,6 +1189,9 @@ body.is-miniapp-fullscreen {
 }
 
 .desktop-demo-window__expand-icon {
+  width: 16px;
+  height: 16px;
+  display: block;
   line-height: 1;
 }
 
@@ -1167,9 +1209,11 @@ body.is-miniapp-fullscreen {
 
 .desktop-demo-window__iframe {
   width: 100%;
-  height: 560px;
+  height: 100%;
   border: none;
   background: #0b0f14;
+  flex: 1;
+  min-height: 520px;
 }
 
 .desktop-demo-window.is-fullscreen {
@@ -1191,6 +1235,7 @@ body.is-miniapp-fullscreen {
 @media (max-width: 768px) {
   .desktop-demo-window__iframe {
     height: 440px;
+    min-height: 440px;
   }
 }
 
@@ -2188,7 +2233,11 @@ body.is-miniapp-fullscreen {
 }
 
 .demo-panel--active {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
 }
 
 @keyframes demoPanelIn {

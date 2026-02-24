@@ -260,7 +260,7 @@
 }
 
 /* ─── Premium Desktop Scrollbars ─── */
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   ::-webkit-scrollbar {
     width: 12px;
     height: 12px;

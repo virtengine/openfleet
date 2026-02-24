@@ -22,17 +22,17 @@
  */
 
 export const CATEGORIES = [
-  { id: "telegram",  label: "Telegram Bot",        icon: "📱", description: "Bot token, chat, polling, and notification settings" },
-  { id: "miniapp",   label: "Mini App / UI",        icon: "🖥️", description: "Web UI server, port, auth, and tunnel settings" },
-  { id: "executor",  label: "Executor / AI",        icon: "🧠", description: "Agent execution, SDK selection, parallelism, and timeouts" },
-  { id: "kanban",    label: "Kanban / Tasks",        icon: "📋", description: "Task backend, sync, labels, and project mapping" },
-  { id: "github",    label: "GitHub / Git",          icon: "🐙", description: "Repository, auth, PR, merge, and reconciliation settings" },
-  { id: "network",   label: "Network / Tunnel",      icon: "🌐", description: "Cloudflare tunnel, presence, and multi-instance coordination" },
-  { id: "security",  label: "Security / Sandbox",    icon: "🛡️", description: "Sandbox mode, container isolation, and permissions" },
-  { id: "sentinel",  label: "Sentinel / Reliability", icon: "🔗", description: "Auto-restart, crash recovery, and repair agent settings" },
-  { id: "hooks",     label: "Agent Hooks",           icon: "🪝", description: "Pre-push, pre-commit, and lifecycle hook configuration" },
-  { id: "logging",   label: "Logging / Monitoring",  icon: "📊", description: "Work logs, error thresholds, cost tracking, and retention" },
-  { id: "advanced",  label: "Advanced",              icon: "🔧", description: "Daemon, dev mode, paths, and low-level tuning" },
+  { id: "telegram",  label: "Telegram Bot",         icon: "phone", description: "Bot token, chat, polling, and notification settings" },
+  { id: "miniapp",   label: "Mini App / UI",        icon: "monitor", description: "Web UI server, port, auth, and tunnel settings" },
+  { id: "executor",  label: "Executor / AI",        icon: "cpu", description: "Agent execution, SDK selection, parallelism, and timeouts" },
+  { id: "kanban",    label: "Kanban / Tasks",       icon: "clipboard", description: "Task backend, sync, labels, and project mapping" },
+  { id: "github",    label: "GitHub / Git",         icon: "git", description: "Repository, auth, PR, merge, and reconciliation settings" },
+  { id: "network",   label: "Network / Tunnel",     icon: "globe", description: "Cloudflare tunnel, presence, and multi-instance coordination" },
+  { id: "security",  label: "Security / Sandbox",   icon: "shield", description: "Sandbox mode, container isolation, and permissions" },
+  { id: "sentinel",  label: "Sentinel / Reliability", icon: "link", description: "Auto-restart, crash recovery, and repair agent settings" },
+  { id: "hooks",     label: "Agent Hooks",          icon: "link", description: "Pre-push, pre-commit, and lifecycle hook configuration" },
+  { id: "logging",   label: "Logging / Monitoring", icon: "chart", description: "Work logs, error thresholds, cost tracking, and retention" },
+  { id: "advanced",  label: "Advanced",             icon: "settings", description: "Daemon, dev mode, paths, and low-level tuning" },
 ];
 
 /** @type {SettingDef[]} */
@@ -62,8 +62,8 @@ export const SETTINGS_SCHEMA = [
   { key: "TELEGRAM_UI_HOST",               label: "Bind Host",                  category: "miniapp", type: "string",  defaultVal: "0.0.0.0", description: "Network interface to bind. Use 127.0.0.1 for local-only access.", restart: true },
   { key: "TELEGRAM_UI_PUBLIC_HOST",        label: "Public Host",                category: "miniapp", type: "string",  description: "Public hostname if behind a reverse proxy. Auto-detected if not set." },
   { key: "TELEGRAM_UI_BASE_URL",           label: "Base URL Override",          category: "miniapp", type: "string",  description: "Full public URL (e.g., https://my-domain.com). Takes precedence over auto-detection.", validate: "^https?://" },
-  { key: "TELEGRAM_UI_ALLOW_UNSAFE",       label: "⛔ Allow Unsafe (No Auth)",  category: "miniapp", type: "boolean", defaultVal: false, description: "⛔ DANGER: Disables ALL authentication. Anyone with your URL can control agents, read secrets, and execute code on your machine. Combined with a tunnel, this exposes your machine to the ENTIRE INTERNET. Only enable for localhost-only debugging with tunnel DISABLED.", restart: true, danger: true },
-  { key: "_UNSAFE_TUNNEL_WARNING",          label: "",                            category: "miniapp", type: "info",    description: "🔴 WARNING: If 'Allow Unsafe' is ON and 'Tunnel Mode' is not disabled, your UI is publicly accessible with ZERO authentication. This is a critical security risk." },
+  { key: "TELEGRAM_UI_ALLOW_UNSAFE",       label: "Allow Unsafe (No Auth)",      category: "miniapp", type: "boolean", defaultVal: false, description: "DANGER: Disables ALL authentication. Anyone with your URL can control agents, read secrets, and execute code on your machine. Combined with a tunnel, this exposes your machine to the ENTIRE INTERNET. Only enable for localhost-only debugging with tunnel DISABLED.", restart: true, danger: true },
+  { key: "_UNSAFE_TUNNEL_WARNING",          label: "",                            category: "miniapp", type: "info",    description: "WARNING: If 'Allow Unsafe' is ON and 'Tunnel Mode' is not disabled, your UI is publicly accessible with ZERO authentication. This is a critical security risk." },
   { key: "TELEGRAM_UI_AUTH_MAX_AGE_SEC",   label: "Auth Token Max Age",         category: "miniapp", type: "number",  defaultVal: 86400, min: 300, max: 604800, unit: "sec", description: "Maximum age for Telegram initData tokens before they expire." },
   { key: "TELEGRAM_UI_TUNNEL",             label: "Tunnel Mode",                category: "miniapp", type: "select",  defaultVal: "auto", options: ["auto", "cloudflared", "disabled"], description: "Cloudflare tunnel mode. 'auto' starts tunnel if cloudflared is available.", restart: true },
 

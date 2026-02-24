@@ -115,15 +115,32 @@ export const EMOJI_ICON_MAP = {
   "🧵": "link",
   "🧹": "trash",
   "🪝": "link",
+  "✨": "star",
+  "⭐": "star",
+  "⚙": "settings",
+  "⚙️": "settings",
+  "⚠": "alert",
+  "⚠️": "alert",
+  "⚡": "zap",
+  "⏱": "clock",
+  "⏱️": "clock",
+  "⏸": "pause",
+  "⏸️": "pause",
+  "⏹": "stop",
+  "⏹️": "stop",
   "▶": "play",
   "▶️": "play",
-  "⏸": "pause",
-  "⏹": "stop",
+  "⏳": "clock",
   "⛔": "ban",
   "☰": "menu",
   "#️⃣": "hash",
-  "⚡": "zap",
-  "⚠️": "alert",
+  "🎛️": "sliders",
+  "🗺️": "grid",
+  "🖥️": "monitor",
+  "🏷️": "tag",
+  "🛰️": "server",
+  "🛡️": "shield",
+  "👁️": "eye",
 };
 
 export function resolveIcon(icon) {
@@ -142,6 +159,7 @@ export function iconText(text, { className = "" } = {}) {
   let buffer = "";
 
   for (const ch of str) {
+    if (ch === "\uFE0E" || ch === "\uFE0F") continue;
     const mapped = EMOJI_ICON_MAP[ch];
     const icon = mapped ? ICONS[mapped] : null;
     if (icon) {
@@ -161,4 +179,3 @@ export function iconText(text, { className = "" } = {}) {
 
   return html`<span class="icon-text ${className}">${parts}</span>`;
 }
-

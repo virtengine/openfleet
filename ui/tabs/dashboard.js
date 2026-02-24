@@ -31,6 +31,7 @@ import {
 import { navigateTo } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
 import { cloneValue, formatRelative, truncate } from "../modules/utils.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   Card,
   Badge,
@@ -550,13 +551,13 @@ export function DashboardTab() {
       <div class="dashboard-shell">
         <${Card} className="dashboard-card">
           <div class="dashboard-welcome-card">
-            <div class="dashboard-welcome-icon">🎛️</div>
+            <div class="dashboard-welcome-icon">${resolveIcon("🎛")}</div>
             <div class="dashboard-welcome-title">Welcome to VirtEngine Control Center</div>
             <div class="dashboard-welcome-desc">
               Your AI development fleet is ready. Create your first task to get started.
             </div>
             <button class="btn btn-primary" onClick=${() => setShowCreate(true)}>
-              ➕ Create your first task
+              ${iconText("➕ Create your first task")}
             </button>
           </div>
         <//>
@@ -677,7 +678,7 @@ export function DashboardTab() {
           ${fleetAtRest
             ? html`
               <div class="fleet-rest-badge">
-                <div class="fleet-rest-icon">✓</div>
+                <div class="fleet-rest-icon">${resolveIcon("✓")}</div>
                 <div class="fleet-rest-label">Fleet at rest</div>
                 <div class="fleet-rest-sub">${done} task${done !== 1 ? "s" : ""} completed · zero pending</div>
               </div>
@@ -791,7 +792,7 @@ export function DashboardTab() {
                   style="--qa-color: ${a.color}"
                   onClick=${(e) => handleQuickAction(a, e)}
                 >
-                  <span class="dashboard-action-icon">${a.icon}</span>
+                  <span class="dashboard-action-icon">${resolveIcon(a.icon) || a.icon}</span>
                   <span class="dashboard-action-label">${a.label}</span>
                 </button>
               `,
@@ -891,7 +892,7 @@ export function DashboardTab() {
 
       ${recentCommits.length > 0 && html`
         <${Card}
-          title=${html`<span class="dashboard-card-title"><span class="dashboard-title-icon">${ICONS.git || '🔀'}</span>Recent Commits</span>`}
+          title=${html`<span class="dashboard-card-title"><span class="dashboard-title-icon">${ICONS.git || resolveIcon("🔀")}</span>Recent Commits</span>`}
           className="dashboard-card dashboard-commits-card"
         >
           <div class="dashboard-commits">

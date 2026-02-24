@@ -60,15 +60,15 @@ export const activeAgentInfo = computed(() => {
  * ═══════════════════════════════════════════════ */
 
 const MODES = [
-  { id: "ask", label: "Ask", icon: "💬", description: "Ask a question" },
-  { id: "agent", label: "Agent", icon: "🤖", description: "Autonomous agent" },
-  { id: "plan", label: "Plan", icon: "📋", description: "Create a plan first" },
+  { id: "ask", label: "Ask", icon: "chat", description: "Ask a question" },
+  { id: "agent", label: "Agent", icon: "bot", description: "Autonomous agent" },
+  { id: "plan", label: "Plan", icon: "clipboard", description: "Create a plan first" },
 ];
 
 const AGENT_ICONS = {
-  "codex-sdk": "⚡",
-  "copilot-sdk": "🤖",
-  "claude-sdk": "🧠",
+  "codex-sdk": "zap",
+  "copilot-sdk": "bot",
+  "claude-sdk": "cpu",
 };
 
 const PROVIDER_COLORS = {
@@ -590,7 +590,7 @@ export function AgentPicker() {
     switchAgent(agentId);
   }, []);
 
-  const currentIcon = AGENT_ICONS[current] || "⚡";
+  const currentIcon = AGENT_ICONS[current] || "zap";
 
   return html`
     <div class="agent-picker-wrap">
@@ -640,7 +640,7 @@ export function AgentStatusBadge() {
       />
       <span class="agent-status-label">${cfg.label}</span>
       ${alive > 0 && html`<span class="agent-count-badge" title="${alive} agent(s) active" style="background:#2ea043;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:4px;">${alive}</span>`}
-      ${stale > 0 && html`<span class="agent-count-badge" title="${stale} agent(s) stale" style="background:#d29922;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;">⚠${stale}</span>`}
+      ${stale > 0 && html`<span class="agent-count-badge" title="${stale} agent(s) stale" style="background:#d29922;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;">${resolveIcon("alert")}${stale}</span>`}
       ${errors > 0 && html`<span class="agent-count-badge" title="${errors} error(s)" style="background:#f85149;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;">${resolveIcon("✕")}${errors}</span>`}
     </div>
   `;

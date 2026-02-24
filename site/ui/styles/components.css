@@ -4765,7 +4765,7 @@ select.input {
 /* ═══════════════════════════════════════════════
  *  Desktop Premium Density Overrides
  * ═══════════════════════════════════════════════ */
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
 
   /* Cards */
   .card {
