@@ -487,6 +487,9 @@ function App() {
   const [failoverStrategy, setFailoverStrategy] = useState("next-in-line");
   const [completedSteps, setCompletedSteps] = useState(new Set());
   const [loadedFromEnv, setLoadedFromEnv] = useState(false);
+  const [bosunHome, setBosunHome] = useState("");
+  const [workspacesDir, setWorkspacesDir] = useState("");
+  const [workspacesDirCustomized, setWorkspacesDirCustomized] = useState(false);
   const [telegramEnabled, setTelegramEnabled] = useState(false);
   const [jiraUrl, setJiraUrl] = useState("");
   const [jiraProjectKey, setJiraProjectKey] = useState("");
@@ -512,24 +515,28 @@ function App() {
 
       // Apply defaults
       const d = defaultsData.defaults || {};
-      if (d.projectName) setProjectName(d.projectName);
-      if (d.repoSlug) setRepoSlug(d.repoSlug);
-      if (d.repoRoot) setRepoRoot(d.repoRoot);
-      if (d.maxParallel) setMaxParallel(d.maxParallel);
-      if (d.maxRetries) setMaxRetries(d.maxRetries);
+      if (d.projectName)     setProjectName(d.projectName);
+      if (d.repoSlug)        setRepoSlug(d.repoSlug);
+      if (d.repoRoot)        setRepoRoot(d.repoRoot);
+      if (d.maxParallel)     setMaxParallel(d.maxParallel);
+      if (d.maxRetries)      setMaxRetries(d.maxRetries);
       if (d.failoverStrategy) setFailoverStrategy(d.failoverStrategy);
-      if (d.kanbanBackend) setKanbanBackend(d.kanbanBackend);
+      if (d.kanbanBackend)   setKanbanBackend(d.kanbanBackend);
+      if (d.bosunHome)       setBosunHome(d.bosunHome);
+      if (d.workspacesDir)   setWorkspacesDir(d.workspacesDir);
 
-      // Pre-fill repos from existing config or detected root
+      // Pre-fill repos from existing config (slugs preferred)
       if (statusData.existingConfig?.repos?.length) {
-        setRepos(statusData.existingConfig.repos.map((r) => r.path || r.slug || ""));
-      } else if (d.repoRoot) {
-        setRepos([d.repoRoot]);
+        setRepos(statusData.existingConfig.repos.map((r) => r.slug || r.path || ""));
+      } else if (d.repoSlug) {
+        setRepos([d.repoSlug]);
       }
 
       // ── Pre-fill from existing .env ──────────────────────────────────────
       const env = statusData.existingEnv || {};
       let envLoaded = false;
+      if (env.BOSUN_HOME) { setBosunHome(env.BOSUN_HOME); envLoaded = true; }
+      if (env.BOSUN_WORKSPACES_DIR) { setWorkspacesDir(env.BOSUN_WORKSPACES_DIR); setWorkspacesDirCustomized(true); envLoaded = true; }
       if (env.PROJECT_NAME) { setProjectName(env.PROJECT_NAME); envLoaded = true; }
       if (env.GITHUB_REPO) { setRepoSlug(env.GITHUB_REPO); envLoaded = true; }
       if (env.REPO_ROOT) { setRepoRoot(env.REPO_ROOT); envLoaded = true; }
@@ -567,6 +574,14 @@ function App() {
       setLoading(false);
     });
   }, []);
+
+  // Auto-update workspacesDir whenever bosunHome changes, unless the user has
+  // manually set a custom workspaces path.
+  useEffect(() => {
+    if (!workspacesDirCustomized && bosunHome) {
+      setWorkspacesDir(bosunHome.replace(/[/\\]*$/, "") + "/workspaces");
+    }
+  }, [bosunHome]);
 
   // ── Navigation ─────────────────────────────────────────────────────────────
 
@@ -607,6 +622,8 @@ function App() {
       const filteredRepos = repos.filter((r) => r.trim());
       const result = await apiPost("apply", {
         env: {
+          bosunHome,
+          workspacesDir,
           projectName,
           repoSlug,
           repoRoot,
@@ -624,8 +641,10 @@ function App() {
         },
         configJson: {
           projectName,
+          bosunHome,
+          workspacesDir,
           executors: buildExecutorsConfig(),
-          repos: filteredRepos.map((path) => ({ path })),
+          repos: filteredRepos.map((r) => ({ slug: r })),
           kanban: { backend: kanbanBackend },
           failover: {
             strategy: failoverStrategy,
@@ -639,6 +658,9 @@ function App() {
 
       if (result.ok) {
         setDone(true);
+        // Feed the actual bosunHome/workspacesDir back from the server result
+        if (result.bosunHome)    setBosunHome(result.bosunHome);
+        if (result.workspacesDir) setWorkspacesDir(result.workspacesDir);
         // Signal server to shut down
         setTimeout(() => apiPost("complete", {}), 1500);
       } else {
@@ -730,7 +752,10 @@ function App() {
             <h2>Setup Complete!</h2>
             <p>Bosun is configured and ready to go.</p>
             <p style="margin-top:12px;font-size:0.8rem;color:var(--text-dim)">
-              Config saved to <code style="font-family:var(--font-mono);color:var(--accent-light)">${status?.configDir || "~/bosun"}</code>
+              Bosun home: <code style="font-family:var(--font-mono);color:var(--accent-light)">${bosunHome || status?.bosunHome || "~/bosun"}</code>
+            </p>
+            <p style="margin-top:4px;font-size:0.8rem;color:var(--text-dim)">
+              Workspaces: <code style="font-family:var(--font-mono);color:var(--accent-light)">${workspacesDir || status?.workspacesDir || "~/bosun/workspaces"}</code>
             </p>
             <p style="margin-top:16px;color:var(--text-secondary)">
               You can close this tab. Run <code style="font-family:var(--font-mono);color:var(--accent-light)">bosun</code> to start the orchestrator.
@@ -808,7 +833,36 @@ function App() {
 
   const StepProfile = () => html`
     <h2>Setup Profile</h2>
-    <p class="step-desc">Choose how you'd like to configure bosun.</p>
+    <p class="step-desc">Choose how you'd like to configure bosun, then set your home directory.</p>
+
+    <div class="form-group">
+      <label>Bosun Home Directory <span class="required">*</span></label>
+      <input type="text" value=${bosunHome}
+        oninput=${(e) => setBosunHome(e.target.value)}
+        placeholder="~/bosun" />
+      <div class="hint">
+        Single root for all bosun data: configs, global tool settings, and every workspace.
+        Keep this <strong>outside</strong> any git repo.
+        Bosun creates this folder automatically — it will never touch anything outside it.
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Workspaces Directory</label>
+      <input type="text" value=${workspacesDir}
+        oninput=${(e) => { setWorkspacesDir(e.target.value); setWorkspacesDirCustomized(true); }}
+        placeholder="${bosunHome}/workspaces" />
+      <div class="hint">
+        Bosun clones and manages every project repo here, and stores shared global settings
+        (<code style="font-family:var(--font-mono)">.codex/</code>,
+         <code style="font-family:var(--font-mono)">.vscode/</code>,
+         <code style="font-family:var(--font-mono)">.bosun/hooks/</code>) in this folder.
+        ${workspacesDirCustomized ? html`
+          <a href="#" onclick=${(e) => { e.preventDefault(); setWorkspacesDirCustomized(false); setWorkspacesDir(bosunHome.replace(/[/\\]*$/, "") + "/workspaces"); }}
+            style="margin-left:6px">Reset to default</a>
+        ` : null}
+      </div>
+    </div>
+
     <div class="profile-cards">
       <div class="profile-card ${profile === "standard" ? "selected" : ""}" onclick=${() => setProfile("standard")}>
         <div class="icon">⚡</div>
@@ -833,7 +887,7 @@ function App() {
     </div>
     <div class="nav-buttons">
       <button class="btn" onclick=${goPrev}>← Back</button>
-      <button class="btn btn-primary" onclick=${goNext} disabled=${!projectName.trim()}>Continue →</button>
+      <button class="btn btn-primary" onclick=${goNext} disabled=${!projectName.trim() || !bosunHome.trim()}>Continue →</button>
     </div>
   `;
 
@@ -919,27 +973,42 @@ function App() {
 
   // ── Step 3: Repositories ───────────────────────────────────────────────────
 
-  const StepRepos = () => html`
-    <h2>Repositories</h2>
-    <p class="step-desc">Add local repository paths that bosun should manage. These are the codebases your AI agents will work on.</p>
-    ${repos.map((repo, i) => html`
-      <div class="repo-entry">
-        <input type="text" value=${repo} oninput=${(e) => updateRepo(i, e.target.value)}
-          placeholder="/path/to/your/repo" />
-        ${repos.length > 1 && html`
-          <button class="btn btn-sm btn-danger" onclick=${() => removeRepo(i)}>✕</button>
-        `}
+  const StepRepos = () => {
+    // Show the projected clone root for this project
+    const cloneRoot = workspacesDir
+      ? workspacesDir.replace(/[/\\]*$/, "") + "/" + (projectName || "<project>")
+      : "<workspaces>/<project>";
+
+    return html`
+      <h2>Repositories</h2>
+      <p class="step-desc">
+        Add the GitHub repos bosun should work on.
+        Bosun will clone them into your workspace and set up hooks, prompts, and configs automatically.
+      </p>
+      <div style="background:var(--bg-input);border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.78rem;color:var(--text-secondary)">
+        📁 Repos will be cloned into:
+        <code style="font-family:var(--font-mono);color:var(--accent-light);margin-left:4px">${cloneRoot}/&lt;repo-name&gt;</code>
       </div>
-    `)}
-    <button class="btn btn-sm" onclick=${addRepo} style="margin-top:4px">+ Add Repository</button>
-    <div class="hint" style="margin-top:8px">
-      Tip: Use absolute paths. The first repo listed will be the primary workspace.
-    </div>
-    <div class="nav-buttons">
-      <button class="btn" onclick=${goPrev}>← Back</button>
-      <button class="btn btn-primary" onclick=${goNext}>Continue →</button>
-    </div>
-  `;
+      ${repos.map((repo, i) => html`
+        <div class="repo-entry">
+          <input type="text" value=${repo} oninput=${(e) => updateRepo(i, e.target.value)}
+            placeholder="owner/repo  or  https://github.com/owner/repo" />
+          ${repos.length > 1 && html`
+            <button class="btn btn-sm btn-danger" onclick=${() => removeRepo(i)}>✕</button>
+          `}
+        </div>
+      `)}
+      <button class="btn btn-sm" onclick=${addRepo} style="margin-top:4px">+ Add Repository</button>
+      <div class="hint" style="margin-top:8px">
+        Per-workspace settings live at <code style="font-family:var(--font-mono)">&lt;workspace&gt;/.bosun/</code> — hooks, prompts, and
+        configs there override the global workspace defaults.
+      </div>
+      <div class="nav-buttons">
+        <button class="btn" onclick=${goPrev}>← Back</button>
+        <button class="btn btn-primary" onclick=${goNext}>Continue →</button>
+      </div>
+    `;
+  };
 
   // ── Step 4: Task Management ────────────────────────────────────────────────
 
@@ -1038,6 +1107,8 @@ function App() {
       <p class="step-desc">Review your configuration before applying. You can go back to change any section.</p>
       <table class="summary-table">
         <tbody>
+          <tr><th>Bosun Home</th><td>${bosunHome || status?.bosunHome || "~/bosun"}</td></tr>
+          <tr><th>Workspaces</th><td>${workspacesDir || status?.workspacesDir || "~/bosun/workspaces"}</td></tr>
           <tr><th>Project</th><td>${projectName}</td></tr>
           <tr><th>GitHub Repo</th><td>${repoSlug || "—"}</td></tr>
           <tr>
@@ -1055,13 +1126,12 @@ function App() {
             <td>${filteredRepos.length > 0 ? filteredRepos.join(", ") : "—"}</td>
           </tr>
           <tr><th>Kanban Backend</th><td>${kanbanBackend}</td></tr>
-          <tr><th>Telegram</th><td>${telegramToken ? "Configured" : "Skipped"}</td></tr>
+          <tr><th>Telegram</th><td>${telegramEnabled && telegramToken ? "Configured" : "Skipped"}</td></tr>
           ${profile === "advanced" ? html`
             <tr><th>Max Parallel</th><td>${maxParallel}</td></tr>
             <tr><th>Max Retries</th><td>${maxRetries}</td></tr>
             <tr><th>Failover</th><td>${failoverStrategy}</td></tr>
           ` : null}
-          <tr><th>Config Dir</th><td>${status?.configDir || "~/bosun"}</td></tr>
         </tbody>
       </table>
       ${error && html`<div class="field-error" style="margin-top:12px">${error}</div>`}
