@@ -955,24 +955,12 @@
       return `[${formatTimestamp(entry.ts)}] [${entry.level}] ${entry.source}: ${entry.msg}`;
     }
 
-    let replyCursor = 0;
-    const RESPONSE_SETS = [
-      [
-        { type: 'tool_call', content: 'rg "KanbanFilter" bosun/ui/components -n' },
-        { type: 'tool_result', content: 'bosun/ui/components/kanban-board.js:28 function KanbanFilter\nbosun/ui/components/kanban-board.js:112 <KanbanFilter' },
-        { role: 'assistant', content: 'Found the `KanbanFilter` component. I can add the repo badge dropdown and wire it to the `task.repo` field. Want me to push the patch?' },
-      ],
-      [
-        { type: 'tool_call', content: 'rg "ProcessOrder" x/market -n' },
-        { type: 'tool_result', content: 'x/market/keeper/order.go:118 func (k Keeper) ProcessOrder\nx/market/keeper/order_test.go:45 TestProcessOrder' },
-        { role: 'assistant', content: 'Order processor has an expiry stub. I can wire the TTL check from module params and add settlement-on-expiry logic with tests.' },
-      ],
-      [
-        { type: 'tool_call', content: 'git log --oneline -5' },
-        { type: 'tool_result', content: 'a1b2c3d feat(kanban): add repo badge and filter bar\n4e5f6a7 fix(ui): health card text contrast\n8b9c0d1 feat(site): landing page redesign\ne2f3a4b fix(security): bulk remediation 287/300 alerts' },
-        { role: 'assistant', content: 'Latest commits look good. Kanban filters landed, health card contrast fixed, landing page redesigned. Ready for PR review.' },
-      ],
-    ];
+    /* ═══════════════════════════════════════════════════════════════════
+       LIVE SIMULATION ENGINE
+       Autonomously drives tasks through the pipeline over ~5 minutes.
+       Each task goes: todo → inprogress (agent claims, streams activity)
+       → inreview (PR created, review workflow fires) → done (merged).
+       ═══════════════════════════════════════════════════════════════════ */
 
     function appendMessage(session, msg) {
       session.messages.push(msg);
@@ -982,24 +970,451 @@
       }
     }
 
-    function scheduleResponses(session) {
-      const set = RESPONSE_SETS[replyCursor % RESPONSE_SETS.length];
-      replyCursor += 1;
-      let delay = 600 + Math.random() * 600;
-      set.forEach((item) => {
-        const msg = makeMsg(
-          item.role || 'assistant',
-          item.content,
-          Date.now() + delay,
-          item.type,
-        );
-        const weight = Math.min(2200, Math.max(700, item.content.length * 18));
-        delay += weight + Math.random() * 500;
+    /* ── Agent action scripts: realistic sequences per task type ──── */
+    const AGENT_SCRIPTS = {
+      'bosun-12': [
+        { type: 'tool_call', content: 'rg "error-cluster|correlat" bosun/ -n --type js' },
+        { type: 'tool_result', content: 'bosun/anomaly-detector.mjs:89:  classifyError(pattern) {\nbosun/anomaly-detector.mjs:142:  // TODO: correlation report\nbosun/error-detector.mjs:34:  detectPattern(log) {' },
+        { role: 'assistant', content: 'Found the anomaly detector with a TODO stub for correlation. I\'ll implement the error-cluster correlation report in `anomaly-detector.mjs` and wire it to the planning insights endpoint.' },
+        { type: 'tool_call', content: 'cat bosun/anomaly-detector.mjs | head -160' },
+        { type: 'tool_result', content: 'import { readFileSync } from "fs";\nimport { join } from "path";\n\nexport class AnomalyDetector {\n  constructor(config) {\n    this.patterns = new Map();\n    this.clusters = [];\n    ...\n  classifyError(pattern) {\n    const known = this.patterns.get(pattern.type);\n    return known ? { ...known, confidence: 0.92 } : null;\n  }\n  // TODO: correlation report' },
+        { role: 'assistant', content: 'Implementing the correlation engine. It will group errors by pattern type, calculate temporal proximity, and output a planning-ready report.' },
+        { type: 'tool_call', content: 'apply_patch bosun/anomaly-detector.mjs' },
+        { type: 'tool_result', content: '✓ Applied patch to bosun/anomaly-detector.mjs (+67 lines)\n  Added: correlateErrors(), buildCorrelationReport()\n  Modified: constructor to init correlation window' },
+        { type: 'tool_call', content: 'node --check bosun/anomaly-detector.mjs' },
+        { type: 'tool_result', content: '(no output — syntax OK)' },
+        { role: 'assistant', content: 'Core correlation engine implemented. Now writing tests.' },
+        { type: 'tool_call', content: 'apply_patch bosun/tests/anomaly-detector.test.mjs' },
+        { type: 'tool_result', content: '✓ Created bosun/tests/anomaly-detector.test.mjs (+48 lines)\n  Tests: correlateErrors groups by pattern, buildCorrelationReport output shape, empty input returns empty report' },
+        { type: 'tool_call', content: 'npx vitest run tests/anomaly-detector.test.mjs' },
+        { type: 'tool_result', content: '✓ tests/anomaly-detector.test.mjs (3 tests) 142ms\n  ✓ correlateErrors groups by pattern\n  ✓ buildCorrelationReport output shape\n  ✓ empty input returns empty report\n\n Test Files  1 passed (1)\n      Tests  3 passed (3)' },
+        { role: 'assistant', content: 'All tests passing. Creating PR.' },
+        { type: 'tool_call', content: 'git add -A && git commit -m "feat(analytics): error-cluster correlation report for planning insights"' },
+        { type: 'tool_result', content: '[bs/12-error-correlation 8a3f2c1] feat(analytics): error-cluster correlation report for planning insights\n 2 files changed, 115 insertions(+)' },
+        { type: 'tool_call', content: 'gh pr create --title "feat(analytics): error-cluster correlation report" --body "Closes #12" --base main' },
+        { type: 'tool_result', content: 'https://github.com/virtengine/bosun/pull/19\nCreated pull request #19' },
+        { role: 'assistant', content: 'PR #19 created. CI checks queued. Moving to review.' },
+      ],
+      'bosun-11': [
+        { type: 'tool_call', content: 'rg "session.*metadata|VK.*API|enrichSession" bosun/ -n --type js' },
+        { type: 'tool_result', content: 'bosun/session-tracker.mjs:18:  enrichSession(session) {\nbosun/session-tracker.mjs:22:    // TODO: fetch from VK API when fields are missing\nbosun/telegram-bot.mjs:341:  const userInfo = await this.getVKUserInfo(userId);' },
+        { role: 'assistant', content: 'Found the session tracker with a VK API enrichment stub. I\'ll implement the metadata enrichment flow — fetch missing user info from Telegram/VK API and backfill session records.' },
+        { type: 'tool_call', content: 'cat bosun/session-tracker.mjs' },
+        { type: 'tool_result', content: 'export class SessionTracker {\n  constructor(opts) { this.maxMessages = opts?.maxMessages || 10; }\n  enrichSession(session) {\n    if (session.user?.firstName) return session;\n    // TODO: fetch from VK API when fields are missing\n    return session;\n  }\n  ...\n}' },
+        { role: 'assistant', content: 'I\'ll add the VK API client call with a cache layer so we don\'t hit rate limits. Adding retry + fallback logic.' },
+        { type: 'tool_call', content: 'apply_patch bosun/session-tracker.mjs' },
+        { type: 'tool_result', content: '✓ Applied patch to bosun/session-tracker.mjs (+42 lines)\n  Added: async enrichSessionFromAPI(), LRU cache for user lookups\n  Modified: enrichSession() to call API when fields missing' },
+        { type: 'tool_call', content: 'npx vitest run tests/session-tracker.test.mjs' },
+        { type: 'tool_result', content: '✓ tests/session-tracker.test.mjs (6 tests) 89ms\n  ✓ enriches session with VK API data\n  ✓ caches user lookups\n  ✓ handles API failure gracefully\n\n Test Files  1 passed (1)\n      Tests  6 passed (6)' },
+        { role: 'assistant', content: 'All tests pass. Committing and creating PR.' },
+        { type: 'tool_call', content: 'git add -A && git commit -m "feat(session): enrich metadata from VK API when missing"' },
+        { type: 'tool_result', content: '[bs/11-agent-logging-enrich c7d4e91] feat(session): enrich metadata from VK API when missing\n 2 files changed, 58 insertions(+), 3 deletions(-)' },
+        { type: 'tool_call', content: 'gh pr create --title "feat(session): enrich metadata from VK API" --body "Closes #11"' },
+        { type: 'tool_result', content: 'https://github.com/virtengine/bosun/pull/20\nCreated pull request #20' },
+        { role: 'assistant', content: 'PR #20 created for issue #11. Moving to review.' },
+      ],
+      've-760': [
+        { type: 'tool_call', content: 'rg "ProcessOrder|OrderExpir" x/market/keeper -n' },
+        { type: 'tool_result', content: 'x/market/keeper/order.go:118:func (k Keeper) ProcessOrder(ctx sdk.Context, order Order) error {\nx/market/keeper/order.go:145:  // TODO: implement expiry check\nx/market/types/order.go:24:  ExpiresAt time.Time' },
+        { role: 'assistant', content: 'Found the order processor with an expiry TODO. The `ExpiresAt` field already exists on the Order type. I\'ll wire the TTL check and auto-settlement logic.' },
+        { type: 'tool_call', content: 'apply_patch x/market/keeper/order.go' },
+        { type: 'tool_result', content: '✓ Applied patch to x/market/keeper/order.go (+38 lines)\n  Added: expiry check in ProcessOrder, SettleExpiredOrder helper\n  Modified: ProcessOrder to call expiry before matching' },
+        { type: 'tool_call', content: 'apply_patch x/market/keeper/order_test.go' },
+        { type: 'tool_result', content: '✓ Created x/market/keeper/order_test.go (+92 lines)\n  Tests: TestOrderExpiry, TestAutoSettlement, TestExpiredOrderCancellation' },
+        { type: 'tool_call', content: 'go test ./x/market/keeper/... -v -count=1' },
+        { type: 'tool_result', content: '=== RUN   TestOrderExpiry\n--- PASS: TestOrderExpiry (0.02s)\n=== RUN   TestAutoSettlement\n--- PASS: TestAutoSettlement (0.01s)\n=== RUN   TestExpiredOrderCancellation\n--- PASS: TestExpiredOrderCancellation (0.01s)\nPASS\nok  \tvirtengine/x/market/keeper\t0.142s' },
+        { role: 'assistant', content: 'All market keeper tests pass. Committing.' },
+        { type: 'tool_call', content: 'git add -A && git commit -m "feat(market): order expiry and auto-settlement"' },
+        { type: 'tool_result', content: '[ve/760-market-order-expiry d2e8f3a] feat(market): order expiry and auto-settlement\n 2 files changed, 130 insertions(+), 2 deletions(-)' },
+        { type: 'tool_call', content: 'gh pr create --title "feat(market): order expiry and auto-settlement" --body "Closes #760"' },
+        { type: 'tool_result', content: 'https://github.com/virtengine/virtengine/pull/765\nCreated pull request #765' },
+        { role: 'assistant', content: 'PR #765 created on virtengine/virtengine. CI running.' },
+      ],
+      've-761': [
+        { type: 'tool_call', content: 'rg "BatchSettle|settlement.*batch" x/escrow -n' },
+        { type: 'tool_result', content: 'x/escrow/keeper/batch.go:12:func (k Keeper) BatchSettle(ctx sdk.Context) error {\nx/escrow/keeper/batch.go:14:  iter := k.store.Iterator(ctx, k.settlementPrefix)\nx/escrow/keeper/msg_server.go:118:  // TODO: wire batch settlement' },
+        { role: 'assistant', content: 'The batch iterator skeleton exists but msg_server isn\'t wired. I\'ll complete the batch pipeline — add the retry guard, wire it into the message handler, and add integration tests.' },
+        { type: 'tool_call', content: 'apply_patch x/escrow/keeper/batch.go' },
+        { type: 'tool_result', content: '✓ Applied patch to x/escrow/keeper/batch.go (+53 lines)\n  Added: retryGuard, per-item error handling, metrics emission\n  Modified: BatchSettle to use retry guard and emit metrics' },
+        { type: 'tool_call', content: 'apply_patch x/escrow/keeper/msg_server.go' },
+        { type: 'tool_result', content: '✓ Applied patch to x/escrow/keeper/msg_server.go (+12 lines)\n  Modified: TriggerSettlement to call BatchSettle with context' },
+        { type: 'tool_call', content: 'go test ./x/escrow/... -v -count=1' },
+        { type: 'tool_result', content: '=== RUN   TestBatchSettle\n--- PASS: TestBatchSettle (0.03s)\n=== RUN   TestBatchSettleRetry\n--- PASS: TestBatchSettleRetry (0.02s)\n=== RUN   TestTriggerSettlement\n--- PASS: TestTriggerSettlement (0.01s)\nPASS\nok  \tvirtengine/x/escrow/keeper\t0.198s' },
+        { role: 'assistant', content: 'Escrow batch pipeline complete. All tests green. Creating PR.' },
+        { type: 'tool_call', content: 'git add -A && git commit -m "refactor(escrow): batch settlement pipeline with retry guard"' },
+        { type: 'tool_result', content: '[ve/761-escrow-batch a4b9c12] refactor(escrow): batch settlement pipeline with retry guard\n 3 files changed, 98 insertions(+), 8 deletions(-)' },
+        { type: 'tool_call', content: 'gh pr create --title "refactor(escrow): batch settlement pipeline" --body "Closes #761"' },
+        { type: 'tool_result', content: 'https://github.com/virtengine/virtengine/pull/766\nCreated pull request #766' },
+        { role: 'assistant', content: 'PR #766 created. Moving to review.' },
+      ],
+      've-763': [
+        { type: 'tool_call', content: 'rg "GPUMeter|TrackGPU|gpu.*resource" x/hpc -n' },
+        { type: 'tool_result', content: 'x/hpc/keeper/metering.go:44:func (k Keeper) TrackGPU(ctx sdk.Context, pod Pod) error {\nx/hpc/types/config.go:18:  GPUMeteringEnabled bool' },
+        { role: 'assistant', content: 'GPU metering hooks exist but have no tests. I\'ll write comprehensive unit tests covering the metering flow, config toggle, and edge cases.' },
+        { type: 'tool_call', content: 'apply_patch x/hpc/keeper/metering_test.go' },
+        { type: 'tool_result', content: '✓ Created x/hpc/keeper/metering_test.go (+78 lines)\n  Tests: TestTrackGPU, TestGPUMeteringDisabled, TestMeteringOverflow, TestMeteringMultiplePods' },
+        { type: 'tool_call', content: 'go test ./x/hpc/... -v -count=1' },
+        { type: 'tool_result', content: '=== RUN   TestTrackGPU\n--- PASS: TestTrackGPU (0.01s)\n=== RUN   TestGPUMeteringDisabled\n--- PASS: TestGPUMeteringDisabled (0.00s)\n=== RUN   TestMeteringOverflow\n--- PASS: TestMeteringOverflow (0.01s)\n=== RUN   TestMeteringMultiplePods\n--- PASS: TestMeteringMultiplePods (0.02s)\nPASS\nok  \tvirtengine/x/hpc/keeper\t0.089s' },
+        { role: 'assistant', content: 'All 4 GPU metering tests pass. Committing and creating PR.' },
+        { type: 'tool_call', content: 'git add -A && git commit -m "test(hpc): GPU resource metering unit tests"' },
+        { type: 'tool_result', content: '[ve/763-gpu-metering-tests e5f1d23] test(hpc): GPU resource metering unit tests\n 1 file changed, 78 insertions(+)' },
+        { type: 'tool_call', content: 'gh pr create --title "test(hpc): GPU resource metering unit tests" --body "Closes #763"' },
+        { type: 'tool_result', content: 'https://github.com/virtengine/virtengine/pull/767\nCreated pull request #767' },
+        { role: 'assistant', content: 'PR #767 created. Tests only — should be a quick review.' },
+      ],
+    };
+
+    /* ── Review scripts: what happens during inreview ──────────────── */
+    const REVIEW_SCRIPTS = {
+      'bosun-12': [
+        { role: 'assistant', content: '[review-agent] Reviewing PR #19 — feat(analytics): error-cluster correlation report' },
+        { type: 'tool_call', content: 'gh pr diff 19 --stat' },
+        { type: 'tool_result', content: ' bosun/anomaly-detector.mjs           | 67 ++++++++++++++\n bosun/tests/anomaly-detector.test.mjs | 48 ++++++++++\n 2 files changed, 115 insertions(+)' },
+        { role: 'assistant', content: 'Code looks good — clean separation, tests cover edge cases. Approving.' },
+        { type: 'tool_call', content: 'gh pr review 19 --approve -b "LGTM — correlation engine is well-structured"' },
+        { type: 'tool_result', content: '✓ Approved PR #19' },
+        { type: 'tool_call', content: 'gh pr merge 19 --squash --auto' },
+        { type: 'tool_result', content: '✓ PR #19 merged via squash' },
+      ],
+      'bosun-11': [
+        { role: 'assistant', content: '[review-agent] Reviewing PR #20 — feat(session): enrich metadata from VK API' },
+        { type: 'tool_call', content: 'gh pr checks 20' },
+        { type: 'tool_result', content: 'All checks passed\n✓ syntax-check  ✓ vitest  ✓ build' },
+        { role: 'assistant', content: 'CI green. Code review: cache layer is solid, graceful degradation on API failure. Approving.' },
+        { type: 'tool_call', content: 'gh pr review 20 --approve' },
+        { type: 'tool_result', content: '✓ Approved PR #20' },
+        { type: 'tool_call', content: 'gh pr merge 20 --squash --auto' },
+        { type: 'tool_result', content: '✓ PR #20 merged via squash' },
+      ],
+      've-760': [
+        { role: 'assistant', content: '[review-agent] Reviewing PR #765 — feat(market): order expiry and auto-settlement' },
+        { type: 'tool_call', content: 'gh pr checks 765' },
+        { type: 'tool_result', content: 'All checks passed\n✓ golangci-lint  ✓ go test  ✓ protobuf-check' },
+        { role: 'assistant', content: 'CI passed. Market keeper changes are clean — expiry logic is solid with proper test coverage. Approving.' },
+        { type: 'tool_call', content: 'gh pr review 765 --approve -b "Clean implementation, good test coverage"' },
+        { type: 'tool_result', content: '✓ Approved PR #765' },
+        { type: 'tool_call', content: 'gh pr merge 765 --squash --auto' },
+        { type: 'tool_result', content: '✓ PR #765 merged via squash' },
+      ],
+      've-761': [
+        { role: 'assistant', content: '[review-agent] Reviewing PR #766 — refactor(escrow): batch settlement pipeline' },
+        { type: 'tool_call', content: 'gh pr diff 766 --stat' },
+        { type: 'tool_result', content: ' x/escrow/keeper/batch.go       | 53 +++++++++++++\n x/escrow/keeper/msg_server.go   | 12 ++++\n x/escrow/keeper/batch_test.go   | 33 ++++++++\n 3 files changed, 98 insertions(+), 8 deletions(-)' },
+        { role: 'assistant', content: 'Retry guard pattern is good. One minor suggestion: add context timeout. Approving with comment.' },
+        { type: 'tool_call', content: 'gh pr review 766 --approve' },
+        { type: 'tool_result', content: '✓ Approved PR #766' },
+        { type: 'tool_call', content: 'gh pr merge 766 --squash --auto' },
+        { type: 'tool_result', content: '✓ PR #766 merged via squash' },
+      ],
+      've-763': [
+        { role: 'assistant', content: '[review-agent] Reviewing PR #767 — test(hpc): GPU resource metering unit tests' },
+        { type: 'tool_call', content: 'gh pr checks 767' },
+        { type: 'tool_result', content: 'All checks passed\n✓ golangci-lint  ✓ go test' },
+        { role: 'assistant', content: 'Tests-only PR, all green. Quick approve.' },
+        { type: 'tool_call', content: 'gh pr review 767 --approve' },
+        { type: 'tool_result', content: '✓ Approved PR #767' },
+        { type: 'tool_call', content: 'gh pr merge 767 --squash --auto' },
+        { type: 'tool_result', content: '✓ PR #767 merged via squash' },
+      ],
+    };
+
+    /* ── Live log buffer: meaningful, timestamped log entries ──────── */
+    const liveLogBuffer = [];
+    function pushLiveLog(level, source, msg) {
+      const entry = { ts: Date.now(), level, source, msg };
+      liveLogBuffer.push(entry);
+      if (liveLogBuffer.length > 200) liveLogBuffer.shift();
+      addLog(level, source, msg);
+      // Push via any open WS
+      if (_demoWS && _demoWS.onmessage) {
+        _demoWS.onmessage({ data: JSON.stringify({ type: 'log', entry }) });
+      }
+    }
+
+    /* ── WebSocket reference for pushing events ───────────────────── */
+    let _demoWS = null;
+
+    /* ── Task lifecycle simulation ────────────────────────────────── */
+    const TASK_QUEUE = ['bosun-12', 'bosun-11', 've-760', 've-761', 've-763'];
+    let simIdx = 0;
+    let simRunning = false;
+    const activeSims = new Map(); // taskId → { phase, stepIdx, timer }
+
+    function getOrCreateSession(taskId) {
+      const task = findTask(taskId);
+      if (!task) return null;
+      let session = STATE.sessions.find(s => s.taskId === taskId && s.status !== 'archived');
+      if (!session) {
+        const id = 'ses-sim-' + taskId;
+        session = {
+          id, title: task.title, type: 'task', status: 'running',
+          taskId, branch: task.branch || `sim/${taskId}`,
+          createdAt: Date.now(), updatedAt: Date.now(),
+          lastMessage: 'Session initialized.',
+          messages: [makeMsg('system', `Session started for ${taskId}: ${task.title}`, Date.now(), 'system')],
+        };
+        STATE.sessions.unshift(session);
+        STATE.sessionDiffs[id] = { files: [] };
+      }
+      return session;
+    }
+
+    function assignAgent(taskId) {
+      const agents = ['copilot-claude', 'codex-default'];
+      return agents[simIdx % agents.length];
+    }
+
+    function startTaskSim(taskId) {
+      if (activeSims.has(taskId)) return;
+      const task = findTask(taskId);
+      if (!task) return;
+
+      const agent = assignAgent(taskId);
+      task.status = 'inprogress';
+      task.assignee = agent;
+      task.branch = task.branch || `sim/${taskId}`;
+      task.updated = Date.now();
+
+      const session = getOrCreateSession(taskId);
+      const script = AGENT_SCRIPTS[taskId] || [];
+      const repo = task.repo === 'virtengine' ? 'virtengine/virtengine' : 'virtengine/bosun';
+
+      pushLiveLog('info', 'task-executor', `Claiming task ${taskId}: ${task.title}`);
+      pushLiveLog('info', 'worktree', `Created worktree for branch ${task.branch}`);
+      pushLiveLog('info', agent, `Starting work on ${taskId} (${repo})`);
+
+      // Push task-update via WS
+      if (_demoWS && _demoWS.onmessage) {
+        _demoWS.onmessage({ data: JSON.stringify({ type: 'task-update', task: { id: taskId, status: 'inprogress' } }) });
+      }
+
+      const sim = { phase: 'work', stepIdx: 0, timer: null };
+      activeSims.set(taskId, sim);
+
+      function nextStep() {
+        const s = activeSims.get(taskId);
+        if (!s || s.stepIdx >= script.length) {
+          // Done with work phase → move to review
+          moveToReview(taskId);
+          return;
+        }
+        const step = script[s.stepIdx];
+        s.stepIdx++;
+
+        const msg = makeMsg(step.role || 'assistant', step.content, Date.now(), step.type);
+        appendMessage(session, msg);
+
+        // Generate corresponding log
+        if (step.type === 'tool_call') {
+          pushLiveLog('info', agent, `[${taskId}] $ ${step.content.substring(0, 80)}`);
+        } else if (step.type === 'tool_result') {
+          const firstLine = step.content.split('\n')[0].substring(0, 100);
+          pushLiveLog('debug', agent, `[${taskId}] → ${firstLine}`);
+        } else {
+          pushLiveLog('info', agent, `[${taskId}] ${step.content.substring(0, 100)}`);
+        }
+
+        // Push live WS events for UI reactivity
+        if (_demoWS && _demoWS.onmessage) {
+          // session-message so agent status indicator updates (executing/streaming)
+          _demoWS.onmessage({ data: JSON.stringify({
+            type: 'session-message',
+            payload: { session: { id: session.id, type: 'task', status: 'active' }, message: msg },
+          }) });
+          // session-update for session list
+          _demoWS.onmessage({ data: JSON.stringify({
+            type: 'session-update',
+            session: { id: session.id, taskId, lastMessage: session.lastMessage, updatedAt: session.updatedAt },
+          }) });
+          // invalidate so the active tab refreshes its data
+          _demoWS.onmessage({ data: JSON.stringify({
+            type: 'invalidate', channels: ['tasks', 'agents', 'overview'],
+          }) });
+        }
+
+        // Schedule next step with realistic timing
+        const delay = step.type === 'tool_call' ? (800 + Math.random() * 1200)
+          : step.type === 'tool_result' ? (400 + Math.random() * 600)
+          : (1500 + Math.random() * 2000);
+        s.timer = setTimeout(nextStep, delay);
+      }
+
+      // Start first step after a short delay
+      sim.timer = setTimeout(nextStep, 1000 + Math.random() * 1500);
+    }
+
+    function moveToReview(taskId) {
+      const task = findTask(taskId);
+      if (!task) return;
+      const session = STATE.sessions.find(s => s.taskId === taskId && s.status === 'running');
+
+      task.status = 'inreview';
+      task.updated = Date.now();
+
+      pushLiveLog('success', 'task-executor', `Task ${taskId} moved to review`);
+      pushLiveLog('info', 'review-agent', `Starting automated review of ${taskId}`);
+
+      if (_demoWS && _demoWS.onmessage) {
+        _demoWS.onmessage({ data: JSON.stringify({ type: 'task-update', task: { id: taskId, status: 'inreview' } }) });
+      }
+
+      // Trigger workflow run
+      const wfRun = {
+        runId: 'run-' + Math.random().toString(36).slice(2, 6),
+        workflowId: 'wf-pr-merge-auto',
+        status: 'running',
+        nodeCount: 6,
+        duration: 0,
+        errorCount: 0,
+        startedAt: new Date().toISOString(),
+      };
+      STATE.workflowRuns.unshift(wfRun);
+      pushLiveLog('info', 'workflow', `PR Merge Strategy workflow triggered for ${taskId} (${wfRun.runId})`);
+
+      // Run review script
+      const reviewScript = REVIEW_SCRIPTS[taskId] || [];
+      const sim = activeSims.get(taskId) || { phase: 'review', stepIdx: 0, timer: null };
+      sim.phase = 'review';
+      sim.stepIdx = 0;
+      activeSims.set(taskId, sim);
+
+      let reviewDelay = 3000 + Math.random() * 3000; // Wait before review starts
+      reviewScript.forEach((step, i) => {
         setTimeout(() => {
-          appendMessage(session, msg);
-          addLog('info', 'agent', `${session.title}: ${item.type ? item.type.replace('_', ' ') : 'message'} queued`);
-        }, delay);
+          if (session) {
+            appendMessage(session, makeMsg(step.role || 'assistant', step.content, Date.now(), step.type));
+          }
+          if (step.type === 'tool_call') {
+            pushLiveLog('info', 'review-agent', `[${taskId}] $ ${step.content.substring(0, 80)}`);
+          } else if (step.type === 'tool_result') {
+            pushLiveLog('debug', 'review-agent', `[${taskId}] → ${step.content.split('\\n')[0].substring(0, 80)}`);
+          } else {
+            pushLiveLog('info', 'review-agent', `[${taskId}] ${step.content.substring(0, 100)}`);
+          }
+
+          // Last step = merge → move to done
+          if (i === reviewScript.length - 1) {
+            setTimeout(() => moveToComplete(taskId, wfRun), 2000 + Math.random() * 2000);
+          }
+        }, reviewDelay);
+        reviewDelay += step.type === 'tool_result' ? (300 + Math.random() * 400) : (1500 + Math.random() * 2000);
       });
+
+      // Fallback if no review script
+      if (reviewScript.length === 0) {
+        setTimeout(() => moveToComplete(taskId, wfRun), 8000 + Math.random() * 5000);
+      }
+    }
+
+    function moveToComplete(taskId, wfRun) {
+      const task = findTask(taskId);
+      if (!task) return;
+
+      task.status = 'done';
+      task.updated = Date.now();
+      task.mergedAt = Date.now();
+
+      // Update workflow run
+      if (wfRun) {
+        wfRun.status = 'completed';
+        wfRun.duration = Date.now() - new Date(wfRun.startedAt).getTime();
+      }
+
+      // Update session
+      const session = STATE.sessions.find(s => s.taskId === taskId);
+      if (session) {
+        session.status = 'completed';
+        appendMessage(session, makeMsg('system', `Task ${taskId} completed — PR merged to main.`, Date.now(), 'system'));
+      }
+
+      pushLiveLog('success', 'kanban', `Task ${taskId} completed — PR merged`);
+      pushLiveLog('success', 'git', `Branch ${task.branch} merged and deleted`);
+      pushLiveLog('info', 'worktree', `Cleaned up worktree for ${task.branch}`);
+
+      // Update status counts
+      STATE.status.completed = (STATE.status.completed || 27) + 1;
+      STATE.status.prsMerged = (STATE.status.prsMerged || 22) + 1;
+
+      if (_demoWS && _demoWS.onmessage) {
+        _demoWS.onmessage({ data: JSON.stringify({ type: 'task-update', task: { id: taskId, status: 'done' } }) });
+      }
+
+      activeSims.delete(taskId);
+
+      // Pick up next task from queue
+      scheduleNextTask();
+    }
+
+    function scheduleNextTask() {
+      if (simIdx >= TASK_QUEUE.length) {
+        pushLiveLog('info', 'task-executor', 'Backlog empty — all queued tasks dispatched');
+        return;
+      }
+      const nextTaskId = TASK_QUEUE[simIdx];
+      simIdx++;
+      const delay = 5000 + Math.random() * 10000; // 5-15s between task pickups
+      pushLiveLog('info', 'task-executor', `Next task ${nextTaskId} scheduled for pickup in ${Math.round(delay/1000)}s`);
+      setTimeout(() => startTaskSim(nextTaskId), delay);
+    }
+
+    /* ── Start the simulation loop ────────────────────────────────── */
+    function startSimulation() {
+      if (simRunning) return;
+      simRunning = true;
+      pushLiveLog('info', 'monitor', 'Fleet simulation started — processing backlog');
+      pushLiveLog('info', 'monitor', `${TASK_QUEUE.length} tasks queued for processing`);
+
+      // Executor heartbeat
+      setInterval(() => {
+        const load1 = 40 + Math.floor(Math.random() * 35);
+        const load2 = 30 + Math.floor(Math.random() * 30);
+        if (_demoWS && _demoWS.onmessage) {
+          _demoWS.onmessage({ data: JSON.stringify({ type: 'executor-update', executor: { name: 'copilot-claude', load: load1 } }) });
+          setTimeout(() => {
+            if (_demoWS && _demoWS.onmessage) {
+              _demoWS.onmessage({ data: JSON.stringify({ type: 'executor-update', executor: { name: 'codex-default', load: load2 } }) });
+            }
+          }, 2000);
+        }
+        pushLiveLog('info', 'monitor', `Health check passed — copilot-claude: ${load1}% · codex-default: ${load2}%`);
+      }, 15000);
+
+      // Start first two tasks in parallel (simulating max-parallel=2)
+      startTaskSim(TASK_QUEUE[0]);
+      simIdx = 1;
+      setTimeout(() => {
+        if (simIdx < TASK_QUEUE.length) {
+          startTaskSim(TASK_QUEUE[simIdx]);
+          simIdx++;
+        }
+      }, 3000 + Math.random() * 4000);
+    }
+
+    // Boot the simulation after a short delay (let the UI load first)
+    setTimeout(startSimulation, 2500);
+
+    /* ── User-initiated chat still works via scheduleResponses ─────── */
+    function scheduleResponses(session) {
+      // For user messages, just pick the task's script or generic response
+      const taskId = session.taskId;
+      const script = AGENT_SCRIPTS[taskId];
+      if (script && script.length > 0) {
+        // Send a few contextual steps
+        const steps = script.slice(0, 3);
+        let delay = 600;
+        steps.forEach((step) => {
+          setTimeout(() => {
+            appendMessage(session, makeMsg(step.role || 'assistant', step.content, Date.now(), step.type));
+            pushLiveLog('info', 'agent', `${session.title}: ${step.type || 'message'}`);
+          }, delay);
+          delay += 1000 + Math.random() * 1000;
+        });
+      } else {
+        setTimeout(() => {
+          appendMessage(session, makeMsg('assistant', 'Acknowledged. I\'ll look into that and report back.', Date.now()));
+          pushLiveLog('info', 'agent', `${session.title}: response sent`);
+        }, 800 + Math.random() * 600);
+      }
     }
 
     /* ── API Route Handler (comprehensive — catches ALL /api/* calls) */
@@ -1268,10 +1683,15 @@
       if (route === '/api/agent-logs/tail') {
         const file = params.get('file') || params.get('query') || '';
         const n = parseInt(params.get('lines')) || 100;
-        const lines = Array.from({ length: Math.min(n, 20) }, (_, i) => {
-          const ts = new Date(now - (20 - i) * 30000).toISOString();
-          return `[${ts}] [info] Demo log line ${i + 1} from ${file || 'agent'}`;
-        });
+        // Return real log entries from the live simulation
+        const relevantLogs = liveLogBuffer.filter(entry => {
+          if (!file) return true;
+          const hay = `${entry.source} ${entry.msg}`.toLowerCase();
+          return hay.includes(file.toLowerCase()) || entry.source === file;
+        }).slice(-n);
+        const lines = relevantLogs.length > 0
+          ? relevantLogs.map(e => `[${new Date(e.ts).toISOString()}] [${e.level}] ${e.source}: ${e.msg}`)
+          : liveLogBuffer.slice(-n).map(e => `[${new Date(e.ts).toISOString()}] [${e.level}] ${e.source}: ${e.msg}`);
         return { data: { lines } };
       }
       if (route === '/api/agent-context') {
@@ -1591,9 +2011,10 @@
         removeEventListener() {},
       };
 
-      // Simulate open after microtask
+      // Simulate open after microtask + register as live WS
       setTimeout(() => {
         fake.readyState = 1;
+        _demoWS = fake; // Register for simulation engine to push events
         if (fake.onopen) fake.onopen({});
 
         // Send pong responses
@@ -1602,22 +2023,6 @@
             fake.onmessage({ data: JSON.stringify({ type: 'pong', ts: Date.now() }) });
           }
         }, 5000);
-
-        // Simulate periodic task updates
-        let updateIdx = 0;
-        setInterval(() => {
-          if (!fake.onmessage) return;
-          const updates = [
-            { type: 'task-update', task: { id: 'bosun-7', status: 'inprogress' } },
-            { type: 'log', entry: { ts: Date.now(), level: 'info', source: 'monitor', msg: 'Health check passed — all systems nominal' } },
-            { type: 'executor-update', executor: { name: 'copilot-claude', load: 55 + Math.floor(Math.random() * 25) } },
-            { type: 'task-update', task: { id: 've-760', status: 'inprogress' } },
-            { type: 'log', entry: { ts: Date.now(), level: 'info', source: 'sync', msg: 'Workspace sync complete — 2 repos up to date' } },
-            { type: 'executor-update', executor: { name: 'codex-sdk', load: 40 + Math.floor(Math.random() * 30) } },
-          ];
-          fake.onmessage({ data: JSON.stringify(updates[updateIdx % updates.length]) });
-          updateIdx++;
-        }, 8000);
       }, 100);
 
       return fake;
