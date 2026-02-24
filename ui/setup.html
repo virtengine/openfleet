@@ -475,9 +475,10 @@ function App() {
   const [repoSlug, setRepoSlug] = useState("");
   const [repoRoot, setRepoRoot] = useState("");
   const [executors, setExecutors] = useState([
-    { name: "primary", executor: "COPILOT", model: "claude-opus-4.6", weight: 70, role: "primary" },
-    { name: "backup", executor: "CODEX", model: "gpt-5.2-codex", weight: 30, role: "backup" },
+    { name: "primary", executor: "COPILOT", model: "claude-opus-4.6", weight: 70, role: "primary", authMode: "oauth", apiKey: "", baseUrl: "" },
+    { name: "backup", executor: "CODEX", model: "gpt-5.3-codex", weight: 30, role: "backup", authMode: "oauth", apiKey: "", baseUrl: "" },
   ]);
+  const [probedModels, setProbedModels] = useState({});
   const [repos, setRepos] = useState([""]);
   const [kanbanBackend, setKanbanBackend] = useState("internal");
   const [telegramToken, setTelegramToken] = useState("");
@@ -486,6 +487,15 @@ function App() {
   const [maxRetries, setMaxRetries] = useState(3);
   const [failoverStrategy, setFailoverStrategy] = useState("next-in-line");
   const [completedSteps, setCompletedSteps] = useState(new Set());
+  const [loadedFromEnv, setLoadedFromEnv] = useState(false);
+  const [bosunHome, setBosunHome] = useState("");
+  const [workspacesDir, setWorkspacesDir] = useState("");
+  const [workspacesDirCustomized, setWorkspacesDirCustomized] = useState(false);
+  const [telegramEnabled, setTelegramEnabled] = useState(false);
+  const [jiraUrl, setJiraUrl] = useState("");
+  const [jiraProjectKey, setJiraProjectKey] = useState("");
+  const [jiraApiToken, setJiraApiToken] = useState("");
+  const [githubProjectNumber, setGithubProjectNumber] = useState("");
 
   // ── Load initial data ──────────────────────────────────────────────────────
 
@@ -506,20 +516,67 @@ function App() {
 
       // Apply defaults
       const d = defaultsData.defaults || {};
-      if (d.projectName) setProjectName(d.projectName);
-      if (d.repoSlug) setRepoSlug(d.repoSlug);
-      if (d.repoRoot) setRepoRoot(d.repoRoot);
-      if (d.maxParallel) setMaxParallel(d.maxParallel);
-      if (d.maxRetries) setMaxRetries(d.maxRetries);
+      if (d.projectName)     setProjectName(d.projectName);
+      if (d.repoSlug)        setRepoSlug(d.repoSlug);
+      if (d.repoRoot)        setRepoRoot(d.repoRoot);
+      if (d.maxParallel)     setMaxParallel(d.maxParallel);
+      if (d.maxRetries)      setMaxRetries(d.maxRetries);
       if (d.failoverStrategy) setFailoverStrategy(d.failoverStrategy);
-      if (d.kanbanBackend) setKanbanBackend(d.kanbanBackend);
+      if (d.kanbanBackend)   setKanbanBackend(d.kanbanBackend);
+      if (d.bosunHome)       setBosunHome(d.bosunHome);
+      if (d.workspacesDir)   setWorkspacesDir(d.workspacesDir);
 
-      // Pre-fill repos from existing config or detected root
+      // Pre-fill repos from existing config (slugs preferred)
       if (statusData.existingConfig?.repos?.length) {
-        setRepos(statusData.existingConfig.repos.map((r) => r.path || r.slug || ""));
-      } else if (d.repoRoot) {
-        setRepos([d.repoRoot]);
+        setRepos(statusData.existingConfig.repos.map((r) => r.slug || r.path || ""));
+      } else if (d.repoSlug) {
+        setRepos([d.repoSlug]);
       }
+
+      // ── Pre-fill from existing .env ──────────────────────────────────────
+      const env = statusData.existingEnv || {};
+      let envLoaded = false;
+      if (env.BOSUN_HOME) { setBosunHome(env.BOSUN_HOME); envLoaded = true; }
+      if (env.BOSUN_WORKSPACES_DIR) { setWorkspacesDir(env.BOSUN_WORKSPACES_DIR); setWorkspacesDirCustomized(true); envLoaded = true; }
+      if (env.PROJECT_NAME) { setProjectName(env.PROJECT_NAME); envLoaded = true; }
+      if (env.GITHUB_REPO) { setRepoSlug(env.GITHUB_REPO); envLoaded = true; }
+      if (env.REPO_ROOT) { setRepoRoot(env.REPO_ROOT); envLoaded = true; }
+      if (env.KANBAN_BACKEND) { setKanbanBackend(env.KANBAN_BACKEND); envLoaded = true; }
+      if (env.TELEGRAM_BOT_TOKEN) { setTelegramToken(env.TELEGRAM_BOT_TOKEN); setTelegramEnabled(true); envLoaded = true; }
+      if (env.TELEGRAM_CHAT_ID) { setTelegramChatId(env.TELEGRAM_CHAT_ID); envLoaded = true; }
+      if (env.JIRA_URL) { setJiraUrl(env.JIRA_URL); envLoaded = true; }
+      if (env.JIRA_PROJECT_KEY) { setJiraProjectKey(env.JIRA_PROJECT_KEY); envLoaded = true; }
+      if (env.JIRA_API_TOKEN) { setJiraApiToken(env.JIRA_API_TOKEN); envLoaded = true; }
+      if (env.GITHUB_PROJECT_NUMBER) { setGithubProjectNumber(env.GITHUB_PROJECT_NUMBER); envLoaded = true; }
+      if (env.EXECUTORS) {
+        try {
+          const parsed = env.EXECUTORS.split(",").map((part, idx) => {
+            const segments = part.trim().split(":");
+            const execType = segments[0] || "COPILOT";
+            const variant = segments[1] || "DEFAULT";
+            const weight = Number(segments[2]) || 50;
+            const model = variant === "DEFAULT" ? "" : variant.toLowerCase().replaceAll("_", "-");
+            // Detect if an API key was previously configured for this executor type
+            const hasApiKey =
+              ((execType === "CODEX" || execType === "OPENAI") && !!env.OPENAI_API_KEY) ||
+              ((execType === "CLAUDE_CODE" || execType === "ANTHROPIC") && !!env.ANTHROPIC_API_KEY);
+            return {
+              name: idx === 0 ? "primary" : `executor-${idx + 1}`,
+              executor: execType,
+              model,
+              weight,
+              role: idx === 0 ? "primary" : "backup",
+              authMode: hasApiKey ? "api-key" : "oauth",
+              apiKey: (execType === "CODEX" || execType === "OPENAI") ? (env.OPENAI_API_KEY || "") :
+                       (execType === "CLAUDE_CODE" || execType === "ANTHROPIC") ? (env.ANTHROPIC_API_KEY || "") : "",
+              baseUrl: (execType === "CODEX" || execType === "OPENAI") ? (env.OPENAI_BASE_URL || "") :
+                        (execType === "CLAUDE_CODE" || execType === "ANTHROPIC") ? (env.ANTHROPIC_BASE_URL || "") : "",
+            };
+          });
+          if (parsed.length > 0) { setExecutors(parsed); envLoaded = true; }
+        } catch { /* ignore parse errors */ }
+      }
+      if (envLoaded) setLoadedFromEnv(true);
 
       setLoading(false);
     }).catch((err) => {
@@ -527,6 +584,14 @@ function App() {
       setLoading(false);
     });
   }, []);
+
+  // Auto-update workspacesDir whenever bosunHome changes, unless the user has
+  // manually set a custom workspaces path.
+  useEffect(() => {
+    if (!workspacesDirCustomized && bosunHome) {
+      setWorkspacesDir(bosunHome.replace(/[/\\]*$/, "") + "/workspaces");
+    }
+  }, [bosunHome]);
 
   // ── Navigation ─────────────────────────────────────────────────────────────
 
@@ -556,6 +621,9 @@ function App() {
       variant: (ex.model || "DEFAULT").toUpperCase().replaceAll("-", "_"),
       weight: Number(ex.weight) || 50,
       role: ex.role,
+      authMode: ex.authMode || "oauth",
+      apiKey: ex.authMode === "api-key" ? (ex.apiKey || "") : "",
+      baseUrl: ex.authMode === "api-key" ? (ex.baseUrl || "") : "",
     }));
 
   // ── Apply config ───────────────────────────────────────────────────────────
@@ -567,6 +635,8 @@ function App() {
       const filteredRepos = repos.filter((r) => r.trim());
       const result = await apiPost("apply", {
         env: {
+          bosunHome,
+          workspacesDir,
           projectName,
           repoSlug,
           repoRoot,
@@ -575,13 +645,19 @@ function App() {
           maxParallel,
           maxRetries,
           failoverStrategy,
-          telegramToken,
-          telegramChatId,
+          telegramToken: telegramEnabled ? telegramToken : "",
+          telegramChatId: telegramEnabled ? telegramChatId : "",
+          jiraUrl,
+          jiraProjectKey,
+          jiraApiToken,
+          githubProjectNumber,
         },
         configJson: {
           projectName,
+          bosunHome,
+          workspacesDir,
           executors: buildExecutorsConfig(),
-          repos: filteredRepos.map((path) => ({ path })),
+          repos: filteredRepos.map((r) => ({ slug: r })),
           kanban: { backend: kanbanBackend },
           failover: {
             strategy: failoverStrategy,
@@ -595,6 +671,9 @@ function App() {
 
       if (result.ok) {
         setDone(true);
+        // Feed the actual bosunHome/workspacesDir back from the server result
+        if (result.bosunHome)    setBosunHome(result.bosunHome);
+        if (result.workspacesDir) setWorkspacesDir(result.workspacesDir);
         // Signal server to shut down
         setTimeout(() => apiPost("complete", {}), 1500);
       } else {
@@ -633,6 +712,9 @@ function App() {
         model: "claude-sonnet-4",
         weight: 50,
         role: "backup",
+        authMode: "oauth",
+        apiKey: "",
+        baseUrl: "",
       },
     ]);
   };
@@ -651,6 +733,43 @@ function App() {
       }
       return updated;
     });
+  };
+
+  const probeExecutorModels = async (idx) => {
+    const ex = executors[idx];
+    if (!ex) return;
+    setProbedModels((prev) => ({ ...prev, [idx]: { loading: true, models: [], source: "" } }));
+    try {
+      const result = await apiPost("models/probe", {
+        executor: ex.executor,
+        apiKey: ex.apiKey || "",
+        baseUrl: ex.baseUrl || "",
+      });
+      setProbedModels((prev) => ({
+        ...prev,
+        [idx]: {
+          loading: false,
+          models: result.models || [],
+          source: result.source || "static",
+          warning: result.warning || "",
+          note: result.note || "",
+        },
+      }));
+      // Auto-select first live model if current model isn't in the new list
+      if (result.models?.length) {
+        const current = ex.model;
+        const inList = result.models.some((m) => m.value === current);
+        if (!inList) {
+          const rec = result.models.find((m) => m.recommended) || result.models[0];
+          if (rec) updateExecutor(idx, "model", rec.value);
+        }
+      }
+    } catch (err) {
+      setProbedModels((prev) => ({
+        ...prev,
+        [idx]: { loading: false, models: [], source: "error", warning: err.message },
+      }));
+    }
   };
 
   // ── Repo management ────────────────────────────────────────────────────────
@@ -686,7 +805,10 @@ function App() {
             <h2>Setup Complete!</h2>
             <p>Bosun is configured and ready to go.</p>
             <p style="margin-top:12px;font-size:0.8rem;color:var(--text-dim)">
-              Config saved to <code style="font-family:var(--font-mono);color:var(--accent-light)">${status?.configDir || "~/bosun"}</code>
+              Bosun home: <code style="font-family:var(--font-mono);color:var(--accent-light)">${bosunHome || status?.bosunHome || "~/bosun"}</code>
+            </p>
+            <p style="margin-top:4px;font-size:0.8rem;color:var(--text-dim)">
+              Workspaces: <code style="font-family:var(--font-mono);color:var(--accent-light)">${workspacesDir || status?.workspacesDir || "~/bosun/workspaces"}</code>
             </p>
             <p style="margin-top:16px;color:var(--text-secondary)">
               You can close this tab. Run <code style="font-family:var(--font-mono);color:var(--accent-light)">bosun</code> to start the orchestrator.
@@ -764,7 +886,36 @@ function App() {
 
   const StepProfile = () => html`
     <h2>Setup Profile</h2>
-    <p class="step-desc">Choose how you'd like to configure bosun.</p>
+    <p class="step-desc">Choose how you'd like to configure bosun, then set your home directory.</p>
+
+    <div class="form-group">
+      <label>Bosun Home Directory <span class="required">*</span></label>
+      <input type="text" value=${bosunHome}
+        oninput=${(e) => setBosunHome(e.target.value)}
+        placeholder="~/bosun" />
+      <div class="hint">
+        Single root for all bosun data: configs, global tool settings, and every workspace.
+        Keep this <strong>outside</strong> any git repo.
+        Bosun creates this folder automatically — it will never touch anything outside it.
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Workspaces Directory</label>
+      <input type="text" value=${workspacesDir}
+        oninput=${(e) => { setWorkspacesDir(e.target.value); setWorkspacesDirCustomized(true); }}
+        placeholder="${bosunHome}/workspaces" />
+      <div class="hint">
+        Bosun clones and manages every project repo here, and stores shared global settings
+        (<code style="font-family:var(--font-mono)">.codex/</code>,
+         <code style="font-family:var(--font-mono)">.vscode/</code>,
+         <code style="font-family:var(--font-mono)">.bosun/hooks/</code>) in this folder.
+        ${workspacesDirCustomized ? html`
+          <a href="#" onclick=${(e) => { e.preventDefault(); setWorkspacesDirCustomized(false); setWorkspacesDir(bosunHome.replace(/[/\\]*$/, "") + "/workspaces"); }}
+            style="margin-left:6px">Reset to default</a>
+        ` : null}
+      </div>
+    </div>
+
     <div class="profile-cards">
       <div class="profile-card ${profile === "standard" ? "selected" : ""}" onclick=${() => setProfile("standard")}>
         <div class="icon">⚡</div>
@@ -789,7 +940,7 @@ function App() {
     </div>
     <div class="nav-buttons">
       <button class="btn" onclick=${goPrev}>← Back</button>
-      <button class="btn btn-primary" onclick=${goNext} disabled=${!projectName.trim()}>Continue →</button>
+      <button class="btn btn-primary" onclick=${goNext} disabled=${!projectName.trim() || !bosunHome.trim()}>Continue →</button>
     </div>
   `;
 
@@ -798,7 +949,22 @@ function App() {
   const StepExecutors = () => html`
     <h2>AI Executors</h2>
     <p class="step-desc">Configure which AI coding agents bosun will use. You can add multiple executors with weighted distribution.</p>
-    ${executors.map((ex, i) => html`
+
+    <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;font-size:0.8rem;line-height:1.6">
+      <strong>🔐 No API key required in most cases.</strong>
+      GitHub Copilot, Codex CLI, and Claude Code all support OAuth — just run
+      <code style="font-family:var(--font-mono);color:var(--accent-light)">gh auth login</code>,
+      <code style="font-family:var(--font-mono);color:var(--accent-light)">codex auth login</code>, or
+      <code style="font-family:var(--font-mono);color:var(--accent-light)">claude login</code>
+      before starting Bosun and it will automatically use your authenticated session.
+      Only provide an API key if you need a custom endpoint, a different account, or your own usage quota.
+    </div>
+
+    ${executors.map((ex, i) => {
+      const probed = probedModels[i] || {};
+      const modelOptions = probed.models?.length ? probed.models : getModelsForExecutor(ex.executor);
+      const authMode = ex.authMode || "oauth";
+      return html`
       <div class="executor-card">
         <div class="executor-card-header">
           <h4>${ex.role === "primary" ? "🟢" : "🔵"} Executor ${i + 1}: ${ex.name}</h4>
@@ -827,12 +993,61 @@ function App() {
             />
           </div>
           <div class="form-group">
-            <label>Model</label>
+            <label>Authentication</label>
+            <select value=${authMode} onchange=${(e) => updateExecutor(i, "authMode", e.target.value)}>
+              <option value="oauth">Use existing auth (OAuth / login session)</option>
+              <option value="api-key">API Key</option>
+            </select>
+            <div class="hint">
+              ${authMode === "oauth"
+                ? "Bosun will use your existing login session. No API key stored."
+                : "Your API key will be saved to .env in BOSUN_HOME (never committed to git)."}
+            </div>
+          </div>
+          ${authMode === "api-key" && html`
+            <div class="form-group" style="grid-column:1/-1">
+              <label>API Key</label>
+              <input type="password" value=${ex.apiKey || ""}
+                oninput=${(e) => updateExecutor(i, "apiKey", e.target.value)}
+                placeholder="${ex.executor === "CLAUDE_CODE" ? "sk-ant-..." : "sk-..."}" />
+              <div class="hint">
+                For Codex: <code style="font-family:var(--font-mono)">OPENAI_API_KEY</code>.
+                For Claude Code: <code style="font-family:var(--font-mono)">ANTHROPIC_API_KEY</code>.
+              </div>
+            </div>
+            <div class="form-group" style="grid-column:1/-1">
+              <label>Base URL <span style="font-weight:400;color:var(--text-dim)">(optional)</span></label>
+              <input type="text" value=${ex.baseUrl || ""}
+                oninput=${(e) => updateExecutor(i, "baseUrl", e.target.value)}
+                placeholder="https://api.openai.com  or  https://<resource>.openai.azure.com/" />
+              <div class="hint">Leave blank for the default endpoint. Set for Azure, self-hosted, or OpenAI-compatible APIs.</div>
+            </div>
+          `}
+          <div class="form-group">
+            <label style="display:flex;align-items:center;justify-content:space-between">
+              <span>Model</span>
+              ${ex.executor !== "COPILOT" && html`
+                <button class="btn btn-sm" style="padding:3px 8px;font-size:0.72rem"
+                  onclick=${() => probeExecutorModels(i)}
+                  disabled=${probed.loading}>
+                  ${probed.loading ? html`<span class="spinner" style="width:10px;height:10px"></span>` : "↺ Probe"}
+                </button>
+              `}
+            </label>
             <${SelectWithCustom}
-              options=${getModelsForExecutor(ex.executor)}
+              options=${modelOptions}
               value=${ex.model}
               onChange=${(v) => updateExecutor(i, "model", v)}
             />
+            ${probed.source === "live" && html`
+              <div class="hint" style="color:var(--success)">✓ Live model list from API (${modelOptions.length} models)</div>
+            `}
+            ${probed.warning && html`
+              <div class="hint" style="color:var(--warning, #f59e0b)">${probed.warning}</div>
+            `}
+            ${probed.note && html`
+              <div class="hint">${probed.note}</div>
+            `}
           </div>
           <div class="form-group">
             <label>Weight</label>
@@ -842,7 +1057,7 @@ function App() {
           </div>
         </div>
       </div>
-    `)}
+    `})}
     <button class="btn btn-sm" onclick=${addExecutor} style="margin-bottom:12px">+ Add Executor</button>
     ${profile === "advanced" && html`
       <div class="executor-grid" style="margin-top:12px">
@@ -875,27 +1090,42 @@ function App() {
 
   // ── Step 3: Repositories ───────────────────────────────────────────────────
 
-  const StepRepos = () => html`
-    <h2>Repositories</h2>
-    <p class="step-desc">Add local repository paths that bosun should manage. These are the codebases your AI agents will work on.</p>
-    ${repos.map((repo, i) => html`
-      <div class="repo-entry">
-        <input type="text" value=${repo} oninput=${(e) => updateRepo(i, e.target.value)}
-          placeholder="/path/to/your/repo" />
-        ${repos.length > 1 && html`
-          <button class="btn btn-sm btn-danger" onclick=${() => removeRepo(i)}>✕</button>
-        `}
+  const StepRepos = () => {
+    // Show the projected clone root for this project
+    const cloneRoot = workspacesDir
+      ? workspacesDir.replace(/[/\\]*$/, "") + "/" + (projectName || "<project>")
+      : "<workspaces>/<project>";
+
+    return html`
+      <h2>Repositories</h2>
+      <p class="step-desc">
+        Add the GitHub repos bosun should work on.
+        Bosun will clone them into your workspace and set up hooks, prompts, and configs automatically.
+      </p>
+      <div style="background:var(--bg-input);border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.78rem;color:var(--text-secondary)">
+        📁 Repos will be cloned into:
+        <code style="font-family:var(--font-mono);color:var(--accent-light);margin-left:4px">${cloneRoot}/&lt;repo-name&gt;</code>
       </div>
-    `)}
-    <button class="btn btn-sm" onclick=${addRepo} style="margin-top:4px">+ Add Repository</button>
-    <div class="hint" style="margin-top:8px">
-      Tip: Use absolute paths. The first repo listed will be the primary workspace.
-    </div>
-    <div class="nav-buttons">
-      <button class="btn" onclick=${goPrev}>← Back</button>
-      <button class="btn btn-primary" onclick=${goNext}>Continue →</button>
-    </div>
-  `;
+      ${repos.map((repo, i) => html`
+        <div class="repo-entry">
+          <input type="text" value=${repo} oninput=${(e) => updateRepo(i, e.target.value)}
+            placeholder="owner/repo  or  https://github.com/owner/repo" />
+          ${repos.length > 1 && html`
+            <button class="btn btn-sm btn-danger" onclick=${() => removeRepo(i)}>✕</button>
+          `}
+        </div>
+      `)}
+      <button class="btn btn-sm" onclick=${addRepo} style="margin-top:4px">+ Add Repository</button>
+      <div class="hint" style="margin-top:8px">
+        Per-workspace settings live at <code style="font-family:var(--font-mono)">&lt;workspace&gt;/.bosun/</code> — hooks, prompts, and
+        configs there override the global workspace defaults.
+      </div>
+      <div class="nav-buttons">
+        <button class="btn" onclick=${goPrev}>← Back</button>
+        <button class="btn btn-primary" onclick=${goNext}>Continue →</button>
+      </div>
+    `;
+  };
 
   // ── Step 4: Task Management ────────────────────────────────────────────────
 
@@ -912,10 +1142,38 @@ function App() {
       <div class="hint">
         ${kanbanBackend === "internal" ? "Uses a local SQLite database for fast, offline task tracking." :
           kanbanBackend === "github" ? "Syncs with GitHub Projects. Requires a GitHub repo configured above." :
-          kanbanBackend === "jira" ? "Two-way sync with Jira boards. Additional Jira config will be needed." :
+          kanbanBackend === "jira" ? "Two-way sync with Jira boards. Configure your Jira connection below." :
           "Custom backend — make sure you have the integration module."}
       </div>
     </div>
+    ${kanbanBackend === "jira" && html`
+      <div class="form-group">
+        <label>Jira URL <span class="required">*</span></label>
+        <input type="text" value=${jiraUrl} oninput=${(e) => setJiraUrl(e.target.value)}
+          placeholder="https://yourorg.atlassian.net" />
+        <div class="hint">Your Jira instance base URL.</div>
+      </div>
+      <div class="form-group">
+        <label>Jira Project Key <span class="required">*</span></label>
+        <input type="text" value=${jiraProjectKey} oninput=${(e) => setJiraProjectKey(e.target.value)}
+          placeholder="PROJ" />
+        <div class="hint">The Jira project key (e.g. PROJ, DEV, MYAPP).</div>
+      </div>
+      <div class="form-group">
+        <label>Jira API Token</label>
+        <input type="password" value=${jiraApiToken} oninput=${(e) => setJiraApiToken(e.target.value)}
+          placeholder="Jira API token..." />
+        <div class="hint">Create at <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank">Atlassian API tokens</a>. Used as the password with your Jira email.</div>
+      </div>
+    `}
+    ${kanbanBackend === "github" && html`
+      <div class="form-group">
+        <label>GitHub Project Number</label>
+        <input type="number" value=${githubProjectNumber} oninput=${(e) => setGithubProjectNumber(e.target.value)}
+          placeholder="1" />
+        <div class="hint">The number in the GitHub Projects URL: github.com/org/repo/projects/<strong>1</strong></div>
+      </div>
+    `}
     <div class="nav-buttons">
       <button class="btn" onclick=${goPrev}>← Back</button>
       <button class="btn btn-primary" onclick=${goNext}>Continue →</button>
@@ -928,17 +1186,28 @@ function App() {
     <h2>Notifications</h2>
     <p class="step-desc">Optional: configure Telegram notifications for task progress, errors, and PR updates.</p>
     <div class="form-group">
-      <label>Telegram Bot Token</label>
-      <input type="password" value=${telegramToken} oninput=${(e) => setTelegramToken(e.target.value)}
-        placeholder="123456:ABCdefGHIjklMNO..." />
-      <div class="hint">Create a bot via <a href="https://t.me/botfather" target="_blank">@BotFather</a>. Leave blank to skip.</div>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+        <input type="checkbox" checked=${telegramEnabled}
+          onchange=${(e) => setTelegramEnabled(e.target.checked)}
+          style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+        Enable Telegram Notifications
+        ${telegramEnabled && loadedFromEnv ? html`<span style="font-size:0.7rem;color:var(--success);margin-left:4px">● loaded from .env</span>` : null}
+      </label>
     </div>
-    <div class="form-group">
-      <label>Telegram Chat ID</label>
-      <input type="text" value=${telegramChatId} oninput=${(e) => setTelegramChatId(e.target.value)}
-        placeholder="-1001234567890" />
-      <div class="hint">Use <code style="font-family:var(--font-mono)">bosun --get-chat-id</code> to find your chat ID after the bot is running.</div>
-    </div>
+    ${telegramEnabled && html`
+      <div class="form-group">
+        <label>Telegram Bot Token</label>
+        <input type="password" value=${telegramToken} oninput=${(e) => setTelegramToken(e.target.value)}
+          placeholder="123456:ABCdefGHIjklMNO..." />
+        <div class="hint">Create a bot via <a href="https://t.me/botfather" target="_blank">@BotFather</a>.</div>
+      </div>
+      <div class="form-group">
+        <label>Telegram Chat ID</label>
+        <input type="text" value=${telegramChatId} oninput=${(e) => setTelegramChatId(e.target.value)}
+          placeholder="-1001234567890" />
+        <div class="hint">Use <code style="font-family:var(--font-mono)">bosun --get-chat-id</code> to find your chat ID after the bot is running.</div>
+      </div>
+    `}
     <div class="nav-buttons">
       <button class="btn" onclick=${goPrev}>← Back</button>
       <button class="btn btn-primary" onclick=${goNext}>Continue →</button>
@@ -955,6 +1224,8 @@ function App() {
       <p class="step-desc">Review your configuration before applying. You can go back to change any section.</p>
       <table class="summary-table">
         <tbody>
+          <tr><th>Bosun Home</th><td>${bosunHome || status?.bosunHome || "~/bosun"}</td></tr>
+          <tr><th>Workspaces</th><td>${workspacesDir || status?.workspacesDir || "~/bosun/workspaces"}</td></tr>
           <tr><th>Project</th><td>${projectName}</td></tr>
           <tr><th>GitHub Repo</th><td>${repoSlug || "—"}</td></tr>
           <tr>
@@ -972,13 +1243,12 @@ function App() {
             <td>${filteredRepos.length > 0 ? filteredRepos.join(", ") : "—"}</td>
           </tr>
           <tr><th>Kanban Backend</th><td>${kanbanBackend}</td></tr>
-          <tr><th>Telegram</th><td>${telegramToken ? "Configured" : "Skipped"}</td></tr>
+          <tr><th>Telegram</th><td>${telegramEnabled && telegramToken ? "Configured" : "Skipped"}</td></tr>
           ${profile === "advanced" ? html`
             <tr><th>Max Parallel</th><td>${maxParallel}</td></tr>
             <tr><th>Max Retries</th><td>${maxRetries}</td></tr>
             <tr><th>Failover</th><td>${failoverStrategy}</td></tr>
           ` : null}
-          <tr><th>Config Dir</th><td>${status?.configDir || "~/bosun"}</td></tr>
         </tbody>
       </table>
       ${error && html`<div class="field-error" style="margin-top:12px">${error}</div>`}
@@ -992,17 +1262,22 @@ function App() {
   };
 
   // ── Step Router ────────────────────────────────────────────────────────────
+  // NOTE: Steps are called as plain functions (not <${Component} />) so Preact
+  // diffs them inline — prevents the component-identity churn that causes
+  // inputs to lose focus on every keystroke.
 
-  const steps = [
-    StepPrerequisites,
-    StepProfile,
-    StepExecutors,
-    StepRepos,
-    StepKanban,
-    StepNotifications,
-    StepReview,
-  ];
-  const CurrentStep = steps[step] || StepPrerequisites;
+  const renderStep = () => {
+    switch (step) {
+      case 0: return StepPrerequisites();
+      case 1: return StepProfile();
+      case 2: return StepExecutors();
+      case 3: return StepRepos();
+      case 4: return StepKanban();
+      case 5: return StepNotifications();
+      case 6: return StepReview();
+      default: return StepPrerequisites();
+    }
+  };
 
   return html`
     <div class="setup-container">
@@ -1015,9 +1290,15 @@ function App() {
         <div class="setup-title">Bosun Setup</div>
         <div class="setup-subtitle">v${status?.version || ""} — Configure your AI orchestrator</div>
       </div>
+      ${loadedFromEnv && html`
+        <div style="background:var(--success-bg);border:1px solid rgba(34,197,94,.3);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.8rem;color:var(--success);display:flex;align-items:center;gap:8px">
+          <span>✓</span>
+          <span>Existing config detected — fields pre-filled from your <code style="font-family:var(--font-mono);color:var(--success)">.env</code>. Review each step and press Continue, or adjust as needed.</span>
+        </div>
+      `}
       <${ProgressBar} />
       <div class="step-panel">
-        <${CurrentStep} />
+        ${renderStep()}
       </div>
     </div>
   `;
@@ -1026,4 +1307,5 @@ function App() {
 render(html`<${App} />`, document.getElementById("app"));
   </script>
 </body>
+<script defer src="https://cloud.umami.is/script.js" data-website-id="24c5d605-7f25-4be5-875e-25c8f3cb4059"></script>
 </html>
