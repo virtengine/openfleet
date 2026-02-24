@@ -263,9 +263,9 @@ describe("import map consistency", () => {
       // CDN URL: extract from preact@X.Y.Z
       const m = url.match(/preact@([\d.]+)/);
       if (m) return m[1];
-      // Vendor path: /vendor/preact.js — version is pinned in package.json;
-      // return the filename as a consistent identity token
-      if (url.startsWith("/vendor/")) return url;
+      // Vendor path: /vendor/preact.js or ./vendor/preact.js
+      // Version is pinned in package.json; return the filename as a stable identity token.
+      if (url.startsWith("/vendor/") || url.startsWith("./vendor/")) return url;
       return null;
     };
 
@@ -278,19 +278,22 @@ describe("import map consistency", () => {
     expect(demoPreactVer).toBeTruthy();
     expect(indexPreactVer).toBeTruthy();
 
-    // demo.html is a static GitHub Pages file — it MUST use CDN URLs so
-    // it works without a Node.js server.  index.html is served by the local
-    // bosun UI server which handles /vendor/ routes, so it MUST use them.
-    // Both pin the same preact version via package.json (their "contract").
-    const demoCdn = !demoPreactUrl.startsWith("/vendor/");
+    // index.html is served by the local bosun UI server which handles /vendor/
+    // routes — it MUST use them for zero-CDN operation.
     const indexVendor = indexPreactUrl.startsWith("/vendor/");
-
-    expect(demoCdn).toBe(true);   // demo.html must use CDN (GitHub Pages)
     expect(indexVendor).toBe(true); // index.html must use /vendor/ (live server)
 
-    // @preact/signals deps param should match the CDN preact version used in demo
+    // demo.html is a GitHub Pages static file. It may use either:
+    //   a) ./vendor/ relative paths — vendor files committed to git (preferred: offline-safe)
+    //   b) CDN URLs (esm.sh / jsDelivr) — fallback when vendor files aren't available
+    // It must NOT use bare unprefixed /vendor/ (that would require a live bosun server).
+    const demoUsesVendor = demoPreactUrl.startsWith("./vendor/");
+    const demoUsesCdn = !demoPreactUrl.startsWith("/vendor/") && !demoPreactUrl.startsWith("./vendor/");
+    expect(demoUsesVendor || demoUsesCdn).toBe(true); // must use ./vendor/ or CDN
+
+    // @preact/signals deps param should match the CDN preact version used in demo (only for CDN mode)
     const signalsUrl = demoMap.imports["@preact/signals"] || "";
-    if (!signalsUrl.startsWith("/vendor/")) {
+    if (!signalsUrl.startsWith("/vendor/") && !signalsUrl.startsWith("./vendor/")) {
       const demoSignalsDeps = extractVersion(signalsUrl);
       if (demoSignalsDeps) {
         expect(demoSignalsDeps).toBe(demoPreactVer);
