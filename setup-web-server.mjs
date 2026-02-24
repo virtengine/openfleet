@@ -18,6 +18,7 @@ import { resolve, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 import { homedir } from "node:os";
+import { scaffoldSkills } from "./bosun-skills.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -336,6 +337,83 @@ function handleExecutors() {
   return { ok: true, executors: EXECUTOR_TYPES, kanbanBackends: KANBAN_BACKENDS };
 }
 
+/**
+ * Attempt to fetch the live model list from an OpenAI-compatible endpoint.
+ * Falls back to the static MODELS list if the probe fails.
+ */
+async function handleModelsProbe(body) {
+  const { executor = "CODEX", apiKey = "", baseUrl = "" } = body || {};
+
+  // Copilot and Claude Code use OAuth — we can't probe their model lists from
+  // the server side. Return the static list with a note.
+  if (executor === "COPILOT" || executor === "CLAUDE_CODE") {
+    const key = executor === "COPILOT" ? "copilot" : "claude";
+    return {
+      ok: true,
+      models: MODELS[key] || [],
+      source: "static",
+      note: `${executor} uses OAuth authentication. Models listed are known-good values; your actual available models depend on your subscription.`,
+    };
+  }
+
+  // For OpenAI / compatible endpoints, try GET /v1/models
+  const resolvedBase = (baseUrl || "https://api.openai.com").replace(/\/+$/, "");
+  const endpoint = `${resolvedBase}/v1/models`;
+
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
+    const resp = await fetch(endpoint, { headers, signal: controller.signal });
+    clearTimeout(timeout);
+
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+    }
+
+    const data = await resp.json();
+    const ids = (data.data || [])
+      .map((m) => m.id)
+      .filter((id) => typeof id === "string" && id.length > 0)
+      .sort();
+
+    if (!ids.length) {
+      throw new Error("Response contained no models");
+    }
+
+    // Mark the first id as recommended; preserve static recommendations where
+    // they overlap with the live list.
+    const staticRecommended = new Set(
+      (MODELS.codex || []).filter((m) => m.recommended).map((m) => m.value),
+    );
+
+    const models = ids.map((id) => ({
+      value: id,
+      label: id,
+      recommended: staticRecommended.has(id),
+      live: true,
+    }));
+
+    // If none are recommended, recommend the first
+    if (!models.some((m) => m.recommended) && models.length > 0) {
+      models[0].recommended = true;
+    }
+
+    return { ok: true, models, source: "live", endpoint };
+  } catch (err) {
+    // Probe failed — return static list with a warning
+    return {
+      ok: true,
+      models: MODELS.codex || [],
+      source: "static",
+      warning: `Could not reach ${endpoint}: ${err.message}. Showing static model list.`,
+    };
+  }
+}
+
 function handleValidate(body) {
   const errors = {};
   const { field, value } = body || {};
@@ -415,6 +493,13 @@ function handleApply(body) {
     mkdirSync(resolve(workspacesDir, ".bosun", "hooks"),   { recursive: true });
     mkdirSync(resolve(workspacesDir, ".bosun", "prompts"), { recursive: true });
 
+    // Scaffold built-in skills knowledge base
+    try {
+      scaffoldSkills(bosunHome);
+    } catch (error_) {
+      console.warn("[setup] skills scaffold warning:", error_.message);
+    }
+
     // Self-documenting README
     const workspacesReadme = resolve(workspacesDir, "README.md");
     if (!existsSync(workspacesReadme)) {
@@ -470,6 +555,24 @@ function handleApply(body) {
     if (env.jiraProjectKey)      envMap.JIRA_PROJECT_KEY         = env.jiraProjectKey;
     if (env.jiraApiToken)        envMap.JIRA_API_TOKEN           = env.jiraApiToken;
     if (env.githubProjectNumber) envMap.GITHUB_PROJECT_NUMBER    = String(env.githubProjectNumber);
+
+    // Write executor-specific API keys for any executor configured with api-key auth mode.
+    // Executors using OAuth login (codex auth login / gh auth login / claude login)
+    // do NOT need env vars — omitting them lets the executor use its stored credentials.
+    if (Array.isArray(configJson.executors)) {
+      for (const ex of configJson.executors) {
+        if (ex?.authMode !== "api-key") continue;
+        const type = (ex.executor || "").toUpperCase();
+        if (type === "CODEX" || type === "OPENAI") {
+          if (ex.apiKey)   envMap.OPENAI_API_KEY  = ex.apiKey;
+          if (ex.baseUrl)  envMap.OPENAI_BASE_URL = ex.baseUrl;
+        } else if (type === "CLAUDE_CODE" || type === "ANTHROPIC") {
+          if (ex.apiKey)  envMap.ANTHROPIC_API_KEY = ex.apiKey;
+          if (ex.baseUrl) envMap.ANTHROPIC_BASE_URL = ex.baseUrl;
+        }
+        // COPILOT uses gh auth — no API key env vars needed.
+      }
+    }
 
     for (const [key, value] of Object.entries(envMap)) {
       if (value !== undefined && value !== null && value !== "") {
@@ -540,6 +643,13 @@ async function handleRequest(req, res) {
           return;
         case "models":
           jsonResponse(res, 200, handleModels());
+          return;
+        case "models/probe":
+          if (req.method !== "POST") {
+            jsonResponse(res, 405, { ok: false, error: "POST required" });
+            return;
+          }
+          jsonResponse(res, 200, await handleModelsProbe(await readBody(req)));
           return;
         case "executors":
           jsonResponse(res, 200, handleExecutors());
