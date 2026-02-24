@@ -1293,6 +1293,12 @@ ul.md-list li::before {
   border-radius: var(--radius-md);
 }
 
+.chat-send-btn svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
+
 /* ═══ Diff Viewer ═══ */
 .diff-viewer {
   background: var(--bg-card);

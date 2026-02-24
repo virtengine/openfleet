@@ -127,6 +127,11 @@ const AGENT_SELECTOR_STYLES = `
   font-size: 11px;
   line-height: 1;
 }
+.agent-mode-pill .mode-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
 
 /* ── Agent Picker Dropdown ── */
 .agent-picker-wrap {
@@ -160,6 +165,11 @@ const AGENT_SELECTOR_STYLES = `
 .agent-picker-btn .picker-icon {
   font-size: 13px;
   line-height: 1;
+}
+.agent-picker-btn .picker-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
 }
 .agent-picker-chevron {
   font-size: 9px;
@@ -640,8 +650,8 @@ export function AgentStatusBadge() {
       />
       <span class="agent-status-label">${cfg.label}</span>
       ${alive > 0 && html`<span class="agent-count-badge" title="${alive} agent(s) active" style="background:#2ea043;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:4px;">${alive}</span>`}
-      ${stale > 0 && html`<span class="agent-count-badge" title="${stale} agent(s) stale" style="background:#d29922;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;">${resolveIcon("alert")}${stale}</span>`}
-      ${errors > 0 && html`<span class="agent-count-badge" title="${errors} error(s)" style="background:#f85149;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;">${resolveIcon("✕")}${errors}</span>`}
+      ${stale > 0 && html`<span class="agent-count-badge" title="${stale} agent(s) stale" style="background:#d29922;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;"><span class="icon-inline">${resolveIcon("alert")}</span>${stale}</span>`}
+      ${errors > 0 && html`<span class="agent-count-badge" title="${errors} error(s)" style="background:#f85149;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px;"><span class="icon-inline">${resolveIcon("close")}</span>${errors}</span>`}
     </div>
   `;
 }

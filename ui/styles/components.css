@@ -351,6 +351,12 @@
   overflow: hidden;
 }
 
+.btn svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
+
 .btn-icon-compact {
   gap: 4px;
 }

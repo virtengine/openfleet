@@ -119,6 +119,7 @@
       font-size: 0.7rem; font-weight: 600; color: var(--text-dim);
       transition: all var(--transition);
     }
+    .progress-step .step-dot svg { width: 1em; height: 1em; display: inline-block; }
     .progress-step.active .step-dot {
       border-color: var(--accent);
       background: var(--accent);
@@ -366,7 +367,7 @@
 import { h, render } from "preact";
 import { useState, useEffect, useRef } from "preact/hooks";
 import htm from "htm";
-import { iconText, resolveIcon } from "./modules/icon-utils.js";
+import { resolveIcon } from "./modules/icon-utils.js";
 
 const html = htm.bind(h);
 
@@ -968,7 +969,7 @@ function App() {
         <p>Sensible defaults with primary & backup executors. Best for most users.</p>
       </div>
       <div class="profile-card ${profile === "advanced" ? "selected" : ""}" onclick=${() => setProfile("advanced")}>
-        <div class="icon">🔧</div>
+        <div class="icon">${resolveIcon("settings")}</div>
         <h4>Advanced</h4>
         <p>Full control over executors, failover, distribution weights, and all settings.</p>
       </div>
@@ -996,7 +997,7 @@ function App() {
     <p class="step-desc">Configure which AI coding agents bosun will use. You can add multiple executors with weighted distribution.</p>
 
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;font-size:0.8rem;line-height:1.6">
-      <strong>🔐 No API key required in most cases.</strong>
+      <strong><span class="icon">${resolveIcon("lock")}</span> No API key required in most cases.</strong>
       GitHub Copilot, Codex CLI, and Claude Code all support OAuth — just run
       <code style="font-family:var(--font-mono);color:var(--accent-light)">gh auth login</code>,
       <code style="font-family:var(--font-mono);color:var(--accent-light)">codex auth login</code>, or
@@ -1012,7 +1013,10 @@ function App() {
       return html`
       <div class="executor-card">
         <div class="executor-card-header">
-          <h4>${ex.role === "primary" ? "🟢" : "🔵"} Executor ${i + 1}: ${ex.name}</h4>
+          <h4>
+            <span class="icon" style="color:${ex.role === "primary" ? "var(--success)" : "#60a5fa"}">${resolveIcon("dot")}</span>
+            Executor ${i + 1}: ${ex.name}
+          </h4>
           ${executors.length > 1 && html`
             <button class="btn btn-sm btn-danger" onclick=${() => removeExecutor(i)}>Remove</button>
           `}
@@ -1085,7 +1089,10 @@ function App() {
               onChange=${(v) => updateExecutor(i, "model", v)}
             />
             ${probed.source === "live" && html`
-              <div class="hint" style="color:var(--success)">✓ Live model list from API (${modelOptions.length} models)</div>
+              <div class="hint" style="color:var(--success)">
+                <span class="icon">${resolveIcon("check")}</span>
+                Live model list from API (${modelOptions.length} models)
+              </div>
             `}
             ${probed.warning && html`
               <div class="hint" style="color:var(--warning, #f59e0b)">${probed.warning}</div>
@@ -1148,7 +1155,8 @@ function App() {
         Bosun will clone them into your workspace and set up hooks, prompts, and configs automatically.
       </p>
       <div style="background:var(--bg-input);border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.78rem;color:var(--text-secondary)">
-        📁 Repos will be cloned into:
+        <span class="icon">${resolveIcon("folder")}</span>
+        Repos will be cloned into:
         <code style="font-family:var(--font-mono);color:var(--accent-light);margin-left:4px">${cloneRoot}/&lt;repo-name&gt;</code>
       </div>
       ${repos.map((repo, i) => html`
@@ -1156,7 +1164,9 @@ function App() {
           <input type="text" value=${repo} oninput=${(e) => updateRepo(i, e.target.value)}
             placeholder="owner/repo  or  https://github.com/owner/repo" />
           ${repos.length > 1 && html`
-            <button class="btn btn-sm btn-danger" onclick=${() => removeRepo(i)}>✕</button>
+            <button class="btn btn-sm btn-danger" onclick=${() => removeRepo(i)}>
+              <span class="icon">${resolveIcon("close")}</span>
+            </button>
           `}
         </div>
       `)}
@@ -1234,12 +1244,13 @@ function App() {
     ${/* ── GitHub App installation callout ── */ ""}
     <div style="background:rgba(56,139,253,.07);border:1px solid rgba(56,139,253,.25);border-radius:var(--radius-sm);padding:14px 16px;margin-bottom:20px">
       <div style="display:flex;align-items:flex-start;gap:10px">
-        <span style="font-size:1.3em;line-height:1.2;flex-shrink:0">📦</span>
+        <span class="icon" style="font-size:1.3em;line-height:1.2;flex-shrink:0">${resolveIcon("box")}</span>
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:0.9rem;color:var(--accent-light);margin-bottom:4px">GitHub App — Bosun[VE]</div>
           ${oauthStatus === "received"
             ? html`<div style="color:#4ade80;font-size:0.82rem">
-                ✅ GitHub App authorized!
+                <span class="icon">${resolveIcon("check")}</span>
+                GitHub App authorized!
                 ${oauthInstallationId ? html` (Installation <code style="font-family:var(--font-mono)">${oauthInstallationId}</code>)` : null}
               </div>`
             : html`<div style="font-size:0.82rem;color:var(--text-secondary);line-height:1.5">
@@ -1249,7 +1260,8 @@ function App() {
                 <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                   <a href="https://github.com/apps/bosun-ve" target="_blank" rel="noopener"
                      style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:var(--accent);color:#fff;border-radius:5px;font-size:0.8rem;font-weight:600;text-decoration:none">
-                    🔗 Install from GitHub Marketplace
+                    <span class="icon">${resolveIcon("link")}</span>
+                    Install from GitHub Marketplace
                   </a>
                   <span style="font-size:0.75rem;color:var(--text-dim)">
                     <span class="spinner" style="width:10px;height:10px;border-width:2px;vertical-align:middle;margin-right:4px"></span>
@@ -1331,7 +1343,7 @@ function App() {
       <div class="nav-buttons">
         <button class="btn" onclick=${goPrev}>← Back</button>
         <button class="btn btn-success" onclick=${handleApply} disabled=${applying}>
-          ${applying ? html`<span class="spinner"></span> Applying...` : "Apply Configuration ✓"}
+          ${applying ? html`<span class="spinner"></span> Applying...` : html`<span class="icon">${resolveIcon("check")}</span> Apply Configuration`}
         </button>
       </div>
     `;
@@ -1368,13 +1380,13 @@ function App() {
       </div>
       ${loadedFromEnv && html`
         <div style="background:var(--success-bg);border:1px solid rgba(34,197,94,.3);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.8rem;color:var(--success);display:flex;align-items:center;gap:8px">
-          <span>✓</span>
+          <span class="icon">${resolveIcon("check")}</span>
           <span>Existing config detected — fields pre-filled from your <code style="font-family:var(--font-mono);color:var(--success)">.env</code>. Review each step and press Continue, or adjust as needed.</span>
         </div>
       `}
       ${oauthStatus === "received" && html`
         <div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.35);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;font-size:0.85rem;color:#4ade80;display:flex;align-items:flex-start;gap:10px">
-          <span style="font-size:1.2em;line-height:1">✅</span>
+          <span class="icon" style="font-size:1.2em;line-height:1">${resolveIcon("check")}</span>
           <div>
             <strong>GitHub App authorized!</strong>
             ${oauthInstallationId && html` Installation ID: <code style="font-family:var(--font-mono);font-size:0.8em;color:#86efac">${oauthInstallationId}</code>.`}
