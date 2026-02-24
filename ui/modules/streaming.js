@@ -303,7 +303,7 @@ export function installRequestFullHandler(trackers) {
 
 /**
  * Array of messages awaiting server confirmation.
- * @type {import("@preact/signals").Signal<Array<{tempId:string,sessionId:string,content:string,role:string,status:string,createdAt:number,error:string|null,attachments?:any[]}>>}
+ * @type {import("@preact/signals").Signal<Array<{tempId:string,sessionId:string,content:string,role:string,status:string,createdAt:number,error:string|null}>>}
  */
 export const pendingMessages = signal([]);
 
@@ -320,12 +320,11 @@ let _pendingId = 0;
  * @param {string} content
  * @returns {string} tempId
  */
-export function addPendingMessage(sessionId, content, attachments = []) {
+export function addPendingMessage(sessionId, content) {
   const tempId = `pending-${++_pendingId}-${Date.now()}`;
   const msg = {
     tempId, sessionId, content, role: "user",
     status: "sending", createdAt: Date.now(), error: null,
-    attachments,
   };
   pendingMessages.value = [...pendingMessages.value, msg];
 
@@ -376,7 +375,7 @@ export function retryPendingMessage(tempId) {
   const msg = pendingMessages.value.find((m) => m.tempId === tempId);
   if (!msg) return null;
   pendingMessages.value = pendingMessages.value.filter((m) => m.tempId !== tempId);
-  return addPendingMessage(msg.sessionId, msg.content, msg.attachments || []);
+  return addPendingMessage(msg.sessionId, msg.content);
 }
 
 /**
