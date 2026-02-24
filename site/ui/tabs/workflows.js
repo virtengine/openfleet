@@ -1348,6 +1348,9 @@ function WorkflowListView() {
                     <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
                       <span style="font-size: 14px;">${t.categoryIcon || group.icon}</span>
                       <span style="font-weight: 600; font-size: 14px; flex: 1;">${t.name}</span>
+                      ${t.recommended && html`
+                        <span class="wf-badge" style="background: #10b98125; color: #10b981; border-color: #10b98140; font-size: 10px; padding: 2px 8px; font-weight: 600; letter-spacing: 0.3px;">⭐ Recommended</span>
+                      `}
                     </div>
                     <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 10px; line-height: 1.4;">
                       ${t.description?.slice(0, 120)}${(t.description?.length || 0) > 120 ? "…" : ""}

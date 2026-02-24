@@ -264,6 +264,7 @@ const TASK_PLANNER_TEMPLATE = {
     "TASK_PLANNER_MODE / REPLENISH_ENABLED env-var system.",
   category: "planning",
   enabled: true,
+  recommended: true,
   trigger: "trigger.task_low",
   variables: {
     minTodoCount: 3,
@@ -427,6 +428,7 @@ const REVIEW_AGENT_TEMPLATE = {
     "Checks build, tests, and code quality, then posts review comments.",
   category: "github",
   enabled: true,
+  recommended: true,
   trigger: "trigger.pr_event",
   variables: {},
   nodes: [
@@ -570,6 +572,7 @@ const ERROR_RECOVERY_TEMPLATE = {
     "Analyzes logs, attempts auto-fix, and escalates if needed.",
   category: "reliability",
   enabled: true,
+  recommended: true,
   trigger: "trigger.event",
   variables: {
     maxRetries: 3,
@@ -701,6 +704,7 @@ const PR_MERGE_STRATEGY_TEMPLATE = {
     "close, request manual review, or wait. Based on Bosun's merge-strategy engine.",
   category: "github",
   enabled: true,
+  recommended: true,
   trigger: "trigger.pr_event",
   variables: {
     ciTimeoutMs: 300000,
@@ -933,6 +937,651 @@ const PR_TRIAGE_TEMPLATE = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  TEMPLATE 10: Anomaly Watchdog (death-loop / stall detection)
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+const ANOMALY_WATCHDOG_TEMPLATE = {
+  id: "template-anomaly-watchdog",
+  name: "Anomaly Watchdog",
+  description:
+    "Real-time anomaly detection for agent sessions — catches death loops, " +
+    "stalls, token overflows, rebase spirals, and thought spinning. " +
+    "Automatically intervenes or escalates depending on severity.",
+  category: "reliability",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.event",
+  variables: {
+    stallThresholdMs: 300000,
+    maxTokenUsage: 0.9,
+    maxConsecutiveErrors: 5,
+  },
+  nodes: [
+    node("trigger", "trigger.event", "Agent Anomaly Detected", {
+      eventType: "agent.anomaly",
+      filter: "$event?.severity === 'high' || $event?.severity === 'critical'",
+    }, { x: 400, y: 50 }),
+
+    node("classify", "condition.switch", "Classify Anomaly", {
+      value: "$data?.anomalyType || 'unknown'",
+      cases: {
+        "DEATH_LOOP": "death-loop",
+        "STALL": "stall",
+        "TOKEN_OVERFLOW": "token-overflow",
+        "REBASE_SPIRAL": "rebase-spiral",
+        "THOUGHT_SPIN": "thought-spin",
+      },
+    }, { x: 400, y: 200, outputs: ["death-loop", "stall", "token-overflow", "rebase-spiral", "thought-spin", "default"] }),
+
+    node("kill-and-restart", "action.restart_agent", "Kill & Restart Agent", {
+      sessionId: "{{sessionId}}",
+      reason: "Death loop detected — agent cycling through the same error pattern",
+      prompt: "The previous session entered a death loop. Start fresh with a different approach.\n\nOriginal task: {{taskTitle}}",
+    }, { x: 100, y: 380 }),
+
+    node("nudge-stall", "action.continue_session", "Nudge Stalled Agent", {
+      sessionId: "{{sessionId}}",
+      prompt: "You appear to be stalled. Please continue working on the current task. If you are stuck, describe the blocker and try a different approach.",
+      strategy: "continue",
+    }, { x: 300, y: 380 }),
+
+    node("trim-context", "action.continue_session", "Trim Context & Continue", {
+      sessionId: "{{sessionId}}",
+      prompt: "Your context window is nearly full. Summarize your progress so far in 2-3 sentences, then continue with the most critical remaining work.",
+      strategy: "refine",
+    }, { x: 500, y: 380 }),
+
+    node("fix-rebase", "action.run_command", "Fix Stuck Rebase", {
+      command: "git rebase --abort 2>/dev/null; git reset --hard HEAD; git checkout -B {{branch}} origin/{{branch}} 2>/dev/null || true",
+      cwd: "{{worktreePath}}",
+    }, { x: 700, y: 380 }),
+
+    node("break-spin", "action.continue_session", "Break Thought Spin", {
+      sessionId: "{{sessionId}}",
+      prompt: "Stop your current analysis. You are repeating the same reasoning. Take a concrete action NOW:\n1. Make a specific code change, OR\n2. Run a specific command, OR\n3. Report that you are blocked and need help.\nDo NOT continue analyzing.",
+      strategy: "continue",
+    }, { x: 900, y: 380 }),
+
+    node("log-intervention", "notify.log", "Log Intervention", {
+      message: "Anomaly watchdog intervened: {{anomalyType}} for session {{sessionId}}",
+      level: "warn",
+    }, { x: 400, y: 550 }),
+
+    node("alert-telegram", "notify.telegram", "Alert Human", {
+      message: "⚠️ Agent anomaly detected: **{{anomalyType}}**\nSession: {{sessionId}}\nTask: {{taskTitle}}\nIntervention: auto-applied",
+    }, { x: 400, y: 700 }),
+  ],
+  edges: [
+    edge("trigger", "classify"),
+    edge("classify", "kill-and-restart", { port: "death-loop" }),
+    edge("classify", "nudge-stall", { port: "stall" }),
+    edge("classify", "trim-context", { port: "token-overflow" }),
+    edge("classify", "fix-rebase", { port: "rebase-spiral" }),
+    edge("classify", "break-spin", { port: "thought-spin" }),
+    edge("kill-and-restart", "log-intervention"),
+    edge("nudge-stall", "log-intervention"),
+    edge("trim-context", "log-intervention"),
+    edge("fix-rebase", "log-intervention"),
+    edge("break-spin", "log-intervention"),
+    edge("log-intervention", "alert-telegram"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-02-25T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["anomaly", "watchdog", "death-loop", "stall", "reliability"],
+    replaces: {
+      module: "anomaly-detector.mjs",
+      functions: ["AnomalyDetector.processLine", "onAnomaly callback"],
+      calledFrom: ["monitor.mjs:startAgentAlertTailer"],
+      description: "Replaces hardcoded anomaly detection responses with a visual " +
+        "workflow. Each anomaly type (death loop, stall, token overflow, rebase " +
+        "spiral, thought spin) routes to a specific intervention node.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TEMPLATE 11: Workspace Hygiene (maintenance + reaper)
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+const WORKSPACE_HYGIENE_TEMPLATE = {
+  id: "template-workspace-hygiene",
+  name: "Workspace Hygiene",
+  description:
+    "Scheduled maintenance sweep: prune orphaned worktrees, kill stale " +
+    "processes, rotate logs, and clean up old agent evidence. Keeps " +
+    "your dev environment lean.",
+  category: "reliability",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.schedule",
+  variables: {
+    staleProcessMaxAge: "15m",
+    worktreeMaxAge: "48h",
+    logRetentionDays: 7,
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Daily Cleanup", {
+      intervalMs: 86400000,
+      cron: "0 3 * * *",
+    }, { x: 400, y: 50 }),
+
+    node("prune-worktrees", "action.run_command", "Prune Worktrees", {
+      command: "git worktree prune && git worktree list --porcelain | grep -c worktree || echo 0",
+    }, { x: 150, y: 200 }),
+
+    node("kill-stale", "action.run_command", "Kill Stale Processes", {
+      command: "bosun maintenance --kill-stale --max-age {{staleProcessMaxAge}}",
+      continueOnError: true,
+    }, { x: 400, y: 200 }),
+
+    node("rotate-logs", "action.run_command", "Rotate Agent Logs", {
+      command: "find .bosun/logs -name '*.log' -mtime +{{logRetentionDays}} -delete 2>/dev/null; echo 'Rotated'",
+      continueOnError: true,
+    }, { x: 650, y: 200 }),
+
+    node("clean-evidence", "action.run_command", "Clean Old Evidence", {
+      command: "find .bosun/evidence -type f -mtime +14 -delete 2>/dev/null; echo 'Cleaned'",
+      continueOnError: true,
+    }, { x: 150, y: 380 }),
+
+    node("check-disk", "action.run_command", "Check Disk Usage", {
+      command: "du -sh .bosun/ 2>/dev/null || dir /s .bosun 2>nul",
+    }, { x: 400, y: 380 }),
+
+    node("gc-git", "action.run_command", "Git GC", {
+      command: "git gc --auto --quiet",
+      continueOnError: true,
+    }, { x: 650, y: 380 }),
+
+    node("summary", "notify.log", "Log Summary", {
+      message: "Workspace hygiene sweep completed",
+      level: "info",
+    }, { x: 400, y: 540 }),
+  ],
+  edges: [
+    edge("trigger", "prune-worktrees"),
+    edge("trigger", "kill-stale"),
+    edge("trigger", "rotate-logs"),
+    edge("prune-worktrees", "clean-evidence"),
+    edge("kill-stale", "check-disk"),
+    edge("rotate-logs", "gc-git"),
+    edge("clean-evidence", "summary"),
+    edge("check-disk", "summary"),
+    edge("gc-git", "summary"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-02-25T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["maintenance", "cleanup", "worktree", "hygiene"],
+    replaces: {
+      module: "maintenance.mjs",
+      functions: ["runMaintenanceSweep", "killStaleOrchestrators", "reapStuckGitPushes", "cleanupWorktrees"],
+      calledFrom: ["monitor.mjs:startProcess"],
+      description: "Replaces the hardcoded maintenance sweep with a visual workflow. " +
+        "Worktree pruning, stale process cleanup, log rotation, and git gc " +
+        "become explicit, configurable workflow steps.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TEMPLATE 12: PR Conflict Resolver
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+const PR_CONFLICT_RESOLVER_TEMPLATE = {
+  id: "template-pr-conflict-resolver",
+  name: "PR Conflict Resolver",
+  description:
+    "Detects PRs with merge conflicts or failing CI and automatically " +
+    "resolves them — rebases, fixes conflicts, re-runs CI, and auto-merges " +
+    "when green.",
+  category: "github",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.schedule",
+  variables: {
+    checkIntervalMs: 1800000,
+    maxConcurrentFixes: 3,
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Check Every 30min", {
+      intervalMs: 1800000,
+      cron: "*/30 * * * *",
+    }, { x: 400, y: 50 }),
+
+    node("list-prs", "action.run_command", "List Open PRs", {
+      command: "gh pr list --json number,title,headRefName,mergeable,statusCheckRollup --limit 20",
+    }, { x: 400, y: 180 }),
+
+    node("has-conflicts", "condition.expression", "Any Conflicts?", {
+      expression: "($ctx.getNodeOutput('list-prs')?.output || '').includes('CONFLICTING') || ($ctx.getNodeOutput('list-prs')?.output || '').includes('BEHIND')",
+    }, { x: 400, y: 330 }),
+
+    node("resolve-conflicts", "action.run_agent", "Resolve Conflicts", {
+      prompt: `You are a merge conflict resolution agent. For each PR with conflicts:
+1. Check out the branch
+2. Rebase onto main (or the base branch)
+3. Resolve any conflicts — prefer the feature branch changes but ensure tests pass
+4. Force-push the rebased branch
+5. Verify CI passes
+
+Only fix conflicts, do NOT change any logic. Keep changes minimal.`,
+      sdk: "auto",
+      timeoutMs: 1800000,
+    }, { x: 200, y: 500 }),
+
+    node("verify-ci", "action.run_command", "Verify CI Green", {
+      command: "gh pr checks --json name,state,conclusion | head -20",
+    }, { x: 200, y: 660 }),
+
+    node("auto-merge", "condition.expression", "CI Passed?", {
+      expression: "$ctx.getNodeOutput('verify-ci')?.success === true",
+    }, { x: 200, y: 810 }),
+
+    node("do-merge", "action.run_command", "Auto-Merge", {
+      command: "gh pr merge --auto --squash",
+    }, { x: 100, y: 960 }),
+
+    node("notify-fixed", "notify.telegram", "Notify Fixed", {
+      message: "🔧 PR conflicts auto-resolved and merged",
+      silent: true,
+    }, { x: 100, y: 1100 }),
+
+    node("notify-failed", "notify.log", "Log CI Failed", {
+      message: "PR conflict resolved but CI still failing — needs manual review",
+      level: "warn",
+    }, { x: 400, y: 960 }),
+
+    node("skip", "notify.log", "No Conflicts", {
+      message: "All PRs are clean — no conflicts found",
+      level: "info",
+    }, { x: 600, y: 330 }),
+  ],
+  edges: [
+    edge("trigger", "list-prs"),
+    edge("list-prs", "has-conflicts"),
+    edge("has-conflicts", "resolve-conflicts", { condition: "$output?.result === true" }),
+    edge("has-conflicts", "skip", { condition: "$output?.result !== true" }),
+    edge("resolve-conflicts", "verify-ci"),
+    edge("verify-ci", "auto-merge"),
+    edge("auto-merge", "do-merge", { condition: "$output?.result === true" }),
+    edge("auto-merge", "notify-failed", { condition: "$output?.result !== true" }),
+    edge("do-merge", "notify-fixed"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-02-25T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "pr", "conflict", "rebase", "automation"],
+    replaces: {
+      module: "pr-cleanup-daemon.mjs",
+      functions: ["PRCleanupDaemon.run", "processCleanup", "resolveConflicts"],
+      calledFrom: ["monitor.mjs:startProcess"],
+      description: "Replaces the pr-cleanup-daemon class with a visual workflow. " +
+        "Conflict detection, rebase, CI verification, and auto-merge become " +
+        "explicit workflow steps with configurable intervals.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TEMPLATE 13: Health Check & Config Doctor
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+const HEALTH_CHECK_TEMPLATE = {
+  id: "template-health-check",
+  name: "Health Check",
+  description:
+    "Periodic system health check: validates config, verifies SDK " +
+    "availability, checks git state, and reports any issues found.",
+  category: "reliability",
+  enabled: true,
+  trigger: "trigger.schedule",
+  variables: {
+    intervalMs: 3600000,
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Hourly Health Check", {
+      intervalMs: 3600000,
+      cron: "0 * * * *",
+    }, { x: 400, y: 50 }),
+
+    node("check-config", "action.bosun_cli", "Check Config", {
+      subcommand: "doctor",
+      args: "--json",
+    }, { x: 150, y: 200 }),
+
+    node("check-git", "action.run_command", "Check Git State", {
+      command: "git status --porcelain && git worktree list --porcelain | grep -c worktree",
+      continueOnError: true,
+    }, { x: 400, y: 200 }),
+
+    node("check-agents", "action.run_command", "Check Agent Status", {
+      command: "bosun --daemon-status 2>/dev/null || echo 'daemon not running'",
+      continueOnError: true,
+    }, { x: 650, y: 200 }),
+
+    node("has-issues", "condition.expression", "Any Issues?", {
+      expression: "($ctx.getNodeOutput('check-config')?.output || '').includes('ERROR') || ($ctx.getNodeOutput('check-config')?.output || '').includes('CRITICAL')",
+    }, { x: 400, y: 380 }),
+
+    node("alert", "notify.telegram", "Alert Issues Found", {
+      message: "🏥 Health check found issues — run `bosun doctor` for details",
+    }, { x: 200, y: 540 }),
+
+    node("all-ok", "notify.log", "All Healthy", {
+      message: "Health check passed — all systems operational",
+      level: "info",
+    }, { x: 600, y: 540 }),
+  ],
+  edges: [
+    edge("trigger", "check-config"),
+    edge("trigger", "check-git"),
+    edge("trigger", "check-agents"),
+    edge("check-config", "has-issues"),
+    edge("check-git", "has-issues"),
+    edge("check-agents", "has-issues"),
+    edge("has-issues", "alert", { condition: "$output?.result === true" }),
+    edge("has-issues", "all-ok", { condition: "$output?.result !== true" }),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-02-25T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["health", "config", "doctor", "monitoring"],
+    replaces: {
+      module: "config-doctor.mjs",
+      functions: ["runConfigDoctor"],
+      calledFrom: ["cli.mjs:doctor command"],
+      description: "Replaces manual config-doctor runs with a scheduled health " +
+        "check workflow. Config validation, git state, and agent status " +
+        "checks run in parallel with automatic alerting.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TEMPLATE 14: Stale PR Reaper
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+const STALE_PR_REAPER_TEMPLATE = {
+  id: "template-stale-pr-reaper",
+  name: "Stale PR Reaper",
+  description:
+    "Close stale PRs that have been inactive for too long. Posts a " +
+    "warning comment before closing and cleans up associated branches.",
+  category: "github",
+  enabled: false,
+  trigger: "trigger.schedule",
+  variables: {
+    staleAfterDays: 14,
+    warningBeforeDays: 3,
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Daily Check", {
+      intervalMs: 86400000,
+      cron: "0 8 * * *",
+    }, { x: 400, y: 50 }),
+
+    node("find-stale", "action.run_command", "Find Stale PRs", {
+      command: "gh pr list --json number,title,updatedAt,headRefName --limit 50",
+    }, { x: 400, y: 200 }),
+
+    node("has-stale", "condition.expression", "Any Stale PRs?", {
+      expression: "($ctx.getNodeOutput('find-stale')?.output || '[]').length > 2",
+    }, { x: 400, y: 350 }),
+
+    node("warn-stale", "action.run_command", "Post Warning Comment", {
+      command: "echo 'Would warn stale PRs older than {{staleAfterDays}} days'",
+      continueOnError: true,
+    }, { x: 200, y: 500 }),
+
+    node("close-stale", "action.run_command", "Close Expired PRs", {
+      command: "echo 'Would close PRs inactive > {{staleAfterDays}} days'",
+      continueOnError: true,
+    }, { x: 200, y: 650 }),
+
+    node("cleanup-branches", "action.run_command", "Delete Stale Branches", {
+      command: "git fetch --prune origin",
+    }, { x: 200, y: 800 }),
+
+    node("summary", "notify.telegram", "Summary", {
+      message: "🧹 Stale PR cleanup complete",
+      silent: true,
+    }, { x: 200, y: 950 }),
+
+    node("skip", "notify.log", "No Stale PRs", {
+      message: "No stale PRs found",
+      level: "info",
+    }, { x: 600, y: 500 }),
+  ],
+  edges: [
+    edge("trigger", "find-stale"),
+    edge("find-stale", "has-stale"),
+    edge("has-stale", "warn-stale", { condition: "$output?.result === true" }),
+    edge("has-stale", "skip", { condition: "$output?.result !== true" }),
+    edge("warn-stale", "close-stale"),
+    edge("close-stale", "cleanup-branches"),
+    edge("cleanup-branches", "summary"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-02-25T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "pr", "stale", "cleanup"],
+    replaces: {
+      module: "workspace-reaper.mjs",
+      functions: ["runReaperSweep", "cleanOrphanedWorktrees"],
+      calledFrom: ["monitor.mjs:runMaintenanceSweep"],
+      description: "Replaces scattered stale PR and branch cleanup logic with " +
+        "a structured workflow. Warning, closing, and branch deletion are " +
+        "explicit, auditable steps.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TEMPLATE 15: Agent Session Monitor
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+const AGENT_SESSION_MONITOR_TEMPLATE = {
+  id: "template-agent-session-monitor",
+  name: "Agent Session Monitor",
+  description:
+    "Monitors active agent sessions for timeouts, excessive token usage, " +
+    "or inactivity. Auto-continues stalled agents or escalates hung ones.",
+  category: "agents",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.schedule",
+  variables: {
+    checkIntervalMs: 300000,
+    maxIdleMs: 600000,
+    maxTokenPercent: 85,
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Check Every 5min", {
+      intervalMs: 300000,
+      cron: "*/5 * * * *",
+    }, { x: 400, y: 50 }),
+
+    node("list-sessions", "action.run_command", "List Active Sessions", {
+      command: "bosun agent list --json --active",
+      continueOnError: true,
+    }, { x: 400, y: 200 }),
+
+    node("has-active", "condition.expression", "Any Active?", {
+      expression: "($ctx.getNodeOutput('list-sessions')?.output || '[]') !== '[]' && ($ctx.getNodeOutput('list-sessions')?.output || '').length > 5",
+    }, { x: 400, y: 340 }),
+
+    node("check-health", "action.run_command", "Check Session Health", {
+      command: "bosun agent health --json",
+      continueOnError: true,
+    }, { x: 200, y: 490 }),
+
+    node("has-issues", "condition.expression", "Any Unhealthy?", {
+      expression: "($ctx.getNodeOutput('check-health')?.output || '').includes('stalled') || ($ctx.getNodeOutput('check-health')?.output || '').includes('timeout')",
+    }, { x: 200, y: 640 }),
+
+    node("auto-continue", "action.continue_session", "Auto-Continue Stalled", {
+      prompt: "You appear to have stalled. Please continue working on the current task.",
+      strategy: "continue",
+      timeoutMs: 300000,
+    }, { x: 100, y: 800 }),
+
+    node("alert-hung", "notify.telegram", "Alert Hung Sessions", {
+      message: "🔴 Agent session appears hung — auto-continue attempted. Check status.",
+    }, { x: 100, y: 950 }),
+
+    node("all-healthy", "notify.log", "Sessions Healthy", {
+      message: "All active agent sessions are healthy",
+      level: "info",
+    }, { x: 450, y: 640 }),
+
+    node("no-sessions", "notify.log", "No Active Sessions", {
+      message: "No active agent sessions to monitor",
+      level: "info",
+    }, { x: 600, y: 490 }),
+  ],
+  edges: [
+    edge("trigger", "list-sessions"),
+    edge("list-sessions", "has-active"),
+    edge("has-active", "check-health", { condition: "$output?.result === true" }),
+    edge("has-active", "no-sessions", { condition: "$output?.result !== true" }),
+    edge("check-health", "has-issues"),
+    edge("has-issues", "auto-continue", { condition: "$output?.result === true" }),
+    edge("has-issues", "all-healthy", { condition: "$output?.result !== true" }),
+    edge("auto-continue", "alert-hung"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-02-25T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["agent", "monitor", "session", "health"],
+    replaces: {
+      module: "session-tracker.mjs",
+      functions: ["SessionTracker.checkHealth", "pollAgentAlerts"],
+      calledFrom: ["monitor.mjs:startAgentAlertTailer"],
+      description: "Replaces hardcoded agent session monitoring with a visual " +
+        "workflow. Health checks, stall detection, and auto-continuation " +
+        "are configurable workflow steps.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TEMPLATE 16: Nightly Report
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+const NIGHTLY_REPORT_TEMPLATE = {
+  id: "template-nightly-report",
+  name: "Nightly Report",
+  description:
+    "Generates a daily summary of agent activity: tasks completed, " +
+    "PRs merged, errors encountered, and token usage. Sends to Telegram.",
+  category: "planning",
+  enabled: false,
+  trigger: "trigger.schedule",
+  variables: {
+    reportHour: 23,
+    reportTimezone: "UTC",
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Nightly at 11pm", {
+      intervalMs: 86400000,
+      cron: "0 23 * * *",
+    }, { x: 400, y: 50 }),
+
+    node("get-task-stats", "action.run_command", "Get Task Stats", {
+      command: "bosun task stats --json",
+      continueOnError: true,
+    }, { x: 150, y: 200 }),
+
+    node("get-pr-stats", "action.run_command", "Get PR Stats", {
+      command: "gh pr list --state all --json number,state,mergedAt --limit 50",
+      continueOnError: true,
+    }, { x: 400, y: 200 }),
+
+    node("get-agent-stats", "action.run_command", "Get Agent Stats", {
+      command: "bosun agent stats --json 2>/dev/null || echo '{}'",
+      continueOnError: true,
+    }, { x: 650, y: 200 }),
+
+    node("generate-report", "action.run_agent", "Generate Report", {
+      prompt: `Generate a concise daily activity report from the following data.
+
+## Task Stats
+{{taskStats}}
+
+## PR Activity
+{{prStats}}
+
+## Agent Activity
+{{agentStats}}
+
+Format as a Telegram-friendly message with emoji headers. Include:
+- Tasks completed today vs yesterday
+- PRs merged / opened / closed
+- Agent success rate
+- Notable errors or anomalies
+- Recommendations for tomorrow`,
+      timeoutMs: 300000,
+    }, { x: 400, y: 380 }),
+
+    node("send-report", "notify.telegram", "Send Report", {
+      message: "📊 **Daily Bosun Report**\n\n{{reportOutput}}",
+    }, { x: 400, y: 540 }),
+  ],
+  edges: [
+    edge("trigger", "get-task-stats"),
+    edge("trigger", "get-pr-stats"),
+    edge("trigger", "get-agent-stats"),
+    edge("get-task-stats", "generate-report"),
+    edge("get-pr-stats", "generate-report"),
+    edge("get-agent-stats", "generate-report"),
+    edge("generate-report", "send-report"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-02-25T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["report", "daily", "telegram", "analytics"],
+    replaces: {
+      module: "telegram-sentinel.mjs",
+      functions: ["dailyDigest", "sendStatusReport"],
+      calledFrom: ["monitor.mjs:startSentinelBridge"],
+      description: "Replaces ad-hoc Telegram status reporting with a scheduled " +
+        "nightly report workflow. Stats gathering runs in parallel, then " +
+        "an agent generates a formatted summary.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  EXPORTS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -947,6 +1596,7 @@ export const TEMPLATE_CATEGORIES = Object.freeze({
 });
 
 export const WORKFLOW_TEMPLATES = Object.freeze([
+  // ── Original 9 ──
   PR_MERGE_STRATEGY_TEMPLATE,
   PR_TRIAGE_TEMPLATE,
   REVIEW_AGENT_TEMPLATE,
@@ -956,6 +1606,14 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   BUILD_DEPLOY_TEMPLATE,
   ERROR_RECOVERY_TEMPLATE,
   CUSTOM_AGENT_TEMPLATE,
+  // ── New templates ──
+  ANOMALY_WATCHDOG_TEMPLATE,
+  WORKSPACE_HYGIENE_TEMPLATE,
+  PR_CONFLICT_RESOLVER_TEMPLATE,
+  HEALTH_CHECK_TEMPLATE,
+  STALE_PR_REAPER_TEMPLATE,
+  AGENT_SESSION_MONITOR_TEMPLATE,
+  NIGHTLY_REPORT_TEMPLATE,
 ]);
 
 /**
@@ -986,6 +1644,8 @@ export function listTemplates() {
       nodeCount: t.nodes?.length || 0,
       edgeCount: t.edges?.length || 0,
       replaces: t.metadata?.replaces || null,
+      recommended: t.recommended === true,
+      enabled: t.enabled !== false,
     };
   });
 }

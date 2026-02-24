@@ -226,68 +226,93 @@
   }
 
   /* ── MiniApp fullscreen toggle ───────────────────────────────────────── */
-  const miniappExpandBtn = document.querySelector('.miniapp-demo-window__expand');
-  const miniappPhone = document.querySelector('.miniapp-demo-window__phone');
   const miniappOverlay = document.querySelector('.miniapp-demo-window__overlay');
-  if (miniappExpandBtn && miniappPhone) {
+  const fullscreenControllers = [];
+
+  const updateFullscreenOverlay = () => {
+    const anyFullscreen = fullscreenControllers.some(({ target }) =>
+      target.classList.contains('is-fullscreen'),
+    ) || document.fullscreenElement;
+    if (miniappOverlay) miniappOverlay.classList.toggle('is-visible', Boolean(anyFullscreen));
+    document.body.classList.toggle('is-miniapp-fullscreen', Boolean(anyFullscreen));
+  };
+
+  const setupFullscreenToggle = (button, target, label) => {
+    if (!button || !target) return;
     let lastFullscreenState = null;
+
     const setFullscreen = (enabled) => {
-      miniappPhone.classList.toggle('is-fullscreen', enabled);
-      miniappExpandBtn.classList.toggle('is-fullscreen', enabled);
-      miniappExpandBtn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-      miniappExpandBtn.setAttribute('aria-label', enabled ? 'Exit fullscreen' : 'Enter fullscreen');
-      if (miniappOverlay) miniappOverlay.classList.toggle('is-visible', enabled);
-      document.body.classList.toggle('is-miniapp-fullscreen', enabled);
+      target.classList.toggle('is-fullscreen', enabled);
+      button.classList.toggle('is-fullscreen', enabled);
+      button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+      button.setAttribute('aria-label', enabled ? 'Exit fullscreen' : 'Enter fullscreen');
+      updateFullscreenOverlay();
       if (enabled !== lastFullscreenState) {
-        track('miniapp_fullscreen', { enabled: enabled ? 'true' : 'false' });
+        track('miniapp_fullscreen', { enabled: enabled ? 'true' : 'false', target: label });
         lastFullscreenState = enabled;
       }
     };
 
-    const syncFullscreenState = () => {
-      const isFs = document.fullscreenElement === miniappPhone;
-      setFullscreen(isFs);
-    };
-
-    miniappExpandBtn.addEventListener('click', () => {
-      const wantsFullscreen = !miniappPhone.classList.contains('is-fullscreen');
-      if (wantsFullscreen && document.fullscreenEnabled && miniappPhone.requestFullscreen) {
-        miniappPhone.requestFullscreen().catch(() => {
-          setFullscreen(true);
-        });
+    const toggle = () => {
+      const wantsFullscreen = !target.classList.contains('is-fullscreen');
+      if (wantsFullscreen && document.fullscreenEnabled && target.requestFullscreen) {
+        target.requestFullscreen().catch(() => setFullscreen(true));
         return;
       }
       if (!wantsFullscreen && document.fullscreenElement && document.exitFullscreen) {
-        document.exitFullscreen().catch(() => {
-          setFullscreen(false);
-        });
+        document.exitFullscreen().catch(() => setFullscreen(false));
         return;
       }
       setFullscreen(wantsFullscreen);
+    };
+
+    button.addEventListener('click', toggle);
+    document.addEventListener('fullscreenchange', () => {
+      const isFs = document.fullscreenElement === target;
+      if (isFs || target.classList.contains('is-fullscreen')) {
+        setFullscreen(isFs);
+      }
     });
 
-    if (miniappOverlay) {
-      miniappOverlay.addEventListener('click', () => {
-        if (document.fullscreenElement && document.exitFullscreen) {
-          document.exitFullscreen().catch(() => setFullscreen(false));
-        } else {
+    fullscreenControllers.push({ target, setFullscreen });
+  };
+
+  setupFullscreenToggle(
+    document.querySelector('.miniapp-demo-window__expand'),
+    document.querySelector('.miniapp-demo-window__phone'),
+    'mobile',
+  );
+  setupFullscreenToggle(
+    document.querySelector('.desktop-demo-window__expand'),
+    document.querySelector('.desktop-demo-window'),
+    'desktop',
+  );
+
+  if (miniappOverlay) {
+    miniappOverlay.addEventListener('click', () => {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+      fullscreenControllers.forEach(({ target, setFullscreen }) => {
+        if (target.classList.contains('is-fullscreen')) {
+          setFullscreen(false);
+        }
+      });
+    });
+  }
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+      fullscreenControllers.forEach(({ target, setFullscreen }) => {
+        if (target.classList.contains('is-fullscreen')) {
           setFullscreen(false);
         }
       });
     }
-
-    document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') {
-        if (document.fullscreenElement && document.exitFullscreen) {
-          document.exitFullscreen().catch(() => setFullscreen(false));
-        } else {
-          setFullscreen(false);
-        }
-      }
-    });
-
-    document.addEventListener('fullscreenchange', syncFullscreenState);
-  }
+  });
 
   /* ── Demo Tab Switching ──────────────────────────────────────────────── */
   var demoTabs = document.querySelectorAll('.demo-tab');

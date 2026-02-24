@@ -141,7 +141,7 @@
       <div class="hero__title-block">
         <a href="https://www.npmjs.com/package/bosun" class="hero__badge">
           <span class="pulse-dot"></span>
-          <span data-version>v0.0</span> — now available
+          <span class="hero__badge-text">v.x.x · Live</span>
         </a>
         <h1 class="hero__headline">
           Your AI Fleet,<br>
@@ -153,19 +153,6 @@
 
         <!-- LEFT: intro -->
         <div class="hero__intro">
-          <p class="hero__subtitle">
-            Bosun is the open-source supervisor for AI coding agents.
-            Route tasks, manage multi-executor pools, automate PR lifecycles,
-            and ship production code — without human intervention.
-          </p>
-
-          <ul class="hero__bullets">
-            <li>Multi-executor: Copilot, Codex, Claude</li>
-            <li>GitHub, Jira &amp; Vibe-Kanban integrated</li>
-            <li>Telegram + WhatsApp push alerts</li>
-            <li>Auto-fix lint, CI failures &amp; retry loops</li>
-          </ul>
-
           <div class="hero__install">
             <div class="install-cmd" title="Click to copy">
               <span class="install-cmd__prompt">$</span>
@@ -178,13 +165,7 @@
               </span>
               <span class="install-cmd__tooltip">Copied!</span>
             </div>
-            <a href="docs/" class="btn btn--ghost btn--sm">Documentation</a>
-            <a href="https://github.com/virtengine/bosun#readme" class="btn btn--ghost btn--sm" target="_blank" rel="noopener">GitHub</a>
           </div>
-
-          <a href="https://www.npmjs.com/package/bosun" class="hero__version-tag">
-            <span data-version>v0.0</span> · Bosun by VirtEngine · Apache 2.0
-          </a>
         </div>
 
         <!-- RIGHT: demo panels -->
@@ -215,20 +196,14 @@
         <div class="demo-panel" id="demo-panel-desktop">
           <div class="desktop-demo-window reveal">
             <div class="desktop-demo-window__chrome">
-              <div class="terminal-window__dots">
-                <div class="terminal-window__dot terminal-window__dot--red"></div>
-                <div class="terminal-window__dot terminal-window__dot--yellow"></div>
-                <div class="terminal-window__dot terminal-window__dot--green"></div>
+              <div class="desktop-demo-window__title">
+                <span class="desktop-demo-window__app">Bosun Desktop</span>
+                <span class="desktop-demo-window__meta">Electron</span>
               </div>
-              <div class="desktop-demo-window__url">
-                <div class="desktop-demo-window__nav-btns">
-                  <span>‹</span><span>›</span>
-                </div>
-                <div class="desktop-demo-window__url-bar">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                  bosun.virtengine.com
-                </div>
-              </div>
+              <button class="desktop-demo-window__expand" type="button" aria-label="Enter fullscreen" aria-pressed="false">
+                <span class="desktop-demo-window__expand-icon desktop-demo-window__expand-icon--enter">+</span>
+                <span class="desktop-demo-window__expand-icon desktop-demo-window__expand-icon--exit">x</span>
+              </button>
             </div>
             <iframe
               id="desktop-miniapp-iframe"
@@ -907,9 +882,7 @@
             <circle cx="50" cy="50" r="7" fill="url(#helm-g-ft)"/><circle cx="50" cy="50" r="2.5" fill="#09090b"/>
             <g fill="url(#helm-g-ft)"><circle cx="92" cy="50" r="5.5"/><circle cx="79.70" cy="79.70" r="5.5"/><circle cx="50" cy="92" r="5.5"/><circle cx="20.30" cy="79.70" r="5.5"/><circle cx="8" cy="50" r="5.5"/><circle cx="20.30" cy="20.30" r="5.5"/><circle cx="50" cy="8" r="5.5"/><circle cx="79.70" cy="20.30" r="5.5"/></g>
           </svg>
-          <a href="https://github.com/virtengine/bosun#readme" target="_blank" rel="noopener">
-            <span data-version>v0.0</span> · Bosun by <span>VirtEngine</span> · Apache 2.0
-          </a>
+          <span class="footer__brand">Bosun</span>
         </div>
         <ul class="footer__links">
           <li><a href="docs/">Docs</a></li>

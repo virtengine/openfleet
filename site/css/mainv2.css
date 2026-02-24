@@ -1874,6 +1874,9 @@ body.is-miniapp-fullscreen {
 
 .security-card__icon { width: 40px; height: 40px; border-radius: 8px; background: var(--bg-surface); border: 1px solid var(--border-default); display: grid; place-items: center; font-size: 1.2rem; flex-shrink: 0; color: var(--text-primary); }
 
+.security-card__icon svg,
+.security-flow__step-icon svg { width: 22px; height: 22px; stroke: currentColor; }
+
 .security-card__title {
   font-size: 1.15rem;
   font-weight: 800;
@@ -1916,7 +1919,7 @@ body.is-miniapp-fullscreen {
   transform: translateY(0);
 }
 
-.security-flow__step-icon { width: 48px; height: 48px; border-radius: 8px; background: var(--bg-surface); border: 1px solid var(--border-default); display: grid; place-items: center; font-size: 1.25rem; transition: all 0.2s ease; color: var(--text-primary); }
+.security-flow__step-icon { width: 48px; height: 48px; border-radius: 8px; background: var(--bg-surface); border: 1px solid var(--border-default); display: grid; place-items: center; font-size: 1.25rem; transition: all 0.2s ease; color: var(--step-color, var(--text-primary)); }
 
 .security-flow__step:hover .security-flow__step-icon { transform: scale(1.05); border-color: var(--border-glow); }
 
@@ -2038,8 +2041,6 @@ body.is-miniapp-fullscreen {
 }
 
 @media (max-width: 480px) { .btn { width: 100%; } 
-
-
 
 
 

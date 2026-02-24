@@ -78,6 +78,8 @@ import {
   disconnectWebSocket,
   wsConnected,
   loadingCount,
+  loadingInteractiveCount,
+  noteUserInteraction,
 } from "./modules/api.js";
 import {
   connected,
@@ -1198,11 +1200,21 @@ function App() {
   const [showScrollTop, setShowScrollTop] = useState(false);
   const scrollVisibilityRef = useRef(false);
 
+  useEffect(() => {
+    const handler = () => noteUserInteraction();
+    window.addEventListener("pointerdown", handler, { passive: true });
+    window.addEventListener("keydown", handler);
+    return () => {
+      window.removeEventListener("pointerdown", handler);
+      window.removeEventListener("keydown", handler);
+    };
+  }, []);
+
   // ── Top loading bar state ──
   const [loadingPct, setLoadingPct] = useState(0);
   const [loadingVisible, setLoadingVisible] = useState(false);
   const loadingTimerRef = useRef(null);
-  const isLoading = loadingCount.value > 0;
+  const isLoading = loadingInteractiveCount.value > 0;
   useEffect(() => {
     if (isLoading) {
       if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);

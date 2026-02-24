@@ -19,6 +19,15 @@ export const wsReconnectIn = signal(null);
 export const wsReconnectCount = signal(0);
 /** Reactive signal: count of in-flight apiFetch calls (drives top loading bar) */
 export const loadingCount = signal(0);
+/** Reactive signal: count of in-flight user-initiated calls (top bar only on interaction) */
+export const loadingInteractiveCount = signal(0);
+
+const INTERACTIVE_GRACE_MS = 2000;
+let lastUserInteractionAt = 0;
+
+export function noteUserInteraction() {
+  lastUserInteractionAt = Date.now();
+}
 
 /* ─── REST API Client ─── */
 
@@ -27,7 +36,7 @@ export const loadingCount = signal(0);
  * X-Telegram-InitData header and handles JSON parsing / errors.
  *
  * @param {string} path  - API path, e.g. "/api/status"
- * @param {RequestInit & {_silent?: boolean}} options
+ * @param {RequestInit & {_silent?: boolean, _interactive?: boolean}} options
  * @returns {Promise<any>} parsed JSON body
  */
 export function apiFetch(path, options = {}) {
@@ -41,6 +50,8 @@ export function apiFetch(path, options = {}) {
 
   const silent = options._silent;
   delete options._silent;
+  const interactive = options._interactive;
+  delete options._interactive;
 
   // Deduplicate concurrent identical GETs
   const isGet = !options.method || options.method === "GET";
@@ -56,6 +67,10 @@ export function apiFetch(path, options = {}) {
 
   const promise = (async () => {
     loadingCount.value += 1;
+    const interactiveHit =
+      Boolean(interactive) ||
+      (!silent && Date.now() - lastUserInteractionAt < INTERACTIVE_GRACE_MS);
+    if (interactiveHit) loadingInteractiveCount.value += 1;
     let res;
     let fetchAttempt = 0;
     try {
@@ -89,6 +104,9 @@ export function apiFetch(path, options = {}) {
       throw err;
     } finally {
       loadingCount.value = Math.max(0, loadingCount.value - 1);
+      if (interactiveHit) {
+        loadingInteractiveCount.value = Math.max(0, loadingInteractiveCount.value - 1);
+      }
       if (isGet && !options.body) _inflight.delete(path);
     }
   })();
@@ -108,6 +126,7 @@ export async function sendCommandToChat(cmd) {
   return apiFetch("/api/command", {
     method: "POST",
     body: JSON.stringify({ command: cmd }),
+    _interactive: true,
   });
 }
 
