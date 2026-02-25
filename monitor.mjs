@@ -324,6 +324,7 @@ let workflowAutomationInitPromise = null;
 let workflowAutomationInitDone = false;
 let workflowAutomationReadyLogged = false;
 let workflowAutomationUnavailableLogged = false;
+let workflowConflictResolverPausedLogged = false;
 
 /**
  * Cache of module names that have an enabled workflow replacement.
@@ -1157,6 +1158,18 @@ function isSelfRestartWatcherEnabled() {
   const explicit = process.env.SELF_RESTART_WATCH_ENABLED;
   if (explicit !== undefined && String(explicit).trim() !== "") {
     return !isFalsyFlag(explicit);
+  }
+  if (
+    String(executorMode || "")
+      .trim()
+      .toLowerCase() === "internal" ||
+    String(executorMode || "")
+      .trim()
+      .toLowerCase() === "hybrid"
+  ) {
+    // Internal/hybrid mode continuously mutates source as tasks run.
+    // Auto self-restart from file churn causes unnecessary restart storms.
+    return false;
   }
   // Dev mode (source checkout / monorepo) → watch for code changes.
   // npm mode (installed via npm) → do NOT watch; source only changes via
@@ -5107,6 +5120,9 @@ loadRecoveryCache();
 async function checkMergedPRsAndUpdateTasks() {
   try {
     console.log("[monitor] Checking for merged PRs to update task status...");
+    const workflowOwnsLegacyConflictResolution =
+      isWorkflowReplacingModule("pr-cleanup-daemon.mjs") ||
+      isWorkflowReplacingModule("monitor.mjs");
 
     const statuses = ["inreview", "inprogress"];
     const tasksByStatus = await Promise.all(
@@ -5672,6 +5688,15 @@ async function checkMergedPRsAndUpdateTasks() {
       // reservation. We do NOT trigger smartPRFlow("conflict") here to avoid
       // the thundering herd where both systems race to fix the same PR.
       if (conflictCandidates.length > 0) {
+        if (workflowOwnsLegacyConflictResolution) {
+          if (!workflowConflictResolverPausedLogged) {
+            workflowConflictResolverPausedLogged = true;
+            console.log(
+              "[monitor] skipping legacy PR conflict resolver — handled by workflow replacement",
+            );
+          }
+          continue;
+        }
         const lastConflictCheck = conflictResolutionCooldown.get(task.id);
         const onCooldown =
           lastConflictCheck &&
@@ -13957,8 +13982,16 @@ startEnvWatchers();
 if (selfRestartWatcherEnabled) {
   startSelfWatcher();
 } else {
+  const normalizedExecutorMode = String(executorMode || "")
+    .trim()
+    .toLowerCase();
+  const disabledReason = !isDevMode()
+    ? "npm/prod mode — updates via auto-update loop"
+    : normalizedExecutorMode === "internal" || normalizedExecutorMode === "hybrid"
+      ? `executor mode "${normalizedExecutorMode}" (continuous task-driven code changes)`
+      : "explicitly";
   console.log(
-    `[monitor] self-restart file watcher disabled (${isDevMode() ? "explicitly" : "npm/prod mode — updates via auto-update loop"})`,
+    `[monitor] self-restart file watcher disabled (${disabledReason})`,
   );
 }
 startInteractiveShell();
@@ -14132,6 +14165,13 @@ function restartGitHubReconciler() {
 }
 
 if (!isMonitorTestRuntime) {
+if (workflowAutomationEnabled) {
+  await ensureWorkflowAutomationEngine().catch(() => {});
+} else {
+  console.log(
+    "[workflows] automation disabled (set WORKFLOW_AUTOMATION_ENABLED=true to enable event-driven workflow triggers)",
+  );
+}
 // ── Task Management Subsystem Initialization ────────────────────────────────
 try {
   mkdirSync(monitorStateCacheDir, { recursive: true });
@@ -14716,13 +14756,6 @@ void restoreLiveDigest()
 startAgentWorkAnalyzer();
 startAgentAlertTailer();
 startMonitorMonitorSupervisor();
-if (workflowAutomationEnabled) {
-  ensureWorkflowAutomationEngine().catch(() => {});
-} else {
-  console.log(
-    "[workflows] automation disabled (set WORKFLOW_AUTOMATION_ENABLED=true to enable event-driven workflow triggers)",
-  );
-}
 startTaskPlannerStatusLoop();
 restartGitHubReconciler();
 

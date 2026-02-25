@@ -16,6 +16,16 @@ describe("monitor lock command-line classification", () => {
     expect(classifyMonitorCommandLine(cmd)).toBe("monitor");
   });
 
+  it("classifies dot-slash monitor launch as monitor", () => {
+    const cmd = "node ./monitor.mjs --self-restart";
+    expect(classifyMonitorCommandLine(cmd)).toBe("monitor");
+  });
+
+  it("classifies eval-import monitor launch as monitor", () => {
+    const cmd = "node -e \"import('./monitor.mjs')\"";
+    expect(classifyMonitorCommandLine(cmd)).toBe("monitor");
+  });
+
   it("classifies cli monitorMonitor launch as monitor", () => {
     const cmd = "node C:/repos/bosun/cli.mjs monitorMonitor";
     expect(classifyMonitorCommandLine(cmd)).toBe("monitor");
@@ -54,3 +64,5 @@ describe("unknown lock owner fallback", () => {
     expect(shouldAssumeMonitorForUnknownOwner(pidFileData, nowMs)).toBe(false);
   });
 });
+
+

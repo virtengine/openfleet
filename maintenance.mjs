@@ -469,6 +469,11 @@ export function cleanupStaleBranches(repoRoot, opts = {}) {
 
 const PID_FILE_NAME = "bosun.pid";
 const MONITOR_MARKER = "bosun/monitor.mjs";
+const MONITOR_SCRIPT_SEGMENT_RE =
+  /(?:^|[\/\s"'=])monitor\.mjs(?=$|[?#/\s"'`),;:])/;
+const JS_MONITOR_LAUNCHER_RE = /\b(node(?:\.exe)?|bun|tsx|deno)\b/;
+const MONITOR_EVAL_IMPORT_RE =
+  /(import|require)\s*\(\s*["'`][^"'`]*monitor\.mjs[^"'`]*["'`]\s*\)/;
 const PID_START_TIME_TOLERANCE_MS = 90_000;
 const UNKNOWN_OWNER_MONITOR_GRACE_MS = 3 * 60 * 1000;
 const MONITOR_PROCESS_STARTED_AT = new Date().toISOString();
@@ -588,10 +593,13 @@ export function classifyMonitorCommandLine(commandLine) {
     return "monitor";
   }
 
-  // Dev-mode launches often use a relative script path: `node monitor.mjs`.
+  const hasMonitorScriptSegment = MONITOR_SCRIPT_SEGMENT_RE.test(normalized);
+  // Dev-mode launches may use relative or eval-import forms:
+  // `node monitor.mjs`, `node ./monitor.mjs`, `node -e "import('./monitor.mjs')"`.
   if (
-    /\bnode(?:\.exe)?\b/.test(normalized) &&
-    /(?:^|[\s"'=])monitor\.mjs(?:$|[\s"'])/.test(normalized)
+    hasMonitorScriptSegment &&
+    (JS_MONITOR_LAUNCHER_RE.test(normalized) ||
+      MONITOR_EVAL_IMPORT_RE.test(normalized))
   ) {
     return "monitor";
   }
@@ -606,7 +614,6 @@ export function classifyMonitorCommandLine(commandLine) {
 
   return "other";
 }
-
 function isLikelySameProcessFromPidFile(processInfo, pidFileData) {
   if (!processInfo || !pidFileData?.started_at) return null;
   const lockStartMs = Date.parse(pidFileData.started_at);
@@ -1065,5 +1072,4 @@ export async function runMaintenanceSweep(opts = {}) {
     branchesDeleted,
   };
 }
-
 
