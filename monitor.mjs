@@ -631,6 +631,12 @@ function writeAnomalySignal(anomaly) {
 
 // ── Configure logging before anything else ──────────────────────────────────
 configureFromArgs(process.argv.slice(2));
+const isMonitorTestRuntime =
+  ["1", "true", "yes", "on"].includes(
+    String(process.env.VITEST || "")
+      .trim()
+      .toLowerCase(),
+  ) || String(process.env.NODE_ENV || "").trim().toLowerCase() === "test";
 
 // ── Load unified configuration ──────────────────────────────────────────────
 let config;
@@ -654,11 +660,13 @@ workflowAutomationEnabled = parseEnvBoolean(
 
 // Install console interceptor with log file (after config provides logDir)
 {
-  const _logDir = config.logDir || resolve(__dirname, "logs");
-  const _logFile = resolve(_logDir, "monitor.log");
-  const _errorLogFile = resolve(_logDir, "monitor-error.log");
-  installConsoleInterceptor({ logFile: _logFile });
-  setErrorLogFile(_errorLogFile);
+  if (!isMonitorTestRuntime) {
+    const _logDir = config.logDir || resolve(__dirname, "logs");
+    const _logFile = resolve(_logDir, "monitor.log");
+    const _errorLogFile = resolve(_logDir, "monitor-error.log");
+    installConsoleInterceptor({ logFile: _logFile });
+    setErrorLogFile(_errorLogFile);
+  }
 }
 
 // Guard against core.bare=true corruption on the main repo at startup
@@ -5960,12 +5968,14 @@ function detectFailedChecks(checks = []) {
   return checks.some((check) => {
     const state = String(check?.state || "").toUpperCase();
     const conclusion = String(check?.conclusion || "").toUpperCase();
+    const signal = conclusion || state;
     return (
-      state === "FAILURE" ||
-      conclusion === "FAILURE" ||
-      conclusion === "CANCELLED" ||
-      conclusion === "TIMED_OUT" ||
-      conclusion === "ACTION_REQUIRED"
+      signal === "FAILURE" ||
+      signal === "FAILED" ||
+      signal === "ERROR" ||
+      signal === "CANCELLED" ||
+      signal === "TIMED_OUT" ||
+      signal === "ACTION_REQUIRED"
     );
   });
 }
@@ -5974,7 +5984,7 @@ async function readRequiredChecks(prNumber) {
   const slug = getRepoSlugForEpic();
   if (!slug || !ghAvailable() || !prNumber) return [];
   try {
-    const checksCmd = `gh pr checks ${prNumber} --repo ${slug} --json name,state,conclusion --required`;
+    const checksCmd = `gh pr checks ${prNumber} --repo ${slug} --json name,state --required`;
     const checksResult = execSync(checksCmd, {
       cwd: repoRoot,
       encoding: "utf8",
@@ -6529,7 +6539,7 @@ async function checkAndMergeDependabotPRs() {
 
       try {
         // Check CI status — all checks must pass
-        const checksCmd = `gh pr checks ${pr.number} --repo ${repoSlug} --json name,state,conclusion --required`;
+        const checksCmd = `gh pr checks ${pr.number} --repo ${repoSlug} --json name,state --required`;
         let checksResult;
         try {
           checksResult = execSync(checksCmd, {
@@ -6563,33 +6573,45 @@ async function checkAndMergeDependabotPRs() {
         // All required checks must be in a passing state
         const allPassed =
           checks.length > 0 &&
-          checks.every(
-            (c) =>
-              c.conclusion === "SUCCESS" ||
-              c.conclusion === "success" ||
-              c.conclusion === "NEUTRAL" ||
-              c.conclusion === "neutral" ||
-              c.conclusion === "SKIPPED" ||
-              c.conclusion === "skipped",
-          );
+          checks.every((c) => {
+            const state = String(c?.state || "").toUpperCase();
+            const conclusion = String(c?.conclusion || "").toUpperCase();
+            const signal = conclusion || state;
+            return (
+              signal === "SUCCESS" ||
+              signal === "PASSED" ||
+              signal === "PASS" ||
+              signal === "NEUTRAL" ||
+              signal === "SKIPPED" ||
+              signal === "COMPLETED"
+            );
+          });
 
         if (!allPassed) {
-          const pending = checks.filter(
-            (c) =>
-              !c.conclusion ||
-              c.state === "PENDING" ||
-              c.state === "IN_PROGRESS" ||
-              c.state === "QUEUED",
-          );
-          const failed = checks.filter(
-            (c) =>
-              c.conclusion === "FAILURE" ||
-              c.conclusion === "failure" ||
-              c.conclusion === "ERROR" ||
-              c.conclusion === "error" ||
-              c.conclusion === "TIMED_OUT" ||
-              c.conclusion === "timed_out",
-          );
+          const pending = checks.filter((c) => {
+            const state = String(c?.state || "").toUpperCase();
+            const conclusion = String(c?.conclusion || "").toUpperCase();
+            return (
+              !conclusion ||
+              state === "PENDING" ||
+              state === "IN_PROGRESS" ||
+              state === "QUEUED" ||
+              state === "WAITING"
+            );
+          });
+          const failed = checks.filter((c) => {
+            const state = String(c?.state || "").toUpperCase();
+            const conclusion = String(c?.conclusion || "").toUpperCase();
+            const signal = conclusion || state;
+            return (
+              signal === "FAILURE" ||
+              signal === "FAILED" ||
+              signal === "ERROR" ||
+              signal === "TIMED_OUT" ||
+              signal === "CANCELLED" ||
+              signal === "ACTION_REQUIRED"
+            );
+          });
           if (failed.length > 0) {
             console.log(
               `[dependabot] PR #${pr.number}: ${failed.length} check(s) failed — skipping`,
@@ -11540,6 +11562,41 @@ function getMonitorMonitorStatusSnapshot() {
   };
 }
 
+function sanitizeMonitorTailForPrompt(tail, backend) {
+  const text = String(tail || "");
+  if (!text) return text;
+  if (String(backend || "").toLowerCase() === "vk") return text;
+
+  const fixtureTokens = [
+    "/api/tasks/999",
+    "/api/tasks/111",
+    "/api/tasks/123",
+    "/api/tasks/task-5",
+    "safeRecover: could not re-fetch status for \"Failing Task\"",
+    "Invalid JSON - Invalid JSON",
+    "plain text response",
+    "<h1>404 Not Found</h1>",
+    "<h1>502 Bad Gateway</h1>",
+    "nginx/1.18.0",
+  ];
+
+  const lines = text.split("\n");
+  const filtered = lines.filter((line) => {
+    const current = String(line || "");
+    if (/A{40,}/.test(current)) return false;
+    return !fixtureTokens.some((token) => current.includes(token));
+  });
+
+  if (filtered.length === lines.length) return text;
+
+  return [
+    filtered.join("\n"),
+    "[monitor] (sanitized synthetic VK fixture noise for non-VK backend)",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
   const digestSnapshot = getDigestSnapshot();
   const digestEntries =
@@ -11584,10 +11641,15 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
       }
     }
   }
-  const monitorTail = await readLogTail(resolve(logDir, "monitor-error.log"), {
+  const activeKanbanBackend = getActiveKanbanBackend();
+  const rawMonitorTail = await readLogTail(resolve(logDir, "monitor-error.log"), {
     maxLines: 120,
     maxChars: 12000,
   });
+  const monitorTail = sanitizeMonitorTailForPrompt(
+    rawMonitorTail,
+    activeKanbanBackend,
+  );
 
   const anomalyReport = getAnomalyStatusReport();
   const monitorPrompt = agentPrompts?.monitorMonitor || "";
@@ -13082,28 +13144,29 @@ process.on("exit", (code) => {
   }
 });
 
-// ── Singleton guard: prevent ghost monitors ─────────────────────────────────
-if (!process.env.VITEST && !acquireMonitorLock(config.cacheDir)) {
-  // During source-change self-restart, the previous monitor can still be
-  // shutting down and holding the lock briefly. Ask cli.mjs to retry instead
-  // of treating this as a hard crash.
-  if (isSelfRestart) {
-    // Write directly to stderr so the message reaches the terminal even when
-    // the console interceptor is redirecting to a log file.
+if (!isMonitorTestRuntime) {
+  // ── Singleton guard: prevent ghost monitors ─────────────────────────────────
+  if (!acquireMonitorLock(config.cacheDir)) {
+    // During source-change self-restart, the previous monitor can still be
+    // shutting down and holding the lock briefly. Ask cli.mjs to retry instead
+    // of treating this as a hard crash.
+    if (isSelfRestart) {
+      // Write directly to stderr so the message reaches the terminal even when
+      // the console interceptor is redirecting to a log file.
+      process.stderr.write(
+        "[monitor] self-restart lock handoff still busy — retrying startup\n",
+      );
+      process.exit(SELF_RESTART_EXIT_CODE);
+    }
+    // Write directly to stderr — console.error is intercepted to a log file at
+    // this point, so the user would see a silent exit-code-1 crash with zero
+    // explanation without this line.
     process.stderr.write(
-      "[monitor] self-restart lock handoff still busy — retrying startup\n",
+      "[monitor] another bosun instance holds the lock — exiting (exit code 1).\n" +
+        "[monitor] If no other bosun is running, delete .cache/bosun.pid and retry.\n",
     );
-    process.exit(SELF_RESTART_EXIT_CODE);
+    process.exit(1);
   }
-  // Write directly to stderr — console.error is intercepted to a log file at
-  // this point, so the user would see a silent exit-code-1 crash with zero
-  // explanation without this line.
-  process.stderr.write(
-    "[monitor] another bosun instance holds the lock — exiting (exit code 1).\n" +
-      "[monitor] If no other bosun is running, delete .cache/bosun.pid and retry.\n",
-  );
-  process.exit(1);
-}
 
 // ── Codex CLI config.toml: ensure VK MCP + stream timeouts ──────────────────
 try {
@@ -13373,6 +13436,11 @@ try {
 } catch (err) {
   console.warn(`[monitor] stale cleanup failed: ${err.message}`);
 }
+} else {
+  console.log(
+    "[monitor] test runtime detected (VITEST/NODE_ENV=test) — startup maintenance loops disabled",
+  );
+}
 
 // ── Internal Executor / VK Orchestrator startup ──────────────────────────────
 /** @type {import("./task-executor.mjs").TaskExecutor|null} */
@@ -13437,6 +13505,7 @@ function restartGitHubReconciler() {
   });
 }
 
+if (!isMonitorTestRuntime) {
 // ── Task Management Subsystem Initialization ────────────────────────────────
 try {
   mkdirSync(monitorStateCacheDir, { recursive: true });
@@ -14181,6 +14250,11 @@ if (config.prCleanupEnabled !== false) {
   });
   prCleanupDaemon.start();
 }
+} else {
+  console.log(
+    "[monitor] test runtime detected (VITEST/NODE_ENV=test) — runtime services disabled",
+  );
+}
 
 // ── Named exports for testing ───────────────────────────────────────────────
 export {
@@ -14221,6 +14295,5 @@ export {
   getContainerStatus,
   isContainerEnabled,
 };
-
 
 
