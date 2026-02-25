@@ -2682,8 +2682,10 @@ select.input {
   right: 0;
   height: 4px;
   background: var(--qa-color, var(--accent));
-  opacity: 0.8;
-  transition: height 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+  opacity: 0;
+  transform: scaleX(0.65);
+  transform-origin: center;
+  transition: opacity 0.2s ease, transform 0.2s ease, height 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .dashboard-action-btn:hover {
@@ -2693,7 +2695,11 @@ select.input {
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
-.dashboard-action-btn:hover::before {
+.dashboard-action-btn:hover::before,
+.dashboard-action-btn:focus-visible::before,
+.dashboard-action-btn:active::before {
+  opacity: 0.8;
+  transform: scaleX(1);
   height: 6px;
 }
 
