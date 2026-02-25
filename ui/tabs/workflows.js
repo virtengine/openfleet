@@ -1575,6 +1575,63 @@ function RunHistoryView() {
     };
   }, [hasRunningRuns, selectedRunIsRunning, selectedRunId.value]);
 
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [workflowFilter, setWorkflowFilter] = useState("all");
+  const [triggerFilter, setTriggerFilter] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const normalizedSearch = String(searchQuery || "").trim().toLowerCase();
+
+  const workflowOptions = useMemo(() => {
+    const map = new Map();
+    for (const run of runs) {
+      const id = String(run?.workflowId || "").trim();
+      if (!id || map.has(id)) continue;
+      const name =
+        run?.workflowName ||
+        workflowNameMap.get(id) ||
+        id;
+      map.set(id, name);
+    }
+    return Array.from(map.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }, [runs, workflows.value]);
+
+  const filteredRuns = useMemo(() => {
+    return runs.filter((run) => {
+      const runStatus = String(run?.status || "unknown");
+      const runWorkflowId = String(run?.workflowId || "");
+      const runWorkflowName =
+        String(run?.workflowName || workflowNameMap.get(runWorkflowId) || runWorkflowId)
+          .toLowerCase();
+      const runTriggerSource = String(run?.triggerSource || "manual").toLowerCase();
+      const runTriggerEvent = String(run?.triggerEvent || "").toLowerCase();
+      const runId = String(run?.runId || "").toLowerCase();
+
+      if (statusFilter !== "all" && runStatus !== statusFilter) return false;
+      if (workflowFilter !== "all" && runWorkflowId !== workflowFilter) return false;
+      if (triggerFilter !== "all" && runTriggerSource !== triggerFilter) return false;
+      if (
+        normalizedSearch &&
+        !runWorkflowName.includes(normalizedSearch) &&
+        !runTriggerEvent.includes(normalizedSearch) &&
+        !runId.includes(normalizedSearch)
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }, [runs, workflowNameMap, statusFilter, workflowFilter, triggerFilter, normalizedSearch]);
+
+  const runCounts = useMemo(() => {
+    const counts = { all: runs.length, running: 0, failed: 0, completed: 0 };
+    for (const run of runs) {
+      const status = String(run?.status || "");
+      if (status in counts) counts[status] += 1;
+    }
+    return counts;
+  }, [runs]);
+
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
     const nodeStatuses = selectedRun?.detail?.nodeStatuses || {};
@@ -1681,12 +1738,75 @@ function RunHistoryView() {
         ${hasRunningRuns && html`<span class="wf-badge" style="background: #3b82f630; color: #60a5fa;">Live</span>`}
       </div>
 
+      <div class="wf-runs-toolbar">
+        <input
+          class="wf-input"
+          placeholder="Search workflow, run ID, trigger event..."
+          value=${searchQuery}
+          onInput=${(e) => setSearchQuery(e.target.value)}
+        />
+        <select class="wf-input" value=${workflowFilter} onChange=${(e) => setWorkflowFilter(e.target.value)}>
+          <option value="all">All Workflows</option>
+          ${workflowOptions.map((opt) => html`<option value=${opt.id}>${opt.name}</option>`)}
+        </select>
+        <select class="wf-input" value=${statusFilter} onChange=${(e) => setStatusFilter(e.target.value)}>
+          <option value="all">All Statuses</option>
+          <option value="running">Running</option>
+          <option value="failed">Failed</option>
+          <option value="completed">Completed</option>
+        </select>
+        <select class="wf-input" value=${triggerFilter} onChange=${(e) => setTriggerFilter(e.target.value)}>
+          <option value="all">All Trigger Types</option>
+          <option value="manual">Manual</option>
+          <option value="monitor-event">Monitor Event</option>
+          <option value="event">Event</option>
+        </select>
+      </div>
+
+      <div class="wf-runs-filters">
+        <button
+          class=${`wf-chip ${statusFilter === "all" ? "active" : ""}`}
+          onClick=${() => setStatusFilter("all")}
+          type="button"
+        >
+          All ${runCounts.all}
+        </button>
+        <button
+          class=${`wf-chip ${statusFilter === "running" ? "active" : ""}`}
+          onClick=${() => setStatusFilter("running")}
+          type="button"
+        >
+          Running ${runCounts.running}
+        </button>
+        <button
+          class=${`wf-chip ${statusFilter === "failed" ? "active" : ""}`}
+          onClick=${() => setStatusFilter("failed")}
+          type="button"
+        >
+          Failed ${runCounts.failed}
+        </button>
+        <button
+          class=${`wf-chip ${statusFilter === "completed" ? "active" : ""}`}
+          onClick=${() => setStatusFilter("completed")}
+          type="button"
+        >
+          Completed ${runCounts.completed}
+        </button>
+        <span class="wf-runs-count">${filteredRuns.length} shown</span>
+      </div>
+
       ${runs.length === 0 && html`
         <div style="text-align: center; padding: 40px; opacity: 0.5;">No workflow runs yet</div>
       `}
 
+      ${runs.length > 0 && filteredRuns.length === 0 && html`
+        <div style="text-align: center; padding: 28px; opacity: 0.6;">
+          No runs match the current filters.
+        </div>
+      `}
+
       <div style="display: flex; flex-direction: column; gap: 8px;">
-        ${runs.map((run) => {
+        ${filteredRuns.map((run) => {
           const styles = getRunStatusBadgeStyles(run.status);
           const runName = run.workflowName || workflowNameMap.get(run.workflowId) || run.workflowId;
           const lastActivityAt = getRunActivityAt(run);
@@ -1696,11 +1816,14 @@ function RunHistoryView() {
           const borderColor = run.isStuck
             ? "#f59e0b80"
             : (run.status === "running" ? "#3b82f680" : "var(--color-border, #2a3040)");
+          const triggerLabel = run.triggerSource === "monitor-event"
+            ? `event:${run.triggerEvent || "unknown"}`
+            : (run.triggerSource || "manual");
           return html`
             <button
               key=${run.runId}
               type="button"
-              class="wf-card"
+              class="wf-card wf-run-row"
               onClick=${() => loadRunDetail(run.runId)}
               style="text-align: left; width: 100%; background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px; padding: 12px; border: 1px solid ${borderColor}; display: flex; align-items: center; gap: 12px; cursor: pointer;"
             >
@@ -1714,10 +1837,11 @@ function RunHistoryView() {
                 <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
                   ${formatDate(run.startedAt)} (${formatRelative(run.startedAt)}) · ${formatDuration(liveDuration)} · ${run.nodeCount || 0} nodes${run.errorCount ? ` · ${run.errorCount} errors` : ""}
                 </div>
-                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 2px;">
-                  ${run.status === "running"
+                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 2px; display:flex; gap:10px; flex-wrap:wrap;">
+                  <span>${run.status === "running"
                     ? `Active nodes: ${run.activeNodeCount || 0} · Last activity ${lastActivityAt ? formatRelative(lastActivityAt) : "—"}`
-                    : `Finished ${run.endedAt ? formatRelative(run.endedAt) : "—"}`}
+                    : `Finished ${run.endedAt ? formatRelative(run.endedAt) : "—"}`}</span>
+                  <span>Trigger: ${triggerLabel}</span>
                 </div>
                 <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 2px;">
                   Run: <code>${run.runId}</code>
@@ -1811,6 +1935,46 @@ export function WorkflowsTab() {
       }
       .wf-input:focus { border-color: #3b82f6; }
       .wf-textarea { font-family: monospace; font-size: 12px; resize: vertical; min-height: 60px; }
+      .wf-runs-toolbar {
+        display: grid;
+        grid-template-columns: minmax(220px, 2fr) repeat(3, minmax(140px, 1fr));
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .wf-runs-filters {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+      }
+      .wf-chip {
+        background: #111827;
+        color: #cbd5e1;
+        border: 1px solid #334155;
+        border-radius: 999px;
+        font-size: 11px;
+        padding: 4px 10px;
+        cursor: pointer;
+      }
+      .wf-chip.active {
+        color: #dbeafe;
+        border-color: #2563eb;
+        background: #1d4ed833;
+      }
+      .wf-runs-count {
+        margin-left: auto;
+        font-size: 11px;
+        color: var(--color-text-secondary, #8b95a5);
+      }
+      @media (max-width: 900px) {
+        .wf-runs-toolbar {
+          grid-template-columns: 1fr;
+        }
+        .wf-runs-count {
+          margin-left: 0;
+        }
+      }
       .wf-card { transition: border-color 0.15s, transform 0.1s; }
       .wf-card:hover { border-color: #3b82f680 !important; }
       .wf-template-card:hover { border-color: #f59e0b80 !important; }

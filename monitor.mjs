@@ -62,6 +62,7 @@ import {
 } from "./primary-agent.mjs";
 import {
   execPooledPrompt,
+  launchEphemeralThread,
   launchOrResumeThread,
   getAvailableSdks,
   forceNewThread,
@@ -158,7 +159,11 @@ import {
 import { WorkspaceMonitor } from "./workspace-monitor.mjs";
 import { VkLogStream } from "./vk-log-stream.mjs";
 import { VKErrorResolver } from "./vk-error-resolver.mjs";
-import { createAnomalyDetector } from "./anomaly-detector.mjs";
+import {
+  createAnomalyDetector,
+  setWorkflowEngine as bindWorkflowEngineToAnomalyDetector,
+  wrapAnomalyCallback,
+} from "./anomaly-detector.mjs";
 import { resolvePwshRuntime } from "./pwsh-runtime.mjs";
 import {
   getWorktreeManager,
@@ -290,6 +295,215 @@ function formatMonitorError(err) {
   return String(err);
 }
 
+function parseEnvBoolean(value, defaultValue = false) {
+  if (value == null || value === "") return defaultValue;
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return defaultValue;
+}
+
+let workflowAutomationEnabled = false;
+let workflowEventDedupWindowMs = 15_000;
+const workflowEventDedup = new Map();
+const workflowTaskStatusSnapshot = new Map();
+let workflowAutomationEngine = null;
+let workflowAutomationInitPromise = null;
+let workflowAutomationReadyLogged = false;
+let workflowAutomationUnavailableLogged = false;
+
+function allowWorkflowEvent(dedupKey, windowMs = workflowEventDedupWindowMs) {
+  if (!dedupKey) return true;
+  const now = Date.now();
+  const last = workflowEventDedup.get(dedupKey) || 0;
+  if (now - last < windowMs) return false;
+  workflowEventDedup.set(dedupKey, now);
+  if (workflowEventDedup.size > 1000) {
+    const cutoff = now - windowMs * 2;
+    for (const [key, ts] of workflowEventDedup) {
+      if (ts < cutoff) workflowEventDedup.delete(key);
+    }
+  }
+  return true;
+}
+
+function buildWorkflowEventPayload(eventType, eventData = {}) {
+  const payload =
+    eventData && typeof eventData === "object" ? { ...eventData } : {};
+  payload.eventType = eventType;
+  if (String(eventType || "").startsWith("pr.")) {
+    const prEvent = String(eventType).slice(3).trim();
+    if (prEvent) payload.prEvent = prEvent;
+  }
+  payload._triggerSource = "monitor-event";
+  payload._triggerEventType = eventType;
+  payload._triggeredAt = new Date().toISOString();
+  return payload;
+}
+
+async function ensureWorkflowAutomationEngine() {
+  if (!workflowAutomationEnabled || process.env.VITEST) return null;
+  if (workflowAutomationEngine) return workflowAutomationEngine;
+  if (workflowAutomationInitPromise) return workflowAutomationInitPromise;
+
+  workflowAutomationInitPromise = (async () => {
+    try {
+      const [{ getWorkflowEngine }, { createTask }, wfNodes] = await Promise.all([
+        import("./workflow-engine.mjs"),
+        import("./kanban-adapter.mjs"),
+        import("./workflow-nodes.mjs"),
+      ]);
+      if (!wfNodes) {
+        throw new Error("workflow nodes unavailable");
+      }
+
+      const kanbanService = {
+        createTask: async (taskData = {}) => {
+          const backend = getActiveKanbanBackend();
+          const projectId = String(
+            taskData?.projectId || getConfiguredKanbanProjectId(backend) || "",
+          ).trim();
+          if (!projectId) {
+            throw new Error(
+              `No project ID configured for backend=${backend} (required for workflow action.create_task)`,
+            );
+          }
+          const payload = { ...(taskData || {}) };
+          delete payload.projectId;
+          return createTask(projectId, payload);
+        },
+        updateTaskStatus: async (taskId, status) =>
+          updateKanbanTaskStatus(String(taskId || ""), String(status || "")),
+        listTasks: async (projectId, filters = {}) =>
+          listKanbanTasks(String(projectId || ""), filters || {}),
+      };
+
+      const agentPoolService = {
+        launchEphemeralThread,
+        launchOrResumeThread,
+        async continueSession(sessionId, prompt, opts = {}) {
+          const timeout = Number(opts.timeout) || 60 * 60 * 1000;
+          const cwd = opts.cwd || process.cwd();
+          return launchOrResumeThread(prompt, cwd, timeout, {
+            taskKey: sessionId,
+            sdk: opts.sdk,
+            model: opts.model,
+          });
+        },
+      };
+
+      const telegramService =
+        telegramToken && telegramChatId
+          ? {
+              async sendMessage(chatId, text) {
+                const target = chatId || telegramChatId;
+                if (!target) return;
+                await sendTelegramMessage(String(text || ""), {
+                  chatId: String(target),
+                });
+              },
+            }
+          : null;
+
+      const services = {
+        telegram: telegramService,
+        kanban: kanbanService,
+        agentPool: agentPoolService,
+        prompts: agentPrompts || null,
+        anomalyDetector: anomalyDetector || null,
+      };
+
+      const engine = getWorkflowEngine({ services });
+      workflowAutomationEngine = engine;
+      bindWorkflowEngineToAnomalyDetector(engine);
+
+      if (!workflowAutomationReadyLogged) {
+        workflowAutomationReadyLogged = true;
+        const total = engine.list?.().length || 0;
+        const enabled = (engine.list?.() || []).filter((wf) => wf?.enabled !== false)
+          .length;
+        console.log(
+          `[workflows] automation enabled — loaded ${enabled}/${total} workflow(s)`,
+        );
+      }
+      return engine;
+    } catch (err) {
+      if (!workflowAutomationUnavailableLogged) {
+        workflowAutomationUnavailableLogged = true;
+        console.warn(
+          `[workflows] automation unavailable: ${err?.message || err}`,
+        );
+      }
+      return null;
+    } finally {
+      workflowAutomationInitPromise = null;
+    }
+  })();
+
+  return workflowAutomationInitPromise;
+}
+
+async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
+  if (!workflowAutomationEnabled) return false;
+  const dedupKey = String(opts?.dedupKey || "").trim();
+  if (dedupKey && !allowWorkflowEvent(dedupKey)) {
+    return false;
+  }
+
+  const engine = await ensureWorkflowAutomationEngine();
+  if (!engine?.evaluateTriggers || !engine?.execute) return false;
+
+  const payload = buildWorkflowEventPayload(eventType, eventData);
+  let triggered = [];
+  try {
+    triggered = await engine.evaluateTriggers(eventType, payload);
+  } catch (err) {
+    console.warn(
+      `[workflows] trigger evaluation failed for ${eventType}: ${err?.message || err}`,
+    );
+    return false;
+  }
+
+  if (!Array.isArray(triggered) || triggered.length === 0) {
+    return false;
+  }
+
+  for (const match of triggered) {
+    const workflowId = String(match?.workflowId || "").trim();
+    if (!workflowId) continue;
+    const runPayload = {
+      ...payload,
+      _triggeredBy: match?.triggeredBy || null,
+    };
+    void engine
+      .execute(workflowId, runPayload)
+      .then((ctx) => {
+        const runId = ctx?.id || "unknown";
+        const runStatus =
+          Array.isArray(ctx?.errors) && ctx.errors.length > 0
+            ? "failed"
+            : "completed";
+        console.log(
+          `[workflows] auto-run ${runStatus} workflow=${workflowId} runId=${runId} event=${eventType}`,
+        );
+      })
+      .catch((err) => {
+        console.warn(
+          `[workflows] auto-run failed workflow=${workflowId} event=${eventType}: ${err?.message || err}`,
+        );
+      });
+  }
+
+  console.log(
+    `[workflows] event "${eventType}" triggered ${triggered.length} workflow run(s)`,
+  );
+  return true;
+}
+
+function queueWorkflowEvent(eventType, eventData = {}, opts = {}) {
+  void dispatchWorkflowEvent(eventType, eventData, opts);
+}
+
 async function pollAgentAlerts() {
   if (process.env.VITEST) return;
   const path = getAgentAlertsPath();
@@ -418,6 +632,16 @@ try {
   const message = err?.message || String(err);
   console.error(`[monitor] configuration error: ${message}`);
   process.exit(1);
+}
+workflowAutomationEnabled = parseEnvBoolean(
+  process.env.WORKFLOW_AUTOMATION_ENABLED,
+  false,
+);
+{
+  const dedupMs = Number(process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS || "15000");
+  workflowEventDedupWindowMs = Number.isFinite(dedupMs) && dedupMs > 0
+    ? dedupMs
+    : 15_000;
 }
 
 // Install console interceptor with log file (after config provides logDir)
@@ -2492,7 +2716,7 @@ function ensureAnomalyDetector() {
   if (anomalyDetector) return anomalyDetector;
   if (process.env.VITEST) return null;
   anomalyDetector = createAnomalyDetector({
-    onAnomaly: (anomaly) => {
+    onAnomaly: wrapAnomalyCallback((anomaly) => {
       const icon =
         anomaly.severity === "CRITICAL"
           ? "🔴"
@@ -2528,11 +2752,14 @@ function ensureAnomalyDetector() {
           }
         }
       }
-    },
+    }),
     notify: (text, options) => {
       sendTelegramMessage(text, options).catch(() => {});
     },
   });
+  if (workflowAutomationEngine?.services) {
+    workflowAutomationEngine.services.anomalyDetector = anomalyDetector;
+  }
   console.log("[monitor] anomaly detector started");
   return anomalyDetector;
 }
@@ -3890,7 +4117,85 @@ async function fetchTasksByStatus(status) {
  * @param {string} newStatus - New status ("todo", "inprogress", "inreview", "done", "cancelled")
  * @returns {Promise<boolean>} true if successful, false otherwise
  */
-async function updateTaskStatus(taskId, newStatus) {
+async function updateTaskStatus(taskId, newStatus, options = {}) {
+  const normalizedTaskId = String(taskId || "").trim();
+  const normalizedStatus = String(newStatus || "").trim().toLowerCase();
+  const taskData =
+    options?.taskData && typeof options.taskData === "object"
+      ? options.taskData
+      : null;
+  const taskTitle = String(
+    options?.taskTitle || taskData?.title || getInternalTask(normalizedTaskId)?.title || "",
+  ).trim();
+  const previousStatus = String(
+    options?.previousStatus || workflowTaskStatusSnapshot.get(normalizedTaskId) || "",
+  )
+    .trim()
+    .toLowerCase();
+  const baseWorkflowPayload = {
+    taskId: normalizedTaskId,
+    taskTitle,
+    previousStatus: previousStatus || null,
+    status: normalizedStatus,
+  };
+  const queueTaskStatusWorkflowEvents = () => {
+    const statusChanged = previousStatus !== normalizedStatus;
+    const shouldEmitLifecycle =
+      statusChanged || ["done", "inreview"].includes(normalizedStatus);
+    workflowTaskStatusSnapshot.set(normalizedTaskId, normalizedStatus);
+
+    if (!normalizedTaskId || !normalizedStatus || !shouldEmitLifecycle) {
+      return;
+    }
+
+    queueWorkflowEvent(
+      "task.status_changed",
+      baseWorkflowPayload,
+      { dedupKey: `workflow-event:task.status_changed:${normalizedTaskId}:${normalizedStatus}` },
+    );
+    queueWorkflowEvent(
+      `task.${normalizedStatus}`,
+      baseWorkflowPayload,
+      { dedupKey: `workflow-event:task.${normalizedStatus}:${normalizedTaskId}` },
+    );
+
+    if (normalizedStatus === "done") {
+      queueWorkflowEvent(
+        "task.completed",
+        baseWorkflowPayload,
+        { dedupKey: `workflow-event:task.completed:${normalizedTaskId}` },
+      );
+    } else if (normalizedStatus === "inreview") {
+      queueWorkflowEvent(
+        "task.in_review",
+        baseWorkflowPayload,
+        { dedupKey: `workflow-event:task.in_review:${normalizedTaskId}` },
+      );
+    }
+
+    if (options?.workflowEvent) {
+      const eventName = String(options.workflowEvent || "").trim();
+      if (eventName) {
+        const extraPayload =
+          options?.workflowData && typeof options.workflowData === "object"
+            ? options.workflowData
+            : {};
+        queueWorkflowEvent(
+          eventName,
+          {
+            ...baseWorkflowPayload,
+            ...extraPayload,
+          },
+          {
+            dedupKey:
+              options?.workflowDedupKey ||
+              `workflow-event:${eventName}:${normalizedTaskId}:${normalizedStatus}`,
+          },
+        );
+      }
+    }
+  };
+
   const backend = getActiveKanbanBackend();
   if (backend !== "vk") {
     const resolvedTaskId = resolveTaskIdForBackend(taskId, backend);
@@ -3906,6 +4211,7 @@ async function updateTaskStatus(taskId, newStatus) {
       if (resolvedTaskId !== taskId) {
         clearRecoveryCaches(resolvedTaskId);
       }
+      queueTaskStatusWorkflowEvents();
       return true;
     } catch (err) {
       console.warn(
@@ -3922,7 +4228,10 @@ async function updateTaskStatus(taskId, newStatus) {
   });
   const ok = res?.success === true;
   // Clear recovery caches — task status changed, so it needs re-evaluation
-  if (ok) clearRecoveryCaches(taskId);
+  if (ok) {
+    clearRecoveryCaches(taskId);
+    queueTaskStatusWorkflowEvents();
+  }
   return ok;
 }
 
@@ -4904,13 +5213,22 @@ async function checkMergedPRsAndUpdateTasks() {
           if (c.branch) mergedBranchCache.add(c.branch);
         }
         saveMergedTaskCache();
-        void updateTaskStatus(task.id, "done");
+        void updateTaskStatus(task.id, "done", {
+          taskData: task,
+          workflowEvent: "pr.merged",
+          workflowData: {
+            prNumber: knownBranch.prNumber || null,
+            branch: knownBranch.branch || null,
+            triggerReason: "known_merged_branch",
+          },
+        });
         continue;
       }
 
       // ── Check ALL candidates for a merged PR/branch ──
       let resolved = false;
       let hasOpenPR = false;
+      let firstOpenPr = null;
       /** @type {Array<{prNumber: number, attemptId?: string, branch?: string}>} */
       const conflictCandidates = [];
 
@@ -4954,7 +5272,16 @@ async function checkMergedPRsAndUpdateTasks() {
               resolved = true;
               break;
             }
-            const success = await updateTaskStatus(task.id, "done");
+            const success = await updateTaskStatus(task.id, "done", {
+              taskData: task,
+              workflowEvent: "pr.merged",
+              workflowData: {
+                prNumber: cand.prNumber || null,
+                branch: cand.branch || null,
+                baseBranch: cand.baseBranch || null,
+                triggerReason: "merged_pr_detected",
+              },
+            });
             movedCount++;
             mergedTaskCache.add(task.id);
             pendingMergeStrategyByTask.delete(String(task.id || "").trim());
@@ -4983,6 +5310,13 @@ async function checkMergedPRsAndUpdateTasks() {
           }
           if (prState === "OPEN") {
             hasOpenPR = true;
+            if (!firstOpenPr) {
+              firstOpenPr = {
+                prNumber: cand.prNumber || null,
+                branch: cand.branch || null,
+                baseBranch: cand.baseBranch || null,
+              };
+            }
             // Detect merge conflicts on open PRs
             // gh CLI: mergeable = "CONFLICTING" / "MERGEABLE" / "UNKNOWN"
             // REST API: mergeable = false, mergeable_state = "dirty"
@@ -5023,7 +5357,16 @@ async function checkMergedPRsAndUpdateTasks() {
             resolved = true;
             break;
           }
-          const success = await updateTaskStatus(task.id, "done");
+          const success = await updateTaskStatus(task.id, "done", {
+            taskData: task,
+            workflowEvent: "pr.merged",
+            workflowData: {
+              prNumber: cand.prNumber || null,
+              branch: cand.branch || null,
+              baseBranch: cand.baseBranch || null,
+              triggerReason: "merged_branch_detected",
+            },
+          });
           movedCount++;
           mergedTaskCache.add(task.id);
           pendingMergeStrategyByTask.delete(String(task.id || "").trim());
@@ -5064,6 +5407,13 @@ async function checkMergedPRsAndUpdateTasks() {
             const bpState = String(branchPr.state).toUpperCase();
             if (bpState === "OPEN") {
               hasOpenPR = true;
+              if (!firstOpenPr) {
+                firstOpenPr = {
+                  prNumber: branchPr.number || null,
+                  branch: cand.branch || null,
+                  baseBranch: branchPr.base?.ref || null,
+                };
+              }
               // Fetch full PR info (with mergeable) via number
               const fullPrInfo = await getPullRequestByNumber(branchPr.number);
               const isConflicting =
@@ -5252,7 +5602,15 @@ async function checkMergedPRsAndUpdateTasks() {
 
       // Task is NOT merged via any attempt — handle accordingly
       if (hasOpenPR && taskStatus !== "inreview") {
-        const success = await updateTaskStatus(task.id, "inreview");
+        const success = await updateTaskStatus(task.id, "inreview", {
+          taskData: task,
+          workflowEvent: "pr.opened",
+          workflowData: {
+            prNumber: firstOpenPr?.prNumber || null,
+            branch: firstOpenPr?.branch || null,
+            baseBranch: firstOpenPr?.baseBranch || null,
+          },
+        });
         if (success) {
           movedReviewCount++;
           console.log(
@@ -12342,10 +12700,25 @@ function applyConfig(nextConfig, options = {}) {
   plannerIdleSlotThreshold = nextConfig.plannerIdleSlotThreshold;
   plannerDedupMs = nextConfig.plannerDedupMs;
   plannerMode = nextConfig.plannerMode || "codex-sdk";
+  workflowAutomationEnabled = parseEnvBoolean(
+    process.env.WORKFLOW_AUTOMATION_ENABLED,
+    workflowAutomationEnabled,
+  );
+  {
+    const dedupMs = Number(
+      process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS || workflowEventDedupWindowMs || "15000",
+    );
+    workflowEventDedupWindowMs = Number.isFinite(dedupMs) && dedupMs > 0
+      ? dedupMs
+      : 15_000;
+  }
   triggerSystemConfig =
     nextConfig.triggerSystem && typeof nextConfig.triggerSystem === "object"
       ? nextConfig.triggerSystem
       : { enabled: false, templates: [], defaults: { executor: "auto", model: "auto" } };
+  if (workflowAutomationEnabled) {
+    void ensureWorkflowAutomationEngine();
+  }
   githubReconcile = nextConfig.githubReconcile || githubReconcile;
   agentPrompts = nextConfig.agentPrompts;
   configExecutorConfig = nextConfig.executorConfig;
@@ -13080,12 +13453,39 @@ if (isExecutorDisabled()) {
           Number.isFinite(slot?.agentInstanceId) && slot.agentInstanceId > 0
             ? `#${slot.agentInstanceId}`
             : "n/a";
+        const taskId = String(task?.id || task?.task_id || "").trim();
         console.log(
           `[task-executor] 🚀 started: "${task.title}" (${slot.sdk}) agent=${agentId} branch=${slot.branch} worktree=${slot.worktreePath || "(pending)"}`,
         );
         if (agentEventBus) agentEventBus.onTaskStarted(task, slot);
+        if (taskId) {
+          queueWorkflowEvent(
+            "task.assigned",
+            {
+              taskId,
+              taskTitle: task?.title || "",
+              taskStatus: "inprogress",
+              sdk: slot?.sdk || null,
+              branch: slot?.branch || null,
+              worktreePath: slot?.worktreePath || null,
+            },
+            { dedupKey: `workflow-event:task.assigned:${taskId}` },
+          );
+          queueWorkflowEvent(
+            "agent.started",
+            {
+              taskId,
+              taskTitle: task?.title || "",
+              sdk: slot?.sdk || null,
+              branch: slot?.branch || null,
+              agentInstanceId: slot?.agentInstanceId ?? null,
+            },
+            { dedupKey: `workflow-event:agent.started:${taskId}:${slot?.agentInstanceId ?? "na"}` },
+          );
+        }
       },
       onTaskCompleted: (task, result) => {
+        const taskId = String(task?.id || task?.task_id || "").trim();
         console.log(
           `[task-executor] ✅ completed: "${task.title}" (${result.attempts} attempt(s))`,
         );
@@ -13107,12 +13507,48 @@ if (isExecutorDisabled()) {
             }
           }
         }
+        if (taskId) {
+          queueWorkflowEvent(
+            "task.completed",
+            {
+              taskId,
+              taskTitle: task?.title || "",
+              taskStatus: "completed",
+              attempts: Number(result?.attempts || 0),
+              success: result?.success !== false,
+            },
+            { dedupKey: `workflow-event:task.completed:${taskId}:${result?.attempts || 0}` },
+          );
+        }
       },
       onTaskFailed: (task, err) => {
+        const taskId = String(task?.id || task?.task_id || "").trim();
         console.warn(
           `[task-executor] ❌ failed: "${task.title}" — ${formatMonitorError(err)}`,
         );
         if (agentEventBus) agentEventBus.onTaskFailed(task, err);
+        if (taskId) {
+          const errorMessage = formatMonitorError(err);
+          queueWorkflowEvent(
+            "task.failed",
+            {
+              taskId,
+              taskTitle: task?.title || "",
+              taskStatus: "failed",
+              error: errorMessage,
+            },
+            { dedupKey: `workflow-event:task.failed:${taskId}:${errorMessage}` },
+          );
+          queueWorkflowEvent(
+            "agent.crashed",
+            {
+              taskId,
+              taskTitle: task?.title || "",
+              error: errorMessage,
+            },
+            { dedupKey: `workflow-event:agent.crashed:${taskId}:${errorMessage}` },
+          );
+        }
       },
     };
     internalTaskExecutor = getTaskExecutor(execOpts);
@@ -13553,6 +13989,13 @@ void restoreLiveDigest()
 startAgentWorkAnalyzer();
 startAgentAlertTailer();
 startMonitorMonitorSupervisor();
+if (workflowAutomationEnabled) {
+  void ensureWorkflowAutomationEngine();
+} else {
+  console.log(
+    "[workflows] automation disabled (set WORKFLOW_AUTOMATION_ENABLED=true to enable event-driven workflow triggers)",
+  );
+}
 startTaskPlannerStatusLoop();
 restartGitHubReconciler();
 
@@ -13746,4 +14189,3 @@ export {
   getContainerStatus,
   isContainerEnabled,
 };
-
