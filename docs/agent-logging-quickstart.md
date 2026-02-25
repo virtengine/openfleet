@@ -9,6 +9,7 @@ Captures **all agent work** into structured logs and enables:
 - ✅ Offline analytics for task planning improvements
 - ✅ Executor performance comparison
 - ✅ Common error clustering
+- ✅ Error correlation by size, executor, and complexity
 
 ## Architecture Quick View
 
@@ -210,6 +211,10 @@ Add to `.env`:
 AGENT_WORK_LOGGING_ENABLED=true
 AGENT_WORK_ANALYZER_ENABLED=true
 
+# Optional: enrich missing task metadata from VK (default: true)
+AGENT_WORK_LOGGING_ENRICH_VK=true
+# Cache file (auto-managed): .cache/agent-work-logs/task-metadata.json
+
 # Detection thresholds
 AGENT_ERROR_LOOP_THRESHOLD=4         # Alert after 4 repeated errors
 AGENT_TOOL_LOOP_THRESHOLD=10         # Alert after 10 rapid tool calls
@@ -357,6 +362,63 @@ context_window_exceeded: 12 occurrences across 8 tasks
   First: 2026-01-15T14:22:33Z, Last: 2026-02-09T11:03:45Z
 ```
 
+### Correlate Error Clusters With Task Characteristics
+
+```bash
+node scripts/bosun/analyze-agent-work.mjs --error-correlation --days 30 --top 5
+```
+
+**Output:**
+```
+=== Error Correlation Report ===
+
+git_push_failed
+  Occurrences: 23
+  Affected tasks: 15
+  Executors: CODEX 14 (60.9%), COPILOT 9 (39.1%)
+  Sizes: m 10 (43.5%), s 8 (34.8%), l 5 (21.7%)
+  Complexity: medium 12 (52.2%), low 7 (30.4%), high 4 (17.4%)
+  Sample: fatal: remote error: access denied or repository not exported...
+```
+
+```bash
+node scripts/bosun/analyze-agent-work.mjs --error-correlation --days 30 --top 5 --json
+```
+
+**Output:**
+```
+{
+  "generated_at": "2026-02-25T21:12:31.123Z",
+  "window_days": 30,
+  "total_errors": 120,
+  "total_fingerprints": 18,
+  "top": 5,
+  "correlations": [
+    {
+      "fingerprint": "git_push_failed",
+      "count": 23,
+      "task_count": 15,
+      "sample_message": "fatal: remote error: access denied or repository not exported...",
+      "first_seen": "2026-01-10T08:15:22.000Z",
+      "last_seen": "2026-02-08T19:42:11.000Z",
+      "by_executor": [
+        { "label": "CODEX", "count": 14, "percent": 60.9 },
+        { "label": "COPILOT", "count": 9, "percent": 39.1 }
+      ],
+      "by_size": [
+        { "label": "m", "count": 10, "percent": 43.5 },
+        { "label": "s", "count": 8, "percent": 34.8 }
+      ],
+      "by_complexity": [
+        { "label": "medium", "count": 12, "percent": 52.2 },
+        { "label": "low", "count": 7, "percent": 30.4 }
+      ]
+    }
+  ]
+}
+```
+
+
 ## Real-Time Alerts
 
 Once running, you'll get Telegram alerts like:
@@ -457,3 +519,5 @@ Check alert polling is running in monitor.mjs (should see log lines every 5s whe
 ---
 
 **Ready to start?** Just follow steps 1-5 above and restart bosun!
+
+

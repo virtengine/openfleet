@@ -75,10 +75,14 @@ function Write-AgentWorkLog {
 
     # Add optional metadata
     if ($TaskMetadata) {
-        $logEntry.task_id = $TaskMetadata.task_id
-        $logEntry.task_title = $TaskMetadata.task_title
-        $logEntry.task_description = $TaskMetadata.task_description
-        $logEntry.project_id = $TaskMetadata.project_id
+        if ($TaskMetadata.task_id) { $logEntry.task_id = $TaskMetadata.task_id }
+        if (-not [string]::IsNullOrWhiteSpace($TaskMetadata.task_title)) {
+            $logEntry.task_title = $TaskMetadata.task_title
+        }
+        if (-not [string]::IsNullOrWhiteSpace($TaskMetadata.task_description)) {
+            $logEntry.task_description = $TaskMetadata.task_description
+        }
+        if ($TaskMetadata.project_id) { $logEntry.project_id = $TaskMetadata.project_id }
     }
 
     if ($ExecutorInfo) {

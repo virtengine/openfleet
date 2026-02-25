@@ -399,6 +399,175 @@ function Get-EnvString {
     return $value.Trim()
 }
 
+
+function Get-AgentWorkLogCacheDir {
+    if ($script:AgentWorkLogCacheDir) { return $script:AgentWorkLogCacheDir }
+    if (Get-Variable -Name LogDir -Scope Script -ErrorAction SilentlyContinue) {
+        $script:AgentWorkLogCacheDir = $LogDir
+    }
+    else {
+        $basePath = $null
+        try {
+            $basePath = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+        }
+        catch {
+            $basePath = $PSScriptRoot
+        }
+        $script:AgentWorkLogCacheDir = Join-Path $basePath ".cache\agent-work-logs"
+    }
+    return $script:AgentWorkLogCacheDir
+}
+
+function Get-AgentWorkTaskMetadataCachePath {
+    if ($script:AgentWorkTaskMetadataCachePath) { return $script:AgentWorkTaskMetadataCachePath }
+    $cacheDir = Get-AgentWorkLogCacheDir
+    $script:AgentWorkTaskMetadataCachePath = Join-Path $cacheDir "task-metadata.json"
+    return $script:AgentWorkTaskMetadataCachePath
+}
+
+function Ensure-AgentWorkLogCacheDir {
+    $cacheDir = Get-AgentWorkLogCacheDir
+    if (-not (Test-Path $cacheDir)) {
+        New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+    }
+}
+
+function Load-AgentWorkTaskMetadataCache {
+    if ($null -ne $script:AgentWorkTaskMetadataCache) { return $script:AgentWorkTaskMetadataCache }
+    $cachePath = Get-AgentWorkTaskMetadataCachePath
+    if (-not (Test-Path $cachePath)) {
+        $script:AgentWorkTaskMetadataCache = @{}
+        return $script:AgentWorkTaskMetadataCache
+    }
+    try {
+        $raw = Get-Content -Path $cachePath -Raw -ErrorAction Stop
+        if (-not $raw) {
+            $script:AgentWorkTaskMetadataCache = @{}
+            return $script:AgentWorkTaskMetadataCache
+        }
+        $parsed = $raw | ConvertFrom-Json -Depth 12 -ErrorAction Stop
+        if ($parsed -is [hashtable]) {
+            $script:AgentWorkTaskMetadataCache = $parsed
+        }
+        else {
+            $cache = @{}
+            foreach ($prop in $parsed.PSObject.Properties) {
+                $cache[$prop.Name] = $prop.Value
+            }
+            $script:AgentWorkTaskMetadataCache = $cache
+        }
+    }
+    catch {
+        Write-Log "Failed to read agent work task metadata cache: $($_.Exception.Message)" -Level "WARN"
+        $script:AgentWorkTaskMetadataCache = @{}
+    }
+    return $script:AgentWorkTaskMetadataCache
+}
+
+function Save-AgentWorkTaskMetadataCache {
+    if ($null -eq $script:AgentWorkTaskMetadataCache) { return }
+    try {
+        Ensure-AgentWorkLogCacheDir
+        $cachePath = Get-AgentWorkTaskMetadataCachePath
+        $script:AgentWorkTaskMetadataCache | ConvertTo-Json -Depth 12 | Set-Content -Path $cachePath -Encoding UTF8
+    }
+    catch {
+        Write-Log "Failed to write agent work task metadata cache: $($_.Exception.Message)" -Level "WARN"
+    }
+}
+
+function Get-AgentWorkTaskMetadataFromCache {
+    param([Parameter(Mandatory)][string]$TaskId)
+    $cache = Load-AgentWorkTaskMetadataCache
+    if ($cache.ContainsKey($TaskId)) { return $cache[$TaskId] }
+    return $null
+}
+
+function Update-AgentWorkTaskMetadataCache {
+    param(
+        [Parameter(Mandatory)][string]$TaskId,
+        [Parameter(Mandatory)][hashtable]$Metadata
+    )
+    $cache = Load-AgentWorkTaskMetadataCache
+    $entry = @{}
+    if ($cache.ContainsKey($TaskId)) {
+        $existing = $cache[$TaskId]
+        if ($existing -is [hashtable]) {
+            foreach ($key in $existing.Keys) {
+                $entry[$key] = $existing[$key]
+            }
+        }
+        else {
+            foreach ($prop in $existing.PSObject.Properties) {
+                $entry[$prop.Name] = $prop.Value
+            }
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Metadata.task_title)) { $entry.task_title = $Metadata.task_title }
+    if (-not [string]::IsNullOrWhiteSpace($Metadata.task_description)) { $entry.task_description = $Metadata.task_description }
+    if ($Metadata.project_id) { $entry.project_id = $Metadata.project_id }
+    $entry.cached_at = (Get-Date).ToUniversalTime().ToString("o")
+    $cache[$TaskId] = $entry
+    $script:AgentWorkTaskMetadataCache = $cache
+    Save-AgentWorkTaskMetadataCache
+}
+
+function Get-VKTaskMetadata {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$TaskId,
+        [int]$TimeoutSec = 5
+    )
+    $baseUrl = Get-VKBaseUrl
+    if (-not $baseUrl) { return $null }
+    $timeout = if ($TimeoutSec -gt 0) { $TimeoutSec } else { 5 }
+    $client = $null
+    try {
+        $client = New-Object System.Net.Http.HttpClient
+        $client.Timeout = [TimeSpan]::FromSeconds($timeout)
+        $resp = $client.GetAsync("$baseUrl/api/tasks/$TaskId").GetAwaiter().GetResult()
+        if (-not $resp.IsSuccessStatusCode) {
+            Write-Log "VK task metadata request failed for $TaskId (HTTP $($resp.StatusCode))" -Level "WARN"
+            return $null
+        }
+        $json = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        if (-not $json) { return $null }
+        $parsed = $json | ConvertFrom-Json -Depth 20
+        if ($parsed.success -eq $false) { return $null }
+        $task = if ($parsed.data) { $parsed.data } else { $parsed }
+        if (-not $task) { return $null }
+        return @{
+            task_id = $TaskId
+            task_title = if ($task.title) { $task.title } elseif ($task.name) { $task.name } else { $null }
+            task_description = if ($task.description) {
+                $task.description
+            }
+            elseif ($task.body) {
+                $task.body
+            }
+            elseif ($task.details) {
+                $task.details
+            }
+            elseif ($task.content) {
+                $task.content
+            }
+            else {
+                $null
+            }
+            project_id = $task.project_id
+        }
+    }
+    catch {
+        Write-Log "VK task metadata request failed for ${TaskId}: $($_.Exception.Message)" -Level "WARN"
+        return $null
+    }
+    finally {
+        if ($client) { $client.Dispose() }
+    }
+}
+
+$script:AgentWorkLoggingEnrichVk = Get-EnvBool -Name "AGENT_WORK_LOGGING_ENRICH_VK" -Default $true
+
 $script:FollowUpMaxChars = Get-EnvInt -Name "VE_FOLLOWUP_MAX_CHARS" -Default 16000 -Min 2000
 $script:FollowUpMaxDescriptionChars = Get-EnvInt -Name "VE_FOLLOWUP_MAX_DESC_CHARS" -Default 2000 -Min 200
 
@@ -3700,11 +3869,61 @@ function Sync-TrackedAttempts {
             # ── Agent Work Logger: start session ──
             if ($script:AgentWorkLoggerEnabled) {
                 try {
-                    Start-AgentSession -AttemptId $a.id `
-                        -TaskMetadata @{
-                        task_id    = $a.task_id
+                    $taskMetadata = @{
+                        task_id = $a.task_id
                         task_title = $a.name
-                    } `
+                        task_description = $null
+                        project_id = $null
+                    }
+
+                    if ($script:AgentWorkLoggingEnrichVk -and $a.task_id) {
+                        $needsTitle = [string]::IsNullOrWhiteSpace($taskMetadata.task_title)
+                        $needsDescription = [string]::IsNullOrWhiteSpace($taskMetadata.task_description)
+                        if ($needsTitle -or $needsDescription) {
+                            $cached = Get-AgentWorkTaskMetadataFromCache -TaskId $a.task_id
+                            if ($cached) {
+                                if ($needsTitle -and -not [string]::IsNullOrWhiteSpace($cached.task_title)) {
+                                    $taskMetadata.task_title = $cached.task_title
+                                    $needsTitle = $false
+                                }
+                                if ($needsDescription -and -not [string]::IsNullOrWhiteSpace($cached.task_description)) {
+                                    $taskMetadata.task_description = $cached.task_description
+                                    $needsDescription = $false
+                                }
+                                if (-not $taskMetadata.project_id -and $cached.project_id) {
+                                    $taskMetadata.project_id = $cached.project_id
+                                }
+                            }
+                        }
+
+                        if ($needsTitle -or $needsDescription) {
+                            $vkMetadata = Get-VKTaskMetadata -TaskId $a.task_id -TimeoutSec 5
+                            if ($vkMetadata) {
+                                if ($needsTitle -and -not [string]::IsNullOrWhiteSpace($vkMetadata.task_title)) {
+                                    $taskMetadata.task_title = $vkMetadata.task_title
+                                    $needsTitle = $false
+                                }
+                                if ($needsDescription -and -not [string]::IsNullOrWhiteSpace($vkMetadata.task_description)) {
+                                    $taskMetadata.task_description = $vkMetadata.task_description
+                                    $needsDescription = $false
+                                }
+                                if (-not $taskMetadata.project_id -and $vkMetadata.project_id) {
+                                    $taskMetadata.project_id = $vkMetadata.project_id
+                                }
+                                Update-AgentWorkTaskMetadataCache -TaskId $a.task_id -Metadata $vkMetadata
+                            }
+                        }
+                    }
+
+                    if ($taskMetadata.task_title) {
+                        $script:TrackedAttempts[$a.id].task_title_cached = $taskMetadata.task_title
+                    }
+                    if ($taskMetadata.task_description) {
+                        $script:TrackedAttempts[$a.id].task_description_cached = $taskMetadata.task_description
+                    }
+
+                    Start-AgentSession -AttemptId $a.id `
+                        -TaskMetadata $taskMetadata `
                         -ExecutorInfo @{
                         executor         = if ($execProfile) { $execProfile.executor } else { "unknown" }
                         executor_variant = if ($execProfile) { $execProfile.variant } else { $null }
