@@ -26,6 +26,16 @@ vi.mock("../diff-stats.mjs", () => ({
 }));
 
 describe("review-agent", () => {
+  async function waitFor(condition, timeoutMs = 2000) {
+    const start = Date.now();
+    while (!condition()) {
+      if (Date.now() - start > timeoutMs) {
+        throw new Error("waitFor timeout");
+      }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
   describe("ReviewAgent constructor", () => {
     it("creates instance with defaults", () => {
       const agent = createReviewAgent();
@@ -149,6 +159,29 @@ describe("review-agent", () => {
     it("starts and stops cleanly", async () => {
       const agent = createReviewAgent();
       agent.start();
+      await agent.stop();
+    });
+
+    it("allows re-queue after a completed review", async () => {
+      const onReviewComplete = vi.fn();
+      const agent = createReviewAgent({ onReviewComplete });
+      agent.start();
+
+      await agent.queueReview({
+        id: "task-1",
+        title: "Test Task",
+        branchName: "ve/test-branch",
+      });
+      await waitFor(() => agent.getStatus().completedReviews >= 1);
+
+      await agent.queueReview({
+        id: "task-1",
+        title: "Test Task",
+        branchName: "ve/test-branch",
+      });
+      await waitFor(() => agent.getStatus().completedReviews >= 2);
+
+      expect(onReviewComplete).toHaveBeenCalledTimes(2);
       await agent.stop();
     });
   });

@@ -275,7 +275,7 @@ export class ReviewAgent {
   /** @type {Array<{ id: string, title: string, branchName: string, prUrl: string, description: string, taskContext?: string }>} */
   #queue = [];
 
-  /** @type {Set<string>} - task IDs already reviewed or in-flight */
+  /** @type {Set<string>} - task IDs queued or currently in-flight */
   #seen = new Set();
 
   #completedCount = 0;
@@ -335,7 +335,7 @@ export class ReviewAgent {
 
   /**
    * Queue a task for review.
-   * Deduplicates by task ID — same task won't be reviewed twice.
+   * Deduplicates by task ID while queued/in-flight.
    * @param {{ id: string, title: string, branchName: string, prUrl: string, description: string, taskContext?: string }} task
    */
   async queueReview(task) {
@@ -345,7 +345,7 @@ export class ReviewAgent {
     }
 
     if (this.#seen.has(task.id)) {
-      console.log(`${TAG} task ${task.id} already reviewed/queued — skipping`);
+      console.log(`${TAG} task ${task.id} already queued/in-flight — skipping`);
       return;
     }
 
@@ -438,6 +438,7 @@ export class ReviewAgent {
           })
           .finally(() => {
             this.#activeReviews.delete(task.id);
+            this.#seen.delete(task.id);
             this.#completedCount++;
             // Continue processing after slot freed
             if (this.#running && this.#queue.length > 0) {
