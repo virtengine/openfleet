@@ -54,6 +54,7 @@ const ATOMIC_RENAME_FALLBACK_CODES = new Set(["EPERM", "EACCES", "EBUSY", "EXDEV
 let _store = null; // { _meta: {...}, tasks: { [id]: Task } }
 let _loaded = false;
 let _writeChain = Promise.resolve(); // simple write lock
+let _didLogInitialLoad = false;
 
 export function configureTaskStore(options = {}) {
   const baseDir = options.baseDir ? resolve(options.baseDir) : null;
@@ -74,6 +75,7 @@ export function configureTaskStore(options = {}) {
     _store = null;
     _loaded = false;
     _writeChain = Promise.resolve();
+    _didLogInitialLoad = false;
   }
 
   return storePath;
@@ -222,10 +224,13 @@ export function loadStore() {
         _meta: { ...defaultMeta(), ...(data._meta || {}) },
         tasks: data.tasks || {},
       };
-      console.log(
-        TAG,
-        `Loaded ${Object.keys(_store.tasks).length} tasks from disk`,
-      );
+      if (!_didLogInitialLoad) {
+        _didLogInitialLoad = true;
+        console.log(
+          TAG,
+          `Loaded ${Object.keys(_store.tasks).length} tasks from disk`,
+        );
+      }
     } else {
       _store = { _meta: defaultMeta(), tasks: {} };
       console.log(TAG, "No store file found — initialised empty store");

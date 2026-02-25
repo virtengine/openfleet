@@ -800,6 +800,26 @@ let githubReconcile = githubReconcileConfig || {
   mergedLookbackHours: 72,
   trackingLabels: ["tracking"],
 };
+let chdirUnsupportedInRuntime = false;
+
+function isChdirUnsupportedError(err) {
+  if (!err) {
+    return false;
+  }
+  const code = String(err.code || "");
+  const message = String(err.message || "").toLowerCase();
+  return (
+    code === "ERR_WORKER_UNSUPPORTED_OPERATION" ||
+    message.includes("process.chdir() is not supported in workers")
+  );
+}
+
+function normalizePathForCompare(pathValue) {
+  const normalized = String(pathValue || "")
+    .replace(/[\\/]+/g, "/")
+    .replace(/\/+$/, "");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
 
 // ── Ensure CWD is the repo root ─────────────────────────────────────────────
 // The daemon is spawned with cwd=homedir (to avoid deleted worktree paths).
@@ -807,9 +827,13 @@ let githubReconcile = githubReconcileConfig || {
 // trusted git directory, preventing "Not inside a trusted directory" errors.
 // Prefer agentRepoRoot (workspace-aware) over raw repoRoot.
 const effectiveRepoRoot = agentRepoRoot || repoRoot;
-if (!isMainThread) {
+const needsChdir =
+  effectiveRepoRoot &&
+  normalizePathForCompare(process.cwd()) !==
+    normalizePathForCompare(effectiveRepoRoot);
+if (!isMainThread || chdirUnsupportedInRuntime) {
   // Worker threads cannot call process.chdir(); skip to avoid noisy warnings.
-} else if (effectiveRepoRoot && process.cwd() !== effectiveRepoRoot) {
+} else if (needsChdir) {
   try {
     process.chdir(effectiveRepoRoot);
     console.log(`[monitor] changed CWD to repo root: ${effectiveRepoRoot}`);
@@ -818,14 +842,29 @@ if (!isMainThread) {
       console.log(`[monitor] developer repo root: ${repoRoot}`);
     }
   } catch (err) {
-    console.warn(`[monitor] could not chdir to ${effectiveRepoRoot}: ${err.message}`);
-    // Fall back to repoRoot if agentRepoRoot failed
-    if (agentRepoRoot && repoRoot && agentRepoRoot !== repoRoot) {
-      try {
-        process.chdir(repoRoot);
-        console.log(`[monitor] fell back to developer repo root: ${repoRoot}`);
-      } catch (e2) {
-        console.warn(`[monitor] could not chdir to fallback ${repoRoot}: ${e2.message}`);
+    if (isChdirUnsupportedError(err)) {
+      chdirUnsupportedInRuntime = true;
+      console.log("[monitor] runtime does not support process.chdir(); skipping CWD re-anchor.");
+    } else {
+      console.warn(`[monitor] could not chdir to ${effectiveRepoRoot}: ${err.message}`);
+      // Fall back to repoRoot if agentRepoRoot failed
+      if (
+        agentRepoRoot &&
+        repoRoot &&
+        agentRepoRoot !== repoRoot &&
+        normalizePathForCompare(process.cwd()) !== normalizePathForCompare(repoRoot)
+      ) {
+        try {
+          process.chdir(repoRoot);
+          console.log(`[monitor] fell back to developer repo root: ${repoRoot}`);
+        } catch (e2) {
+          if (isChdirUnsupportedError(e2)) {
+            chdirUnsupportedInRuntime = true;
+            console.log("[monitor] runtime does not support process.chdir(); fallback skipped.");
+          } else {
+            console.warn(`[monitor] could not chdir to fallback ${repoRoot}: ${e2.message}`);
+          }
+        }
       }
     }
   }
@@ -13159,8 +13198,21 @@ process.on("uncaughtException", (err) => {
     );
     return;
   }
+  // Always log the exception — even during shutdown — so the crash is traceable.
+  const detail = err?.stack || msg || String(err);
+  try {
+    process.stderr.write("[monitor] uncaughtException: " + detail + "\n");
+  } catch { /* stderr may be torn down */ }
+  try {
+    const crashDir = config?.logDir || resolve(__dirname, "logs");
+    mkdirSync(crashDir, { recursive: true });
+    appendFileSync(
+      resolve(crashDir, "monitor-crash-breadcrumb.log"),
+      `[${new Date().toISOString()}] uncaughtException (shuttingDown=${shuttingDown}): ${detail}\n`,
+    );
+  } catch { /* best effort */ }
   if (shuttingDown) return;
-  console.error("[monitor] uncaughtException: " + (err?.stack || msg));
+  console.error("[monitor] uncaughtException: " + detail);
   handleMonitorFailure("uncaughtException", err).catch((failureErr) => {
     try {
       process.stderr.write(
@@ -13174,6 +13226,16 @@ process.on("uncaughtException", (err) => {
 
 process.on("unhandledRejection", (reason) => {
   const msg = reason?.message || String(reason || "");
+  // Always write breadcrumb — unhandled rejections can cause exit code 1
+  try {
+    const crashDir = config?.logDir || resolve(__dirname, "logs");
+    mkdirSync(crashDir, { recursive: true });
+    const detail = reason instanceof Error ? (reason.stack || msg) : msg;
+    appendFileSync(
+      resolve(crashDir, "monitor-crash-breadcrumb.log"),
+      `[${new Date().toISOString()}] unhandledRejection (shuttingDown=${shuttingDown}): ${detail}\n`,
+    );
+  } catch { /* best effort */ }
   // Always suppress stream noise
   if (isStreamNoise(msg)) {
     console.error(
@@ -13199,13 +13261,25 @@ process.on("unhandledRejection", (reason) => {
 // ── Exit diagnostic: always log the exit code so crashes are traceable ──────
 process.on("exit", (code) => {
   if (code === 0 || code === SELF_RESTART_EXIT_CODE) return;
+  const ts = new Date().toISOString();
+  const line = `[${ts}] process exiting with code ${code} (shuttingDown=${shuttingDown}, uptime=${Math.round(process.uptime())}s)`;
   // Write directly to stderr — console may already be torn down at exit time
   try {
-    process.stderr.write(
-      `[monitor] process exiting with code ${code} (shuttingDown=${shuttingDown})\n`,
-    );
+    process.stderr.write("[monitor] " + line + "\n");
   } catch {
     /* best effort — stderr may be broken */
+  }
+  // Persist breadcrumb to disk so the crash is always traceable even when
+  // stderr output is lost (e.g., background daemon, piped output).
+  try {
+    const crashDir = config?.logDir || resolve(__dirname, "logs");
+    mkdirSync(crashDir, { recursive: true });
+    appendFileSync(
+      resolve(crashDir, "monitor-crash-breadcrumb.log"),
+      line + "\n",
+    );
+  } catch {
+    /* best effort */
   }
 });
 
