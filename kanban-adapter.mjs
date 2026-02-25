@@ -768,6 +768,27 @@ function normalizeObjectCollection(value) {
   return [];
 }
 
+function findNestedCollectionByKeys(node, keys, depth = 0, visited = new Set()) {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return [];
+  if (depth > 4) return [];
+  if (visited.has(node)) return [];
+  visited.add(node);
+
+  for (const key of keys) {
+    const value = node[key];
+    if (Array.isArray(value)) return value;
+    const normalized = normalizeObjectCollection(value);
+    if (normalized.length > 0) return normalized;
+  }
+
+  for (const value of Object.values(node)) {
+    const nested = findNestedCollectionByKeys(value, keys, depth + 1, visited);
+    if (nested.length > 0) return nested;
+  }
+
+  return [];
+}
+
 function extractArrayPayload(payload, keys = []) {
   if (Array.isArray(payload)) return payload;
   if (!payload || typeof payload !== "object") return [];
@@ -789,6 +810,9 @@ function extractArrayPayload(payload, keys = []) {
     const normalizedData = normalizeObjectCollection(data);
     if (normalizedData.length > 0) return normalizedData;
   }
+
+  const nested = findNestedCollectionByKeys(payload, keys);
+  if (nested.length > 0) return nested;
 
   const normalizedPayload = normalizeObjectCollection(payload);
   if (normalizedPayload.length > 0) return normalizedPayload;
@@ -5053,8 +5077,4 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
-
-
-
-
 
