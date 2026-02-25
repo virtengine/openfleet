@@ -1205,6 +1205,39 @@ describe("task-executor", () => {
       );
     });
 
+    it("marks diagnostic preflight tasks done when description includes a remediation fix command", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const ex = new TaskExecutor();
+      const task = {
+        id: "preflight-1b",
+        title: "[s] preflight: detect interactive git editor and guide remediation",
+        description:
+          "Interactive git editors can deadlock agents. Include a suggested fix command: node git-editor-fix.mjs",
+      };
+      vi.spyOn(ex, "_hasUnpushedCommits").mockReturnValue(false);
+
+      await ex._handleTaskResult(
+        task,
+        {
+          success: true,
+          attempts: 1,
+          output: "Verified behavior and documented guidance; no repository changes required.",
+        },
+        "/fake/worktree",
+        { agentMadeNewCommits: false },
+      );
+
+      expect(updateTaskStatus).toHaveBeenCalledWith("preflight-1b", "done");
+      expect(updateTaskStatus).not.toHaveBeenCalledWith("preflight-1b", "todo");
+      expect(ex._noCommitCounts.has("preflight-1b")).toBe(false);
+      expect(ex._skipUntil.has("preflight-1b")).toBe(false);
+      expect(
+        warnSpy.mock.calls.some((args) =>
+          String(args?.[0] || "").includes("completed but no commits found"),
+        ),
+      ).toBe(false);
+    });
+
     it("keeps no-commit cooldown for preflight tasks that explicitly require a fix", async () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       const ex = new TaskExecutor();

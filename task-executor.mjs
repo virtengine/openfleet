@@ -1482,10 +1482,16 @@ function isExpectedNoCommitTask(task) {
     ) || combined.includes("guide remediation");
   if (!hasDiagnosticIntent) return false;
 
-  const hasCodeChangeIntent =
-    /\b(fix|implement|refactor|patch|write test|add test|code change)\b/.test(
+  const hasGuidedFixIntent =
+    /\b(one-command|single-command|suggested|recommended|provide|include|guide)\b[\s\S]{0,80}\bfix\b/.test(
       combined,
-    );
+    ) ||
+    /\bfix\b[\s\S]{0,80}\b(command|script|instructions?)\b/.test(combined);
+  const hasCodeChangeIntent =
+    /\b(implement|refactor|patch|write test|add test|code change)\b/.test(
+      combined,
+    ) ||
+    (/\bfix\b/.test(combined) && !hasGuidedFixIntent);
   return !hasCodeChangeIntent;
 }
 function getTaskLabelSet(task) {

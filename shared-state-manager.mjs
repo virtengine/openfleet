@@ -266,9 +266,21 @@ function logEvent(state, event, ownerId, details) {
  * @returns {boolean}
  */
 function isHeartbeatStale(heartbeat, staleThresholdMs) {
-  const heartbeatTime = new Date(heartbeat).getTime();
+  if (!heartbeat) {
+    return true;
+  }
+
+  const heartbeatTime = Date.parse(String(heartbeat));
+  if (!Number.isFinite(heartbeatTime)) {
+    return true;
+  }
+
+  const thresholdMs =
+    Number.isFinite(staleThresholdMs) && staleThresholdMs >= 0
+      ? staleThresholdMs
+      : DEFAULT_TTL_SECONDS * 1000;
   const now = Date.now();
-  return now - heartbeatTime > staleThresholdMs;
+  return now - heartbeatTime > thresholdMs;
 }
 
 /**

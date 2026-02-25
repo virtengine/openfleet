@@ -112,6 +112,57 @@ describe("shared-state-manager", () => {
       expect(result.state.ownerId).toBe("workstation-1/agent-1");
     });
 
+    it("allows takeover when existing owner heartbeat is invalid", async () => {
+      const { writeFile, mkdir } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+
+      const registryPath = join(
+        tempRoot,
+        ".cache",
+        "bosun",
+        "shared-task-states.json",
+      );
+      const now = new Date().toISOString();
+      await mkdir(join(tempRoot, ".cache", "bosun"), {
+        recursive: true,
+      });
+      await writeFile(
+        registryPath,
+        JSON.stringify({
+          version: "1.0.0",
+          lastUpdated: now,
+          tasks: {
+            "task-invalid-heartbeat": {
+              taskId: "task-invalid-heartbeat",
+              ownerId: "workstation-1/agent-1",
+              ownerHeartbeat: "not-a-date",
+              attemptToken: "token-123",
+              attemptStarted: now,
+              attemptStatus: "claimed",
+              retryCount: 0,
+              ttlSeconds: 300,
+              eventLog: [{ timestamp: now, event: "claimed", ownerId: "workstation-1/agent-1" }],
+            },
+          },
+        }),
+        "utf-8",
+      );
+
+      const result = await claimTaskInSharedState(
+        "task-invalid-heartbeat",
+        "workstation-2/agent-2",
+        "token-456",
+        300,
+        tempRoot,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.state.ownerId).toBe("workstation-2/agent-2");
+      expect(result.state.retryCount).toBe(1);
+      expect(
+        result.state.eventLog.find((e) => e.event === "conflict")?.details,
+      ).toContain("takeover");
+    });
     it("allows takeover when existing owner heartbeat is stale", async () => {
       // First claim
       await claimTaskInSharedState(
@@ -662,6 +713,47 @@ describe("shared-state-manager", () => {
       expect(result.reason).toBe("currently_owned_by_active_agent");
     });
 
+    it("returns true when claimed task heartbeat is invalid", async () => {
+      const { writeFile, mkdir } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+
+      const registryPath = join(
+        tempRoot,
+        ".cache",
+        "bosun",
+        "shared-task-states.json",
+      );
+      const now = new Date().toISOString();
+      await mkdir(join(tempRoot, ".cache", "bosun"), {
+        recursive: true,
+      });
+      await writeFile(
+        registryPath,
+        JSON.stringify({
+          version: "1.0.0",
+          lastUpdated: now,
+          tasks: {
+            "task-active": {
+              taskId: "task-active",
+              ownerId: "workstation-1/agent-1",
+              ownerHeartbeat: "invalid-heartbeat",
+              attemptToken: "token-123",
+              attemptStarted: now,
+              attemptStatus: "claimed",
+              retryCount: 0,
+              ttlSeconds: 300,
+              eventLog: [{ timestamp: now, event: "claimed", ownerId: "workstation-1/agent-1" }],
+            },
+          },
+        }),
+        "utf-8",
+      );
+
+      const result = await shouldRetryTask("task-active", 3, tempRoot);
+
+      expect(result.shouldRetry).toBe(true);
+      expect(result.reason).toBe("eligible_for_retry");
+    });
     it("returns true when task claim is stale", async () => {
       await claimTaskInSharedState(
         "task-stale",
