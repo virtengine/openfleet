@@ -522,6 +522,59 @@ describe("kanban-adapter vk backend fallback fetch", () => {
       backend: "vk",
     });
   });
+
+  it("normalizes nested /api/projects payloads before mapping", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (name) =>
+          String(name || "").toLowerCase() === "content-type"
+            ? "application/json"
+            : null,
+      },
+      json: async () => ({
+        data: {
+          projects: [{ id: "proj-1", name: "Project One" }],
+        },
+      }),
+    });
+
+    const adapter = getKanbanAdapter();
+    const projects = await adapter.listProjects();
+    expect(projects).toHaveLength(1);
+    expect(projects[0]).toMatchObject({
+      id: "proj-1",
+      name: "Project One",
+      backend: "vk",
+    });
+  });
+
+  it("normalizes nested /api/tasks payloads before mapping", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (name) =>
+          String(name || "").toLowerCase() === "content-type"
+            ? "application/json"
+            : null,
+      },
+      json: async () => ({
+        data: {
+          tasks: [{ id: "task-nested-1", title: "Nested Task", status: "todo" }],
+        },
+      }),
+    });
+
+    const adapter = getKanbanAdapter();
+    const tasks = await adapter.listTasks("proj-1", { status: "todo" });
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      id: "task-nested-1",
+      title: "Nested Task",
+      status: "todo",
+      backend: "vk",
+    });
+  });
 });
 
 describe("kanban-adapter jira backend", () => {
@@ -887,4 +940,5 @@ describe("kanban-adapter internal backend", () => {
     expect(removeTask(created.id)).toBe(false);
   });
 });
+
 

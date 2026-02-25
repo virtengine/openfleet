@@ -735,6 +735,25 @@ function normalizeTags(raw) {
   return normalizeLabels(raw);
 }
 
+function extractArrayPayload(payload, keys = []) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== "object") return [];
+
+  for (const key of keys) {
+    if (Array.isArray(payload[key])) return payload[key];
+  }
+
+  const data = payload.data;
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === "object") {
+    for (const key of keys) {
+      if (Array.isArray(data[key])) return data[key];
+    }
+  }
+
+  return [];
+}
+
 const UPSTREAM_LABEL_REGEX =
   /^(?:upstream|base|target)(?:_branch)?[:=]\s*([A-Za-z0-9._/-]+)$/i;
 
@@ -926,7 +945,7 @@ class VKAdapter {
   async listProjects() {
     const fetchVk = await this._getFetchVk();
     const result = await fetchVk("/api/projects");
-    const projects = Array.isArray(result) ? result : result?.data || [];
+    const projects = extractArrayPayload(result, ["projects", "items", "results"]);
     return projects.map((p) => ({
       id: p.id,
       name: p.name || p.title || p.id,
@@ -945,9 +964,7 @@ class VKAdapter {
     if (filters.limit) params.push(`limit=${filters.limit}`);
     const url = `/api/tasks?${params.join("&")}`;
     const result = await fetchVk(url);
-    const tasks = Array.isArray(result)
-      ? result
-      : result?.data || result?.tasks || [];
+    const tasks = extractArrayPayload(result, ["tasks", "items", "results"]);
     return tasks.map((t) => this._normaliseTask(t, projectId));
   }
 
@@ -4948,5 +4965,7 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
+
+
 
 
