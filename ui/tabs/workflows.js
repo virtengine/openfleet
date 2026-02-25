@@ -14,7 +14,8 @@ import { apiFetch } from "../modules/api.js";
 import { showToast, refreshTab } from "../modules/state.js";
 import { navigateTo } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
-import { formatRelative } from "../modules/utils.js";
+import { resolveIcon } from "../modules/icon-utils.js";
+import { formatDate, formatDuration, formatRelative } from "../modules/utils.js";
 import { Card, Badge, EmptyState } from "../components/shared.js";
 
 /* ═══════════════════════════════════════════════════════════════
@@ -26,6 +27,8 @@ const templates = signal([]);
 const nodeTypes = signal([]);
 const activeWorkflow = signal(null);
 const workflowRuns = signal([]);
+const selectedRunId = signal(null);
+const selectedRunDetail = signal(null);
 const canvasZoom = signal(1);
 const canvasOffset = signal({ x: 0, y: 0 });
 const selectedNodeId = signal(null);
@@ -38,10 +41,10 @@ const viewMode = signal("list"); // "list" | "canvas" | "runs"
 function returnToWorkflowList() {
   selectedNodeId.value = null;
   selectedEdgeId.value = null;
+  selectedRunId.value = null;
+  selectedRunDetail.value = null;
   viewMode.value = "list";
 }
-const workflowListSearch = signal("");
-const workflowListFilter = signal("");
 
 /* ═══════════════════════════════════════════════════════════════
  *  API Helpers
@@ -143,9 +146,28 @@ async function loadRuns(workflowId) {
       ? `/api/workflows/${workflowId}/runs`
       : "/api/workflows/runs";
     const data = await apiFetch(url);
-    if (data?.runs) workflowRuns.value = data.runs;
+    if (data?.runs) {
+      workflowRuns.value = data.runs;
+      if (selectedRunId.value && !data.runs.find((run) => run.runId === selectedRunId.value)) {
+        selectedRunId.value = null;
+        selectedRunDetail.value = null;
+      }
+    }
   } catch (err) {
     console.error("[workflows] Failed to load runs:", err);
+  }
+}
+
+async function loadRunDetail(runId) {
+  if (!runId) return;
+  try {
+    const data = await apiFetch(`/api/workflows/runs/${encodeURIComponent(runId)}`);
+    if (data?.run) {
+      selectedRunId.value = runId;
+      selectedRunDetail.value = data.run;
+    }
+  } catch (err) {
+    showToast("Failed to load run details", "error");
   }
 }
 
@@ -154,19 +176,26 @@ async function loadRuns(workflowId) {
  * ═══════════════════════════════════════════════════════════════ */
 
 const NODE_CATEGORY_META = {
-  trigger:    { color: "#10b981", bg: "#10b98120", icon: "⚡", label: "Triggers" },
-  condition:  { color: "#f59e0b", bg: "#f59e0b20", icon: "🔀", label: "Conditions" },
-  action:     { color: "#3b82f6", bg: "#3b82f620", icon: "▶️", label: "Actions" },
-  validation: { color: "#8b5cf6", bg: "#8b5cf620", icon: "✅", label: "Validation" },
-  transform:  { color: "#ec4899", bg: "#ec489920", icon: "🔄", label: "Transform" },
-  notify:     { color: "#06b6d4", bg: "#06b6d420", icon: "🔔", label: "Notify" },
-  agent:      { color: "#f97316", bg: "#f9731620", icon: "🤖", label: "Agent" },
-  loop:       { color: "#64748b", bg: "#64748b20", icon: "🔁", label: "Loop" },
+  trigger:    { color: "#10b981", bg: "#10b98120", icon: "zap", label: "Triggers" },
+  condition:  { color: "#f59e0b", bg: "#f59e0b20", icon: "filter", label: "Conditions" },
+  action:     { color: "#3b82f6", bg: "#3b82f620", icon: "play", label: "Actions" },
+  validation: { color: "#8b5cf6", bg: "#8b5cf620", icon: "check", label: "Validation" },
+  transform:  { color: "#ec4899", bg: "#ec489920", icon: "refresh", label: "Transform" },
+  notify:     { color: "#06b6d4", bg: "#06b6d420", icon: "bell", label: "Notify" },
+  agent:      { color: "#f97316", bg: "#f9731620", icon: "bot", label: "Agent" },
+  loop:       { color: "#64748b", bg: "#64748b20", icon: "repeat", label: "Loop" },
 };
 
 function getNodeMeta(type) {
   const [cat] = (type || "").split(".");
-  return NODE_CATEGORY_META[cat] || { color: "#6b7280", bg: "#6b728020", icon: "⬡", label: "Other" };
+  return NODE_CATEGORY_META[cat] || { color: "#6b7280", bg: "#6b728020", icon: "diamond", label: "Other" };
+}
+
+function stripEmoji(text) {
+  return String(text || "")
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2700}-\u{27BF}]/gu, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -317,7 +346,7 @@ function WorkflowCanvas({ workflow, onSave }) {
     const newNode = {
       id,
       type,
-      label: `${meta.icon} ${name?.replace(/_/g, " ") || type}`,
+      label: name?.replace(/_/g, " ") || type,
       config: {},
       position: { x: mousePos.x || 300, y: mousePos.y || 300 },
       outputs: ["default"],
@@ -417,10 +446,12 @@ function WorkflowCanvas({ workflow, onSave }) {
           <span style="font-size: 18px;">+</span> Add Node
         </button>
         <button class="wf-btn" onClick=${() => { if (workflow) saveWorkflow({ ...workflow, nodes, edges }); }}>
-          💾 Save
+          <span class="btn-icon">${resolveIcon("save")}</span>
+          Save
         </button>
         <button class="wf-btn" onClick=${() => { if (workflow?.id) executeWorkflow(workflow.id); }}>
-          ▶️ Run
+          <span class="btn-icon">${resolveIcon("play")}</span>
+          Run
         </button>
         <div style="flex:1;"></div>
         <span class="wf-badge" style="font-size: 11px; opacity: 0.7;">
@@ -514,7 +545,7 @@ function WorkflowCanvas({ workflow, onSave }) {
                     font-size="11"
                     style="cursor: pointer;"
                     onClick=${(e) => { e.stopPropagation(); deleteEdge(edge.id); }}
-                  >✕ Remove</text>
+                  >Remove</text>
                 `}
               </g>
             `;
@@ -576,7 +607,7 @@ function WorkflowCanvas({ workflow, onSave }) {
                   fill="white"
                   font-size="13"
                   font-weight="600"
-                >${(node.label || node.type).slice(0, 25)}</text>
+                >${stripEmoji(node.label || node.type).slice(0, 25)}</text>
 
                 <!-- Type subtitle -->
                 <text
@@ -619,9 +650,18 @@ function WorkflowCanvas({ workflow, onSave }) {
       <!-- Context Menu -->
       ${contextMenu && html`
         <div class="wf-context-menu" style="position: fixed; left: ${contextMenu.x}px; top: ${contextMenu.y}px; z-index: 50;">
-          <button onClick=${() => { setEditingNode(contextMenu.nodeId); setContextMenu(null); }}>⚙️ Edit Config</button>
-          <button onClick=${() => { const n = nodes.find(n => n.id === contextMenu.nodeId); if (n) { const clone = { ...n, id: `node-${Date.now()}`, position: { x: n.position.x + 40, y: n.position.y + 40 } }; setNodes(p => [...p, clone]); } setContextMenu(null); }}>📋 Duplicate</button>
-          <button onClick=${() => { deleteNode(contextMenu.nodeId); }} style="color: #ef4444;">🗑️ Delete</button>
+          <button onClick=${() => { setEditingNode(contextMenu.nodeId); setContextMenu(null); }}>
+            <span class="btn-icon">${resolveIcon("settings")}</span>
+            Edit Config
+          </button>
+          <button onClick=${() => { const n = nodes.find(n => n.id === contextMenu.nodeId); if (n) { const clone = { ...n, id: `node-${Date.now()}`, position: { x: n.position.x + 40, y: n.position.y + 40 } }; setNodes(p => [...p, clone]); } setContextMenu(null); }}>
+            <span class="btn-icon">${resolveIcon("clipboard")}</span>
+            Duplicate
+          </button>
+          <button onClick=${() => { deleteNode(contextMenu.nodeId); }} style="color: #ef4444;">
+            <span class="btn-icon">${resolveIcon("trash")}</span>
+            Delete
+          </button>
         </div>
       `}
 
@@ -683,21 +723,23 @@ function NodePalette({ nodeTypes: types, onSelect, onClose }) {
           style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--color-border, #2a3040); background: var(--color-bg-secondary, #1a1f2e); color: white; font-size: 13px; outline: none;"
           autofocus
         />
-        <button onClick=${onClose} class="wf-btn wf-btn-sm" style="font-size: 16px; line-height: 1;">✕</button>
+        <button onClick=${onClose} class="wf-btn wf-btn-sm" style="font-size: 16px; line-height: 1;">
+          <span class="icon-inline">${resolveIcon("✕")}</span>
+        </button>
       </div>
 
       ${Object.entries(filtered).map(([cat, items]) => {
-        const meta = NODE_CATEGORY_META[cat] || { color: "#6b7280", icon: "⬡", label: cat };
+        const meta = NODE_CATEGORY_META[cat] || { color: "#6b7280", icon: "diamond", label: cat };
         return html`
           <div key=${cat} style="margin-bottom: 8px;">
             <div
               style="display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 6px; cursor: pointer; color: ${meta.color}; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;"
               onClick=${() => setExpandedCat(expandedCat === cat ? null : cat)}
             >
-              <span>${meta.icon}</span>
+              <span class="icon-inline">${resolveIcon(meta.icon) || ICONS.dot}</span>
               <span>${meta.label}</span>
               <span style="margin-left: auto; font-size: 10px; opacity: 0.5;">${items.length}</span>
-              <span style="font-size: 10px;">${expandedCat === cat ? "▼" : "▶"}</span>
+              <span style="font-size: 10px;">${expandedCat === cat ? ICONS.chevronDown : ICONS.arrowRight}</span>
             </div>
             ${(expandedCat === cat || search.trim()) && items.map(nt => html`
               <button
@@ -727,77 +769,77 @@ function NodePalette({ nodeTypes: types, onSelect, onClose }) {
 
 const COMMAND_PRESETS = {
   testing: [
-    { label: "Run Tests", cmd: "npm test", icon: "🧪" },
-    { label: "Run Single File", cmd: 'npx vitest run tests/{{testFile}}', icon: "🎯" },
-    { label: "Syntax Check", cmd: "npm run syntax:check", icon: "✅" },
+    { label: "Run Tests", cmd: "npm test", icon: "beaker" },
+    { label: "Run Single File", cmd: 'npx vitest run tests/{{testFile}}', icon: "target" },
+    { label: "Syntax Check", cmd: "npm run syntax:check", icon: "check" },
   ],
   build: [
-    { label: "Build Project", cmd: "npm run build", icon: "🔨" },
-    { label: "Build Watch", cmd: "npm run build -- --watch", icon: "👁️" },
-    { label: "Type Check", cmd: "npx tsc --noEmit", icon: "📐" },
+    { label: "Build Project", cmd: "npm run build", icon: "hammer" },
+    { label: "Build Watch", cmd: "npm run build -- --watch", icon: "eye" },
+    { label: "Type Check", cmd: "npx tsc --noEmit", icon: "ruler" },
   ],
   git: [
-    { label: "Diff Stats", cmd: "git diff --stat main...HEAD", icon: "📊" },
-    { label: "Git Status", cmd: "git status --porcelain", icon: "📋" },
-    { label: "Stage All", cmd: "git add -A", icon: "📥" },
-    { label: "Commit", cmd: 'git commit -m "{{commitMessage}}"', icon: "💾" },
-    { label: "Push", cmd: "git push --set-upstream origin HEAD", icon: "🚀" },
+    { label: "Diff Stats", cmd: "git diff --stat main...HEAD", icon: "chart" },
+    { label: "Git Status", cmd: "git status --porcelain", icon: "clipboard" },
+    { label: "Stage All", cmd: "git add -A", icon: "download" },
+    { label: "Commit", cmd: 'git commit -m "{{commitMessage}}"', icon: "save" },
+    { label: "Push", cmd: "git push --set-upstream origin HEAD", icon: "rocket" },
   ],
   github: [
-    { label: "Check CI", cmd: "gh pr checks --json name,state,conclusion", icon: "🔍" },
-    { label: "Merge PR (squash)", cmd: "gh pr merge --auto --squash", icon: "🔀" },
-    { label: "Close PR", cmd: 'gh pr close --comment "{{reason}}"', icon: "🚫" },
-    { label: "PR Diff", cmd: "gh pr diff --stat", icon: "📊" },
-    { label: "Create PR", cmd: 'gh pr create --title "{{title}}" --body "{{body}}" --base main', icon: "📝" },
-    { label: "Add Label", cmd: 'gh pr edit --add-label "{{label}}"', icon: "🏷️" },
-    { label: "Request Review", cmd: 'gh pr edit --add-reviewer {{reviewer}}', icon: "👀" },
+    { label: "Check CI", cmd: "gh pr checks --json name,state,conclusion", icon: "search" },
+    { label: "Merge PR (squash)", cmd: "gh pr merge --auto --squash", icon: "git" },
+    { label: "Close PR", cmd: 'gh pr close --comment "{{reason}}"', icon: "ban" },
+    { label: "PR Diff", cmd: "gh pr diff --stat", icon: "chart" },
+    { label: "Create PR", cmd: 'gh pr create --title "{{title}}" --body "{{body}}" --base main', icon: "edit" },
+    { label: "Add Label", cmd: 'gh pr edit --add-label "{{label}}"', icon: "tag" },
+    { label: "Request Review", cmd: 'gh pr edit --add-reviewer {{reviewer}}', icon: "eye" },
   ],
   bosun: [
-    { label: "List Tasks", cmd: "bosun task list --status todo --json", icon: "📋" },
-    { label: "Count Tasks", cmd: "bosun task list --status todo --count", icon: "#️⃣" },
-    { label: "Task Stats", cmd: "bosun task stats --json", icon: "📈" },
-    { label: "Plan Tasks", cmd: "bosun task plan --count 5", icon: "🧠" },
-    { label: "Create Task", cmd: 'bosun task create --title "{{title}}" --status todo', icon: "➕" },
-    { label: "Monitor Status", cmd: "bosun --daemon-status", icon: "💓" },
+    { label: "List Tasks", cmd: "bosun task list --status todo --json", icon: "clipboard" },
+    { label: "Count Tasks", cmd: "bosun task list --status todo --count", icon: "hash" },
+    { label: "Task Stats", cmd: "bosun task stats --json", icon: "chart" },
+    { label: "Plan Tasks", cmd: "bosun task plan --count 5", icon: "compass" },
+    { label: "Create Task", cmd: 'bosun task create --title "{{title}}" --status todo', icon: "plus" },
+    { label: "Monitor Status", cmd: "bosun --daemon-status", icon: "heart" },
   ],
   session: [
-    { label: "Continue Session", cmd: 'bosun agent continue --session "{{sessionId}}" --prompt "continue"', icon: "▶️" },
-    { label: "Restart Agent", cmd: 'bosun agent restart --session "{{sessionId}}"', icon: "🔄" },
-    { label: "Kill Agent", cmd: 'bosun agent kill --session "{{sessionId}}"', icon: "⛔" },
-    { label: "List Sessions", cmd: "bosun agent list --json", icon: "📡" },
+    { label: "Continue Session", cmd: 'bosun agent continue --session "{{sessionId}}" --prompt "continue"', icon: "play" },
+    { label: "Restart Agent", cmd: 'bosun agent restart --session "{{sessionId}}"', icon: "refresh" },
+    { label: "Kill Agent", cmd: 'bosun agent kill --session "{{sessionId}}"', icon: "stop" },
+    { label: "List Sessions", cmd: "bosun agent list --json", icon: "server" },
   ],
   screenshots: [
-    { label: "Desktop Screenshot", cmd: "bosun screenshot --viewport 1280x720", icon: "🖥️" },
-    { label: "Mobile Screenshot", cmd: "bosun screenshot --viewport 375x812", icon: "📱" },
-    { label: "All Viewports", cmd: "bosun screenshot --viewport desktop,mobile", icon: "📸" },
+    { label: "Desktop Screenshot", cmd: "bosun screenshot --viewport 1280x720", icon: "monitor" },
+    { label: "Mobile Screenshot", cmd: "bosun screenshot --viewport 375x812", icon: "phone" },
+    { label: "All Viewports", cmd: "bosun screenshot --viewport desktop,mobile", icon: "camera" },
   ],
 };
 
 const AGENT_PROMPT_PRESETS = [
-  { label: "▶️ Continue Working", prompt: "Continue working on the current task. Pick up where you left off. Review your previous output and continue.", category: "session" },
-  { label: "🔧 Fix Errors", prompt: "Fix the following errors. Do NOT introduce new issues:\n\n{{lastError}}\n\nTask: {{taskTitle}}\nFiles changed: {{changedFiles}}", category: "fix" },
-  { label: "🔍 PR Review", prompt: "Review this PR for quality, bugs, security issues, test coverage, and documentation.\n\nProvide:\n1. Summary of changes\n2. Issues found (critical/warning/info)\n3. Verdict: APPROVE, REQUEST_CHANGES, or COMMENT", category: "review" },
-  { label: "🔀 Merge Decision", prompt: "Analyze this PR and decide the merge strategy. Consider: CI status, diff size, code quality, test coverage.\n\nDecide exactly ONE action:\n- merge_after_ci_pass: Ready to merge\n- prompt: Agent needs to continue working (explain what)\n- close_pr: PR should be closed (explain why)\n- re_attempt: Task should be restarted from scratch\n- manual_review: Needs human review (explain why)\n- wait: CI still running, check back later\n- noop: No action needed", category: "strategy" },
-  { label: "🎨 Frontend Implement", prompt: "Implement the following frontend changes:\n\nTask: {{taskTitle}}\n{{taskDescription}}\n\nRequirements:\n- Must pass build (npm run build) with 0 warnings\n- Must pass lint (npm run lint)\n- Match the provided design specs\n- Add/update tests if applicable", category: "implement" },
-  { label: "📋 Plan Tasks", prompt: "Analyze the codebase and create {{planCount}} actionable improvement tasks.\n\nFor each task provide:\n- title: Concise action-oriented title\n- description: What needs to change and why\n- priority: 1-5 (1=highest)\n- tags: Relevant labels\n- complexity: low, medium, or high\n\nFocus on: code quality, missing tests, documentation gaps, performance improvements, and technical debt.", category: "planning" },
-  { label: "🐛 Analyze Failure", prompt: "Analyze this agent failure and suggest a fix:\n\nError: {{lastError}}\nTask: {{taskTitle}}\nAttempt: {{retryCount}}/{{maxRetries}}\n\nProvide:\n1. Root cause analysis\n2. Concrete fix steps\n3. Should we retry or escalate?", category: "fix" },
-  { label: "🛡️ Error Recovery", prompt: "The previous agent attempt failed. Here's what happened:\n\n{{lastError}}\n\nOriginal task: {{taskTitle}}\n\nApproach this differently:\n1. Identify what went wrong\n2. Try an alternative approach\n3. Ensure tests pass before committing", category: "fix" },
-  { label: "📊 Code Analysis", prompt: "Analyze the codebase for:\n\n1. Code complexity hotspots\n2. Test coverage gaps\n3. Security vulnerabilities\n4. Performance bottlenecks\n5. Documentation completeness\n\nOutput a structured JSON report.", category: "review" },
-  { label: "🧹 Refactor", prompt: "Refactor {{targetFile}} to:\n\n1. Reduce complexity\n2. Extract reusable functions\n3. Improve naming conventions\n4. Add JSDoc comments\n5. Ensure all existing tests still pass\n\nDo NOT change external behavior.", category: "implement" },
+  { label: "Continue Working", icon: "play", prompt: "Continue working on the current task. Pick up where you left off. Review your previous output and continue.", category: "session" },
+  { label: "Fix Errors", icon: "settings", prompt: "Fix the following errors. Do NOT introduce new issues:\n\n{{lastError}}\n\nTask: {{taskTitle}}\nFiles changed: {{changedFiles}}", category: "fix" },
+  { label: "PR Review", icon: "search", prompt: "Review this PR for quality, bugs, security issues, test coverage, and documentation.\n\nProvide:\n1. Summary of changes\n2. Issues found (critical/warning/info)\n3. Verdict: APPROVE, REQUEST_CHANGES, or COMMENT", category: "review" },
+  { label: "Merge Decision", icon: "git", prompt: "Analyze this PR and decide the merge strategy. Consider: CI status, diff size, code quality, test coverage.\n\nDecide exactly ONE action:\n- merge_after_ci_pass: Ready to merge\n- prompt: Agent needs to continue working (explain what)\n- close_pr: PR should be closed (explain why)\n- re_attempt: Task should be restarted from scratch\n- manual_review: Needs human review (explain why)\n- wait: CI still running, check back later\n- noop: No action needed", category: "strategy" },
+  { label: "Frontend Implement", icon: "palette", prompt: "Implement the following frontend changes:\n\nTask: {{taskTitle}}\n{{taskDescription}}\n\nRequirements:\n- Must pass build (npm run build) with 0 warnings\n- Must pass lint (npm run lint)\n- Match the provided design specs\n- Add/update tests if applicable", category: "implement" },
+  { label: "Plan Tasks", icon: "clipboard", prompt: "Analyze the codebase and create {{planCount}} actionable improvement tasks.\n\nFor each task provide:\n- title: Concise action-oriented title\n- description: What needs to change and why\n- priority: 1-5 (1=highest)\n- tags: Relevant labels\n- complexity: low, medium, or high\n\nFocus on: code quality, missing tests, documentation gaps, performance improvements, and technical debt.", category: "planning" },
+  { label: "Analyze Failure", icon: "bug", prompt: "Analyze this agent failure and suggest a fix:\n\nError: {{lastError}}\nTask: {{taskTitle}}\nAttempt: {{retryCount}}/{{maxRetries}}\n\nProvide:\n1. Root cause analysis\n2. Concrete fix steps\n3. Should we retry or escalate?", category: "fix" },
+  { label: "Error Recovery", icon: "shield", prompt: "The previous agent attempt failed. Here's what happened:\n\n{{lastError}}\n\nOriginal task: {{taskTitle}}\n\nApproach this differently:\n1. Identify what went wrong\n2. Try an alternative approach\n3. Ensure tests pass before committing", category: "fix" },
+  { label: "Code Analysis", icon: "chart", prompt: "Analyze the codebase for:\n\n1. Code complexity hotspots\n2. Test coverage gaps\n3. Security vulnerabilities\n4. Performance bottlenecks\n5. Documentation completeness\n\nOutput a structured JSON report.", category: "review" },
+  { label: "Refactor", icon: "repeat", prompt: "Refactor {{targetFile}} to:\n\n1. Reduce complexity\n2. Extract reusable functions\n3. Improve naming conventions\n4. Add JSDoc comments\n5. Ensure all existing tests still pass\n\nDo NOT change external behavior.", category: "implement" },
 ];
 
 const TRIGGER_EVENT_PRESETS = [
-  { label: "Task Failed", value: "task.failed", icon: "❌" },
-  { label: "Task Completed", value: "task.completed", icon: "✅" },
-  { label: "Task Assigned", value: "task.assigned", icon: "👤" },
-  { label: "PR Merged", value: "pr.merged", icon: "🔀" },
-  { label: "PR Opened", value: "pr.opened", icon: "📬" },
-  { label: "Agent Started", value: "agent.started", icon: "🤖" },
-  { label: "Agent Crashed", value: "agent.crashed", icon: "💥" },
-  { label: "Rate Limited", value: "rate.limited", icon: "🚦" },
-  { label: "Build Failed", value: "build.failed", icon: "🔨" },
-  { label: "Deploy Completed", value: "deploy.completed", icon: "🚀" },
-  { label: "Session Ended", value: "session.ended", icon: "🔌" },
+  { label: "Task Failed", value: "task.failed", icon: "close" },
+  { label: "Task Completed", value: "task.completed", icon: "check" },
+  { label: "Task Assigned", value: "task.assigned", icon: "user" },
+  { label: "PR Merged", value: "pr.merged", icon: "git" },
+  { label: "PR Opened", value: "pr.opened", icon: "mail" },
+  { label: "Agent Started", value: "agent.started", icon: "bot" },
+  { label: "Agent Crashed", value: "agent.crashed", icon: "zap" },
+  { label: "Rate Limited", value: "rate.limited", icon: "alert" },
+  { label: "Build Failed", value: "build.failed", icon: "hammer" },
+  { label: "Deploy Completed", value: "deploy.completed", icon: "rocket" },
+  { label: "Session Ended", value: "session.ended", icon: "plug" },
 ];
 
 const CRON_PRESETS = [
@@ -852,7 +894,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
 
       <!-- Header -->
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
-        <span style="font-size: 20px;">${meta.icon}</span>
+        <span class="icon-inline" style="font-size: 20px;">${resolveIcon(meta.icon) || ICONS.dot}</span>
         <div style="flex: 1;">
           <input
             type="text"
@@ -862,7 +904,9 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
           />
           <div style="font-size: 11px; color: ${meta.color}; font-family: monospace;">${node.type}</div>
         </div>
-        <button onClick=${onClose} class="wf-btn wf-btn-sm">✕</button>
+        <button onClick=${onClose} class="wf-btn wf-btn-sm">
+          <span class="icon-inline">${resolveIcon("✕")}</span>
+        </button>
       </div>
 
       <!-- Description -->
@@ -879,9 +923,9 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
             style="display: flex; align-items: center; gap: 6px; cursor: pointer; margin-bottom: 8px; opacity: 0.9;"
             onClick=${() => setPresetExpanded(!presetExpanded)}
           >
-            <span style="font-size: 11px; color: #f59e0b;">⚡</span>
+            <span class="icon-inline" style="font-size: 11px; color: #f59e0b;">${resolveIcon("zap")}</span>
             <span style="font-size: 12px; font-weight: 600; color: #f59e0b;">Quick Commands</span>
-            <span style="font-size: 10px; margin-left: auto; color: #6b7280;">${presetExpanded ? "▼" : "▶"}</span>
+            <span style="font-size: 10px; margin-left: auto; color: #6b7280;">${presetExpanded ? ICONS.chevronDown : ICONS.arrowRight}</span>
           </div>
           ${presetExpanded && Object.entries(COMMAND_PRESETS).map(([group, items]) => html`
             <div key=${group} style="margin-bottom: 6px;">
@@ -895,7 +939,8 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
                     title=${p.cmd}
                     style="padding: 3px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: ${config.command === p.cmd ? '#1e3a5f' : '#1a1f2e'}; color: ${config.command === p.cmd ? '#60a5fa' : '#c9d1d9'}; cursor: pointer; white-space: nowrap; transition: all 0.1s;"
                   >
-                    ${p.icon} ${p.label}
+                    <span class="btn-icon">${resolveIcon(p.icon)}</span>
+                    ${p.label}
                   </button>
                 `)}
               </div>
@@ -911,9 +956,9 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
             style="display: flex; align-items: center; gap: 6px; cursor: pointer; margin-bottom: 8px;"
             onClick=${() => setPresetExpanded(!presetExpanded)}
           >
-            <span style="font-size: 11px; color: #a78bfa;">🤖</span>
+            <span class="icon-inline" style="font-size: 11px; color: #a78bfa;">${resolveIcon("bot")}</span>
             <span style="font-size: 12px; font-weight: 600; color: #a78bfa;">Agent Prompt Templates</span>
-            <span style="font-size: 10px; margin-left: auto; color: #6b7280;">${presetExpanded ? "▼" : "▶"}</span>
+            <span style="font-size: 10px; margin-left: auto; color: #6b7280;">${presetExpanded ? ICONS.chevronDown : ICONS.arrowRight}</span>
           </div>
           ${presetExpanded && html`
             <div style="display: flex; flex-direction: column; gap: 3px; max-height: 200px; overflow-y: auto; padding-right: 4px;">
@@ -924,7 +969,10 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
                   class="wf-preset-btn"
                   style="padding: 6px 10px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: #1a1f2e; color: #c9d1d9; cursor: pointer; text-align: left; transition: all 0.1s; line-height: 1.3;"
                 >
-                  <div style="font-weight: 500;">${p.label}</div>
+                  <div style="font-weight: 500; display: flex; align-items: center; gap: 6px;">
+                    <span class="btn-icon">${resolveIcon(p.icon)}</span>
+                    <span>${p.label}</span>
+                  </div>
                   <div style="font-size: 10px; color: #6b7280; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${p.prompt.split("\n")[0].slice(0, 60)}…</div>
                 </button>
               `)}
@@ -932,7 +980,10 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
           `}
           ${(node.type === "action.run_agent") && html`
             <div style="margin-top: 8px; padding: 6px 8px; background: #1a1f2e; border-radius: 6px; border-left: 3px solid #a78bfa;">
-              <div style="font-size: 10px; color: #a78bfa; font-weight: 600; margin-bottom: 2px;">💡 Agent Variables</div>
+              <div style="font-size: 10px; color: #a78bfa; font-weight: 600; margin-bottom: 2px; display: flex; align-items: center; gap: 6px;">
+                <span class="btn-icon">${resolveIcon("lightbulb")}</span>
+                Agent Variables
+              </div>
               <div style="font-size: 10px; color: #6b7280; font-family: monospace; line-height: 1.6;">
                 ${"{{taskTitle}}"} · ${"{{taskDescription}}"} · ${"{{lastError}}"}<br/>
                 ${"{{branch}}"} · ${"{{changedFiles}}"} · ${"{{retryCount}}"}<br/>
@@ -946,7 +997,10 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
       <!-- ═══ Smart Presets: trigger.event ═══ -->
       ${node.type === "trigger.event" && html`
         <div class="wf-preset-section" style="margin-bottom: 14px;">
-          <div style="font-size: 12px; font-weight: 600; color: #34d399; margin-bottom: 6px;">⚡ Event Types</div>
+          <div style="font-size: 12px; font-weight: 600; color: #34d399; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+            <span class="btn-icon">${resolveIcon("zap")}</span>
+            Event Types
+          </div>
           <div style="display: flex; flex-wrap: wrap; gap: 4px;">
             ${TRIGGER_EVENT_PRESETS.map(p => html`
               <button
@@ -954,7 +1008,8 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
                 onClick=${() => applyPreset({ eventType: p.value })}
                 style="padding: 3px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: ${config.eventType === p.value ? '#0d3320' : '#1a1f2e'}; color: ${config.eventType === p.value ? '#34d399' : '#c9d1d9'}; cursor: pointer; white-space: nowrap;"
               >
-                ${p.icon} ${p.label}
+                <span class="btn-icon">${resolveIcon(p.icon)}</span>
+                ${p.label}
               </button>
             `)}
           </div>
@@ -964,7 +1019,10 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
       <!-- ═══ Smart Presets: trigger.cron / trigger.schedule ═══ -->
       ${(node.type === "trigger.cron" || node.type === "trigger.schedule") && html`
         <div class="wf-preset-section" style="margin-bottom: 14px;">
-          <div style="font-size: 12px; font-weight: 600; color: #34d399; margin-bottom: 6px;">⏱️ Schedule Presets</div>
+          <div style="font-size: 12px; font-weight: 600; color: #34d399; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+            <span class="btn-icon">${resolveIcon("clock")}</span>
+            Schedule Presets
+          </div>
           <div style="display: flex; flex-wrap: wrap; gap: 4px;">
             ${CRON_PRESETS.map(p => html`
               <button
@@ -982,7 +1040,10 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
       <!-- ═══ Smart Presets: trigger.pr_event ═══ -->
       ${node.type === "trigger.pr_event" && html`
         <div class="wf-preset-section" style="margin-bottom: 14px;">
-          <div style="font-size: 12px; font-weight: 600; color: #34d399; margin-bottom: 6px;">🐙 PR Events</div>
+          <div style="font-size: 12px; font-weight: 600; color: #34d399; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+            <span class="btn-icon">${resolveIcon("git")}</span>
+            PR Events
+          </div>
           <div style="display: flex; flex-wrap: wrap; gap: 4px;">
             ${["opened", "merged", "review_requested", "changes_requested", "approved", "closed"].map(ev => html`
               <button
@@ -1000,7 +1061,10 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
       <!-- ═══ Smart Presets: condition.expression ═══ -->
       ${node.type === "condition.expression" && html`
         <div class="wf-preset-section" style="margin-bottom: 14px;">
-          <div style="font-size: 12px; font-weight: 600; color: #f472b6; margin-bottom: 6px;">🔣 Expression Presets</div>
+          <div style="font-size: 12px; font-weight: 600; color: #f472b6; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+            <span class="btn-icon">${resolveIcon("terminal")}</span>
+            Expression Presets
+          </div>
           <div style="display: flex; flex-direction: column; gap: 3px;">
             ${EXPRESSION_PRESETS.map(p => html`
               <button
@@ -1039,24 +1103,30 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
       <!-- ═══ Smart Presets: notify.telegram ═══ -->
       ${node.type === "notify.telegram" && html`
         <div class="wf-preset-section" style="margin-bottom: 14px;">
-          <div style="font-size: 12px; font-weight: 600; color: #38bdf8; margin-bottom: 6px;">📨 Message Templates</div>
+          <div style="font-size: 12px; font-weight: 600; color: #38bdf8; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+            <span class="btn-icon">${resolveIcon("mail")}</span>
+            Message Templates
+          </div>
           <div style="display: flex; flex-direction: column; gap: 3px;">
             ${[
-              { label: "✅ Task Done", msg: "✅ Task completed: {{taskTitle}}" },
-              { label: "❌ Task Failed", msg: "🚨 Task {{taskTitle}} failed after {{retryCount}} attempts. Manual intervention needed." },
-              { label: "🔀 PR Merged", msg: "🔀 PR merged: {{prTitle}} → {{baseBranch}}" },
-              { label: "📝 Review Done", msg: "📝 PR review complete for {{branch}}: {{verdict}}" },
-              { label: "📋 Tasks Planned", msg: "📋 Task planner added {{newTaskCount}} tasks to backlog" },
-              { label: "🚀 Deployed", msg: "🚀 Deployment to production completed for {{branch}}" },
-              { label: "👀 Needs Review", msg: "👀 PR needs manual review: {{reason}}" },
-              { label: "🚦 Rate Limited", msg: "🚦 Agent rate limited. Cooling down for {{cooldownSec}}s. Provider: {{provider}}" },
+              { label: "Task Done", icon: "check", msg: "Task completed: {{taskTitle}}" },
+              { label: "Task Failed", icon: "alert", msg: "Task {{taskTitle}} failed after {{retryCount}} attempts. Manual intervention needed." },
+              { label: "PR Merged", icon: "git", msg: "PR merged: {{prTitle}} → {{baseBranch}}" },
+              { label: "Review Done", icon: "edit", msg: "PR review complete for {{branch}}: {{verdict}}" },
+              { label: "Tasks Planned", icon: "clipboard", msg: "Task planner added {{newTaskCount}} tasks to backlog" },
+              { label: "Deployed", icon: "rocket", msg: "Deployment to production completed for {{branch}}" },
+              { label: "Needs Review", icon: "eye", msg: "PR needs manual review: {{reason}}" },
+              { label: "Rate Limited", icon: "alert", msg: "Agent rate limited. Cooling down for {{cooldownSec}}s. Provider: {{provider}}" },
             ].map(p => html`
               <button
                 key=${p.label}
                 onClick=${() => applyPreset({ message: p.msg })}
                 style="padding: 4px 8px; font-size: 11px; border: 1px solid #2a3040; border-radius: 6px; background: #1a1f2e; color: #c9d1d9; cursor: pointer; text-align: left;"
               >
-                ${p.label}
+                <span style="display: inline-flex; align-items: center; gap: 6px;">
+                  <span class="btn-icon">${resolveIcon(p.icon)}</span>
+                  <span>${p.label}</span>
+                </span>
               </button>
             `)}
           </div>
@@ -1081,7 +1151,10 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
       <!-- ═══ Smart Presets: validation nodes ═══ -->
       ${nodeCategory === "validation" && html`
         <div class="wf-preset-section" style="margin-bottom: 14px;">
-          <div style="font-size: 12px; font-weight: 600; color: #34d399; margin-bottom: 6px;">✅ Validation Commands</div>
+          <div style="font-size: 12px; font-weight: 600; color: #34d399; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+            <span class="btn-icon">${resolveIcon("check")}</span>
+            Validation Commands
+          </div>
           <div style="display: flex; flex-wrap: wrap; gap: 4px;">
             ${[
               ...(nodeAction === "build" ? [
@@ -1218,7 +1291,8 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
         class="wf-btn"
         style="width: 100%; margin-top: 20px; background: #dc262620; color: #ef4444; border-color: #ef444440;"
       >
-        🗑️ Delete Node
+        <span class="btn-icon">${resolveIcon("trash")}</span>
+        Delete Node
       </button>
 
       <!-- Raw JSON -->
@@ -1237,46 +1311,15 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
 function WorkflowListView() {
   const wfs = workflows.value || [];
   const tmpls = templates.value || [];
-
-  // ── Search & Filter via signals ──
-  const searchQuery = workflowListSearch.value;
-  const filterCategory = workflowListFilter.value;
-  const setSearchQuery = (v) => { workflowListSearch.value = v; };
-  const setFilterCategory = (v) => { workflowListFilter.value = v; };
-
-  // ── Dedup: build set of template IDs already installed ──
   const installedTemplateIds = new Set();
   wfs.forEach((wf) => {
     if (wf.metadata?.installedFrom) installedTemplateIds.add(wf.metadata.installedFrom);
-    // Also match by name as fallback for legacy data
     installedTemplateIds.add(wf.name);
   });
-
-  // Filter workflows by search
-  const sq = (searchQuery || "").toLowerCase().trim();
-  const filteredWfs = sq
-    ? wfs.filter((wf) => {
-        const haystack = `${wf.name} ${wf.description || ""} ${wf.category || ""} ${(wf.tags || []).join(" ")}`.toLowerCase();
-        return haystack.includes(sq);
-      })
-    : wfs;
-
-  // Filter & dedup templates: hide already-installed, apply search + category
   const availableTemplates = tmpls.filter((t) => {
-    // Dedup: hide templates already installed
     if (installedTemplateIds.has(t.id) || installedTemplateIds.has(t.name)) return false;
-    // Search filter
-    if (sq) {
-      const haystack = `${t.name} ${t.description || ""} ${t.category || ""} ${(t.tags || []).join(" ")}`.toLowerCase();
-      if (!haystack.includes(sq)) return false;
-    }
-    // Category filter
-    if (filterCategory && (t.category || "custom") !== filterCategory) return false;
     return true;
   });
-
-  // Collect unique categories for filter pills
-  const allCategories = [...new Set(tmpls.map((t) => t.category || "custom"))].sort();
 
   return html`
     <div style="padding: 0 4px;">
@@ -1303,56 +1346,24 @@ function WorkflowListView() {
               }
             });
           }}
-        >+ Create Workflow</button>
-        <button class="wf-btn" onClick=${() => { viewMode.value = "runs"; loadRuns(); }}>
-          📊 Run History
+        >
+          <span class="btn-icon">${resolveIcon("plus")}</span>
+          Create Workflow
+        </button>
+        <button class="wf-btn" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; viewMode.value = "runs"; loadRuns(); }}>
+          <span class="btn-icon">${resolveIcon("chart")}</span>
+          Run History
         </button>
       </div>
 
-      <!-- Search & Filter Bar -->
-      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap;">
-        <div style="position: relative; flex: 1; min-width: 200px; max-width: 400px;">
-          <input
-            type="text"
-            placeholder="Search workflows & templates…"
-            value=${searchQuery}
-            onInput=${(e) => setSearchQuery(e.target.value)}
-            style="width: 100%; padding: 8px 12px 8px 32px; border-radius: 8px; border: 1px solid var(--color-border, #2a3040); background: var(--color-bg-secondary, #1a1f2e); color: var(--color-text, #e0e0e0); font-size: 13px; outline: none;"
-          />
-          <span style="position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 14px; opacity: 0.5;">🔍</span>
-        </div>
-        ${allCategories.length > 1 && html`
-          <div style="display: flex; gap: 4px; flex-wrap: wrap;">
-            <button
-              class="wf-btn wf-btn-sm"
-              style=${!filterCategory ? "background: var(--color-accent, #6366f1); color: white;" : ""}
-              onClick=${() => setFilterCategory("")}
-            >All</button>
-            ${allCategories.map((cat) => html`
-              <button
-                key=${cat}
-                class="wf-btn wf-btn-sm"
-                style=${filterCategory === cat ? "background: var(--color-accent, #6366f1); color: white;" : ""}
-                onClick=${() => setFilterCategory(filterCategory === cat ? "" : cat)}
-              >${cat}</button>
-            `)}
-          </div>
-        `}
-        ${sq && html`
-          <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">
-            ${filteredWfs.length + availableTemplates.length} results
-          </span>
-        `}
-      </div>
-
       <!-- Active Workflows -->
-      ${filteredWfs.length > 0 && html`
+      ${wfs.length > 0 && html`
         <div style="margin-bottom: 24px;">
           <h3 style="font-size: 14px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
-            Your Workflows (${filteredWfs.length})
+            Your Workflows (${wfs.length})
           </h3>
           <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
-            ${filteredWfs.map(wf => html`
+            ${wfs.map(wf => html`
               <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
                    onClick=${() => {
                      apiFetch("/api/workflows/" + wf.id).then(d => {
@@ -1361,7 +1372,7 @@ function WorkflowListView() {
                      }).catch(() => { activeWorkflow.value = wf; viewMode.value = "canvas"; });
                    }}>
                 <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                  <span style="font-size: 14px;">${getNodeMeta(wf.trigger || "action")?.icon || "⬡"}</span>
+                  <span class="icon-inline" style="font-size: 14px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
                   <span style="font-weight: 600; font-size: 14px; flex: 1;">${wf.name}</span>
                   <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
                     ${wf.enabled ? "Active" : "Disabled"}
@@ -1377,8 +1388,12 @@ function WorkflowListView() {
                   <span>·</span>
                   <span>${wf.category || "custom"}</span>
                   <div style="flex: 1;"></div>
-                  <button class="wf-btn wf-btn-sm" style="font-size: 11px;" onClick=${(e) => { e.stopPropagation(); executeWorkflow(wf.id); }}>▶️</button>
-                  <button class="wf-btn wf-btn-sm wf-btn-danger" style="font-size: 11px;" onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>🗑️</button>
+                  <button class="wf-btn wf-btn-sm" style="font-size: 11px;" onClick=${(e) => { e.stopPropagation(); executeWorkflow(wf.id); }}>
+                    <span class="icon-inline">${resolveIcon("play")}</span>
+                  </button>
+                  <button class="wf-btn wf-btn-sm wf-btn-danger" style="font-size: 11px;" onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
+                    <span class="icon-inline">${resolveIcon("trash")}</span>
+                  </button>
                 </div>
               </div>
             `)}
@@ -1386,30 +1401,27 @@ function WorkflowListView() {
         </div>
       `}
 
-      ${filteredWfs.length === 0 && html`
+      ${wfs.length === 0 && html`
         <div style="text-align: center; padding: 40px 20px; background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; margin-bottom: 24px; border: 1px solid var(--color-border, #2a3040);">
-          <div style="font-size: 36px; margin-bottom: 12px;">${sq ? "🔍" : "🔄"}</div>
-          <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">${sq ? "No Matching Workflows" : "No Workflows Yet"}</div>
+          <div style="font-size: 36px; margin-bottom: 12px;">
+            <span class="icon-inline">${resolveIcon("refresh")}</span>
+          </div>
+          <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">No Workflows Yet</div>
           <div style="font-size: 13px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 16px; max-width: 400px; margin-left: auto; margin-right: auto; line-height: 1.5;">
-            ${sq
-              ? "Try a different search term or clear the search to see all workflows."
-              : "Workflows automate your development pipeline — from PR merging to error recovery. Install a template below or create one from scratch."}
+            Workflows automate your development pipeline — from PR merging
+            to error recovery. Install a template below or create one from scratch.
           </div>
           <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
-            ${sq
-              ? html`<button class="wf-btn" onClick=${() => setSearchQuery("")}>Clear Search</button>`
-              : html`
-                <button class="wf-btn wf-btn-primary" onClick=${() => {
-                  const newWf = { name: "New Workflow", description: "", category: "custom", enabled: true, nodes: [], edges: [], variables: {} };
-                  saveWorkflow(newWf).then(wf => { if (wf) { activeWorkflow.value = wf; viewMode.value = "canvas"; } });
-                }}>+ Create Blank</button>
-                ${availableTemplates.length > 0 && html`
-                  <button class="wf-btn" style="border-color: #f59e0b60; color: #f59e0b;" onClick=${() => installTemplate(availableTemplates[0]?.id)}>
-                    ⚡ Quick Install: ${availableTemplates[0]?.name}
-                  </button>
-                `}
-              `
-            }
+            <button class="wf-btn wf-btn-primary" onClick=${() => {
+              const newWf = { name: "New Workflow", description: "", category: "custom", enabled: true, nodes: [], edges: [], variables: {} };
+              saveWorkflow(newWf).then(wf => { if (wf) { activeWorkflow.value = wf; viewMode.value = "canvas"; } });
+            }}>+ Create Blank</button>
+            ${availableTemplates.length > 0 && html`
+              <button class="wf-btn" style="border-color: #f59e0b60; color: #f59e0b;" onClick=${() => installTemplate(availableTemplates[0]?.id)}>
+                <span class="btn-icon">${resolveIcon("zap")}</span>
+                Quick Install: ${availableTemplates[0]?.name}
+              </button>
+            `}
           </div>
         </div>
       `}
@@ -1421,7 +1433,7 @@ function WorkflowListView() {
         </h3>
         ${availableTemplates.length === 0 && html`
           <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px;">
-            ${sq ? "No templates match your search." : "All templates are installed! 🎉"}
+            All templates are installed! 🎉
           </div>
         `}
         ${(() => {
@@ -1429,14 +1441,14 @@ function WorkflowListView() {
           const groups = {};
           availableTemplates.forEach(t => {
             const key = t.category || "custom";
-            if (!groups[key]) groups[key] = { label: t.categoryLabel || key, icon: t.categoryIcon || "⚙️", order: t.categoryOrder || 99, items: [] };
+            if (!groups[key]) groups[key] = { label: t.categoryLabel || key, icon: t.categoryIcon || "settings", order: t.categoryOrder || 99, items: [] };
             groups[key].items.push(t);
           });
           const sorted = Object.entries(groups).sort((a, b) => a[1].order - b[1].order);
           return sorted.map(([cat, group]) => html`
             <div key=${cat} style="margin-bottom: 20px;">
               <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--color-border, #2a304060);">
-                <span style="font-size: 16px;">${group.icon}</span>
+                <span class="icon-inline" style="font-size: 16px;">${resolveIcon(group.icon) || ICONS.dot}</span>
                 <span style="font-size: 13px; font-weight: 600; color: var(--color-text-secondary, #8b95a5);">${group.label}</span>
                 <span style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">(${group.items.length})</span>
               </div>
@@ -1444,10 +1456,13 @@ function WorkflowListView() {
                 ${group.items.map(t => html`
                   <div key=${t.id} class="wf-card wf-template-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a304080);">
                     <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                      <span style="font-size: 14px;">${t.categoryIcon || group.icon}</span>
+                      <span class="icon-inline" style="font-size: 14px;">${resolveIcon(t.categoryIcon || group.icon) || ICONS.dot}</span>
                       <span style="font-weight: 600; font-size: 14px; flex: 1;">${t.name}</span>
                       ${t.recommended && html`
-                        <span class="wf-badge" style="background: #10b98125; color: #10b981; border-color: #10b98140; font-size: 10px; padding: 2px 8px; font-weight: 600; letter-spacing: 0.3px;">⭐ Recommended</span>
+                        <span class="wf-badge" style="background: #10b98125; color: #10b981; border-color: #10b98140; font-size: 10px; padding: 2px 8px; font-weight: 600; letter-spacing: 0.3px; display: inline-flex; align-items: center; gap: 4px;">
+                          <span class="icon-inline">${resolveIcon("star")}</span>
+                          Recommended
+                        </span>
                       `}
                     </div>
                     <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 10px; line-height: 1.4;">
@@ -1483,11 +1498,105 @@ function WorkflowListView() {
  *  Run History View
  * ═══════════════════════════════════════════════════════════════ */
 
+function getRunStatusBadgeStyles(status) {
+  if (status === "completed") return { bg: "#10b98130", color: "#10b981" };
+  if (status === "failed") return { bg: "#ef444430", color: "#ef4444" };
+  if (status === "running") return { bg: "#3b82f630", color: "#60a5fa" };
+  return { bg: "#6b728030", color: "#9ca3af" };
+}
+
+function safePrettyJson(value) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value ?? "");
+  }
+}
+
 function RunHistoryView() {
   const runs = workflowRuns.value || [];
+  const selectedRun = selectedRunDetail.value;
+  const workflowNameMap = new Map((workflows.value || []).map((wf) => [wf.id, wf.name]));
+
+  if (selectedRun) {
+    const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
+    const nodeStatuses = selectedRun?.detail?.nodeStatuses || {};
+    const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
+    const logs = Array.isArray(selectedRun?.detail?.logs) ? selectedRun.detail.logs : [];
+    const errors = Array.isArray(selectedRun?.detail?.errors) ? selectedRun.detail.errors : [];
+    const nodeIds = Object.keys(nodeStatuses).sort((a, b) => String(a).localeCompare(String(b)));
+
+    return html`
+      <div style="padding: 0 4px;">
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
+          <button class="wf-btn wf-btn-sm" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; }}>
+            ← Back to Run History
+          </button>
+          <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run Details</h2>
+          <button class="wf-btn wf-btn-sm" onClick=${() => loadRunDetail(selectedRun.runId)}>Refresh</button>
+        </div>
+
+        <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px; margin-bottom: 12px;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+            <span style="font-size: 14px; font-weight: 700;">
+              ${selectedRun.workflowName || workflowNameMap.get(selectedRun.workflowId) || selectedRun.workflowId || "Unknown Workflow"}
+            </span>
+            <span class="wf-badge" style="background: ${statusStyles.bg}; color: ${statusStyles.color};">
+              ${selectedRun.status || "unknown"}
+            </span>
+          </div>
+          <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); line-height: 1.6;">
+            <div><b>Workflow ID:</b> <code>${selectedRun.workflowId || "—"}</code></div>
+            <div><b>Run ID:</b> <code>${selectedRun.runId || "—"}</code></div>
+            <div><b>Started:</b> ${formatDate(selectedRun.startedAt)} (${formatRelative(selectedRun.startedAt)})</div>
+            <div><b>Finished:</b> ${formatDate(selectedRun.endedAt)}</div>
+            <div><b>Duration:</b> ${formatDuration(selectedRun.duration)}</div>
+            <div><b>Nodes:</b> ${selectedRun.nodeCount || 0} · <b>Logs:</b> ${selectedRun.logCount || logs.length} · <b>Errors:</b> ${selectedRun.errorCount || errors.length}</div>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <h3 style="margin: 0; font-size: 14px; color: var(--color-text-secondary, #8b95a5);">Node Execution</h3>
+          ${nodeIds.length === 0 && html`<div style="font-size: 12px; opacity: 0.6;">No node execution data recorded.</div>`}
+          ${nodeIds.map((nodeId) => {
+            const nodeStatus = nodeStatuses[nodeId];
+            const nodeStatusStyles = getRunStatusBadgeStyles(nodeStatus);
+            const nodeOutput = nodeOutputs[nodeId];
+            return html`
+              <details key=${nodeId} style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
+                <summary style="cursor: pointer; display: flex; align-items: center; gap: 8px;">
+                  <code style="font-size: 12px;">${nodeId}</code>
+                  <span class="wf-badge" style="background: ${nodeStatusStyles.bg}; color: ${nodeStatusStyles.color};">
+                    ${nodeStatus || "unknown"}
+                  </span>
+                </summary>
+                <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(nodeOutput)}</pre>
+              </details>
+            `;
+          })}
+        </div>
+
+        <div style="margin-top: 14px; display: grid; gap: 10px;">
+          <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
+            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Run Logs (${logs.length})</summary>
+            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(logs)}</pre>
+          </details>
+          <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
+            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Errors (${errors.length})</summary>
+            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #fca5a5; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(errors)}</pre>
+          </details>
+          <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
+            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Raw Run JSON</summary>
+            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(selectedRun)}</pre>
+          </details>
+        </div>
+      </div>
+    `;
+  }
+
   return html`
     <div style="padding: 0 4px;">
-      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
         <button class="wf-btn wf-btn-sm" onClick=${returnToWorkflowList}>← Back to Workflows</button>
         <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run History</h2>
         <button class="wf-btn wf-btn-sm" onClick=${() => loadRuns()}>Refresh</button>
@@ -1498,21 +1607,36 @@ function RunHistoryView() {
       `}
 
       <div style="display: flex; flex-direction: column; gap: 8px;">
-        ${runs.map(run => html`
-          <div key=${run.runId} style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px; padding: 12px; border: 1px solid var(--color-border, #2a3040); display: flex; align-items: center; gap: 12px;">
-            <span style="font-size: 16px;">${run.status === "completed" ? "✅" : run.status === "failed" ? "❌" : "⏳"}</span>
-            <div style="flex: 1;">
-              <div style="font-weight: 500; font-size: 13px;">${run.workflowId}</div>
-              <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">
-                ${run.nodeCount || 0} nodes · ${run.duration ? Math.round(run.duration / 1000) + "s" : "—"}
-                ${run.errorCount ? ` · ${run.errorCount} errors` : ""}
+        ${runs.map((run) => {
+          const styles = getRunStatusBadgeStyles(run.status);
+          const runName = run.workflowName || workflowNameMap.get(run.workflowId) || run.workflowId;
+          return html`
+            <button
+              key=${run.runId}
+              class="wf-card"
+              onClick=${() => loadRunDetail(run.runId)}
+              style="text-align: left; width: 100%; background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px; padding: 12px; border: 1px solid var(--color-border, #2a3040); display: flex; align-items: center; gap: 12px; cursor: pointer;"
+            >
+              <span class="icon-inline" style="font-size: 16px;">
+                ${run.status === "completed" ? resolveIcon("check") : run.status === "failed" ? resolveIcon("close") : resolveIcon("clock")}
+              </span>
+              <div style="flex: 1; min-width: 0;">
+                <div style="font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                  ${runName || "Unknown workflow"}
+                </div>
+                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                  ${formatDate(run.startedAt)} (${formatRelative(run.startedAt)}) · ${formatDuration(run.duration)} · ${run.nodeCount || 0} nodes${run.errorCount ? ` · ${run.errorCount} errors` : ""}
+                </div>
+                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 2px;">
+                  Run: <code>${run.runId}</code>
+                </div>
               </div>
-            </div>
-            <span class="wf-badge" style="background: ${run.status === "completed" ? "#10b98130" : "#ef444430"}; color: ${run.status === "completed" ? "#10b981" : "#ef4444"};">
-              ${run.status}
-            </span>
-          </div>
-        `)}
+              <span class="wf-badge" style="background: ${styles.bg}; color: ${styles.color};">
+                ${run.status || "unknown"}
+              </span>
+            </button>
+          `;
+        })}
       </div>
     </div>
   `;
@@ -1618,7 +1742,7 @@ export function WorkflowsTab() {
       .wf-preset-section { animation: wf-fade-in 0.15s ease; }
       @keyframes wf-fade-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
       .wf-canvas-container { height: calc(100vh - 140px); min-height: 500px; }
-      @media (min-width: 1400px) { .wf-canvas-container { height: calc(100vh - 120px); min-height: 700px; } }
+      @media (min-width: 1200px) { .wf-canvas-container { height: calc(100vh - 120px); min-height: 700px; } }
     </style>
 
     <div style="padding: 8px;">
