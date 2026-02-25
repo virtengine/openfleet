@@ -578,7 +578,7 @@ export function runConfigDoctor(options = {}) {
   }
 
   // ── Codex config.toml feature flag / sub-agent checks ──────────────────────
-  const codexConfigToml = join(homedir(), ".codex", "config.toml");
+  const codexConfigToml = join(repoRoot, ".codex", "config.toml");
   if (existsSync(codexConfigToml)) {
     const toml = readFileSync(codexConfigToml, "utf-8");
     if (!/^\[features\]/m.test(toml)) {
@@ -592,25 +592,25 @@ export function runConfigDoctor(options = {}) {
         issues.warnings.push({
           code: "CODEX_NO_CHILD_AGENTS",
           message: "child_agents_md not enabled — Codex cannot spawn sub-agents or discover CODEX.md.",
-          fix: 'Add child_agents_md = true under [features] in ~/.codex/config.toml',
+          fix: 'Add child_agents_md = true under [features] in .codex/config.toml',
         });
       }
       if (!/memory_tool\s*=\s*true/i.test(toml)) {
         issues.warnings.push({
           code: "CODEX_NO_MEMORY",
           message: "memory_tool not enabled — Codex has no persistent memory across sessions.",
-          fix: 'Add memory_tool = true under [features] in ~/.codex/config.toml',
+          fix: 'Add memory_tool = true under [features] in .codex/config.toml',
         });
       }
     }
     if (
-      !/^\s*sandbox_permissions\s*=/m.test(toml) &&
-      !/^\[sandbox_permissions\]/m.test(toml)
+      !/^\s*sandbox_mode\s*=/m.test(toml) &&
+      !/^\[sandbox_mode\]/m.test(toml)
     ) {
       issues.warnings.push({
-        code: "CODEX_NO_SANDBOX_PERMS",
-        message: "No sandbox_permissions in Codex config — may restrict agent file access.",
-        fix: "Run bosun --setup to auto-configure sandbox permissions",
+        code: "CODEX_NO_SANDBOX_MODE",
+        message: "No sandbox_mode in Codex config — may restrict agent file access.",
+        fix: "Run bosun --setup to auto-configure sandbox mode",
       });
     }
     if (!/^\[sandbox_workspace_write\]/m.test(toml)) {
@@ -627,14 +627,14 @@ export function runConfigDoctor(options = {}) {
       issues.warnings.push({
         code: "CODEX_BWRAP_DISABLED",
         message: "Bubblewrap sandbox is enabled but unprivileged user namespaces appear disabled.",
-        fix: "Set CODEX_FEATURES_BWRAP=false and re-run bosun --setup (or edit ~/.codex/config.toml [features]).",
+        fix: "Set CODEX_FEATURES_BWRAP=false and re-run bosun --setup (or edit .codex/config.toml [features]).",
       });
     }
   } else {
     issues.warnings.push({
       code: "CODEX_CONFIG_MISSING",
-      message: "~/.codex/config.toml not found — Codex CLI may not be configured.",
-      fix: "Run bosun --setup or 'codex --setup' to create initial config",
+      message: "repo-level .codex/config.toml not found — Codex CLI may not be configured for this workspace.",
+      fix: "Run bosun --setup to create initial config",
     });
   }
 

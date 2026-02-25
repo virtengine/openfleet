@@ -306,37 +306,33 @@ export function hasShellEnvPolicy(toml) {
 }
 
 /**
- * Check whether config has sandbox_permissions set (top-level key).
+ * Check whether config has sandbox_mode set (top-level key).
  */
-export function hasSandboxPermissions(toml) {
-  return /^sandbox_permissions\s*=/m.test(toml);
+export function hasSandboxMode(toml) {
+  return /^sandbox_mode\s*=/m.test(toml);
 }
 
-function stripSandboxPermissions(toml) {
+function stripSandboxMode(toml) {
   let next = toml.replace(
-    /^\s*#\s*Sandbox permissions.*(?:\r?\n)?/gim,
+    /^\s*#\s*Sandbox mode.*(?:\r?\n)?/gim,
     "",
   );
-  next = next.replace(/^\s*sandbox_permissions\s*=.*(?:\r?\n)?/gim, "");
+  next = next.replace(/^\s*sandbox_mode\s*=.*(?:\r?\n)?/gim, "");
   return next;
 }
 
-function extractSandboxPermissionsValue(toml) {
-  const match = toml.match(/^\s*sandbox_permissions\s*=\s*(.+)$/m);
+function extractSandboxModeValue(toml) {
+  const match = toml.match(/^\s*sandbox_mode\s*=\s*(.+)$/m);
   if (!match) return "";
   const raw = String(match[1] || "").split("#")[0].trim();
   if (!raw) return "";
-  if (raw.startsWith("[")) {
-    const values = parseTomlArrayLiteral(raw);
-    return values.join(",");
-  }
   const quoted = raw.match(/^"(.*)"$/) || raw.match(/^'(.*)'$/);
   if (quoted) return quoted[1];
   return raw;
 }
 
-function insertTopLevelSandboxPermissions(toml, permValue) {
-  const block = buildSandboxPermissions(permValue).trim();
+function insertTopLevelSandboxMode(toml, modeValue) {
+  const block = buildSandboxMode(modeValue).trim();
   const tableIdx = toml.search(/^\s*\[/m);
   if (tableIdx === -1) {
     return `${toml.trimEnd()}\n\n${block}\n`;
@@ -346,11 +342,11 @@ function insertTopLevelSandboxPermissions(toml, permValue) {
   return `${head}\n\n${block}\n\n${tail}`;
 }
 
-function ensureTopLevelSandboxPermissions(toml, envValue) {
-  const existingValue = extractSandboxPermissionsValue(toml);
-  const permValue = envValue || existingValue || "disk-full-write-access";
-  const stripped = stripSandboxPermissions(toml);
-  const updated = insertTopLevelSandboxPermissions(stripped, permValue);
+function ensureTopLevelSandboxMode(toml, envValue) {
+  const existingValue = extractSandboxModeValue(toml);
+  const modeValue = envValue || existingValue || "workspace-write";
+  const stripped = stripSandboxMode(toml);
+  const updated = insertTopLevelSandboxMode(stripped, modeValue);
   return {
     toml: updated,
     changed: updated !== toml,
@@ -451,19 +447,17 @@ export function ensureFeatureFlags(toml, envOverrides = process.env) {
 }
 
 /**
- * Build the sandbox_permissions top-level key.
- * Default: "disk-full-write-access" for agentic workloads.
+ * Build the sandbox_mode top-level key.
+ * Default: "workspace-write" for agentic workloads.
  *
- * Codex CLI expects sandbox_permissions as a plain string, NOT an array.
+ * Codex CLI expects sandbox_mode as a plain string, NOT an array.
  *
- * @param {string} [envValue]  CODEX_SANDBOX_PERMISSIONS env var value
+ * @param {string} [envValue]  CODEX_SANDBOX_MODE env var value
  * @returns {string}  TOML line(s)
  */
-export function buildSandboxPermissions(envValue) {
-  const perm = envValue
-    ? envValue.split(",").map((s) => s.trim()).filter(Boolean).join(",")
-    : "disk-full-write-access";
-  return `\n# Sandbox permissions (added by bosun)\nsandbox_permissions = "${perm}"\n`;
+export function buildSandboxMode(envValue) {
+  const mode = envValue ? envValue.trim() : "workspace-write";
+  return `\n# Sandbox mode (added by bosun)\nsandbox_mode = "${mode}"\n`;
 }
 
 function parseTomlArrayLiteral(raw) {
