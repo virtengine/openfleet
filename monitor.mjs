@@ -13570,15 +13570,34 @@ process.on("exit", (code) => {
 if (!isMonitorTestRuntime) {
   const DUPLICATE_START_EXIT_STATE_FILE =
     "monitor-duplicate-start-exit-state.json";
+  const MONITOR_PID_FILE_NAME = "bosun.pid";
   const DUPLICATE_START_EXIT_THROTTLE_MS = Math.max(
     5_000,
     Number(process.env.MONITOR_DUPLICATE_START_WARN_THROTTLE_MS || "60000") ||
       60000,
   );
 
+  function readMonitorLockOwnerPid(cacheDir) {
+    const pidPath = resolve(cacheDir, MONITOR_PID_FILE_NAME);
+    try {
+      const raw = String(readFileSync(pidPath, "utf8") || "").trim();
+      if (!raw) return null;
+      if (raw.startsWith("{")) {
+        const parsed = JSON.parse(raw);
+        const pid = Number(parsed?.pid);
+        return Number.isFinite(pid) && pid > 0 ? pid : null;
+      }
+      const pid = Number(raw);
+      return Number.isFinite(pid) && pid > 0 ? pid : null;
+    } catch {
+      return null;
+    }
+  }
+
   function writeDuplicateStartExitNotice(cacheDir) {
     const statePath = resolve(cacheDir, DUPLICATE_START_EXIT_STATE_FILE);
     const now = Date.now();
+    const ownerPid = readMonitorLockOwnerPid(cacheDir);
     let state = {};
     try {
       state = JSON.parse(readFileSync(statePath, "utf8"));
@@ -13586,13 +13605,16 @@ if (!isMonitorTestRuntime) {
       state = {};
     }
 
+    const lastPid = Number(state?.pid || 0);
+    const samePid = Number(ownerPid) > 0 && lastPid === Number(ownerPid);
     const lastLoggedAt = Number(state?.lastLoggedAt || 0);
     const suppressed = Math.max(0, Number(state?.suppressed || 0));
-    if (now - lastLoggedAt < DUPLICATE_START_EXIT_THROTTLE_MS) {
+    if (samePid && now - lastLoggedAt < DUPLICATE_START_EXIT_THROTTLE_MS) {
       try {
         writeFileSync(
           statePath,
           JSON.stringify({
+            pid: ownerPid,
             lastLoggedAt,
             suppressed: suppressed + 1,
           }),
@@ -13605,15 +13627,18 @@ if (!isMonitorTestRuntime) {
     }
 
     const suffix =
-      suppressed > 0
+      samePid && suppressed > 0
         ? " (suppressed " +
           suppressed +
           " duplicate-start exits in last " +
           Math.round(DUPLICATE_START_EXIT_THROTTLE_MS / 1000) +
           "s)"
         : "";
+    const pidSuffix = Number(ownerPid) > 0 ? ` (PID ${ownerPid})` : "";
     process.stderr.write(
-      "[monitor] another bosun instance holds the lock — duplicate start ignored (exit code 0)." +
+      "[monitor] another bosun instance holds the lock" +
+        pidSuffix +
+        " — duplicate start ignored (exit code 0)." +
         suffix +
         "\n",
     );
@@ -13622,6 +13647,7 @@ if (!isMonitorTestRuntime) {
       writeFileSync(
         statePath,
         JSON.stringify({
+          pid: Number(ownerPid) > 0 ? ownerPid : null,
           lastLoggedAt: now,
           suppressed: 0,
         }),

@@ -33,7 +33,15 @@ describe("duplicate monitor lock handling", () => {
   it("throttles duplicate-start exit notices in monitor", () => {
     expect(monitorSource).toContain("DUPLICATE_START_EXIT_THROTTLE_MS");
     expect(monitorSource).toContain("monitor-duplicate-start-exit-state.json");
-    expect(monitorSource).toContain("suppressed");
+    expect(monitorSource).toContain("samePid");
+    expect(monitorSource).toContain("duplicate-start exits in last");
+  });
+
+  it("includes lock owner PID in monitor duplicate-start exit notices", () => {
+    expect(monitorSource).toContain("MONITOR_PID_FILE_NAME");
+    expect(monitorSource).toContain("readMonitorLockOwnerPid");
+    expect(monitorSource).toContain("holds the lock");
+    expect(monitorSource).toContain("(PID ${ownerPid})");
   });
 
   it("short-circuits duplicate starts in cli before forking monitor", () => {
