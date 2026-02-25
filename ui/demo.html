@@ -831,6 +831,8 @@
         { id: 'copilot-claude', name: 'Copilot Claude', provider: 'anthropic', available: true, busy: false, capabilities: ['code', 'review', 'plan'] },
         { id: 'codex-mini', name: 'Codex Mini', provider: 'openai', available: true, busy: false, capabilities: ['code'] },
       ],
+      libraryEntries: [],
+      libraryContents: {},
       gitBranches: [
         'main',
         'docs/bosun-improvement-plan',
@@ -1654,6 +1656,151 @@
     function addLog(level, source, msg) {
       STATE.logs.unshift({ ts: Date.now(), level, source, msg });
       if (STATE.logs.length > 100) STATE.logs.length = 100;
+    }
+    function slugify(name) {
+      return String(name || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "");
+    }
+    function ensureLibrarySeeded(force = false) {
+      if (!force && STATE.libraryEntries.length) {
+        return { entries: STATE.libraryEntries.length, scaffolded: 0 };
+      }
+      const created = new Date(now - 6 * hr).toISOString();
+      const updated = new Date(now - 2 * hr).toISOString();
+      const entries = [
+        {
+          id: "task-executor",
+          type: "prompt",
+          name: "Task Executor",
+          description: "Default task execution prompt for autonomous agents.",
+          filename: "task-executor.md",
+          tags: ["executor", "task", "agent"],
+          scope: "global",
+          workspace: null,
+          createdAt: created,
+          updatedAt: updated,
+        },
+        {
+          id: "reviewer",
+          type: "prompt",
+          name: "PR Reviewer",
+          description: "Review prompt for quality, tests, and regressions.",
+          filename: "reviewer.md",
+          tags: ["review", "quality", "pr"],
+          scope: "global",
+          workspace: null,
+          createdAt: created,
+          updatedAt: updated,
+        },
+        {
+          id: "frontend-agent",
+          type: "agent",
+          name: "Frontend Agent",
+          description: "UI-focused agent profile with screenshot validation.",
+          filename: "frontend-agent.json",
+          tags: ["frontend", "ui", "css", "screenshot"],
+          scope: "global",
+          workspace: null,
+          createdAt: created,
+          updatedAt: updated,
+        },
+        {
+          id: "backend-agent",
+          type: "agent",
+          name: "Backend Agent",
+          description: "API-first agent profile for services and data.",
+          filename: "backend-agent.json",
+          tags: ["backend", "api", "db"],
+          scope: "global",
+          workspace: null,
+          createdAt: created,
+          updatedAt: updated,
+        },
+        {
+          id: "testing-agent",
+          type: "agent",
+          name: "Testing Agent",
+          description: "Test/QA agent profile for coverage and CI validation.",
+          filename: "testing-agent.json",
+          tags: ["tests", "qa", "ci"],
+          scope: "global",
+          workspace: null,
+          createdAt: created,
+          updatedAt: updated,
+        },
+        {
+          id: "lint-sheriff",
+          type: "skill",
+          name: "Lint Sheriff",
+          description: "Skill: fix lint errors quickly and safely.",
+          filename: "lint-sheriff.md",
+          tags: ["lint", "eslint", "format"],
+          scope: "global",
+          workspace: null,
+          createdAt: created,
+          updatedAt: updated,
+        },
+        {
+          id: "docs-polish",
+          type: "skill",
+          name: "Docs Polish",
+          description: "Skill: update docs, changelogs, and READMEs.",
+          filename: "docs-polish.md",
+          tags: ["docs", "readme"],
+          scope: "global",
+          workspace: null,
+          createdAt: created,
+          updatedAt: updated,
+        },
+      ];
+      const contents = {
+        "task-executor": "# Task Executor\n\nFocus on delivering a clean implementation with tests and clear output.\n",
+        reviewer: "# PR Reviewer\n\nCheck for regressions, missing tests, and risky changes.\n",
+        "frontend-agent": {
+          id: "frontend-agent",
+          name: "Frontend Agent",
+          description: "UI-focused agent profile with screenshot validation.",
+          titlePatterns: ["ui", "frontend", "css", "layout", "design"],
+          scopes: ["ui", "frontend", "portal", "web", "css"],
+          sdk: "COPILOT",
+          model: null,
+          promptOverride: null,
+          skills: ["lint-sheriff", "docs-polish"],
+          env: { UI_SCREENSHOT_REQUIRED: "1" },
+        },
+        "backend-agent": {
+          id: "backend-agent",
+          name: "Backend Agent",
+          description: "API-first agent profile for services and data.",
+          titlePatterns: ["api", "backend", "db", "server"],
+          scopes: ["api", "server", "db", "backend"],
+          sdk: "CODEX",
+          model: null,
+          promptOverride: null,
+          skills: ["lint-sheriff"],
+          env: {},
+        },
+        "testing-agent": {
+          id: "testing-agent",
+          name: "Testing Agent",
+          description: "Test/QA agent profile for coverage and CI validation.",
+          titlePatterns: ["test", "qa", "coverage", "ci"],
+          scopes: ["test", "tests", "ci"],
+          sdk: "CODEX",
+          model: null,
+          promptOverride: null,
+          skills: [],
+          env: {},
+        },
+        "lint-sheriff": "# Lint Sheriff\n\n## Purpose\nFix lint and formatting errors without changing behavior.\n\n## Instructions\n- Run lint/check tasks\n- Apply minimal changes\n- Re-run lint\n",
+        "docs-polish": "# Docs Polish\n\n## Purpose\nKeep documentation clear and up to date.\n\n## Instructions\n- Update README and changelogs as needed\n- Keep formatting consistent\n",
+      };
+      STATE.libraryEntries = entries;
+      STATE.libraryContents = contents;
+      return { entries: entries.length, scaffolded: 3 };
     }
     function formatLogLine(entry) {
       return `[${formatTimestamp(entry.ts)}] [${entry.level}] ${entry.source}: ${entry.msg}`;
@@ -2509,6 +2656,99 @@
         const t = findTask(body?.taskId || body?.id);
         if (t) { t.status = 'todo'; t.updated = Date.now(); addLog('info', 'kanban', `Task unignored: ${t.title}`); }
         return { ok: true, data: t || null };
+      }
+
+      // ── Library ──
+      if (route === '/api/library') {
+        ensureLibrarySeeded();
+        const type = (params.get('type') || '').trim();
+        const search = (params.get('search') || '').trim().toLowerCase();
+        let list = STATE.libraryEntries.slice();
+        if (type && type !== 'all') list = list.filter(e => e.type === type);
+        if (search) {
+          list = list.filter(e => {
+            const hay = [e.name, e.description, e.id, ...(e.tags || [])].join(' ').toLowerCase();
+            return hay.includes(search);
+          });
+        }
+        return { ok: true, data: list };
+      }
+      if (route === '/api/library/entry') {
+        ensureLibrarySeeded();
+        if (method === 'GET') {
+          const id = (params.get('id') || '').trim();
+          const entry = STATE.libraryEntries.find(e => e.id === id);
+          if (!entry) return { ok: false, error: 'not found' };
+          return { ok: true, data: { ...entry, content: STATE.libraryContents[id] ?? '' } };
+        }
+        if (method === 'POST') {
+          const payload = body || {};
+          const id = payload.id || slugify(payload.name);
+          if (!id || !payload.type || !payload.name) return { ok: false, error: 'missing fields' };
+          const nowIso = new Date().toISOString();
+          const idx = STATE.libraryEntries.findIndex(e => e.id === id);
+          const entry = {
+            id,
+            type: payload.type,
+            name: payload.name,
+            description: payload.description || '',
+            filename: payload.filename || `${id}.${payload.type === 'agent' ? 'json' : 'md'}`,
+            tags: Array.isArray(payload.tags) ? payload.tags : [],
+            scope: payload.scope || 'global',
+            workspace: payload.workspace ?? null,
+            createdAt: idx >= 0 ? STATE.libraryEntries[idx].createdAt : nowIso,
+            updatedAt: nowIso,
+          };
+          if (idx >= 0) STATE.libraryEntries[idx] = entry;
+          else STATE.libraryEntries.push(entry);
+          if (payload.content !== undefined) {
+            STATE.libraryContents[id] = payload.content;
+          }
+          return { ok: true, data: entry };
+        }
+        if (method === 'DELETE') {
+          const id = body?.id;
+          if (!id) return { ok: false, error: 'id required' };
+          const idx = STATE.libraryEntries.findIndex(e => e.id === id);
+          if (idx < 0) return { ok: false, error: 'not found' };
+          STATE.libraryEntries.splice(idx, 1);
+          delete STATE.libraryContents[id];
+          return { ok: true };
+        }
+      }
+      if (route === '/api/library/scopes') {
+        return { ok: true, data: [
+          { name: 'ui', source: 'folder', count: 0 },
+          { name: 'api', source: 'folder', count: 0 },
+          { name: 'infra', source: 'folder', count: 0 },
+          { name: 'docs', source: 'folder', count: 0 },
+        ]};
+      }
+      if (route === '/api/library/init') {
+        const result = ensureLibrarySeeded(true);
+        return { ok: true, data: result };
+      }
+      if (route === '/api/library/rebuild') {
+        ensureLibrarySeeded();
+        return { ok: true, data: { count: STATE.libraryEntries.length, added: 0, removed: 0 } };
+      }
+      if (route === '/api/library/match-profile') {
+        ensureLibrarySeeded();
+        const title = (params.get('title') || '').toLowerCase();
+        let best = null;
+        let bestScore = 0;
+        for (const entry of STATE.libraryEntries) {
+          if (entry.type !== 'agent') continue;
+          const tags = entry.tags || [];
+          let score = 0;
+          for (const tag of tags) if (title.includes(tag)) score += 2;
+          if (title.includes(entry.id.replace(/-/g, ' '))) score += 3;
+          if (score > bestScore) {
+            bestScore = score;
+            best = { ...entry, score };
+          }
+        }
+        return { ok: true, data: best };
       }
 
       // ── Agents ──
