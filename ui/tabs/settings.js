@@ -544,9 +544,23 @@ function ServerConfigMode() {
     setLoadError(null);
     try {
       const res = await apiFetch("/api/settings");
-      if (res?.ok && res.data) {
+      const isWrapped = Boolean(res?.ok && res.data && typeof res.data === "object");
+      const isLegacyObject = Boolean(
+        res &&
+        typeof res === "object" &&
+        !Array.isArray(res) &&
+        !("ok" in res) &&
+        !("data" in res),
+      );
+
+      if (isWrapped) {
         setServerData(res.data);
         setServerMeta(res.meta || null);
+        setConfigSync(null);
+      } else if (isLegacyObject) {
+        // Demo/legacy compatibility: /api/settings may return a plain object.
+        setServerData(res);
+        setServerMeta(null);
         setConfigSync(null);
       } else {
         throw new Error(res?.error || "Unexpected response format");
@@ -694,14 +708,23 @@ function ServerConfigMode() {
       for (const [key, value] of Object.entries(edits)) {
         changes[key] = value;
       }
-      const res = await apiFetch("/api/settings/update", {
-        method: "POST",
-        body: JSON.stringify({ changes }),
-      });
-      if (res?.ok) {
+      let res;
+      try {
+        res = await apiFetch("/api/settings/update", {
+          method: "POST",
+          body: JSON.stringify({ changes }),
+        });
+      } catch (primaryErr) {
+        // Legacy/demo compatibility endpoint.
+        res = await apiFetch("/api/config/update", {
+          method: "POST",
+          body: JSON.stringify(changes),
+        });
+      }
+      if (res?.ok || (res && typeof res === "object" && !Array.isArray(res))) {
         showToast("Settings saved successfully", "success");
         haptic("medium");
-        const updatedConfig = Array.isArray(res.updatedConfig) ? res.updatedConfig : [];
+        const updatedConfig = Array.isArray(res.updatedConfig) ? res.updatedConfig : Object.keys(changes);
         const changeKeys = Object.keys(changes);
         const skipped = changeKeys.filter((key) => !updatedConfig.includes(key));
         setConfigSync({
