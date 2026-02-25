@@ -208,6 +208,38 @@ export class GitHubReconciler {
     ]);
   }
 
+  /**
+   * Fetch issues that were closed within the merged lookback window.
+   * These may have been auto-closed by GitHub when a PR merged while Bosun
+   * was offline — they never went through the reconciler's normal path.
+   */
+  async _listRecentlyClosedIssues() {
+    const since = new Date(
+      Date.now() - this.mergedLookbackHours * 60 * 60 * 1000,
+    )
+      .toISOString()
+      .slice(0, 10);
+    try {
+      return await this.gh([
+        "issue",
+        "list",
+        "--repo",
+        this.repoSlug,
+        "--state",
+        "closed",
+        "--search",
+        `closed:>=${since}`,
+        "--limit",
+        "200",
+        "--json",
+        "number,title,labels,url,closedAt",
+      ]);
+    } catch (err) {
+      console.warn(`${TAG} failed to list recently-closed issues: ${err?.message || err}`);
+      return [];
+    }
+  }
+
   async reconcileOnce() {
     const backend = String(getKanbanBackendName() || "").toLowerCase();
     if (!this.enabled) {
@@ -224,6 +256,7 @@ export class GitHubReconciler {
       status: "ok",
       checked: 0,
       closed: 0,
+      recentlyClosed: 0,
       inreview: 0,
       normalized: 0,
       skippedTracking: 0,
@@ -257,15 +290,17 @@ export class GitHubReconciler {
       }
     }
 
-    const [issuesRaw, openPrsRaw, mergedPrsRaw] = await Promise.all([
+    const [issuesRaw, openPrsRaw, mergedPrsRaw, recentlyClosedRaw] = await Promise.all([
       this._listOpenIssues(),
       this._listOpenPrs(),
       this._listMergedPrs(),
+      this._listRecentlyClosedIssues(),
     ]);
 
     const issues = Array.isArray(issuesRaw) ? issuesRaw : [];
     const openPrs = Array.isArray(openPrsRaw) ? openPrsRaw : [];
     const mergedPrs = Array.isArray(mergedPrsRaw) ? mergedPrsRaw : [];
+    const recentlyClosed = Array.isArray(recentlyClosedRaw) ? recentlyClosedRaw : [];
     const mappings = buildIssueMappings(openPrs, mergedPrs);
 
     for (const issue of issues) {
@@ -344,8 +379,30 @@ export class GitHubReconciler {
       }
     }
 
+    // Second pass: recently-closed issues that may have been auto-closed by GitHub
+    // (when a PR merged while Bosun was offline). Ensure project board is synced to "done".
+    for (const issue of recentlyClosed) {
+      const issueNumber = String(issue?.number || "").trim();
+      if (!issueNumber) continue;
+      const mapped = mappings.get(issueNumber);
+      const hasMergedPr = mapped && mapped.mergedPrs.length > 0;
+      if (!hasMergedPr) continue;
+      if (isTrackingIssue(issue, this.trackingLabels)) continue;
+      try {
+        // updateTaskStatus("done") on an already-closed issue is a no-op for the issue
+        // itself but triggers project board sync when in kanban mode.
+        await this.updateTaskStatus(issueNumber, "done");
+        summary.recentlyClosed += 1;
+      } catch (err) {
+        summary.errors += 1;
+        console.warn(
+          `${TAG} failed syncing recently-closed issue #${issueNumber}: ${err?.message || err}`,
+        );
+      }
+    }
+
     console.log(
-      `${TAG} cycle complete: checked=${summary.checked} closed=${summary.closed} inreview=${summary.inreview} normalized=${summary.normalized} skippedTracking=${summary.skippedTracking} projectMismatches=${summary.projectMismatches} errors=${summary.errors}`,
+      `${TAG} cycle complete: checked=${summary.checked} closed=${summary.closed} recentlyClosed=${summary.recentlyClosed} inreview=${summary.inreview} normalized=${summary.normalized} skippedTracking=${summary.skippedTracking} projectMismatches=${summary.projectMismatches} errors=${summary.errors}`,
     );
     return summary;
   }
