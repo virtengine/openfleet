@@ -549,6 +549,39 @@ describe("kanban-adapter vk backend fallback fetch", () => {
     });
   });
 
+  it("normalizes object-map /api/projects payloads before mapping", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (name) =>
+          String(name || "").toLowerCase() === "content-type"
+            ? "application/json"
+            : null,
+      },
+      json: async () => ({
+        data: {
+          projects: {
+            first: { id: "proj-1", name: "Project One" },
+            second: { id: "proj-2", title: "Project Two" },
+          },
+        },
+      }),
+    });
+
+    const adapter = getKanbanAdapter();
+    const projects = await adapter.listProjects();
+    expect(projects).toHaveLength(2);
+    expect(projects[0]).toMatchObject({
+      id: "proj-1",
+      name: "Project One",
+      backend: "vk",
+    });
+    expect(projects[1]).toMatchObject({
+      id: "proj-2",
+      name: "Project Two",
+      backend: "vk",
+    });
+  });
   it("normalizes nested /api/tasks payloads before mapping", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,

@@ -1980,16 +1980,49 @@ class GitHubIssuesAdapter {
   async _gh(args, options = {}) {
     const { parseJson = true } = options;
     const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const execFileAsync = promisify(execFile);
 
     const attempt = async () => {
       try {
-        const { stdout, stderr } = await execFileAsync("gh", args, {
-          maxBuffer: 10 * 1024 * 1024,
-          timeout: 30_000,
+        const result = await new Promise((resolve, reject) => {
+          execFile(
+            "gh",
+            args,
+            {
+              maxBuffer: 10 * 1024 * 1024,
+              timeout: 30_000,
+            },
+            (err, stdout, stderr) => {
+              const normalizeOutput = (value, fallback = "") => {
+                if (value == null) return String(fallback || "");
+                if (typeof value === "string") return value;
+                return String(value);
+              };
+
+              const outputFromStdoutObject =
+                stdout && typeof stdout === "object"
+                  ? {
+                      stdout: normalizeOutput(stdout.stdout),
+                      stderr: normalizeOutput(stdout.stderr, stderr),
+                    }
+                  : null;
+
+              const normalized = outputFromStdoutObject || {
+                stdout: normalizeOutput(stdout),
+                stderr: normalizeOutput(stderr),
+              };
+
+              if (err) {
+                err.stdout = normalizeOutput(err.stdout, normalized.stdout);
+                err.stderr = normalizeOutput(err.stderr, normalized.stderr);
+                reject(err);
+                return;
+              }
+
+              resolve(normalized);
+            },
+          );
         });
-        return { stdout, stderr };
+        return result;
       } catch (err) {
         const message = String(err?.message || err);
         const stdout = String(err?.stdout || "");
