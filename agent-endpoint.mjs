@@ -170,6 +170,7 @@ function isAlreadyExitedProcessError(err) {
     detail.includes("no running instance") ||
     detail.includes("no such process") ||
     detail.includes("cannot find the process") ||
+    detail.includes("not found") ||
     detail.includes("esrch")
   );
 }
@@ -307,7 +308,7 @@ export class AgentEndpoint {
    */
   async _killProcessOnPort(port) {
     try {
-      const { execSync } = await import("node:child_process");
+      const { execSync, spawnSync } = await import("node:child_process");
       const isWindows = process.platform === "win32";
       let output;
       let pids = new Set();
@@ -366,10 +367,31 @@ export class AgentEndpoint {
         console.log(`${TAG} Sending SIGTERM to stale process PID ${pid} on port ${port}`);
         try {
           if (isWindows) {
-            execSync(`taskkill /F /PID ${pid}`, {
-              encoding: "utf8",
-              timeout: 5000,
-            });
+            const killRes = spawnSync(
+              "taskkill",
+              ["/F", "/PID", String(pid)],
+              {
+                encoding: "utf8",
+                timeout: 5000,
+                windowsHide: true,
+                stdio: ["ignore", "pipe", "pipe"],
+              },
+            );
+            if (killRes.error) {
+              throw killRes.error;
+            }
+            if (killRes.status !== 0) {
+              const err = new Error(
+                String(
+                  killRes.stderr ||
+                    killRes.stdout ||
+                    `taskkill exited with status ${killRes.status}`,
+                ).trim(),
+              );
+              err.stderr = killRes.stderr;
+              err.stdout = killRes.stdout;
+              throw err;
+            }
           } else {
             // Graceful SIGTERM first — only escalate to SIGKILL if still alive
             execSync(`kill ${pid}`, {

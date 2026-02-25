@@ -309,7 +309,18 @@ function readAlivePid(pidFile) {
   try {
     if (!existsSync(pidFile)) return null;
     const raw = readFileSync(pidFile, "utf8").trim();
-    const pid = Number(raw);
+    if (!raw) return null;
+
+    let pid = Number(raw);
+    if ((!Number.isFinite(pid) || pid <= 0) && raw.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(raw);
+        pid = Number(parsed?.pid);
+      } catch {
+        return null;
+      }
+    }
+
     if (!Number.isFinite(pid) || pid <= 0) return null;
     return isProcessAlive(pid) ? pid : null;
   } catch {
@@ -1234,6 +1245,28 @@ async function sendCrashNotification(exitCode, signal, options = {}) {
 const SELF_RESTART_EXIT_CODE = 75;
 let monitorChild = null;
 
+function getMonitorPidFileCandidates() {
+  return [
+    PID_FILE,
+    process.env.BOSUN_DIR
+      ? resolve(process.env.BOSUN_DIR, ".cache", "bosun.pid")
+      : null,
+    resolve(__dirname, "..", ".cache", "bosun.pid"),
+    resolve(process.cwd(), ".cache", "bosun.pid"),
+  ].filter(Boolean);
+}
+
+function detectExistingMonitorLockOwner(excludePid = null) {
+  for (const pidFile of getMonitorPidFileCandidates()) {
+    const ownerPid = readAlivePid(pidFile);
+    if (!ownerPid) continue;
+    if (Number.isFinite(excludePid) && ownerPid === excludePid) continue;
+    if (ownerPid === process.pid) continue;
+    return { pid: ownerPid, pidFile };
+  }
+  return null;
+}
+
 function runMonitor() {
   return new Promise((resolve, reject) => {
     const monitorPath = fileURLToPath(
@@ -1247,6 +1280,7 @@ function runMonitor() {
     daemonCrashTracker.markStart();
 
     monitorChild.on("exit", (code, signal) => {
+      const childPid = monitorChild?.pid ?? null;
       monitorChild = null;
       if (code === SELF_RESTART_EXIT_CODE) {
         console.log(
@@ -1256,6 +1290,17 @@ function runMonitor() {
         setTimeout(() => resolve(runMonitor()), 2000);
       } else {
         const exitCode = code ?? (signal ? 1 : 0);
+        const existingOwner =
+          !gracefulShutdown && exitCode === 1
+            ? detectExistingMonitorLockOwner(childPid)
+            : null;
+        if (existingOwner) {
+          console.log(
+            `\n  bosun is already running (PID ${existingOwner.pid}); exiting duplicate start.\n`,
+          );
+          process.exit(0);
+          return;
+        }
         // 4294967295 (0xFFFFFFFF / -1 signed) = OS killed the process (OOM, external termination)
         const isOSKill = exitCode === 4294967295 || exitCode === -1;
         const shouldAutoRestart =

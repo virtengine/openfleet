@@ -35,7 +35,6 @@ const selectedNodeId = signal(null);
 const selectedEdgeId = signal(null);
 const draggingNode = signal(null);
 const connectingFrom = signal(null);
-const isLoading = signal(false);
 const viewMode = signal("list"); // "list" | "canvas" | "runs"
 
 function returnToWorkflowList() {
@@ -111,14 +110,18 @@ async function deleteWorkflow(id) {
 
 async function executeWorkflow(id) {
   try {
-    isLoading.value = true;
-    const data = await apiFetch(`/api/workflows/${id}/execute`, { method: "POST" });
-    showToast("Workflow started", "success");
+    const data = await apiFetch(`/api/workflows/${id}/execute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dispatch: true }),
+    });
+    showToast("Workflow dispatched", "success");
+    setTimeout(() => {
+      loadRuns(id).catch(() => {});
+    }, 600);
     return data;
   } catch (err) {
     showToast("Failed to execute workflow", "error");
-  } finally {
-    isLoading.value = false;
   }
 }
 

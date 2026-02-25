@@ -2251,10 +2251,37 @@ async function startVibeKanbanProcess() {
       );
       try {
         if (isWindows) {
-          execSync(`taskkill /F /PID ${stalePid}`, {
-            timeout: 5000,
-            stdio: "pipe",
-          });
+          const killRes = spawnSync(
+            "taskkill",
+            ["/F", "/PID", String(stalePid)],
+            {
+              encoding: "utf8",
+              timeout: 5000,
+              windowsHide: true,
+              stdio: ["ignore", "pipe", "pipe"],
+            },
+          );
+          if (killRes.status !== 0) {
+            const detail = String(
+              killRes.stderr ||
+                killRes.stdout ||
+                killRes.error?.message ||
+                "taskkill failed",
+            ).toLowerCase();
+            if (
+              !detail.includes("no running instance") &&
+              !detail.includes("not found")
+            ) {
+              console.warn(
+                `[monitor] failed to kill stale PID ${stalePid} on port ${vkRecoveryPort}: ${String(
+                  killRes.stderr ||
+                    killRes.stdout ||
+                    killRes.error?.message ||
+                    `exit ${killRes.status}`,
+                ).slice(0, 200)}`,
+              );
+            }
+          }
         } else {
           // Graceful SIGTERM first, then escalate if still alive
           execSync(`kill ${stalePid}`, {
@@ -5586,12 +5613,84 @@ async function readRequiredChecks(prNumber) {
   }
 }
 
+function getEpicMergeReadiness(headBranch, baseBranch) {
+  const { headInfo, baseInfo } = summarizeEpicBranch(headBranch, baseBranch);
+  const headRef = `${headInfo.remote}/${headInfo.name}`;
+  const baseRef = `${baseInfo.remote}/${baseInfo.name}`;
+  const runGit = (args) =>
+    spawnSync("git", args, {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 20_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+  const headExistsRes = runGit([
+    "ls-remote",
+    "--heads",
+    headInfo.remote,
+    headInfo.name,
+  ]);
+  if (headExistsRes.status !== 0 || !String(headExistsRes.stdout || "").trim()) {
+    return { ready: false, reason: "head-missing" };
+  }
+
+  const baseExistsRes = runGit([
+    "ls-remote",
+    "--heads",
+    baseInfo.remote,
+    baseInfo.name,
+  ]);
+  if (baseExistsRes.status !== 0 || !String(baseExistsRes.stdout || "").trim()) {
+    return { ready: false, reason: "base-missing" };
+  }
+
+  const fetchHead = runGit(["fetch", headInfo.remote, headInfo.name, "--quiet"]);
+  const fetchBase = runGit(["fetch", baseInfo.remote, baseInfo.name, "--quiet"]);
+  if (fetchHead.status !== 0 || fetchBase.status !== 0) {
+    return { ready: false, reason: "fetch-failed" };
+  }
+
+  const aheadRes = runGit(["rev-list", "--count", `${baseRef}..${headRef}`]);
+  if (aheadRes.status !== 0) {
+    return { ready: false, reason: "ahead-unknown" };
+  }
+  const aheadCount = Number(String(aheadRes.stdout || "").trim());
+  if (!Number.isFinite(aheadCount) || aheadCount < 0) {
+    return { ready: false, reason: "ahead-unknown" };
+  }
+  if (aheadCount === 0) {
+    return { ready: false, reason: "no-commits", aheadCount: 0 };
+  }
+  return { ready: true, reason: "ready", aheadCount };
+}
+
 async function createEpicMergePr(headBranch, baseBranch, tasks) {
   const slug = getRepoSlugForEpic();
   if (!slug || !ghAvailable()) return null;
   const { headInfo, baseInfo } = summarizeEpicBranch(headBranch, baseBranch);
   const title = createEpicMergeTitle(headInfo.name, baseInfo.name);
   const body = buildEpicMergeBody(tasks, headInfo.name, baseInfo.name);
+  const readiness = getEpicMergeReadiness(headBranch, baseBranch);
+  if (!readiness.ready) {
+    if (
+      readiness.reason === "no-commits" ||
+      readiness.reason === "head-missing" ||
+      readiness.reason === "base-missing"
+    ) {
+      console.log(
+        `[monitor] skipping epic PR create for ${headInfo.name} -> ${baseInfo.name}: ${readiness.reason}`,
+      );
+      return {
+        skipped: true,
+        reason: readiness.reason,
+        head: headInfo.name,
+        base: baseInfo.name,
+        aheadCount:
+          typeof readiness.aheadCount === "number" ? readiness.aheadCount : null,
+      };
+    }
+  }
   try {
     const result = spawnSync(
       "gh",
@@ -5919,6 +6018,14 @@ async function checkEpicBranches(reason = "interval") {
         void sendTelegramMessage(
           `🧩 Epic PR created for ${epicBranch} → ${DEFAULT_TARGET_BRANCH}\n${created.url}`,
         );
+      } else if (created?.skipped) {
+        updateEpicMergeCache(cacheKey, {
+          status: created.reason || "skipped",
+          head: epicBranch,
+          base: DEFAULT_TARGET_BRANCH,
+          aheadCount:
+            typeof created.aheadCount === "number" ? created.aheadCount : undefined,
+        });
       }
       continue;
     }
