@@ -313,6 +313,42 @@ let workflowAutomationInitDone = false;
 let workflowAutomationReadyLogged = false;
 let workflowAutomationUnavailableLogged = false;
 
+/**
+ * Cache of module names that have an enabled workflow replacement.
+ * Populated once after the workflow engine loads.
+ * Used by `isWorkflowReplacingModule()` to let legacy code yield.
+ */
+const _workflowReplacesModuleCache = new Set();
+let _workflowReplacesModuleCachePopulated = false;
+
+/**
+ * Check whether a workflow replaces a legacy module and workflow automation is
+ * enabled.  When this returns `true` the legacy code-path should yield so that
+ * the same action is not performed twice (once by the module and once by the
+ * workflow).
+ *
+ * @param {string} moduleName  e.g. "merge-strategy.mjs", "review-agent.mjs"
+ * @returns {boolean}
+ */
+function isWorkflowReplacingModule(moduleName) {
+  if (!workflowAutomationEnabled) return false;
+  if (!workflowAutomationEngine) return false;
+
+  // Lazily populate the cache from the engine's loaded workflows
+  if (!_workflowReplacesModuleCachePopulated) {
+    _workflowReplacesModuleCachePopulated = true;
+    try {
+      const all = workflowAutomationEngine.list?.() || [];
+      for (const wf of all) {
+        if (wf?.enabled === false) continue;
+        const replaces = wf?.metadata?.replaces?.module;
+        if (replaces) _workflowReplacesModuleCache.add(replaces);
+      }
+    } catch { /* best effort */ }
+  }
+  return _workflowReplacesModuleCache.has(moduleName);
+}
+
 function allowWorkflowEvent(dedupKey, windowMs = workflowEventDedupWindowMs) {
   if (!dedupKey) return true;
   const now = Date.now();
@@ -421,12 +457,31 @@ async function ensureWorkflowAutomationEngine() {
 
       if (!workflowAutomationReadyLogged) {
         workflowAutomationReadyLogged = true;
-        const total = engine.list?.().length || 0;
-        const enabled = (engine.list?.() || []).filter((wf) => wf?.enabled !== false)
-          .length;
+        const all = engine.list?.() || [];
+        const total = all.length;
+        const enabled = all.filter((wf) => wf?.enabled !== false).length;
         console.log(
           `[workflows] automation enabled — loaded ${enabled}/${total} workflow(s)`,
         );
+
+        // Populate the legacy-module replacement cache so callers of
+        // isWorkflowReplacingModule() get instant answers.
+        _workflowReplacesModuleCachePopulated = true;
+        _workflowReplacesModuleCache.clear();
+        const replaced = [];
+        for (const wf of all) {
+          if (wf?.enabled === false) continue;
+          const mod = wf?.metadata?.replaces?.module;
+          if (mod) {
+            _workflowReplacesModuleCache.add(mod);
+            replaced.push(mod);
+          }
+        }
+        if (replaced.length > 0) {
+          console.log(
+            `[workflows] legacy modules paused (replaced by workflows): ${replaced.join(", ")}`,
+          );
+        }
       }
       return engine;
     } catch (err) {
@@ -1020,6 +1075,10 @@ function isFalsyFlag(value) {
 }
 
 function isReviewAgentEnabled() {
+  // When the workflow version is handling reviews, the legacy review agent
+  // must be disabled to prevent duplicate reviews on the same PR.
+  if (isWorkflowReplacingModule("review-agent.mjs")) return false;
+
   const explicit = process.env.INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED;
   if (explicit !== undefined && String(explicit).trim() !== "") {
     return !isFalsyFlag(explicit);
@@ -2778,6 +2837,10 @@ function restartVibeKanbanProcess() {
 function ensureAnomalyDetector() {
   if (anomalyDetector) return anomalyDetector;
   if (process.env.VITEST) return null;
+  if (isWorkflowReplacingModule("anomaly-detector.mjs")) {
+    console.log("[monitor] skipping legacy anomaly detector — handled by workflow");
+    return null;
+  }
   anomalyDetector = createAnomalyDetector({
     onAnomaly: wrapAnomalyCallback((anomaly) => {
       const icon =
@@ -6970,6 +7033,15 @@ async function shouldFinalizeMergedTask(task, context = {}) {
  */
 async function runMergeStrategyAnalysis(ctx, opts = {}) {
   const tag = `merge-strategy(${ctx.shortId})`;
+
+  // ── Workflow guard: yield to the workflow version if active ──────────
+  if (isWorkflowReplacingModule("merge-strategy.mjs")) {
+    console.log(
+      `[${tag}] skipping legacy merge-strategy — handled by workflow`,
+    );
+    return;
+  }
+
   try {
     const skipFlowGate = opts?.skipFlowGate === true;
     const flowGateEnabled = isFlowPrimaryEnabled() && isFlowReviewGateEnabled();
@@ -13297,14 +13369,12 @@ if (!isMonitorTestRuntime) {
       );
       process.exit(SELF_RESTART_EXIT_CODE);
     }
-    // Write directly to stderr — console.error is intercepted to a log file at
-    // this point, so the user would see a silent exit-code-1 crash with zero
-    // explanation without this line.
+    // Duplicate start (lock held by another healthy monitor) is benign.
+    // Exit 0 so daemon/service wrappers do not treat this as a crash loop.
     process.stderr.write(
-      "[monitor] another bosun instance holds the lock — exiting (exit code 1).\n" +
-        "[monitor] If no other bosun is running, delete .cache/bosun.pid and retry.\n",
+      "[monitor] another bosun instance holds the lock — duplicate start ignored (exit code 0).\n",
     );
-    process.exit(1);
+    process.exit(0);
   }
 
 // ── Codex CLI config.toml: ensure VK MCP + stream timeouts ──────────────────
@@ -13458,15 +13528,10 @@ if (dependabotAutoMerge) {
 // ── Self-updating: poll npm every 10 min, auto-install + restart ────────────
 startAutoUpdateLoop({
   onRestart: (reason) => restartSelf(reason),
-  onNotify: (msg) => {
-    try {
-      // Priority 1 (critical) bypasses the live digest so the user gets a
-      // direct push notification for update-detected and restarting events.
-      void sendTelegramMessage(msg, { priority: 1, skipDedup: true });
-    } catch {
-      /* best-effort */
-    }
-  },
+  onNotify: (msg) =>
+    // Priority 1 (critical) bypasses the live digest so the user gets a
+    // direct push notification for update-detected and restarting events.
+    sendTelegramMessage(msg, { priority: 1, skipDedup: true }).catch(() => {}),
 });
 
 startWatcher();
@@ -13606,6 +13671,10 @@ let prCleanupDaemon = null;
 let ghReconciler = null;
 
 function restartGitHubReconciler() {
+  if (isWorkflowReplacingModule("github-reconciler.mjs")) {
+    console.log("[monitor] skipping legacy GitHub reconciler — handled by workflow");
+    return;
+  }
   try {
     stopGitHubReconciler();
     ghReconciler = null;
@@ -14371,23 +14440,27 @@ if (isContainerEnabled()) {
 // ── Start PR Cleanup Daemon ──────────────────────────────────────────────────
 // Automatically resolves PR conflicts and CI failures every 30 minutes
 if (config.prCleanupEnabled !== false) {
-  const prRepoRoot = effectiveRepoRoot || repoRoot || process.cwd();
-  const flowGateControlsMerges =
-    isFlowPrimaryEnabled() && isFlowReviewGateEnabled();
-  console.log(`[monitor] Starting PR cleanup daemon (repoRoot: ${prRepoRoot})...`);
-  if (flowGateControlsMerges) {
-    console.log(
-      "[monitor] Flow review gate is active — PR cleanup daemon auto-merge is disabled",
-    );
+  if (isWorkflowReplacingModule("pr-cleanup-daemon.mjs")) {
+    console.log("[monitor] skipping legacy PR cleanup daemon — handled by workflow");
+  } else {
+    const prRepoRoot = effectiveRepoRoot || repoRoot || process.cwd();
+    const flowGateControlsMerges =
+      isFlowPrimaryEnabled() && isFlowReviewGateEnabled();
+    console.log(`[monitor] Starting PR cleanup daemon (repoRoot: ${prRepoRoot})...`);
+    if (flowGateControlsMerges) {
+      console.log(
+        "[monitor] Flow review gate is active — PR cleanup daemon auto-merge is disabled",
+      );
+    }
+    prCleanupDaemon = new PRCleanupDaemon({
+      intervalMs: 30 * 60 * 1000, // 30 minutes
+      maxConcurrentCleanups: 3,
+      dryRun: false,
+      autoMerge: !flowGateControlsMerges,
+      repoRoot: prRepoRoot,
+    });
+    prCleanupDaemon.start();
   }
-  prCleanupDaemon = new PRCleanupDaemon({
-    intervalMs: 30 * 60 * 1000, // 30 minutes
-    maxConcurrentCleanups: 3,
-    dryRun: false,
-    autoMerge: !flowGateControlsMerges,
-    repoRoot: prRepoRoot,
-  });
-  prCleanupDaemon.start();
 }
 } else {
   console.log(
@@ -14434,5 +14507,3 @@ export {
   getContainerStatus,
   isContainerEnabled,
 };
-
-

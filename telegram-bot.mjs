@@ -784,15 +784,36 @@ const uiInputRequests = new Map();
 
 /**
  * Get the browser URL with the session token appended for auto-auth.
- * Falls back to the plain telegramUiUrl if no token is available.
+ *
+ * Priority:
+ *   1. Cloudflare tunnel URL (publicly reachable — works from Telegram/mobile)
+ *   2. Configured base URL (explicit env override)
+ *   3. LAN URL (same-network fallback)
+ *
+ * Previous behavior preferred LAN which broke "Open in Browser" for Telegram
+ * users connecting from outside the local network.
  */
 function getBrowserUiUrl() {
   const base = telegramUiUrl;
   if (!base) return null;
   const token = getSessionToken();
 
-  // Prefer LAN for browser opens when available (same-network path),
-  // and fall back to the configured/public URL.
+  // 1. Prefer the cloudflare tunnel when available — it's publicly reachable
+  //    and is the only URL guaranteed to work from Telegram / mobile.
+  const tUrl = getTunnelUrl();
+  if (tUrl) {
+    return appendTokenToUrl(tUrl, token) || tUrl;
+  }
+
+  // 2. Fall back to configured/explicit URL
+  const explicit =
+    process.env.TELEGRAM_WEBAPP_URL || process.env.TELEGRAM_UI_BASE_URL || "";
+  if (explicit) {
+    const trimmed = explicit.trim().replace(/\/+$/, "");
+    if (trimmed) return appendTokenToUrl(trimmed, token) || trimmed;
+  }
+
+  // 3. Fall back to LAN URL for same-network access
   try {
     const parsed = new URL(base);
     const lanIp = getLocalLanIp?.();

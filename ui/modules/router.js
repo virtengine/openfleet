@@ -42,6 +42,18 @@ export function navigateTo(tab, opts = {}) {
   activeTab.value = tab;
   refreshTab(tab, forceRefresh ? { force: true } : undefined);
 
+  // ── Umami analytics: track virtual page views per tab ──────
+  // This lets us see which components/views get the most use.
+  try {
+    if (typeof window.umami !== "undefined") {
+      window.umami.track((props) => ({
+        ...props,
+        url: `/${tab}`,
+        title: `Bosun — ${tab}`,
+      }));
+    }
+  } catch { /* analytics failure must never break navigation */ }
+
   // Show Telegram BackButton when there is history
   if (tabHistory.length > 0) {
     showBackButton(goBack);

@@ -638,8 +638,8 @@ export function acquireMonitorLock(lockDir) {
         ) {
           const classification = classifyMonitorProcess(existingPid, parsed.data);
           if (classification === "monitor") {
-            console.error(
-              "[maintenance] another bosun is already running (PID " + existingPid + "). Exiting.",
+            console.warn(
+              "[maintenance] another bosun is already running (PID " + existingPid + "). Ignoring duplicate start.",
             );
             return false;
           }
