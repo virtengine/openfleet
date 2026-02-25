@@ -541,6 +541,7 @@ function App() {
   const [internalReplenishEnabled, setInternalReplenishEnabled] = useState(false);
   const [internalReplenishMin, setInternalReplenishMin] = useState(1);
   const [internalReplenishMax, setInternalReplenishMax] = useState(2);
+  const [workflowAutomationEnabled, setWorkflowAutomationEnabled] = useState(true);
   // Kanban
   const [kanbanSyncPolicy, setKanbanSyncPolicy] = useState("internal-primary");
   // Multi-workspace
@@ -641,6 +642,7 @@ function App() {
       if (env.INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS) { setInternalReplenishMin(Number(env.INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS) || 1); envLoaded = true; }
       if (env.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS) { setInternalReplenishMax(Number(env.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS) || 2); envLoaded = true; }
       if (env.KANBAN_SYNC_POLICY) { setKanbanSyncPolicy(env.KANBAN_SYNC_POLICY); envLoaded = true; }
+      if (env.WORKFLOW_AUTOMATION_ENABLED !== undefined) { setWorkflowAutomationEnabled(env.WORKFLOW_AUTOMATION_ENABLED !== "false"); envLoaded = true; }
       // Codex model profiles
       if (env.CODEX_MODEL_PROFILE) { setCodexModelProfile(env.CODEX_MODEL_PROFILE); envLoaded = true; }
       if (env.CODEX_MODEL_PROFILE_SUBAGENT) { setCodexModelProfileSubagent(env.CODEX_MODEL_PROFILE_SUBAGENT); envLoaded = true; }
@@ -861,6 +863,7 @@ function App() {
           internalReplenishMin,
           internalReplenishMax,
           kanbanSyncPolicy,
+          workflowAutomationEnabled,
           // Codex model profiles
           codexModelProfile,
           codexModelProfileSubagent,
@@ -1811,6 +1814,15 @@ function App() {
           </label>
           <div class="hint">Auto-generate new tasks when the queue runs low.</div>
         </div>
+        <div class="form-group" style="margin-top:12px;margin-bottom:0">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${workflowAutomationEnabled}
+              onchange=${(e) => setWorkflowAutomationEnabled(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enable Workflow Automation
+          </label>
+          <div class="hint">Runs matching workflows automatically from monitor events (task/pr lifecycle).</div>
+        </div>
         ${internalReplenishEnabled && html`
           <div class="executor-grid" style="margin-top:12px">
             <div class="form-group" style="margin-bottom:0">
@@ -2103,6 +2115,7 @@ function App() {
             <tr><th>Failover</th><td>${failoverStrategy}</td></tr>
             <tr><th>Distribution</th><td>${executorDistribution}</td></tr>
             <tr><th>Executor Mode</th><td>${executorMode}</td></tr>
+            <tr><th>Workflow Automation</th><td>${workflowAutomationEnabled ? "Enabled" : "Disabled"}</td></tr>
           ` : html`
             <tr><th>Max Parallel</th><td>${maxParallel}</td></tr>
             <tr><th>Failover Strategy</th><td>${failoverStrategy}</td></tr>

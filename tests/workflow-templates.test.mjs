@@ -302,25 +302,22 @@ describe("template dry-run execution", () => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
   });
 
-  // Import node type registrations (side effects — registers all 43 types)
-  // This is in a sub-describe so it runs the import once
-  it("every template can be installed and dry-run executed", async () => {
-    // Dynamically import to trigger node type registration
+  beforeEach(async () => {
+    // Side-effect import registers built-in workflow node types once per test process.
     await import("../workflow-nodes.mjs");
+  });
 
-    for (const template of WORKFLOW_TEMPLATES) {
+  for (const template of WORKFLOW_TEMPLATES) {
+    it(`template "${template.id}" dry-run executes without errors`, async () => {
       const installed = installTemplate(template.id, engine);
       const ctx = await engine.execute(installed.id, {}, { dryRun: true, force: true });
       expect(ctx, `Dry-run failed for ${template.id}`).toBeDefined();
-      // In dry-run mode, nodes report what they WOULD do
-      // There should be zero hard errors (structure should be valid)
-      const hardErrors = (ctx.errors || []).filter(
-        (e) => !e.message?.includes("Unknown node type")
-      );
-      // We may get "Unknown node type" for some node types not registered
-      // in the test env—that's expected. But structural errors shouldn't happen.
-    }
-  });
+      expect(
+        ctx.errors || [],
+        `Dry-run produced runtime errors for ${template.id}`
+      ).toEqual([]);
+    });
+  }
 });
 
 // ── Replaces Metadata ───────────────────────────────────────────────────────

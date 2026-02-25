@@ -303,7 +303,7 @@ function parseEnvBoolean(value, defaultValue = false) {
   return defaultValue;
 }
 
-let workflowAutomationEnabled = false;
+let workflowAutomationEnabled = true;
 let workflowEventDedupWindowMs = 15_000;
 const workflowEventDedup = new Map();
 const workflowTaskStatusSnapshot = new Map();
@@ -640,7 +640,7 @@ try {
 }
 workflowAutomationEnabled = parseEnvBoolean(
   process.env.WORKFLOW_AUTOMATION_ENABLED,
-  false,
+  true,
 );
 {
   const dedupMs = Number(process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS || "15000");
@@ -12707,7 +12707,7 @@ function applyConfig(nextConfig, options = {}) {
   plannerMode = nextConfig.plannerMode || "codex-sdk";
   workflowAutomationEnabled = parseEnvBoolean(
     process.env.WORKFLOW_AUTOMATION_ENABLED,
-    workflowAutomationEnabled,
+    true,
   );
   {
     const dedupMs = Number(
@@ -13998,7 +13998,7 @@ if (workflowAutomationEnabled) {
   ensureWorkflowAutomationEngine().catch(() => {});
 } else {
   console.log(
-    "[workflows] automation disabled (set WORKFLOW_AUTOMATION_ENABLED=true to enable event-driven workflow triggers)",
+    "[workflows] automation disabled (set WORKFLOW_AUTOMATION_ENABLED=true to re-enable; default is enabled)",
   );
 }
 startTaskPlannerStatusLoop();
