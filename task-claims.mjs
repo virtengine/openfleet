@@ -221,7 +221,9 @@ async function saveClaimsRegistry(registry) {
   ensureInitialized();
   registry.updated_at = new Date().toISOString();
   const payload = JSON.stringify(registry, null, 2);
-  const tmpPath = `${state.claimsPath}.tmp-${process.pid}-${Date.now()}`;
+  // Include a UUID to prevent tmp-path collisions when multiple save calls
+  // happen in the same millisecond within the same process.
+  const tmpPath = `${state.claimsPath}.tmp-${process.pid}-${Date.now()}-${crypto.randomUUID()}`;
   await writeFile(tmpPath, payload, "utf8");
   try {
     await rename(tmpPath, state.claimsPath);
