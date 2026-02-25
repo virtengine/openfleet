@@ -1155,6 +1155,16 @@ async function main() {
     process.exit(0);
   }
 
+  const existingOwner = !IS_DAEMON_CHILD
+    ? detectExistingMonitorLockOwner()
+    : null;
+  if (existingOwner) {
+    console.log(
+      `\n  bosun is already running (PID ${existingOwner.pid}); exiting duplicate start.\n`,
+    );
+    return;
+  }
+
   // Fork monitor as a child process — enables self-restart on source changes.
   // When monitor exits with code 75, cli re-forks with a fresh ESM module cache.
   await runMonitor();
@@ -1257,12 +1267,19 @@ function getMonitorPidFileCandidates() {
 }
 
 function detectExistingMonitorLockOwner(excludePid = null) {
-  for (const pidFile of getMonitorPidFileCandidates()) {
-    const ownerPid = readAlivePid(pidFile);
-    if (!ownerPid) continue;
-    if (Number.isFinite(excludePid) && ownerPid === excludePid) continue;
-    if (ownerPid === process.pid) continue;
-    return { pid: ownerPid, pidFile };
+  try {
+    for (const pidFile of getMonitorPidFileCandidates()) {
+      const ownerPid = readAlivePid(pidFile);
+      if (!ownerPid) continue;
+      if (Number.isFinite(excludePid) && ownerPid === excludePid) continue;
+      if (ownerPid === process.pid) continue;
+      return { pid: ownerPid, pidFile };
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `\n  [cli] failed to inspect existing monitor lock owner: ${message}\n`,
+    );
   }
   return null;
 }
@@ -1404,3 +1421,4 @@ main().catch(async (err) => {
   await sendCrashNotification(1, null).catch(() => {});
   process.exit(1);
 });
+
