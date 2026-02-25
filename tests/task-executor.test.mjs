@@ -455,6 +455,30 @@ describe("task-executor", () => {
       expect(updateTaskStatus).toHaveBeenCalledWith("stale-1", "todo");
       expect(executeSpy).not.toHaveBeenCalled();
     });
+
+    it("does not resume in-progress tasks already blocked for no-commit thrash", async () => {
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
+      ex._running = true;
+      ex._noCommitCounts.set("blocked-1", 3);
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "blocked-1",
+          title: "Blocked task",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(updateTaskStatus).toHaveBeenCalledWith("blocked-1", "todo");
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
   });
 
   // ────────────────────────────────────────────────────────────────────────

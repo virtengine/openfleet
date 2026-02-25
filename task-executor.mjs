@@ -2997,6 +2997,7 @@ class TaskExecutor {
     let resetToTodo = 0;
     let reconciledDrift = 0;
     let skippedForActiveClaim = 0;
+    let skippedForNoCommitBlock = 0;
 
     for (const task of inProgressTasks) {
       const id = task?.id || task?.task_id;
@@ -3032,6 +3033,23 @@ class TaskExecutor {
         } catch {
           /* best effort */
         }
+      }
+
+      const noCommitCount = this._noCommitCounts.get(id) || 0;
+      if (noCommitCount >= MAX_NO_COMMIT_ATTEMPTS) {
+        try {
+          await updateTaskStatus(id, "todo");
+        } catch {
+          /* best effort */
+        }
+        try {
+          setInternalStatus(id, "todo", "task-executor-recovery-no-commit-block");
+        } catch {
+          /* best effort */
+        }
+        this._removeRuntimeSlot(id);
+        skippedForNoCommitBlock++;
+        continue;
       }
 
       let ageMs = getTaskAgeMs(task);
@@ -3091,7 +3109,7 @@ class TaskExecutor {
       });
     }
 
-    if (toDispatch.length > 0 || resetToTodo > 0) {
+    if (toDispatch.length > 0 || resetToTodo > 0 || skippedForNoCommitBlock > 0) {
       console.log(
         `${TAG} in-progress recovery: resumed ${toDispatch.length}, reset ${resetToTodo} stale task(s) to todo` +
           (reconciledDrift > 0
@@ -3099,6 +3117,9 @@ class TaskExecutor {
             : "") +
           (skippedForActiveClaim > 0
             ? `, skipped ${skippedForActiveClaim} active claim(s)`
+            : "") +
+          (skippedForNoCommitBlock > 0
+            ? `, skipped ${skippedForNoCommitBlock} no-commit blocked task(s)`
             : ""),
       );
     }
@@ -5225,10 +5246,10 @@ class TaskExecutor {
 
         if (noCommitCount >= MAX_NO_COMMIT_ATTEMPTS) {
           console.warn(
-            `${tag} task "${task.title}" blocked — ${MAX_NO_COMMIT_ATTEMPTS} consecutive no-commit completions. Skipping until executor restart.`,
+            `${tag} task "${task.title}" blocked — ${MAX_NO_COMMIT_ATTEMPTS} consecutive no-commit completions. Skipping until anti-thrash state is cleared.`,
           );
           this.sendTelegram?.(
-            `🚫 Task blocked (${MAX_NO_COMMIT_ATTEMPTS}x no-commit): "${task.title}" — will not retry until executor restart`,
+            `🚫 Task blocked (${MAX_NO_COMMIT_ATTEMPTS}x no-commit): "${task.title}" — will not retry until anti-thrash state is cleared`,
           );
         } else {
           this.sendTelegram?.(
