@@ -17,4 +17,10 @@ describe("agent endpoint stale-pid handling", () => {
     const block = match ? match[0] : "";
     expect(block).toContain('stdio: ["ignore", "pipe", "pipe"]');
   });
+
+  it("skips forced kill when port owner is not a bosun process", () => {
+    expect(source).toContain("isLikelyBosunCommandLine");
+    expect(source).toContain("held by non-bosun PID");
+    expect(source).toContain("skipping forced kill");
+  });
 });

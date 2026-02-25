@@ -468,6 +468,7 @@ export function cleanupStaleBranches(repoRoot, opts = {}) {
 
 const PID_FILE_NAME = "bosun.pid";
 const MONITOR_MARKER = "bosun/monitor.mjs";
+const PID_START_TIME_TOLERANCE_MS = 90_000;
 
 function parsePidFile(raw) {
   const text = String(raw || "").trim();
@@ -483,24 +484,72 @@ function parsePidFile(raw) {
   return { pid: Number(text), raw: text };
 }
 
-function getProcessCommandLine(pid) {
-  if (!Number.isFinite(pid) || pid <= 0) return "";
+function getProcessSnapshot(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return null;
   const processes = getProcesses();
   const entry = processes.find((p) => Number(p.pid) === Number(pid));
-  return entry?.commandLine || "";
+  if (!entry) return null;
+  return {
+    commandLine: entry.commandLine || "",
+    creationDate: entry.creationDate || null,
+  };
 }
 
-function classifyMonitorProcess(pid) {
-  const cmd = getProcessCommandLine(pid);
-  if (!cmd) return "unknown";
-  const normalized = cmd.toLowerCase();
+export function classifyMonitorCommandLine(commandLine) {
+  const normalized = String(commandLine || "").toLowerCase().replace(/\\/g, "/");
+  if (!normalized.trim()) return "unknown";
   if (normalized.includes(MONITOR_MARKER)) return "monitor";
   if (normalized.includes("bosun") && normalized.includes("monitor.mjs")) {
     return "monitor";
   }
+
+  // Dev-mode launches often use a relative script path: `node monitor.mjs`.
+  if (
+    /\bnode(?:\.exe)?\b/.test(normalized) &&
+    /(?:^|[\s"'=])monitor\.mjs(?:$|[\s"'])/.test(normalized)
+  ) {
+    return "monitor";
+  }
+
+  if (
+    normalized.includes("bosun") &&
+    normalized.includes("cli.mjs") &&
+    normalized.includes("monitormonitor")
+  ) {
+    return "monitor";
+  }
+
   return "other";
 }
 
+function isLikelySameProcessFromPidFile(processInfo, pidFileData) {
+  if (!processInfo || !pidFileData?.started_at) return null;
+  const lockStartMs = Date.parse(pidFileData.started_at);
+  const processStartMs = processInfo.creationDate?.getTime?.() || NaN;
+  if (!Number.isFinite(lockStartMs) || !Number.isFinite(processStartMs)) {
+    return null;
+  }
+  return Math.abs(processStartMs - lockStartMs) <= PID_START_TIME_TOLERANCE_MS;
+}
+
+function pidFileLooksLikeMonitor(pidFileData) {
+  if (!pidFileData || !Array.isArray(pidFileData.argv)) return false;
+  return classifyMonitorCommandLine(pidFileData.argv.join(" ")) === "monitor";
+}
+
+function classifyMonitorProcess(pid, pidFileData) {
+  const processInfo = getProcessSnapshot(pid);
+  const commandClass = classifyMonitorCommandLine(processInfo?.commandLine || "");
+  if (commandClass === "monitor") return "monitor";
+
+  // Fallback for cases where OS command-line capture omits argv.
+  const sameProcess = isLikelySameProcessFromPidFile(processInfo, pidFileData);
+  if (sameProcess === true && pidFileLooksLikeMonitor(pidFileData)) {
+    return "monitor";
+  }
+
+  return commandClass;
+}
 /**
  * Acquire a singleton lock by writing our PID file.
  * If a stale monitor is detected (PID file exists but process dead), clean up and take over.
@@ -587,7 +636,7 @@ export function acquireMonitorLock(lockDir) {
           existingPid !== process.pid &&
           isProcessAlive(existingPid)
         ) {
-          const classification = classifyMonitorProcess(existingPid);
+          const classification = classifyMonitorProcess(existingPid, parsed.data);
           if (classification === "monitor") {
             console.error(
               "[maintenance] another bosun is already running (PID " + existingPid + "). Exiting.",

@@ -31,6 +31,7 @@ const DEFAULT_PORT = 18432;
 const MAX_BODY_SIZE = 1024 * 1024; // 1 MB
 const REQUEST_TIMEOUT_MS = 30_000; // 30 seconds
 const ACCESS_DENIED_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+const BOSUN_ROOT_HINT = __dirname.toLowerCase().replace(/\\/g, '/');
 
 // Valid status transitions when an agent self-reports
 const VALID_TRANSITIONS = {
@@ -175,6 +176,41 @@ function isAlreadyExitedProcessError(err) {
   );
 }
 
+function normalizeCommandLine(commandLine) {
+  return String(commandLine || "").toLowerCase().replace(/\\/g, "/").trim();
+}
+
+function isLikelyBosunCommandLine(commandLine) {
+  const normalized = normalizeCommandLine(commandLine);
+  if (!normalized) return false;
+
+  if (normalized.includes(BOSUN_ROOT_HINT)) return true;
+
+  if (
+    normalized.includes("/bosun/") &&
+    (normalized.includes("monitor.mjs") ||
+      normalized.includes("cli.mjs") ||
+      normalized.includes("agent-endpoint.mjs") ||
+      normalized.includes("ve-orchestrator"))
+  ) {
+    return true;
+  }
+
+  // Dev-mode often launches monitor as node monitor.mjs from bosun root.
+  if (/\bnode(?:\.exe)?\b/.test(normalized) && /\bmonitor\.mjs\b/.test(normalized)) {
+    return true;
+  }
+
+  return false;
+}
+
+function summarizeCommandLine(commandLine, maxLen = 140) {
+  const compact = String(commandLine || "").replace(/\s+/g, " ").trim();
+  if (!compact) return "command line unavailable";
+  if (compact.length <= maxLen) return compact;
+  return compact.slice(0, maxLen) + "...";
+}
+
 // ── AgentEndpoint Class ─────────────────────────────────────────────────────
 
 export class AgentEndpoint {
@@ -311,7 +347,7 @@ export class AgentEndpoint {
       const { execSync, spawnSync } = await import("node:child_process");
       const isWindows = process.platform === "win32";
       let output;
-      let pids = new Set();
+      const pids = new Set();
 
       // PIDs we must NEVER kill — ourselves, our parent (cli.mjs fork host),
       // and any ancestor in the same process tree.  lsof can return these when
@@ -321,13 +357,43 @@ export class AgentEndpoint {
         String(process.ppid),
       ]);
 
+      const readProcessCommandLine = (pid) => {
+        try {
+          if (isWindows) {
+            const query = `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue; if ($p) { $p.CommandLine }`;
+            const result = spawnSync(
+              "powershell",
+              ["-NoProfile", "-Command", query],
+              {
+                encoding: "utf8",
+                timeout: 5000,
+                windowsHide: true,
+                stdio: ["ignore", "pipe", "pipe"],
+              },
+            );
+            if (result.error || result.status !== 0) return "";
+            return String(result.stdout || "").trim();
+          }
+
+          const result = spawnSync("ps", ["-p", String(pid), "-o", "args="], {
+            encoding: "utf8",
+            timeout: 5000,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          if (result.error || result.status !== 0) return "";
+          return String(result.stdout || "").trim();
+        } catch {
+          return "";
+        }
+      };
+
       if (isWindows) {
         // Windows: netstat -ano | findstr
         output = execSync(`netstat -ano | findstr ":${port}"`, {
           encoding: "utf8",
           timeout: 5000,
         }).trim();
-        const lines = output.split("\n").filter((l) => l.includes("LISTENING"));
+        const lines = output.split("\n").filter((line) => line.includes("LISTENING"));
         for (const line of lines) {
           const parts = line.trim().split(/\s+/);
           const pid = parts[parts.length - 1];
@@ -342,7 +408,7 @@ export class AgentEndpoint {
             encoding: "utf8",
             timeout: 5000,
           }).trim();
-          const pidList = output.split("\n").filter((p) => p.trim());
+          const pidList = output.split("\n").filter((pid) => pid.trim());
           for (const pid of pidList) {
             if (pid && /^\d+$/.test(pid) && !protectedPids.has(pid)) {
               pids.add(pid);
@@ -363,7 +429,23 @@ export class AgentEndpoint {
         }
       }
 
+      const killEligiblePids = new Set();
       for (const pid of pids) {
+        const commandLine = readProcessCommandLine(pid);
+        if (!isLikelyBosunCommandLine(commandLine)) {
+          console.warn(
+            `${TAG} Port ${port} held by non-bosun PID ${pid} (${summarizeCommandLine(commandLine)}); skipping forced kill`,
+          );
+          continue;
+        }
+        killEligiblePids.add(pid);
+      }
+
+      if (killEligiblePids.size === 0) {
+        return;
+      }
+
+      for (const pid of killEligiblePids) {
         console.log(`${TAG} Sending SIGTERM to stale process PID ${pid} on port ${port}`);
         try {
           if (isWindows) {
@@ -421,12 +503,13 @@ export class AgentEndpoint {
           );
         }
       }
+
       // Give the SIGTERM'd processes time to exit gracefully
       await new Promise((r) => setTimeout(r, 2000));
 
       // Escalate: check if any are still alive and SIGKILL them
       if (!isWindows) {
-        for (const pid of pids) {
+        for (const pid of killEligiblePids) {
           try {
             process.kill(Number(pid), 0); // probe — throws if dead
             console.warn(`${TAG} PID ${pid} still alive after SIGTERM — sending SIGKILL`);
@@ -447,7 +530,6 @@ export class AgentEndpoint {
       }
     }
   }
-
   /**
    * Stop the HTTP server.
    * @returns {Promise<void>}
