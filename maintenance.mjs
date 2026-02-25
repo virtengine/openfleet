@@ -470,6 +470,7 @@ export function cleanupStaleBranches(repoRoot, opts = {}) {
 const PID_FILE_NAME = "bosun.pid";
 const MONITOR_MARKER = "bosun/monitor.mjs";
 const PID_START_TIME_TOLERANCE_MS = 90_000;
+const UNKNOWN_OWNER_MONITOR_GRACE_MS = 3 * 60 * 1000;
 const MONITOR_PROCESS_STARTED_AT = new Date().toISOString();
 const MONITOR_LOCK_TOKEN = randomUUID();
 
@@ -548,6 +549,19 @@ function isLikelySameProcessFromPidFile(processInfo, pidFileData) {
 function pidFileLooksLikeMonitor(pidFileData) {
   if (!pidFileData || !Array.isArray(pidFileData.argv)) return false;
   return classifyMonitorCommandLine(pidFileData.argv.join(" ")) === "monitor";
+}
+
+export function shouldAssumeMonitorForUnknownOwner(
+  pidFileData,
+  nowMs = Date.now(),
+) {
+  if (!pidFileLooksLikeMonitor(pidFileData)) return false;
+  const startedAtMs = Date.parse(String(pidFileData?.started_at || ""));
+  if (!Number.isFinite(startedAtMs)) {
+    // Conservative fallback: lock payload strongly resembles monitor ownership.
+    return true;
+  }
+  return Math.abs(nowMs - startedAtMs) <= UNKNOWN_OWNER_MONITOR_GRACE_MS;
 }
 
 function classifyMonitorProcess(pid, pidFileData) {
@@ -663,15 +677,17 @@ export function acquireMonitorLock(lockDir) {
             return false;
           }
           if (classification === "unknown") {
-            // On Windows, PIDs are recycled aggressively.  A live PID whose
-            // command line we cannot read is far more likely to be a reused PID
-            // from an unrelated process than it is to be an actual bosun
-            // monitor.  Log a warning and replace the lock instead of blocking
-            // startup — the worst case is a brief overlap that self-resolves
-            // via the next lock acquisition attempt from the other side.
+            if (shouldAssumeMonitorForUnknownOwner(parsed.data)) {
+              console.warn(
+                "[maintenance] PID file points to a live process (PID " + existingPid +
+                  ") with unavailable command line, but lock payload matches a recent monitor start; ignoring duplicate start",
+              );
+              return false;
+            }
+            // Unknown owner + stale monitor metadata is more likely PID reuse.
             console.warn(
               "[maintenance] PID file points to a live process (PID " + existingPid +
-                ") but command line is unavailable — assuming PID reuse; replacing lock",
+                ") with unavailable command line and stale monitor metadata; assuming PID reuse and replacing lock",
             );
           } else {
             console.warn(
