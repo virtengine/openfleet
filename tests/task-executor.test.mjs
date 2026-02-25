@@ -479,6 +479,94 @@ describe("task-executor", () => {
       expect(updateTaskStatus).toHaveBeenCalledWith("blocked-1", "todo");
       expect(executeSpy).not.toHaveBeenCalled();
     });
+
+    it("still resumes in-progress tasks when no-commit count is below block threshold", async () => {
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
+      ex._running = true;
+      ex._noCommitCounts.set("resume-2", 2);
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "resume-2",
+          title: "Still eligible",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(executeSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "resume-2" }),
+        expect.objectContaining({ recoveredFromInProgress: true }),
+      );
+      expect(updateTaskStatus).not.toHaveBeenCalledWith("resume-2", "todo");
+    });
+
+    it("keeps no-commit block precedence even when a resumable thread exists", async () => {
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
+      ex._running = true;
+      ex._noCommitCounts.set("blocked-thread-1", 3);
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "blocked-thread-1",
+          title: "Blocked with thread",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([
+        { taskKey: "blocked-thread-1" },
+      ]);
+
+      await ex._recoverInterruptedInProgressTasks();
+
+      expect(updateTaskStatus).toHaveBeenCalledWith("blocked-thread-1", "todo");
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
+
+    it("does not crash recovery when resetting blocked no-commit task fails", async () => {
+      const ex = new TaskExecutor({ projectId: "proj-1", maxParallel: 2 });
+      ex._running = true;
+      ex._noCommitCounts.set("blocked-err-1", 3);
+      ex._slotRuntimeState.set("blocked-err-1", {
+        taskId: "blocked-err-1",
+        taskTitle: "Blocked task",
+        branch: "ve/blocked-err-1",
+        sdk: "codex",
+        attempt: 0,
+        startedAt: Date.now(),
+        status: "running",
+      });
+      const executeSpy = vi
+        .spyOn(ex, "executeTask")
+        .mockResolvedValue(undefined);
+      updateTaskStatus.mockRejectedValueOnce(new Error("VK unavailable"));
+
+      listTasks.mockResolvedValueOnce([
+        {
+          id: "blocked-err-1",
+          title: "Blocked task",
+          status: "inprogress",
+          updated_at: new Date().toISOString(),
+        },
+      ]);
+      getActiveThreads.mockReturnValueOnce([]);
+
+      await expect(ex._recoverInterruptedInProgressTasks()).resolves.toBeUndefined();
+
+      expect(updateTaskStatus).toHaveBeenCalledWith("blocked-err-1", "todo");
+      expect(ex._slotRuntimeState.has("blocked-err-1")).toBe(false);
+      expect(executeSpy).not.toHaveBeenCalled();
+    });
   });
 
   // ────────────────────────────────────────────────────────────────────────
@@ -1761,4 +1849,3 @@ describe("task-executor", () => {
     });
   });
 });
-
