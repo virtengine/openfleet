@@ -110,6 +110,57 @@ function buildCopilotPermissionHandler() {
   return async () => ({ kind: "approved" });
 }
 
+/**
+ * Build a per-attempt abort controller that preserves external abort semantics.
+ *
+ * Internal attempt timeouts must not abort the caller-provided controller.
+ * Otherwise retries are immediately pre-aborted and treated as external kills.
+ *
+ * @param {AbortController|null|undefined} externalAC
+ * @param {number} timeoutMs
+ * @returns {{ controller: AbortController, cleanup: () => void }}
+ */
+function createScopedAbortController(externalAC, timeoutMs) {
+  const controller = new AbortController();
+  const externalSignal = externalAC?.signal || null;
+  const forwardExternalAbort = () => {
+    if (!controller.signal.aborted) {
+      controller.abort(externalSignal?.reason || "external_abort");
+    }
+  };
+
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      forwardExternalAbort();
+    } else {
+      externalSignal.addEventListener("abort", forwardExternalAbort, {
+        once: true,
+      });
+    }
+  }
+
+  const timeoutHandle = setTimeout(() => {
+    if (!controller.signal.aborted) {
+      controller.abort("timeout");
+    }
+  }, timeoutMs);
+  if (timeoutHandle && typeof timeoutHandle.unref === "function") {
+    timeoutHandle.unref();
+  }
+
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    clearTimeout(timeoutHandle);
+    if (externalSignal) {
+      externalSignal.removeEventListener("abort", forwardExternalAbort);
+    }
+  };
+
+  return { controller, cleanup };
+}
+
 function shouldFallbackForSdkError(error) {
   if (!error) return false;
   const message = String(error).toLowerCase();
@@ -127,13 +178,42 @@ function shouldFallbackForSdkError(error) {
   if (message.includes("invalid model")) return true;
   // Auth / key errors — SDK isn't properly configured
   if (message.includes("unauthorized") || message.includes("401")) return true;
-  if (message.includes("api key") && (message.includes("invalid") || message.includes("missing") || message.includes("required"))) return true;
-  if (message.includes("authentication") && (message.includes("failed") || message.includes("required") || message.includes("error"))) return true;
+  if (
+    message.includes("api key") &&
+    (message.includes("invalid") ||
+      message.includes("missing") ||
+      message.includes("required"))
+  ) {
+    return true;
+  }
+  if (
+    message.includes("authentication") &&
+    (message.includes("failed") ||
+      message.includes("required") ||
+      message.includes("error"))
+  ) {
+    return true;
+  }
   if (message.includes("forbidden") || message.includes("403")) return true;
   // Connection errors — SDK endpoint is unreachable
   if (message.includes("econnrefused")) return true;
   if (message.includes("enotfound")) return true;
   if (message.includes("connection refused")) return true;
+  if (message.includes("connection reset")) return true;
+  if (message.includes("etimedout")) return true;
+  // Runtime/provider instability: fail over to next SDK immediately.
+  if (message.includes("timeout")) return true;
+  if (message.includes("rate limit") || message.includes("429")) return true;
+  if (message.includes("service unavailable") || message.includes("503")) {
+    return true;
+  }
+  if (message.includes("bad gateway") || message.includes("502")) return true;
+  if (message.includes("gateway timeout") || message.includes("504")) {
+    return true;
+  }
+  if (message.includes("overloaded") || message.includes("server error")) {
+    return true;
+  }
   return false;
 }
 
@@ -642,8 +722,10 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   }
 
   // ── 3. Timeout / abort wiring ────────────────────────────────────────────
-  const controller = externalAC || new AbortController();
-  const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+  const { controller, cleanup: clearAbortScope } = createScopedAbortController(
+    externalAC,
+    timeoutMs,
+  );
 
   // Hard timeout: safety net if the SDK's async iterator ignores AbortSignal.
   // Fires HARD_TIMEOUT_BUFFER_MS after the soft timeout to forcibly break the loop.
@@ -692,7 +774,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
 
     await Promise.race([iterateEvents(), hardTimeoutPromise]);
     clearTimeout(hardTimer);
-    clearTimeout(timer);
+    clearAbortScope();
 
     const output =
       finalResponse.trim() || "(Agent completed with no text output)";
@@ -706,7 +788,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
       threadId: thread.id || null,
     };
   } catch (err) {
-    clearTimeout(timer);
+    clearAbortScope();
     if (hardTimer) clearTimeout(hardTimer);
     if (steerKey) unregisterActiveSession(steerKey);
     const isTimeout =
@@ -841,8 +923,10 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
   const sessionMode = (process.env.COPILOT_SESSION_MODE || "local").trim().toLowerCase();
   const cliUrl = process.env.COPILOT_CLI_URL || undefined;
 
-  const controller = externalAC || new AbortController();
-  const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+  const { controller, cleanup: clearAbortScope } = createScopedAbortController(
+    externalAC,
+    timeoutMs,
+  );
 
   let client;
   let unsubscribe = null;
@@ -884,7 +968,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
       await client.start();
     });
   } catch (err) {
-    clearTimeout(timer);
+    clearAbortScope();
     return {
       success: false,
       output: "",
@@ -1131,7 +1215,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
       threadId: resumeThreadId,
     };
   } finally {
-    clearTimeout(timer);
+    clearAbortScope();
     if (steerKey) unregisterActiveSession(steerKey);
     try {
       if (typeof unsubscribe === "function") unsubscribe();
@@ -1221,10 +1305,13 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     undefined;
 
   // ── 3. Build message queue ───────────────────────────────────────────────
-  const controller = externalAC || new AbortController();
-  const softTimer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+  const { controller, cleanup: clearAbortScope } = createScopedAbortController(
+    externalAC,
+    timeoutMs,
+  );
   // Hard timeout: force-break Promise.race if SDK ignores abort signal
   const hardTimeoutMs = timeoutMs + HARD_TIMEOUT_BUFFER_MS;
+  let hardTimer = null;
 
   /**
    * Minimal async message queue for the Claude SDK streaming interface.
@@ -1416,13 +1503,17 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
       }
     })();
 
-    const hardTimeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("hard-timeout")), hardTimeoutMs),
-    );
+    const hardTimeout = new Promise((_, reject) => {
+      hardTimer = setTimeout(() => reject(new Error("hard-timeout")), hardTimeoutMs);
+      if (hardTimer && typeof hardTimer.unref === "function") {
+        hardTimer.unref();
+      }
+    });
 
     await Promise.race([sdkExecution, hardTimeout]);
+    if (hardTimer) clearTimeout(hardTimer);
 
-    clearTimeout(softTimer);
+    clearAbortScope();
     msgQueue.close();
     if (steerKey) unregisterActiveSession(steerKey);
 
@@ -1437,7 +1528,8 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
       threadId: activeClaudeSessionId,
     };
   } catch (err) {
-    clearTimeout(softTimer);
+    clearAbortScope();
+    if (hardTimer) clearTimeout(hardTimer);
     if (steerKey) unregisterActiveSession(steerKey);
     const isTimeout =
       err.name === "AbortError" ||
@@ -1556,6 +1648,7 @@ export async function launchEphemeralThread(
       : resolvePoolSdkName();
 
   const primaryAdapter = SDK_ADAPTERS[primaryName];
+  let lastAttemptResult = null;
 
   // ── Try primary SDK ──────────────────────────────────────────────────────
   if (primaryAdapter && !isDisabled(primaryName)) {
@@ -1567,6 +1660,7 @@ export async function launchEphemeralThread(
     } else {
       const launcher = await primaryAdapter.load();
       const result = await launcher(prompt, cwd, timeoutMs, extra);
+      lastAttemptResult = result;
 
       // If it succeeded, or if the error isn't fallback-worthy, return as-is
       if (result.success || !shouldFallbackForSdkError(result.error)) {
@@ -1600,6 +1694,7 @@ export async function launchEphemeralThread(
     console.log(`${TAG} trying fallback SDK: ${name}`);
     const launcher = await adapter.load();
     const result = await launcher(prompt, cwd, timeoutMs, extra);
+    lastAttemptResult = result;
 
     if (result.success || !shouldFallbackForSdkError(result.error)) {
       return result;
@@ -1607,6 +1702,9 @@ export async function launchEphemeralThread(
   }
 
   // ── All SDKs exhausted ───────────────────────────────────────────────────
+  if (lastAttemptResult) {
+    return lastAttemptResult;
+  }
   const triedSdks = SDK_FALLBACK_ORDER.filter((n) => !isDisabled(n));
   const configuredSdks = triedSdks.filter((n) => hasSdkPrerequisites(n).ok);
   const skippedSdks = triedSdks.filter((n) => !hasSdkPrerequisites(n).ok);
@@ -2027,8 +2125,10 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     };
   }
 
-  const controller = externalAC || new AbortController();
-  const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+  const { controller, cleanup: clearAbortScope } = createScopedAbortController(
+    externalAC,
+    timeoutMs,
+  );
   let hardTimer;
 
   try {
@@ -2066,7 +2166,7 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
 
     await Promise.race([iterateEvents(), hardTimeoutPromise]);
     clearTimeout(hardTimer);
-    clearTimeout(timer);
+    clearAbortScope();
 
     const newThreadId = thread.id || threadId;
     return {
@@ -2078,7 +2178,7 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
       threadId: newThreadId,
     };
   } catch (err) {
-    clearTimeout(timer);
+    clearAbortScope();
     if (hardTimer) clearTimeout(hardTimer);
     const isTimeout =
       err.name === "AbortError" ||

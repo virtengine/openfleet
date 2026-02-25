@@ -59,6 +59,7 @@ import {
   getWorktreeStats,
 } from "./worktree-manager.mjs";
 import { loadExecutorConfig } from "./config.mjs";
+import { generateWeeklyAgentWorkReport } from "./agent-work-report.mjs";
 import { resolvePwshRuntime } from "./pwsh-runtime.mjs";
 import {
   getTelegramUiUrl,
@@ -2728,6 +2729,14 @@ const COMMANDS = {
     handler: cmdTelemetry,
     desc: "Telemetry summary: /telemetry [errors|executors|alerts]",
   },
+  "/weekly": {
+    handler: cmdWeeklyReport,
+    desc: "Weekly agent work report: /weekly [days]",
+  },
+  "/report": {
+    handler: cmdReport,
+    desc: "Report aliases: /report weekly [days]",
+  },
   "/agentlogs": {
     handler: cmdAgentLogs,
     desc: "Agent output for branch: /agentlogs <branch>",
@@ -3087,6 +3096,7 @@ const FAST_COMMANDS = new Set([
   "/menu",
   "/background",
   "/status",
+  "/weekly",
   "/tasks",
   "/agents",
   "/cancel",
@@ -6230,6 +6240,30 @@ async function cmdTelemetry(chatId, args = "") {
     "Use /telemetry errors | executors | alerts for drill‑down.",
   ];
   return sendReply(chatId, lines.join("\n"));
+}
+
+async function cmdWeeklyReport(chatId, args = "") {
+  try {
+    const maybeDays = Number.parseInt(String(args || "").trim(), 10);
+    const days = Number.isFinite(maybeDays) && maybeDays > 0 && maybeDays <= 30
+      ? maybeDays
+      : 7;
+    const report = await generateWeeklyAgentWorkReport({ days });
+    await sendReply(chatId, report.text);
+  } catch (err) {
+    await sendReply(chatId, `Weekly report failed: ${err?.message || err}`);
+  }
+}
+
+async function cmdReport(chatId, args = "") {
+  const parts = String(args || "").trim().split(/\s+/).filter(Boolean);
+  const subcommand = (parts[0] || "").toLowerCase();
+  if (subcommand === "weekly") {
+    const remainingArgs = parts.slice(1).join(" ");
+    await cmdWeeklyReport(chatId, remainingArgs);
+    return;
+  }
+  await sendReply(chatId, "Usage: /report weekly [days]");
 }
 
 async function cmdAsk(chatId, args) {

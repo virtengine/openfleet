@@ -122,6 +122,7 @@
     "agent-pool.mjs",
     "agent-prompts.mjs",
     "agent-sdk.mjs",
+    "agent-work-report.mjs",
     "anomaly-detector.mjs",
     "autofix.mjs",
     "claude-shell.mjs",

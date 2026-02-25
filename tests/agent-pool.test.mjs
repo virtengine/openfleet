@@ -185,6 +185,8 @@ const ENV_KEYS = [
   "DEVMODE_MONITOR_MONITOR_TIMEOUT_MAX_MS",
   "COPILOT_MODEL",
   "COPILOT_SDK_MODEL",
+  "GITHUB_TOKEN",
+  "COPILOT_CLI_TOKEN",
 ];
 
 /** @type {Record<string, string|undefined>} */
@@ -225,6 +227,8 @@ function clearSdkEnv() {
   delete process.env.DEVMODE_MONITOR_MONITOR_TIMEOUT_MAX_MS;
   delete process.env.COPILOT_MODEL;
   delete process.env.COPILOT_SDK_MODEL;
+  delete process.env.GITHUB_TOKEN;
+  delete process.env.COPILOT_CLI_TOKEN;
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +242,7 @@ let getPoolSdkName,
   launchEphemeralThread,
   execPooledPrompt,
   launchOrResumeThread,
+  execWithRetry,
   invalidateThreadAsync,
   getThreadRecord,
   clearThreadRegistry,
@@ -257,6 +262,7 @@ beforeEach(async () => {
   launchEphemeralThread = mod.launchEphemeralThread;
   execPooledPrompt = mod.execPooledPrompt;
   launchOrResumeThread = mod.launchOrResumeThread;
+  execWithRetry = mod.execWithRetry;
   invalidateThreadAsync = mod.invalidateThreadAsync;
   getThreadRecord = mod.getThreadRecord;
   clearThreadRegistry = mod.clearThreadRegistry;
@@ -467,6 +473,45 @@ describe("launchEphemeralThread", () => {
     expect(result).toHaveProperty("success");
     expect(result).toHaveProperty("sdk");
   });
+  it("fails over to fallback SDK when primary times out", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.__MOCK_COPILOT_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.GITHUB_TOKEN = "test-token";
+    setPoolSdk("codex");
+
+    mockCodexStartThread.mockImplementationOnce(() => ({
+      id: "timeout-thread-failover",
+      runStreamed: async (_prompt, { signal } = {}) => {
+        await new Promise((_, reject) => {
+          const abortNow = () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (signal?.aborted) {
+            abortNow();
+            return;
+          }
+          signal?.addEventListener("abort", abortNow, { once: true });
+        });
+      },
+    }));
+
+    const result = await launchEphemeralThread(
+      "test prompt",
+      process.cwd(),
+      25,
+      {
+        sdk: "codex",
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.sdk).toBe("copilot");
+    expect(result.error).toBeNull();
+    expect(result.output).toContain("copilot-output");
+  });
 
   it("returns error when all SDKs are disabled", async () => {
     process.env.CODEX_SDK_DISABLED = "1";
@@ -580,6 +625,7 @@ describe("launchEphemeralThread", () => {
 
   it("fails copilot idle timeout when no assistant output was received", async () => {
     process.env.__MOCK_COPILOT_AVAILABLE = "1";
+    process.env.GITHUB_TOKEN = "test-token";
     process.env.CODEX_SDK_DISABLED = "1";
     process.env.CLAUDE_SDK_DISABLED = "1";
     setPoolSdk("copilot");
@@ -716,6 +762,7 @@ describe("launchEphemeralThread", () => {
 describe("launchOrResumeThread", () => {
   it("applies configured monitor-monitor minimum timeout bound", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
     process.env.DEVMODE_MONITOR_MONITOR_TIMEOUT_MIN_MS = "80";
     setPoolSdk("codex");
 
@@ -753,6 +800,7 @@ describe("launchOrResumeThread", () => {
 
   it("does not apply monitor timeout bounds to non-monitor task keys", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
     process.env.DEVMODE_MONITOR_MONITOR_TIMEOUT_MIN_MS = "90";
     setPoolSdk("codex");
 
@@ -989,7 +1037,57 @@ describe("launchOrResumeThread", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 5. execPooledPrompt
+// 5. execWithRetry
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("execWithRetry", () => {
+  it("retries after timeout without treating the next attempt as externally aborted", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    setPoolSdk("codex");
+
+    let launchCount = 0;
+    mockCodexStartThread.mockImplementation(() => {
+      launchCount += 1;
+      if (launchCount === 1) {
+        return {
+          id: "timeout-thread-first",
+          runStreamed: async (_prompt, { signal } = {}) => {
+            await new Promise((_, reject) => {
+              const abortNow = () => {
+                const err = new Error("aborted");
+                err.name = "AbortError";
+                reject(err);
+              };
+              if (signal?.aborted) {
+                abortNow();
+                return;
+              }
+              signal?.addEventListener("abort", abortNow, { once: true });
+            });
+          },
+        };
+      }
+      return makeCodexMockThread("timeout-thread-second", "recovered-output");
+    });
+
+    const result = await execWithRetry("recover after timeout", {
+      taskKey: "retry-timeout-task",
+      cwd: process.cwd(),
+      timeoutMs: 25,
+      maxRetries: 1,
+      sdk: "codex",
+      abortController: new AbortController(),
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.attempts).toBe(2);
+    expect(result.error).toBeNull();
+    expect(result.output).toContain("recovered-output");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 6. execPooledPrompt
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("execPooledPrompt", () => {
@@ -1064,7 +1162,7 @@ describe("execPooledPrompt", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 6. Edge cases & integration of resolution + launch
+// 7. Edge cases & integration of resolution + launch
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("resolution and launch integration", () => {

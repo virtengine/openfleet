@@ -52,6 +52,10 @@ import {
   pushStatusBoardUpdate,
 } from "./telegram-bot.mjs";
 import { startAnalyzer, stopAnalyzer } from "./agent-work-analyzer.mjs";
+import {
+  generateWeeklyAgentWorkReport,
+  shouldSendWeeklyReport,
+} from "./agent-work-report.mjs";
 import { PRCleanupDaemon } from "./pr-cleanup-daemon.mjs";
 import {
   execPrimaryPrompt,
@@ -301,6 +305,14 @@ function parseEnvBoolean(value, defaultValue = false) {
   if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
   return defaultValue;
+}
+
+function parseEnvInteger(value, defaultValue, { min = null, max = null } = {}) {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  if (!Number.isFinite(parsed)) return defaultValue;
+  if (Number.isFinite(min) && parsed < min) return defaultValue;
+  if (Number.isFinite(max) && parsed > max) return defaultValue;
+  return parsed;
 }
 
 let workflowAutomationEnabled = false;
@@ -839,6 +851,26 @@ let {
   executorMode: configExecutorMode,
   githubReconcile: githubReconcileConfig,
 } = config;
+
+const telegramWeeklyReportEnabled = parseEnvBoolean(
+  process.env.TELEGRAM_WEEKLY_REPORT_ENABLED,
+  false,
+);
+const telegramWeeklyReportDay = parseEnvInteger(
+  process.env.TELEGRAM_WEEKLY_REPORT_DAY,
+  0,
+  { min: 0, max: 6 },
+);
+const telegramWeeklyReportHour = parseEnvInteger(
+  process.env.TELEGRAM_WEEKLY_REPORT_HOUR,
+  9,
+  { min: 0, max: 23 },
+);
+const telegramWeeklyReportDays = parseEnvInteger(
+  process.env.TELEGRAM_WEEKLY_REPORT_DAYS,
+  7,
+  { min: 1, max: 30 },
+);
 
 let watchPath = resolve(configWatchPath);
 let codexEnabled = config.codexEnabled;
@@ -1475,6 +1507,7 @@ try {
 
 let telegramNotifierInterval = null;
 let telegramNotifierTimeout = null;
+let weeklyReportLastSentAt = null;
 let vkRecoveryLastAt = 0;
 let vkNonJsonNotifiedAt = 0;
 let vkNonJsonContentTypeLoggedAt = 0;
@@ -9307,6 +9340,44 @@ async function sendTelegramMessage(text, options = {}) {
   });
 }
 
+async function maybeSendWeeklyReport(nowInput = new Date()) {
+  if (!telegramWeeklyReportEnabled) return;
+  if (!telegramToken || !telegramChatId) return;
+  const now = nowInput instanceof Date ? nowInput : new Date(nowInput);
+  if (!Number.isFinite(now.getTime())) return;
+
+  if (!shouldSendWeeklyReport({
+    now,
+    dayOfWeek: telegramWeeklyReportDay,
+    hourUtc: telegramWeeklyReportHour,
+    lastSentAt: weeklyReportLastSentAt,
+  })) return;
+
+  try {
+    const report = await generateWeeklyAgentWorkReport({
+      days: telegramWeeklyReportDays,
+      now,
+    });
+    await sendTelegramMessage(report.text, {
+      dedupKey: `weekly-report:${now.toISOString().slice(0, 10)}`,
+      exactDedup: true,
+      skipDedup: true,
+    });
+    weeklyReportLastSentAt = now.toISOString();
+    if (Array.isArray(report.warnings) && report.warnings.length > 0) {
+      console.warn(
+        `[monitor] weekly report generated with warnings: ${report.warnings.join(" | ")}`,
+      );
+    }
+  } catch (err) {
+    console.warn(`[monitor] weekly report generation failed: ${err?.message || err}`);
+    await sendTelegramMessage(
+      `⚠️ Weekly report failed: ${err?.message || err}`,
+      { dedupKey: "weekly-report:failed", exactDedup: true },
+    );
+  }
+}
+
 globalThis.__bosunNotifyAnomaly = (anomaly) => {
   if (process.env.BOSUN_INTERNAL_ANOMALY_NOTIFY === "false") return;
   if (!telegramToken || !telegramChatId) return;
@@ -13588,6 +13659,15 @@ if (dependabotAutoMerge) {
   safeSetInterval("dependabot-auto-merge", () => checkAndMergeDependabotPRs(), depIntervalMs);
   console.log(
     `[dependabot] auto-merge enabled — checking every ${dependabotAutoMergeIntervalMin || 10} min for: ${dependabotAuthors.join(", ")}`,
+  );
+}
+
+if (telegramWeeklyReportEnabled) {
+  const weeklyReportPollMs = 60 * 1000;
+  safeSetInterval("telegram-weekly-report", () => maybeSendWeeklyReport(), weeklyReportPollMs);
+  safeSetTimeout("telegram-weekly-report-initial", () => maybeSendWeeklyReport(), 45 * 1000);
+  console.log(
+    `[monitor] weekly Telegram report scheduler enabled (day=${telegramWeeklyReportDay}, hourUtc=${telegramWeeklyReportHour}, lookbackDays=${telegramWeeklyReportDays})`,
   );
 }
 
