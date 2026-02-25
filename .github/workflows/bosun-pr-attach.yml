@@ -43,12 +43,14 @@ jobs:
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
             const marker = "<!-- bosun-attached -->";
-            const body = `${marker}
-            🤖 Bosun attached.
-
-            This PR is tracked by Bosun attachment automation.
-            - Marker label: \`bosun-attached\`
-            - Trigger: \`${context.eventName}\` / \`${context.payload.action}\``;
+            const body = [
+              marker,
+              "🤖 Bosun attached.",
+              "",
+              "This PR is tracked by Bosun attachment automation.",
+              "- Marker label: `bosun-attached`",
+              `- Trigger: \`${context.eventName}\` / \`${context.payload.action}\``,
+            ].join("\n");
 
             await github.rest.issues.addLabels({
               owner,
