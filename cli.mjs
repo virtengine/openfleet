@@ -318,7 +318,13 @@ function readAlivePid(pidFile) {
     if ((!Number.isFinite(pid) || pid <= 0) && raw.startsWith("{")) {
       try {
         const parsed = JSON.parse(raw);
-        pid = Number(parsed?.pid);
+        // Accept legacy/new payload variants while staying strict on pid validity.
+        pid = Number(
+          parsed?.pid ??
+            parsed?.processId ??
+            parsed?.ownerPid ??
+            parsed?.process?.pid,
+        );
       } catch {
         return null;
       }
@@ -1270,7 +1276,16 @@ function getMonitorPidFileCandidates() {
 function detectExistingMonitorLockOwner(excludePid = null) {
   try {
     for (const pidFile of getMonitorPidFileCandidates()) {
-      const ownerPid = readAlivePid(pidFile);
+      let ownerPid = null;
+      try {
+        ownerPid = readAlivePid(pidFile);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `\n  [cli] failed to inspect existing monitor lock owner: ${message} (pidFile=${pidFile})\n`,
+        );
+        continue;
+      }
       if (!ownerPid) continue;
       if (Number.isFinite(excludePid) && ownerPid === excludePid) continue;
       if (ownerPid === process.pid) continue;
