@@ -9,6 +9,7 @@ Captures **all agent work** into structured logs and enables:
 - ✅ Offline analytics for task planning improvements
 - ✅ Executor performance comparison
 - ✅ Common error clustering
+- ✅ Error correlation by size, executor, and complexity
 
 ## Architecture Quick View
 
@@ -514,3 +515,5 @@ Check alert polling is running in monitor.mjs (should see log lines every 5s whe
 ---
 
 **Ready to start?** Just follow steps 1-5 above and restart bosun!
+
+

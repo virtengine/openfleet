@@ -135,7 +135,9 @@ function buildDerivedMetrics(events, options = {}) {
         attempt_id: attemptId,
         task_id: event.task_id || "",
         task_title: event.task_title || "",
+        task_description: event.task_description || "",
         executor: event.executor || "unknown",
+        model: event.model || event.data?.model || "unknown",
         started_at: null,
         ended_at: null,
         duration_ms: null,
@@ -150,8 +152,13 @@ function buildDerivedMetrics(events, options = {}) {
     const session = sessions.get(attemptId);
     if (event.task_id && !session.task_id) session.task_id = event.task_id;
     if (event.task_title && !session.task_title) session.task_title = event.task_title;
+    if (event.task_description && !session.task_description)
+      session.task_description = event.task_description;
     if (event.executor && session.executor === "unknown")
       session.executor = event.executor;
+    if ((event.model || event.data?.model) && session.model === "unknown") {
+      session.model = event.model || event.data?.model;
+    }
 
     if (event.event_type === "session_start") {
       session.started_at = session.started_at || tsValue;
@@ -187,7 +194,9 @@ function buildDerivedMetrics(events, options = {}) {
       attempt_id: session.attempt_id,
       task_id: session.task_id,
       task_title: session.task_title,
+      task_description: session.task_description,
       executor: session.executor,
+      model: session.model,
       metrics: {
         duration_ms: session.duration_ms || 0,
         tool_calls: session.tool_calls,
@@ -333,6 +342,17 @@ function classifyComplexityBucket({ sizeLabel, title, description }) {
 function incrementCounter(target, key) {
   const resolved = key || "unknown";
   target[resolved] = (target[resolved] || 0) + 1;
+}
+
+function resolveKnownValue(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    const text = String(value).trim();
+    if (!text) continue;
+    if (text.toLowerCase() === "unknown") continue;
+    return text;
+  }
+  return "unknown";
 }
 
 function buildDistribution(counts, total) {
@@ -558,6 +578,12 @@ async function correlateErrors(options) {
 
   for (const metric of metrics) {
     const profile = ensureTaskProfile(metric.task_id || "unknown");
+    if (metric.task_title && !profile.task_title) {
+      profile.task_title = metric.task_title;
+    }
+    if (metric.task_description && !profile.task_description) {
+      profile.task_description = metric.task_description;
+    }
     if (metric.executor && profile.executor === "unknown") {
       profile.executor = metric.executor;
     }
@@ -637,12 +663,12 @@ async function correlateErrors(options) {
     }
 
     const profile = taskProfiles.get(error.task_id || "unknown");
-    const sizeLabel =
-      profile?.size_label ||
-      extractSizeLabelFromTitle(error.task_title) ||
-      "unknown";
-    const executor = profile?.executor || error.executor || "unknown";
-    const complexity = profile?.complexity || "unknown";
+    const sizeLabel = resolveKnownValue(
+      profile?.size_label,
+      extractSizeLabelFromTitle(error.task_title),
+    );
+    const executor = resolveKnownValue(profile?.executor, error.executor);
+    const complexity = resolveKnownValue(profile?.complexity);
 
     incrementCounter(entry.by_size, sizeLabel);
     incrementCounter(entry.by_executor, executor);
