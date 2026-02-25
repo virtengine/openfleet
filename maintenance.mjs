@@ -519,7 +519,8 @@ function logDuplicateStartWarning(lockDir, existingPid, message) {
         Math.round(DUPLICATE_START_WARN_THROTTLE_MS / 1000) +
         "s)"
       : "";
-  console.warn(message + suffix);
+  // Duplicate lock contention is benign (exit 0 path), so keep it out of error channels.
+  console.log(message + suffix);
   try {
     writeFileSync(
       statePath,

@@ -2140,7 +2140,8 @@ async function handleMonitorFailure(reason, err) {
   } catch (fatal) {
     // Use process.stderr to avoid EPIPE on stdout
     try {
-      process.stderr.write(
+      // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
+    process.stdout.write(
         `[monitor] failure handler crashed: ${fatal.message || fatal}\n`,
       );
     } catch {
@@ -2157,7 +2158,8 @@ function reportGuardedFailure(reason, err) {
   console.error("[monitor] " + reason + " failed: " + (error.stack || error.message));
   handleMonitorFailure(reason, error).catch((failureErr) => {
     try {
-      process.stderr.write(
+      // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
+    process.stdout.write(
         "[monitor] handleMonitorFailure failed: " + (failureErr?.message || failureErr) + "\n",
       );
     } catch {
@@ -11622,7 +11624,14 @@ async function readLogTail(
     }
     const raw = await readFile(filePath, "utf8");
     const tail = raw.split(/\r?\n/).slice(-maxLines).join("\n");
-    return tail.length > maxChars ? tail.slice(-maxChars) : tail;
+    if (tail.length <= maxChars) return tail;
+
+    // When maxChars cuts mid-line, drop the partial head fragment so monitor-
+    // monitor does not ingest stale/truncated orphan text without timestamps.
+    const sliced = tail.slice(-maxChars);
+    const firstNl = sliced.indexOf("\n");
+    if (firstNl <= 0) return sliced;
+    return sliced.slice(firstNl + 1);
   } catch (err) {
     return `(unable to read ${filePath}: ${err.message || err})`;
   }
@@ -11804,9 +11813,19 @@ function filterMonitorTailByRecency(tail, { windowMs } = {}) {
     if (current) {
       current.lines.push(currentLine);
     } else {
-      // Keep orphan lines (e.g., "(missing: ...)" diagnostics) as standalone
-      // blocks so we do not hide useful context when timestamps are absent.
-      blocks.push({ tsMs: null, lines: [currentLine] });
+      const trimmed = currentLine.trim();
+      if (!trimmed) continue;
+
+      // Keep only explicit diagnostics as orphan blocks. Untimestamped trailing
+      // fragments are usually mid-line truncation artifacts and can surface stale
+      // noise in monitor-monitor prompts.
+      const isDiagnosticOrphan =
+        /^\(missing:/.test(trimmed) ||
+        /^\(unable to read /.test(trimmed) ||
+        /^\[fallback:/.test(trimmed);
+      if (isDiagnosticOrphan) {
+        blocks.push({ tsMs: null, lines: [currentLine] });
+      }
     }
   }
   flushCurrent();
@@ -13485,7 +13504,8 @@ process.on("uncaughtException", (err) => {
   // Always log the exception — even during shutdown — so the crash is traceable.
   const detail = err?.stack || msg || String(err);
   try {
-    process.stderr.write("[monitor] uncaughtException: " + detail + "\n");
+    // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
+    process.stdout.write("[monitor] uncaughtException: " + detail + "\n");
   } catch { /* stderr may be torn down */ }
   try {
     const crashDir = config?.logDir || resolve(__dirname, "logs");
@@ -13499,7 +13519,8 @@ process.on("uncaughtException", (err) => {
   console.error("[monitor] uncaughtException: " + detail);
   handleMonitorFailure("uncaughtException", err).catch((failureErr) => {
     try {
-      process.stderr.write(
+      // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
+    process.stdout.write(
         "[monitor] uncaughtException handler failed: " + (failureErr?.message || failureErr) + "\n",
       );
     } catch {
@@ -13533,7 +13554,8 @@ process.on("unhandledRejection", (reason) => {
   console.error("[monitor] unhandledRejection: " + (err?.stack || msg));
   handleMonitorFailure("unhandledRejection", err).catch((failureErr) => {
     try {
-      process.stderr.write(
+      // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
+    process.stdout.write(
         "[monitor] unhandledRejection handler failed: " + (failureErr?.message || failureErr) + "\n",
       );
     } catch {
@@ -13549,7 +13571,8 @@ process.on("exit", (code) => {
   const line = `[${ts}] process exiting with code ${code} (shuttingDown=${shuttingDown}, uptime=${Math.round(process.uptime())}s)`;
   // Write directly to stderr — console may already be torn down at exit time
   try {
-    process.stderr.write("[monitor] " + line + "\n");
+    // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
+    process.stdout.write("[monitor] " + line + "\n");
   } catch {
     /* best effort — stderr may be broken */
   }
@@ -13635,7 +13658,8 @@ if (!isMonitorTestRuntime) {
           "s)"
         : "";
     const pidSuffix = Number(ownerPid) > 0 ? ` (PID ${ownerPid})` : "";
-    process.stderr.write(
+    // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
+    process.stdout.write(
       "[monitor] another bosun instance holds the lock" +
         pidSuffix +
         " — duplicate start ignored (exit code 0)." +
@@ -13666,7 +13690,8 @@ if (!isMonitorTestRuntime) {
     if (isSelfRestart) {
       // Write directly to stderr so the message reaches the terminal even when
       // the console interceptor is redirecting to a log file.
-      process.stderr.write(
+      // Duplicate-start lock contention exits with code 0; emit on stdout to avoid error-tail noise.
+    process.stdout.write(
         "[monitor] self-restart lock handoff still busy — retrying startup\n",
       );
       process.exit(SELF_RESTART_EXIT_CODE);
