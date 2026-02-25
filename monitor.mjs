@@ -12177,15 +12177,25 @@ async function handleDigestSealed({ entries, text }) {
 async function startProcess() {
   try {
     // Guard: never spawn VK orchestrator when executor mode is internal or disabled
-  const execMode = configExecutorMode || getExecutorMode();
-  if (execMode === "internal" || isExecutorDisabled()) {
-    console.log(
-      `[monitor] startProcess skipped — executor mode is "${execMode}" (VK orchestrator not needed)`,
-    );
-    return;
-  }
+    const execMode = configExecutorMode || getExecutorMode();
+    if (execMode === "internal" || isExecutorDisabled()) {
+      console.log(
+        `[monitor] startProcess skipped — executor mode is "${execMode}" (VK orchestrator not needed)`,
+      );
+      try {
+        await ensureLogDir();
+        const backend = getActiveKanbanBackend();
+        const activeLogPath = resolve(logDir, "orchestrator-active.log");
+        const message =
+          `[monitor] orchestrator inactive in executor mode "${execMode}" (backend=${backend})`;
+        await writeFile(activeLogPath, `${message}\n`, "utf8");
+      } catch {
+        /* best effort */
+      }
+      return;
+    }
 
-  const now = Date.now();
+    const now = Date.now();
 
   // ── Minimum restart interval — never restart faster than 15s ──────
   if (restartController.lastProcessStartAt > 0) {

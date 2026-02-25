@@ -11,4 +11,13 @@ describe("monitor-monitor prompt orchestrator tail", () => {
       'not applicable: executor mode "${execMode}" runs without external orchestrator logs',
     );
   });
+  it("writes an explicit active-log placeholder when orchestrator is skipped", () => {
+    expect(monitorSource).toContain(
+      '[monitor] orchestrator inactive in executor mode "${execMode}" (backend=${backend})',
+    );
+    expect(monitorSource).toContain(
+      'await writeFile(activeLogPath, `${message}\\n`, "utf8")',
+    );
+  });
 });
+
