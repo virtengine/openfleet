@@ -627,3 +627,17 @@ function promptConfirm(question) {
     });
   });
 }
+
+
+export const __autoUpdateTestHooks = {
+  readAutoUpdateState,
+  writeAutoUpdateState,
+  resetAutoUpdateState,
+  recordAutoUpdateFailure,
+  isAutoUpdateDisabled,
+  classifyInstallError,
+  buildDisableNotice,
+  AUTO_UPDATE_STATE_FILE,
+  AUTO_UPDATE_FAILURE_LIMIT,
+  AUTO_UPDATE_DISABLE_WINDOW_MS,
+};

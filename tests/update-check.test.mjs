@@ -1,5 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { startAutoUpdateLoop, stopAutoUpdateLoop } from "../update-check.mjs";
+import {
+  startAutoUpdateLoop,
+  stopAutoUpdateLoop,
+  __autoUpdateTestHooks,
+} from "../update-check.mjs";
+
+const {
+  recordAutoUpdateFailure,
+  resetAutoUpdateState,
+  isAutoUpdateDisabled,
+  classifyInstallError,
+  buildDisableNotice,
+  AUTO_UPDATE_DISABLE_WINDOW_MS,
+  AUTO_UPDATE_FAILURE_LIMIT,
+} = __autoUpdateTestHooks;
 
 describe("update-check", () => {
   let originalEnv;
@@ -104,6 +118,41 @@ describe("update-check", () => {
       expect(process.listenerCount("SIGHUP")).toBeGreaterThanOrEqual(1);
 
       stopAutoUpdateLoop();
+    });
+  });
+
+  describe("circuit breaker", () => {
+    it("disables after consecutive failures and records reason", async () => {
+      await resetAutoUpdateState();
+      let state = await resetAutoUpdateState();
+
+      for (let i = 0; i < AUTO_UPDATE_FAILURE_LIMIT; i += 1) {
+        state = await recordAutoUpdateFailure(state, "EINVAL");
+      }
+
+      expect(state.failureCount).toBe(AUTO_UPDATE_FAILURE_LIMIT);
+      expect(state.lastFailureReason).toBe("EINVAL");
+      expect(state.disabledUntil).toBeGreaterThan(Date.now());
+      expect(isAutoUpdateDisabled(state)).toBe(true);
+
+      const notice = buildDisableNotice(state);
+      expect(notice).toContain("BOSUN_SKIP_AUTO_UPDATE=1");
+      expect(notice).toContain(`${AUTO_UPDATE_DISABLE_WINDOW_MS / 1000 / 60 / 60}`);
+    });
+
+    it("classifies install errors with EINVAL precedence", () => {
+      expect(classifyInstallError({ code: "EINVAL" })).toBe("EINVAL");
+      expect(classifyInstallError({ message: "boom EINVAL oops" })).toBe("EINVAL");
+      expect(classifyInstallError({ code: "EACCESS", message: "fail" })).toBe("EACCESS");
+    });
+
+    it("re-enables when disable window expires", () => {
+      const pastState = {
+        failureCount: AUTO_UPDATE_FAILURE_LIMIT,
+        lastFailureReason: "EINVAL",
+        disabledUntil: Date.now() - 1000,
+      };
+      expect(isAutoUpdateDisabled(pastState, Date.now())).toBe(false);
     });
   });
 });
