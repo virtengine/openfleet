@@ -786,7 +786,7 @@ const COMMAND_PRESETS = {
     { label: "Push", cmd: "git push --set-upstream origin HEAD", icon: "rocket" },
   ],
   github: [
-    { label: "Check CI", cmd: "gh pr checks --json name,state,conclusion", icon: "search" },
+    { label: "Check CI", cmd: "gh pr checks --json name,state", icon: "search" },
     { label: "Merge PR (squash)", cmd: "gh pr merge --auto --squash", icon: "git" },
     { label: "Close PR", cmd: 'gh pr close --comment "{{reason}}"', icon: "ban" },
     { label: "PR Diff", cmd: "gh pr diff --stat", icon: "chart" },

@@ -250,6 +250,7 @@ async function handleVendor(req, res, url) {
 }
 const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const logsDir = resolve(__dirname, "logs");
+const monitorMonitorLogsDir = resolve(repoRoot, ".cache", "monitor-monitor-logs");
 const agentLogsDirCandidates = [
   resolve(__dirname, "logs", "agents"),
   resolve(repoRoot, ".cache", "agent-logs"),
@@ -2255,15 +2256,55 @@ function normalizeAgentLogName(name) {
   return basename(String(name || "")).trim();
 }
 
+async function listDirFilesWithMtime(dir, predicate = () => true) {
+  const names = await readdir(dir).catch(() => []);
+  const entries = await Promise.all(
+    names
+      .filter((name) => predicate(name))
+      .map(async (name) => {
+        const fullPath = resolve(dir, name);
+        const info = await stat(fullPath).catch(() => null);
+        if (!info?.isFile?.()) return null;
+        return {
+          name,
+          path: fullPath,
+          mtimeMs: Number(info.mtimeMs || 0),
+        };
+      }),
+  );
+  return entries.filter(Boolean);
+}
+
+async function resolvePreferredSystemLogPath() {
+  const rootLogEntries = await listDirFilesWithMtime(
+    logsDir,
+    (name) => name.endsWith(".log"),
+  );
+  const nonDaemonEntries = rootLogEntries.filter((entry) => entry.name !== "daemon.log");
+
+  const monitorPromptEntries = await listDirFilesWithMtime(
+    monitorMonitorLogsDir,
+    (name) =>
+      name.startsWith("monitor-monitor-") &&
+      (name.endsWith(".prompt.md") || name.endsWith(".md")),
+  );
+
+  const preferredEntries = [...nonDaemonEntries, ...monitorPromptEntries].sort(
+    (a, b) => b.mtimeMs - a.mtimeMs,
+  );
+  if (preferredEntries.length > 0) return preferredEntries[0].path;
+
+  const daemonEntry = rootLogEntries.find((entry) => entry.name === "daemon.log");
+  return daemonEntry ? daemonEntry.path : null;
+}
+
 /**
  * Resolve the log file path for a given logType and optional query.
  * Returns null if no matching file found.
  */
 async function resolveLogPath(logType, query) {
   if (logType === "system") {
-    const files = await readdir(logsDir).catch(() => []);
-    const logFile = files.filter((f) => f.endsWith(".log")).sort().pop();
-    return logFile ? resolve(logsDir, logFile) : null;
+    return resolvePreferredSystemLogPath();
   }
   if (logType === "agent") {
     const agentLogsDir = await resolveAgentLogsDir();
@@ -3252,17 +3293,10 @@ function normalizeBranchInput(input) {
 }
 
 async function getLatestLogTail(lineCount) {
-  const files = await readdir(logsDir).catch(() => []);
-  const logFile = files
-    .filter((f) => f.endsWith(".log"))
-    .sort()
-    .pop();
-  if (!logFile) return { file: null, lines: [] };
-  const logPath = resolve(logsDir, logFile);
-  const content = await readFile(logPath, "utf8");
-  const lines = content.split("\n").filter(Boolean);
-  const tail = lines.slice(-lineCount);
-  return { file: logFile, lines: tail };
+  const logPath = await resolvePreferredSystemLogPath();
+  if (!logPath) return { file: null, lines: [] };
+  const tail = await tailFile(logPath, lineCount);
+  return { file: basename(logPath), lines: tail.lines || [] };
 }
 
 async function tailFile(filePath, lineCount, maxBytes = 1_000_000) {

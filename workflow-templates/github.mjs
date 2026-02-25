@@ -39,7 +39,7 @@ export const PR_MERGE_STRATEGY_TEMPLATE = {
     }, { x: 400, y: 50 }),
 
     node("check-ci", "validation.build", "Check CI Status", {
-      command: "gh pr checks {{prNumber}} --json name,state,conclusion",
+      command: "gh pr checks {{prNumber}} --json name,state",
     }, { x: 150, y: 200 }),
 
     node("get-diff", "action.run_command", "Get Diff Stats", {
@@ -47,7 +47,8 @@ export const PR_MERGE_STRATEGY_TEMPLATE = {
     }, { x: 650, y: 200 }),
 
     node("ci-passed", "condition.expression", "CI Passed?", {
-      expression: "$ctx.getNodeOutput('check-ci')?.passed === true",
+      expression:
+        "(() => { const out = $ctx.getNodeOutput('check-ci'); if (!out || out.passed !== true) return false; let checks = []; try { checks = JSON.parse(out.output || '[]'); } catch { return false; } if (!Array.isArray(checks) || checks.length === 0) return false; const ok = new Set(['SUCCESS', 'PASSED', 'PASS', 'COMPLETED', 'NEUTRAL', 'SKIPPED']); return checks.every((c) => ok.has(String(c?.state || '').toUpperCase())); })()",
     }, { x: 150, y: 350, outputs: ["yes", "no"] }),
 
     node("wait-for-ci", "action.delay", "Wait for CI", {
@@ -294,7 +295,7 @@ Only fix conflicts, do NOT change any logic. Keep changes minimal.`,
     }, { x: 200, y: 500 }),
 
     node("verify-ci", "action.run_command", "Verify CI Green", {
-      command: "gh pr checks --json name,state,conclusion | head -20",
+      command: "gh pr checks --json name,state",
     }, { x: 200, y: 660 }),
 
     node("auto-merge", "condition.expression", "CI Passed?", {

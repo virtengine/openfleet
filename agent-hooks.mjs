@@ -366,7 +366,7 @@ export function loadHooks(configPath) {
  *
  * @example
  * const id = registerHook("PrePush", {
- *   command: "scripts/agent-preflight.ps1",
+ *   command: "node preflight.mjs",
  *   blocking: true,
  *   timeout: 300000,
  * });
@@ -610,8 +610,7 @@ export async function executeBlockingHooks(event, context = {}) {
  * that run regardless of config file contents.
  *
  * Built-in hooks:
- *   - **PrePush** — Runs `scripts/agent-preflight.ps1` (Windows) or
- *     `scripts/agent-preflight.sh` (Unix) to validate quality gates.
+ *   - **PrePush** — Runs `node preflight.mjs` to validate quality gates.
  *   - **TaskComplete** — Runs a basic acceptance-criteria check via git log.
  */
 export function registerBuiltinHooks(options = {}) {
@@ -644,9 +643,7 @@ export function registerBuiltinHooks(options = {}) {
 
   // ── PrePush: agent preflight quality gate ──
   if (!skipPrePush) {
-    const preflightScript = IS_WINDOWS
-      ? "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/agent-preflight.ps1"
-      : "bash scripts/agent-preflight.sh";
+    const preflightScript = "node preflight.mjs";
 
     registerHook("PrePush", {
       id: "builtin-prepush-preflight",

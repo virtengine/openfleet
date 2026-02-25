@@ -88,6 +88,53 @@ describe("session-tracker", () => {
       expect(messages[0].type).toBe("tool_result");
     });
 
+    it("records Codex command_execution events", () => {
+      tracker.startSession("task-1", "Test");
+      tracker.recordEvent("task-1", {
+        type: "item.completed",
+        item: {
+          type: "command_execution",
+          command: "git status -sb",
+          aggregated_output: "## main",
+          status: "completed",
+          exit_code: 0,
+        },
+      });
+
+      const messages = tracker.getLastMessages("task-1");
+      expect(messages).toHaveLength(1);
+      expect(messages[0].type).toBe("tool_call");
+      expect(messages[0].meta.toolName).toBe("command_execution");
+      expect(messages[0].content).toContain("git status -sb");
+      expect(messages[0].content).toContain("## main");
+    });
+
+    it("records Codex reasoning events as system messages", () => {
+      tracker.startSession("task-1", "Test");
+      tracker.recordEvent("task-1", {
+        type: "item.completed",
+        item: { type: "reasoning", text: "Planning the next edit" },
+      });
+
+      const messages = tracker.getLastMessages("task-1");
+      expect(messages).toHaveLength(1);
+      expect(messages[0].type).toBe("system");
+      expect(messages[0].content).toContain("Planning the next edit");
+    });
+
+    it("records assistant.message events", () => {
+      tracker.startSession("task-1", "Test");
+      tracker.recordEvent("task-1", {
+        type: "assistant.message",
+        data: { content: "Done. Changes are applied." },
+      });
+
+      const messages = tracker.getLastMessages("task-1");
+      expect(messages).toHaveLength(1);
+      expect(messages[0].type).toBe("agent_message");
+      expect(messages[0].content).toContain("Done. Changes are applied.");
+    });
+
     it("records Copilot message events", () => {
       tracker.startSession("task-1", "Test");
       tracker.recordEvent("task-1", {

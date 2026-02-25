@@ -750,12 +750,22 @@ export class SessionTracker {
     if (!event || !event.type) return null;
 
     const ts = new Date().toISOString();
+    const toText = (value) => {
+      if (value == null) return "";
+      if (typeof value === "string") return value;
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    };
 
     // ── Codex SDK events ──
     if (event.type === "item.completed" && event.item) {
       const item = event.item;
+      const itemType = String(item.type || "").toLowerCase();
 
-      if (item.type === "agent_message" && item.text) {
+      if (itemType === "agent_message" && item.text) {
         return {
           type: "agent_message",
           content: item.text.slice(0, MAX_MESSAGE_CHARS),
@@ -763,7 +773,7 @@ export class SessionTracker {
         };
       }
 
-      if (item.type === "function_call") {
+      if (itemType === "function_call") {
         return {
           type: "tool_call",
           content: `${item.name}(${(item.arguments || "").slice(0, 500)})`,
@@ -772,7 +782,7 @@ export class SessionTracker {
         };
       }
 
-      if (item.type === "function_call_output") {
+      if (itemType === "function_call_output") {
         return {
           type: "tool_result",
           content: (item.output || "").slice(0, MAX_MESSAGE_CHARS),
@@ -780,7 +790,106 @@ export class SessionTracker {
         };
       }
 
+      if (itemType === "command_execution" || itemType === "commandexecution") {
+        const command = toText(item.command || item.input || "").trim();
+        const exitCode = Number.isFinite(Number(item.exit_code)) ? Number(item.exit_code) : null;
+        const status = toText(item.status || "").trim();
+        const statusParts = [];
+        if (status) statusParts.push(status);
+        if (exitCode !== null) statusParts.push(`exit=${exitCode}`);
+        const statusLabel = statusParts.length ? ` [${statusParts.join(", ")}]` : "";
+        const output = toText(
+          item.aggregated_output || item.output || item.stderr || item.stdout || "",
+        ).trim();
+        const content = output
+          ? `${command || "(command)"}${statusLabel}
+${output}`
+          : `${command || "(command)"}${statusLabel}`;
+        return {
+          type: "tool_call",
+          content: content.slice(0, MAX_MESSAGE_CHARS),
+          timestamp: ts,
+          meta: { toolName: "command_execution" },
+        };
+      }
+
+      if (itemType === "reasoning") {
+        const detail = toText(item.text || item.summary || "");
+        if (!detail) return null;
+        return {
+          type: "system",
+          content: detail.slice(0, MAX_MESSAGE_CHARS),
+          timestamp: ts,
+        };
+      }
+
+      if (itemType === "file_change") {
+        const changes = Array.isArray(item.changes)
+          ? item.changes
+              .map((change) => {
+                const kind = toText(change?.kind || "update").trim();
+                const filePath = toText(change?.path || change?.file || "").trim();
+                return filePath ? `${kind} ${filePath}` : kind;
+              })
+              .filter(Boolean)
+          : [];
+        const summary = changes.length
+          ? `file changes: ${changes.slice(0, 5).join(", ")}`
+          : "file changes detected";
+        return {
+          type: "system",
+          content: summary.slice(0, MAX_MESSAGE_CHARS),
+          timestamp: ts,
+        };
+      }
+
+      if (itemType === "todo_list") {
+        const items = Array.isArray(item.items)
+          ? item.items
+              .map((entry) => {
+                const detail = toText(entry?.text || "").trim();
+                if (!detail) return "";
+                return `${entry?.completed ? "[x]" : "[ ]"} ${detail}`;
+              })
+              .filter(Boolean)
+          : [];
+        const summary = items.length ? `todo:
+${items.join("\n")}` : "todo updated";
+        return {
+          type: "system",
+          content: summary.slice(0, MAX_MESSAGE_CHARS),
+          timestamp: ts,
+        };
+      }
+
+      if (item.text || item.content) {
+        const fallback = toText(item.text || item.content);
+        if (fallback) {
+          return {
+            type: "system",
+            content: fallback.slice(0, MAX_MESSAGE_CHARS),
+            timestamp: ts,
+          };
+        }
+      }
+
       return null; // Skip other item types
+    }
+
+    if (event.type === "assistant.message" && event.data?.content) {
+      return {
+        type: "agent_message",
+        content: toText(event.data.content).slice(0, MAX_MESSAGE_CHARS),
+        timestamp: ts,
+      };
+    }
+
+    if (event.type === "assistant.message_delta" && event.data?.deltaContent) {
+      return {
+        type: "agent_message",
+        content: toText(event.data.deltaContent).slice(0, MAX_MESSAGE_CHARS),
+        timestamp: ts,
+      };
     }
 
     // ── Copilot SDK events ──

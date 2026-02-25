@@ -12475,6 +12475,15 @@ process.on("unhandledRejection", (reason) => {
 
 // ── Singleton guard: prevent ghost monitors ─────────────────────────────────
 if (!process.env.VITEST && !acquireMonitorLock(config.cacheDir)) {
+  // During source-change self-restart, the previous monitor can still be
+  // shutting down and holding the lock briefly. Ask cli.mjs to retry instead
+  // of treating this as a hard crash.
+  if (isSelfRestart) {
+    console.warn(
+      "[monitor] self-restart lock handoff still busy — retrying startup",
+    );
+    process.exit(SELF_RESTART_EXIT_CODE);
+  }
   process.exit(1);
 }
 

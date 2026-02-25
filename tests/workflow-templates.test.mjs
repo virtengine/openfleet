@@ -200,6 +200,96 @@ describe("template API functions", () => {
   });
 });
 
+describe("health check template reliability behavior", () => {
+  it("uses cross-platform commands for git and daemon checks", () => {
+    const template = getTemplate("template-health-check");
+    expect(template).toBeDefined();
+
+    const checkGit = template.nodes.find((n) => n.id === "check-git");
+    const checkAgents = template.nodes.find((n) => n.id === "check-agents");
+
+    expect(checkGit?.config?.command).toContain("node -e");
+    expect(checkGit?.config?.command).not.toMatch(/\bgrep\b/);
+    expect(checkAgents?.config?.command).toContain("node -e");
+    expect(checkAgents?.config?.command).not.toContain("2>/dev/null");
+    expect(checkAgents?.config?.command).toContain("bosun --daemon-status");
+  });
+
+  it("flags issues when command checks fail even without doctor ERROR/CRITICAL text", () => {
+    const template = getTemplate("template-health-check");
+    const hasIssuesNode = template.nodes.find((n) => n.id === "has-issues");
+    const expr = hasIssuesNode?.config?.expression;
+    expect(typeof expr).toBe("string");
+
+    const makeCtx = (outputs) => ({
+      getNodeOutput: (id) => outputs[id],
+    });
+    const evaluate = new Function("$data", "$ctx", "$output", `return (${expr});`);
+
+    const failedGit = evaluate({}, makeCtx({
+      "check-config": { success: true, output: "Status: OK" },
+      "check-git": { success: false, error: "command failed" },
+      "check-agents": { success: true, output: "running" },
+    }), {});
+    expect(failedGit).toBe(true);
+
+    const allHealthy = evaluate({}, makeCtx({
+      "check-config": { success: true, output: "Status: OK" },
+      "check-git": { success: true, output: "" },
+      "check-agents": { success: true, output: "running" },
+    }), {});
+    expect(allHealthy).toBe(false);
+  });
+});
+
+describe("github template CLI compatibility", () => {
+  it("uses supported gh pr checks fields for merge strategy and conflict resolver", () => {
+    const mergeTemplate = getTemplate("template-pr-merge-strategy");
+    const resolverTemplate = getTemplate("template-pr-conflict-resolver");
+    expect(mergeTemplate).toBeDefined();
+    expect(resolverTemplate).toBeDefined();
+
+    const checkCi = mergeTemplate.nodes.find((n) => n.id === "check-ci");
+    const verifyCi = resolverTemplate.nodes.find((n) => n.id === "verify-ci");
+
+    expect(checkCi?.config?.command).toContain("gh pr checks");
+    expect(checkCi?.config?.command).toContain("--json name,state");
+    expect(checkCi?.config?.command).not.toContain("conclusion");
+
+    expect(verifyCi?.config?.command).toContain("gh pr checks");
+    expect(verifyCi?.config?.command).toContain("--json name,state");
+    expect(verifyCi?.config?.command).not.toContain("conclusion");
+    expect(verifyCi?.config?.command).not.toMatch(/\|\s*head\b/);
+  });
+
+  it("merge strategy CI gate treats unsupported/malformed output as not passed", () => {
+    const mergeTemplate = getTemplate("template-pr-merge-strategy");
+    const ciPassedNode = mergeTemplate.nodes.find((n) => n.id === "ci-passed");
+    const expr = ciPassedNode?.config?.expression;
+    expect(typeof expr).toBe("string");
+
+    const makeCtx = (outputs) => ({
+      getNodeOutput: (id) => outputs[id],
+    });
+    const evaluate = new Function("$data", "$ctx", "$output", `return (${expr});`);
+
+    const malformed = evaluate({}, makeCtx({
+      "check-ci": { passed: true, output: "not-json" },
+    }), {});
+    expect(malformed).toBe(false);
+
+    const failedState = evaluate({}, makeCtx({
+      "check-ci": { passed: true, output: JSON.stringify([{ name: "ci", state: "FAILURE" }]) },
+    }), {});
+    expect(failedState).toBe(false);
+
+    const allPassing = evaluate({}, makeCtx({
+      "check-ci": { passed: true, output: JSON.stringify([{ name: "ci", state: "SUCCESS" }]) },
+    }), {});
+    expect(allPassing).toBe(true);
+  });
+});
+
 // ── Dry-Run Execution ───────────────────────────────────────────────────────
 
 describe("template dry-run execution", () => {

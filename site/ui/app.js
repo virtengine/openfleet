@@ -1643,7 +1643,6 @@ function App() {
     setSidebarDrawerOpen(false);
     setInspectorDrawerOpen(false);
   }, []);
-  const sidebarToggleLabel = sidebarDrawerOpen ? "Close sidebar" : "Open sidebar";
   const inspectorToggleLabel = inspectorDrawerOpen
     ? "Close inspector"
     : "Open inspector";
@@ -1663,9 +1662,9 @@ function App() {
         <button
           class="btn btn-ghost btn-sm tablet-toggle"
           onClick=${toggleMore}
-          aria-label=${isMoreOpen ? "Close more menu" : "Open more menu"}
+          aria-label=${isMoreOpen ? "Close navigation menu" : "Open navigation menu"}
         >
-          ⋯ More
+          ⋯ Navigation
         </button>
       `
     : null;
@@ -1725,13 +1724,6 @@ function App() {
           ${showDrawerToggles
             ? html`
                 <div class="tablet-action-bar">
-                  <button
-                    class="btn btn-ghost btn-sm tablet-toggle"
-                    onClick=${toggleSidebar}
-                    aria-label=${sidebarToggleLabel}
-                  >
-                    ☰ Navigation
-                  </button>
                   ${inspectorToggleButton}
                   ${moreToggleButton}
                 </div>

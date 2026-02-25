@@ -301,17 +301,17 @@ export const HEALTH_CHECK_TEMPLATE = {
     }, { x: 150, y: 200 }),
 
     node("check-git", "action.run_command", "Check Git State", {
-      command: "git status --porcelain && git worktree list --porcelain | grep -c worktree",
+      command: "node -e \"const cp=require('node:child_process');const status=cp.execSync('git status --porcelain',{encoding:'utf8'});const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(status + (status.endsWith('\\\\n') ? '' : '\\\\n') + count + '\\\\n');\"",
       continueOnError: true,
     }, { x: 400, y: 200 }),
 
     node("check-agents", "action.run_command", "Check Agent Status", {
-      command: "bosun --daemon-status 2>/dev/null || echo 'daemon not running'",
+      command: "node -e \"const cp=require('node:child_process');try{process.stdout.write(cp.execSync('bosun --daemon-status',{encoding:'utf8'}));}catch{process.stdout.write('daemon not running\\\\n');}\"",
       continueOnError: true,
     }, { x: 650, y: 200 }),
 
     node("has-issues", "condition.expression", "Any Issues?", {
-      expression: "($ctx.getNodeOutput('check-config')?.output || '').includes('ERROR') || ($ctx.getNodeOutput('check-config')?.output || '').includes('CRITICAL')",
+      expression: "($ctx.getNodeOutput('check-config')?.success === false) || (($ctx.getNodeOutput('check-config')?.output || '').includes('ERROR')) || (($ctx.getNodeOutput('check-config')?.output || '').includes('CRITICAL')) || ($ctx.getNodeOutput('check-git')?.success === false) || ($ctx.getNodeOutput('check-agents')?.success === false)",
     }, { x: 400, y: 380 }),
 
     node("alert", "notify.telegram", "Alert Issues Found", {
@@ -349,4 +349,3 @@ export const HEALTH_CHECK_TEMPLATE = {
     },
   },
 };
-

@@ -161,11 +161,16 @@ function extractTaskId(pathname) {
 }
 
 function isAlreadyExitedProcessError(err) {
-  const detail = String(err?.stderr || err?.message || "").toLowerCase();
+  const detail = [err?.stderr, err?.stdout, err?.message]
+    .map((part) => String(part || ""))
+    .join("\n")
+    .toLowerCase();
   return (
     detail.includes("no running instance of the task") ||
-    detail.includes("not found") ||
-    detail.includes("no such process")
+    detail.includes("no running instance") ||
+    detail.includes("no such process") ||
+    detail.includes("cannot find the process") ||
+    detail.includes("esrch")
   );
 }
 
