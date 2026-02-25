@@ -229,6 +229,7 @@
     "workflow-templates/github.mjs",
     "workflow-templates/planning.mjs",
     "workflow-templates/reliability.mjs",
+    "workflow-templates/security.mjs",
     "ui/vendor/"
   ],
   "dependencies": {

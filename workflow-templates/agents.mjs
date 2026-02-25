@@ -6,6 +6,7 @@
  *   - Review Agent (recommended)
  *   - Custom Agent Profile
  *   - Agent Session Monitor (recommended)
+ *   - Backend Agent (recommended)
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
@@ -420,6 +421,134 @@ export const AGENT_SESSION_MONITOR_TEMPLATE = {
       description: "Replaces hardcoded agent session monitoring with a visual " +
         "workflow. Health checks, stall detection, and auto-continuation " +
         "are configurable workflow steps.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Backend Agent
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const BACKEND_AGENT_TEMPLATE = {
+  id: "template-backend-agent",
+  name: "Backend Agent",
+  description:
+    "Spins up an agent focused on backend/API development with a " +
+    "test-first methodology. Writes tests first, implements the feature, " +
+    "validates with build + lint, then creates a PR.",
+  category: "agents",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.task_assigned",
+  variables: {
+    testFramework: "node --test",
+    buildCommand: "npm run build",
+    agentSdk: "auto",
+    timeoutMs: 3600000,
+  },
+  nodes: [
+    node("trigger", "trigger.task_assigned", "Task Assigned", {
+      filter: "task.tags?.some(t => t === 'backend' || t === 'api')",
+    }, { x: 400, y: 50 }),
+
+    node("plan-work", "agent.run_planner", "Plan Implementation", {
+      prompt: "Analyze the task requirements and create a step-by-step implementation plan. Identify which files need to be modified, what tests need to be written, and any API contracts to maintain.",
+      outputVariable: "plan",
+    }, { x: 400, y: 180 }),
+
+    node("write-tests", "action.run_agent", "Write Tests First", {
+      prompt: `# Test-First Development
+
+Based on the plan:
+{{plan}}
+
+Write comprehensive tests FIRST before any implementation:
+1. Unit tests for new functions/methods
+2. Integration tests for API endpoints if applicable
+3. Edge cases and error scenarios
+
+Use the project's existing test framework: {{testFramework}}
+Commit with message "test: add tests for [feature]"`,
+      sdk: "{{agentSdk}}",
+      timeoutMs: 1200000,
+    }, { x: 400, y: 330 }),
+
+    node("implement", "action.run_agent", "Implement Feature", {
+      prompt: `# Implement Backend Feature
+
+The tests have been written. Now implement the feature to make them pass:
+1. Follow existing code conventions
+2. Add proper error handling
+3. Ensure all new tests pass
+4. Do NOT modify the tests — make the code fit the contract
+
+Run \`{{testFramework}}\` after implementation.
+Commit with message "feat: implement [feature]"`,
+      sdk: "{{agentSdk}}",
+      timeoutMs: 1800000,
+    }, { x: 400, y: 490 }),
+
+    node("build", "validation.build", "Build Check", {
+      command: "{{buildCommand}}",
+      zeroWarnings: true,
+    }, { x: 400, y: 650 }),
+
+    node("test-final", "validation.tests", "Final Test Run", {
+      command: "{{testFramework}}",
+    }, { x: 400, y: 780 }),
+
+    node("lint", "validation.lint", "Lint Check", {
+      command: "npm run lint 2>/dev/null || echo 'no lint script'",
+    }, { x: 400, y: 910 }),
+
+    node("all-passed", "condition.expression", "All Checks Passed?", {
+      expression: "$ctx.getNodeOutput('build')?.exitCode === 0 && $ctx.getNodeOutput('test-final')?.exitCode === 0",
+    }, { x: 400, y: 1040, outputs: ["yes", "no"] }),
+
+    node("create-pr", "action.create_pr", "Create PR", {
+      title: "feat: {{taskTitle}}",
+      body: "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing.",
+      branch: "feat/{{taskSlug}}",
+      baseBranch: "main",
+    }, { x: 250, y: 1170 }),
+
+    node("notify-done", "notify.log", "Task Complete", {
+      message: "Backend agent completed task — PR created",
+      level: "info",
+    }, { x: 250, y: 1300 }),
+
+    node("notify-fail", "notify.telegram", "Checks Failed", {
+      message: "⚠️ Backend agent: build or tests failed for task {{taskTitle}}. Manual review needed.",
+    }, { x: 600, y: 1170 }),
+  ],
+  edges: [
+    edge("trigger", "plan-work"),
+    edge("plan-work", "write-tests"),
+    edge("write-tests", "implement"),
+    edge("implement", "build"),
+    edge("build", "test-final"),
+    edge("test-final", "lint"),
+    edge("lint", "all-passed"),
+    edge("all-passed", "create-pr", { condition: "$output?.result === true", port: "yes" }),
+    edge("all-passed", "notify-fail", { condition: "$output?.result !== true", port: "no" }),
+    edge("create-pr", "notify-done"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-02-25T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["agent", "backend", "api", "test-first", "tdd"],
+    replaces: {
+      module: "primary-agent.mjs",
+      functions: ["runAgentWithTask"],
+      calledFrom: ["task-executor.mjs:executeTask"],
+      description:
+        "Replaces generic agent task execution with a structured backend " +
+        "workflow. Test-first methodology, build/lint gates, and PR creation " +
+        "are enforced as distinct workflow stages.",
     },
   },
 };

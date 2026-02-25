@@ -6,6 +6,7 @@
  *   - PR Triage & Labels
  *   - PR Conflict Resolver (recommended)
  *   - Stale PR Reaper
+ *   - Release Drafter
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
@@ -429,5 +430,106 @@ export const STALE_PR_REAPER_TEMPLATE = {
         "a structured workflow. Warning, closing, and branch deletion are " +
         "explicit, auditable steps.",
     },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Release Drafter
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const RELEASE_DRAFTER_TEMPLATE = {
+  id: "template-release-drafter",
+  name: "Release Drafter",
+  description:
+    "Automatically generates release notes from merged PRs since the last " +
+    "tag. Groups changes by conventional commit type (features, fixes, " +
+    "refactors, etc.) and drafts a GitHub release.",
+  category: "github",
+  enabled: true,
+  trigger: "trigger.manual",
+  variables: {
+    baseBranch: "main",
+    releasePrefix: "v",
+  },
+  nodes: [
+    node("trigger", "trigger.manual", "Draft Release Notes", {
+      description: "Generate release notes from merged PRs",
+    }, { x: 400, y: 50 }),
+
+    node("get-last-tag", "action.run_command", "Get Last Tag", {
+      command: "git describe --tags --abbrev=0 2>/dev/null || echo 'v0.0.0'",
+    }, { x: 400, y: 180 }),
+
+    node("list-prs", "action.run_command", "List Merged PRs", {
+      command: "gh pr list --state merged --base {{baseBranch}} --json number,title,labels,author,mergedAt --limit 100",
+      continueOnError: true,
+    }, { x: 400, y: 310 }),
+
+    node("get-commits", "action.run_command", "Get Commit Log", {
+      command: "git log $(git describe --tags --abbrev=0 2>/dev/null || echo HEAD~50)..HEAD --oneline --no-merges",
+    }, { x: 400, y: 440 }),
+
+    node("draft-notes", "action.run_agent", "Draft Release Notes", {
+      prompt: `# Generate Release Notes
+
+## Merged PRs (JSON)
+{{prList}}
+
+## Commit Log
+{{commitLog}}
+
+## Last Tag
+{{lastTag}}
+
+Generate professional release notes in the following format:
+
+# What's Changed
+
+## 🚀 Features
+- [list feat: commits with PR references]
+
+## 🐛 Bug Fixes
+- [list fix: commits with PR references]
+
+## 🔧 Improvements
+- [list refactor/perf/style commits]
+
+## 📚 Documentation
+- [list docs: commits]
+
+## 🏗️ Internal
+- [list chore/ci/build commits]
+
+Omit empty sections. Include contributor attribution. Be concise.`,
+      sdk: "auto",
+      timeoutMs: 600000,
+    }, { x: 400, y: 590 }),
+
+    node("save-draft", "action.write_file", "Save Draft", {
+      path: "RELEASE_DRAFT.md",
+      content: "{{releaseNotes}}",
+    }, { x: 400, y: 740 }),
+
+    node("notify-ready", "notify.log", "Draft Ready", {
+      message: "Release notes draft saved to RELEASE_DRAFT.md — review and publish when ready",
+      level: "info",
+    }, { x: 400, y: 870 }),
+  ],
+  edges: [
+    edge("trigger", "get-last-tag"),
+    edge("get-last-tag", "list-prs"),
+    edge("list-prs", "get-commits"),
+    edge("get-commits", "draft-notes"),
+    edge("draft-notes", "save-draft"),
+    edge("save-draft", "notify-ready"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-02-25T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "release", "notes", "changelog", "draft"],
   },
 };

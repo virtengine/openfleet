@@ -36,7 +36,7 @@ describe("workflow-templates", () => {
 
   it("exports a frozen array of templates", () => {
     expect(Array.isArray(WORKFLOW_TEMPLATES)).toBe(true);
-    expect(WORKFLOW_TEMPLATES.length).toBeGreaterThanOrEqual(16);
+    expect(WORKFLOW_TEMPLATES.length).toBeGreaterThanOrEqual(24);
     expect(Object.isFrozen(WORKFLOW_TEMPLATES)).toBe(true);
   });
 
@@ -167,6 +167,10 @@ describe("template API functions", () => {
       "template-workspace-hygiene",
       "template-pr-conflict-resolver",
       "template-agent-session-monitor",
+      "template-release-pipeline",
+      "template-backend-agent",
+      "template-incident-response",
+      "template-dependency-audit",
     ];
     for (const id of expectedRecommended) {
       const item = list.find((t) => t.id === id);
@@ -326,7 +330,7 @@ describe("template replaces metadata", () => {
     const withReplaces = WORKFLOW_TEMPLATES.filter(
       (t) => t.metadata?.replaces?.module
     );
-    expect(withReplaces.length).toBeGreaterThanOrEqual(7);
+    expect(withReplaces.length).toBeGreaterThanOrEqual(11);
 
     for (const t of withReplaces) {
       const r = t.metadata.replaces;

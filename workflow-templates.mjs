@@ -6,11 +6,12 @@
  * previously required custom code or env-var configuration.
  *
  * Templates are split into category modules for easy extension:
- *   workflow-templates/github.mjs     — PR Merge Strategy, Triage, Conflict Resolver, Stale Reaper
- *   workflow-templates/agents.mjs     — Frontend Agent, Review Agent, Custom Agent, Session Monitor
- *   workflow-templates/planning.mjs   — Task Planner, Task Replenish, Nightly Report
- *   workflow-templates/ci-cd.mjs      — Build & Deploy
- *   workflow-templates/reliability.mjs — Error Recovery, Anomaly Watchdog, Workspace Hygiene, Health Check
+ *   workflow-templates/github.mjs     — PR Merge Strategy, Triage, Conflict Resolver, Stale Reaper, Release Drafter
+ *   workflow-templates/agents.mjs     — Frontend Agent, Review Agent, Custom Agent, Session Monitor, Backend Agent
+ *   workflow-templates/planning.mjs   — Task Planner, Task Replenish, Nightly Report, Sprint Retrospective
+ *   workflow-templates/ci-cd.mjs      — Build & Deploy, Release Pipeline, Canary Deploy
+ *   workflow-templates/reliability.mjs — Error Recovery, Anomaly Watchdog, Workspace Hygiene, Health Check, Incident Response
+ *   workflow-templates/security.mjs   — Dependency Audit, Secret Scanner
  *
  * To add a new template:
  *   1. Choose the appropriate category file (or create a new one)
@@ -18,7 +19,7 @@
  *   3. Define and export your template constant
  *   4. Add the export to this index file's WORKFLOW_TEMPLATES array
  *
- * Categories: github, agents, planning, ci-cd, reliability, custom
+ * Categories: github, agents, planning, ci-cd, reliability, security, custom
  *
  * EXPORTS:
  *   WORKFLOW_TEMPLATES     — Array of all built-in templates
@@ -41,6 +42,7 @@ import {
   PR_TRIAGE_TEMPLATE,
   PR_CONFLICT_RESOLVER_TEMPLATE,
   STALE_PR_REAPER_TEMPLATE,
+  RELEASE_DRAFTER_TEMPLATE,
 } from "./workflow-templates/github.mjs";
 
 // Agents
@@ -49,6 +51,7 @@ import {
   REVIEW_AGENT_TEMPLATE,
   CUSTOM_AGENT_TEMPLATE,
   AGENT_SESSION_MONITOR_TEMPLATE,
+  BACKEND_AGENT_TEMPLATE,
 } from "./workflow-templates/agents.mjs";
 
 // Planning
@@ -56,10 +59,15 @@ import {
   TASK_PLANNER_TEMPLATE,
   TASK_REPLENISH_TEMPLATE,
   NIGHTLY_REPORT_TEMPLATE,
+  SPRINT_RETROSPECTIVE_TEMPLATE,
 } from "./workflow-templates/planning.mjs";
 
 // CI/CD
-import { BUILD_DEPLOY_TEMPLATE } from "./workflow-templates/ci-cd.mjs";
+import {
+  BUILD_DEPLOY_TEMPLATE,
+  RELEASE_PIPELINE_TEMPLATE,
+  CANARY_DEPLOY_TEMPLATE,
+} from "./workflow-templates/ci-cd.mjs";
 
 // Reliability
 import {
@@ -67,7 +75,14 @@ import {
   ANOMALY_WATCHDOG_TEMPLATE,
   WORKSPACE_HYGIENE_TEMPLATE,
   HEALTH_CHECK_TEMPLATE,
+  INCIDENT_RESPONSE_TEMPLATE,
 } from "./workflow-templates/reliability.mjs";
+
+// Security
+import {
+  DEPENDENCY_AUDIT_TEMPLATE,
+  SECRET_SCANNER_TEMPLATE,
+} from "./workflow-templates/security.mjs";
 
 // ── Re-export individual templates for direct import ────────────────────────
 
@@ -76,18 +91,26 @@ export {
   PR_TRIAGE_TEMPLATE,
   PR_CONFLICT_RESOLVER_TEMPLATE,
   STALE_PR_REAPER_TEMPLATE,
+  RELEASE_DRAFTER_TEMPLATE,
   FRONTEND_AGENT_TEMPLATE,
   REVIEW_AGENT_TEMPLATE,
   CUSTOM_AGENT_TEMPLATE,
   AGENT_SESSION_MONITOR_TEMPLATE,
+  BACKEND_AGENT_TEMPLATE,
   TASK_PLANNER_TEMPLATE,
   TASK_REPLENISH_TEMPLATE,
   NIGHTLY_REPORT_TEMPLATE,
+  SPRINT_RETROSPECTIVE_TEMPLATE,
   BUILD_DEPLOY_TEMPLATE,
+  RELEASE_PIPELINE_TEMPLATE,
+  CANARY_DEPLOY_TEMPLATE,
   ERROR_RECOVERY_TEMPLATE,
   ANOMALY_WATCHDOG_TEMPLATE,
   WORKSPACE_HYGIENE_TEMPLATE,
   HEALTH_CHECK_TEMPLATE,
+  INCIDENT_RESPONSE_TEMPLATE,
+  DEPENDENCY_AUDIT_TEMPLATE,
+  SECRET_SCANNER_TEMPLATE,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -101,7 +124,8 @@ export const TEMPLATE_CATEGORIES = Object.freeze({
   planning:    { label: "Planning",     icon: "📋", order: 3 },
   "ci-cd":     { label: "CI / CD",      icon: "🔄", order: 4 },
   reliability: { label: "Reliability",  icon: "🛡️", order: 5 },
-  custom:      { label: "Custom",       icon: "⚙️", order: 6 },
+  security:    { label: "Security",     icon: "🔒", order: 6 },
+  custom:      { label: "Custom",       icon: "⚙️", order: 7 },
 });
 
 export const WORKFLOW_TEMPLATES = Object.freeze([
@@ -110,22 +134,31 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   PR_TRIAGE_TEMPLATE,
   PR_CONFLICT_RESOLVER_TEMPLATE,
   STALE_PR_REAPER_TEMPLATE,
+  RELEASE_DRAFTER_TEMPLATE,
   // ── Agents ──
   REVIEW_AGENT_TEMPLATE,
   FRONTEND_AGENT_TEMPLATE,
   CUSTOM_AGENT_TEMPLATE,
   AGENT_SESSION_MONITOR_TEMPLATE,
+  BACKEND_AGENT_TEMPLATE,
   // ── Planning ──
   TASK_PLANNER_TEMPLATE,
   TASK_REPLENISH_TEMPLATE,
   NIGHTLY_REPORT_TEMPLATE,
+  SPRINT_RETROSPECTIVE_TEMPLATE,
   // ── CI/CD ──
   BUILD_DEPLOY_TEMPLATE,
+  RELEASE_PIPELINE_TEMPLATE,
+  CANARY_DEPLOY_TEMPLATE,
   // ── Reliability ──
   ERROR_RECOVERY_TEMPLATE,
   ANOMALY_WATCHDOG_TEMPLATE,
   WORKSPACE_HYGIENE_TEMPLATE,
   HEALTH_CHECK_TEMPLATE,
+  INCIDENT_RESPONSE_TEMPLATE,
+  // ── Security ──
+  DEPENDENCY_AUDIT_TEMPLATE,
+  SECRET_SCANNER_TEMPLATE,
 ]);
 
 /**
