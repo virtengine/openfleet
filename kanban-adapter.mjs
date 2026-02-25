@@ -751,7 +751,18 @@ function looksLikeKanbanEntity(value) {
 
 function normalizeObjectCollection(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return [];
-  const candidates = Object.values(value).filter(looksLikeKanbanEntity);
+  const candidates = Object.entries(value)
+    .filter(([, candidate]) => looksLikeKanbanEntity(candidate))
+    .map(([key, candidate]) => {
+      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+        return candidate;
+      }
+      const rawId = candidate.id ?? candidate.task_id ?? candidate.project_id;
+      if (rawId != null && String(rawId).trim()) return candidate;
+      const mapKey = String(key || "").trim();
+      if (!mapKey) return candidate;
+      return { ...candidate, id: mapKey };
+    });
   if (candidates.length > 0) return candidates;
   if (looksLikeKanbanEntity(value)) return [value];
   return [];
@@ -977,12 +988,25 @@ class VKAdapter {
     const fetchVk = await this._getFetchVk();
     const result = await fetchVk("/api/projects");
     const projects = extractArrayPayload(result, ["projects", "items", "results"]);
-    return projects.map((p) => ({
-      id: p.id,
-      name: p.name || p.title || p.id,
-      meta: p,
-      backend: "vk",
-    }));
+    const normalized = [];
+    for (const project of projects) {
+      if (!project || typeof project !== "object" || Array.isArray(project)) continue;
+      const idRaw =
+        project.id ??
+        project.project_id ??
+        project.task_id ??
+        project.key ??
+        project.number;
+      const id = String(idRaw || "").trim();
+      if (!id) continue;
+      normalized.push({
+        id,
+        name: project.name || project.title || id,
+        meta: project,
+        backend: "vk",
+      });
+    }
+    return normalized;
   }
 
   async listTasks(projectId, filters = {}) {
@@ -5029,6 +5053,7 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
+
 
 
 

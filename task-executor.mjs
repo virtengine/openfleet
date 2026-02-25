@@ -800,6 +800,11 @@ function extractBacklogCandidates(outputText) {
   return [];
 }
 
+function hasBacklogCandidateHint(outputText) {
+  const text = String(outputText || "");
+  if (!text.trim()) return false;
+  return /(?:bosun-backlog|backlog_tasks|follow-up\s+tasks?)/i.test(text);
+}
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -5354,11 +5359,14 @@ class TaskExecutor {
     if (!this._backlogReplenishment.enabled) return;
     if (isPlannerTaskData(task)) return;
 
-    const candidatesRaw = extractBacklogCandidates(result?.output || "");
+    const outputText = result?.output || "";
+    const candidatesRaw = extractBacklogCandidates(outputText);
     if (!Array.isArray(candidatesRaw) || candidatesRaw.length === 0) {
-      console.warn(
-        `${TAG} backlog replenishment: no structured candidates found for ${task.id}`,
-      );
+      if (hasBacklogCandidateHint(outputText)) {
+        console.warn(
+          `${TAG} backlog replenishment: no structured candidates found for ${task.id}`,
+        );
+      }
       return;
     }
 

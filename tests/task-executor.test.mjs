@@ -1060,6 +1060,43 @@ describe("task-executor", () => {
     });
   });
 
+  describe("backlog replenishment diagnostics", () => {
+    it("does not warn when output has no backlog signal", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const ex = new TaskExecutor({
+        backlogReplenishment: { enabled: true, minNewTasks: 1, maxNewTasks: 2 },
+      });
+
+      await ex._processBacklogReplenishment(
+        { id: "task-plain", title: "Regular task", description: "Implement feature" },
+        { output: "Completed requested work without follow-up planning." },
+      );
+
+      expect(
+        warnSpy.mock.calls.some((args) =>
+          String(args?.[0] || "").includes("backlog replenishment: no structured candidates found"),
+        ),
+      ).toBe(false);
+    });
+
+    it("warns when backlog markers exist but payload is not parseable", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const ex = new TaskExecutor({
+        backlogReplenishment: { enabled: true, minNewTasks: 1, maxNewTasks: 2 },
+      });
+
+      await ex._processBacklogReplenishment(
+        { id: "task-hint", title: "Regular task", description: "Implement feature" },
+        { output: "```bosun-backlog\nnot-json\n```" },
+      );
+
+      expect(
+        warnSpy.mock.calls.some((args) =>
+          String(args?.[0] || "").includes("backlog replenishment: no structured candidates found for task-hint"),
+        ),
+      ).toBe(true);
+    });
+  });
   describe("planner result handling", () => {
     it("marks planner task done when no commits but planner created backlog tasks", async () => {
       const onTaskCompleted = vi.fn();
