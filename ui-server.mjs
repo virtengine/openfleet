@@ -148,6 +148,158 @@ function ensureLibraryInitialized() {
   }
 }
 
+// ── Workflow engine lazy-loader (module-scope cache) ──────────────────────────
+let _wfEngine;
+let _wfNodes;
+let _wfTemplates;
+let _wfServicesReady = false;
+let _wfRecommendedInstalled = false;
+let _wfInitPromise = null;
+let _wfLoadedBase = null;
+
+async function getWorkflowEngineModule() {
+  if (_wfEngine) return _wfEngine;
+  if (_wfInitPromise) {
+    await _wfInitPromise;
+    return _wfEngine;
+  }
+
+  _wfInitPromise = (async () => {
+    const primaryBase = new URL(".", import.meta.url).href;
+    const localBosunDir = resolve(repoRoot, "bosun");
+    const fallbackBase = pathToFileURL(localBosunDir + "/").href;
+    const bases = [primaryBase];
+    if (fallbackBase !== primaryBase) bases.push(fallbackBase);
+
+    for (const base of bases) {
+      try {
+        _wfEngine = await import(new URL("workflow-engine.mjs", base).href);
+        _wfNodes = await import(new URL("workflow-nodes.mjs", base).href);
+        _wfTemplates = await import(new URL("workflow-templates.mjs", base).href);
+        if (_wfLoadedBase !== base) {
+          console.log(`[workflows] Loaded workflow modules from: ${base}`);
+          _wfLoadedBase = base;
+        }
+        break;
+      } catch (err) {
+        console.warn(`[workflows] Could not load from ${base}: ${err.message}`);
+        _wfEngine = undefined;
+      }
+    }
+
+    if (!_wfEngine) {
+      console.error(
+        "[workflows] Workflow engine unavailable. Run: npm install -g bosun@latest"
+      );
+      return;
+    }
+
+    if (!_wfServicesReady) {
+      const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+      const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+      const telegramService = telegramToken
+        ? {
+            async sendMessage(chatId, text) {
+              const target = chatId || telegramChatId;
+              if (!target) return;
+              try {
+                await fetch(
+                  `https://api.telegram.org/bot${telegramToken}/sendMessage`,
+                  {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      chat_id: target,
+                      text: String(text || ""),
+                      parse_mode: "HTML",
+                    }),
+                  }
+                );
+              } catch (e) {
+                console.warn("[workflows/telegram] sendMessage failed:", e.message);
+              }
+            },
+          }
+        : null;
+
+      let kanbanService = null;
+      try {
+        kanbanService = getKanbanAdapter();
+      } catch (err) {
+        console.warn("[workflows] kanban adapter unavailable:", err.message);
+      }
+
+      const agentPoolService = {
+        launchEphemeralThread,
+        launchOrResumeThread,
+        async continueSession(sessionId, prompt, opts = {}) {
+          const timeout = Number(opts.timeout) || 60 * 60 * 1000;
+          const cwd = opts.cwd || process.cwd();
+          return launchEphemeralThread(prompt, cwd, timeout, {
+            resumeThreadId: sessionId,
+            sdk: opts.sdk,
+          });
+        },
+        async killSession(sessionId) {
+          if (!sessionId) return false;
+          try {
+            invalidateThread(sessionId);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      };
+
+      let promptBundle = null;
+      try {
+        const { configData } = readConfigDocument();
+        promptBundle = resolveAgentPrompts(
+          resolveUiConfigDir(),
+          repoRoot,
+          configData,
+        );
+      } catch (err) {
+        console.warn("[workflows] prompt resolver failed:", err.message);
+      }
+
+      const services = {
+        telegram: telegramService,
+        agentPool: agentPoolService,
+        kanban: kanbanService,
+        prompts: promptBundle?.prompts || null,
+      };
+      _wfEngine.getWorkflowEngine({ services });
+      _wfServicesReady = true;
+    }
+
+    if (!_wfRecommendedInstalled && _wfTemplates?.installRecommendedTemplates) {
+      try {
+        const engine = _wfEngine.getWorkflowEngine();
+        const result = _wfTemplates.installRecommendedTemplates(engine);
+        if (result.installed.length) {
+          console.log(`[workflows] Installed ${result.installed.length} recommended templates`);
+        }
+        if (result.errors.length) {
+          console.warn("[workflows] Recommended template install errors:", result.errors);
+        }
+      } catch (err) {
+        console.warn("[workflows] Recommended template install failed:", err.message);
+      } finally {
+        _wfRecommendedInstalled = true;
+      }
+    }
+  })();
+
+  try {
+    await _wfInitPromise;
+  } finally {
+    _wfInitPromise = null;
+  }
+
+  return _wfEngine;
+}
+
 // ── Vendor module map ─────────────────────────────────────────────────────────
 // Served at /vendor/<name>.js — no auth required (public browser libraries).
 //
@@ -5333,140 +5485,8 @@ async function handleApi(req, res, url) {
    *  Workflow API endpoints
    * ═══════════════════════════════════════════════════════════ */
 
-  // Lazy-load workflow modules (they may not exist in older/global installs)
-  let _wfEngine, _wfNodes, _wfTemplates;
-  let _wfServicesReady = false;
-  let _wfRecommendedInstalled = false;
-  async function getWorkflowEngine() {
-    if (!_wfEngine) {
-      // Try two locations: the module's own directory (standard install) then the
-      // local dev repo's bosun/ sub-folder (when running a stale global install).
-      const primaryBase = new URL(".", import.meta.url).href;
-      const localBosunDir = resolve(repoRoot, "bosun");
-      const fallbackBase = pathToFileURL(localBosunDir + "/").href;
-      const bases = [primaryBase];
-      if (fallbackBase !== primaryBase) bases.push(fallbackBase);
-
-      for (const base of bases) {
-        try {
-          _wfEngine = await import(new URL("workflow-engine.mjs", base).href);
-          _wfNodes = await import(new URL("workflow-nodes.mjs", base).href);
-          _wfTemplates = await import(new URL("workflow-templates.mjs", base).href);
-          console.log(`[workflows] Loaded workflow modules from: ${base}`);
-          break;
-        } catch (err) {
-          console.warn(`[workflows] Could not load from ${base}: ${err.message}`);
-          _wfEngine = undefined;
-        }
-      }
-
-      if (_wfEngine) {
-        // Initialise the engine singleton with injected services on first load.
-        // After this point every call to wfMod.getWorkflowEngine() returns the same
-        // instance, so services only need to be wired here.
-        if (!_wfServicesReady) {
-          const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
-          const telegramChatId = process.env.TELEGRAM_CHAT_ID;
-          const telegramService = telegramToken
-            ? {
-                async sendMessage(chatId, text) {
-                  const target = chatId || telegramChatId;
-                  if (!target) return;
-                  try {
-                    await fetch(
-                      `https://api.telegram.org/bot${telegramToken}/sendMessage`,
-                      {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          chat_id: target,
-                          text: String(text || ""),
-                          parse_mode: "HTML",
-                        }),
-                      }
-                    );
-                  } catch (e) {
-                    console.warn("[workflows/telegram] sendMessage failed:", e.message);
-                  }
-                },
-              }
-            : null;
-
-          let kanbanService = null;
-          try {
-            kanbanService = getKanbanAdapter();
-          } catch (err) {
-            console.warn("[workflows] kanban adapter unavailable:", err.message);
-          }
-
-          const agentPoolService = {
-            launchEphemeralThread,
-            launchOrResumeThread,
-            async continueSession(sessionId, prompt, opts = {}) {
-              const timeout = Number(opts.timeout) || 60 * 60 * 1000;
-              const cwd = opts.cwd || process.cwd();
-              return launchEphemeralThread(prompt, cwd, timeout, {
-                resumeThreadId: sessionId,
-                sdk: opts.sdk,
-              });
-            },
-            async killSession(sessionId) {
-              if (!sessionId) return false;
-              try {
-                invalidateThread(sessionId);
-                return true;
-              } catch {
-                return false;
-              }
-            },
-          };
-
-          let promptBundle = null;
-          try {
-            const { configData } = readConfigDocument();
-            promptBundle = resolveAgentPrompts(
-              resolveUiConfigDir(),
-              repoRoot,
-              configData,
-            );
-          } catch (err) {
-            console.warn("[workflows] prompt resolver failed:", err.message);
-          }
-
-          const services = {
-            telegram: telegramService,
-            agentPool: agentPoolService,
-            kanban: kanbanService,
-            prompts: promptBundle?.prompts || null,
-          };
-          _wfEngine.getWorkflowEngine({ services });
-          _wfServicesReady = true;
-        }
-
-        if (!_wfRecommendedInstalled && _wfTemplates?.installRecommendedTemplates) {
-          try {
-            const engine = _wfEngine.getWorkflowEngine();
-            const result = _wfTemplates.installRecommendedTemplates(engine);
-            if (result.installed.length) {
-              console.log(`[workflows] Installed ${result.installed.length} recommended templates`);
-            }
-            if (result.errors.length) {
-              console.warn("[workflows] Recommended template install errors:", result.errors);
-            }
-          } catch (err) {
-            console.warn("[workflows] Recommended template install failed:", err.message);
-          } finally {
-            _wfRecommendedInstalled = true;
-          }
-        }
-      } else {
-        console.error(
-          "[workflows] Workflow engine unavailable. Run: npm install -g bosun@latest"
-        );
-      }
-    }
-    return _wfEngine;
-  }
+  // Use module-scope getWorkflowEngineModule() for cross-request caching.
+  const getWorkflowEngine = getWorkflowEngineModule;
 
   if (path === "/api/workflows") {
     try {

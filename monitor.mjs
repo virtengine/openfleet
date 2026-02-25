@@ -444,6 +444,7 @@ async function ensureWorkflowAutomationEngine() {
 }
 
 async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
+  try {
   if (!workflowAutomationEnabled) return false;
   const dedupKey = String(opts?.dedupKey || "").trim();
   if (dedupKey && !allowWorkflowEvent(dedupKey)) {
@@ -498,10 +499,14 @@ async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
     `[workflows] event "${eventType}" triggered ${triggered.length} workflow run(s)`,
   );
   return true;
+  } catch (err) {
+    console.warn(`[workflows] dispatchWorkflowEvent error for ${eventType}: ${err?.message || err}`);
+    return false;
+  }
 }
 
 function queueWorkflowEvent(eventType, eventData = {}, opts = {}) {
-  void dispatchWorkflowEvent(eventType, eventData, opts);
+  dispatchWorkflowEvent(eventType, eventData, opts).catch(() => {});
 }
 
 async function pollAgentAlerts() {
@@ -4211,7 +4216,7 @@ async function updateTaskStatus(taskId, newStatus, options = {}) {
       if (resolvedTaskId !== taskId) {
         clearRecoveryCaches(resolvedTaskId);
       }
-      queueTaskStatusWorkflowEvents();
+      try { queueTaskStatusWorkflowEvents(); } catch { /* workflow event errors must not break task updates */ }
       return true;
     } catch (err) {
       console.warn(
@@ -4230,7 +4235,7 @@ async function updateTaskStatus(taskId, newStatus, options = {}) {
   // Clear recovery caches — task status changed, so it needs re-evaluation
   if (ok) {
     clearRecoveryCaches(taskId);
-    queueTaskStatusWorkflowEvents();
+    try { queueTaskStatusWorkflowEvents(); } catch { /* workflow event errors must not break task updates */ }
   }
   return ok;
 }
@@ -12717,7 +12722,7 @@ function applyConfig(nextConfig, options = {}) {
       ? nextConfig.triggerSystem
       : { enabled: false, templates: [], defaults: { executor: "auto", model: "auto" } };
   if (workflowAutomationEnabled) {
-    void ensureWorkflowAutomationEngine();
+    ensureWorkflowAutomationEngine().catch(() => {});
   }
   githubReconcile = nextConfig.githubReconcile || githubReconcile;
   agentPrompts = nextConfig.agentPrompts;
@@ -13990,7 +13995,7 @@ startAgentWorkAnalyzer();
 startAgentAlertTailer();
 startMonitorMonitorSupervisor();
 if (workflowAutomationEnabled) {
-  void ensureWorkflowAutomationEngine();
+  ensureWorkflowAutomationEngine().catch(() => {});
 } else {
   console.log(
     "[workflows] automation disabled (set WORKFLOW_AUTOMATION_ENABLED=true to enable event-driven workflow triggers)",
