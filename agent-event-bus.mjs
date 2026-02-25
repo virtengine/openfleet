@@ -114,6 +114,7 @@ export class AgentEventBus {
       options.staleCheckIntervalMs || DEFAULTS.staleCheckIntervalMs;
     this._maxAutoRetries =
       options.maxAutoRetries ?? DEFAULTS.maxAutoRetries;
+    this._dedupeWindowMs = options.dedupeWindowMs || DEFAULTS.dedupeWindowMs;
 
     /** @type {Array<{type: string, taskId: string, payload: object, ts: number}>} ring buffer */
     this._eventLog = [];
@@ -202,11 +203,11 @@ export class AgentEventBus {
 
     // ── Dedup
     const key = `${type}:${taskId}`;
-    const last = this._recentEmits.get(key) || 0;
-    if (ts - last < DEFAULTS.dedupeWindowMs) return;
+    const last = this._recentEmits.get(key);
+    if (typeof last === "number" && ts - last < this._dedupeWindowMs) return;
     this._recentEmits.set(key, ts);
     if (this._recentEmits.size > 200) {
-      const cutoff = ts - DEFAULTS.dedupeWindowMs * 2;
+      const cutoff = ts - this._dedupeWindowMs * 2;
       for (const [k, v] of this._recentEmits) {
         if (v < cutoff) this._recentEmits.delete(k);
       }
