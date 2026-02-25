@@ -87,6 +87,32 @@ function checkWorktreeClean(repoRoot) {
   };
 }
 
+/**
+ * Detect interactive git editors that block automated commits.
+ * Returns `null` if no interactive editor is detected, otherwise an object
+ * with `{ editor, source }` describing the offending configuration.
+ */
+const INTERACTIVE_EDITOR_PATTERNS =
+  /\b(vim?|nvim|nano|emacs|pico|joe|mcedit|micro|helix|hx|subl|gedit|kate|notepad)\b|--wait\b/i;
+
+function checkInteractiveEditor(repoRoot) {
+  // GIT_EDITOR takes precedence over core.editor in git
+  const envEditor = process.env.GIT_EDITOR || "";
+  if (envEditor && INTERACTIVE_EDITOR_PATTERNS.test(envEditor)) {
+    return { editor: envEditor, source: "GIT_EDITOR" };
+  }
+
+  const res = runCommand("git", ["config", "--get", "core.editor"], {
+    cwd: repoRoot,
+  });
+  const coreEditor = readOutput(res);
+  if (coreEditor && INTERACTIVE_EDITOR_PATTERNS.test(coreEditor)) {
+    return { editor: coreEditor, source: "core.editor" };
+  }
+
+  return null;
+}
+
 function parseDiskFromPosix(repoRoot) {
   const res = runCommand("df", ["-kP", repoRoot]);
   if (res.status !== 0) return null;
@@ -284,6 +310,16 @@ export function runPreflightChecks(options = {}) {
       title: "Git identity not configured",
       message:
         'Set git user.name and user.email (git config --global user.name "Your Name"; git config --global user.email "you@example.com").',
+    });
+  }
+
+  const interactiveEditor = checkInteractiveEditor(repoRoot);
+  if (interactiveEditor) {
+    warnings.push({
+      title: "Interactive git editor detected",
+      message:
+        `${interactiveEditor.source} is set to "${interactiveEditor.editor}" which blocks automated commits. ` +
+        `Fix: node git-editor-fix.mjs`,
     });
   }
 
