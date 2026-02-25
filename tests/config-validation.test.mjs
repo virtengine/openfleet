@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -28,6 +29,8 @@ const ENV_KEYS = [
   "EXECUTORS",
   "TASK_TRIGGER_SYSTEM_ENABLED",
   "KANBAN_BACKEND",
+  "WATCH_PATH",
+  "ORCHESTRATOR_SCRIPT",
 ];
 
 describe("loadConfig validation and edge cases", () => {
@@ -74,6 +77,54 @@ describe("loadConfig validation and edge cases", () => {
     expect(config.dependabotMergeMethod).toBe("squash");
   });
 
+  it("chooses an existing default watchPath when orchestrator script path is missing", () => {
+    delete process.env.WATCH_PATH;
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(typeof config.watchPath).toBe("string");
+    expect(existsSync(config.watchPath)).toBe(true);
+  });
+
+  it("falls back from a stale WATCH_PATH to an existing path", () => {
+    process.env.WATCH_PATH = resolve(tempConfigDir, "missing-watch-target.ps1");
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.watchPath).not.toBe(resolve(tempConfigDir, "missing-watch-target.ps1"));
+    expect(existsSync(config.watchPath)).toBe(true);
+  });
+
+  it("resolves an existing orchestrator script even when repo-root has no script", () => {
+    delete process.env.ORCHESTRATOR_SCRIPT;
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(typeof config.scriptPath).toBe("string");
+    expect(existsSync(config.scriptPath)).toBe(true);
+    expect(config.scriptPath).toMatch(/ve-orchestrator.(ps1|sh)$/i);
+  });
   it("accepts valid env overrides", () => {
     process.env.TELEGRAM_INTERVAL_MIN = "30";
     process.env.INTERNAL_EXECUTOR_PARALLEL = "5";

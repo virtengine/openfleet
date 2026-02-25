@@ -628,7 +628,11 @@ function detectRepoRoot() {
     // bosun installed standalone, not in a repo
   }
 
-  // 4. Check bosun config for workspace repos
+  // 4. If this package is a standalone bosun checkout, use it as root.
+  const moduleRoot = detectBosunModuleRoot();
+  if (moduleRoot) return moduleRoot;
+
+  // 5. Check bosun config for workspace repos
   const configDirs = getConfigSearchDirs();
   let fallbackRepo = null;
   for (const cfgName of CONFIG_FILES) {
@@ -650,7 +654,7 @@ function detectRepoRoot() {
   }
   if (fallbackRepo) return fallbackRepo;
 
-  // 5. Final fallback — warn and return cwd.  This is unlikely to be a valid
+  // 6. Final fallback — warn and return cwd.  This is unlikely to be a valid
   // git repo (e.g. when the daemon spawns with cwd=homedir), but returning
   // null would crash downstream callers like resolve(repoRoot).  The warning
   // helps diagnose "not a git repository" errors from child processes.
@@ -791,6 +795,76 @@ function normalizeProjectRequirementsProfile(value) {
     return profile;
   }
   return "feature";
+}
+
+function isBosunModuleRoot(dirPath) {
+  if (!dirPath) return false;
+  const monitorPath = resolve(dirPath, "monitor.mjs");
+  const hasOrchestrator =
+    existsSync(resolve(dirPath, "ve-orchestrator.ps1")) ||
+    existsSync(resolve(dirPath, "ve-orchestrator.sh"));
+  return existsSync(monitorPath) && hasOrchestrator;
+}
+
+function detectBosunModuleRoot() {
+  const candidates = [
+    __dirname,
+    resolve(__dirname, "scripts", "bosun"),
+    resolve(__dirname, "..", "scripts", "bosun"),
+  ];
+  for (const candidate of candidates) {
+    if (isBosunModuleRoot(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function resolveDefaultWatchPath({
+  configuredWatchPath,
+  scriptPath,
+  repoRoot,
+  configDir,
+}) {
+  const resolvedConfiguredWatchPath = configuredWatchPath
+    ? resolve(configuredWatchPath)
+    : "";
+  let missingConfiguredWatchPath = "";
+  if (resolvedConfiguredWatchPath) {
+    if (existsSync(resolvedConfiguredWatchPath)) {
+      return resolvedConfiguredWatchPath;
+    }
+    missingConfiguredWatchPath = resolvedConfiguredWatchPath;
+  }
+
+  const moduleRoot = detectBosunModuleRoot();
+  const candidates = [
+    scriptPath,
+    moduleRoot ? resolve(moduleRoot, "ve-orchestrator.ps1") : "",
+    moduleRoot ? resolve(moduleRoot, "ve-orchestrator.sh") : "",
+    resolve(repoRoot, "scripts", "ve-orchestrator.ps1"),
+    resolve(repoRoot, "scripts", "ve-orchestrator.sh"),
+    resolve(__dirname, "monitor.mjs"),
+    repoRoot,
+    configDir,
+    process.cwd(),
+  ];
+
+  const existing = candidates.find(
+    (candidate) => candidate && existsSync(candidate),
+  );
+  const fallbackPath = resolve(
+    existing || scriptPath || repoRoot || configDir || process.cwd(),
+  );
+  if (missingConfiguredWatchPath && fallbackPath !== missingConfiguredWatchPath) {
+    console.warn(
+      "[config] WATCH_PATH not found: " +
+        missingConfiguredWatchPath +
+        "; falling back to " +
+        fallbackPath,
+    );
+  }
+  return fallbackPath;
 }
 
 function findExecutorMetadataMatch(entry, candidates, index = 0) {
@@ -1426,13 +1500,18 @@ export function loadConfig(argv = process.argv, options = {}) {
     : configData.watchEnabled !== undefined
       ? configData.watchEnabled
       : true;
-  const watchPath = resolve(
+  const configuredWatchPath =
     cli["watch-path"] ||
-      process.env.WATCH_PATH ||
-      selectedRepository?.watchPath ||
-      configData.watchPath ||
-      scriptPath,
-  );
+    process.env.WATCH_PATH ||
+    selectedRepository?.watchPath ||
+    configData.watchPath ||
+    "";
+  const watchPath = resolveDefaultWatchPath({
+    configuredWatchPath,
+    scriptPath,
+    repoRoot,
+    configDir,
+  });
   const echoLogs = flags.has("echo-logs")
     ? true
     : flags.has("no-echo-logs")
@@ -2206,6 +2285,7 @@ function detectProjectName(configDir, repoRoot) {
 }
 
 function findOrchestratorScript(configDir, repoRoot) {
+  const moduleRoot = detectBosunModuleRoot();
   const shellModeEnv = String(process.env.BOSUN_SHELL_MODE || "")
     .trim()
     .toLowerCase();
@@ -2223,6 +2303,12 @@ function findOrchestratorScript(configDir, repoRoot) {
     resolve(configDir, "orchestrator.sh"),
     resolve(configDir, "..", "ve-orchestrator.sh"),
     resolve(configDir, "..", "orchestrator.sh"),
+    ...(moduleRoot
+      ? [
+          resolve(moduleRoot, "ve-orchestrator.sh"),
+          resolve(moduleRoot, "orchestrator.sh"),
+        ]
+      : []),
     resolve(repoRoot, "scripts", "ve-orchestrator.sh"),
     resolve(repoRoot, "scripts", "orchestrator.sh"),
     resolve(repoRoot, "ve-orchestrator.sh"),
@@ -2237,6 +2323,12 @@ function findOrchestratorScript(configDir, repoRoot) {
     resolve(configDir, "orchestrator.ps1"),
     resolve(configDir, "..", "ve-orchestrator.ps1"),
     resolve(configDir, "..", "orchestrator.ps1"),
+    ...(moduleRoot
+      ? [
+          resolve(moduleRoot, "ve-orchestrator.ps1"),
+          resolve(moduleRoot, "orchestrator.ps1"),
+        ]
+      : []),
     resolve(repoRoot, "scripts", "ve-orchestrator.ps1"),
     resolve(repoRoot, "scripts", "orchestrator.ps1"),
     resolve(repoRoot, "ve-orchestrator.ps1"),
@@ -2252,9 +2344,10 @@ function findOrchestratorScript(configDir, repoRoot) {
   for (const p of candidates) {
     if (existsSync(p)) return p;
   }
+  const fallbackRoot = moduleRoot || configDir || repoRoot || process.cwd();
   return preferShellScript
-    ? resolve(configDir, "..", "ve-orchestrator.sh")
-    : resolve(configDir, "..", "ve-orchestrator.ps1");
+    ? resolve(fallbackRoot, "ve-orchestrator.sh")
+    : resolve(fallbackRoot, "ve-orchestrator.ps1");
 }
 
 // ── Exports ──────────────────────────────────────────────────────────────────

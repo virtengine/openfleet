@@ -20,6 +20,29 @@ function normalizeConfigRepoPath(repoPath, configDir) {
   return resolve(isAbsolute(repoPath) ? repoPath : resolve(configDir, repoPath));
 }
 
+function isBosunModuleRoot(dirPath) {
+  if (!dirPath) return false;
+  const monitorPath = resolve(dirPath, "monitor.mjs");
+  const hasOrchestrator =
+    existsSync(resolve(dirPath, "ve-orchestrator.ps1")) ||
+    existsSync(resolve(dirPath, "ve-orchestrator.sh"));
+  return existsSync(monitorPath) && hasOrchestrator;
+}
+
+function detectBosunModuleRoot() {
+  const candidates = [
+    __dirname,
+    resolve(__dirname, "scripts", "bosun"),
+    resolve(__dirname, "..", "scripts", "bosun"),
+  ];
+  for (const candidate of candidates) {
+    if (isBosunModuleRoot(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 /**
  * Resolve the repo root for bosun.
  *
@@ -27,8 +50,9 @@ function normalizeConfigRepoPath(repoPath, configDir) {
  *  1. Explicit REPO_ROOT env var.
  *  2. git rev-parse --show-toplevel (relative to cwd).
  *  3. git rev-parse --show-toplevel from the bosun package directory.
- *  4. Workspace config repo path (bosun.config.json).
- *  5. process.cwd().
+ *  4. Bosun module root fallback.
+ *  5. Workspace config repo path (bosun.config.json).
+ *  6. process.cwd().
  */
 export function resolveRepoRoot(options = {}) {
   const envRoot = process.env.REPO_ROOT;
@@ -59,6 +83,9 @@ export function resolveRepoRoot(options = {}) {
   } catch {
     // bosun installed standalone
   }
+
+  const moduleRoot = detectBosunModuleRoot();
+  if (moduleRoot) return moduleRoot;
 
   // Check bosun config for workspace repos
   const CONFIG_FILES = ["bosun.config.json", ".bosun.json", "bosun.json"];

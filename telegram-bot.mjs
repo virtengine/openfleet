@@ -13,7 +13,7 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import {
   mkdir,
   readFile,
@@ -126,6 +126,16 @@ const telegramPollLockPath = resolve(
   ".cache",
   "telegram-getupdates.lock",
 );
+const telegramPollConflictStatePath = resolve(
+  repoRoot,
+  ".cache",
+  "telegram-getupdates-conflict.json",
+);
+const TELEGRAM_POLL_CONFLICT_COOLDOWN_MS = Math.max(
+  60_000,
+  Number(process.env.TELEGRAM_POLL_CONFLICT_COOLDOWN_MS || "900000") || 900000,
+);
+
 const liveDigestStatePath = resolve(repoRoot, ".cache", "ve-live-digest.json");
 const statusBoardStatePath = resolve(
   repoRoot,
@@ -712,6 +722,50 @@ function canSignalProcess(pid) {
     return true;
   } catch {
     return false;
+  }
+}
+function readTelegramPollConflictState() {
+  try {
+    if (!existsSync(telegramPollConflictStatePath)) return null;
+    const raw = String(readFileSync(telegramPollConflictStatePath, "utf8") || "").trim();
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const untilMs = Number(parsed?.untilMs || 0);
+    return Number.isFinite(untilMs) && untilMs > 0
+      ? { untilMs, reason: String(parsed?.reason || "") }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeTelegramPollConflictState(untilMs, reason = "") {
+  try {
+    mkdirSync(dirname(telegramPollConflictStatePath), { recursive: true });
+    writeFileSync(
+      telegramPollConflictStatePath,
+      JSON.stringify(
+        {
+          untilMs,
+          reason,
+          updatedAt: new Date().toISOString(),
+          pid: process.pid,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  } catch {
+    /* best effort */
+  }
+}
+
+function clearTelegramPollConflictState() {
+  try {
+    unlinkSync(telegramPollConflictStatePath);
+  } catch {
+    /* best effort */
   }
 }
 
@@ -1967,16 +2021,23 @@ async function pollUpdates() {
   if (!res.ok) {
     markPollFailure();
     const body = await res.text().catch(() => "");
-    console.warn(`[telegram-bot] getUpdates failed: ${res.status} ${body}`);
     if (res.status === 409) {
+      const untilMs = Date.now() + TELEGRAM_POLL_CONFLICT_COOLDOWN_MS;
+      writeTelegramPollConflictState(untilMs, body);
+      const cooldownSec = Math.max(1, Math.round((untilMs - Date.now()) / 1000));
+      console.warn(
+        `[telegram-bot] getUpdates conflict (409): another poller is active; pausing polling for ${cooldownSec}s`,
+      );
       polling = false;
       await releaseTelegramPollLock();
       return [];
     }
+    console.warn(`[telegram-bot] getUpdates failed: ${res.status} ${body}`);
     if (polling) await delayMs(getPollBackoffMs());
     return [];
   }
   resetPollFailureStreak();
+  clearTelegramPollConflictState();
   if (!telegramApiReachable) {
     telegramApiReachable = true;
     // API came back — register commands that were deferred at startup
@@ -10408,6 +10469,19 @@ export async function startTelegramBot() {
     );
     return;
   }
+
+  const pollConflict = readTelegramPollConflictState();
+  if (pollConflict && pollConflict.untilMs > Date.now()) {
+    const remainingSec = Math.max(
+      1,
+      Math.round((pollConflict.untilMs - Date.now()) / 1000),
+    );
+    console.warn(
+      `[telegram-bot] polling temporarily disabled due to recent 409 conflict (${remainingSec}s remaining)`,
+    );
+    return;
+  }
+  clearTelegramPollConflictState();
 
   const lockOk = await acquireTelegramPollLock("telegram-bot");
   if (!lockOk) {

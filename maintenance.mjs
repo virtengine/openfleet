@@ -28,6 +28,56 @@ import {
 } from "./worktree-manager.mjs";
 
 const isWindows = process.platform === "win32";
+const MAINTENANCE_WARNING_THROTTLE_MS = Math.max(
+  60_000,
+  Number(process.env.MAINTENANCE_WARNING_THROTTLE_MS || "1800000") || 1_800_000,
+);
+
+const branchSyncWarningState = new Map();
+
+export function evaluateThrottledWarning(state, key, nowMs, throttleMs) {
+  const now = Number(nowMs) || Date.now();
+  const intervalMs = Math.max(1_000, Number(throttleMs) || MAINTENANCE_WARNING_THROTTLE_MS);
+  const current = state.get(key);
+  if (!current) {
+    state.set(key, { lastLoggedAt: now, suppressed: 0 });
+    return { shouldLog: true, suppressed: 0 };
+  }
+  const elapsed = now - Number(current.lastLoggedAt || 0);
+  if (elapsed >= intervalMs) {
+    const suppressed = Number(current.suppressed || 0);
+    state.set(key, { lastLoggedAt: now, suppressed: 0 });
+    return { shouldLog: true, suppressed };
+  }
+  state.set(key, {
+    lastLoggedAt: Number(current.lastLoggedAt || now),
+    suppressed: Number(current.suppressed || 0) + 1,
+  });
+  return { shouldLog: false, suppressed: Number(current.suppressed || 0) + 1 };
+}
+
+function warnThrottledBranchSync(key, message) {
+  const decision = evaluateThrottledWarning(
+    branchSyncWarningState,
+    key,
+    Date.now(),
+    MAINTENANCE_WARNING_THROTTLE_MS,
+  );
+  if (!decision.shouldLog) return;
+  if (decision.suppressed > 0) {
+    console.warn(`${message} (suppressed ${decision.suppressed} similar warning(s))`);
+    return;
+  }
+  console.warn(message);
+}
+
+function clearBranchSyncWarning(key) {
+  branchSyncWarningState.delete(key);
+}
+
+export function resetBranchSyncWarningStateForTests() {
+  branchSyncWarningState.clear();
+}
 
 /**
  * Get all running processes matching a filter.
@@ -898,11 +948,13 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
       );
       const ahead = parseInt(aheadCheck.stdout?.trim(), 10) || 0;
       if (ahead > 0) {
-        console.warn(
+        warnThrottledBranchSync(
+          `diverged:${repoRoot}:${branch}`,
           `[maintenance] local '${branch}' has ${ahead} commit(s) ahead of ${remoteRef} — skipping (diverged)`,
         );
         continue;
       }
+      clearBranchSyncWarning(`diverged:${repoRoot}:${branch}`);
 
       // If this is the currently checked-out branch, use git pull --ff-only
       if (branch === currentBranch) {
@@ -914,11 +966,13 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           windowsHide: true,
         });
         if (statusCheck.stdout?.trim()) {
-          console.warn(
+          warnThrottledBranchSync(
+            `dirty:${repoRoot}:${branch}`,
             `[maintenance] '${branch}' is checked out with uncommitted changes — skipping pull`,
           );
           continue;
         }
+        clearBranchSyncWarning(`dirty:${repoRoot}:${branch}`);
 
         const pull = spawnSync("git", ["pull", "--ff-only", "--quiet"], {
           cwd: repoRoot,
@@ -930,6 +984,8 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           console.log(
             `[maintenance] fast-forwarded checked-out '${branch}' (was ${behind} behind)`,
           );
+          clearBranchSyncWarning(`diverged:${repoRoot}:${branch}`);
+          clearBranchSyncWarning(`dirty:${repoRoot}:${branch}`);
           synced++;
         } else {
           console.warn(
@@ -948,6 +1004,8 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           console.log(
             `[maintenance] fast-forwarded '${branch}' → ${remoteRef} (was ${behind} behind)`,
           );
+          clearBranchSyncWarning(`diverged:${repoRoot}:${branch}`);
+          clearBranchSyncWarning(`dirty:${repoRoot}:${branch}`);
           synced++;
         } else {
           console.warn(`[maintenance] update-ref failed for '${branch}'`);
