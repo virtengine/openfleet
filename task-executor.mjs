@@ -5210,9 +5210,9 @@ class TaskExecutor {
       } else {
         // No commits — agent completed without making changes.
         // This is NOT a real completion. Apply anti-thrash protection.
-        const prevCount = this._noCommitCounts.get(task.id) || 0;
+        const prevCount = this._noCommitCounts.get(taskKey || normalizeTaskIdKey(task.id)) || 0;
         const noCommitCount = prevCount + 1;
-        this._noCommitCounts.set(task.id, noCommitCount);
+        this._noCommitCounts.set(taskKey || normalizeTaskIdKey(task.id), noCommitCount);
         this._saveNoCommitState();
 
         // Only force fresh thread after 2+ consecutive no-commit completions.
@@ -5257,7 +5257,7 @@ class TaskExecutor {
           NO_COMMIT_MAX_COOLDOWN_MS,
         );
         const cooldownMin = Math.round(cooldownMs / 60_000);
-        this._skipUntil.set(task.id, Date.now() + cooldownMs);
+        this._skipUntil.set(taskKey || normalizeTaskIdKey(task.id), Date.now() + cooldownMs);
         this._taskCooldowns.set(task.id, Date.now());
 
         console.warn(
@@ -6526,4 +6526,5 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
+
 
