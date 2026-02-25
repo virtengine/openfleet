@@ -769,10 +769,18 @@ function normalizeObjectCollection(value) {
 }
 
 function findNestedCollectionByKeys(node, keys, depth = 0, visited = new Set()) {
-  if (!node || typeof node !== "object" || Array.isArray(node)) return [];
+  if (!node || typeof node !== "object") return [];
   if (depth > 4) return [];
   if (visited.has(node)) return [];
   visited.add(node);
+
+  if (Array.isArray(node)) {
+    for (const entry of node) {
+      const nested = findNestedCollectionByKeys(entry, keys, depth + 1, visited);
+      if (nested.length > 0) return nested;
+    }
+    return [];
+  }
 
   for (const key of keys) {
     const value = node[key];
