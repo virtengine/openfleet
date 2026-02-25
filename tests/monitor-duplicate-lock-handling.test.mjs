@@ -13,7 +13,10 @@ describe("duplicate monitor lock handling", () => {
     );
     expect(blockMatch, "singleton guard block should exit 0 for duplicate starts").toBeTruthy();
     const block = blockMatch ? blockMatch[0] : "";
-    expect(block).toContain("duplicate start ignored");
+    expect(
+      block.includes("duplicate start ignored") ||
+        block.includes("writeDuplicateStartExitNotice("),
+    ).toBe(true);
     expect(block).not.toContain("exit code 1");
   });
 
@@ -26,6 +29,11 @@ describe("duplicate monitor lock handling", () => {
   it("throttles duplicate lock warning spam across restart storms", () => {
     expect(maintenanceSource).toContain("MONITOR_DUPLICATE_START_WARN_THROTTLE_MS");
     expect(maintenanceSource).toContain("duplicate-start warnings in last");
+  });
+  it("throttles duplicate-start exit notices in monitor", () => {
+    expect(monitorSource).toContain("DUPLICATE_START_EXIT_THROTTLE_MS");
+    expect(monitorSource).toContain("monitor-duplicate-start-exit-state.json");
+    expect(monitorSource).toContain("suppressed");
   });
 
   it("short-circuits duplicate starts in cli before forking monitor", () => {

@@ -54,6 +54,12 @@ Requires:
 
 ---
 
+## Telegram weekly report
+
+- Run `/weekly` to generate the operator weekly agent-work report on demand.
+- Use `/report weekly` as an alias.
+- Optional scheduler knobs in `.env`: `TELEGRAM_WEEKLY_REPORT_ENABLED`, `TELEGRAM_WEEKLY_REPORT_DAY`, `TELEGRAM_WEEKLY_REPORT_HOUR` (UTC), and `TELEGRAM_WEEKLY_REPORT_DAYS`.
+
 ## Documentation
 
 **Published docs (website):** https://bosun.virtengine.com/docs/

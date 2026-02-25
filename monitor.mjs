@@ -13493,6 +13493,70 @@ process.on("exit", (code) => {
 });
 
 if (!isMonitorTestRuntime) {
+  const DUPLICATE_START_EXIT_STATE_FILE =
+    "monitor-duplicate-start-exit-state.json";
+  const DUPLICATE_START_EXIT_THROTTLE_MS = Math.max(
+    5_000,
+    Number(process.env.MONITOR_DUPLICATE_START_WARN_THROTTLE_MS || "60000") ||
+      60000,
+  );
+
+  function writeDuplicateStartExitNotice(cacheDir) {
+    const statePath = resolve(cacheDir, DUPLICATE_START_EXIT_STATE_FILE);
+    const now = Date.now();
+    let state = {};
+    try {
+      state = JSON.parse(readFileSync(statePath, "utf8"));
+    } catch {
+      state = {};
+    }
+
+    const lastLoggedAt = Number(state?.lastLoggedAt || 0);
+    const suppressed = Math.max(0, Number(state?.suppressed || 0));
+    if (now - lastLoggedAt < DUPLICATE_START_EXIT_THROTTLE_MS) {
+      try {
+        writeFileSync(
+          statePath,
+          JSON.stringify({
+            lastLoggedAt,
+            suppressed: suppressed + 1,
+          }),
+          "utf8",
+        );
+      } catch {
+        /* best effort */
+      }
+      return;
+    }
+
+    const suffix =
+      suppressed > 0
+        ? " (suppressed " +
+          suppressed +
+          " duplicate-start exits in last " +
+          Math.round(DUPLICATE_START_EXIT_THROTTLE_MS / 1000) +
+          "s)"
+        : "";
+    process.stderr.write(
+      "[monitor] another bosun instance holds the lock — duplicate start ignored (exit code 0)." +
+        suffix +
+        "\n",
+    );
+
+    try {
+      writeFileSync(
+        statePath,
+        JSON.stringify({
+          lastLoggedAt: now,
+          suppressed: 0,
+        }),
+        "utf8",
+      );
+    } catch {
+      /* best effort */
+    }
+  }
+
   // ── Singleton guard: prevent ghost monitors ─────────────────────────────────
   if (!acquireMonitorLock(config.cacheDir)) {
     // During source-change self-restart, the previous monitor can still be
@@ -13508,9 +13572,7 @@ if (!isMonitorTestRuntime) {
     }
     // Duplicate start (lock held by another healthy monitor) is benign.
     // Exit 0 so daemon/service wrappers do not treat this as a crash loop.
-    process.stderr.write(
-      "[monitor] another bosun instance holds the lock — duplicate start ignored (exit code 0).\n",
-    );
+    writeDuplicateStartExitNotice(config.cacheDir);
     process.exit(0);
   }
 
