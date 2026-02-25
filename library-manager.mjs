@@ -360,9 +360,21 @@ export function detectScopes(repoRoot, opts = {}) {
 
   // 1. Scan git commit history for conventional commit scopes
   try {
+    const gitEnv = { ...process.env };
+    delete gitEnv.GIT_DIR;
+    delete gitEnv.GIT_WORK_TREE;
+    delete gitEnv.GIT_INDEX_FILE;
+    delete gitEnv.GIT_COMMON_DIR;
+    delete gitEnv.GIT_PREFIX;
     const log = execSync(
       `git log --oneline -${maxCommits} --format="%s"`,
-      { cwd: repoRoot, encoding: "utf8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"] },
+      {
+        cwd: repoRoot,
+        env: gitEnv,
+        encoding: "utf8",
+        timeout: 10000,
+        stdio: ["pipe", "pipe", "pipe"],
+      },
     );
     const scopeRegex = /(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\(([^)]+)\)/gi;
     for (const line of log.split("\n")) {
