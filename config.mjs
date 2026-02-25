@@ -65,7 +65,8 @@ function isWslInteropRuntime() {
 }
 
 function resolveConfigDir(repoRoot) {
-  // 1. Explicit env override
+  // 1. Explicit env override (BOSUN_HOME supersedes BOSUN_DIR; both are aliases)
+  if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
   if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
 
   // 2. Platform-aware user home
@@ -84,6 +85,55 @@ function resolveConfigDir(repoRoot) {
       process.env.LOCALAPPDATA ||
       os.homedir();
   return resolve(baseDir, "bosun");
+}
+
+function getConfigSearchDirs(repoRoot) {
+  const dirs = new Set();
+  if (process.env.BOSUN_HOME) dirs.add(resolve(process.env.BOSUN_HOME));
+  if (process.env.BOSUN_DIR) dirs.add(resolve(process.env.BOSUN_DIR));
+  dirs.add(resolveConfigDir(repoRoot));
+  if (process.env.APPDATA) dirs.add(resolve(process.env.APPDATA, "bosun"));
+  if (process.env.LOCALAPPDATA) dirs.add(resolve(process.env.LOCALAPPDATA, "bosun"));
+  if (process.env.USERPROFILE) dirs.add(resolve(process.env.USERPROFILE, "bosun"));
+  if (process.env.HOME) dirs.add(resolve(process.env.HOME, "bosun"));
+  return [...dirs].filter(Boolean);
+}
+
+function collectRepoPathsFromConfig(cfg, configDir) {
+  const paths = [];
+  const pushPath = (path) => {
+    if (!path) return;
+    paths.push(isAbsolute(path) ? path : resolve(configDir, path));
+  };
+
+  const repos = cfg.repositories || cfg.repos || [];
+  if (Array.isArray(repos)) {
+    for (const repo of repos) {
+      const repoPath = typeof repo === "string" ? repo : (repo?.path || repo?.repoRoot);
+      pushPath(repoPath);
+    }
+  }
+
+  const workspaces = cfg.workspaces || [];
+  if (Array.isArray(workspaces)) {
+    for (const ws of workspaces) {
+      const wsBase = ws?.path
+        ? (isAbsolute(ws.path) ? ws.path : resolve(configDir, ws.path))
+        : (ws?.id ? resolve(configDir, "workspaces", ws.id) : null);
+      const wsRepos = ws?.repos || ws?.repositories || [];
+      if (!Array.isArray(wsRepos)) continue;
+      for (const repo of wsRepos) {
+        const repoPath = typeof repo === "string" ? repo : (repo?.path || repo?.repoRoot);
+        if (repoPath) {
+          pushPath(repoPath);
+          continue;
+        }
+        if (wsBase && repo?.name) pushPath(resolve(wsBase, repo.name));
+      }
+    }
+  }
+
+  return paths;
 }
 
 function ensurePromptWorkspaceGitIgnore(repoRoot) {
@@ -575,33 +625,26 @@ function detectRepoRoot() {
   }
 
   // 4. Check bosun config for workspace repos
-  const configDir = process.env.BOSUN_DIR || resolve(process.env.HOME || process.env.USERPROFILE || "", "bosun");
+  const configDirs = getConfigSearchDirs();
+  let fallbackRepo = null;
   for (const cfgName of CONFIG_FILES) {
-    const cfgPath = resolve(configDir, cfgName);
-    if (existsSync(cfgPath)) {
+    for (const configDir of configDirs) {
+      const cfgPath = resolve(configDir, cfgName);
+      if (!existsSync(cfgPath)) continue;
       try {
         const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
-        // Check workspace repos
-        const repos = cfg.repositories || cfg.repos || [];
-        if (Array.isArray(repos) && repos.length > 0) {
-          const primary = repos.find((r) => r.primary) || repos[0];
-          const repoPath = primary?.path || primary?.repoRoot;
-          if (repoPath && existsSync(resolve(repoPath))) return resolve(repoPath);
+        const repoPaths = collectRepoPathsFromConfig(cfg, configDir);
+        for (const repoPath of repoPaths) {
+          if (!repoPath || !existsSync(repoPath)) continue;
+          if (existsSync(resolve(repoPath, ".git"))) return repoPath;
+          fallbackRepo ??= repoPath;
         }
-        // Check workspaces
-        const workspaces = cfg.workspaces;
-        if (Array.isArray(workspaces) && workspaces.length > 0) {
-          const ws = workspaces[0];
-          const wsRepos = ws?.repos || ws?.repositories || [];
-          if (Array.isArray(wsRepos) && wsRepos.length > 0) {
-            const primary = wsRepos.find((r) => r.primary) || wsRepos[0];
-            const repoPath = primary?.path || primary?.repoRoot;
-            if (repoPath && existsSync(resolve(repoPath))) return resolve(repoPath);
-          }
-        }
-      } catch { /* invalid config */ }
+      } catch {
+        /* invalid config */
+      }
     }
   }
+  if (fallbackRepo) return fallbackRepo;
 
   // 5. Final fallback — warn and return cwd.  This is unlikely to be a valid
   // git repo (e.g. when the daemon spawns with cwd=homedir), but returning
@@ -2069,6 +2112,25 @@ export function loadConfig(argv = process.argv, options = {}) {
 
     // First run
     isFirstRun,
+
+    // Security controls
+    security: Object.freeze({
+      // List of trusted issue creators (primary GitHub account or configured list)
+      trustedCreators:
+        configData.trustedCreators ||
+        process.env.BOSUN_TRUSTED_CREATORS?.split(",") ||
+        [],
+      // Enforce all new tasks go to backlog unless planner config allows auto-push
+      enforceBacklog:
+        typeof configData.enforceBacklog === "boolean"
+          ? configData.enforceBacklog
+          : true,
+      // Control agent triggers: restrict agent activation to trusted sources
+      agentTriggerControl:
+        typeof configData.agentTriggerControl === "boolean"
+          ? configData.agentTriggerControl
+          : true,
+    }),
   };
 
   return Object.freeze(config);

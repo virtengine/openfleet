@@ -8,7 +8,7 @@
  * Designed for eventual consistency on distributed filesystems.
  */
 
-import { readFile, writeFile, mkdir, rename, unlink } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, unlink, copyFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -45,6 +45,48 @@ import { randomUUID } from "node:crypto";
 const REGISTRY_VERSION = "1.0.0";
 const DEFAULT_TTL_SECONDS = 300; // 5 minutes
 const MAX_EVENT_LOG_ENTRIES = 100;
+const RENAME_RETRY_DELAY_MS = 60;
+const RENAME_MAX_RETRIES = 8;
+const COPY_MAX_RETRIES = 3;
+const WRITE_MAX_RETRIES = 3;
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const RETRYABLE_FS_ERRORS = new Set([
+  "EPERM",
+  "EACCES",
+  "EBUSY",
+  "ENOTEMPTY",
+  "EMFILE",
+  "ENFILE",
+]);
+
+function isRetryableFsError(error) {
+  const code = error?.code || "";
+  return RETRYABLE_FS_ERRORS.has(code);
+}
+
+async function retryFsOperation(fn, { maxRetries, delayMs }) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn(attempt);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableFsError(error) || attempt === maxRetries) break;
+      await delay(delayMs * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
+async function safeUnlink(path) {
+  try {
+    if (existsSync(path)) await unlink(path);
+  } catch {
+    // best effort
+  }
+}
 
 /**
  * Get the path to the shared state registry file
@@ -144,19 +186,50 @@ async function saveRegistry(registryPath, registry) {
   const tempPath = `${registryPath}.tmp-${randomUUID()}`;
 
   try {
-    await writeFile(tempPath, JSON.stringify(registry, null, 2), "utf-8");
+    const payload = JSON.stringify(registry, null, 2);
+    await writeFile(tempPath, payload, { encoding: "utf-8", flush: true });
 
-    // Atomic rename
-    await rename(tempPath, registryPath);
+    // Atomic rename (with retries for Windows file-lock hiccups)
+    try {
+      await retryFsOperation(
+        () => rename(tempPath, registryPath),
+        { maxRetries: RENAME_MAX_RETRIES, delayMs: RENAME_RETRY_DELAY_MS },
+      );
+      return;
+    } catch (renameError) {
+      const code = renameError?.code || "unknown";
+
+      // Fallback: copy temp over destination (less atomic, but more reliable on Windows).
+      try {
+        await retryFsOperation(
+          () => copyFile(tempPath, registryPath),
+          { maxRetries: COPY_MAX_RETRIES, delayMs: RENAME_RETRY_DELAY_MS },
+        );
+        await safeUnlink(tempPath);
+        console.warn(
+          `[SharedStateManager] Atomic rename failed (${code}); copied registry instead.`,
+        );
+        return;
+      } catch (copyError) {
+        // Final fallback: direct write to target.
+        try {
+          await retryFsOperation(
+            () => writeFile(registryPath, payload, { encoding: "utf-8", flush: true }),
+            { maxRetries: WRITE_MAX_RETRIES, delayMs: RENAME_RETRY_DELAY_MS },
+          );
+          await safeUnlink(tempPath);
+          console.warn(
+            `[SharedStateManager] Atomic rename failed (${code}); wrote registry directly.`,
+          );
+          return;
+        } catch (fallbackError) {
+          throw copyError || renameError || fallbackError;
+        }
+      }
+    }
   } catch (error) {
     // Clean up temp file on failure
-    try {
-      if (existsSync(tempPath)) {
-        await unlink(tempPath);
-      }
-    } catch (cleanupError) {
-      // Ignore cleanup errors
-    }
+    await safeUnlink(tempPath);
     throw error;
   }
 }

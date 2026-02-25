@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\agent-hook-bridge.mjs --agent claude --event UserPromptSubmit"
+            "command": "node C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun-worktrees\\landing-style\\agent-hook-bridge.mjs --agent claude --event UserPromptSubmit"
           }
         ]
       }
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\agent-hook-bridge.mjs --agent claude --event PreToolUse"
+            "command": "node C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun-worktrees\\landing-style\\agent-hook-bridge.mjs --agent claude --event PreToolUse"
           }
         ]
       }
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\agent-hook-bridge.mjs --agent claude --event PostToolUse"
+            "command": "node C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun-worktrees\\landing-style\\agent-hook-bridge.mjs --agent claude --event PostToolUse"
           }
         ]
       }
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\agent-hook-bridge.mjs --agent claude --event Stop"
+            "command": "node C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun-worktrees\\landing-style\\agent-hook-bridge.mjs --agent claude --event Stop"
           }
         ]
       }

@@ -873,12 +873,16 @@ function App() {
       <div class="progress-line">
         <div class="progress-line-fill" style="width:${progressPercent}%"></div>
       </div>
-      ${STEPS.map((s, i) => html`
-        <div class="progress-step ${i === step ? "active" : ""} ${completedSteps.has(i) ? "completed" : ""}" onclick=${() => goTo(i)}>
-          <div class="step-dot">${completedSteps.has(i) ? resolveIcon("check") : i + 1}</div>
-          <div class="step-label">${s.label}</div>
-        </div>
-      `)}
+      ${STEPS.map((s, i) => {
+        const isActive = i === step;
+        const isCompleted = completedSteps.has(i) && !isActive;
+        return html`
+          <div class="progress-step ${isActive ? "active" : ""} ${isCompleted ? "completed" : ""}" onclick=${() => goTo(i)}>
+            <div class="step-dot">${isCompleted ? resolveIcon("check") : i + 1}</div>
+            <div class="step-label">${s.label}</div>
+          </div>
+        `;
+      })}
     </div>
   `;
 
@@ -1147,6 +1151,7 @@ function App() {
     const cloneRoot = workspacesDir
       ? workspacesDir.replace(/[/\\]*$/, "") + "/" + (projectName || "<project>")
       : "<workspaces>/<project>";
+    const repoNamePlaceholder = "<repo-name>";
 
     return html`
       <h2>Repositories</h2>
@@ -1157,7 +1162,7 @@ function App() {
       <div style="background:var(--bg-input);border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.78rem;color:var(--text-secondary)">
         <span class="icon">${resolveIcon("folder")}</span>
         Repos will be cloned into:
-        <code style="font-family:var(--font-mono);color:var(--accent-light);margin-left:4px">${cloneRoot}/&lt;repo-name&gt;</code>
+        <code style="font-family:var(--font-mono);color:var(--accent-light);margin-left:4px">${cloneRoot}/${repoNamePlaceholder}</code>
       </div>
       ${repos.map((repo, i) => html`
         <div class="repo-entry">
@@ -1226,7 +1231,14 @@ function App() {
         <label>GitHub Project Number</label>
         <input type="number" value=${githubProjectNumber} oninput=${(e) => setGithubProjectNumber(e.target.value)}
           placeholder="1" />
-        <div class="hint">The number in the GitHub Projects URL: github.com/org/repo/projects/<strong>1</strong></div>
+        <div class="hint">
+          GitHub Projects are owned by a user/org (not a repo). Bosun uses the owner from
+          <strong>GitHub Repository</strong> above as the default project owner.
+        </div>
+        <div class="hint">
+          URL example: github.com/orgs/<strong>my-org</strong>/projects/<strong>1</strong>.
+          For separate projects per repo, use multiple workspaces in the terminal setup or edit <code style="font-family:var(--font-mono)">bosun.config.json</code>.
+        </div>
       </div>
     `}
     <div class="nav-buttons">

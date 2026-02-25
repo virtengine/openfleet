@@ -1,9 +1,24 @@
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+function getConfigSearchDirs() {
+  const dirs = new Set();
+  if (process.env.BOSUN_DIR) dirs.add(resolve(process.env.BOSUN_DIR));
+  if (process.env.APPDATA) dirs.add(resolve(process.env.APPDATA, "bosun"));
+  if (process.env.LOCALAPPDATA) dirs.add(resolve(process.env.LOCALAPPDATA, "bosun"));
+  if (process.env.USERPROFILE) dirs.add(resolve(process.env.USERPROFILE, "bosun"));
+  if (process.env.HOME) dirs.add(resolve(process.env.HOME, "bosun"));
+  return [...dirs];
+}
+
+function normalizeConfigRepoPath(repoPath, configDir) {
+  if (!repoPath) return null;
+  return resolve(isAbsolute(repoPath) ? repoPath : resolve(configDir, repoPath));
+}
 
 /**
  * Resolve the repo root for bosun.
@@ -47,24 +62,29 @@ export function resolveRepoRoot(options = {}) {
 
   // Check bosun config for workspace repos
   const CONFIG_FILES = ["bosun.config.json", ".bosun.json", "bosun.json"];
-  const configDir = process.env.BOSUN_DIR || resolve(process.env.HOME || process.env.USERPROFILE || "", "bosun");
+  const configDirs = [...getConfigSearchDirs(), __dirname];
+  let fallbackRepo = null;
   for (const cfgName of CONFIG_FILES) {
-    // Check both the configDir and __dirname (package dir)
-    for (const dir of [configDir, __dirname]) {
+    for (const dir of configDirs) {
       const cfgPath = resolve(dir, cfgName);
-      if (existsSync(cfgPath)) {
-        try {
-          const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
-          const repos = cfg.repositories || cfg.repos || [];
-          if (Array.isArray(repos) && repos.length > 0) {
-            const primary = repos.find((r) => r.primary) || repos[0];
-            const repoPath = primary?.path || primary?.repoRoot;
-            if (repoPath && existsSync(resolve(repoPath))) return resolve(repoPath);
-          }
-        } catch { /* invalid config */ }
+      if (!existsSync(cfgPath)) continue;
+      try {
+        const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+        const repos = cfg.repositories || cfg.repos || [];
+        if (Array.isArray(repos) && repos.length > 0) {
+          const primary = repos.find((r) => r.primary) || repos[0];
+          const repoPath = typeof primary === "string" ? primary : (primary?.path || primary?.repoRoot);
+          const resolved = normalizeConfigRepoPath(repoPath, dir);
+          if (!resolved || !existsSync(resolved)) continue;
+          if (existsSync(resolve(resolved, ".git"))) return resolved;
+          fallbackRepo ??= resolved;
+        }
+      } catch {
+        /* invalid config */
       }
     }
   }
+  if (fallbackRepo) return fallbackRepo;
 
   return resolve(cwd);
 }
@@ -104,12 +124,9 @@ export function resolveAgentRepoRoot(options = {}) {
  */
 function _resolveWorkspacePrimaryRepo() {
   const CONFIG_FILES = ["bosun.config.json", ".bosun.json", "bosun.json"];
-  const configDir =
-    process.env.BOSUN_DIR ||
-    resolve(process.env.HOME || process.env.USERPROFILE || "", "bosun");
-
+  const configDirs = [...getConfigSearchDirs(), __dirname];
   for (const cfgName of CONFIG_FILES) {
-    for (const dir of [configDir, __dirname]) {
+    for (const dir of configDirs) {
       const cfgPath = resolve(dir, cfgName);
       if (!existsSync(cfgPath)) continue;
       try {
@@ -123,7 +140,9 @@ function _resolveWorkspacePrimaryRepo() {
           : null) || workspaces[0];
         if (!ws?.repos?.length) continue;
 
-        const wsPath = ws.path || resolve(dir, "workspaces", ws.id);
+        const wsPath = ws.path
+          ? resolve(isAbsolute(ws.path) ? ws.path : resolve(dir, ws.path))
+          : resolve(dir, "workspaces", ws.id);
         const primaryRepo = ws.repos.find((r) => r.primary) ||
           (ws.activeRepo ? ws.repos.find((r) => r.name === ws.activeRepo) : null) ||
           ws.repos[0];
