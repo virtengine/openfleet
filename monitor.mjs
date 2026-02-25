@@ -1996,8 +1996,16 @@ async function handleMonitorFailure(reason, err) {
 function reportGuardedFailure(reason, err) {
   if (shuttingDown) return;
   const error = err instanceof Error ? err : new Error(formatMonitorError(err));
-  console.error(`[monitor] ${reason} failed: ${error.stack || error.message}`);
-  void handleMonitorFailure(reason, error);
+  console.error("[monitor] " + reason + " failed: " + (error.stack || error.message));
+  handleMonitorFailure(reason, error).catch((failureErr) => {
+    try {
+      process.stderr.write(
+        "[monitor] handleMonitorFailure failed: " + (failureErr?.message || failureErr) + "\n",
+      );
+    } catch {
+      /* best effort */
+    }
+  });
 }
 
 function runGuarded(reason, fn) {
@@ -13017,13 +13025,21 @@ process.on("uncaughtException", (err) => {
   // Always suppress stream noise — not just during shutdown
   if (isStreamNoise(msg)) {
     console.error(
-      `[monitor] suppressed stream noise (uncaughtException): ${msg}`,
+      "[monitor] suppressed stream noise (uncaughtException): " + msg,
     );
     return;
   }
   if (shuttingDown) return;
-  console.error(`[monitor] uncaughtException: ${err?.stack || msg}`);
-  void handleMonitorFailure("uncaughtException", err);
+  console.error("[monitor] uncaughtException: " + (err?.stack || msg));
+  handleMonitorFailure("uncaughtException", err).catch((failureErr) => {
+    try {
+      process.stderr.write(
+        "[monitor] uncaughtException handler failed: " + (failureErr?.message || failureErr) + "\n",
+      );
+    } catch {
+      /* best effort */
+    }
+  });
 });
 
 process.on("unhandledRejection", (reason) => {
@@ -13031,15 +13047,23 @@ process.on("unhandledRejection", (reason) => {
   // Always suppress stream noise
   if (isStreamNoise(msg)) {
     console.error(
-      `[monitor] suppressed stream noise (unhandledRejection): ${msg}`,
+      "[monitor] suppressed stream noise (unhandledRejection): " + msg,
     );
     return;
   }
   if (shuttingDown) return;
   const err =
     reason instanceof Error ? reason : new Error(String(reason || ""));
-  console.error(`[monitor] unhandledRejection: ${err?.stack || msg}`);
-  void handleMonitorFailure("unhandledRejection", err);
+  console.error("[monitor] unhandledRejection: " + (err?.stack || msg));
+  handleMonitorFailure("unhandledRejection", err).catch((failureErr) => {
+    try {
+      process.stderr.write(
+        "[monitor] unhandledRejection handler failed: " + (failureErr?.message || failureErr) + "\n",
+      );
+    } catch {
+      /* best effort */
+    }
+  });
 });
 
 // ── Exit diagnostic: always log the exit code so crashes are traceable ──────

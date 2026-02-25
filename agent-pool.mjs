@@ -1923,7 +1923,9 @@ export async function ensureThreadRegistryLoaded() {
 }
 
 // Kick off async load at module init (non-blocking), callers can await explicitly.
-void ensureThreadRegistryLoaded();
+ensureThreadRegistryLoaded().catch((err) => {
+  console.warn(TAG + " thread registry warm-up failed: " + (err?.message || err));
+});
 
 // ---------------------------------------------------------------------------
 // Per-SDK Resume Launchers
@@ -2667,7 +2669,11 @@ export function invalidateThread(taskKey) {
   }
   // If registry hasn't loaded yet, defer invalidation until load completes.
   if (!threadRegistryLoaded) {
-    void invalidateThreadAsync(taskKey);
+    invalidateThreadAsync(taskKey).catch((err) => {
+      console.warn(
+        TAG + " deferred invalidateThreadAsync failed for \"" + taskKey + "\": " + (err?.message || err),
+      );
+    });
   }
 }
 

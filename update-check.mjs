@@ -515,9 +515,17 @@ export function startAutoUpdateLoop(opts = {}) {
   }
 
   // First poll after 60s (let startup settle), then every intervalMs
+  const runPollSafely = () => {
+    poll().catch((err) => {
+      console.warn(
+        "[auto-update] Poll scheduler error: " + (err?.message || err),
+      );
+    });
+  };
+
   setTimeout(() => {
-    void poll();
-    autoUpdateTimer = setInterval(() => void poll(), intervalMs);
+    runPollSafely();
+    autoUpdateTimer = setInterval(runPollSafely, intervalMs);
   }, 60 * 1000);
 }
 
