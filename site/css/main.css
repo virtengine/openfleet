@@ -1214,7 +1214,7 @@ body.is-miniapp-fullscreen {
   border: none;
   background: #0b0f14;
   flex: 1;
-  min-height: 640px;
+  min-height: 700px;
 }
 
 .desktop-demo-window.is-fullscreen {
@@ -1235,8 +1235,8 @@ body.is-miniapp-fullscreen {
 
 @media (max-width: 768px) {
   .desktop-demo-window__iframe {
-    height: 520px;
-    min-height: 520px;
+    height: 560px;
+    min-height: 560px;
   }
 }
 
