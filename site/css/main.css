@@ -934,6 +934,7 @@ section {
 }
 
 .terminal-window {
+  width: min(800px, 100%);
   max-width: 800px;
   margin: 0 auto;
   border-radius: 16px;
@@ -1213,7 +1214,7 @@ body.is-miniapp-fullscreen {
   border: none;
   background: #0b0f14;
   flex: 1;
-  min-height: 520px;
+  min-height: 640px;
 }
 
 .desktop-demo-window.is-fullscreen {
@@ -1234,8 +1235,8 @@ body.is-miniapp-fullscreen {
 
 @media (max-width: 768px) {
   .desktop-demo-window__iframe {
-    height: 440px;
-    min-height: 440px;
+    height: 520px;
+    min-height: 520px;
   }
 }
 

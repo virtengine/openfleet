@@ -36,6 +36,12 @@ const connectingFrom = signal(null);
 const isLoading = signal(false);
 const viewMode = signal("list"); // "list" | "canvas" | "runs"
 
+function returnToWorkflowList() {
+  selectedNodeId.value = null;
+  selectedEdgeId.value = null;
+  viewMode.value = "list";
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  API Helpers
  * ═══════════════════════════════════════════════════════════════ */
@@ -410,6 +416,9 @@ function WorkflowCanvas({ workflow, onSave }) {
 
       <!-- Toolbar -->
       <div class="wf-toolbar" style="position: absolute; top: 12px; left: 12px; right: 12px; z-index: 20; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+        <button class="wf-btn wf-btn-ghost" onClick=${returnToWorkflowList}>
+          ← Back to Workflows
+        </button>
         <button class="wf-btn wf-btn-primary" onClick=${() => setShowNodePalette(!showNodePalette)} style="display: flex; align-items: center; gap: 6px;">
           <span style="font-size: 18px;">+</span> Add Node
         </button>
@@ -427,7 +436,7 @@ function WorkflowCanvas({ workflow, onSave }) {
         </span>
         <button class="wf-btn wf-btn-sm" onClick=${() => setZoom(1)}>Reset Zoom</button>
         <button class="wf-btn wf-btn-sm" onClick=${() => setPan({ x: 0, y: 0 })}>Reset Pan</button>
-        <button class="wf-btn wf-btn-sm" onClick=${() => viewMode.value = "list"}>← Back</button>
+        <button class="wf-btn wf-btn-sm" onClick=${returnToWorkflowList}>← Back to Workflows</button>
       </div>
 
       <!-- Node Palette (dropdown) -->
@@ -1457,7 +1466,7 @@ function RunHistoryView() {
   return html`
     <div style="padding: 0 4px;">
       <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
-        <button class="wf-btn wf-btn-sm" onClick=${() => viewMode.value = "list"}>← Back</button>
+        <button class="wf-btn wf-btn-sm" onClick=${returnToWorkflowList}>← Back to Workflows</button>
         <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run History</h2>
         <button class="wf-btn wf-btn-sm" onClick=${() => loadRuns()}>Refresh</button>
       </div>
@@ -1500,6 +1509,20 @@ export function WorkflowsTab() {
     loadNodeTypes();
   }, []);
 
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key !== "Escape") return;
+      const activeTag = document.activeElement?.tagName || "";
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(activeTag)) return;
+      if (viewMode.value !== "list") {
+        e.preventDefault();
+        returnToWorkflowList();
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, []);
+
   const mode = viewMode.value;
 
   return html`
@@ -1520,6 +1543,8 @@ export function WorkflowsTab() {
       .wf-btn-primary { background: #3b82f6; border-color: #3b82f6; color: white; }
       .wf-btn-primary:hover { background: #2563eb; }
       .wf-btn-danger:hover { border-color: #ef4444; background: #dc262620; }
+      .wf-btn-ghost { background: #111827; border-color: #374151; color: #d1d5db; }
+      .wf-btn-ghost:hover { background: #1f2937; border-color: #60a5fa; color: #e5e7eb; }
       .wf-btn-sm { padding: 3px 8px; font-size: 11px; border-radius: 6px; }
       .wf-badge {
         display: inline-block;

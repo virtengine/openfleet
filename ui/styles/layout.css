@@ -524,6 +524,37 @@
   }
 }
 
+@media (min-width: 641px) and (max-width: 1100px) {
+  .app-header-right {
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 50%;
+  }
+
+  .header-actions {
+    min-width: 0;
+    max-width: 100%;
+    gap: 6px;
+  }
+
+  .header-status {
+    min-width: 0;
+  }
+
+  .connection-pill,
+  .header-freshness,
+  .app-header-user {
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app-header-user {
+    max-width: 120px;
+  }
+}
+
 @media (max-width: 520px) {
   .app-header {
     padding-left: calc(14px + var(--safe-left));

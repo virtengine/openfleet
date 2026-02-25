@@ -163,6 +163,14 @@ export function listTemplates() {
 }
 
 /**
+ * List recommended templates only.
+ * @returns {Array<object>}
+ */
+export function listRecommendedTemplates() {
+  return WORKFLOW_TEMPLATES.filter((t) => t.recommended === true);
+}
+
+/**
  * Install a template into a workflow engine, creating a new workflow instance.
  * The user can then customize names, variables, and node configs.
  * @param {string} templateId
@@ -199,4 +207,37 @@ export function installTemplate(templateId, engine, overrides = {}) {
   }
 
   return engine.save(def);
+}
+
+/**
+ * Ensure all recommended templates are installed.
+ * @param {import('./workflow-engine.mjs').WorkflowEngine} engine
+ * @param {Record<string, object>} [overridesById] Optional variable overrides keyed by template id.
+ * @returns {{installed: object[], skipped: string[], errors: Array<{id: string, error: string}>}}
+ */
+export function installRecommendedTemplates(engine, overridesById = {}) {
+  const existing = engine.list();
+  const installed = new Set(
+    existing.flatMap((wf) => [wf.metadata?.installedFrom, wf.name]).filter(Boolean),
+  );
+  const results = { installed: [], skipped: [], errors: [] };
+
+  for (const template of WORKFLOW_TEMPLATES) {
+    if (template.recommended !== true) continue;
+    if (installed.has(template.id) || installed.has(template.name)) {
+      results.skipped.push(template.id);
+      continue;
+    }
+    try {
+      const overrides = overridesById[template.id] || overridesById[template.name] || {};
+      const wf = installTemplate(template.id, engine, overrides);
+      results.installed.push(wf);
+      installed.add(template.id);
+      installed.add(template.name);
+    } catch (err) {
+      results.errors.push({ id: template.id, error: err.message });
+    }
+  }
+
+  return results;
 }

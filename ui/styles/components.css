@@ -4105,28 +4105,28 @@ select.input {
 
 /* Column widths via header cells */
 .task-th:nth-child(1) {
-  width: 120px;
-}
-
-/* Status */
-.task-th:nth-child(2) {
-  width: 76px;
+  width: 92px;
 }
 
 /* Priority */
-.task-th:nth-child(3) {}
-
-/* Title — flex grows */
-.task-th:nth-child(4) {
-  width: 140px;
+.task-th:nth-child(2) {
+  width: 64px;
 }
 
+/* Title — flex grows */
+.task-th:nth-child(3) {}
+
 /* Branch */
-.task-th:nth-child(5) {
-  width: 110px;
+.task-th:nth-child(4) {
+  width: 96px;
 }
 
 /* Repo */
+.task-th:nth-child(5) {
+  width: 76px;
+}
+
+/* Updated */
 .task-th:nth-child(6) {
   width: 90px;
 }
@@ -4159,7 +4159,7 @@ select.input {
 }
 
 .task-th-grow {
-  width: auto;
+  width: clamp(180px, 38vw, 320px);
 }
 
 .task-th-arrow {
