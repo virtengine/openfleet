@@ -5598,8 +5598,37 @@ async function handleApi(req, res, url) {
       if (action === "execute" && req.method === "POST") {
         const body = await readJsonBody(req);
         const input = body && typeof body === "object" ? body : {};
-        const result = await engine.execute(workflowId, input);
-        jsonResponse(res, 200, { ok: true, result });
+        const shouldWait = input.waitForCompletion === true || input.dispatch === false;
+        const executeInput = { ...input };
+        delete executeInput.waitForCompletion;
+        delete executeInput.dispatch;
+
+        if (!shouldWait) {
+          const dispatchedAt = new Date().toISOString();
+          Promise.resolve()
+            .then(() => engine.execute(workflowId, executeInput))
+            .then((ctx) => {
+              const runStatus = Array.isArray(ctx?.errors) && ctx.errors.length > 0 ? "failed" : "completed";
+              console.log(
+                `[workflows] Dispatched run finished workflow=${workflowId} runId=${ctx?.id || "unknown"} status=${runStatus}`,
+              );
+            })
+            .catch((err) => {
+              console.error(`[workflows] Dispatched run failed workflow=${workflowId}: ${err.message}`);
+            });
+
+          jsonResponse(res, 202, {
+            ok: true,
+            accepted: true,
+            mode: "dispatch",
+            workflowId,
+            dispatchedAt,
+          });
+          return;
+        }
+
+        const result = await engine.execute(workflowId, executeInput);
+        jsonResponse(res, 200, { ok: true, result, mode: "sync" });
         return;
       }
 

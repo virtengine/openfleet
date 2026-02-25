@@ -35,7 +35,6 @@ const selectedNodeId = signal(null);
 const selectedEdgeId = signal(null);
 const draggingNode = signal(null);
 const connectingFrom = signal(null);
-const isLoading = signal(false);
 const viewMode = signal("list"); // "list" | "canvas" | "runs"
 
 function returnToWorkflowList() {
@@ -111,14 +110,18 @@ async function deleteWorkflow(id) {
 
 async function executeWorkflow(id) {
   try {
-    isLoading.value = true;
-    const data = await apiFetch(`/api/workflows/${id}/execute`, { method: "POST" });
-    showToast("Workflow started", "success");
+    const data = await apiFetch(`/api/workflows/${id}/execute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dispatch: true }),
+    });
+    showToast("Workflow dispatched", "success");
+    setTimeout(() => {
+      loadRuns(id).catch(() => {});
+    }, 600);
     return data;
   } catch (err) {
     showToast("Failed to execute workflow", "error");
-  } finally {
-    isLoading.value = false;
   }
 }
 
@@ -1506,6 +1509,31 @@ function getRunStatusBadgeStyles(status) {
   return { bg: "#6b728030", color: "#9ca3af" };
 }
 
+function getNodeStatusRank(status) {
+  if (status === "running") return 0;
+  if (status === "failed") return 1;
+  if (status === "waiting") return 2;
+  if (status === "pending") return 3;
+  if (status === "completed") return 4;
+  if (status === "skipped") return 5;
+  return 6;
+}
+
+function getRunActivityAt(run) {
+  const lastLogAt = Number(run?.lastLogAt);
+  const lastProgressAt = Number(run?.lastProgressAt);
+  const startedAt = Number(run?.startedAt);
+  const candidates = [lastLogAt, lastProgressAt, startedAt].filter((value) => Number.isFinite(value) && value > 0);
+  return candidates.length > 0 ? Math.max(...candidates) : null;
+}
+
+function getNodeCardBorder(status) {
+  if (status === "running") return "#3b82f680";
+  if (status === "failed") return "#ef444480";
+  if (status === "waiting") return "#f59e0b80";
+  return "var(--color-border, #2a3040)";
+}
+
 function safePrettyJson(value) {
   try {
     return JSON.stringify(value, null, 2);
@@ -1518,6 +1546,34 @@ function RunHistoryView() {
   const runs = workflowRuns.value || [];
   const selectedRun = selectedRunDetail.value;
   const workflowNameMap = new Map((workflows.value || []).map((wf) => [wf.id, wf.name]));
+  const [nowTick, setNowTick] = useState(Date.now());
+  const hasRunningRuns = runs.some((run) => run?.status === "running");
+  const selectedRunIsRunning = selectedRun?.status === "running";
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const pollMs = hasRunningRuns || selectedRunIsRunning ? 3000 : 15000;
+
+    const poll = async () => {
+      if (cancelled) return;
+      await loadRuns().catch(() => {});
+      if (!cancelled && selectedRunId.value && selectedRunIsRunning) {
+        await loadRunDetail(selectedRunId.value).catch(() => {});
+      }
+    };
+
+    poll();
+    const timer = setInterval(poll, pollMs);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [hasRunningRuns, selectedRunIsRunning, selectedRunId.value]);
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
@@ -1525,7 +1581,20 @@ function RunHistoryView() {
     const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
     const logs = Array.isArray(selectedRun?.detail?.logs) ? selectedRun.detail.logs : [];
     const errors = Array.isArray(selectedRun?.detail?.errors) ? selectedRun.detail.errors : [];
-    const nodeIds = Object.keys(nodeStatuses).sort((a, b) => String(a).localeCompare(String(b)));
+    const nodeIds = Object.keys(nodeStatuses).sort((a, b) => {
+      const rankDiff = getNodeStatusRank(nodeStatuses[a]) - getNodeStatusRank(nodeStatuses[b]);
+      if (rankDiff !== 0) return rankDiff;
+      return String(a).localeCompare(String(b));
+    });
+    const finishedAt = selectedRun.status === "running" ? null : selectedRun.endedAt;
+    const liveDuration = selectedRun.status === "running" && selectedRun.startedAt
+      ? Math.max(0, nowTick - selectedRun.startedAt)
+      : selectedRun.duration;
+    const lastActivityAt = getRunActivityAt(selectedRun);
+    const staleMs = selectedRun.status === "running" && lastActivityAt
+      ? Math.max(0, nowTick - lastActivityAt)
+      : 0;
+    const showStuck = selectedRun.status === "running" && selectedRun.isStuck;
 
     return html`
       <div style="padding: 0 4px;">
@@ -1545,14 +1614,22 @@ function RunHistoryView() {
             <span class="wf-badge" style="background: ${statusStyles.bg}; color: ${statusStyles.color};">
               ${selectedRun.status || "unknown"}
             </span>
+            ${showStuck && html`
+              <span class="wf-badge" style="background: #f59e0b2f; color: #f59e0b; border-color: #f59e0b50;">
+                Stuck
+              </span>
+            `}
           </div>
           <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); line-height: 1.6;">
             <div><b>Workflow ID:</b> <code>${selectedRun.workflowId || "—"}</code></div>
             <div><b>Run ID:</b> <code>${selectedRun.runId || "—"}</code></div>
             <div><b>Started:</b> ${formatDate(selectedRun.startedAt)} (${formatRelative(selectedRun.startedAt)})</div>
-            <div><b>Finished:</b> ${formatDate(selectedRun.endedAt)}</div>
-            <div><b>Duration:</b> ${formatDuration(selectedRun.duration)}</div>
+            <div><b>Finished:</b> ${finishedAt ? formatDate(finishedAt) : "Running"}</div>
+            <div><b>Duration:</b> ${formatDuration(liveDuration)}</div>
+            <div><b>Last Activity:</b> ${lastActivityAt ? `${formatDate(lastActivityAt)} (${formatRelative(lastActivityAt)})` : "—"}</div>
+            ${selectedRun.status === "running" && html`<div><b>No Progress For:</b> ${formatDuration(staleMs)}</div>`}
             <div><b>Nodes:</b> ${selectedRun.nodeCount || 0} · <b>Logs:</b> ${selectedRun.logCount || logs.length} · <b>Errors:</b> ${selectedRun.errorCount || errors.length}</div>
+            <div><b>Active Nodes:</b> ${selectedRun.activeNodeCount || 0}</div>
           </div>
         </div>
 
@@ -1564,7 +1641,7 @@ function RunHistoryView() {
             const nodeStatusStyles = getRunStatusBadgeStyles(nodeStatus);
             const nodeOutput = nodeOutputs[nodeId];
             return html`
-              <details key=${nodeId} style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
+              <details key=${nodeId} style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid ${getNodeCardBorder(nodeStatus)}; border-radius: 8px; padding: 8px 10px;">
                 <summary style="cursor: pointer; display: flex; align-items: center; gap: 8px;">
                   <code style="font-size: 12px;">${nodeId}</code>
                   <span class="wf-badge" style="background: ${nodeStatusStyles.bg}; color: ${nodeStatusStyles.color};">
@@ -1601,6 +1678,7 @@ function RunHistoryView() {
         <button class="wf-btn wf-btn-sm" onClick=${returnToWorkflowList}>← Back to Workflows</button>
         <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run History</h2>
         <button class="wf-btn wf-btn-sm" onClick=${() => loadRuns()}>Refresh</button>
+        ${hasRunningRuns && html`<span class="wf-badge" style="background: #3b82f630; color: #60a5fa;">Live</span>`}
       </div>
 
       ${runs.length === 0 && html`
@@ -1611,13 +1689,20 @@ function RunHistoryView() {
         ${runs.map((run) => {
           const styles = getRunStatusBadgeStyles(run.status);
           const runName = run.workflowName || workflowNameMap.get(run.workflowId) || run.workflowId;
+          const lastActivityAt = getRunActivityAt(run);
+          const liveDuration = run.status === "running" && run.startedAt
+            ? Math.max(0, nowTick - run.startedAt)
+            : run.duration;
+          const borderColor = run.isStuck
+            ? "#f59e0b80"
+            : (run.status === "running" ? "#3b82f680" : "var(--color-border, #2a3040)");
           return html`
             <button
               key=${run.runId}
               type="button"
               class="wf-card"
               onClick=${() => loadRunDetail(run.runId)}
-              style="text-align: left; width: 100%; background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px; padding: 12px; border: 1px solid var(--color-border, #2a3040); display: flex; align-items: center; gap: 12px; cursor: pointer;"
+              style="text-align: left; width: 100%; background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px; padding: 12px; border: 1px solid ${borderColor}; display: flex; align-items: center; gap: 12px; cursor: pointer;"
             >
               <span class="icon-inline" style="font-size: 16px;">
                 ${run.status === "completed" ? resolveIcon("check") : run.status === "failed" ? resolveIcon("close") : resolveIcon("clock")}
@@ -1627,15 +1712,23 @@ function RunHistoryView() {
                   ${runName || "Unknown workflow"}
                 </div>
                 <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                  ${formatDate(run.startedAt)} (${formatRelative(run.startedAt)}) · ${formatDuration(run.duration)} · ${run.nodeCount || 0} nodes${run.errorCount ? ` · ${run.errorCount} errors` : ""}
+                  ${formatDate(run.startedAt)} (${formatRelative(run.startedAt)}) · ${formatDuration(liveDuration)} · ${run.nodeCount || 0} nodes${run.errorCount ? ` · ${run.errorCount} errors` : ""}
+                </div>
+                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 2px;">
+                  ${run.status === "running"
+                    ? `Active nodes: ${run.activeNodeCount || 0} · Last activity ${lastActivityAt ? formatRelative(lastActivityAt) : "—"}`
+                    : `Finished ${run.endedAt ? formatRelative(run.endedAt) : "—"}`}
                 </div>
                 <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 2px;">
                   Run: <code>${run.runId}</code>
                 </div>
               </div>
-              <span class="wf-badge" style="background: ${styles.bg}; color: ${styles.color};">
-                ${run.status || "unknown"}
-              </span>
+              <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px;">
+                <span class="wf-badge" style="background: ${styles.bg}; color: ${styles.color};">
+                  ${run.status || "unknown"}
+                </span>
+                ${run.isStuck && html`<span class="wf-badge" style="background: #f59e0b2f; color: #f59e0b; border-color: #f59e0b50;">stuck</span>`}
+              </div>
             </button>
           `;
         })}

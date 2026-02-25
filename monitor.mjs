@@ -1398,7 +1398,7 @@ function restartSelf(reason) {
       console.warn(
         `[monitor] deferring monitor restart (${reason || "unknown"}) — ${protection.reason}; retrying in ${retrySec}s`,
       );
-      deferredMonitorRestartTimer = setTimeout(() => {
+      deferredMonitorRestartTimer = safeSetTimeout("deferred-monitor-restart", () => {
         deferredMonitorRestartTimer = null;
         const deferredReason = pendingMonitorRestartReason || "deferred";
         pendingMonitorRestartReason = "";
@@ -2251,10 +2251,37 @@ async function startVibeKanbanProcess() {
       );
       try {
         if (isWindows) {
-          execSync(`taskkill /F /PID ${stalePid}`, {
-            timeout: 5000,
-            stdio: "pipe",
-          });
+          const killRes = spawnSync(
+            "taskkill",
+            ["/F", "/PID", String(stalePid)],
+            {
+              encoding: "utf8",
+              timeout: 5000,
+              windowsHide: true,
+              stdio: ["ignore", "pipe", "pipe"],
+            },
+          );
+          if (killRes.status !== 0) {
+            const detail = String(
+              killRes.stderr ||
+                killRes.stdout ||
+                killRes.error?.message ||
+                "taskkill failed",
+            ).toLowerCase();
+            if (
+              !detail.includes("no running instance") &&
+              !detail.includes("not found")
+            ) {
+              console.warn(
+                `[monitor] failed to kill stale PID ${stalePid} on port ${vkRecoveryPort}: ${String(
+                  killRes.stderr ||
+                    killRes.stdout ||
+                    killRes.error?.message ||
+                    `exit ${killRes.status}`,
+                ).slice(0, 200)}`,
+              );
+            }
+          }
         } else {
           // Graceful SIGTERM first, then escalate if still alive
           execSync(`kill ${stalePid}`, {
@@ -5586,12 +5613,84 @@ async function readRequiredChecks(prNumber) {
   }
 }
 
+function getEpicMergeReadiness(headBranch, baseBranch) {
+  const { headInfo, baseInfo } = summarizeEpicBranch(headBranch, baseBranch);
+  const headRef = `${headInfo.remote}/${headInfo.name}`;
+  const baseRef = `${baseInfo.remote}/${baseInfo.name}`;
+  const runGit = (args) =>
+    spawnSync("git", args, {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 20_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+  const headExistsRes = runGit([
+    "ls-remote",
+    "--heads",
+    headInfo.remote,
+    headInfo.name,
+  ]);
+  if (headExistsRes.status !== 0 || !String(headExistsRes.stdout || "").trim()) {
+    return { ready: false, reason: "head-missing" };
+  }
+
+  const baseExistsRes = runGit([
+    "ls-remote",
+    "--heads",
+    baseInfo.remote,
+    baseInfo.name,
+  ]);
+  if (baseExistsRes.status !== 0 || !String(baseExistsRes.stdout || "").trim()) {
+    return { ready: false, reason: "base-missing" };
+  }
+
+  const fetchHead = runGit(["fetch", headInfo.remote, headInfo.name, "--quiet"]);
+  const fetchBase = runGit(["fetch", baseInfo.remote, baseInfo.name, "--quiet"]);
+  if (fetchHead.status !== 0 || fetchBase.status !== 0) {
+    return { ready: false, reason: "fetch-failed" };
+  }
+
+  const aheadRes = runGit(["rev-list", "--count", `${baseRef}..${headRef}`]);
+  if (aheadRes.status !== 0) {
+    return { ready: false, reason: "ahead-unknown" };
+  }
+  const aheadCount = Number(String(aheadRes.stdout || "").trim());
+  if (!Number.isFinite(aheadCount) || aheadCount < 0) {
+    return { ready: false, reason: "ahead-unknown" };
+  }
+  if (aheadCount === 0) {
+    return { ready: false, reason: "no-commits", aheadCount: 0 };
+  }
+  return { ready: true, reason: "ready", aheadCount };
+}
+
 async function createEpicMergePr(headBranch, baseBranch, tasks) {
   const slug = getRepoSlugForEpic();
   if (!slug || !ghAvailable()) return null;
   const { headInfo, baseInfo } = summarizeEpicBranch(headBranch, baseBranch);
   const title = createEpicMergeTitle(headInfo.name, baseInfo.name);
   const body = buildEpicMergeBody(tasks, headInfo.name, baseInfo.name);
+  const readiness = getEpicMergeReadiness(headBranch, baseBranch);
+  if (!readiness.ready) {
+    if (
+      readiness.reason === "no-commits" ||
+      readiness.reason === "head-missing" ||
+      readiness.reason === "base-missing"
+    ) {
+      console.log(
+        `[monitor] skipping epic PR create for ${headInfo.name} -> ${baseInfo.name}: ${readiness.reason}`,
+      );
+      return {
+        skipped: true,
+        reason: readiness.reason,
+        head: headInfo.name,
+        base: baseInfo.name,
+        aheadCount:
+          typeof readiness.aheadCount === "number" ? readiness.aheadCount : null,
+      };
+    }
+  }
   try {
     const result = spawnSync(
       "gh",
@@ -5919,6 +6018,14 @@ async function checkEpicBranches(reason = "interval") {
         void sendTelegramMessage(
           `🧩 Epic PR created for ${epicBranch} → ${DEFAULT_TARGET_BRANCH}\n${created.url}`,
         );
+      } else if (created?.skipped) {
+        updateEpicMergeCache(cacheKey, {
+          status: created.reason || "skipped",
+          head: epicBranch,
+          base: DEFAULT_TARGET_BRANCH,
+          aheadCount:
+            typeof created.aheadCount === "number" ? created.aheadCount : undefined,
+        });
       }
       continue;
     }
@@ -6905,10 +7012,43 @@ function normalizeBranchName(value) {
   return trimmed ? trimmed : null;
 }
 
+let cachedGitRemotes = null;
+
+function getGitRemoteNames(defaultRemote = "origin") {
+  if (cachedGitRemotes) return cachedGitRemotes;
+  const remotes = new Set(["origin", "upstream", defaultRemote]);
+  try {
+    const res = spawnSync("git", ["remote"], {
+      cwd: repoRoot || process.cwd(),
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (res.status === 0) {
+      for (const line of String(res.stdout || "").split(/\r?\n/)) {
+        const remote = line.trim();
+        if (remote) remotes.add(remote);
+      }
+    }
+  } catch {
+    // Best-effort only; callers fall back to default remote.
+  }
+  cachedGitRemotes = remotes;
+  return cachedGitRemotes;
+}
+
 function splitRemoteRef(ref, defaultRemote = "origin") {
-  const match = String(ref || "").match(/^([^/]+)\/(.+)$/);
-  if (match) return { remote: match[1], name: match[2] };
-  return { remote: defaultRemote, name: ref };
+  const normalized = normalizeBranchName(ref);
+  if (!normalized) return { remote: defaultRemote, name: ref };
+  const match = normalized.match(/^([^/]+)\/(.+)$/);
+  if (!match) return { remote: defaultRemote, name: normalized };
+  const [, remoteCandidate, remainder] = match;
+  const remotes = getGitRemoteNames(defaultRemote);
+  if (remoteCandidate && remainder && remotes.has(remoteCandidate)) {
+    return { remote: remoteCandidate, name: remainder };
+  }
+  // Branch names like "ve/bosun-generic" are not remote-qualified refs.
+  return { remote: defaultRemote, name: normalized };
 }
 
 function normalizeBranchForCompare(ref) {
@@ -11815,7 +11955,7 @@ function selfRestartForSourceChange(filename) {
       `[monitor] SAFETY NET: selfRestartForSourceChange called with ${activeSlots} active agent(s)! Deferring instead of killing.`,
     );
     pendingSelfRestart = filename;
-    selfRestartTimer = setTimeout(retryDeferredSelfRestart, 30_000);
+    selfRestartTimer = safeSetTimeout("self-restart-safety-net-retry", retryDeferredSelfRestart, 30_000);
     return;
   }
   console.log(
@@ -11894,7 +12034,7 @@ function attemptSelfRestartAfterQuiet() {
   const sinceLastChange = now - selfRestartLastChangeAt;
   if (sinceLastChange < SELF_RESTART_QUIET_MS) {
     const waitMs = SELF_RESTART_QUIET_MS - sinceLastChange;
-    selfRestartTimer = setTimeout(attemptSelfRestartAfterQuiet, waitMs);
+    selfRestartTimer = safeSetTimeout("self-restart-quiet-wait", attemptSelfRestartAfterQuiet, waitMs);
     return;
   }
   const filename = selfRestartLastFile || "unknown";
@@ -11931,7 +12071,8 @@ function attemptSelfRestartAfterQuiet() {
     console.log(
       `[monitor] deferring self-restart (${filename}) — ${protection.reason}; retrying in ${retrySec}s (defer #${deferCount})`,
     );
-    selfRestartTimer = setTimeout(
+    selfRestartTimer = safeSetTimeout(
+      "self-restart-deferred-retry",
       retryDeferredSelfRestart,
       SELF_RESTART_RETRY_MS,
     );
@@ -11951,7 +12092,7 @@ function attemptSelfRestartAfterQuiet() {
       console.log(
         `[monitor] will retry restart in 60s (agents must finish first)`,
       );
-      selfRestartTimer = setTimeout(attemptSelfRestartAfterQuiet, 60_000);
+      selfRestartTimer = safeSetTimeout("self-restart-agent-wait-retry", attemptSelfRestartAfterQuiet, 60_000);
       return;
     }
   }
@@ -11968,7 +12109,8 @@ function queueSelfRestart(filename) {
   console.log(
     `\n[monitor] source file changed: ${filename} — waiting ${Math.round(SELF_RESTART_QUIET_MS / 1000)}s for quiet before restart`,
   );
-  selfRestartTimer = setTimeout(
+  selfRestartTimer = safeSetTimeout(
+    "self-restart-queue",
     attemptSelfRestartAfterQuiet,
     SELF_RESTART_QUIET_MS,
   );
@@ -11995,7 +12137,7 @@ function startSelfWatcher() {
       if (selfWatcherDebounce) {
         clearTimeout(selfWatcherDebounce);
       }
-      selfWatcherDebounce = setTimeout(() => {
+      selfWatcherDebounce = safeSetTimeout("self-watcher-debounce", () => {
         queueSelfRestart(filename);
       }, 1000);
     });
@@ -12520,6 +12662,19 @@ process.on("unhandledRejection", (reason) => {
     reason instanceof Error ? reason : new Error(String(reason || ""));
   console.error(`[monitor] unhandledRejection: ${err?.stack || msg}`);
   void handleMonitorFailure("unhandledRejection", err);
+});
+
+// ── Exit diagnostic: always log the exit code so crashes are traceable ──────
+process.on("exit", (code) => {
+  if (code === 0 || code === SELF_RESTART_EXIT_CODE) return;
+  // Write directly to stderr — console may already be torn down at exit time
+  try {
+    process.stderr.write(
+      `[monitor] process exiting with code ${code} (shuttingDown=${shuttingDown})\n`,
+    );
+  } catch {
+    /* best effort — stderr may be broken */
+  }
 });
 
 // ── Singleton guard: prevent ghost monitors ─────────────────────────────────

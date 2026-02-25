@@ -20,6 +20,31 @@ export const wsReconnectCount = signal(0);
 /** Reactive signal: count of in-flight apiFetch calls (drives top loading bar) */
 export const loadingCount = signal(0);
 
+let _loadingSuppressionDepth = 0;
+let _loadingForceDepth = 0;
+
+async function withDepthCounter(kind, fn) {
+  if (kind === "suppress") _loadingSuppressionDepth += 1;
+  else _loadingForceDepth += 1;
+  try {
+    return await fn();
+  } finally {
+    if (kind === "suppress") {
+      _loadingSuppressionDepth = Math.max(0, _loadingSuppressionDepth - 1);
+    } else {
+      _loadingForceDepth = Math.max(0, _loadingForceDepth - 1);
+    }
+  }
+}
+
+export function withLoadingSuppressed(fn) {
+  return withDepthCounter("suppress", fn);
+}
+
+export function withLoadingTracked(fn) {
+  return withDepthCounter("force", fn);
+}
+
 /* ─── REST API Client ─── */
 
 /**
@@ -42,8 +67,14 @@ export function apiFetch(path, options = {}) {
     headers["X-Telegram-InitData"] = initData;
   }
 
-  const silent = options._silent;
+  const silent = Boolean(options._silent);
+  const trackLoadingOption = options._trackLoading;
   delete options._silent;
+  delete options._trackLoading;
+
+  const forceLoading = trackLoadingOption === true || _loadingForceDepth > 0;
+  const suppressLoading = trackLoadingOption === false || _loadingSuppressionDepth > 0;
+  const trackLoading = !suppressLoading && (forceLoading || !silent);
 
   // Deduplicate concurrent identical GETs
   const isGet = !options.method || options.method === "GET";
@@ -58,7 +89,7 @@ export function apiFetch(path, options = {}) {
   const FETCH_RETRY_BASE_MS = 800;
 
   const promise = (async () => {
-    loadingCount.value += 1;
+    if (trackLoading) loadingCount.value += 1;
     let res;
     let fetchAttempt = 0;
     try {
@@ -91,7 +122,9 @@ export function apiFetch(path, options = {}) {
       }
       throw err;
     } finally {
-      loadingCount.value = Math.max(0, loadingCount.value - 1);
+      if (trackLoading) {
+        loadingCount.value = Math.max(0, loadingCount.value - 1);
+      }
       if (isGet && !options.body) _inflight.delete(path);
     }
   })();

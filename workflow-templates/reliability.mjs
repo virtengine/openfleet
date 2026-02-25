@@ -6,6 +6,7 @@
  *   - Anomaly Watchdog (recommended)
  *   - Workspace Hygiene (recommended)
  *   - Health Check
+ *   - Incident Response (recommended)
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
@@ -346,6 +347,131 @@ export const HEALTH_CHECK_TEMPLATE = {
       description: "Replaces manual config-doctor runs with a scheduled health " +
         "check workflow. Config validation, git state, and agent status " +
         "checks run in parallel with automatic alerting.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Incident Response
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const INCIDENT_RESPONSE_TEMPLATE = {
+  id: "template-incident-response",
+  name: "Incident Response",
+  description:
+    "Automated incident management: detects error spikes or anomalous " +
+    "patterns, creates an incident task, assigns an agent for investigation, " +
+    "collects evidence, and escalates via notification channels.",
+  category: "reliability",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.anomaly",
+  variables: {
+    errorThreshold: 5,
+    escalationDelayMs: 600000,
+    autoAssignAgent: true,
+  },
+  nodes: [
+    node("trigger", "trigger.anomaly", "Error Spike Detected", {
+      anomalyTypes: ["error-spike", "death-loop", "agent-stall"],
+      threshold: "{{errorThreshold}}",
+    }, { x: 400, y: 50 }),
+
+    node("collect-evidence", "agent.evidence_collect", "Collect Evidence", {
+      sources: ["logs", "git-status", "process-list", "recent-errors"],
+      lookbackMinutes: 30,
+    }, { x: 400, y: 200 }),
+
+    node("classify-incident", "action.run_agent", "Classify Incident", {
+      prompt: `# Incident Classification
+
+Analyze the collected evidence:
+{{evidence}}
+
+Classify the incident:
+1. **SEVERITY**: critical / high / medium / low
+2. **CATEGORY**: agent-crash / build-failure / resource-exhaustion / stuck-process / unknown
+3. **ROOT CAUSE**: One-line hypothesis
+4. **IMPACT**: What is affected and who is impacted
+5. **RECOMMENDED ACTION**: Immediate steps to mitigate
+
+Output as JSON: { "severity": "...", "category": "...", "rootCause": "...", "impact": "...", "action": "..." }`,
+      sdk: "auto",
+      timeoutMs: 300000,
+    }, { x: 400, y: 370 }),
+
+    node("is-critical", "condition.expression", "Is Critical?", {
+      expression: "($ctx.getNodeOutput('classify-incident')?.output || '').includes('\"severity\": \"critical\"') || ($ctx.getNodeOutput('classify-incident')?.output || '').includes('\"severity\":\"critical\"')",
+    }, { x: 400, y: 540, outputs: ["yes", "no"] }),
+
+    node("create-incident-task", "action.create_task", "Create Incident Task", {
+      title: "🚨 Incident: {{incidentCategory}}",
+      description: "Auto-detected incident.\n\nEvidence: {{evidence}}\n\nClassification: {{classification}}",
+      tags: ["incident", "auto-detected"],
+      priority: "high",
+    }, { x: 400, y: 690 }),
+
+    node("assign-agent", "action.run_agent", "Investigate & Mitigate", {
+      prompt: `# Incident Investigation
+
+An incident has been detected and classified:
+{{classification}}
+
+Evidence collected:
+{{evidence}}
+
+Your task:
+1. Investigate the root cause in detail
+2. Apply immediate mitigation if safe to do so
+3. Document what you find and what you changed
+4. If you cannot resolve it, document what you know for human review
+
+Be conservative — prefer safe mitigations over aggressive fixes.`,
+      sdk: "auto",
+      timeoutMs: 1800000,
+    }, { x: 250, y: 840 }),
+
+    node("alert-critical", "notify.telegram", "Critical Incident Alert", {
+      message: "🚨 **CRITICAL INCIDENT**\n\nCategory: {{incidentCategory}}\nRoot cause: {{rootCause}}\n\nAgent investigating. Immediate attention may be required.",
+    }, { x: 150, y: 540 }),
+
+    node("alert-standard", "notify.log", "Log Incident", {
+      message: "Incident detected (non-critical): {{incidentCategory}} — agent assigned",
+      level: "warn",
+    }, { x: 600, y: 690 }),
+
+    node("resolution-log", "notify.log", "Log Resolution", {
+      message: "Incident response complete — see task for details",
+      level: "info",
+    }, { x: 400, y: 990 }),
+  ],
+  edges: [
+    edge("trigger", "collect-evidence"),
+    edge("collect-evidence", "classify-incident"),
+    edge("classify-incident", "is-critical"),
+    edge("is-critical", "alert-critical", { condition: "$output?.result === true", port: "yes" }),
+    edge("is-critical", "create-incident-task", { condition: "$output?.result !== true", port: "no" }),
+    edge("alert-critical", "create-incident-task"),
+    edge("create-incident-task", "alert-standard"),
+    edge("create-incident-task", "assign-agent"),
+    edge("assign-agent", "resolution-log"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-02-25T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["incident", "response", "detection", "escalation", "reliability"],
+    replaces: {
+      module: "error-detector.mjs",
+      functions: ["handleErrorSpike", "escalateAnomaly"],
+      calledFrom: ["anomaly-detector.mjs:onAnomaly"],
+      description:
+        "Replaces reactive error handling with a structured incident response " +
+        "workflow. Evidence collection, classification, task creation, and " +
+        "agent assignment become explicit, auditable steps.",
     },
   },
 };

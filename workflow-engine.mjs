@@ -39,6 +39,8 @@ const WORKFLOW_RUNS_DIR = "workflow-runs";
 const MAX_NODE_RETRIES = 3;
 const NODE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes per node default
 const MAX_CONCURRENT_BRANCHES = 8;
+const MAX_PERSISTED_RUNS = 200;
+const DEFAULT_RUN_STUCK_THRESHOLD_MS = 5 * 60 * 1000;
 
 // ── Node Status ─────────────────────────────────────────────────────────────
 
@@ -153,6 +155,7 @@ export class WorkflowContext {
     this.nodeStatuses = new Map();
     this.logs = [];
     this.errors = [];
+    this.nodeStatusEvents = [];
     this.variables = {};
     this.retryAttempts = new Map();
   }
@@ -198,6 +201,7 @@ export class WorkflowContext {
   /** Set node execution status */
   setNodeStatus(nodeId, status) {
     this.nodeStatuses.set(nodeId, status);
+    this.nodeStatusEvents.push({ nodeId, status, timestamp: Date.now() });
   }
 
   /** Get node execution status */
@@ -260,6 +264,7 @@ export class WorkflowContext {
       retryAttempts: Object.fromEntries(this.retryAttempts),
       logs: this.logs,
       errors: this.errors,
+      nodeStatusEvents: this.nodeStatusEvents,
     };
   }
 }
@@ -408,7 +413,13 @@ export class WorkflowEngine extends EventEmitter {
     ctx.variables = { ...def.variables };
 
     const runId = ctx.id;
-    this._activeRuns.set(runId, { workflowId, ctx, startedAt: Date.now(), status: WorkflowStatus.RUNNING });
+    this._activeRuns.set(runId, {
+      workflowId,
+      workflowName: def.name,
+      ctx,
+      startedAt: ctx.startedAt,
+      status: WorkflowStatus.RUNNING,
+    });
     this.emit("run:start", { runId, workflowId, name: def.name });
 
     try {
@@ -476,18 +487,20 @@ export class WorkflowEngine extends EventEmitter {
 
   /** Get status of active runs */
   getActiveRuns() {
-    return Array.from(this._activeRuns.entries()).map(([runId, info]) => ({
-      runId,
-      workflowId: info.workflowId,
-      status: info.status,
-      startedAt: info.startedAt,
-      duration: Date.now() - info.startedAt,
-    }));
+    return Array.from(this._activeRuns.entries())
+      .map(([runId, info]) => this._buildActiveRunSummary(runId, info))
+      .filter(Boolean);
   }
 
   /** Get historical run logs */
   getRunHistory(workflowId, limit = 20) {
-    let runs = this._readRunIndex();
+    const persisted = this._readRunIndex()
+      .map((entry) => this._normalizeRunSummary(entry))
+      .filter(Boolean);
+    const active = this.getActiveRuns();
+    const activeRunIds = new Set(active.map((run) => run.runId));
+
+    let runs = [...active, ...persisted.filter((run) => !activeRunIds.has(run.runId))];
     if (workflowId) runs = runs.filter((r) => r.workflowId === workflowId);
     runs.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
     const normalizedLimit = Number(limit);
@@ -501,36 +514,46 @@ export class WorkflowEngine extends EventEmitter {
   getRunDetail(runId) {
     const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
     if (!normalizedRunId) return null;
+
+    const activeRun = this._activeRuns.get(normalizedRunId);
+    if (activeRun?.ctx) {
+      const summary = this._buildActiveRunSummary(normalizedRunId, activeRun);
+      if (!summary) return null;
+      return {
+        ...summary,
+        detail: this._serializeRunContext(activeRun.ctx, true),
+      };
+    }
+
     const detailPath = resolve(this.runsDir, `${normalizedRunId}.json`);
     if (!existsSync(detailPath)) return null;
 
     try {
       const detail = JSON.parse(readFileSync(detailPath, "utf8"));
-      const summary = this._readRunIndex().find((entry) => entry?.runId === normalizedRunId) || null;
+      const summary = this._normalizeRunSummary(
+        this._readRunIndex().find((entry) => entry?.runId === normalizedRunId) || null,
+      );
       if (summary) {
-        return { ...summary, detail };
+        const recomputed = this._buildSummaryFromDetail({
+          runId: normalizedRunId,
+          workflowId: summary.workflowId,
+          workflowName: summary.workflowName,
+          status: summary.status || WorkflowStatus.COMPLETED,
+          detail,
+        });
+        return { ...summary, ...recomputed, detail };
       }
-      const nodeStatuses = detail?.nodeStatuses || {};
-      const statusValues = Object.values(nodeStatuses);
       const status = Array.isArray(detail?.errors) && detail.errors.length > 0
-        ? "failed"
-        : "completed";
-      return {
+        ? WorkflowStatus.FAILED
+        : WorkflowStatus.COMPLETED;
+      const computed = this._buildSummaryFromDetail({
         runId: normalizedRunId,
         workflowId: detail?.data?._workflowId || null,
         workflowName: detail?.data?._workflowName || null,
-        startedAt: detail?.startedAt || null,
-        endedAt: detail?.endedAt || null,
-        duration: detail?.duration || null,
         status,
-        errorCount: Array.isArray(detail?.errors) ? detail.errors.length : 0,
-        logCount: Array.isArray(detail?.logs) ? detail.logs.length : 0,
-        nodeCount: statusValues.length,
-        completedCount: statusValues.filter((value) => value === NodeStatus.COMPLETED).length,
-        failedCount: statusValues.filter((value) => value === NodeStatus.FAILED).length,
-        skippedCount: statusValues.filter((value) => value === NodeStatus.SKIPPED).length,
         detail,
-      };
+      });
+      return { ...computed, detail };
     } catch {
       return null;
     }
@@ -806,39 +829,160 @@ export class WorkflowEngine extends EventEmitter {
     }
   }
 
+  _getRunStuckThresholdMs() {
+    const raw = Number(process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS);
+    if (Number.isFinite(raw) && raw > 0) return raw;
+    return DEFAULT_RUN_STUCK_THRESHOLD_MS;
+  }
+
+  _getLastLogAt(logs = []) {
+    let latest = 0;
+    for (const entry of Array.isArray(logs) ? logs : []) {
+      const ts = Number(entry?.timestamp);
+      if (Number.isFinite(ts) && ts > latest) latest = ts;
+    }
+    return latest > 0 ? latest : null;
+  }
+
+  _getLastProgressAt(nodeStatusEvents = [], startedAt = null) {
+    let latest = 0;
+    for (const event of Array.isArray(nodeStatusEvents) ? nodeStatusEvents : []) {
+      const ts = Number(event?.timestamp);
+      if (Number.isFinite(ts) && ts > latest) latest = ts;
+    }
+    if (latest > 0) return latest;
+    const normalizedStart = Number(startedAt);
+    return Number.isFinite(normalizedStart) && normalizedStart > 0 ? normalizedStart : null;
+  }
+
+  _countNodeStatuses(nodeStatuses = {}) {
+    const values = Object.values(nodeStatuses || {});
+    return {
+      nodeCount: values.length,
+      completedCount: values.filter((value) => value === NodeStatus.COMPLETED).length,
+      failedCount: values.filter((value) => value === NodeStatus.FAILED).length,
+      skippedCount: values.filter((value) => value === NodeStatus.SKIPPED).length,
+      activeNodeCount: values.filter(
+        (value) => value === NodeStatus.RUNNING || value === NodeStatus.WAITING,
+      ).length,
+    };
+  }
+
+  _serializeRunContext(ctx, isRunning = false) {
+    const detail = ctx.toJSON(Date.now());
+    if (isRunning) {
+      detail.endedAt = null;
+      detail.duration = Math.max(0, Date.now() - Number(ctx?.startedAt || Date.now()));
+    }
+    return detail;
+  }
+
+  _buildSummaryFromDetail({ runId, workflowId, workflowName, status, detail }) {
+    const startedAt = Number(detail?.startedAt) || null;
+    const endedAtRaw = Number(detail?.endedAt);
+    const normalizedStatus = status || WorkflowStatus.COMPLETED;
+    const endedAt = normalizedStatus === WorkflowStatus.RUNNING
+      ? null
+      : (Number.isFinite(endedAtRaw) ? endedAtRaw : null);
+    const duration = normalizedStatus === WorkflowStatus.RUNNING
+      ? (startedAt ? Math.max(0, Date.now() - startedAt) : null)
+      : (Number.isFinite(Number(detail?.duration)) ? Number(detail?.duration) : (startedAt && endedAt ? Math.max(0, endedAt - startedAt) : null));
+    const nodeStatuses = detail?.nodeStatuses || {};
+    const counts = this._countNodeStatuses(nodeStatuses);
+    const errorCount = Array.isArray(detail?.errors) ? detail.errors.length : 0;
+    const logCount = Array.isArray(detail?.logs) ? detail.logs.length : 0;
+    const lastLogAt = this._getLastLogAt(detail?.logs || []);
+    const lastProgressAt = this._getLastProgressAt(detail?.nodeStatusEvents || [], startedAt);
+    const threshold = this._getRunStuckThresholdMs();
+    const activityRef = Math.max(lastLogAt || 0, lastProgressAt || 0, startedAt || 0);
+    const isRunning = normalizedStatus === WorkflowStatus.RUNNING;
+    const stuckMs = isRunning && activityRef > 0 ? Math.max(0, Date.now() - activityRef) : 0;
+    const isStuck = isRunning && stuckMs >= threshold;
+
+    return {
+      runId,
+      workflowId,
+      workflowName: workflowName || workflowId || null,
+      startedAt,
+      endedAt,
+      duration,
+      status: normalizedStatus,
+      errorCount,
+      logCount,
+      nodeCount: counts.nodeCount,
+      completedCount: counts.completedCount,
+      failedCount: counts.failedCount,
+      skippedCount: counts.skippedCount,
+      activeNodeCount: counts.activeNodeCount,
+      lastLogAt,
+      lastProgressAt,
+      isStuck,
+      stuckMs,
+      stuckThresholdMs: threshold,
+    };
+  }
+
+  _buildActiveRunSummary(runId, info) {
+    if (!info?.ctx) return null;
+    const detail = this._serializeRunContext(info.ctx, true);
+    return this._buildSummaryFromDetail({
+      runId,
+      workflowId: info.workflowId,
+      workflowName: info.workflowName || info.ctx?.data?._workflowName || info.workflowId,
+      status: WorkflowStatus.RUNNING,
+      detail,
+    });
+  }
+
+  _normalizeRunSummary(summary) {
+    if (!summary || !summary.runId) return null;
+    const normalized = {
+      ...summary,
+      runId: String(summary.runId),
+      status: summary.status || WorkflowStatus.COMPLETED,
+    };
+    if (!Number.isFinite(Number(normalized.stuckThresholdMs))) {
+      normalized.stuckThresholdMs = this._getRunStuckThresholdMs();
+    }
+    if (!Number.isFinite(Number(normalized.activeNodeCount))) {
+      normalized.activeNodeCount = 0;
+    }
+    if (normalized.status !== WorkflowStatus.RUNNING) {
+      normalized.isStuck = false;
+      normalized.stuckMs = 0;
+      return normalized;
+    }
+    const startedAt = Number(normalized.startedAt) || 0;
+    const activityRef = Math.max(
+      Number(normalized.lastLogAt) || 0,
+      Number(normalized.lastProgressAt) || 0,
+      startedAt,
+    );
+    normalized.stuckMs = activityRef > 0 ? Math.max(0, Date.now() - activityRef) : 0;
+    normalized.isStuck = normalized.stuckMs >= Number(normalized.stuckThresholdMs);
+    return normalized;
+  }
+
   _persistRun(runId, workflowId, ctx) {
     try {
       this._ensureDirs();
-      const finishedAt = Date.now();
       const workflow = this.get(workflowId);
-      const detail = ctx.toJSON(finishedAt);
-      const statusValues = Object.values(detail.nodeStatuses || {});
-      const completedCount = statusValues.filter((value) => value === NodeStatus.COMPLETED).length;
-      const failedCount = statusValues.filter((value) => value === NodeStatus.FAILED).length;
-      const skippedCount = statusValues.filter((value) => value === NodeStatus.SKIPPED).length;
-      const summary = {
+      const detail = this._serializeRunContext(ctx, false);
+      const summary = this._buildSummaryFromDetail({
         runId,
         workflowId,
         workflowName: workflow?.name || ctx.data?._workflowName || workflowId,
-        startedAt: ctx.startedAt,
-        endedAt: finishedAt,
-        duration: Math.max(0, finishedAt - ctx.startedAt),
-        status: ctx.errors.length > 0 ? "failed" : "completed",
-        errorCount: ctx.errors.length,
-        logCount: detail.logs?.length || 0,
-        nodeCount: statusValues.length,
-        completedCount,
-        failedCount,
-        skippedCount,
-      };
+        status: ctx.errors.length > 0 ? WorkflowStatus.FAILED : WorkflowStatus.COMPLETED,
+        detail,
+      });
 
       // Append to index
       const indexPath = resolve(this.runsDir, "index.json");
       let index = { runs: this._readRunIndex() };
 
       index.runs.push(summary);
-      // Keep last 200 runs
-      if (index.runs.length > 200) index.runs = index.runs.slice(-200);
+      // Keep last N runs
+      if (index.runs.length > MAX_PERSISTED_RUNS) index.runs = index.runs.slice(-MAX_PERSISTED_RUNS);
       writeFileSync(indexPath, JSON.stringify(index, null, 2), "utf8");
 
       // Save full run detail

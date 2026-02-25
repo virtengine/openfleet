@@ -311,6 +311,11 @@ describe("WorkflowEngine - run history details", () => {
     expect(typeof latest.endedAt).toBe("number");
     expect(typeof latest.logCount).toBe("number");
     expect(typeof latest.completedCount).toBe("number");
+    expect(typeof latest.lastProgressAt).toBe("number");
+    expect(typeof latest.lastLogAt).toBe("number");
+    expect(typeof latest.activeNodeCount).toBe("number");
+    expect(latest.isStuck).toBe(false);
+    expect(latest.stuckMs).toBe(0);
 
     const run = engine.getRunDetail(latest.runId);
     expect(run).toBeTruthy();
@@ -320,6 +325,7 @@ describe("WorkflowEngine - run history details", () => {
     expect(run.detail.nodeStatuses.trigger).toBeDefined();
     expect(run.detail.nodeStatuses.log).toBeDefined();
     expect(Array.isArray(run.detail.logs)).toBe(true);
+    expect(Array.isArray(run.detail.nodeStatusEvents)).toBe(true);
   });
 
   it("returns runs in descending order and null for unknown run details", async () => {
@@ -338,6 +344,66 @@ describe("WorkflowEngine - run history details", () => {
     expect(history.length).toBeGreaterThanOrEqual(2);
     expect(history[0].startedAt).toBeGreaterThanOrEqual(history[1].startedAt);
     expect(engine.getRunDetail("does-not-exist")).toBeNull();
+  });
+
+  it("includes active runs in history and exposes live run detail while executing", async () => {
+    const prevThreshold = process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS;
+    process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS = "20";
+    try {
+      let releaseRun;
+      const blocker = new Promise((resolve) => { releaseRun = resolve; });
+
+      registerNodeType("test.long_running", {
+        describe: () => "Long running node for active-run visibility",
+        schema: { type: "object", properties: {} },
+        async execute(node, ctx) {
+          ctx.log(node.id, "long running node entered");
+          await blocker;
+          return { ok: true };
+        },
+      });
+
+      const wf = makeSimpleWorkflow(
+        [
+          { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+          { id: "wait", type: "test.long_running", label: "Wait", config: {} },
+        ],
+        [{ id: "e1", source: "trigger", target: "wait" }],
+        { name: "Active Run Visibility Workflow" },
+      );
+
+      engine.save(wf);
+      const runPromise = engine.execute(wf.id, {});
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      const history = engine.getRunHistory(wf.id, 10);
+      const active = history.find((entry) => entry.status === WorkflowStatus.RUNNING);
+      expect(active).toBeTruthy();
+      expect(active.workflowName).toBe("Active Run Visibility Workflow");
+      expect(active.activeNodeCount).toBeGreaterThan(0);
+      expect(typeof active.lastProgressAt).toBe("number");
+      expect(typeof active.duration).toBe("number");
+      expect(active.isStuck).toBe(true);
+      expect(active.stuckMs).toBeGreaterThanOrEqual(20);
+
+      const detail = engine.getRunDetail(active.runId);
+      expect(detail).toBeTruthy();
+      expect(detail.status).toBe(WorkflowStatus.RUNNING);
+      expect(detail.endedAt).toBeNull();
+      expect(detail.detail.endedAt).toBeNull();
+      expect(Array.isArray(detail.detail.logs)).toBe(true);
+      expect(Array.isArray(detail.detail.nodeStatusEvents)).toBe(true);
+
+      releaseRun();
+      await runPromise;
+
+      const latest = engine.getRunHistory(wf.id, 1)[0];
+      expect(latest.status).toBe(WorkflowStatus.COMPLETED);
+      expect(latest.isStuck).toBe(false);
+    } finally {
+      if (prevThreshold === undefined) delete process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS;
+      else process.env.WORKFLOW_RUN_STUCK_THRESHOLD_MS = prevThreshold;
+    }
   });
 });
 

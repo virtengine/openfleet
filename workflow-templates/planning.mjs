@@ -5,6 +5,7 @@
  *   - Task Planner (recommended)
  *   - Task Replenish (Scheduled)
  *   - Nightly Report
+ *   - Sprint Retrospective
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
@@ -261,6 +262,149 @@ Format as a Telegram-friendly message with emoji headers. Include:
       description: "Replaces ad-hoc Telegram status reporting with a scheduled " +
         "nightly report workflow. Stats gathering runs in parallel, then " +
         "an agent generates a formatted summary.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Sprint Retrospective
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const SPRINT_RETROSPECTIVE_TEMPLATE = {
+  id: "template-sprint-retrospective",
+  name: "Sprint Retrospective",
+  description:
+    "Weekly automated retrospective: gathers metrics on tasks completed, " +
+    "PRs merged, agent success rates, and common failure patterns. " +
+    "Generates improvement suggestions and creates action item tasks.",
+  category: "planning",
+  enabled: true,
+  trigger: "trigger.schedule",
+  variables: {
+    lookbackDays: 7,
+    createImprovementTasks: true,
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Weekly Retro", {
+      intervalMs: 604800000,
+      cron: "0 9 * * 1",
+    }, { x: 400, y: 50 }),
+
+    node("task-metrics", "action.bosun_cli", "Gather Task Metrics", {
+      command: "task list --format json --since {{lookbackDays}}d",
+      continueOnError: true,
+    }, { x: 200, y: 200 }),
+
+    node("pr-metrics", "action.run_command", "Gather PR Metrics", {
+      command: "gh pr list --state all --json number,title,state,createdAt,mergedAt,closedAt --limit 50",
+      continueOnError: true,
+    }, { x: 600, y: 200 }),
+
+    node("error-analysis", "action.analyze_errors", "Analyze Error Patterns", {
+      lookbackHours: "{{ lookbackDays * 24 }}",
+      groupBy: "category",
+    }, { x: 200, y: 350 }),
+
+    node("agent-stats", "action.bosun_cli", "Agent Performance", {
+      command: "status --json",
+      continueOnError: true,
+    }, { x: 600, y: 350 }),
+
+    node("generate-retro", "action.run_agent", "Generate Retrospective", {
+      prompt: `# Sprint Retrospective Analysis
+
+Analyze the following data from the past {{lookbackDays}} days:
+
+## Task Metrics
+{{taskMetrics}}
+
+## PR Metrics
+{{prMetrics}}
+
+## Error Patterns
+{{errorAnalysis}}
+
+## Agent Performance
+{{agentStats}}
+
+Generate a retrospective report with these sections:
+
+### 📊 Key Metrics
+- Tasks completed vs created
+- Average task cycle time
+- PR merge rate and average review time
+- Agent success rate
+
+### ✅ What Went Well
+- Highlight successful patterns and wins
+
+### ❌ What Didn't Go Well
+- Identify bottlenecks and recurring issues
+
+### 🎯 Action Items
+For each improvement suggestion, output a line:
+ACTION: [title] | [description]
+
+Be specific and actionable. Limit to 3-5 improvement items.`,
+      sdk: "auto",
+      timeoutMs: 600000,
+    }, { x: 400, y: 520 }),
+
+    node("has-actions", "condition.expression", "Has Action Items?", {
+      expression: "($ctx.getNodeOutput('generate-retro')?.output || '').includes('ACTION:')",
+    }, { x: 400, y: 680, outputs: ["yes", "no"] }),
+
+    node("create-tasks", "action.run_agent", "Create Improvement Tasks", {
+      prompt: `# Create Improvement Tasks
+
+From the retrospective output, extract all lines starting with ACTION:
+and create a bosun task for each one.
+
+Use the CLI: bosun task create --title "[title]" --description "[description]" --tag improvement --tag retro
+
+Only create tasks if {{createImprovementTasks}} is true.`,
+      sdk: "auto",
+      timeoutMs: 300000,
+    }, { x: 250, y: 830 }),
+
+    node("send-report", "notify.telegram", "Send Retro Report", {
+      message: "📋 **Weekly Retrospective** (past {{lookbackDays}} days)\n\n{{retroOutput}}",
+    }, { x: 400, y: 980 }),
+
+    node("log-no-actions", "notify.log", "No Actions Needed", {
+      message: "Sprint retrospective complete — no action items generated",
+      level: "info",
+    }, { x: 600, y: 830 }),
+  ],
+  edges: [
+    edge("trigger", "task-metrics"),
+    edge("trigger", "pr-metrics"),
+    edge("task-metrics", "error-analysis"),
+    edge("pr-metrics", "agent-stats"),
+    edge("error-analysis", "generate-retro"),
+    edge("agent-stats", "generate-retro"),
+    edge("generate-retro", "has-actions"),
+    edge("has-actions", "create-tasks", { condition: "$output?.result === true", port: "yes" }),
+    edge("has-actions", "log-no-actions", { condition: "$output?.result !== true", port: "no" }),
+    edge("create-tasks", "send-report"),
+    edge("log-no-actions", "send-report"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-02-25T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["planning", "retrospective", "metrics", "improvement", "weekly"],
+    replaces: {
+      module: "telegram-sentinel.mjs",
+      functions: ["weeklyDigest"],
+      calledFrom: ["monitor.mjs:scheduleWeeklyDigest"],
+      description:
+        "Replaces simple weekly digest with a comprehensive retrospective " +
+        "workflow. Metrics gathering, AI analysis, action item creation, " +
+        "and reporting are structured as workflow stages.",
     },
   },
 };
