@@ -1628,7 +1628,7 @@ Instructions:
   };
 }
 
-// Hard cap: if we hit this many failures in the window, actually exit.
+// Hard cap: if we hit this many failures in the window, enter degraded mode.
 const MONITOR_FAILURE_HARD_CAP = 30;
 // Minimum interval between handleMonitorFailure executions (prevent Telegram spam).
 const MONITOR_FAILURE_COOLDOWN_MS = 5000;
@@ -1656,9 +1656,13 @@ async function handleMonitorFailure(reason, err) {
     return; // circuit breaker sends its own summary message
   }
 
-  // Hard cap: exit the process to break the loop for good
+  // Hard cap: never kill monitor; degrade into safe mode and pause restarts.
   if (failureCount >= MONITOR_FAILURE_HARD_CAP) {
-    const msg = `🛑 bosun hit hard failure cap (${failureCount}). Exiting to break crash loop.`;
+    const pauseMs = Math.max(orchestratorPauseMs, 30 * 60 * 1000);
+    const pauseMin = Math.max(1, Math.round(pauseMs / 60_000));
+    const msg =
+      `🛑 bosun hit hard failure cap (${failureCount}). ` +
+      `Entering safe mode for ${pauseMin} minute(s); monitor process will stay alive.`;
     console.error(`[monitor] ${msg}`);
     if (telegramToken && telegramChatId) {
       try {
@@ -1667,15 +1671,23 @@ async function handleMonitorFailure(reason, err) {
         /* best effort */
       }
     }
-    // Wait for active agents before killing process
-    const activeSlots = getInternalActiveSlotCount();
-    if (activeSlots > 0 && internalTaskExecutor) {
-      console.warn(
-        `[monitor] hard failure cap reached but ${activeSlots} agent(s) active — waiting for graceful shutdown`,
-      );
-      await internalTaskExecutor.stop();
+    monitorSafeModeUntil = Math.max(monitorSafeModeUntil, Date.now() + pauseMs);
+    // Prevent immediate retrigger loops after entering hard-cap safe mode.
+    monitorFailureTimestamps.length = 0;
+    // Stop currently running child orchestrator while keeping monitor alive.
+    if (currentChild) {
+      try {
+        currentChild.kill("SIGTERM");
+      } catch {
+        /* best effort */
+      }
     }
-    process.exit(1);
+    // Ensure we retry after safe-mode window if still running.
+    if (!shuttingDown) {
+      setTimeout(() => {
+        if (!shuttingDown) void startProcess();
+      }, pauseMs + 1000);
+    }
     return;
   }
 
@@ -1750,6 +1762,33 @@ async function handleMonitorFailure(reason, err) {
   } finally {
     monitorFailureHandling = false;
   }
+}
+
+function reportGuardedFailure(reason, err) {
+  if (shuttingDown) return;
+  const error = err instanceof Error ? err : new Error(formatMonitorError(err));
+  console.error(`[monitor] ${reason} failed: ${error.stack || error.message}`);
+  void handleMonitorFailure(reason, error);
+}
+
+function runGuarded(reason, fn) {
+  if (shuttingDown) return;
+  try {
+    const result = fn();
+    if (result && typeof result.then === "function") {
+      result.catch((err) => reportGuardedFailure(reason, err));
+    }
+  } catch (err) {
+    reportGuardedFailure(reason, err);
+  }
+}
+
+function safeSetInterval(reason, fn, ms) {
+  return setInterval(() => runGuarded(`interval:${reason}`, fn), ms);
+}
+
+function safeSetTimeout(reason, fn, ms) {
+  return setTimeout(() => runGuarded(`timeout:${reason}`, fn), ms);
 }
 
 const crashLoopFixAttempts = new Map();
@@ -11292,26 +11331,26 @@ function startMonitorMonitorSupervisor() {
     monitorMonitor.statusTimer = null;
   }
 
-  monitorMonitor.timer = setInterval(() => {
+  monitorMonitor.timer = safeSetInterval("monitor-monitor-cycle", () => {
     if (shuttingDown) return;
-    void runMonitorMonitorCycle({ trigger: "interval" });
+    return runMonitorMonitorCycle({ trigger: "interval" });
   }, monitorMonitor.intervalMs);
-  monitorMonitor.statusTimer = setInterval(() => {
+  monitorMonitor.statusTimer = safeSetInterval("monitor-monitor-status", () => {
     if (shuttingDown) return;
-    void publishMonitorMonitorStatus("interval");
+    return publishMonitorMonitorStatus("interval");
   }, monitorMonitor.statusIntervalMs);
 
   console.log(
     `[monitor] monitor-monitor supervisor started (${Math.round(monitorMonitor.intervalMs / 1000)}s run interval, ${Math.round(monitorMonitor.statusIntervalMs / 60_000)}m status interval, sdk order: ${monitorMonitor.sdkOrder.join(" -> ")})`,
   );
 
-  setTimeout(() => {
+  safeSetTimeout("monitor-monitor-startup-cycle", () => {
     if (shuttingDown) return;
-    void runMonitorMonitorCycle({ trigger: "startup" });
+    return runMonitorMonitorCycle({ trigger: "startup" });
   }, 15_000);
-  setTimeout(() => {
+  safeSetTimeout("monitor-monitor-startup-status", () => {
     if (shuttingDown) return;
-    void publishMonitorMonitorStatus("startup");
+    return publishMonitorMonitorStatus("startup");
   }, 20_000);
 }
 
@@ -11368,7 +11407,8 @@ async function handleDigestSealed({ entries, text }) {
 }
 
 async function startProcess() {
-  // Guard: never spawn VK orchestrator when executor mode is internal or disabled
+  try {
+    // Guard: never spawn VK orchestrator when executor mode is internal or disabled
   const execMode = configExecutorMode || getExecutorMode();
   if (execMode === "internal" || isExecutorDisabled()) {
     console.log(
@@ -11643,6 +11683,15 @@ async function startProcess() {
       handleExit(code, signal, archiveLogPath);
     });
   });
+  } catch (err) {
+    reportGuardedFailure("startProcess", err);
+    if (!shuttingDown) {
+      const retryMs = Math.max(5_000, restartDelayMs || 0);
+      safeSetTimeout("startProcess-retry", () => {
+        if (!shuttingDown) void startProcess();
+      }, retryMs);
+    }
+  }
 }
 
 function requestRestart(reason) {
@@ -12517,24 +12566,24 @@ try {
 }
 
 // ── Startup sweep: kill stale processes, prune worktrees, archive old tasks ──
-runMaintenanceSweep({
-  repoRoot,
-  archiveCompletedTasks: async () => {
-    const projectId = await findVkProjectId();
-    if (!projectId) return { archived: 0 };
-    return await archiveCompletedTasks(fetchVk, projectId, { maxArchive: 50 });
-  },
-});
+runGuarded("startup-maintenance-sweep", () =>
+  runMaintenanceSweep({
+    repoRoot,
+    archiveCompletedTasks: async () => {
+      const projectId = await findVkProjectId();
+      if (!projectId) return { archived: 0 };
+      return await archiveCompletedTasks(fetchVk, projectId, { maxArchive: 50 });
+    },
+  }),
+);
 
-setInterval(() => {
-  void flushErrorQueue();
-}, 60 * 1000);
+safeSetInterval("flush-error-queue", () => flushErrorQueue(), 60 * 1000);
 
 // ── Periodic maintenance: every 5 min, reap stuck pushes & prune worktrees ──
 const maintenanceIntervalMs = 5 * 60 * 1000;
-setInterval(() => {
+safeSetInterval("maintenance-sweep", () => {
   const childPid = currentChild ? currentChild.pid : undefined;
-  runMaintenanceSweep({
+  return runMaintenanceSweep({
     repoRoot,
     childPid,
     archiveCompletedTasks: async () => {
@@ -12550,23 +12599,19 @@ setInterval(() => {
 
 // ── Periodic merged PR check: every 10 min, move merged PRs to done ─────────
 const mergedPRCheckIntervalMs = 10 * 60 * 1000;
-setInterval(() => {
-  void checkMergedPRsAndUpdateTasks();
-}, mergedPRCheckIntervalMs);
+safeSetInterval("merged-pr-check", () => checkMergedPRsAndUpdateTasks(), mergedPRCheckIntervalMs);
 
 // ── Periodic epic branch sync/merge: every 15 min ──────────────────────────
 const epicMergeIntervalMs = 15 * 60 * 1000;
-setInterval(() => {
-  void checkEpicBranches("interval");
-}, epicMergeIntervalMs);
+safeSetInterval("epic-merge-check", () => checkEpicBranches("interval"), epicMergeIntervalMs);
 
 // ── Log rotation: truncate oldest logs when folder exceeds size limit ───────
 if (logMaxSizeMb > 0) {
   // Run once at startup (delayed 10s)
-  setTimeout(() => void truncateOldLogs(), 10 * 1000);
+  safeSetTimeout("startup-log-rotation", () => truncateOldLogs(), 10 * 1000);
   if (logCleanupIntervalMin > 0) {
     const logCleanupIntervalMs = logCleanupIntervalMin * 60 * 1000;
-    setInterval(() => void truncateOldLogs(), logCleanupIntervalMs);
+    safeSetInterval("log-rotation", () => truncateOldLogs(), logCleanupIntervalMs);
     console.log(
       `[monitor] log rotation enabled — max ${logMaxSizeMb} MB, checking every ${logCleanupIntervalMin} min`,
     );
@@ -12578,10 +12623,10 @@ if (logMaxSizeMb > 0) {
 }
 
 // Run once immediately after startup (delayed by 30s to let things settle)
-setTimeout(() => {
-  void checkMergedPRsAndUpdateTasks();
-  void checkEpicBranches("startup");
-  void checkAndMergeDependabotPRs();
+safeSetTimeout("startup-health-checks", () => {
+  checkMergedPRsAndUpdateTasks();
+  checkEpicBranches("startup");
+  return checkAndMergeDependabotPRs();
 }, 30 * 1000);
 
 // ── Fleet Coordination ───────────────────────────────────────────────────────
@@ -12604,12 +12649,13 @@ if (fleetConfig?.enabled) {
 
   // Periodic fleet sync
   const syncMs = fleetConfig.syncIntervalMs || 2 * 60 * 1000;
-  setInterval(() => {
-    void refreshFleet({ ttlMs: fleetConfig.presenceTtlMs })
-      .then(() => persistFleetState(repoRoot))
-      .catch((err) => {
-        console.warn(`[fleet] sync error: ${err.message}`);
-      });
+  safeSetInterval("fleet-sync", async () => {
+    try {
+      await refreshFleet({ ttlMs: fleetConfig.presenceTtlMs });
+      await persistFleetState(repoRoot);
+    } catch (err) {
+      console.warn(`[fleet] sync error: ${err.message}`);
+    }
   }, syncMs);
   console.log(
     `[fleet] sync every ${Math.round(syncMs / 1000)}s, TTL=${Math.round((fleetConfig.presenceTtlMs || 300000) / 1000)}s`,
@@ -12632,9 +12678,7 @@ if (fleetConfig?.enabled) {
 // ── Periodic Dependabot auto-merge check ─────────────────────────────────────
 if (dependabotAutoMerge) {
   const depIntervalMs = (dependabotAutoMergeIntervalMin || 10) * 60 * 1000;
-  setInterval(() => {
-    void checkAndMergeDependabotPRs();
-  }, depIntervalMs);
+  safeSetInterval("dependabot-auto-merge", () => checkAndMergeDependabotPRs(), depIntervalMs);
   console.log(
     `[dependabot] auto-merge enabled — checking every ${dependabotAutoMergeIntervalMin || 10} min for: ${dependabotAuthors.join(", ")}`,
   );
@@ -12682,9 +12726,7 @@ if (
   Number.isFinite(vkEnsureIntervalMs) &&
   vkEnsureIntervalMs > 0
 ) {
-  setInterval(() => {
-    void ensureVibeKanbanRunning();
-  }, vkEnsureIntervalMs);
+  safeSetInterval("vk-runtime-ensure", () => ensureVibeKanbanRunning(), vkEnsureIntervalMs);
 }
 // Periodically reconnect log stream for externally-managed VK (e.g. after VK restart).
 // Session discovery is handled by ensureVkSessionDiscoveryLoop() inside ensureVkLogStream().
@@ -12695,11 +12737,10 @@ if (
   Number.isFinite(vkEnsureIntervalMs) &&
   vkEnsureIntervalMs > 0
 ) {
-  setInterval(() => {
+  safeSetInterval("vk-logstream-reconnect", async () => {
     if (!vkLogStream) {
-      void isVibeKanbanOnline().then((online) => {
-        if (online) ensureVkLogStream();
-      });
+      const online = await isVibeKanbanOnline();
+      if (online) ensureVkLogStream();
     }
   }, vkEnsureIntervalMs);
 }
