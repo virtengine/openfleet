@@ -1288,6 +1288,15 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
 function WorkflowListView() {
   const wfs = workflows.value || [];
   const tmpls = templates.value || [];
+  const installedTemplateIds = new Set();
+  wfs.forEach((wf) => {
+    if (wf.metadata?.installedFrom) installedTemplateIds.add(wf.metadata.installedFrom);
+    installedTemplateIds.add(wf.name);
+  });
+  const availableTemplates = tmpls.filter((t) => {
+    if (installedTemplateIds.has(t.id) || installedTemplateIds.has(t.name)) return false;
+    return true;
+  });
 
   return html`
     <div style="padding: 0 4px;">
@@ -1384,25 +1393,30 @@ function WorkflowListView() {
               const newWf = { name: "New Workflow", description: "", category: "custom", enabled: true, nodes: [], edges: [], variables: {} };
               saveWorkflow(newWf).then(wf => { if (wf) { activeWorkflow.value = wf; viewMode.value = "canvas"; } });
             }}>+ Create Blank</button>
-            ${tmpls.length > 0 && html`
-              <button class="wf-btn" style="border-color: #f59e0b60; color: #f59e0b;" onClick=${() => installTemplate(tmpls[0]?.id)}>
+            ${availableTemplates.length > 0 && html`
+              <button class="wf-btn" style="border-color: #f59e0b60; color: #f59e0b;" onClick=${() => installTemplate(availableTemplates[0]?.id)}>
                 <span class="btn-icon">${resolveIcon("zap")}</span>
-                Quick Install: ${tmpls[0]?.name}
+                Quick Install: ${availableTemplates[0]?.name}
               </button>
             `}
           </div>
         </div>
       `}
 
-      <!-- Templates (grouped by category) -->
+      <!-- Templates (grouped by category, deduped against installed) -->
       <div>
         <h3 style="font-size: 14px; font-weight: 600; color: var(--color-text-secondary, #8b95a5); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
-          Templates (${tmpls.length})
+          Available Templates (${availableTemplates.length})${tmpls.length !== availableTemplates.length ? html` <span style="font-size: 11px; font-weight: 400; opacity: 0.6;">· ${tmpls.length - availableTemplates.length} installed</span>` : ""}
         </h3>
+        ${availableTemplates.length === 0 && html`
+          <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px;">
+            All templates are installed! 🎉
+          </div>
+        `}
         ${(() => {
           // Group templates by category
           const groups = {};
-          tmpls.forEach(t => {
+          availableTemplates.forEach(t => {
             const key = t.category || "custom";
             if (!groups[key]) groups[key] = { label: t.categoryLabel || key, icon: t.categoryIcon || "settings", order: t.categoryOrder || 99, items: [] };
             groups[key].items.push(t);
