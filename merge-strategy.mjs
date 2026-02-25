@@ -607,6 +607,8 @@ export function resetMergeStrategyDedup() {
  * @param {number}        [opts.timeoutMs]  Timeout for agent operations (default: 15 min)
  * @param {number}        [opts.maxRetries] Max retries for re_attempt (default: 2)
  * @param {object}        [opts.promptTemplates] Optional prompt template overrides
+ * @param {function}      [opts.canEnableMerge] Optional async gate for merge action.
+ *   Signature: ({ decision, ctx }) => Promise<{ allowed: boolean, reason?: string }>
  * @returns {Promise<ExecutionResult>}
  */
 export async function executeDecision(decision, ctx, opts = {}) {
@@ -616,6 +618,7 @@ export async function executeDecision(decision, ctx, opts = {}) {
     timeoutMs = 15 * 60 * 1000,
     maxRetries = 2,
     promptTemplates = {},
+    canEnableMerge,
   } = opts;
 
   const tag = `merge-exec(${ctx.shortId})`;
@@ -648,7 +651,11 @@ export async function executeDecision(decision, ctx, opts = {}) {
         });
 
       case "merge_after_ci_pass":
-        return await executeMergeAction(decision, ctx, { tag, onTelegram });
+        return await executeMergeAction(decision, ctx, {
+          tag,
+          onTelegram,
+          canEnableMerge,
+        });
 
       case "close_pr":
         return await executeCloseAction(decision, ctx, { tag, onTelegram });
@@ -988,7 +995,39 @@ function buildReAttemptPrompt(ctx, reason, promptTemplate = "") {
  * Enable auto-merge for the PR via `gh pr merge --auto --squash`.
  */
 async function executeMergeAction(decision, ctx, execOpts) {
-  const { tag, onTelegram } = execOpts;
+  const { tag, onTelegram, canEnableMerge } = execOpts;
+
+  if (typeof canEnableMerge === "function") {
+    try {
+      const gate = await canEnableMerge({ decision, ctx });
+      if (gate && gate.allowed === false) {
+        const reason = String(gate.reason || "merge_gate_blocked");
+        console.warn(
+          `[${tag}] merge_after_ci_pass blocked by merge gate: ${reason}`,
+        );
+        if (onTelegram) {
+          onTelegram(
+            `⛔ Merge blocked for ${ctx.taskTitle || `PR #${ctx.prNumber || "unknown"}`}: ${reason}`,
+          );
+        }
+        return {
+          executed: false,
+          action: "merge_after_ci_pass",
+          success: false,
+          error: `FLOW_REVIEW_GATE:${reason}`,
+        };
+      }
+    } catch (err) {
+      const msg = err?.message || String(err || "merge gate error");
+      console.warn(`[${tag}] merge gate threw: ${msg}`);
+      return {
+        executed: false,
+        action: "merge_after_ci_pass",
+        success: false,
+        error: `FLOW_REVIEW_GATE_ERROR:${msg}`,
+      };
+    }
+  }
 
   if (!ctx.prNumber) {
     console.warn(`[${tag}] merge_after_ci_pass but no PR number`);

@@ -185,9 +185,17 @@ function getPrDiff({ prUrl, branchName }) {
 function parseReviewResult(raw) {
   if (!raw || !raw.trim()) {
     return {
-      approved: true,
-      issues: [],
-      summary: "Empty agent output — auto-approved",
+      approved: false,
+      issues: [
+        {
+          severity: "major",
+          category: "broken",
+          file: "(review)",
+          line: null,
+          description: "Reviewer returned empty output; review is not complete.",
+        },
+      ],
+      summary: "Empty reviewer output",
     };
   }
 
@@ -218,11 +226,19 @@ function parseReviewResult(raw) {
     }
   }
 
-  // Couldn't parse — auto-approve with note
+  // Couldn't parse — treat as failed review to prevent unsafe auto-merge.
   return {
-    approved: true,
-    issues: [],
-    summary: "Could not parse review output — auto-approved",
+    approved: false,
+    issues: [
+      {
+        severity: "major",
+        category: "broken",
+        file: "(review)",
+        line: null,
+        description: "Could not parse reviewer output as JSON.",
+      },
+    ],
+    summary: "Could not parse reviewer output",
   };
 }
 
@@ -232,8 +248,18 @@ function parseReviewResult(raw) {
  * @returns {{ approved: boolean, issues: Array, summary: string }}
  */
 function normalizeResult(obj) {
-  const approved = obj.verdict !== "changes_requested";
+  const verdict = String(obj?.verdict || "").trim().toLowerCase();
+  const approved = verdict === "approved";
   const issues = Array.isArray(obj.issues) ? obj.issues : [];
+  if (!approved && verdict !== "changes_requested" && issues.length === 0) {
+    issues.push({
+      severity: "major",
+      category: "broken",
+      file: "(review)",
+      line: null,
+      description: `Invalid reviewer verdict "${verdict || "missing"}".`,
+    });
+  }
   const summary = typeof obj.summary === "string" ? obj.summary : "";
   return { approved, issues, summary };
 }
@@ -249,7 +275,7 @@ export class ReviewAgent {
   /** @type {Array<{ id: string, title: string, branchName: string, prUrl: string, description: string, taskContext?: string }>} */
   #queue = [];
 
-  /** @type {Set<string>} - task IDs already reviewed or in-flight */
+  /** @type {Set<string>} - task IDs queued or currently in-flight */
   #seen = new Set();
 
   #completedCount = 0;
@@ -309,7 +335,7 @@ export class ReviewAgent {
 
   /**
    * Queue a task for review.
-   * Deduplicates by task ID — same task won't be reviewed twice.
+   * Deduplicates by task ID while queued/in-flight.
    * @param {{ id: string, title: string, branchName: string, prUrl: string, description: string, taskContext?: string }} task
    */
   async queueReview(task) {
@@ -319,7 +345,7 @@ export class ReviewAgent {
     }
 
     if (this.#seen.has(task.id)) {
-      console.log(`${TAG} task ${task.id} already reviewed/queued — skipping`);
+      console.log(`${TAG} task ${task.id} already queued/in-flight — skipping`);
       return;
     }
 
@@ -412,6 +438,7 @@ export class ReviewAgent {
           })
           .finally(() => {
             this.#activeReviews.delete(task.id);
+            this.#seen.delete(task.id);
             this.#completedCount++;
             // Continue processing after slot freed
             if (this.#running && this.#queue.length > 0) {
@@ -441,12 +468,21 @@ export class ReviewAgent {
 
     if (!diff) {
       console.log(
-        `${TAG} no diff available for task ${task.id} — auto-approving`,
+        `${TAG} no diff available for task ${task.id} — marking review as changes requested`,
       );
       const result = {
-        approved: true,
-        issues: [],
-        summary: "No diff available",
+        approved: false,
+        issues: [
+          {
+            severity: "major",
+            category: "broken",
+            file: "(diff)",
+            line: null,
+            description:
+              "No diff could be loaded for this PR; cannot complete review safely.",
+          },
+        ],
+        summary: "No diff available for review",
         reviewedAt: new Date().toISOString(),
         agentOutput: "",
       };
@@ -474,7 +510,7 @@ export class ReviewAgent {
       const sdkResult = await execWithRetry(prompt, {
         taskKey: `review-${task.id}`,
         timeoutMs: this.#reviewTimeoutMs,
-        maxRetries: 0, // Reviews don't retry — approve on failure
+        maxRetries: 0, // Reviews don't retry — reject on failure
         sdk: this.#sdk,
       });
 
@@ -482,8 +518,16 @@ export class ReviewAgent {
     } catch (err) {
       console.error(`${TAG} SDK call failed for task ${task.id}:`, err.message);
       const result = {
-        approved: true,
-        issues: [],
+        approved: false,
+        issues: [
+          {
+            severity: "major",
+            category: "broken",
+            file: "(review)",
+            line: null,
+            description: `Reviewer execution failed: ${err.message}`,
+          },
+        ],
         summary: `Review failed: ${err.message}`,
         reviewedAt: new Date().toISOString(),
         agentOutput: "",

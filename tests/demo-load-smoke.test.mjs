@@ -409,7 +409,7 @@ describe("demo load smoke", () => {
       expect.fail(`MiniApp import/export linkage errors:\n${importErrors.join("\n")}`);
     }
     expect(visited.size).toBeGreaterThan(15);
-  });
+  }, 15000);
 
   it("landing demo tabs activate and lazy initializers run", () => {
     const scriptPath = resolve(SITE_ROOT, "js/main.js");

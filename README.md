@@ -69,6 +69,7 @@ Key references:
 - [GitHub Projects v2 monitoring](_docs/GITHUB_PROJECTS_V2_MONITORING.md)
 - [GitHub Projects v2 checklist](_docs/GITHUB_PROJECTS_V2_IMPLEMENTATION_CHECKLIST.md)
 - [Jira integration](_docs/JIRA_INTEGRATION.md)
+- [Workflows](_docs/WORKFLOWS.md)
 - [Agent logging quickstart](docs/agent-logging-quickstart.md)
 - [Agent logging design](docs/agent-work-logging-design.md)
 - [Agent logging summary](docs/AGENT_LOGGING_SUMMARY.md)

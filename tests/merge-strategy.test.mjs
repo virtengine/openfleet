@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   analyzeMergeStrategy,
   buildMergeStrategyPrompt,
+  executeDecision,
   extractActionJson,
   resetMergeStrategyDedup,
 } from "../merge-strategy.mjs";
@@ -140,6 +141,25 @@ describe("merge-strategy", () => {
       expect(result.action).toBe("manual_review");
       expect(result.reason).toContain("Codex error");
       expect(result.success).toBe(false);
+    });
+  });
+
+  describe("executeDecision merge gate", () => {
+    it("blocks merge_after_ci_pass when canEnableMerge disallows it", async () => {
+      const result = await executeDecision(
+        { action: "merge_after_ci_pass", reason: "ok" },
+        { attemptId: "gate-1", shortId: "gate-1", status: "completed", prNumber: 123 },
+        {
+          canEnableMerge: async () => ({
+            allowed: false,
+            reason: "task_review_not_approved",
+          }),
+        },
+      );
+
+      expect(result.executed).toBe(false);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("FLOW_REVIEW_GATE:task_review_not_approved");
     });
   });
 });

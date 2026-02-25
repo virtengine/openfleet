@@ -391,6 +391,11 @@ body.kanban-dragging .kanban-card {
   flex-shrink: 0;
 }
 
+.kanban-card-assignee svg {
+  width: 12px;
+  height: 12px;
+}
+
 .kanban-card-title {
   font-size: 14px;
   font-weight: 500;

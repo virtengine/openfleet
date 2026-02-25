@@ -730,6 +730,22 @@ function isReviewAgentEnabled() {
   return true;
 }
 
+function isFlowPrimaryEnabled() {
+  const explicit = process.env.BOSUN_FLOW_PRIMARY;
+  if (explicit !== undefined && String(explicit).trim() !== "") {
+    return !isFalsyFlag(explicit);
+  }
+  return !isFalsyFlag(flowPrimaryDefault);
+}
+
+function isFlowReviewGateEnabled() {
+  const explicit = process.env.BOSUN_FLOW_REQUIRE_REVIEW;
+  if (explicit !== undefined && String(explicit).trim() !== "") {
+    return !isFalsyFlag(explicit);
+  }
+  return !isFalsyFlag(flowRequireReviewDefault);
+}
+
 function isMonitorMonitorEnabled() {
   if (process.env.VITEST) return false;
   if (!isDevMode()) return false;
@@ -968,6 +984,8 @@ const codexAnalyzeMergeStrategy =
 const mergeStrategyMode = String(
   process.env.MERGE_STRATEGY_MODE || "smart",
 ).toLowerCase();
+const flowPrimaryDefault = "true";
+const flowRequireReviewDefault = "true";
 const codexResolveConflictsEnabled =
   agentPoolEnabled &&
   (process.env.CODEX_RESOLVE_CONFLICTS || "true").toLowerCase() !== "false";
@@ -4784,7 +4802,16 @@ async function checkMergedPRsAndUpdateTasks() {
         (c) => c.branch && mergedBranchCache.has(c.branch),
       );
       if (knownBranch) {
+        const canFinalize = await shouldFinalizeMergedTask(task, {
+          branch: knownBranch.branch,
+          prNumber: knownBranch.prNumber,
+          reason: "known_merged_branch",
+        });
+        if (!canFinalize) {
+          continue;
+        }
         mergedTaskCache.add(task.id);
+        pendingMergeStrategyByTask.delete(String(task.id || "").trim());
         // Cache all branches for this task
         for (const c of candidates) {
           if (c.branch) mergedBranchCache.add(c.branch);
@@ -4831,9 +4858,19 @@ async function checkMergedPRsAndUpdateTasks() {
             console.log(
               `[monitor] Task "${task.title}" (${task.id.substring(0, 8)}...) has merged PR #${cand.prNumber}, updating to done [confidence=${confidence.confidence}, ${confidence.reason}]`,
             );
+            const canFinalize = await shouldFinalizeMergedTask(task, {
+              branch: cand.branch,
+              prNumber: cand.prNumber,
+              reason: "merged_pr_detected",
+            });
+            if (!canFinalize) {
+              resolved = true;
+              break;
+            }
             const success = await updateTaskStatus(task.id, "done");
             movedCount++;
             mergedTaskCache.add(task.id);
+            pendingMergeStrategyByTask.delete(String(task.id || "").trim());
             for (const c of candidates) {
               if (c.branch) mergedBranchCache.add(c.branch);
             }
@@ -4890,9 +4927,19 @@ async function checkMergedPRsAndUpdateTasks() {
           console.log(
             `[monitor] Task "${task.title}" (${task.id.substring(0, 8)}...) has merged branch ${cand.branch}, updating to done`,
           );
+          const canFinalize = await shouldFinalizeMergedTask(task, {
+            branch: cand.branch,
+            prNumber: cand.prNumber,
+            reason: "merged_branch_detected",
+          });
+          if (!canFinalize) {
+            resolved = true;
+            break;
+          }
           const success = await updateTaskStatus(task.id, "done");
           movedCount++;
           mergedTaskCache.add(task.id);
+          pendingMergeStrategyByTask.delete(String(task.id || "").trim());
           for (const c of candidates) {
             if (c.branch) mergedBranchCache.add(c.branch);
           }
@@ -6064,6 +6111,137 @@ async function checkAndMergeDependabotPRs() {
 
 // ── Merge Strategy Analysis ─────────────────────────────────────────────────
 
+function getReviewGateSnapshot(taskId) {
+  const id = String(taskId || "").trim();
+  if (!id) return null;
+
+  const runtime = reviewGateResults.get(id);
+  if (runtime) {
+    return {
+      approved: runtime.approved === true,
+      reviewedAt: runtime.reviewedAt || null,
+      source: "runtime",
+    };
+  }
+
+  try {
+    const task = getInternalTask(id);
+    if (!task) return null;
+    return {
+      approved: task.reviewStatus === "approved",
+      reviewedAt: task.reviewedAt || null,
+      source: "task-store",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isTaskReviewApprovedForFlow(taskId) {
+  const snapshot = getReviewGateSnapshot(taskId);
+  return snapshot?.approved === true;
+}
+
+function rememberPendingMergeStrategy(ctx, reason = "review_pending") {
+  const taskId = String(ctx?.taskId || "").trim();
+  if (!taskId) return false;
+  pendingMergeStrategyByTask.set(taskId, {
+    ...ctx,
+    _flowDeferredAt: new Date().toISOString(),
+    _flowDeferredReason: reason,
+  });
+  return true;
+}
+
+function dequeuePendingMergeStrategy(taskId) {
+  const id = String(taskId || "").trim();
+  if (!id) return null;
+  const ctx = pendingMergeStrategyByTask.get(id) || null;
+  if (ctx) pendingMergeStrategyByTask.delete(id);
+  return ctx;
+}
+
+async function queueFlowReview(taskId, ctx, reason = "") {
+  if (!reviewAgent) return false;
+  const id = String(taskId || "").trim();
+  if (!id) return false;
+  try {
+    const prUrl =
+      ctx?.prUrl ||
+      (ctx?.prNumber ? `${repoUrlBase}/pull/${ctx.prNumber}` : "");
+    await reviewAgent.queueReview({
+      id,
+      title: ctx?.taskTitle || id,
+      branchName: ctx?.branch || "",
+      prUrl,
+      description: ctx?.taskDescription || "",
+      taskContext: reason ? `Flow gate reason: ${reason}` : "",
+      worktreePath: ctx?.worktreeDir || null,
+      sessionMessages: "",
+      diffStats: "",
+    });
+    return true;
+  } catch (err) {
+    console.warn(
+      `[flow-gate] failed to queue review for ${id}: ${err.message || err}`,
+    );
+    return false;
+  }
+}
+
+async function canEnableMergeForFlow(ctx) {
+  if (!isFlowPrimaryEnabled() || !isFlowReviewGateEnabled()) {
+    return { allowed: true };
+  }
+
+  const taskId = String(ctx?.taskId || "").trim();
+  if (!taskId) {
+    return { allowed: false, reason: "missing_task_id_for_review_gate" };
+  }
+
+  if (!isTaskReviewApprovedForFlow(taskId)) {
+    return { allowed: false, reason: "task_review_not_approved" };
+  }
+
+  return { allowed: true };
+}
+
+async function shouldFinalizeMergedTask(task, context = {}) {
+  if (!isFlowPrimaryEnabled() || !isFlowReviewGateEnabled()) {
+    return true;
+  }
+
+  const taskId = String(task?.id || "").trim();
+  if (!taskId) return false;
+  if (isTaskReviewApprovedForFlow(taskId)) return true;
+
+  const branch = context.branch || task?.branch || task?.workspace_branch || "";
+  const prNumber = context.prNumber || task?.pr_number || null;
+  const reason = context.reason || "merged_before_review";
+  console.log(
+    `[flow-gate] Task "${task?.title || taskId}" merged but review is not approved yet — holding in inreview`,
+  );
+  const currentStatus = String(task?.status || "").toLowerCase();
+  if (currentStatus && currentStatus !== "inreview") {
+    try {
+      await updateTaskStatus(taskId, "inreview");
+    } catch {
+      /* best effort */
+    }
+  }
+  await queueFlowReview(taskId, {
+    taskId,
+    taskTitle: task?.title || taskId,
+    taskDescription: task?.description || task?.body || "",
+    branch,
+    prNumber,
+    prUrl:
+      context.prUrl ||
+      (prNumber ? `${repoUrlBase}/pull/${prNumber}` : task?.pr_url || ""),
+  }, reason);
+  return false;
+}
+
 /**
  * Run the Codex-powered merge strategy analysis for a completed task.
  * This is fire-and-forget (void) — it runs async in the background and
@@ -6071,9 +6249,29 @@ async function checkAndMergeDependabotPRs() {
  *
  * @param {import("./merge-strategy.mjs").MergeContext} ctx
  */
-async function runMergeStrategyAnalysis(ctx) {
+async function runMergeStrategyAnalysis(ctx, opts = {}) {
   const tag = `merge-strategy(${ctx.shortId})`;
   try {
+    const skipFlowGate = opts?.skipFlowGate === true;
+    const flowGateEnabled = isFlowPrimaryEnabled() && isFlowReviewGateEnabled();
+    if (!skipFlowGate && flowGateEnabled) {
+      const taskId = String(ctx?.taskId || "").trim();
+      if (!taskId) {
+        console.warn(
+          `[${tag}] flow gate: missing taskId — deferring merge strategy until task mapping is available`,
+        );
+        return;
+      }
+      if (!isTaskReviewApprovedForFlow(taskId)) {
+        rememberPendingMergeStrategy(ctx, "review_pending");
+        await queueFlowReview(taskId, ctx, "merge_strategy_waiting_for_review");
+        console.log(
+          `[${tag}] flow gate: deferred until review is approved for task ${taskId}`,
+        );
+        return;
+      }
+    }
+
     const telegramFn =
       telegramToken && telegramChatId
         ? (msg) => void sendTelegramMessage(msg)
@@ -6105,6 +6303,7 @@ async function runMergeStrategyAnalysis(ctx) {
       onTelegram: telegramFn,
       timeoutMs:
         parseInt(process.env.MERGE_STRATEGY_TIMEOUT_MS, 10) || 15 * 60 * 1000,
+      canEnableMerge: ({ ctx: mergeCtx }) => canEnableMergeForFlow(mergeCtx),
       promptTemplates: {
         mergeStrategyFix: agentPrompts?.mergeStrategyFix,
         mergeStrategyReAttempt: agentPrompts?.mergeStrategyReAttempt,
@@ -6127,6 +6326,17 @@ async function runMergeStrategyAnalysis(ctx) {
 
     if (!execResult.success && execResult.error) {
       console.warn(`[${tag}] execution issue: ${execResult.error}`);
+      if (
+        String(execResult.error).startsWith("FLOW_REVIEW_GATE:") &&
+        ctx?.taskId
+      ) {
+        rememberPendingMergeStrategy(ctx, "merge_blocked_by_review_gate");
+        await queueFlowReview(
+          ctx.taskId,
+          ctx,
+          "merge_action_blocked_by_review_gate",
+        );
+      }
     }
   } catch (err) {
     console.warn(
@@ -6753,12 +6963,32 @@ async function smartPRFlow(attemptId, shortId, status) {
       }
       const merged = await isBranchMerged(attemptInfo.branch);
       if (merged) {
+        let canFinalize = true;
+        if (attemptInfo.task_id) {
+          canFinalize = await shouldFinalizeMergedTask(
+            {
+              id: attemptInfo.task_id,
+              title: attemptInfo.task_title || attemptInfo.task_id,
+              description: attemptInfo.task_description || "",
+              pr_number: attemptInfo.pr_number || null,
+              pr_url: attemptInfo.pr_url || "",
+            },
+            {
+              branch: attemptInfo.branch,
+              prNumber: attemptInfo.pr_number || null,
+              reason: "smartpr_initial_merged_branch",
+            },
+          );
+        }
         console.log(
-          `[monitor] ${tag}: branch ${attemptInfo.branch} confirmed merged — completing task`,
+          `[monitor] ${tag}: branch ${attemptInfo.branch} confirmed merged — ${canFinalize ? "completing task" : "awaiting review gate"}`,
         );
         mergedBranchCache.add(attemptInfo.branch);
-        if (attemptInfo.task_id) {
+        if (attemptInfo.task_id && canFinalize) {
           mergedTaskCache.add(attemptInfo.task_id);
+          pendingMergeStrategyByTask.delete(
+            String(attemptInfo.task_id || "").trim(),
+          );
           void updateTaskStatus(attemptInfo.task_id, "done");
         }
         await archiveAttempt(attemptId);
@@ -7134,6 +7364,7 @@ Return a short summary of what you did and any files that needed manual resoluti
       // ── Step 5b: Merge strategy analysis (Codex-powered) ─────
       if (codexAnalyzeMergeStrategy) {
         void runMergeStrategyAnalysis({
+          taskId: attempt?.task_id || attemptInfo?.task_id || null,
           attemptId,
           shortId,
           status,
@@ -7267,12 +7498,32 @@ async function resolveAndTriggerSmartPR(shortId, status) {
       // Check GitHub for a merged PR with this head branch
       const merged = await isBranchMerged(resolvedAttempt.branch);
       if (merged) {
+        let canFinalize = true;
+        if (resolvedAttempt.task_id) {
+          canFinalize = await shouldFinalizeMergedTask(
+            {
+              id: resolvedAttempt.task_id,
+              title: resolvedAttempt.task_title || resolvedAttempt.task_id,
+              description: resolvedAttempt.task_description || "",
+              pr_number: resolvedAttempt.pr_number || null,
+              pr_url: resolvedAttempt.pr_url || "",
+            },
+            {
+              branch: resolvedAttempt.branch,
+              prNumber: resolvedAttempt.pr_number || null,
+              reason: "resolve_smartpr_merged_branch",
+            },
+          );
+        }
         console.log(
-          `[monitor] smartPR(${shortId}): branch ${resolvedAttempt.branch} confirmed merged — completing task and skipping PR flow`,
+          `[monitor] smartPR(${shortId}): branch ${resolvedAttempt.branch} confirmed merged — ${canFinalize ? "completing task and skipping PR flow" : "awaiting review gate"}`,
         );
         mergedBranchCache.add(resolvedAttempt.branch);
-        if (resolvedAttempt.task_id) {
+        if (resolvedAttempt.task_id && canFinalize) {
           mergedTaskCache.add(resolvedAttempt.task_id);
+          pendingMergeStrategyByTask.delete(
+            String(resolvedAttempt.task_id || "").trim(),
+          );
           void updateTaskStatus(resolvedAttempt.task_id, "done");
         }
         await archiveAttempt(resolvedAttempt.id || shortId);
@@ -12356,6 +12607,10 @@ let agentEndpoint = null;
 let agentEventBus = null;
 /** @type {import("./review-agent.mjs").ReviewAgent|null} */
 let reviewAgent = null;
+/** @type {Map<string, import("./merge-strategy.mjs").MergeContext>} */
+const pendingMergeStrategyByTask = new Map();
+/** @type {Map<string, { approved: boolean, reviewedAt: string }>} */
+const reviewGateResults = new Map();
 /** @type {import("./sync-engine.mjs").SyncEngine|null} */
 let syncEngine = null;
 /** @type {import("./error-detector.mjs").ErrorDetector|null} */
@@ -12715,9 +12970,14 @@ if (isExecutorDisabled()) {
               : null,
           promptTemplate: agentPrompts?.reviewer,
           onReviewComplete: (taskId, result) => {
+            const normalizedTaskId = String(taskId || "").trim();
             console.log(
               `[monitor] review complete for ${taskId}: ${result?.approved ? "approved" : "changes_requested"} — prMerged: ${result?.prMerged}`,
             );
+            reviewGateResults.set(normalizedTaskId, {
+              approved: result?.approved === true,
+              reviewedAt: result?.reviewedAt || new Date().toISOString(),
+            });
             try {
               setReviewResult(taskId, {
                 approved: result?.approved ?? false,
@@ -12726,6 +12986,9 @@ if (isExecutorDisabled()) {
             } catch {
               /* best-effort */
             }
+            const pendingCtx = result?.approved
+              ? dequeuePendingMergeStrategy(normalizedTaskId)
+              : null;
 
             if (result?.approved && result?.prMerged) {
               // PR merged and reviewer happy — fully done
@@ -12747,10 +13010,27 @@ if (isExecutorDisabled()) {
               console.log(
                 `[monitor] review approved but PR not merged — ${taskId} stays inreview`,
               );
+              if (pendingCtx) {
+                console.log(
+                  `[monitor] flow gate released for ${taskId} — running deferred merge strategy`,
+                );
+                void runMergeStrategyAnalysis(
+                  {
+                    ...pendingCtx,
+                    taskId: pendingCtx.taskId || taskId,
+                  },
+                  { skipFlowGate: false },
+                );
+              }
             } else {
               console.log(
                 `[monitor] review found ${result?.issues?.length || 0} issue(s) for ${taskId} — task stays inreview`,
               );
+              if (pendingMergeStrategyByTask.has(normalizedTaskId)) {
+                console.log(
+                  `[monitor] flow gate remains active for ${taskId} — merge strategy stays deferred`,
+                );
+              }
             }
           },
         });

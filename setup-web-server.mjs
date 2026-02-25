@@ -30,7 +30,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 //   2. Node module resolution via createRequire — handles global install hoisting
 //   3. CDN redirect — last resort
 const _require = createRequire(import.meta.url);
-const BUNDLED_VENDOR_DIR = resolve(__dirname, "ui", "vendor");
+const uiRootPreferred = resolve(__dirname, "site", "ui");
+const uiRootFallback = resolve(__dirname, "ui");
+const uiRoot = existsSync(uiRootPreferred) ? uiRootPreferred : uiRootFallback;
+const BUNDLED_VENDOR_DIR = resolve(uiRoot, "vendor");
 
 const VENDOR_FILES = {
   "preact.js":                { specifier: "preact/dist/preact.module.js",                  cdn: "https://esm.sh/preact@10.25.4" },
@@ -997,7 +1000,6 @@ async function handleRequest(req, res) {
   }
 
   // Static file serving from ui/
-  const uiRoot = resolve(__dirname, "ui");
   let pathname = url.pathname === "/" || url.pathname === "/setup" ? "/setup.html" : url.pathname;
   const filePath = resolve(uiRoot, `.${pathname}`);
 
