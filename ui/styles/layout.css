@@ -843,7 +843,7 @@
   top: 0;
   bottom: 0;
   z-index: 910;
-  width: min(320px, 85vw);
+  width: min(420px, 88vw);
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   box-shadow: var(--shadow-lg, 0 10px 40px rgba(0, 0, 0, 0.3));

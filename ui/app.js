@@ -880,23 +880,22 @@ function getActiveTaskCount() {
     Number(sCounts.running || sCounts.inprogress || 0) +
     Number(sCounts.inreview || sCounts.review || 0);
   const list = Array.isArray(tasksData.value) ? tasksData.value : [];
-  if (list.length > 0) {
-    return list.filter((task) => {
-      const status = String(task?.status || "").toLowerCase();
-      return status === "inprogress" || status === "inreview" || status === "running";
-    }).length;
-  }
-  return fromSummary;
+  const fromList = list.filter((task) => {
+    const status = String(task?.status || "").toLowerCase();
+    return status === "inprogress" || status === "inreview" || status === "running";
+  }).length;
+  return Math.max(fromSummary, fromList);
 }
 
 function getActiveAgentCount() {
   const slots = Number(executorData.value?.data?.activeSlots || 0);
-  if (Number.isFinite(slots) && slots > 0) return slots;
   const agents = Array.isArray(agentsData.value) ? agentsData.value : [];
-  return agents.filter((agent) => {
+  const fromAgents = agents.filter((agent) => {
     const status = String(agent?.status || "").toLowerCase();
     return status === "running" || status === "busy" || status === "active";
   }).length;
+  const safeSlots = Number.isFinite(slots) ? Math.max(0, slots) : 0;
+  return Math.max(safeSlots, fromAgents);
 }
 
 function BottomNav({ compact, moreOpen, onToggleMore, onNavigate }) {
@@ -1232,18 +1231,31 @@ function App() {
   const loadingTimerRef = useRef(null);
   const isLoading = loadingCount.value > 0;
   useEffect(() => {
+    if (loadingTimerRef.current) {
+      clearTimeout(loadingTimerRef.current);
+      loadingTimerRef.current = null;
+    }
     if (isLoading) {
-      if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
-      setLoadingVisible(true);
-      setLoadingPct(70);
+      // Avoid flashing the top bar for short background activity.
+      loadingTimerRef.current = setTimeout(() => {
+        setLoadingVisible(true);
+        setLoadingPct(70);
+        loadingTimerRef.current = null;
+      }, 180);
     } else {
       setLoadingPct(100);
       loadingTimerRef.current = setTimeout(() => {
         setLoadingVisible(false);
         setLoadingPct(0);
-      }, 500);
+        loadingTimerRef.current = null;
+      }, 220);
     }
-    return () => {};
+    return () => {
+      if (loadingTimerRef.current) {
+        clearTimeout(loadingTimerRef.current);
+        loadingTimerRef.current = null;
+      }
+    };
   }, [isLoading]);
   const [isMoreOpen, setIsMoreOpen] = useState(false);
   const resizeRef = useRef(null);

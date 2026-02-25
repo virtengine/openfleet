@@ -33,16 +33,86 @@ const AUTO_UPDATE_DISABLE_WINDOW_MS =
   Number(process.env.BOSUN_AUTO_UPDATE_DISABLE_WINDOW_MS) || 24 * 60 * 60 * 1000;
 const STARTUP_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour (startup notice)
 const AUTO_UPDATE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes (polling loop)
+const NPM_LAUNCH_ERROR_CODES = new Set([
+  "EINVAL",
+  "ENOENT",
+  "EACCES",
+  "EPERM",
+  "ETXTBSY",
+]);
+
+function sanitizeNpmEnv(baseEnv = process.env) {
+  const env = { ...baseEnv };
+  for (const key of ["PWD", "OLDPWD", "INIT_CWD"]) {
+    const value = env[key];
+    if (typeof value === "string" && value.trim() && !existsSync(value)) {
+      delete env[key];
+    }
+  }
+  return env;
+}
+
+function isLaunchFailure(err) {
+  if (!err) return false;
+  if (typeof err.status === "number") return false;
+  const code = String(err.code || "").toUpperCase();
+  if (NPM_LAUNCH_ERROR_CODES.has(code)) return true;
+  const message = String(err.message || "");
+  return (
+    /\b(EINVAL|ENOENT|EACCES|EPERM)\b/i.test(message) ||
+    /not recognized as an internal or external command/i.test(message)
+  );
+}
+
+function formatAttemptError(label, err) {
+  const code = err?.code ? String(err.code) : "unknown";
+  const message = String(err?.message || err || "").replace(/\s+/g, " ").trim();
+  const summary = message ? message.slice(0, 160) : "no message";
+  return `${label} [${code}] ${summary}`;
+}
+
+function tryNpmAttempt(label, runner, launchErrors) {
+  try {
+    return { ok: true, value: runner() };
+  } catch (err) {
+    if (!isLaunchFailure(err)) {
+      throw err;
+    }
+    launchErrors.push(formatAttemptError(label, err));
+    return { ok: false, error: err };
+  }
+}
+
+function quoteCmdArg(arg) {
+  const text = String(arg ?? "");
+  if (!/[ \t"&()^|<>]/.test(text)) return text;
+  return `"${text.replace(/(["^])/g, "^$1")}"`;
+}
+
+function runWindowsCmd(candidate, args, options) {
+  const cmdLine = [`"${candidate}"`, ...args.map(quoteCmdArg)].join(" ");
+  return execFileSync("cmd.exe", ["/d", "/s", "/c", cmdLine], options);
+}
 
 function runNpmCommand(args, options = {}) {
   // Default cwd to the user home directory so that npm never inherits a
   // deleted working directory (e.g. a stale git worktree), which would cause
   // Node's uv_cwd to throw ENOENT before npm even parses its arguments.
-  const safeOptions = { cwd: os.homedir(), ...options };
+  const safeOptions = {
+    cwd: os.homedir(),
+    ...options,
+    env: sanitizeNpmEnv(options.env || process.env),
+  };
+  const launchErrors = [];
 
   const npmExecPath = process.env.npm_execpath;
   if (npmExecPath && existsSync(npmExecPath)) {
-    return execFileSync(process.execPath, [npmExecPath, ...args], safeOptions);
+    const result = tryNpmAttempt(
+      `node ${npmExecPath}`,
+      () => execFileSync(process.execPath, [npmExecPath, ...args], safeOptions),
+      launchErrors,
+    );
+    if (result.ok) return result.value;
   }
 
   const nodeBinDir = dirname(process.execPath);
@@ -56,29 +126,89 @@ function runNpmCommand(args, options = {}) {
       : [join(nodeBinDir, "npm")];
 
   for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      // On Unix, npm is a shell script with #!/usr/bin/env node which fails
-      // when running inside a detached daemon where nvm node is not on PATH.
-      // Invoke it directly through process.execPath to bypass the shebang.
-      if (process.platform !== "win32") {
-        return execFileSync(process.execPath, [candidate, ...args], safeOptions);
-      }
-      // On Windows, .cmd/.bat files are batch scripts that must be interpreted
-      // by cmd.exe.  Without shell:true, execFileSync can fail with EINVAL on
-      // certain Node/nvm-for-windows configurations.
-      if (candidate.endsWith(".cmd") || candidate.endsWith(".bat")) {
-        return execFileSync(candidate, args, { ...safeOptions, shell: true });
-      }
-      return execFileSync(candidate, args, safeOptions);
+    if (!existsSync(candidate)) continue;
+    // On Unix, npm is a shell script with #!/usr/bin/env node which fails
+    // when running inside a detached daemon where nvm node is not on PATH.
+    // Invoke it directly through process.execPath to bypass the shebang.
+    if (process.platform !== "win32") {
+      const result = tryNpmAttempt(
+        `node ${candidate}`,
+        () => execFileSync(process.execPath, [candidate, ...args], safeOptions),
+        launchErrors,
+      );
+      if (result.ok) return result.value;
+      continue;
     }
+    // On Windows, .cmd/.bat files are batch scripts that can fail with EINVAL
+    // on some nvm-for-windows setups when launched directly.
+    if (candidate.endsWith(".cmd") || candidate.endsWith(".bat")) {
+      const shellResult = tryNpmAttempt(
+        `${candidate} (shell)`,
+        () => execFileSync(candidate, args, { ...safeOptions, shell: true }),
+        launchErrors,
+      );
+      if (shellResult.ok) return shellResult.value;
+      const cmdResult = tryNpmAttempt(
+        `${candidate} (cmd.exe)`,
+        () => runWindowsCmd(candidate, args, safeOptions),
+        launchErrors,
+      );
+      if (cmdResult.ok) return cmdResult.value;
+      continue;
+    }
+    const directResult = tryNpmAttempt(
+      candidate,
+      () => execFileSync(candidate, args, safeOptions),
+      launchErrors,
+    );
+    if (directResult.ok) return directResult.value;
+  }
+
+  const npmCliCandidates = [
+    npmExecPath,
+    join(nodeBinDir, "node_modules", "npm", "bin", "npm-cli.js"),
+    join(dirname(nodeBinDir), "node_modules", "npm", "bin", "npm-cli.js"),
+  ].filter(Boolean);
+
+  for (const cliPath of npmCliCandidates) {
+    if (!existsSync(cliPath)) continue;
+    const result = tryNpmAttempt(
+      `node ${cliPath}`,
+      () => execFileSync(process.execPath, [cliPath, ...args], safeOptions),
+      launchErrors,
+    );
+    if (result.ok) return result.value;
   }
 
   const fallback = process.platform === "win32" ? "npm.cmd" : "npm";
-  // The fallback path also needs shell:true on Windows for .cmd resolution.
-  if (process.platform === "win32") {
-    return execFileSync(fallback, args, { ...safeOptions, shell: true });
+  if (process.platform !== "win32") {
+    const result = tryNpmAttempt(
+      fallback,
+      () => execFileSync(fallback, args, safeOptions),
+      launchErrors,
+    );
+    if (result.ok) return result.value;
+  } else {
+    // The fallback path also needs shell:true on Windows for .cmd resolution.
+    const shellFallback = tryNpmAttempt(
+      `${fallback} (shell)`,
+      () => execFileSync(fallback, args, { ...safeOptions, shell: true }),
+      launchErrors,
+    );
+    if (shellFallback.ok) return shellFallback.value;
+    const cmdFallback = tryNpmAttempt(
+      `${fallback} (cmd.exe)`,
+      () => runWindowsCmd(fallback, args, safeOptions),
+      launchErrors,
+    );
+    if (cmdFallback.ok) return cmdFallback.value;
   }
-  return execFileSync(fallback, args, safeOptions);
+
+  const launchError = new Error(
+    `[auto-update] npm launch failed after ${launchErrors.length} attempt(s): ${launchErrors.join(" | ")}`,
+  );
+  launchError.code = "NPM_LAUNCH_FAILED";
+  throw launchError;
 }
 
 // ── Semver comparison ────────────────────────────────────────────────────────
@@ -152,8 +282,13 @@ async function resetAutoUpdateState() {
 
 function classifyInstallError(err) {
   const message = err?.message || String(err || "");
-  const code = err?.code || "";
+  const code = String(err?.code || "").toUpperCase();
   if (code === "EINVAL" || message.includes("EINVAL")) return "EINVAL";
+  if (code === "NPM_LAUNCH_FAILED") return "NPM_LAUNCH_FAILED";
+  if (code === "ETIMEDOUT" || /timed?\s*out/i.test(message)) return "ETIMEDOUT";
+  if (code === "ENOENT") return "ENOENT";
+  if (code === "EPERM" || code === "EACCES") return "EACCES";
+  if (Number.isInteger(err?.status)) return `EXIT_${err.status}`;
   if (code) return code;
   return message.slice(0, 160) || "unknown";
 }
@@ -383,8 +518,32 @@ export function startAutoUpdateLoop(opts = {}) {
     Number(process.env.BOSUN_UPDATE_INTERVAL_MS) ||
     opts.intervalMs ||
     AUTO_UPDATE_INTERVAL_MS;
+  const startupDelayRaw =
+    opts.startupDelayMs ?? process.env.BOSUN_UPDATE_STARTUP_DELAY_MS;
+  const startupDelayMs =
+    Number.isFinite(Number(startupDelayRaw)) && Number(startupDelayRaw) >= 0
+      ? Number(startupDelayRaw)
+      : 60 * 1000;
   const onRestart = opts.onRestart || (() => process.exit(0));
   const onNotify = opts.onNotify || ((msg) => console.log(msg));
+  const safeNotify = async (msg) => {
+    try {
+      await Promise.resolve(onNotify(msg));
+    } catch (notifyErr) {
+      console.warn(
+        `[auto-update] notify callback failed: ${notifyErr?.message || notifyErr}`,
+      );
+    }
+  };
+  const safeRestart = async (reason) => {
+    try {
+      await Promise.resolve(onRestart(reason));
+    } catch (restartErr) {
+      console.error(
+        `[auto-update] restart callback failed: ${restartErr?.message || restartErr}`,
+      );
+    }
+  };
 
   // Register cleanup handlers to prevent zombie processes
   registerCleanupHandlers();
@@ -422,11 +581,11 @@ export function startAutoUpdateLoop(opts = {}) {
     try {
       if (isAutoUpdateDisabled(state, now)) {
         if (!state.lastNotifiedAt) {
-          const notice = buildDisableNotice(state);
-          onNotify(notice);
-          console.log(notice);
           state = { ...state, lastNotifiedAt: now };
           await writeAutoUpdateState(state);
+          const notice = buildDisableNotice(state);
+          await safeNotify(notice);
+          console.log(notice);
         }
         return;
       }
@@ -449,7 +608,7 @@ export function startAutoUpdateLoop(opts = {}) {
       // ── Update detected! ──────────────────────────────────────────────
       const msg = `[auto-update] 🔄 Update detected: v${currentVersion} → v${latest}. Installing...`;
       console.log(msg);
-      onNotify(msg);
+      await safeNotify(msg);
 
       try {
         runNpmCommand(["install", "-g", `${PKG_NAME}@${latest}`], {
@@ -459,19 +618,19 @@ export function startAutoUpdateLoop(opts = {}) {
       } catch (installErr) {
         const errMsg = `[auto-update] ❌ Install failed: ${installErr.message || installErr}`;
         console.error(errMsg);
-        onNotify(errMsg);
+        await safeNotify(errMsg);
 
-        const updatedState = await recordAutoUpdateFailure(
+        let updatedState = await recordAutoUpdateFailure(
           state,
           classifyInstallError(installErr),
         );
 
         if (updatedState.disabledUntil && !updatedState.lastNotifiedAt) {
-          const notice = buildDisableNotice(updatedState);
-          onNotify(notice);
-          console.log(notice);
-          updatedState.lastNotifiedAt = Date.now();
+          updatedState = { ...updatedState, lastNotifiedAt: Date.now() };
           await writeAutoUpdateState(updatedState);
+          const notice = buildDisableNotice(updatedState);
+          await safeNotify(notice);
+          console.log(notice);
         }
         return;
       }
@@ -481,7 +640,7 @@ export function startAutoUpdateLoop(opts = {}) {
       if (!isNewer(newVersion, currentVersion) && newVersion !== latest) {
         const errMsg = `[auto-update] ⚠️ Install ran but version unchanged (${newVersion}). Skipping restart.`;
         console.warn(errMsg);
-        onNotify(errMsg);
+        await safeNotify(errMsg);
         return;
       }
 
@@ -490,12 +649,12 @@ export function startAutoUpdateLoop(opts = {}) {
 
       const successMsg = `[auto-update] ✅ Updated to v${latest}. Restarting...`;
       console.log(successMsg);
-      onNotify(successMsg);
+      await safeNotify(successMsg);
 
       // Give Telegram a moment to deliver the notification
       await new Promise((r) => setTimeout(r, 2000));
 
-      onRestart(`auto-update v${currentVersion} → v${latest}`);
+      await safeRestart(`auto-update v${currentVersion} → v${latest}`);
     } catch (err) {
       console.warn(`[auto-update] Poll error: ${err.message || err}`);
     } finally {
@@ -514,7 +673,7 @@ export function startAutoUpdateLoop(opts = {}) {
     }, 30 * 1000);
   }
 
-  // First poll after 60s (let startup settle), then every intervalMs
+  // First poll after startup delay (default 60s), then every intervalMs
   const runPollSafely = () => {
     poll().catch((err) => {
       console.warn(
@@ -526,7 +685,7 @@ export function startAutoUpdateLoop(opts = {}) {
   setTimeout(() => {
     runPollSafely();
     autoUpdateTimer = setInterval(runPollSafely, intervalMs);
-  }, 60 * 1000);
+  }, startupDelayMs);
 }
 
 /**

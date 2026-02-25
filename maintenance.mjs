@@ -10,6 +10,7 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -469,6 +470,8 @@ export function cleanupStaleBranches(repoRoot, opts = {}) {
 const PID_FILE_NAME = "bosun.pid";
 const MONITOR_MARKER = "bosun/monitor.mjs";
 const PID_START_TIME_TOLERANCE_MS = 90_000;
+const MONITOR_PROCESS_STARTED_AT = new Date().toISOString();
+const MONITOR_LOCK_TOKEN = randomUUID();
 
 function parsePidFile(raw) {
   const text = String(raw || "").trim();
@@ -484,6 +487,16 @@ function parsePidFile(raw) {
   return { pid: Number(text), raw: text };
 }
 
+function isCurrentProcessLockOwner(parsed) {
+  if (!parsed || Number(parsed.pid) !== Number(process.pid)) return false;
+  const data = parsed.data;
+  const token = data?.lock_token;
+  if (typeof token === "string" && token.trim().length > 0) {
+    return token === MONITOR_LOCK_TOKEN;
+  }
+  // Backward-compatible fallback for pre-token lock files.
+  return Boolean(data?.started_at) && data.started_at === MONITOR_PROCESS_STARTED_AT;
+}
 function getProcessSnapshot(pid) {
   if (!Number.isFinite(pid) || pid <= 0) return null;
   const processes = getProcesses();
@@ -566,8 +579,8 @@ export function acquireMonitorLock(lockDir) {
   const registerCleanup = () => {
     const cleanup = () => {
       try {
-        const current = parsePidFile(readFileSync(pidFile, "utf8")).pid;
-        if (Number(current) === process.pid) {
+        const parsed = parsePidFile(readFileSync(pidFile, "utf8"));
+        if (isCurrentProcessLockOwner(parsed)) {
           unlinkSync(pidFile);
         }
       } catch {
@@ -588,8 +601,9 @@ export function acquireMonitorLock(lockDir) {
   const writeFreshLock = () => {
     const payload = {
       pid: process.pid,
-      started_at: new Date().toISOString(),
+      started_at: MONITOR_PROCESS_STARTED_AT,
       argv: process.argv,
+      lock_token: MONITOR_LOCK_TOKEN,
     };
     const fd = openSync(pidFile, "wx");
     try {
@@ -627,8 +641,13 @@ export function acquireMonitorLock(lockDir) {
         const existingPid = parsed.pid;
 
         if (existingPid && existingPid === process.pid) {
-          // Re-entrant startup within the same process.
-          return true;
+          if (isCurrentProcessLockOwner(parsed)) {
+            // Re-entrant startup within the same process.
+            return true;
+          }
+          console.warn(
+            "[maintenance] PID file uses current PID but lock owner identity mismatched; replacing lock",
+          );
         }
 
         if (

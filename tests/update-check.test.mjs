@@ -11,6 +11,8 @@ const {
   isAutoUpdateDisabled,
   classifyInstallError,
   buildDisableNotice,
+  readAutoUpdateState,
+  writeAutoUpdateState,
   AUTO_UPDATE_DISABLE_WINDOW_MS,
   AUTO_UPDATE_FAILURE_LIMIT,
 } = __autoUpdateTestHooks;
@@ -144,6 +146,38 @@ describe("update-check", () => {
       expect(classifyInstallError({ code: "EINVAL" })).toBe("EINVAL");
       expect(classifyInstallError({ message: "boom EINVAL oops" })).toBe("EINVAL");
       expect(classifyInstallError({ code: "EACCESS", message: "fail" })).toBe("EACCESS");
+      expect(classifyInstallError({ code: "NPM_LAUNCH_FAILED" })).toBe("NPM_LAUNCH_FAILED");
+      expect(classifyInstallError({ message: "request timed out after 180000ms" })).toBe("ETIMEDOUT");
+      expect(classifyInstallError({ status: 1 })).toBe("EXIT_1");
+    });
+
+    it("persists disable notice timestamp even if notify callback throws", async () => {
+      delete process.env.BOSUN_SKIP_AUTO_UPDATE;
+      await writeAutoUpdateState({
+        failureCount: AUTO_UPDATE_FAILURE_LIMIT,
+        lastFailureReason: "EINVAL",
+        disabledUntil: Date.now() + 60_000,
+        lastNotifiedAt: 0,
+      });
+
+      const warnSpy = vi.spyOn(console, "warn");
+      startAutoUpdateLoop({
+        intervalMs: 1000000,
+        startupDelayMs: 0,
+        parentPid: process.pid,
+        onNotify: () => {
+          throw new Error("notify failed");
+        },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      stopAutoUpdateLoop();
+
+      const state = await readAutoUpdateState();
+      expect(state.lastNotifiedAt).toBeGreaterThan(0);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("[auto-update] notify callback failed"),
+      );
     });
 
     it("re-enables when disable window expires", () => {

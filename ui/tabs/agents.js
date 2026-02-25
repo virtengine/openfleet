@@ -90,8 +90,20 @@ function WorkspaceViewer({ agent, onClose }) {
   const logRef = useRef(null);
 
   const query = agent.branch || agent.taskId || agent.sessionId || "";
+  const linkedSession =
+    (sessionsData.value || []).find((s) => {
+      if (!s) return false;
+      const sid = String(s.id || "");
+      const taskId = String(s.taskId || "");
+      const branch = String(s.branch || "");
+      return (
+        (agent.sessionId && sid === String(agent.sessionId)) ||
+        (agent.taskId && taskId === String(agent.taskId)) ||
+        (agent.branch && branch === String(agent.branch))
+      );
+    }) || null;
   const sessionId =
-    contextData?.session?.id || agent.taskId || agent.sessionId || null;
+    contextData?.session?.id || agent.sessionId || linkedSession?.id || null;
 
   useEffect(() => {
     if (!query) return;
@@ -709,7 +721,7 @@ function WorkspaceViewer({ agent, onClose }) {
 
   return html`
     <div class="modal-overlay" onClick=${(e) => e.target === e.currentTarget && onClose()}>
-      <div class="modal-content">
+      <div class="modal-content modal-content-wide workspace-modal-content">
         <div class="modal-handle" />
         <div class="workspace-viewer">
           <div class="workspace-header">
@@ -884,7 +896,17 @@ export function AgentsTab() {
   }, [sessionsData.value, selectedSessionId.value]);
 
   useEffect(() => {
-    loadSessions({ type: "task" });
+    let active = true;
+    const refreshTaskSessions = () => {
+      if (!active) return;
+      loadSessions({ type: "task" });
+    };
+    refreshTaskSessions();
+    const interval = setInterval(refreshTaskSessions, 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
   }, []);
 
   useEffect(() => {

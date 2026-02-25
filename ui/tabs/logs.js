@@ -132,6 +132,18 @@ function parseTimestamp(value) {
     const trimmed = value.trim();
     if (!trimmed) return null;
     if (/^\d+$/.test(trimmed)) return parseTimestamp(Number(trimmed));
+
+    // Handle log filename timestamps like 2026-02-25T12-36-00-924Z
+    const embedded = trimmed.match(/(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:-\d{3})?Z)/);
+    if (embedded?.[1]) {
+      const normalized = embedded[1].replace(
+        /(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})(?:-(\d{3}))?Z/,
+        (_m, date, hh, mm, ss, ms) => `${date}T${hh}:${mm}:${ss}${ms ? `.${ms}` : ""}Z`,
+      );
+      const embeddedDate = new Date(normalized);
+      if (Number.isFinite(embeddedDate.getTime())) return embeddedDate;
+    }
+
     const d = new Date(trimmed);
     return Number.isFinite(d.getTime()) ? d : null;
   }
