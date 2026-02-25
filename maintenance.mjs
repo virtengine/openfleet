@@ -482,12 +482,15 @@ function getProcessCommandLine(pid) {
   return entry?.commandLine || "";
 }
 
-function isMonitorProcess(pid) {
+function classifyMonitorProcess(pid) {
   const cmd = getProcessCommandLine(pid);
-  if (!cmd) return false;
+  if (!cmd) return "unknown";
   const normalized = cmd.toLowerCase();
-  if (normalized.includes(MONITOR_MARKER)) return true;
-  return normalized.includes("bosun") && normalized.includes("monitor.mjs");
+  if (normalized.includes(MONITOR_MARKER)) return "monitor";
+  if (normalized.includes("bosun") && normalized.includes("monitor.mjs")) {
+    return "monitor";
+  }
+  return "other";
 }
 
 /**
@@ -508,9 +511,16 @@ export function acquireMonitorLock(lockDir) {
         existingPid !== process.pid &&
         isProcessAlive(existingPid)
       ) {
-        if (isMonitorProcess(existingPid)) {
+        const classification = classifyMonitorProcess(existingPid);
+        if (classification === "monitor") {
           console.error(
             `[maintenance] another bosun is already running (PID ${existingPid}). Exiting.`,
+          );
+          return false;
+        }
+        if (classification === "unknown") {
+          console.error(
+            `[maintenance] PID file points to a live process (PID ${existingPid}) but command line is unavailable. Assuming bosun may already be running; exiting.`,
           );
           return false;
         }
@@ -566,7 +576,10 @@ function isProcessAlive(pid) {
   try {
     process.kill(pid, 0); // Signal 0 = check existence, don't actually kill
     return true;
-  } catch {
+  } catch (err) {
+    if (err && (err.code === "EPERM" || err.code === "EACCES")) {
+      return true;
+    }
     return false;
   }
 }
