@@ -14,7 +14,7 @@ describe("monitor epic PR guard rails", () => {
 
   it("skips PR creation when there are no mergeable commits", () => {
     const match = source.match(
-      /async function createEpicMergePr\([\s\S]*?\n\}\n\nasync function enableEpicAutoMerge/,
+      /async function createEpicMergePr\([\s\S]*?\r?\n\}\r?\n\r?\nasync function enableEpicAutoMerge/,
     );
     expect(match, "createEpicMergePr block should be present").toBeTruthy();
     const block = match ? match[0] : "";

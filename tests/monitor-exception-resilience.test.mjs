@@ -8,7 +8,7 @@ describe("monitor exception resilience guards", () => {
 
   it("does not terminate process inside handleMonitorFailure", () => {
     const match = source.match(
-      /async function handleMonitorFailure\([\s\S]*?\n\}\n\nfunction reportGuardedFailure/,
+      /async function handleMonitorFailure\([\s\S]*?\r?\n\}\r?\n\r?\nfunction reportGuardedFailure/,
     );
     expect(match, "handleMonitorFailure block should be present").toBeTruthy();
     const body = match ? match[0] : "";
@@ -25,7 +25,7 @@ describe("monitor exception resilience guards", () => {
 
   it("contains top-level startProcess exception containment", () => {
     const startProcessMatch = source.match(
-      /async function startProcess\(\) \{[\s\S]*?\n\}\n\nfunction requestRestart/,
+      /async function startProcess\(\) \{[\s\S]*?\r?\n\}\r?\n\r?\nfunction requestRestart/,
     );
     expect(startProcessMatch, "startProcess function should be present").toBeTruthy();
     const block = startProcessMatch ? startProcessMatch[0] : "";
