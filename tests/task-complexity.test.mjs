@@ -321,6 +321,15 @@ describe("resolveExecutorForTask", () => {
     expect(result.executor).toBe("CODEX");
   });
 
+  it("preserves executor codexProfile on resolved decisions", () => {
+    const task = { title: "test task", size: "m" };
+    const result = resolveExecutorForTask(task, {
+      ...baseCodexProfile,
+      codexProfile: "executor-2-profile",
+    });
+    expect(result.codexProfile).toBe("executor-2-profile");
+  });
+
   it("returns disabled complexity info when routing is off", () => {
     const task = { title: "test task", size: "xl" };
     const result = resolveExecutorForTask(task, baseCodexProfile, {

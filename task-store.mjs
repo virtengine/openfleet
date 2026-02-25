@@ -13,6 +13,7 @@ import {
   mkdirSync,
   renameSync,
   existsSync,
+  unlinkSync,
 } from "node:fs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -44,6 +45,7 @@ let storeTmpPath = storePath + ".tmp";
 const MAX_STATUS_HISTORY = 50;
 const MAX_AGENT_OUTPUT = 2000;
 const MAX_ERROR_LENGTH = 1000;
+const ATOMIC_RENAME_FALLBACK_CODES = new Set(["EPERM", "EACCES", "EBUSY", "EXDEV"]);
 
 // ---------------------------------------------------------------------------
 // In-memory state
@@ -220,13 +222,13 @@ export function loadStore() {
         _meta: { ...defaultMeta(), ...(data._meta || {}) },
         tasks: data.tasks || {},
       };
-      console.error(
+      console.log(
         TAG,
         `Loaded ${Object.keys(_store.tasks).length} tasks from disk`,
       );
     } else {
       _store = { _meta: defaultMeta(), tasks: {} };
-      console.error(TAG, "No store file found — initialised empty store");
+      console.log(TAG, "No store file found — initialised empty store");
     }
   } catch (err) {
     console.error(TAG, "Failed to load store, starting fresh:", err.message);
@@ -251,7 +253,23 @@ export function saveStore() {
         }
         const json = JSON.stringify(_store, null, 2);
         writeFileSync(storeTmpPath, json, "utf-8");
-        renameSync(storeTmpPath, storePath);
+        try {
+          renameSync(storeTmpPath, storePath);
+        } catch (renameErr) {
+          if (!ATOMIC_RENAME_FALLBACK_CODES.has(renameErr?.code)) {
+            throw renameErr;
+          }
+          writeFileSync(storePath, json, "utf-8");
+          try {
+            unlinkSync(storeTmpPath);
+          } catch {
+            /* best effort */
+          }
+          console.warn(
+            TAG,
+            `Atomic rename failed (${renameErr?.message || renameErr}); fell back to direct write.`,
+          );
+        }
       } catch (err) {
         console.error(TAG, "Failed to save store:", err.message);
       }

@@ -13,14 +13,12 @@
  */
 
 import { readFile, writeFile, appendFile, stat, watch, mkdir } from "fs/promises";
-import { createReadStream, existsSync, mkdirSync } from "fs";
+import { createReadStream, existsSync } from "fs";
 import { createInterface } from "readline";
 import { resolve, dirname } from "path";
-import { fileURLToPath } from "url";
+import { resolveRepoRoot } from "./repo-root.mjs";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const repoRoot = resolve(__dirname, "../..");
+const repoRoot = resolveRepoRoot({ cwd: process.cwd() });
 
 // ── Configuration ───────────────────────────────────────────────────────────
 const AGENT_WORK_STREAM = resolve(
@@ -45,6 +43,13 @@ const TOOL_LOOP_WINDOW_MS = 60 * 1000; // 1 minute
 const STUCK_DETECTION_THRESHOLD_MS = Number(
   process.env.AGENT_STUCK_THRESHOLD_MS || String(5 * 60 * 1000),
 ); // 5 minutes
+const STUCK_SWEEP_INTERVAL_MS = Number(
+  process.env.AGENT_STUCK_SWEEP_INTERVAL_MS || "30000",
+); // 30 seconds
+const INITIAL_REPLAY_MAX_SESSION_AGE_MS = Number(
+  process.env.AGENT_INITIAL_REPLAY_MAX_SESSION_AGE_MS ||
+    String(Math.max(STUCK_DETECTION_THRESHOLD_MS * 3, 15 * 60 * 1000)),
+); // Trim stale sessions after startup replay
 
 const COST_ANOMALY_THRESHOLD_USD = Number(
   process.env.AGENT_COST_ANOMALY_THRESHOLD || "1.0",
@@ -63,6 +68,7 @@ const ALERT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes between same alert
 
 let filePosition = 0;
 let isRunning = false;
+let stuckSweepTimer = null;
 
 /**
  * Start the analyzer loop
@@ -89,6 +95,7 @@ export async function startAnalyzer() {
   // Initial read of existing log
   if (existsSync(AGENT_WORK_STREAM)) {
     filePosition = await processLogFile(filePosition);
+    pruneStaleSessionsAfterReplay();
   } else {
     // Ensure the stream file exists so the watcher doesn't throw
     try {
@@ -97,6 +104,8 @@ export async function startAnalyzer() {
       // May fail if another process creates it first — that's fine
     }
   }
+
+  startStuckSweep();
 
   // Watch for changes — retry loop handles the case where the file
   // is deleted and recreated (e.g. log rotation).
@@ -130,6 +139,10 @@ export async function startAnalyzer() {
  */
 export function stopAnalyzer() {
   isRunning = false;
+  if (stuckSweepTimer) {
+    clearInterval(stuckSweepTimer);
+    stuckSweepTimer = null;
+  }
   console.log("[agent-work-analyzer] Stopped");
 }
 
@@ -182,7 +195,10 @@ async function processLogFile(startPosition) {
  * @param {Object} event - Parsed JSONL event
  */
 async function analyzeEvent(event) {
-  const { attempt_id, event_type, timestamp, data } = event;
+  const { attempt_id, event_type, timestamp } = event;
+  const parsedTs = Date.parse(timestamp);
+  const eventTime = Number.isFinite(parsedTs) ? parsedTs : Date.now();
+  const eventIso = new Date(eventTime).toISOString();
 
   // Initialize session state if needed
   if (!activeSessions.has(attempt_id)) {
@@ -190,15 +206,15 @@ async function analyzeEvent(event) {
       attempt_id,
       errors: [],
       toolCalls: [],
-      lastActivity: timestamp,
-      startedAt: timestamp,
+      lastActivity: eventIso,
+      startedAt: eventIso,
       taskId: event.task_id,
       executor: event.executor,
     });
   }
 
   const session = activeSessions.get(attempt_id);
-  session.lastActivity = timestamp;
+  session.lastActivity = eventIso;
 
   // Route to specific analyzers
   switch (event_type) {
@@ -217,8 +233,7 @@ async function analyzeEvent(event) {
       break;
   }
 
-  // Continuous checks
-  await checkStuckAgent(session, event);
+  // Stuck checks are timer-driven to avoid replay-triggered false positives.
 }
 
 // ── Pattern Analyzers ───────────────────────────────────────────────────────
@@ -376,9 +391,10 @@ async function analyzeSessionEnd(session, event) {
 /**
  * Check if agent appears stuck (no activity for X minutes)
  */
-async function checkStuckAgent(session, event) {
+async function checkStuckAgent(session, nowMs = Date.now()) {
   const lastActivityTime = new Date(session.lastActivity).getTime();
-  const timeSinceActivity = Date.now() - lastActivityTime;
+  if (!Number.isFinite(lastActivityTime)) return;
+  const timeSinceActivity = nowMs - lastActivityTime;
 
   if (timeSinceActivity > STUCK_DETECTION_THRESHOLD_MS) {
     await emitAlert({
@@ -392,6 +408,35 @@ async function checkStuckAgent(session, event) {
       severity: "medium",
     });
   }
+}
+
+function pruneStaleSessionsAfterReplay() {
+  const now = Date.now();
+  for (const [attemptId, session] of activeSessions.entries()) {
+    const lastActivityTime = new Date(session.lastActivity).getTime();
+    if (
+      !Number.isFinite(lastActivityTime) ||
+      now - lastActivityTime > INITIAL_REPLAY_MAX_SESSION_AGE_MS
+    ) {
+      activeSessions.delete(attemptId);
+    }
+  }
+}
+
+async function runStuckSweep() {
+  if (!isRunning) return;
+  const now = Date.now();
+  for (const session of activeSessions.values()) {
+    await checkStuckAgent(session, now);
+  }
+}
+
+function startStuckSweep() {
+  if (stuckSweepTimer) return;
+  stuckSweepTimer = setInterval(() => {
+    void runStuckSweep();
+  }, STUCK_SWEEP_INTERVAL_MS);
+  stuckSweepTimer.unref?.();
 }
 
 // ── Alert System ────────────────────────────────────────────────────────────
