@@ -2952,7 +2952,63 @@
         return { ok: true, workflow: wf };
       }
       if (route === '/api/workflows/runs') {
-        return { ok: true, runs: STATE.workflowRuns };
+        return {
+          ok: true,
+          runs: STATE.workflowRuns.map((run) => {
+            const wf = STATE.workflows.find((item) => item.id === run.workflowId);
+            return {
+              ...run,
+              workflowName: run.workflowName || wf?.name || run.workflowId,
+            };
+          }),
+        };
+      }
+      if (route.startsWith('/api/workflows/runs/')) {
+        const runId = decodeURIComponent(route.replace('/api/workflows/runs/', '')).trim();
+        const run = STATE.workflowRuns.find((item) => item.runId === runId);
+        if (!run) return { ok: false, error: 'Workflow run not found' };
+
+        const wf = STATE.workflows.find((item) => item.id === run.workflowId);
+        const startedAtMs = Date.parse(run.startedAt || '') || Date.now();
+        const duration = Number.isFinite(Number(run.duration)) ? Number(run.duration) : 0;
+        const endedAt = run.endedAt || new Date(startedAtMs + duration).toISOString();
+        const nodeCount = Math.max(1, Number(run.nodeCount) || 1);
+        const nodeStatuses = {};
+        const nodeOutputs = {};
+        for (let i = 1; i <= nodeCount; i += 1) {
+          const nodeId = 'node-' + String(i).padStart(2, '0');
+          const isFailingNode = run.status === 'failed' && i === nodeCount;
+          nodeStatuses[nodeId] = isFailingNode ? 'failed' : 'completed';
+          nodeOutputs[nodeId] = {
+            message: isFailingNode ? 'Demo failure output' : 'Demo node output',
+            index: i,
+            runId,
+            workflowId: run.workflowId,
+          };
+        }
+
+        const errors = run.status === 'failed'
+          ? [{ nodeId: 'node-' + String(nodeCount).padStart(2, '0'), message: 'Demo workflow step failed' }]
+          : [];
+
+        return {
+          ok: true,
+          run: {
+            ...run,
+            workflowName: run.workflowName || wf?.name || run.workflowId,
+            endedAt,
+            detail: {
+              nodeStatuses,
+              nodeOutputs,
+              logs: [
+                'Run ' + runId + ' started',
+                'Workflow ' + (wf?.name || run.workflowId) + ' processed ' + nodeCount + ' nodes',
+                run.status === 'failed' ? 'Run failed in demo mode' : 'Run completed in demo mode',
+              ],
+              errors,
+            },
+          },
+        };
       }
       if (route.startsWith('/api/workflows/') && !route.includes('/save') && !route.includes('/templates') && !route.includes('/install') && !route.includes('/node-types') && !route.includes('/runs')) {
         const segs = route.replace('/api/workflows/', '').split('/');
@@ -3105,11 +3161,39 @@
       }
 
       // ── Settings & Config ──
-      if (route === '/api/settings')
-        return STATE.settings;
+      if (route === '/api/settings') {
+        return {
+          ok: true,
+          data: { ...STATE.settings },
+          meta: {
+            envPath: '.env',
+            configPath: 'bosun.config.json',
+            configDir: '/demo',
+          },
+        };
+      }
+      if (route === '/api/settings/update') {
+        const changes = (body && typeof body === 'object' && body.changes && typeof body.changes === 'object')
+          ? body.changes
+          : {};
+        const keys = Object.keys(changes);
+        Object.assign(STATE.settings, changes);
+        return {
+          ok: true,
+          data: { ...STATE.settings },
+          updatedConfig: keys,
+          configSync: {
+            total: keys.length,
+            updated: keys.length,
+            skipped: [],
+            configPath: 'bosun.config.json',
+          },
+        };
+      }
       if (route === '/api/config/update') {
-        Object.assign(STATE.settings, body || {});
-        return { ok: true };
+        const updates = body && typeof body === 'object' ? body : {};
+        Object.assign(STATE.settings, updates);
+        return { ok: true, data: { ...STATE.settings } };
       }
 
       // ── Command ──

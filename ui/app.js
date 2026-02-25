@@ -1603,8 +1603,9 @@ function App() {
   const isChatOrAgents = activeTab.value === "chat" || activeTab.value === "agents";
   const showSessionRail = isDesktop && isChatOrAgents;
   const showInspector = isDesktop && isChatOrAgents;
+  const showBottomNav = !isDesktop && !isTablet;
 
-  // On tablet: show toggle buttons for sidebar + inspector when relevant
+  // On tablet: prefer drawer controls over bottom-nav to avoid dual navigation
   const showDrawerToggles = isTablet;
   const showInspectorToggle = isTablet && isChatOrAgents;
 
@@ -1655,6 +1656,17 @@ function App() {
         >
           <span class="btn-icon">${resolveIcon("clipboard")}</span>
           Inspector
+        </button>
+      `
+    : null;
+  const moreToggleButton = showDrawerToggles
+    ? html`
+        <button
+          class="btn btn-ghost btn-sm tablet-toggle"
+          onClick=${toggleMore}
+          aria-label=${isMoreOpen ? "Close more menu" : "Open more menu"}
+        >
+          ⋯ More
         </button>
       `
     : null;
@@ -1722,6 +1734,7 @@ function App() {
                     ☰ Navigation
                   </button>
                   ${inspectorToggleButton}
+                  ${moreToggleButton}
                 </div>
               `
             : null}
@@ -1762,12 +1775,14 @@ function App() {
           />`
         : null}
     </div>
-    <${BottomNav}
-      compact=${isCompactNav}
-      moreOpen=${isMoreOpen}
-      onToggleMore=${toggleMore}
-      onNavigate=${handleNavigate}
-    />
+    ${showBottomNav
+      ? html`<${BottomNav}
+          compact=${isCompactNav}
+          moreOpen=${isMoreOpen}
+          onToggleMore=${toggleMore}
+          onNavigate=${handleNavigate}
+        />`
+      : null}
     <${MoreSheet}
       open=${isMoreOpen}
       onClose=${closeMore}

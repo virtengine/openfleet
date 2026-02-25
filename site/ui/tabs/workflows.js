@@ -1328,6 +1328,7 @@ function WorkflowListView() {
       <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
         <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Workflows</h2>
         <button
+          type="button"
           class="wf-btn wf-btn-primary"
           onClick=${() => {
             const newWf = {
@@ -1350,7 +1351,7 @@ function WorkflowListView() {
           <span class="btn-icon">${resolveIcon("plus")}</span>
           Create Workflow
         </button>
-        <button class="wf-btn" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; viewMode.value = "runs"; loadRuns(); }}>
+        <button type="button" class="wf-btn" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; viewMode.value = "runs"; loadRuns(); }}>
           <span class="btn-icon">${resolveIcon("chart")}</span>
           Run History
         </button>
@@ -1613,6 +1614,7 @@ function RunHistoryView() {
           return html`
             <button
               key=${run.runId}
+              type="button"
               class="wf-card"
               onClick=${() => loadRunDetail(run.runId)}
               style="text-align: left; width: 100%; background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px; padding: 12px; border: 1px solid var(--color-border, #2a3040); display: flex; align-items: center; gap: 12px; cursor: pointer;"
@@ -1690,6 +1692,8 @@ export function WorkflowsTab() {
       .wf-btn-ghost { background: #111827; border-color: #374151; color: #d1d5db; }
       .wf-btn-ghost:hover { background: #1f2937; border-color: #60a5fa; color: #e5e7eb; }
       .wf-btn-sm { padding: 3px 8px; font-size: 11px; border-radius: 6px; }
+      .wf-btn .btn-icon { display: inline-flex; align-items: center; justify-content: center; line-height: 0; vertical-align: middle; }
+      .wf-btn .btn-icon svg { width: 1em; height: 1em; display: inline-block; stroke-width: 1.8; }
       .wf-badge {
         display: inline-block;
         padding: 2px 8px;

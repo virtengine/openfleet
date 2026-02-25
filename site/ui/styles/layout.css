@@ -1525,6 +1525,12 @@ body.is-resizing * {
     transition: color 0.15s, background 0.15s;
   }
 
+  .sidebar-icon-action svg {
+    width: 1em;
+    height: 1em;
+    display: inline-block;
+  }
+
   .sidebar-icon-action:hover {
     color: var(--text-primary);
     background: var(--bg-hover, rgba(148,163,184,0.12));

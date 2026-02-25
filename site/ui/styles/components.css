@@ -351,6 +351,12 @@
   overflow: hidden;
 }
 
+.btn svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+}
+
 .btn-icon-compact {
   gap: 4px;
 }
@@ -3895,6 +3901,13 @@ select.input {
 .btn-icon {
   margin-right: 6px;
   font-size: 1.1em;
+}
+
+.btn-icon svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+  vertical-align: -0.15em;
 }
 
 /* ═══════════════════════════════════════════════
