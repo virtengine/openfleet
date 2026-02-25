@@ -12571,20 +12571,28 @@ function getRuntimeRestartProtection() {
   return { defer: false, reason: "" };
 }
 
-function selfRestartForSourceChange(filename) {
+function selfRestartForSourceChange(
+  filename,
+  { forceActiveAgentExit = false } = {},
+) {
   pendingSelfRestart = null;
 
   // ── SAFETY NET: Double-check no agents are running before killing process ──
   // This should never trigger because attemptSelfRestartAfterQuiet() already
   // defers, but provides defense-in-depth against race conditions.
   const activeSlots = getInternalActiveSlotCount();
-  if (activeSlots > 0) {
+  if (activeSlots > 0 && !forceActiveAgentExit) {
     console.warn(
       `[monitor] SAFETY NET: selfRestartForSourceChange called with ${activeSlots} active agent(s)! Deferring instead of killing.`,
     );
     pendingSelfRestart = filename;
     selfRestartTimer = safeSetTimeout("self-restart-safety-net-retry", retryDeferredSelfRestart, 30_000);
     return;
+  }
+  if (activeSlots > 0 && forceActiveAgentExit) {
+    console.warn(
+      `[monitor] FORCED self-restart: proceeding with ${activeSlots} active agent(s) after defer hard cap`,
+    );
   }
   console.log(
     `\n[monitor] source files stable for ${Math.round(SELF_RESTART_QUIET_MS / 1000)}s — restarting (${filename})`,
@@ -12598,12 +12606,16 @@ function selfRestartForSourceChange(filename) {
   if (prCleanupDaemon) {
     prCleanupDaemon.stop();
   }
-  // ── Agent isolation: do NOT stop internal executor on self-restart ──
+  // ── Agent isolation: by default, do NOT stop internal executor on self-restart ──
   // Task agents run as in-process SDK async iterators. Stopping the executor
-  // here is pointless because process.exit(75) kills them anyway. Instead,
-  // defer the restart if agents are actively running — they should complete
-  // uninterrupted. The new process will recover orphaned worktrees on startup.
+  // during a normal restart is unnecessary because process.exit(75) kills them.
+  // Forced restarts are different: request stop to reduce abrupt termination.
   const shutdownPromises = [];
+  if (forceActiveAgentExit && internalTaskExecutor) {
+    shutdownPromises.push(
+      Promise.resolve(internalTaskExecutor.stop()).catch(() => {}),
+    );
+  }
   // Agent endpoint is lightweight — stop it so the new process can bind the port.
   if (agentEndpoint) {
     shutdownPromises.push(
@@ -12689,12 +12701,9 @@ function attemptSelfRestartAfterQuiet() {
       console.warn(
         `[monitor] self-restart deferred ${deferCount} times over ${elapsedSec}s (${capReason}) — force-stopping active agents and restarting`,
       );
-      if (internalTaskExecutor) {
-        internalTaskExecutor.stop().catch(() => {});
-      }
       selfRestartDeferCount = 0;
       selfRestartFirstDeferredAt = 0;
-      selfRestartForSourceChange(filename);
+      selfRestartForSourceChange(filename, { forceActiveAgentExit: true });
       return;
     }
 
@@ -12736,7 +12745,7 @@ function attemptSelfRestartAfterQuiet() {
         );
         selfRestartDeferCount = 0;
         selfRestartFirstDeferredAt = 0;
-        selfRestartForSourceChange(filename);
+        selfRestartForSourceChange(filename, { forceActiveAgentExit: true });
         return;
       }
       const slotNames = (status.slots || []).map((s) => s.taskTitle).join(", ");

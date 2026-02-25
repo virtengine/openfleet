@@ -13,13 +13,14 @@ describe("monitor self-restart defer hard caps", () => {
     expect(monitorSource).toContain('process.env.SELF_RESTART_MAX_DEFER_MS || "600000"');
   });
 
-  it("force-stops active internal agents when count or time hard cap is reached", () => {
-    const hardCapBlock = monitorSource.match(
-      /if \(hitCountCap \|\| hitTimeCap\) \{[\s\S]*?internalTaskExecutor\.stop\(\)\.catch\(\(\) => \{\}\);[\s\S]*?selfRestartForSourceChange\(filename\);[\s\S]*?return;[\s\S]*?\}/,
+  it("forces restart path at hard cap with active-agent override", () => {
+    expect(monitorSource).toContain(
+      "selfRestartForSourceChange(filename, { forceActiveAgentExit: true });",
     );
-    expect(
-      hardCapBlock,
-      "monitor should force-stop stuck internal task agents at defer hard caps",
-    ).toBeTruthy();
+    expect(monitorSource).toContain("if (activeSlots > 0 && !forceActiveAgentExit)");
+    expect(monitorSource).toContain(
+      "FORCED self-restart: proceeding with ${activeSlots} active agent(s) after defer hard cap",
+    );
   });
 });
+
