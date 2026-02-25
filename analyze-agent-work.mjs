@@ -12,6 +12,7 @@
  * Usage:
  *   node analyze-agent-work.mjs --backlog-tasks 10
  *   node analyze-agent-work.mjs --error-clustering --days 7
+ *   node analyze-agent-work.mjs --error-correlation --days 30 --top 5
  *   node analyze-agent-work.mjs --executor-comparison CODEX COPILOT
  *   node analyze-agent-work.mjs --task-planning --failed-only
  *   node analyze-agent-work.mjs --weekly-report
@@ -22,6 +23,7 @@ import { createReadStream, existsSync } from "fs";
 import { createInterface } from "readline";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { classifyComplexity } from "./task-complexity.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -307,6 +309,53 @@ function countFrequency(array) {
   return freq;
 }
 
+const SIZE_LABEL_PATTERN = /\[(xs|s|m|l|xl|xxl|2xl)\]/i;
+
+function extractSizeLabelFromTitle(title) {
+  const text = String(title || "");
+  const match = text.match(SIZE_LABEL_PATTERN);
+  if (!match) return "unknown";
+  const label = match[1].toLowerCase();
+  return label === "2xl" ? "xxl" : label;
+}
+
+function classifyComplexityBucket({ sizeLabel, title, description }) {
+  if (!description) return "unknown";
+  const normalizedSize = sizeLabel && sizeLabel !== "unknown" ? sizeLabel : null;
+  const result = classifyComplexity({
+    sizeLabel: normalizedSize,
+    title: title || "",
+    description: description || "",
+  });
+  return result?.tier || "unknown";
+}
+
+function incrementCounter(target, key) {
+  const resolved = key || "unknown";
+  target[resolved] = (target[resolved] || 0) + 1;
+}
+
+function buildDistribution(counts, total) {
+  return Object.entries(counts)
+    .map(([label, count]) => ({
+      label,
+      count,
+      percent: total > 0 ? (count * 100.0) / total : 0,
+    }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+}
+
+function formatDistribution(counts, total, limit = 5) {
+  const entries = buildDistribution(counts, total).slice(0, limit);
+  if (entries.length === 0) return "none";
+  return entries
+    .map(
+      (entry) =>
+        `${entry.label} ${entry.count} (${entry.percent.toFixed(1)}%)`,
+    )
+    .join(", ");
+}
+
 function topN(obj, n) {
   return Object.entries(obj)
     .sort((a, b) => b[1] - a[1])
@@ -454,6 +503,206 @@ async function clusterErrors(options) {
   }
 
   console.log(`\n\nTotal unique error types: ${clusters.length}`);
+  console.log(`Total error events: ${errors.length}`);
+}
+
+/**
+ * Correlate error fingerprints with task characteristics
+ */
+async function correlateErrors(options) {
+  const windowDays = options.days || 7;
+  const topLimit = options.top || 10;
+  const useJson = options.json === true;
+
+  const errors = await loadErrors({ days: windowDays });
+
+  if (errors.length === 0) {
+    const message = "No error data found";
+    if (useJson) {
+      console.log(
+        JSON.stringify(
+          {
+            message,
+            window_days: windowDays,
+            total_errors: 0,
+            total_fingerprints: 0,
+            correlations: [],
+          },
+          null,
+          2,
+        ),
+      );
+    } else {
+      console.log(message);
+    }
+    return;
+  }
+
+  const metrics = await loadMetricsWithFallback({ days: windowDays });
+  const taskProfiles = new Map();
+
+  const ensureTaskProfile = (taskId) => {
+    const key = taskId || "unknown";
+    if (!taskProfiles.has(key)) {
+      taskProfiles.set(key, {
+        task_id: key,
+        task_title: "",
+        task_description: "",
+        executor: "unknown",
+        model: "unknown",
+        durations: [],
+      });
+    }
+    return taskProfiles.get(key);
+  };
+
+  for (const metric of metrics) {
+    const profile = ensureTaskProfile(metric.task_id || "unknown");
+    if (metric.executor && profile.executor === "unknown") {
+      profile.executor = metric.executor;
+    }
+    if (metric.model && profile.model === "unknown") {
+      profile.model = metric.model;
+    }
+    if (metric.metrics?.duration_ms) {
+      profile.durations.push(metric.metrics.duration_ms);
+    }
+  }
+
+  for (const error of errors) {
+    const profile = ensureTaskProfile(error.task_id || "unknown");
+    if (error.task_title && !profile.task_title) {
+      profile.task_title = error.task_title;
+    }
+    if (error.task_description && !profile.task_description) {
+      profile.task_description = error.task_description;
+    }
+    if (error.executor && profile.executor === "unknown") {
+      profile.executor = error.executor;
+    }
+    if (error.model && profile.model === "unknown") {
+      profile.model = error.model;
+    }
+  }
+
+  for (const profile of taskProfiles.values()) {
+    profile.size_label = extractSizeLabelFromTitle(profile.task_title);
+    profile.complexity = classifyComplexityBucket({
+      sizeLabel: profile.size_label,
+      title: profile.task_title,
+      description: profile.task_description,
+    });
+    profile.avg_duration_ms =
+      profile.durations.length > 0 ? average(profile.durations) : 0;
+  }
+
+  const correlations = new Map();
+
+  const ensureCorrelation = (fingerprint) => {
+    if (!correlations.has(fingerprint)) {
+      correlations.set(fingerprint, {
+        fingerprint,
+        count: 0,
+        task_ids: new Set(),
+        by_executor: {},
+        by_size: {},
+        by_complexity: {},
+        sample_message: "",
+        first_seen_ts: null,
+        last_seen_ts: null,
+      });
+    }
+    return correlations.get(fingerprint);
+  };
+
+  for (const error of errors) {
+    const fingerprint =
+      error.data?.error_fingerprint ||
+      normalizeErrorFingerprint(error.data?.error_message);
+    const entry = ensureCorrelation(fingerprint);
+    entry.count += 1;
+    entry.task_ids.add(error.task_id || "unknown");
+    if (!entry.sample_message && error.data?.error_message) {
+      entry.sample_message = error.data.error_message;
+    }
+
+    const timestamp = normalizeTimestamp(error.timestamp);
+    if (timestamp) {
+      if (!entry.first_seen_ts || timestamp < entry.first_seen_ts) {
+        entry.first_seen_ts = timestamp;
+      }
+      if (!entry.last_seen_ts || timestamp > entry.last_seen_ts) {
+        entry.last_seen_ts = timestamp;
+      }
+    }
+
+    const profile = taskProfiles.get(error.task_id || "unknown");
+    const sizeLabel =
+      profile?.size_label ||
+      extractSizeLabelFromTitle(error.task_title) ||
+      "unknown";
+    const executor = profile?.executor || error.executor || "unknown";
+    const complexity = profile?.complexity || "unknown";
+
+    incrementCounter(entry.by_size, sizeLabel);
+    incrementCounter(entry.by_executor, executor);
+    incrementCounter(entry.by_complexity, complexity);
+  }
+
+  const sorted = [...correlations.values()].sort((a, b) => b.count - a.count);
+  const top = sorted.slice(0, topLimit);
+
+  if (useJson) {
+    const payload = {
+      generated_at: new Date().toISOString(),
+      window_days: windowDays,
+      total_errors: errors.length,
+      total_fingerprints: correlations.size,
+      top: topLimit,
+      correlations: top.map((entry) => ({
+        fingerprint: entry.fingerprint,
+        count: entry.count,
+        task_count: entry.task_ids.size,
+        sample_message: entry.sample_message,
+        first_seen: entry.first_seen_ts
+          ? new Date(entry.first_seen_ts).toISOString()
+          : null,
+        last_seen: entry.last_seen_ts
+          ? new Date(entry.last_seen_ts).toISOString()
+          : null,
+        by_executor: buildDistribution(entry.by_executor, entry.count),
+        by_size: buildDistribution(entry.by_size, entry.count),
+        by_complexity: buildDistribution(entry.by_complexity, entry.count),
+      })),
+    };
+
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+
+  console.log("\n=== Error Correlation Report ===\n");
+
+  for (const entry of top) {
+    console.log(`\n${entry.fingerprint}`);
+    console.log(`  Occurrences: ${entry.count}`);
+    console.log(`  Affected tasks: ${entry.task_ids.size}`);
+    console.log(
+      `  Executors: ${formatDistribution(entry.by_executor, entry.count)}`,
+    );
+    console.log(
+      `  Sizes: ${formatDistribution(entry.by_size, entry.count)}`,
+    );
+    console.log(
+      `  Complexity: ${formatDistribution(entry.by_complexity, entry.count)}`,
+    );
+    if (entry.sample_message) {
+      console.log(
+        `  Sample: ${entry.sample_message.slice(0, 100)}${entry.sample_message.length > 100 ? "..." : ""}`,
+      );
+    }
+  }
+
+  console.log(`\nTotal unique error types: ${correlations.size}`);
   console.log(`Total error events: ${errors.length}`);
 }
 
@@ -753,6 +1002,7 @@ Agent Work Analytics CLI
 Usage:
   node analyze-agent-work.mjs --backlog-tasks [N] [--days N]
   node analyze-agent-work.mjs --error-clustering [--days N] [--top N]
+  node analyze-agent-work.mjs --error-correlation [--days N] [--top N] [--json]
   node analyze-agent-work.mjs --executor-comparison <executor1> <executor2> ...
   node analyze-agent-work.mjs --task-planning [--failed-only]
   node analyze-agent-work.mjs --weekly-report
@@ -760,6 +1010,7 @@ Usage:
 Examples:
   node analyze-agent-work.mjs --backlog-tasks 10 --days 30
   node analyze-agent-work.mjs --error-clustering --days 7 --top 15
+  node analyze-agent-work.mjs --error-correlation --days 30 --top 5
   node analyze-agent-work.mjs --executor-comparison CODEX COPILOT
   node analyze-agent-work.mjs --task-planning --failed-only
   `);
@@ -798,6 +1049,14 @@ try {
       });
       break;
 
+    case "--error-correlation":
+      await correlateErrors({
+        days: options.days || 7,
+        top: options.top || 10,
+        json: options.json || false,
+      });
+      break;
+
     case "--executor-comparison":
       const executors = args
         .slice(1)
@@ -828,3 +1087,4 @@ try {
   console.error(err.stack);
   process.exit(1);
 }
+
