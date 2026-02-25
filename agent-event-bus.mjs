@@ -785,6 +785,7 @@ export class AgentEventBus {
         branchName:
           result?.branch || task?.branchName || task?.meta?.branch_name,
         description: task?.description || "",
+        taskContext: task?._taskContextBlock || task?.meta?.taskContextBlock || "",
       });
       this.emit(AGENT_EVENT.AUTO_REVIEW, taskId, {
         title: task?.title || "",

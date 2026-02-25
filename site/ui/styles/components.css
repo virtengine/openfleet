@@ -2218,7 +2218,7 @@ select.input {
   display: flex;
   flex-direction: column;
   gap: 24px;
-  max-width: 1200px;
+  max-width: var(--content-max);
   margin: 0 auto;
   padding: 16px;
 }
