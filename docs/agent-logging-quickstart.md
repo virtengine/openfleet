@@ -210,6 +210,10 @@ Add to `.env`:
 AGENT_WORK_LOGGING_ENABLED=true
 AGENT_WORK_ANALYZER_ENABLED=true
 
+# Optional: enrich missing task metadata from VK (default: true)
+AGENT_WORK_LOGGING_ENRICH_VK=true
+# Cache file (auto-managed): .cache/agent-work-logs/task-metadata.json
+
 # Detection thresholds
 AGENT_ERROR_LOOP_THRESHOLD=4         # Alert after 4 repeated errors
 AGENT_TOOL_LOOP_THRESHOLD=10         # Alert after 10 rapid tool calls
