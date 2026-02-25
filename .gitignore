@@ -40,3 +40,4 @@ workspaces.json
 /.codex-monitor/
 /.bosun/
 *.bak
+.claude/settings.local.json
