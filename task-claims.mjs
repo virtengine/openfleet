@@ -44,6 +44,9 @@ import os from "node:os";
 import { resolve } from "node:path";
 import {
   getPresenceState,
+  initPresence,
+  notePresence,
+  buildLocalPresence,
   listActiveInstances,
   selectCoordinator,
 } from "./presence.mjs";
@@ -78,6 +81,29 @@ const state = {
   auditPath: null,
 };
 
+// ── In-process mutex ─────────────────────────────────────────────────────────
+// Serializes all load→modify→save cycles on the claims registry to prevent
+// concurrent async operations from clobbering each other's writes.
+let _registryLockChain = Promise.resolve();
+
+/**
+ * Execute `fn` while holding an exclusive in-process lock on the claims
+ * registry.  All callers that do load→modify→save MUST use this to prevent
+ * the read-modify-write race where a concurrent save reverts another
+ * caller's changes.
+ *
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+function withRegistryLock(fn) {
+  const next = _registryLockChain.then(fn, fn);
+  // Swallow rejections in the chain itself so a failure in one call
+  // doesn't permanently poison all subsequent callers.
+  _registryLockChain = next.catch(() => {});
+  return next;
+}
+
 // ── Initialization ───────────────────────────────────────────────────────────
 
 /**
@@ -94,6 +120,21 @@ export async function initTaskClaims(opts = {}) {
   state.claimsPath = resolve(cacheDir, CLAIMS_FILENAME);
   state.auditPath = resolve(cacheDir, AUDIT_FILENAME);
   state.initialized = true;
+
+  // Ensure presence is initialized and register ourselves so that
+  // shouldTreatClaimAsStale() can see this instance as "alive".
+  // Without this, the presence registry may be empty, causing the
+  // stale-check to fall through to PID-based detection which breaks
+  // across process restarts with the same instance ID.
+  try {
+    await initPresence({ repoRoot: state.repoRoot });
+    const selfPresence = buildLocalPresence();
+    if (selfPresence?.instance_id) {
+      await notePresence(selfPresence, { source: "task-claims-init" });
+    }
+  } catch (err) {
+    console.warn(`[task-claims] presence init warning: ${err?.message || err}`);
+  }
 }
 
 function ensureInitialized() {
@@ -523,7 +564,10 @@ function resolveDuplicateClaim(existingClaim, newClaim, opts = {}) {
  */
 export async function claimTask(opts = {}) {
   ensureInitialized();
+  return withRegistryLock(() => _claimTaskInner(opts));
+}
 
+async function _claimTaskInner(opts) {
   const {
     taskId,
     instanceId = getPresenceState().instance_id,
@@ -726,7 +770,10 @@ export async function claimTask(opts = {}) {
  */
 export async function releaseTask(opts = {}) {
   ensureInitialized();
+  return withRegistryLock(() => _releaseTaskInner(opts));
+}
 
+async function _releaseTaskInner(opts) {
   const {
     taskId,
     claimToken,
@@ -808,7 +855,10 @@ export async function releaseTask(opts = {}) {
  */
 export async function renewClaim(opts = {}) {
   ensureInitialized();
+  return withRegistryLock(() => _renewClaimInner(opts));
+}
 
+async function _renewClaimInner(opts) {
   const {
     taskId,
     claimToken,
@@ -848,6 +898,17 @@ export async function renewClaim(opts = {}) {
   claim.expires_at = expiresAt.toISOString();
   claim.ttl_minutes = ttlMinutes;
   claim.renewed_at = now.toISOString();
+
+  // Refresh our own presence so shouldTreatClaimAsStale() continues to
+  // see this instance as active between fleet-sync intervals.
+  try {
+    const selfPresence = buildLocalPresence();
+    if (selfPresence?.instance_id) {
+      await notePresence(selfPresence, { source: "claim-renew" });
+    }
+  } catch {
+    /* best-effort — don't fail the renewal for a presence write error */
+  }
 
   await saveClaimsRegistry(registry);
   await appendAuditEntry({
