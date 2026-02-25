@@ -47,8 +47,8 @@ jobs:
             🤖 Bosun attached.
 
             This PR is tracked by Bosun attachment automation.
-            - Marker label: \\`bosun-attached\\`
-            - Trigger: \\`${context.eventName}\\` / \\`${context.payload.action}\\``;
+            - Marker label: \`bosun-attached\`
+            - Trigger: \`${context.eventName}\` / \`${context.payload.action}\``;
 
             await github.rest.issues.addLabels({
               owner,
