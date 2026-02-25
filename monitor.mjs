@@ -11562,6 +11562,64 @@ function getMonitorMonitorStatusSnapshot() {
   };
 }
 
+function resolveMonitorMonitorErrorTailWindowMs() {
+  const raw = Number(
+    process.env.DEVMODE_MONITOR_MONITOR_ERROR_TAIL_WINDOW_MS || "1200000",
+  );
+  if (!Number.isFinite(raw) || raw <= 0) return 20 * 60_000;
+  return Math.max(60_000, raw);
+}
+
+function filterMonitorTailByRecency(tail, { windowMs } = {}) {
+  const text = String(tail || "");
+  if (!text) return text;
+
+  const parsedWindow = Number(windowMs);
+  if (!Number.isFinite(parsedWindow) || parsedWindow <= 0) return text;
+  const cutoff = Date.now() - parsedWindow;
+
+  const lines = text.split("\n");
+  const blocks = [];
+  let current = null;
+
+  const flushCurrent = () => {
+    if (!current) return;
+    blocks.push(current);
+    current = null;
+  };
+
+  for (const line of lines) {
+    const currentLine = String(line || "");
+    const tsMatch = currentLine.match(
+      /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\s/,
+    );
+    if (tsMatch) {
+      flushCurrent();
+      const tsMs = Date.parse(tsMatch[1]);
+      current = {
+        tsMs: Number.isFinite(tsMs) ? tsMs : null,
+        lines: [currentLine],
+      };
+      continue;
+    }
+
+    if (current) {
+      current.lines.push(currentLine);
+    } else {
+      // Keep orphan lines (e.g., "(missing: ...)" diagnostics) as standalone
+      // blocks so we do not hide useful context when timestamps are absent.
+      blocks.push({ tsMs: null, lines: [currentLine] });
+    }
+  }
+  flushCurrent();
+
+  return blocks
+    .filter((block) => block.tsMs === null || block.tsMs >= cutoff)
+    .map((block) => block.lines.join("\n"))
+    .join("\n")
+    .trimEnd();
+}
+
 function sanitizeMonitorTailForPrompt(tail, backend) {
   const text = String(tail || "");
   if (!text) return text;
@@ -11642,14 +11700,21 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
     }
   }
   const activeKanbanBackend = getActiveKanbanBackend();
+  const monitorTailWindowMs = resolveMonitorMonitorErrorTailWindowMs();
   const rawMonitorTail = await readLogTail(resolve(logDir, "monitor-error.log"), {
     maxLines: 120,
     maxChars: 12000,
   });
+  const recentMonitorTail = filterMonitorTailByRecency(rawMonitorTail, {
+    windowMs: monitorTailWindowMs,
+  });
   const monitorTail = sanitizeMonitorTailForPrompt(
-    rawMonitorTail,
+    recentMonitorTail,
     activeKanbanBackend,
   );
+  const monitorTailForPrompt =
+    String(monitorTail || "").trim() ||
+    `(no recent monitor errors in last ${Math.round(monitorTailWindowMs / 60_000)}m)`;
 
   const anomalyReport = getAnomalyStatusReport();
   const monitorPrompt = agentPrompts?.monitorMonitor || "";
@@ -11688,7 +11753,7 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
     anomalyReport || "(none)",
     "",
     "## Monitor Error Log Tail",
-    monitorTail,
+    monitorTailForPrompt,
     "",
     "## Orchestrator Log Tail",
     orchestratorTail,
