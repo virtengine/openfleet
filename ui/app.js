@@ -1464,7 +1464,7 @@ function App() {
     loadNotificationPrefs();
 
     // Load initial data for the default tab, then apply stored executor defaults
-    refreshTab("dashboard").then(() => applyStoredDefaults());
+    refreshTab("dashboard", { background: true, manual: false }).then(() => applyStoredDefaults());
 
     // Global keyboard shortcuts (1-7 for tabs, Escape for modals)
     function handleGlobalKeys(e) {

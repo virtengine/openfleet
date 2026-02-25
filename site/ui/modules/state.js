@@ -4,7 +4,7 @@
  * ────────────────────────────────────────────────────────────── */
 
 import { signal } from "@preact/signals";
-import { apiFetch, onWsMessage } from "./api.js";
+import { apiFetch, onWsMessage, withLoadingSuppressed, withLoadingTracked } from "./api.js";
 import { cloneValue } from "./utils.js";
 import { generateId } from "./utils.js";
 import { cloudStorageGet } from "./telegram.js";
@@ -681,9 +681,9 @@ const TAB_LOADERS = {
 /**
  * Refresh all data for a given tab.
  * @param {string} tabName
- * @param {{ force?: boolean }} [opts]
+ * @param {{ force?: boolean, background?: boolean, manual?: boolean }} [opts]
  */
-export async function refreshTab(tabName, opts = {}) {
+async function runTabRefresh(tabName, opts = {}) {
   if (opts.force) _apiCache.clear();
   const loader = TAB_LOADERS[tabName];
   if (loader) {
@@ -693,6 +693,18 @@ export async function refreshTab(tabName, opts = {}) {
       /* errors handled by individual loaders */
     }
   }
+}
+
+export async function refreshTab(tabName, opts = {}) {
+  if (opts.background) {
+    return withLoadingSuppressed(() => runTabRefresh(tabName, opts));
+  }
+
+  if (opts.manual !== false) {
+    return withLoadingTracked(() => runTabRefresh(tabName, opts));
+  }
+
+  return runTabRefresh(tabName, opts);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -737,9 +749,9 @@ export function scheduleRefresh(ms = 5000) {
     // Dynamic import to avoid circular dependency at module load time
     try {
       const { activeTab } = await import("./router.js");
-      await refreshTab(activeTab.value);
+      await refreshTab(activeTab.value, { background: true, manual: false });
     } catch {
-      await refreshTab("dashboard");
+      await refreshTab("dashboard", { background: true, manual: false });
     }
   }, ms);
 }
