@@ -241,6 +241,43 @@ function parseBooleanEnv(value, fallback = false) {
   if (["0", "false", "no", "off"].includes(key)) return false;
   return fallback;
 }
+const GH_TRANSIENT_ERROR_PATTERNS = [
+  /bad gateway/i,
+  /service unavailable/i,
+  /gateway timeout/i,
+  /http\s*502/i,
+  /http\s*503/i,
+  /http\s*504/i,
+  /econnreset/i,
+  /econnrefused/i,
+  /etimedout/i,
+  /socket hang up/i,
+  /network error/i,
+  /temporarily unavailable/i,
+  /invalid character '<' looking for beginning of value/i,
+  /unexpected token </i,
+];
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isGhRateLimitError(text) {
+  const errText = String(text || "").toLowerCase();
+  if (!errText) return false;
+  return (
+    errText.includes("rate limit") ||
+    errText.includes("api rate limit exceeded") ||
+    (errText.includes("403") && errText.includes("limit"))
+  );
+}
+
+function isGhTransientError(text) {
+  const errText = String(text || "").toLowerCase();
+  if (!errText) return false;
+  if (isGhRateLimitError(errText)) return false;
+  return GH_TRANSIENT_ERROR_PATTERNS.some((pattern) => pattern.test(errText));
+}
 
 function parseRepoSlug(raw) {
   const text = String(raw || "").trim().replace(/^https?:\/\/github\.com\//i, "");
@@ -1115,6 +1152,14 @@ class GitHubIssuesAdapter {
     // Rate limit retry delay (ms) — configurable for tests
     this._rateLimitRetryDelayMs =
       Number(process.env.GH_RATE_LIMIT_RETRY_MS) || 60_000;
+    this._transientRetryDelayMs = Math.max(
+      250,
+      Number(process.env.GH_TRANSIENT_RETRY_MS) || 2_000,
+    );
+    this._transientRetryMax = Math.max(
+      0,
+      Number(process.env.GH_TRANSIENT_RETRY_MAX) || 2,
+    );
   }
 
   /**
@@ -1891,46 +1936,84 @@ class GitHubIssuesAdapter {
     const execFileAsync = promisify(execFile);
 
     const attempt = async () => {
-      const { stdout, stderr } = await execFileAsync("gh", args, {
-        maxBuffer: 10 * 1024 * 1024,
-        timeout: 30_000,
-      });
-      return { stdout, stderr };
+      try {
+        const { stdout, stderr } = await execFileAsync("gh", args, {
+          maxBuffer: 10 * 1024 * 1024,
+          timeout: 30_000,
+        });
+        return { stdout, stderr };
+      } catch (err) {
+        const message = String(err?.message || err);
+        const stdout = String(err?.stdout || "");
+        const stderr = String(err?.stderr || "");
+        const ghError = new Error(message);
+        ghError.stdout = stdout;
+        ghError.stderr = stderr;
+        ghError.fullText = [message, stderr, stdout].filter(Boolean).join("\n");
+        ghError.isRateLimit = isGhRateLimitError([message, stderr].join("\n"));
+        ghError.isTransient = isGhTransientError([message, stderr, stdout].join("\n"));
+        throw ghError;
+      }
     };
 
-    let result;
-    try {
-      result = await attempt();
-    } catch (err) {
-      const errText = String(err?.message || err?.stderr || err).toLowerCase();
-      // Rate limit detection: "API rate limit exceeded" or HTTP 403
-      if (
-        errText.includes("rate limit") ||
-        errText.includes("api rate limit exceeded") ||
-        (errText.includes("403") && errText.includes("limit"))
-      ) {
-        console.warn(`${TAG} rate limit detected, waiting 60s before retry...`);
-        await new Promise((resolve) =>
-          setTimeout(resolve, this._rateLimitRetryDelayMs),
-        );
-        try {
-          result = await attempt();
-        } catch (retryErr) {
-          throw new Error(
-            `gh CLI failed (after rate limit retry): ${retryErr.message}`,
+    let usedRateLimitRetry = false;
+    let transientRetries = 0;
+    const maxTransientRetries = Math.max(0, Number(this._transientRetryMax) || 0);
+
+    while (true) {
+      let result;
+      try {
+        result = await attempt();
+      } catch (err) {
+        const message = String(err?.message || err);
+        if (err?.isRateLimit && !usedRateLimitRetry) {
+          usedRateLimitRetry = true;
+          console.warn(
+            `${TAG} rate limit detected, waiting ${this._rateLimitRetryDelayMs}ms before retry...`,
           );
+          await sleepMs(this._rateLimitRetryDelayMs);
+          continue;
         }
-      } else {
-        throw new Error(`gh CLI failed: ${err.message}`);
+        if (err?.isTransient && transientRetries < maxTransientRetries) {
+          transientRetries += 1;
+          console.warn(
+            `${TAG} transient gh failure (attempt ${transientRetries}/${maxTransientRetries}), retrying in ${this._transientRetryDelayMs}ms...`,
+          );
+          await sleepMs(this._transientRetryDelayMs);
+          continue;
+        }
+        if (err?.isRateLimit && usedRateLimitRetry) {
+          throw new Error(`gh CLI failed (after rate limit retry): ${message}`);
+        }
+        throw new Error(`gh CLI failed: ${message}`);
+      }
+
+      const text = String(result?.stdout || "").trim();
+      if (!parseJson) return text;
+      if (!text) return null;
+
+      try {
+        return JSON.parse(text);
+      } catch (err) {
+        const parseMessage = String(err?.message || err);
+        const parseContext = [parseMessage, result?.stderr || "", text.slice(0, 512)]
+          .filter(Boolean)
+          .join("\n");
+        if (
+          isGhTransientError(parseContext) &&
+          transientRetries < maxTransientRetries
+        ) {
+          transientRetries += 1;
+          console.warn(
+            `${TAG} transient gh JSON parse failure (attempt ${transientRetries}/${maxTransientRetries}), retrying in ${this._transientRetryDelayMs}ms...`,
+          );
+          await sleepMs(this._transientRetryDelayMs);
+          continue;
+        }
+        throw new Error(`gh CLI returned invalid JSON: ${parseMessage}`);
       }
     }
-
-    const text = String(result.stdout || "").trim();
-    if (!parseJson) return text;
-    if (!text) return null;
-    return JSON.parse(text);
   }
-
   async _ensureLabelExists(label) {
     const name = String(label || "").trim();
     if (!name) return;
@@ -4865,3 +4948,5 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
+
+

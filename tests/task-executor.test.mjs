@@ -118,6 +118,7 @@ import {
   getPoolSdkName,
   getActiveThreads,
   ensureThreadRegistryLoaded,
+  invalidateThread,
 } from "../agent-pool.mjs";
 import { acquireWorktree, releaseWorktree } from "../worktree-manager.mjs";
 import {
@@ -427,6 +428,7 @@ describe("task-executor", () => {
 
       expect(executeSpy).toHaveBeenCalledWith(
         expect.objectContaining({ id: "resume-1" }),
+        expect.objectContaining({ recoveredFromInProgress: true }),
       );
     });
 
@@ -554,11 +556,40 @@ describe("task-executor", () => {
         updatedAt: Date.now(),
       });
 
-      const promise = ex.executeTask({ ...mockTask, status: "inprogress" });
+      const promise = ex.executeTask(
+        { ...mockTask, status: "inprogress" },
+        { recoveredFromInProgress: true },
+      );
       const slot = ex._activeSlots.get("task-123-uuid");
       expect(slot?.agentInstanceId).toBe(41);
       expect(slot?.startedAt).toBe(recoveredStartedAt);
       await promise;
+    });
+
+    it("invalidates stale recovered runtime before slot allocation", async () => {
+      const ex = new TaskExecutor({ taskTimeoutMs: 60_000 });
+      const recoveredStartedAt = Date.now() - 4 * 60 * 60 * 1000;
+      ex._slotRuntimeState.set("task-123-uuid", {
+        taskId: "task-123-uuid",
+        taskTitle: "Fix the bug",
+        branch: "ve/task-123-fix-the-bug",
+        sdk: "codex",
+        attempt: 0,
+        startedAt: recoveredStartedAt,
+        agentInstanceId: 41,
+        status: "running",
+        updatedAt: Date.now(),
+      });
+
+      const promise = ex.executeTask(
+        { ...mockTask, status: "inprogress" },
+        { recoveredFromInProgress: true },
+      );
+      const slot = ex._activeSlots.get("task-123-uuid");
+      expect(slot?.agentInstanceId).not.toBe(41);
+      expect(slot?.startedAt).toBeGreaterThan(recoveredStartedAt);
+      await promise;
+      expect(invalidateThread).toHaveBeenCalledWith("task-123-uuid");
     });
 
     it("calls updateTaskStatus with inprogress", async () => {
