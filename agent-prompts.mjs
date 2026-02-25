@@ -760,7 +760,10 @@ function asPathCandidates(pathValue, configDir, repoRoot) {
   const candidates = [];
   if (repoRoot) candidates.push(resolve(repoRoot, raw));
   if (configDir) candidates.push(resolve(configDir, raw));
-  candidates.push(resolve(process.cwd(), raw));
+  // Only fall back to cwd when no explicit roots were provided.
+  if (candidates.length === 0) {
+    candidates.push(resolve(process.cwd(), raw));
+  }
 
   return candidates.filter((p, idx, arr) => p && arr.indexOf(p) === idx);
 }

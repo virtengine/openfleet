@@ -793,6 +793,31 @@ function normalizeProjectRequirementsProfile(value) {
   return "feature";
 }
 
+function findExecutorMetadataMatch(entry, candidates, index = 0) {
+  const entryExecutor = normalizeExecutorKey(entry?.executor);
+  const entryVariant = String(entry?.variant || "DEFAULT")
+    .trim()
+    .toUpperCase();
+  const entryRole = String(entry?.role || "")
+    .trim()
+    .toLowerCase();
+
+  const exact = candidates.find((candidate) =>
+    normalizeExecutorKey(candidate?.executor) === entryExecutor &&
+    String(candidate?.variant || "DEFAULT").trim().toUpperCase() === entryVariant &&
+    String(candidate?.role || "").trim().toLowerCase() === entryRole
+  );
+  if (exact) return exact;
+
+  const byExecutorAndVariant = candidates.find((candidate) =>
+    normalizeExecutorKey(candidate?.executor) === entryExecutor &&
+    String(candidate?.variant || "DEFAULT").trim().toUpperCase() === entryVariant
+  );
+  if (byExecutorAndVariant) return byExecutorAndVariant;
+
+  return candidates[index] || null;
+}
+
 function loadExecutorConfig(configDir, configData) {
   // 1. Try env var
   const fromEnv = parseExecutorsFromEnv();
@@ -822,6 +847,25 @@ function loadExecutorConfig(configDir, configData) {
   const executors = (Array.isArray(baseExecutors) ? baseExecutors : [])
     .map((entry, index, arr) => normalizeExecutorEntry(entry, index, arr.length))
     .filter(Boolean);
+
+  // Preserve file-defined metadata (for example codexProfile) even when
+  // execution topology comes from EXECUTORS env.
+  if (fromEnv && Array.isArray(fromFile?.executors) && executors.length > 0) {
+    const fileExecutors = fromFile.executors
+      .map((entry, index, arr) => normalizeExecutorEntry(entry, index, arr.length))
+      .filter(Boolean);
+
+    for (let index = 0; index < executors.length; index++) {
+      const current = executors[index];
+      if (current.codexProfile) continue;
+      const match = findExecutorMetadataMatch(current, fileExecutors, index);
+      if (!match?.codexProfile) continue;
+      executors[index] = {
+        ...current,
+        codexProfile: match.codexProfile,
+      };
+    }
+  }
   const failover = fromFile?.failover || {
     strategy:
       process.env.FAILOVER_STRATEGY || DEFAULT_EXECUTORS.failover.strategy,
@@ -1148,6 +1192,7 @@ export function loadConfig(argv = process.argv, options = {}) {
 
   const configFile = loadConfigFile(configDir);
   let configData = configFile.data || {};
+  const configFileHadInvalidJson = configFile.error === "invalid-json";
 
   const repoRootOverride = cli["repo-root"] || process.env.REPO_ROOT || "";
 
@@ -1590,6 +1635,9 @@ export function loadConfig(argv = process.argv, options = {}) {
   validateKanbanBackendConfig({ kanbanBackend, kanban, jira });
 
   const internalExecutorConfig = configData.internalExecutor || {};
+  const envInternalExecutorParallel = configFileHadInvalidJson
+    ? undefined
+    : process.env.INTERNAL_EXECUTOR_PARALLEL;
   const projectRequirements = {
     profile: normalizeProjectRequirementsProfile(
       process.env.PROJECT_REQUIREMENTS_PROFILE ||
@@ -1643,7 +1691,7 @@ export function loadConfig(argv = process.argv, options = {}) {
       ? executorMode
       : "internal",
     maxParallel: Number(
-      process.env.INTERNAL_EXECUTOR_PARALLEL ||
+      envInternalExecutorParallel ||
         internalExecutorConfig.maxParallel ||
         3,
     ),
