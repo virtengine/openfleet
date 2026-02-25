@@ -735,12 +735,36 @@ function normalizeTags(raw) {
   return normalizeLabels(raw);
 }
 
+function looksLikeKanbanEntity(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return (
+    "id" in value ||
+    "project_id" in value ||
+    "task_id" in value ||
+    "name" in value ||
+    "title" in value ||
+    "status" in value ||
+    "key" in value ||
+    "number" in value
+  );
+}
+
+function normalizeObjectCollection(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const candidates = Object.values(value).filter(looksLikeKanbanEntity);
+  if (candidates.length > 0) return candidates;
+  if (looksLikeKanbanEntity(value)) return [value];
+  return [];
+}
+
 function extractArrayPayload(payload, keys = []) {
   if (Array.isArray(payload)) return payload;
   if (!payload || typeof payload !== "object") return [];
 
   for (const key of keys) {
     if (Array.isArray(payload[key])) return payload[key];
+    const normalized = normalizeObjectCollection(payload[key]);
+    if (normalized.length > 0) return normalized;
   }
 
   const data = payload.data;
@@ -748,8 +772,15 @@ function extractArrayPayload(payload, keys = []) {
   if (data && typeof data === "object") {
     for (const key of keys) {
       if (Array.isArray(data[key])) return data[key];
+      const normalized = normalizeObjectCollection(data[key]);
+      if (normalized.length > 0) return normalized;
     }
+    const normalizedData = normalizeObjectCollection(data);
+    if (normalizedData.length > 0) return normalizedData;
   }
+
+  const normalizedPayload = normalizeObjectCollection(payload);
+  if (normalizedPayload.length > 0) return normalizedPayload;
 
   return [];
 }
