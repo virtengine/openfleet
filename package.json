@@ -217,6 +217,16 @@
     "daemon-restart-policy.mjs",
     "publish.mjs",
     "vendor-sync.mjs",
+    "workflow-engine.mjs",
+    "workflow-migration.mjs",
+    "workflow-nodes.mjs",
+    "workflow-templates.mjs",
+    "workflow-templates/_helpers.mjs",
+    "workflow-templates/agents.mjs",
+    "workflow-templates/ci-cd.mjs",
+    "workflow-templates/github.mjs",
+    "workflow-templates/planning.mjs",
+    "workflow-templates/reliability.mjs",
     "ui/vendor/"
   ],
   "dependencies": {
