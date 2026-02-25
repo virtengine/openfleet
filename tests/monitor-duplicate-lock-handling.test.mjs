@@ -44,6 +44,10 @@ describe("duplicate monitor lock handling", () => {
     expect(monitorSource).toContain("(PID ${ownerPid})");
   });
 
+  it("treats permission-denied PID probes as alive in cli preflight", () => {
+    expect(cliSource).toContain("err.code === \"EPERM\"");
+    expect(cliSource).toContain("err.code === \"EACCES\"");
+  });
   it("short-circuits duplicate starts in cli before forking monitor", () => {
     const preflightMatch = cliSource.match(
       /const existingOwner = detectExistingMonitorLockOwner\(\);[\s\S]*?if \(existingOwner\) \{[\s\S]*?exiting duplicate start\.[\s\S]*?return;[\s\S]*?\}/,

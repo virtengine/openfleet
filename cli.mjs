@@ -300,7 +300,10 @@ function isProcessAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (err) {
+    if (err && (err.code === "EPERM" || err.code === "EACCES")) {
+      return true;
+    }
     return false;
   }
 }
