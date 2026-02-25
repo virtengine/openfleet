@@ -60,11 +60,17 @@
   color: #000;
 }
 
+.sidebar-version-info {
+  margin-bottom: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
 .sidebar-version {
   font-size: 0.7rem;
   color: var(--text-muted);
   font-family: var(--font-mono);
-  margin-bottom: 1.5rem;
   display: block;
 }
 
@@ -422,6 +428,7 @@
     left: -280px;
     top: 0;
     bottom: 0;
+    height: 100vh;
     width: 280px;
     transition: left 0.3s var(--ease-out);
     z-index: 1000;

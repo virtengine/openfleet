@@ -691,4 +691,21 @@
   function escHtml(str) {
     return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
+
+  /* ── Fetch Latest Version ────────────────────────────────────────────── */
+  function fetchLatestVersion() {
+    const versionEl = document.getElementById('current-version');
+    if (!versionEl) return;
+    
+    fetch('https://registry.npmjs.org/bosun/latest')
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.version) {
+          versionEl.textContent = 'Current Version: v' + data.version;
+        }
+      })
+      .catch(err => console.warn('[version-fetch]', err));
+  }
+  
+  fetchLatestVersion();
 })();
