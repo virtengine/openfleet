@@ -4511,6 +4511,47 @@ async function safeRecoverTask(taskId, taskTitle, reason) {
   const isInternal = execMode === "internal";
 
   try {
+    const activeBackend = getActiveKanbanBackend();
+    if (activeBackend !== "vk") {
+      const localStatus = String(getInternalTask(taskId)?.status || "")
+        .trim()
+        .toLowerCase();
+      if (localStatus === "cancelled" || localStatus === "done") {
+        console.log(
+          `[monitor] safeRecover: task "${taskTitle}" is now ${localStatus} (local store) - aborting recovery`,
+        );
+        recoverySkipCache.set(taskId, {
+          resolvedStatus: localStatus,
+          timestamp: Date.now(),
+          updatedAt: "",
+          status: localStatus,
+        });
+        scheduleRecoveryCacheSave();
+        return false;
+      }
+      if (localStatus === "todo") {
+        console.log(
+          `[monitor] safeRecover: task "${taskTitle}" is already todo (local store) - no action needed`,
+        );
+        recoverySkipCache.set(taskId, {
+          resolvedStatus: localStatus,
+          timestamp: Date.now(),
+          updatedAt: "",
+          status: localStatus,
+        });
+        scheduleRecoveryCacheSave();
+        return false;
+      }
+
+      const success = await updateTaskStatus(taskId, "todo");
+      if (success) {
+        console.log(
+          `[monitor] ♻️ Recovered "${taskTitle}" from ${localStatus || "inprogress"} → todo (${reason}) [${activeBackend} backend - VK status re-fetch skipped]`,
+        );
+      }
+      return success;
+    }
+
     const res = await fetchVk(`/api/tasks/${taskId}`);
     const liveStatus = res?.data?.status || res?.status;
     const liveUpdatedAt = res?.data?.updated_at || res?.data?.created_at || "";
@@ -11872,6 +11913,37 @@ function sanitizeMonitorTailForPrompt(tail, backend) {
     .join("\n");
 }
 
+function formatOrchestratorTailForMonitorPrompt({
+  mode,
+  activeKanbanBackend,
+  orchestratorTail,
+}) {
+  try {
+    const resolvedMode = String(mode || "unknown").trim().toLowerCase();
+    if (
+      mode === "internal" ||
+      mode === "disabled" ||
+      resolvedMode === "internal" ||
+      resolvedMode === "disabled" ||
+      resolvedMode === "none" ||
+      resolvedMode === "monitor-only"
+    ) {
+      return (
+        `(not applicable: executor mode "${resolvedMode}" runs without external orchestrator logs)` +
+        ` [backend=${activeKanbanBackend}]`
+      );
+    }
+
+    const tailText = String(orchestratorTail || "").trim();
+    if (tailText) return tailText;
+
+    return `(missing: orchestrator tail unavailable for mode "${resolvedMode}")`;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `(missing: failed to format orchestrator tail: ${message})`;
+  }
+}
+
 async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
   const digestSnapshot = getDigestSnapshot();
   const digestEntries =
@@ -11890,9 +11962,13 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
     : "Work on the current branch. Do not create a new branch.";
 
   const activeKanbanBackend = getActiveKanbanBackend();
-  const execMode = configExecutorMode || getExecutorMode();
+  const runtimeExecutorMode = String(
+    configExecutorMode || getExecutorMode() || "internal",
+  )
+    .trim()
+    .toLowerCase();
   const usesExternalOrchestratorLog =
-    execMode !== "internal" && !isExecutorDisabled();
+    runtimeExecutorMode !== "internal" && !isExecutorDisabled();
   let orchestratorTail = "";
   if (usesExternalOrchestratorLog) {
     orchestratorTail = await readLogTail(resolve(logDir, "orchestrator-active.log"), {
@@ -11919,11 +11995,12 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
         }
       }
     }
-  } else {
-    orchestratorTail =
-      `(not applicable: executor mode "${execMode}" runs without external orchestrator logs)` +
-      ` [backend=${activeKanbanBackend}]`;
   }
+  orchestratorTail = formatOrchestratorTailForMonitorPrompt({
+    mode: runtimeExecutorMode,
+    activeKanbanBackend,
+    orchestratorTail,
+  });
   const monitorTailWindowMs = resolveMonitorMonitorErrorTailWindowMs();
   const rawMonitorTail = await readLogTail(resolve(logDir, "monitor-error.log"), {
     maxLines: 120,
