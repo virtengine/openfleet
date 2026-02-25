@@ -442,6 +442,39 @@ describe("worktree-manager", () => {
       await mgr.acquireWorktree("ve/checked-out", "task-det");
       expect(detachCalled).toBe(true);
     });
+
+    it("reuses existing local branch instead of creating with -b", async () => {
+      spawnSync.mockImplementation((_cmd, args) => {
+        if (args?.[0] === "worktree" && args?.includes("--porcelain")) {
+          return {
+            status: 0,
+            stdout: porcelainOutput([
+              { path: REPO_ROOT, branch: "refs/heads/main" },
+            ]),
+            stderr: "",
+          };
+        }
+        if (args?.[0] === "show-ref") {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+        if (args?.[0] === "worktree" && args?.[1] === "add") {
+          return { status: 0, stdout: "", stderr: "" };
+        }
+        return { status: 0, stdout: "", stderr: "" };
+      });
+
+      await mgr.acquireWorktree("ve/existing", "task-existing", {
+        owner: "monitor",
+        baseBranch: "origin/main",
+      });
+
+      const addCall = spawnSync.mock.calls.find(
+        ([, args]) => args?.[0] === "worktree" && args?.[1] === "add",
+      );
+      expect(addCall).toBeTruthy();
+      expect(addCall[1]).not.toContain("-b");
+      expect(addCall[1][addCall[1].length - 1]).toBe("ve/existing");
+    });
   });
 
   // ────────────────────────────────────────────────────────────────────────

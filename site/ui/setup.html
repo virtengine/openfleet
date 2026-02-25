@@ -507,8 +507,8 @@ function App() {
   const [repoSlug, setRepoSlug] = useState("");
   const [repoRoot, setRepoRoot] = useState("");
   const [executors, setExecutors] = useState([
-    { name: "primary", executor: "COPILOT", model: "claude-opus-4.6", weight: 70, role: "primary", authMode: "oauth", apiKey: "", baseUrl: "", connections: [] },
-    { name: "backup", executor: "CODEX", model: "gpt-5.3-codex", weight: 30, role: "backup", authMode: "oauth", apiKey: "", baseUrl: "", connections: [] },
+    { name: "primary", executor: "COPILOT", model: "claude-opus-4.6", weight: 70, role: "primary", authMode: "oauth", apiKey: "", baseUrl: "", connections: [], codexProfile: "" },
+    { name: "backup", executor: "CODEX", model: "gpt-5.3-codex", weight: 30, role: "backup", authMode: "oauth", apiKey: "", baseUrl: "", connections: [], codexProfile: "" },
   ]);
   const [probedModels, setProbedModels] = useState({});
   const [repos, setRepos] = useState([""]);
@@ -718,6 +718,7 @@ function App() {
               baseUrl: (execType === "CODEX" || execType === "OPENAI") ? (env.OPENAI_BASE_URL || "") :
                         (execType === "CLAUDE_CODE" || execType === "ANTHROPIC") ? (env.ANTHROPIC_BASE_URL || "") : "",
               connections,
+              codexProfile: String(statusData.existingConfig?.executors?.[idx]?.codexProfile || ""),
             };
           });
           if (parsed.length > 0) { setExecutors(parsed); envLoaded = true; }
@@ -812,6 +813,10 @@ function App() {
         weight: Number(ex.weight) || 50,
         role: ex.role,
         authMode: ex.authMode || "oauth",
+        codexProfile:
+          (ex.executor === "CODEX" || ex.executor === "OPENAI")
+            ? String(ex.codexProfile || "").trim()
+            : "",
         // Legacy single-key fields (used by CLAUDE_CODE and as fallback)
         apiKey: ex.authMode === "api-key" ? (ex.apiKey || "") : "",
         baseUrl: ex.authMode === "api-key" ? (ex.baseUrl || "") : "",
@@ -969,6 +974,7 @@ function App() {
         apiKey: "",
         baseUrl: "",
         connections: [],
+        codexProfile: "",
       },
     ]);
   };
@@ -1346,6 +1352,18 @@ function App() {
                 : "Your API key will be saved to .env in BOSUN_HOME (never committed to git)."}
             </div>
           </div>
+          ${(ex.executor === "CODEX" || ex.executor === "OPENAI") && html`
+            <div class="form-group">
+              <label>Codex Profile <span style="font-weight:400;color:var(--text-dim)">(optional)</span></label>
+              <input type="text" value=${ex.codexProfile || ""}
+                oninput=${(e) => updateExecutor(i, "codexProfile", e.target.value)}
+                placeholder="executor-2-profile" />
+              <div class="hint">
+                Per-executor Codex profile name (sets <code style="font-family:var(--font-mono)">CODEX_MODEL_PROFILE</code> for this executor only).
+                Use this to route one executor to a different provider/account.
+              </div>
+            </div>
+          `}
           ${authMode === "api-key" && (() => {
             const execType = ex.executor || "COPILOT";
             const multiOk  = supportsMultiConnections(execType);

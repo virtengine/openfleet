@@ -283,6 +283,64 @@ describe("WorkflowEngine - loop.for_each", () => {
   });
 });
 
+// ── Run History / Detail Tests ──────────────────────────────────────────────
+
+describe("WorkflowEngine - run history details", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("persists rich summary metadata and exposes detailed run payload", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "log", type: "notify.log", label: "Log", config: { message: "hello from history test" } },
+      ],
+      [{ id: "e1", source: "trigger", target: "log" }],
+      { name: "History Detail Workflow" }
+    );
+
+    engine.save(wf);
+    await engine.execute(wf.id, {});
+
+    const history = engine.getRunHistory(wf.id, 5);
+    expect(history.length).toBeGreaterThan(0);
+    const latest = history[0];
+    expect(latest.workflowName).toBe("History Detail Workflow");
+    expect(typeof latest.endedAt).toBe("number");
+    expect(typeof latest.logCount).toBe("number");
+    expect(typeof latest.completedCount).toBe("number");
+
+    const run = engine.getRunDetail(latest.runId);
+    expect(run).toBeTruthy();
+    expect(run.workflowId).toBe(wf.id);
+    expect(run.workflowName).toBe("History Detail Workflow");
+    expect(run.detail).toBeTruthy();
+    expect(run.detail.nodeStatuses.trigger).toBeDefined();
+    expect(run.detail.nodeStatuses.log).toBeDefined();
+    expect(Array.isArray(run.detail.logs)).toBe(true);
+  });
+
+  it("returns runs in descending order and null for unknown run details", async () => {
+    const wf = makeSimpleWorkflow(
+      [{ id: "trigger", type: "trigger.manual", label: "Start", config: {} }],
+      [],
+      { name: "Ordering Workflow" }
+    );
+
+    engine.save(wf);
+    await engine.execute(wf.id, { run: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await engine.execute(wf.id, { run: 2 });
+
+    const history = engine.getRunHistory(wf.id, 10);
+    expect(history.length).toBeGreaterThanOrEqual(2);
+    expect(history[0].startedAt).toBeGreaterThanOrEqual(history[1].startedAt);
+    expect(engine.getRunDetail("does-not-exist")).toBeNull();
+  });
+});
+
 // ── Node Type Tests ─────────────────────────────────────────────────────────
 
 describe("New node types", () => {

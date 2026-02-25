@@ -121,6 +121,28 @@ function parseNumberEnv(name, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function isDisabledFlag(value) {
+  return ["0", "false", "no", "off"].includes(
+    String(value || "")
+      .trim()
+      .toLowerCase(),
+  );
+}
+
+function isFlowReviewGateRequired(defaultValue = true) {
+  const primaryRaw = process.env.BOSUN_FLOW_PRIMARY;
+  if (primaryRaw !== undefined && String(primaryRaw).trim() !== "") {
+    if (isDisabledFlag(primaryRaw)) return false;
+  }
+
+  const reviewRaw = process.env.BOSUN_FLOW_REQUIRE_REVIEW;
+  if (reviewRaw !== undefined && String(reviewRaw).trim() !== "") {
+    return !isDisabledFlag(reviewRaw);
+  }
+
+  return defaultValue;
+}
+
 function sanitizePathSegment(value) {
   return String(value || "").replace(/[^a-zA-Z0-9._-]+/g, "_");
 }
@@ -1693,6 +1715,7 @@ async function commentOnIssue(task, commentBody) {
  * @property {number}   taskTimeoutMs   - Timeout per task execution (default: 90 * 60 * 1000)
  * @property {number}   maxRetries      - Retries per task via execWithRetry (default: 2)
  * @property {boolean}  autoCreatePr    - Create PR after agent completes (default: true)
+ * @property {boolean}  flowReviewGateRequired - Block PR merge automation until review is approved (default: true)
  * @property {string}   projectId       - VK project ID to poll (null = auto-detect first project)
  * @property {string}   repoRoot        - Repository root path
  * @property {string}   repoSlug        - "owner/repo" for gh CLI
@@ -1740,6 +1763,7 @@ class TaskExecutor {
       taskTimeoutMs: 6 * 60 * 60 * 1000, // 6 hours — stream-based watchdog handles real issues
       maxRetries: 2,
       autoCreatePr: true,
+      flowReviewGateRequired: isFlowReviewGateRequired(true),
       projectId: null,
       repoRoot: process.cwd(),
       repoSlug: "",
@@ -1769,6 +1793,7 @@ class TaskExecutor {
     this.taskTimeoutMs = merged.taskTimeoutMs;
     this.maxRetries = merged.maxRetries;
     this.autoCreatePr = merged.autoCreatePr;
+    this.flowReviewGateRequired = merged.flowReviewGateRequired !== false;
     this.projectId = merged.projectId;
     this.repoRoot = merged.repoRoot;
     this.repoSlug = merged.repoSlug;
@@ -3790,6 +3815,16 @@ class TaskExecutor {
       );
     }
 
+    const codexEnvOverrides = {};
+    if (resolvedSdk === "codex") {
+      const executorCodexProfile = String(
+        executorProfile?.codexProfile || "",
+      ).trim();
+      if (executorCodexProfile) {
+        codexEnvOverrides.CODEX_MODEL_PROFILE = executorCodexProfile;
+      }
+    }
+
     // 1b. Allocate slot
     const recoveredRuntime =
       task?.status === "inprogress"
@@ -3947,7 +3982,9 @@ class TaskExecutor {
           `| **SDK** | ${resolvedSdk} |`,
           selectedModel ? `| **Model** | ${selectedModel} |` : "",
           `| **Executor** | bosun (internal) |`,
-          executorProfile ? `| **Profile** | ${executorProfile} |` : "",
+          executorProfile
+            ? `| **Profile** | ${executorProfile.name || executorProfile.codexProfile || "default"} |`
+            : "",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -4142,6 +4179,8 @@ class TaskExecutor {
         executor: resolvedSdk,
         executor_variant: selectedModel || undefined,
         model: selectedModel || undefined,
+        codex_profile:
+          codexEnvOverrides.CODEX_MODEL_PROFILE || undefined,
       };
       const gitContext = { branch };
 
@@ -4167,6 +4206,10 @@ class TaskExecutor {
           maxContinues: 3,
           sdk: resolvedSdk !== "auto" ? resolvedSdk : undefined,
           model: selectedModel || undefined,
+          envOverrides:
+            Object.keys(codexEnvOverrides).length > 0
+              ? codexEnvOverrides
+              : undefined,
           buildRetryPrompt: (lastResult, attempt) =>
             this._buildRetryPrompt(task, lastResult, attempt),
           buildContinuePrompt: (lastResult, attempt) =>
@@ -4291,6 +4334,11 @@ class TaskExecutor {
             maxRetries: 0,
             maxContinues: 1,
             sdk: resolvedSdk !== "auto" ? resolvedSdk : undefined,
+            model: selectedModel || undefined,
+            envOverrides:
+              Object.keys(codexEnvOverrides).length > 0
+                ? codexEnvOverrides
+                : undefined,
             buildRetryPrompt: (lr, att) =>
               this._buildRetryPrompt(task, lr, att),
             buildContinuePrompt: (lr, att) =>
@@ -4977,9 +5025,25 @@ class TaskExecutor {
           baseBranch,
         });
         if (pr) {
+          const prNumber = pr.prNumber ? String(pr.prNumber) : null;
+          const prUrl = pr.url || null;
+          result.prNumber = prNumber;
+          result.prUrl = prUrl;
+          result.branch = pr.branch || null;
+
           // Mark as completed with PR — prevents re-dispatch
           this._completedWithPR.add(task.id);
           this._prCreatedForBranch.add(task.id);
+          try {
+            updateInternalTask(task.id, {
+              branchName: pr.branch || task.branchName || null,
+              prNumber,
+              prUrl,
+              externalStatus: "inreview",
+            });
+          } catch {
+            /* best-effort */
+          }
           try {
             await updateTaskStatus(task.id, "inreview");
           } catch {
@@ -5977,12 +6041,19 @@ class TaskExecutor {
               );
             }
             if (openPr) {
-              // Open PR exists — just push latest commits and enable auto-merge
+              // Open PR exists — just push latest commits.
+              // Flow review gate (default) defers merge actions until review approval.
               console.log(
                 `${TAG} Open PR #${existingPrNumber} already exists for branch ${branch}`,
               );
               this._pushBranch(worktreePath, branch, baseInfo.branch);
-              this._enableAutoMerge(existingPrNumber, worktreePath, task);
+              if (!this.flowReviewGateRequired) {
+                this._enableAutoMerge(existingPrNumber, worktreePath, task);
+              } else {
+                console.log(
+                  `${TAG} flow review gate active — merge automation deferred for PR #${existingPrNumber}`,
+                );
+              }
               return { url: existingPrUrl, branch, prNumber: existingPrNumber };
             }
           }
@@ -6137,7 +6208,13 @@ class TaskExecutor {
 
       // ── Step 3: Enable auto-merge ──────────────────────────────────────
       if (prNumber) {
-        this._enableAutoMerge(prNumber, worktreePath, task);
+        if (!this.flowReviewGateRequired) {
+          this._enableAutoMerge(prNumber, worktreePath, task);
+        } else {
+          console.log(
+            `${TAG} flow review gate active — merge automation deferred for PR #${prNumber}`,
+          );
+        }
       }
 
       return { url: prUrl, branch, prNumber };
@@ -6213,6 +6290,9 @@ export function loadExecutorOptionsFromConfig() {
       process.env.INTERNAL_EXECUTOR_MAX_RETRIES || configExec.maxRetries || 2,
     ),
     autoCreatePr: configExec.autoCreatePr !== false,
+    flowReviewGateRequired: isFlowReviewGateRequired(
+      configExec.flowRequireReview !== false,
+    ),
     projectId:
       process.env.INTERNAL_EXECUTOR_PROJECT_ID || configExec.projectId || null,
     reviewAgentEnabled,

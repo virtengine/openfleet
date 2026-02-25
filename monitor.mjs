@@ -6189,6 +6189,123 @@ async function queueFlowReview(taskId, ctx, reason = "") {
   }
 }
 
+function parsePositivePrNumber(value) {
+  const parsed = Number(String(value || "").trim());
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function extractPrNumberFromUrl(prUrl) {
+  const raw = String(prUrl || "");
+  const match = raw.match(/\/pull\/(\d+)(?:$|[/?#])/i);
+  return match ? parsePositivePrNumber(match[1]) : null;
+}
+
+async function triggerFlowPostReviewMerge(taskId, context = {}) {
+  if (!isFlowPrimaryEnabled() || !isFlowReviewGateEnabled()) {
+    return false;
+  }
+  if (!ghAvailable()) {
+    return false;
+  }
+
+  const id = String(taskId || "").trim();
+  if (!id) return false;
+
+  const task = getInternalTask(id);
+  const branch = String(
+    context.branch || task?.branchName || task?.branch || "",
+  ).trim();
+  const taskTitle = String(
+    context.taskTitle || task?.title || id,
+  ).trim();
+  let prNumber =
+    parsePositivePrNumber(context.prNumber) ||
+    parsePositivePrNumber(task?.prNumber) ||
+    parsePositivePrNumber(task?.pr_number) ||
+    null;
+  let prUrl = String(
+    context.prUrl || task?.prUrl || task?.pr_url || "",
+  ).trim();
+  if (!prNumber && prUrl) {
+    prNumber = extractPrNumberFromUrl(prUrl);
+  }
+
+  if (!prNumber && branch) {
+    let existingPr = await findExistingPrForBranch(branch);
+    if (!existingPr) {
+      existingPr = await findExistingPrForBranchApi(branch);
+    }
+    if (existingPr?.number) {
+      prNumber = parsePositivePrNumber(existingPr.number);
+      prUrl = prUrl || String(existingPr.url || "").trim();
+    }
+  }
+
+  if (!prNumber) {
+    console.warn(
+      `[flow-gate] review approved for ${id}, but no PR number could be resolved yet`,
+    );
+    return false;
+  }
+
+  const autoArgs = ["pr", "merge", String(prNumber)];
+  if (repoSlug) autoArgs.push("--repo", repoSlug);
+  autoArgs.push("--auto", "--squash");
+
+  const autoResult = spawnSync("gh", autoArgs, {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 20_000,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (autoResult.status === 0) {
+    console.log(
+      `[flow-gate] review approved for "${taskTitle}" (${id}) — auto-merge queued for PR #${prNumber}`,
+    );
+    return true;
+  }
+
+  const autoErr = String(
+    autoResult.stderr || autoResult.stdout || "",
+  ).trim();
+  if (/clean status|not in the correct state/i.test(autoErr)) {
+    const directArgs = ["pr", "merge", String(prNumber)];
+    if (repoSlug) directArgs.push("--repo", repoSlug);
+    directArgs.push("--squash");
+    const directResult = spawnSync("gh", directArgs, {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 30_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (directResult.status === 0) {
+      console.log(
+        `[flow-gate] review approved for "${taskTitle}" (${id}) — directly merged PR #${prNumber}`,
+      );
+      return true;
+    }
+    const directErr = String(
+      directResult.stderr || directResult.stdout || "",
+    ).trim();
+    console.warn(
+      `[flow-gate] direct merge failed after approval for PR #${prNumber}: ${directErr.slice(0, 220)}`,
+    );
+    return false;
+  }
+
+  if (/auto-merge/i.test(autoErr) && /enabled|already/i.test(autoErr)) {
+    console.log(
+      `[flow-gate] review approved for "${taskTitle}" (${id}) — auto-merge already queued for PR #${prNumber}`,
+    );
+    return true;
+  }
+
+  console.warn(
+    `[flow-gate] could not queue auto-merge for approved task ${id} (PR #${prNumber}): ${autoErr.slice(0, 220)}`,
+  );
+  return false;
+}
+
 async function canEnableMergeForFlow(ctx) {
   if (!isFlowPrimaryEnabled() || !isFlowReviewGateEnabled()) {
     return { allowed: true };
@@ -11780,6 +11897,9 @@ function retryDeferredSelfRestart() {
 
 function startSelfWatcher() {
   stopSelfWatcher();
+  if (!watchEnabled) {
+    return;
+  }
   try {
     selfWatcher = watch(__dirname, { persistent: true }, (_event, filename) => {
       // Only react to .mjs source files
@@ -13021,6 +13141,10 @@ if (isExecutorDisabled()) {
                   },
                   { skipFlowGate: false },
                 );
+              } else {
+                void triggerFlowPostReviewMerge(taskId, {
+                  taskTitle: getInternalTask(taskId)?.title || taskId,
+                });
               }
             } else {
               console.log(
@@ -13314,12 +13438,19 @@ if (isContainerEnabled()) {
 // Automatically resolves PR conflicts and CI failures every 30 minutes
 if (config.prCleanupEnabled !== false) {
   const prRepoRoot = effectiveRepoRoot || repoRoot || process.cwd();
+  const flowGateControlsMerges =
+    isFlowPrimaryEnabled() && isFlowReviewGateEnabled();
   console.log(`[monitor] Starting PR cleanup daemon (repoRoot: ${prRepoRoot})...`);
+  if (flowGateControlsMerges) {
+    console.log(
+      "[monitor] Flow review gate is active — PR cleanup daemon auto-merge is disabled",
+    );
+  }
   prCleanupDaemon = new PRCleanupDaemon({
     intervalMs: 30 * 60 * 1000, // 30 minutes
     maxConcurrentCleanups: 3,
     dryRun: false,
-    autoMerge: true,
+    autoMerge: !flowGateControlsMerges,
     repoRoot: prRepoRoot,
   });
   prCleanupDaemon.start();

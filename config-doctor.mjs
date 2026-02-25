@@ -613,13 +613,6 @@ export function runConfigDoctor(options = {}) {
         fix: "Run bosun --setup to auto-configure sandbox mode",
       });
     }
-    if (!/^\[sandbox_workspace_write\]/m.test(toml)) {
-      issues.warnings.push({
-        code: "CODEX_NO_SANDBOX_WORKSPACE",
-        message: "No [sandbox_workspace_write] section in Codex config — workspace-write roots may be missing.",
-        fix: "Run bosun --setup to add workspace-write defaults (writable_roots, network_access).",
-      });
-    }
     if (
       isUserNamespaceDisabled() &&
       /use_linux_sandbox_bwrap\s*=\s*true/i.test(toml)

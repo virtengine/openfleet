@@ -434,6 +434,9 @@ function normalizeExecutorEntry(entry, index = 0, total = 1) {
     String(entry.name || "").trim() ||
     `${normalized}-${String(variant || "default").toLowerCase()}`;
   const models = normalizeExecutorModels(executorType, entry.models);
+  const codexProfile = String(
+    entry.codexProfile || entry.modelProfile || "",
+  ).trim();
 
   return {
     name,
@@ -443,6 +446,7 @@ function normalizeExecutorEntry(entry, index = 0, total = 1) {
     role,
     enabled: entry.enabled !== false,
     models,
+    codexProfile,
   };
 }
 

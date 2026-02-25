@@ -32,7 +32,14 @@
 
 import crypto from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile, unlink } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  readFile,
+  rename,
+  writeFile,
+  unlink,
+} from "node:fs/promises";
 import os from "node:os";
 import { resolve } from "node:path";
 import {
@@ -53,6 +60,8 @@ const AUDIT_FILENAME = "task-claims-audit.jsonl";
 const DEFAULT_TTL_MINUTES = 60;
 const CACHE_DIR = ".cache/bosun";
 const DEFAULT_OWNER_STALE_TTL_MS = 10 * 60 * 1000;
+const FS_RETRY_DELAY_MS = 40;
+const FS_RETRY_MAX = 4;
 
 // Shared state configuration from environment
 const SHARED_STATE_ENABLED = process.env.SHARED_STATE_ENABLED !== "false"; // default true
@@ -224,13 +233,26 @@ async function saveClaimsRegistry(registry) {
   // Include a UUID to prevent tmp-path collisions when multiple save calls
   // happen in the same millisecond within the same process.
   const tmpPath = `${state.claimsPath}.tmp-${process.pid}-${Date.now()}-${crypto.randomUUID()}`;
-  await writeFile(tmpPath, payload, "utf8");
+  await writeFile(tmpPath, payload, { encoding: "utf8", flush: true });
   try {
-    await rename(tmpPath, state.claimsPath);
+    await retryFsOperation(() => rename(tmpPath, state.claimsPath));
   } catch (err) {
-    // Windows can error if destination exists; fall back to direct write.
+    const reason = err?.message || err;
+    // On Windows, rename can fail when the destination file is in use.
     try {
-      await writeFile(state.claimsPath, payload, "utf8");
+      await retryFsOperation(() => copyFile(tmpPath, state.claimsPath));
+      console.warn(
+        `[task-claims] Atomic rename failed (${reason}); copied temp file into place.`,
+      );
+      return;
+    } catch (copyErr) {
+      const copyReason = copyErr?.message || copyErr;
+      await retryFsOperation(() =>
+        writeFile(state.claimsPath, payload, { encoding: "utf8", flush: true }),
+      );
+      console.warn(
+        `[task-claims] Atomic rename failed (${reason}); copy fallback failed (${copyReason}); wrote registry directly.`,
+      );
     } finally {
       try {
         await unlink(tmpPath);
@@ -238,9 +260,6 @@ async function saveClaimsRegistry(registry) {
         /* best effort */
       }
     }
-    console.warn(
-      `[task-claims] Atomic rename failed (${err?.message || err}); fell back to direct write.`,
-    );
   }
 }
 
@@ -279,6 +298,37 @@ function generateClaimToken() {
 function parseDuration(value, fallbackMs) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs;
+}
+
+function sleep(ms) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+function isRetriableFsError(err) {
+  const code = err?.code;
+  return (
+    code === "EPERM" ||
+    code === "EBUSY" ||
+    code === "EACCES" ||
+    code === "ENOTEMPTY" ||
+    code === "EEXIST"
+  );
+}
+
+async function retryFsOperation(fn, { maxRetries = FS_RETRY_MAX, delayMs = FS_RETRY_DELAY_MS } = {}) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isRetriableFsError(err) || attempt === maxRetries - 1) {
+        throw err;
+      }
+      await sleep(delayMs * (attempt + 1));
+    }
+  }
+  throw lastErr;
 }
 
 function isProcessAlive(pid) {
@@ -923,4 +973,8 @@ export const _test = {
   loadClaimsRegistry,
   saveClaimsRegistry,
   generateClaimToken,
+  retryFsOperation,
+  isRetriableFsError,
 };
+
+

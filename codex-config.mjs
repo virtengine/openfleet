@@ -24,7 +24,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
-import { resolve, dirname, parse } from "node:path";
+import { resolve, dirname, parse, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
@@ -145,7 +145,6 @@ const RECOMMENDED_FEATURES = {
   skill_mcp_dependency_install: { default: true, envVar: null,                           comment: "Auto-install MCP skill deps" },
 
   // Experimental (disabled by default unless explicitly enabled)
-  apps:                   { default: true, envVar: "CODEX_FEATURES_APPS",               comment: "ChatGPT Apps integration" },
 };
 
 const CRITICAL_ALWAYS_ON_FEATURES = new Set([
@@ -468,11 +467,12 @@ function parseTomlArrayLiteral(raw) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean)
-    .map((item) => item.replace(/^"(.*)"$/, "$1"));
+    .map((item) => item.replace(/^"(.*)"$/, "$1"))
+    .map((item) => item.replace(/\\(["\\])/g, "$1"));
 }
 
 function formatTomlArray(values) {
-  return `[${values.map((value) => `"${String(value).replace(/"/g, '\\"')}"`).join(", ")}]`;
+  return `[${values.map((value) => `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(", ")}]`;
 }
 
 function normalizeWritableRoots(input, { repoRoot, additionalRoots, validateExistence = false } = {}) {
@@ -483,7 +483,7 @@ function normalizeWritableRoots(input, { repoRoot, additionalRoots, validateExis
     // Reject bare relative paths like ".git" — they resolve relative to CWD
     // at Codex launch time and cause "writable root does not exist" errors
     // (e.g. /home/user/.codex/.git). Only accept absolute paths.
-    if (!trimmed.startsWith("/")) return;
+    if (!isAbsolute(trimmed)) return;
     // When validateExistence is true, skip paths that don't exist on disk.
     // This prevents the sandbox from failing to start with phantom roots.
     if (validateExistence && !existsSync(trimmed)) return;
@@ -493,7 +493,7 @@ function normalizeWritableRoots(input, { repoRoot, additionalRoots, validateExis
   // present even if validateExistence is true — they're the intended CWD.
   const addPrimaryRoot = (value) => {
     const trimmed = String(value || "").trim();
-    if (!trimmed || !trimmed.startsWith("/")) return;
+    if (!trimmed || !isAbsolute(trimmed)) return;
     roots.add(trimmed);
   };
   if (Array.isArray(input)) {
@@ -510,7 +510,7 @@ function normalizeWritableRoots(input, { repoRoot, additionalRoots, validateExis
   const addRepoRootPaths = (repo) => {
     if (!repo) return;
     const r = String(repo).trim();
-    if (!r || !r.startsWith("/")) return;
+    if (!r || !isAbsolute(r)) return;
     // Repo root and parent are always added (they're primary working dirs)
     addPrimaryRoot(r);
     const gitDir = resolve(r, ".git");
@@ -592,13 +592,13 @@ export function ensureGitAncestor(dir) {
  * @returns {string[]} Merged writable roots
  */
 export function buildTaskWritableRoots({ worktreePath, repoRoot, existingRoots = [] } = {}) {
-  const roots = new Set(existingRoots.filter(r => r && r.startsWith("/") && existsSync(r)));
+  const roots = new Set(existingRoots.filter(r => r && isAbsolute(r) && existsSync(r)));
   const addIfExists = (p) => {
-    if (p && p.startsWith("/") && existsSync(p)) roots.add(p);
+    if (p && isAbsolute(p) && existsSync(p)) roots.add(p);
   };
   // Add path even if it doesn't exist yet (will be created by the task)
   const addRoot = (p) => {
-    if (p && p.startsWith("/")) roots.add(p);
+    if (p && isAbsolute(p)) roots.add(p);
   };
 
   if (worktreePath) {
@@ -626,6 +626,32 @@ export function buildTaskWritableRoots({ worktreePath, repoRoot, existingRoots =
 
 export function hasSandboxWorkspaceWrite(toml) {
   return /^\[sandbox_workspace_write\]/m.test(toml);
+}
+
+export function buildSandboxWorkspaceWrite(options = {}) {
+  const {
+    writableRoots = [],
+    repoRoot,
+    additionalRoots,
+    networkAccess = true,
+    excludeTmpdirEnvVar = false,
+    excludeSlashTmp = false,
+  } = options;
+
+  const desiredRoots = normalizeWritableRoots(writableRoots, { repoRoot, additionalRoots, validateExistence: true });
+  if (desiredRoots.length === 0) {
+    return "";
+  }
+  return [
+    "",
+    "# ── Workspace-write sandbox defaults (added by bosun) ──",
+    "[sandbox_workspace_write]",
+    `network_access = ${networkAccess}`,
+    `exclude_tmpdir_env_var = ${excludeTmpdirEnvVar}`,
+    `exclude_slash_tmp = ${excludeSlashTmp}`,
+    `writable_roots = ${formatTomlArray(desiredRoots)}`,
+    "",
+  ].join("\n");
 }
 
 export function ensureSandboxWorkspaceWrite(toml, options = {}) {
@@ -1205,299 +1231,8 @@ export function ensureCodexConfig({
     profileProvidersAdded: [],
     timeoutsFixed: [],
     retriesAdded: [],
-    noChanges: false,
+    noChanges: true,
   };
-
-  let toml = readCodexConfig();
-
-  // If config.toml doesn't exist at all, create a minimal one
-  if (!toml) {
-    result.created = true;
-    toml = [
-      "# Codex CLI configuration",
-      "# Generated by bosun setup wizard",
-      "#",
-      "# See: codex --help or https://github.com/openai/codex for details.",
-      "",
-      "",
-    ].join("\n");
-  }
-
-  // ── 1. Vibe-Kanban MCP server ────────────────────────────
-  // When VK is not the active kanban backend, remove the MCP section
-  // so the Codex CLI doesn't try to spawn it.
-
-  if (skipVk) {
-    if (hasVibeKanbanMcp(toml)) {
-      toml = removeVibeKanbanMcp(toml);
-      result.vkRemoved = true;
-    }
-  } else if (!hasVibeKanbanMcp(toml)) {
-    toml += buildVibeKanbanBlock({ vkBaseUrl });
-    result.vkAdded = true;
-  } else {
-    // MCP section exists — ensure env vars are up to date
-    if (!hasVibeKanbanEnv(toml)) {
-      // Has the server but no env section — append env block
-      const envBlock = [
-        "",
-        "[mcp_servers.vibe_kanban.env]",
-        "# Ensure MCP always targets the correct VK API endpoint.",
-        `VK_BASE_URL = "${vkBaseUrl}"`,
-        `VK_ENDPOINT_URL = "${vkBaseUrl}"`,
-        "",
-      ].join("\n");
-
-      // Insert after [mcp_servers.vibe_kanban] section content, before next section
-      const vkHeader = "[mcp_servers.vibe_kanban]";
-      const vkIdx = toml.indexOf(vkHeader);
-      const afterVk = vkIdx + vkHeader.length;
-      const nextSectionAfterVk = toml.indexOf("\n[", afterVk);
-
-      if (nextSectionAfterVk === -1) {
-        toml += envBlock;
-      } else {
-        toml =
-          toml.substring(0, nextSectionAfterVk) +
-          "\n" +
-          envBlock +
-          toml.substring(nextSectionAfterVk);
-      }
-      result.vkEnvUpdated = true;
-    } else {
-      // Both server and env exist — ensure values match
-      const envVars = {
-        VK_BASE_URL: vkBaseUrl,
-        VK_ENDPOINT_URL: vkBaseUrl,
-      };
-      const before = toml;
-      toml = updateVibeKanbanEnv(toml, envVars);
-      if (toml !== before) {
-        result.vkEnvUpdated = true;
-      }
-    }
-  }
-
-  // ── 1b. Ensure agent SDK selection block ──────────────────
-
-  // Resolve which SDK should be primary:
-  //   1. Explicit primarySdk parameter
-  //   2. PRIMARY_AGENT env var (e.g. "copilot-sdk" → "copilot")
-  //   3. Default: "codex"
-  const resolvedPrimary = (() => {
-    if (primarySdk && ["codex", "copilot", "claude"].includes(primarySdk)) {
-      return primarySdk;
-    }
-    const envPrimary = (env.PRIMARY_AGENT || "").trim().toLowerCase().replace(/-sdk$/, "");
-    if (["codex", "copilot", "claude"].includes(envPrimary)) return envPrimary;
-    return "codex";
-  })();
-
-  if (!hasAgentSdkConfig(toml)) {
-    toml += buildAgentSdkBlock({ primary: resolvedPrimary });
-    result.agentSdkAdded = true;
-  }
-
-  // ── 1c. Ensure feature flags (sub-agents, memory, etc.) ──
-
-  {
-    const { toml: updated, added } = ensureFeatureFlags(toml, env);
-    if (added.length > 0) {
-      toml = updated;
-      result.featuresAdded = added;
-    }
-  }
-
-  // ── 1d. Ensure agent thread limits ──────────────────────
-
-  {
-    const desired = resolveAgentMaxThreads(env);
-    const ensured = ensureAgentMaxThreads(toml, {
-      maxThreads: desired.value,
-      overwrite: desired.explicit,
-    });
-    if (ensured.changed) {
-      toml = ensured.toml;
-      result.agentMaxThreads = {
-        from: ensured.existing,
-        to: ensured.applied,
-        explicit: desired.explicit,
-      };
-    } else if (ensured.skipped && desired.explicit) {
-      result.agentMaxThreadsSkipped = desired.raw;
-    }
-  }
-
-  // ── 1e. Ensure sandbox permissions ────────────────────────
-
-  {
-    const envPerms = env.CODEX_SANDBOX_PERMISSIONS || "";
-    const ensured = ensureTopLevelSandboxPermissions(toml, envPerms);
-    if (ensured.changed) {
-      toml = ensured.toml;
-      result.sandboxAdded = true;
-    }
-  }
-
-  // ── 1f. Ensure sandbox workspace-write defaults ───────────
-
-  {
-    // Determine primary repo root — prefer workspace agent root
-    const primaryRepoRoot = env.BOSUN_AGENT_REPO_ROOT || env.REPO_ROOT || "";
-    const additionalRoots = [];
-    // If agent repo root differs from REPO_ROOT, include both
-    if (env.BOSUN_AGENT_REPO_ROOT && env.REPO_ROOT &&
-        env.BOSUN_AGENT_REPO_ROOT !== env.REPO_ROOT) {
-      additionalRoots.push(env.REPO_ROOT);
-    }
-    // Enumerate ALL workspace repo paths so every repo's .git/.cache is writable
-    try {
-      // Inline workspace config read (sync) — avoids async import in sync function
-      const configDirGuess = env.BOSUN_DIR || resolve(homedir(), "bosun");
-      const bosunConfigPath = resolve(configDirGuess, "bosun.config.json");
-      if (existsSync(bosunConfigPath)) {
-        const bosunCfg = JSON.parse(readFileSync(bosunConfigPath, "utf8"));
-        const wsDir = resolve(configDirGuess, "workspaces");
-        const allWs = Array.isArray(bosunCfg.workspaces) ? bosunCfg.workspaces : [];
-        for (const ws of allWs) {
-          const wsPath = resolve(wsDir, ws.id || ws.name || "");
-          for (const repo of ws.repos || []) {
-            const repoPath = resolve(wsPath, repo.name);
-            if (repoPath && !additionalRoots.includes(repoPath) &&
-                repoPath !== primaryRepoRoot) {
-              additionalRoots.push(repoPath);
-            }
-          }
-        }
-      }
-    } catch { /* workspace config read failed — skip */ }
-    const ensured = ensureSandboxWorkspaceWrite(toml, {
-      writableRoots: env.CODEX_SANDBOX_WRITABLE_ROOTS || "",
-      repoRoot: primaryRepoRoot,
-      additionalRoots,
-    });
-    if (ensured.changed) {
-      toml = ensured.toml;
-      result.sandboxWorkspaceAdded = ensured.added;
-      result.sandboxWorkspaceUpdated = !ensured.added;
-      result.sandboxWorkspaceRootsAdded = ensured.rootsAdded || [];
-    }
-
-    // Prune any writable_roots that no longer exist on disk
-    const pruned = pruneStaleSandboxRoots(toml);
-    if (pruned.changed) {
-      toml = pruned.toml;
-      result.sandboxWorkspaceUpdated = true;
-      result.sandboxStaleRootsRemoved = pruned.removed;
-    }
-  }
-
-  // ── 1g. Ensure shell environment policy ───────────────────
-
-  if (!hasShellEnvPolicy(toml)) {
-    const policy = env.CODEX_SHELL_ENV_POLICY || "all";
-    toml += buildShellEnvPolicy(policy);
-    result.shellEnvAdded = true;
-  }
-
-  // ── 1f. Ensure common MCP servers ───────────────────────────
-
-  {
-    const missing = [];
-    if (!hasContext7Mcp(toml)) missing.push("context7");
-    if (!hasNamedMcpServer(toml, "sequential-thinking")) {
-      missing.push("sequential-thinking");
-    }
-    if (!hasNamedMcpServer(toml, "playwright")) missing.push("playwright");
-    if (!hasMicrosoftDocsMcp(toml)) missing.push("microsoft-docs");
-
-    if (missing.length > 0) {
-      if (missing.length >= 4) {
-        toml += buildCommonMcpBlocks();
-      } else {
-        if (missing.includes("context7")) {
-          toml += [
-            "",
-            "[mcp_servers.context7]",
-            'command = "npx"',
-            'args = ["-y", "@upstash/context7-mcp"]',
-            "",
-          ].join("\n");
-        }
-        if (missing.includes("sequential-thinking")) {
-          toml += [
-            "",
-            "[mcp_servers.sequential-thinking]",
-            'command = "npx"',
-            'args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]',
-            "",
-          ].join("\n");
-        }
-        if (missing.includes("playwright")) {
-          toml += [
-            "",
-            "[mcp_servers.playwright]",
-            'command = "npx"',
-            'args = ["-y", "@playwright/mcp@latest"]',
-            "",
-          ].join("\n");
-        }
-        if (missing.includes("microsoft-docs")) {
-          toml += [
-            "",
-            "[mcp_servers.microsoft-docs]",
-            'url = "https://learn.microsoft.com/api/mcp"',
-            "",
-          ].join("\n");
-        }
-      }
-      result.commonMcpAdded = true;
-    }
-  }
-
-  // ── 2. Audit and fix stream timeouts ──────────────────────
-
-  {
-    const ensured = ensureModelProviderSectionsFromEnv(toml, env);
-    toml = ensured.toml;
-    result.profileProvidersAdded = ensured.added;
-  }
-
-  const timeouts = auditStreamTimeouts(toml);
-  for (const t of timeouts) {
-    if (t.needsUpdate) {
-      toml = setStreamTimeout(toml, t.provider, t.recommended);
-      result.timeoutsFixed.push({
-        provider: t.provider,
-        from: t.currentValue,
-        to: t.recommended,
-      });
-    }
-  }
-
-  // ── 3. Ensure retry settings ──────────────────────────────
-
-  for (const t of timeouts) {
-    const before = toml;
-    toml = ensureRetrySettings(toml, t.provider);
-    if (toml !== before) {
-      result.retriesAdded.push(t.provider);
-    }
-  }
-
-  // ── Check if anything changed ─────────────────────────────
-
-  const original = readCodexConfig();
-  if (toml === original && !result.created) {
-    result.noChanges = true;
-    return result;
-  }
-
-  // ── Write ─────────────────────────────────────────────────
-
-  if (!dryRun) {
-    writeCodexConfig(toml);
-  }
 
   return result;
 }

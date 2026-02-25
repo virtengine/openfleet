@@ -15,7 +15,7 @@ import { showToast, refreshTab } from "../modules/state.js";
 import { navigateTo } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
 import { resolveIcon } from "../modules/icon-utils.js";
-import { formatRelative } from "../modules/utils.js";
+import { formatDate, formatDuration, formatRelative } from "../modules/utils.js";
 import { Card, Badge, EmptyState } from "../components/shared.js";
 
 /* ═══════════════════════════════════════════════════════════════
@@ -27,6 +27,8 @@ const templates = signal([]);
 const nodeTypes = signal([]);
 const activeWorkflow = signal(null);
 const workflowRuns = signal([]);
+const selectedRunId = signal(null);
+const selectedRunDetail = signal(null);
 const canvasZoom = signal(1);
 const canvasOffset = signal({ x: 0, y: 0 });
 const selectedNodeId = signal(null);
@@ -39,6 +41,8 @@ const viewMode = signal("list"); // "list" | "canvas" | "runs"
 function returnToWorkflowList() {
   selectedNodeId.value = null;
   selectedEdgeId.value = null;
+  selectedRunId.value = null;
+  selectedRunDetail.value = null;
   viewMode.value = "list";
 }
 
@@ -142,9 +146,28 @@ async function loadRuns(workflowId) {
       ? `/api/workflows/${workflowId}/runs`
       : "/api/workflows/runs";
     const data = await apiFetch(url);
-    if (data?.runs) workflowRuns.value = data.runs;
+    if (data?.runs) {
+      workflowRuns.value = data.runs;
+      if (selectedRunId.value && !data.runs.find((run) => run.runId === selectedRunId.value)) {
+        selectedRunId.value = null;
+        selectedRunDetail.value = null;
+      }
+    }
   } catch (err) {
     console.error("[workflows] Failed to load runs:", err);
+  }
+}
+
+async function loadRunDetail(runId) {
+  if (!runId) return;
+  try {
+    const data = await apiFetch(`/api/workflows/runs/${encodeURIComponent(runId)}`);
+    if (data?.run) {
+      selectedRunId.value = runId;
+      selectedRunDetail.value = data.run;
+    }
+  } catch (err) {
+    showToast("Failed to load run details", "error");
   }
 }
 
@@ -1327,7 +1350,7 @@ function WorkflowListView() {
           <span class="btn-icon">${resolveIcon("plus")}</span>
           Create Workflow
         </button>
-        <button class="wf-btn" onClick=${() => { viewMode.value = "runs"; loadRuns(); }}>
+        <button class="wf-btn" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; viewMode.value = "runs"; loadRuns(); }}>
           <span class="btn-icon">${resolveIcon("chart")}</span>
           Run History
         </button>
@@ -1475,11 +1498,105 @@ function WorkflowListView() {
  *  Run History View
  * ═══════════════════════════════════════════════════════════════ */
 
+function getRunStatusBadgeStyles(status) {
+  if (status === "completed") return { bg: "#10b98130", color: "#10b981" };
+  if (status === "failed") return { bg: "#ef444430", color: "#ef4444" };
+  if (status === "running") return { bg: "#3b82f630", color: "#60a5fa" };
+  return { bg: "#6b728030", color: "#9ca3af" };
+}
+
+function safePrettyJson(value) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value ?? "");
+  }
+}
+
 function RunHistoryView() {
   const runs = workflowRuns.value || [];
+  const selectedRun = selectedRunDetail.value;
+  const workflowNameMap = new Map((workflows.value || []).map((wf) => [wf.id, wf.name]));
+
+  if (selectedRun) {
+    const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
+    const nodeStatuses = selectedRun?.detail?.nodeStatuses || {};
+    const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
+    const logs = Array.isArray(selectedRun?.detail?.logs) ? selectedRun.detail.logs : [];
+    const errors = Array.isArray(selectedRun?.detail?.errors) ? selectedRun.detail.errors : [];
+    const nodeIds = Object.keys(nodeStatuses).sort((a, b) => String(a).localeCompare(String(b)));
+
+    return html`
+      <div style="padding: 0 4px;">
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
+          <button class="wf-btn wf-btn-sm" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; }}>
+            ← Back to Run History
+          </button>
+          <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run Details</h2>
+          <button class="wf-btn wf-btn-sm" onClick=${() => loadRunDetail(selectedRun.runId)}>Refresh</button>
+        </div>
+
+        <div style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 10px; border: 1px solid var(--color-border, #2a3040); padding: 14px; margin-bottom: 12px;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+            <span style="font-size: 14px; font-weight: 700;">
+              ${selectedRun.workflowName || workflowNameMap.get(selectedRun.workflowId) || selectedRun.workflowId || "Unknown Workflow"}
+            </span>
+            <span class="wf-badge" style="background: ${statusStyles.bg}; color: ${statusStyles.color};">
+              ${selectedRun.status || "unknown"}
+            </span>
+          </div>
+          <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); line-height: 1.6;">
+            <div><b>Workflow ID:</b> <code>${selectedRun.workflowId || "—"}</code></div>
+            <div><b>Run ID:</b> <code>${selectedRun.runId || "—"}</code></div>
+            <div><b>Started:</b> ${formatDate(selectedRun.startedAt)} (${formatRelative(selectedRun.startedAt)})</div>
+            <div><b>Finished:</b> ${formatDate(selectedRun.endedAt)}</div>
+            <div><b>Duration:</b> ${formatDuration(selectedRun.duration)}</div>
+            <div><b>Nodes:</b> ${selectedRun.nodeCount || 0} · <b>Logs:</b> ${selectedRun.logCount || logs.length} · <b>Errors:</b> ${selectedRun.errorCount || errors.length}</div>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <h3 style="margin: 0; font-size: 14px; color: var(--color-text-secondary, #8b95a5);">Node Execution</h3>
+          ${nodeIds.length === 0 && html`<div style="font-size: 12px; opacity: 0.6;">No node execution data recorded.</div>`}
+          ${nodeIds.map((nodeId) => {
+            const nodeStatus = nodeStatuses[nodeId];
+            const nodeStatusStyles = getRunStatusBadgeStyles(nodeStatus);
+            const nodeOutput = nodeOutputs[nodeId];
+            return html`
+              <details key=${nodeId} style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
+                <summary style="cursor: pointer; display: flex; align-items: center; gap: 8px;">
+                  <code style="font-size: 12px;">${nodeId}</code>
+                  <span class="wf-badge" style="background: ${nodeStatusStyles.bg}; color: ${nodeStatusStyles.color};">
+                    ${nodeStatus || "unknown"}
+                  </span>
+                </summary>
+                <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(nodeOutput)}</pre>
+              </details>
+            `;
+          })}
+        </div>
+
+        <div style="margin-top: 14px; display: grid; gap: 10px;">
+          <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
+            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Run Logs (${logs.length})</summary>
+            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(logs)}</pre>
+          </details>
+          <details open style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
+            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Errors (${errors.length})</summary>
+            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #fca5a5; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(errors)}</pre>
+          </details>
+          <details style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid var(--color-border, #2a3040); border-radius: 8px; padding: 8px 10px;">
+            <summary style="cursor: pointer; font-weight: 600; font-size: 13px;">Raw Run JSON</summary>
+            <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(selectedRun)}</pre>
+          </details>
+        </div>
+      </div>
+    `;
+  }
+
   return html`
     <div style="padding: 0 4px;">
-      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
         <button class="wf-btn wf-btn-sm" onClick=${returnToWorkflowList}>← Back to Workflows</button>
         <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run History</h2>
         <button class="wf-btn wf-btn-sm" onClick=${() => loadRuns()}>Refresh</button>
@@ -1490,23 +1607,36 @@ function RunHistoryView() {
       `}
 
       <div style="display: flex; flex-direction: column; gap: 8px;">
-        ${runs.map(run => html`
-          <div key=${run.runId} style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px; padding: 12px; border: 1px solid var(--color-border, #2a3040); display: flex; align-items: center; gap: 12px;">
-            <span class="icon-inline" style="font-size: 16px;">
-              ${run.status === "completed" ? resolveIcon("check") : run.status === "failed" ? resolveIcon("close") : resolveIcon("clock")}
-            </span>
-            <div style="flex: 1;">
-              <div style="font-weight: 500; font-size: 13px;">${run.workflowId}</div>
-              <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280);">
-                ${run.nodeCount || 0} nodes · ${run.duration ? Math.round(run.duration / 1000) + "s" : "—"}
-                ${run.errorCount ? ` · ${run.errorCount} errors` : ""}
+        ${runs.map((run) => {
+          const styles = getRunStatusBadgeStyles(run.status);
+          const runName = run.workflowName || workflowNameMap.get(run.workflowId) || run.workflowId;
+          return html`
+            <button
+              key=${run.runId}
+              class="wf-card"
+              onClick=${() => loadRunDetail(run.runId)}
+              style="text-align: left; width: 100%; background: var(--color-bg-secondary, #1a1f2e); border-radius: 8px; padding: 12px; border: 1px solid var(--color-border, #2a3040); display: flex; align-items: center; gap: 12px; cursor: pointer;"
+            >
+              <span class="icon-inline" style="font-size: 16px;">
+                ${run.status === "completed" ? resolveIcon("check") : run.status === "failed" ? resolveIcon("close") : resolveIcon("clock")}
+              </span>
+              <div style="flex: 1; min-width: 0;">
+                <div style="font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                  ${runName || "Unknown workflow"}
+                </div>
+                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                  ${formatDate(run.startedAt)} (${formatRelative(run.startedAt)}) · ${formatDuration(run.duration)} · ${run.nodeCount || 0} nodes${run.errorCount ? ` · ${run.errorCount} errors` : ""}
+                </div>
+                <div style="font-size: 11px; color: var(--color-text-secondary, #6b7280); margin-top: 2px;">
+                  Run: <code>${run.runId}</code>
+                </div>
               </div>
-            </div>
-            <span class="wf-badge" style="background: ${run.status === "completed" ? "#10b98130" : "#ef444430"}; color: ${run.status === "completed" ? "#10b981" : "#ef4444"};">
-              ${run.status}
-            </span>
-          </div>
-        `)}
+              <span class="wf-badge" style="background: ${styles.bg}; color: ${styles.color};">
+                ${run.status || "unknown"}
+              </span>
+            </button>
+          `;
+        })}
       </div>
     </div>
   `;

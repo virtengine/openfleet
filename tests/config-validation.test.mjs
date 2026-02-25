@@ -164,6 +164,42 @@ describe("loadConfig validation and edge cases", () => {
     ]);
   });
 
+  it("preserves per-executor codexProfile from config file", async () => {
+    await writeFile(
+      resolve(tempConfigDir, "bosun.config.json"),
+      JSON.stringify(
+        {
+          executors: [
+            {
+              name: "codex-azure-b",
+              executor: "CODEX",
+              variant: "DEFAULT",
+              weight: 100,
+              role: "primary",
+              codexProfile: "executor-2-profile",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.executorConfig.executors[0].codexProfile).toBe(
+      "executor-2-profile",
+    );
+  });
+
   it("keeps trigger system disabled by default", () => {
     delete process.env.TASK_TRIGGER_SYSTEM_ENABLED;
     const config = loadConfig([

@@ -397,6 +397,7 @@ export function resolveExecutorForTask(task, baseProfile, complexityConfig) {
     weight: baseProfile?.weight || 100,
     role: baseProfile?.role || "primary",
     enabled: baseProfile?.enabled !== false,
+    codexProfile: baseProfile?.codexProfile || "",
     model: modelProfile.model,
     reasoningEffort: modelProfile.reasoningEffort,
     complexity,

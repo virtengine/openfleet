@@ -5516,8 +5516,34 @@ async function handleApi(req, res, url) {
       const wfMod = await getWorkflowEngine();
       if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
       const engine = wfMod.getWorkflowEngine();
-      const runs = engine.getRunHistory ? engine.getRunHistory() : [];
+      const rawLimit = Number(url.searchParams.get("limit"));
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0
+        ? Math.min(rawLimit, 500)
+        : 200;
+      const runs = engine.getRunHistory ? engine.getRunHistory(null, limit) : [];
       jsonResponse(res, 200, { ok: true, runs });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/workflows/runs/")) {
+    try {
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const engine = wfMod.getWorkflowEngine();
+      const runId = decodeURIComponent(path.replace("/api/workflows/runs/", "")).trim();
+      if (!runId) {
+        jsonResponse(res, 400, { ok: false, error: "runId is required" });
+        return;
+      }
+      const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
+      if (!run) {
+        jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
+        return;
+      }
+      jsonResponse(res, 200, { ok: true, run });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -5544,7 +5570,11 @@ async function handleApi(req, res, url) {
       }
 
       if (action === "runs") {
-        const runs = engine.getRunHistory ? engine.getRunHistory(workflowId) : [];
+        const rawLimit = Number(url.searchParams.get("limit"));
+        const limit = Number.isFinite(rawLimit) && rawLimit > 0
+          ? Math.min(rawLimit, 500)
+          : 200;
+        const runs = engine.getRunHistory ? engine.getRunHistory(workflowId, limit) : [];
         jsonResponse(res, 200, { ok: true, runs });
         return;
       }
