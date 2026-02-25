@@ -185,9 +185,17 @@ function getPrDiff({ prUrl, branchName }) {
 function parseReviewResult(raw) {
   if (!raw || !raw.trim()) {
     return {
-      approved: true,
-      issues: [],
-      summary: "Empty agent output — auto-approved",
+      approved: false,
+      issues: [
+        {
+          severity: "major",
+          category: "broken",
+          file: "(review)",
+          line: null,
+          description: "Reviewer returned empty output; review is not complete.",
+        },
+      ],
+      summary: "Empty reviewer output",
     };
   }
 
@@ -218,11 +226,19 @@ function parseReviewResult(raw) {
     }
   }
 
-  // Couldn't parse — auto-approve with note
+  // Couldn't parse — treat as failed review to prevent unsafe auto-merge.
   return {
-    approved: true,
-    issues: [],
-    summary: "Could not parse review output — auto-approved",
+    approved: false,
+    issues: [
+      {
+        severity: "major",
+        category: "broken",
+        file: "(review)",
+        line: null,
+        description: "Could not parse reviewer output as JSON.",
+      },
+    ],
+    summary: "Could not parse reviewer output",
   };
 }
 
@@ -232,8 +248,18 @@ function parseReviewResult(raw) {
  * @returns {{ approved: boolean, issues: Array, summary: string }}
  */
 function normalizeResult(obj) {
-  const approved = obj.verdict !== "changes_requested";
+  const verdict = String(obj?.verdict || "").trim().toLowerCase();
+  const approved = verdict === "approved";
   const issues = Array.isArray(obj.issues) ? obj.issues : [];
+  if (!approved && verdict !== "changes_requested" && issues.length === 0) {
+    issues.push({
+      severity: "major",
+      category: "broken",
+      file: "(review)",
+      line: null,
+      description: `Invalid reviewer verdict "${verdict || "missing"}".`,
+    });
+  }
   const summary = typeof obj.summary === "string" ? obj.summary : "";
   return { approved, issues, summary };
 }
@@ -441,12 +467,21 @@ export class ReviewAgent {
 
     if (!diff) {
       console.log(
-        `${TAG} no diff available for task ${task.id} — auto-approving`,
+        `${TAG} no diff available for task ${task.id} — marking review as changes requested`,
       );
       const result = {
-        approved: true,
-        issues: [],
-        summary: "No diff available",
+        approved: false,
+        issues: [
+          {
+            severity: "major",
+            category: "broken",
+            file: "(diff)",
+            line: null,
+            description:
+              "No diff could be loaded for this PR; cannot complete review safely.",
+          },
+        ],
+        summary: "No diff available for review",
         reviewedAt: new Date().toISOString(),
         agentOutput: "",
       };
@@ -474,7 +509,7 @@ export class ReviewAgent {
       const sdkResult = await execWithRetry(prompt, {
         taskKey: `review-${task.id}`,
         timeoutMs: this.#reviewTimeoutMs,
-        maxRetries: 0, // Reviews don't retry — approve on failure
+        maxRetries: 0, // Reviews don't retry — reject on failure
         sdk: this.#sdk,
       });
 
@@ -482,8 +517,16 @@ export class ReviewAgent {
     } catch (err) {
       console.error(`${TAG} SDK call failed for task ${task.id}:`, err.message);
       const result = {
-        approved: true,
-        issues: [],
+        approved: false,
+        issues: [
+          {
+            severity: "major",
+            category: "broken",
+            file: "(review)",
+            line: null,
+            description: `Reviewer execution failed: ${err.message}`,
+          },
+        ],
         summary: `Review failed: ${err.message}`,
         reviewedAt: new Date().toISOString(),
         agentOutput: "",
