@@ -192,6 +192,19 @@ let primaryProfile = null;
 let primaryFallbackReason = null;
 let initialized = false;
 
+const CONFIG_WARNING_THROTTLE_MS = 5 * 60 * 1000;
+const _configWarningCache = new Map();
+
+function warnConfigIssueThrottled(key, message) {
+  const now = Date.now();
+  const prev = _configWarningCache.get(key) || 0;
+  if (now - prev < CONFIG_WARNING_THROTTLE_MS) {
+    return;
+  }
+  _configWarningCache.set(key, now);
+  console.warn(message);
+}
+
 function normalizePrimarySdkName(value) {
   return String(value || "")
     .trim()
@@ -225,7 +238,8 @@ function ensurePrimaryAgentConfigs(primaryName) {
         for (const line of logLines) console.log(`[primary-agent] ${line}`);
       }
     } catch (err) {
-      console.warn(
+      warnConfigIssueThrottled(
+        `repo-config:${repoRoot}`,
         `[primary-agent] failed to ensure repo config for ${repoRoot}: ${err?.message || err}`,
       );
     }
@@ -248,7 +262,8 @@ function ensurePrimaryAgentConfigs(primaryName) {
       printConfigSummary(codexResult, (msg) => console.log(`[primary-agent] ${msg}`));
     }
   } catch (err) {
-    console.warn(
+    warnConfigIssueThrottled(
+      "codex-config",
       `[primary-agent] failed to ensure Codex config: ${err?.message || err}`,
     );
   }

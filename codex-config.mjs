@@ -454,9 +454,45 @@ export function ensureFeatureFlags(toml, envOverrides = process.env) {
  * @param {string} [envValue]  CODEX_SANDBOX_MODE env var value
  * @returns {string}  TOML line(s)
  */
+function normalizeSandboxModeValue(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  switch (raw.toLowerCase()) {
+    case "disk-full-write-access":
+    case "workspace-write":
+      return "workspace-write";
+    case "disk-read-only":
+    case "read-only":
+      return "read-only";
+    case "danger-full-access":
+      return "danger-full-access";
+    default:
+      return raw;
+  }
+}
+
 export function buildSandboxMode(envValue) {
-  const mode = envValue ? envValue.trim() : "workspace-write";
+  const mode = normalizeSandboxModeValue(envValue) || "workspace-write";
   return `\n# Sandbox mode (added by bosun)\nsandbox_mode = "${mode}"\n`;
+}
+
+/**
+ * @deprecated Compatibility shim for older callers.
+ * `sandbox_permissions` has been replaced by `sandbox_mode` in Codex CLI.
+ */
+export function buildSandboxPermissions(envValue) {
+  return buildSandboxMode(envValue);
+}
+
+/**
+ * @deprecated Compatibility shim for older callers.
+ * Retained to avoid runtime failures during mixed-version startup.
+ */
+export function ensureTopLevelSandboxPermissions(toml, envValue) {
+  return ensureTopLevelSandboxMode(
+    toml,
+    normalizeSandboxModeValue(envValue) || undefined,
+  );
 }
 
 function parseTomlArrayLiteral(raw) {

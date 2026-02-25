@@ -160,6 +160,15 @@ function extractTaskId(pathname) {
   return match ? match[1] : null;
 }
 
+function isAlreadyExitedProcessError(err) {
+  const detail = String(err?.stderr || err?.message || "").toLowerCase();
+  return (
+    detail.includes("no running instance of the task") ||
+    detail.includes("not found") ||
+    detail.includes("no such process")
+  );
+}
+
 // ── AgentEndpoint Class ─────────────────────────────────────────────────────
 
 export class AgentEndpoint {
@@ -365,10 +374,17 @@ export class AgentEndpoint {
           }
         } catch (killErr) {
           /* may already be dead — log for diagnostics */
-          const stderrText = String(killErr.stderr || "");
+          const stderrText = String(killErr.stderr || killErr.message || "");
+          const stderrLower = stderrText.toLowerCase();
+          if (isAlreadyExitedProcessError(killErr)) {
+            console.log(
+              `${TAG} PID ${pid} already exited before kill on port ${port}; continuing`,
+            );
+            continue;
+          }
           if (
-            stderrText.toLowerCase().includes("access is denied") ||
-            stderrText.toLowerCase().includes("operation not permitted")
+            stderrLower.includes("access is denied") ||
+            stderrLower.includes("operation not permitted")
           ) {
             accessDeniedPorts.set(port, Date.now());
             persistAccessDeniedCache();
@@ -1262,3 +1278,4 @@ export class AgentEndpoint {
 export function createAgentEndpoint(options) {
   return new AgentEndpoint(options);
 }
+

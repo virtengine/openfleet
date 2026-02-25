@@ -271,6 +271,24 @@ function formatAgentAlert(alert) {
   return lines.join("\n");
 }
 
+function formatMonitorError(err) {
+  if (err == null) return "unknown error";
+  if (typeof err === "string") return err;
+  if (err instanceof Error) return err.message || String(err);
+  if (typeof err === "object") {
+    const details = [err.message, err.error, err.stderr, err.reason]
+      .filter((value) => typeof value === "string" && value.trim())
+      .map((value) => String(value).trim());
+    if (details.length > 0) return details[0];
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return String(err);
+    }
+  }
+  return String(err);
+}
+
 async function pollAgentAlerts() {
   if (process.env.VITEST) return;
   const path = getAgentAlertsPath();
@@ -12859,7 +12877,7 @@ if (isExecutorDisabled()) {
       },
       onTaskFailed: (task, err) => {
         console.warn(
-          `[task-executor] ❌ failed: "${task.title}" — ${err?.message || err}`,
+          `[task-executor] ❌ failed: "${task.title}" — ${formatMonitorError(err)}`,
         );
         if (agentEventBus) agentEventBus.onTaskFailed(task, err);
       },
@@ -13495,3 +13513,4 @@ export {
   getContainerStatus,
   isContainerEnabled,
 };
+

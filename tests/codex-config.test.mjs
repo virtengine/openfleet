@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCommonMcpBlocks,
+  buildSandboxPermissions,
   ensureAgentMaxThreads,
   ensureFeatureFlags,
   ensureSandboxWorkspaceWrite,
+  ensureTopLevelSandboxPermissions,
 } from "../codex-config.mjs";
 
 describe("codex-config defaults", () => {
@@ -138,5 +140,13 @@ describe("codex-config defaults", () => {
     expect(result.toml).toContain('"/tmp/virtengine"');
     // .git is only added when the directory actually exists on disk
     // (normalizeWritableRoots rejects phantom .git paths)
+  });
+  it("supports legacy sandbox_permissions helper names", () => {
+    const line = buildSandboxPermissions("disk-full-write-access");
+    expect(line).toContain('sandbox_mode = "workspace-write"');
+
+    const result = ensureTopLevelSandboxPermissions("[features]\nchild_agents_md = true\n", "disk-full-write-access");
+    expect(result.changed).toBe(true);
+    expect(result.toml).toContain('sandbox_mode = "workspace-write"');
   });
 });

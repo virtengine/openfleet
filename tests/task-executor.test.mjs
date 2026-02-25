@@ -120,7 +120,11 @@ import {
   ensureThreadRegistryLoaded,
 } from "../agent-pool.mjs";
 import { acquireWorktree, releaseWorktree } from "../worktree-manager.mjs";
-import { claimTask, releaseTask as releaseTaskClaim } from "../task-claims.mjs";
+import {
+  claimTask,
+  renewClaim,
+  releaseTask as releaseTaskClaim,
+} from "../task-claims.mjs";
 import { initPresence, getPresenceState } from "../presence.mjs";
 import { loadConfig } from "../config.mjs";
 import { evaluateBranchSafetyForPush } from "../git-safety.mjs";
@@ -807,6 +811,44 @@ describe("task-executor", () => {
         expect.objectContaining({ id: "task-123-uuid" }),
         expect.objectContaining({ success: false }),
       );
+    });
+
+    it("aborts running task when claim renewal loses ownership", async () => {
+      vi.useFakeTimers();
+      try {
+        const ex = new TaskExecutor();
+        ex.taskClaimRenewIntervalMs = 10;
+        ex._activeSlots.set("task-claim-loss", {
+          taskId: "task-claim-loss",
+          taskTitle: "Claim-sensitive task",
+          status: "running",
+          startedAt: Date.now(),
+        });
+        const ac = new AbortController();
+        ex._slotAbortControllers.set("task-claim-loss", ac);
+
+        renewClaim.mockResolvedValueOnce({
+          success: false,
+          error: "claim_token_mismatch",
+        });
+
+        ex._startTaskClaimRenewal(
+          "task-claim-loss",
+          "claim-abc",
+          "Claim-sensitive task",
+        );
+
+        await vi.advanceTimersByTimeAsync(20);
+
+        expect(renewClaim).toHaveBeenCalled();
+        expect(ac.signal.aborted).toBe(true);
+        expect(String(ac.signal.reason)).toContain(
+          "claim_lost:claim_token_mismatch",
+        );
+        expect(ex._taskClaimRenewTimers.has("task-claim-loss")).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("calls onTaskFailed when worktree acquisition fails", async () => {
@@ -1664,3 +1706,4 @@ describe("task-executor", () => {
     });
   });
 });
+

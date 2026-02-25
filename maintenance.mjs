@@ -10,7 +10,15 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { resolve } from "node:path";
 import {
   pruneStaleWorktrees,
@@ -500,51 +508,13 @@ function classifyMonitorProcess(pid) {
  */
 export function acquireMonitorLock(lockDir) {
   const pidFile = resolve(lockDir, PID_FILE_NAME);
-
-  if (existsSync(pidFile)) {
-    try {
-      const raw = readFileSync(pidFile, "utf8");
-      const parsed = parsePidFile(raw);
-      const existingPid = parsed.pid;
-      if (
-        existingPid &&
-        existingPid !== process.pid &&
-        isProcessAlive(existingPid)
-      ) {
-        const classification = classifyMonitorProcess(existingPid);
-        if (classification === "monitor") {
-          console.error(
-            `[maintenance] another bosun is already running (PID ${existingPid}). Exiting.`,
-          );
-          return false;
-        }
-        if (classification === "unknown") {
-          console.error(
-            `[maintenance] PID file points to a live process (PID ${existingPid}) but command line is unavailable. Assuming bosun may already be running; exiting.`,
-          );
-          return false;
-        }
-        console.warn(
-          `[maintenance] PID file points to non-monitor process (PID ${existingPid}); replacing lock`,
-        );
-      }
-      // Stale PID file — previous monitor crashed without cleanup
-      console.warn(
-        `[maintenance] removing stale PID file (PID ${parsed.raw || "unknown"} no longer alive)`,
-      );
-    } catch {
-      // Can't read PID file — just overwrite
-    }
+  try {
+    mkdirSync(lockDir, { recursive: true });
+  } catch {
+    /* best effort */
   }
 
-  try {
-    const payload = {
-      pid: process.pid,
-      started_at: new Date().toISOString(),
-      argv: process.argv,
-    };
-    writeFileSync(pidFile, JSON.stringify(payload, null, 2), "utf8");
-    // Clean up on exit
+  const registerCleanup = () => {
     const cleanup = () => {
       try {
         const current = parsePidFile(readFileSync(pidFile, "utf8")).pid;
@@ -564,12 +534,102 @@ export function acquireMonitorLock(lockDir) {
       cleanup();
       process.exit(0);
     });
-    console.log(`[maintenance] monitor PID file written: ${pidFile}`);
+  };
+
+  const writeFreshLock = () => {
+    const payload = {
+      pid: process.pid,
+      started_at: new Date().toISOString(),
+      argv: process.argv,
+    };
+    const fd = openSync(pidFile, "wx");
+    try {
+      writeFileSync(fd, JSON.stringify(payload, null, 2), "utf8");
+    } finally {
+      try {
+        closeSync(fd);
+      } catch {
+        /* best effort */
+      }
+    }
+    registerCleanup();
+    console.log("[maintenance] monitor PID file written: " + pidFile);
     return true;
-  } catch (e) {
-    console.warn(`[maintenance] failed to write PID file: ${e.message}`);
-    return true; // Don't block startup on PID file failure
+  };
+
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return writeFreshLock();
+    } catch (err) {
+      if (err?.code !== "EEXIST") {
+        console.warn("[maintenance] failed to write PID file: " + err.message);
+        return true; // Don't block startup on PID file failure
+      }
+
+      if (!existsSync(pidFile)) {
+        // Lock vanished between EEXIST and inspection, retry quickly.
+        continue;
+      }
+
+      try {
+        const raw = readFileSync(pidFile, "utf8");
+        const parsed = parsePidFile(raw);
+        const existingPid = parsed.pid;
+
+        if (existingPid && existingPid === process.pid) {
+          // Re-entrant startup within the same process.
+          return true;
+        }
+
+        if (
+          existingPid &&
+          existingPid !== process.pid &&
+          isProcessAlive(existingPid)
+        ) {
+          const classification = classifyMonitorProcess(existingPid);
+          if (classification === "monitor") {
+            console.error(
+              "[maintenance] another bosun is already running (PID " + existingPid + "). Exiting.",
+            );
+            return false;
+          }
+          if (classification === "unknown") {
+            console.error(
+              "[maintenance] PID file points to a live process (PID " + existingPid + ") but command line is unavailable. Assuming bosun may already be running; exiting.",
+            );
+            return false;
+          }
+          console.warn(
+            "[maintenance] PID file points to non-monitor process (PID " + existingPid + "); replacing lock",
+          );
+        } else {
+          console.warn(
+            "[maintenance] removing stale PID file (PID " + (parsed.raw || "unknown") + " no longer alive)",
+          );
+        }
+      } catch {
+        // Can't parse/read existing lock; remove it and retry.
+      }
+
+      try {
+        unlinkSync(pidFile);
+      } catch (unlinkErr) {
+        if (unlinkErr?.code !== "ENOENT") {
+          if (attempt === maxAttempts) {
+            console.error(
+              "[maintenance] failed to remove stale PID file after " + attempt + " attempt(s): " + unlinkErr.message,
+            );
+            return false;
+          }
+          continue;
+        }
+      }
+    }
   }
+
+  console.error("[maintenance] failed to acquire monitor PID lock after retries");
+  return false;
 }
 
 function isProcessAlive(pid) {
@@ -839,3 +899,4 @@ export async function runMaintenanceSweep(opts = {}) {
     branchesDeleted,
   };
 }
+

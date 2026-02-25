@@ -105,6 +105,11 @@ const MAX_NO_COMMIT_ATTEMPTS = 3; // Stop picking up a task after N consecutive 
 const NO_COMMIT_COOLDOWN_BASE_MS = 15 * 60 * 1000; // 15 minutes base cooldown for no-commit
 const NO_COMMIT_MAX_COOLDOWN_MS = 2 * 60 * 60 * 1000;
 const CLAIM_CONFLICT_COMMENT_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+const FATAL_CLAIM_RENEW_ERRORS = new Set([
+  "task_claimed_by_different_instance",
+  "claim_token_mismatch",
+  "task_not_claimed",
+]);
 const CODEX_TASK_LABELS = (() => {
   const raw = String(
     process.env.BOSUN_TASK_LABELS || "bosun,codex-mointor",
@@ -3313,16 +3318,27 @@ class TaskExecutor {
           ttlMinutes: this._getTaskClaimTtlMinutes(),
         });
         if (!renewed?.success) {
-          console.warn(
-            `${TAG} claim renewal failed for "${taskTitle || taskId}": ${renewed?.error || "unknown"}`,
-          );
-          if (
-            renewed?.error === "task_claimed_by_different_instance" ||
-            renewed?.error === "claim_token_mismatch" ||
-            renewed?.error === "task_not_claimed"
-          ) {
+          const renewError = String(renewed?.error || "unknown");
+          if (FATAL_CLAIM_RENEW_ERRORS.has(renewError)) {
             this._stopTaskClaimRenewal(taskId);
+            const slot = this._activeSlots.get(taskId);
+            const taskLabel = taskTitle || slot?.taskTitle || taskId;
+            const ac = this._slotAbortControllers.get(taskId);
+            if (slot?.status === "running" && ac && !ac.signal.aborted) {
+              console.warn(
+                `${TAG} claim ownership lost for "${taskLabel}" (${renewError}) — aborting task to avoid duplicate execution`,
+              );
+              ac.abort(`claim_lost:${renewError}`);
+            } else {
+              console.warn(
+                `${TAG} claim ownership lost for "${taskLabel}" (${renewError}); stopping renewals`,
+              );
+            }
+            return;
           }
+          console.warn(
+            `${TAG} claim renewal failed for "${taskTitle || taskId}": ${renewError}`,
+          );
         }
       } catch (err) {
         console.warn(
@@ -6425,3 +6441,4 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
+

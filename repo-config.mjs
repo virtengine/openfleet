@@ -21,25 +21,181 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import {
-  buildFeaturesBlock,
-  buildShellEnvPolicy,
-  buildSandboxMode,
-  buildSandboxWorkspaceWrite,
-  buildCommonMcpBlocks,
-  buildVibeKanbanBlock,
-  buildAgentSdkBlock,
-} from "./codex-config.mjs";
-
+import * as codexConfig from "./codex-config.mjs";
 import {
   buildRecommendedVsCodeSettings,
 } from "./setup.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const _missingCodexHelpersWarned = new Set();
+
+function warnMissingCodexHelper(name) {
+  if (_missingCodexHelpersWarned.has(name)) return;
+  _missingCodexHelpersWarned.add(name);
+  console.warn(
+    `[repo-config] codex-config helper "${name}" missing or invalid; using compatibility fallback`,
+  );
+}
+
+function toTomlString(value) {
+  return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function parseWritableRootsInput(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry || "").trim()).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function fallbackBuildSandboxMode(envValue) {
+  const mode = String(envValue || "workspace-write").trim() || "workspace-write";
+  return `\n# Sandbox mode (added by bosun)\nsandbox_mode = "${mode}"\n`;
+}
+
+function fallbackBuildSandboxWorkspaceWrite(options = {}) {
+  const { writableRoots, repoRoot } = options;
+  const roots = new Set();
+
+  for (const entry of parseWritableRootsInput(writableRoots)) {
+    if (isAbsolute(entry)) roots.add(entry);
+  }
+  if (repoRoot && isAbsolute(repoRoot)) {
+    roots.add(repoRoot);
+    const parent = dirname(repoRoot);
+    if (parent && parent !== repoRoot) roots.add(parent);
+  }
+  roots.add("/tmp");
+
+  if (!roots.size) return "";
+  return [
+    "",
+    "# Workspace-write sandbox defaults (compat fallback)",
+    "[sandbox_workspace_write]",
+    "network_access = true",
+    "exclude_tmpdir_env_var = false",
+    "exclude_slash_tmp = false",
+    `writable_roots = [${Array.from(roots).map(toTomlString).join(", ")}]`,
+    "",
+  ].join("\n");
+}
+
+function fallbackBuildFeaturesBlock() {
+  return [
+    "",
+    "# Feature flags (compat fallback)",
+    "[features]",
+    "child_agents_md = true",
+    "multi_agent = true",
+    "collaboration_modes = true",
+    "memory_tool = true",
+    "shell_tool = true",
+    "unified_exec = true",
+    "",
+  ].join("\n");
+}
+
+function fallbackBuildShellEnvPolicy(policy = "all") {
+  const inherit = String(policy || "all").trim() || "all";
+  return `\n[shell_environment_policy]\ninherit = "${inherit}"\n`;
+}
+
+function fallbackBuildCommonMcpBlocks() {
+  return [
+    "",
+    "[mcp_servers.context7]",
+    'command = "npx"',
+    'args = ["-y", "@upstash/context7-mcp"]',
+    "",
+    "[mcp_servers.microsoft-docs]",
+    'url = "https://learn.microsoft.com/api/mcp"',
+    "",
+  ].join("\n");
+}
+
+function fallbackBuildVibeKanbanBlock({ vkBaseUrl } = {}) {
+  const baseUrl = String(vkBaseUrl || "http://127.0.0.1:54089").trim() || "http://127.0.0.1:54089";
+  return [
+    "",
+    "[mcp_servers.vibe_kanban]",
+    'command = "npx"',
+    'args = ["-y", "vibe-kanban@latest"]',
+    "[mcp_servers.vibe_kanban.env]",
+    `VK_BASE_URL = ${toTomlString(baseUrl)}`,
+    "",
+  ].join("\n");
+}
+
+function fallbackBuildAgentSdkBlock({ primary = "codex" } = {}) {
+  const normalized = String(primary || "codex").trim().toLowerCase();
+  const resolved = ["codex", "copilot", "claude"].includes(normalized)
+    ? normalized
+    : "codex";
+  const caps = {
+    codex: { steering: true, subagents: true, vscodeTools: false },
+    copilot: { steering: false, subagents: true, vscodeTools: true },
+    claude: { steering: false, subagents: true, vscodeTools: false },
+  };
+  const c = caps[resolved];
+  return [
+    "",
+    "[agent_sdk]",
+    `primary = "${resolved}"`,
+    "max_threads = 12",
+    "",
+    "[agent_sdk.capabilities]",
+    `steering = ${c.steering}`,
+    `subagents = ${c.subagents}`,
+    `vscode_tools = ${c.vscodeTools}`,
+    "",
+  ].join("\n");
+}
+
+function getCodexHelper(name, fallback) {
+  const candidate = codexConfig?.[name];
+  if (typeof candidate === "function") return candidate;
+  warnMissingCodexHelper(name);
+  return fallback;
+}
+
+const buildFeaturesBlock = getCodexHelper(
+  "buildFeaturesBlock",
+  fallbackBuildFeaturesBlock,
+);
+const buildShellEnvPolicy = getCodexHelper(
+  "buildShellEnvPolicy",
+  fallbackBuildShellEnvPolicy,
+);
+const buildSandboxMode = getCodexHelper(
+  "buildSandboxMode",
+  fallbackBuildSandboxMode,
+);
+const buildSandboxWorkspaceWrite = getCodexHelper(
+  "buildSandboxWorkspaceWrite",
+  fallbackBuildSandboxWorkspaceWrite,
+);
+const buildCommonMcpBlocks = getCodexHelper(
+  "buildCommonMcpBlocks",
+  fallbackBuildCommonMcpBlocks,
+);
+const buildVibeKanbanBlock = getCodexHelper(
+  "buildVibeKanbanBlock",
+  fallbackBuildVibeKanbanBlock,
+);
+const buildAgentSdkBlock = getCodexHelper(
+  "buildAgentSdkBlock",
+  fallbackBuildAgentSdkBlock,
+);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
