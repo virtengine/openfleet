@@ -473,6 +473,68 @@ const PID_START_TIME_TOLERANCE_MS = 90_000;
 const UNKNOWN_OWNER_MONITOR_GRACE_MS = 3 * 60 * 1000;
 const MONITOR_PROCESS_STARTED_AT = new Date().toISOString();
 const MONITOR_LOCK_TOKEN = randomUUID();
+const DUPLICATE_START_WARN_STATE_FILE = "monitor-duplicate-start-warning-state.json";
+const DUPLICATE_START_WARN_THROTTLE_MS = Math.max(
+  5_000,
+  Number(process.env.MONITOR_DUPLICATE_START_WARN_THROTTLE_MS || "60000") || 60000,
+);
+
+function logDuplicateStartWarning(lockDir, existingPid, message) {
+  const statePath = resolve(lockDir, DUPLICATE_START_WARN_STATE_FILE);
+  const now = Date.now();
+  let state = {};
+  try {
+    state = JSON.parse(readFileSync(statePath, "utf8"));
+  } catch {
+    state = {};
+  }
+
+  const lastPid = Number(state?.pid);
+  const lastLoggedAt = Number(state?.lastLoggedAt || 0);
+  const suppressed = Math.max(0, Number(state?.suppressed || 0));
+  const samePid = Number(existingPid) > 0 && lastPid === Number(existingPid);
+
+  if (samePid && now - lastLoggedAt < DUPLICATE_START_WARN_THROTTLE_MS) {
+    try {
+      writeFileSync(
+        statePath,
+        JSON.stringify({
+          pid: existingPid,
+          lastLoggedAt,
+          suppressed: suppressed + 1,
+        }),
+        "utf8",
+      );
+    } catch {
+      /* best effort */
+    }
+    return;
+  }
+
+  const suffix =
+    samePid && suppressed > 0
+      ? " (suppressed " +
+        suppressed +
+        " duplicate-start warnings in last " +
+        Math.round(DUPLICATE_START_WARN_THROTTLE_MS / 1000) +
+        "s)"
+      : "";
+  console.warn(message + suffix);
+  try {
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        pid: existingPid,
+        lastLoggedAt: now,
+        suppressed: 0,
+      }),
+      "utf8",
+    );
+  } catch {
+    /* best effort */
+  }
+}
+
 
 function parsePidFile(raw) {
   const text = String(raw || "").trim();
@@ -671,14 +733,18 @@ export function acquireMonitorLock(lockDir) {
         ) {
           const classification = classifyMonitorProcess(existingPid, parsed.data);
           if (classification === "monitor") {
-            console.warn(
+            logDuplicateStartWarning(
+              lockDir,
+              existingPid,
               "[maintenance] another bosun is already running (PID " + existingPid + "). Ignoring duplicate start.",
             );
             return false;
           }
           if (classification === "unknown") {
             if (shouldAssumeMonitorForUnknownOwner(parsed.data)) {
-              console.warn(
+              logDuplicateStartWarning(
+                lockDir,
+                existingPid,
                 "[maintenance] PID file points to a live process (PID " + existingPid +
                   ") with unavailable command line, but lock payload matches a recent monitor start; ignoring duplicate start",
               );

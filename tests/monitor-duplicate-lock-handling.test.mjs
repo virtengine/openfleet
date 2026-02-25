@@ -20,7 +20,12 @@ describe("duplicate monitor lock handling", () => {
   it("logs duplicate lock owners as warnings in maintenance", () => {
     expect(maintenanceSource).toContain("another bosun is already running");
     expect(maintenanceSource).toContain("Ignoring duplicate start.");
-    expect(maintenanceSource).toContain("console.warn(");
+    expect(maintenanceSource).toContain("logDuplicateStartWarning(");
+  });
+
+  it("throttles duplicate lock warning spam across restart storms", () => {
+    expect(maintenanceSource).toContain("MONITOR_DUPLICATE_START_WARN_THROTTLE_MS");
+    expect(maintenanceSource).toContain("duplicate-start warnings in last");
   });
 
   it("short-circuits duplicate starts in cli before forking monitor", () => {
@@ -30,3 +35,4 @@ describe("duplicate monitor lock handling", () => {
     expect(preflightMatch, "cli should skip runMonitor() when a live lock owner exists").toBeTruthy();
   });
 });
+
