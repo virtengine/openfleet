@@ -733,13 +733,28 @@ function handleApply(body) {
       for (const ex of configJson.executors) {
         if (ex?.authMode !== "api-key") continue;
         const type = (ex.executor || "").toUpperCase();
+        const isPrimaryRole = String(ex.role || "").toLowerCase() === "primary";
+        const codexProfileName = String(ex.codexProfile || "").trim();
+        const codexProfileEnvBase = codexProfileName
+          .toUpperCase()
+          .replace(/[^A-Z0-9]/g, "_");
         if (type === "CODEX" || type === "OPENAI") {
           const connections = Array.isArray(ex.connections) ? ex.connections.filter((c) => c.apiKey || c.baseUrl) : [];
           if (connections.length > 0) {
             // Multi-connection path — first connection is the primary key/endpoint
             const primary = connections[0];
-            if (primary.apiKey)  envMap.OPENAI_API_KEY  = primary.apiKey;
-            if (primary.baseUrl) envMap.OPENAI_BASE_URL = primary.baseUrl;
+            if (primary.apiKey && (isPrimaryRole || !envMap.OPENAI_API_KEY)) {
+              envMap.OPENAI_API_KEY = primary.apiKey;
+            }
+            if (primary.baseUrl && (isPrimaryRole || !envMap.OPENAI_BASE_URL)) {
+              envMap.OPENAI_BASE_URL = primary.baseUrl;
+            }
+            if (
+              codexProfileName &&
+              (isPrimaryRole || !envMap.CODEX_MODEL_PROFILE)
+            ) {
+              envMap.CODEX_MODEL_PROFILE = codexProfileName;
+            }
             // Additional connections become named Codex model profiles
             for (let ci = 1; ci < connections.length; ci++) {
               const conn = connections[ci];
@@ -749,10 +764,31 @@ function handleApply(body) {
               if (conn.apiKey)  envMap[`CODEX_MODEL_PROFILE_${profileName}_API_KEY`]  = conn.apiKey;
               if (conn.baseUrl) envMap[`CODEX_MODEL_PROFILE_${profileName}_BASE_URL`] = conn.baseUrl;
             }
+          } else if (codexProfileEnvBase) {
+            // Explicit per-executor profile path.
+            if (ex.apiKey) {
+              envMap[`CODEX_MODEL_PROFILE_${codexProfileEnvBase}_API_KEY`] = ex.apiKey;
+            }
+            if (ex.baseUrl) {
+              envMap[`CODEX_MODEL_PROFILE_${codexProfileEnvBase}_BASE_URL`] = ex.baseUrl;
+            }
+            if (ex.apiKey && (isPrimaryRole || !envMap.OPENAI_API_KEY)) {
+              envMap.OPENAI_API_KEY = ex.apiKey;
+            }
+            if (ex.baseUrl && (isPrimaryRole || !envMap.OPENAI_BASE_URL)) {
+              envMap.OPENAI_BASE_URL = ex.baseUrl;
+            }
+            if (isPrimaryRole || !envMap.CODEX_MODEL_PROFILE) {
+              envMap.CODEX_MODEL_PROFILE = codexProfileName;
+            }
           } else {
             // Legacy single-key path (no connections array configured)
-            if (ex.apiKey)  envMap.OPENAI_API_KEY  = ex.apiKey;
-            if (ex.baseUrl) envMap.OPENAI_BASE_URL = ex.baseUrl;
+            if (ex.apiKey && (isPrimaryRole || !envMap.OPENAI_API_KEY)) {
+              envMap.OPENAI_API_KEY = ex.apiKey;
+            }
+            if (ex.baseUrl && (isPrimaryRole || !envMap.OPENAI_BASE_URL)) {
+              envMap.OPENAI_BASE_URL = ex.baseUrl;
+            }
           }
         } else if (type === "CLAUDE_CODE" || type === "ANTHROPIC") {
           if (ex.apiKey)  envMap.ANTHROPIC_API_KEY  = ex.apiKey;

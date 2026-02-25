@@ -239,8 +239,8 @@ async function withSanitizedOpenAiEnv(fn) {
  * provider settings via `config` and maps the API key via `env`.
  * Otherwise strips OPENAI_BASE_URL so the SDK uses its default auth.
  */
-function buildCodexSdkOptions() {
-  const { env: resolvedEnv } = resolveCodexProfileRuntime(process.env);
+function buildCodexSdkOptions(envInput = process.env) {
+  const { env: resolvedEnv } = resolveCodexProfileRuntime(envInput);
   const baseUrl = resolvedEnv.OPENAI_BASE_URL || "";
   const isAzure = baseUrl.includes(".openai.azure.com");
   const env = { ...resolvedEnv };
@@ -544,7 +544,13 @@ export function getAvailableSdks() {
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string }>}
  */
 async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
-  const { onEvent, abortController: externalAC, onThreadReady = null, taskKey: steerKey = null } = extra;
+  const {
+    onEvent,
+    abortController: externalAC,
+    onThreadReady = null,
+    taskKey: steerKey = null,
+    envOverrides = null,
+  } = extra;
 
   let reportedThreadId = null;
   const emitThreadReady = (threadId) => {
@@ -583,7 +589,16 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
 
   // Pass feature overrides via --config so sub-agent and memory features are
   // available even if ~/.codex/config.toml hasn't been patched yet.
-  const codexOpts = buildCodexSdkOptions();
+  const codexRuntimeEnv =
+    envOverrides && typeof envOverrides === "object"
+      ? { ...process.env, ...envOverrides }
+      : process.env;
+  const codexOpts = buildCodexSdkOptions(codexRuntimeEnv);
+  const modelOverride = String(extra?.model || "").trim();
+  if (modelOverride) {
+    codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
+    codexOpts.config = { ...(codexOpts.config || {}), model: modelOverride };
+  }
   codexOpts.config = {
     ...(codexOpts.config || {}),
     features: {
@@ -1947,7 +1962,7 @@ function isPoisonedCodexResumeError(errorValue) {
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string, threadId: string|null }>}
  */
 async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
-  const { onEvent, abortController: externalAC } = extra;
+  const { onEvent, abortController: externalAC, envOverrides = null } = extra;
 
   let CodexClass;
   try {
@@ -1965,7 +1980,17 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     };
   }
 
-  const codex = new CodexClass(buildCodexSdkOptions());
+  const codexRuntimeEnv =
+    envOverrides && typeof envOverrides === "object"
+      ? { ...process.env, ...envOverrides }
+      : process.env;
+  const codexOpts = buildCodexSdkOptions(codexRuntimeEnv);
+  const modelOverride = String(extra?.model || "").trim();
+  if (modelOverride) {
+    codexOpts.env = { ...(codexOpts.env || {}), CODEX_MODEL: modelOverride };
+    codexOpts.config = { ...(codexOpts.config || {}), model: modelOverride };
+  }
+  const codex = new CodexClass(codexOpts);
 
   let thread;
   try {

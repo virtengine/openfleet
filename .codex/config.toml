@@ -94,3 +94,10 @@ args = ["-y", "@playwright/mcp@latest"]
 [mcp_servers.microsoft-docs]
 url = "https://learn.microsoft.com/api/mcp"
 
+[sandbox_workspace_write]
+network_access = true
+exclude_tmpdir_env_var = false
+exclude_slash_tmp = false
+writable_roots = ["C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.git", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.cache\\worktrees", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.cache", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh", "/tmp"]
+
+# ── Feature flags (added by bosun) ──

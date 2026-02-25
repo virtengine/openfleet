@@ -359,9 +359,10 @@ class WorktreeManager {
    */
   async acquireWorktree(branch, taskKey, opts = {}) {
     await this.loadRegistry();
+    const normalizedBranch = branch.replace(/^refs\/heads\//, "");
 
     // 1. Check if a worktree already exists for this branch
-    const existingPath = this.findWorktreeForBranch(branch);
+    const existingPath = this.findWorktreeForBranch(normalizedBranch);
     if (existingPath) {
       // Update registry with the (possibly new) taskKey
       const existingKey = this._findKeyByPath(existingPath);
@@ -379,7 +380,7 @@ class WorktreeManager {
         // Not tracked — register it now
         this.registry.set(taskKey, {
           path: existingPath,
-          branch,
+          normalizedBranch,
           taskKey,
           createdAt: Date.now(),
           lastUsedAt: Date.now(),
@@ -410,10 +411,13 @@ class WorktreeManager {
 
     // Build git worktree add command
     const args = ["worktree", "add", worktreePath];
-    if (opts.baseBranch) {
-      args.push("-b", branch, opts.baseBranch);
+    // Avoid a guaranteed "branch already exists" failure when rerunning tasks:
+    // if the local branch already exists, reuse it instead of creating with -b.
+    const localBranchExists = this._localBranchExists(normalizedBranch);
+    if (opts.baseBranch && !localBranchExists) {
+      args.push("-b", normalizedBranch, opts.baseBranch);
     } else {
-      args.push(branch);
+      args.push(normalizedBranch);
     }
 
     // Use extended timeout for large repos (7000+ files can take >120s on Windows)
@@ -453,7 +457,7 @@ class WorktreeManager {
         // Try checking out the existing branch into the new worktree (no -b)
         // Use extended timeout for large repos (7000+ files can take >120s on Windows)
         const existingResult = gitSync(
-          ["worktree", "add", worktreePath, branch],
+          ["worktree", "add", worktreePath, normalizedBranch],
           this.repoRoot,
           { timeout: WT_TIMEOUT },
         );
@@ -469,7 +473,13 @@ class WorktreeManager {
             console.warn(
               `${TAG} branch "${branch}" already checked out elsewhere, using -B to force-reset`,
             );
-            const forceArgs = ["worktree", "add", worktreePath, "-B", branch];
+            const forceArgs = [
+                "worktree",
+                "add",
+                worktreePath,
+                "-B",
+                normalizedBranch,
+              ];
             if (opts.baseBranch) forceArgs.push(opts.baseBranch);
             result = gitSync(forceArgs, this.repoRoot, { timeout: WT_TIMEOUT });
             if (result.status !== 0) {
@@ -499,7 +509,7 @@ class WorktreeManager {
           "add",
           "--detach",
           worktreePath,
-          branch,
+          normalizedBranch,
         ];
         const retryResult = gitSync(detachArgs, this.repoRoot, {
           timeout: WT_TIMEOUT,
@@ -934,6 +944,22 @@ class WorktreeManager {
   }
 
   // ── Private Helpers ─────────────────────────────────────────────────────
+
+  /**
+   * Check whether a local branch ref exists.
+   * @param {string} branch
+   * @returns {boolean}
+   */
+  _localBranchExists(branch) {
+    const normalized = (branch || "").replace(/^refs\/heads\//, "");
+    if (!normalized) return false;
+    const result = gitSync(
+      ["show-ref", "--verify", "--quiet", `refs/heads/${normalized}`],
+      this.repoRoot,
+      { timeout: 5000 },
+    );
+    return result.status === 0;
+  }
 
   /**
    * Find a registry key by the worktree's filesystem path.

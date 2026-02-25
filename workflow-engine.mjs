@@ -247,11 +247,13 @@ export class WorkflowContext {
   }
 
   /** Get a serializable summary of the execution */
-  toJSON() {
+  toJSON(endedAt = Date.now()) {
+    const finishedAt = Number.isFinite(endedAt) ? endedAt : Date.now();
     return {
       id: this.id,
       startedAt: this.startedAt,
-      duration: Date.now() - this.startedAt,
+      endedAt: finishedAt,
+      duration: Math.max(0, finishedAt - this.startedAt),
       data: this.data,
       nodeOutputs: Object.fromEntries(this.nodeOutputs),
       nodeStatuses: Object.fromEntries(this.nodeStatuses),
@@ -485,15 +487,52 @@ export class WorkflowEngine extends EventEmitter {
 
   /** Get historical run logs */
   getRunHistory(workflowId, limit = 20) {
-    const indexPath = resolve(this.runsDir, "index.json");
-    if (!existsSync(indexPath)) return [];
+    let runs = this._readRunIndex();
+    if (workflowId) runs = runs.filter((r) => r.workflowId === workflowId);
+    runs.sort((a, b) => Number(b?.startedAt || 0) - Number(a?.startedAt || 0));
+    const normalizedLimit = Number(limit);
+    if (Number.isFinite(normalizedLimit) && normalizedLimit > 0) {
+      return runs.slice(0, normalizedLimit);
+    }
+    return runs;
+  }
+
+  /** Get full run detail for a specific runId */
+  getRunDetail(runId) {
+    const normalizedRunId = basename(String(runId || "")).replace(/\.json$/i, "");
+    if (!normalizedRunId) return null;
+    const detailPath = resolve(this.runsDir, `${normalizedRunId}.json`);
+    if (!existsSync(detailPath)) return null;
+
     try {
-      const index = JSON.parse(readFileSync(indexPath, "utf8"));
-      let runs = index.runs || [];
-      if (workflowId) runs = runs.filter((r) => r.workflowId === workflowId);
-      return runs.slice(-limit);
+      const detail = JSON.parse(readFileSync(detailPath, "utf8"));
+      const summary = this._readRunIndex().find((entry) => entry?.runId === normalizedRunId) || null;
+      if (summary) {
+        return { ...summary, detail };
+      }
+      const nodeStatuses = detail?.nodeStatuses || {};
+      const statusValues = Object.values(nodeStatuses);
+      const status = Array.isArray(detail?.errors) && detail.errors.length > 0
+        ? "failed"
+        : "completed";
+      return {
+        runId: normalizedRunId,
+        workflowId: detail?.data?._workflowId || null,
+        workflowName: detail?.data?._workflowName || null,
+        startedAt: detail?.startedAt || null,
+        endedAt: detail?.endedAt || null,
+        duration: detail?.duration || null,
+        status,
+        errorCount: Array.isArray(detail?.errors) ? detail.errors.length : 0,
+        logCount: Array.isArray(detail?.logs) ? detail.logs.length : 0,
+        nodeCount: statusValues.length,
+        completedCount: statusValues.filter((value) => value === NodeStatus.COMPLETED).length,
+        failedCount: statusValues.filter((value) => value === NodeStatus.FAILED).length,
+        skippedCount: statusValues.filter((value) => value === NodeStatus.SKIPPED).length,
+        detail,
+      };
     } catch {
-      return [];
+      return null;
     }
   }
 
@@ -756,27 +795,46 @@ export class WorkflowEngine extends EventEmitter {
     }
   }
 
+  _readRunIndex() {
+    const indexPath = resolve(this.runsDir, "index.json");
+    if (!existsSync(indexPath)) return [];
+    try {
+      const index = JSON.parse(readFileSync(indexPath, "utf8"));
+      return Array.isArray(index?.runs) ? index.runs : [];
+    } catch {
+      return [];
+    }
+  }
+
   _persistRun(runId, workflowId, ctx) {
     try {
       this._ensureDirs();
+      const finishedAt = Date.now();
+      const workflow = this.get(workflowId);
+      const detail = ctx.toJSON(finishedAt);
+      const statusValues = Object.values(detail.nodeStatuses || {});
+      const completedCount = statusValues.filter((value) => value === NodeStatus.COMPLETED).length;
+      const failedCount = statusValues.filter((value) => value === NodeStatus.FAILED).length;
+      const skippedCount = statusValues.filter((value) => value === NodeStatus.SKIPPED).length;
       const summary = {
         runId,
         workflowId,
+        workflowName: workflow?.name || ctx.data?._workflowName || workflowId,
         startedAt: ctx.startedAt,
-        duration: Date.now() - ctx.startedAt,
+        endedAt: finishedAt,
+        duration: Math.max(0, finishedAt - ctx.startedAt),
         status: ctx.errors.length > 0 ? "failed" : "completed",
         errorCount: ctx.errors.length,
-        nodeCount: ctx.nodeStatuses.size,
+        logCount: detail.logs?.length || 0,
+        nodeCount: statusValues.length,
+        completedCount,
+        failedCount,
+        skippedCount,
       };
 
       // Append to index
       const indexPath = resolve(this.runsDir, "index.json");
-      let index = { runs: [] };
-      try {
-        if (existsSync(indexPath)) {
-          index = JSON.parse(readFileSync(indexPath, "utf8"));
-        }
-      } catch { /* fresh index */ }
+      let index = { runs: this._readRunIndex() };
 
       index.runs.push(summary);
       // Keep last 200 runs
@@ -785,7 +843,7 @@ export class WorkflowEngine extends EventEmitter {
 
       // Save full run detail
       const detailPath = resolve(this.runsDir, `${runId}.json`);
-      writeFileSync(detailPath, JSON.stringify(ctx.toJSON(), null, 2), "utf8");
+      writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
     } catch (err) {
       console.error(`${TAG} Failed to persist run log:`, err.message);
     }

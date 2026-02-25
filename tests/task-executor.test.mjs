@@ -647,6 +647,35 @@ describe("task-executor", () => {
       );
     });
 
+    it("forwards per-executor CODEX_MODEL_PROFILE env override to agent execution", async () => {
+      const ex = new TaskExecutor({ sdk: "auto" });
+      ex._executorScheduler = {
+        next: () => ({
+          name: "codex-azure-b",
+          executor: "CODEX",
+          variant: "DEFAULT",
+          weight: 100,
+          role: "primary",
+          enabled: true,
+          codexProfile: "executor-2-profile",
+        }),
+        recordSuccess: vi.fn(),
+        recordFailure: vi.fn(),
+      };
+
+      await ex.executeTask({ ...mockTask });
+
+      expect(execWithRetry).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          sdk: "codex",
+          envOverrides: {
+            CODEX_MODEL_PROFILE: "executor-2-profile",
+          },
+        }),
+      );
+    });
+
     it("uses task meta execution overrides before env model defaults", async () => {
       process.env.COPILOT_MODEL = "gpt-5.3-codex";
       const ex = new TaskExecutor({ sdk: "auto" });
@@ -1589,6 +1618,49 @@ describe("task-executor", () => {
         { id: "42", backend: "github" },
         "77",
       );
+    });
+
+    it("_createPR defers merge automation when flow review gate is active", async () => {
+      getKanbanBackendName.mockReturnValue("github");
+      const ex = new TaskExecutor({
+        repoSlug: "acme/widgets",
+        flowReviewGateRequired: true,
+      });
+      const autoMergeSpy = vi
+        .spyOn(ex, "_enableAutoMerge")
+        .mockImplementation(() => {});
+      vi.spyOn(ex, "_pushBranch").mockReturnValue({ success: true });
+
+      spawnSync.mockImplementation((bin, args) => {
+        if (bin === "gh" && args[0] === "pr" && args[1] === "list") {
+          return { status: 0, stdout: "[]", stderr: "" };
+        }
+        if (bin === "git" && args[0] === "diff" && args[1] === "--name-only") {
+          return { status: 0, stdout: "src/auth.ts\n", stderr: "" };
+        }
+        if (bin === "gh" && args[0] === "pr" && args[1] === "create") {
+          return {
+            status: 0,
+            stdout: "https://github.com/acme/widgets/pull/77\n",
+            stderr: "",
+          };
+        }
+        return { status: 0, stdout: "", stderr: "" };
+      });
+
+      const pr = await ex._createPR(
+        {
+          id: "42",
+          title: "feat(auth): add guard",
+          description: "Adds auth guard",
+          branchName: "ve/42-auth-guard",
+          backend: "github",
+        },
+        "/fake/wt",
+      );
+
+      expect(pr?.prNumber).toBe("77");
+      expect(autoMergeSpy).not.toHaveBeenCalled();
     });
   });
 });

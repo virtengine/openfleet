@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockCodexStartThread = vi.fn();
 const mockCodexResumeThread = vi.fn();
+const mockCodexCtor = vi.fn();
 const mockCopilotCreateSession = vi.fn();
 const mockCopilotResumeSession = vi.fn();
 const mockClaudeQuery = vi.fn();
@@ -34,6 +35,10 @@ function makeCodexMockThread(
 vi.mock("@openai/codex-sdk", () => {
   return {
     Codex: class MockCodex {
+      constructor(...args) {
+        mockCodexCtor(...args);
+      }
+
       startThread(...args) {
         if (process.env.__MOCK_CODEX_AVAILABLE !== "1") {
           return {
@@ -168,6 +173,11 @@ const ENV_KEYS = [
   "CODEX_SDK_DISABLED",
   "COPILOT_SDK_DISABLED",
   "CLAUDE_SDK_DISABLED",
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "CODEX_MODEL_PROFILE",
+  "CODEX_MODEL",
+  "AZURE_OPENAI_API_KEY",
   "__MOCK_CODEX_AVAILABLE",
   "__MOCK_COPILOT_AVAILABLE",
   "__MOCK_CLAUDE_AVAILABLE",
@@ -203,6 +213,11 @@ function clearSdkEnv() {
   delete process.env.CODEX_SDK_DISABLED;
   delete process.env.COPILOT_SDK_DISABLED;
   delete process.env.CLAUDE_SDK_DISABLED;
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_BASE_URL;
+  delete process.env.CODEX_MODEL_PROFILE;
+  delete process.env.CODEX_MODEL;
+  delete process.env.AZURE_OPENAI_API_KEY;
   delete process.env.__MOCK_CODEX_AVAILABLE;
   delete process.env.__MOCK_COPILOT_AVAILABLE;
   delete process.env.__MOCK_CLAUDE_AVAILABLE;
@@ -251,6 +266,7 @@ beforeEach(async () => {
   resetPoolSdkCache();
   mockCodexStartThread.mockReset();
   mockCodexResumeThread.mockReset();
+  mockCodexCtor.mockReset();
   mockCopilotCreateSession.mockReset();
   mockCopilotResumeSession.mockReset();
   mockClaudeQuery.mockReset();
@@ -506,6 +522,30 @@ describe("launchEphemeralThread", () => {
     );
     // Invalid sdk in extra should fall through to resolved pool sdk
     expect(result.sdk).toBe("codex");
+  });
+
+  it("applies envOverrides to Codex launch options per request", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    setPoolSdk("codex");
+
+    const result = await launchEphemeralThread("test prompt", process.cwd(), 5000, {
+      sdk: "codex",
+      envOverrides: {
+        CODEX_MODEL_PROFILE: "executor-2-profile",
+        CODEX_MODEL: "gpt-5.3-codex",
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.sdk).toBe("codex");
+    expect(mockCodexCtor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.objectContaining({
+          CODEX_MODEL_PROFILE: "executor-2-profile",
+          CODEX_MODEL: "gpt-5.3-codex",
+        }),
+      }),
+    );
   });
 
   it("accepts copilot output when sendAndWait times out waiting for session.idle", async () => {

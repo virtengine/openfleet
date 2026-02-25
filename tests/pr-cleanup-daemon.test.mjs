@@ -107,3 +107,15 @@ describe("PRCleanupDaemon.getBaseBranch", () => {
     expect(daemon.getBaseBranch({})).toBe("main");
   });
 });
+
+describe("PRCleanupDaemon auto-merge gate", () => {
+  it("skips green-PR merge scan when autoMerge is disabled", async () => {
+    const daemon = new PRCleanupDaemon({ autoMerge: false });
+    daemon.fetchProblematicPRs = vi.fn().mockResolvedValue([]);
+    daemon.mergeGreenPRs = vi.fn();
+
+    await daemon.run();
+
+    expect(daemon.mergeGreenPRs).not.toHaveBeenCalled();
+  });
+});

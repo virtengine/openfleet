@@ -126,12 +126,14 @@ class PRCleanupDaemon {
       }
 
       // 4. Also scan for green PRs ready to merge (not just problematic ones)
-      try {
-        await this.mergeGreenPRs();
-      } catch (e) {
-        console.warn(
-          `[pr-cleanup-daemon] Green PR scan failed: ${e?.message ?? String(e)}`,
-        );
+      if (this.config.autoMerge) {
+        try {
+          await this.mergeGreenPRs();
+        } catch (e) {
+          console.warn(
+            `[pr-cleanup-daemon] Green PR scan failed: ${e?.message ?? String(e)}`,
+          );
+        }
       }
 
       // 5. Log stats
@@ -728,6 +730,9 @@ class PRCleanupDaemon {
    * This catches PRs that were created by agents but never had auto-merge enabled.
    */
   async mergeGreenPRs() {
+    if (!this.config.autoMerge) {
+      return;
+    }
     try {
       const { stdout } = await exec(
         `gh pr list --json number,title,mergeable,statusCheckRollup,headRefName,autoMergeRequest --limit 30`,

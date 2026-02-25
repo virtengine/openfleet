@@ -637,4 +637,36 @@ describe("task-claims", () => {
       expect(result.resolution.reason).toBe("new_is_coordinator");
     });
   });
+
+  describe("retryFsOperation", () => {
+    let _test;
+
+    beforeEach(async () => {
+      ({ _test } = await import("../task-claims.mjs"));
+    });
+
+    it("retries retriable fs errors and eventually succeeds", async () => {
+      const op = vi
+        .fn()
+        .mockRejectedValueOnce(Object.assign(new Error("busy"), { code: "EPERM" }))
+        .mockResolvedValueOnce("ok");
+
+      const result = await _test.retryFsOperation(op, { maxRetries: 3, delayMs: 0 });
+
+      expect(result).toBe("ok");
+      expect(op).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not retry non-retriable fs errors", async () => {
+      const op = vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error("bad"), { code: "EINVAL" }));
+
+      await expect(
+        _test.retryFsOperation(op, { maxRetries: 3, delayMs: 0 }),
+      ).rejects.toThrow("bad");
+      expect(op).toHaveBeenCalledTimes(1);
+    });
+  });
 });
+

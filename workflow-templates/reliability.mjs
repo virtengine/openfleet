@@ -318,7 +318,7 @@ export const HEALTH_CHECK_TEMPLATE = {
       message: "🏥 Health check found issues — run `bosun doctor` for details",
     }, { x: 200, y: 540 }),
 
-    node("all-ok", "notify.log", "All Healthy", {
+    node("all-ok", "notify.telegram", "All Healthy", {
       message: "Health check passed — all systems operational",
       level: "info",
     }, { x: 600, y: 540 }),
@@ -349,3 +349,4 @@ export const HEALTH_CHECK_TEMPLATE = {
     },
   },
 };
+
