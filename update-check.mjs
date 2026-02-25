@@ -26,6 +26,11 @@ import os from "node:os";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_NAME = "bosun";
 const CACHE_FILE = resolve(__dirname, "logs", ".update-check-cache.json");
+const AUTO_UPDATE_STATE_FILE = resolve(__dirname, ".cache", "auto-update-state.json");
+const AUTO_UPDATE_FAILURE_LIMIT =
+  Number(process.env.BOSUN_AUTO_UPDATE_FAILURE_LIMIT) || 3;
+const AUTO_UPDATE_DISABLE_WINDOW_MS =
+  Number(process.env.BOSUN_AUTO_UPDATE_DISABLE_WINDOW_MS) || 24 * 60 * 60 * 1000;
 const STARTUP_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour (startup notice)
 const AUTO_UPDATE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes (polling loop)
 
@@ -109,6 +114,79 @@ async function writeCache(data) {
   } catch {
     // non-critical
   }
+}
+
+const defaultAutoUpdateState = {
+  failureCount: 0,
+  lastFailureReason: null,
+  disabledUntil: 0,
+  lastNotifiedAt: 0,
+};
+
+async function readAutoUpdateState() {
+  try {
+    const raw = await readFile(AUTO_UPDATE_STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    return { ...defaultAutoUpdateState, ...parsed };
+  } catch {
+    return { ...defaultAutoUpdateState };
+  }
+}
+
+async function writeAutoUpdateState(state) {
+  try {
+    await mkdir(dirname(AUTO_UPDATE_STATE_FILE), { recursive: true });
+    await writeFile(
+      AUTO_UPDATE_STATE_FILE,
+      JSON.stringify({ ...defaultAutoUpdateState, ...state }, null, 2),
+    );
+  } catch {
+    // non-critical
+  }
+}
+
+async function resetAutoUpdateState() {
+  await writeAutoUpdateState({ ...defaultAutoUpdateState });
+  return { ...defaultAutoUpdateState };
+}
+
+function classifyInstallError(err) {
+  const message = err?.message || String(err || "");
+  const code = err?.code || "";
+  if (code === "EINVAL" || message.includes("EINVAL")) return "EINVAL";
+  if (code) return code;
+  return message.slice(0, 160) || "unknown";
+}
+
+async function recordAutoUpdateFailure(state, reason) {
+  const now = Date.now();
+  const next = {
+    ...defaultAutoUpdateState,
+    ...state,
+    failureCount: (state?.failureCount || 0) + 1,
+    lastFailureReason: reason,
+  };
+
+  if (!next.disabledUntil && next.failureCount >= AUTO_UPDATE_FAILURE_LIMIT) {
+    next.disabledUntil = now + AUTO_UPDATE_DISABLE_WINDOW_MS;
+    next.lastNotifiedAt = 0;
+  }
+
+  await writeAutoUpdateState(next);
+  return next;
+}
+
+function isAutoUpdateDisabled(state, now = Date.now()) {
+  return Boolean(state?.disabledUntil && now < state.disabledUntil);
+}
+
+function buildDisableNotice(state) {
+  const hours = Math.round(AUTO_UPDATE_DISABLE_WINDOW_MS / (60 * 60 * 1000));
+  const reason = state?.lastFailureReason || "unknown";
+  return [
+    `[auto-update] ⛔ Disabled for ${hours}h after ${state?.failureCount || 0} failures (last: ${reason}).`,
+    "Recovery: set BOSUN_SKIP_AUTO_UPDATE=1 or delete .cache/auto-update-state.json then restart.",
+  ].join(' ');
 }
 
 // ── Registry query ───────────────────────────────────────────────────────────
@@ -324,6 +402,7 @@ export function startAutoUpdateLoop(opts = {}) {
     `[auto-update] Polling every ${Math.round(intervalMs / 1000 / 60)} min for upstream changes`,
   );
 
+
   async function poll() {
     // Safety check: Is parent process still alive?
     if (!isParentAlive()) {
@@ -336,17 +415,34 @@ export function startAutoUpdateLoop(opts = {}) {
 
     if (autoUpdateRunning) return;
     autoUpdateRunning = true;
+
+    let state = await readAutoUpdateState();
+    const now = Date.now();
+
     try {
+      if (isAutoUpdateDisabled(state, now)) {
+        if (!state.lastNotifiedAt) {
+          const notice = buildDisableNotice(state);
+          onNotify(notice);
+          console.log(notice);
+          state = { ...state, lastNotifiedAt: now };
+          await writeAutoUpdateState(state);
+        }
+        return;
+      }
+
+      if (state.disabledUntil && now >= state.disabledUntil) {
+        state = await resetAutoUpdateState();
+      }
+
       const currentVersion = getCurrentVersion();
       const latest = await fetchLatestVersion();
 
       if (!latest) {
-        autoUpdateRunning = false;
         return; // registry unreachable — try again next cycle
       }
 
       if (!isNewer(latest, currentVersion)) {
-        autoUpdateRunning = false;
         return; // already up to date
       }
 
@@ -364,7 +460,19 @@ export function startAutoUpdateLoop(opts = {}) {
         const errMsg = `[auto-update] ❌ Install failed: ${installErr.message || installErr}`;
         console.error(errMsg);
         onNotify(errMsg);
-        autoUpdateRunning = false;
+
+        const updatedState = await recordAutoUpdateFailure(
+          state,
+          classifyInstallError(installErr),
+        );
+
+        if (updatedState.disabledUntil && !updatedState.lastNotifiedAt) {
+          const notice = buildDisableNotice(updatedState);
+          onNotify(notice);
+          console.log(notice);
+          updatedState.lastNotifiedAt = Date.now();
+          await writeAutoUpdateState(updatedState);
+        }
         return;
       }
 
@@ -374,11 +482,11 @@ export function startAutoUpdateLoop(opts = {}) {
         const errMsg = `[auto-update] ⚠️ Install ran but version unchanged (${newVersion}). Skipping restart.`;
         console.warn(errMsg);
         onNotify(errMsg);
-        autoUpdateRunning = false;
         return;
       }
 
       await writeCache({ lastCheck: Date.now(), latestVersion: latest });
+      await resetAutoUpdateState();
 
       const successMsg = `[auto-update] ✅ Updated to v${latest}. Restarting...`;
       console.log(successMsg);
