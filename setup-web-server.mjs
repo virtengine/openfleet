@@ -654,7 +654,12 @@ function handleApply(body) {
       VK_PROJECT_DIR: bosunHome,
     };
 
-    if (env.telegramToken)       envMap.TELEGRAM_BOT_TOKEN      = env.telegramToken;
+    const telegramToken = String(env.telegramToken || "").trim();
+    if (telegramToken) {
+      envMap.TELEGRAM_BOT_TOKEN = telegramToken;
+      envMap.TELEGRAM_UI_TUNNEL = "auto";
+      envMap.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+    }
     if (env.telegramChatId)      envMap.TELEGRAM_CHAT_ID         = env.telegramChatId;
     if (env.jiraUrl)             envMap.JIRA_URL                 = env.jiraUrl;
     if (env.jiraProjectKey)      envMap.JIRA_PROJECT_KEY         = env.jiraProjectKey;

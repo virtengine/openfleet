@@ -102,6 +102,19 @@ export const ICONS = {
     <rect x="16" y="13" width="3" height="6" />
   </svg>`,
 
+  book: html`<svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+    <path d="M4 4.5A2.5 2.5 0 0 1 6.5 7H20" />
+    <path d="M6.5 4.5H20V20H6.5A2.5 2.5 0 0 1 4 17.5V6.5A2.5 2.5 0 0 1 6.5 4.5Z" />
+  </svg>`,
+
   /* ── Status / Feedback ── */
   check: html`<svg
     viewBox="0 0 24 24"

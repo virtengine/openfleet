@@ -1293,6 +1293,7 @@ function App() {
         Enable Telegram Notifications
         ${telegramEnabled && loadedFromEnv ? html`<span style="font-size:0.7rem;color:var(--success);margin-left:4px">● loaded from .env</span>` : null}
       </label>
+      <div class="hint">When Telegram is configured, Bosun enables the Mini App Cloudflare tunnel automatically for HTTPS.</div>
     </div>
     ${telegramEnabled && html`
       <div class="form-group">
@@ -1344,6 +1345,7 @@ function App() {
           </tr>
           <tr><th>Kanban Backend</th><td>${kanbanBackend}</td></tr>
           <tr><th>Telegram</th><td>${telegramEnabled && telegramToken ? "Configured" : "Skipped"}</td></tr>
+          ${telegramEnabled && telegramToken ? html`<tr><th>Mini App Tunnel</th><td>auto (Cloudflare)</td></tr>` : null}
           ${profile === "advanced" ? html`
             <tr><th>Max Parallel</th><td>${maxParallel}</td></tr>
             <tr><th>Max Retries</th><td>${maxRetries}</td></tr>

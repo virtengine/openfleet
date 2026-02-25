@@ -2,6 +2,7 @@
 @import "./styles/layout.css";
 @import "./styles/components.css";
 @import "./styles/animations.css";
+@import "./styles/workspace-switcher.css";
 
 /* ─── Agent Stream Enhancements ─── */
 .stream-toolbar {

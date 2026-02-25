@@ -77,12 +77,13 @@ export function goBack() {
 export const TAB_CONFIG = [
   { id: "dashboard", label: "Pulse", icon: "grid" },
   { id: "tasks", label: "Work", icon: "check" },
+  { id: "chat", label: "Chat", icon: "chat" },
+  { id: "workflows", label: "Flows", icon: "workflow" },
   { id: "agents", label: "Fleet", icon: "cpu" },
   { id: "control", label: "Control", icon: "sliders" },
-  { id: "chat", label: "Chat", icon: "chat" },
   { id: "infra", label: "Infra", icon: "server" },
   { id: "logs", label: "Logs", icon: "terminal" },
+  { id: "library", label: "Library", icon: "book" },
   { id: "telemetry", label: "Telemetry", icon: "chart" },
-  { id: "workflows", label: "Flows", icon: "workflow" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];

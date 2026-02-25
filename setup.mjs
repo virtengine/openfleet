@@ -45,6 +45,7 @@ import {
   normalizeHookTargets,
   scaffoldAgentHookFiles,
 } from "./hook-profiles.mjs";
+import { initLibrary } from "./library-manager.mjs";
 import { detectLegacySetup, applyAllCompatibility } from "./compat.mjs";
 import { DEFAULT_MODEL_PROFILES } from "./task-complexity.mjs";
 import { pullWorkspaceRepos, listWorkspaces } from "./workspace-manager.mjs";
@@ -1745,6 +1746,17 @@ function normalizeSetupConfiguration({
   env.TELEGRAM_INTERVAL_MIN = String(
     toPositiveInt(env.TELEGRAM_INTERVAL_MIN || "10", 10),
   );
+  const telegramToken = String(
+    env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || "",
+  ).trim();
+  if (telegramToken) {
+    if (!env.TELEGRAM_UI_TUNNEL && !process.env.TELEGRAM_UI_TUNNEL) {
+      env.TELEGRAM_UI_TUNNEL = "auto";
+    }
+    if (!env.TELEGRAM_UI_ALLOW_UNSAFE && !process.env.TELEGRAM_UI_ALLOW_UNSAFE) {
+      env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+    }
+  }
 
   env.KANBAN_BACKEND = normalizeEnum(
     env.KANBAN_BACKEND,
@@ -4512,6 +4524,20 @@ async function main() {
       configJson.agentPrompts = getDefaultPromptOverrides();
     }
 
+    // ── Library Init ────────────────────────────────────────
+    try {
+      const libResult = initLibrary(repoRoot);
+      const entriesCount = libResult?.manifest?.entries?.length ?? 0;
+      const scaffolded = libResult?.scaffolded?.written?.length ?? 0;
+      if (entriesCount > 0) {
+        success(`Initialized library (${entriesCount} entries, ${scaffolded} profiles scaffolded).`);
+      } else {
+        info("Library initialized (no entries found yet).");
+      }
+    } catch (err) {
+      info(`Library init skipped: ${err.message}`);
+    }
+
     // ── Agent Hooks ───────────────────────────────────────
     heading("Agent Hooks");
     console.log(
@@ -5184,6 +5210,11 @@ async function runNonInteractive({
   configJson.agentPrompts = getDefaultPromptOverrides();
   ensureAgentPromptWorkspace(repoRoot);
   ensureRepoGitIgnoreEntry(repoRoot, "/.bosun/");
+  try {
+    initLibrary(repoRoot);
+  } catch (err) {
+    info(`Library init skipped: ${err.message}`);
+  }
 
   const hookOptions = buildHookScaffoldOptionsFromEnv(process.env);
   const hookResult = scaffoldAgentHookFiles(repoRoot, hookOptions);
