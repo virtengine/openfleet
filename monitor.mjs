@@ -1395,6 +1395,10 @@ const SELF_RESTART_DEFER_HARD_CAP = Math.max(
   1,
   Number(process.env.SELF_RESTART_DEFER_HARD_CAP || "20") || 20,
 );
+const SELF_RESTART_MAX_DEFER_MS = Math.max(
+  60_000,
+  Number(process.env.SELF_RESTART_MAX_DEFER_MS || "600000") || 600000,
+);
 let selfWatcher = null;
 let selfWatcherDebounce = null;
 let selfRestartTimer = null;
@@ -1402,6 +1406,7 @@ let selfRestartLastChangeAt = 0;
 let selfRestartLastFile = null;
 let pendingSelfRestart = null; // filename that triggered a deferred restart
 let selfRestartDeferCount = 0;
+let selfRestartFirstDeferredAt = 0;
 let deferredMonitorRestartTimer = null;
 let pendingMonitorRestartReason = "";
 let selfRestartWatcherEnabled = isSelfRestartWatcherEnabled();
@@ -11787,34 +11792,41 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
     ? `Work on branch ${monitorMonitor.branch}. Do not create a new branch.`
     : "Work on the current branch. Do not create a new branch.";
 
-  let orchestratorTail = await readLogTail(
-    resolve(logDir, "orchestrator-active.log"),
-    {
-      maxLines: 140,
-      maxChars: 14000,
-    },
-  );
-  if (orchestratorTail.startsWith("(missing:")) {
-    const fallback = await readLatestLogTail(logDir, "orchestrator-", {
+  const activeKanbanBackend = getActiveKanbanBackend();
+  const execMode = configExecutorMode || getExecutorMode();
+  const usesExternalOrchestratorLog =
+    execMode !== "internal" && !isExecutorDisabled();
+  let orchestratorTail = "";
+  if (usesExternalOrchestratorLog) {
+    orchestratorTail = await readLogTail(resolve(logDir, "orchestrator-active.log"), {
       maxLines: 140,
       maxChars: 14000,
     });
-    if (fallback?.tail) {
-      orchestratorTail = `[fallback: ${fallback.name}]\n${fallback.tail}`;
-    } else {
-      const defaultLogDir = resolve(__dirname, "logs");
-      if (defaultLogDir !== logDir) {
-        const alt = await readLatestLogTail(defaultLogDir, "orchestrator-", {
-          maxLines: 140,
-          maxChars: 14000,
-        });
-        if (alt?.tail) {
-          orchestratorTail = `[fallback: ${alt.name}]\n${alt.tail}`;
+    if (orchestratorTail.startsWith("(missing:")) {
+      const fallback = await readLatestLogTail(logDir, "orchestrator-", {
+        maxLines: 140,
+        maxChars: 14000,
+      });
+      if (fallback?.tail) {
+        orchestratorTail = `[fallback: ${fallback.name}]\n${fallback.tail}`;
+      } else {
+        const defaultLogDir = resolve(__dirname, "logs");
+        if (defaultLogDir !== logDir) {
+          const alt = await readLatestLogTail(defaultLogDir, "orchestrator-", {
+            maxLines: 140,
+            maxChars: 14000,
+          });
+          if (alt?.tail) {
+            orchestratorTail = `[fallback: ${alt.name}]\n${alt.tail}`;
+          }
         }
       }
     }
+  } else {
+    orchestratorTail =
+      `(not applicable: executor mode "${execMode}" runs without external orchestrator logs)` +
+      ` [backend=${activeKanbanBackend}]`;
   }
-  const activeKanbanBackend = getActiveKanbanBackend();
   const monitorTailWindowMs = resolveMonitorMonitorErrorTailWindowMs();
   const rawMonitorTail = await readLogTail(resolve(logDir, "monitor-error.log"), {
     maxLines: 120,
@@ -12657,28 +12669,38 @@ function attemptSelfRestartAfterQuiet() {
   const protection = getRuntimeRestartProtection();
   if (protection.defer) {
     pendingSelfRestart = filename;
+    if (!selfRestartFirstDeferredAt) {
+      selfRestartFirstDeferredAt = now;
+    }
     const deferCount = (selfRestartDeferCount =
       (selfRestartDeferCount || 0) + 1);
+    const deferElapsedMs = Math.max(0, now - selfRestartFirstDeferredAt);
     const retrySec = Math.round(SELF_RESTART_RETRY_MS / 1000);
+    const hitCountCap = deferCount >= SELF_RESTART_DEFER_HARD_CAP;
+    const hitTimeCap = deferElapsedMs >= SELF_RESTART_MAX_DEFER_MS;
 
-    // Hard cap: after many deferrals the active agent is likely stuck.
-    // Force-stop the task executor and proceed with the restart so the
-    // monitor doesn't hang forever (or crash from resource exhaustion).
-    if (deferCount >= SELF_RESTART_DEFER_HARD_CAP) {
+    // Hard caps: after too many deferrals or too much deferred time the
+    // active agent is likely stuck. Force-stop and restart so changes apply.
+    if (hitCountCap || hitTimeCap) {
+      const elapsedSec = Math.max(1, Math.round(deferElapsedMs / 1000));
+      const capReason = hitCountCap
+        ? `hard cap ${SELF_RESTART_DEFER_HARD_CAP}`
+        : `max defer ${Math.round(SELF_RESTART_MAX_DEFER_MS / 1000)}s`;
       console.warn(
-        `[monitor] self-restart deferred ${deferCount} times (hard cap ${SELF_RESTART_DEFER_HARD_CAP}) — force-stopping active agents and restarting`,
+        `[monitor] self-restart deferred ${deferCount} times over ${elapsedSec}s (${capReason}) — force-stopping active agents and restarting`,
       );
       if (internalTaskExecutor) {
         internalTaskExecutor.stop().catch(() => {});
       }
       selfRestartDeferCount = 0;
+      selfRestartFirstDeferredAt = 0;
       selfRestartForSourceChange(filename);
       return;
     }
 
     if (deferCount % 20 === 0) {
       console.warn(
-        `[monitor] self-restart deferred ${deferCount} times — still waiting for ${protection.reason}; continuing to defer`,
+        `[monitor] self-restart deferred ${deferCount} times over ${Math.round(deferElapsedMs / 1000)}s — still waiting for ${protection.reason}; continuing to defer (caps: count=${SELF_RESTART_DEFER_HARD_CAP}, time=${Math.round(SELF_RESTART_MAX_DEFER_MS / 1000)}s)`,
       );
     }
     console.log(
@@ -12691,6 +12713,8 @@ function attemptSelfRestartAfterQuiet() {
     );
     return;
   }
+  selfRestartDeferCount = 0;
+  selfRestartFirstDeferredAt = 0;
 
   // ── Agent isolation: defer restart if task agents are actively running ──
   // Task agents run inside this process. If we exit now, all running agents
@@ -12698,24 +12722,46 @@ function attemptSelfRestartAfterQuiet() {
   if (internalTaskExecutor) {
     const status = internalTaskExecutor.getStatus();
     if (status.activeSlots > 0) {
+      if (!selfRestartFirstDeferredAt) {
+        selfRestartFirstDeferredAt = now;
+      }
+      const deferCount = (selfRestartDeferCount =
+        (selfRestartDeferCount || 0) + 1);
+      const deferElapsedMs = Math.max(0, now - selfRestartFirstDeferredAt);
+      const hitCountCap = deferCount >= SELF_RESTART_DEFER_HARD_CAP;
+      const hitTimeCap = deferElapsedMs >= SELF_RESTART_MAX_DEFER_MS;
+      if (hitCountCap || hitTimeCap) {
+        console.warn(
+          `[monitor] self-restart deferred ${deferCount} times over ${Math.round(deferElapsedMs / 1000)}s while waiting for active agents — restarting anyway`,
+        );
+        selfRestartDeferCount = 0;
+        selfRestartFirstDeferredAt = 0;
+        selfRestartForSourceChange(filename);
+        return;
+      }
       const slotNames = (status.slots || []).map((s) => s.taskTitle).join(", ");
       console.log(
         `[monitor] self-restart deferred — ${status.activeSlots} agent(s) still running: ${slotNames}`,
       );
       console.log(
-        `[monitor] will retry restart in 60s (agents must finish first)`,
+        `[monitor] will retry restart in 60s (agents must finish first)` +
+          ` (defer #${deferCount}, elapsed ${Math.round(deferElapsedMs / 1000)}s)`,
       );
       selfRestartTimer = safeSetTimeout("self-restart-agent-wait-retry", attemptSelfRestartAfterQuiet, 60_000);
       return;
     }
   }
 
+  selfRestartDeferCount = 0;
+  selfRestartFirstDeferredAt = 0;
   selfRestartForSourceChange(filename);
 }
 
 function queueSelfRestart(filename) {
   selfRestartLastChangeAt = Date.now();
   selfRestartLastFile = filename;
+  selfRestartDeferCount = 0;
+  selfRestartFirstDeferredAt = 0;
   if (selfRestartTimer) {
     clearTimeout(selfRestartTimer);
   }
@@ -14508,3 +14554,4 @@ export {
   getContainerStatus,
   isContainerEnabled,
 };
+
