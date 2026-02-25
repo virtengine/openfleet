@@ -3084,7 +3084,7 @@ class TaskExecutor {
       available,
     );
     for (const task of toDispatch) {
-      void this.executeTask(task).catch((err) => {
+      void this.executeTask(task, { recoveredFromInProgress: true }).catch((err) => {
         console.error(
           `${TAG} in-progress recovery executeTask failed for "${task?.title || task?.id}": ${err.message || err}`,
         );
@@ -3847,16 +3847,45 @@ class TaskExecutor {
     }
 
     // 1b. Allocate slot
-    const recoveredRuntime =
-      task?.status === "inprogress"
+    const useRecoveredRuntime =
+      task?.status === "inprogress" && options?.recoveredFromInProgress === true;
+    let recoveredRuntime =
+      useRecoveredRuntime
         ? this._slotRuntimeState.get(taskId) || null
         : null;
-    const recoveredAgentId = Number(recoveredRuntime?.agentInstanceId || 0);
+    let recoveredAgentId = Number(recoveredRuntime?.agentInstanceId || 0);
     const recoveredStartedAt = Number(recoveredRuntime?.startedAt || 0);
+    const recoveredRuntimeAgeMs = Date.now() - recoveredStartedAt;
+    const recoveredRuntimeDeadlineMs = this.taskTimeoutMs + WATCHDOG_GRACE_MS;
     const validRecoveredStartedAt =
       Number.isFinite(recoveredStartedAt) &&
       recoveredStartedAt > 0 &&
-      recoveredStartedAt <= Date.now();
+      recoveredStartedAt <= Date.now() &&
+      recoveredRuntimeAgeMs >= 0 &&
+      recoveredRuntimeAgeMs <= recoveredRuntimeDeadlineMs;
+
+    if (
+      useRecoveredRuntime &&
+      recoveredRuntime &&
+      Number.isFinite(recoveredStartedAt) &&
+      recoveredStartedAt > 0 &&
+      recoveredRuntimeAgeMs > recoveredRuntimeDeadlineMs
+    ) {
+      const elapsedMin = Math.round(recoveredRuntimeAgeMs / 60_000);
+      const deadlineMin = Math.round(recoveredRuntimeDeadlineMs / 60_000);
+      console.warn(
+        `${TAG} in-progress recovery detected stale runtime state for "${taskTitle}" ` +
+          `(${elapsedMin}min > ${deadlineMin}min). Resetting runtime slot and invalidating stale thread.`,
+      );
+      this._removeRuntimeSlot(taskId);
+      Promise.resolve(invalidateThread(taskId)).catch((err) => {
+        console.warn(
+          `${TAG} failed to invalidate stale thread for "${taskTitle}" (${taskId}): ${err?.message || err}`,
+        );
+      });
+      recoveredRuntime = null;
+      recoveredAgentId = 0;
+    }
 
     let agentInstanceId = null;
     if (Number.isFinite(recoveredAgentId) && recoveredAgentId > 0) {

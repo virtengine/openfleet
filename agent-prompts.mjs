@@ -150,6 +150,24 @@ You are an autonomous task orchestrator agent. You receive implementation tasks 
 4. Run relevant verification (tests/lint/build) before finalizing.
 5. Use conventional commit messages.
 
+## Code Quality — Hard Rules
+
+These rules are non-negotiable. Violations cause real production crashes.
+
+- **Module-scope caching:** Variables that cache state (lazy singletons, loaded
+  flags, memoization maps) MUST be at module scope, never inside a function body
+  that runs repeatedly.
+- **Async safety:** NEVER use bare \`void asyncFn()\`. Every async call must be
+  \`await\`-ed or have a \`.catch()\` handler. Unhandled rejections crash Node.js.
+- **Error boundaries:** HTTP handlers, timers, and event callbacks MUST wrap async
+  work in try/catch so one failure doesn't kill the process.
+- **No over-mocking in tests:** Mock only external boundaries (network, disk, clock).
+  Never mock the module under test. If a test needs > 3 mocks, refactor the code.
+- **Deterministic tests:** No \`Math.random()\`, real network calls, or \`setTimeout\`
+  for synchronization. Tests must be reproducible and order-independent.
+- **Dynamic \`import()\` must be cached:** Never place \`import()\` inside a
+  frequently-called function without caching the result at module scope.
+
 ## Completion Criteria
 
 - Implementation matches requested behavior.
@@ -270,6 +288,27 @@ Check for relevant skills before implementing:
 - No placeholders/stubs/TODO-only output.
 - Keep behavior stable and production-safe.
 
+## Code Quality — Mandatory Checks
+
+These patterns have caused real production crashes. Treat them as hard rules:
+
+1. **Module-scope caching:** If you declare variables that cache state (lazy
+   singletons, init flags, memoization), place them at **module scope** — never
+   inside a function body that runs per-request or per-event.
+2. **Async fire-and-forget:** Never use bare \`void asyncFn()\`. Always \`await\`
+   or append \`.catch()\`. Unhandled promise rejections crash Node.js (exit 1).
+3. **Error boundaries:** Wrap HTTP handlers, timers, and event callbacks in
+   top-level try/catch. One unguarded throw must not kill the process.
+4. **Dynamic imports:** Cache \`import()\` results at module scope. Never call
+   \`import()\` inside a hot path without caching — it causes repeated I/O.
+5. **Test quality:** Mock only external boundaries (network, disk, clock). Never
+   mock the module under test. No \`setTimeout\`/\`sleep\` for synchronization.
+   Tests must be deterministic and order-independent. Assert on behavior, not
+   implementation details.
+6. **No architectural shortcuts:** Don't force-enable feature flags inline. Don't
+   add config overrides that bypass safety checks. If a feature is behind a flag,
+   respect it.
+
 ## Bosun Task Agent — Git & PR Workflow
 
 You are running as a **Bosun-managed task agent**.  Environment variables
@@ -375,6 +414,13 @@ Review the following PR diff for CRITICAL issues ONLY.
 2. Bugs / correctness regressions
 3. Missing implementations
 4. Broken functionality
+5. Cache/singleton variables declared inside function bodies instead of module scope
+6. Bare \`void asyncFn()\` or async calls without \`await\` / \`.catch()\`
+7. HTTP handlers, timers, or event callbacks missing try/catch error boundaries
+8. Dynamic \`import()\` inside hot paths without module-scope caching
+9. Tests that over-mock (mocking the module under test, > 3 mocks per test)
+10. Flaky test patterns: \`setTimeout\`/sleep for sync, \`Math.random()\`, real network
+11. Force-enabled feature flags or config overrides that bypass safety checks
 
 ## What to ignore
 - Style-only concerns
@@ -399,7 +445,7 @@ Respond with JSON only:
   "issues": [
     {
       "severity": "critical" | "major",
-      "category": "security" | "bug" | "missing_impl" | "broken",
+      "category": "security" | "bug" | "missing_impl" | "broken" | "anti_pattern" | "flaky_test",
       "file": "path/to/file",
       "line": 123,
       "description": "..."

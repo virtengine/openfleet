@@ -469,8 +469,10 @@ describe("kanban-adapter github backend", () => {
     });
 
     const adapter = getKanbanAdapter();
+    adapter._transientRetryMax = 0;
     const result = await adapter.addComment("42", "test body");
     expect(result).toBe(false);
+    expect(execFileMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -885,3 +887,4 @@ describe("kanban-adapter internal backend", () => {
     expect(removeTask(created.id)).toBe(false);
   });
 });
+

@@ -48,8 +48,9 @@ export async function loadSessionMessages(id) {
     if (!url) return { ok: false, error: "invalid" };
     const res = await apiFetch(url, { _silent: true });
     if (res?.session) {
-      sessionMessages.value = res.session.messages || [];
-      return { ok: true, messages: sessionMessages.value };
+      const normalized = dedupeMessages(res.session.messages || []);
+      sessionMessages.value = normalized;
+      return { ok: true, messages: normalized };
     }
     sessionMessages.value = [];
     return { ok: false, error: "empty" };
@@ -64,6 +65,40 @@ function normalizePreview(content) {
   const text =
     typeof content === "string" ? content : JSON.stringify(content);
   return text.slice(0, 100);
+}
+
+function dedupeMessages(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  const out = [];
+  const seenExact = new Set();
+  for (const msg of list) {
+    if (!msg) continue;
+    const role = String(msg.role || "");
+    const type = String(msg.type || "");
+    const content = String(msg.content || msg.text || "").trim();
+    const ts = Date.parse(msg.timestamp || 0) || 0;
+    const exactKey = `${role}|${type}|${content}|${ts}`;
+    if (seenExact.has(exactKey)) continue;
+    const last = out[out.length - 1];
+    if (last) {
+      const lastRole = String(last.role || "");
+      const lastType = String(last.type || "");
+      const lastContent = String(last.content || last.text || "").trim();
+      const lastTs = Date.parse(last.timestamp || 0) || 0;
+      if (
+        content &&
+        lastRole === role &&
+        lastType === type &&
+        lastContent === content &&
+        Math.abs(ts - lastTs) <= 5000
+      ) {
+        continue;
+      }
+    }
+    seenExact.add(exactKey);
+    out.push(msg);
+  }
+  return out;
 }
 
 /**
@@ -100,23 +135,10 @@ function _flushMessageBatch() {
   if (_msgBatchBuffer.length === 0) return;
   const batch = _msgBatchBuffer;
   _msgBatchBuffer = [];
-  const current = sessionMessages.value || [];
-  // Deduplicate against current tail and within batch
-  const seen = new Set();
-  const lastExisting = current[current.length - 1];
-  if (lastExisting) {
-    seen.add(`${lastExisting.timestamp}|${lastExisting.role}|${lastExisting.content}`);
-  }
-  const newMsgs = [];
-  for (const msg of batch) {
-    const key = `${msg.timestamp}|${msg.role}|${msg.content}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      newMsgs.push(msg);
-    }
-  }
-  if (newMsgs.length > 0) {
-    sessionMessages.value = [...current, ...newMsgs];
+  const current = Array.isArray(sessionMessages.value) ? sessionMessages.value : [];
+  const merged = dedupeMessages([...current, ...batch]);
+  if (merged.length !== current.length) {
+    sessionMessages.value = merged;
   }
 }
 

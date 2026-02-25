@@ -212,7 +212,7 @@ export const WORKSPACE_HYGIENE_TEMPLATE = {
     }, { x: 400, y: 50 }),
 
     node("prune-worktrees", "action.run_command", "Prune Worktrees", {
-      command: "git worktree prune && git worktree list --porcelain | grep -c worktree || echo 0",
+      command: "node -e \"const cp=require('node:child_process');cp.execSync('git worktree prune',{stdio:'ignore'});const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"",
     }, { x: 150, y: 200 }),
 
     node("kill-stale", "action.run_command", "Kill Stale Processes", {

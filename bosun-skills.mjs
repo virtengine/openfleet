@@ -531,6 +531,207 @@ curl -sX POST http://127.0.0.1:$BOSUN_ENDPOINT_PORT/api/tasks/$BOSUN_TASK_ID/err
 | \`BOSUN_MANAGED\` | \`VE_MANAGED\` | Set to "1" when running under bosun |
 `,
   },
+  {
+    filename: "code-quality-anti-patterns.md",
+    title: "Code Quality Anti-Patterns",
+    tags: ["quality", "code", "architecture", "async", "testing", "reliability", "bug", "crash", "scope", "caching", "promise", "module"],
+    scope: "global",
+    content: `# Skill: Code Quality Anti-Patterns
+
+## Purpose
+Prevent common coding mistakes that cause crashes, flaky behavior, memory leaks,
+and hard-to-diagnose production failures. Every pattern below has caused real
+outages — treat each as a hard rule, not a suggestion.
+
+---
+
+## 1. Module-Scope vs Function-Scope — Caching & Singletons
+
+**Rule:** Variables that cache module-level state (lazy singletons, loaded
+configs, memoized results) MUST be declared at **module scope**, never inside
+a function that runs repeatedly.
+
+### Bad — re-initializes on every call
+\`\`\`js
+export function handleRequest(req, res) {
+  let _engine;           // ← reset to undefined on EVERY call
+  let _loaded = false;   // ← never stays true across calls
+  if (!_loaded) {
+    _engine = await loadEngine();
+    _loaded = true;
+  }
+  // ...
+}
+\`\`\`
+
+### Good — persists across calls
+\`\`\`js
+let _engine;
+let _loaded = false;
+
+export function handleRequest(req, res) {
+  if (!_loaded) {
+    _engine = await loadEngine();
+    _loaded = true;
+  }
+  // ...
+}
+\`\`\`
+
+**Why:** Placing cache variables inside a function body causes:
+- Repeated expensive initialization (import, parse, connect) on every call
+- Log spam from repeated init messages
+- Potential memory leaks from orphaned resources
+- Race conditions when multiple concurrent calls all see \`_loaded === false\`
+
+**Checklist:**
+- [ ] Lazy singletons: module scope
+- [ ] Memoization caches: module scope (or a \`Map\`/\`WeakMap\` at module scope)
+- [ ] "loaded" / "initialized" flags: module scope
+- [ ] Config objects read once from disk: module scope
+
+---
+
+## 2. Async Fire-and-Forget — Always Handle Rejections
+
+**Rule:** NEVER use bare \`void asyncFn()\` or call an async function without
+either \`await\`-ing or chaining \`.catch()\`. Unhandled promise rejections crash
+Node.js processes.
+
+### Bad — unhandled rejection → crash
+\`\`\`js
+void dispatchEvent(data);    // if dispatchEvent is async and throws → crash
+asyncCleanup();              // no await, no catch → crash
+\`\`\`
+
+### Good — always handle the rejection
+\`\`\`js
+await dispatchEvent(data);                           // preferred: await it
+dispatchEvent(data).catch(() => {});                  // fire-and-forget OK
+dispatchEvent(data).catch(err => log.warn(err));      // fire-and-forget with logging
+\`\`\`
+
+**Why:** Since Node.js 15+, unhandled promise rejections terminate the process
+with exit code 1. A single \`void asyncFn()\` in a hot path can cause a
+crash → restart → crash loop that takes down the entire system.
+
+**Checklist:**
+- [ ] Every async call is \`await\`-ed OR has a \`.catch()\` handler
+- [ ] No bare \`void asyncFn()\` patterns
+- [ ] Event dispatch functions wrapped in try/catch at the top level
+- [ ] setInterval/setTimeout callbacks that call async functions use \`.catch()\`
+
+---
+
+## 3. Error Boundaries & Defensive Coding
+
+**Rule:** Any function called from a hot path (HTTP handlers, event loops,
+timers) MUST have a top-level try/catch that prevents a single failure from
+crashing the entire process.
+
+### Bad — one bad event kills the server
+\`\`\`js
+router.post('/webhook', async (req, res) => {
+  const data = parsePayload(req.body);
+  await processAllWebhooks(data);
+  res.json({ ok: true });
+});
+\`\`\`
+
+### Good — contained failure
+\`\`\`js
+router.post('/webhook', async (req, res) => {
+  try {
+    const data = parsePayload(req.body);
+    await processAllWebhooks(data);
+    res.json({ ok: true });
+  } catch (err) {
+    log.error('webhook handler failed', err);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+\`\`\`
+
+---
+
+## 4. Testing Anti-Patterns
+
+### Over-Mocking
+**Rule:** Tests should validate real behavior, not just confirm that mocks
+return what you told them to return.
+
+- Mock only external boundaries (network, filesystem, clock).
+- Never mock the module under test.
+- If you need > 3 mocks for a single test, the code under test probably needs
+  refactoring, not more mocks.
+- Prefer integration tests with real instances over unit tests with heavy mocking.
+
+### Flaky Tests
+**Rule:** Tests must be deterministic and reproducible.
+
+- No \`Math.random()\` or \`Date.now()\` without mocking.
+- No network calls to real servers.
+- No \`setTimeout\`/\`sleep\` for synchronization — use proper async patterns.
+- No implicit ordering dependencies between tests.
+- If a test creates global state, clean it up in \`afterEach\`.
+
+### Assertion Quality
+- Test ONE behavior per test case.
+- Assert on observable outputs, not internal state.
+- Check error cases, not just happy paths.
+- Use descriptive test names: \`parseDate_invalidInput_throwsError\`
+  not \`test parseDate 3\`.
+
+---
+
+## 5. Architectural Patterns
+
+### Initialization Guards
+When a module has expensive async initialization, use a promise-based
+deduplication pattern to prevent multiple concurrent initializations:
+
+\`\`\`js
+let _initPromise = null;
+
+async function ensureInit() {
+  if (!_initPromise) {
+    _initPromise = doExpensiveInit(); // called ONCE
+  }
+  return _initPromise;
+}
+\`\`\`
+
+### Import/Require in Module Scope
+Dynamic \`import()\` calls should be cached at module scope.
+Never put \`import()\` inside a frequently-called function without caching.
+
+### Guard Clauses for Optional Features
+When calling into optional subsystems (plugins, workflow engines, etc.),
+always check that the subsystem is enabled before invoking:
+
+\`\`\`js
+if (!config.featureEnabled) return;
+const engine = await getEngine();
+if (!engine) return;
+await engine.process(data);
+\`\`\`
+
+---
+
+## Quick Reference: Red Flags in Code Review
+
+| Pattern | Risk | Fix |
+|---------|------|-----|
+| \`let x\` inside function body used as cache | Re-init every call | Hoist to module scope |
+| \`void asyncFn()\` | Unhandled rejection → crash | \`await\` or \`.catch()\` |
+| Async callback without try/catch | Uncaught exception → crash | Wrap in try/catch |
+| \`import()\` inside hot function, no cache | Repeated I/O, log spam | Cache at module scope |
+| Test mocking the module under test | Test proves nothing | Mock only boundaries |
+| \`setTimeout\`/\`sleep\` in tests | Flaky | Use async events/mocks |
+| No error case tests | False confidence | Add negative test cases |
+| \`git add .\` | Stages unrelated files | Stage files individually |
+`,
+  },
 ];
 
 // ── Skills directory helpers ──────────────────────────────────────────────────

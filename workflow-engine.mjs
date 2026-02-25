@@ -466,6 +466,37 @@ export class WorkflowEngine extends EventEmitter {
         n.type.startsWith("trigger.")
       );
       for (const tNode of triggerNodes) {
+        // Event-driven evaluation should only run event-capable trigger types.
+        // Polling/manual triggers (schedule, task_low, manual, scheduled_once)
+        // are intentionally excluded here.
+        if (
+          tNode.type !== "trigger.event" &&
+          tNode.type !== "trigger.pr_event" &&
+          tNode.type !== "trigger.task_assigned" &&
+          tNode.type !== "trigger.anomaly" &&
+          tNode.type !== "trigger.webhook"
+        ) {
+          continue;
+        }
+        if (tNode.type === "trigger.pr_event") {
+          const hasPrSignal =
+            String(eventType || "").startsWith("pr.") ||
+            !!eventData?.prEvent;
+          if (!hasPrSignal) continue;
+        }
+        if (tNode.type === "trigger.task_assigned" && eventType !== "task.assigned") {
+          continue;
+        }
+        if (tNode.type === "trigger.anomaly") {
+          const anomalyEvent =
+            eventType === "anomaly" ||
+            eventType === "agent.anomaly";
+          if (!anomalyEvent) continue;
+        }
+        if (tNode.type === "trigger.webhook" && !String(eventType || "").startsWith("webhook")) {
+          continue;
+        }
+
         const handler = getNodeType(tNode.type);
         if (!handler) continue;
 
@@ -898,6 +929,14 @@ export class WorkflowEngine extends EventEmitter {
     const isRunning = normalizedStatus === WorkflowStatus.RUNNING;
     const stuckMs = isRunning && activityRef > 0 ? Math.max(0, Date.now() - activityRef) : 0;
     const isStuck = isRunning && stuckMs >= threshold;
+    const triggerEvent =
+      detail?.data?._triggerEventType ||
+      detail?.data?.eventType ||
+      null;
+    const triggerSource =
+      detail?.data?._triggerSource ||
+      (triggerEvent ? "event" : "manual");
+    const triggeredBy = detail?.data?._triggeredBy || null;
 
     return {
       runId,
@@ -919,6 +958,9 @@ export class WorkflowEngine extends EventEmitter {
       isStuck,
       stuckMs,
       stuckThresholdMs: threshold,
+      triggerEvent,
+      triggerSource,
+      triggeredBy,
     };
   }
 

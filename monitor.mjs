@@ -62,6 +62,7 @@ import {
 } from "./primary-agent.mjs";
 import {
   execPooledPrompt,
+  launchEphemeralThread,
   launchOrResumeThread,
   getAvailableSdks,
   forceNewThread,
@@ -158,7 +159,11 @@ import {
 import { WorkspaceMonitor } from "./workspace-monitor.mjs";
 import { VkLogStream } from "./vk-log-stream.mjs";
 import { VKErrorResolver } from "./vk-error-resolver.mjs";
-import { createAnomalyDetector } from "./anomaly-detector.mjs";
+import {
+  createAnomalyDetector,
+  setWorkflowEngine as bindWorkflowEngineToAnomalyDetector,
+  wrapAnomalyCallback,
+} from "./anomaly-detector.mjs";
 import { resolvePwshRuntime } from "./pwsh-runtime.mjs";
 import {
   getWorktreeManager,
@@ -290,6 +295,223 @@ function formatMonitorError(err) {
   return String(err);
 }
 
+function parseEnvBoolean(value, defaultValue = false) {
+  if (value == null || value === "") return defaultValue;
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return defaultValue;
+}
+
+let workflowAutomationEnabled = false;
+let workflowEventDedupWindowMs = 15_000;
+const workflowEventDedup = new Map();
+const workflowTaskStatusSnapshot = new Map();
+let workflowAutomationEngine = null;
+let workflowAutomationInitPromise = null;
+let workflowAutomationInitDone = false;
+let workflowAutomationReadyLogged = false;
+let workflowAutomationUnavailableLogged = false;
+
+function allowWorkflowEvent(dedupKey, windowMs = workflowEventDedupWindowMs) {
+  if (!dedupKey) return true;
+  const now = Date.now();
+  const last = workflowEventDedup.get(dedupKey) || 0;
+  if (now - last < windowMs) return false;
+  workflowEventDedup.set(dedupKey, now);
+  if (workflowEventDedup.size > 1000) {
+    const cutoff = now - windowMs * 2;
+    for (const [key, ts] of workflowEventDedup) {
+      if (ts < cutoff) workflowEventDedup.delete(key);
+    }
+  }
+  return true;
+}
+
+function buildWorkflowEventPayload(eventType, eventData = {}) {
+  const payload =
+    eventData && typeof eventData === "object" ? { ...eventData } : {};
+  payload.eventType = eventType;
+  if (String(eventType || "").startsWith("pr.")) {
+    const prEvent = String(eventType).slice(3).trim();
+    if (prEvent) payload.prEvent = prEvent;
+  }
+  payload._triggerSource = "monitor-event";
+  payload._triggerEventType = eventType;
+  payload._triggeredAt = new Date().toISOString();
+  return payload;
+}
+
+async function ensureWorkflowAutomationEngine() {
+  if (!workflowAutomationEnabled || process.env.VITEST) return null;
+  if (workflowAutomationEngine) return workflowAutomationEngine;
+  if (workflowAutomationInitDone) return null;
+  if (workflowAutomationInitPromise) return workflowAutomationInitPromise;
+
+  workflowAutomationInitPromise = (async () => {
+    try {
+      const [{ getWorkflowEngine }, { createTask }, wfNodes] = await Promise.all([
+        import("./workflow-engine.mjs"),
+        import("./kanban-adapter.mjs"),
+        import("./workflow-nodes.mjs"),
+      ]);
+      if (!wfNodes) {
+        throw new Error("workflow nodes unavailable");
+      }
+
+      const kanbanService = {
+        createTask: async (taskData = {}) => {
+          const backend = getActiveKanbanBackend();
+          const projectId = String(
+            taskData?.projectId || getConfiguredKanbanProjectId(backend) || "",
+          ).trim();
+          if (!projectId) {
+            throw new Error(
+              `No project ID configured for backend=${backend} (required for workflow action.create_task)`,
+            );
+          }
+          const payload = { ...(taskData || {}) };
+          delete payload.projectId;
+          return createTask(projectId, payload);
+        },
+        updateTaskStatus: async (taskId, status) =>
+          updateKanbanTaskStatus(String(taskId || ""), String(status || "")),
+        listTasks: async (projectId, filters = {}) =>
+          listKanbanTasks(String(projectId || ""), filters || {}),
+      };
+
+      const agentPoolService = {
+        launchEphemeralThread,
+        launchOrResumeThread,
+        async continueSession(sessionId, prompt, opts = {}) {
+          const timeout = Number(opts.timeout) || 60 * 60 * 1000;
+          const cwd = opts.cwd || process.cwd();
+          return launchOrResumeThread(prompt, cwd, timeout, {
+            taskKey: sessionId,
+            sdk: opts.sdk,
+            model: opts.model,
+          });
+        },
+      };
+
+      const telegramService =
+        telegramToken && telegramChatId
+          ? {
+              async sendMessage(chatId, text) {
+                const target = chatId || telegramChatId;
+                if (!target) return;
+                await sendTelegramMessage(String(text || ""), {
+                  chatId: String(target),
+                });
+              },
+            }
+          : null;
+
+      const services = {
+        telegram: telegramService,
+        kanban: kanbanService,
+        agentPool: agentPoolService,
+        prompts: agentPrompts || null,
+        anomalyDetector: anomalyDetector || null,
+      };
+
+      const engine = getWorkflowEngine({ services });
+      workflowAutomationEngine = engine;
+      bindWorkflowEngineToAnomalyDetector(engine);
+
+      if (!workflowAutomationReadyLogged) {
+        workflowAutomationReadyLogged = true;
+        const total = engine.list?.().length || 0;
+        const enabled = (engine.list?.() || []).filter((wf) => wf?.enabled !== false)
+          .length;
+        console.log(
+          `[workflows] automation enabled — loaded ${enabled}/${total} workflow(s)`,
+        );
+      }
+      return engine;
+    } catch (err) {
+      if (!workflowAutomationUnavailableLogged) {
+        workflowAutomationUnavailableLogged = true;
+        console.warn(
+          `[workflows] automation unavailable: ${err?.message || err}`,
+        );
+      }
+      return null;
+    } finally {
+      workflowAutomationInitDone = true;
+      workflowAutomationInitPromise = null;
+    }
+  })();
+
+  return workflowAutomationInitPromise;
+}
+
+async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
+  try {
+  if (!workflowAutomationEnabled) return false;
+  const dedupKey = String(opts?.dedupKey || "").trim();
+  if (dedupKey && !allowWorkflowEvent(dedupKey)) {
+    return false;
+  }
+
+  const engine = await ensureWorkflowAutomationEngine();
+  if (!engine?.evaluateTriggers || !engine?.execute) return false;
+
+  const payload = buildWorkflowEventPayload(eventType, eventData);
+  let triggered = [];
+  try {
+    triggered = await engine.evaluateTriggers(eventType, payload);
+  } catch (err) {
+    console.warn(
+      `[workflows] trigger evaluation failed for ${eventType}: ${err?.message || err}`,
+    );
+    return false;
+  }
+
+  if (!Array.isArray(triggered) || triggered.length === 0) {
+    return false;
+  }
+
+  for (const match of triggered) {
+    const workflowId = String(match?.workflowId || "").trim();
+    if (!workflowId) continue;
+    const runPayload = {
+      ...payload,
+      _triggeredBy: match?.triggeredBy || null,
+    };
+    void engine
+      .execute(workflowId, runPayload)
+      .then((ctx) => {
+        const runId = ctx?.id || "unknown";
+        const runStatus =
+          Array.isArray(ctx?.errors) && ctx.errors.length > 0
+            ? "failed"
+            : "completed";
+        console.log(
+          `[workflows] auto-run ${runStatus} workflow=${workflowId} runId=${runId} event=${eventType}`,
+        );
+      })
+      .catch((err) => {
+        console.warn(
+          `[workflows] auto-run failed workflow=${workflowId} event=${eventType}: ${err?.message || err}`,
+        );
+      });
+  }
+
+  console.log(
+    `[workflows] event "${eventType}" triggered ${triggered.length} workflow run(s)`,
+  );
+  return true;
+  } catch (err) {
+    console.warn(`[workflows] dispatchWorkflowEvent error for ${eventType}: ${err?.message || err}`);
+    return false;
+  }
+}
+
+function queueWorkflowEvent(eventType, eventData = {}, opts = {}) {
+  dispatchWorkflowEvent(eventType, eventData, opts).catch(() => {});
+}
+
 async function pollAgentAlerts() {
   if (process.env.VITEST) return;
   const path = getAgentAlertsPath();
@@ -409,6 +631,12 @@ function writeAnomalySignal(anomaly) {
 
 // ── Configure logging before anything else ──────────────────────────────────
 configureFromArgs(process.argv.slice(2));
+const isMonitorTestRuntime =
+  ["1", "true", "yes", "on"].includes(
+    String(process.env.VITEST || "")
+      .trim()
+      .toLowerCase(),
+  ) || String(process.env.NODE_ENV || "").trim().toLowerCase() === "test";
 
 // ── Load unified configuration ──────────────────────────────────────────────
 let config;
@@ -419,14 +647,26 @@ try {
   console.error(`[monitor] configuration error: ${message}`);
   process.exit(1);
 }
+workflowAutomationEnabled = parseEnvBoolean(
+  process.env.WORKFLOW_AUTOMATION_ENABLED,
+  false,
+);
+{
+  const dedupMs = Number(process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS || "15000");
+  workflowEventDedupWindowMs = Number.isFinite(dedupMs) && dedupMs > 0
+    ? dedupMs
+    : 15_000;
+}
 
 // Install console interceptor with log file (after config provides logDir)
 {
-  const _logDir = config.logDir || resolve(__dirname, "logs");
-  const _logFile = resolve(_logDir, "monitor.log");
-  const _errorLogFile = resolve(_logDir, "monitor-error.log");
-  installConsoleInterceptor({ logFile: _logFile });
-  setErrorLogFile(_errorLogFile);
+  if (!isMonitorTestRuntime) {
+    const _logDir = config.logDir || resolve(__dirname, "logs");
+    const _logFile = resolve(_logDir, "monitor.log");
+    const _errorLogFile = resolve(_logDir, "monitor-error.log");
+    installConsoleInterceptor({ logFile: _logFile });
+    setErrorLogFile(_errorLogFile);
+  }
 }
 
 // Guard against core.bare=true corruption on the main repo at startup
@@ -1767,8 +2007,16 @@ async function handleMonitorFailure(reason, err) {
 function reportGuardedFailure(reason, err) {
   if (shuttingDown) return;
   const error = err instanceof Error ? err : new Error(formatMonitorError(err));
-  console.error(`[monitor] ${reason} failed: ${error.stack || error.message}`);
-  void handleMonitorFailure(reason, error);
+  console.error("[monitor] " + reason + " failed: " + (error.stack || error.message));
+  handleMonitorFailure(reason, error).catch((failureErr) => {
+    try {
+      process.stderr.write(
+        "[monitor] handleMonitorFailure failed: " + (failureErr?.message || failureErr) + "\n",
+      );
+    } catch {
+      /* best effort */
+    }
+  });
 }
 
 function runGuarded(reason, fn) {
@@ -2492,7 +2740,7 @@ function ensureAnomalyDetector() {
   if (anomalyDetector) return anomalyDetector;
   if (process.env.VITEST) return null;
   anomalyDetector = createAnomalyDetector({
-    onAnomaly: (anomaly) => {
+    onAnomaly: wrapAnomalyCallback((anomaly) => {
       const icon =
         anomaly.severity === "CRITICAL"
           ? "🔴"
@@ -2528,11 +2776,14 @@ function ensureAnomalyDetector() {
           }
         }
       }
-    },
+    }),
     notify: (text, options) => {
       sendTelegramMessage(text, options).catch(() => {});
     },
   });
+  if (workflowAutomationEngine?.services) {
+    workflowAutomationEngine.services.anomalyDetector = anomalyDetector;
+  }
   console.log("[monitor] anomaly detector started");
   return anomalyDetector;
 }
@@ -3890,7 +4141,85 @@ async function fetchTasksByStatus(status) {
  * @param {string} newStatus - New status ("todo", "inprogress", "inreview", "done", "cancelled")
  * @returns {Promise<boolean>} true if successful, false otherwise
  */
-async function updateTaskStatus(taskId, newStatus) {
+async function updateTaskStatus(taskId, newStatus, options = {}) {
+  const normalizedTaskId = String(taskId || "").trim();
+  const normalizedStatus = String(newStatus || "").trim().toLowerCase();
+  const taskData =
+    options?.taskData && typeof options.taskData === "object"
+      ? options.taskData
+      : null;
+  const taskTitle = String(
+    options?.taskTitle || taskData?.title || getInternalTask(normalizedTaskId)?.title || "",
+  ).trim();
+  const previousStatus = String(
+    options?.previousStatus || workflowTaskStatusSnapshot.get(normalizedTaskId) || "",
+  )
+    .trim()
+    .toLowerCase();
+  const baseWorkflowPayload = {
+    taskId: normalizedTaskId,
+    taskTitle,
+    previousStatus: previousStatus || null,
+    status: normalizedStatus,
+  };
+  const queueTaskStatusWorkflowEvents = () => {
+    const statusChanged = previousStatus !== normalizedStatus;
+    const shouldEmitLifecycle =
+      statusChanged || ["done", "inreview"].includes(normalizedStatus);
+    workflowTaskStatusSnapshot.set(normalizedTaskId, normalizedStatus);
+
+    if (!normalizedTaskId || !normalizedStatus || !shouldEmitLifecycle) {
+      return;
+    }
+
+    queueWorkflowEvent(
+      "task.status_changed",
+      baseWorkflowPayload,
+      { dedupKey: `workflow-event:task.status_changed:${normalizedTaskId}:${normalizedStatus}` },
+    );
+    queueWorkflowEvent(
+      `task.${normalizedStatus}`,
+      baseWorkflowPayload,
+      { dedupKey: `workflow-event:task.${normalizedStatus}:${normalizedTaskId}` },
+    );
+
+    if (normalizedStatus === "done") {
+      queueWorkflowEvent(
+        "task.completed",
+        baseWorkflowPayload,
+        { dedupKey: `workflow-event:task.completed:${normalizedTaskId}` },
+      );
+    } else if (normalizedStatus === "inreview") {
+      queueWorkflowEvent(
+        "task.in_review",
+        baseWorkflowPayload,
+        { dedupKey: `workflow-event:task.in_review:${normalizedTaskId}` },
+      );
+    }
+
+    if (options?.workflowEvent) {
+      const eventName = String(options.workflowEvent || "").trim();
+      if (eventName) {
+        const extraPayload =
+          options?.workflowData && typeof options.workflowData === "object"
+            ? options.workflowData
+            : {};
+        queueWorkflowEvent(
+          eventName,
+          {
+            ...baseWorkflowPayload,
+            ...extraPayload,
+          },
+          {
+            dedupKey:
+              options?.workflowDedupKey ||
+              `workflow-event:${eventName}:${normalizedTaskId}:${normalizedStatus}`,
+          },
+        );
+      }
+    }
+  };
+
   const backend = getActiveKanbanBackend();
   if (backend !== "vk") {
     const resolvedTaskId = resolveTaskIdForBackend(taskId, backend);
@@ -3906,6 +4235,7 @@ async function updateTaskStatus(taskId, newStatus) {
       if (resolvedTaskId !== taskId) {
         clearRecoveryCaches(resolvedTaskId);
       }
+      try { queueTaskStatusWorkflowEvents(); } catch { /* workflow event errors must not break task updates */ }
       return true;
     } catch (err) {
       console.warn(
@@ -3922,7 +4252,10 @@ async function updateTaskStatus(taskId, newStatus) {
   });
   const ok = res?.success === true;
   // Clear recovery caches — task status changed, so it needs re-evaluation
-  if (ok) clearRecoveryCaches(taskId);
+  if (ok) {
+    clearRecoveryCaches(taskId);
+    try { queueTaskStatusWorkflowEvents(); } catch { /* workflow event errors must not break task updates */ }
+  }
   return ok;
 }
 
@@ -4904,13 +5237,22 @@ async function checkMergedPRsAndUpdateTasks() {
           if (c.branch) mergedBranchCache.add(c.branch);
         }
         saveMergedTaskCache();
-        void updateTaskStatus(task.id, "done");
+        void updateTaskStatus(task.id, "done", {
+          taskData: task,
+          workflowEvent: "pr.merged",
+          workflowData: {
+            prNumber: knownBranch.prNumber || null,
+            branch: knownBranch.branch || null,
+            triggerReason: "known_merged_branch",
+          },
+        });
         continue;
       }
 
       // ── Check ALL candidates for a merged PR/branch ──
       let resolved = false;
       let hasOpenPR = false;
+      let firstOpenPr = null;
       /** @type {Array<{prNumber: number, attemptId?: string, branch?: string}>} */
       const conflictCandidates = [];
 
@@ -4954,7 +5296,16 @@ async function checkMergedPRsAndUpdateTasks() {
               resolved = true;
               break;
             }
-            const success = await updateTaskStatus(task.id, "done");
+            const success = await updateTaskStatus(task.id, "done", {
+              taskData: task,
+              workflowEvent: "pr.merged",
+              workflowData: {
+                prNumber: cand.prNumber || null,
+                branch: cand.branch || null,
+                baseBranch: cand.baseBranch || null,
+                triggerReason: "merged_pr_detected",
+              },
+            });
             movedCount++;
             mergedTaskCache.add(task.id);
             pendingMergeStrategyByTask.delete(String(task.id || "").trim());
@@ -4983,6 +5334,13 @@ async function checkMergedPRsAndUpdateTasks() {
           }
           if (prState === "OPEN") {
             hasOpenPR = true;
+            if (!firstOpenPr) {
+              firstOpenPr = {
+                prNumber: cand.prNumber || null,
+                branch: cand.branch || null,
+                baseBranch: cand.baseBranch || null,
+              };
+            }
             // Detect merge conflicts on open PRs
             // gh CLI: mergeable = "CONFLICTING" / "MERGEABLE" / "UNKNOWN"
             // REST API: mergeable = false, mergeable_state = "dirty"
@@ -5023,7 +5381,16 @@ async function checkMergedPRsAndUpdateTasks() {
             resolved = true;
             break;
           }
-          const success = await updateTaskStatus(task.id, "done");
+          const success = await updateTaskStatus(task.id, "done", {
+            taskData: task,
+            workflowEvent: "pr.merged",
+            workflowData: {
+              prNumber: cand.prNumber || null,
+              branch: cand.branch || null,
+              baseBranch: cand.baseBranch || null,
+              triggerReason: "merged_branch_detected",
+            },
+          });
           movedCount++;
           mergedTaskCache.add(task.id);
           pendingMergeStrategyByTask.delete(String(task.id || "").trim());
@@ -5064,6 +5431,13 @@ async function checkMergedPRsAndUpdateTasks() {
             const bpState = String(branchPr.state).toUpperCase();
             if (bpState === "OPEN") {
               hasOpenPR = true;
+              if (!firstOpenPr) {
+                firstOpenPr = {
+                  prNumber: branchPr.number || null,
+                  branch: cand.branch || null,
+                  baseBranch: branchPr.base?.ref || null,
+                };
+              }
               // Fetch full PR info (with mergeable) via number
               const fullPrInfo = await getPullRequestByNumber(branchPr.number);
               const isConflicting =
@@ -5252,7 +5626,15 @@ async function checkMergedPRsAndUpdateTasks() {
 
       // Task is NOT merged via any attempt — handle accordingly
       if (hasOpenPR && taskStatus !== "inreview") {
-        const success = await updateTaskStatus(task.id, "inreview");
+        const success = await updateTaskStatus(task.id, "inreview", {
+          taskData: task,
+          workflowEvent: "pr.opened",
+          workflowData: {
+            prNumber: firstOpenPr?.prNumber || null,
+            branch: firstOpenPr?.branch || null,
+            baseBranch: firstOpenPr?.baseBranch || null,
+          },
+        });
         if (success) {
           movedReviewCount++;
           console.log(
@@ -5586,12 +5968,14 @@ function detectFailedChecks(checks = []) {
   return checks.some((check) => {
     const state = String(check?.state || "").toUpperCase();
     const conclusion = String(check?.conclusion || "").toUpperCase();
+    const signal = conclusion || state;
     return (
-      state === "FAILURE" ||
-      conclusion === "FAILURE" ||
-      conclusion === "CANCELLED" ||
-      conclusion === "TIMED_OUT" ||
-      conclusion === "ACTION_REQUIRED"
+      signal === "FAILURE" ||
+      signal === "FAILED" ||
+      signal === "ERROR" ||
+      signal === "CANCELLED" ||
+      signal === "TIMED_OUT" ||
+      signal === "ACTION_REQUIRED"
     );
   });
 }
@@ -5600,7 +5984,7 @@ async function readRequiredChecks(prNumber) {
   const slug = getRepoSlugForEpic();
   if (!slug || !ghAvailable() || !prNumber) return [];
   try {
-    const checksCmd = `gh pr checks ${prNumber} --repo ${slug} --json name,state,conclusion --required`;
+    const checksCmd = `gh pr checks ${prNumber} --repo ${slug} --json name,state --required`;
     const checksResult = execSync(checksCmd, {
       cwd: repoRoot,
       encoding: "utf8",
@@ -6155,7 +6539,7 @@ async function checkAndMergeDependabotPRs() {
 
       try {
         // Check CI status — all checks must pass
-        const checksCmd = `gh pr checks ${pr.number} --repo ${repoSlug} --json name,state,conclusion --required`;
+        const checksCmd = `gh pr checks ${pr.number} --repo ${repoSlug} --json name,state --required`;
         let checksResult;
         try {
           checksResult = execSync(checksCmd, {
@@ -6189,33 +6573,45 @@ async function checkAndMergeDependabotPRs() {
         // All required checks must be in a passing state
         const allPassed =
           checks.length > 0 &&
-          checks.every(
-            (c) =>
-              c.conclusion === "SUCCESS" ||
-              c.conclusion === "success" ||
-              c.conclusion === "NEUTRAL" ||
-              c.conclusion === "neutral" ||
-              c.conclusion === "SKIPPED" ||
-              c.conclusion === "skipped",
-          );
+          checks.every((c) => {
+            const state = String(c?.state || "").toUpperCase();
+            const conclusion = String(c?.conclusion || "").toUpperCase();
+            const signal = conclusion || state;
+            return (
+              signal === "SUCCESS" ||
+              signal === "PASSED" ||
+              signal === "PASS" ||
+              signal === "NEUTRAL" ||
+              signal === "SKIPPED" ||
+              signal === "COMPLETED"
+            );
+          });
 
         if (!allPassed) {
-          const pending = checks.filter(
-            (c) =>
-              !c.conclusion ||
-              c.state === "PENDING" ||
-              c.state === "IN_PROGRESS" ||
-              c.state === "QUEUED",
-          );
-          const failed = checks.filter(
-            (c) =>
-              c.conclusion === "FAILURE" ||
-              c.conclusion === "failure" ||
-              c.conclusion === "ERROR" ||
-              c.conclusion === "error" ||
-              c.conclusion === "TIMED_OUT" ||
-              c.conclusion === "timed_out",
-          );
+          const pending = checks.filter((c) => {
+            const state = String(c?.state || "").toUpperCase();
+            const conclusion = String(c?.conclusion || "").toUpperCase();
+            return (
+              !conclusion ||
+              state === "PENDING" ||
+              state === "IN_PROGRESS" ||
+              state === "QUEUED" ||
+              state === "WAITING"
+            );
+          });
+          const failed = checks.filter((c) => {
+            const state = String(c?.state || "").toUpperCase();
+            const conclusion = String(c?.conclusion || "").toUpperCase();
+            const signal = conclusion || state;
+            return (
+              signal === "FAILURE" ||
+              signal === "FAILED" ||
+              signal === "ERROR" ||
+              signal === "TIMED_OUT" ||
+              signal === "CANCELLED" ||
+              signal === "ACTION_REQUIRED"
+            );
+          });
           if (failed.length > 0) {
             console.log(
               `[dependabot] PR #${pr.number}: ${failed.length} check(s) failed — skipping`,
@@ -11166,6 +11562,99 @@ function getMonitorMonitorStatusSnapshot() {
   };
 }
 
+function resolveMonitorMonitorErrorTailWindowMs() {
+  const raw = Number(
+    process.env.DEVMODE_MONITOR_MONITOR_ERROR_TAIL_WINDOW_MS || "1200000",
+  );
+  if (!Number.isFinite(raw) || raw <= 0) return 20 * 60_000;
+  return Math.max(60_000, raw);
+}
+
+function filterMonitorTailByRecency(tail, { windowMs } = {}) {
+  const text = String(tail || "");
+  if (!text) return text;
+
+  const parsedWindow = Number(windowMs);
+  if (!Number.isFinite(parsedWindow) || parsedWindow <= 0) return text;
+  const cutoff = Date.now() - parsedWindow;
+
+  const lines = text.split("\n");
+  const blocks = [];
+  let current = null;
+
+  const flushCurrent = () => {
+    if (!current) return;
+    blocks.push(current);
+    current = null;
+  };
+
+  for (const line of lines) {
+    const currentLine = String(line || "");
+    const tsMatch = currentLine.match(
+      /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)\s/,
+    );
+    if (tsMatch) {
+      flushCurrent();
+      const tsMs = Date.parse(tsMatch[1]);
+      current = {
+        tsMs: Number.isFinite(tsMs) ? tsMs : null,
+        lines: [currentLine],
+      };
+      continue;
+    }
+
+    if (current) {
+      current.lines.push(currentLine);
+    } else {
+      // Keep orphan lines (e.g., "(missing: ...)" diagnostics) as standalone
+      // blocks so we do not hide useful context when timestamps are absent.
+      blocks.push({ tsMs: null, lines: [currentLine] });
+    }
+  }
+  flushCurrent();
+
+  return blocks
+    .filter((block) => block.tsMs === null || block.tsMs >= cutoff)
+    .map((block) => block.lines.join("\n"))
+    .join("\n")
+    .trimEnd();
+}
+
+function sanitizeMonitorTailForPrompt(tail, backend) {
+  const text = String(tail || "");
+  if (!text) return text;
+  if (String(backend || "").toLowerCase() === "vk") return text;
+
+  const fixtureTokens = [
+    "/api/tasks/999",
+    "/api/tasks/111",
+    "/api/tasks/123",
+    "/api/tasks/task-5",
+    "safeRecover: could not re-fetch status for \"Failing Task\"",
+    "Invalid JSON - Invalid JSON",
+    "plain text response",
+    "<h1>404 Not Found</h1>",
+    "<h1>502 Bad Gateway</h1>",
+    "nginx/1.18.0",
+  ];
+
+  const lines = text.split("\n");
+  const filtered = lines.filter((line) => {
+    const current = String(line || "");
+    if (/A{40,}/.test(current)) return false;
+    return !fixtureTokens.some((token) => current.includes(token));
+  });
+
+  if (filtered.length === lines.length) return text;
+
+  return [
+    filtered.join("\n"),
+    "[monitor] (sanitized synthetic VK fixture noise for non-VK backend)",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
   const digestSnapshot = getDigestSnapshot();
   const digestEntries =
@@ -11210,10 +11699,22 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
       }
     }
   }
-  const monitorTail = await readLogTail(resolve(logDir, "monitor-error.log"), {
+  const activeKanbanBackend = getActiveKanbanBackend();
+  const monitorTailWindowMs = resolveMonitorMonitorErrorTailWindowMs();
+  const rawMonitorTail = await readLogTail(resolve(logDir, "monitor-error.log"), {
     maxLines: 120,
     maxChars: 12000,
   });
+  const recentMonitorTail = filterMonitorTailByRecency(rawMonitorTail, {
+    windowMs: monitorTailWindowMs,
+  });
+  const monitorTail = sanitizeMonitorTailForPrompt(
+    recentMonitorTail,
+    activeKanbanBackend,
+  );
+  const monitorTailForPrompt =
+    String(monitorTail || "").trim() ||
+    `(no recent monitor errors in last ${Math.round(monitorTailWindowMs / 60_000)}m)`;
 
   const anomalyReport = getAnomalyStatusReport();
   const monitorPrompt = agentPrompts?.monitorMonitor || "";
@@ -11252,7 +11753,7 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
     anomalyReport || "(none)",
     "",
     "## Monitor Error Log Tail",
-    monitorTail,
+    monitorTailForPrompt,
     "",
     "## Orchestrator Log Tail",
     orchestratorTail,
@@ -12342,10 +12843,25 @@ function applyConfig(nextConfig, options = {}) {
   plannerIdleSlotThreshold = nextConfig.plannerIdleSlotThreshold;
   plannerDedupMs = nextConfig.plannerDedupMs;
   plannerMode = nextConfig.plannerMode || "codex-sdk";
+  workflowAutomationEnabled = parseEnvBoolean(
+    process.env.WORKFLOW_AUTOMATION_ENABLED,
+    workflowAutomationEnabled,
+  );
+  {
+    const dedupMs = Number(
+      process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS || workflowEventDedupWindowMs || "15000",
+    );
+    workflowEventDedupWindowMs = Number.isFinite(dedupMs) && dedupMs > 0
+      ? dedupMs
+      : 15_000;
+  }
   triggerSystemConfig =
     nextConfig.triggerSystem && typeof nextConfig.triggerSystem === "object"
       ? nextConfig.triggerSystem
       : { enabled: false, templates: [], defaults: { executor: "auto", model: "auto" } };
+  if (workflowAutomationEnabled) {
+    ensureWorkflowAutomationEngine().catch(() => {});
+  }
   githubReconcile = nextConfig.githubReconcile || githubReconcile;
   agentPrompts = nextConfig.agentPrompts;
   configExecutorConfig = nextConfig.executorConfig;
@@ -12639,13 +13155,21 @@ process.on("uncaughtException", (err) => {
   // Always suppress stream noise — not just during shutdown
   if (isStreamNoise(msg)) {
     console.error(
-      `[monitor] suppressed stream noise (uncaughtException): ${msg}`,
+      "[monitor] suppressed stream noise (uncaughtException): " + msg,
     );
     return;
   }
   if (shuttingDown) return;
-  console.error(`[monitor] uncaughtException: ${err?.stack || msg}`);
-  void handleMonitorFailure("uncaughtException", err);
+  console.error("[monitor] uncaughtException: " + (err?.stack || msg));
+  handleMonitorFailure("uncaughtException", err).catch((failureErr) => {
+    try {
+      process.stderr.write(
+        "[monitor] uncaughtException handler failed: " + (failureErr?.message || failureErr) + "\n",
+      );
+    } catch {
+      /* best effort */
+    }
+  });
 });
 
 process.on("unhandledRejection", (reason) => {
@@ -12653,15 +13177,23 @@ process.on("unhandledRejection", (reason) => {
   // Always suppress stream noise
   if (isStreamNoise(msg)) {
     console.error(
-      `[monitor] suppressed stream noise (unhandledRejection): ${msg}`,
+      "[monitor] suppressed stream noise (unhandledRejection): " + msg,
     );
     return;
   }
   if (shuttingDown) return;
   const err =
     reason instanceof Error ? reason : new Error(String(reason || ""));
-  console.error(`[monitor] unhandledRejection: ${err?.stack || msg}`);
-  void handleMonitorFailure("unhandledRejection", err);
+  console.error("[monitor] unhandledRejection: " + (err?.stack || msg));
+  handleMonitorFailure("unhandledRejection", err).catch((failureErr) => {
+    try {
+      process.stderr.write(
+        "[monitor] unhandledRejection handler failed: " + (failureErr?.message || failureErr) + "\n",
+      );
+    } catch {
+      /* best effort */
+    }
+  });
 });
 
 // ── Exit diagnostic: always log the exit code so crashes are traceable ──────
@@ -12677,28 +13209,29 @@ process.on("exit", (code) => {
   }
 });
 
-// ── Singleton guard: prevent ghost monitors ─────────────────────────────────
-if (!process.env.VITEST && !acquireMonitorLock(config.cacheDir)) {
-  // During source-change self-restart, the previous monitor can still be
-  // shutting down and holding the lock briefly. Ask cli.mjs to retry instead
-  // of treating this as a hard crash.
-  if (isSelfRestart) {
-    // Write directly to stderr so the message reaches the terminal even when
-    // the console interceptor is redirecting to a log file.
+if (!isMonitorTestRuntime) {
+  // ── Singleton guard: prevent ghost monitors ─────────────────────────────────
+  if (!acquireMonitorLock(config.cacheDir)) {
+    // During source-change self-restart, the previous monitor can still be
+    // shutting down and holding the lock briefly. Ask cli.mjs to retry instead
+    // of treating this as a hard crash.
+    if (isSelfRestart) {
+      // Write directly to stderr so the message reaches the terminal even when
+      // the console interceptor is redirecting to a log file.
+      process.stderr.write(
+        "[monitor] self-restart lock handoff still busy — retrying startup\n",
+      );
+      process.exit(SELF_RESTART_EXIT_CODE);
+    }
+    // Write directly to stderr — console.error is intercepted to a log file at
+    // this point, so the user would see a silent exit-code-1 crash with zero
+    // explanation without this line.
     process.stderr.write(
-      "[monitor] self-restart lock handoff still busy — retrying startup\n",
+      "[monitor] another bosun instance holds the lock — exiting (exit code 1).\n" +
+        "[monitor] If no other bosun is running, delete .cache/bosun.pid and retry.\n",
     );
-    process.exit(SELF_RESTART_EXIT_CODE);
+    process.exit(1);
   }
-  // Write directly to stderr — console.error is intercepted to a log file at
-  // this point, so the user would see a silent exit-code-1 crash with zero
-  // explanation without this line.
-  process.stderr.write(
-    "[monitor] another bosun instance holds the lock — exiting (exit code 1).\n" +
-      "[monitor] If no other bosun is running, delete .cache/bosun.pid and retry.\n",
-  );
-  process.exit(1);
-}
 
 // ── Codex CLI config.toml: ensure VK MCP + stream timeouts ──────────────────
 try {
@@ -12968,6 +13501,11 @@ try {
 } catch (err) {
   console.warn(`[monitor] stale cleanup failed: ${err.message}`);
 }
+} else {
+  console.log(
+    "[monitor] test runtime detected (VITEST/NODE_ENV=test) — startup maintenance loops disabled",
+  );
+}
 
 // ── Internal Executor / VK Orchestrator startup ──────────────────────────────
 /** @type {import("./task-executor.mjs").TaskExecutor|null} */
@@ -13032,6 +13570,7 @@ function restartGitHubReconciler() {
   });
 }
 
+if (!isMonitorTestRuntime) {
 // ── Task Management Subsystem Initialization ────────────────────────────────
 try {
   mkdirSync(monitorStateCacheDir, { recursive: true });
@@ -13080,12 +13619,39 @@ if (isExecutorDisabled()) {
           Number.isFinite(slot?.agentInstanceId) && slot.agentInstanceId > 0
             ? `#${slot.agentInstanceId}`
             : "n/a";
+        const taskId = String(task?.id || task?.task_id || "").trim();
         console.log(
           `[task-executor] 🚀 started: "${task.title}" (${slot.sdk}) agent=${agentId} branch=${slot.branch} worktree=${slot.worktreePath || "(pending)"}`,
         );
         if (agentEventBus) agentEventBus.onTaskStarted(task, slot);
+        if (taskId) {
+          queueWorkflowEvent(
+            "task.assigned",
+            {
+              taskId,
+              taskTitle: task?.title || "",
+              taskStatus: "inprogress",
+              sdk: slot?.sdk || null,
+              branch: slot?.branch || null,
+              worktreePath: slot?.worktreePath || null,
+            },
+            { dedupKey: `workflow-event:task.assigned:${taskId}` },
+          );
+          queueWorkflowEvent(
+            "agent.started",
+            {
+              taskId,
+              taskTitle: task?.title || "",
+              sdk: slot?.sdk || null,
+              branch: slot?.branch || null,
+              agentInstanceId: slot?.agentInstanceId ?? null,
+            },
+            { dedupKey: `workflow-event:agent.started:${taskId}:${slot?.agentInstanceId ?? "na"}` },
+          );
+        }
       },
       onTaskCompleted: (task, result) => {
+        const taskId = String(task?.id || task?.task_id || "").trim();
         console.log(
           `[task-executor] ✅ completed: "${task.title}" (${result.attempts} attempt(s))`,
         );
@@ -13107,12 +13673,48 @@ if (isExecutorDisabled()) {
             }
           }
         }
+        if (taskId) {
+          queueWorkflowEvent(
+            "task.completed",
+            {
+              taskId,
+              taskTitle: task?.title || "",
+              taskStatus: "completed",
+              attempts: Number(result?.attempts || 0),
+              success: result?.success !== false,
+            },
+            { dedupKey: `workflow-event:task.completed:${taskId}:${result?.attempts || 0}` },
+          );
+        }
       },
       onTaskFailed: (task, err) => {
+        const taskId = String(task?.id || task?.task_id || "").trim();
         console.warn(
           `[task-executor] ❌ failed: "${task.title}" — ${formatMonitorError(err)}`,
         );
         if (agentEventBus) agentEventBus.onTaskFailed(task, err);
+        if (taskId) {
+          const errorMessage = formatMonitorError(err);
+          queueWorkflowEvent(
+            "task.failed",
+            {
+              taskId,
+              taskTitle: task?.title || "",
+              taskStatus: "failed",
+              error: errorMessage,
+            },
+            { dedupKey: `workflow-event:task.failed:${taskId}:${errorMessage}` },
+          );
+          queueWorkflowEvent(
+            "agent.crashed",
+            {
+              taskId,
+              taskTitle: task?.title || "",
+              error: errorMessage,
+            },
+            { dedupKey: `workflow-event:agent.crashed:${taskId}:${errorMessage}` },
+          );
+        }
       },
     };
     internalTaskExecutor = getTaskExecutor(execOpts);
@@ -13553,6 +14155,13 @@ void restoreLiveDigest()
 startAgentWorkAnalyzer();
 startAgentAlertTailer();
 startMonitorMonitorSupervisor();
+if (workflowAutomationEnabled) {
+  ensureWorkflowAutomationEngine().catch(() => {});
+} else {
+  console.log(
+    "[workflows] automation disabled (set WORKFLOW_AUTOMATION_ENABLED=true to enable event-driven workflow triggers)",
+  );
+}
 startTaskPlannerStatusLoop();
 restartGitHubReconciler();
 
@@ -13706,6 +14315,11 @@ if (config.prCleanupEnabled !== false) {
   });
   prCleanupDaemon.start();
 }
+} else {
+  console.log(
+    "[monitor] test runtime detected (VITEST/NODE_ENV=test) — runtime services disabled",
+  );
+}
 
 // ── Named exports for testing ───────────────────────────────────────────────
 export {
@@ -13746,4 +14360,5 @@ export {
   getContainerStatus,
   isContainerEnabled,
 };
+
 

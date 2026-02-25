@@ -688,6 +688,8 @@ function handleApply(body) {
     if (env.internalReplenishMax != null)
                                          envMap.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS = String(env.internalReplenishMax);
     if (env.kanbanSyncPolicy)           envMap.KANBAN_SYNC_POLICY            = env.kanbanSyncPolicy;
+    if (env.workflowAutomationEnabled != null)
+                                         envMap.WORKFLOW_AUTOMATION_ENABLED   = String(!!env.workflowAutomationEnabled);
 
     // ── Codex model profile settings ───────────────────────────────────────
     if (env.codexModelProfile)          envMap.CODEX_MODEL_PROFILE              = env.codexModelProfile;

@@ -434,7 +434,11 @@ async function runStuckSweep() {
 function startStuckSweep() {
   if (stuckSweepTimer) return;
   stuckSweepTimer = setInterval(() => {
-    void runStuckSweep();
+    runStuckSweep().catch((err) => {
+      console.error(
+        "[agent-work-analyzer] Stuck sweep failed: " + (err?.message || err),
+      );
+    });
   }, STUCK_SWEEP_INTERVAL_MS);
   stuckSweepTimer.unref?.();
 }

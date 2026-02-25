@@ -203,6 +203,7 @@ export const SETTINGS_SCHEMA = [
   { key: "MAX_PARALLEL",                   label: "Global Max Parallel",        category: "advanced", type: "number", defaultVal: 6, min: 1, max: 50, description: "Global maximum parallel task slots across all executors." },
   { key: "RESTART_DELAY_MS",               label: "Restart Delay",              category: "advanced", type: "number", defaultVal: 10000, min: 1000, max: 60000, unit: "ms", description: "Delay before restarting after a crash." },
   { key: "SHARED_STATE_ENABLED",           label: "Shared State",               category: "advanced", type: "boolean", defaultVal: true, description: "Enable distributed task coordination for multi-instance setups." },
+  { key: "WORKFLOW_AUTOMATION_ENABLED",    label: "Workflow Automation",        category: "advanced", type: "boolean", defaultVal: true, description: "Enable event-driven workflow auto-triggers from monitor events." },
   { key: "SHARED_STATE_STALE_THRESHOLD_MS", label: "Stale Threshold",           category: "advanced", type: "number", defaultVal: 300000, min: 60000, max: 1800000, unit: "ms", description: "Time before a heartbeat is considered stale.", advanced: true },
   { key: "VE_CI_SWEEP_EVERY",              label: "CI Sweep Interval",          category: "advanced", type: "number", defaultVal: 15, min: 1, max: 100, description: "Trigger CI sweep after every N completed tasks.", advanced: true },
 ];

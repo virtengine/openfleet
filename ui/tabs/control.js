@@ -53,6 +53,7 @@ const MAX_HISTORY = 50;
 const MAX_OUTPUTS = 3;
 const POLL_INTERVAL = 2000;
 const MAX_POLLS = 7;
+const OUTPUT_POLL_WINDOW_SEC = Math.max(1, Math.round((POLL_INTERVAL * MAX_POLLS) / 1000));
 
 const normalizeHistoryEntry = (entry) => {
   if (entry == null) return "";
@@ -219,7 +220,7 @@ export function ControlTab() {
           pollRef.current = null;
           setRunningCmd(null);
           setCmdOutputs((prev) => {
-            const entry = { cmd, ts, output: text || '(no output)' };
+            const entry = { cmd, ts, output: text || 'no live output yet — command accepted. Check /logs for full stream' };
             const next = [entry, ...prev].slice(0, MAX_OUTPUTS);
             return next;
           });
@@ -232,7 +233,7 @@ export function ControlTab() {
         pollRef.current = null;
         setRunningCmd(null);
         setCmdOutputs((prev) => {
-          const entry = { cmd, ts, output: '(failed to fetch output)' };
+          const entry = { cmd, ts, output: 'could not fetch live output — command may still be running. Check /logs' };
           return [entry, ...prev].slice(0, MAX_OUTPUTS);
         });
       }
@@ -698,9 +699,9 @@ export function ControlTab() {
             </div>
 
             ${runningCmd && html`
-              <div class="cmd-running-indicator">
+              <div class="cmd-running-indicator" title="Polling supervisor logs for command output">
                 <span class="cmd-running-dot"></span>
-                Running: <code>${runningCmd}</code>
+                Running: <code>${runningCmd}</code> · waiting for supervisor output (~${OUTPUT_POLL_WINDOW_SEC}s)
               </div>
             `}
 

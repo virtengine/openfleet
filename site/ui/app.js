@@ -84,6 +84,8 @@ import {
   connected,
   statusData,
   executorData,
+  tasksData,
+  agentsData,
   refreshTab,
   initWsInvalidationListener,
   loadNotificationPrefs,
@@ -552,12 +554,11 @@ function SidebarNav({ collapsed = false, onToggle }) {
         ${TAB_CONFIG.map((tab) => {
           const isActive = activeTab.value === tab.id;
           const isHome = tab.id === "dashboard";
-          const sCounts = statusData.value?.counts || {};
           let badge = 0;
           if (tab.id === "tasks") {
-            badge = Number(sCounts.running || sCounts.inprogress || 0) + Number(sCounts.inreview || sCounts.review || 0);
+            badge = getActiveTaskCount();
           } else if (tab.id === "agents") {
-            badge = Number(executorData.value?.data?.activeSlots || 0);
+            badge = getActiveAgentCount();
           }
           return html`
             <button
@@ -575,7 +576,7 @@ function SidebarNav({ collapsed = false, onToggle }) {
             >
               ${ICONS[tab.icon]}
               ${!collapsed && html`<span>${tab.label}</span>`}
-              ${badge > 0 ? html`<span class="nav-badge">${badge}</span>` : null}
+              ${badge > 0 ? html`<span class="nav-badge" title=${tab.id === "tasks" ? "Active work items" : "Active agents"}>${badge}</span>` : null}
             </button>
           `;
         })}
@@ -873,11 +874,35 @@ function getTabsById(ids) {
     .filter(Boolean);
 }
 
+function getActiveTaskCount() {
+  const sCounts = statusData.value?.counts || {};
+  const fromSummary =
+    Number(sCounts.running || sCounts.inprogress || 0) +
+    Number(sCounts.inreview || sCounts.review || 0);
+  const list = Array.isArray(tasksData.value) ? tasksData.value : [];
+  if (list.length > 0) {
+    return list.filter((task) => {
+      const status = String(task?.status || "").toLowerCase();
+      return status === "inprogress" || status === "inreview" || status === "running";
+    }).length;
+  }
+  return fromSummary;
+}
+
+function getActiveAgentCount() {
+  const slots = Number(executorData.value?.data?.activeSlots || 0);
+  if (Number.isFinite(slots) && slots > 0) return slots;
+  const agents = Array.isArray(agentsData.value) ? agentsData.value : [];
+  return agents.filter((agent) => {
+    const status = String(agent?.status || "").toLowerCase();
+    return status === "running" || status === "busy" || status === "active";
+  }).length;
+}
+
 function BottomNav({ compact, moreOpen, onToggleMore, onNavigate }) {
   const primaryTabs = getTabsById(PRIMARY_NAV_TABS);
-  const sCounts = statusData.value?.counts || {};
-  const tasksBadge = Number(sCounts.running || sCounts.inprogress || 0) + Number(sCounts.inreview || sCounts.review || 0);
-  const agentsBadge = Number(executorData.value?.data?.activeSlots || 0);
+  const tasksBadge = getActiveTaskCount();
+  const agentsBadge = getActiveAgentCount();
   return html`
     <nav class=${`bottom-nav ${compact ? "compact" : ""}`}>
       ${primaryTabs.map((tab) => {
@@ -901,7 +926,7 @@ function BottomNav({ compact, moreOpen, onToggleMore, onNavigate }) {
           >
             ${ICONS[tab.icon]}
             <span class="nav-label">${tab.label}</span>
-            ${badge > 0 ? html`<span class="nav-badge">${badge}</span>` : null}
+            ${badge > 0 ? html`<span class="nav-badge" title=${tab.id === "tasks" ? "Active work items" : "Active agents"}>${badge}</span>` : null}
           </button>
         `;
       })}

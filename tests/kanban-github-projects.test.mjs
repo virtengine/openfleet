@@ -960,6 +960,84 @@ describe("GitHub Projects v2 integration", () => {
       await assertion;
     });
 
+
+    it("retries transient gh CLI failures and succeeds", async () => {
+      vi.useFakeTimers();
+
+      execFileMock.mockImplementationOnce((_cmd, _args, _opts, cb) => {
+        cb(new Error("invalid character '<' looking for beginning of value"), {
+          stdout: "",
+          stderr: "invalid character '<' looking for beginning of value",
+        });
+      });
+      execFileMock.mockImplementationOnce((_cmd, _args, _opts, cb) => {
+        cb(null, {
+          stdout: JSON.stringify([{ id: "task-2" }]),
+          stderr: "",
+        });
+      });
+
+      const adapter = getKanbanAdapter();
+      const promise = adapter._gh(["api", "user"]);
+
+      await vi.advanceTimersByTimeAsync(adapter._transientRetryDelayMs + 100);
+
+      const result = await promise;
+      expect(result).toEqual([{ id: "task-2" }]);
+      expect(execFileMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("throws after transient retry budget is exhausted", async () => {
+      vi.useFakeTimers();
+
+      execFileMock.mockImplementationOnce((_cmd, _args, _opts, cb) => {
+        cb(new Error("service unavailable"), {
+          stdout: "",
+          stderr: "service unavailable",
+        });
+      });
+      execFileMock.mockImplementationOnce((_cmd, _args, _opts, cb) => {
+        cb(new Error("service unavailable"), {
+          stdout: "",
+          stderr: "service unavailable",
+        });
+      });
+
+      const adapter = getKanbanAdapter();
+      adapter._transientRetryMax = 1;
+      const promise = adapter._gh(["api", "user"]);
+
+      const assertion = expect(promise).rejects.toThrow(/gh CLI failed/);
+      await vi.advanceTimersByTimeAsync(adapter._transientRetryDelayMs + 100);
+      await assertion;
+      expect(execFileMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("retries transient invalid JSON responses and succeeds", async () => {
+      vi.useFakeTimers();
+
+      execFileMock.mockImplementationOnce((_cmd, _args, _opts, cb) => {
+        cb(null, {
+          stdout: "<html><body><h1>502 Bad Gateway</h1></body></html>",
+          stderr: "",
+        });
+      });
+      execFileMock.mockImplementationOnce((_cmd, _args, _opts, cb) => {
+        cb(null, {
+          stdout: JSON.stringify([{ id: "task-3" }]),
+          stderr: "",
+        });
+      });
+
+      const adapter = getKanbanAdapter();
+      const promise = adapter._gh(["api", "user"]);
+
+      await vi.advanceTimersByTimeAsync(adapter._transientRetryDelayMs + 100);
+
+      const result = await promise;
+      expect(result).toEqual([{ id: "task-3" }]);
+      expect(execFileMock).toHaveBeenCalledTimes(2);
+    });
     it("does not retry on non-rate-limit errors", async () => {
       mockGhError("not found");
 
@@ -1306,3 +1384,4 @@ describe("GitHub Projects v2 integration", () => {
     });
   });
 });
+

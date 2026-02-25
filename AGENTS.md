@@ -286,6 +286,71 @@ const status = await getAuthStatus();
 console.log(status.message); // e.g. "GitHub OAuth user token — authenticated as @myuser"
 ```
 
+## Code Quality — Mandatory Rules
+
+These rules are **non-negotiable**. Every pattern below has caused real production
+crashes in this codebase. Agents that violate them will have their work reverted.
+
+### Module-Scope Caching
+
+Variables that cache state (lazy singletons, "loaded" flags, memoization maps,
+dynamic `import()` results) **MUST** be declared at **module scope**, never
+inside a function body that executes repeatedly (HTTP handlers, event callbacks,
+timers).
+
+**Why:** Function-scoped caches reset on every call → repeated expensive init,
+log spam, memory leaks, and race conditions.
+
+```javascript
+// ❌ BAD — _engine resets to undefined on every request
+export function handleApi(req, res) {
+  let _engine;
+  if (!_engine) _engine = await loadEngine(); // runs EVERY time
+}
+
+// ✅ GOOD — _engine persists across calls
+let _engine;
+export function handleApi(req, res) {
+  if (!_engine) _engine = await loadEngine(); // runs ONCE
+}
+```
+
+### Async Fire-and-Forget
+
+**NEVER** use bare `void asyncFn()` or call an async function without `await` or
+`.catch()`. Since Node.js 15+, unhandled promise rejections crash the process.
+
+```javascript
+// ❌ BAD — if dispatchEvent throws → unhandled rejection → exit code 1
+void dispatchEvent(data);
+
+// ✅ GOOD
+await dispatchEvent(data); // preferred
+dispatchEvent(data).catch((err) => log.warn(err)); // fire-and-forget OK
+```
+
+### Error Boundaries
+
+Any function called from a hot path (HTTP handler, event loop, timer, setInterval)
+**MUST** have a top-level try/catch. One unguarded throw must never kill the process.
+
+### Testing Requirements
+
+- **No over-mocking:** Mock only external boundaries (network, filesystem, clock).
+  Never mock the module under test. If a test needs > 3 mocks, refactor the code.
+- **Deterministic:** No `Math.random()`, real network calls, or `setTimeout`/sleep
+  for synchronization.
+- **Behavioral:** Assert on observable outputs, not internal state. Test error
+  cases, not just happy paths.
+- **Independent:** Tests must not depend on execution order or shared mutable state.
+
+### Architecture
+
+- Use promise-based deduplication for async initialization (`let _initPromise`).
+- Dynamic `import()` results must be cached at module scope.
+- Respect feature flags — never force-enable or inline-override config values.
+- Guard optional subsystem calls with null/undefined checks.
+
 ## Testing
 
 - Test runner: Vitest (`scripts/bosun/vitest.config.mjs:1`)

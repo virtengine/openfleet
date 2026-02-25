@@ -495,6 +495,7 @@ function App() {
   const [workspacesDir, setWorkspacesDir] = useState("");
   const [workspacesDirCustomized, setWorkspacesDirCustomized] = useState(false);
   const [telegramEnabled, setTelegramEnabled] = useState(false);
+  const [workflowAutomationEnabled, setWorkflowAutomationEnabled] = useState(true);
   const [jiraUrl, setJiraUrl] = useState("");
   const [jiraProjectKey, setJiraProjectKey] = useState("");
   const [jiraApiToken, setJiraApiToken] = useState("");
@@ -553,6 +554,7 @@ function App() {
       if (env.JIRA_PROJECT_KEY) { setJiraProjectKey(env.JIRA_PROJECT_KEY); envLoaded = true; }
       if (env.JIRA_API_TOKEN) { setJiraApiToken(env.JIRA_API_TOKEN); envLoaded = true; }
       if (env.GITHUB_PROJECT_NUMBER) { setGithubProjectNumber(env.GITHUB_PROJECT_NUMBER); envLoaded = true; }
+      if (env.WORKFLOW_AUTOMATION_ENABLED !== undefined) { setWorkflowAutomationEnabled(env.WORKFLOW_AUTOMATION_ENABLED !== "false"); envLoaded = true; }
       if (env.EXECUTORS) {
         try {
           const parsed = env.EXECUTORS.split(",").map((part, idx) => {
@@ -702,6 +704,7 @@ function App() {
           jiraProjectKey,
           jiraApiToken,
           githubProjectNumber,
+          workflowAutomationEnabled,
         },
         configJson: {
           projectName,
@@ -1134,7 +1137,7 @@ function App() {
     `})}
     <button class="btn btn-sm" onclick=${addExecutor} style="margin-bottom:12px">+ Add Executor</button>
     ${profile === "advanced" && html`
-      <div class="executor-grid" style="margin-top:12px">
+        <div class="executor-grid" style="margin-top:12px">
         <div class="form-group">
           <label>Max Parallel</label>
           <input type="number" value=${maxParallel} min="1" max="20"
@@ -1146,16 +1149,25 @@ function App() {
           <input type="number" value=${maxRetries} min="0" max="10"
             oninput=${(e) => setMaxRetries(Number(e.target.value) || 3)} />
         </div>
-        <div class="form-group">
-          <label>Failover Strategy</label>
-          <select value=${failoverStrategy} onchange=${(e) => setFailoverStrategy(e.target.value)}>
-            <option value="next-in-line">Next in Line</option>
-            <option value="round-robin">Round Robin</option>
-            <option value="random">Random</option>
-          </select>
+          <div class="form-group">
+            <label>Failover Strategy</label>
+            <select value=${failoverStrategy} onchange=${(e) => setFailoverStrategy(e.target.value)}>
+              <option value="next-in-line">Next in Line</option>
+              <option value="round-robin">Round Robin</option>
+              <option value="random">Random</option>
+            </select>
+          </div>
+          <div class="form-group" style="grid-column:1/-1">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+              <input type="checkbox" checked=${workflowAutomationEnabled}
+                onchange=${(e) => setWorkflowAutomationEnabled(e.target.checked)}
+                style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+              Enable Workflow Automation
+            </label>
+            <div class="hint">Runs matching workflows automatically from monitor task/pr events.</div>
+          </div>
         </div>
-      </div>
-    `}
+      `}
     <div class="nav-buttons">
       <button class="btn" onclick=${goPrev}>← Back</button>
       <button class="btn btn-primary" onclick=${goNext} disabled=${executors.length === 0}>Continue →</button>
@@ -1368,6 +1380,7 @@ function App() {
             <tr><th>Max Parallel</th><td>${maxParallel}</td></tr>
             <tr><th>Max Retries</th><td>${maxRetries}</td></tr>
             <tr><th>Failover</th><td>${failoverStrategy}</td></tr>
+            <tr><th>Workflow Automation</th><td>${workflowAutomationEnabled ? "Enabled" : "Disabled"}</td></tr>
           ` : null}
         </tbody>
       </table>
