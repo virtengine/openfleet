@@ -20,6 +20,7 @@ import { clearLine, createInterface, cursorTo } from "node:readline";
 import net from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMainThread } from "node:worker_threads";
 
 // Node.js Happy Eyeballs (RFC 8305) tries IPv6 first with a 250ms timeout
 // before falling back to IPv4.  On networks where IPv6 is unreachable, the
@@ -566,7 +567,9 @@ let githubReconcile = githubReconcileConfig || {
 // trusted git directory, preventing "Not inside a trusted directory" errors.
 // Prefer agentRepoRoot (workspace-aware) over raw repoRoot.
 const effectiveRepoRoot = agentRepoRoot || repoRoot;
-if (effectiveRepoRoot && process.cwd() !== effectiveRepoRoot) {
+if (!isMainThread) {
+  // Worker threads cannot call process.chdir(); skip to avoid noisy warnings.
+} else if (effectiveRepoRoot && process.cwd() !== effectiveRepoRoot) {
   try {
     process.chdir(effectiveRepoRoot);
     console.log(`[monitor] changed CWD to repo root: ${effectiveRepoRoot}`);
@@ -11849,16 +11852,32 @@ function attemptSelfRestartAfterQuiet() {
   const protection = getRuntimeRestartProtection();
   if (protection.defer) {
     pendingSelfRestart = filename;
-    // Track how many times we've deferred. Never force-restart when internal
-    // task agents are active; just keep retrying with periodic reminders.
     const deferCount = (selfRestartDeferCount =
       (selfRestartDeferCount || 0) + 1);
     const retrySec = Math.round(SELF_RESTART_RETRY_MS / 1000);
-    if (deferCount >= 20) {
+
+    // Hard cap: after many deferrals the active agent is likely stuck.
+    // Force-stop the task executor and proceed with the restart so the
+    // monitor doesn't hang forever (or crash from resource exhaustion).
+    const SELF_RESTART_DEFER_HARD_CAP = Number(
+      process.env.SELF_RESTART_DEFER_HARD_CAP || "50",
+    );
+    if (deferCount >= SELF_RESTART_DEFER_HARD_CAP) {
+      console.warn(
+        `[monitor] self-restart deferred ${deferCount} times (hard cap ${SELF_RESTART_DEFER_HARD_CAP}) — force-stopping active agents and restarting`,
+      );
+      if (internalTaskExecutor) {
+        internalTaskExecutor.stop().catch(() => {});
+      }
+      selfRestartDeferCount = 0;
+      selfRestartForSourceChange(filename);
+      return;
+    }
+
+    if (deferCount % 20 === 0) {
       console.warn(
         `[monitor] self-restart deferred ${deferCount} times — still waiting for ${protection.reason}; continuing to defer`,
       );
-      selfRestartDeferCount = 0;
     }
     console.log(
       `[monitor] deferring self-restart (${filename}) — ${protection.reason}; retrying in ${retrySec}s (defer #${deferCount})`,

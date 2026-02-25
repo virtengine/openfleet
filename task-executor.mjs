@@ -109,6 +109,11 @@ const FATAL_CLAIM_RENEW_ERRORS = new Set([
   "task_claimed_by_different_instance",
   "claim_token_mismatch",
   "task_not_claimed",
+  // Shared-state token mismatches — another orchestrator instance has taken
+  // over the task in the shared state registry.  Treat exactly the same as a
+  // direct claim-token mismatch: abort the now-orphaned local agent.
+  "attempt_token_mismatch",
+  "owner_mismatch",
 ]);
 const CODEX_TASK_LABELS = (() => {
   const raw = String(

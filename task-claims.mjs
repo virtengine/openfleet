@@ -868,7 +868,15 @@ export async function renewClaim(opts = {}) {
         state.repoRoot
       );
       if (!sharedResult.success) {
-        console.info(`[task-claims] Shared state heartbeat renewal warning for ${taskId}: ${sharedResult.reason}`);
+        const reason = sharedResult.reason || "unknown";
+        // Token mismatch in shared state means another orchestrator has taken
+        // over — surface as a fatal claim renewal failure so the task-executor
+        // can abort the now-orphaned agent instead of letting it run forever.
+        if (reason === "attempt_token_mismatch" || reason === "owner_mismatch") {
+          console.warn(`[task-claims] Shared state heartbeat FATAL for ${taskId}: ${reason} — surfacing as claim failure`);
+          return { success: false, error: reason };
+        }
+        console.info(`[task-claims] Shared state heartbeat renewal warning for ${taskId}: ${reason}`);
       }
     } catch (err) {
       console.warn(`[task-claims] Shared state heartbeat renewal failed for ${taskId}: ${err.message}`);
