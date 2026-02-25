@@ -289,7 +289,9 @@ body.kanban-dragging .kanban-card {
   padding: 4px;
   min-height: 0;
   touch-action: pan-y;
-  overscroll-behavior-y: contain;
+  /* Do not trap wheel/trackpad scroll when the column itself can't scroll.
+     Allow scroll chaining to the page-level container. */
+  overscroll-behavior-y: auto;
 }
 
 .kanban-card {
