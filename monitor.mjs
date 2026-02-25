@@ -303,12 +303,13 @@ function parseEnvBoolean(value, defaultValue = false) {
   return defaultValue;
 }
 
-let workflowAutomationEnabled = true;
+let workflowAutomationEnabled = false;
 let workflowEventDedupWindowMs = 15_000;
 const workflowEventDedup = new Map();
 const workflowTaskStatusSnapshot = new Map();
 let workflowAutomationEngine = null;
 let workflowAutomationInitPromise = null;
+let workflowAutomationInitDone = false;
 let workflowAutomationReadyLogged = false;
 let workflowAutomationUnavailableLogged = false;
 
@@ -344,6 +345,7 @@ function buildWorkflowEventPayload(eventType, eventData = {}) {
 async function ensureWorkflowAutomationEngine() {
   if (!workflowAutomationEnabled || process.env.VITEST) return null;
   if (workflowAutomationEngine) return workflowAutomationEngine;
+  if (workflowAutomationInitDone) return null;
   if (workflowAutomationInitPromise) return workflowAutomationInitPromise;
 
   workflowAutomationInitPromise = (async () => {
@@ -436,6 +438,7 @@ async function ensureWorkflowAutomationEngine() {
       }
       return null;
     } finally {
+      workflowAutomationInitDone = true;
       workflowAutomationInitPromise = null;
     }
   })();
@@ -640,7 +643,7 @@ try {
 }
 workflowAutomationEnabled = parseEnvBoolean(
   process.env.WORKFLOW_AUTOMATION_ENABLED,
-  true,
+  false,
 );
 {
   const dedupMs = Number(process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS || "15000");
@@ -12715,7 +12718,7 @@ function applyConfig(nextConfig, options = {}) {
   plannerMode = nextConfig.plannerMode || "codex-sdk";
   workflowAutomationEnabled = parseEnvBoolean(
     process.env.WORKFLOW_AUTOMATION_ENABLED,
-    true,
+    workflowAutomationEnabled,
   );
   {
     const dedupMs = Number(
@@ -14022,7 +14025,7 @@ if (workflowAutomationEnabled) {
   ensureWorkflowAutomationEngine().catch(() => {});
 } else {
   console.log(
-    "[workflows] automation disabled (set WORKFLOW_AUTOMATION_ENABLED=true to re-enable; default is enabled)",
+    "[workflows] automation disabled (set WORKFLOW_AUTOMATION_ENABLED=true to enable event-driven workflow triggers)",
   );
 }
 startTaskPlannerStatusLoop();
@@ -14218,3 +14221,6 @@ export {
   getContainerStatus,
   isContainerEnabled,
 };
+
+
+

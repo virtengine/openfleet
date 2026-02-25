@@ -123,6 +123,15 @@ function AnimatedNumber({ value, duration = 600, className = "" }) {
   return html`<span class="${className}">${display}</span>`;
 }
 
+function normalizeCommitMessage(message) {
+  const text = String(message || "").trim();
+  if (!text) return "";
+  return text.replace(
+    /^([a-z]+)\(([A-Za-z0-9._/-]+)\)(!?)(\s*:)/,
+    (_m, type, scope, bang, suffix) => type + "(" + scope.toLowerCase() + ")" + bang + suffix,
+  );
+}
+
 /* ─── CreateTaskModal ─── */
 export function CreateTaskModal({ onClose }) {
   const [title, setTitle] = useState("");
@@ -898,7 +907,8 @@ export function DashboardTab() {
             ${recentCommits.map((c) => {
               // Support both structured {hash,message,author,date} and legacy/alternate field names
               const hash = (c.hash || c.sha || '').slice(0, 7);
-              const message = c.message || c.msg || c.subject || (typeof c === 'string' ? c.split(' ').slice(1).join(' ') : '');
+              const messageRaw = c.message || c.msg || c.subject || (typeof c === 'string' ? c.split(' ').slice(1).join(' ') : '');
+              const message = normalizeCommitMessage(messageRaw);
               const author = c.author || c.authorName || '';
               const date = c.date || c.timestamp || c.authoredDate || '';
               return html`

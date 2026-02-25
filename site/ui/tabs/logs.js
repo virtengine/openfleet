@@ -119,6 +119,60 @@ function isMobileViewport() {
   return false;
 }
 
+function parseTimestamp(value) {
+  if (value == null || value === "") return null;
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value : null;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const ms = value < 1e12 ? value * 1000 : value;
+    const d = new Date(ms);
+    return Number.isFinite(d.getTime()) ? d : null;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (/^\d+$/.test(trimmed)) return parseTimestamp(Number(trimmed));
+    const d = new Date(trimmed);
+    return Number.isFinite(d.getTime()) ? d : null;
+  }
+  if (typeof value === "object") {
+    return (
+      parseTimestamp(value.mtime) ||
+      parseTimestamp(value.mtimeMs) ||
+      parseTimestamp(value.updatedAt) ||
+      parseTimestamp(value.createdAt) ||
+      parseTimestamp(value.timestamp) ||
+      parseTimestamp(value.date) ||
+      parseTimestamp(value.time) ||
+      parseTimestamp(value.seconds) ||
+      parseTimestamp(value._seconds) ||
+      parseTimestamp(value.sec)
+    );
+  }
+  return null;
+}
+
+function formatTimestamp(value, fallback = "Unknown time") {
+  const date = parseTimestamp(value);
+  return date ? date.toLocaleString() : fallback;
+}
+
+function normalizeBranchEntry(entry) {
+  if (entry == null) return "";
+  if (typeof entry === "string") return entry;
+  if (typeof entry === "object") {
+    return (
+      entry.raw ||
+      entry.name ||
+      entry.branch ||
+      entry.ref ||
+      entry.display ||
+      entry.label ||
+      ""
+    );
+  }
+  return String(entry);
+}
+
 /* ─── LogsTab ─── */
 export function LogsTab() {
   const logRef = useRef(null);
@@ -281,11 +335,12 @@ export function LogsTab() {
   };
 
   const normalizeBranchLine = (line) => {
-    if (!line) return null;
-    const cleaned = line.replace(/^\*\s*/, "").trim();
+    const rawEntry = normalizeBranchEntry(line);
+    if (!rawEntry) return null;
+    const cleaned = rawEntry.replace(/^\*\s*/, "").trim();
     const noRemote = cleaned.replace(/^remotes\//, "");
     const short = noRemote.replace(/^origin\//, "");
-    return { raw: line, name: noRemote, short };
+    return { raw: rawEntry, name: noRemote, short };
   };
 
   const openBranchDetail = async (line) => {
@@ -558,7 +613,7 @@ export function LogsTab() {
                       ${formatBytes
                         ? formatBytes(file.size)
                         : Math.round(file.size / 1024) + "kb"}
-                      · ${new Date(file.mtime).toLocaleString()}
+                      · ${formatTimestamp(file.mtime ?? file.mtimeMs ?? file.updatedAt, "time unknown")}
                     </div>
                   </div>
                   <${Badge} status="log" text="log" />
@@ -667,15 +722,15 @@ export function LogsTab() {
                 <button
                   key=${i}
                   class="branch-row"
-                  onClick=${() => openBranchDetail(line)}
+                  onClick=${() => openBranchDetail(parsed?.name || line)}
                 >
                   <span class="branch-name">${parsed?.short || line}</span>
-                  <span class="branch-raw">${line}</span>
+                  <span class="branch-raw">${parsed?.raw || line}</span>
                 </button>
               `;
             },
           )
-        : html`<div class="meta-text">No branches found.</div>`}
+        : html`<div class="meta-text">No branches found. Click Refresh to re-query git.</div>`}
     <//>
 
     ${branchDetail &&
@@ -746,7 +801,7 @@ export function LogsTab() {
                   <div class="meta-text" key=${cm.hash}>
                     <span class="mono">${cm.hash}</span> ${subject}
                     ${author ? `· ${author}` : ""}
-                    ${dateVal ? `· ${new Date(dateVal).toLocaleString()}` : ""}
+                    ${(() => { const dateText = formatTimestamp(dateVal, ""); return dateText ? `· ${dateText}` : ""; })()}
                   </div>
                 `;
               })}

@@ -502,8 +502,15 @@ export async function loadGit() {
     })),
     apiFetch("/api/git/diff", { _silent: true }).catch(() => ({ data: "" })),
   ]);
-  gitBranches.value = branches.data || [];
-  gitDiff.value = diff.data || "";
+  const branchRows = Array.isArray(branches?.data)
+    ? branches.data
+    : Array.isArray(branches)
+      ? branches
+      : Array.isArray(branches?.branches)
+        ? branches.branches
+        : [];
+  gitBranches.value = branchRows;
+  gitDiff.value = typeof diff?.data === "string" ? diff.data : (typeof diff === "string" ? diff : "");
 }
 
 /** Load agent log file list → agentLogFiles */
@@ -667,7 +674,7 @@ const TAB_LOADERS = {
     ]),
   control: () => Promise.all([loadExecutor(), loadConfig()]),
   logs: () =>
-    Promise.all([loadLogs(), loadAgentLogFileList(), loadAgentLogTailData()]),
+    Promise.all([loadLogs(), loadGit(), loadAgentLogFileList(), loadAgentLogTailData()]),
   telemetry: () =>
     Promise.all([
       loadTelemetrySummary(),

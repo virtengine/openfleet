@@ -864,7 +864,7 @@
           trigger: 'trigger.pr_event',
           nodes: [
             { id: 'trigger',          type: 'trigger.pr_event',       label: 'PR Ready for Review',   config: { event: 'review_requested' },                              position: { x: 400, y: 50 } },
-            { id: 'check-ci',         type: 'validation.build',       label: 'Check CI Status',       config: { command: 'gh pr checks --json name,state,conclusion' },    position: { x: 150, y: 200 } },
+            { id: 'check-ci',         type: 'validation.build',       label: 'Check CI Status',       config: { command: 'gh pr checks --json name,state' },    position: { x: 150, y: 200 } },
             { id: 'get-diff',         type: 'action.run_command',     label: 'Get Diff Stats',        config: { command: 'git diff --stat main...HEAD' },                  position: { x: 650, y: 200 } },
             { id: 'ci-passed',        type: 'condition.expression',   label: 'CI Passed?',            config: { expression: "$ctx.getNodeOutput('check-ci')?.passed" },    position: { x: 150, y: 350 } },
             { id: 'wait-for-ci',      type: 'action.delay',           label: 'Wait for CI',           config: { delayMs: 300000, reason: 'CI still running' },             position: { x: 150, y: 500 } },
@@ -1806,6 +1806,83 @@
       return `[${formatTimestamp(entry.ts)}] [${entry.level}] ${entry.source}: ${entry.msg}`;
     }
 
+    function normalizeTaskStatusForCounts(status) {
+      const raw = String(status || '').toLowerCase();
+      if (['running', 'inprogress', 'active'].includes(raw)) return 'inprogress';
+      if (['inreview', 'review'].includes(raw)) return 'inreview';
+      if (['done', 'completed', 'merged'].includes(raw)) return 'done';
+      if (['todo', 'queued', 'backlog'].includes(raw)) return 'todo';
+      if (['draft', 'planned', 'planning'].includes(raw)) return 'draft';
+      if (['error', 'failed', 'blocked', 'cancelled'].includes(raw)) return 'error';
+      return raw || 'todo';
+    }
+
+    function buildTaskCounts() {
+      const counts = {
+        running: 0,
+        inprogress: 0,
+        inreview: 0,
+        review: 0,
+        done: 0,
+        todo: 0,
+        draft: 0,
+        error: 0,
+      };
+      const tasks = Array.isArray(STATE.tasks) ? STATE.tasks : [];
+      for (const task of tasks) {
+        const status = normalizeTaskStatusForCounts(task?.status);
+        if (status === 'inprogress') {
+          counts.running += 1;
+          counts.inprogress += 1;
+        } else if (status === 'inreview') {
+          counts.inreview += 1;
+          counts.review += 1;
+        } else if (Object.prototype.hasOwnProperty.call(counts, status)) {
+          counts[status] += 1;
+        }
+      }
+      return counts;
+    }
+
+    function buildStatusSnapshot() {
+      const counts = buildTaskCounts();
+      const tasks = Array.isArray(STATE.tasks) ? STATE.tasks : [];
+      const withPr = tasks.filter((t) => t && t.pr != null);
+      const merged = tasks.filter((t) => t?.status === 'done' && t?.pr != null);
+      const pendingPr = withPr.length - merged.length;
+      const active = counts.inprogress + counts.inreview;
+      const queued = counts.todo + counts.draft;
+      return {
+        ...STATE.status,
+        maxParallel: STATE.maxParallel,
+        counts,
+        tasks: {
+          ...(STATE.status?.tasks || {}),
+          completed: counts.done,
+          failed: counts.error,
+          active,
+          queued,
+        },
+        prs: {
+          ...(STATE.status?.prs || {}),
+          created: withPr.length,
+          merged: merged.length,
+          pending: Math.max(0, pendingPr),
+        },
+        backlog_remaining: queued,
+      };
+    }
+
+    function buildProjectSnapshot() {
+      const tasks = Array.isArray(STATE.tasks) ? STATE.tasks : [];
+      return {
+        ...STATE.project,
+        totalTasks: tasks.length,
+        completedTasks: tasks.filter((t) => t?.status === 'done').length,
+        activePRs: tasks.filter((t) => t?.pr != null && t?.status !== 'done').length,
+      };
+    }
+
     /* ═══════════════════════════════════════════════════════════════════
        LIVE SIMULATION ENGINE
        Autonomously drives tasks through the pipeline over ~5 minutes.
@@ -1814,11 +1891,34 @@
        ═══════════════════════════════════════════════════════════════════ */
 
     function appendMessage(session, msg) {
+      if (!session || !msg) return false;
+      const messages = Array.isArray(session.messages) ? session.messages : [];
+      const content = String(msg.content || '').trim();
+      const msgType = String(msg.type || '');
+      const msgRole = String(msg.role || '');
+      if (content && msgRole === 'system') {
+        const duplicateSystem = messages.some((existing) =>
+          String(existing?.role || '') === msgRole &&
+          String(existing?.type || '') === msgType &&
+          String(existing?.content || '').trim() === content);
+        if (duplicateSystem) return false;
+      }
+      const last = messages[messages.length - 1] || null;
+      if (last) {
+        const sameContent = String(last.content || '').trim() === content && content.length > 0;
+        const sameRole = String(last.role || '') === msgRole;
+        const sameType = String(last.type || '') === msgType;
+        const lastTs = Date.parse(last.timestamp || 0) || 0;
+        const msgTs = Date.parse(msg.timestamp || 0) || 0;
+        const isNearDuplicate = sameContent && sameRole && sameType && Math.abs(msgTs - lastTs) <= 5000;
+        if (isNearDuplicate) return false;
+      }
       session.messages.push(msg);
       session.updatedAt = Date.now();
       if (msg.content && msg.role !== 'system' && msg.type !== 'tool_call' && msg.type !== 'tool_result') {
         session.lastMessage = msg.content;
       }
+      return true;
     }
 
     function buildDemoSlots() {
@@ -2331,10 +2431,6 @@
       pushLiveLog('success', 'git', `Branch ${task.branch} merged and deleted`);
       pushLiveLog('info', 'worktree', `Cleaned up worktree for ${task.branch}`);
 
-      // Update status counts
-      STATE.status.completed = (STATE.status.completed || 27) + 1;
-      STATE.status.prsMerged = (STATE.status.prsMerged || 22) + 1;
-
       if (_demoWS && _demoWS.onmessage) {
         _demoWS.onmessage({ data: JSON.stringify({ type: 'invalidate', channels: ['tasks', 'overview', 'agents'] }) });
         _demoWS.onmessage({ data: JSON.stringify({ type: 'task-update', task: { id: taskId, status: 'done' } }) });
@@ -2456,13 +2552,14 @@
 
       // ── Status & Executor ──
       if (route === '/api/status')
-        return { data: STATE.status };
+        return { data: buildStatusSnapshot() };
       if (route === '/api/executor') {
+        const statusSnapshot = buildStatusSnapshot();
         const slots = buildDemoSlots();
         const activeSlots = slots.filter((slot) => ['running', 'busy'].includes(String(slot.status || '').toLowerCase())).length;
         return {
           data: {
-            ...STATE.status,
+            ...statusSnapshot,
             maxParallel: STATE.maxParallel,
             paused: STATE.paused,
             executors: STATE.executors,
@@ -2784,7 +2881,7 @@
         const limit = parseInt(params.get('limit')) || 100;
         // Build events dynamically from current simulation state
         let events = [];
-        for (const t of SEED_TASKS) {
+        for (const t of STATE.tasks) {
           const base = { taskId: t.id };
           if (t.status === 'inprogress' || t.status === 'inreview' || t.status === 'done') {
             events.push({ ...base, type: 'agent:task-started', payload: { title: t.title, sdk: t.assignee || 'copilot-claude' }, ts: (t.updated || now) - 120000 });
@@ -3209,7 +3306,7 @@
 
       // ── Project ──
       if (route === '/api/project' || route === '/api/project-summary')
-        return { data: STATE.project };
+        return { data: buildProjectSnapshot() };
 
       // ── Supervisor ──
       if (route === '/api/supervisor/status')

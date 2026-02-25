@@ -24,6 +24,22 @@ import { execSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 const TAG = "[workflow-nodes]";
+const PORTABLE_WORKTREE_COUNT_COMMAND = "node -e \"const cp=require('node:child_process');const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
+const PORTABLE_PRUNE_AND_COUNT_WORKTREES_COMMAND = "node -e \"const cp=require('node:child_process');cp.execSync('git worktree prune',{stdio:'ignore'});const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
+
+function normalizeLegacyWorkflowCommand(command) {
+  let normalized = String(command || "");
+  if (!normalized) return normalized;
+  if (/--json\s+name,state,conclusion\b/i.test(normalized)) {
+    normalized = normalized.replace(/--json\s+name,state,conclusion\b/gi, "--json name,state");
+  }
+  if (/grep\s+-c\s+worktree/i.test(normalized)) {
+    normalized = /git\s+worktree\s+prune/i.test(normalized)
+      ? PORTABLE_PRUNE_AND_COUNT_WORKTREES_COMMAND
+      : PORTABLE_WORKTREE_COUNT_COMMAND;
+  }
+  return normalized;
+}
 
 function isBosunStateComment(text) {
   const raw = String(text || "").toLowerCase();
@@ -492,10 +508,14 @@ registerNodeType("action.run_command", {
     required: ["command"],
   },
   async execute(node, ctx) {
-    const command = ctx.resolve(node.config?.command || "");
+    const resolvedCommand = ctx.resolve(node.config?.command || "");
+    const command = normalizeLegacyWorkflowCommand(resolvedCommand);
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const timeout = node.config?.timeoutMs || 300000;
 
+    if (command !== resolvedCommand) {
+      ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
+    }
     ctx.log(node.id, `Running: ${command}`);
     try {
       const output = execSync(command, {
@@ -1038,10 +1058,14 @@ registerNodeType("validation.build", {
     },
   },
   async execute(node, ctx) {
-    const command = ctx.resolve(node.config?.command || "npm run build");
+    const resolvedCommand = ctx.resolve(node.config?.command || "npm run build");
+    const command = normalizeLegacyWorkflowCommand(resolvedCommand);
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const timeout = node.config?.timeoutMs || 600000;
 
+    if (command !== resolvedCommand) {
+      ctx.log(node.id, `Normalized legacy command for portability: ${command}`);
+    }
     ctx.log(node.id, `Building: ${command}`);
     try {
       const output = execSync(command, { cwd, timeout, encoding: "utf8", stdio: "pipe" });

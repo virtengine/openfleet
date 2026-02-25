@@ -155,12 +155,14 @@ let _wfTemplates;
 let _wfServicesReady = false;
 let _wfRecommendedInstalled = false;
 let _wfInitPromise = null;
+let _wfInitDone = false;
 let _wfLoadedBase = null;
 
 async function getWorkflowEngineModule() {
   if (_wfEngine) return _wfEngine;
+  if (_wfInitDone) return _wfEngine;          // failed previously → don't retry
   if (_wfInitPromise) {
-    await _wfInitPromise;
+    try { await _wfInitPromise; } catch { /* handled by originator */ }
     return _wfEngine;
   }
 
@@ -195,82 +197,86 @@ async function getWorkflowEngineModule() {
     }
 
     if (!_wfServicesReady) {
-      const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
-      const telegramChatId = process.env.TELEGRAM_CHAT_ID;
-      const telegramService = telegramToken
-        ? {
-            async sendMessage(chatId, text) {
-              const target = chatId || telegramChatId;
-              if (!target) return;
-              try {
-                await fetch(
-                  `https://api.telegram.org/bot${telegramToken}/sendMessage`,
-                  {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      chat_id: target,
-                      text: String(text || ""),
-                      parse_mode: "HTML",
-                    }),
-                  }
-                );
-              } catch (e) {
-                console.warn("[workflows/telegram] sendMessage failed:", e.message);
-              }
-            },
-          }
-        : null;
-
-      let kanbanService = null;
       try {
-        kanbanService = getKanbanAdapter();
+        const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+        const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+        const telegramService = telegramToken
+          ? {
+              async sendMessage(chatId, text) {
+                const target = chatId || telegramChatId;
+                if (!target) return;
+                try {
+                  await fetch(
+                    `https://api.telegram.org/bot${telegramToken}/sendMessage`,
+                    {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        chat_id: target,
+                        text: String(text || ""),
+                        parse_mode: "HTML",
+                      }),
+                    }
+                  );
+                } catch (e) {
+                  console.warn("[workflows/telegram] sendMessage failed:", e.message);
+                }
+              },
+            }
+          : null;
+
+        let kanbanService = null;
+        try {
+          kanbanService = getKanbanAdapter();
+        } catch (err) {
+          console.warn("[workflows] kanban adapter unavailable:", err.message);
+        }
+
+        const agentPoolService = {
+          launchEphemeralThread,
+          launchOrResumeThread,
+          async continueSession(sessionId, prompt, opts = {}) {
+            const timeout = Number(opts.timeout) || 60 * 60 * 1000;
+            const cwd = opts.cwd || process.cwd();
+            return launchEphemeralThread(prompt, cwd, timeout, {
+              resumeThreadId: sessionId,
+              sdk: opts.sdk,
+            });
+          },
+          async killSession(sessionId) {
+            if (!sessionId) return false;
+            try {
+              invalidateThread(sessionId);
+              return true;
+            } catch {
+              return false;
+            }
+          },
+        };
+
+        let promptBundle = null;
+        try {
+          const { configData } = readConfigDocument();
+          promptBundle = resolveAgentPrompts(
+            resolveUiConfigDir(),
+            repoRoot,
+            configData,
+          );
+        } catch (err) {
+          console.warn("[workflows] prompt resolver failed:", err.message);
+        }
+
+        const services = {
+          telegram: telegramService,
+          agentPool: agentPoolService,
+          kanban: kanbanService,
+          prompts: promptBundle?.prompts || null,
+        };
+        _wfEngine.getWorkflowEngine({ services });
+        _wfServicesReady = true;
       } catch (err) {
-        console.warn("[workflows] kanban adapter unavailable:", err.message);
+        console.warn("[workflows] services setup failed (engine still usable):", err.message);
       }
-
-      const agentPoolService = {
-        launchEphemeralThread,
-        launchOrResumeThread,
-        async continueSession(sessionId, prompt, opts = {}) {
-          const timeout = Number(opts.timeout) || 60 * 60 * 1000;
-          const cwd = opts.cwd || process.cwd();
-          return launchEphemeralThread(prompt, cwd, timeout, {
-            resumeThreadId: sessionId,
-            sdk: opts.sdk,
-          });
-        },
-        async killSession(sessionId) {
-          if (!sessionId) return false;
-          try {
-            invalidateThread(sessionId);
-            return true;
-          } catch {
-            return false;
-          }
-        },
-      };
-
-      let promptBundle = null;
-      try {
-        const { configData } = readConfigDocument();
-        promptBundle = resolveAgentPrompts(
-          resolveUiConfigDir(),
-          repoRoot,
-          configData,
-        );
-      } catch (err) {
-        console.warn("[workflows] prompt resolver failed:", err.message);
-      }
-
-      const services = {
-        telegram: telegramService,
-        agentPool: agentPoolService,
-        kanban: kanbanService,
-        prompts: promptBundle?.prompts || null,
-      };
-      _wfEngine.getWorkflowEngine({ services });
-      _wfServicesReady = true;
     }
 
     if (!_wfRecommendedInstalled && _wfTemplates?.installRecommendedTemplates) {
@@ -294,6 +300,7 @@ async function getWorkflowEngineModule() {
   try {
     await _wfInitPromise;
   } finally {
+    _wfInitDone = true;
     _wfInitPromise = null;
   }
 
