@@ -8,7 +8,7 @@ import { createServer as createHttpsServer } from "node:https";
 import { networkInterfaces } from "node:os";
 import { connect as netConnect } from "node:net";
 import { resolve, extname, dirname, basename, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { arch as osArch, platform as osPlatform } from "node:os";
 import Ajv2020 from "ajv/dist/2020.js";
@@ -38,6 +38,19 @@ import {
   releaseWorktree,
   releaseWorktreeByBranch,
 } from "./worktree-manager.mjs";
+import {
+  listEntries,
+  getEntry,
+  getEntryContent,
+  upsertEntry,
+  deleteEntry,
+  detectScopes,
+  initLibrary,
+  rebuildManifest,
+  matchAgentProfile,
+  loadManifest,
+  getManifestPath,
+} from "./library-manager.mjs";
 import {
   loadSharedWorkspaceRegistry,
   sweepExpiredLeases,
@@ -107,6 +120,25 @@ import {
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
 const uiRoot = resolve(__dirname, "ui");
+let libraryInitAttempted = false;
+
+function ensureLibraryInitialized() {
+  if (libraryInitAttempted) return;
+  libraryInitAttempted = true;
+  try {
+    const manifestPath = getManifestPath(repoRoot);
+    const manifest = loadManifest(repoRoot);
+    if (!existsSync(manifestPath) || !Array.isArray(manifest?.entries) || manifest.entries.length === 0) {
+      const result = initLibrary(repoRoot);
+      const count = result?.manifest?.entries?.length ?? 0;
+      if (count > 0) {
+        console.log(`[ui] Library initialized (${count} entries).`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[ui] Library init failed: ${err.message}`);
+  }
+}
 
 // ── Vendor module map ─────────────────────────────────────────────────────────
 // Served at /vendor/<name>.js — no auth required (public browser libraries).
@@ -4060,6 +4092,128 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/library") {
+    try {
+      ensureLibraryInitialized();
+      const typeRaw = (url.searchParams.get("type") || "").trim();
+      const search = (url.searchParams.get("search") || "").trim();
+      const type = typeRaw && typeRaw !== "all" ? typeRaw : "";
+      const data = listEntries(repoRoot, {
+        type: type || undefined,
+        search: search || undefined,
+      });
+      jsonResponse(res, 200, { ok: true, data });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/library/entry") {
+    try {
+      ensureLibraryInitialized();
+      if (req.method === "GET") {
+        const id = (url.searchParams.get("id") || "").trim();
+        if (!id) {
+          jsonResponse(res, 400, { ok: false, error: "id required" });
+          return;
+        }
+        const entry = getEntry(repoRoot, id);
+        if (!entry) {
+          jsonResponse(res, 404, { ok: false, error: "not found" });
+          return;
+        }
+        const content = getEntryContent(repoRoot, entry);
+        jsonResponse(res, 200, { ok: true, data: { ...entry, content } });
+        return;
+      }
+
+      if (req.method === "POST") {
+        const body = await readJsonBody(req);
+        const { content, ...entryData } = body || {};
+        const entry = upsertEntry(repoRoot, entryData, content);
+        jsonResponse(res, 200, { ok: true, data: entry });
+        return;
+      }
+
+      if (req.method === "DELETE") {
+        const body = await readJsonBody(req);
+        const id = body?.id;
+        if (!id) {
+          jsonResponse(res, 400, { ok: false, error: "id required" });
+          return;
+        }
+        const deleted = deleteEntry(repoRoot, id, { deleteFile: Boolean(body?.deleteFile) });
+        if (!deleted) {
+          jsonResponse(res, 404, { ok: false, error: "not found" });
+          return;
+        }
+        jsonResponse(res, 200, { ok: true });
+        return;
+      }
+
+      jsonResponse(res, 405, { ok: false, error: "method not allowed" });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/library/scopes") {
+    try {
+      ensureLibraryInitialized();
+      const result = detectScopes(repoRoot);
+      jsonResponse(res, 200, { ok: true, data: result?.scopes || [] });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/library/init" && req.method === "POST") {
+    try {
+      const result = initLibrary(repoRoot);
+      const entriesCount = result?.manifest?.entries?.length ?? 0;
+      const scaffoldedCount = result?.scaffolded?.written?.length ?? 0;
+      jsonResponse(res, 200, {
+        ok: true,
+        data: { entries: entriesCount, scaffolded: scaffoldedCount },
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/library/rebuild" && req.method === "POST") {
+    try {
+      const result = rebuildManifest(repoRoot);
+      jsonResponse(res, 200, {
+        ok: true,
+        data: {
+          count: result?.entries?.length ?? 0,
+          added: result?.added ?? 0,
+          removed: result?.removed ?? 0,
+        },
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/library/match-profile") {
+    try {
+      ensureLibraryInitialized();
+      const title = (url.searchParams.get("title") || "").trim();
+      const match = matchAgentProfile(repoRoot, title);
+      jsonResponse(res, 200, { ok: true, data: match || null });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   if (path === "/api/logs") {
     const lines = Math.min(
       1000,
@@ -4089,8 +4243,8 @@ async function handleApi(req, res, url) {
     try {
       const configDir = resolveUiConfigDir();
       // Auto-initialize workspaces from disk if config has none yet
-      const { workspaces: initialized } = initializeWorkspaces(configDir);
-      const workspaces = initialized.length > 0 ? initialized : listManagedWorkspaces(configDir);
+      const { workspaces: initialized } = initializeWorkspaces(configDir, { repoRoot });
+      const workspaces = initialized.length > 0 ? initialized : listManagedWorkspaces(configDir, { repoRoot });
       const active = getActiveManagedWorkspace(configDir);
       jsonResponse(res, 200, { ok: true, data: workspaces, activeId: active?.id || null });
     } catch (err) {
@@ -5114,16 +5268,66 @@ async function handleApi(req, res, url) {
    *  Workflow API endpoints
    * ═══════════════════════════════════════════════════════════ */
 
-  // Lazy-load workflow modules (they may not exist in older installs)
+  // Lazy-load workflow modules (they may not exist in older/global installs)
   let _wfEngine, _wfNodes, _wfTemplates;
   async function getWorkflowEngine() {
     if (!_wfEngine) {
-      try {
-        _wfEngine = await import("./workflow-engine.mjs");
-        _wfNodes = await import("./workflow-nodes.mjs");
-        _wfTemplates = await import("./workflow-templates.mjs");
-      } catch (err) {
-        console.error("[workflows] Failed to load workflow modules:", err.message);
+      // Try two locations: the module's own directory (standard install) then the
+      // local dev repo's bosun/ sub-folder (when running a stale global install).
+      const primaryBase = new URL(".", import.meta.url).href;
+      const localBosunDir = resolve(repoRoot, "bosun");
+      const fallbackBase = pathToFileURL(localBosunDir + "/").href;
+      const bases = [primaryBase];
+      if (fallbackBase !== primaryBase) bases.push(fallbackBase);
+
+      for (const base of bases) {
+        try {
+          _wfEngine = await import(new URL("workflow-engine.mjs", base).href);
+          _wfNodes = await import(new URL("workflow-nodes.mjs", base).href);
+          _wfTemplates = await import(new URL("workflow-templates.mjs", base).href);
+          console.log(`[workflows] Loaded workflow modules from: ${base}`);
+          break;
+        } catch (err) {
+          console.warn(`[workflows] Could not load from ${base}: ${err.message}`);
+          _wfEngine = undefined;
+        }
+      }
+
+      if (_wfEngine) {
+        // Initialise the engine singleton with injected services on first load.
+        // After this point every call to wfMod.getWorkflowEngine() returns the same
+        // instance, so services only need to be wired here.
+        const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
+        const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+        const telegramService = telegramToken
+          ? {
+              async sendMessage(chatId, text) {
+                const target = chatId || telegramChatId;
+                if (!target) return;
+                try {
+                  await fetch(
+                    `https://api.telegram.org/bot${telegramToken}/sendMessage`,
+                    {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        chat_id: target,
+                        text: String(text || ""),
+                        parse_mode: "HTML",
+                      }),
+                    }
+                  );
+                } catch (e) {
+                  console.warn("[workflows/telegram] sendMessage failed:", e.message);
+                }
+              },
+            }
+          : null;
+        _wfEngine.getWorkflowEngine({ services: { telegram: telegramService } });
+      } else {
+        console.error(
+          "[workflows] Workflow engine unavailable. Run: npm install -g bosun@latest"
+        );
       }
     }
     return _wfEngine;

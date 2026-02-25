@@ -163,23 +163,42 @@ function saveWorkspacesToConfig(configDir, workspaces, activeWorkspace) {
 /**
  * List all workspaces with their repos.
  * @param {string} configDir
+ * @param {{ repoRoot?: string }} [opts]  Optional overrides.  When `repoRoot` is
+ *   provided, repos that don't exist under the workspace directory are also checked
+ *   against `<repoRoot>/<repoName>` so that local development repos surface as
+ *   "existing" rather than "missing".
  * @returns {Array<{id: string, name: string, path: string, repos: Array, createdAt: string, activeRepo: string}>}
  */
-export function listWorkspaces(configDir) {
+export function listWorkspaces(configDir, opts = {}) {
   const workspaces = getWorkspacesFromConfig(configDir);
   const wsDir = getWorkspacesDir(configDir);
+  const repoRootOverride = opts.repoRoot || null;
 
   return workspaces.map((ws) => {
     const wsPath = resolve(wsDir, ws.id);
-    const repos = (ws.repos || []).map((repo) => ({
-      ...repo,
-      path: resolve(wsPath, repo.name),
-      exists: existsSync(resolve(wsPath, repo.name)),
-    }));
+    const repos = (ws.repos || []).map((repo) => {
+      const standardPath = resolve(wsPath, repo.name);
+      const standardExists = existsSync(standardPath);
+      let effectivePath = standardPath;
+      let exists = standardExists;
+      if (!standardExists && repoRootOverride) {
+        const altPath = resolve(repoRootOverride, repo.name);
+        if (existsSync(altPath)) {
+          effectivePath = altPath;
+          exists = true;
+        }
+      }
+      return {
+        ...repo,
+        path: effectivePath,
+        exists,
+      };
+    });
+    const wsExists = existsSync(wsPath) || repos.some((r) => r.exists);
     return {
       ...ws,
       path: wsPath,
-      exists: existsSync(wsPath),
+      exists: wsExists,
       repos,
     };
   });
@@ -725,17 +744,17 @@ export function detectWorkspaces(configDir) {
  * @param {string} configDir
  * @returns {{workspaces: Array, isNew: boolean}}
  */
-export function initializeWorkspaces(configDir) {
+export function initializeWorkspaces(configDir, opts = {}) {
   const existing = getWorkspacesFromConfig(configDir);
   if (existing.length > 0) {
-    return { workspaces: listWorkspaces(configDir), isNew: false };
+    return { workspaces: listWorkspaces(configDir, opts), isNew: false };
   }
 
   // Try auto-detection
   const detected = detectWorkspaces(configDir);
   if (detected.length > 0) {
     saveWorkspacesToConfig(configDir, detected, detected[0].id);
-    return { workspaces: listWorkspaces(configDir), isNew: true };
+    return { workspaces: listWorkspaces(configDir, opts), isNew: true };
   }
 
   return { workspaces: [], isNew: true };

@@ -154,6 +154,7 @@
     "git-safety.mjs",
     "kanban-adapter.mjs",
     "lib/logger.mjs",
+    "library-manager.mjs",
     "maintenance.mjs",
     "merge-strategy.mjs",
     "monitor.mjs",
