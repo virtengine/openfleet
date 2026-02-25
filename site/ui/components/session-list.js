@@ -15,6 +15,7 @@ const html = htm.bind(h);
 export const sessionsData = signal([]);
 export const selectedSessionId = signal(null);
 export const sessionMessages = signal([]);
+export const sessionMessagesSessionId = signal(null);
 export const sessionsError = signal(null);
 
 let _wsListenerReady = false;
@@ -39,12 +40,15 @@ export async function loadSessionMessages(id) {
   try {
     const res = await apiFetch(`/api/sessions/${id}`, { _silent: true });
     if (res?.session) {
+      sessionMessagesSessionId.value = id || null;
       sessionMessages.value = res.session.messages || [];
       return { ok: true, messages: sessionMessages.value };
     }
+    sessionMessagesSessionId.value = id || null;
     sessionMessages.value = [];
     return { ok: false, error: "empty" };
   } catch {
+    sessionMessagesSessionId.value = id || null;
     sessionMessages.value = [];
     return { ok: false, error: "unavailable" };
   }
@@ -131,7 +135,11 @@ function appendSessionMessage(sessionId, message, sessionMeta) {
   }
 
   // ── Batch sessionMessages per animation frame ──
-  if (selectedSessionId.value === sessionId) {
+  const activeMessageSessionId = sessionMessagesSessionId.value;
+  if (
+    selectedSessionId.value === sessionId ||
+    activeMessageSessionId === sessionId
+  ) {
     _msgBatchBuffer.push(message);
     if (!_msgBatchRaf) {
       _msgBatchRaf = typeof requestAnimationFrame === "function"

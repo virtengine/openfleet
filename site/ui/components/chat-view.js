@@ -217,7 +217,7 @@ function categorizeMessage(msg) {
 function isThinkingTraceMessage(msg) {
   if (!msg) return false;
   const category = categorizeMessage(msg);
-  if (category === "tool" || category === "result" || category === "error") {
+  if (category === "tool" || category === "result") {
     return true;
   }
   return (msg.type || "").toLowerCase() === "system";
