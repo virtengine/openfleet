@@ -13,6 +13,19 @@ describe("monitor self-restart defer hard caps", () => {
     expect(monitorSource).toContain('process.env.SELF_RESTART_MAX_DEFER_MS || "600000"');
   });
 
+  it("defines a minimum active-slot age before forced restart", () => {
+    expect(monitorSource).toContain(
+      'process.env.SELF_RESTART_FORCE_ACTIVE_SLOT_MIN_AGE_MS',
+    );
+  });
+
+  it("extends deferral when active agents are still young", () => {
+    expect(monitorSource).toContain("getYoungActiveAgentRestartDeferralInfo");
+    expect(monitorSource).toContain(
+      "self-restart defer cap reached, but ${youngAgentInfo.activeSlots} active agent(s) are still young",
+    );
+  });
+
   it("forces restart path at hard cap with active-agent override", () => {
     expect(monitorSource).toContain(
       "selfRestartForSourceChange(filename, { forceActiveAgentExit: true });",
@@ -23,4 +36,3 @@ describe("monitor self-restart defer hard caps", () => {
     );
   });
 });
-

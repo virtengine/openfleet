@@ -1431,6 +1431,13 @@ const SELF_RESTART_MAX_DEFER_MS = Math.max(
   60_000,
   Number(process.env.SELF_RESTART_MAX_DEFER_MS || "600000") || 600000,
 );
+const SELF_RESTART_FORCE_ACTIVE_SLOT_MIN_AGE_MS = Math.max(
+  60_000,
+  Number(
+    process.env.SELF_RESTART_FORCE_ACTIVE_SLOT_MIN_AGE_MS ||
+      String(SELF_RESTART_MAX_DEFER_MS),
+  ) || SELF_RESTART_MAX_DEFER_MS,
+);
 let selfWatcher = null;
 let selfWatcherDebounce = null;
 let selfRestartTimer = null;
@@ -12652,6 +12659,44 @@ function getRuntimeRestartProtection() {
   return { defer: false, reason: "" };
 }
 
+function getYoungActiveAgentRestartDeferralInfo(now = Date.now()) {
+  if (SELF_RESTART_FORCE_ACTIVE_SLOT_MIN_AGE_MS <= 0) return null;
+  if (!internalTaskExecutor || typeof internalTaskExecutor.getStatus !== "function") {
+    return null;
+  }
+  try {
+    const status = internalTaskExecutor.getStatus();
+    const slots = Array.isArray(status?.slots) ? status.slots : [];
+    const activeSlots = Math.max(0, Number(status?.activeSlots || slots.length || 0));
+    if (activeSlots <= 0) return null;
+
+    let oldestRunningMs = 0;
+    for (const slot of slots) {
+      let runningMs = 0;
+      const runningForSec = Number(slot?.runningFor);
+      const startedAt = Number(slot?.startedAt);
+      if (Number.isFinite(runningForSec) && runningForSec >= 0) {
+        runningMs = runningForSec * 1000;
+      } else if (Number.isFinite(startedAt) && startedAt > 0) {
+        runningMs = Math.max(0, now - startedAt);
+      }
+      oldestRunningMs = Math.max(oldestRunningMs, runningMs);
+    }
+
+    if (oldestRunningMs >= SELF_RESTART_FORCE_ACTIVE_SLOT_MIN_AGE_MS) {
+      return null;
+    }
+
+    return {
+      activeSlots,
+      oldestRunningMs,
+      minAgeMs: SELF_RESTART_FORCE_ACTIVE_SLOT_MIN_AGE_MS,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function selfRestartForSourceChange(
   filename,
   { forceActiveAgentExit = false } = {},
@@ -12775,6 +12820,21 @@ function attemptSelfRestartAfterQuiet() {
     // Hard caps: after too many deferrals or too much deferred time the
     // active agent is likely stuck. Force-stop and restart so changes apply.
     if (hitCountCap || hitTimeCap) {
+      const youngAgentInfo = getYoungActiveAgentRestartDeferralInfo(now);
+      if (youngAgentInfo) {
+        console.warn(
+          `[monitor] self-restart defer cap reached, but ${youngAgentInfo.activeSlots} active agent(s) are still young (oldest ${Math.round(youngAgentInfo.oldestRunningMs / 1000)}s < ${Math.round(youngAgentInfo.minAgeMs / 1000)}s). Extending defer window.`,
+        );
+        selfRestartDeferCount = 0;
+        selfRestartFirstDeferredAt = now;
+        selfRestartTimer = safeSetTimeout(
+          "self-restart-deferred-retry",
+          retryDeferredSelfRestart,
+          SELF_RESTART_RETRY_MS,
+        );
+        return;
+      }
+
       const elapsedSec = Math.max(1, Math.round(deferElapsedMs / 1000));
       const capReason = hitCountCap
         ? `hard cap ${SELF_RESTART_DEFER_HARD_CAP}`
@@ -12821,6 +12881,21 @@ function attemptSelfRestartAfterQuiet() {
       const hitCountCap = deferCount >= SELF_RESTART_DEFER_HARD_CAP;
       const hitTimeCap = deferElapsedMs >= SELF_RESTART_MAX_DEFER_MS;
       if (hitCountCap || hitTimeCap) {
+        const youngAgentInfo = getYoungActiveAgentRestartDeferralInfo(now);
+        if (youngAgentInfo) {
+          console.warn(
+            `[monitor] self-restart deferred ${deferCount} times over ${Math.round(deferElapsedMs / 1000)}s while waiting for active agents, but ${youngAgentInfo.activeSlots} agent(s) are still young (oldest ${Math.round(youngAgentInfo.oldestRunningMs / 1000)}s < ${Math.round(youngAgentInfo.minAgeMs / 1000)}s). Extending defer window.`,
+          );
+          selfRestartDeferCount = 0;
+          selfRestartFirstDeferredAt = now;
+          selfRestartTimer = safeSetTimeout(
+            "self-restart-agent-wait-retry",
+            attemptSelfRestartAfterQuiet,
+            60_000,
+          );
+          return;
+        }
+
         console.warn(
           `[monitor] self-restart deferred ${deferCount} times over ${Math.round(deferElapsedMs / 1000)}s while waiting for active agents — restarting anyway`,
         );
