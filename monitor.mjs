@@ -7012,10 +7012,43 @@ function normalizeBranchName(value) {
   return trimmed ? trimmed : null;
 }
 
+let cachedGitRemotes = null;
+
+function getGitRemoteNames(defaultRemote = "origin") {
+  if (cachedGitRemotes) return cachedGitRemotes;
+  const remotes = new Set(["origin", "upstream", defaultRemote]);
+  try {
+    const res = spawnSync("git", ["remote"], {
+      cwd: repoRoot || process.cwd(),
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (res.status === 0) {
+      for (const line of String(res.stdout || "").split(/\r?\n/)) {
+        const remote = line.trim();
+        if (remote) remotes.add(remote);
+      }
+    }
+  } catch {
+    // Best-effort only; callers fall back to default remote.
+  }
+  cachedGitRemotes = remotes;
+  return cachedGitRemotes;
+}
+
 function splitRemoteRef(ref, defaultRemote = "origin") {
-  const match = String(ref || "").match(/^([^/]+)\/(.+)$/);
-  if (match) return { remote: match[1], name: match[2] };
-  return { remote: defaultRemote, name: ref };
+  const normalized = normalizeBranchName(ref);
+  if (!normalized) return { remote: defaultRemote, name: ref };
+  const match = normalized.match(/^([^/]+)\/(.+)$/);
+  if (!match) return { remote: defaultRemote, name: normalized };
+  const [, remoteCandidate, remainder] = match;
+  const remotes = getGitRemoteNames(defaultRemote);
+  if (remoteCandidate && remainder && remotes.has(remoteCandidate)) {
+    return { remote: remoteCandidate, name: remainder };
+  }
+  // Branch names like "ve/bosun-generic" are not remote-qualified refs.
+  return { remote: defaultRemote, name: normalized };
 }
 
 function normalizeBranchForCompare(ref) {

@@ -2717,7 +2717,7 @@ const COMMANDS = {
   "/restart": { handler: cmdRestart, desc: "Restart orchestrator process" },
   // Hidden — no desc so it's excluded from /help, /helpfull, and Telegram autocomplete.
   // Only surfaces in the security warning when TELEGRAM_UI_ALLOW_UNSAFE=true.
-  "/disable-unsafe-access": { handler: cmdDisableUnsafeAccess },
+  "/disable_unsafe_access": { handler: cmdDisableUnsafeAccess },
   "/retry": {
     handler: cmdRetry,
     desc: "Start fresh session for stuck task: /retry [reason]",
@@ -10549,10 +10549,10 @@ export async function startTelegramBot() {
       const body = _tunnelWanted
         ? "*Unsafe UI access was enabled alongside Cloudflare tunnel — the tunnel has been disabled* until unsafe access is turned off.\n\n"
           + "With both active, anyone on the internet could control your agents, execute code, and read your secrets.\n\n"
-          + "Tap the button below (or send `/disable-unsafe-access` then `/restart`) to re-enable the tunnel."
+          + "Tap the button below (or send `/disable_unsafe_access` then `/restart`; `/disable-unsafe-access` alias also works) to re-enable the tunnel."
         : "Authentication is *completely disabled* on the web UI. "
           + "Anyone with the local URL can send commands to agents and access API keys.\n\n"
-          + "Tap the button below (or send `/disable-unsafe-access`) to re-enable auth.";
+          + "Tap the button below (or send `/disable_unsafe_access`; `/disable-unsafe-access` alias also works) to re-enable auth.";
       await sendDirect(
         telegramChatId,
         `${title}\n\n${body}`,

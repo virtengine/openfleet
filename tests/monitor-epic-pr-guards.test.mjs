@@ -22,4 +22,10 @@ describe("monitor epic PR guard rails", () => {
     expect(block).toContain('readiness.reason === "no-commits"');
     expect(block).toContain("skipped: true");
   });
+  it("treats slash-containing branch names as branches unless remote exists", () => {
+    expect(source).toContain("function getGitRemoteNames(");
+    expect(source).toContain("remotes.has(remoteCandidate)");
+    expect(source).toContain("Branch names like \"ve/bosun-generic\" are not remote-qualified refs.");
+  });
+
 });
