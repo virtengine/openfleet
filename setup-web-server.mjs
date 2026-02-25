@@ -661,6 +661,63 @@ function handleApply(body) {
     if (env.jiraApiToken)        envMap.JIRA_API_TOKEN           = env.jiraApiToken;
     if (env.githubProjectNumber) envMap.GITHUB_PROJECT_NUMBER    = String(env.githubProjectNumber);
 
+    // ── Advanced / orchestration settings ──────────────────────────────────
+    if (env.executorMode)                envMap.EXECUTOR_MODE                = env.executorMode;
+    if (env.executorDistribution)        envMap.EXECUTOR_DISTRIBUTION        = env.executorDistribution;
+    if (env.failoverStrategy)            envMap.FAILOVER_STRATEGY            = env.failoverStrategy;
+    if (env.maxParallel != null)         envMap.MAX_PARALLEL                 = String(env.maxParallel);
+    if (env.maxRetries != null)          envMap.MAX_RETRIES                  = String(env.maxRetries);
+    if (env.failoverCooldownMinutes != null)
+                                         envMap.FAILOVER_COOLDOWN_MINUTES    = String(env.failoverCooldownMinutes);
+    if (env.failoverDisableOnConsecutive != null)
+                                         envMap.FAILOVER_DISABLE_ON_CONSECUTIVE_FAILURES = String(env.failoverDisableOnConsecutive);
+    if (env.primaryAgent)               envMap.PRIMARY_AGENT                 = env.primaryAgent;
+    if (env.projectRequirementsProfile) envMap.PROJECT_REQUIREMENTS_PROFILE  = env.projectRequirementsProfile;
+    if (env.internalReplenishEnabled != null)
+                                         envMap.INTERNAL_EXECUTOR_REPLENISH_ENABLED      = String(!!env.internalReplenishEnabled);
+    if (env.internalReplenishMin != null)
+                                         envMap.INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS = String(env.internalReplenishMin);
+    if (env.internalReplenishMax != null)
+                                         envMap.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS = String(env.internalReplenishMax);
+    if (env.kanbanSyncPolicy)           envMap.KANBAN_SYNC_POLICY            = env.kanbanSyncPolicy;
+
+    // ── Codex model profile settings ───────────────────────────────────────
+    if (env.codexModelProfile)          envMap.CODEX_MODEL_PROFILE              = env.codexModelProfile;
+    if (env.codexModelProfileSubagent)  envMap.CODEX_MODEL_PROFILE_SUBAGENT     = env.codexModelProfileSubagent;
+    if (env.codexXlProvider)            envMap.CODEX_MODEL_PROFILE_XL_PROVIDER  = env.codexXlProvider;
+    if (env.codexXlModel)               envMap.CODEX_MODEL_PROFILE_XL_MODEL     = env.codexXlModel;
+    if (env.codexMProvider)             envMap.CODEX_MODEL_PROFILE_M_PROVIDER   = env.codexMProvider;
+    if (env.codexMModel)                envMap.CODEX_MODEL_PROFILE_M_MODEL      = env.codexMModel;
+    if (env.codexAgentMaxThreads != null)
+                                         envMap.CODEX_AGENT_MAX_THREADS         = String(env.codexAgentMaxThreads);
+    if (env.codexTransport)             envMap.CODEX_TRANSPORT                  = env.codexTransport;
+    if (env.codexSandbox)               envMap.CODEX_SANDBOX                    = env.codexSandbox;
+    if (env.codexSandboxPermissions)    envMap.CODEX_SANDBOX_PERMISSIONS        = env.codexSandboxPermissions;
+    if (env.codexSandboxWritableRoots)  envMap.CODEX_SANDBOX_WRITABLE_ROOTS     = env.codexSandboxWritableRoots;
+    if (env.codexFeaturesNoBwrap)       envMap.CODEX_FEATURES_NO_BWRAP          = "true";
+
+    // ── Copilot settings ───────────────────────────────────────────────────
+    if (env.copilotAgentMaxRequests != null)
+                                         envMap.COPILOT_AGENT_MAX_REQUESTS      = String(env.copilotAgentMaxRequests);
+    if (env.copilotTransport)           envMap.COPILOT_TRANSPORT                = env.copilotTransport;
+    if (env.copilotNoExperimental)      envMap.COPILOT_NO_EXPERIMENTAL          = "true";
+    if (env.copilotNoAllowAll)          envMap.COPILOT_NO_ALLOW_ALL             = "true";
+    if (env.copilotEnableAskUser)       envMap.COPILOT_ENABLE_ASK_USER          = "true";
+    if (env.copilotEnableAllMcpTools != null)
+                                         envMap.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS = String(!!env.copilotEnableAllMcpTools);
+    if (env.copilotMcpConfig)           envMap.COPILOT_MCP_CONFIG               = env.copilotMcpConfig;
+
+    // ── Infrastructure settings ────────────────────────────────────────────
+    if (env.containerEnabled)           envMap.CONTAINER_ENABLED               = "true";
+    if (env.containerRuntime && env.containerRuntime !== "auto")
+                                         envMap.CONTAINER_RUNTIME               = env.containerRuntime;
+    if (env.vkBaseUrl)                  envMap.VK_BASE_URL                      = env.vkBaseUrl;
+    if (env.vkRecoveryPort)             envMap.VK_RECOVERY_PORT                 = String(env.vkRecoveryPort);
+    if (env.whatsappEnabled)            envMap.WHATSAPP_ENABLED                 = "true";
+    if (env.telegramIntervalMin != null && Number(env.telegramIntervalMin) !== 10)
+                                         envMap.TELEGRAM_INTERVAL_MIN           = String(env.telegramIntervalMin);
+    if (env.orchestratorScript)         envMap.ORCHESTRATOR_SCRIPT              = env.orchestratorScript;
+
     // Write executor-specific API keys for any executor configured with api-key auth mode.
     // Executors using OAuth login (codex auth login / gh auth login / claude login)
     // do NOT need env vars — omitting them lets the executor use its stored credentials.
@@ -717,14 +774,19 @@ function handleApply(body) {
       failover: configJson.failover || {
         strategy: env.failoverStrategy || "next-in-line",
         maxRetries: Number(env.maxRetries) || 3,
-        cooldownMinutes: Number(env.cooldownMinutes) || 5,
-        disableOnConsecutiveFailures: 3,
+        cooldownMinutes: Number(env.failoverCooldownMinutes) || 5,
+        disableOnConsecutiveFailures: Number(env.failoverDisableOnConsecutive) || 3,
       },
-      distribution: configJson.distribution || env.distribution || "weighted",
+      distribution: configJson.distribution || env.executorDistribution || "weighted",
     };
 
-    if (configJson.repos?.length) config.repos = configJson.repos;
-    if (configJson.kanban)        config.kanban = configJson.kanban;
+    if (configJson.executorMode)               config.executorMode               = configJson.executorMode;
+    if (configJson.primaryAgent)               config.primaryAgent               = configJson.primaryAgent;
+    if (configJson.projectRequirementsProfile) config.projectRequirementsProfile = configJson.projectRequirementsProfile;
+    if (configJson.internalReplenish)          config.internalReplenish          = configJson.internalReplenish;
+    if (configJson.repos?.length)              config.repos                      = configJson.repos;
+    if (configJson.kanban)                     config.kanban                     = configJson.kanban;
+    if (configJson.workspaces?.length)         config.workspaces                 = configJson.workspaces;
 
     const configPath = resolve(bosunHome, "bosun.config.json");
     writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
@@ -760,7 +822,7 @@ function handleApply(body) {
     //    recommended settings (MCP servers, sandbox, feature flags, etc.).
     try {
       ensureCodexConfig({
-        vkBaseUrl: process.env.VK_BASE_URL || "http://127.0.0.1:54089",
+        vkBaseUrl: env.vkBaseUrl || process.env.VK_BASE_URL || "http://127.0.0.1:54089",
         skipVk: (env.kanbanBackend || "") !== "internal" && (env.kanbanBackend || "") !== "",
         env: { ...process.env, BOSUN_HOME: bosunHome, BOSUN_WORKSPACES_DIR: workspacesDir },
       });

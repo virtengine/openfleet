@@ -419,6 +419,7 @@ const STEPS = [
   { id: "repos", label: "Repositories", icon: "📁" },
   { id: "kanban", label: "Task Mgmt", icon: "📋" },
   { id: "notifications", label: "Notifications", icon: "🔔" },
+  { id: "advanced", label: "Advanced", icon: "⚙️" },
   { id: "review", label: "Review", icon: "🚀" },
 ];
 
@@ -530,6 +531,51 @@ function App() {
   const [oauthStatus, setOauthStatus] = useState(null); // null | "pending" | "received"
   const [oauthInstallationId, setOauthInstallationId] = useState("");
 
+  // ── Advanced / orchestration settings ─────────────────────────────────────
+  const [executorMode, setExecutorMode] = useState("internal");
+  const [executorDistribution, setExecutorDistribution] = useState("weighted");
+  const [failoverCooldownMinutes, setFailoverCooldownMinutes] = useState(5);
+  const [failoverDisableOnConsecutive, setFailoverDisableOnConsecutive] = useState(3);
+  const [primaryAgent, setPrimaryAgent] = useState("");
+  const [projectRequirementsProfile, setProjectRequirementsProfile] = useState("feature");
+  const [internalReplenishEnabled, setInternalReplenishEnabled] = useState(false);
+  const [internalReplenishMin, setInternalReplenishMin] = useState(1);
+  const [internalReplenishMax, setInternalReplenishMax] = useState(2);
+  // Kanban
+  const [kanbanSyncPolicy, setKanbanSyncPolicy] = useState("internal-primary");
+  // Multi-workspace
+  const [multiWorkspaceEnabled, setMultiWorkspaceEnabled] = useState(false);
+  const [workspaces, setWorkspaces] = useState([{ id: Date.now(), name: "", repos: [""] }]);
+  // Codex model profiles
+  const [codexModelProfile, setCodexModelProfile] = useState("xl");
+  const [codexModelProfileSubagent, setCodexModelProfileSubagent] = useState("m");
+  const [codexXlProvider, setCodexXlProvider] = useState("openai");
+  const [codexXlModel, setCodexXlModel] = useState("gpt-5.3-codex");
+  const [codexMProvider, setCodexMProvider] = useState("openai");
+  const [codexMModel, setCodexMModel] = useState("gpt-5.1-codex-mini");
+  const [codexAgentMaxThreads, setCodexAgentMaxThreads] = useState(12);
+  const [codexTransport, setCodexTransport] = useState("sdk");
+  const [codexSandbox, setCodexSandbox] = useState("workspace-write");
+  const [codexSandboxPermissions, setCodexSandboxPermissions] = useState("");
+  const [codexSandboxWritableRoots, setCodexSandboxWritableRoots] = useState("");
+  const [codexFeaturesNoBwrap, setCodexFeaturesNoBwrap] = useState(false);
+  // Copilot settings
+  const [copilotAgentMaxRequests, setCopilotAgentMaxRequests] = useState(500);
+  const [copilotTransport, setCopilotTransport] = useState("sdk");
+  const [copilotNoExperimental, setCopilotNoExperimental] = useState(false);
+  const [copilotNoAllowAll, setCopilotNoAllowAll] = useState(false);
+  const [copilotEnableAskUser, setCopilotEnableAskUser] = useState(false);
+  const [copilotEnableAllMcpTools, setCopilotEnableAllMcpTools] = useState(true);
+  const [copilotMcpConfig, setCopilotMcpConfig] = useState(".vscode/mcp.json");
+  // Infrastructure
+  const [containerEnabled, setContainerEnabled] = useState(false);
+  const [containerRuntime, setContainerRuntime] = useState("auto");
+  const [vkBaseUrl, setVkBaseUrl] = useState("");
+  const [vkRecoveryPort, setVkRecoveryPort] = useState("");
+  const [whatsappEnabled, setWhatsappEnabled] = useState(false);
+  const [telegramIntervalMin, setTelegramIntervalMin] = useState(10);
+  const [orchestratorScript, setOrchestratorScript] = useState("");
+
   // ── Load initial data ──────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -581,6 +627,59 @@ function App() {
       if (env.JIRA_PROJECT_KEY) { setJiraProjectKey(env.JIRA_PROJECT_KEY); envLoaded = true; }
       if (env.JIRA_API_TOKEN) { setJiraApiToken(env.JIRA_API_TOKEN); envLoaded = true; }
       if (env.GITHUB_PROJECT_NUMBER) { setGithubProjectNumber(env.GITHUB_PROJECT_NUMBER); envLoaded = true; }
+
+      // Advanced / orchestration
+      if (env.EXECUTOR_MODE) { setExecutorMode(env.EXECUTOR_MODE); envLoaded = true; }
+      if (env.FAILOVER_STRATEGY) { setFailoverStrategy(env.FAILOVER_STRATEGY); envLoaded = true; }
+      if (env.MAX_PARALLEL) { setMaxParallel(Number(env.MAX_PARALLEL) || 6); envLoaded = true; }
+      if (env.MAX_RETRIES) { setMaxRetries(Number(env.MAX_RETRIES) || 3); envLoaded = true; }
+      if (env.FAILOVER_COOLDOWN_MINUTES) { setFailoverCooldownMinutes(Number(env.FAILOVER_COOLDOWN_MINUTES) || 5); envLoaded = true; }
+      if (env.FAILOVER_DISABLE_ON_CONSECUTIVE_FAILURES) { setFailoverDisableOnConsecutive(Number(env.FAILOVER_DISABLE_ON_CONSECUTIVE_FAILURES) || 3); envLoaded = true; }
+      if (env.PRIMARY_AGENT) { setPrimaryAgent(env.PRIMARY_AGENT); envLoaded = true; }
+      if (env.PROJECT_REQUIREMENTS_PROFILE) { setProjectRequirementsProfile(env.PROJECT_REQUIREMENTS_PROFILE); envLoaded = true; }
+      if (env.INTERNAL_EXECUTOR_REPLENISH_ENABLED) { setInternalReplenishEnabled(env.INTERNAL_EXECUTOR_REPLENISH_ENABLED === "true"); envLoaded = true; }
+      if (env.INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS) { setInternalReplenishMin(Number(env.INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS) || 1); envLoaded = true; }
+      if (env.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS) { setInternalReplenishMax(Number(env.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS) || 2); envLoaded = true; }
+      if (env.KANBAN_SYNC_POLICY) { setKanbanSyncPolicy(env.KANBAN_SYNC_POLICY); envLoaded = true; }
+      // Codex model profiles
+      if (env.CODEX_MODEL_PROFILE) { setCodexModelProfile(env.CODEX_MODEL_PROFILE); envLoaded = true; }
+      if (env.CODEX_MODEL_PROFILE_SUBAGENT) { setCodexModelProfileSubagent(env.CODEX_MODEL_PROFILE_SUBAGENT); envLoaded = true; }
+      if (env.CODEX_MODEL_PROFILE_XL_PROVIDER) { setCodexXlProvider(env.CODEX_MODEL_PROFILE_XL_PROVIDER); envLoaded = true; }
+      if (env.CODEX_MODEL_PROFILE_XL_MODEL) { setCodexXlModel(env.CODEX_MODEL_PROFILE_XL_MODEL); envLoaded = true; }
+      if (env.CODEX_MODEL_PROFILE_M_PROVIDER) { setCodexMProvider(env.CODEX_MODEL_PROFILE_M_PROVIDER); envLoaded = true; }
+      if (env.CODEX_MODEL_PROFILE_M_MODEL) { setCodexMModel(env.CODEX_MODEL_PROFILE_M_MODEL); envLoaded = true; }
+      if (env.CODEX_AGENT_MAX_THREADS) { setCodexAgentMaxThreads(Number(env.CODEX_AGENT_MAX_THREADS) || 12); envLoaded = true; }
+      if (env.CODEX_TRANSPORT) { setCodexTransport(env.CODEX_TRANSPORT); envLoaded = true; }
+      if (env.CODEX_SANDBOX) { setCodexSandbox(env.CODEX_SANDBOX); envLoaded = true; }
+      if (env.CODEX_SANDBOX_PERMISSIONS) { setCodexSandboxPermissions(env.CODEX_SANDBOX_PERMISSIONS); envLoaded = true; }
+      if (env.CODEX_SANDBOX_WRITABLE_ROOTS) { setCodexSandboxWritableRoots(env.CODEX_SANDBOX_WRITABLE_ROOTS); envLoaded = true; }
+      if (env.CODEX_FEATURES_NO_BWRAP) { setCodexFeaturesNoBwrap(env.CODEX_FEATURES_NO_BWRAP === "true"); envLoaded = true; }
+      // Copilot settings
+      if (env.COPILOT_AGENT_MAX_REQUESTS) { setCopilotAgentMaxRequests(Number(env.COPILOT_AGENT_MAX_REQUESTS) || 500); envLoaded = true; }
+      if (env.COPILOT_TRANSPORT) { setCopilotTransport(env.COPILOT_TRANSPORT); envLoaded = true; }
+      if (env.COPILOT_NO_EXPERIMENTAL) { setCopilotNoExperimental(env.COPILOT_NO_EXPERIMENTAL === "true"); envLoaded = true; }
+      if (env.COPILOT_NO_ALLOW_ALL) { setCopilotNoAllowAll(env.COPILOT_NO_ALLOW_ALL === "true"); envLoaded = true; }
+      if (env.COPILOT_ENABLE_ASK_USER) { setCopilotEnableAskUser(env.COPILOT_ENABLE_ASK_USER === "true"); envLoaded = true; }
+      if (env.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS !== undefined) { setCopilotEnableAllMcpTools(env.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS !== "false"); envLoaded = true; }
+      if (env.COPILOT_MCP_CONFIG) { setCopilotMcpConfig(env.COPILOT_MCP_CONFIG); envLoaded = true; }
+      // Infrastructure
+      if (env.CONTAINER_ENABLED) { setContainerEnabled(env.CONTAINER_ENABLED === "true"); envLoaded = true; }
+      if (env.CONTAINER_RUNTIME) { setContainerRuntime(env.CONTAINER_RUNTIME); envLoaded = true; }
+      if (env.VK_BASE_URL) { setVkBaseUrl(env.VK_BASE_URL); envLoaded = true; }
+      if (env.VK_RECOVERY_PORT) { setVkRecoveryPort(env.VK_RECOVERY_PORT); envLoaded = true; }
+      if (env.WHATSAPP_ENABLED) { setWhatsappEnabled(env.WHATSAPP_ENABLED === "true"); envLoaded = true; }
+      if (env.TELEGRAM_INTERVAL_MIN) { setTelegramIntervalMin(Number(env.TELEGRAM_INTERVAL_MIN) || 10); envLoaded = true; }
+      if (env.ORCHESTRATOR_SCRIPT) { setOrchestratorScript(env.ORCHESTRATOR_SCRIPT); envLoaded = true; }
+      // Multi-workspace: load workspaces[] from existing config
+      if (statusData.existingConfig?.workspaces?.length > 1) {
+        setMultiWorkspaceEnabled(true);
+        setWorkspaces(statusData.existingConfig.workspaces.map((ws) => ({
+          id: ws.id || Date.now() + Math.random(),
+          name: ws.name || "",
+          repos: (ws.repos || []).map((r) => r.slug || r.path || r || ""),
+        })));
+        envLoaded = true;
+      }
       if (env.EXECUTORS) {
         try {
           const parsed = env.EXECUTORS.split(",").map((part, idx) => {
@@ -746,6 +845,46 @@ function App() {
           jiraProjectKey,
           jiraApiToken,
           githubProjectNumber,
+          // Advanced / orchestration
+          executorMode,
+          executorDistribution,
+          failoverCooldownMinutes,
+          failoverDisableOnConsecutive,
+          primaryAgent,
+          projectRequirementsProfile,
+          internalReplenishEnabled,
+          internalReplenishMin,
+          internalReplenishMax,
+          kanbanSyncPolicy,
+          // Codex model profiles
+          codexModelProfile,
+          codexModelProfileSubagent,
+          codexXlProvider,
+          codexXlModel,
+          codexMProvider,
+          codexMModel,
+          codexAgentMaxThreads,
+          codexTransport,
+          codexSandbox,
+          codexSandboxPermissions,
+          codexSandboxWritableRoots,
+          codexFeaturesNoBwrap,
+          // Copilot settings
+          copilotAgentMaxRequests,
+          copilotTransport,
+          copilotNoExperimental,
+          copilotNoAllowAll,
+          copilotEnableAskUser,
+          copilotEnableAllMcpTools,
+          copilotMcpConfig,
+          // Infrastructure
+          containerEnabled,
+          containerRuntime,
+          vkBaseUrl,
+          vkRecoveryPort,
+          whatsappEnabled,
+          telegramIntervalMin,
+          orchestratorScript,
         },
         configJson: {
           projectName,
@@ -753,14 +892,29 @@ function App() {
           workspacesDir,
           executors: buildExecutorsConfig(),
           repos: filteredRepos.map((r) => ({ slug: r })),
-          kanban: { backend: kanbanBackend },
+          kanban: { backend: kanbanBackend, syncPolicy: kanbanSyncPolicy },
           failover: {
             strategy: failoverStrategy,
             maxRetries: Number(maxRetries) || 3,
-            cooldownMinutes: 5,
-            disableOnConsecutiveFailures: 3,
+            cooldownMinutes: Number(failoverCooldownMinutes) || 5,
+            disableOnConsecutiveFailures: Number(failoverDisableOnConsecutive) || 3,
           },
-          distribution: "weighted",
+          distribution: executorDistribution,
+          executorMode,
+          primaryAgent: primaryAgent || undefined,
+          projectRequirementsProfile,
+          internalReplenish: internalReplenishEnabled ? {
+            enabled: true,
+            minNewTasks: Number(internalReplenishMin) || 1,
+            maxNewTasks: Number(internalReplenishMax) || 2,
+          } : { enabled: false },
+          workspaces: multiWorkspaceEnabled
+            ? workspaces.filter((ws) => ws.name.trim()).map((ws) => ({
+                id: ws.id,
+                name: ws.name,
+                repos: (ws.repos || []).filter((r) => r.trim()).map((r) => ({ slug: r })),
+              }))
+            : undefined,
         },
       });
 
@@ -931,6 +1085,39 @@ function App() {
     setRepos((prev) => { const u = [...prev]; u[idx] = value; return u; });
   };
 
+  // ── Multi-workspace management ──────────────────────────────────────────────
+
+  const addWorkspace = () =>
+    setWorkspaces((prev) => [...prev, { id: Date.now(), name: "", repos: [""] }]);
+  const removeWorkspace = (wIdx) =>
+    setWorkspaces((prev) => prev.filter((_, i) => i !== wIdx));
+  const updateWorkspace = (wIdx, field, value) =>
+    setWorkspaces((prev) => {
+      const u = [...prev];
+      u[wIdx] = { ...u[wIdx], [field]: value };
+      return u;
+    });
+  const addWorkspaceRepo = (wIdx) =>
+    setWorkspaces((prev) => {
+      const u = [...prev];
+      u[wIdx] = { ...u[wIdx], repos: [...(u[wIdx].repos || []), ""] };
+      return u;
+    });
+  const removeWorkspaceRepo = (wIdx, rIdx) =>
+    setWorkspaces((prev) => {
+      const u = [...prev];
+      u[wIdx] = { ...u[wIdx], repos: (u[wIdx].repos || []).filter((_, i) => i !== rIdx) };
+      return u;
+    });
+  const updateWorkspaceRepo = (wIdx, rIdx, value) =>
+    setWorkspaces((prev) => {
+      const u = [...prev];
+      const r = [...(u[wIdx].repos || [])];
+      r[rIdx] = value;
+      u[wIdx] = { ...u[wIdx], repos: r };
+      return u;
+    });
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   if (loading) {
@@ -978,12 +1165,16 @@ function App() {
       <div class="progress-line">
         <div class="progress-line-fill" style="width:${progressPercent}%"></div>
       </div>
-      ${STEPS.map((s, i) => html`
-        <div class="progress-step ${i === step ? "active" : ""} ${completedSteps.has(i) ? "completed" : ""}" onclick=${() => goTo(i)}>
-          <div class="step-dot">${completedSteps.has(i) ? "✓" : i + 1}</div>
-          <div class="step-label">${s.label}</div>
-        </div>
-      `)}
+      ${STEPS.map((s, i) => {
+        const isActive = i === step;
+        const isCompleted = completedSteps.has(i) && !isActive;
+        return html`
+          <div class="progress-step ${isActive ? "active" : ""} ${isCompleted ? "completed" : ""}" onclick=${() => goTo(i)}>
+            <div class="step-dot">${isCompleted ? "✓" : i + 1}</div>
+            <div class="step-label">${s.label}</div>
+          </div>
+        `;
+      })}
     </div>
   `;
 
@@ -1316,22 +1507,74 @@ function App() {
         Add the GitHub repos bosun should work on.
         Bosun will clone them into your workspace and set up hooks, prompts, and configs automatically.
       </p>
-      <div style="background:var(--bg-input);border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.78rem;color:var(--text-secondary)">
-        📁 Repos will be cloned into:
-        <code style="font-family:var(--font-mono);color:var(--accent-light);margin-left:4px">${cloneRoot}/&lt;repo-name&gt;</code>
-      </div>
-      ${repos.map((repo, i) => html`
-        <div class="repo-entry">
-          <input type="text" value=${repo} oninput=${(e) => updateRepo(i, e.target.value)}
-            placeholder="owner/repo  or  https://github.com/owner/repo" />
-          ${repos.length > 1 && html`
-            <button class="btn btn-sm btn-danger" onclick=${() => removeRepo(i)}>✕</button>
-          `}
+
+      ${!multiWorkspaceEnabled && html`
+        <div style="background:var(--bg-input);border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.78rem;color:var(--text-secondary)">
+          📁 Repos will be cloned into:
+          <code style="font-family:var(--font-mono);color:var(--accent-light);margin-left:4px">${cloneRoot}/${"<repo-name>"}</code>
         </div>
-      `)}
-      <button class="btn btn-sm" onclick=${addRepo} style="margin-top:4px">+ Add Repository</button>
+      `}
+
+      <div class="form-group" style="margin-bottom:16px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+          <input type="checkbox" checked=${multiWorkspaceEnabled}
+            onchange=${(e) => setMultiWorkspaceEnabled(e.target.checked)}
+            style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+          Enable Multiple Workspaces
+        </label>
+        <div class="hint">Use multiple named workspaces — each with their own set of repos. Useful for monorepos or multi-project setups.</div>
+      </div>
+
+      ${!multiWorkspaceEnabled && html`
+        ${repos.map((repo, i) => html`
+          <div class="repo-entry">
+            <input type="text" value=${repo} oninput=${(e) => updateRepo(i, e.target.value)}
+              placeholder="owner/repo  or  https://github.com/owner/repo" />
+            ${repos.length > 1 && html`
+              <button class="btn btn-sm btn-danger" onclick=${() => removeRepo(i)}>✕</button>
+            `}
+          </div>
+        `)}
+        <button class="btn btn-sm" onclick=${addRepo} style="margin-top:4px">+ Add Repository</button>
+      `}
+
+      ${multiWorkspaceEnabled && html`
+        ${workspaces.map((ws, wIdx) => html`
+          <div class="executor-card" style="margin-bottom:12px">
+            <div class="executor-card-header">
+              <h4>Workspace ${wIdx + 1}</h4>
+              ${workspaces.length > 1 && html`
+                <button class="btn btn-sm btn-danger" onclick=${() => removeWorkspace(wIdx)}>✕ Remove</button>
+              `}
+            </div>
+            <div class="form-group">
+              <label>Workspace Name</label>
+              <input type="text" value=${ws.name}
+                oninput=${(e) => updateWorkspace(wIdx, "name", e.target.value)}
+                placeholder="e.g. backend, frontend, shared" />
+              <div class="hint">A short identifier for this workspace — used as the folder name.</div>
+            </div>
+            <div class="form-group" style="margin-bottom:0">
+              <label>Repositories</label>
+              ${(ws.repos || []).map((repo, rIdx) => html`
+                <div class="repo-entry">
+                  <input type="text" value=${repo}
+                    oninput=${(e) => updateWorkspaceRepo(wIdx, rIdx, e.target.value)}
+                    placeholder="owner/repo  or  https://github.com/owner/repo" />
+                  ${(ws.repos || []).length > 1 && html`
+                    <button class="btn btn-sm btn-danger" onclick=${() => removeWorkspaceRepo(wIdx, rIdx)}>✕</button>
+                  `}
+                </div>
+              `)}
+              <button class="btn btn-sm" onclick=${() => addWorkspaceRepo(wIdx)} style="margin-top:4px">+ Add Repo</button>
+            </div>
+          </div>
+        `)}
+        <button class="btn btn-sm" onclick=${addWorkspace} style="margin-top:4px">+ Add Workspace</button>
+      `}
+
       <div class="hint" style="margin-top:8px">
-        Per-workspace settings live at <code style="font-family:var(--font-mono)">&lt;workspace&gt;/.bosun/</code> — hooks, prompts, and
+        Per-workspace settings live at <code style="font-family:var(--font-mono)">${"<workspace>"}/.bosun/</code> — hooks, prompts, and
         configs there override the global workspace defaults.
       </div>
       <div class="nav-buttons">
@@ -1385,9 +1628,24 @@ function App() {
         <label>GitHub Project Number</label>
         <input type="number" value=${githubProjectNumber} oninput=${(e) => setGithubProjectNumber(e.target.value)}
           placeholder="1" />
-        <div class="hint">The number in the GitHub Projects URL: github.com/org/repo/projects/<strong>1</strong></div>
+        <div class="hint">
+          GitHub Projects are owned by a user/org (not a repo). Bosun uses the owner from
+          <strong>GitHub Repository</strong> above as the default project owner.
+        </div>
+        <div class="hint">
+          URL example: github.com/orgs/<strong>my-org</strong>/projects/<strong>1</strong>.
+          For separate projects per repo, use multiple workspaces in the terminal setup or edit <code style="font-family:var(--font-mono)">bosun.config.json</code>.
+        </div>
       </div>
     `}
+    <div class="form-group">
+      <label>Sync Policy</label>
+      <select value=${kanbanSyncPolicy} onchange=${(e) => setKanbanSyncPolicy(e.target.value)}>
+        <option value="internal-primary">Internal Primary — bosun's DB is authoritative, upstream synced on close</option>
+        <option value="bidirectional">Bidirectional — changes in either direction are synced in real time</option>
+      </select>
+      <div class="hint">Controls how tasks are synchronised between bosun's internal database and the external backend (GitHub / Jira).</div>
+    </div>
     <div class="nav-buttons">
       <button class="btn" onclick=${goPrev}>← Back</button>
       <button class="btn btn-primary" onclick=${goNext}>Continue →</button>
@@ -1459,7 +1717,339 @@ function App() {
     </div>
   `;
 
-  // ── Step 6: Review & Apply ─────────────────────────────────────────────────
+  // ── Step 6: Advanced Settings ──────────────────────────────────────────────
+
+  const StepAdvanced = () => {
+    // Section is rendered as a real Preact component (`<${Section}/>`) so its
+    // useState call is properly isolated to its own fiber — safe to use here.
+    function Section({ id, title, defaultOpen, children }) {
+      const [open, setOpen] = useState(!!defaultOpen);
+      return html`
+        <div style="border:1px solid var(--border-primary);border-radius:var(--radius-sm);margin-bottom:10px;overflow:hidden">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;background:var(--bg-input);user-select:none"
+            onclick=${() => setOpen((v) => !v)}>
+            <span style="font-weight:600;font-size:0.88rem">${title}</span>
+            <span style="color:var(--text-dim);font-size:0.8rem">${open ? "▲" : "▼"}</span>
+          </div>
+          ${open && html`<div style="padding:16px">${children}</div>`}
+        </div>
+      `;
+    }
+
+    return html`
+      <h2>Advanced Settings</h2>
+      <p class="step-desc">Fine-tune execution, model profiles, and infrastructure. Defaults are sensible — only change what you need.</p>
+
+      <${Section} title="⚡ Execution & Distribution" defaultOpen=${true}>
+        <div class="form-group">
+          <label>Executor Mode</label>
+          <select value=${executorMode} onchange=${(e) => setExecutorMode(e.target.value)}>
+            <option value="internal">Internal — bosun manages agents directly</option>
+            <option value="vk">VirtKanban (VK) — remote agent server</option>
+            <option value="hybrid">Hybrid — internal + remote fallback</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Task Distribution</label>
+          <select value=${executorDistribution} onchange=${(e) => setExecutorDistribution(e.target.value)}>
+            <option value="weighted">Weighted — tasks assigned by executor weight</option>
+            <option value="round-robin">Round Robin — rotate evenly</option>
+            <option value="primary-only">Primary Only — always use the first executor</option>
+          </select>
+        </div>
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>Max Parallel Tasks</label>
+            <input type="number" value=${maxParallel} min="1" max="32"
+              oninput=${(e) => setMaxParallel(Number(e.target.value) || 6)} />
+            <div class="hint">Simultaneous agent slots</div>
+          </div>
+          <div class="form-group">
+            <label>Project Requirements Profile</label>
+            <select value=${projectRequirementsProfile} onchange=${(e) => setProjectRequirementsProfile(e.target.value)}>
+              <option value="simple-feature">Simple Feature</option>
+              <option value="feature">Feature (default)</option>
+              <option value="large-feature">Large Feature</option>
+              <option value="system">System</option>
+              <option value="multi-system">Multi-System</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Primary Agent (overrides derived)</label>
+          <select value=${primaryAgent} onchange=${(e) => setPrimaryAgent(e.target.value)}>
+            <option value="">Auto-detect from executor list</option>
+            <option value="copilot-sdk">Copilot SDK</option>
+            <option value="codex-sdk">Codex SDK</option>
+            <option value="claude-sdk">Claude SDK</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${internalReplenishEnabled}
+              onchange=${(e) => setInternalReplenishEnabled(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enable Internal Executor Replenishment
+          </label>
+          <div class="hint">Auto-generate new tasks when the queue runs low.</div>
+        </div>
+        ${internalReplenishEnabled && html`
+          <div class="executor-grid" style="margin-top:12px">
+            <div class="form-group" style="margin-bottom:0">
+              <label>Min New Tasks</label>
+              <input type="number" value=${internalReplenishMin} min="1"
+                oninput=${(e) => setInternalReplenishMin(Number(e.target.value) || 1)} />
+            </div>
+            <div class="form-group" style="margin-bottom:0">
+              <label>Max New Tasks</label>
+              <input type="number" value=${internalReplenishMax} min="1"
+                oninput=${(e) => setInternalReplenishMax(Number(e.target.value) || 2)} />
+            </div>
+          </div>
+        `}
+      <//>
+
+      <${Section} title="🔀 Failover">
+        <div class="form-group">
+          <label>Failover Strategy</label>
+          <select value=${failoverStrategy} onchange=${(e) => setFailoverStrategy(e.target.value)}>
+            <option value="next-in-line">Next in Line</option>
+            <option value="round-robin">Round Robin</option>
+            <option value="weighted-random">Weighted Random</option>
+            <option value="random">Random</option>
+          </select>
+        </div>
+        <div class="executor-grid">
+          <div class="form-group" style="margin-bottom:0">
+            <label>Max Retries</label>
+            <input type="number" value=${maxRetries} min="0" max="10"
+              oninput=${(e) => setMaxRetries(Number(e.target.value) || 3)} />
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label>Cooldown (minutes)</label>
+            <input type="number" value=${failoverCooldownMinutes} min="1" max="60"
+              oninput=${(e) => setFailoverCooldownMinutes(Number(e.target.value) || 5)} />
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label>Disable after N consecutive failures</label>
+            <input type="number" value=${failoverDisableOnConsecutive} min="1" max="20"
+              oninput=${(e) => setFailoverDisableOnConsecutive(Number(e.target.value) || 3)} />
+          </div>
+        </div>
+      <//>
+
+      <${Section} title="🔵 Codex Settings">
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>Active Model Profile</label>
+            <select value=${codexModelProfile} onchange=${(e) => setCodexModelProfile(e.target.value)}>
+              <option value="xl">XL (high-capability)</option>
+              <option value="m">M (fast / mini)</option>
+            </select>
+            <div class="hint">Used for primary task agent</div>
+          </div>
+          <div class="form-group">
+            <label>Subagent Profile</label>
+            <select value=${codexModelProfileSubagent} onchange=${(e) => setCodexModelProfileSubagent(e.target.value)}>
+              <option value="m">M (fast / mini)</option>
+              <option value="xl">XL (high-capability)</option>
+            </select>
+            <div class="hint">Used for sub-agent calls inside a task</div>
+          </div>
+          <div class="form-group">
+            <label>XL Provider</label>
+            <select value=${codexXlProvider} onchange=${(e) => setCodexXlProvider(e.target.value)}>
+              <option value="openai">OpenAI</option>
+              <option value="azure">Azure OpenAI</option>
+              <option value="compatible">OpenAI-compatible</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>XL Model Slug</label>
+            <input type="text" value=${codexXlModel} oninput=${(e) => setCodexXlModel(e.target.value)}
+              placeholder="gpt-5.3-codex" />
+          </div>
+          <div class="form-group">
+            <label>M Provider</label>
+            <select value=${codexMProvider} onchange=${(e) => setCodexMProvider(e.target.value)}>
+              <option value="openai">OpenAI</option>
+              <option value="azure">Azure OpenAI</option>
+              <option value="compatible">OpenAI-compatible</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>M Model Slug</label>
+            <input type="text" value=${codexMModel} oninput=${(e) => setCodexMModel(e.target.value)}
+              placeholder="gpt-5.1-codex-mini" />
+          </div>
+          <div class="form-group">
+            <label>Max Threads</label>
+            <input type="number" value=${codexAgentMaxThreads} min="1" max="64"
+              oninput=${(e) => setCodexAgentMaxThreads(Number(e.target.value) || 12)} />
+          </div>
+          <div class="form-group">
+            <label>Transport</label>
+            <select value=${codexTransport} onchange=${(e) => setCodexTransport(e.target.value)}>
+              <option value="sdk">SDK (default)</option>
+              <option value="auto">Auto-detect</option>
+              <option value="cli">CLI subprocess</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Sandbox</label>
+          <select value=${codexSandbox} onchange=${(e) => setCodexSandbox(e.target.value)}>
+            <option value="workspace-write">Workspace Write (default)</option>
+            <option value="danger-full-access">Danger — Full Access</option>
+            <option value="read-only">Read Only</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Sandbox Permissions</label>
+          <input type="text" value=${codexSandboxPermissions} oninput=${(e) => setCodexSandboxPermissions(e.target.value)}
+            placeholder="disk-full-write-access (leave blank for default)" />
+        </div>
+        <div class="form-group">
+          <label>Sandbox Writable Roots (comma-separated paths)</label>
+          <input type="text" value=${codexSandboxWritableRoots} oninput=${(e) => setCodexSandboxWritableRoots(e.target.value)}
+            placeholder="Leave blank for auto-detected values" />
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${codexFeaturesNoBwrap}
+              onchange=${(e) => setCodexFeaturesNoBwrap(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Disable bwrap sandbox (CODEX_FEATURES_NO_BWRAP)
+          </label>
+          <div class="hint">Disable Linux namespace-based sandboxing. Only set this if bwrap is unavailable on your system.</div>
+        </div>
+      <//>
+
+      <${Section} title="🟣 Copilot Settings">
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>Max Requests per Session</label>
+            <input type="number" value=${copilotAgentMaxRequests} min="1"
+              oninput=${(e) => setCopilotAgentMaxRequests(Number(e.target.value) || 500)} />
+          </div>
+          <div class="form-group">
+            <label>Transport</label>
+            <select value=${copilotTransport} onchange=${(e) => setCopilotTransport(e.target.value)}>
+              <option value="sdk">SDK (default)</option>
+              <option value="auto">Auto-detect</option>
+              <option value="cli">CLI subprocess</option>
+              <option value="url">URL / HTTP</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>MCP Config Path</label>
+          <input type="text" value=${copilotMcpConfig} oninput=${(e) => setCopilotMcpConfig(e.target.value)}
+            placeholder=".vscode/mcp.json" />
+          <div class="hint">Path to your VS Code MCP server config file.</div>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${copilotEnableAllMcpTools}
+              onchange=${(e) => setCopilotEnableAllMcpTools(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enable All GitHub MCP Tools
+          </label>
+          <div class="hint">Expose the full GitHub MCP tool surface to Copilot agents (recommended).</div>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${copilotEnableAskUser}
+              onchange=${(e) => setCopilotEnableAskUser(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enable Ask User
+          </label>
+          <div class="hint">Allow agent to pause and ask a human for clarification mid-task.</div>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${copilotNoExperimental}
+              onchange=${(e) => setCopilotNoExperimental(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Disable Experimental Features
+          </label>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${copilotNoAllowAll}
+              onchange=${(e) => setCopilotNoAllowAll(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Disable Auto-Allow All Permissions
+          </label>
+          <div class="hint">Disables the --allow-all flag. Agents will require explicit permission grants.</div>
+        </div>
+      <//>
+
+      <${Section} title="🏗️ Infrastructure">
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${containerEnabled}
+              onchange=${(e) => setContainerEnabled(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enable Container Isolation
+          </label>
+          <div class="hint">Run agents inside Docker/Podman containers for isolation.</div>
+        </div>
+        ${containerEnabled && html`
+          <div class="form-group">
+            <label>Container Runtime</label>
+            <select value=${containerRuntime} onchange=${(e) => setContainerRuntime(e.target.value)}>
+              <option value="auto">Auto-detect</option>
+              <option value="docker">Docker</option>
+              <option value="podman">Podman</option>
+              <option value="container">Generic container CLI</option>
+            </select>
+          </div>
+        `}
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>VirtKanban Base URL</label>
+            <input type="text" value=${vkBaseUrl} oninput=${(e) => setVkBaseUrl(e.target.value)}
+              placeholder="http://127.0.0.1:54089" />
+            <div class="hint">Only needed when executor mode is VK or hybrid.</div>
+          </div>
+          <div class="form-group">
+            <label>VK Recovery Port</label>
+            <input type="text" value=${vkRecoveryPort} oninput=${(e) => setVkRecoveryPort(e.target.value)}
+              placeholder="54089" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${whatsappEnabled}
+              onchange=${(e) => setWhatsappEnabled(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enable WhatsApp Notifications
+          </label>
+        </div>
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>Telegram Polling Interval (minutes)</label>
+            <input type="number" value=${telegramIntervalMin} min="1" max="60"
+              oninput=${(e) => setTelegramIntervalMin(Number(e.target.value) || 10)} />
+          </div>
+          <div class="form-group">
+            <label>Orchestrator Script Path</label>
+            <input type="text" value=${orchestratorScript} oninput=${(e) => setOrchestratorScript(e.target.value)}
+              placeholder="Leave blank for auto-detect" />
+            <div class="hint">Override the script bosun uses to launch its orchestrator.</div>
+          </div>
+        </div>
+      <//>
+
+      <div class="nav-buttons">
+        <button class="btn" onclick=${goPrev}>← Back</button>
+        <button class="btn btn-primary" onclick=${goNext}>Continue →</button>
+      </div>
+    `;
+  };
+
+  // ── Step 7: Review & Apply ─────────────────────────────────────────────────
 
   const StepReview = () => {
     const filteredRepos = repos.filter((r) => r.trim());
@@ -1493,7 +2083,12 @@ function App() {
             <tr><th>Max Parallel</th><td>${maxParallel}</td></tr>
             <tr><th>Max Retries</th><td>${maxRetries}</td></tr>
             <tr><th>Failover</th><td>${failoverStrategy}</td></tr>
-          ` : null}
+            <tr><th>Distribution</th><td>${executorDistribution}</td></tr>
+            <tr><th>Executor Mode</th><td>${executorMode}</td></tr>
+          ` : html`
+            <tr><th>Max Parallel</th><td>${maxParallel}</td></tr>
+            <tr><th>Failover Strategy</th><td>${failoverStrategy}</td></tr>
+          `}
         </tbody>
       </table>
       ${error && html`<div class="field-error" style="margin-top:12px">${error}</div>`}
@@ -1519,7 +2114,8 @@ function App() {
       case 3: return StepRepos();
       case 4: return StepKanban();
       case 5: return StepNotifications();
-      case 6: return StepReview();
+      case 6: return StepAdvanced();
+      case 7: return StepReview();
       default: return StepPrerequisites();
     }
   };
