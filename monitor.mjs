@@ -1398,7 +1398,7 @@ function restartSelf(reason) {
       console.warn(
         `[monitor] deferring monitor restart (${reason || "unknown"}) — ${protection.reason}; retrying in ${retrySec}s`,
       );
-      deferredMonitorRestartTimer = setTimeout(() => {
+      deferredMonitorRestartTimer = safeSetTimeout("deferred-monitor-restart", () => {
         deferredMonitorRestartTimer = null;
         const deferredReason = pendingMonitorRestartReason || "deferred";
         pendingMonitorRestartReason = "";
@@ -11955,7 +11955,7 @@ function selfRestartForSourceChange(filename) {
       `[monitor] SAFETY NET: selfRestartForSourceChange called with ${activeSlots} active agent(s)! Deferring instead of killing.`,
     );
     pendingSelfRestart = filename;
-    selfRestartTimer = setTimeout(retryDeferredSelfRestart, 30_000);
+    selfRestartTimer = safeSetTimeout("self-restart-safety-net-retry", retryDeferredSelfRestart, 30_000);
     return;
   }
   console.log(
@@ -12034,7 +12034,7 @@ function attemptSelfRestartAfterQuiet() {
   const sinceLastChange = now - selfRestartLastChangeAt;
   if (sinceLastChange < SELF_RESTART_QUIET_MS) {
     const waitMs = SELF_RESTART_QUIET_MS - sinceLastChange;
-    selfRestartTimer = setTimeout(attemptSelfRestartAfterQuiet, waitMs);
+    selfRestartTimer = safeSetTimeout("self-restart-quiet-wait", attemptSelfRestartAfterQuiet, waitMs);
     return;
   }
   const filename = selfRestartLastFile || "unknown";
@@ -12071,7 +12071,8 @@ function attemptSelfRestartAfterQuiet() {
     console.log(
       `[monitor] deferring self-restart (${filename}) — ${protection.reason}; retrying in ${retrySec}s (defer #${deferCount})`,
     );
-    selfRestartTimer = setTimeout(
+    selfRestartTimer = safeSetTimeout(
+      "self-restart-deferred-retry",
       retryDeferredSelfRestart,
       SELF_RESTART_RETRY_MS,
     );
@@ -12091,7 +12092,7 @@ function attemptSelfRestartAfterQuiet() {
       console.log(
         `[monitor] will retry restart in 60s (agents must finish first)`,
       );
-      selfRestartTimer = setTimeout(attemptSelfRestartAfterQuiet, 60_000);
+      selfRestartTimer = safeSetTimeout("self-restart-agent-wait-retry", attemptSelfRestartAfterQuiet, 60_000);
       return;
     }
   }
@@ -12108,7 +12109,8 @@ function queueSelfRestart(filename) {
   console.log(
     `\n[monitor] source file changed: ${filename} — waiting ${Math.round(SELF_RESTART_QUIET_MS / 1000)}s for quiet before restart`,
   );
-  selfRestartTimer = setTimeout(
+  selfRestartTimer = safeSetTimeout(
+    "self-restart-queue",
     attemptSelfRestartAfterQuiet,
     SELF_RESTART_QUIET_MS,
   );
@@ -12135,7 +12137,7 @@ function startSelfWatcher() {
       if (selfWatcherDebounce) {
         clearTimeout(selfWatcherDebounce);
       }
-      selfWatcherDebounce = setTimeout(() => {
+      selfWatcherDebounce = safeSetTimeout("self-watcher-debounce", () => {
         queueSelfRestart(filename);
       }, 1000);
     });
@@ -12660,6 +12662,19 @@ process.on("unhandledRejection", (reason) => {
     reason instanceof Error ? reason : new Error(String(reason || ""));
   console.error(`[monitor] unhandledRejection: ${err?.stack || msg}`);
   void handleMonitorFailure("unhandledRejection", err);
+});
+
+// ── Exit diagnostic: always log the exit code so crashes are traceable ──────
+process.on("exit", (code) => {
+  if (code === 0 || code === SELF_RESTART_EXIT_CODE) return;
+  // Write directly to stderr — console may already be torn down at exit time
+  try {
+    process.stderr.write(
+      `[monitor] process exiting with code ${code} (shuttingDown=${shuttingDown})\n`,
+    );
+  } catch {
+    /* best effort — stderr may be broken */
+  }
 });
 
 // ── Singleton guard: prevent ghost monitors ─────────────────────────────────
