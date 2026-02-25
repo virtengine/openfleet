@@ -595,14 +595,21 @@ export function acquireMonitorLock(lockDir) {
             return false;
           }
           if (classification === "unknown") {
-            console.error(
-              "[maintenance] PID file points to a live process (PID " + existingPid + ") but command line is unavailable. Assuming bosun may already be running; exiting.",
+            // On Windows, PIDs are recycled aggressively.  A live PID whose
+            // command line we cannot read is far more likely to be a reused PID
+            // from an unrelated process than it is to be an actual bosun
+            // monitor.  Log a warning and replace the lock instead of blocking
+            // startup — the worst case is a brief overlap that self-resolves
+            // via the next lock acquisition attempt from the other side.
+            console.warn(
+              "[maintenance] PID file points to a live process (PID " + existingPid +
+                ") but command line is unavailable — assuming PID reuse; replacing lock",
             );
-            return false;
+          } else {
+            console.warn(
+              "[maintenance] PID file points to non-monitor process (PID " + existingPid + "); replacing lock",
+            );
           }
-          console.warn(
-            "[maintenance] PID file points to non-monitor process (PID " + existingPid + "); replacing lock",
-          );
         } else {
           console.warn(
             "[maintenance] removing stale PID file (PID " + (parsed.raw || "unknown") + " no longer alive)",

@@ -12528,11 +12528,20 @@ if (!process.env.VITEST && !acquireMonitorLock(config.cacheDir)) {
   // shutting down and holding the lock briefly. Ask cli.mjs to retry instead
   // of treating this as a hard crash.
   if (isSelfRestart) {
-    console.warn(
-      "[monitor] self-restart lock handoff still busy — retrying startup",
+    // Write directly to stderr so the message reaches the terminal even when
+    // the console interceptor is redirecting to a log file.
+    process.stderr.write(
+      "[monitor] self-restart lock handoff still busy — retrying startup\n",
     );
     process.exit(SELF_RESTART_EXIT_CODE);
   }
+  // Write directly to stderr — console.error is intercepted to a log file at
+  // this point, so the user would see a silent exit-code-1 crash with zero
+  // explanation without this line.
+  process.stderr.write(
+    "[monitor] another bosun instance holds the lock — exiting (exit code 1).\n" +
+      "[monitor] If no other bosun is running, delete .cache/bosun.pid and retry.\n",
+  );
   process.exit(1);
 }
 
