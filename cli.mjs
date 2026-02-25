@@ -253,7 +253,10 @@ function printConfigLocations() {
 
 // ── Daemon Mode ──────────────────────────────────────────────────────────────
 
+// Monitor singleton lock file (owned by monitor.mjs / maintenance.mjs).
 const PID_FILE = resolve(__dirname, ".cache", "bosun.pid");
+// Daemon supervisor PID file (owned by cli.mjs --daemon-child).
+const DAEMON_PID_FILE = resolve(__dirname, ".cache", "bosun-daemon.pid");
 const DAEMON_LOG = resolve(__dirname, "logs", "daemon.log");
 const SENTINEL_PID_FILE = resolve(
   __dirname,
@@ -412,16 +415,17 @@ async function ensureSentinelRunning(options = {}) {
 }
 
 function getDaemonPid() {
+  const tracked = readAlivePid(DAEMON_PID_FILE);
+  if (tracked) return tracked;
+
+  // Legacy fallback: older versions stored daemon PID in bosun.pid
+  // as a plain number before monitor lock payloads were JSON.
   try {
     if (!existsSync(PID_FILE)) return null;
-    const pid = parseInt(readFileSync(PID_FILE, "utf8").trim(), 10);
-    if (isNaN(pid)) return null;
-    try {
-      process.kill(pid, 0);
-      return pid;
-    } catch {
-      return null;
-    }
+    const raw = String(readFileSync(PID_FILE, "utf8") || "").trim();
+    if (!/^\d+$/.test(raw)) return null;
+    const legacyPid = Number(raw);
+    return isProcessAlive(legacyPid) ? legacyPid : null;
   } catch {
     return null;
   }
@@ -433,7 +437,26 @@ function getDaemonPid() {
  * Returns an array of PIDs (may be empty).
  */
 function findGhostDaemonPids() {
-  if (process.platform === "win32") return [];
+  if (process.platform === "win32") {
+    try {
+      const out = execFileSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -match 'cli\\.mjs' -and $_.CommandLine -match '--daemon-child' } | Select-Object -ExpandProperty ProcessId",
+        ],
+        { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 3000 },
+      ).trim();
+      if (!out) return [];
+      return out
+        .split(/\r?\n/)
+        .map((s) => parseInt(String(s).trim(), 10))
+        .filter((n) => Number.isFinite(n) && n > 0 && n !== process.pid);
+    } catch {
+      return [];
+    }
+  }
   try {
     const out = execFileSync(
       "pgrep",
@@ -451,8 +474,8 @@ function findGhostDaemonPids() {
 
 function writePidFile(pid) {
   try {
-    mkdirSync(dirname(PID_FILE), { recursive: true });
-    writeFileSync(PID_FILE, String(pid), "utf8");
+    mkdirSync(dirname(DAEMON_PID_FILE), { recursive: true });
+    writeFileSync(DAEMON_PID_FILE, String(pid), "utf8");
   } catch {
     /* best effort */
   }
@@ -460,7 +483,7 @@ function writePidFile(pid) {
 
 function removePidFile() {
   try {
-    if (existsSync(PID_FILE)) unlinkSync(PID_FILE);
+    if (existsSync(DAEMON_PID_FILE)) unlinkSync(DAEMON_PID_FILE);
   } catch {
     /* ok */
   }
@@ -553,7 +576,7 @@ function startDaemon() {
   ╰──────────────────────────────────────────────────────────╯
 
   Logs: ${DAEMON_LOG}
-  PID:  ${PID_FILE}
+  PID:  ${DAEMON_PID_FILE}
 
   Commands:
     bosun --daemon-status   Check if running
@@ -566,9 +589,37 @@ function startDaemon() {
 function stopDaemon() {
   const pid = getDaemonPid();
   if (!pid) {
-    console.log("  No daemon running (PID file not found or process dead).");
-    removePidFile();
-    process.exit(0);
+    const ghosts = findGhostDaemonPids();
+    if (ghosts.length === 0) {
+      console.log("  No daemon running (PID file not found or process dead).");
+      removePidFile();
+      process.exit(0);
+      return;
+    }
+    console.log(
+      `  Found ${ghosts.length} untracked daemon process(es): ${ghosts.join(", ")}`,
+    );
+    for (const gpid of ghosts) {
+      try {
+        process.kill(gpid, "SIGTERM");
+      } catch {
+        /* already dead */
+      }
+    }
+    setTimeout(() => {
+      for (const gpid of ghosts) {
+        if (!isProcessAlive(gpid)) continue;
+        try {
+          process.kill(gpid, "SIGKILL");
+        } catch {
+          /* already dead */
+        }
+      }
+      removePidFile();
+      console.log("  ✓ Untracked daemon process(es) stopped.");
+      process.exit(0);
+    }, 1200);
+    return;
   }
   console.log(`  Stopping bosun daemon (PID ${pid})...`);
   try {
@@ -752,6 +803,13 @@ async function main() {
     args.includes("--daemon-child") ||
     process.env.BOSUN_DAEMON === "1"
   ) {
+    const existingDaemonPid = readAlivePid(DAEMON_PID_FILE);
+    if (existingDaemonPid && existingDaemonPid !== process.pid) {
+      process.stdout.write(
+        `[daemon] another daemon-child already owns ${DAEMON_PID_FILE} (PID ${existingDaemonPid}) — duplicate daemon-child ignored.\n`,
+      );
+      process.exit(0);
+    }
     writePidFile(process.pid);
     // Redirect console to log file on daemon child
     const { createWriteStream } = await import("node:fs");
@@ -794,23 +852,28 @@ async function main() {
     );
   }
 
-  // Auto-start sentinel in daemon mode when Telegram credentials are available
-  const hasTelegramCreds = !!(
-    (process.env.TELEGRAM_BOT_TOKEN || readEnvCredentials().TELEGRAM_BOT_TOKEN) &&
-    (process.env.TELEGRAM_CHAT_ID || readEnvCredentials().TELEGRAM_CHAT_ID)
+  // Sentinel is opt-in. Running sentinel and monitor Telegram polling together
+  // can create getUpdates 409 conflicts when both poll the same bot token.
+  const sentinelExplicit = args.includes("--sentinel");
+  const sentinelAutoRequested = parseBoolEnv(
+    process.env.BOSUN_SENTINEL_AUTO_START,
+    false,
   );
+  // In daemon-child mode, disable implicit sentinel auto-starts unless the
+  // user explicitly requested --sentinel. This avoids accidental double pollers.
   const sentinelRequested =
-    args.includes("--sentinel") ||
-    parseBoolEnv(process.env.BOSUN_SENTINEL_AUTO_START, false) ||
-    (IS_DAEMON_CHILD && hasTelegramCreds);
+    sentinelExplicit || (!IS_DAEMON_CHILD && sentinelAutoRequested);
+  if (sentinelAutoRequested && !sentinelExplicit && IS_DAEMON_CHILD) {
+    console.log(
+      "  telegram-sentinel auto-start suppressed in daemon-child mode (use --sentinel to enable explicitly)",
+    );
+  }
   if (sentinelRequested) {
     const sentinel = await ensureSentinelRunning({ quiet: false });
     if (!sentinel.ok) {
-      const mode = args.includes("--sentinel")
+      const mode = sentinelExplicit
         ? "requested by --sentinel"
-        : IS_DAEMON_CHILD && hasTelegramCreds
-          ? "auto-started in daemon mode (Telegram credentials detected)"
-          : "requested by BOSUN_SENTINEL_AUTO_START";
+        : "requested by BOSUN_SENTINEL_AUTO_START";
       const strictSentinel = parseBoolEnv(
         process.env.BOSUN_SENTINEL_STRICT,
         false,
