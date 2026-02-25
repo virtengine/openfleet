@@ -770,6 +770,11 @@ function isSharedHeartbeatStale(heartbeat, thresholdMs) {
   return Date.now() - ts > thresholdMs;
 }
 
+function normalizeTaskIdKey(taskId) {
+  const normalized = String(taskId ?? "").trim();
+  return normalized;
+}
+
 function extractBacklogCandidates(outputText) {
   const text = String(outputText || "");
   if (!text.trim()) return [];
@@ -1996,22 +2001,29 @@ class TaskExecutor {
         const data = JSON.parse(raw);
         if (data && typeof data === "object") {
           for (const [id, count] of Object.entries(data.noCommitCounts || {})) {
-            this._noCommitCounts.set(id, count);
+            const key = normalizeTaskIdKey(id);
+            const parsed = Number(count);
+            if (!key || !Number.isFinite(parsed) || parsed <= 0) continue;
+            this._noCommitCounts.set(key, parsed);
           }
           for (const [id, until] of Object.entries(data.skipUntil || {})) {
+            const key = normalizeTaskIdKey(id);
+            if (!key) continue;
             if (until > Date.now()) {
-              this._skipUntil.set(id, until);
+              this._skipUntil.set(key, until);
             }
           }
           // Restore completed-with-PR tracking
           if (Array.isArray(data.completedWithPR)) {
             for (const id of data.completedWithPR) {
-              this._completedWithPR.add(id);
+              const key = normalizeTaskIdKey(id);
+              if (key) this._completedWithPR.add(key);
             }
           }
           if (Array.isArray(data.prCreatedForBranch)) {
             for (const id of data.prCreatedForBranch) {
-              this._prCreatedForBranch.add(id);
+              const key = normalizeTaskIdKey(id);
+              if (key) this._prCreatedForBranch.add(key);
             }
           }
           console.log(
@@ -3005,7 +3017,7 @@ class TaskExecutor {
     let skippedForNoCommitBlock = 0;
 
     for (const task of inProgressTasks) {
-      const id = task?.id || task?.task_id;
+      const id = normalizeTaskIdKey(task?.id || task?.task_id);
       if (!id || this._activeSlots.has(id)) continue;
 
       const internalTask = getInternalTask(id);
@@ -3249,16 +3261,18 @@ class TaskExecutor {
    * @returns {boolean}
    */
   isTaskManaged(taskId) {
+    const key = normalizeTaskIdKey(taskId);
+    if (!key) return false;
     // Currently executing
-    if (this._activeSlots.has(taskId)) return true;
+    if (this._activeSlots.has(key)) return true;
     // In anti-thrash cooldown
-    const skipUntil = this._skipUntil.get(taskId);
+    const skipUntil = this._skipUntil.get(key);
     if (skipUntil && Date.now() < skipUntil) return true;
     // In failure cooldown
-    const cooldownAt = this._taskCooldowns.get(taskId);
+    const cooldownAt = this._taskCooldowns.get(key);
     if (cooldownAt && Date.now() - cooldownAt < COOLDOWN_MS) return true;
     // Permanently blocked for this session
-    const noCommitCount = this._noCommitCounts.get(taskId) || 0;
+    const noCommitCount = this._noCommitCounts.get(key) || 0;
     if (noCommitCount >= MAX_NO_COMMIT_ATTEMPTS) return true;
     return false;
   }
@@ -3607,7 +3621,7 @@ class TaskExecutor {
 
       // Filter out ineligible tasks
       const eligible = tasks.filter((t) => {
-        const id = t.id || t.task_id;
+        const id = normalizeTaskIdKey(t.id || t.task_id);
         if (!id) return false;
         // Already running
         if (this._activeSlots.has(id)) return false;
@@ -3643,7 +3657,8 @@ class TaskExecutor {
 
       for (const task of toDispatch) {
         // Normalize task id
-        task.id = task.id || task.task_id;
+        task.id = normalizeTaskIdKey(task.id || task.task_id);
+        if (!task.id) continue;
         try {
           // Fire and forget — executeTask handles its own lifecycle
           this.executeTask(task).catch((err) => {
@@ -3730,8 +3745,13 @@ class TaskExecutor {
    * @returns {Promise<void>}
    */
   async executeTask(task, options = {}) {
-    const taskId = task.id || task.task_id;
+    const taskId = normalizeTaskIdKey(task.id || task.task_id);
     const taskTitle = task.title || "(untitled)";
+    if (!taskId) {
+      console.warn(`${TAG} skipping task with invalid id: "${taskTitle}"`);
+      return { skipped: true, reason: "invalid_task_id" };
+    }
+    task.id = taskId;
     if (this._paused && !options?.force) {
       console.log(
         `${TAG} executor paused — skipping task "${taskTitle}" (${taskId})`,
@@ -4962,6 +4982,8 @@ class TaskExecutor {
    * @private
    */
   async _handleTaskResult(task, result, worktreePath, execInfo = {}) {
+    const taskKey = normalizeTaskIdKey(task.id || task.task_id);
+    if (taskKey) task.id = taskKey;
     const taskTitle = (task.title || "").slice(0, 50);
     const tag = `${TAG} task "${taskTitle}"`;
     const baseBranch = resolveTaskBaseBranch(

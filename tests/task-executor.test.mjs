@@ -1167,6 +1167,29 @@ describe("task-executor", () => {
   // loadExecutorOptionsFromConfig
   // ────────────────────────────────────────────────────────────────────────
 
+  describe("anti-thrash key normalization", () => {
+    it("keeps no-commit counters stable when task id type changes", async () => {
+      const ex = new TaskExecutor();
+      vi.spyOn(ex, "_hasUnpushedCommits").mockReturnValue(false);
+
+      await ex._handleTaskResult(
+        { id: 21, title: "Type-flip task", description: "desc" },
+        { success: true, attempts: 1, output: "no changes" },
+        "/fake/worktree",
+        { agentMadeNewCommits: false },
+      );
+
+      await ex._handleTaskResult(
+        { id: "21", title: "Type-flip task", description: "desc" },
+        { success: true, attempts: 1, output: "no changes" },
+        "/fake/worktree",
+        { agentMadeNewCommits: false },
+      );
+
+      expect(ex._noCommitCounts.get("21")).toBe(2);
+      expect(ex._noCommitCounts.has(21)).toBe(false);
+    });
+  });
   describe("loadExecutorOptionsFromConfig", () => {
     it("returns defaults when nothing configured", () => {
       loadConfig.mockReturnValue({});
