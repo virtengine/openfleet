@@ -17,6 +17,7 @@ import {
   isMonitorRunning,
   ensureMonitorRunning,
   getQueuedCommands,
+  parsePidFileValue,
 } from "../telegram-sentinel.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -53,6 +54,27 @@ describe("telegram-sentinel", () => {
       expect(typeof isMonitorRunning).toBe("function");
       expect(typeof ensureMonitorRunning).toBe("function");
       expect(typeof getQueuedCommands).toBe("function");
+      expect(typeof parsePidFileValue).toBe("function");
+    });
+  });
+
+  describe("pid file parsing", () => {
+    it("parses plain numeric PID payload", () => {
+      expect(parsePidFileValue("1234\n")).toBe(1234);
+    });
+
+    it("parses JSON PID payload written by monitor lock", () => {
+      const raw = JSON.stringify({
+        pid: 91628,
+        started_at: "2026-02-25T15:31:54.796Z",
+        argv: ["node", "monitor.mjs"],
+      });
+      expect(parsePidFileValue(raw)).toBe(91628);
+    });
+
+    it("returns null for malformed payload", () => {
+      expect(parsePidFileValue("{not-json")).toBeNull();
+      expect(parsePidFileValue("")).toBeNull();
     });
   });
 

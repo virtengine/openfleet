@@ -1388,9 +1388,7 @@ const SELF_RESTART_RETRY_MS = Math.max(
   15_000,
   Number(process.env.SELF_RESTART_RETRY_MS || "30000"),
 );
-const ALLOW_INTERNAL_RUNTIME_RESTARTS = isTruthyFlag(
-  process.env.ALLOW_INTERNAL_RUNTIME_RESTARTS || "false",
-);
+const ALLOW_INTERNAL_RUNTIME_RESTARTS = isTruthyFlag(`r`n  process.env.ALLOW_INTERNAL_RUNTIME_RESTARTS || "false",`r`n);`r`nconst SELF_RESTART_DEFER_HARD_CAP = Math.max(`r`n  1,`r`n  Number(process.env.SELF_RESTART_DEFER_HARD_CAP || "20") || 20,`r`n);
 let selfWatcher = null;
 let selfWatcherDebounce = null;
 let selfRestartTimer = null;
@@ -12660,9 +12658,6 @@ function attemptSelfRestartAfterQuiet() {
     // Hard cap: after many deferrals the active agent is likely stuck.
     // Force-stop the task executor and proceed with the restart so the
     // monitor doesn't hang forever (or crash from resource exhaustion).
-    const SELF_RESTART_DEFER_HARD_CAP = Number(
-      process.env.SELF_RESTART_DEFER_HARD_CAP || "50",
-    );
     if (deferCount >= SELF_RESTART_DEFER_HARD_CAP) {
       console.warn(
         `[monitor] self-restart deferred ${deferCount} times (hard cap ${SELF_RESTART_DEFER_HARD_CAP}) — force-stopping active agents and restarting`,

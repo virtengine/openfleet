@@ -603,6 +603,31 @@ function isProcessAlive(pid) {
 }
 
 /**
+ * Parse a PID file payload that may be plain text (`"1234"`) or JSON (`{"pid":1234,...}`).
+ * @param {string} raw
+ * @returns {number | null}
+ */
+export function parsePidFileValue(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return null;
+
+  if (text.startsWith("{")) {
+    try {
+      const data = JSON.parse(text);
+      const pid = Number(data?.pid);
+      if (!Number.isFinite(pid) || pid <= 0) return null;
+      return Math.trunc(pid);
+    } catch {
+      return null;
+    }
+  }
+
+  const pid = Number.parseInt(text, 10);
+  if (!Number.isFinite(pid) || pid <= 0) return null;
+  return pid;
+}
+
+/**
  * Read a PID from a file and check if the process is alive.
  * @param {string} pidPath
  * @returns {number | null} The PID if alive, null otherwise.
@@ -610,8 +635,8 @@ function isProcessAlive(pid) {
 function readAlivePid(pidPath) {
   try {
     if (!existsSync(pidPath)) return null;
-    const pid = parseInt(readFileSync(pidPath, "utf8").trim(), 10);
-    if (isNaN(pid)) return null;
+    const pid = parsePidFileValue(readFileSync(pidPath, "utf8"));
+    if (!pid) return null;
     return isProcessAlive(pid) ? pid : null;
   } catch {
     return null;

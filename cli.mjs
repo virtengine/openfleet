@@ -1155,9 +1155,7 @@ async function main() {
     process.exit(0);
   }
 
-  const existingOwner = !IS_DAEMON_CHILD
-    ? detectExistingMonitorLockOwner()
-    : null;
+  const existingOwner = detectExistingMonitorLockOwner();
   if (existingOwner) {
     console.log(
       `\n  bosun is already running (PID ${existingOwner.pid}); exiting duplicate start.\n`,

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 describe("duplicate monitor lock handling", () => {
   const monitorSource = readFileSync(resolve(process.cwd(), "monitor.mjs"), "utf8");
   const maintenanceSource = readFileSync(resolve(process.cwd(), "maintenance.mjs"), "utf8");
+  const cliSource = readFileSync(resolve(process.cwd(), "cli.mjs"), "utf8");
 
   it("treats non-self-restart lock contention as a benign duplicate start", () => {
     const blockMatch = monitorSource.match(
@@ -20,5 +21,12 @@ describe("duplicate monitor lock handling", () => {
     expect(maintenanceSource).toContain("another bosun is already running");
     expect(maintenanceSource).toContain("Ignoring duplicate start.");
     expect(maintenanceSource).toContain("console.warn(");
+  });
+
+  it("short-circuits duplicate starts in cli before forking monitor", () => {
+    const preflightMatch = cliSource.match(
+      /const existingOwner = detectExistingMonitorLockOwner\(\);[\s\S]*?if \(existingOwner\) \{[\s\S]*?exiting duplicate start\.[\s\S]*?return;[\s\S]*?\}/,
+    );
+    expect(preflightMatch, "cli should skip runMonitor() when a live lock owner exists").toBeTruthy();
   });
 });
