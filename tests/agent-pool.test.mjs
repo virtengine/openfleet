@@ -187,6 +187,7 @@ const ENV_KEYS = [
   "COPILOT_SDK_MODEL",
   "GITHUB_TOKEN",
   "COPILOT_CLI_TOKEN",
+  "AGENT_POOL_SDK_FAILURE_COOLDOWN_MS",
 ];
 
 /** @type {Record<string, string|undefined>} */
@@ -229,6 +230,7 @@ function clearSdkEnv() {
   delete process.env.COPILOT_SDK_MODEL;
   delete process.env.GITHUB_TOKEN;
   delete process.env.COPILOT_CLI_TOKEN;
+  delete process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS;
 }
 
 // ---------------------------------------------------------------------------
@@ -511,6 +513,69 @@ describe("launchEphemeralThread", () => {
     expect(result.sdk).toBe("copilot");
     expect(result.error).toBeNull();
     expect(result.output).toContain("copilot-output");
+  });
+
+  it("skips a cooled-down SDK after timeout and retries it after cooldown expiry", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.__MOCK_COPILOT_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.GITHUB_TOKEN = "test-token";
+    process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS = "1000";
+    setPoolSdk("codex");
+
+    const nowSpy = vi.spyOn(Date, "now");
+    let nowMs = 1_000_000;
+    nowSpy.mockImplementation(() => nowMs);
+
+    const makeTimeoutThread = (id) => ({
+      id,
+      runStreamed: async (_prompt, { signal } = {}) => {
+        await new Promise((_, reject) => {
+          const abortNow = () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (signal?.aborted) {
+            abortNow();
+            return;
+          }
+          signal?.addEventListener("abort", abortNow, { once: true });
+        });
+      },
+    });
+
+    mockCodexStartThread
+      .mockImplementationOnce(() => makeTimeoutThread("cooldown-timeout-1"))
+      .mockImplementationOnce(() => makeTimeoutThread("cooldown-timeout-2"));
+
+    const first = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+    });
+
+    expect(first.success).toBe(true);
+    expect(first.sdk).toBe("copilot");
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
+
+    const second = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+    });
+
+    expect(second.success).toBe(true);
+    expect(second.sdk).toBe("copilot");
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(1);
+
+    nowMs += 1001;
+
+    const third = await launchEphemeralThread("test prompt", process.cwd(), 25, {
+      sdk: "codex",
+    });
+
+    expect(third.success).toBe(true);
+    expect(third.sdk).toBe("copilot");
+    expect(mockCodexStartThread).toHaveBeenCalledTimes(2);
+
+    nowSpy.mockRestore();
   });
 
   it("returns error when all SDKs are disabled", async () => {

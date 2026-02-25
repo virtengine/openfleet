@@ -241,6 +241,12 @@ function parseBooleanEnv(value, fallback = false) {
   if (["0", "false", "no", "off"].includes(key)) return false;
   return fallback;
 }
+
+function parseDelayMs(value, fallback, min = 0) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, parsed);
+}
 const GH_TRANSIENT_ERROR_PATTERNS = [
   /bad gateway/i,
   /service unavailable/i,
@@ -259,7 +265,15 @@ const GH_TRANSIENT_ERROR_PATTERNS = [
 ];
 
 function sleepMs(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  const delay = Number(ms);
+  if (!Number.isFinite(delay) || delay <= 0) {
+    return Promise.resolve();
+  }
+  const setTimeoutFn = globalThis?.setTimeout;
+  if (typeof setTimeoutFn !== "function") {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => setTimeoutFn(resolve, delay));
 }
 
 function isGhRateLimitError(text) {
@@ -1254,11 +1268,15 @@ class GitHubIssuesAdapter {
     );
 
     // Rate limit retry delay (ms) — configurable for tests
-    this._rateLimitRetryDelayMs =
-      Number(process.env.GH_RATE_LIMIT_RETRY_MS) || 60_000;
-    this._transientRetryDelayMs = Math.max(
-      250,
-      Number(process.env.GH_TRANSIENT_RETRY_MS) || 2_000,
+    this._rateLimitRetryDelayMs = parseDelayMs(
+      process.env.GH_RATE_LIMIT_RETRY_MS,
+      60_000,
+      0,
+    );
+    this._transientRetryDelayMs = parseDelayMs(
+      process.env.GH_TRANSIENT_RETRY_MS,
+      2_000,
+      0,
     );
     this._transientRetryMax = Math.max(
       0,

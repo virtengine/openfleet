@@ -1161,6 +1161,81 @@ describe("task-executor", () => {
       expect(ex._noCommitCounts.get("planner-2")).toBe(1);
       expect(ex._skipUntil.has("planner-2")).toBe(true);
     });
+
+    it("marks preflight diagnostic task done when success has no commits", async () => {
+      const onTaskCompleted = vi.fn();
+      const sendTelegram = vi.fn();
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const ex = new TaskExecutor({ onTaskCompleted, sendTelegram });
+      const task = {
+        id: "preflight-1",
+        title: "[s] preflight: detect interactive git editor and guide remediation",
+        description: "Run preflight checks and report findings.",
+      };
+      ex._noCommitCounts.set(task.id, 2);
+      ex._skipUntil.set(task.id, Date.now() + 60_000);
+      vi.spyOn(ex, "_hasUnpushedCommits").mockReturnValue(false);
+
+      await ex._handleTaskResult(
+        task,
+        {
+          success: true,
+          attempts: 1,
+          output: "Checked environment; no remediation needed.",
+        },
+        "/fake/worktree",
+        { agentMadeNewCommits: false },
+      );
+
+      expect(updateTaskStatus).toHaveBeenCalledWith("preflight-1", "done");
+      expect(updateTaskStatus).not.toHaveBeenCalledWith("preflight-1", "todo");
+      expect(ex._noCommitCounts.has("preflight-1")).toBe(false);
+      expect(ex._skipUntil.has("preflight-1")).toBe(false);
+      expect(
+        warnSpy.mock.calls.some((args) =>
+          String(args?.[0] || "").includes("completed but no commits found"),
+        ),
+      ).toBe(false);
+      expect(onTaskCompleted).toHaveBeenCalledWith(
+        task,
+        expect.objectContaining({ success: true }),
+      );
+      expect(sendTelegram).toHaveBeenCalledWith(
+        expect.stringContaining("completed with no code changes"),
+      );
+    });
+
+    it("keeps no-commit cooldown for preflight tasks that explicitly require a fix", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const ex = new TaskExecutor();
+      const task = {
+        id: "preflight-2",
+        title: "[s] preflight: fix interactive git editor defaults",
+        description: "Preflight remediation task",
+      };
+      vi.spyOn(ex, "_hasUnpushedCommits").mockReturnValue(false);
+
+      await ex._handleTaskResult(
+        task,
+        {
+          success: true,
+          attempts: 1,
+          output: "Investigated issue but no changes applied.",
+        },
+        "/fake/worktree",
+        { agentMadeNewCommits: false },
+      );
+
+      expect(updateTaskStatus).toHaveBeenCalledWith("preflight-2", "todo");
+      expect(updateTaskStatus).not.toHaveBeenCalledWith("preflight-2", "done");
+      expect(ex._noCommitCounts.get("preflight-2")).toBe(1);
+      expect(ex._skipUntil.has("preflight-2")).toBe(true);
+      expect(
+        warnSpy.mock.calls.some((args) =>
+          String(args?.[0] || "").includes("completed but no commits found"),
+        ),
+      ).toBe(true);
+    });
   });
 
   // ────────────────────────────────────────────────────────────────────────
@@ -1633,11 +1708,30 @@ describe("task-executor", () => {
     it("handles no projects found gracefully", async () => {
       const ex = new TaskExecutor();
       ex._running = true;
+      getKanbanBackendName.mockReturnValue("vk");
       listProjects.mockResolvedValueOnce([]);
 
       await ex._pollLoop();
 
       expect(listTasks).not.toHaveBeenCalled();
+    });
+
+    it("polls tasks without project id for github backend when projects are unavailable", async () => {
+      const ex = new TaskExecutor();
+      ex._running = true;
+      getKanbanBackendName.mockReturnValue("github");
+      listProjects.mockResolvedValueOnce([]);
+      listTasks.mockResolvedValueOnce([]);
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      await ex._pollLoop();
+
+      expect(listTasks).toHaveBeenCalledWith(undefined, { status: "todo" });
+      expect(
+        warnSpy.mock.calls.some((args) =>
+          String(args?.[0] || "").includes("no projects found"),
+        ),
+      ).toBe(false);
     });
   });
 
@@ -1909,3 +2003,6 @@ describe("task-executor", () => {
     });
   });
 });
+
+
+

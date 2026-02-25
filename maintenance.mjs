@@ -520,7 +520,15 @@ function logDuplicateStartWarning(lockDir, existingPid, message) {
         "s)"
       : "";
   // Duplicate lock contention is benign (exit 0 path), so keep it out of error channels.
-  console.log(message + suffix);
+  try {
+    console.log(message + suffix);
+  } catch {
+    try {
+      process.stdout.write(String(message + suffix) + "\n");
+    } catch {
+      /* best effort */
+    }
+  }
   try {
     writeFileSync(
       statePath,
@@ -1057,4 +1065,5 @@ export async function runMaintenanceSweep(opts = {}) {
     branchesDeleted,
   };
 }
+
 

@@ -429,6 +429,64 @@ function isDisabled(name) {
   return envFlagEnabled(process.env[adapter.envDisableKey]);
 }
 
+const DEFAULT_SDK_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
+const sdkFailureCooldownUntil = new Map();
+
+function getSdkFailureCooldownMs() {
+  const parsed = Number(process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_SDK_FAILURE_COOLDOWN_MS;
+  }
+  return Math.trunc(parsed);
+}
+
+function getSdkCooldownRemainingMs(name, nowMs = Date.now()) {
+  const untilMs = Number(sdkFailureCooldownUntil.get(name) || 0);
+  if (!untilMs || untilMs <= nowMs) {
+    sdkFailureCooldownUntil.delete(name);
+    return 0;
+  }
+  return untilMs - nowMs;
+}
+
+function shouldApplySdkCooldown(error) {
+  if (!error) return false;
+  const message = String(error).toLowerCase();
+  if (!message) return false;
+  if (message.includes("timeout")) return true;
+  if (message.includes("rate limit") || message.includes("429")) return true;
+  if (message.includes("service unavailable") || message.includes("503")) {
+    return true;
+  }
+  if (message.includes("bad gateway") || message.includes("502")) return true;
+  if (message.includes("gateway timeout") || message.includes("504")) {
+    return true;
+  }
+  if (message.includes("overloaded") || message.includes("server error")) {
+    return true;
+  }
+  if (message.includes("econnrefused")) return true;
+  if (message.includes("enotfound")) return true;
+  if (message.includes("connection reset")) return true;
+  if (message.includes("etimedout")) return true;
+  return false;
+}
+
+function applySdkFailureCooldown(name, error, nowMs = Date.now()) {
+  if (!name || !SDK_ADAPTERS[name]) return;
+  if (!shouldApplySdkCooldown(error)) return;
+  const cooldownMs = getSdkFailureCooldownMs();
+  if (cooldownMs <= 0) return;
+  const untilMs = nowMs + cooldownMs;
+  const previous = Number(sdkFailureCooldownUntil.get(name) || 0);
+  if (untilMs <= previous) return;
+  sdkFailureCooldownUntil.set(name, untilMs);
+  const roundedSec = Math.max(1, Math.ceil(cooldownMs / 1000));
+  console.warn(
+    `${TAG} SDK "${name}" entering failure cooldown for ${roundedSec}s after fallback-worthy error: ${error}`,
+  );
+}
+
 const MONITOR_MONITOR_TASK_KEY = "monitor-monitor";
 let monitorMonitorTimeoutBoundsWarningKey = "";
 let monitorMonitorTimeoutAdjustmentKey = "";
@@ -1647,57 +1705,81 @@ export async function launchEphemeralThread(
       ? requestedSdk
       : resolvePoolSdkName();
 
-  const primaryAdapter = SDK_ADAPTERS[primaryName];
+  const attemptOrder = [
+    primaryName,
+    ...SDK_FALLBACK_ORDER.filter((name) => name !== primaryName),
+  ];
+
   let lastAttemptResult = null;
+  const triedSdkNames = [];
+  const missingPrereqSdks = [];
+  const cooledDownSdks = [];
+  const ignoreSdkCooldown = extra?.ignoreSdkCooldown === true;
 
-  // ── Try primary SDK ──────────────────────────────────────────────────────
-  if (primaryAdapter && !isDisabled(primaryName)) {
-    const prereq = hasSdkPrerequisites(primaryName);
-    if (!prereq.ok) {
-      console.warn(
-        `${TAG} primary SDK "${primaryName}" missing prerequisites: ${prereq.reason}; trying fallback chain`,
-      );
-    } else {
-      const launcher = await primaryAdapter.load();
-      const result = await launcher(prompt, cwd, timeoutMs, extra);
-      lastAttemptResult = result;
-
-      // If it succeeded, or if the error isn't fallback-worthy, return as-is
-      if (result.success || !shouldFallbackForSdkError(result.error)) {
-        return result;
-      }
-
-      // Primary SDK not installed — fall through to fallback chain
-      console.warn(
-        `${TAG} primary SDK "${primaryName}" failed (${result.error}); trying fallback chain`,
-      );
-    }
-  }
-
-  // ── Fallback chain ───────────────────────────────────────────────────────
-  for (const name of SDK_FALLBACK_ORDER) {
-    if (name === primaryName) continue; // already tried
-    if (isDisabled(name)) continue;
-
+  for (const name of attemptOrder) {
     const adapter = SDK_ADAPTERS[name];
     if (!adapter) continue;
+    if (isDisabled(name)) continue;
+
+    const cooldownRemainingMs = ignoreSdkCooldown
+      ? 0
+      : getSdkCooldownRemainingMs(name);
+    if (cooldownRemainingMs > 0) {
+      cooledDownSdks.push({ name, cooldownRemainingMs });
+      const remainingSec = Math.max(1, Math.ceil(cooldownRemainingMs / 1000));
+      if (name === primaryName) {
+        console.warn(
+          `${TAG} primary SDK "${name}" cooling down (${remainingSec}s remaining); trying fallback chain`,
+        );
+      } else {
+        console.log(
+          `${TAG} skipping fallback SDK "${name}" due to cooldown (${remainingSec}s remaining)`,
+        );
+      }
+      continue;
+    }
 
     // Check prerequisites before wasting time trying an unconfigured SDK
     const prereq = hasSdkPrerequisites(name);
     if (!prereq.ok) {
-      console.log(
-        `${TAG} skipping fallback SDK "${name}": ${prereq.reason}`,
-      );
+      missingPrereqSdks.push({ name, reason: prereq.reason });
+      if (name === primaryName) {
+        console.warn(
+          `${TAG} primary SDK "${name}" missing prerequisites: ${prereq.reason}; trying fallback chain`,
+        );
+      } else {
+        console.log(`${TAG} skipping fallback SDK "${name}": ${prereq.reason}`);
+      }
       continue;
     }
 
-    console.log(`${TAG} trying fallback SDK: ${name}`);
+    if (name !== primaryName) {
+      console.log(`${TAG} trying fallback SDK: ${name}`);
+    }
+
+    triedSdkNames.push(name);
     const launcher = await adapter.load();
     const result = await launcher(prompt, cwd, timeoutMs, extra);
     lastAttemptResult = result;
 
-    if (result.success || !shouldFallbackForSdkError(result.error)) {
+    if (result.success) {
       return result;
+    }
+
+    if (!shouldFallbackForSdkError(result.error)) {
+      return result;
+    }
+
+    applySdkFailureCooldown(name, result.error);
+
+    if (name === primaryName) {
+      console.warn(
+        `${TAG} primary SDK "${primaryName}" failed (${result.error}); trying fallback chain`,
+      );
+    } else {
+      console.warn(
+        `${TAG} fallback SDK "${name}" failed (${result.error}); trying next fallback`,
+      );
     }
   }
 
@@ -1705,19 +1787,32 @@ export async function launchEphemeralThread(
   if (lastAttemptResult) {
     return lastAttemptResult;
   }
-  const triedSdks = SDK_FALLBACK_ORDER.filter((n) => !isDisabled(n));
-  const configuredSdks = triedSdks.filter((n) => hasSdkPrerequisites(n).ok);
-  const skippedSdks = triedSdks.filter((n) => !hasSdkPrerequisites(n).ok);
+
+  const eligibleSdks = Array.from(
+    new Set(attemptOrder.filter((name) => SDK_ADAPTERS[name] && !isDisabled(name))),
+  );
+
   let errorMsg = `${TAG} no SDK available.`;
-  if (configuredSdks.length > 0) {
-    errorMsg += ` Tried: ${configuredSdks.join(", ")}.`;
+  if (triedSdkNames.length > 0) {
+    errorMsg += ` Tried: ${triedSdkNames.join(", ")}.`;
   }
-  if (skippedSdks.length > 0) {
-    errorMsg += ` Skipped (missing credentials): ${skippedSdks.map((n) => `${n} (${hasSdkPrerequisites(n).reason})`).join(", ")}.`;
+  if (missingPrereqSdks.length > 0) {
+    errorMsg += ` Skipped (missing credentials): ${missingPrereqSdks
+      .map((entry) => `${entry.name} (${entry.reason})`)
+      .join(", ")}.`;
   }
-  if (triedSdks.length === 0) {
+  if (cooledDownSdks.length > 0) {
+    errorMsg += ` Cooling down: ${cooledDownSdks
+      .map(
+        (entry) =>
+          `${entry.name} (${Math.max(1, Math.ceil(entry.cooldownRemainingMs / 1000))}s remaining)`,
+      )
+      .join(", ")}.`;
+  }
+  if (eligibleSdks.length === 0) {
     errorMsg += " All SDKs are disabled.";
   }
+
   return {
     success: false,
     output: "",
@@ -2664,6 +2759,7 @@ export async function execWithRetry(prompt, options = {}) {
       model,
       onEvent,
       abortController,
+      ignoreSdkCooldown: attempt > 1,
     });
 
     // Check post-launch if aborted with idle_continue (race: abort fired during execution)
@@ -2854,3 +2950,4 @@ export function getActiveThreads() {
   }
   return result;
 }
+

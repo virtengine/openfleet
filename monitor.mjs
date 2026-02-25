@@ -4548,6 +4548,10 @@ async function safeRecoverTask(taskId, taskTitle, reason) {
         console.log(
           `[monitor] ♻️ Recovered "${taskTitle}" from ${localStatus || "inprogress"} → todo (${reason}) [${activeBackend} backend - VK status re-fetch skipped]`,
         );
+      } else {
+        console.warn(
+          `[monitor] safeRecover: failed to move "${taskTitle}" to todo (${reason}) [${activeBackend} backend]`,
+        );
       }
       return success;
     }
@@ -11920,6 +11924,9 @@ function formatOrchestratorTailForMonitorPrompt({
 }) {
   try {
     const resolvedMode = String(mode || "unknown").trim().toLowerCase();
+    const backendLabel = String(activeKanbanBackend || "unknown")
+      .trim()
+      .toLowerCase();
     if (
       mode === "internal" ||
       mode === "disabled" ||
@@ -11930,7 +11937,7 @@ function formatOrchestratorTailForMonitorPrompt({
     ) {
       return (
         `(not applicable: executor mode "${resolvedMode}" runs without external orchestrator logs)` +
-        ` [backend=${activeKanbanBackend}]`
+        ` [backend=${backendLabel}]`
       );
     }
 
@@ -14918,4 +14925,3 @@ export {
   getContainerStatus,
   isContainerEnabled,
 };
-

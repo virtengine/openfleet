@@ -616,6 +616,20 @@ describe("safeRecoverTask + recoverySkipCache", () => {
     recoverySkipCache.clear();
   });
 
+  it("skips VK re-fetch warnings on non-VK backends", async () => {
+    setKanbanBackend("github");
+    mockFetch.mockClear();
+    mockConsoleWarn.mockClear();
+
+    await safeRecoverTask("task-nonvk", "Non VK Task", "stale");
+
+    const warnings = mockConsoleWarn.mock.calls.map((args) =>
+      String(args?.[0] || ""),
+    );
+    expect(
+      warnings.some((line) => line.includes("could not re-fetch status")),
+    ).toBe(false);
+  });
   it("caches task as skipped when live status is already todo", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,

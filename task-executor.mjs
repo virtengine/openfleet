@@ -125,6 +125,18 @@ const CODEX_TASK_LABELS = (() => {
     .filter(Boolean);
   return new Set(labels.length > 0 ? labels : ["bosun"]);
 })();
+const EXPECTED_NO_COMMIT_LABELS = new Set([
+  "no-code-change-expected",
+  "analysis-only",
+  "diagnostic",
+  "preflight",
+]);
+const EXPECTED_NO_COMMIT_TAGS = new Set([
+  "no-code-change-expected",
+  "analysis-only",
+  "diagnostic",
+  "preflight",
+]);
 
 function parseNumberEnv(name, fallback) {
   const value = Number(process.env[name]);
@@ -1445,6 +1457,37 @@ function isPlannerTaskData(task) {
   );
 }
 
+function isExpectedNoCommitTask(task) {
+  if (!task) return false;
+
+  const labelSet = getTaskLabelSet(task);
+  for (const label of labelSet) {
+    if (EXPECTED_NO_COMMIT_LABELS.has(label)) return true;
+  }
+
+  const tagSet = getTaskTagSet(task);
+  for (const tag of tagSet) {
+    if (EXPECTED_NO_COMMIT_TAGS.has(tag)) return true;
+  }
+
+  const title = String(task.title || "").toLowerCase();
+  const desc = String(task.description || task.body || "").toLowerCase();
+  const combined = `${title}\n${desc}`;
+  const isPreflightTask = combined.includes("preflight");
+  if (!isPreflightTask) return false;
+
+  const hasDiagnosticIntent =
+    /\b(detect|check|verify|validate|inspect|audit|diagnos|investigat|triage)\b/.test(
+      combined,
+    ) || combined.includes("guide remediation");
+  if (!hasDiagnosticIntent) return false;
+
+  const hasCodeChangeIntent =
+    /\b(fix|implement|refactor|patch|write test|add test|code change)\b/.test(
+      combined,
+    );
+  return !hasCodeChangeIntent;
+}
 function getTaskLabelSet(task) {
   const labels = Array.isArray(task?.meta?.labels)
     ? task.meta.labels
@@ -2901,11 +2944,25 @@ class TaskExecutor {
     }
   }
 
+  _requiresKanbanProjectId() {
+    try {
+      const backend = String(getKanbanBackendName() || "")
+        .trim()
+        .toLowerCase();
+      return backend === "vk" || backend === "jira";
+    } catch {
+      return true;
+    }
+  }
+
   async _ensureResolvedProjectId() {
     if (this._resolvedProjectId) return this._resolvedProjectId;
     if (this.projectId) {
       this._resolvedProjectId = this.projectId;
       return this._resolvedProjectId;
+    }
+    if (!this._requiresKanbanProjectId()) {
+      return null;
     }
     if (this._shouldBackoffProjectResolution()) {
       return null;
@@ -2964,11 +3021,14 @@ class TaskExecutor {
     });
 
     const projectId = await this._ensureResolvedProjectId();
-    if (!projectId) return;
+    const requiresProjectId = this._requiresKanbanProjectId();
+    if (requiresProjectId && !projectId) return;
 
     let inProgressTasks = [];
     try {
-      const fetched = await listTasks(projectId, { status: "inprogress" });
+      const fetched = await listTasks(projectId || undefined, {
+        status: "inprogress",
+      });
       if (Array.isArray(fetched)) {
         inProgressTasks = fetched.filter(
           (task) => task?.status === "inprogress",
@@ -3497,12 +3557,14 @@ class TaskExecutor {
       task?.projectId ||
       task?.project_id ||
       this.projectId ||
+      this._resolvedProjectId ||
       (await this._ensureResolvedProjectId());
-    if (!projectId) {
+    const requiresProjectId = this._requiresKanbanProjectId();
+    if (requiresProjectId && !projectId) {
       return { completed: false, reason: "project_not_found", createdCount: 0 };
     }
 
-    const tasks = await listTasks(projectId);
+    const tasks = await listTasks(projectId || undefined);
     const allTasks = Array.isArray(tasks) ? tasks : [];
     const sinceMs = parseTaskTimestamp(task) || Date.now();
     const candidates = allTasks.filter((candidate) => {
@@ -3555,7 +3617,8 @@ class TaskExecutor {
     this._pollInProgress = true;
     try {
       const projectId = await this._ensureResolvedProjectId();
-      if (!projectId) {
+      const requiresProjectId = this._requiresKanbanProjectId();
+      if (requiresProjectId && !projectId) {
         this._warnNoProjects();
         return;
       }
@@ -3568,7 +3631,7 @@ class TaskExecutor {
       let tasks;
       try {
         tasks = await withRetry(
-          () => listTasks(projectId, { status: "todo" }),
+          () => listTasks(projectId || undefined, { status: "todo" }),
           {
             maxAttempts: 3,
             baseMs: 2000,
@@ -5078,6 +5141,35 @@ class TaskExecutor {
         }
       }
 
+      if (!hasCommits && isExpectedNoCommitTask(task)) {
+        this._noCommitCounts.delete(task.id);
+        this._skipUntil.delete(task.id);
+        this._saveNoCommitState();
+        try {
+          recordAgentAttempt(task.id, {
+            output: result.output,
+            hasCommits: false,
+          });
+          setInternalStatus(task.id, "done", "task-executor");
+          updateInternalTask(task.id, { externalStatus: "done" });
+          this._errorDetector.resetTask(task.id);
+        } catch {
+          /* best-effort */
+        }
+        try {
+          await updateTaskStatus(task.id, "done");
+        } catch {
+          /* best-effort */
+        }
+        console.log(
+          `${tag} completed with no code changes (expected for preflight/diagnostic task)`,
+        );
+        this.sendTelegram?.(
+          `✅ Task completed with no code changes: "${task.title}"`,
+        );
+        this.onTaskCompleted?.(task, result);
+        return;
+      }
       if (hasCommits && this.autoCreatePr) {
         // Real work done — reset the no-commit counter
         this._noCommitCounts.delete(task.id);
@@ -6526,5 +6618,6 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
+
 
 
