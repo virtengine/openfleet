@@ -136,6 +136,10 @@ describe("duplicate monitor lock handling", () => {
     expect(monitorSource).toContain("holds the lock");
     expect(monitorSource).toContain("(PID ${ownerPid})");
   });
+  it("keeps benign duplicate-start logs out of error channels", () => {
+    expect(maintenanceSource).toContain("console.log(message + suffix)");
+    expect(monitorSource).toContain("process.stdout.write(");
+  });
 
   it("treats permission-denied PID probes as alive in cli preflight", () => {
     expect(cliSource).toContain("err.code === \"EPERM\"");
