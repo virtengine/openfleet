@@ -16,6 +16,7 @@ const html = htm.bind(h);
 import { haptic, showConfirm } from "../modules/telegram.js";
 import { apiFetch, sendCommandToChat } from "../modules/api.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
+import { getAgentDisplay } from "../modules/agent-display.js";
 import { signal } from "@preact/signals";
 import {
   tasksData,
@@ -786,7 +787,7 @@ export function TaskProgressModal({ task, onClose }) {
     : "var(--color-error)";
 
   const startedRelative = liveTask?.created ? formatRelative(liveTask.created) : "—";
-  const agentLabel = liveTask?.assignee || task.assignee || "Agent";
+  const agentDisplay = getAgentDisplay(liveTask || task);
   const branchLabel = liveTask?.branch || task.branch || "—";
 
   const handleCancel = async () => {
@@ -842,10 +843,13 @@ export function TaskProgressModal({ task, onClose }) {
 
       
       <div class="tp-meta-strip">
-        <div class="tp-meta-item">
-          <span class="tp-meta-label">Agent</span>
-          <span class="tp-meta-value">${agentLabel}</span>
-        </div>
+          <div class="tp-meta-item">
+            <span class="tp-meta-label">Agent</span>
+            <span class="tp-meta-value">
+              <span class="agent-inline-icon">${agentDisplay.icon}</span>
+              ${agentDisplay.label}
+            </span>
+          </div>
         <div class="tp-meta-item">
           <span class="tp-meta-label">Branch</span>
           <span class="tp-meta-value mono">${branchLabel}</span>
@@ -964,7 +968,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
 
   const prNumber = liveTask?.pr || task.pr;
   const branchLabel = liveTask?.branch || task.branch || "—";
-  const agentLabel = liveTask?.assignee || task.assignee || "Agent";
+  const agentDisplay = getAgentDisplay(liveTask || task);
   const updatedRelative = liveTask?.updated ? formatRelative(liveTask.updated) : "—";
   const reviewAttachments = normalizeTaskAttachments(liveTask || task);
 
@@ -1060,10 +1064,13 @@ export function TaskReviewModal({ task, onClose, onStart }) {
 
       
       <div class="tr-meta-grid">
-        <div class="tr-meta-item">
-          <span class="tr-meta-label">Agent</span>
-          <span class="tr-meta-value">${agentLabel}</span>
-        </div>
+          <div class="tr-meta-item">
+            <span class="tr-meta-label">Agent</span>
+            <span class="tr-meta-value">
+              <span class="agent-inline-icon">${agentDisplay.icon}</span>
+              ${agentDisplay.label}
+            </span>
+          </div>
         <div class="tr-meta-item">
           <span class="tr-meta-label">Branch</span>
           <span class="tr-meta-value mono">${branchLabel}</span>

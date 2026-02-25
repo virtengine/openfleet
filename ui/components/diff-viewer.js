@@ -99,8 +99,9 @@ export function DiffViewer({ sessionId }) {
     let active = true;
     setLoading(true);
     setError(null);
+    const safeSessionId = encodeURIComponent(sessionId);
 
-    apiFetch(`/api/sessions/${sessionId}/diff`, { _silent: true })
+    apiFetch(`/api/sessions/${safeSessionId}/diff`, { _silent: true })
       .then((res) => {
         if (!active) return;
         setDiffData(res?.diff || null);
@@ -118,7 +119,8 @@ export function DiffViewer({ sessionId }) {
   const handleRetry = useCallback(() => {
     setError(null);
     setLoading(true);
-    apiFetch(`/api/sessions/${sessionId}/diff`, { _silent: true })
+    const safeSessionId = encodeURIComponent(sessionId);
+    apiFetch(`/api/sessions/${safeSessionId}/diff`, { _silent: true })
       .then((res) => setDiffData(res?.diff || null))
       .catch(() => setError("unavailable"))
       .finally(() => setLoading(false));

@@ -545,12 +545,12 @@ export function ChatTab() {
         markUserMessageSent(activeAgent.value);
 
         // Use sendOrQueue for offline resilience
-        const sendFn = async (sid, msg) => {
-          await apiFetch(`/api/sessions/${sid}/message`, {
-            method: "POST",
-            body: JSON.stringify({ content: msg, mode: agentMode.value, yolo: yoloMode.peek() }),
-          });
-        };
+          const sendFn = async (sid, msg) => {
+            await apiFetch(`/api/sessions/${encodeURIComponent(sid)}/message`, {
+              method: "POST",
+              body: JSON.stringify({ content: msg, mode: agentMode.value, yolo: yoloMode.peek() }),
+            });
+          };
 
         try {
           await sendOrQueue(sessionId, content, sendFn);
@@ -576,7 +576,7 @@ export function ChatTab() {
           markUserMessageSent(activeAgent.value);
 
           try {
-            await apiFetch(`/api/sessions/${newId}/message`, {
+            await apiFetch(`/api/sessions/${encodeURIComponent(newId)}/message`, {
               method: "POST",
               body: JSON.stringify({ content, mode: agentMode.value, yolo: yoloMode.peek() }),
             });
@@ -638,10 +638,10 @@ export function ChatTab() {
   /* ── Session rename ── */
   async function saveRename(sid, newTitle) {
     try {
-      await apiFetch(`/api/sessions/${sid}/rename`, {
-        method: "POST",
-        body: JSON.stringify({ title: newTitle }),
-      });
+        await apiFetch(`/api/sessions/${encodeURIComponent(sid)}/rename`, {
+          method: "POST",
+          body: JSON.stringify({ title: newTitle }),
+        });
       loadSessions();
       showToast("Session renamed", "success");
     } catch {

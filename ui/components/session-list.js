@@ -23,6 +23,12 @@ let _wsListenerReady = false;
 /** Track the last filter used so createSession can reload with the same filter */
 let _lastLoadFilter = {};
 
+function sessionPath(id, action = "") {
+  const safeId = encodeURIComponent(String(id || "").trim());
+  if (!safeId) return "";
+  return action ? `/api/sessions/${safeId}/${action}` : `/api/sessions/${safeId}`;
+}
+
 /* ─── Data loaders ─── */
 export async function loadSessions(filter = {}) {
   _lastLoadFilter = filter;
@@ -38,7 +44,9 @@ export async function loadSessions(filter = {}) {
 
 export async function loadSessionMessages(id) {
   try {
-    const res = await apiFetch(`/api/sessions/${id}`, { _silent: true });
+    const url = sessionPath(id);
+    if (!url) return { ok: false, error: "invalid" };
+    const res = await apiFetch(url, { _silent: true });
     if (res?.session) {
       sessionMessages.value = res.session.messages || [];
       return { ok: true, messages: sessionMessages.value };
@@ -195,7 +203,9 @@ export async function createSession(options = {}) {
 /* ─── Session actions ─── */
 export async function archiveSession(id) {
   try {
-    await apiFetch(`/api/sessions/${id}/archive`, { method: "POST" });
+    const url = sessionPath(id, "archive");
+    if (!url) return false;
+    await apiFetch(url, { method: "POST" });
     if (selectedSessionId.value === id) selectedSessionId.value = null;
     await loadSessions(_lastLoadFilter);
     return true;
@@ -206,7 +216,9 @@ export async function archiveSession(id) {
 
 export async function deleteSession(id) {
   try {
-    await apiFetch(`/api/sessions/${id}/delete`, { method: "POST" });
+    const url = sessionPath(id, "delete");
+    if (!url) return false;
+    await apiFetch(url, { method: "POST" });
     if (selectedSessionId.value === id) selectedSessionId.value = null;
     await loadSessions(_lastLoadFilter);
     return true;
@@ -217,7 +229,9 @@ export async function deleteSession(id) {
 
 export async function resumeSession(id) {
   try {
-    await apiFetch(`/api/sessions/${id}/resume`, { method: "POST" });
+    const url = sessionPath(id, "resume");
+    if (!url) return false;
+    await apiFetch(url, { method: "POST" });
     await loadSessions(_lastLoadFilter);
     return true;
   } catch {

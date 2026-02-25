@@ -397,6 +397,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     session?.status === "active" || session?.status === "running";
   const resumeLabel =
     session?.status === "archived" ? "Unarchive" : "Resume Session";
+  const safeSessionId = sessionId ? encodeURIComponent(sessionId) : "";
 
   /* Memoize the filter key list so filteredMessages memoization works properly.
      Previously a new array was created every render, breaking useMemo deps. */
@@ -630,7 +631,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       for (const file of list) {
         form.append("file", file, file.name || "attachment");
       }
-      const res = await apiFetch(`/api/sessions/${sessionId}/attachments`, {
+      const res = await apiFetch(`/api/sessions/${safeSessionId}/attachments`, {
         method: "POST",
         body: form,
       });
@@ -684,7 +685,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     setSending(true);
 
     try {
-      await apiFetch(`/api/sessions/${sessionId}/message`, {
+      await apiFetch(`/api/sessions/${safeSessionId}/message`, {
         method: "POST",
         body: JSON.stringify({
           content: text,
@@ -702,7 +703,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
   const handleResume = useCallback(async () => {
     try {
-      await apiFetch(`/api/sessions/${sessionId}/resume`, { method: "POST" });
+      await apiFetch(`/api/sessions/${safeSessionId}/resume`, { method: "POST" });
       showToast(
         session?.status === "archived" ? "Session unarchived" : "Session resumed",
         "success",
@@ -717,7 +718,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
   const handleArchive = useCallback(async () => {
     try {
-      await apiFetch(`/api/sessions/${sessionId}/archive`, { method: "POST" });
+      await apiFetch(`/api/sessions/${safeSessionId}/archive`, { method: "POST" });
       showToast("Session archived", "success");
       await loadSessions();
       const res = await loadSessionMessages(sessionId);

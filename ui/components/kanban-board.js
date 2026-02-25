@@ -10,6 +10,7 @@ import { apiFetch } from "../modules/api.js";
 import { haptic } from "../modules/telegram.js";
 import { formatRelative, truncate, cloneValue } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
+import { getAgentDisplay } from "../modules/agent-display.js";
 
 const html = htm.bind(h);
 
@@ -340,6 +341,16 @@ function KanbanCard({ task, onOpen }) {
   const baseBranch = getTaskBaseBranch(task);
   const repoName = task.repo || task.repository || "";
   const issueNum = task.issueNumber || task.issue_number || (typeof task.id === "string" && /^\d+$/.test(task.id) ? task.id : null);
+  const hasAgent = Boolean(
+    task?.assignee ||
+    task?.meta?.execution?.sdk ||
+    task?.meta?.execution?.executor ||
+    task?.sdk ||
+    task?.executor ||
+    task?.agent ||
+    task?.agentName,
+  );
+  const agentDisplay = hasAgent ? getAgentDisplay(task) : null;
 
   return html`
     <div
@@ -380,7 +391,12 @@ function KanbanCard({ task, onOpen }) {
         </div>
       `}
       <div class="kanban-card-meta">
-        ${task.assignee && html`<span class="kanban-card-assignee" title=${task.assignee}>${task.assignee.split("-")[0]}</span>`}
+        ${agentDisplay && html`
+          <span
+            class="kanban-card-assignee"
+            title=${agentDisplay.label}
+          >${agentDisplay.icon}</span>
+        `}
         <span class="kanban-card-id">${typeof task.id === "string" ? truncate(task.id, 12) : task.id}</span>
         ${task.created_at && html`<span>${formatRelative(task.created_at)}</span>`}
       </div>

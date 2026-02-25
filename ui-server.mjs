@@ -125,7 +125,9 @@ import {
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
-const uiRoot = resolve(__dirname, "ui");
+const uiRootPreferred = resolve(__dirname, "site", "ui");
+const uiRootFallback = resolve(__dirname, "ui");
+const uiRoot = existsSync(uiRootPreferred) ? uiRootPreferred : uiRootFallback;
 let libraryInitAttempted = false;
 
 function ensureLibraryInitialized() {
@@ -154,7 +156,7 @@ function ensureLibraryInitialized() {
 //   2. node_modules      — createRequire resolution (handles npm hoisting)
 //   3. CDN redirect      — last resort for airgap / first-run edge cases
 const _require = createRequire(import.meta.url);
-const BUNDLED_VENDOR_DIR = resolve(__dirname, "ui", "vendor");
+const BUNDLED_VENDOR_DIR = resolve(uiRoot, "vendor");
 
 function resolveVendorPath(specifier) {
   // Direct resolution first (works when package exports allow the sub-path)
@@ -248,7 +250,10 @@ async function handleVendor(req, res, url) {
 }
 const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
 const logsDir = resolve(__dirname, "logs");
-const agentLogsDir = resolve(repoRoot, ".cache", "agent-logs");
+const agentLogsDirCandidates = [
+  resolve(__dirname, "logs", "agents"),
+  resolve(repoRoot, ".cache", "agent-logs"),
+];
 const CONFIG_SCHEMA_PATH = resolve(__dirname, "bosun.schema.json");
 const PLANNER_STATE_PATH = resolve(
   repoRoot,
@@ -2235,6 +2240,21 @@ function broadcastSessionMessage(payload) {
 
 /* ─── Log Streaming Helpers ─── */
 
+async function resolveAgentLogsDir() {
+  for (const dir of agentLogsDirCandidates) {
+    const files = await readdir(dir).catch(() => null);
+    if (files?.some((f) => f.endsWith(".log"))) return dir;
+  }
+  for (const dir of agentLogsDirCandidates) {
+    if (existsSync(dir)) return dir;
+  }
+  return agentLogsDirCandidates[0];
+}
+
+function normalizeAgentLogName(name) {
+  return basename(String(name || "")).trim();
+}
+
 /**
  * Resolve the log file path for a given logType and optional query.
  * Returns null if no matching file found.
@@ -2246,6 +2266,7 @@ async function resolveLogPath(logType, query) {
     return logFile ? resolve(logsDir, logFile) : null;
   }
   if (logType === "agent") {
+    const agentLogsDir = await resolveAgentLogsDir();
     const files = await readdir(agentLogsDir).catch(() => []);
     let candidates = files.filter((f) => f.endsWith(".log")).sort().reverse();
     if (query) {
@@ -3325,6 +3346,7 @@ function summarizeTelemetry(metrics, days) {
 
 async function listAgentLogFiles(query = "", limit = 60) {
   const entries = [];
+  const agentLogsDir = await resolveAgentLogsDir();
   const files = await readdir(agentLogsDir).catch(() => []);
   for (const name of files) {
     if (!name.endsWith(".log")) continue;
@@ -3333,6 +3355,7 @@ async function listAgentLogFiles(query = "", limit = 60) {
       const info = await stat(resolve(agentLogsDir, name));
       entries.push({
         name,
+        source: agentLogsDir,
         size: info.size,
         mtime:
           info.mtime?.toISOString?.() || new Date(info.mtime).toISOString(),
@@ -4617,7 +4640,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/agent-logs") {
     try {
-      const file = url.searchParams.get("file");
+      const file = normalizeAgentLogName(url.searchParams.get("file"));
       const query = url.searchParams.get("query") || "";
       const lines = Math.min(
         1000,
@@ -4628,6 +4651,7 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 200, { ok: true, data: files });
         return;
       }
+      const agentLogsDir = await resolveAgentLogsDir();
       const filePath = resolve(agentLogsDir, file);
       if (!filePath.startsWith(agentLogsDir)) {
         jsonResponse(res, 403, { ok: false, error: "Forbidden" });
@@ -4851,7 +4875,8 @@ async function handleApi(req, res, url) {
         return;
       }
       const latest = files[0];
-      const filePath = resolve(agentLogsDir, latest.name || latest);
+      const agentLogsDir = await resolveAgentLogsDir();
+      const filePath = resolve(agentLogsDir, normalizeAgentLogName(latest.name || latest));
       if (!filePath.startsWith(agentLogsDir) || !existsSync(filePath)) {
         jsonResponse(res, 200, { ok: true, data: null });
         return;
@@ -5417,8 +5442,9 @@ async function handleApi(req, res, url) {
       const all = engine.list();
       jsonResponse(res, 200, { ok: true, workflows: all.map(w => ({
         id: w.id, name: w.name, description: w.description, category: w.category,
-        enabled: w.enabled !== false, nodeCount: (w.nodes || []).length,
-        trigger: (w.nodes || [])[0]?.type || "manual",
+        enabled: w.enabled !== false,
+        nodeCount: Number.isFinite(w.nodeCount) ? w.nodeCount : (w.nodes || []).length,
+        trigger: w.trigger || (w.nodes || [])[0]?.type || "manual",
       })) });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -5530,8 +5556,7 @@ async function handleApi(req, res, url) {
       }
 
       // GET — return full workflow definition
-      const all = engine.list();
-      const wf = all.find(w => w.id === workflowId);
+      const wf = engine.get(workflowId);
       if (!wf) { jsonResponse(res, 404, { ok: false, error: "Workflow not found" }); return; }
       jsonResponse(res, 200, { ok: true, workflow: wf });
     } catch (err) {
@@ -6876,8 +6901,7 @@ export async function startTelegramUiServer(options = {}) {
     }
   }
 
-  // Start cloudflared tunnel for trusted TLS (Telegram Mini App requires valid cert)
-  if (uiServerTls) {
+    // Start cloudflared tunnel for trusted TLS (Telegram Mini App requires valid cert)
     const tUrl = await startTunnel(actualPort);
     if (tUrl) {
       console.log(`[telegram-ui] Telegram Mini App URL: ${tUrl}`);
@@ -6888,7 +6912,6 @@ export async function startTelegramUiServer(options = {}) {
         );
       }
     }
-  }
 
   return uiServer;
 }

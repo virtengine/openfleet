@@ -867,6 +867,7 @@ select.input {
   justify-content: center;
   align-items: center;
   padding: 8px 0;
+  position: relative;
 }
 
 .donut-legend {
@@ -5348,5 +5349,19 @@ select.input {
 .icon-inline svg {
   width: 16px;
   height: 16px;
+  stroke-width: 1.7;
+}
+
+.agent-inline-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 6px;
+  line-height: 0;
+}
+
+.agent-inline-icon svg {
+  width: 14px;
+  height: 14px;
   stroke-width: 1.7;
 }
