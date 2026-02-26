@@ -2395,6 +2395,17 @@ export async function launchOrResumeThread(
   restExtra.taskKey = taskKey;
   timeoutMs = clampMonitorMonitorTimeout(timeoutMs, taskKey);
 
+  // The monitor-monitor is the health-checker — it must always be able to
+  // attempt a run even when SDKs are in cooldown.  Without this, a cascading
+  // cooldown (e.g. copilot fails → codex times out → both cooling) causes
+  // consecutive monitor failures and a blind spot in observability.
+  if (
+    String(taskKey || "").trim() === MONITOR_MONITOR_TASK_KEY &&
+    restExtra.ignoreSdkCooldown === undefined
+  ) {
+    restExtra.ignoreSdkCooldown = true;
+  }
+
   // No taskKey — pure ephemeral (backward compatible)
   if (!taskKey) {
     const result = await launchEphemeralThread(
