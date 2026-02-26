@@ -22,10 +22,13 @@ function normalizeProjectMode(value) {
   return String(value || "issues").trim().toLowerCase();
 }
 
-function resolveProjectBoardId(projectNumber, projectId) {
+function resolveProjectBoardId(projectNumber, projectId, hasExplicitProjectId = false) {
+  const normalizedProjectId = String(projectId || "").trim();
+  if (hasExplicitProjectId) {
+    return normalizedProjectId || null;
+  }
   const normalizedProjectNumber = String(projectNumber || "").trim();
   if (normalizedProjectNumber) return normalizedProjectNumber;
-  const normalizedProjectId = String(projectId || "").trim();
   return normalizedProjectId || null;
 }
 
@@ -168,9 +171,13 @@ export class GitHubReconciler {
     this.projectMode = normalizeProjectMode(
       options.projectMode ?? process.env.GITHUB_PROJECT_MODE,
     );
+    const hasExplicitProjectId =
+      options.projectId !== undefined ||
+      Object.prototype.hasOwnProperty.call(process.env, "GITHUB_PROJECT_ID");
     this.projectBoardId = resolveProjectBoardId(
       options.projectNumber ?? process.env.GITHUB_PROJECT_NUMBER,
       options.projectId ?? process.env.GITHUB_PROJECT_ID,
+      hasExplicitProjectId,
     );
   }
 

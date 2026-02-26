@@ -431,6 +431,8 @@ function isDisabled(name) {
 
 const DEFAULT_SDK_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 const sdkFailureCooldownUntil = new Map();
+const DEFAULT_SDK_PREREQ_WARNING_THROTTLE_MS = 5 * 60 * 1000;
+const sdkPrereqWarningAt = new Map();
 
 function getSdkFailureCooldownMs() {
   const parsed = Number(process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS);
@@ -447,6 +449,44 @@ function getSdkCooldownRemainingMs(name, nowMs = Date.now()) {
     return 0;
   }
   return untilMs - nowMs;
+}
+
+function getSdkPrereqWarningThrottleMs() {
+  const parsed = Number(process.env.AGENT_POOL_PREREQ_WARNING_THROTTLE_MS);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_SDK_PREREQ_WARNING_THROTTLE_MS;
+  }
+  return Math.trunc(parsed);
+}
+
+function shouldLogSdkPrereqWarning(
+  name,
+  reason,
+  role = "primary",
+  nowMs = Date.now(),
+) {
+  const throttleMs = getSdkPrereqWarningThrottleMs();
+  const key = `${role}:${String(name || "").trim()}:${String(reason || "").trim()}`;
+  const previousAt = Number(sdkPrereqWarningAt.get(key) || 0);
+  if (throttleMs > 0 && previousAt > 0 && nowMs - previousAt < throttleMs) {
+    return false;
+  }
+  sdkPrereqWarningAt.set(key, nowMs);
+  return true;
+}
+
+function logSdkPrereqSkip(name, reason, { primary = false } = {}) {
+  const role = primary ? "primary" : "fallback";
+  if (!shouldLogSdkPrereqWarning(name, reason, role)) {
+    return;
+  }
+  if (primary) {
+    console.warn(
+      `${TAG} primary SDK "${name}" missing prerequisites: ${reason}; trying fallback chain`,
+    );
+    return;
+  }
+  console.log(`${TAG} skipping fallback SDK "${name}": ${reason}`);
 }
 
 function shouldApplySdkCooldown(error) {
@@ -656,6 +696,7 @@ export function setPoolSdk(name) {
 export function resetPoolSdkCache() {
   resolvedSdkName = null;
   resolutionLogged = false;
+  sdkPrereqWarningAt.clear();
 }
 
 /**
@@ -1743,13 +1784,7 @@ export async function launchEphemeralThread(
     const prereq = hasSdkPrerequisites(name);
     if (!prereq.ok) {
       missingPrereqSdks.push({ name, reason: prereq.reason });
-      if (name === primaryName) {
-        console.warn(
-          `${TAG} primary SDK "${name}" missing prerequisites: ${prereq.reason}; trying fallback chain`,
-        );
-      } else {
-        console.log(`${TAG} skipping fallback SDK "${name}": ${prereq.reason}`);
-      }
+      logSdkPrereqSkip(name, prereq.reason, { primary: name === primaryName });
       continue;
     }
 

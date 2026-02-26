@@ -93,7 +93,7 @@ function checkWorktreeClean(repoRoot) {
  * with `{ editor, source }` describing the offending configuration.
  */
 const INTERACTIVE_EDITOR_PATTERNS =
-  /\b(vim?|nvim|nano|emacs|pico|joe|mcedit|micro|helix|hx|subl|gedit|kate|notepad)\b|--wait\b/i;
+  /\b(code(?:-insiders)?|codium|cursor|vim?|nvim|nano|emacs|pico|joe|mcedit|micro|helix|hx|subl|gedit|kate|notepad)\b|--wait\b/i;
 
 function checkInteractiveEditor(repoRoot) {
   // GIT_EDITOR takes precedence over core.editor in git
@@ -378,6 +378,17 @@ export function formatPreflightReport(result, options = {}) {
   lines.push(
     `Status: ${result.ok ? "OK" : "FAILED"} (${result.errors.length} error(s), ${result.warnings.length} warning(s))`,
   );
+
+  const interactiveEditorWarning = result.warnings.find((warn) =>
+    /interactive git editor/i.test(
+      String(warn.title || "") + "\n" + String(warn.message || ""),
+    ),
+  );
+  if (interactiveEditorWarning) {
+    lines.push(
+      "Attention: interactive git editor detected. Run `node git-editor-fix.mjs` to switch to a non-blocking editor.",
+    );
+  }
 
   const toolchain = result.details?.toolchain;
   if (toolchain?.tools?.length) {
