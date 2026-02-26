@@ -11,6 +11,7 @@ export default defineConfig({
       "**/*.node.test.mjs",
       "**/maintenance-warning-throttle.test.mjs",
       "**/telegram-poll-conflict-cooldown.test.mjs",
+      "**/stuck-agent-prune.test.mjs",
     ],
     testTimeout: 5000,
     pool: "threads",
