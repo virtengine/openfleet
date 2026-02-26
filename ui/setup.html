@@ -507,15 +507,14 @@ function App() {
   const [repoSlug, setRepoSlug] = useState("");
   const [repoRoot, setRepoRoot] = useState("");
   const [executors, setExecutors] = useState([
-    { name: "primary", executor: "COPILOT", model: "claude-opus-4.6", weight: 70, role: "primary", authMode: "oauth", apiKey: "", baseUrl: "", connections: [], codexProfile: "" },
-    { name: "backup", executor: "CODEX", model: "gpt-5.3-codex", weight: 30, role: "backup", authMode: "oauth", apiKey: "", baseUrl: "", connections: [], codexProfile: "" },
+    { name: "primary", executor: "CODEX", model: "gpt-5.3-codex", weight: 100, role: "primary", authMode: "oauth", apiKey: "", baseUrl: "", connections: [], codexProfile: "" },
   ]);
   const [probedModels, setProbedModels] = useState({});
   const [repos, setRepos] = useState([""]);
   const [kanbanBackend, setKanbanBackend] = useState("internal");
   const [telegramToken, setTelegramToken] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
-  const [maxParallel, setMaxParallel] = useState(6);
+  const [maxParallel, setMaxParallel] = useState(4);
   const [maxRetries, setMaxRetries] = useState(3);
   const [failoverStrategy, setFailoverStrategy] = useState("next-in-line");
   const [completedSteps, setCompletedSteps] = useState(new Set());
@@ -533,7 +532,7 @@ function App() {
 
   // ── Advanced / orchestration settings ─────────────────────────────────────
   const [executorMode, setExecutorMode] = useState("internal");
-  const [executorDistribution, setExecutorDistribution] = useState("weighted");
+  const [executorDistribution, setExecutorDistribution] = useState("primary-only");
   const [failoverCooldownMinutes, setFailoverCooldownMinutes] = useState(5);
   const [failoverDisableOnConsecutive, setFailoverDisableOnConsecutive] = useState(3);
   const [primaryAgent, setPrimaryAgent] = useState("");
@@ -566,7 +565,7 @@ function App() {
   const [copilotNoExperimental, setCopilotNoExperimental] = useState(false);
   const [copilotNoAllowAll, setCopilotNoAllowAll] = useState(false);
   const [copilotEnableAskUser, setCopilotEnableAskUser] = useState(false);
-  const [copilotEnableAllMcpTools, setCopilotEnableAllMcpTools] = useState(true);
+  const [copilotEnableAllMcpTools, setCopilotEnableAllMcpTools] = useState(false);
   const [copilotMcpConfig, setCopilotMcpConfig] = useState(".vscode/mcp.json");
   // Infrastructure
   const [containerEnabled, setContainerEnabled] = useState(false);
@@ -603,6 +602,46 @@ function App() {
       if (d.maxRetries)      setMaxRetries(d.maxRetries);
       if (d.failoverStrategy) setFailoverStrategy(d.failoverStrategy);
       if (d.kanbanBackend)   setKanbanBackend(d.kanbanBackend);
+      if (d.kanbanSyncPolicy) setKanbanSyncPolicy(d.kanbanSyncPolicy);
+      if (d.executorMode) setExecutorMode(d.executorMode);
+      if (d.executorDistribution) setExecutorDistribution(d.executorDistribution);
+      if (d.failoverCooldownMinutes != null) {
+        setFailoverCooldownMinutes(Number(d.failoverCooldownMinutes) || 5);
+      }
+      if (d.failoverDisableOnConsecutive != null) {
+        setFailoverDisableOnConsecutive(Number(d.failoverDisableOnConsecutive) || 3);
+      }
+      if (d.internalReplenishEnabled != null) {
+        setInternalReplenishEnabled(Boolean(d.internalReplenishEnabled));
+      }
+      if (d.internalReplenishMin != null) {
+        setInternalReplenishMin(Number(d.internalReplenishMin) || 1);
+      }
+      if (d.internalReplenishMax != null) {
+        setInternalReplenishMax(Number(d.internalReplenishMax) || 2);
+      }
+      if (d.workflowAutomationEnabled != null) {
+        setWorkflowAutomationEnabled(Boolean(d.workflowAutomationEnabled));
+      }
+      if (d.copilotEnableAllMcpTools != null) {
+        setCopilotEnableAllMcpTools(Boolean(d.copilotEnableAllMcpTools));
+      }
+      if (Array.isArray(d.executors) && d.executors.length > 0) {
+        setExecutors(
+          d.executors.map((ex, idx) => ({
+            name: ex.name || (idx === 0 ? "primary" : `executor-${idx + 1}`),
+            executor: ex.executor || "CODEX",
+            model: ex.model || "",
+            weight: Number(ex.weight) || 50,
+            role: ex.role || (idx === 0 ? "primary" : "backup"),
+            authMode: ex.authMode || "oauth",
+            apiKey: ex.apiKey || "",
+            baseUrl: ex.baseUrl || "",
+            connections: Array.isArray(ex.connections) ? ex.connections : [],
+            codexProfile: String(ex.codexProfile || ""),
+          })),
+        );
+      }
       if (d.bosunHome)       setBosunHome(d.bosunHome);
       if (d.workspacesDir)   setWorkspacesDir(d.workspacesDir);
 
@@ -632,10 +671,22 @@ function App() {
       // Advanced / orchestration
       if (env.EXECUTOR_MODE) { setExecutorMode(env.EXECUTOR_MODE); envLoaded = true; }
       if (env.FAILOVER_STRATEGY) { setFailoverStrategy(env.FAILOVER_STRATEGY); envLoaded = true; }
-      if (env.MAX_PARALLEL) { setMaxParallel(Number(env.MAX_PARALLEL) || 6); envLoaded = true; }
-      if (env.MAX_RETRIES) { setMaxRetries(Number(env.MAX_RETRIES) || 3); envLoaded = true; }
-      if (env.FAILOVER_COOLDOWN_MINUTES) { setFailoverCooldownMinutes(Number(env.FAILOVER_COOLDOWN_MINUTES) || 5); envLoaded = true; }
-      if (env.FAILOVER_DISABLE_ON_CONSECUTIVE_FAILURES) { setFailoverDisableOnConsecutive(Number(env.FAILOVER_DISABLE_ON_CONSECUTIVE_FAILURES) || 3); envLoaded = true; }
+      if (env.MAX_PARALLEL) { setMaxParallel(Number(env.MAX_PARALLEL) || 4); envLoaded = true; }
+      const failoverMaxRetriesRaw = env.FAILOVER_MAX_RETRIES || env.MAX_RETRIES;
+      if (failoverMaxRetriesRaw) {
+        setMaxRetries(Number(failoverMaxRetriesRaw) || 3);
+        envLoaded = true;
+      }
+      const failoverCooldownRaw = env.FAILOVER_COOLDOWN_MIN || env.FAILOVER_COOLDOWN_MINUTES;
+      if (failoverCooldownRaw) {
+        setFailoverCooldownMinutes(Number(failoverCooldownRaw) || 5);
+        envLoaded = true;
+      }
+      const failoverDisableRaw = env.FAILOVER_DISABLE_AFTER || env.FAILOVER_DISABLE_ON_CONSECUTIVE_FAILURES;
+      if (failoverDisableRaw) {
+        setFailoverDisableOnConsecutive(Number(failoverDisableRaw) || 3);
+        envLoaded = true;
+      }
       if (env.PRIMARY_AGENT) { setPrimaryAgent(env.PRIMARY_AGENT); envLoaded = true; }
       if (env.PROJECT_REQUIREMENTS_PROFILE) { setProjectRequirementsProfile(env.PROJECT_REQUIREMENTS_PROFILE); envLoaded = true; }
       if (env.INTERNAL_EXECUTOR_REPLENISH_ENABLED) { setInternalReplenishEnabled(env.INTERNAL_EXECUTOR_REPLENISH_ENABLED === "true"); envLoaded = true; }
@@ -1490,7 +1541,7 @@ function App() {
         <div class="form-group">
           <label>Max Parallel</label>
           <input type="number" value=${maxParallel} min="1" max="20"
-            oninput=${(e) => setMaxParallel(Number(e.target.value) || 6)} />
+            oninput=${(e) => setMaxParallel(Number(e.target.value) || 4)} />
           <div class="hint">Simultaneous execution slots</div>
         </div>
         <div class="form-group">
@@ -1782,7 +1833,7 @@ function App() {
           <div class="form-group">
             <label>Max Parallel Tasks</label>
             <input type="number" value=${maxParallel} min="1" max="32"
-              oninput=${(e) => setMaxParallel(Number(e.target.value) || 6)} />
+              oninput=${(e) => setMaxParallel(Number(e.target.value) || 4)} />
             <div class="hint">Simultaneous agent slots</div>
           </div>
           <div class="form-group">
