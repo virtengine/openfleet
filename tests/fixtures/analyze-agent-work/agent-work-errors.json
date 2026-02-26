@@ -1,0 +1,86 @@
+[
+  {
+    "timestamp": "2026-02-25T11:00:00.000Z",
+    "task_id": "task-1",
+    "task_title": "[m] add exports",
+    "task_description": "Implement baseline analytics reporting.",
+    "executor": "CODEX",
+    "model": "gpt-5.2-codex",
+    "attempt_id": "attempt-1",
+    "data": {
+      "error_fingerprint": "timeout",
+      "error_message": "Timeout after 30s",
+      "error_category": "timeout"
+    }
+  },
+  {
+    "timestamp": "2026-02-25T11:05:00.000Z",
+    "task_id": "task-1",
+    "task_title": "[m] add exports",
+    "task_description": "Implement baseline analytics reporting.",
+    "executor": "CODEX",
+    "model": "gpt-5.2-codex",
+    "attempt_id": "attempt-2",
+    "data": {
+      "error_fingerprint": "timeout",
+      "error_message": "Timeout after 30s",
+      "error_category": "timeout"
+    }
+  },
+  {
+    "timestamp": "2026-02-25T11:10:00.000Z",
+    "task_id": "task-1",
+    "task_title": "[m] add exports",
+    "task_description": "Implement baseline analytics reporting.",
+    "executor": "CODEX",
+    "model": "gpt-5.2-codex",
+    "attempt_id": "attempt-3",
+    "data": {
+      "error_fingerprint": "timeout",
+      "error_message": "Timeout after 30s",
+      "error_category": "timeout"
+    }
+  },
+  {
+    "timestamp": "2026-02-24T11:00:00.000Z",
+    "task_id": "task-2",
+    "task_title": "[s] fix auth",
+    "task_description": "Adjust auth fallback handling.",
+    "executor": "COPILOT",
+    "model": "claude-sonnet-4.6",
+    "attempt_id": "attempt-4",
+    "data": {
+      "error_fingerprint": "auth",
+      "error_message": "Auth failed",
+      "error_category": "auth"
+    }
+  },
+  {
+    "timestamp": "2026-02-24T11:10:00.000Z",
+    "task_id": "task-2",
+    "task_title": "[s] fix auth",
+    "task_description": "Adjust auth fallback handling.",
+    "executor": "COPILOT",
+    "model": "claude-sonnet-4.6",
+    "attempt_id": "attempt-5",
+    "data": {
+      "error_fingerprint": "auth",
+      "error_message": "Auth failed",
+      "error_category": "auth"
+    }
+  },
+  {
+    "timestamp": "2026-02-10T11:00:00.000Z",
+    "task_id": "task-3",
+    "task_title": "[l] legacy cleanup",
+    "task_description": "Tune legacy pipeline behavior.",
+    "executor": "CODEX",
+    "model": "gpt-5.2-codex",
+    "attempt_id": "attempt-6",
+    "data": {
+      "error_fingerprint": "network",
+      "error_message": "Network drop",
+      "error_category": "network"
+    }
+  }
+]

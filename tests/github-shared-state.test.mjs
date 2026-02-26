@@ -8,6 +8,9 @@ vi.mock("node:child_process", () => ({
 
 describe("github-shared-state", () => {
   let adapter;
+  let originalProjectMode;
+  let originalProjectNumber;
+  let originalProjectId;
   let envSnapshot = {};
 
   beforeEach(async () => {
@@ -17,6 +20,13 @@ describe("github-shared-state", () => {
       GITHUB_PROJECT_MODE: process.env.GITHUB_PROJECT_MODE,
     };
     process.env.GITHUB_PROJECT_MODE = "issues";
+
+    originalProjectMode = process.env.GITHUB_PROJECT_MODE;
+    originalProjectNumber = process.env.GITHUB_PROJECT_NUMBER;
+    originalProjectId = process.env.GITHUB_PROJECT_ID;
+    process.env.GITHUB_PROJECT_MODE = "issues";
+    delete process.env.GITHUB_PROJECT_NUMBER;
+    delete process.env.GITHUB_PROJECT_ID;
 
     // Mock config
     vi.doMock("../config.mjs", () => ({
@@ -37,6 +47,21 @@ describe("github-shared-state", () => {
   });
 
   afterEach(() => {
+    if (originalProjectMode === undefined) {
+      delete process.env.GITHUB_PROJECT_MODE;
+    } else {
+      process.env.GITHUB_PROJECT_MODE = originalProjectMode;
+    }
+    if (originalProjectNumber === undefined) {
+      delete process.env.GITHUB_PROJECT_NUMBER;
+    } else {
+      process.env.GITHUB_PROJECT_NUMBER = originalProjectNumber;
+    }
+    if (originalProjectId === undefined) {
+      delete process.env.GITHUB_PROJECT_ID;
+    } else {
+      process.env.GITHUB_PROJECT_ID = originalProjectId;
+    }
     vi.doUnmock("../config.mjs");
     if (envSnapshot.GITHUB_PROJECT_MODE === undefined) {
       delete process.env.GITHUB_PROJECT_MODE;
