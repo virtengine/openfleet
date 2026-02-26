@@ -26,7 +26,7 @@ class ChatSafeBoundary extends Component {
       const retry = () => this.setState({ error: null });
       return html`
         <div class="chat-error-inline" style="padding:16px;text-align:center;color:var(--text-secondary,#999);opacity:0.8;">
-          <span style="font-size:18px;">⚠️</span>
+          <span style="font-size:18px;">${resolveIcon("alert")}</span>
           <span style="margin-left:8px;font-size:12px;">
             ${this.props.label || "Component"} failed to render.
           </span>
@@ -75,31 +75,31 @@ import {
 
 /* ─── Bosun commands (always available) ─── */
 const BOSUN_COMMANDS = [
-  { cmd: "/help", desc: "Show available commands", icon: "❓", source: "bosun" },
-  { cmd: "/status", desc: "Check orchestrator status", icon: "📊", source: "bosun" },
-  { cmd: "/health", desc: "Health check", icon: "💚", source: "bosun" },
-  { cmd: "/logs", desc: "View recent logs", icon: "📜", source: "bosun" },
-  { cmd: "/tasks", desc: "List tasks", icon: "📋", source: "bosun" },
-  { cmd: "/plan", desc: "Generate plan", icon: "📝", source: "bosun" },
-  { cmd: "/start", desc: "Start orchestrator", icon: "▶️", source: "bosun" },
-  { cmd: "/stop", desc: "Stop orchestrator", icon: "⏹️", source: "bosun" },
-  { cmd: "/pause", desc: "Pause execution", icon: "⏸️", source: "bosun" },
-  { cmd: "/resume", desc: "Resume execution", icon: "▶️", source: "bosun" },
-  { cmd: "/version", desc: "Show version info", icon: "🔢", source: "bosun" },
-  { cmd: "/hooks", desc: "Show hook status", icon: "🪝", source: "bosun" },
-  { cmd: "/sentinel", desc: "Sentinel status", icon: "🛡️", source: "bosun" },
-  { cmd: "/kanban", desc: "Open Kanban board", icon: "📌", source: "bosun" },
-  { cmd: "/deploy", desc: "Trigger deployment", icon: "🚀", source: "bosun" },
-  { cmd: "/ask", desc: "Ask the assistant", icon: "💬", source: "bosun" },
+  { cmd: "/help", desc: "Show available commands", icon: "help", source: "bosun" },
+  { cmd: "/status", desc: "Check orchestrator status", icon: "chart", source: "bosun" },
+  { cmd: "/health", desc: "Health check", icon: "heart", source: "bosun" },
+  { cmd: "/logs", desc: "View recent logs", icon: "file", source: "bosun" },
+  { cmd: "/tasks", desc: "List tasks", icon: "clipboard", source: "bosun" },
+  { cmd: "/plan", desc: "Generate plan", icon: "edit", source: "bosun" },
+  { cmd: "/start", desc: "Start orchestrator", icon: "play", source: "bosun" },
+  { cmd: "/stop", desc: "Stop orchestrator", icon: "stop", source: "bosun" },
+  { cmd: "/pause", desc: "Pause execution", icon: "pause", source: "bosun" },
+  { cmd: "/resume", desc: "Resume execution", icon: "play", source: "bosun" },
+  { cmd: "/version", desc: "Show version info", icon: "hash", source: "bosun" },
+  { cmd: "/hooks", desc: "Show hook status", icon: "link", source: "bosun" },
+  { cmd: "/sentinel", desc: "Sentinel status", icon: "shield", source: "bosun" },
+  { cmd: "/kanban", desc: "Open Kanban board", icon: "pin", source: "bosun" },
+  { cmd: "/deploy", desc: "Trigger deployment", icon: "rocket", source: "bosun" },
+  { cmd: "/ask", desc: "Ask the assistant", icon: "chat", source: "bosun" },
 ];
 
 /* ─── SDK commands (dynamic based on active agent) ─── */
 const SDK_COMMAND_META = {
-  "/compact": { desc: "Compact conversation context", icon: "🗜️" },
-  "/context": { desc: "Show context window usage", icon: "📏" },
-  "/mcp": { desc: "MCP server status", icon: "🔌" },
-  "/model": { desc: "Show/change model", icon: "🧠" },
-  "/clear": { desc: "Clear agent session", icon: "🧹" },
+  "/compact": { desc: "Compact conversation context", icon: "filter" },
+  "/context": { desc: "Show context window usage", icon: "ruler" },
+  "/mcp": { desc: "MCP server status", icon: "plug" },
+  "/model": { desc: "Show/change model", icon: "cpu" },
+  "/clear": { desc: "Clear agent session", icon: "trash" },
 };
 
 /** Merge Bosun + SDK commands based on active agent capabilities.
@@ -112,7 +112,7 @@ function getSlashCommands() {
     .map((cmd) => ({
       cmd,
       desc: SDK_COMMAND_META[cmd]?.desc || `SDK: ${cmd}`,
-      icon: SDK_COMMAND_META[cmd]?.icon || "⚡",
+      icon: SDK_COMMAND_META[cmd]?.icon || "zap",
       source: "sdk",
     }));
   return [...BOSUN_COMMANDS, ...sdkEntries];
@@ -121,17 +121,17 @@ function getSlashCommands() {
 /* ─── Welcome screen (no session selected) ─── */
 function ChatWelcome({ onNewSession, onQuickCommand }) {
   const quickActions = [
-    { label: "New Chat", icon: "💬", action: () => onNewSession() },
-    { label: "Status", icon: "📊", action: () => onQuickCommand("/status") },
-    { label: "Tasks", icon: "📋", action: () => onQuickCommand("/tasks") },
-    { label: "Logs", icon: "📜", action: () => onQuickCommand("/logs") },
-    { label: "Health", icon: "💚", action: () => onQuickCommand("/health") },
-    { label: "Help", icon: "❓", action: () => onQuickCommand("/help") },
+    { label: "New Chat", icon: "chat", action: () => onNewSession() },
+    { label: "Status", icon: "chart", action: () => onQuickCommand("/status") },
+    { label: "Tasks", icon: "clipboard", action: () => onQuickCommand("/tasks") },
+    { label: "Logs", icon: "file", action: () => onQuickCommand("/logs") },
+    { label: "Health", icon: "heart", action: () => onQuickCommand("/health") },
+    { label: "Help", icon: "help", action: () => onQuickCommand("/help") },
   ];
 
   return html`
     <div class="chat-welcome">
-      <div class="chat-welcome-icon">${resolveIcon("🤖")}</div>
+      <div class="chat-welcome-icon">${resolveIcon("bot")}</div>
       <div class="chat-welcome-title">Welcome to Bosun</div>
       <div class="chat-welcome-subtitle">
         Select a session from the sidebar, start a new chat, or use a quick
@@ -718,7 +718,7 @@ export function ChatTab() {
     return html`
       <div class="session-panel" style="display:flex;align-items:center;justify-content:center;height:100%;padding:24px;">
         <div style="text-align:center;color:var(--text-secondary,#999);">
-          <div style="font-size:28px;margin-bottom:12px;">⚠️</div>
+          <div style="font-size:28px;margin-bottom:12px;">${resolveIcon("alert")}</div>
           <div style="font-size:14px;font-weight:600;margin-bottom:8px;">Chat failed to load</div>
           <div style="font-size:12px;opacity:0.7;margin-bottom:16px;">${chatError}</div>
           <button class="btn btn-primary btn-sm" onClick=${() => setChatError(null)}>Retry</button>
@@ -757,7 +757,7 @@ export function ChatTab() {
               <div class="chat-shell-inner">
                 <!-- Sessions toggle: shown on mobile always; on desktop only when rail is collapsed (CSS-controlled) -->
                 <button class="session-drawer-btn session-drawer-btn-rail" onClick=${handleShowSessions}>
-                  ☰ Sessions
+                  ${iconText("☰ Sessions")}
                 </button>
                 <div class="chat-shell-title">
                   <div class="chat-shell-name">${sessionTitle}</div>
@@ -862,7 +862,7 @@ export function ChatTab() {
           class="focus-exit-fab"
           onClick=${() => setFocusMode(false)}
           title="Exit focus mode"
-        >${resolveIcon("✕")}</button>
+        >${resolveIcon("close")}</button>
       `}
       ${isMobile &&
       html`

@@ -1060,7 +1060,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
                   ${pm.status === "sending"
                     ? "Sending…"
                     : pm.status === "uncertain"
-                      ? html`<span class="chat-pending-warn">⚠ Uncertain</span>
+                      ? html`<span class="chat-pending-warn">${iconText("⚠ Uncertain")}</span>
                               <button class="btn btn-ghost btn-xs chat-retry-btn"
                                 onClick=${() => retryPendingMessage(pm.tempId)}>↻ Retry</button>`
                       : pm.status === "failed"
@@ -1118,7 +1118,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
                   class="btn btn-ghost btn-xs chat-attachment-remove"
                   onClick=${() => removeAttachment(index)}
                   title="Remove attachment"
-                >✕</button>
+                >${resolveIcon("✕")}</button>
               </div>
             `)}
             ${uploadingAttachments && html`
