@@ -21,7 +21,7 @@ describe("codex-config defaults", () => {
     const input = [
       "[features]",
       "child_agents_md = false",
-      "memory_tool = false",
+      "memories = false",
       "multi_agent = false",
       "shell_tool = false",
       "unified_exec = false",
@@ -32,7 +32,7 @@ describe("codex-config defaults", () => {
     const { toml } = ensureFeatureFlags(input);
 
     expect(toml).toContain("child_agents_md = true");
-    expect(toml).toContain("memory_tool = true");
+    expect(toml).toContain("memories = true");
     expect(toml).toContain("multi_agent = true");
     expect(toml).toContain("shell_tool = true");
     expect(toml).toContain("unified_exec = true");

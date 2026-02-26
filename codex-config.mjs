@@ -127,7 +127,7 @@ const RECOMMENDED_FEATURES = {
   collaboration_modes:    { default: true, envVar: "CODEX_FEATURES_COLLABORATION_MODES", comment: "Enable collaboration mode selection" },
 
   // Continuity & recovery
-  memory_tool:            { default: true, envVar: "CODEX_FEATURES_MEMORY_TOOL",        comment: "Persistent memory across sessions" },
+  memories:            { default: true, envVar: "CODEX_FEATURES_MEMORIES",        comment: "Persistent memory across sessions" },
   undo:                   { default: true, envVar: "CODEX_FEATURES_UNDO",               comment: "Safe rollback of agent changes" },
   steer:                  { default: true, envVar: "CODEX_FEATURES_STEER",              comment: "Live steering during runs" },
   personality:            { default: true, envVar: "CODEX_FEATURES_PERSONALITY",         comment: "Agent personality persistence" },
@@ -149,7 +149,7 @@ const RECOMMENDED_FEATURES = {
 
 const CRITICAL_ALWAYS_ON_FEATURES = new Set([
   "child_agents_md",
-  "memory_tool",
+  "memories",
   "multi_agent",
   "collaboration_modes",
   "shell_tool",

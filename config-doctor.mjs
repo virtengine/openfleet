@@ -595,11 +595,11 @@ export function runConfigDoctor(options = {}) {
           fix: 'Add child_agents_md = true under [features] in .codex/config.toml',
         });
       }
-      if (!/memory_tool\s*=\s*true/i.test(toml)) {
+      if (!/memories\s*=\s*true/i.test(toml)) {
         issues.warnings.push({
           code: "CODEX_NO_MEMORY",
-          message: "memory_tool not enabled — Codex has no persistent memory across sessions.",
-          fix: 'Add memory_tool = true under [features] in .codex/config.toml',
+          message: "memories not enabled — Codex has no persistent memory across sessions.",
+          fix: 'Add memories = true under [features] in .codex/config.toml',
         });
       }
     }

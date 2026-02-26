@@ -98,7 +98,7 @@ function fallbackBuildFeaturesBlock() {
     "child_agents_md = true",
     "multi_agent = true",
     "collaboration_modes = true",
-    "memory_tool = true",
+    "memories = true",
     "shell_tool = true",
     "unified_exec = true",
     "",

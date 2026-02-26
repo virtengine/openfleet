@@ -742,7 +742,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     features: {
       child_agents_md: true,
       multi_agent: true,
-      memory_tool: true,
+      memories: true,
       undo: true,
       steer: true,
     },

@@ -16,7 +16,7 @@ multi_agent = true
 # Enable collaboration mode selection
 collaboration_modes = true
 # Persistent memory across sessions
-memory_tool = true
+memories = true
 # Safe rollback of agent changes
 undo = true
 # Live steering during runs

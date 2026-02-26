@@ -5061,25 +5061,30 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/agent-logs/tail") {
     try {
+      const fileParam = url.searchParams.get("file") || "";
       const query = url.searchParams.get("query") || "";
       const lines = Math.min(
         1000,
         Math.max(20, Number(url.searchParams.get("lines") || "100")),
       );
-      const files = await listAgentLogFiles(query);
-      if (!files.length) {
-        jsonResponse(res, 200, { ok: true, data: null });
-        return;
-      }
-      const latest = files[0];
       const agentLogsDir = await resolveAgentLogsDir();
-      const filePath = resolve(agentLogsDir, normalizeAgentLogName(latest.name || latest));
+      // Prefer an explicit file name; fall back to query-based latest-file lookup
+      let fileName = fileParam;
+      if (!fileName) {
+        const files = await listAgentLogFiles(query);
+        if (!files.length) {
+          jsonResponse(res, 200, { ok: true, data: null });
+          return;
+        }
+        fileName = files[0].name || files[0];
+      }
+      const filePath = resolve(agentLogsDir, normalizeAgentLogName(fileName));
       if (!filePath.startsWith(agentLogsDir) || !existsSync(filePath)) {
         jsonResponse(res, 200, { ok: true, data: null });
         return;
       }
       const tail = await tailFile(filePath, lines);
-      jsonResponse(res, 200, { ok: true, data: { file: latest.name || latest, content: tail } });
+      jsonResponse(res, 200, { ok: true, data: { file: fileName, content: tail } });
     } catch (err) {
       jsonResponse(res, 200, { ok: true, data: null });
     }
@@ -5144,7 +5149,7 @@ async function handleApi(req, res, url) {
         } catch { return ""; }
       };
       const gitLog = runWtGit("log --oneline -10");
-      const gitLogDetailed = runWtGit("log --format=%h||%s||%cr -10");
+      const gitLogDetailed = runWtGit("log --format=%h||%D||%s||%cr -10");
       const gitStatus = runWtGit("status --porcelain");
       const gitBranch = runWtGit("rev-parse --abbrev-ref HEAD");
       const gitDiffStat = runWtGit("diff --stat");
@@ -5160,8 +5165,13 @@ async function handleApi(req, res, url) {
         : [];
       const commitRows = gitLogDetailed
         ? gitLogDetailed.split("\n").filter(Boolean).map((line) => {
-            const [hash, message, time] = line.split("||");
-            return { hash, message, time };
+            const parts = line.split("||");
+            // format: hash || refs (may be empty) || subject || relative-time
+            const [hash, refs, message, time] =
+              parts.length >= 4
+                ? parts
+                : [parts[0], "", parts[1] || "", parts[2] || ""];
+            return { hash, refs: refs || "", message: message || "", time: time || "" };
           })
         : [];
       const sessionTracker = getSessionTracker();
