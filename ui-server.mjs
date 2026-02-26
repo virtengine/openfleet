@@ -531,6 +531,30 @@ function getTemplateIdFromTask(task = {}) {
     .toLowerCase();
 }
 
+const TRIGGER_TEMPLATE_STATS_TIMEOUT_MS = (() => {
+  const configured = Number(process.env.BOSUN_TRIGGER_TEMPLATE_STATS_TIMEOUT_MS);
+  if (Number.isFinite(configured) && configured > 0) {
+    return configured;
+  }
+  return 1500;
+})();
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
 async function collectTriggerTemplateTaskStats(templates = []) {
   const statsByTemplateId = {};
   for (const template of templates) {
@@ -550,12 +574,20 @@ async function collectTriggerTemplateTaskStats(templates = []) {
 
   try {
     const adapter = getKanbanAdapter();
-    const projects = await adapter.listProjects();
+    const projects = await withTimeout(
+      Promise.resolve(adapter.listProjects()),
+      TRIGGER_TEMPLATE_STATS_TIMEOUT_MS,
+      "listProjects",
+    );
     const activeProject =
       projects?.[0]?.id || projects?.[0]?.project_id || "";
     if (!activeProject) return statsByTemplateId;
 
-    const tasks = await adapter.listTasks(activeProject, {});
+    const tasks = await withTimeout(
+      Promise.resolve(adapter.listTasks(activeProject, {})),
+      TRIGGER_TEMPLATE_STATS_TIMEOUT_MS,
+      "listTasks",
+    );
     const taskById = new Map();
 
     for (const task of tasks) {
@@ -626,7 +658,10 @@ async function collectTriggerTemplateTaskStats(templates = []) {
         })
         .slice(0, 6);
     }
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[ui] trigger template stats unavailable: ${err?.message || err}`,
+    );
     return statsByTemplateId;
   }
 
