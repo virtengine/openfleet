@@ -1611,6 +1611,21 @@ try {
 let telegramNotifierInterval = null;
 let telegramNotifierTimeout = null;
 let weeklyReportLastSentAt = null;
+const monitorRestartReason = String(
+  process.env.BOSUN_MONITOR_RESTART_REASON || "",
+)
+  .trim()
+  .toLowerCase();
+
+function getTelegramBotStartOptions() {
+  const restartReason = isSelfRestart
+    ? "self-restart"
+    : monitorRestartReason;
+  return {
+    restartReason,
+    suppressPortalAutoOpen: restartReason.length > 0,
+  };
+}
 let vkRecoveryLastAt = 0;
 let vkNonJsonNotifiedAt = 0;
 let vkNonJsonContentTypeLoggedAt = 0;
@@ -13725,7 +13740,7 @@ function applyConfig(nextConfig, options = {}) {
   }
   if (prevTelegramBotEnabled !== telegramBotEnabled) {
     if (telegramBotEnabled) {
-      void startTelegramBot();
+      void startTelegramBot(getTelegramBotStartOptions());
     } else {
       stopTelegramBot();
     }
@@ -15189,7 +15204,7 @@ injectMonitorFunctions({
   },
 });
 if (telegramBotEnabled) {
-  void startTelegramBot();
+  void startTelegramBot(getTelegramBotStartOptions());
 
   // Process any commands queued by telegram-sentinel while monitor was down
   try {

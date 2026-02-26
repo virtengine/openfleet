@@ -1236,7 +1236,10 @@ let wsServer = null;
 let _browserOpened = false;
 const AUTO_OPEN_MARKER_FILE = "ui-auto-open.json";
 const UI_INSTANCE_LOCK_FILE = "ui-server.instance.lock.json";
+const UI_SESSION_TOKEN_FILE = "ui-session-token.json";
+const UI_LAST_PORT_FILE = "ui-last-port.json";
 const DEFAULT_AUTO_OPEN_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12h
+const DEFAULT_SESSION_TOKEN_TTL_MS = AUTH_MAX_AGE_SEC * 1000;
 const wsClients = new Set();
 let sessionListenerAttached = false;
 /** @type {ReturnType<typeof setInterval>|null} */
@@ -1467,6 +1470,110 @@ function shouldAutoOpenBrowserNow() {
   if (!marker?.openedAt) return true;
   const cooldownMs = getAutoOpenCooldownMs();
   return Date.now() - marker.openedAt >= cooldownMs;
+}
+
+function getSessionTokenTtlMs() {
+  const raw = Number(process.env.BOSUN_UI_SESSION_TOKEN_TTL_MS || "");
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_SESSION_TOKEN_TTL_MS;
+  return Math.max(5 * 60 * 1000, Math.trunc(raw));
+}
+
+function resolveUiCachePath(fileName) {
+  const cacheDir = resolve(resolveUiConfigDir(), ".cache");
+  mkdirSync(cacheDir, { recursive: true });
+  return resolve(cacheDir, fileName);
+}
+
+function isValidSessionToken(token) {
+  return /^[a-f0-9]{64}$/i.test(String(token || ""));
+}
+
+function readPersistedSessionToken() {
+  try {
+    const tokenPath = resolveUiCachePath(UI_SESSION_TOKEN_FILE);
+    if (!existsSync(tokenPath)) return "";
+    const payload = JSON.parse(readFileSync(tokenPath, "utf8"));
+    const token = String(payload?.token || "").trim();
+    const createdAt = Number(payload?.createdAt || 0);
+    if (!isValidSessionToken(token)) return "";
+    if (!Number.isFinite(createdAt) || createdAt <= 0) return "";
+    if (Date.now() - createdAt > getSessionTokenTtlMs()) return "";
+    return token;
+  } catch {
+    return "";
+  }
+}
+
+function persistSessionToken(token) {
+  if (!isValidSessionToken(token)) return;
+  try {
+    const tokenPath = resolveUiCachePath(UI_SESSION_TOKEN_FILE);
+    writeFileSync(
+      tokenPath,
+      JSON.stringify(
+        {
+          token,
+          createdAt: Date.now(),
+          pid: process.pid,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  } catch {
+    // best effort
+  }
+}
+
+function ensureSessionToken() {
+  if (isValidSessionToken(sessionToken)) return sessionToken;
+  const persisted = readPersistedSessionToken();
+  if (persisted) {
+    sessionToken = persisted;
+    return sessionToken;
+  }
+  sessionToken = randomBytes(32).toString("hex");
+  persistSessionToken(sessionToken);
+  return sessionToken;
+}
+
+function readLastUiPort() {
+  try {
+    const portPath = resolveUiCachePath(UI_LAST_PORT_FILE);
+    if (!existsSync(portPath)) return 0;
+    const payload = JSON.parse(readFileSync(portPath, "utf8"));
+    const port = Number(payload?.port || 0);
+    if (!Number.isFinite(port) || port <= 0 || port > 65535) return 0;
+    return Math.trunc(port);
+  } catch {
+    return 0;
+  }
+}
+
+function persistLastUiPort(port) {
+  const normalized = Number(port || 0);
+  if (!Number.isFinite(normalized) || normalized <= 0 || normalized > 65535) {
+    return;
+  }
+  try {
+    const portPath = resolveUiCachePath(UI_LAST_PORT_FILE);
+    writeFileSync(
+      portPath,
+      JSON.stringify(
+        {
+          port: Math.trunc(normalized),
+          updatedAt: Date.now(),
+          pid: process.pid,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  } catch {
+    // best effort
+  }
 }
 
 const projectSyncWebhookMetrics = {
@@ -7014,8 +7121,10 @@ async function handleStatic(req, res, url) {
 export async function startTelegramUiServer(options = {}) {
   if (uiServer) return uiServer;
 
+  injectUiDependencies(options.dependencies || {});
+
   const rawPort = options.port ?? getDefaultPort();
-  const port = Number(rawPort);
+  const configuredPort = Number(rawPort);
   const isTestRun =
     Boolean(process.env.VITEST) ||
     process.env.NODE_ENV === "test" ||
@@ -7028,8 +7137,15 @@ export async function startTelegramUiServer(options = {}) {
     options.allowEphemeralPort === true ||
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT === "1" ||
     isTestRun;
+  const persistedPort = readLastUiPort();
+  const port =
+    configuredPort === 0 && allowEphemeralPort && persistedPort > 0
+      ? persistedPort
+      : configuredPort;
   const portSource =
-    options.port != null
+    configuredPort === 0 && allowEphemeralPort && persistedPort > 0
+      ? "cache.ui-last-port"
+      : options.port != null
       ? "options.port"
       : process.env.TELEGRAM_UI_PORT
         ? "env.TELEGRAM_UI_PORT"
@@ -7057,8 +7173,6 @@ export async function startTelegramUiServer(options = {}) {
   console.log(
     `[telegram-ui] startup config: port=${port} source=${portSource} autoOpen=${autoOpenEnabled ? "enabled" : "disabled"}`,
   );
-
-  injectUiDependencies(options.dependencies || {});
 
   if (!skipInstanceLock) {
     const lockResult = tryAcquireUiInstanceLock({ preferredPort: port });
@@ -7278,8 +7392,8 @@ export async function startTelegramUiServer(options = {}) {
       });
     });
 
-    // Generate a session token for browser-based access (no config needed)
-    sessionToken = randomBytes(32).toString("hex");
+    // Reuse a recent session token when possible so browser sessions survive restarts.
+    ensureSessionToken();
 
     await new Promise((resolveReady, rejectReady) => {
       uiServer.once("error", rejectReady);
@@ -7313,6 +7427,7 @@ export async function startTelegramUiServer(options = {}) {
     url: uiServerUrl,
     startedAt: Date.now(),
   });
+  persistLastUiPort(actualPort);
   console.log(`[telegram-ui] server listening on ${uiServerUrl}`);
   if (uiServerTls) {
     console.log(`[telegram-ui] TLS enabled (self-signed) — Telegram WebApp buttons will use HTTPS`);
@@ -7346,10 +7461,20 @@ export async function startTelegramUiServer(options = {}) {
   //  - only open ONCE per process (singleton guard — prevents loops on server restart)
   const isTestRunRuntime =
     process.env.VITEST || process.env.NODE_ENV === "test" || process.env.JEST_WORKER_ID;
+  const restartReason = String(
+    options.restartReason || process.env.BOSUN_MONITOR_RESTART_REASON || "",
+  ).trim();
+  const suppressAutoOpenForRestart = restartReason.length > 0;
+  if (suppressAutoOpenForRestart && autoOpenEnabled) {
+    console.log(
+      `[telegram-ui] auto-open suppressed during restart (${restartReason})`,
+    );
+  }
   if (
     autoOpenEnabled &&
     process.env.BOSUN_DESKTOP !== "1" &&
     !options.skipAutoOpen &&
+    !suppressAutoOpenForRestart &&
     !_browserOpened &&
     !isTestRunRuntime &&
     shouldAutoOpenBrowserNow()
@@ -7436,7 +7561,6 @@ export function stopTelegramUiServer() {
   }
   uiServer = null;
   uiServerTls = false;
-  sessionToken = "";
   resetProjectSyncWebhookMetrics();
   releaseUiInstanceLock();
 }

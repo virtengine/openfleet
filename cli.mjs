@@ -1484,14 +1484,21 @@ function detectExistingMonitorLockOwner(excludePid = null) {
   return null;
 }
 
-function runMonitor() {
+function runMonitor({ restartReason = "" } = {}) {
   return new Promise((resolve, reject) => {
     const monitorPath = fileURLToPath(
       new URL("./monitor.mjs", import.meta.url),
     );
+    const childEnv = { ...process.env };
+    if (restartReason) {
+      childEnv.BOSUN_MONITOR_RESTART_REASON = restartReason;
+    } else {
+      delete childEnv.BOSUN_MONITOR_RESTART_REASON;
+    }
     monitorChild = fork(monitorPath, process.argv.slice(2), {
       stdio: "inherit",
       execArgv: ["--max-old-space-size=4096"],
+      env: childEnv,
       windowsHide: IS_DAEMON_CHILD && process.platform === "win32",
     });
     daemonCrashTracker.markStart();
@@ -1504,7 +1511,7 @@ function runMonitor() {
           "\n  \u21BB Monitor restarting with fresh modules...\n",
         );
         // Small delay to let file writes / port releases settle
-        setTimeout(() => resolve(runMonitor()), 2000);
+        setTimeout(() => resolve(runMonitor({ restartReason: "self-restart" })), 2000);
       } else {
         const exitCode = code ?? (signal ? 1 : 0);
         const existingOwner =
@@ -1572,7 +1579,15 @@ function runMonitor() {
             restartAttempt: daemonRestartCount,
             maxRestarts: IS_DAEMON_CHILD ? DAEMON_MAX_RESTARTS : 0,
           }).catch(() => {});
-          setTimeout(() => resolve(runMonitor()), delayMs);
+          setTimeout(
+            () =>
+              resolve(
+                runMonitor({
+                  restartReason: isOSKill ? "os-kill" : "crash",
+                }),
+              ),
+            delayMs,
+          );
           return;
         }
 

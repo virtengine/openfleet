@@ -10467,7 +10467,7 @@ function stopBatchFlushLoop() {
  * Start the two-way Telegram bot.
  * Call injectMonitorFunctions() first if you want full integration.
  */
-export async function startTelegramBot() {
+export async function startTelegramBot(options = {}) {
   refreshTelegramConfigFromEnv();
   if (!telegramToken || !telegramChatId) {
     console.warn(
@@ -10504,13 +10504,22 @@ export async function startTelegramBot() {
   const miniAppPort = Number(process.env.TELEGRAM_UI_PORT || "0");
 
   if (miniAppEnabled || miniAppPort > 0) {
+    const restartReason = String(
+      options.restartReason || process.env.BOSUN_MONITOR_RESTART_REASON || "",
+    )
+      .trim()
+      .toLowerCase();
+    const suppressPortalAutoOpen =
+      options.suppressPortalAutoOpen === true || restartReason.length > 0;
+    const autoOpenOptIn = ["1", "true", "yes", "on"].includes(
+      String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "").toLowerCase(),
+    );
     try {
       await startTelegramUiServer({
         // Background monitor/bot runtime should not keep opening browser tabs.
         // Set BOSUN_UI_AUTO_OPEN_BROWSER=1 to opt-in.
-        skipAutoOpen: !["1", "true", "yes", "on"].includes(
-          String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "").toLowerCase(),
-        ),
+        skipAutoOpen: suppressPortalAutoOpen || !autoOpenOptIn,
+        restartReason,
         dependencies: {
           execPrimaryPrompt,
           getInternalExecutor: _getInternalExecutor,

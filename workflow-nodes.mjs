@@ -20,7 +20,7 @@
 import { registerNodeType } from "./workflow-engine.mjs";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { execSync, spawnSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 const TAG = "[workflow-nodes]";
@@ -2066,6 +2066,366 @@ registerNodeType("action.refresh_worktree", {
     } catch (err) {
       return { success: false, error: err.message, operation: op };
     }
+  },
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  MCP Tool Call — execute a tool on an installed MCP server
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Lazy-import MCP registry — cached at module scope per AGENTS.md rules.
+let _mcpRegistry = null;
+async function getMcpRegistry() {
+  if (!_mcpRegistry) {
+    _mcpRegistry = await import("./mcp-registry.mjs");
+  }
+  return _mcpRegistry;
+}
+
+/**
+ * Spawn a stdio MCP server, send a JSON-RPC request, and collect the response.
+ * Implements the MCP stdio transport: newline-delimited JSON-RPC over stdin/stdout.
+ *
+ * @param {Object} server — resolved MCP server config (command, args, env)
+ * @param {string} method — JSON-RPC method (e.g. "tools/call", "tools/list")
+ * @param {Object} params — JSON-RPC params
+ * @param {number} timeoutMs — max wait time
+ * @returns {Promise<Object>} — JSON-RPC result
+ */
+function mcpStdioRequest(server, method, params, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    const env = { ...process.env, ...(server.env || {}) };
+    const child = spawn(server.command, server.args || [], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env,
+      shell: process.platform === "win32",
+      timeout: timeoutMs + 5000,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const requestId = randomUUID();
+
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        child.kill("SIGTERM");
+        reject(new Error(`MCP stdio request timed out after ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      // Try to parse complete JSON-RPC responses (newline-delimited)
+      const lines = stdout.split("\n");
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const msg = JSON.parse(trimmed);
+          // Handle initialize response — send the actual tool call
+          if (msg.id === `${requestId}-init` && msg.result) {
+            // Send initialized notification
+            const initialized = JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n";
+            child.stdin.write(initialized);
+            // Now send the actual tool call
+            const toolCall = JSON.stringify({
+              jsonrpc: "2.0",
+              id: requestId,
+              method,
+              params,
+            }) + "\n";
+            child.stdin.write(toolCall);
+          }
+          // Handle the actual tool call response
+          if (msg.id === requestId && !settled) {
+            settled = true;
+            clearTimeout(timer);
+            child.kill("SIGTERM");
+            if (msg.error) {
+              reject(new Error(`MCP error ${msg.error.code}: ${msg.error.message}`));
+            } else {
+              resolve(msg.result);
+            }
+          }
+        } catch {
+          // Not valid JSON yet — partial line, keep accumulating
+        }
+      }
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", (err) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error(`MCP stdio spawn error: ${err.message}`));
+      }
+    });
+
+    child.on("close", (code) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        if (code !== 0) {
+          reject(new Error(`MCP server exited with code ${code}: ${stderr.slice(0, 500)}`));
+        } else {
+          reject(new Error("MCP server closed without responding"));
+        }
+      }
+    });
+
+    // Send initialize request first (MCP protocol handshake)
+    const initRequest = JSON.stringify({
+      jsonrpc: "2.0",
+      id: `${requestId}-init`,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "bosun-workflow", version: "1.0.0" },
+      },
+    }) + "\n";
+    child.stdin.write(initRequest);
+  });
+}
+
+/**
+ * Send an HTTP JSON-RPC request to a URL-based MCP server.
+ *
+ * @param {string} url — MCP server URL
+ * @param {string} method — JSON-RPC method
+ * @param {Object} params — JSON-RPC params
+ * @param {number} timeoutMs — max wait time
+ * @returns {Promise<Object>} — JSON-RPC result
+ */
+async function mcpUrlRequest(url, method, params, timeoutMs = 30000) {
+  const requestId = randomUUID();
+  const body = JSON.stringify({
+    jsonrpc: "2.0",
+    id: requestId,
+    method,
+    params,
+  });
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`MCP HTTP ${res.status}: ${text.slice(0, 500)}`);
+    }
+
+    const json = await res.json();
+    if (json.error) {
+      throw new Error(`MCP error ${json.error.code}: ${json.error.message}`);
+    }
+    return json.result;
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === "AbortError") {
+      throw new Error(`MCP URL request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  }
+}
+
+registerNodeType("action.mcp_tool_call", {
+  describe: () => "Call a tool on an installed MCP server from the library",
+  schema: {
+    type: "object",
+    properties: {
+      server: {
+        type: "string",
+        description: "MCP server ID from the library (e.g. 'github', 'filesystem', 'context7')",
+      },
+      tool: {
+        type: "string",
+        description: "Tool name to invoke on the MCP server",
+      },
+      input: {
+        type: "object",
+        description: "Tool input arguments (server-specific)",
+        additionalProperties: true,
+      },
+      timeoutMs: {
+        type: "number",
+        default: 30000,
+        description: "Timeout in ms for the MCP tool call",
+      },
+      outputVariable: {
+        type: "string",
+        description: "Variable name to store the result in ctx.data",
+      },
+    },
+    required: ["server", "tool"],
+  },
+  async execute(node, ctx) {
+    const serverId = ctx.resolve(node.config?.server || "");
+    const toolName = ctx.resolve(node.config?.tool || "");
+    const input = node.config?.input || {};
+    const timeoutMs = node.config?.timeoutMs || 30000;
+
+    if (!serverId) throw new Error("action.mcp_tool_call: 'server' is required");
+    if (!toolName) throw new Error("action.mcp_tool_call: 'tool' is required");
+
+    ctx.log(node.id, `MCP tool call: ${serverId}/${toolName}`);
+
+    // Resolve the MCP server from the library/catalog
+    const registry = await getMcpRegistry();
+    const rootDir = ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+    const resolved = await registry.resolveMcpServersForAgent(rootDir, [serverId]);
+
+    if (!resolved || !resolved.length) {
+      throw new Error(
+        `action.mcp_tool_call: MCP server "${serverId}" not found. ` +
+        `Install it first via the library: installMcpServer("${serverId}")`,
+      );
+    }
+
+    const server = resolved[0];
+    ctx.log(node.id, `Resolved server: ${server.name} (${server.transport})`);
+
+    // Resolve any {{variable}} references in tool input
+    const resolvedInput = {};
+    for (const [key, value] of Object.entries(input)) {
+      resolvedInput[key] = typeof value === "string" ? ctx.resolve(value) : value;
+    }
+
+    let result;
+    try {
+      if (server.transport === "url" && server.url) {
+        // URL-based MCP server — direct HTTP JSON-RPC
+        result = await mcpUrlRequest(server.url, "tools/call", {
+          name: toolName,
+          arguments: resolvedInput,
+        }, timeoutMs);
+      } else if (server.command) {
+        // Stdio-based MCP server — spawn process and communicate via JSON-RPC
+        result = await mcpStdioRequest(server, "tools/call", {
+          name: toolName,
+          arguments: resolvedInput,
+        }, timeoutMs);
+      } else {
+        throw new Error(
+          `MCP server "${serverId}" has no command or url configured`,
+        );
+      }
+    } catch (err) {
+      ctx.log(node.id, `MCP tool call failed: ${err.message}`);
+      return {
+        success: false,
+        error: err.message,
+        server: serverId,
+        tool: toolName,
+      };
+    }
+
+    ctx.log(node.id, `MCP tool call completed successfully`);
+
+    // Extract content from MCP tool call result
+    const content = result?.content || result;
+    const textContent = Array.isArray(content)
+      ? content
+          .filter((c) => c.type === "text")
+          .map((c) => c.text)
+          .join("\n")
+      : typeof content === "string"
+        ? content
+        : JSON.stringify(content);
+
+    const output = {
+      success: true,
+      server: serverId,
+      tool: toolName,
+      result: content,
+      text: textContent,
+      isError: result?.isError || false,
+    };
+
+    // Store in ctx.data if outputVariable is set
+    if (node.config?.outputVariable) {
+      ctx.data[node.config.outputVariable] = output;
+    }
+
+    return output;
+  },
+});
+
+registerNodeType("action.mcp_list_tools", {
+  describe: () => "List available tools on an installed MCP server",
+  schema: {
+    type: "object",
+    properties: {
+      server: {
+        type: "string",
+        description: "MCP server ID from the library",
+      },
+      timeoutMs: {
+        type: "number",
+        default: 30000,
+        description: "Timeout in ms",
+      },
+      outputVariable: {
+        type: "string",
+        description: "Variable name to store the tool list in ctx.data",
+      },
+    },
+    required: ["server"],
+  },
+  async execute(node, ctx) {
+    const serverId = ctx.resolve(node.config?.server || "");
+    const timeoutMs = node.config?.timeoutMs || 30000;
+
+    if (!serverId) throw new Error("action.mcp_list_tools: 'server' is required");
+
+    ctx.log(node.id, `Listing tools for MCP server: ${serverId}`);
+
+    const registry = await getMcpRegistry();
+    const rootDir = ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+    const resolved = await registry.resolveMcpServersForAgent(rootDir, [serverId]);
+
+    if (!resolved || !resolved.length) {
+      throw new Error(`action.mcp_list_tools: MCP server "${serverId}" not found`);
+    }
+
+    const server = resolved[0];
+    let result;
+
+    try {
+      if (server.transport === "url" && server.url) {
+        result = await mcpUrlRequest(server.url, "tools/list", {}, timeoutMs);
+      } else if (server.command) {
+        result = await mcpStdioRequest(server, "tools/list", {}, timeoutMs);
+      } else {
+        throw new Error(`MCP server "${serverId}" has no command or url`);
+      }
+    } catch (err) {
+      ctx.log(node.id, `Failed to list tools: ${err.message}`);
+      return { success: false, error: err.message, server: serverId, tools: [] };
+    }
+
+    const tools = result?.tools || [];
+    ctx.log(node.id, `Found ${tools.length} tool(s) on ${serverId}`);
+
+    const output = { success: true, server: serverId, tools };
+    if (node.config?.outputVariable) {
+      ctx.data[node.config.outputVariable] = output;
+    }
+    return output;
   },
 });
 

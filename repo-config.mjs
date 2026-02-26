@@ -123,6 +123,65 @@ function fallbackBuildCommonMcpBlocks() {
   ].join("\n");
 }
 
+/**
+ * Build TOML blocks for all installed MCP servers in the library.
+ * Falls back to empty string if the library is not initialized or has no MCP entries.
+ * This reads the library manifest synchronously for use in config generation.
+ *
+ * @param {string} repoRoot — workspace root directory
+ * @returns {string} — TOML blocks for installed MCP servers
+ */
+function buildInstalledMcpBlocks(repoRoot) {
+  try {
+    const manifestPath = resolve(repoRoot, ".bosun", "library.json");
+    if (!existsSync(manifestPath)) return "";
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const mcpEntries = (manifest.entries || []).filter((e) => e.type === "mcp");
+    if (!mcpEntries.length) return "";
+
+    const lines = [];
+    for (const entry of mcpEntries) {
+      const meta = entry.meta || {};
+      const safeId = String(entry.id).replace(/[^a-zA-Z0-9_-]/g, "_");
+
+      // Skip entries that are already covered by common/kanban blocks
+      if (safeId === "context7" || safeId === "microsoft-docs" || safeId === "vibe-kanban" || safeId === "vibe_kanban") {
+        continue;
+      }
+
+      if (meta.transport === "url" && meta.url) {
+        lines.push("");
+        lines.push(`[mcp_servers.${safeId}]`);
+        lines.push(`url = ${toTomlString(meta.url)}`);
+      } else if (meta.command) {
+        lines.push("");
+        lines.push(`[mcp_servers.${safeId}]`);
+        lines.push(`command = ${toTomlString(meta.command)}`);
+        if (meta.args && meta.args.length) {
+          const argsStr = meta.args.map((a) => toTomlString(a)).join(", ");
+          lines.push(`args = [${argsStr}]`);
+        }
+      } else {
+        continue;
+      }
+
+      // Write env block if present (skip empty-value keys)
+      const envEntries = Object.entries(meta.env || {}).filter(
+        ([, v]) => v != null && String(v).trim() !== "",
+      );
+      if (envEntries.length) {
+        lines.push(`[mcp_servers.${safeId}.env]`);
+        for (const [key, value] of envEntries) {
+          lines.push(`${key} = ${toTomlString(String(value))}`);
+        }
+      }
+    }
+    return lines.join("\n");
+  } catch {
+    return "";
+  }
+}
+
 function fallbackBuildVibeKanbanBlock({ vkBaseUrl } = {}) {
   const baseUrl = String(vkBaseUrl || "http://127.0.0.1:54089").trim() || "http://127.0.0.1:54089";
   return [
@@ -351,7 +410,7 @@ function resolveBridgePath(explicit) {
  * @param {object} options
  * @param {string}  options.repoRoot       Absolute path to the repo
  * @param {string}  [options.vkBaseUrl]    VK API base URL (default: "http://127.0.0.1:54089")
- * @param {boolean} [options.skipVk]       Whether to skip the VK MCP server (default: false)
+ * @param {boolean} [options.skipVk]       Whether to skip the VK MCP server (default: true)
  * @param {string}  [options.primarySdk]   "codex" | "copilot" | "claude" (default: "codex")
  * @param {object}  [options.env]          Environment overrides
  * @returns {string}  TOML content
@@ -360,7 +419,7 @@ export function buildRepoCodexConfig(options = {}) {
   const {
     repoRoot,
     vkBaseUrl = "http://127.0.0.1:54089",
-    skipVk = false,
+    skipVk = true,
     primarySdk = "codex",
     env = process.env,
   } = options;
@@ -418,6 +477,15 @@ export function buildRepoCodexConfig(options = {}) {
 
   parts.push(buildCommonMcpBlocks().trim());
   parts.push("");
+
+  // ── Installed library MCP servers ──
+  if (repoRoot) {
+    const installedBlocks = buildInstalledMcpBlocks(repoRoot).trim();
+    if (installedBlocks) {
+      parts.push(installedBlocks);
+      parts.push("");
+    }
+  }
 
   return parts.join("\n") + "\n";
 }
@@ -706,7 +774,7 @@ export function buildRepoVsCodeMcpConfig() {
  * @param {string} repoRoot  Absolute path to the repo directory
  * @param {object} [options]
  * @param {string}  [options.vkBaseUrl]        VK API base URL (default: "http://127.0.0.1:54089")
- * @param {boolean} [options.skipVk]           Whether to skip VK MCP server
+ * @param {boolean} [options.skipVk]           Whether to skip VK MCP server (default: true)
  * @param {string}  [options.primarySdk]       "codex" | "copilot" | "claude" (default: "codex")
  * @param {string}  [options.bosunBridgePath]  Path to agent-hook-bridge.mjs
  * @param {object}  [options.env]              Environment overrides
@@ -716,7 +784,7 @@ export function buildRepoVsCodeMcpConfig() {
 export function ensureRepoConfigs(repoRoot, options = {}) {
   const {
     vkBaseUrl = "http://127.0.0.1:54089",
-    skipVk = false,
+    skipVk = true,
     primarySdk = "codex",
     bosunBridgePath,
     env = process.env,

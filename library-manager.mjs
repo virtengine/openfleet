@@ -26,9 +26,10 @@ export const LIBRARY_MANIFEST = "library.json";
 export const PROMPT_DIR = ".bosun/agents";
 export const SKILL_DIR = ".bosun/skills";
 export const PROFILE_DIR = ".bosun/profiles";
+export const MCP_DIR = ".bosun/mcp-servers";
 
 /** Resource types managed by the library */
-export const RESOURCE_TYPES = Object.freeze(["prompt", "agent", "skill"]);
+export const RESOURCE_TYPES = Object.freeze(["prompt", "agent", "skill", "mcp"]);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -140,12 +141,13 @@ function dirForType(rootDir, type) {
     case "prompt": return resolve(root, PROMPT_DIR);
     case "skill":  return resolve(root, SKILL_DIR);
     case "agent":  return resolve(root, PROFILE_DIR);
+    case "mcp":    return resolve(root, MCP_DIR);
     default: throw new Error(`Unknown library resource type: ${type}`);
   }
 }
 
 function extForType(type) {
-  return type === "agent" ? ".json" : ".md";
+  return (type === "agent" || type === "mcp") ? ".json" : ".md";
 }
 
 /**
@@ -439,9 +441,9 @@ export function detectScopes(repoRoot, opts = {}) {
 export function resolveLibraryRefs(template, rootDir, extraVars = {}) {
   if (typeof template !== "string") return "";
 
-  // First resolve namespaced refs: {{prompt:name}}, {{agent:name}}, {{skill:name}}
+  // First resolve namespaced refs: {{prompt:name}}, {{agent:name}}, {{skill:name}}, {{mcp:name}}
   let resolved = template.replace(
-    /\{\{\s*(prompt|agent|skill):([A-Za-z0-9_-]+)\s*\}\}/gi,
+    /\{\{\s*(prompt|agent|skill|mcp):([A-Za-z0-9_-]+)\s*\}\}/gi,
     (_full, type, name) => {
       const typeLower = type.toLowerCase();
       const id = slugify(name);

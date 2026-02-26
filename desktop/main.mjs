@@ -256,6 +256,9 @@ async function startUiServer() {
   if (uiServerStarted) return;
   const api = await loadUiServerModule();
   const server = await api.startTelegramUiServer({
+    host: "127.0.0.1",
+    publicHost: "127.0.0.1",
+    skipAutoOpen: true,
     dependencies: {
       configDir: resolveDesktopConfigDir(),
     },
