@@ -3389,7 +3389,9 @@ async function triggerVibeKanbanRecovery(reason) {
     const notice = codexEnabled
       ? `Codex recovery triggered: vibe-kanban unreachable. Attempting restart. (${link})`
       : `Vibe-kanban recovery triggered (Codex disabled). Attempting restart. (${link})`;
-    void sendTelegramMessage(notice, { parseMode: "HTML" });
+    runDetached("vk-recovery-notify", () =>
+      sendTelegramMessage(notice, { parseMode: "HTML" }),
+    );
   }
   await runCodexRecovery(reason || "vibe-kanban unreachable");
   restartVibeKanbanProcess();
@@ -10072,6 +10074,7 @@ async function startTelegramNotifier() {
     await flushMergeNotifications();
     await checkStatusMilestones();
   };
+
 
   // Suppress "Notifier started" message on rapid restarts (e.g. code-change restarts).
   // If the last start was <60s ago, skip the notification — just log locally.
