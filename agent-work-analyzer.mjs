@@ -273,12 +273,29 @@ async function processLogFile(startPosition) {
       encoding: "utf8",
     });
 
-    const rl = createInterface({ input: stream });
-    let bytesRead = startPosition;
+    let chunkText = "";
+    for await (const chunk of stream) {
+      chunkText += String(chunk || "");
+    }
+    if (!chunkText) {
+      return startPosition;
+    }
 
-    for await (const line of rl) {
-      bytesRead += Buffer.byteLength(line, "utf8") + 1; // +1 for newline
+    const lastNewlineIdx = chunkText.lastIndexOf("\n");
+    let processText = "";
+    let trailing = "";
+    if (lastNewlineIdx >= 0) {
+      processText = chunkText.slice(0, lastNewlineIdx + 1);
+      trailing = chunkText.slice(lastNewlineIdx + 1);
+    } else {
+      trailing = chunkText;
+    }
 
+    const lines = processText
+      .split(/\r?\n/)
+      .map((line) => String(line || "").trim())
+      .filter(Boolean);
+    for (const line of lines) {
       try {
         const event = JSON.parse(line);
         await analyzeEvent(event);
@@ -289,7 +306,21 @@ async function processLogFile(startPosition) {
       }
     }
 
-    return bytesRead;
+    // If trailing text is present without newline, treat it as a potentially
+    // partial line and only consume it when it is valid JSON. This avoids data
+    // loss when writers flush an incomplete line temporarily.
+    const trailingTrimmed = String(trailing || "").trim();
+    if (trailingTrimmed) {
+      try {
+        const trailingEvent = JSON.parse(trailingTrimmed);
+        await analyzeEvent(trailingEvent);
+        return startPosition + Buffer.byteLength(chunkText, "utf8");
+      } catch {
+        return startPosition + Buffer.byteLength(processText, "utf8");
+      }
+    }
+
+    return startPosition + Buffer.byteLength(processText, "utf8");
   } catch (err) {
     if (err.code !== "ENOENT") {
       console.error(`[agent-work-analyzer] Error reading log: ${err.message}`);
