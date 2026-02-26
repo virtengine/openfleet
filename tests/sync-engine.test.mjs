@@ -44,6 +44,7 @@ describe("sync-engine backward external status handling", () => {
     vi.clearAllMocks();
     mockTaskStore.getAllTasks.mockReturnValue([]);
     mockKanban.listTasks.mockResolvedValue([]);
+    mockKanban.getKanbanBackendName.mockReturnValue("vk");
   });
 
   it("re-pushes backward move when internal equals old external status", async () => {
@@ -163,6 +164,7 @@ describe("sync-engine external status normalization", () => {
     vi.clearAllMocks();
     mockTaskStore.getAllTasks.mockReturnValue([]);
     mockKanban.listTasks.mockResolvedValue([]);
+    mockKanban.getKanbanBackendName.mockReturnValue("vk");
   });
 
   it("normalizes external closed to cancelled and updates internal status", async () => {
@@ -258,6 +260,7 @@ describe("sync-engine push 404 orphan handling", () => {
     vi.clearAllMocks();
     mockTaskStore.getAllTasks.mockReturnValue([]);
     mockKanban.listTasks.mockResolvedValue([]);
+    mockKanban.getKanbanBackendName.mockReturnValue("vk");
   });
 
   it("removes orphaned task from internal store on 404 push error", async () => {
@@ -276,6 +279,65 @@ describe("sync-engine push 404 orphan handling", () => {
     expect(result.pushed).toBe(0);
     // 404 is handled gracefully, should not appear in errors
     expect(result.errors.length).toBe(0);
+  });
+
+  it("removes orphaned task when GraphQL reports missing issue number", async () => {
+    mockKanban.getKanbanBackendName.mockReturnValue("github");
+    mockTaskStore.getDirtyTasks.mockReturnValue([
+      { id: "759", status: "cancelled", syncDirty: true },
+    ]);
+    mockKanban.updateTaskStatus.mockRejectedValue(
+      new Error(
+        "GraphQL: Could not resolve to an issue or pull request with the number of 759. (repository.issue)",
+      ),
+    );
+
+    const engine = new SyncEngine({ projectId: "proj-1" });
+    const result = await engine.pushToExternal();
+
+    expect(mockTaskStore.removeTask).toHaveBeenCalledWith("759");
+    expect(mockTaskStore.markSynced).not.toHaveBeenCalled();
+    expect(result.pushed).toBe(0);
+    expect(result.errors.length).toBe(0);
+  });
+
+  it("removes orphaned task when GraphQL reports missing pull request number", async () => {
+    mockKanban.getKanbanBackendName.mockReturnValue("github");
+    mockTaskStore.getDirtyTasks.mockReturnValue([
+      { id: "200", status: "inprogress", syncDirty: true },
+    ]);
+    mockKanban.updateTaskStatus.mockRejectedValue(
+      new Error(
+        "GraphQL: Could not resolve to an issue or pull request with the number of 200. (repository.pullrequest)",
+      ),
+    );
+
+    const engine = new SyncEngine({ projectId: "proj-1" });
+    const result = await engine.pushToExternal();
+
+    expect(mockTaskStore.removeTask).toHaveBeenCalledWith("200");
+    expect(mockTaskStore.markSynced).not.toHaveBeenCalled();
+    expect(result.pushed).toBe(0);
+    expect(result.errors.length).toBe(0);
+  });
+
+  it("does not treat partial GraphQL message without scope suffix as not-found", async () => {
+    mockKanban.getKanbanBackendName.mockReturnValue("github");
+    mockTaskStore.getDirtyTasks.mockReturnValue([
+      { id: "300", status: "todo", syncDirty: true },
+    ]);
+    mockKanban.updateTaskStatus.mockRejectedValue(
+      new Error(
+        "GraphQL: Could not resolve to an issue or pull request with the number of 300.",
+      ),
+    );
+
+    const engine = new SyncEngine({ projectId: "proj-1" });
+    const result = await engine.pushToExternal();
+
+    // Should not be treated as orphaned because it lacks (repository.issue) or (repository.pullrequest)
+    expect(mockTaskStore.removeTask).not.toHaveBeenCalled();
+    expect(result.errors.length).toBe(1);
   });
 
   it("does not remove task on non-404 push errors", async () => {
@@ -300,6 +362,7 @@ describe("sync-engine UUID-to-GitHub ID mismatch handling", () => {
     vi.clearAllMocks();
     mockTaskStore.getAllTasks.mockReturnValue([]);
     mockKanban.listTasks.mockResolvedValue([]);
+    mockKanban.getKanbanBackendName.mockReturnValue("vk");
   });
 
   it("skips UUID tasks when backend is github", async () => {
@@ -465,6 +528,7 @@ describe("sync-engine syncTask backend ID handling", () => {
     vi.clearAllMocks();
     mockTaskStore.getAllTasks.mockReturnValue([]);
     mockKanban.listTasks.mockResolvedValue([]);
+    mockKanban.getKanbanBackendName.mockReturnValue("vk");
   });
 
   it("syncTask uses externalId for github backend", async () => {

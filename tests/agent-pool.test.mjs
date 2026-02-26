@@ -188,6 +188,7 @@ const ENV_KEYS = [
   "GITHUB_TOKEN",
   "COPILOT_CLI_TOKEN",
   "AGENT_POOL_SDK_FAILURE_COOLDOWN_MS",
+  "AGENT_POOL_PREREQ_WARNING_THROTTLE_MS",
 ];
 
 /** @type {Record<string, string|undefined>} */
@@ -231,6 +232,7 @@ function clearSdkEnv() {
   delete process.env.GITHUB_TOKEN;
   delete process.env.COPILOT_CLI_TOKEN;
   delete process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS;
+  delete process.env.AGENT_POOL_PREREQ_WARNING_THROTTLE_MS;
 }
 
 // ---------------------------------------------------------------------------
@@ -515,6 +517,61 @@ describe("launchEphemeralThread", () => {
     expect(result.output).toContain("copilot-output");
   });
 
+  it("throttles repeated primary missing-prerequisite warnings", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.AGENT_POOL_PREREQ_WARNING_THROTTLE_MS = "60000";
+    delete process.env.COPILOT_CLI_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const first = await launchEphemeralThread("test prompt", process.cwd(), 5000, {
+      sdk: "copilot",
+    });
+    const second = await launchEphemeralThread("test prompt", process.cwd(), 5000, {
+      sdk: "copilot",
+    });
+
+    expect(first.success).toBe(true);
+    expect(first.sdk).toBe("codex");
+    expect(second.success).toBe(true);
+    expect(second.sdk).toBe("codex");
+
+    const missingPrereqWarnings = warnSpy.mock.calls
+      .map((call) => String(call?.[0] || ""))
+      .filter((line) =>
+        line.includes('primary SDK "copilot" missing prerequisites'),
+      );
+    expect(missingPrereqWarnings).toHaveLength(1);
+    warnSpy.mockRestore();
+  });
+
+  it("does not throttle fallback prerequisite logs when throttle is zero", async () => {
+    process.env.__MOCK_CLAUDE_AVAILABLE = "1";
+    process.env.AGENT_POOL_PREREQ_WARNING_THROTTLE_MS = "0";
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.COPILOT_CLI_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const first = await launchEphemeralThread("test prompt", process.cwd(), 5000, {
+      sdk: "codex",
+    });
+    const second = await launchEphemeralThread("test prompt", process.cwd(), 5000, {
+      sdk: "codex",
+    });
+
+    expect(first.success).toBe(true);
+    expect(first.sdk).toBe("claude");
+    expect(second.success).toBe(true);
+    expect(second.sdk).toBe("claude");
+
+    const fallbackMissingPrereqLogs = logSpy.mock.calls
+      .map((call) => String(call?.[0] || ""))
+      .filter((line) => line.includes('skipping fallback SDK "copilot":'));
+    expect(fallbackMissingPrereqLogs).toHaveLength(2);
+    logSpy.mockRestore();
+  });
   it("skips a cooled-down SDK after timeout and retries it after cooldown expiry", async () => {
     process.env.__MOCK_CODEX_AVAILABLE = "1";
     process.env.__MOCK_COPILOT_AVAILABLE = "1";

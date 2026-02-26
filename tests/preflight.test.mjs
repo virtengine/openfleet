@@ -144,6 +144,22 @@ describe("preflight interactive git editor warnings", () => {
       /code/i,
     );
   });
+  it("warns when core.editor is set to code-insiders", () => {
+    spawnSyncMock.mockImplementation(
+      createSpawnMock({
+        coreEditor: "code-insiders",
+      }),
+    );
+
+    const result = runPreflightChecks({ repoRoot: "C:\\repo" });
+    const warning = getInteractiveEditorWarning(result);
+
+    expect(result.ok).toBe(true);
+    expect(warning).toBeDefined();
+    expect(String(warning.title) + "\n" + String(warning.message)).toMatch(
+      /code-insiders/i,
+    );
+  });
   it("warns when GIT_EDITOR is interactive even when core.editor is safe", () => {
     process.env.GIT_EDITOR = "vim";
     spawnSyncMock.mockImplementation(

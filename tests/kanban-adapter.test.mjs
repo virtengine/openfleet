@@ -196,6 +196,11 @@ describe("kanban-adapter github backend", () => {
       } else {
         process.env.GH_RATE_LIMIT_RETRY_MS = previous.rateRetry;
       }
+      if (previous.rateBackoffMax === undefined) {
+        delete process.env.GH_RATE_LIMIT_BACKOFF_MAX_MS;
+      } else {
+        process.env.GH_RATE_LIMIT_BACKOFF_MAX_MS = previous.rateBackoffMax;
+      }
       if (previous.transientRetry === undefined) {
         delete process.env.GH_TRANSIENT_RETRY_MS;
       } else {
@@ -313,6 +318,49 @@ describe("kanban-adapter github backend", () => {
     expect(issueCreateCall[1]).not.toContain("acme");
   });
 
+  it("uses gh auth status login as default assignee before calling gh api user", async () => {
+    mockGh("ok");
+    mockGh("Logged in to github.com as octocat (keyring)\n");
+    mockGh("https://github.com/acme/widgets/issues/88\n");
+    mockGh(
+      JSON.stringify({
+        number: 88,
+        title: "new task",
+        body: "desc",
+        state: "open",
+        url: "https://github.com/acme/widgets/issues/88",
+        labels: [],
+        assignees: [{ login: "octocat" }],
+      }),
+    );
+    mockGh("[]");
+
+    const adapter = getKanbanAdapter();
+    const task = await adapter.createTask("ignored-project-id", {
+      title: "new task",
+      description: "desc",
+    });
+
+    expect(task?.id).toBe("88");
+    const issueCreateCall = execFileMock.mock.calls.find(
+      (call) =>
+        Array.isArray(call[1]) &&
+        call[1].includes("issue") &&
+        call[1].includes("create"),
+    );
+    expect(issueCreateCall).toBeTruthy();
+    expect(issueCreateCall[1]).toContain("--assignee");
+    expect(issueCreateCall[1]).toContain("octocat");
+
+    const authStatusCalls = execFileMock.mock.calls.filter(
+      (call) => Array.isArray(call[1]) && call[1].join(" ").includes("auth status"),
+    );
+    const apiUserCalls = execFileMock.mock.calls.filter(
+      (call) => Array.isArray(call[1]) && call[1].join(" ").includes("api user"),
+    );
+    expect(authStatusCalls).toHaveLength(1);
+    expect(apiUserCalls).toHaveLength(0);
+  });
   it("filters listTasks to codex-scoped labels when enforcement is enabled", async () => {
     mockGh(
       JSON.stringify([
@@ -672,6 +720,42 @@ describe("kanban-adapter github backend", () => {
     }
   });
 
+  it("uses default command backoff when owner retry backoff is configured as zero", async () => {
+    const prevOwnerRetryMs = process.env.GH_PROJECT_OWNER_RETRY_MS;
+    const prevDefaultAssignee = process.env.GITHUB_DEFAULT_ASSIGNEE;
+    process.env.GH_PROJECT_OWNER_RETRY_MS = "0";
+    process.env.GITHUB_DEFAULT_ASSIGNEE = "acme";
+
+    const ownerTypeError = new Error(
+      "Command failed: gh project item-list owner-zero-backoff-5 --owner acme --format json\nunknown owner type",
+    );
+    ownerTypeError.stderr = "unknown owner type";
+    ownerTypeError.stdout = "";
+
+    mockGhError(ownerTypeError);
+    mockGhError(ownerTypeError);
+
+    try {
+      const adapter = getKanbanAdapter();
+      const first = await adapter.listTasksFromProject("owner-zero-backoff-5");
+      const second = await adapter.listTasksFromProject("owner-zero-backoff-5");
+
+      expect(first).toEqual([]);
+      expect(second).toEqual([]);
+      expect(execFileMock).toHaveBeenCalledTimes(2);
+    } finally {
+      if (prevOwnerRetryMs === undefined) {
+        delete process.env.GH_PROJECT_OWNER_RETRY_MS;
+      } else {
+        process.env.GH_PROJECT_OWNER_RETRY_MS = prevOwnerRetryMs;
+      }
+      if (prevDefaultAssignee === undefined) {
+        delete process.env.GITHUB_DEFAULT_ASSIGNEE;
+      } else {
+        process.env.GITHUB_DEFAULT_ASSIGNEE = prevDefaultAssignee;
+      }
+    }
+  });
   it("skips GH calls while project owner fallback is in cooldown", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
@@ -811,6 +895,42 @@ describe("kanban-adapter github backend", () => {
     }
   });
 
+  it("falls back to default command backoff when project rate-limit backoff is zero", async () => {
+    const prevRetryMs = process.env.GH_RATE_LIMIT_RETRY_MS;
+    const prevProjectRateLimitBackoffMs = process.env.GH_PROJECT_RATE_LIMIT_BACKOFF_MS;
+    process.env.GH_RATE_LIMIT_RETRY_MS = "0";
+    process.env.GH_PROJECT_RATE_LIMIT_BACKOFF_MS = "0";
+
+    const rateLimitError = new Error(
+      "Command failed: gh project item-list rate-limit-zero-backoff-5 --owner acme --format json\nGraphQL: API rate limit exceeded for user ID 9289791.",
+    );
+    rateLimitError.stderr = "GraphQL: API rate limit exceeded for user ID 9289791.";
+    rateLimitError.stdout = "";
+
+    mockGhError(rateLimitError);
+    mockGhError(rateLimitError);
+
+    try {
+      const adapter = getKanbanAdapter();
+      const first = await adapter.listTasksFromProject("rate-limit-zero-backoff-5");
+      const second = await adapter.listTasksFromProject("rate-limit-zero-backoff-5");
+
+      expect(first).toEqual([]);
+      expect(second).toEqual([]);
+      expect(execFileMock).toHaveBeenCalledTimes(2);
+    } finally {
+      if (prevRetryMs === undefined) {
+        delete process.env.GH_RATE_LIMIT_RETRY_MS;
+      } else {
+        process.env.GH_RATE_LIMIT_RETRY_MS = prevRetryMs;
+      }
+      if (prevProjectRateLimitBackoffMs === undefined) {
+        delete process.env.GH_PROJECT_RATE_LIMIT_BACKOFF_MS;
+      } else {
+        process.env.GH_PROJECT_RATE_LIMIT_BACKOFF_MS = prevProjectRateLimitBackoffMs;
+      }
+    }
+  });
   it("backs off repeated project item-list fetches after invalid payload", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     mockGh(JSON.stringify({ unexpected: true }));
@@ -901,6 +1021,217 @@ describe("kanban-adapter github backend", () => {
       expect.stringContaining("project field-list returned non-array"),
     );
     warnSpy.mockRestore();
+  });
+  it("normalizes GraphQL connection project field-list payloads", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockGh(
+      JSON.stringify({
+        data: {
+          organization: {
+            projectV2: {
+              fields: {
+                nodes: [
+                  {
+                    id: "PVTSSF_status",
+                    name: "Status",
+                    data_type: "SINGLE_SELECT",
+                    options: [{ id: "todo-id", name: "Todo" }],
+                  },
+                ],
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    const adapter = getKanbanAdapter();
+    const fields = await adapter._getProjectFields("5");
+
+    expect(fields).toEqual({
+      statusFieldId: "PVTSSF_status",
+      statusOptions: [{ id: "todo-id", name: "Todo" }],
+    });
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("project field-list returned non-array"),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("throttles repeated missing-status-field warnings per project", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const prevThrottle = process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS;
+    process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS = "60000";
+
+    try {
+      setKanbanBackend("github");
+      const adapter = getKanbanAdapter();
+      const baseTime = Date.now();
+
+      // First warning should emit
+      adapter._warnMissingProjectStatusField("5", baseTime);
+      // Second within throttle window should be suppressed
+      adapter._warnMissingProjectStatusField("5", baseTime + 1000);
+      // Third after throttle expires should emit again
+      adapter._warnMissingProjectStatusField("5", baseTime + 70_000);
+
+      const statusFieldWarnings = warnSpy.mock.calls
+        .map((call) => String(call?.[0] || ""))
+        .filter((line) => line.includes("cannot sync to project: no status field found"));
+      expect(statusFieldWarnings).toHaveLength(2);
+    } finally {
+      if (prevThrottle === undefined) {
+        delete process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS;
+      } else {
+        process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS = prevThrottle;
+      }
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("does not throttle status-field warnings when throttle is zero", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const prevThrottle = process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS;
+    process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS = "0";
+
+    try {
+      setKanbanBackend("github");
+      const adapter = getKanbanAdapter();
+      const baseTime = Date.now();
+
+      adapter._warnMissingProjectStatusField("5", baseTime);
+      adapter._warnMissingProjectStatusField("5", baseTime + 100);
+
+      const statusFieldWarnings = warnSpy.mock.calls
+        .map((call) => String(call?.[0] || ""))
+        .filter((line) => line.includes("cannot sync to project: no status field found"));
+      expect(statusFieldWarnings).toHaveLength(2);
+    } finally {
+      if (prevThrottle === undefined) {
+        delete process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS;
+      } else {
+        process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS = prevThrottle;
+      }
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("tracks status-field warnings independently per project number", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const prevThrottle = process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS;
+    process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS = "60000";
+
+    try {
+      // Reset module-level map state by re-creating backend
+      setKanbanBackend("github");
+      const adapter = getKanbanAdapter();
+      // Clear the shared map to avoid leaking state from prior tests
+      adapter._projectStatusFieldWarningAt.clear();
+      const baseTime = Date.now();
+
+      adapter._warnMissingProjectStatusField("5", baseTime);
+      adapter._warnMissingProjectStatusField("7", baseTime);
+      // Repeat within throttle — should both be suppressed
+      adapter._warnMissingProjectStatusField("5", baseTime + 1000);
+      adapter._warnMissingProjectStatusField("7", baseTime + 1000);
+
+      const statusFieldWarnings = warnSpy.mock.calls
+        .map((call) => String(call?.[0] || ""))
+        .filter((line) => line.includes("cannot sync to project: no status field found"));
+      expect(statusFieldWarnings).toHaveLength(2);
+    } finally {
+      if (prevThrottle === undefined) {
+        delete process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS;
+      } else {
+        process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS = prevThrottle;
+      }
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("skips status-field warning when project number is empty", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const adapter = getKanbanAdapter();
+    adapter._warnMissingProjectStatusField("", Date.now());
+    adapter._warnMissingProjectStatusField(null, Date.now());
+    adapter._warnMissingProjectStatusField(undefined, Date.now());
+
+    const statusFieldWarnings = warnSpy.mock.calls
+      .map((call) => String(call?.[0] || ""))
+      .filter((line) => line.includes("cannot sync to project: no status field found"));
+    expect(statusFieldWarnings).toHaveLength(0);
+    warnSpy.mockRestore();
+  });
+
+  it("uses default status-field warning throttle when env var is blank", () => {
+    const prevThrottle = process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS;
+    process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS = "";
+
+    try {
+      setKanbanBackend("github");
+      const adapter = getKanbanAdapter();
+      expect(adapter._projectStatusFieldWarningThrottleMs).toBe(300_000);
+    } finally {
+      if (prevThrottle === undefined) {
+        delete process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS;
+      } else {
+        process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS = prevThrottle;
+      }
+    }
+  });
+
+  it("persists invalid project owner state and reloads it across adapter instances", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.GITHUB_DEFAULT_ASSIGNEE = "acme";
+
+    const ownerTypeError = new Error(
+      "Command failed: gh project item-list persist-test-5 --owner acme --format json\nunknown owner type",
+    );
+    ownerTypeError.stderr = "unknown owner type";
+    ownerTypeError.stdout = "";
+
+    // First mock: owner try fails with owner-type error
+    mockGhError(ownerTypeError);
+    // Second mock: ownerless fallback also fails with owner-type error
+    mockGhError(ownerTypeError);
+
+    try {
+      const adapter1 = getKanbanAdapter();
+      await adapter1.listTasksFromProject("persist-test-5");
+
+      // Verify owner "acme" was added to the invalid set
+      expect(adapter1._invalidProjectOwners.has("acme")).toBe(true);
+
+      // Create a fresh adapter — it should load persisted state and know acme is invalid
+      setKanbanBackend("github");
+      const adapter2 = getKanbanAdapter();
+      expect(adapter2._invalidProjectOwners.has("acme")).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("merges sibling-process invalid owner state on reload", () => {
+    const adapter = getKanbanAdapter();
+    // Directly mark an owner invalid and persist
+    adapter._invalidProjectOwners.add("org-a");
+    adapter._projectOwnerAllInvalidUntil = Date.now() + 300_000;
+    adapter._persistInvalidOwnerState();
+
+    // Create a fresh adapter — it should load persisted state
+    setKanbanBackend("github");
+    const adapter2 = getKanbanAdapter();
+    expect(adapter2._invalidProjectOwners.has("org-a")).toBe(true);
+    expect(adapter2._projectOwnerAllInvalidUntil).toBeGreaterThan(Date.now());
+
+    // Simulate sibling adding another owner
+    adapter2._invalidProjectOwners.add("org-b");
+    adapter2._persistInvalidOwnerState();
+
+    // Reload and verify merge
+    adapter._reloadInvalidOwnerState();
+    expect(adapter._invalidProjectOwners.has("org-a")).toBe(true);
+    expect(adapter._invalidProjectOwners.has("org-b")).toBe(true);
   });
 
   it("reopens issue and syncs status labels for open-state transitions", async () => {
@@ -1032,6 +1363,31 @@ describe("kanban-adapter github backend", () => {
       retryCount: 0,
     });
     expect(persisted).toBe(false);
+  });
+
+  it("caches issue-comment 404 misses to avoid repeated gh calls", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const notFoundError = new Error(
+      "Command failed: gh api /repos/acme/widgets/issues/42/comments --jq .\ngh: Not Found (HTTP 404)",
+    );
+    notFoundError.stderr = "gh: Not Found (HTTP 404)";
+    mockGhError(notFoundError);
+
+    const adapter = getKanbanAdapter();
+    const first = await adapter.readSharedStateFromIssue("42");
+    const second = await adapter.readSharedStateFromIssue("42");
+
+    expect(first).toBeNull();
+    expect(second).toBeNull();
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+
+    const warnings = warnSpy.mock.calls
+      .map((call) => String(call?.[0] || ""))
+      .filter((line) =>
+        line.includes("issue #42 not found while fetching comments"),
+      );
+    expect(warnings).toHaveLength(1);
+    warnSpy.mockRestore();
   });
 
   it("addComment posts a comment on a github issue", async () => {
