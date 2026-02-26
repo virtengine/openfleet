@@ -161,6 +161,13 @@ const CRITICAL_ALWAYS_ON_FEATURES = new Set([
   "unified_exec",
 ]);
 
+// Features that must be DISABLED regardless of user-set value.
+// These cause known compatibility failures (e.g. Azure wire_api=responses
+// breaks when enable_request_compression embeds unescaped content in JSON).
+const CRITICAL_ALWAYS_OFF_FEATURES = new Set([
+  "enable_request_compression",
+]);
+
 function parsePositiveInt(value) {
   const parsed = Number.parseInt(String(value ?? "").trim(), 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
@@ -442,6 +449,18 @@ export function ensureFeatureFlags(toml, envOverrides = process.env) {
       );
       if (disabledRegex.test(section)) {
         section = section.replace(disabledRegex, `$1true`);
+      }
+    }
+
+    // Force certain features OFF regardless of what is in the file.
+    // (e.g. enable_request_compression corrupts JSON bodies on Azure wire_api=responses)
+    if (CRITICAL_ALWAYS_OFF_FEATURES.has(key)) {
+      const enabledRegex = new RegExp(
+        `^(${escapeRegex(key)}\\s*=\\s*)true\\b.*$`,
+        "m",
+      );
+      if (enabledRegex.test(section)) {
+        section = section.replace(enabledRegex, `$1false`);
       }
     }
   }
