@@ -302,6 +302,95 @@ describe("kanban-adapter github backend", () => {
     expect(tasks).toHaveLength(2);
   });
 
+  it("falls back to issues when project board listing fails", async () => {
+    process.env.GITHUB_PROJECT_MODE = "kanban";
+    process.env.GITHUB_PROJECT_NUMBER = "5";
+
+    execFileMock.mockImplementation((_cmd, args, _opts, cb) => {
+      const joined = args.join(" ");
+      if (joined.includes("project item-list")) {
+        cb(new Error("unknown owner type"), { stdout: "", stderr: "" });
+        return;
+      }
+      if (joined.includes("issue list")) {
+        cb(
+          null,
+          {
+            stdout: JSON.stringify([
+              {
+                number: 77,
+                title: "Issue fallback task",
+                body: "",
+                state: "OPEN",
+                url: "https://github.com/acme/widgets/issues/77",
+                assignees: [],
+                labels: [{ name: "bosun" }],
+                comments: [],
+              },
+            ]),
+            stderr: "",
+          },
+        );
+        return;
+      }
+      cb(null, { stdout: "[]", stderr: "" });
+    });
+
+    const adapter = getKanbanAdapter();
+    const tasks = await adapter.listTasks("ignored", { status: "todo" });
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({ id: "77", title: "Issue fallback task" });
+  });
+
+  it("returns cached tasks during github issue-list backoff failures", async () => {
+    const adapter = getKanbanAdapter();
+    adapter._rateLimitRetryDelayMs = 0;
+    adapter._transientRetryMax = 0;
+
+    execFileMock.mockImplementationOnce((_cmd, args, _opts, cb) => {
+      if (args.includes("issue") && args.includes("list")) {
+        cb(
+          null,
+          {
+            stdout: JSON.stringify([
+              {
+                number: 81,
+                title: "Cached task",
+                body: "",
+                state: "OPEN",
+                url: "https://github.com/acme/widgets/issues/81",
+                assignees: [],
+                labels: [{ name: "bosun" }],
+                comments: [],
+              },
+            ]),
+            stderr: "",
+          },
+        );
+        return;
+      }
+      cb(null, { stdout: "[]", stderr: "" });
+    });
+
+    const first = await adapter.listTasks("ignored", { status: "todo" });
+    expect(first).toHaveLength(1);
+    expect(first[0]?.id).toBe("81");
+
+    adapter._issueListCache.clear();
+    execFileMock.mockImplementationOnce((_cmd, args, _opts, cb) => {
+      if (args.includes("issue") && args.includes("list")) {
+        cb(new Error("gh unavailable"), { stdout: "", stderr: "" });
+        return;
+      }
+      cb(null, { stdout: "[]", stderr: "" });
+    });
+
+    const second = await adapter.listTasks("ignored", { status: "todo" });
+    expect(second).toHaveLength(1);
+    expect(second[0]?.id).toBe("81");
+  });
+
   it("reopens issue and syncs status labels for open-state transitions", async () => {
     execFileMock.mockImplementation((_cmd, args, _opts, cb) => {
       const joined = args.join(" ");

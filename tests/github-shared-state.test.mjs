@@ -11,9 +11,15 @@ describe("github-shared-state", () => {
   let originalProjectMode;
   let originalProjectNumber;
   let originalProjectId;
+  let envSnapshot = {};
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    execFileMock.mockReset();
+    envSnapshot = {
+      GITHUB_PROJECT_MODE: process.env.GITHUB_PROJECT_MODE,
+    };
+    process.env.GITHUB_PROJECT_MODE = "issues";
 
     originalProjectMode = process.env.GITHUB_PROJECT_MODE;
     originalProjectNumber = process.env.GITHUB_PROJECT_NUMBER;
@@ -34,6 +40,8 @@ describe("github-shared-state", () => {
       await import("../kanban-adapter.mjs");
     setKanbanBackend("github");
     adapter = getKanbanAdapter();
+    adapter._issueListCache?.clear?.();
+    adapter._sharedStateCache?.clear?.();
     // Disable rate limit retry delay for test speed
     adapter._rateLimitRetryDelayMs = 0;
   });
@@ -55,6 +63,11 @@ describe("github-shared-state", () => {
       process.env.GITHUB_PROJECT_ID = originalProjectId;
     }
     vi.doUnmock("../config.mjs");
+    if (envSnapshot.GITHUB_PROJECT_MODE === undefined) {
+      delete process.env.GITHUB_PROJECT_MODE;
+    } else {
+      process.env.GITHUB_PROJECT_MODE = envSnapshot.GITHUB_PROJECT_MODE;
+    }
   });
 
   function mockGh(stdout, stderr = "") {

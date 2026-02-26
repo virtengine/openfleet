@@ -1280,6 +1280,8 @@ class GitHubIssuesAdapter {
     /** @type {Map<string, {fields: any, time: number}>} projectNumber → {fields, time} */
     this._projectFieldsCache = new Map();
     this._projectFieldsCacheTTL = 300_000; // 5 minutes
+    /** @type {Set<string>} projects already warned for missing Status field */
+    this._projectStatusFieldWarned = new Set();
     this._repositoryNodeId = null;
 
     // Auto-sync toggle: set GITHUB_PROJECT_AUTO_SYNC=false to disable project sync
@@ -1309,6 +1311,46 @@ class GitHubIssuesAdapter {
     this._issueListCache = new Map();
     /** @type {Map<string, {data: object|null, ts: number}>} issueNum → {data, ts} */
     this._sharedStateCache = new Map();
+    this._lastKnownTasks = [];
+    this._taskListBackoffUntil = 0;
+    this._taskListBackoffMs = parseDelayMs(
+      process.env.GH_TASK_LIST_BACKOFF_MS,
+      90_000,
+      5_000,
+    );
+    this._taskListBackoffWarnAt = 0;
+  }
+
+  _cacheLastKnownTasks(tasks) {
+    if (!Array.isArray(tasks)) return;
+    this._lastKnownTasks = tasks.map((task) => ({
+      ...task,
+      meta: task?.meta ? { ...task.meta } : {},
+    }));
+    this._taskListBackoffUntil = 0;
+    this._taskListBackoffWarnAt = 0;
+  }
+
+  _setTaskListBackoff() {
+    const now = Date.now();
+    this._taskListBackoffUntil = Math.max(
+      this._taskListBackoffUntil || 0,
+      now + this._taskListBackoffMs,
+    );
+  }
+
+  _getBackoffTasks(filters = {}) {
+    let fallback = this._lastKnownTasks.map((task) => ({
+      ...task,
+      meta: task?.meta ? { ...task.meta } : {},
+    }));
+
+    if (filters.status) {
+      const normalizedFilter = normaliseStatus(filters.status);
+      fallback = fallback.filter((task) => task.status === normalizedFilter);
+    }
+
+    return fallback;
   }
 
   /**
@@ -1341,7 +1383,15 @@ class GitHubIssuesAdapter {
         "json",
       ]);
 
-      if (!Array.isArray(fields)) {
+      const normalizedFields = Array.isArray(fields)
+        ? fields
+        : Array.isArray(fields?.fields)
+          ? fields.fields
+          : Array.isArray(fields?.data)
+            ? fields.data
+            : null;
+
+      if (!Array.isArray(normalizedFields)) {
         console.warn(
           `${TAG} project field-list returned non-array for project ${projectNumber}`,
         );
@@ -1349,7 +1399,7 @@ class GitHubIssuesAdapter {
       }
 
       // Find the Status field
-      const statusField = fields.find(
+      const statusField = normalizedFields.find(
         (f) =>
           f.name === "Status" &&
           (f.type === "SINGLE_SELECT" || f.data_type === "SINGLE_SELECT"),
@@ -1366,7 +1416,7 @@ class GitHubIssuesAdapter {
       // Cache the result (also cache the raw fields array for getProjectFields)
       this._projectFieldsCache.set(cacheKey, {
         fields: result,
-        rawFields: fields,
+        rawFields: normalizedFields,
         time: now,
       });
 
@@ -1950,10 +2000,9 @@ class GitHubIssuesAdapter {
 
       return tasks;
     } catch (err) {
-      console.warn(
-        `${TAG} failed to list tasks from project ${projectNumber}: ${err.message}`,
+      throw new Error(
+        `project ${projectNumber} list failed: ${err?.message || err}`,
       );
-      return [];
     }
   }
 
@@ -1981,9 +2030,16 @@ class GitHubIssuesAdapter {
       // Get project fields
       const fields = await this._getProjectFields(projectNumber);
       if (!fields || !fields.statusFieldId) {
-        console.warn(`${TAG} cannot sync to project: no status field found`);
+        const projectKey = String(projectNumber || "");
+        if (!this._projectStatusFieldWarned.has(projectKey)) {
+          this._projectStatusFieldWarned.add(projectKey);
+          console.warn(
+            `${TAG} cannot sync to project ${projectKey}: no Status field found`,
+          );
+        }
         return false;
       }
+      this._projectStatusFieldWarned.delete(String(projectNumber || ""));
 
       // Map codex status to project status option using configurable mapping
       const targetStatusName = this._normalizeProjectStatus(status, true);
@@ -2256,6 +2312,24 @@ class GitHubIssuesAdapter {
   }
 
   async listTasks(_projectId, filters = {}) {
+    const now = Date.now();
+    if (this._taskListBackoffUntil > now) {
+      const fallback = this._getBackoffTasks(filters);
+      if (fallback.length > 0) {
+        if (now - this._taskListBackoffWarnAt > 15_000) {
+          this._taskListBackoffWarnAt = now;
+          const sec = Math.max(
+            1,
+            Math.ceil((this._taskListBackoffUntil - now) / 1000),
+          );
+          console.warn(
+            `${TAG} task list in backoff (${sec}s remaining) — serving ${fallback.length} cached task(s)`,
+          );
+        }
+        return fallback;
+      }
+    }
+
     // If project mode is enabled, read from project board
     if (this._projectMode === "kanban" && this._projectNumber) {
       const projectNumber = await this._resolveProjectNumber();
@@ -2296,6 +2370,7 @@ class GitHubIssuesAdapter {
             }
           }
 
+          this._cacheLastKnownTasks(filtered);
           return filtered;
         } catch (err) {
           console.warn(
@@ -2345,8 +2420,20 @@ class GitHubIssuesAdapter {
       } else {
         args.push("--state", "open");
       }
-      rawIssues = await this._gh(args);
-      this._issueListCache.set(listCacheKey, { data: rawIssues, ts: nowMs });
+      try {
+        rawIssues = await this._gh(args);
+        this._issueListCache.set(listCacheKey, { data: rawIssues, ts: nowMs });
+      } catch (err) {
+        this._setTaskListBackoff();
+        const fallback = this._getBackoffTasks(filters);
+        if (fallback.length > 0) {
+          console.warn(
+            `${TAG} failed to list issues (${err.message}); serving ${fallback.length} cached task(s)`,
+          );
+          return fallback;
+        }
+        throw err;
+      }
     }
 
     let normalized = (Array.isArray(rawIssues) ? rawIssues : []).map((i) =>
@@ -2390,6 +2477,7 @@ class GitHubIssuesAdapter {
       }
     }
 
+    this._cacheLastKnownTasks(normalized);
     return normalized;
   }
 
@@ -5209,5 +5297,3 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
-
-

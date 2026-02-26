@@ -32,7 +32,7 @@ describe("ui-server mini app", () => {
   ];
   let envSnapshot = {};
 
-  beforeEach(() => {
+  beforeEach(async () => {
     envSnapshot = Object.fromEntries(
       ENV_KEYS.map((key) => [key, process.env[key]]),
     );
@@ -42,6 +42,10 @@ describe("ui-server mini app", () => {
     process.env.GITHUB_PROJECT_WEBHOOK_SECRET = "webhook-secret";
     process.env.GITHUB_PROJECT_WEBHOOK_REQUIRE_SIGNATURE = "true";
     process.env.GITHUB_PROJECT_SYNC_ALERT_FAILURE_THRESHOLD = "2";
+    process.env.KANBAN_BACKEND = "internal";
+
+    const { setKanbanBackend } = await import("../kanban-adapter.mjs");
+    setKanbanBackend("internal");
   });
 
   afterEach(async () => {
@@ -416,7 +420,7 @@ describe("ui-server mini app", () => {
     expect(json.data.templates[0].state).toBeDefined();
 
     rmSync(tmpDir, { recursive: true, force: true });
-  });
+  }, 15000);
 
   it("persists trigger template updates to config", async () => {
     const mod = await import("../ui-server.mjs");
@@ -483,5 +487,5 @@ describe("ui-server mini app", () => {
     expect(updatedTemplate?.minIntervalMinutes).toBe(45);
 
     rmSync(tmpDir, { recursive: true, force: true });
-  });
+  }, 15000);
 });

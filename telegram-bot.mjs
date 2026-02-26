@@ -1088,6 +1088,25 @@ async function bumpStickyMenu(chatId) {
   });
 }
 
+async function refreshStickyMenu(chatId, screenId = "home", params = {}) {
+  const state = stickyMenuState.get(chatId);
+  if (state?.messageId) {
+    try {
+      await deleteDirect(chatId, state.messageId);
+    } catch {
+      /* best effort */
+    }
+  }
+  const timer = stickyMenuTimers.get(chatId);
+  if (timer) {
+    clearTimeout(timer);
+    stickyMenuTimers.delete(chatId);
+  }
+  stickyMenuState.delete(chatId);
+  clearPendingUiInput(chatId);
+  await showUiScreen(chatId, null, screenId, params, { sticky: true });
+}
+
 // ── Telegram API Helpers ─────────────────────────────────────────────────────
 
 /**
@@ -3951,13 +3970,13 @@ function uiNavRow(parent) {
   if (!parent) {
     return [
       uiButton("🏠 Home", uiGoAction("home")),
-      uiButton("✖ Close", "cb:close_menu"),
+      uiButton("❌ Close", "cb:close_menu"),
     ];
   }
   return [
     uiButton("⬅️ Back", uiGoAction(parent)),
     uiButton("🏠 Home", uiGoAction("home")),
-    uiButton("✖ Close", "cb:close_menu"),
+    uiButton("❌ Close", "cb:close_menu"),
   ];
 }
 
@@ -4191,7 +4210,7 @@ Object.assign(UI_SCREENS, {
             text: "📱 Open Control Center",
             web_app: { url: telegramWebAppUrl },
           },
-          uiButton("✖", "cb:close_menu"),
+          uiButton("❌", "cb:close_menu"),
         ]);
         if (telegramUiUrl) {
           rows.unshift([
@@ -4201,10 +4220,10 @@ Object.assign(UI_SCREENS, {
       } else if (telegramUiUrl) {
         rows.unshift([
           { text: "🌐 Open Control Center", url: getBrowserUiUrl() || telegramUiUrl },
-          uiButton("✖", "cb:close_menu"),
+          uiButton("❌", "cb:close_menu"),
         ]);
       } else {
-        rows.unshift([uiButton("✖ Close Menu", "cb:close_menu")]);
+        rows.unshift([uiButton("❌ Close Menu", "cb:close_menu")]);
       }
       return buildKeyboard(rows);
     },
@@ -10593,8 +10612,9 @@ export async function startTelegramBot() {
   } else {
     await sendDirect(
       telegramChatId,
-      `🤖 Bosun primary agent online (${getPrimaryAgentName()}).\n\nType /menu for the control center or send any message to chat with the agent.`,
+      `🤖 Bosun primary agent online (${getPrimaryAgentName()}).\n\nType /menu for the control center or send any message to chat with the agent.\n\nRefreshing control center menu below…`,
     );
+    await refreshStickyMenu(telegramChatId, "home", {});
 
     // ── SECURITY: Alert when ALLOW_UNSAFE is enabled (especially with tunnel) ──
     const _isUnsafe = ["1", "true", "yes"].includes(
