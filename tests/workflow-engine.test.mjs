@@ -122,7 +122,7 @@ describe("WorkflowEngine - retry logic", () => {
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
-        { id: "flaky", type: "test.flaky_always_fail", label: "Flaky", config: { maxRetries: 2 } },
+        { id: "flaky", type: "test.flaky_always_fail", label: "Flaky", config: { maxRetries: 2, retryDelayMs: 0 } },
       ],
       [{ id: "e1", source: "trigger", target: "flaky" }]
     );
@@ -150,7 +150,7 @@ describe("WorkflowEngine - retry logic", () => {
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
-        { id: "retry-node", type: "test.flaky_second_try", label: "Retry Me", config: { maxRetries: 3 } },
+        { id: "retry-node", type: "test.flaky_second_try", label: "Retry Me", config: { maxRetries: 3, retryDelayMs: 0 } },
       ],
       [{ id: "e1", source: "trigger", target: "retry-node" }]
     );
@@ -202,7 +202,7 @@ describe("WorkflowEngine - retry logic", () => {
     const wf = makeSimpleWorkflow(
       [
         { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
-        { id: "retry-node", type: "test.retry_events", label: "Retry", config: { maxRetries: 3 } },
+        { id: "retry-node", type: "test.retry_events", label: "Retry", config: { maxRetries: 3, retryDelayMs: 0 } },
       ],
       [{ id: "e1", source: "trigger", target: "retry-node" }]
     );
@@ -352,12 +352,15 @@ describe("WorkflowEngine - run history details", () => {
     try {
       let releaseRun;
       const blocker = new Promise((resolve) => { releaseRun = resolve; });
+      let nodeEntered;
+      const nodeStarted = new Promise((resolve) => { nodeEntered = resolve; });
 
       registerNodeType("test.long_running", {
         describe: () => "Long running node for active-run visibility",
         schema: { type: "object", properties: {} },
         async execute(node, ctx) {
           ctx.log(node.id, "long running node entered");
+          nodeEntered();
           await blocker;
           return { ok: true };
         },
@@ -374,7 +377,9 @@ describe("WorkflowEngine - run history details", () => {
 
       engine.save(wf);
       const runPromise = engine.execute(wf.id, {});
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      // Wait for the long-running node to actually start, then add stuck threshold
+      await nodeStarted;
+      await new Promise((resolve) => setTimeout(resolve, 30));
 
       const history = engine.getRunHistory(wf.id, 10);
       const active = history.find((entry) => entry.status === WorkflowStatus.RUNNING);
@@ -598,5 +603,113 @@ describe("Template dedup on install", () => {
 
     // Install again - should throw
     expect(() => installTemplate("template-pr-merge-strategy", engine)).toThrow(/already installed/i);
+  });
+});
+
+// ── Retry Backoff Configuration Tests ───────────────────────────────────────
+
+describe("WorkflowEngine - configurable retry backoff", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("uses custom retryDelayMs for backoff base", async () => {
+    const backoffs = [];
+    let callCount = 0;
+    registerNodeType("test.custom_delay_fail", {
+      describe: () => "Fails with custom delay",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        callCount++;
+        throw new Error("fail");
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "node", type: "test.custom_delay_fail", label: "Fail", config: { maxRetries: 2, retryDelayMs: 0 } },
+      ],
+      [{ id: "e1", source: "trigger", target: "node" }]
+    );
+
+    engine.save(wf);
+    engine.on("node:retry", (ev) => backoffs.push(ev.backoffMs));
+    const start = Date.now();
+    await engine.execute(wf.id, {});
+    const elapsed = Date.now() - start;
+
+    expect(callCount).toBe(3);
+    // With retryDelayMs=0, backoff should be 0ms (0*2^0=0, 0*2^1=0)
+    expect(backoffs).toEqual([0, 0]);
+    // Total time should be well under 100ms (no 1s+ delays)
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it("defaults to 1000ms base when retryDelayMs not set", async () => {
+    const backoffs = [];
+    let callCount = 0;
+    registerNodeType("test.default_delay_fail", {
+      describe: () => "Fails with default delay",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        callCount++;
+        throw new Error("fail");
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "node", type: "test.default_delay_fail", label: "Fail", config: { maxRetries: 1 } },
+      ],
+      [{ id: "e1", source: "trigger", target: "node" }]
+    );
+
+    engine.save(wf);
+    engine.on("node:retry", (ev) => backoffs.push(ev.backoffMs));
+    await engine.execute(wf.id, {});
+
+    expect(callCount).toBe(2);
+    // Default backoff = 1000 * 2^0 = 1000ms
+    expect(backoffs).toEqual([1000]);
+  });
+});
+
+// ── Timer Cleanup Tests ─────────────────────────────────────────────────────
+
+describe("WorkflowEngine - timeout timer cleanup", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("does not leak timers when node completes before timeout", async () => {
+    registerNodeType("test.fast_node", {
+      describe: () => "Completes instantly",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        return { fast: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "fast", type: "test.fast_node", label: "Fast", config: { timeout: 60000 } },
+      ],
+      [{ id: "e1", source: "trigger", target: "fast" }]
+    );
+
+    engine.save(wf);
+    // If timers leaked, the 60s timeout timer would keep the process alive.
+    // We verify it completes quickly.
+    const start = Date.now();
+    const result = await engine.execute(wf.id, {});
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(result.errors.length).toBe(0);
+    const output = result.getNodeOutput("fast");
+    expect(output.fast).toBe(true);
   });
 });
