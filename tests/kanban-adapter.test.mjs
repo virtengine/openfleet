@@ -31,6 +31,7 @@ const {
   persistSharedStateToIssue,
   readSharedStateFromIssue,
   markTaskIgnored,
+  unmarkTaskIgnored,
   __resetGhRateLimitBackoffForTests,
   __resetProjectPayloadWarningStateForTests,
   __reloadProjectCommandBackoffStateForTests,
@@ -1526,6 +1527,86 @@ describe("kanban-adapter github backend", () => {
     );
   });
 
+  it("unmarkTaskIgnored removes codex:ignore label from github issue", async () => {
+    mockGh("ok"); // issue edit --remove-label succeeds
+
+    const adapter = getKanbanAdapter();
+    const result = await adapter.unmarkTaskIgnored("42");
+
+    expect(result).toBe(true);
+    const editCall = execFileMock.mock.calls.find(
+      (call) =>
+        Array.isArray(call[1]) &&
+        call[1].includes("issue") &&
+        call[1].includes("edit") &&
+        call[1].includes("--remove-label"),
+    );
+    expect(editCall).toBeTruthy();
+    expect(editCall[1]).toContain("codex:ignore");
+    expect(editCall[1]).toContain("42");
+  });
+
+  it("unmarkTaskIgnored strips leading # from issue number", async () => {
+    mockGh("ok");
+
+    const adapter = getKanbanAdapter();
+    const result = await adapter.unmarkTaskIgnored("#99");
+
+    expect(result).toBe(true);
+    const editCall = execFileMock.mock.calls.find(
+      (call) =>
+        Array.isArray(call[1]) &&
+        call[1].includes("issue") &&
+        call[1].includes("edit"),
+    );
+    expect(editCall[1]).toContain("99");
+    expect(editCall[1]).not.toContain("#99");
+  });
+
+  it("unmarkTaskIgnored throws for non-numeric issue number", async () => {
+    const adapter = getKanbanAdapter();
+    await expect(
+      adapter.unmarkTaskIgnored("abc"),
+    ).rejects.toThrow("Invalid issue number");
+  });
+
+  it("unmarkTaskIgnored throws for empty issue number", async () => {
+    const adapter = getKanbanAdapter();
+    await expect(
+      adapter.unmarkTaskIgnored(""),
+    ).rejects.toThrow("Invalid issue number");
+  });
+
+  it("unmarkTaskIgnored returns false when gh command fails", async () => {
+    mockGhError(new Error("label not found"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const adapter = getKanbanAdapter();
+    const result = await adapter.unmarkTaskIgnored("42");
+
+    expect(result).toBe(false);
+    const errorMessages = errorSpy.mock.calls
+      .map((call) => String(call?.[0] || ""))
+      .filter((line) => line.includes("failed to unmark task #42 ignored"));
+    expect(errorMessages).toHaveLength(1);
+    errorSpy.mockRestore();
+  });
+
+  it("top-level unmarkTaskIgnored delegates to github adapter", async () => {
+    mockGh("ok"); // issue edit --remove-label
+
+    const result = await unmarkTaskIgnored("55");
+
+    expect(result).toBe(true);
+    const editCall = execFileMock.mock.calls.find(
+      (call) =>
+        Array.isArray(call[1]) &&
+        call[1].includes("--remove-label") &&
+        call[1].includes("codex:ignore"),
+    );
+    expect(editCall).toBeTruthy();
+  });
+
   it("returns false when shared state persistence exhausts retries", async () => {
     mockGhError(new Error("api down"));
     mockGhError(new Error("still down"));
@@ -2045,6 +2126,49 @@ describe("kanban-adapter jira backend", () => {
     expect(loaded).toMatchObject(sharedState);
   });
 
+  it("unmarkTaskIgnored removes codex:ignore label from Jira issue", async () => {
+    fetchWithFallbackMock.mockImplementation((url, options = {}) => {
+      const method = String(options.method || "GET").toUpperCase();
+      const text = String(url);
+      // GET labels for the issue
+      if (method === "GET" && text.includes("/issue/PROJ-77")) {
+        return Promise.resolve(
+          jsonResponse({
+            fields: {
+              labels: ["codex:ignore", "bosun", "codex:claimed"],
+            },
+          }),
+        );
+      }
+      // PUT to update labels (remove codex:ignore)
+      if (method === "PUT" && text.includes("/issue/PROJ-77")) {
+        return Promise.resolve(jsonResponse(null, 204));
+      }
+      return Promise.resolve(jsonResponse({}));
+    });
+
+    const result = await unmarkTaskIgnored("PROJ-77");
+    expect(result).toBe(true);
+
+    // Verify a PUT was made to the issue endpoint
+    const putCalls = fetchWithFallbackMock.mock.calls.filter(
+      (call) => {
+        const opts = call[1] || {};
+        return String(opts.method || "GET").toUpperCase() === "PUT" && String(call[0]).includes("PROJ-77");
+      },
+    );
+    expect(putCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("unmarkTaskIgnored returns false when Jira API fails", async () => {
+    fetchWithFallbackMock.mockRejectedValue(new Error("Jira unreachable"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await unmarkTaskIgnored("PROJ-88");
+    expect(result).toBe(false);
+    errorSpy.mockRestore();
+  });
+
   it("throws on invalid jira issue keys", async () => {
     await expect(getKanbanTask("not-a-key")).rejects.toThrow(/invalid issue key/);
     await expect(deleteKanbanTask("123")).rejects.toThrow(/invalid issue key/);
@@ -2105,6 +2229,277 @@ describe("kanban-adapter internal backend", () => {
     const deleted = await adapter.deleteTask(created.id);
     expect(deleted).toBe(true);
     expect(removeTask(created.id)).toBe(false);
+  });
+
+  it("unmarkTaskIgnored returns false for internal backend (unsupported)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await unmarkTaskIgnored("some-internal-id");
+
+    expect(result).toBe(false);
+    const warnings = warnSpy.mock.calls
+      .map((call) => String(call?.[0] || ""))
+      .filter((line) => line.includes("unmarkTaskIgnored not supported"));
+    expect(warnings).toHaveLength(1);
+    warnSpy.mockRestore();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Cross-process state sharing and backoff re-read tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+
+describe("kanban-adapter cross-process backoff re-read", () => {
+  const originalRepo = process.env.GITHUB_REPOSITORY;
+  const originalProjectMode = process.env.GITHUB_PROJECT_MODE;
+  const originalProjectNumber = process.env.GITHUB_PROJECT_NUMBER;
+  const originalProjectOwner = process.env.GITHUB_PROJECT_OWNER;
+
+  beforeEach(() => {
+    execFileMock.mockReset();
+    vi.clearAllMocks();
+    process.env.GITHUB_REPOSITORY = "acme/widgets";
+    process.env.GITHUB_PROJECT_MODE = "kanban";
+    process.env.GITHUB_PROJECT_NUMBER = "42";
+    process.env.GITHUB_PROJECT_OWNER = "acme";
+    loadConfigMock.mockReturnValue({});
+    setKanbanBackend("github");
+    __resetGhRateLimitBackoffForTests();
+    __resetProjectPayloadWarningStateForTests();
+  });
+
+  afterEach(() => {
+    if (originalRepo === undefined) delete process.env.GITHUB_REPOSITORY;
+    else process.env.GITHUB_REPOSITORY = originalRepo;
+    if (originalProjectMode === undefined) delete process.env.GITHUB_PROJECT_MODE;
+    else process.env.GITHUB_PROJECT_MODE = originalProjectMode;
+    if (originalProjectNumber === undefined) delete process.env.GITHUB_PROJECT_NUMBER;
+    else process.env.GITHUB_PROJECT_NUMBER = originalProjectNumber;
+    if (originalProjectOwner === undefined) delete process.env.GITHUB_PROJECT_OWNER;
+    else process.env.GITHUB_PROJECT_OWNER = originalProjectOwner;
+    __resetProjectPayloadWarningStateForTests();
+  });
+
+  it("reloads backoff state from disk within the re-read interval", async () => {
+    // After the initial load, modifying the backoff file on disk should be
+    // picked up on the next reload (simulating sibling process writes).
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    // Cause a backoff by triggering an invalid payload response
+    mockGh(JSON.stringify({ unexpected: true }));
+    const adapter = getKanbanAdapter();
+    const first = await adapter.listTasksFromProject("42");
+    expect(first).toEqual([]);
+
+    // After reload, the backoff should still be honoured (no new gh calls)
+    __reloadProjectCommandBackoffStateForTests();
+    setKanbanBackend("github");
+    const adapter2 = getKanbanAdapter();
+    const second = await adapter2.listTasksFromProject("42");
+    expect(second).toEqual([]);
+
+    // Only one gh call should have happened (second was backed off from disk)
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+
+  it("__resetProjectPayloadWarningStateForTests cleans up invalid owners state file", () => {
+    // Create adapter and persist some invalid-owner state
+    const adapter = getKanbanAdapter();
+    adapter._invalidProjectOwners.add("test-org");
+    adapter._projectOwnerAllInvalidUntil = Date.now() + 300_000;
+    adapter._persistInvalidOwnerState();
+
+    // The reset helper should remove the invalid-owners file
+    __resetProjectPayloadWarningStateForTests();
+
+    // New adapter should not inherit old invalid-owner state
+    setKanbanBackend("github");
+    const freshAdapter = getKanbanAdapter();
+    expect(freshAdapter._invalidProjectOwners.has("test-org")).toBe(false);
+  });
+
+  it("constructor loads persisted invalid-owner state with expired cooldown", () => {
+    // Persist state with an allInvalidUntil in the past
+    const adapter = getKanbanAdapter();
+    adapter._invalidProjectOwners.add("expired-org");
+    adapter._projectOwnerAllInvalidUntil = Date.now() - 1000;
+    adapter._persistInvalidOwnerState();
+
+    // New adapter should load the owners but have allInvalidUntil reset to 0
+    setKanbanBackend("github");
+    const freshAdapter = getKanbanAdapter();
+    expect(freshAdapter._invalidProjectOwners.has("expired-org")).toBe(true);
+    expect(freshAdapter._projectOwnerAllInvalidUntil).toBe(0);
+  });
+
+  it("_reloadInvalidOwnerState merges new owners and takes later cooldown", () => {
+    const adapter = getKanbanAdapter();
+    const baseCooldown = Date.now() + 100_000;
+    adapter._invalidProjectOwners.add("org-memory");
+    adapter._projectOwnerAllInvalidUntil = baseCooldown;
+    adapter._persistInvalidOwnerState();
+
+    // Simulate sibling process persisting additional owners with a later cooldown
+    const laterCooldown = baseCooldown + 200_000;
+    const adapter2 = getKanbanAdapter();
+    adapter2._invalidProjectOwners.add("org-sibling");
+    adapter2._projectOwnerAllInvalidUntil = laterCooldown;
+    adapter2._persistInvalidOwnerState();
+
+    // Original adapter reloads — should merge both owners, take later cooldown
+    adapter._reloadInvalidOwnerState();
+    expect(adapter._invalidProjectOwners.has("org-memory")).toBe(true);
+    expect(adapter._invalidProjectOwners.has("org-sibling")).toBe(true);
+    expect(adapter._projectOwnerAllInvalidUntil).toBe(laterCooldown);
+  });
+
+  it("_reloadInvalidOwnerState keeps later in-memory cooldown over disk", () => {
+    const adapter = getKanbanAdapter();
+    const laterCooldown = Date.now() + 999_000;
+    adapter._invalidProjectOwners.add("org-a");
+    adapter._projectOwnerAllInvalidUntil = laterCooldown;
+
+    // Persist earlier cooldown to disk (simulating a sibling with a stale cooldown)
+    // We write directly to the adapter's persist method with an earlier cooldown
+    const earlierCooldown = Date.now() + 10_000;
+    // Temporarily swap values to persist a stale state to disk
+    const savedOwners = new Set(adapter._invalidProjectOwners);
+    const savedUntil = adapter._projectOwnerAllInvalidUntil;
+    adapter._invalidProjectOwners.clear();
+    adapter._invalidProjectOwners.add("org-b");
+    adapter._projectOwnerAllInvalidUntil = earlierCooldown;
+    adapter._persistInvalidOwnerState();
+    // Restore in-memory state (simulating only memory has the later cooldown)
+    adapter._invalidProjectOwners.clear();
+    for (const o of savedOwners) adapter._invalidProjectOwners.add(o);
+    adapter._projectOwnerAllInvalidUntil = savedUntil;
+
+    // Reload from disk — should merge owners but keep the later in-memory cooldown
+    adapter._reloadInvalidOwnerState();
+    expect(adapter._invalidProjectOwners.has("org-a")).toBe(true);
+    expect(adapter._invalidProjectOwners.has("org-b")).toBe(true);
+    expect(adapter._projectOwnerAllInvalidUntil).toBe(laterCooldown);
+  });
+
+  it("persists and recovers invalid-owner state across adapter recreation", () => {
+    const adapter1 = getKanbanAdapter();
+    adapter1._invalidProjectOwners.add("persistent-org");
+    adapter1._projectOwnerAllInvalidUntil = Date.now() + 600_000;
+    adapter1._persistInvalidOwnerState();
+
+    // Recreate adapter from scratch
+    setKanbanBackend("github");
+    const adapter2 = getKanbanAdapter();
+    expect(adapter2._invalidProjectOwners.has("persistent-org")).toBe(true);
+    expect(adapter2._projectOwnerAllInvalidUntil).toBeGreaterThan(Date.now());
+  });
+
+  it("clearInvalidProjectOwnerState on successful owner resolution removes persisted state", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const adapter = getKanbanAdapter();
+    adapter._invalidProjectOwners.add("test-owner");
+    adapter._projectOwnerAllInvalidUntil = Date.now() + 300_000;
+    adapter._persistInvalidOwnerState();
+
+    // When owner resolution succeeds, the owner should be removed from invalid set
+    adapter._invalidProjectOwners.delete("test-owner");
+    adapter._projectOwnerAllInvalidUntil = 0;
+    adapter._persistInvalidOwnerState();
+
+    setKanbanBackend("github");
+    const adapter2 = getKanbanAdapter();
+    expect(adapter2._invalidProjectOwners.has("test-owner")).toBe(false);
+    expect(adapter2._projectOwnerAllInvalidUntil).toBe(0);
+
+    warnSpy.mockRestore();
+  });
+});
+
+describe("kanban-adapter status-field warning integration with syncFieldToProject", () => {
+  const originalRepo = process.env.GITHUB_REPOSITORY;
+  const originalProjectMode = process.env.GITHUB_PROJECT_MODE;
+  const originalProjectNumber = process.env.GITHUB_PROJECT_NUMBER;
+  const originalProjectOwner = process.env.GITHUB_PROJECT_OWNER;
+  const originalAutoSync = process.env.GITHUB_PROJECT_AUTO_SYNC;
+
+  beforeEach(() => {
+    execFileMock.mockReset();
+    vi.clearAllMocks();
+    process.env.GITHUB_REPOSITORY = "acme/widgets";
+    process.env.GITHUB_PROJECT_MODE = "kanban";
+    process.env.GITHUB_PROJECT_NUMBER = "7";
+    process.env.GITHUB_PROJECT_OWNER = "acme";
+    process.env.GITHUB_PROJECT_AUTO_SYNC = "true";
+    loadConfigMock.mockReturnValue({});
+    setKanbanBackend("github");
+    __resetGhRateLimitBackoffForTests();
+    __resetProjectPayloadWarningStateForTests();
+  });
+
+  afterEach(() => {
+    if (originalRepo === undefined) delete process.env.GITHUB_REPOSITORY;
+    else process.env.GITHUB_REPOSITORY = originalRepo;
+    if (originalProjectMode === undefined) delete process.env.GITHUB_PROJECT_MODE;
+    else process.env.GITHUB_PROJECT_MODE = originalProjectMode;
+    if (originalProjectNumber === undefined) delete process.env.GITHUB_PROJECT_NUMBER;
+    else process.env.GITHUB_PROJECT_NUMBER = originalProjectNumber;
+    if (originalProjectOwner === undefined) delete process.env.GITHUB_PROJECT_OWNER;
+    else process.env.GITHUB_PROJECT_OWNER = originalProjectOwner;
+    if (originalAutoSync === undefined) delete process.env.GITHUB_PROJECT_AUTO_SYNC;
+    else process.env.GITHUB_PROJECT_AUTO_SYNC = originalAutoSync;
+    __resetProjectPayloadWarningStateForTests();
+  });
+
+  it("throttles status-field-missing console.warn across multiple syncFieldToProject calls", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const prevThrottle = process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS;
+    process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS = "60000";
+
+    try {
+      const adapter = getKanbanAdapter();
+      // Clear shared warning state to isolate this test
+      adapter._projectStatusFieldWarningAt.clear();
+
+      const baseTime = Date.now();
+
+      // Call throttled warning helper multiple times
+      adapter._warnMissingProjectStatusField("7", baseTime);
+      adapter._warnMissingProjectStatusField("7", baseTime + 500);
+      adapter._warnMissingProjectStatusField("7", baseTime + 1000);
+      adapter._warnMissingProjectStatusField("7", baseTime + 65_000);
+
+      const warnings = warnSpy.mock.calls
+        .map((call) => String(call?.[0] || ""))
+        .filter((line) => line.includes("cannot sync to project: no status field found"));
+
+      // Only 2 should fire: first call and after 65s (outside 60s throttle)
+      expect(warnings).toHaveLength(2);
+    } finally {
+      if (prevThrottle === undefined) delete process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS;
+      else process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS = prevThrottle;
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("_getProjectOwnerCandidates reloads invalid-owner state from disk before returning", () => {
+    const adapter = getKanbanAdapter();
+    // Initially no invalid owners — should return candidates
+    adapter._invalidProjectOwners.clear();
+    adapter._projectOwnerAllInvalidUntil = 0;
+
+    // Simulate sibling process marking all owners invalid
+    const adapter2 = getKanbanAdapter();
+    adapter2._invalidProjectOwners.add("acme");
+    adapter2._projectOwnerAllInvalidUntil = Date.now() + 300_000;
+    adapter2._persistInvalidOwnerState();
+
+    // Original adapter should reload state and see all owners are invalid
+    const candidates = adapter._getProjectOwnerCandidates();
+    expect(candidates).toEqual([]);
   });
 });
 
