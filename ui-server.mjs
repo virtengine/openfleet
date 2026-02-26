@@ -525,6 +525,28 @@ async function readPlannerTemplateState() {
   }
 }
 
+function resolveTriggerStatsTimeoutMs() {
+  const parsed = Number(process.env.TELEGRAM_UI_TRIGGER_STATS_TIMEOUT_MS);
+  if (Number.isFinite(parsed) && parsed >= 100) return parsed;
+  return 1200;
+}
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function getTemplateIdFromTask(task = {}) {
   return String(task?.meta?.triggerTemplate?.id || "")
     .trim()
@@ -550,12 +572,21 @@ async function collectTriggerTemplateTaskStats(templates = []) {
 
   try {
     const adapter = getKanbanAdapter();
-    const projects = await adapter.listProjects();
+    const timeoutMs = resolveTriggerStatsTimeoutMs();
+    const projects = await withTimeout(
+      adapter.listProjects(),
+      timeoutMs,
+      "trigger stats listProjects",
+    );
     const activeProject =
       projects?.[0]?.id || projects?.[0]?.project_id || "";
     if (!activeProject) return statsByTemplateId;
 
-    const tasks = await adapter.listTasks(activeProject, {});
+    const tasks = await withTimeout(
+      adapter.listTasks(activeProject, {}),
+      timeoutMs,
+      "trigger stats listTasks",
+    );
     const taskById = new Map();
 
     for (const task of tasks) {
@@ -3541,6 +3572,19 @@ function summarizeTelemetry(metrics, days) {
   };
 }
 
+function resolveAgentWorkLogDir() {
+  const candidates = [
+    resolve(repoRoot, ".cache", "agent-work-logs"),
+    // Legacy path used by older task-executor builds.
+    resolve(repoRoot, "..", "..", ".cache", "agent-work-logs"),
+    resolve(repoRoot, "..", ".cache", "agent-work-logs"),
+  ];
+  for (const dir of candidates) {
+    if (existsSync(dir)) return dir;
+  }
+  return candidates[0];
+}
+
 async function listAgentLogFiles(query = "", limit = 60) {
   const entries = [];
   const agentLogsDir = await resolveAgentLogsDir();
@@ -4869,7 +4913,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/telemetry/summary") {
     try {
       const days = Number(url.searchParams.get("days") || "7");
-      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const logDir = resolveAgentWorkLogDir();
       const metricsPath = resolve(logDir, "agent-metrics.jsonl");
       const metrics = await readJsonlTail(metricsPath, 3000);
       const summary = summarizeTelemetry(metrics, days);
@@ -4883,7 +4927,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/telemetry/errors") {
     try {
       const days = Number(url.searchParams.get("days") || "7");
-      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const logDir = resolveAgentWorkLogDir();
       const errorsPath = resolve(logDir, "agent-errors.jsonl");
       const errors = (await readJsonlTail(errorsPath, 2000)).filter((e) =>
         withinDays(e, days),
@@ -4907,7 +4951,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/telemetry/executors") {
     try {
       const days = Number(url.searchParams.get("days") || "7");
-      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const logDir = resolveAgentWorkLogDir();
       const metricsPath = resolve(logDir, "agent-metrics.jsonl");
       const metrics = await readJsonlTail(metricsPath, 3000);
       const summary = summarizeTelemetry(metrics, days);
@@ -4924,7 +4968,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/telemetry/alerts") {
     try {
       const days = Number(url.searchParams.get("days") || "7");
-      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const logDir = resolveAgentWorkLogDir();
       const alertsPath = resolve(logDir, "agent-alerts.jsonl");
       const alerts = (await readJsonlTail(alertsPath, 500)).filter((a) =>
         withinDays(a, days),
@@ -6085,12 +6129,6 @@ async function handleApi(req, res, url) {
         return;
       }
       const status = executor.getStatus?.() || {};
-      const freeSlots =
-        (status.maxParallel || 0) - (status.activeSlots || 0);
-      if (freeSlots <= 0) {
-        jsonResponse(res, 409, { ok: false, error: "No free slots" });
-        return;
-      }
       if (taskId) {
         const adapter = getKanbanAdapter();
         const task = await adapter.getTask(taskId);
