@@ -27,6 +27,41 @@ const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000; // 60 min for agentic tasks (matches 
 const STATE_FILE = resolve(__dirname, "logs", "codex-shell-state.json");
 const SESSIONS_DIR = resolve(__dirname, "logs", "sessions");
 const MAX_PERSISTENT_TURNS = 50;
+
+// ── Payload safety ────────────────────────────────────────────────────────────
+// The Codex API rejects JSON bodies with malformed or oversized strings.
+// 180 KB is a safe ceiling; the API hard-errors around 200–400 KB payloads
+// that contain embedded content with unescaped characters.
+const MAX_PROMPT_BYTES = 180_000;
+
+/**
+ * Strip ASCII control characters (except \n/\t) that corrupt JSON serialization,
+ * then truncate the UTF-8 byte length to MAX_PROMPT_BYTES.
+ * These two faults cause the two observed invalid_request_error variants:
+ *   • unescaped control chars   → '}' is invalid after a property name
+ *   • oversized body truncation → Expected end of string / end of data
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function sanitizeAndTruncatePrompt(text) {
+  if (typeof text !== "string") return "";
+  // Remove control characters that JSON.stringify would have to escape but
+  // the Codex SDK may inline-inject without escaping (\x00-\x08, \x0b-\x0c, \x0e-\x1f, \x7f)
+  // eslint-disable-next-line no-control-regex
+  const sanitized = text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+  // Fast-path: most prompts are well under the limit
+  const bytes = Buffer.byteLength(sanitized, "utf8");
+  if (bytes <= MAX_PROMPT_BYTES) return sanitized;
+  // Truncate to MAX_PROMPT_BYTES bytes while respecting multi-byte char boundaries
+  const buf = Buffer.from(sanitized, "utf8").slice(0, MAX_PROMPT_BYTES);
+  const truncated = buf.toString("utf8");
+  const removedBytes = bytes - MAX_PROMPT_BYTES;
+  console.warn(
+    `[codex-shell] prompt truncated: ${bytes} → ${MAX_PROMPT_BYTES} bytes (removed ${removedBytes} bytes) to avoid invalid_request_error`,
+  );
+  return truncated + `\n\n[...prompt truncated — ${removedBytes} bytes removed to stay within API limits]`;
+}
 const REPO_ROOT = resolveRepoRoot();
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -222,7 +257,7 @@ const THREAD_OPTIONS = {
   skipGitRepoCheck: true,
   webSearchMode: "live",
   approvalPolicy: "never",
-  // Note: sub-agent features (child_agents_md, multi_agent, memory_tool, etc.)
+  // Note: sub-agent features (child_agents_md, multi_agent, memories, etc.)
   // are configured via ~/.codex/config.toml [features] section, not SDK ThreadOptions.
   // codex-config.mjs ensureFeatureFlags() handles this during setup.
 };
@@ -248,7 +283,7 @@ async function getThread() {
         features: {
           child_agents_md: true,
           multi_agent: true,
-          memory_tool: true,
+          memories: true,
           undo: true,
           steer: true,
         },
@@ -436,7 +471,17 @@ function formatEvent(event) {
 function isRecoverableThreadError(err) {
   const message = err?.message || String(err || "");
   const lower = message.toLowerCase();
+  // JSON body parse failures from the Codex API — thread state is corrupt;
+  // reset and retry with a fresh thread (the sanitizeAndTruncatePrompt guard
+  // on the next attempt will prevent recurrence).
+  const isJsonBodyError =
+    lower.includes("failed to parse request body as json") ||
+    lower.includes("bytepositioninline") ||
+    lower.includes("expected end of string") ||
+    lower.includes("is invalid after a property name") ||
+    (lower.includes("invalid_request_error") && lower.includes("json"));
   return (
+    isJsonBodyError ||
     lower.includes("invalid_encrypted_content") ||
     lower.includes("could not be verified") ||
     lower.includes("state db missing rollout path") ||
@@ -521,7 +566,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
         );
         prompt = `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.`;
       } else {
-        prompt = `# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.`;
+        prompt = `${userMessage}\n\n\n# YOUR TASK — EXECUTE NOW\n\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output & complete the user's request E2E.`;
       }
 
       // Set up timeout
@@ -529,8 +574,12 @@ export async function execCodexPrompt(userMessage, options = {}) {
       const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
 
       try {
+        // Sanitize & size-guard before sending — prevents invalid_request_error
+        // from oversized bodies (BytePositionInLine > 80 000) or control chars.
+        const safePrompt = sanitizeAndTruncatePrompt(prompt);
+
         // Use runStreamed for real-time event streaming
-        const streamedTurn = await thread.runStreamed(prompt, {
+        const streamedTurn = await thread.runStreamed(safePrompt, {
           signal: controller.signal,
         });
 
@@ -747,7 +796,7 @@ export async function initCodexShell() {
         features: {
           child_agents_md: true,
           multi_agent: true,
-          memory_tool: true,
+          memories: true,
           undo: true,
           steer: true,
         },

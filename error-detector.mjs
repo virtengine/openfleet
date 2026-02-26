@@ -71,6 +71,11 @@ export const REQUEST_ERROR_PATTERNS = [
   /request.*too.*large|payload.*too.*large/i,     // 413 without token context
   /404 Not Found/i,                                // wrong endpoint URL
   /invalid.*endpoint|endpoint.*not.*found/i,
+  // Codex API: JSON body parse failures — oversized or control-char-corrupted payload
+  /Failed to parse request body as json/i,
+  /BytePositionInLine/i,
+  /Expected end of string.*end of data/i,
+  /is invalid after a property name.*Expected a ':'/i,
 ];
 
 const SESSION_EXPIRED_PATTERNS = [

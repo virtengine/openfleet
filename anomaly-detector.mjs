@@ -197,6 +197,11 @@ const RE_TOKEN_OVERFLOW =
 const STR_MODEL_NOT_SUPPORTED =
   "CAPIError: 400 The requested model is not supported";
 
+// P0: JSON body parse failure — oversized payload or control-char corruption
+// Example: "Failed to parse request body as json with error: ... BytePositionInLine: 81998"
+const RE_INVALID_REQUEST_JSON =
+  /Failed to parse request body as json|BytePositionInLine:\s*\d{4,}/;
+
 // P1: Stream death
 const STR_STREAM_DEATH = "Stream completed without a response.completed event";
 
@@ -434,6 +439,9 @@ export class AnomalyDetector {
       this.#detectTokenOverflow(line, state);
       this.#detectModelNotSupported(line, state);
     }
+    if (RE_INVALID_REQUEST_JSON.test(line)) {
+      this.#detectInvalidRequestJson(line, state);
+    }
     if (line.includes("Stream completed")) {
       this.#detectStreamDeath(line, state);
     }
@@ -598,6 +606,34 @@ export class AnomalyDetector {
       message: `Token overflow: ${tokenCount.toLocaleString()} tokens vs ${limit.toLocaleString()} limit (+${(tokenCount - limit).toLocaleString()} over)`,
       data: { tokenCount, limit, overflow: tokenCount - limit },
       action: "kill",
+    });
+  }
+
+  /**
+   * P0: Codex API rejected request body as malformed JSON.
+   * Two variants:
+   *   1. Oversized payload (~1.5 MB) — body truncated mid-stream → "Expected end of string"
+   *   2. Unescaped control chars (~82 KB) — '}' invalid in property position
+   * Both mean the current thread/session state must be reset.
+   * codex-shell.mjs sanitizeAndTruncatePrompt() prevents recurrence on next attempt.
+   */
+  #detectInvalidRequestJson(line, state) {
+    if (!RE_INVALID_REQUEST_JSON.test(line)) return;
+
+    // Extract byte position if present for richer diagnostics
+    const byteMatch = /BytePositionInLine:\s*(\d+)/i.exec(line);
+    const bytePos = byteMatch ? parseInt(byteMatch[1], 10) : null;
+    const sizeHint = bytePos ? ` (payload byte pos ${bytePos.toLocaleString()})` : "";
+
+    this.#emit({
+      type: AnomalyType.REPEATED_ERROR,  // closest existing type; conveys "bad payload"
+      severity: Severity.HIGH,
+      processId: state.processId,
+      shortId: state.shortId,
+      taskTitle: state.taskTitle,
+      message: `Codex API invalid_request_error: malformed JSON body${sizeHint} — prompt too large or contains unescaped control chars. Thread will be reset on next attempt.`,
+      data: { bytePos, line: line.slice(0, 200) },
+      action: "warn",
     });
   }
 
