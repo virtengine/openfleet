@@ -81,6 +81,7 @@ function showHelp() {
     --no-auto-update            Disable background auto-update polling
     --daemon, -d                Run as a background daemon (detached, with PID file)
     --stop-daemon               Stop a running daemon process
+    --terminate                 Hard-stop all bosun processes (daemon + monitor + companions)
     --daemon-status             Check if daemon is running
 
   ORCHESTRATOR
@@ -674,6 +675,122 @@ function daemonStatus() {
   process.exit(0);
 }
 
+function findAllBosunProcessPids() {
+  const patterns = [
+    "cli.mjs",
+    "monitor.mjs",
+    "telegram-bot.mjs",
+    "telegram-sentinel.mjs",
+    "ui-server.mjs",
+  ];
+  const joined = patterns.join("|");
+  if (process.platform === "win32") {
+    try {
+      const out = execFileSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          `Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^node(\\.exe)?$' -and $_.CommandLine -match '${joined.replace(/\|/g, "|")}' } | Select-Object -ExpandProperty ProcessId`,
+        ],
+        { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 4000 },
+      ).trim();
+      if (!out) return [];
+      return out
+        .split(/\r?\n/)
+        .map((s) => Number.parseInt(String(s).trim(), 10))
+        .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+    } catch {
+      return [];
+    }
+  }
+  try {
+    const out = execFileSync("pgrep", ["-f", joined], {
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 4000,
+    }).trim();
+    if (!out) return [];
+    return out
+      .split(/\r?\n/)
+      .map((s) => Number.parseInt(String(s).trim(), 10))
+      .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+  } catch {
+    return [];
+  }
+}
+
+function removeKnownPidFiles() {
+  const pidFiles = [
+    DAEMON_PID_FILE,
+    PID_FILE,
+    SENTINEL_PID_FILE,
+    SENTINEL_PID_FILE_LEGACY,
+    resolve(__dirname, "..", ".cache", "bosun.pid"),
+    resolve(process.cwd(), ".cache", "bosun.pid"),
+  ];
+  for (const pidFile of pidFiles) {
+    try {
+      if (existsSync(pidFile)) unlinkSync(pidFile);
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
+function terminateBosun() {
+  const tracked = [
+    getDaemonPid(),
+    readAlivePid(PID_FILE),
+    readAlivePid(SENTINEL_PID_FILE),
+    readAlivePid(SENTINEL_PID_FILE_LEGACY),
+  ].filter((pid) => Number.isFinite(pid) && pid > 0);
+  const ghosts = findGhostDaemonPids();
+  const scanned = findAllBosunProcessPids();
+  const allPids = Array.from(new Set([...tracked, ...ghosts, ...scanned])).filter(
+    (pid) => pid !== process.pid,
+  );
+  if (allPids.length === 0) {
+    removeKnownPidFiles();
+    console.log("  No running bosun processes found.");
+    process.exit(0);
+    return;
+  }
+
+  console.log(`  Terminating ${allPids.length} bosun process(es): ${allPids.join(", ")}`);
+  for (const pid of allPids) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      /* already dead */
+    }
+  }
+
+  const deadline = Date.now() + 5000;
+  let alive = allPids.filter((pid) => isProcessAlive(pid));
+  while (alive.length > 0 && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+    alive = alive.filter((pid) => isProcessAlive(pid));
+  }
+
+  for (const pid of alive) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* already dead */
+    }
+  }
+  removeKnownPidFiles();
+  const killed = allPids.length - alive.length;
+  console.log(`  ✓ Terminated ${killed}/${allPids.length} process(es).`);
+  if (alive.length > 0) {
+    console.log(`  ⚠️  Still alive: ${alive.join(", ")}`);
+    process.exit(1);
+    return;
+  }
+  process.exit(0);
+}
+
 async function main() {
   // Apply legacy CODEX_MONITOR_* → BOSUN_* env aliases before any config ops
   applyAllCompatibility();
@@ -791,6 +908,10 @@ async function main() {
   }
   if (args.includes("--stop-daemon")) {
     stopDaemon();
+    return;
+  }
+  if (args.includes("--terminate")) {
+    terminateBosun();
     return;
   }
   if (args.includes("--daemon-status")) {
@@ -1500,4 +1621,3 @@ main().catch(async (err) => {
   await sendCrashNotification(1, null).catch(() => {});
   process.exit(1);
 });
-

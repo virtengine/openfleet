@@ -6136,7 +6136,7 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 404, { ok: false, error: "Task not found." });
           return;
         }
-        executor.executeTask(task).catch((error) => {
+        executor.executeTask(task, { force: true }).catch((error) => {
           console.warn(
             `[telegram-ui] dispatch failed for ${taskId}: ${error.message}`,
           );
