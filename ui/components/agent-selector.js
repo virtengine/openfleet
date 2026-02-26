@@ -75,26 +75,34 @@ const AGENT_ICONS = {
   "claude-sdk": "cpu",
 };
 
+// Mirrors EXECUTOR_MODEL_REGISTRY in task-complexity.mjs — keep in sync
 const AGENT_MODELS = {
   "codex-sdk": [
     { value: "", label: "Default" },
-    { value: "o4-mini", label: "o4-mini" },
-    { value: "o3", label: "o3" },
-    { value: "gpt-4.1", label: "GPT-4.1" },
-    { value: "gpt-4.1-mini", label: "GPT-4.1 Mini" },
-    { value: "gpt-4.1-nano", label: "GPT-4.1 Nano" },
+    { value: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
+    { value: "gpt-5.2-codex", label: "GPT-5.2 Codex" },
+    { value: "gpt-5.1-codex", label: "GPT-5.1 Codex" },
+    { value: "gpt-5.1-codex-mini", label: "GPT-5.1 Codex Mini" },
+    { value: "gpt-5.1-codex-max", label: "GPT-5.1 Codex Max" },
   ],
   "copilot-sdk": [
     { value: "", label: "Default" },
-    { value: "claude-sonnet-4", label: "Claude Sonnet 4" },
-    { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-    { value: "gpt-4.1", label: "GPT-4.1" },
-    { value: "o4-mini", label: "o4-mini" },
+    { value: "claude-opus-4.6", label: "Claude Opus 4.6" },
+    { value: "claude-sonnet-4.6", label: "Claude Sonnet 4.6" },
+    { value: "claude-sonnet-4.5", label: "Claude Sonnet 4.5" },
+    { value: "claude-haiku-4.5", label: "Claude Haiku 4.5" },
+    { value: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
+    { value: "gpt-5.2-codex", label: "GPT-5.2 Codex" },
+    { value: "gpt-5.1-codex", label: "GPT-5.1 Codex" },
+    { value: "gpt-5.1-codex-mini", label: "GPT-5.1 Codex Mini" },
   ],
   "claude-sdk": [
     { value: "", label: "Default" },
-    { value: "claude-sonnet-4-20250514", label: "Sonnet 4" },
-    { value: "claude-opus-4-20250514", label: "Opus 4" },
+    { value: "claude-opus-4.6", label: "Claude Opus 4.6" },
+    { value: "claude-sonnet-4.6", label: "Claude Sonnet 4.6" },
+    { value: "claude-sonnet-4.5", label: "Claude Sonnet 4.5" },
+    { value: "claude-haiku-4.5", label: "Claude Haiku 4.5" },
+    { value: "claude-code", label: "Claude Code" },
   ],
 };
 
@@ -593,13 +601,14 @@ const AGENT_SELECTOR_STYLES = `
   color: var(--tg-theme-text-color, #fff);
   font-size: 12px;
   font-weight: 500;
-  padding: 5px 28px 5px 28px;
+  padding: 5px 22px 5px 10px;
   cursor: pointer;
-  min-width: 120px;
+  min-width: 100px;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%23999' d='M1 3l4 4 4-4'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 8px center;
+  background-position: right 6px center;
   transition: border-color 0.2s ease;
+  flex-shrink: 0;
 }
 .agent-picker-native:hover {
   border-color: rgba(255,255,255,0.15);
@@ -612,6 +621,30 @@ const AGENT_SELECTOR_STYLES = `
   background: #1a1a2e;
   color: #fff;
 }
+
+/* ── Toolbar Select — mode & model pickers ── */
+.toolbar-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--tg-theme-secondary-bg-color, #1e1e2e);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  color: var(--tg-theme-text-color, #fff);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 22px 5px 10px;
+  cursor: pointer;
+  min-width: 72px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%23999' d='M1 3l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+  transition: border-color 0.2s ease;
+  flex-shrink: 0;
+}
+.toolbar-select:hover { border-color: rgba(255,255,255,0.15); }
+.toolbar-select:focus { outline: none; border-color: var(--tg-theme-button-color, #3b82f6); }
+.toolbar-select option { background: #1a1a2e; color: #fff; }
+.toolbar-select--wide { min-width: 110px; }
 `;
 
 let _agentStylesInjected = false;
@@ -694,128 +727,62 @@ async function setAgentMode(mode) {
 
 /* ═══════════════════════════════════════════════
  *  AgentModeSelector
- *  Compact icon-based dropdown: Ask | Agent | Plan
+ *  Native select: Ask | Agent | Plan
  * ═══════════════════════════════════════════════ */
 
 export function AgentModeSelector() {
   const currentMode = agentMode.value;
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
 
-  const current = MODES.find((m) => m.id === currentMode) || MODES[1];
-
-  const handleSelect = useCallback((mode) => {
+  const handleChange = useCallback((e) => {
+    const mode = e.target.value;
     if (mode === agentMode.value) return;
     haptic("light");
     setAgentMode(mode);
-    setOpen(false);
   }, []);
 
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
   return html`
-    <div class="icon-dropdown-wrap" ref=${ref}>
-      <button
-        class="icon-dropdown-btn ${open ? "open" : ""}"
-        onClick=${() => setOpen(!open)}
-        title=${current.description}
-        aria-haspopup="listbox"
-        aria-expanded=${open}
-      >
-        <span class="dd-icon">${resolveIcon(current.icon) || current.icon}</span>
-        <span class="dd-label">${current.label}</span>
-        <span class="dd-chevron">▾</span>
-      </button>
-      ${open && html`
-        <div class="icon-dropdown-menu" role="listbox" aria-label="Agent mode">
-          ${MODES.map((m) => html`
-            <button
-              key=${m.id}
-              class="icon-dropdown-item ${currentMode === m.id ? "active" : ""}"
-              role="option"
-              aria-selected=${currentMode === m.id}
-              onClick=${() => handleSelect(m.id)}
-            >
-              <span class="item-icon">${resolveIcon(m.icon) || m.icon}</span>
-              ${m.label}
-              ${currentMode === m.id && html`<span class="item-check">✓</span>`}
-            </button>
-          `)}
-        </div>
-      `}
-    </div>
+    <select
+      class="toolbar-select"
+      value=${currentMode}
+      onChange=${handleChange}
+      title="Agent interaction mode"
+    >
+      ${MODES.map((m) => html`
+        <option key=${m.id} value=${m.id}>${m.label}</option>
+      `)}
+    </select>
   `;
 }
 
 /* ═══════════════════════════════════════════════
  *  ModelPicker
- *  Compact icon-based dropdown for model selection
+ *  Native select for model selection
  * ═══════════════════════════════════════════════ */
 
 export function ModelPicker() {
   const current = activeAgent.value;
   const model = selectedModel.value;
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
 
   const models = AGENT_MODELS[current] || AGENT_MODELS["codex-sdk"];
-  const currentModel = models.find((m) => m.value === model) || models[0];
 
-  const handleSelect = useCallback((value) => {
+  const handleChange = useCallback((e) => {
+    const value = e.target.value;
     selectedModel.value = value;
     try { localStorage.setItem("ve-selected-model", value); } catch {}
     haptic("light");
-    setOpen(false);
   }, []);
 
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
   return html`
-    <div class="icon-dropdown-wrap" ref=${ref}>
-      <button
-        class="icon-dropdown-btn ${open ? "open" : ""}"
-        onClick=${() => setOpen(!open)}
-        title="Model: ${currentModel.label}"
-        aria-haspopup="listbox"
-        aria-expanded=${open}
-      >
-        <span class="dd-icon">${resolveIcon("cpu") || "⚙"}</span>
-        <span class="dd-label">${currentModel.label}</span>
-        <span class="dd-chevron">▾</span>
-      </button>
-      ${open && html`
-        <div class="icon-dropdown-menu" role="listbox" aria-label="Model selection">
-          ${models.map((m) => html`
-            <button
-              key=${m.value}
-              class="icon-dropdown-item ${model === m.value ? "active" : ""}"
-              role="option"
-              aria-selected=${model === m.value}
-              onClick=${() => handleSelect(m.value)}
-            >
-              ${m.label}
-              ${model === m.value && html`<span class="item-check">✓</span>`}
-            </button>
-          `)}
-        </div>
-      `}
-    </div>
+    <select
+      class="toolbar-select toolbar-select--wide"
+      value=${model}
+      onChange=${handleChange}
+      title="Model selection"
+    >
+      ${models.map((m) => html`
+        <option key=${m.value} value=${m.value}>${m.label}</option>
+      `)}
+    </select>
   `;
 }
 
@@ -836,33 +803,26 @@ export function AgentPicker() {
     switchAgent(agentId);
   }, []);
 
-  const currentIcon = AGENT_ICONS[current] || "zap";
-
   return html`
-    <div class="agent-picker-wrap">
-      <span class="picker-icon" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:13px;pointer-events:none;z-index:1">
-        ${resolveIcon(currentIcon) || currentIcon}
-      </span>
-      <select
-        class="agent-picker-native"
-        value=${current}
-        onChange=${handleChange}
-        disabled=${loading}
-        title="Select AI agent"
-      >
-        ${agents.length === 0 && html`
-          <option disabled>${loading ? "Loading…" : "No agents"}</option>
-        `}
-        ${agents.map((agent) => {
-          const statusLabel = agent.busy ? " (busy)" : !agent.available ? " (offline)" : "";
-          return html`
-            <option key=${agent.id} value=${agent.id}>
-              ${agent.name} · ${agent.provider}${statusLabel}
-            </option>
-          `;
-        })}
-      </select>
-    </div>
+    <select
+      class="agent-picker-native"
+      value=${current}
+      onChange=${handleChange}
+      disabled=${loading}
+      title="Select AI agent"
+    >
+      ${agents.length === 0 && html`
+        <option disabled>${loading ? "Loading…" : "No agents"}</option>
+      `}
+      ${agents.map((agent) => {
+        const statusLabel = agent.busy ? " (busy)" : !agent.available ? " (offline)" : "";
+        return html`
+          <option key=${agent.id} value=${agent.id}>
+            ${agent.name} · ${agent.provider}${statusLabel}
+          </option>
+        `;
+      })}
+    </select>
   `;
 }
 
@@ -916,7 +876,6 @@ function YoloToggle() {
         : 'Enable Yolo mode — agent will skip confirmation prompts'}
       aria-pressed=${isYolo}
     >
-      <span class="yolo-checkbox" aria-hidden="true"></span>
       <span class="yolo-icon">⚡</span>
       Yolo
     </button>

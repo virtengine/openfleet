@@ -678,6 +678,23 @@ async function pollAgentAlerts() {
         }),
       );
     }
+
+    // Act on high-error alerts: apply a cooldown so the task-executor does not
+    // immediately restart the same session against an API that is failing.
+    if (alert.type === "failed_session_high_errors" && alert.task_id && internalTaskExecutor) {
+      try {
+        const taskId = alert.task_id;
+        const cooldownUntil = Date.now() + 15 * 60_000; // 15-minute cooldown
+        if (typeof internalTaskExecutor.applyTaskCooldown === "function") {
+          internalTaskExecutor.applyTaskCooldown(taskId, cooldownUntil);
+        } else if (internalTaskExecutor._skipUntil instanceof Map) {
+          internalTaskExecutor._skipUntil.set(taskId, cooldownUntil);
+        }
+        console.warn(
+          `[monitor] 15m cooldown applied to task ${taskId} after ${alert.error_count || "?"} API errors (executor: ${alert.executor || "unknown"})`,
+        );
+      } catch { /* best effort */ }
+    }
   }
   saveAgentAlertsState();
 }
@@ -1500,11 +1517,11 @@ const ALLOW_INTERNAL_RUNTIME_RESTARTS = isTruthyFlag(
 );
 const SELF_RESTART_DEFER_HARD_CAP = Math.max(
   1,
-  Number(process.env.SELF_RESTART_DEFER_HARD_CAP || "20") || 20,
+  Number(process.env.SELF_RESTART_DEFER_HARD_CAP || "6") || 6,
 );
 const SELF_RESTART_MAX_DEFER_MS = Math.max(
   60_000,
-  Number(process.env.SELF_RESTART_MAX_DEFER_MS || "600000") || 600000,
+  Number(process.env.SELF_RESTART_MAX_DEFER_MS || "180000") || 180000,
 );
 const SELF_RESTART_FORCE_ACTIVE_SLOT_MIN_AGE_MS = Math.max(
   60_000,
@@ -4784,12 +4801,39 @@ async function isBranchMerged(branch, baseBranch) {
     const baseRef = `${baseInfo.remote}/${baseInfo.name}`;
     const ghHead = branchInfo.name || branch;
 
-    // ── Strategy 1: Check GitHub for a merged PR with this head branch ──
-    // This is the most reliable signal — if GitHub says merged, it's merged.
+    // ── Strategy 1: Check GitHub PR state for this head branch ───────────
+    // Open PR always wins over historical merged PRs for the same head.
+    // A branch can have an old merged PR and a newer open PR with fresh commits.
+    // In that case, treat as NOT merged.
     if (ghAvailable()) {
       try {
+        const openResult = execSync(
+          `gh pr list --head "${ghHead}" --state open --json number,baseRefName --limit 10`,
+          {
+            cwd: repoRoot,
+            encoding: "utf8",
+            stdio: ["pipe", "pipe", "ignore"],
+            timeout: 15000,
+          },
+        ).trim();
+        const openPRs = JSON.parse(openResult || "[]");
+        const hasOpenForTarget = openPRs.some((pr) => {
+          const prBase = normalizeBranchName(pr?.baseRefName);
+          return !prBase || prBase === baseInfo.name;
+        });
+        if (hasOpenForTarget || openPRs.length > 0) {
+          console.log(
+            `[monitor] Branch ${branch} has open PR(s) — treating as NOT merged`,
+          );
+          return false;
+        }
+      } catch {
+        // best-effort
+      }
+
+      try {
         const ghResult = execSync(
-          `gh pr list --head "${ghHead}" --state merged --json number,mergedAt --limit 1`,
+          `gh pr list --head "${ghHead}" --base "${baseInfo.name}" --state merged --json number,mergedAt --limit 1`,
           {
             cwd: repoRoot,
             encoding: "utf8",
@@ -4805,7 +4849,27 @@ async function isBranchMerged(branch, baseBranch) {
           return true;
         }
       } catch {
-        // gh failed — fall through to git-based checks
+        // Fallback for older gh variants / edge cases that reject --base here.
+        try {
+          const ghResult = execSync(
+            `gh pr list --head "${ghHead}" --state merged --json number,mergedAt --limit 1`,
+            {
+              cwd: repoRoot,
+              encoding: "utf8",
+              stdio: ["pipe", "pipe", "ignore"],
+              timeout: 15000,
+            },
+          ).trim();
+          const mergedPRs = JSON.parse(ghResult || "[]");
+          if (mergedPRs.length > 0) {
+            console.log(
+              `[monitor] Branch ${branch} has merged PR #${mergedPRs[0].number}`,
+            );
+            return true;
+          }
+        } catch {
+          // gh failed — fall through to git-based checks
+        }
       }
     }
 
@@ -4873,6 +4937,45 @@ const mergedTaskCache = new Set();
  */
 const mergedBranchCache = new Set();
 
+function normalizeMergedBranchKey(branch) {
+  const normalized = normalizeBranchName(branch);
+  if (normalized) return normalized;
+  const raw = String(branch || "").trim();
+  return raw || "";
+}
+
+function addMergedBranchCache(branch) {
+  const key = normalizeMergedBranchKey(branch);
+  if (!key) return false;
+  mergedBranchCache.add(key);
+  return true;
+}
+
+function hasMergedBranchCache(branch) {
+  const key = normalizeMergedBranchKey(branch);
+  if (!key) return false;
+  return mergedBranchCache.has(key);
+}
+
+function removeMergedBranchCache(branch) {
+  const key = normalizeMergedBranchKey(branch);
+  if (!key) return false;
+  return mergedBranchCache.delete(key);
+}
+
+async function isMergedBranchCacheEntryStillValid(branch, baseBranch) {
+  if (!hasMergedBranchCache(branch)) return false;
+  const stillMerged = await isBranchMerged(branch, baseBranch);
+  if (stillMerged) return true;
+  if (removeMergedBranchCache(branch)) {
+    saveMergedTaskCache();
+    console.log(
+      `[monitor] Branch ${branch} removed from merged cache after revalidation`,
+    );
+  }
+  return false;
+}
+
 /** Path to the persistent merged-task cache file */
 const mergedTaskCachePath = resolve(
   config.cacheDir || resolve(config.repoRoot, ".cache"),
@@ -4892,7 +4995,7 @@ function loadMergedTaskCache() {
       }
       if (Array.isArray(data.branches)) {
         for (const b of data.branches) {
-          mergedBranchCache.add(b);
+          addMergedBranchCache(b);
         }
       }
       const total = mergedTaskCache.size + mergedBranchCache.size;
@@ -5236,9 +5339,27 @@ async function checkMergedPRsAndUpdateTasks() {
         }
       }
     });
-    const reviewTasks = Array.from(taskMap.values()).filter(
-      (entry) => !mergedTaskCache.has(entry.task.id),
-    );
+    const reviewTasks = [];
+    let prunedMergedTaskCacheCount = 0;
+    for (const entry of taskMap.values()) {
+      const taskId = String(entry?.task?.id || "").trim();
+      if (!taskId) continue;
+      if (!mergedTaskCache.has(taskId)) {
+        reviewTasks.push(entry);
+        continue;
+      }
+      // Task is active (inprogress/inreview) so a previous done-cache entry
+      // is stale (e.g. task reopened or status rollback) and must be purged.
+      mergedTaskCache.delete(taskId);
+      prunedMergedTaskCacheCount++;
+      reviewTasks.push(entry);
+    }
+    if (prunedMergedTaskCacheCount > 0) {
+      saveMergedTaskCache();
+      console.log(
+        `[monitor] Pruned ${prunedMergedTaskCacheCount} stale merged-task cache entr${prunedMergedTaskCacheCount === 1 ? "y" : "ies"} for active tasks`,
+      );
+    }
     if (reviewTasks.length === 0) {
       console.log(
         "[monitor] No tasks in review/inprogress status (after dedup)",
@@ -5533,34 +5654,40 @@ async function checkMergedPRsAndUpdateTasks() {
 
       // ── Branch-level dedup: skip if ANY branch is already known-merged ──
       const knownBranch = candidates.find(
-        (c) => c.branch && mergedBranchCache.has(c.branch),
+        (c) => c.branch && hasMergedBranchCache(c.branch),
       );
-      if (knownBranch) {
-        const canFinalize = await shouldFinalizeMergedTask(task, {
-          branch: knownBranch.branch,
-          prNumber: knownBranch.prNumber,
-          reason: "known_merged_branch",
-        });
-        if (!canFinalize) {
+      if (knownBranch?.branch) {
+        const cachedStillMerged = await isMergedBranchCacheEntryStillValid(
+          knownBranch.branch,
+          knownBranch.baseBranch,
+        );
+        if (cachedStillMerged) {
+          const canFinalize = await shouldFinalizeMergedTask(task, {
+            branch: knownBranch.branch,
+            prNumber: knownBranch.prNumber,
+            reason: "known_merged_branch",
+          });
+          if (!canFinalize) {
+            continue;
+          }
+          mergedTaskCache.add(task.id);
+          pendingMergeStrategyByTask.delete(String(task.id || "").trim());
+          // Cache all branches for this task
+          for (const c of candidates) {
+            if (c.branch) addMergedBranchCache(c.branch);
+          }
+          saveMergedTaskCache();
+          void updateTaskStatus(task.id, "done", {
+            taskData: task,
+            workflowEvent: "pr.merged",
+            workflowData: {
+              prNumber: knownBranch.prNumber || null,
+              branch: knownBranch.branch || null,
+              triggerReason: "known_merged_branch",
+            },
+          });
           continue;
         }
-        mergedTaskCache.add(task.id);
-        pendingMergeStrategyByTask.delete(String(task.id || "").trim());
-        // Cache all branches for this task
-        for (const c of candidates) {
-          if (c.branch) mergedBranchCache.add(c.branch);
-        }
-        saveMergedTaskCache();
-        void updateTaskStatus(task.id, "done", {
-          taskData: task,
-          workflowEvent: "pr.merged",
-          workflowData: {
-            prNumber: knownBranch.prNumber || null,
-            branch: knownBranch.branch || null,
-            triggerReason: "known_merged_branch",
-          },
-        });
-        continue;
       }
 
       // ── Check ALL candidates for a merged PR/branch ──
@@ -5624,7 +5751,7 @@ async function checkMergedPRsAndUpdateTasks() {
             mergedTaskCache.add(task.id);
             pendingMergeStrategyByTask.delete(String(task.id || "").trim());
             for (const c of candidates) {
-              if (c.branch) mergedBranchCache.add(c.branch);
+              if (c.branch) addMergedBranchCache(c.branch);
             }
             saveMergedTaskCache();
             completedTaskNames.push(task.title);
@@ -5709,7 +5836,7 @@ async function checkMergedPRsAndUpdateTasks() {
           mergedTaskCache.add(task.id);
           pendingMergeStrategyByTask.delete(String(task.id || "").trim());
           for (const c of candidates) {
-            if (c.branch) mergedBranchCache.add(c.branch);
+            if (c.branch) addMergedBranchCache(c.branch);
           }
           saveMergedTaskCache();
           completedTaskNames.push(task.title);
@@ -8018,7 +8145,16 @@ async function smartPRFlow(attemptId, shortId, status) {
     const attemptInfo = await getAttemptInfo(attemptId);
     let taskData = null;
     if (attemptInfo?.branch) {
-      if (mergedBranchCache.has(attemptInfo.branch)) {
+      if (
+        await isMergedBranchCacheEntryStillValid(
+          attemptInfo.branch,
+          attemptInfo?.target_branch ||
+            attemptInfo?.targetBranch ||
+            attemptInfo?.base_branch ||
+            attemptInfo?.baseBranch ||
+            null,
+        )
+      ) {
         console.log(
           `[monitor] ${tag}: branch already in merged cache — archiving`,
         );
@@ -8047,7 +8183,7 @@ async function smartPRFlow(attemptId, shortId, status) {
         console.log(
           `[monitor] ${tag}: branch ${attemptInfo.branch} confirmed merged — ${canFinalize ? "completing task" : "awaiting review gate"}`,
         );
-        mergedBranchCache.add(attemptInfo.branch);
+        addMergedBranchCache(attemptInfo.branch);
         if (attemptInfo.task_id && canFinalize) {
           mergedTaskCache.add(attemptInfo.task_id);
           pendingMergeStrategyByTask.delete(
@@ -8553,7 +8689,16 @@ async function resolveAndTriggerSmartPR(shortId, status) {
     // ── Early merged-branch check: skip if branch is already merged ──
     const resolvedAttempt = match;
     if (resolvedAttempt?.branch) {
-      if (mergedBranchCache.has(resolvedAttempt.branch)) {
+      if (
+        await isMergedBranchCacheEntryStillValid(
+          resolvedAttempt.branch,
+          resolvedAttempt?.target_branch ||
+            resolvedAttempt?.targetBranch ||
+            resolvedAttempt?.base_branch ||
+            resolvedAttempt?.baseBranch ||
+            null,
+        )
+      ) {
         console.log(
           `[monitor] smartPR(${shortId}): branch ${resolvedAttempt.branch} already in mergedBranchCache — skipping`,
         );
@@ -8582,7 +8727,7 @@ async function resolveAndTriggerSmartPR(shortId, status) {
         console.log(
           `[monitor] smartPR(${shortId}): branch ${resolvedAttempt.branch} confirmed merged — ${canFinalize ? "completing task and skipping PR flow" : "awaiting review gate"}`,
         );
-        mergedBranchCache.add(resolvedAttempt.branch);
+        addMergedBranchCache(resolvedAttempt.branch);
         if (resolvedAttempt.task_id && canFinalize) {
           mergedTaskCache.add(resolvedAttempt.task_id);
           pendingMergeStrategyByTask.delete(
@@ -15099,5 +15244,3 @@ export {
   getContainerStatus,
   isContainerEnabled,
 };
-
-

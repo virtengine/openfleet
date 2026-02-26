@@ -888,26 +888,93 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
       );
       if (remoteCheck.status !== 0) continue;
 
-      // Compare: is local behind?
+      // Measure divergence in both directions up front
       const behindCheck = spawnSync(
         "git",
         ["rev-list", "--count", `${branch}..${remoteRef}`],
         { cwd: repoRoot, encoding: "utf8", timeout: 5000, windowsHide: true },
       );
       const behind = parseInt(behindCheck.stdout?.trim(), 10) || 0;
-      if (behind === 0) continue; // Already up to date
 
-      // Check if local has commits not in remote (diverged)
       const aheadCheck = spawnSync(
         "git",
         ["rev-list", "--count", `${remoteRef}..${branch}`],
         { cwd: repoRoot, encoding: "utf8", timeout: 5000, windowsHide: true },
       );
       const ahead = parseInt(aheadCheck.stdout?.trim(), 10) || 0;
-      if (ahead > 0) {
-        console.warn(
-          `[maintenance] local '${branch}' has ${ahead} commit(s) ahead of ${remoteRef} — skipping (diverged)`,
+
+      if (behind === 0 && ahead === 0) continue; // Already in sync
+
+      // Local is ahead of remote but not behind — try a plain push
+      if (behind === 0 && ahead > 0) {
+        const push = spawnSync(
+          "git",
+          ["push", "origin", `${branch}:refs/heads/${branch}`, "--quiet"],
+          { cwd: repoRoot, encoding: "utf8", timeout: 30_000, windowsHide: true },
         );
+        if (push.status === 0) {
+          console.log(
+            `[maintenance] pushed local '${branch}' to origin (${ahead} commit(s) ahead)`,
+          );
+          synced++;
+        } else {
+          console.warn(
+            `[maintenance] git push '${branch}' failed: ${(push.stderr || push.stdout || "").toString().trim()}`,
+          );
+        }
+        continue;
+      }
+
+      // Truly diverged: local has unique commits AND is missing remote commits.
+      // Attempt rebase onto remote then push (checked-out branch only).
+      if (ahead > 0) {
+        const statusCheck = spawnSync("git", ["status", "--porcelain"], {
+          cwd: repoRoot,
+          encoding: "utf8",
+          timeout: 5000,
+          windowsHide: true,
+        });
+        if (statusCheck.stdout?.trim()) {
+          console.warn(
+            `[maintenance] local '${branch}' diverged (${ahead}↑ ${behind}↓) but has uncommitted changes — skipping`,
+          );
+          continue;
+        }
+        if (branch === currentBranch) {
+          const rebase = spawnSync(
+            "git",
+            ["rebase", remoteRef, "--quiet"],
+            { cwd: repoRoot, encoding: "utf8", timeout: 60_000, windowsHide: true },
+          );
+          if (rebase.status !== 0) {
+            spawnSync("git", ["rebase", "--abort"], {
+              cwd: repoRoot, timeout: 10_000, windowsHide: true,
+            });
+            console.warn(
+              `[maintenance] rebase of '${branch}' onto ${remoteRef} failed (${ahead}↑ ${behind}↓) — skipping`,
+            );
+            continue;
+          }
+          const push = spawnSync(
+            "git",
+            ["push", "origin", `${branch}:refs/heads/${branch}`, "--quiet"],
+            { cwd: repoRoot, encoding: "utf8", timeout: 30_000, windowsHide: true },
+          );
+          if (push.status === 0) {
+            console.log(
+              `[maintenance] rebased and pushed '${branch}' (was ${ahead}↑ ${behind}↓)`,
+            );
+            synced++;
+          } else {
+            console.warn(
+              `[maintenance] push after rebase of '${branch}' failed: ${(push.stderr || push.stdout || "").toString().trim()}`,
+            );
+          }
+        } else {
+          console.warn(
+            `[maintenance] local '${branch}' diverged (${ahead}↑ ${behind}↓) and not checked out — skipping (rebase requires checkout)`,
+          );
+        }
         continue;
       }
 
