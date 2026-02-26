@@ -276,6 +276,27 @@ function sleepMs(ms) {
   return new Promise((resolve) => setTimeoutFn(resolve, delay));
 }
 
+// ---------------------------------------------------------------------------
+// Module-level GH API response caches — shared across all adapter instances
+// to eliminate redundant API calls within the same polling window.
+// ---------------------------------------------------------------------------
+
+const GH_ISSUE_LIST_CACHE_TTL_MS =
+  Number(process.env.GITHUB_ISSUES_LIST_CACHE_TTL_MS) || 3 * 60 * 1000; // 3 min
+
+const GH_SHARED_STATE_CACHE_TTL_MS =
+  Number(process.env.GITHUB_SHARED_STATE_CACHE_TTL_MS) || 5 * 60 * 1000; // 5 min
+
+/** Build a cache key for the issue-list cache (per adapter instance). */
+function _issueListCacheKey(state, limit) {
+  return `${state}:${limit}`;
+}
+
+/** Build a cache key for the shared-state cache (per adapter instance). */
+function _sharedStateCacheKey(num) {
+  return String(num);
+}
+
 function isGhRateLimitError(text) {
   const errText = String(text || "").toLowerCase();
   if (!errText) return false;
@@ -1282,6 +1303,12 @@ class GitHubIssuesAdapter {
       0,
       Number(process.env.GH_TRANSIENT_RETRY_MAX) || 2,
     );
+
+    // Issue-list and shared-state caches (instance-level for test isolation)
+    /** @type {Map<string, {data: any, ts: number}>} state:limit → {data, ts} */
+    this._issueListCache = new Map();
+    /** @type {Map<string, {data: object|null, ts: number}>} issueNum → {data, ts} */
+    this._sharedStateCache = new Map();
   }
 
   /**
@@ -2283,26 +2310,46 @@ class GitHubIssuesAdapter {
     const limit =
       Number(filters.limit || process.env.GITHUB_ISSUES_LIST_LIMIT || 1000) ||
       1000;
-    const args = [
-      "issue",
-      "list",
-      "--repo",
-      `${this._owner}/${this._repo}`,
-      "--json",
-      "number,title,body,state,url,assignees,labels,milestone,comments",
-      "--limit",
-      String(limit),
-    ];
+
+    // Determine state filter for cache-key construction
+    let stateFilter = "open";
     if (filters.status === "done") {
-      args.push("--state", "closed");
+      stateFilter = "closed";
     } else if (filters.status && filters.status !== "todo") {
-      args.push("--state", "open");
-      args.push("--label", filters.status);
-    } else {
-      args.push("--state", "open");
+      stateFilter = `open:${filters.status}`;
     }
-    const issues = await this._gh(args);
-    let normalized = (Array.isArray(issues) ? issues : []).map((i) =>
+
+    // Check instance-level issue-list cache to avoid redundant gh API calls
+    const listCacheKey = _issueListCacheKey(stateFilter, limit);
+    const nowMs = Date.now();
+    const cachedList = this._issueListCache.get(listCacheKey);
+    let rawIssues;
+    if (cachedList && nowMs - cachedList.ts < GH_ISSUE_LIST_CACHE_TTL_MS) {
+      rawIssues = cachedList.data;
+    } else {
+      const args = [
+        "issue",
+        "list",
+        "--repo",
+        `${this._owner}/${this._repo}`,
+        "--json",
+        "number,title,body,state,url,assignees,labels,milestone,comments",
+        "--limit",
+        String(limit),
+      ];
+      if (filters.status === "done") {
+        args.push("--state", "closed");
+      } else if (filters.status && filters.status !== "todo") {
+        args.push("--state", "open");
+        args.push("--label", filters.status);
+      } else {
+        args.push("--state", "open");
+      }
+      rawIssues = await this._gh(args);
+      this._issueListCache.set(listCacheKey, { data: rawIssues, ts: nowMs });
+    }
+
+    let normalized = (Array.isArray(rawIssues) ? rawIssues : []).map((i) =>
       this._normaliseIssue(i),
     );
 
@@ -2312,11 +2359,24 @@ class GitHubIssuesAdapter {
       );
     }
 
-    // Enrich with shared state from comments
+    // Build map of pre-fetched comments from the issue-list JSON payload.
+    // gh issue list --json ... already includes comments, so we can pass them
+    // directly to readSharedStateFromIssue to eliminate N extra API calls.
+    const rawCommentsByNum = new Map();
+    if (Array.isArray(rawIssues)) {
+      for (const i of rawIssues) {
+        if (i?.number != null && Array.isArray(i.comments)) {
+          rawCommentsByNum.set(String(i.number), i.comments);
+        }
+      }
+    }
+
+    // Enrich with shared state – pass embedded comments to avoid extra API calls
     for (const task of normalized) {
       try {
+        const embeddedComments = rawCommentsByNum.get(String(task.id));
         const sharedState = normalizeSharedStatePayload(
-          await this.readSharedStateFromIssue(task.id),
+          await this.readSharedStateFromIssue(task.id, embeddedComments),
         );
         if (sharedState) {
           task.meta.sharedState = sharedState;
@@ -2415,6 +2475,10 @@ class GitHubIssuesAdapter {
         `GitHub Issues: invalid issue number "${issueNumber}" — expected a numeric ID, got a UUID or non-numeric string`,
       );
     }
+
+    // Invalidate the instance issue-list cache so the next listTasks() poll
+    // sees fresh data rather than stale cache.
+    this._issueListCache.clear();
     const normalised = normaliseStatus(status);
     if (normalised === "done" || normalised === "cancelled") {
       const closeArgs = [
@@ -3055,6 +3119,11 @@ ${stateJson}
       return true;
     });
 
+    // Invalidate the shared-state cache so the next read fetches fresh data
+    if (commentSuccess) {
+      this._sharedStateCache.delete(_sharedStateCacheKey(num));
+    }
+
     return commentSuccess;
   }
 
@@ -3073,19 +3142,39 @@ ${stateJson}
    *   console.log(`Task claimed by ${state.ownerId}`);
    * }
    */
-  async readSharedStateFromIssue(issueNumber) {
+  async readSharedStateFromIssue(issueNumber, cachedComments = null) {
     const num = String(issueNumber).replace(/^#/, "");
     if (!/^\d+$/.test(num)) {
       throw new Error(`Invalid issue number: ${issueNumber}`);
     }
 
+    // If no pre-fetched comments, check the instance-level shared-state cache
+    // to avoid a separate API call per issue during bulk listTasks cycles.
+    if (!cachedComments) {
+      const cacheKey = _sharedStateCacheKey(num);
+      const cached = this._sharedStateCache.get(cacheKey);
+      if (cached && Date.now() - cached.ts < GH_SHARED_STATE_CACHE_TTL_MS) {
+        return cached.data;
+      }
+    }
+
     try {
-      const comments = await this._getIssueComments(num);
-      const stateComment = comments
-        .reverse()
-        .find((c) => c.body?.includes("<!-- bosun-state"));
+      const comments = cachedComments ?? await this._getIssueComments(num);
+      const stateComment = Array.isArray(comments)
+        ? comments
+            .slice()
+            .reverse()
+            .find((c) => c.body?.includes("<!-- bosun-state"))
+        : null;
 
       if (!stateComment) {
+        // Cache the null result too so repeated calls within the TTL skip the API
+        if (!cachedComments) {
+          this._sharedStateCache.set(
+            _sharedStateCacheKey(num),
+            { data: null, ts: Date.now() },
+          );
+        }
         return null;
       }
 
@@ -3112,6 +3201,14 @@ ${stateJson}
           `[kanban] invalid shared state in #${num}: missing required fields`,
         );
         return null;
+      }
+
+      // Cache the result for the TTL window
+      if (!cachedComments) {
+        this._sharedStateCache.set(
+          _sharedStateCacheKey(num),
+          { data: state, ts: Date.now() },
+        );
       }
 
       return state;

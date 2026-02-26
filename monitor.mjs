@@ -14691,7 +14691,10 @@ if (isExecutorDisabled()) {
       if (projectId) {
         syncEngine = createSyncEngine({
           projectId,
-          syncIntervalMs: 60_000, // 1 minute
+          syncIntervalMs: Math.max(
+            60_000,
+            Number(process.env.KANBAN_SYNC_INTERVAL_MS) || 5 * 60 * 1000,
+          ), // default 5 min (env: KANBAN_SYNC_INTERVAL_MS)
           syncPolicy: kanbanConfig?.syncPolicy || "internal-primary",
           sendTelegram:
             telegramToken && telegramChatId
@@ -14711,7 +14714,7 @@ if (isExecutorDisabled()) {
         });
         syncEngine.start();
         console.log(
-          `[monitor] sync engine started (interval: 60s, backend=${activeKanbanBackend}, policy=${kanbanConfig?.syncPolicy || "internal-primary"}, project=${projectId})`,
+          `[monitor] sync engine started (interval: ${Math.max(60_000, Number(process.env.KANBAN_SYNC_INTERVAL_MS) || 5 * 60 * 1000) / 1000}s, backend=${activeKanbanBackend}, policy=${kanbanConfig?.syncPolicy || "internal-primary"}, project=${projectId})`,
         );
       } else {
         console.log(
