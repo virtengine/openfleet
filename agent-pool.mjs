@@ -1705,10 +1705,12 @@ export async function launchEphemeralThread(
       ? requestedSdk
       : resolvePoolSdkName();
 
-  const attemptOrder = [
-    primaryName,
-    ...SDK_FALLBACK_ORDER.filter((name) => name !== primaryName),
-  ];
+  const attemptOrder = extra?.disableFallback
+    ? [primaryName]
+    : [
+        primaryName,
+        ...SDK_FALLBACK_ORDER.filter((name) => name !== primaryName),
+      ];
 
   let lastAttemptResult = null;
   const triedSdkNames = [];
@@ -1745,8 +1747,16 @@ export async function launchEphemeralThread(
       missingPrereqSdks.push({ name, reason: prereq.reason });
       if (name === primaryName) {
         console.warn(
-          `${TAG} primary SDK "${name}" missing prerequisites: ${prereq.reason}; trying fallback chain`,
+          `${TAG} primary SDK "${name}" missing prerequisites: ${prereq.reason}; not attempting fallback`,
         );
+        return {
+          success: false,
+          output: "",
+          items: [],
+          error: `${TAG} ${name} unavailable: ${prereq.reason}`,
+          sdk: primaryName,
+          threadId: null,
+        };
       } else {
         console.log(`${TAG} skipping fallback SDK "${name}": ${prereq.reason}`);
       }
@@ -2358,6 +2368,10 @@ export async function launchOrResumeThread(
   const { taskKey, ...restExtra } = extra;
   // Pass taskKey through as steer key so SDK launchers can register active sessions
   restExtra.taskKey = taskKey;
+  if (restExtra.sdk) {
+    // Task-bound runs with an explicit SDK should stay pinned to that SDK.
+    restExtra.disableFallback = true;
+  }
   timeoutMs = clampMonitorMonitorTimeout(timeoutMs, taskKey);
 
   // No taskKey — pure ephemeral (backward compatible)
@@ -2950,4 +2964,3 @@ export function getActiveThreads() {
   }
   return result;
 }
-
