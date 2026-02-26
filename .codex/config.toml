@@ -33,8 +33,9 @@ unified_exec = true
 shell_snapshot = true
 # Request-level approval rules
 request_rule = true
-# Compress requests
-enable_request_compression = true
+# Compress requests — DISABLED: causes invalid_request_error JSON body failures
+# ('}' invalid after property name) when used with Azure wire_api=responses.
+# enable_request_compression = true
 # Remote model support
 remote_models = true
 # Auto-install MCP skill deps

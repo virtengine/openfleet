@@ -733,7 +733,7 @@ export function LogsTab() {
 
               ${commits.length > 0
                 ? html`
-                  <div class="card-subtitle mb-xs">Commits</div>
+                  <div class="card-subtitle mb-sm">Commits</div>
                   <div class="commit-list mb-sm">
                     ${commits.map((cm) => {
                       const refs = parseCommitRefs(cm.refs || "");
@@ -766,11 +766,11 @@ export function LogsTab() {
                   : html`<div class="meta-text mb-sm">No commit history.</div>`}
 
               ${ctx.gitStatus && html`
-                <div class="card-subtitle mb-xs">Working Tree Status</div>
+                <div class="card-subtitle mb-sm">Working Tree Status</div>
                 <div class="log-box mb-sm">${ctx.gitStatus || "Clean."}</div>`}
 
               ${ctx.gitDiffStat && html`
-                <div class="card-subtitle mb-xs">Diff Stat</div>
+                <div class="card-subtitle mb-sm">Diff Stat</div>
                 <div class="log-box mb-sm">${ctx.gitDiffStat}</div>`}
 
               <div class="btn-row mt-sm">

@@ -140,7 +140,12 @@ const RECOMMENDED_FEATURES = {
   request_rule:           { default: true, envVar: null,                                 comment: "Request-level approval rules" },
 
   // Performance & networking
-  enable_request_compression: { default: true, envVar: null,                             comment: "Compress requests" },
+  // DISABLED: enable_request_compression corrupts the JSON request body when
+  // used with Azure OpenAI wire_api=responses, causing invalid_request_error:
+  // "'}' is invalid after a property name" / BytePositionInLine: ~82000.
+  // The compression codec embeds unescaped content inside a JSON string field,
+  // breaking the Azure Responses API parser even on small (~1 paragraph) inputs.
+  enable_request_compression: { default: false, envVar: "CODEX_FEATURES_REQUEST_COMPRESSION", comment: "Compress requests (DISABLED — breaks Azure wire_api=responses)" },
   remote_models:          { default: true, envVar: null,                                 comment: "Remote model support" },
   skill_mcp_dependency_install: { default: true, envVar: null,                           comment: "Auto-install MCP skill deps" },
 
