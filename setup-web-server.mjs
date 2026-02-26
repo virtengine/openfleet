@@ -182,6 +182,17 @@ function getCommandVersion(cmd) {
   }
 }
 
+function isWslInteropRuntime() {
+  return Boolean(
+    process.env.WSL_DISTRO_NAME
+    || process.env.WSL_INTEROP
+    || (process.platform === "win32"
+      && String(process.env.HOME || "")
+        .trim()
+        .startsWith("/home/")),
+  );
+}
+
 /**
  * Resolve the Bosun Home directory — the single root where bosun stores all its
  * configs, workspaces, and tooling.  Resolution order:
@@ -190,7 +201,7 @@ function getCommandVersion(cmd) {
  *   3. cwd if it already has a bosun.config.json AND is not inside a git repo
  *      we don't own (safety: prevents "bosun --setup" from contaminating whatever
  *      repo the user happened to be in when they ran the command)
- *   4. ~/bosun             (cross-platform stable default)
+ *   4. platform default config home + /bosun (same as runtime loader)
  */
 function resolveConfigDir() {
   if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
@@ -211,8 +222,22 @@ function resolveConfigDir() {
     if (isExpectedHome) return cwd;
   }
 
-  // Stable default: ~/bosun — same path on every OS
-  return resolve(homedir(), "bosun");
+  const preferWindowsDirs =
+    process.platform === "win32" && !isWslInteropRuntime();
+  const baseDir = preferWindowsDirs
+    ? process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || process.env.USERPROFILE
+      || process.env.HOME
+      || homedir()
+    : process.env.HOME
+      || process.env.XDG_CONFIG_HOME
+      || process.env.USERPROFILE
+      || process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || homedir();
+
+  return resolve(baseDir, "bosun");
 }
 
 /**
@@ -664,7 +689,7 @@ function handleApply(body) {
       envMap.TELEGRAM_UI_ALLOW_UNSAFE = "false";
     }
     if (env.telegramChatId)      envMap.TELEGRAM_CHAT_ID         = env.telegramChatId;
-    if (env.jiraUrl)             envMap.JIRA_URL                 = env.jiraUrl;
+    if (env.jiraUrl)             envMap.JIRA_BASE_URL            = env.jiraUrl;
     if (env.jiraProjectKey)      envMap.JIRA_PROJECT_KEY         = env.jiraProjectKey;
     if (env.jiraApiToken)        envMap.JIRA_API_TOKEN           = env.jiraApiToken;
     if (env.githubProjectNumber) envMap.GITHUB_PROJECT_NUMBER    = String(env.githubProjectNumber);
@@ -674,11 +699,11 @@ function handleApply(body) {
     if (env.executorDistribution)        envMap.EXECUTOR_DISTRIBUTION        = env.executorDistribution;
     if (env.failoverStrategy)            envMap.FAILOVER_STRATEGY            = env.failoverStrategy;
     if (env.maxParallel != null)         envMap.MAX_PARALLEL                 = String(env.maxParallel);
-    if (env.maxRetries != null)          envMap.MAX_RETRIES                  = String(env.maxRetries);
+    if (env.maxRetries != null)          envMap.FAILOVER_MAX_RETRIES         = String(env.maxRetries);
     if (env.failoverCooldownMinutes != null)
-                                         envMap.FAILOVER_COOLDOWN_MINUTES    = String(env.failoverCooldownMinutes);
+                       envMap.FAILOVER_COOLDOWN_MIN        = String(env.failoverCooldownMinutes);
     if (env.failoverDisableOnConsecutive != null)
-                                         envMap.FAILOVER_DISABLE_ON_CONSECUTIVE_FAILURES = String(env.failoverDisableOnConsecutive);
+                       envMap.FAILOVER_DISABLE_AFTER       = String(env.failoverDisableOnConsecutive);
     if (env.primaryAgent)               envMap.PRIMARY_AGENT                 = env.primaryAgent;
     if (env.projectRequirementsProfile) envMap.PROJECT_REQUIREMENTS_PROFILE  = env.projectRequirementsProfile;
     if (env.internalReplenishEnabled != null)

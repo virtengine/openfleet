@@ -71,7 +71,7 @@ function formatDuration(startedAt) {
 }
 
 /* ─── Workspace Viewer Modal ─── */
-function WorkspaceViewer({ agent, onClose }) {
+function WorkspaceViewer({ agent, onClose, embedded = false }) {
   const [logText, setLogText] = useState("Loading…");
   const [contextData, setContextData] = useState(null);
   const [steerInput, setSteerInput] = useState("");
@@ -706,11 +706,8 @@ function WorkspaceViewer({ agent, onClose }) {
     `;
   };
 
-  return html`
-    <div class="modal-overlay" onClick=${(e) => e.target === e.currentTarget && onClose()}>
-      <div class="modal-content">
-        <div class="modal-handle" />
-        <div class="workspace-viewer">
+  const viewerBody = html`
+    <div class="workspace-viewer ${embedded ? "workspace-viewer-embedded" : ""}">
           <div class="workspace-header">
             <div>
               <div class="task-card-title">
@@ -721,7 +718,7 @@ function WorkspaceViewer({ agent, onClose }) {
                 ${agent.branch || "?"} · Slot ${(agent.index ?? 0) + 1} · ${formatDuration(agent.startedAt)}
               </div>
             </div>
-            <button class="btn btn-ghost btn-sm" onClick=${onClose}>✕</button>
+            <button class="btn btn-ghost btn-sm" onClick=${onClose}>${embedded ? "Clear" : "✕"}</button>
           </div>
           <div class="session-detail-tabs workspace-tabs">
             <button
@@ -738,20 +735,22 @@ function WorkspaceViewer({ agent, onClose }) {
             >📄 Logs</button>
           </div>
 
-          ${activeTab === "stream" &&
-          html`
-            ${sessionId
-              ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
-              : html`
-                  <div class="chat-view chat-empty-state">
-                    <div class="session-empty-icon">💬</div>
-                    <div class="session-empty-text">No session stream available</div>
-                  </div>
-                `}
-          `}
-          ${activeTab === "changes" && renderChanges()}
-          ${activeTab === "logs" &&
-          html`<div class="workspace-log" ref=${logRef}>${logText}</div>`}
+          <div class="workspace-main">
+            ${activeTab === "stream" &&
+            html`
+              ${sessionId
+                ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
+                : html`
+                    <div class="chat-view chat-empty-state">
+                      <div class="session-empty-icon">💬</div>
+                      <div class="session-empty-text">No session stream available</div>
+                    </div>
+                  `}
+            `}
+            ${activeTab === "changes" && renderChanges()}
+            ${activeTab === "logs" &&
+            html`<div class="workspace-log" ref=${logRef}>${logText}</div>`}
+          </div>
 
           <div class="workspace-controls">
             <input
@@ -768,7 +767,13 @@ function WorkspaceViewer({ agent, onClose }) {
               onClick=${handleStop}
             >⛔ Stop</button>
           </div>
-        </div>
+  `;
+  if (embedded) return viewerBody;
+  return html`
+    <div class="modal-overlay" onClick=${(e) => e.target === e.currentTarget && onClose()}>
+      <div class="modal-content modal-content-wide">
+        <div class="modal-handle" />
+        ${viewerBody}
       </div>
     </div>
   `;
@@ -779,8 +784,50 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
   const [taskId, setTaskId] = useState("");
   const [prompt, setPrompt] = useState("");
   const [dispatching, setDispatching] = useState(false);
+  const [taskOptions, setTaskOptions] = useState([]);
+  const [taskOptionsLoading, setTaskOptionsLoading] = useState(true);
 
-  const canDispatch = freeSlots > 0 && (taskId.trim() || prompt.trim());
+  const canDispatch = Boolean(taskId.trim() || prompt.trim());
+
+  useEffect(() => {
+    let alive = true;
+    const parseTaskOrder = (id) => {
+      const m = String(id || "").match(/(\d+)(?!.*\d)/);
+      return m ? Number.parseInt(m[1], 10) : Number.NaN;
+    };
+    const sortDesc = (a, b) => {
+      const an = parseTaskOrder(a?.id);
+      const bn = parseTaskOrder(b?.id);
+      if (Number.isFinite(an) && Number.isFinite(bn)) return bn - an;
+      return String(b?.id || "").localeCompare(String(a?.id || ""), undefined, { numeric: true });
+    };
+    const loadTaskOptions = async () => {
+      setTaskOptionsLoading(true);
+      try {
+        const [backlogRes, draftRes] = await Promise.all([
+          apiFetch("/api/tasks?page=0&pageSize=200&status=todo&sort=updated", { _silent: true }),
+          apiFetch("/api/tasks?page=0&pageSize=200&status=draft&sort=updated", { _silent: true }),
+        ]);
+        if (!alive) return;
+        const merged = [...(backlogRes?.data || []), ...(draftRes?.data || [])];
+        const byId = new Map();
+        for (const task of merged) {
+          const id = String(task?.id || "").trim();
+          if (!id) continue;
+          if (!byId.has(id)) byId.set(id, task);
+        }
+        setTaskOptions(Array.from(byId.values()).sort(sortDesc));
+      } catch {
+        if (alive) setTaskOptions([]);
+      } finally {
+        if (alive) setTaskOptionsLoading(false);
+      }
+    };
+    loadTaskOptions();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const handleDispatch = async () => {
     if (!canDispatch || dispatching) return;
@@ -816,17 +863,28 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
       <div class="dispatch-section">
         <div class="meta-text mb-sm">
           ${freeSlots > 0
-            ? `${freeSlots} slot${freeSlots > 1 ? "s" : ""} available`
-            : "No free slots"}
+            ? `${freeSlots} slot${freeSlots > 1 ? "s" : ""} free · dispatch always allowed`
+            : "No free slots · dispatch will still spawn a new agent"}
         </div>
         <div class="input-row">
-          <input
+          <select
             class="input"
-            placeholder="Task ID"
             value=${taskId}
             ref=${inputRef}
-            onInput=${(e) => { setTaskId(e.target.value); if (e.target.value) setPrompt(""); }}
-          />
+            onChange=${(e) => {
+              setTaskId(e.target.value);
+              if (e.target.value) setPrompt("");
+            }}
+          >
+            <option value="">
+              ${taskOptionsLoading ? "Loading backlog/draft tasks…" : "Select task: #id title"}
+            </option>
+            ${taskOptions.map((task) => html`
+              <option key=${task.id} value=${task.id}>
+                #${task.id} ${task.title || "(untitled)"}
+              </option>
+            `)}
+          </select>
         </div>
         <div class="divider-label">or</div>
         <textarea
@@ -856,6 +914,7 @@ export function AgentsTab() {
   const slots = execData?.slots || [];
   const maxParallel = execData?.maxParallel || 0;
   const activeSlots = execData?.activeSlots || 0;
+  const sessions = sessionsData.value || [];
 
   const [expandedSlot, setExpandedSlot] = useState(null);
   const [selectedAgent, setSelectedAgent] = useState(null);
@@ -868,7 +927,6 @@ export function AgentsTab() {
 
   useEffect(() => {
     const current = selectedSessionId.value;
-    const sessions = sessionsData.value || [];
     if (current || sessions.length === 0) return;
     const activeSession =
       sessions.find((s) => s.status === "active" || s.status === "running") ||
@@ -876,7 +934,7 @@ export function AgentsTab() {
     if (activeSession?.id) {
       selectedSessionId.value = activeSession.id;
     }
-  }, [sessionsData.value, selectedSessionId.value]);
+  }, [sessions, selectedSessionId.value]);
 
   useEffect(() => {
     if (!workspaceTarget) return;
@@ -901,6 +959,31 @@ export function AgentsTab() {
     }
     agentWorkspaceTarget.value = null;
   }, [workspaceTarget, slots]);
+
+  useEffect(() => {
+    const sessionId = selectedSessionId.value;
+    if (!sessionId) return;
+    const selectedSession = sessions.find((s) => s.id === sessionId);
+    if (!selectedSession) return;
+    const slotIndex = slots.findIndex((slot) => {
+      if (selectedSession.taskId && slot.taskId === selectedSession.taskId) return true;
+      if (selectedSession.branch && slot.branch === selectedSession.branch) return true;
+      return false;
+    });
+    if (slotIndex >= 0) {
+      setSelectedAgent({ ...slots[slotIndex], index: slotIndex });
+      return;
+    }
+    setSelectedAgent((prev) =>
+      prev || {
+        taskId: selectedSession.taskId || selectedSession.id || null,
+        taskTitle: selectedSession.title || selectedSession.taskId || selectedSession.id || "Session",
+        branch: selectedSession.branch || null,
+        sessionId: selectedSession.id || null,
+        status: selectedSession.status || "idle",
+        index: null,
+      });
+  }, [selectedSessionId.value, sessions, slots]);
 
   useEffect(() => {
     let mq;
@@ -954,6 +1037,13 @@ export function AgentsTab() {
   const openWorkspace = (slot, i) => {
     haptic();
     setSelectedAgent({ ...slot, index: i });
+    const matchedSession =
+      sessions.find((session) => {
+        if (slot.taskId && session.taskId === slot.taskId) return true;
+        if (slot.branch && session.branch === slot.branch) return true;
+        return false;
+      }) || null;
+    if (matchedSession?.id) selectedSessionId.value = matchedSession.id;
   };
 
   /* Capacity utilisation */
@@ -1258,6 +1348,66 @@ export function AgentsTab() {
       <//>
       </div>
 
+      <div class="fleet-span">
+        <${Card}
+          title="Fleet Full View"
+          subtitle="Sessions and active slots with full agent context"
+          className="fleet-full-card"
+        >
+          <div class="fleet-full-layout">
+            <div class="fleet-full-list">
+              <div class="fleet-label">Active Slots</div>
+              ${slots.length
+                ? slots.map((slot, i) => html`
+                    <button
+                      key=${`slot-${slot.taskId || i}`}
+                      class="branch-row"
+                      onClick=${() => openWorkspace(slot, i)}
+                    >
+                      <span class="branch-name">${slot.taskTitle || slot.taskId || `Slot ${i + 1}`}</span>
+                      <span class="branch-raw">#${slot.taskId || "n/a"} · ${slot.status || "running"}</span>
+                    </button>
+                  `)
+                : html`<div class="meta-text">No active slots</div>`}
+              <div class="fleet-label mt-md">Sessions</div>
+              <div class="fleet-session-list">
+                ${sessions.length
+                  ? sessions.map((session) => html`
+                      <button
+                        key=${session.id}
+                        class="branch-row ${selectedSessionId.value === session.id ? "task-card-selected" : ""}"
+                        onClick=${() => { selectedSessionId.value = session.id; }}
+                      >
+                        <span class="branch-name">
+                          <${StatusDot} status=${session.status || "idle"} />
+                          ${session.title || session.taskId || session.id}
+                        </span>
+                        <span class="branch-raw">#${session.taskId || session.id} · ${session.status || "idle"}</span>
+                      </button>
+                    `)
+                  : html`<div class="meta-text">No sessions available</div>`}
+              </div>
+            </div>
+            <div class="fleet-full-main">
+              ${selectedAgent
+                ? html`
+                    <${WorkspaceViewer}
+                      agent=${selectedAgent}
+                      embedded=${true}
+                      onClose=${() => setSelectedAgent(null)}
+                    />
+                  `
+                : html`
+                    <div class="chat-view chat-empty-state">
+                      <div class="session-empty-icon">🧭</div>
+                      <div class="session-empty-text">Select a slot or session to open full view</div>
+                    </div>
+                  `}
+            </div>
+          </div>
+        <//>
+      </div>
+
       ${agents.length > 0 &&
       html`
         <div class="fleet-span">
@@ -1281,13 +1431,6 @@ export function AgentsTab() {
       `}
 
     </div>
-
-    ${selectedAgent && html`
-      <${WorkspaceViewer}
-        agent=${selectedAgent}
-        onClose=${() => setSelectedAgent(null)}
-      />
-    `}
   `;
 }
 

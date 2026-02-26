@@ -34,10 +34,34 @@ function inferRepoRoot(startDir) {
   }
 }
 
+function resolveBosunHomeDir() {
+  const explicit = String(
+    process.env.BOSUN_HOME || process.env.BOSUN_DIR || "",
+  ).trim();
+  if (explicit) return resolve(explicit);
+
+  const base = String(
+    process.env.APPDATA ||
+      process.env.LOCALAPPDATA ||
+      process.env.USERPROFILE ||
+      process.env.HOME ||
+      "",
+  ).trim();
+  if (!base) return null;
+  if (/[/\\]bosun$/i.test(base)) return resolve(base);
+  return resolve(base, "bosun");
+}
+
 function resolveDefaultStorePath() {
-  const repoRoot =
-    inferRepoRoot(process.cwd()) || resolve(__dirname, "..", "..");
-  return resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
+  const repoRoot = inferRepoRoot(process.cwd());
+  if (repoRoot) {
+    return resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
+  }
+  const bosunHome = resolveBosunHomeDir();
+  if (bosunHome) {
+    return resolve(bosunHome, ".cache", "kanban-state.json");
+  }
+  return resolve(__dirname, ".cache", "kanban-state.json");
 }
 
 let storePath = resolveDefaultStorePath();
@@ -58,13 +82,15 @@ let _didLogInitialLoad = false;
 
 export function configureTaskStore(options = {}) {
   const baseDir = options.baseDir ? resolve(options.baseDir) : null;
+  const repoRoot = inferRepoRoot(process.cwd());
+  const homeDir = resolveBosunHomeDir();
+  const defaultBase = baseDir || repoRoot || homeDir || resolve(__dirname);
+  const needsBosunSubdir = Boolean(baseDir || repoRoot);
   const nextPath = options.storePath
     ? resolve(baseDir || process.cwd(), options.storePath)
     : resolve(
-        baseDir ||
-          inferRepoRoot(process.cwd()) ||
-          resolve(__dirname, "..", ".."),
-        ".bosun",
+        defaultBase,
+        needsBosunSubdir ? ".bosun" : "",
         ".cache",
         "kanban-state.json",
       );
@@ -420,14 +446,21 @@ export function setTaskStatus(taskId, status, source) {
   }
 
   const prev = task.status;
+  const tsNow = now();
   task.status = status;
-  task.updatedAt = now();
-  task.lastActivityAt = now();
+  task.updatedAt = tsNow;
+  task.lastActivityAt = tsNow;
+
+  // No-op transition: keep activity fresh without polluting history/logs.
+  if (prev === status) {
+    saveStore();
+    return { ...task };
+  }
 
   // Append to history (FIFO, max 50)
   task.statusHistory.push({
     status,
-    timestamp: now(),
+    timestamp: tsNow,
     source: source || "unknown",
   });
   if (task.statusHistory.length > MAX_STATUS_HISTORY) {

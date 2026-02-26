@@ -5,7 +5,7 @@ import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { get as httpsGet } from "node:https";
 import { createServer as createHttpsServer } from "node:https";
-import { networkInterfaces } from "node:os";
+import { networkInterfaces, homedir } from "node:os";
 import { connect as netConnect } from "node:net";
 import { resolve, extname, dirname, basename, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -27,6 +27,8 @@ function getLocalLanIp() {
 import { WebSocketServer } from "ws";
 import {
   getKanbanAdapter,
+  getKanbanBackendName,
+  setKanbanBackend,
   markTaskIgnored,
   unmarkTaskIgnored,
 } from "./kanban-adapter.mjs";
@@ -525,6 +527,28 @@ async function readPlannerTemplateState() {
   }
 }
 
+function resolveTriggerStatsTimeoutMs() {
+  const parsed = Number(process.env.TELEGRAM_UI_TRIGGER_STATS_TIMEOUT_MS);
+  if (Number.isFinite(parsed) && parsed >= 100) return parsed;
+  return 1200;
+}
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function getTemplateIdFromTask(task = {}) {
   return String(task?.meta?.triggerTemplate?.id || "")
     .trim()
@@ -550,12 +574,21 @@ async function collectTriggerTemplateTaskStats(templates = []) {
 
   try {
     const adapter = getKanbanAdapter();
-    const projects = await adapter.listProjects();
+    const timeoutMs = resolveTriggerStatsTimeoutMs();
+    const projects = await withTimeout(
+      adapter.listProjects(),
+      timeoutMs,
+      "trigger stats listProjects",
+    );
     const activeProject =
       projects?.[0]?.id || projects?.[0]?.project_id || "";
     if (!activeProject) return statsByTemplateId;
 
-    const tasks = await adapter.listTasks(activeProject, {});
+    const tasks = await withTimeout(
+      adapter.listTasks(activeProject, {}),
+      timeoutMs,
+      "trigger stats listTasks",
+    );
     const taskById = new Map();
 
     for (const task of tasks) {
@@ -1218,9 +1251,38 @@ let uiDeps = {};
  * Ensures the directory exists.
  */
 function resolveUiConfigDir() {
+  if (process.env.BOSUN_CONFIG_PATH) {
+    const fromConfigPath = dirname(resolve(process.env.BOSUN_CONFIG_PATH));
+    try { mkdirSync(fromConfigPath, { recursive: true }); } catch { /* ok */ }
+    if (!uiDeps.configDir) uiDeps.configDir = fromConfigPath;
+    return fromConfigPath;
+  }
+  const isWslInteropRuntime = Boolean(
+    process.env.WSL_DISTRO_NAME
+    || process.env.WSL_INTEROP
+    || (process.platform === "win32"
+      && String(process.env.HOME || "")
+        .trim()
+        .startsWith("/home/")),
+  );
+  const preferWindowsDirs = process.platform === "win32" && !isWslInteropRuntime;
+  const baseDir = preferWindowsDirs
+    ? process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || process.env.USERPROFILE
+      || process.env.HOME
+      || homedir()
+    : process.env.HOME
+      || process.env.XDG_CONFIG_HOME
+      || process.env.USERPROFILE
+      || process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || homedir();
+
   const dir = uiDeps.configDir
+    || process.env.BOSUN_HOME
     || process.env.BOSUN_DIR
-    || resolve(process.env.HOME || process.env.USERPROFILE || "", "bosun");
+    || resolve(baseDir, "bosun");
   if (dir) {
     try { mkdirSync(dir, { recursive: true }); } catch { /* ok */ }
     // Cache it so subsequent calls don't re-resolve
@@ -1277,6 +1339,8 @@ const SETTINGS_KNOWN_KEYS = [
   "BOSUN_PROMPT_PLANNER",
   "GITHUB_TOKEN", "GITHUB_REPOSITORY", "GITHUB_PROJECT_MODE",
   "GITHUB_PROJECT_NUMBER", "GITHUB_DEFAULT_ASSIGNEE", "GITHUB_AUTO_ASSIGN_CREATOR",
+  "BOSUN_GITHUB_APP_ID", "BOSUN_GITHUB_PRIVATE_KEY_PATH", "BOSUN_GITHUB_CLIENT_ID", "BOSUN_GITHUB_CLIENT_SECRET",
+  "BOSUN_GITHUB_WEBHOOK_SECRET", "BOSUN_GITHUB_USER_TOKEN",
   "GITHUB_PROJECT_WEBHOOK_PATH", "GITHUB_PROJECT_WEBHOOK_SECRET", "GITHUB_PROJECT_WEBHOOK_REQUIRE_SIGNATURE",
   "GITHUB_PROJECT_SYNC_ALERT_FAILURE_THRESHOLD", "GITHUB_PROJECT_SYNC_RATE_LIMIT_ALERT_THRESHOLD",
   "VK_TARGET_BRANCH", "CODEX_ANALYZE_MERGE_STRATEGY", "DEPENDABOT_AUTO_MERGE",
@@ -1311,6 +1375,7 @@ const SETTINGS_SENSITIVE_KEYS = new Set([
   "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GITHUB_TOKEN",
   "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "CODEX_MODEL_PROFILE_XL_API_KEY", "CODEX_MODEL_PROFILE_M_API_KEY",
   "ANTHROPIC_API_KEY", "COPILOT_CLI_TOKEN", "GITHUB_PROJECT_WEBHOOK_SECRET",
+  "BOSUN_GITHUB_CLIENT_SECRET", "BOSUN_GITHUB_WEBHOOK_SECRET", "BOSUN_GITHUB_USER_TOKEN",
   "CLOUDFLARE_TUNNEL_CREDENTIALS",
 ]);
 
@@ -1473,11 +1538,7 @@ function validateConfigSchemaChanges(changes) {
         fieldErrors[envKey] = err.message || "Invalid value";
       }
     }
-    if (Object.keys(fieldErrors).length === 0) {
-      for (const envKey of pathMap.values()) {
-        fieldErrors[envKey] = "Invalid value (config schema)";
-      }
-    }
+    if (Object.keys(fieldErrors).length === 0) return {};
     return fieldErrors;
   } catch {
     return {};
@@ -3541,6 +3602,19 @@ function summarizeTelemetry(metrics, days) {
   };
 }
 
+function resolveAgentWorkLogDir() {
+  const candidates = [
+    resolve(repoRoot, ".cache", "agent-work-logs"),
+    // Legacy path used by older task-executor builds.
+    resolve(repoRoot, "..", "..", ".cache", "agent-work-logs"),
+    resolve(repoRoot, "..", ".cache", "agent-work-logs"),
+  ];
+  for (const dir of candidates) {
+    if (existsSync(dir)) return dir;
+  }
+  return candidates[0];
+}
+
 async function listAgentLogFiles(query = "", limit = 60) {
   const entries = [];
   const agentLogsDir = await resolveAgentLogsDir();
@@ -4869,7 +4943,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/telemetry/summary") {
     try {
       const days = Number(url.searchParams.get("days") || "7");
-      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const logDir = resolveAgentWorkLogDir();
       const metricsPath = resolve(logDir, "agent-metrics.jsonl");
       const metrics = await readJsonlTail(metricsPath, 3000);
       const summary = summarizeTelemetry(metrics, days);
@@ -4883,7 +4957,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/telemetry/errors") {
     try {
       const days = Number(url.searchParams.get("days") || "7");
-      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const logDir = resolveAgentWorkLogDir();
       const errorsPath = resolve(logDir, "agent-errors.jsonl");
       const errors = (await readJsonlTail(errorsPath, 2000)).filter((e) =>
         withinDays(e, days),
@@ -4907,7 +4981,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/telemetry/executors") {
     try {
       const days = Number(url.searchParams.get("days") || "7");
-      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const logDir = resolveAgentWorkLogDir();
       const metricsPath = resolve(logDir, "agent-metrics.jsonl");
       const metrics = await readJsonlTail(metricsPath, 3000);
       const summary = summarizeTelemetry(metrics, days);
@@ -4924,7 +4998,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/telemetry/alerts") {
     try {
       const days = Number(url.searchParams.get("days") || "7");
-      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const logDir = resolveAgentWorkLogDir();
       const alertsPath = resolve(logDir, "agent-alerts.jsonl");
       const alerts = (await readJsonlTail(alertsPath, 500)).filter((a) =>
         withinDays(a, days),
@@ -5714,6 +5788,16 @@ async function handleApi(req, res, url) {
     const regionEnv = (process.env.EXECUTOR_REGIONS || "").trim();
     const regions = regionEnv ? regionEnv.split(",").map((r) => r.trim()).filter(Boolean) : ["auto"];
     const pkg = JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf8"));
+    let runtimeKanbanBackend = "internal";
+    try {
+      runtimeKanbanBackend = String(
+        getKanbanBackendName() || process.env.KANBAN_BACKEND || "internal",
+      ).trim().toLowerCase();
+    } catch {
+      runtimeKanbanBackend = String(
+        process.env.KANBAN_BACKEND || "internal",
+      ).trim().toLowerCase();
+    }
     jsonResponse(res, 200, {
       ok: true,
       version: pkg.version,
@@ -5725,7 +5809,7 @@ async function handleApi(req, res, url) {
       wsEnabled: true,
       authRequired: !isAllowUnsafe(),
       sdk: process.env.EXECUTOR_SDK || "auto",
-      kanbanBackend: process.env.KANBAN_BACKEND || "github",
+      kanbanBackend: runtimeKanbanBackend,
       regions,
     });
     return;
@@ -5746,6 +5830,13 @@ async function handleApi(req, res, url) {
         return;
       }
       process.env[envKey] = value;
+      if (envKey === "KANBAN_BACKEND") {
+        try {
+          setKanbanBackend(String(value).trim().toLowerCase());
+        } catch (err) {
+          console.warn(`[config] failed to switch kanban backend: ${err.message}`);
+        }
+      }
       // Also send chat command for backward compat
       const cmdMap = { sdk: `/sdk ${value}`, kanban: `/kanban ${value}`, region: `/region ${value}` };
       const handler = uiDeps.handleUiCommand;
@@ -5850,6 +5941,15 @@ async function handleApi(req, res, url) {
         const strVal = String(value);
         process.env[key] = strVal;
         strChanges[key] = strVal;
+      }
+      if (Object.prototype.hasOwnProperty.call(strChanges, "KANBAN_BACKEND")) {
+        try {
+          setKanbanBackend(
+            String(strChanges.KANBAN_BACKEND).trim().toLowerCase(),
+          );
+        } catch (err) {
+          console.warn(`[settings] failed to switch kanban backend: ${err.message}`);
+        }
       }
       // Write to .env file
       const updated = updateEnvFile(strChanges);
@@ -6085,12 +6185,6 @@ async function handleApi(req, res, url) {
         return;
       }
       const status = executor.getStatus?.() || {};
-      const freeSlots =
-        (status.maxParallel || 0) - (status.activeSlots || 0);
-      if (freeSlots <= 0) {
-        jsonResponse(res, 409, { ok: false, error: "No free slots" });
-        return;
-      }
       if (taskId) {
         const adapter = getKanbanAdapter();
         const task = await adapter.getTask(taskId);
@@ -6098,7 +6192,7 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 404, { ok: false, error: "Task not found." });
           return;
         }
-        executor.executeTask(task).catch((error) => {
+        executor.executeTask(task, { force: true }).catch((error) => {
           console.warn(
             `[telegram-ui] dispatch failed for ${taskId}: ${error.message}`,
           );

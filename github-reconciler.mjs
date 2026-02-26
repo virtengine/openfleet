@@ -12,6 +12,7 @@ const TAG = "[gh-reconciler]";
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_MERGED_LOOKBACK_HOURS = 72;
+const DEFAULT_MAX_BACKOFF_MS = 30 * 60 * 1000; // 30 minutes max backoff
 
 function parseNumber(value, fallback) {
   const parsed = Number(value);
@@ -154,6 +155,12 @@ export class GitHubReconciler {
     this.sendTelegram = options.sendTelegram || null;
     this.timer = null;
     this.running = false;
+    // Back-off state for rate-limit handling
+    this._currentIntervalMs = this.intervalMs;
+    this._maxBackoffMs = parseNumber(
+      options.maxBackoffMs,
+      DEFAULT_MAX_BACKOFF_MS,
+    );
   }
 
   async _listOpenIssues() {
@@ -417,26 +424,58 @@ export class GitHubReconciler {
     console.log(
       `${TAG} started (repo=${this.repoSlug}, interval=${this.intervalMs}ms, lookback=${this.mergedLookbackHours}h)`,
     );
-    void this.reconcileOnce().catch((err) => {
-      console.warn(`${TAG} initial cycle failed: ${err?.message || err}`);
-    });
-    this.timer = setInterval(() => {
-      void this.reconcileOnce().catch((err) => {
-        console.warn(`${TAG} cycle failed: ${err?.message || err}`);
-        if (this.sendTelegram) {
-          void this.sendTelegram(
-            `⚠️ GitHub reconciler cycle failed: ${err?.message || err}`,
-          );
-        }
-      });
-    }, this.intervalMs);
-    if (this.timer?.unref) this.timer.unref();
+    this._scheduleNext(0); // run immediately on start
     return this;
+  }
+
+  /** Schedule the next reconcile cycle after `delayMs` milliseconds. */
+  _scheduleNext(delayMs) {
+    if (!this.running) return;
+    this.timer = setTimeout(() => {
+      this.reconcileOnce()
+        .then(() => {
+          // Success: reset backoff to base interval
+          if (this._currentIntervalMs !== this.intervalMs) {
+            console.log(
+              `${TAG} rate-limit backoff cleared — restoring interval to ${this.intervalMs}ms`,
+            );
+            this._currentIntervalMs = this.intervalMs;
+          }
+          this._scheduleNext(this._currentIntervalMs);
+        })
+        .catch((err) => {
+          const msg = String(err?.message || err);
+          console.warn(`${TAG} cycle failed: ${msg}`);
+          const isRateLimit =
+            msg.includes("rate limit") ||
+            msg.includes("API rate limit") ||
+            msg.includes("rate-limit");
+          if (isRateLimit) {
+            // Exponential back-off: double interval up to the max
+            this._currentIntervalMs = Math.min(
+              this._currentIntervalMs * 2,
+              this._maxBackoffMs,
+            );
+            console.warn(
+              `${TAG} rate-limit detected — backing off to ${this._currentIntervalMs}ms`,
+            );
+          }
+          if (this.sendTelegram) {
+            void Promise.resolve(
+              this.sendTelegram(
+                `⚠️ GitHub reconciler cycle failed: ${msg}`,
+              ),
+            ).catch(() => {});
+          }
+          this._scheduleNext(this._currentIntervalMs);
+        });
+    }, delayMs);
+    if (this.timer?.unref) this.timer.unref();
   }
 
   stop() {
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = null;
     }
     this.running = false;

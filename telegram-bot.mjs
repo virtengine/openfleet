@@ -118,6 +118,37 @@ import {
 } from "./presence.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
+
+function isWslInteropRuntime() {
+  return Boolean(
+    process.env.WSL_DISTRO_NAME
+    || process.env.WSL_INTEROP
+    || (process.platform === "win32"
+      && String(process.env.HOME || "")
+        .trim()
+        .startsWith("/home/")),
+  );
+}
+
+function resolveTelegramConfigDir() {
+  if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
+  if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
+
+  const preferWindowsDirs = process.platform === "win32" && !isWslInteropRuntime();
+  const baseDir = preferWindowsDirs
+    ? process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || process.env.USERPROFILE
+      || process.env.HOME
+      || homedir()
+    : process.env.HOME
+      || process.env.XDG_CONFIG_HOME
+      || process.env.USERPROFILE
+      || process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || homedir();
+  return resolve(baseDir, "bosun");
+}
 const repoRoot = resolveRepoRoot();
 const BosunDir = __dirname;
 const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
@@ -1103,6 +1134,25 @@ async function bumpStickyMenu(chatId) {
   await showUiScreen(chatId, null, state.screenId, state.params || {}, {
     sticky: true,
   });
+}
+
+async function refreshStickyMenu(chatId, screenId = "home", params = {}) {
+  const state = stickyMenuState.get(chatId);
+  if (state?.messageId) {
+    try {
+      await deleteDirect(chatId, state.messageId);
+    } catch {
+      /* best effort */
+    }
+  }
+  const timer = stickyMenuTimers.get(chatId);
+  if (timer) {
+    clearTimeout(timer);
+    stickyMenuTimers.delete(chatId);
+  }
+  stickyMenuState.delete(chatId);
+  clearPendingUiInput(chatId);
+  await showUiScreen(chatId, null, screenId, params, { sticky: true });
 }
 
 // ── Telegram API Helpers ─────────────────────────────────────────────────────
@@ -2449,7 +2499,7 @@ async function cmdWorkspace(chatId, text) {
     .trim();
   const [sub, ...rest] = raw ? raw.split(/\s+/) : [];
   const subcmd = String(sub || "list").toLowerCase();
-  const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+  const configDir = resolveTelegramConfigDir();
 
   try {
     if (subcmd === "scan") {
@@ -3968,13 +4018,13 @@ function uiNavRow(parent) {
   if (!parent) {
     return [
       uiButton("🏠 Home", uiGoAction("home")),
-      uiButton("✖ Close", "cb:close_menu"),
+      uiButton("❌ Close", "cb:close_menu"),
     ];
   }
   return [
     uiButton("⬅️ Back", uiGoAction(parent)),
     uiButton("🏠 Home", uiGoAction("home")),
-    uiButton("✖ Close", "cb:close_menu"),
+    uiButton("❌ Close", "cb:close_menu"),
   ];
 }
 
@@ -4208,7 +4258,7 @@ Object.assign(UI_SCREENS, {
             text: "📱 Open Control Center",
             web_app: { url: telegramWebAppUrl },
           },
-          uiButton("✖", "cb:close_menu"),
+          uiButton("❌", "cb:close_menu"),
         ]);
         if (telegramUiUrl) {
           rows.unshift([
@@ -4218,10 +4268,10 @@ Object.assign(UI_SCREENS, {
       } else if (telegramUiUrl) {
         rows.unshift([
           { text: "🌐 Open Control Center", url: getBrowserUiUrl() || telegramUiUrl },
-          uiButton("✖", "cb:close_menu"),
+          uiButton("❌", "cb:close_menu"),
         ]);
       } else {
-        rows.unshift([uiButton("✖ Close Menu", "cb:close_menu")]);
+        rows.unshift([uiButton("❌ Close Menu", "cb:close_menu")]);
       }
       return buildKeyboard(rows);
     },
@@ -5055,7 +5105,7 @@ Object.assign(UI_SCREENS, {
     body: () => "Choose a local workspace to set active for task routing.",
     keyboard: async (ctx) => {
       const page = parsePageParam(ctx.params?.page);
-      const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+      const configDir = resolveTelegramConfigDir();
       const workspaces = listLocalWorkspaces(configDir);
       const active = getActiveLocalWorkspace(configDir);
       if (!workspaces.length) {
@@ -5319,7 +5369,7 @@ Object.assign(UI_SCREENS, {
     body: () => "Browse, manage, and interact with your managed workspaces.",
     keyboard: async (ctx) => {
       const page = parsePageParam(ctx.params?.page);
-      const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+      const configDir = resolveTelegramConfigDir();
       const workspaces = listLocalWorkspaces(configDir);
       const active = getActiveLocalWorkspace(configDir);
       if (!workspaces.length) {
@@ -10456,6 +10506,11 @@ export async function startTelegramBot() {
   if (miniAppEnabled || miniAppPort > 0) {
     try {
       await startTelegramUiServer({
+        // Background monitor/bot runtime should not keep opening browser tabs.
+        // Set BOSUN_UI_AUTO_OPEN_BROWSER=1 to opt-in.
+        skipAutoOpen: !["1", "true", "yes", "on"].includes(
+          String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "").toLowerCase(),
+        ),
         dependencies: {
           execPrimaryPrompt,
           getInternalExecutor: _getInternalExecutor,
@@ -10463,7 +10518,7 @@ export async function startTelegramBot() {
           getAgentEventBus: _getAgentEventBus,
           handleUiCommand: handleUiCommand,
           getSyncEngine: _getSyncEngine,
-          configDir: process.env.BOSUN_DIR || join(homedir(), "bosun"),
+          configDir: resolveTelegramConfigDir(),
           onProjectSyncAlert: async (alert) => {
             if (!_sendTelegramMessage) return;
             const text = String(alert?.message || "Project sync alert");
@@ -10605,8 +10660,9 @@ export async function startTelegramBot() {
   } else {
     await sendDirect(
       telegramChatId,
-      `🤖 Bosun primary agent online (${getPrimaryAgentName()}).\n\nType /menu for the control center or send any message to chat with the agent.`,
+      `🤖 Bosun primary agent online (${getPrimaryAgentName()}).\n\nType /menu for the control center or send any message to chat with the agent.\n\nRefreshing control center menu below…`,
     );
+    await refreshStickyMenu(telegramChatId, "home", {});
 
     // ── SECURITY: Alert when ALLOW_UNSAFE is enabled (especially with tunnel) ──
     const _isUnsafe = ["1", "true", "yes"].includes(

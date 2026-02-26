@@ -715,11 +715,29 @@ function ServerConfigMode() {
           method: "POST",
           body: JSON.stringify({ changes }),
         });
-      } catch (primaryErr) {
-        // Legacy/demo compatibility endpoint.
+      } catch (error_) {
+        const message = String(error_?.message || "");
+        const shouldTryLegacy =
+          /Request failed \((404|405|501)\)/.test(message)
+          || /Failed to fetch|NetworkError|Load failed/i.test(message);
+
+        if (!shouldTryLegacy) throw error_;
+
+        const legacyKeyMap = {
+          INTERNAL_EXECUTOR_SDK: "sdk",
+          KANBAN_BACKEND: "kanban",
+          EXECUTOR_REGIONS: "region",
+        };
+        const entries = Object.entries(changes);
+        if (entries.length !== 1) throw error_;
+
+        const [envKey, value] = entries[0];
+        const legacyKey = legacyKeyMap[envKey];
+        if (!legacyKey) throw error_;
+
         res = await apiFetch("/api/config/update", {
           method: "POST",
-          body: JSON.stringify(changes),
+          body: JSON.stringify({ key: legacyKey, value }),
         });
       }
       if (res?.ok || (res && typeof res === "object" && !Array.isArray(res))) {
@@ -1014,8 +1032,7 @@ function ServerConfigMode() {
       <div class="settings-banner settings-banner-info">
         <span>${resolveIcon("🧭")}</span>
         <span class="settings-banner-text">
-          Settings are saved to <code>${serverMeta.envPath}</code> and synced to
-          <code>${serverMeta.configPath}</code> for supported keys.
+          Settings are saved to <code>${serverMeta.envPath}</code> and synced to <code>${serverMeta.configPath}</code> for supported keys.
         </span>
       </div>
     `}
