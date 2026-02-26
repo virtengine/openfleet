@@ -647,13 +647,14 @@ export class WorkflowEngine extends EventEmitter {
 
           // Retry loop — uses per-node maxRetries or global MAX_NODE_RETRIES
           const maxRetries = (node.config?.retryable === false) ? 0 : (node.config?.maxRetries ?? MAX_NODE_RETRIES);
+          const baseRetryDelay = node.config?.retryDelayMs ?? 1000;
           let lastErr;
 
           for (let attempt = 0; attempt <= maxRetries; attempt++) {
             try {
               if (attempt > 0) {
                 ctx.incrementRetry(nodeId);
-                const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 30000);
+                const backoffMs = Math.min(baseRetryDelay * Math.pow(2, attempt - 1), 30000);
                 ctx.log(nodeId, `Retry ${attempt}/${maxRetries} after ${backoffMs}ms`, "warn");
                 this.emit("node:retry", { nodeId, attempt, maxRetries, backoffMs });
                 await new Promise((r) => setTimeout(r, backoffMs));
@@ -803,20 +804,24 @@ export class WorkflowEngine extends EventEmitter {
       return { _dryRun: true, type: node.type, config: resolvedConfig };
     }
 
-    // Execute with timeout
+    // Execute with timeout — clear timer on completion to avoid resource leaks
     const timeout = resolvedConfig.timeout || node.timeout || NODE_TIMEOUT_MS;
-    const result = await Promise.race([
-      handler.execute(
-        { ...node, config: resolvedConfig },
-        ctx,
-        this
-      ),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`Node "${node.label || node.id}" timed out after ${timeout}ms`)), timeout)
-      ),
-    ]);
-
-    return result;
+    let timer;
+    try {
+      const result = await Promise.race([
+        handler.execute(
+          { ...node, config: resolvedConfig },
+          ctx,
+          this
+        ),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Node "${node.label || node.id}" timed out after ${timeout}ms`)), timeout);
+        }),
+      ]);
+      return result;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   _resolveConfig(config, ctx) {
