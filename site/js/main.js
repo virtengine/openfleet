@@ -677,6 +677,12 @@
       return candidates[0] || 'unknown';
     }
 
+    function hasBosunCoAuthor(commit) {
+      var msg = (commit && commit.commit && commit.commit.message) ? commit.commit.message : '';
+      // Look for Co-Authored-By trailers referencing bosun-agent or bosun-ve
+      return /co-authored-by:[^\n]*bosun/i.test(msg);
+    }
+
     function resolveAuthorActor(commit) {
       if (commit && commit.author) return commit.author;
       if (commit && commit.committer) return commit.committer;
@@ -706,7 +712,8 @@
           var commitUrl = c.html_url || '#';
           var sha = sha7(c.sha);
           var ago = date ? timeAgo(date) : '';
-          return '<a class="pr-card commit-card" href="' + commitUrl + '" target="_blank" rel="noopener">' +
+          var bosunCoAuthor = hasBosunCoAuthor(c);
+          return '<a class="pr-card commit-card' + (bosunCoAuthor ? ' commit-card--coauthored' : '') + '" href="' + commitUrl + '" target="_blank" rel="noopener">' +
             '<div class="pr-card__state commit-type ' + typeInfo.cls + '">' + typeInfo.icon + '</div>' +
             '<div class="pr-card__body">' +
             '<div class="pr-card__title">' + escHtml(firstLine) + '</div>' +
@@ -715,6 +722,7 @@
             (avatarUrl ? '<img class="commit-avatar" src="' + avatarUrl + '" alt="' + escHtml(author) + '" loading="lazy" width="16" height="16">' : '') +
             '<span>' + escHtml(author) + '</span>' +
             '<span>' + ago + '</span>' +
+            (bosunCoAuthor ? '<span class="commit-coauthor-badge" title="Co-authored by bosun-agent">✦ bosun</span>' : '') +
             (typeInfo.label ? '<span class="commit-label commit-label--' + typeInfo.label + '">' + typeInfo.label + '</span>' : '') +
             '</div>' +
             '</div></a>';

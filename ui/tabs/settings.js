@@ -396,6 +396,63 @@ body.settings-save-open .main-content {
     padding-bottom: 140px;
   }
 }
+/* Theme picker grid */
+.theme-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.theme-swatch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 8px;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+.theme-swatch:hover {
+  border-color: var(--border, rgba(255,255,255,0.15));
+  background: rgba(255, 255, 255, 0.02);
+}
+.theme-swatch.active {
+  border-color: var(--accent, #5b6eae);
+  background: rgba(91, 110, 174, 0.08);
+  box-shadow: 0 0 12px rgba(91, 110, 174, 0.2);
+}
+.theme-swatch-preview {
+  display: flex;
+  width: 100%;
+  height: 50px;
+  gap: 3px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.swatch-bg, .swatch-accent {
+  flex: 1;
+  border-radius: 4px;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.3);
+}
+.swatch-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary, #fff);
+}
+.swatch-desc {
+  font-size: 11px;
+  color: var(--text-tertiary, #666);
+  text-align: center;
+}
 `;
 
 /* ─── Inject styles once ─── */
@@ -1433,15 +1490,34 @@ function AppPreferencesMode() {
     <${Collapsible} title=${iconText("🎨 Appearance")} defaultOpen=${false}>
       <${Card}>
         <div class="card-subtitle mb-sm">Color Theme</div>
-        <${SegmentedControl}
-          options=${[
-            { value: "system", label: "System" },
-            { value: "light", label: "Light" },
-            { value: "dark", label: "Dark" },
-          ]}
-          value=${colorTheme}
-          onChange=${handleColorTheme}
-        />
+        <div class="theme-picker-grid">
+          ${[
+            { id: "system", label: "System", bg: "var(--tg-theme-bg-color, #1f1e1c)", accent: "var(--tg-theme-button-color, #da7756)", desc: "Auto" },
+            { id: "dark", label: "Bosun Dark", bg: "#1f1e1c", accent: "#da7756", desc: "Warm" },
+            { id: "dark-blue", label: "Dark Blue", bg: "#0b0f14", accent: "#4cc9f0", desc: "Cyber" },
+            { id: "midnight", label: "Midnight", bg: "#0d1117", accent: "#7c3aed", desc: "Purple" },
+            { id: "dracula", label: "Dracula", bg: "#282a36", accent: "#ff79c6", desc: "Pink" },
+            { id: "nord", label: "Nord", bg: "#2e3440", accent: "#88c0d0", desc: "Arctic" },
+            { id: "monokai", label: "Monokai", bg: "#272822", accent: "#a6e22e", desc: "Classic" },
+            { id: "github-dark", label: "GitHub Dark", bg: "#0d1117", accent: "#58a6ff", desc: "Blue" },
+            { id: "ayu", label: "Ayu", bg: "#0a0e14", accent: "#ff8f40", desc: "Orange" },
+            { id: "dawn", label: "Dawn", bg: "#fdf6e3", accent: "#b58900", desc: "Light" },
+          ].map((theme) => html`
+            <button
+              key=${theme.id}
+              class="theme-swatch ${colorTheme === theme.id ? "active" : ""}"
+              title=${theme.label}
+              onClick=${() => handleColorTheme(theme.id)}
+            >
+              <div class="theme-swatch-preview">
+                <div class="swatch-bg" style="background: ${theme.bg}"></div>
+                <div class="swatch-accent" style="background: ${theme.accent}"></div>
+              </div>
+              <div class="swatch-label">${theme.label}</div>
+              <div class="swatch-desc">${theme.desc}</div>
+            </button>
+          `)}
+        </div>
         <div class="meta-text mt-sm mb-md" style="font-size: 11px;">
           ${colorTheme === "system"
             ? html`Follows your ${tg ? "Telegram" : "OS"} theme automatically.`

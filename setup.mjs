@@ -30,7 +30,6 @@ import { fileURLToPath } from "node:url";
 import {
   readCodexConfig,
   getConfigPath,
-  hasVibeKanbanMcp,
   auditStreamTimeouts,
   ensureCodexConfig,
   printConfigSummary,
@@ -4357,26 +4356,9 @@ async function main() {
       info(`Found existing config: ${configTomlPath}`);
     }
 
-    // Check vibe-kanban MCP
-    if (vkNeeded) {
-      if (existingToml && hasVibeKanbanMcp(existingToml)) {
-        info("Vibe-Kanban MCP server already configured in config.toml.");
-        const updateVk = await prompt.confirm(
-          "Update VK env vars to match your setup values?",
-          true,
-        );
-        if (!updateVk) {
-          env._SKIP_VK_TOML = "1";
-        }
-      } else {
-        info("Will add Vibe-Kanban MCP server to Codex config for agent use.");
-      }
-    } else {
-      env._SKIP_VK_TOML = "1";
-      info(
-        "Skipping Vibe-Kanban MCP setup (VK not selected as board or executor).",
-      );
-    }
+    info(
+      "Vibe-Kanban MCP is workspace-scoped and will only be written to repo .codex/config.toml when VK runtime is selected and configured.",
+    );
 
     // Check stream timeouts
     const timeouts = auditStreamTimeouts(existingToml);
@@ -5391,12 +5373,42 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
     warn(`Could not update Copilot MCP config: ${copilotMcpResult.error}`);
   }
 
+  const vkPort = env.VK_RECOVERY_PORT || "54089";
+  const vkBaseUrl = String(
+    env.VK_BASE_URL || `http://127.0.0.1:${vkPort}`,
+  ).trim();
+  const kanbanIsVk =
+    String(env.KANBAN_BACKEND || "").trim().toLowerCase() === "vk" ||
+    ["vk", "hybrid"].includes(
+      String(env.EXECUTOR_MODE || "").trim().toLowerCase(),
+    );
+  const includeWorkspaceVkMcp = kanbanIsVk && vkBaseUrl.length > 0;
+
+  // Derive primary SDK from executor configuration.
+  const primaryExecutor = (configJson.executors || []).find(
+    (e) => e.role === "primary",
+  );
+  const executorToPrimarySdk = {
+    CODEX: "codex",
+    COPILOT: "copilot",
+    CLAUDE: "claude",
+  };
+  const primarySdk = primaryExecutor
+    ? executorToPrimarySdk[String(primaryExecutor.executor).toUpperCase()] ||
+      "codex"
+    : "codex";
+  const repoConfigOptions = {
+    vkBaseUrl,
+    skipVk: !includeWorkspaceVkMcp,
+    primarySdk,
+  };
+
   // ── Repo-level AI configs for all workspace repos ──────
   heading("Repo-Level AI Configs");
   try {
     const { ensureRepoConfigs, printRepoConfigSummary } = await import("./repo-config.mjs");
     // Apply to the primary repo
-    const repoResult = ensureRepoConfigs(repoRoot);
+    const repoResult = ensureRepoConfigs(repoRoot, repoConfigOptions);
     printRepoConfigSummary(repoResult, (msg) => console.log(msg));
 
     // Also apply to all workspace repos under $BOSUN_DIR/workspaces/
@@ -5410,7 +5422,7 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
           for (const repo of ws.repos || []) {
             const wsRepoPath = resolve(wsDir, ws.id || ws.name || "", repo.name);
             if (wsRepoPath !== repoRoot && existsSync(wsRepoPath)) {
-              const wsResult = ensureRepoConfigs(wsRepoPath);
+              const wsResult = ensureRepoConfigs(wsRepoPath, repoConfigOptions);
               const anyChange = Object.values(wsResult).some((r) => r.created || r.updated);
               if (anyChange) {
                 info(`Workspace repo: ${repo.name}`);
@@ -5429,40 +5441,20 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
 
   // ── Codex CLI config.toml ─────────────────────────────
   heading("Codex CLI Config");
-
-  if (env._SKIP_VK_TOML === "1") {
-    info("Skipped Vibe-Kanban MCP config update.");
-  } else {
-    const vkPort = env.VK_RECOVERY_PORT || "54089";
-    const vkBaseUrl = env.VK_BASE_URL || `http://127.0.0.1:${vkPort}`;
-    const kanbanIsVk =
-      (env.KANBAN_BACKEND || "internal").toLowerCase() === "vk" ||
-      ["vk", "hybrid"].includes((env.EXECUTOR_MODE || "internal").toLowerCase());
-    // Derive primary SDK from executor configuration
-    const primaryExecutor = (configJson.executors || []).find(
-      (e) => e.role === "primary",
-    );
-    const executorToPrimarySdk = {
-      CODEX: "codex",
-      COPILOT: "copilot",
-      CLAUDE: "claude",
-    };
-    const primarySdk = primaryExecutor
-      ? executorToPrimarySdk[String(primaryExecutor.executor).toUpperCase()] || "codex"
-      : "codex";
-
-    const tomlResult = ensureCodexConfig({
-      vkBaseUrl,
-      skipVk: !kanbanIsVk,
-      dryRun: false,
-      primarySdk,
-      env: {
-        ...process.env,
-        ...env,
-      },
-    });
-    printConfigSummary(tomlResult, (msg) => console.log(msg));
-  }
+  info(
+    "Global ~/.codex/config.toml will not include Vibe-Kanban MCP (workspace-only policy).",
+  );
+  const tomlResult = ensureCodexConfig({
+    vkBaseUrl,
+    skipVk: true,
+    dryRun: false,
+    primarySdk,
+    env: {
+      ...process.env,
+      ...env,
+    },
+  });
+  printConfigSummary(tomlResult, (msg) => console.log(msg));
 
   // ── Install dependencies ───────────────────────────────
   heading("Installing Dependencies");

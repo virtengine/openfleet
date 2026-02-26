@@ -219,6 +219,16 @@ function ensurePrimaryAgentConfigs(primaryName) {
   const allowRuntimeCodexMutation = envFlagEnabled(
     process.env.BOSUN_ALLOW_RUNTIME_GLOBAL_CODEX_MUTATION,
   );
+  const vkBaseUrl = String(
+    process.env.VK_BASE_URL ||
+      `http://127.0.0.1:${process.env.VK_RECOVERY_PORT || "54089"}`,
+  ).trim();
+  const vkSelected =
+    String(process.env.KANBAN_BACKEND || "").trim().toLowerCase() === "vk" ||
+    ["vk", "hybrid"].includes(
+      String(process.env.EXECUTOR_MODE || "").trim().toLowerCase(),
+    );
+  const includeWorkspaceVkMcp = vkSelected && vkBaseUrl.length > 0;
   let repoRoot = "";
   try {
     repoRoot = resolveRepoRoot();
@@ -232,7 +242,11 @@ function ensurePrimaryAgentConfigs(primaryName) {
       process.env.BOSUN_AGENT_REPO_ROOT = repoRoot;
     }
     try {
-      const repoResult = ensureRepoConfigs(repoRoot, { primarySdk });
+      const repoResult = ensureRepoConfigs(repoRoot, {
+        primarySdk,
+        vkBaseUrl,
+        skipVk: !includeWorkspaceVkMcp,
+      });
       const logLines = [];
       printRepoConfigSummary(repoResult, (msg) => logLines.push(msg));
       if (logLines.some((line) => line.includes("created") || line.includes("updated"))) {
@@ -251,6 +265,7 @@ function ensurePrimaryAgentConfigs(primaryName) {
     const codexResult = ensureCodexConfig({
       env: process.env,
       primarySdk,
+      skipVk: true,
       dryRun: !allowRuntimeCodexMutation,
     });
     if (!codexResult?.noChanges) {

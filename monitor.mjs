@@ -14154,17 +14154,16 @@ if (!isMonitorTestRuntime) {
     process.exit(0);
   }
 
-// ── Codex CLI config.toml: ensure VK MCP + stream timeouts ──────────────────
+// ── Codex CLI config.toml: ensure global defaults + stream timeouts ─────────
 try {
   const vkPort = config.vkRecoveryPort || "54089";
   const vkBaseUrl = config.vkEndpointUrl || `http://127.0.0.1:${vkPort}`;
-  const skipVk = !isVkRuntimeRequired();
   const allowRuntimeCodexMutation = isTruthyFlag(
     process.env.BOSUN_ALLOW_RUNTIME_GLOBAL_CODEX_MUTATION,
   );
   const tomlResult = ensureCodexConfig({
     vkBaseUrl,
-    skipVk,
+    skipVk: true,
     dryRun: !allowRuntimeCodexMutation,
   });
   if (!tomlResult.noChanges) {

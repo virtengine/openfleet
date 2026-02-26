@@ -930,12 +930,13 @@ function handleApply(body) {
       console.warn("[setup] could not update claude settings:", err.message);
     }
 
-    // 3. Call ensureCodexConfig to ensure ~/.codex/config.toml has all bosun
-    //    recommended settings (MCP servers, sandbox, feature flags, etc.).
+    // 3. Call ensureCodexConfig to ensure ~/.codex/config.toml has global
+    //    bosun settings (sandbox, feature flags, timeouts, etc.).
+    //    Vibe-Kanban MCP stays workspace-scoped in repo .codex/config.toml.
     try {
       ensureCodexConfig({
         vkBaseUrl: env.vkBaseUrl || process.env.VK_BASE_URL || "http://127.0.0.1:54089",
-        skipVk: (env.kanbanBackend || "") !== "internal" && (env.kanbanBackend || "") !== "",
+        skipVk: true,
         env: { ...process.env, BOSUN_HOME: bosunHome, BOSUN_WORKSPACES_DIR: workspacesDir },
       });
     } catch (err) {

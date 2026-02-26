@@ -2,12 +2,15 @@
  * codex-config.mjs — Manages the Codex CLI config (~/.codex/config.toml)
  *
  * Ensures the user's Codex CLI configuration has:
- *   1. A vibe_kanban MCP server section with the correct env vars
- *   2. Sufficient stream_idle_timeout_ms on all model providers
- *   3. Recommended defaults for long-running agentic workloads
- *   4. Feature flags for sub-agents, memory, undo, collaboration
- *   5. Sandbox permissions and shell environment policy
- *   6. Common MCP servers (context7, microsoft-docs)
+ *   1. Sufficient stream_idle_timeout_ms on all model providers
+ *   2. Recommended defaults for long-running agentic workloads
+ *   3. Feature flags for sub-agents, memory, undo, collaboration
+ *   4. Sandbox permissions and shell environment policy
+ *   5. Common MCP servers (context7, microsoft-docs)
+ *
+ * NOTE: Vibe-Kanban MCP is workspace-scoped and managed by repo-config.mjs
+ * inside each repo's `.codex/config.toml`. Global config no longer auto-adds
+ * `[mcp_servers.vibe_kanban]`.
  *
  * SCOPE: This manages the GLOBAL ~/.codex/config.toml which contains:
  *   - Model provider configs (API keys, base URLs) — MUST be global
@@ -1305,13 +1308,15 @@ export function ensureRetrySettings(toml, providerName) {
  * @param {object} opts
  * @param {string}  [opts.vkBaseUrl]
  * @param {boolean} [opts.skipVk]
+ * @param {boolean} [opts.manageVkMcp]  Explicit opt-in to manage VK MCP in global config
  * @param {boolean} [opts.dryRun]  If true, returns result without writing
  * @param {object}  [opts.env]     Environment overrides (defaults to process.env)
  * @param {string}  [opts.primarySdk]  Primary agent SDK: "codex", "copilot", or "claude"
  */
 export function ensureCodexConfig({
   vkBaseUrl = "http://127.0.0.1:54089",
-  skipVk = false,
+  skipVk = true,
+  manageVkMcp = false,
   dryRun = false,
   env = process.env,
   primarySdk,
@@ -1424,7 +1429,8 @@ export function ensureCodexConfig({
   result.featuresAdded = featureResult.added;
   toml = featureResult.toml;
 
-  if (skipVk) {
+  const shouldManageGlobalVkMcp = Boolean(manageVkMcp) && !skipVk;
+  if (!shouldManageGlobalVkMcp) {
     if (hasVibeKanbanMcp(toml)) {
       toml = removeVibeKanbanMcp(toml);
       result.vkRemoved = true;
@@ -1564,7 +1570,7 @@ export function printConfigSummary(result, log = console.log) {
   }
 
   if (result.vkRemoved) {
-    log("  🗑️  Removed Vibe-Kanban MCP server (VK backend not active)");
+    log("  🗑️  Removed Vibe-Kanban MCP server from global config (workspace-scoped only)");
   }
 
   if (result.vkEnvUpdated) {

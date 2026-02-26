@@ -1710,7 +1710,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
         <div class="fleet-slot-rail">
           ${entries.length === 0
             ? html`<div class="meta-text">No active slots</div>`
-            : entries.map((entry) => html`
+            : html`${entries.map((entry) => html`
                 <button
                   key=${entry.key}
                   class="fleet-slot-item ${selectedEntry?.key === entry.key ? "active" : ""}"
@@ -1728,7 +1728,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                     Slot ${(entry.index ?? 0) + 1} · ${entry.slot?.taskId || "no-task-id"}
                   </div>
                 </button>
-              `)}
+              `)}`}
         </div>
         <div class="session-detail fleet-session-detail">
           ${selectedEntry
