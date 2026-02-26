@@ -1233,6 +1233,8 @@ let uiServerTls = false;
 let wsServer = null;
 /** Auto-open browser: only once per process, never during tests */
 let _browserOpened = false;
+const AUTO_OPEN_MARKER_FILE = "ui-auto-open.json";
+const DEFAULT_AUTO_OPEN_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12h
 const wsClients = new Set();
 let sessionListenerAttached = false;
 /** @type {ReturnType<typeof setInterval>|null} */
@@ -1289,6 +1291,56 @@ function resolveUiConfigDir() {
     if (!uiDeps.configDir) uiDeps.configDir = dir;
   }
   return dir;
+}
+
+function getAutoOpenCooldownMs() {
+  const raw = Number(process.env.BOSUN_UI_AUTO_OPEN_COOLDOWN_MS || "");
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_AUTO_OPEN_COOLDOWN_MS;
+  return Math.max(60_000, Math.trunc(raw));
+}
+
+function readAutoOpenMarker() {
+  try {
+    const cacheDir = resolve(resolveUiConfigDir(), ".cache");
+    const markerPath = resolve(cacheDir, AUTO_OPEN_MARKER_FILE);
+    if (!existsSync(markerPath)) return null;
+    const payload = JSON.parse(readFileSync(markerPath, "utf8"));
+    const openedAt = Number(payload?.openedAt || 0);
+    if (!Number.isFinite(openedAt) || openedAt <= 0) return null;
+    return { openedAt, markerPath };
+  } catch {
+    return null;
+  }
+}
+
+function writeAutoOpenMarker(data = {}) {
+  try {
+    const cacheDir = resolve(resolveUiConfigDir(), ".cache");
+    mkdirSync(cacheDir, { recursive: true });
+    const markerPath = resolve(cacheDir, AUTO_OPEN_MARKER_FILE);
+    writeFileSync(
+      markerPath,
+      JSON.stringify(
+        {
+          openedAt: Date.now(),
+          url: String(data.url || ""),
+          pid: process.pid,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  } catch {
+    /* best effort */
+  }
+}
+
+function shouldAutoOpenBrowserNow() {
+  const marker = readAutoOpenMarker();
+  if (!marker?.openedAt) return true;
+  const cooldownMs = getAutoOpenCooldownMs();
+  return Date.now() - marker.openedAt >= cooldownMs;
 }
 
 const projectSyncWebhookMetrics = {
@@ -7141,10 +7193,15 @@ export async function startTelegramUiServer(options = {}) {
     process.env.BOSUN_DESKTOP !== "1" &&
     !options.skipAutoOpen &&
     !_browserOpened &&
-    !isTestRunRuntime
+    !isTestRunRuntime &&
+    shouldAutoOpenBrowserNow()
   ) {
     _browserOpened = true;
-    const openUrl = `${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`;
+    const openHost = String(
+      process.env.BOSUN_UI_AUTO_OPEN_HOST || "127.0.0.1",
+    ).trim();
+    const openProtocol = uiServerTls ? "https" : "http";
+    const openUrl = `${openProtocol}://${openHost}:${actualPort}/?token=${sessionToken}`;
     try {
       const { exec } = await import("node:child_process");
       if (process.platform === "win32") {
@@ -7154,6 +7211,7 @@ export async function startTelegramUiServer(options = {}) {
       } else {
         exec(`xdg-open "${openUrl}"`);
       }
+      writeAutoOpenMarker({ url: openUrl });
     } catch { /* ignore auto-open failure */ }
   }
 

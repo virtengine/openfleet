@@ -2794,19 +2794,24 @@ async function main() {
     const usedSdks = new Set(
       configJson.executors.map((e) => String(e.executor).toUpperCase()),
     );
-    // Auto-disable SDKs that aren't in any executor config and have no API key
-    if (!usedSdks.has("COPILOT") && !process.env.COPILOT_CLI_TOKEN && !process.env.GITHUB_TOKEN) {
-      env.COPILOT_SDK_DISABLED = "true";
-    }
-    if (!usedSdks.has("CLAUDE") && !process.env.ANTHROPIC_API_KEY) {
-      env.CLAUDE_SDK_DISABLED = "true";
-    }
+    // Disable SDKs not represented in executor config — unconditional, prevents
+    // accidental routing to an SDK the user hasn't configured.
+    if (!usedSdks.has("CODEX"))   { env.CODEX_SDK_DISABLED   = "true"; } else { delete env.CODEX_SDK_DISABLED;   }
+    if (!usedSdks.has("COPILOT")) { env.COPILOT_SDK_DISABLED = "true"; } else { delete env.COPILOT_SDK_DISABLED; }
+    if (!usedSdks.has("CLAUDE"))  { env.CLAUDE_SDK_DISABLED  = "true"; } else { delete env.CLAUDE_SDK_DISABLED;  }
 
     if (isAdvancedSetup) {
       console.log();
       info("SDK fallback configuration — which SDKs should be available for fallback?");
       console.log(chalk.dim("  SDKs not in your executor preset will be tried as fallback on failure."));
       console.log(chalk.dim("  Disable SDKs you don't have credentials for to avoid error cascades.\n"));
+
+      const wantCodexFallback = usedSdks.has("CODEX") || await prompt.confirm(
+        "Enable Codex SDK fallback? (requires OPENAI_API_KEY)",
+        !!process.env.OPENAI_API_KEY || usedSdks.has("CODEX"),
+      );
+      if (!wantCodexFallback) env.CODEX_SDK_DISABLED = "true";
+      else delete env.CODEX_SDK_DISABLED;
 
       const wantCopilotFallback = usedSdks.has("COPILOT") || await prompt.confirm(
         "Enable Copilot SDK fallback? (requires COPILOT_CLI_TOKEN or GITHUB_TOKEN)",
@@ -2821,12 +2826,6 @@ async function main() {
       );
       if (!wantClaudeFallback) env.CLAUDE_SDK_DISABLED = "true";
       else delete env.CLAUDE_SDK_DISABLED;
-
-      const wantCodexFallback = usedSdks.has("CODEX") || await prompt.confirm(
-        "Enable Codex SDK fallback? (requires OPENAI_API_KEY)",
-        true,
-      );
-      if (!wantCodexFallback) env.CODEX_SDK_DISABLED = "true";
     }
     saveSetupSnapshot(4, "Executor / Agent Configuration", env, configJson);
     } // end step 4

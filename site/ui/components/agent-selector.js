@@ -112,6 +112,32 @@ const PROVIDER_COLORS = {
   anthropic: "#d97706",
 };
 
+/** Clean display names for the three fixed executor IDs */
+const EXECUTOR_DISPLAY_NAMES = {
+  "codex-sdk":   "Codex",
+  "copilot-sdk": "Copilot",
+  "claude-sdk":  "Claude",
+};
+
+/**
+ * Convert a model string like "gpt-5.3-codex" → "GPT-5.3 Codex"
+ * or "claude-opus-4.6" → "Claude Opus 4.6"
+ */
+function buildLabel(model) {
+  if (!model) return "Default";
+  return model
+    .split("-")
+    .map((seg) => {
+      // Keep version segments like "4.6", "4.5", "5.1" as-is
+      if (/^\d/.test(seg)) return seg;
+      // Uppercase known acronyms
+      if (seg.toLowerCase() === "gpt") return "GPT";
+      // Title-case everything else
+      return seg.charAt(0).toUpperCase() + seg.slice(1);
+    })
+    .join(" ");
+}
+
 const STATUS_CONFIG = {
   idle: { color: "var(--tg-theme-hint-color, #999)", label: "Ready", pulse: false },
   thinking: { color: "#eab308", label: "Thinking…", pulse: true },
@@ -622,6 +648,27 @@ const AGENT_SELECTOR_STYLES = `
   color: #fff;
 }
 
+/* ── Agent Picker — no executors empty state ── */
+.agent-picker-empty {
+  font-size: 12px;
+  color: var(--tg-theme-hint-color, #888);
+  padding: 5px 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  border: 1px solid rgba(255,100,100,0.2);
+  border-radius: 8px;
+  background: rgba(255,60,60,0.06);
+}
+.agent-picker-empty a, .agent-picker-empty button {
+  color: var(--tg-theme-button-color, #3b82f6);
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 /* ── Toolbar Select — mode & model pickers ── */
 .toolbar-select {
   appearance: none;
@@ -756,14 +803,34 @@ export function AgentModeSelector() {
 
 /* ═══════════════════════════════════════════════
  *  ModelPicker
- *  Native select for model selection
+ *  Native select for model selection.
+ *  Prefers the models array from /api/agents/available (always current),
+ *  falls back to the static AGENT_MODELS registry for demo/offline mode.
  * ═══════════════════════════════════════════════ */
 
 export function ModelPicker() {
   const current = activeAgent.value;
   const model = selectedModel.value;
+  const agentInfo = activeAgentInfo.value;
 
-  const models = AGENT_MODELS[current] || AGENT_MODELS["codex-sdk"];
+  // Build model entries: prefer live API list, fall back to static registry
+  const apiModels = agentInfo?.models;
+  const staticList = AGENT_MODELS[current] || AGENT_MODELS["codex-sdk"];
+  const modelEntries = apiModels && apiModels.length > 0
+    ? [
+        { value: "", label: "Default" },
+        ...apiModels.map((m) => ({ value: m, label: buildLabel(m) })),
+      ]
+    : staticList;
+
+  // When executor changes, reset model if the stored value isn't in the new list
+  useEffect(() => {
+    const validValues = modelEntries.map((m) => m.value);
+    if (model && !validValues.includes(model)) {
+      selectedModel.value = "";
+      try { localStorage.setItem("ve-selected-model", ""); } catch {}
+    }
+  }, [current]);
 
   const handleChange = useCallback((e) => {
     const value = e.target.value;
@@ -777,9 +844,9 @@ export function ModelPicker() {
       class="toolbar-select toolbar-select--wide"
       value=${model}
       onChange=${handleChange}
-      title="Model selection"
+      title="Model override (Default = executor decides)"
     >
-      ${models.map((m) => html`
+      ${modelEntries.map((m) => html`
         <option key=${m.value} value=${m.value}>${m.label}</option>
       `)}
     </select>
@@ -788,7 +855,8 @@ export function ModelPicker() {
 
 /* ═══════════════════════════════════════════════
  *  AgentPicker
- *  Dropdown for selecting the AI backend
+ *  Native select — only shows enabled (available) executors.
+ *  Empty state if none configured.
  * ═══════════════════════════════════════════════ */
 
 export function AgentPicker() {
@@ -796,12 +864,27 @@ export function AgentPicker() {
   const current = activeAgent.value;
   const loading = agentSelectorLoading.value;
 
+  // Only show executors that are actually enabled
+  const enabledAgents = agents.filter((a) => a.available);
+
   const handleChange = useCallback((e) => {
     const agentId = e.target.value;
     if (agentId === activeAgent.value) return;
     haptic("medium");
     switchAgent(agentId);
+    // Reset model when executor changes — ModelPicker handles the value reset
+    selectedModel.value = "";
+    try { localStorage.setItem("ve-selected-model", ""); } catch {}
   }, []);
+
+  // Empty state: no executors configured / all disabled
+  if (!loading && enabledAgents.length === 0) {
+    return html`
+      <span class="agent-picker-empty" title="No executors are enabled">
+        No executors · configure in Settings
+      </span>
+    `;
+  }
 
   return html`
     <select
@@ -809,17 +892,14 @@ export function AgentPicker() {
       value=${current}
       onChange=${handleChange}
       disabled=${loading}
-      title="Select AI agent"
+      title="Select AI executor"
     >
-      ${agents.length === 0 && html`
-        <option disabled>${loading ? "Loading…" : "No agents"}</option>
-      `}
-      ${agents.map((agent) => {
-        const statusLabel = agent.busy ? " (busy)" : !agent.available ? " (offline)" : "";
+      ${loading && html`<option disabled value="">Loading…</option>`}
+      ${enabledAgents.map((agent) => {
+        const name = EXECUTOR_DISPLAY_NAMES[agent.id] || agent.name;
+        const busy = agent.busy ? " (busy)" : "";
         return html`
-          <option key=${agent.id} value=${agent.id}>
-            ${agent.name} · ${agent.provider}${statusLabel}
-          </option>
+          <option key=${agent.id} value=${agent.id}>${name}${busy}</option>
         `;
       })}
     </select>

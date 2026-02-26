@@ -39,6 +39,7 @@ import {
   resetClaudeSession,
   initClaudeShell,
 } from "./claude-shell.mjs";
+import { getModelsForExecutor } from "./task-complexity.mjs";
 
 /** Valid agent interaction modes */
 const VALID_MODES = ["ask", "agent", "plan"];
@@ -703,6 +704,7 @@ export function getAvailableAgents() {
       provider: adapter.provider,
       available: !disabled,
       busy,
+      models: getModelsForExecutor(id),
       capabilities: {
         sessions: typeof adapter.listSessions === "function",
         steering: typeof adapter.steer === "function",
