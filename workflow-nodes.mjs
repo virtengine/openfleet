@@ -26,6 +26,76 @@ import { randomUUID } from "node:crypto";
 const TAG = "[workflow-nodes]";
 const PORTABLE_WORKTREE_COUNT_COMMAND = "node -e \"const cp=require('node:child_process');const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
 const PORTABLE_PRUNE_AND_COUNT_WORKTREES_COMMAND = "node -e \"const cp=require('node:child_process');cp.execSync('git worktree prune',{stdio:'ignore'});const wt=cp.execSync('git worktree list --porcelain',{encoding:'utf8'});const count=(wt.match(/^worktree /gm)||[]).length;process.stdout.write(String(count)+'\\\\n');\"";
+const WORKFLOW_AGENT_HEARTBEAT_MS = (() => {
+  const raw = Number(process.env.WORKFLOW_AGENT_HEARTBEAT_MS || 30000);
+  if (!Number.isFinite(raw)) return 30000;
+  return Math.max(5000, Math.min(120000, Math.trunc(raw)));
+})();
+
+function trimLogText(value, max = 180) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function summarizeAgentStreamEvent(event) {
+  const type = String(event?.type || "").trim();
+  if (!type) return "";
+
+  if (
+    type === "response.output_text.delta" ||
+    type === "response.output_text.done" ||
+    type === "item.updated"
+  ) {
+    return "";
+  }
+
+  if (type === "tool_call") {
+    return `Tool call: ${event?.tool_name || event?.data?.tool_name || "unknown"}`;
+  }
+
+  if (type === "tool_result") {
+    const name = event?.tool_name || event?.data?.tool_name || "unknown";
+    return `Tool result: ${name}`;
+  }
+
+  if (type === "error") {
+    return `Agent error: ${trimLogText(event?.error || event?.message || "unknown error", 220)}`;
+  }
+
+  const messageText = trimLogText(
+    event?.message?.content ||
+      event?.message?.text ||
+      event?.content ||
+      event?.text ||
+      event?.data?.content ||
+      event?.data?.text ||
+      "",
+    220,
+  );
+
+  if (messageText) {
+    if (
+      type === "agent_message" ||
+      type === "assistant_message" ||
+      type === "message" ||
+      type === "item.completed"
+    ) {
+      return `Agent: ${messageText}`;
+    }
+    return `${type}: ${messageText}`;
+  }
+
+  if (
+    type === "turn.complete" ||
+    type === "session.completed" ||
+    type === "response.completed"
+  ) {
+    return `Agent event: ${type}`;
+  }
+
+  return "";
+}
 
 function normalizeLegacyWorkflowCommand(command) {
   let normalized = String(command || "");
@@ -460,8 +530,45 @@ registerNodeType("action.run_agent", {
     // Use the engine's service injection to call agent pool
     const agentPool = engine.services?.agentPool;
     if (agentPool?.launchEphemeralThread) {
-      const result = await agentPool.launchEphemeralThread(finalPrompt, cwd, timeoutMs);
-      ctx.log(node.id, `Agent completed: success=${result.success}`);
+      let streamEventCount = 0;
+      let lastStreamLog = "";
+      const startedAt = Date.now();
+      const launchExtra = {};
+      if (sdk && sdk !== "auto") launchExtra.sdk = sdk;
+
+      launchExtra.onEvent = (event) => {
+        try {
+          const line = summarizeAgentStreamEvent(event);
+          if (!line || line === lastStreamLog) return;
+          lastStreamLog = line;
+          streamEventCount += 1;
+          ctx.log(node.id, line);
+        } catch {
+          // Stream callbacks must never crash workflow execution.
+        }
+      };
+
+      const heartbeat = setInterval(() => {
+        const elapsedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+        ctx.log(node.id, `Agent still running (${elapsedSec}s elapsed)`);
+      }, WORKFLOW_AGENT_HEARTBEAT_MS);
+
+      let result;
+      try {
+        result = await agentPool.launchEphemeralThread(
+          finalPrompt,
+          cwd,
+          timeoutMs,
+          launchExtra,
+        );
+      } finally {
+        clearInterval(heartbeat);
+      }
+
+      ctx.log(
+        node.id,
+        `Agent completed: success=${result.success} streamEvents=${streamEventCount}`,
+      );
 
       // Propagate session/thread IDs for downstream chaining
       const threadId = result.threadId || result.sessionId || null;

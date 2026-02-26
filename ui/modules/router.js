@@ -82,6 +82,20 @@ export function goBack() {
   }
 }
 
+export function shouldBlockTabSwipe(target, tabId = activeTab.value) {
+  if (tabId === "workflows") return true;
+  if (!target || typeof target.closest !== "function") return false;
+  return Boolean(
+    target.closest(".kanban-board") ||
+    target.closest(".kanban-cards") ||
+    target.closest(".chat-messages") ||
+    target.closest(".wf-canvas-container") ||
+    target.closest(".wf-config-panel") ||
+    target.closest(".wf-palette") ||
+    target.closest(".wf-context-menu"),
+  );
+}
+
 /**
  * Ordered list of tabs with metadata for rendering the navigation UI.
  * The `icon` key maps to a property on the ICONS object in modules/icons.js.

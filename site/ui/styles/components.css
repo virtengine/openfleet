@@ -1977,6 +1977,20 @@ select.input {
   border-radius: var(--radius-lg, 12px);
   overflow: hidden;
   border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.workspace-viewer-embedded {
+  height: min(78vh, 900px);
+}
+
+.workspace-main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 12px 12px;
 }
 
 .workspace-log {
@@ -3632,6 +3646,32 @@ select.input {
   margin-top: 4px;
 }
 
+.fleet-full-card {
+  min-height: 0;
+}
+
+.fleet-full-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+}
+
+.fleet-full-list {
+  border-right: 1px solid var(--border);
+  padding-right: 10px;
+  max-height: min(78vh, 900px);
+  overflow-y: auto;
+}
+
+.fleet-session-list {
+  margin-top: 8px;
+}
+
+.fleet-full-main {
+  min-height: 0;
+}
+
 @media (min-width: 720px) {
   .fleet-hero {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
@@ -3641,6 +3681,20 @@ select.input {
 @media (min-width: 900px) {
   .fleet-layout {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .fleet-full-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .fleet-full-list {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-right: 0;
+    padding-bottom: 10px;
+    max-height: 320px;
   }
 }
 

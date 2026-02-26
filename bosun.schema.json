@@ -49,6 +49,11 @@
           "type": "string",
           "enum": ["internal", "vk", "github", "jira"]
         },
+        "syncPolicy": {
+          "type": "string",
+          "enum": ["internal-primary", "bidirectional"],
+          "default": "internal-primary"
+        },
         "projectId": { "type": "string" },
         "github": {
           "type": "object",

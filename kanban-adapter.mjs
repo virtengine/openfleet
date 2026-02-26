@@ -276,6 +276,27 @@ function sleepMs(ms) {
   return new Promise((resolve) => setTimeoutFn(resolve, delay));
 }
 
+// ---------------------------------------------------------------------------
+// Module-level GH API response caches — shared across all adapter instances
+// to eliminate redundant API calls within the same polling window.
+// ---------------------------------------------------------------------------
+
+const GH_ISSUE_LIST_CACHE_TTL_MS =
+  Number(process.env.GITHUB_ISSUES_LIST_CACHE_TTL_MS) || 3 * 60 * 1000; // 3 min
+
+const GH_SHARED_STATE_CACHE_TTL_MS =
+  Number(process.env.GITHUB_SHARED_STATE_CACHE_TTL_MS) || 5 * 60 * 1000; // 5 min
+
+/** Build a cache key for the issue-list cache (per adapter instance). */
+function _issueListCacheKey(state, limit) {
+  return `${state}:${limit}`;
+}
+
+/** Build a cache key for the shared-state cache (per adapter instance). */
+function _sharedStateCacheKey(num) {
+  return String(num);
+}
+
 function isGhRateLimitError(text) {
   const errText = String(text || "").toLowerCase();
   if (!errText) return false;
@@ -1259,6 +1280,8 @@ class GitHubIssuesAdapter {
     /** @type {Map<string, {fields: any, time: number}>} projectNumber → {fields, time} */
     this._projectFieldsCache = new Map();
     this._projectFieldsCacheTTL = 300_000; // 5 minutes
+    /** @type {Set<string>} projects already warned for missing Status field */
+    this._projectStatusFieldWarned = new Set();
     this._repositoryNodeId = null;
 
     // Auto-sync toggle: set GITHUB_PROJECT_AUTO_SYNC=false to disable project sync
@@ -1282,6 +1305,52 @@ class GitHubIssuesAdapter {
       0,
       Number(process.env.GH_TRANSIENT_RETRY_MAX) || 2,
     );
+
+    // Issue-list and shared-state caches (instance-level for test isolation)
+    /** @type {Map<string, {data: any, ts: number}>} state:limit → {data, ts} */
+    this._issueListCache = new Map();
+    /** @type {Map<string, {data: object|null, ts: number}>} issueNum → {data, ts} */
+    this._sharedStateCache = new Map();
+    this._lastKnownTasks = [];
+    this._taskListBackoffUntil = 0;
+    this._taskListBackoffMs = parseDelayMs(
+      process.env.GH_TASK_LIST_BACKOFF_MS,
+      90_000,
+      5_000,
+    );
+    this._taskListBackoffWarnAt = 0;
+  }
+
+  _cacheLastKnownTasks(tasks) {
+    if (!Array.isArray(tasks)) return;
+    this._lastKnownTasks = tasks.map((task) => ({
+      ...task,
+      meta: task?.meta ? { ...task.meta } : {},
+    }));
+    this._taskListBackoffUntil = 0;
+    this._taskListBackoffWarnAt = 0;
+  }
+
+  _setTaskListBackoff() {
+    const now = Date.now();
+    this._taskListBackoffUntil = Math.max(
+      this._taskListBackoffUntil || 0,
+      now + this._taskListBackoffMs,
+    );
+  }
+
+  _getBackoffTasks(filters = {}) {
+    let fallback = this._lastKnownTasks.map((task) => ({
+      ...task,
+      meta: task?.meta ? { ...task.meta } : {},
+    }));
+
+    if (filters.status) {
+      const normalizedFilter = normaliseStatus(filters.status);
+      fallback = fallback.filter((task) => task.status === normalizedFilter);
+    }
+
+    return fallback;
   }
 
   /**
@@ -1314,7 +1383,15 @@ class GitHubIssuesAdapter {
         "json",
       ]);
 
-      if (!Array.isArray(fields)) {
+      const normalizedFields = Array.isArray(fields)
+        ? fields
+        : Array.isArray(fields?.fields)
+          ? fields.fields
+          : Array.isArray(fields?.data)
+            ? fields.data
+            : null;
+
+      if (!Array.isArray(normalizedFields)) {
         console.warn(
           `${TAG} project field-list returned non-array for project ${projectNumber}`,
         );
@@ -1322,7 +1399,7 @@ class GitHubIssuesAdapter {
       }
 
       // Find the Status field
-      const statusField = fields.find(
+      const statusField = normalizedFields.find(
         (f) =>
           f.name === "Status" &&
           (f.type === "SINGLE_SELECT" || f.data_type === "SINGLE_SELECT"),
@@ -1339,7 +1416,7 @@ class GitHubIssuesAdapter {
       // Cache the result (also cache the raw fields array for getProjectFields)
       this._projectFieldsCache.set(cacheKey, {
         fields: result,
-        rawFields: fields,
+        rawFields: normalizedFields,
         time: now,
       });
 
@@ -1874,7 +1951,7 @@ class GitHubIssuesAdapter {
 
     try {
       const owner = String(this._projectOwner || this._owner).trim();
-      const items = await this._gh([
+      const itemListResponse = await this._gh([
         "project",
         "item-list",
         String(projectNumber),
@@ -1883,10 +1960,19 @@ class GitHubIssuesAdapter {
         "--format",
         "json",
       ]);
+      const items = Array.isArray(itemListResponse)
+        ? itemListResponse
+        : Array.isArray(itemListResponse?.items)
+          ? itemListResponse.items
+          : null;
 
       if (!Array.isArray(items)) {
+        const shape =
+          itemListResponse && typeof itemListResponse === "object"
+            ? Object.keys(itemListResponse).join(",")
+            : typeof itemListResponse;
         console.warn(
-          `${TAG} project item-list returned non-array for project ${projectNumber}`,
+          `${TAG} project item-list returned unsupported shape for project ${projectNumber} (keys: ${shape || "none"})`,
         );
         return [];
       }
@@ -1914,10 +2000,9 @@ class GitHubIssuesAdapter {
 
       return tasks;
     } catch (err) {
-      console.warn(
-        `${TAG} failed to list tasks from project ${projectNumber}: ${err.message}`,
+      throw new Error(
+        `project ${projectNumber} list failed: ${err?.message || err}`,
       );
-      return [];
     }
   }
 
@@ -1945,9 +2030,16 @@ class GitHubIssuesAdapter {
       // Get project fields
       const fields = await this._getProjectFields(projectNumber);
       if (!fields || !fields.statusFieldId) {
-        console.warn(`${TAG} cannot sync to project: no status field found`);
+        const projectKey = String(projectNumber || "");
+        if (!this._projectStatusFieldWarned.has(projectKey)) {
+          this._projectStatusFieldWarned.add(projectKey);
+          console.warn(
+            `${TAG} cannot sync to project ${projectKey}: no Status field found`,
+          );
+        }
         return false;
       }
+      this._projectStatusFieldWarned.delete(String(projectNumber || ""));
 
       // Map codex status to project status option using configurable mapping
       const targetStatusName = this._normalizeProjectStatus(status, true);
@@ -2220,6 +2312,24 @@ class GitHubIssuesAdapter {
   }
 
   async listTasks(_projectId, filters = {}) {
+    const now = Date.now();
+    if (this._taskListBackoffUntil > now) {
+      const fallback = this._getBackoffTasks(filters);
+      if (fallback.length > 0) {
+        if (now - this._taskListBackoffWarnAt > 15_000) {
+          this._taskListBackoffWarnAt = now;
+          const sec = Math.max(
+            1,
+            Math.ceil((this._taskListBackoffUntil - now) / 1000),
+          );
+          console.warn(
+            `${TAG} task list in backoff (${sec}s remaining) — serving ${fallback.length} cached task(s)`,
+          );
+        }
+        return fallback;
+      }
+    }
+
     // If project mode is enabled, read from project board
     if (this._projectMode === "kanban" && this._projectNumber) {
       const projectNumber = await this._resolveProjectNumber();
@@ -2260,6 +2370,7 @@ class GitHubIssuesAdapter {
             }
           }
 
+          this._cacheLastKnownTasks(filtered);
           return filtered;
         } catch (err) {
           console.warn(
@@ -2274,26 +2385,58 @@ class GitHubIssuesAdapter {
     const limit =
       Number(filters.limit || process.env.GITHUB_ISSUES_LIST_LIMIT || 1000) ||
       1000;
-    const args = [
-      "issue",
-      "list",
-      "--repo",
-      `${this._owner}/${this._repo}`,
-      "--json",
-      "number,title,body,state,url,assignees,labels,milestone,comments",
-      "--limit",
-      String(limit),
-    ];
+
+    // Determine state filter for cache-key construction
+    let stateFilter = "open";
     if (filters.status === "done") {
-      args.push("--state", "closed");
+      stateFilter = "closed";
     } else if (filters.status && filters.status !== "todo") {
-      args.push("--state", "open");
-      args.push("--label", filters.status);
-    } else {
-      args.push("--state", "open");
+      stateFilter = `open:${filters.status}`;
     }
-    const issues = await this._gh(args);
-    let normalized = (Array.isArray(issues) ? issues : []).map((i) =>
+
+    // Check instance-level issue-list cache to avoid redundant gh API calls
+    const listCacheKey = _issueListCacheKey(stateFilter, limit);
+    const nowMs = Date.now();
+    const cachedList = this._issueListCache.get(listCacheKey);
+    let rawIssues;
+    if (cachedList && nowMs - cachedList.ts < GH_ISSUE_LIST_CACHE_TTL_MS) {
+      rawIssues = cachedList.data;
+    } else {
+      const args = [
+        "issue",
+        "list",
+        "--repo",
+        `${this._owner}/${this._repo}`,
+        "--json",
+        "number,title,body,state,url,assignees,labels,milestone,comments",
+        "--limit",
+        String(limit),
+      ];
+      if (filters.status === "done") {
+        args.push("--state", "closed");
+      } else if (filters.status && filters.status !== "todo") {
+        args.push("--state", "open");
+        args.push("--label", filters.status);
+      } else {
+        args.push("--state", "open");
+      }
+      try {
+        rawIssues = await this._gh(args);
+        this._issueListCache.set(listCacheKey, { data: rawIssues, ts: nowMs });
+      } catch (err) {
+        this._setTaskListBackoff();
+        const fallback = this._getBackoffTasks(filters);
+        if (fallback.length > 0) {
+          console.warn(
+            `${TAG} failed to list issues (${err.message}); serving ${fallback.length} cached task(s)`,
+          );
+          return fallback;
+        }
+        throw err;
+      }
+    }
+
+    let normalized = (Array.isArray(rawIssues) ? rawIssues : []).map((i) =>
       this._normaliseIssue(i),
     );
 
@@ -2303,11 +2446,24 @@ class GitHubIssuesAdapter {
       );
     }
 
-    // Enrich with shared state from comments
+    // Build map of pre-fetched comments from the issue-list JSON payload.
+    // gh issue list --json ... already includes comments, so we can pass them
+    // directly to readSharedStateFromIssue to eliminate N extra API calls.
+    const rawCommentsByNum = new Map();
+    if (Array.isArray(rawIssues)) {
+      for (const i of rawIssues) {
+        if (i?.number != null && Array.isArray(i.comments)) {
+          rawCommentsByNum.set(String(i.number), i.comments);
+        }
+      }
+    }
+
+    // Enrich with shared state – pass embedded comments to avoid extra API calls
     for (const task of normalized) {
       try {
+        const embeddedComments = rawCommentsByNum.get(String(task.id));
         const sharedState = normalizeSharedStatePayload(
-          await this.readSharedStateFromIssue(task.id),
+          await this.readSharedStateFromIssue(task.id, embeddedComments),
         );
         if (sharedState) {
           task.meta.sharedState = sharedState;
@@ -2321,6 +2477,7 @@ class GitHubIssuesAdapter {
       }
     }
 
+    this._cacheLastKnownTasks(normalized);
     return normalized;
   }
 
@@ -2406,6 +2563,10 @@ class GitHubIssuesAdapter {
         `GitHub Issues: invalid issue number "${issueNumber}" — expected a numeric ID, got a UUID or non-numeric string`,
       );
     }
+
+    // Invalidate the instance issue-list cache so the next listTasks() poll
+    // sees fresh data rather than stale cache.
+    this._issueListCache.clear();
     const normalised = normaliseStatus(status);
     if (normalised === "done" || normalised === "cancelled") {
       const closeArgs = [
@@ -3046,6 +3207,11 @@ ${stateJson}
       return true;
     });
 
+    // Invalidate the shared-state cache so the next read fetches fresh data
+    if (commentSuccess) {
+      this._sharedStateCache.delete(_sharedStateCacheKey(num));
+    }
+
     return commentSuccess;
   }
 
@@ -3064,19 +3230,39 @@ ${stateJson}
    *   console.log(`Task claimed by ${state.ownerId}`);
    * }
    */
-  async readSharedStateFromIssue(issueNumber) {
+  async readSharedStateFromIssue(issueNumber, cachedComments = null) {
     const num = String(issueNumber).replace(/^#/, "");
     if (!/^\d+$/.test(num)) {
       throw new Error(`Invalid issue number: ${issueNumber}`);
     }
 
+    // If no pre-fetched comments, check the instance-level shared-state cache
+    // to avoid a separate API call per issue during bulk listTasks cycles.
+    if (!cachedComments) {
+      const cacheKey = _sharedStateCacheKey(num);
+      const cached = this._sharedStateCache.get(cacheKey);
+      if (cached && Date.now() - cached.ts < GH_SHARED_STATE_CACHE_TTL_MS) {
+        return cached.data;
+      }
+    }
+
     try {
-      const comments = await this._getIssueComments(num);
-      const stateComment = comments
-        .reverse()
-        .find((c) => c.body?.includes("<!-- bosun-state"));
+      const comments = cachedComments ?? await this._getIssueComments(num);
+      const stateComment = Array.isArray(comments)
+        ? comments
+            .slice()
+            .reverse()
+            .find((c) => c.body?.includes("<!-- bosun-state"))
+        : null;
 
       if (!stateComment) {
+        // Cache the null result too so repeated calls within the TTL skip the API
+        if (!cachedComments) {
+          this._sharedStateCache.set(
+            _sharedStateCacheKey(num),
+            { data: null, ts: Date.now() },
+          );
+        }
         return null;
       }
 
@@ -3103,6 +3289,14 @@ ${stateJson}
           `[kanban] invalid shared state in #${num}: missing required fields`,
         );
         return null;
+      }
+
+      // Cache the result for the TTL window
+      if (!cachedComments) {
+        this._sharedStateCache.set(
+          _sharedStateCacheKey(num),
+          { data: state, ts: Date.now() },
+        );
       }
 
       return state;
@@ -5103,4 +5297,3 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
-
