@@ -10439,6 +10439,11 @@ export async function startTelegramBot() {
   if (miniAppEnabled || miniAppPort > 0) {
     try {
       await startTelegramUiServer({
+        // Background monitor/bot runtime should not keep opening browser tabs.
+        // Set BOSUN_UI_AUTO_OPEN_BROWSER=1 to opt-in.
+        skipAutoOpen: !["1", "true", "yes", "on"].includes(
+          String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "").toLowerCase(),
+        ),
         dependencies: {
           execPrimaryPrompt,
           getInternalExecutor: _getInternalExecutor,
