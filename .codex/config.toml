@@ -92,6 +92,7 @@ args = ["-y", "@playwright/mcp@latest"]
 
 [mcp_servers.microsoft-docs]
 url = "https://learn.microsoft.com/api/mcp"
+tools = ["microsoft_docs_search", "microsoft_code_sample_search"]
 
 [sandbox_workspace_write]
 network_access = true

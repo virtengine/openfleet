@@ -881,6 +881,10 @@ export function buildCommonMcpBlocks() {
     "",
     "[mcp_servers.microsoft-docs]",
     'url = "https://learn.microsoft.com/api/mcp"',
+    // microsoft_docs_fetch description alone is ~2KB and breaks the Azure
+    // Responses API JSON parser when combined with other MCP tool schemas.
+    // Keep only the two search tools which are sufficient for most use cases.
+    'tools = ["microsoft_docs_search", "microsoft_code_sample_search"]',
     "",
   ].join("\n");
 }
