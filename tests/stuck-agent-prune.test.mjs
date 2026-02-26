@@ -145,3 +145,55 @@ test("checkStuckAgent returns 0 for non-stuck sessions", async () => {
     "checkStuckAgent should return idle ms for stuck sessions",
   );
 });
+
+test("error events do NOT reset lastActivity (prevents error-loop masking stuck)", async () => {
+  const src = await readFile(resolve(repoRoot, "agent-work-analyzer.mjs"), "utf8");
+
+  // The analyzeEvent function must NOT blindly update lastActivity before
+  // the switch — that would let error events reset the idle clock and
+  // prevent agents stuck in error loops from being detected/pruned.
+
+  // Extract the analyzeEvent function body
+  const fnStart = src.indexOf("async function analyzeEvent(event)");
+  assert.ok(fnStart >= 0, "analyzeEvent function should exist");
+  const fnBody = src.slice(fnStart, fnStart + 2000);
+
+  // There should be NO blanket "session.lastActivity = eventIso" BEFORE the switch
+  const switchIdx = fnBody.indexOf("switch (event_type)");
+  assert.ok(switchIdx > 0, "switch statement should exist in analyzeEvent");
+  const beforeSwitch = fnBody.slice(0, switchIdx);
+  assert.ok(
+    !beforeSwitch.includes("session.lastActivity = eventIso"),
+    "lastActivity should NOT be set before the switch (would let errors reset idle clock)",
+  );
+
+  // The error case should NOT update lastActivity
+  const errorCaseMatch = fnBody.match(
+    /case\s+"error":\s*\n([\s\S]*?)break;/,
+  );
+  assert.ok(errorCaseMatch, "error case should exist in switch");
+  assert.ok(
+    !errorCaseMatch[1].includes("lastActivity"),
+    'error case must NOT update lastActivity',
+  );
+
+  // tool_call case SHOULD update lastActivity
+  const toolCaseMatch = fnBody.match(
+    /case\s+"tool_call":\s*\n([\s\S]*?)break;/,
+  );
+  assert.ok(toolCaseMatch, "tool_call case should exist in switch");
+  assert.ok(
+    toolCaseMatch[1].includes("lastActivity"),
+    'tool_call case should update lastActivity',
+  );
+
+  // session_start case SHOULD update lastActivity
+  const startCaseMatch = fnBody.match(
+    /case\s+"session_start":\s*\n([\s\S]*?)break;/,
+  );
+  assert.ok(startCaseMatch, "session_start case should exist in switch");
+  assert.ok(
+    startCaseMatch[1].includes("lastActivity"),
+    'session_start case should update lastActivity',
+  );
+});

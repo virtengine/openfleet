@@ -218,22 +218,32 @@ async function analyzeEvent(event) {
   }
 
   const session = activeSessions.get(attempt_id);
-  session.lastActivity = eventIso;
 
-  // Route to specific analyzers
+  // Route to specific analyzers.
+  // IMPORTANT: Only update lastActivity for events that represent productive
+  // work (tool_call, session_start, session_end).  Error events must NOT reset
+  // the idle clock — otherwise agents stuck in error loops keep their
+  // lastActivity fresh and are never detected as stuck / pruned.
   switch (event_type) {
     case "error":
       await analyzeError(session, event);
       break;
     case "tool_call":
+      session.lastActivity = eventIso;
       await analyzeToolCall(session, event);
       break;
     case "session_start":
+      session.lastActivity = eventIso;
       await analyzeSessionStart(session, event);
       break;
     case "session_end":
+      session.lastActivity = eventIso;
       await analyzeSessionEnd(session, event);
       activeSessions.delete(attempt_id);
+      break;
+    default:
+      // Unknown event types still count as activity (conservative default)
+      session.lastActivity = eventIso;
       break;
   }
 

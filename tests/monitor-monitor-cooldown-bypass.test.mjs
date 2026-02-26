@@ -1,80 +1,277 @@
-/**
- * Tests for monitor-monitor SDK cooldown bypass in agent-pool.mjs.
- *
- * Verifies that the monitor-monitor task automatically gets
- * `ignoreSdkCooldown: true` so it can always attempt to run
- * even during cascading SDK cooldowns.
- */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import test from "node:test";
+import { registerHooks } from "node:module";
+import { afterEach, beforeEach, describe, it } from "node:test";
 
-const repoRoot = process.cwd();
-const AGENT_POOL_PATH = resolve(repoRoot, "agent-pool.mjs");
+function asDataUrl(source) {
+  return `data:text/javascript,${encodeURIComponent(source)}`;
+}
 
-test("launchOrResumeThread auto-sets ignoreSdkCooldown for monitor-monitor", async () => {
-  const src = await readFile(AGENT_POOL_PATH, "utf8");
+const CODEX_STUB_URL = asDataUrl(`
+function getState() {
+  if (!globalThis.__agentPoolTestState) {
+    globalThis.__agentPoolTestState = {
+      codexBehaviors: [],
+      codexStartCalls: 0,
+      codexResumeCalls: 0,
+    };
+  }
+  return globalThis.__agentPoolTestState;
+}
 
-  // Verify the MONITOR_MONITOR_TASK_KEY guard exists in launchOrResumeThread
-  assert.ok(
-    src.includes("MONITOR_MONITOR_TASK_KEY") &&
-      src.includes("ignoreSdkCooldown"),
-    "Should reference MONITOR_MONITOR_TASK_KEY and ignoreSdkCooldown",
-  );
+function nextBehavior() {
+  const state = getState();
+  if (!Array.isArray(state.codexBehaviors) || state.codexBehaviors.length === 0) {
+    return { type: "success", text: "codex ok" };
+  }
+  return state.codexBehaviors.shift();
+}
 
-  // Verify the auto-set logic only activates for monitor-monitor
-  assert.ok(
-    /taskKey.*===\s*MONITOR_MONITOR_TASK_KEY/.test(src.replace(/\n/g, " ")),
-    "Should guard the cooldown bypass with taskKey === MONITOR_MONITOR_TASK_KEY",
-  );
+export class Codex {
+  constructor() {}
 
-  // Verify it only sets when not explicitly provided (respects caller override)
-  assert.ok(
-    src.includes("ignoreSdkCooldown === undefined"),
-    "Should only auto-set when not explicitly provided by caller",
-  );
+  startThread() {
+    const state = getState();
+    state.codexStartCalls = (state.codexStartCalls || 0) + 1;
+
+    const behavior = nextBehavior();
+    if (behavior.type === "null") return null;
+    const threadId = behavior.threadId || "codex-thread";
+    return {
+      id: threadId,
+      async runStreamed() {
+        if (behavior.type === "error") {
+          throw new Error(behavior.error || "codex error");
+        }
+        return {
+          events: {
+            async *[Symbol.asyncIterator]() {
+              if (behavior.noOutput) return;
+              yield {
+                type: "item.completed",
+                item: { type: "agent_message", text: behavior.text || "codex ok" },
+              };
+            },
+          },
+        };
+      },
+    };
+  }
+
+  resumeThread(threadId) {
+    const state = getState();
+    state.codexResumeCalls = (state.codexResumeCalls || 0) + 1;
+    return {
+      id: threadId || "codex-thread",
+      async runStreamed() {
+        return {
+          events: {
+            async *[Symbol.asyncIterator]() {
+              yield {
+                type: "item.completed",
+                item: { type: "agent_message", text: "codex resumed" },
+              };
+            },
+          },
+        };
+      },
+    };
+  }
+}
+`);
+
+const COPILOT_STUB_URL = asDataUrl(`
+export class CopilotClient {
+  async start() {}
+  async stop() {}
+  async createSession() {
+    return {
+      sessionId: "copilot-session",
+      async sendAndWait() {},
+      on(cb) {
+        cb({ type: "assistant.message", data: { content: "copilot output" } });
+        return () => {};
+      },
+    };
+  }
+}
+`);
+
+const CLAUDE_STUB_URL = asDataUrl(`
+export function query() {
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield {
+        type: "assistant",
+        session_id: "claude-session",
+        message: { content: [{ type: "text", text: "claude output" }] },
+      };
+      yield { type: "result", session_id: "claude-session" };
+    },
+  };
+}
+`);
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === "@openai/codex-sdk") {
+      return { shortCircuit: true, url: CODEX_STUB_URL };
+    }
+    if (specifier === "@github/copilot-sdk") {
+      return { shortCircuit: true, url: COPILOT_STUB_URL };
+    }
+    if (specifier === "@anthropic-ai/claude-agent-sdk") {
+      return { shortCircuit: true, url: CLAUDE_STUB_URL };
+    }
+    return nextResolve(specifier, context);
+  },
 });
 
-test("monitor-monitor cooldown bypass is in launchOrResumeThread scope", async () => {
-  const src = await readFile(AGENT_POOL_PATH, "utf8");
+const ENV_KEYS = [
+  "AGENT_POOL_SDK",
+  "AGENT_POOL_SDK_FAILURE_COOLDOWN_MS",
+  "__MOCK_CODEX_AVAILABLE",
+  "CODEX_SDK_DISABLED",
+  "COPILOT_SDK_DISABLED",
+  "CLAUDE_SDK_DISABLED",
+  "OPENAI_API_KEY",
+  "AZURE_OPENAI_API_KEY",
+];
 
-  // Find the function — the bypass must be between function start and the
-  // "No taskKey" pure ephemeral guard (line after the bypass)
-  const funcStart = src.indexOf("export async function launchOrResumeThread(");
-  assert.ok(funcStart >= 0, "launchOrResumeThread should exist");
+let envSnapshot = {};
+let importCounter = 0;
 
-  const funcBody = src.slice(funcStart, funcStart + 2000);
+function saveEnv() {
+  envSnapshot = {};
+  for (const key of ENV_KEYS) envSnapshot[key] = process.env[key];
+}
 
-  // The bypass should appear before the first launchEphemeralThread call
-  const bypassIdx = funcBody.indexOf("MONITOR_MONITOR_TASK_KEY");
-  const ephemeralIdx = funcBody.indexOf("launchEphemeralThread");
-  assert.ok(bypassIdx >= 0, "MONITOR_MONITOR_TASK_KEY guard should be in function");
-  assert.ok(ephemeralIdx >= 0, "launchEphemeralThread call should be in function");
-  assert.ok(
-    bypassIdx < ephemeralIdx,
-    "Cooldown bypass should be set BEFORE launchEphemeralThread is called",
-  );
+function restoreEnv() {
+  for (const key of ENV_KEYS) {
+    if (envSnapshot[key] === undefined) delete process.env[key];
+    else process.env[key] = envSnapshot[key];
+  }
+}
+
+function setBaseEnv() {
+  process.env.AGENT_POOL_SDK = "codex";
+  process.env.__MOCK_CODEX_AVAILABLE = "1";
+  process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS = "120000";
+  process.env.COPILOT_SDK_DISABLED = "1";
+  process.env.CLAUDE_SDK_DISABLED = "1";
+}
+
+function resetTestState() {
+  globalThis.__agentPoolTestState = {
+    codexBehaviors: [],
+    codexStartCalls: 0,
+    codexResumeCalls: 0,
+  };
+}
+
+async function importAgentPoolFresh() {
+  importCounter += 1;
+  const url = new URL("../agent-pool.mjs", import.meta.url);
+  url.searchParams.set("node_test", String(importCounter));
+  const mod = await import(url.href);
+  await mod.ensureThreadRegistryLoaded();
+  mod.clearThreadRegistry();
+  return mod;
+}
+
+beforeEach(() => {
+  saveEnv();
+  setBaseEnv();
+  resetTestState();
 });
 
-test("ignoreSdkCooldown is consumed in launchEphemeralThread", async () => {
-  const src = await readFile(AGENT_POOL_PATH, "utf8");
+afterEach(() => {
+  restoreEnv();
+  delete globalThis.__agentPoolTestState;
+});
 
-  // Verify that launchEphemeralThread reads ignoreSdkCooldown from extra
-  const ephFuncStart = src.indexOf(
-    "export async function launchEphemeralThread(",
-  );
-  assert.ok(ephFuncStart >= 0, "launchEphemeralThread should exist");
+describe("monitor-monitor cooldown bypass", () => {
+  it("keeps non-monitor tasks blocked while codex is in cooldown", async () => {
+    const mod = await importAgentPoolFresh();
+    const state = globalThis.__agentPoolTestState;
+    state.codexBehaviors.push({ type: "error", error: "timeout during codex call" });
 
-  const ephBody = src.slice(ephFuncStart, ephFuncStart + 2000);
-  assert.ok(
-    ephBody.includes("ignoreSdkCooldown"),
-    "launchEphemeralThread should read ignoreSdkCooldown from extra",
-  );
+    const first = await mod.launchOrResumeThread("prime cooldown", process.cwd(), 250, {
+      taskKey: "task-a",
+      sdk: "codex",
+    });
+    assert.equal(first.success, false);
+    assert.match(String(first.error || ""), /timeout/i);
+    assert.equal(state.codexStartCalls, 1);
 
-  // Verify that when ignoreSdkCooldown is true, cooldown is set to 0
-  assert.ok(
-    /ignoreSdkCooldown\s*\?\s*0/.test(ephBody.replace(/\n/g, " ")),
-    "Should set cooldownRemainingMs to 0 when ignoreSdkCooldown is true",
-  );
+    const second = await mod.launchOrResumeThread("normal task while cooling", process.cwd(), 250, {
+      taskKey: "task-b",
+      sdk: "codex",
+    });
+    assert.equal(second.success, false);
+    assert.match(String(second.error || ""), /Cooling down: codex/i);
+    assert.equal(state.codexStartCalls, 1);
+  });
+
+  it("auto-bypasses cooldown for monitor-monitor when ignoreSdkCooldown is not provided", async () => {
+    const mod = await importAgentPoolFresh();
+    const state = globalThis.__agentPoolTestState;
+    state.codexBehaviors.push({ type: "error", error: "timeout priming cooldown" });
+    state.codexBehaviors.push({ type: "success", text: "monitor recovered" });
+
+    await mod.launchOrResumeThread("prime cooldown", process.cwd(), 250, {
+      taskKey: "task-a",
+      sdk: "codex",
+    });
+    assert.equal(state.codexStartCalls, 1);
+
+    const monitorResult = await mod.launchOrResumeThread("health check", process.cwd(), 250, {
+      taskKey: "monitor-monitor",
+      sdk: "codex",
+    });
+    assert.equal(monitorResult.success, true);
+    assert.equal(state.codexStartCalls, 2);
+    assert.match(String(monitorResult.output || ""), /monitor recovered/i);
+  });
+
+  it("respects explicit ignoreSdkCooldown=false for monitor-monitor", async () => {
+    const mod = await importAgentPoolFresh();
+    const state = globalThis.__agentPoolTestState;
+    state.codexBehaviors.push({ type: "error", error: "timeout priming cooldown" });
+
+    await mod.launchOrResumeThread("prime cooldown", process.cwd(), 250, {
+      taskKey: "task-a",
+      sdk: "codex",
+    });
+    assert.equal(state.codexStartCalls, 1);
+
+    const monitorResult = await mod.launchOrResumeThread("health check", process.cwd(), 250, {
+      taskKey: "monitor-monitor",
+      sdk: "codex",
+      ignoreSdkCooldown: false,
+    });
+    assert.equal(monitorResult.success, false);
+    assert.match(String(monitorResult.error || ""), /Cooling down: codex/i);
+    assert.equal(state.codexStartCalls, 1);
+  });
+
+  it("treats whitespace-padded monitor task keys as monitor-monitor", async () => {
+    const mod = await importAgentPoolFresh();
+    const state = globalThis.__agentPoolTestState;
+    state.codexBehaviors.push({ type: "error", error: "timeout priming cooldown" });
+    state.codexBehaviors.push({ type: "success", text: "trimmed monitor key worked" });
+
+    await mod.launchOrResumeThread("prime cooldown", process.cwd(), 250, {
+      taskKey: "task-a",
+      sdk: "codex",
+    });
+    assert.equal(state.codexStartCalls, 1);
+
+    const monitorResult = await mod.launchOrResumeThread("health check", process.cwd(), 250, {
+      taskKey: "  monitor-monitor  ",
+      sdk: "codex",
+    });
+    assert.equal(monitorResult.success, true);
+    assert.match(String(monitorResult.output || ""), /trimmed monitor key worked/i);
+    assert.equal(state.codexStartCalls, 2);
+  });
 });

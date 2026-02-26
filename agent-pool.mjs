@@ -2390,7 +2390,9 @@ export async function launchOrResumeThread(
   extra = {},
 ) {
   await ensureThreadRegistryLoaded();
-  const { taskKey, ...restExtra } = extra;
+  const normalizedExtra =
+    extra && typeof extra === "object" && !Array.isArray(extra) ? extra : {};
+  const { taskKey, ...restExtra } = normalizedExtra;
   // Pass taskKey through as steer key so SDK launchers can register active sessions
   restExtra.taskKey = taskKey;
   timeoutMs = clampMonitorMonitorTimeout(timeoutMs, taskKey);
@@ -2996,4 +2998,5 @@ export function getActiveThreads() {
   }
   return result;
 }
+
 
