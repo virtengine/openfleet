@@ -91,7 +91,7 @@ import {
   loadNotificationPrefs,
   applyStoredDefaults,
 } from "./modules/state.js";
-import { activeTab, navigateTo, TAB_CONFIG } from "./modules/router.js";
+import { activeTab, navigateTo, shouldBlockTabSwipe, TAB_CONFIG } from "./modules/router.js";
 import { formatRelative } from "./modules/utils.js";
 
 /* ── Component imports ── */
@@ -1562,19 +1562,10 @@ function App() {
     let tracking = false;
     let blocked = false;
 
-    const shouldBlockSwipe = (target) => {
-      if (!target || typeof target.closest !== "function") return false;
-      return Boolean(
-        target.closest(".kanban-board") ||
-        target.closest(".kanban-cards") ||
-        target.closest(".chat-messages"),
-      );
-    };
-
     const onTouchStart = (e) => {
       if (e.touches.length !== 1) return;
       const target = e.target;
-      blocked = shouldBlockSwipe(target);
+      blocked = shouldBlockTabSwipe(target, activeTab.value);
       if (blocked) return;
       tracking = true;
       startX = e.touches[0].clientX;
