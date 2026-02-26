@@ -95,13 +95,13 @@ Local commands you can run any time:
 
 ```bash
 # Syntax + tests for bosun package
-npm -C scripts/bosun test
+npm test
 
 # Prepublish safety checks
-npm -C scripts/bosun run prepublishOnly
+npm run prepublishOnly
 
 # Install local git hooks (pre-commit + pre-push)
-npm -C scripts/bosun run hooks:install
+npm run hooks:install
 ```
 
 ---

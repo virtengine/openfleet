@@ -36,16 +36,17 @@ Workflows are **directed acyclic graphs (DAGs)** defined as JSON and executed by
 
 ### Key Execution Limits
 
-| Setting | Default | Env var override |
-|---|---|---|
-| Max concurrent branches | 8 | `MAX_CONCURRENT_BRANCHES` |
-| Per-node timeout | 10 minutes | — |
-| Max retries per node | 3 | — |
-| Max persisted run history | 200 runs | — |
+| Setting                   | Default    | Env var override          |
+| ------------------------- | ---------- | ------------------------- |
+| Max concurrent branches   | 8          | `MAX_CONCURRENT_BRANCHES` |
+| Per-node timeout          | 10 minutes | —                         |
+| Max retries per node      | 3          | —                         |
+| Max persisted run history | 200 runs   | —                         |
 
 ### Status Enumerations
 
 **WorkflowStatus** (workflow-level):
+
 - `IDLE` — registered but never triggered
 - `RUNNING` — currently executing
 - `COMPLETED` — all terminal nodes finished successfully
@@ -54,6 +55,7 @@ Workflows are **directed acyclic graphs (DAGs)** defined as JSON and executed by
 - `PAUSED` — execution suspended pending external event
 
 **NodeStatus** (per-node):
+
 - `PENDING` — waiting to be scheduled
 - `RUNNING` — currently executing
 - `COMPLETED` — finished successfully
@@ -65,18 +67,23 @@ Workflows are **directed acyclic graphs (DAGs)** defined as JSON and executed by
 
 ```js
 import {
-  loadWorkflows, saveWorkflow, deleteWorkflow, listWorkflows,
-  getWorkflow, executeWorkflow, registerNodeType,
-} from './workflow-engine.mjs';
+  loadWorkflows,
+  saveWorkflow,
+  deleteWorkflow,
+  listWorkflows,
+  getWorkflow,
+  executeWorkflow,
+  registerNodeType,
+} from "./workflow-engine.mjs";
 
 // Register a custom node type
-registerNodeType('my.node', async (node, ctx) => {
+registerNodeType("my.node", async (node, ctx) => {
   const output = await doSomething(node.config);
   return { result: output };
 });
 
 // Trigger a workflow programmatically
-await executeWorkflow('my-workflow-id', { prNumber: 42 });
+await executeWorkflow("my-workflow-id", { prNumber: 42 });
 ```
 
 ---
@@ -85,44 +92,48 @@ await executeWorkflow('my-workflow-id', { prNumber: 42 });
 
 ```jsonc
 {
-  "id": "my-workflow",            // Unique slug (kebab-case)
-  "name": "My Workflow",          // Human-readable display name
-  "description": "...",           // Multi-line description shown in the UI
-  "category": "github",           // github | agents | planning | ci-cd | reliability | security
-  "enabled": true,                // false = loaded but never triggered
-  "recommended": false,           // Shown with ⭐ in the template picker
-  "trigger": "trigger.pr_event",  // Node type string of the trigger node
+  "id": "my-workflow", // Unique slug (kebab-case)
+  "name": "My Workflow", // Human-readable display name
+  "description": "...", // Multi-line description shown in the UI
+  "category": "github", // github | agents | planning | ci-cd | reliability | security
+  "enabled": true, // false = loaded but never triggered
+  "recommended": false, // Shown with ⭐ in the template picker
+  "trigger": "trigger.pr_event", // Node type string of the trigger node
 
-  "variables": {                  // Workflow-level default values
+  "variables": {
+    // Workflow-level default values
     "baseBranch": "main",
-    "ciTimeoutMs": 300000
+    "ciTimeoutMs": 300000,
   },
 
   "nodes": [
     {
-      "id": "my-node",              // Unique within this workflow
+      "id": "my-node", // Unique within this workflow
       "type": "action.run_command", // Node type (see reference below)
       "label": "Human-readable label",
-      "config": { /* type-specific config */ },
-      "position": { "x": 400, "y": 200 }  // Canvas coordinates for visual builder
-    }
+      "config": {
+        /* type-specific config */
+      },
+      "position": { "x": 400, "y": 200 }, // Canvas coordinates for visual builder
+    },
   ],
 
   "edges": [
     {
-      "id": "edge-1",              // Auto-generated if omitted
-      "source": "node-a",          // Source node id
-      "target": "node-b",          // Target node id
-      "condition": "$output?.result === true",  // Optional JS expression
-      "port": "yes"                // Named output port (for condition.switch)
-    }
+      "id": "edge-1", // Auto-generated if omitted
+      "source": "node-a", // Source node id
+      "target": "node-b", // Target node id
+      "condition": "$output?.result === true", // Optional JS expression
+      "port": "yes", // Named output port (for condition.switch)
+    },
   ],
 
-  "metadata": {                   // Optional — shown in the template picker UI
+  "metadata": {
+    // Optional — shown in the template picker UI
     "author": "bosun",
     "version": 1,
-    "tags": ["github", "pr"]
-  }
+    "tags": ["github", "pr"],
+  },
 }
 ```
 
@@ -142,11 +153,12 @@ These nodes start a workflow. A workflow must have exactly one trigger node.
 
 Fires on GitHub Pull Request events.
 
-| Config field | Type | Description |
-|---|---|---|
-| `event` | string | GitHub event: `opened`, `review_requested`, `closed`, `merged`, `synchronize` |
+| Config field | Type   | Description                                                                   |
+| ------------ | ------ | ----------------------------------------------------------------------------- |
+| `event`      | string | GitHub event: `opened`, `review_requested`, `closed`, `merged`, `synchronize` |
 
 **Example:**
+
 ```json
 { "type": "trigger.pr_event", "config": { "event": "review_requested" } }
 ```
@@ -155,17 +167,17 @@ Fires on GitHub Pull Request events.
 
 Fires on a cron schedule.
 
-| Config field | Type | Description |
-|---|---|---|
-| `cron` | string | Standard cron expression, e.g. `"0 2 * * *"` (2 AM daily) |
+| Config field | Type   | Description                                               |
+| ------------ | ------ | --------------------------------------------------------- |
+| `cron`       | string | Standard cron expression, e.g. `"0 2 * * *"` (2 AM daily) |
 
 #### `trigger.webhook`
 
 Fires when Bosun's webhook endpoint receives a matching payload.
 
-| Config field | Type | Description |
-|---|---|---|
-| `event` | string | Event name to match, e.g. `"agent.anomaly"`, `"task.failed"` |
+| Config field | Type   | Description                                                  |
+| ------------ | ------ | ------------------------------------------------------------ |
+| `event`      | string | Event name to match, e.g. `"agent.anomaly"`, `"task.failed"` |
 
 #### `trigger.manual`
 
@@ -181,14 +193,15 @@ Action nodes perform work and return output that downstream nodes can read.
 
 Runs a shell command in the repository root.
 
-| Config field | Type | Description |
-|---|---|---|
-| `command` | string | Shell command to execute. Supports `{{variable}}` interpolation. |
-| `workdir` | string | (optional) Working directory override |
+| Config field | Type   | Description                                                      |
+| ------------ | ------ | ---------------------------------------------------------------- |
+| `command`    | string | Shell command to execute. Supports `{{variable}}` interpolation. |
+| `workdir`    | string | (optional) Working directory override                            |
 
 **Returns:** `{ exitCode, output, stderr }` — `output` is the trimmed stdout string.
 
 **Example:**
+
 ```json
 {
   "type": "action.run_command",
@@ -200,16 +213,17 @@ Runs a shell command in the repository root.
 
 Dispatches a task to a Bosun agent (Copilot, Codex, or Claude Code).
 
-| Config field | Type | Description |
-|---|---|---|
-| `prompt` | string | Instruction for the agent. Supports `{{variable}}` and `$ctx.*` interpolation. |
-| `timeoutMs` | number | Maximum wait time in ms (default: `600000` = 10 min) |
-| `sdk` | string | (optional) Force a specific SDK: `copilot`, `codex`, `claude` |
-| `model` | string | (optional) Override model for this node |
+| Config field | Type   | Description                                                                    |
+| ------------ | ------ | ------------------------------------------------------------------------------ |
+| `prompt`     | string | Instruction for the agent. Supports `{{variable}}` and `$ctx.*` interpolation. |
+| `timeoutMs`  | number | Maximum wait time in ms (default: `600000` = 10 min)                           |
+| `sdk`        | string | (optional) Force a specific SDK: `copilot`, `codex`, `claude`                  |
+| `model`      | string | (optional) Override model for this node                                        |
 
 **Returns:** `{ output, exitCode }` — `output` is the agent's response text.
 
 **Example:**
+
 ```json
 {
   "type": "action.run_agent",
@@ -224,10 +238,10 @@ Dispatches a task to a Bosun agent (Copilot, Codex, or Claude Code).
 
 Pauses execution for a configurable duration.
 
-| Config field | Type | Description |
-|---|---|---|
-| `delayMs` | number / string | Milliseconds to wait. Supports `{{variable}}`. |
-| `reason` | string | (optional) Human-readable reason shown in logs |
+| Config field | Type            | Description                                    |
+| ------------ | --------------- | ---------------------------------------------- |
+| `delayMs`    | number / string | Milliseconds to wait. Supports `{{variable}}`. |
+| `reason`     | string          | (optional) Human-readable reason shown in logs |
 
 ---
 
@@ -239,13 +253,14 @@ Condition nodes branch the execution graph.
 
 Evaluates a JavaScript expression and routes to `yes` or `no` output ports.
 
-| Config field | Type | Description |
-|---|---|---|
+| Config field | Type   | Description                                                                            |
+| ------------ | ------ | -------------------------------------------------------------------------------------- |
 | `expression` | string | JS expression that evaluates to `true` or `false`. Has access to `$ctx` and `$output`. |
 
 **Output ports:** `yes` (truthy), `no` (falsy)
 
 **Example:**
+
 ```json
 {
   "type": "condition.expression",
@@ -259,16 +274,17 @@ Evaluates a JavaScript expression and routes to `yes` or `no` output ports.
 
 Multi-way branch based on a field value from the previous node's output.
 
-| Config field | Type | Description |
-|---|---|---|
-| `field` | string | Field name to read from the previous node's output |
+| Config field | Type   | Description                                               |
+| ------------ | ------ | --------------------------------------------------------- |
+| `field`      | string | Field name to read from the previous node's output        |
 | `expression` | string | (alternative to `field`) JS expression returning a string |
-| `cases` | object | Map of value → output port name |
-| `default` | string | (optional) Fallback port if no case matches |
+| `cases`      | object | Map of value → output port name                           |
+| `default`    | string | (optional) Fallback port if no case matches               |
 
 **Output ports:** each key in `cases`, plus `default`.
 
 **Example:**
+
 ```json
 {
   "type": "condition.switch",
@@ -294,9 +310,9 @@ Validation nodes check external state and produce a boolean result.
 
 Checks the CI status of a PR or commit.
 
-| Config field | Type | Description |
-|---|---|---|
-| `command` | string | Command whose output is JSON array of `{ name, state }` checks |
+| Config field | Type   | Description                                                    |
+| ------------ | ------ | -------------------------------------------------------------- |
+| `command`    | string | Command whose output is JSON array of `{ name, state }` checks |
 
 **Returns:** `{ passed: boolean, checks: array }`
 
@@ -310,18 +326,18 @@ Notify nodes send messages — they do not branch the graph.
 
 Sends a Telegram message via the configured bot.
 
-| Config field | Type | Description |
-|---|---|---|
-| `message` | string | Message text. Markdown is supported. Supports `{{variable}}` interpolation. |
+| Config field | Type   | Description                                                                 |
+| ------------ | ------ | --------------------------------------------------------------------------- |
+| `message`    | string | Message text. Markdown is supported. Supports `{{variable}}` interpolation. |
 
 #### `notify.log`
 
 Writes a structured log entry visible in the Bosun dashboard.
 
-| Config field | Type | Description |
-|---|---|---|
-| `message` | string | Log message |
-| `level` | string | `info`, `warn`, or `error` (default: `info`) |
+| Config field | Type   | Description                                  |
+| ------------ | ------ | -------------------------------------------- |
+| `message`    | string | Log message                                  |
+| `level`      | string | `info`, `warn`, or `error` (default: `info`) |
 
 ---
 
@@ -333,10 +349,10 @@ Transform nodes reshape data without side effects.
 
 Parses JSON from a previous node's output and extracts a field.
 
-| Config field | Type | Description |
-|---|---|---|
-| `source` | string | Node id to read output from |
-| `path` | string | Dot-notation path, e.g. `"result.score"` |
+| Config field | Type   | Description                              |
+| ------------ | ------ | ---------------------------------------- |
+| `source`     | string | Node id to read output from              |
+| `path`       | string | Dot-notation path, e.g. `"result.score"` |
 
 ---
 
@@ -354,7 +370,7 @@ Edges define transitions between nodes.
   "condition": "$output?.exitCode === 0",
 
   // Optional: named output port (required for condition.switch)
-  "port": "merge"
+  "port": "merge",
 }
 ```
 
@@ -371,22 +387,22 @@ Inside `condition.expression` expressions, `action.run_agent` prompts, and `cond
 
 ```js
 // Get the output object of a previously-executed node
-$ctx.getNodeOutput('node-id')      // returns the node's return value or null
+$ctx.getNodeOutput("node-id"); // returns the node's return value or null
 
 // Access workflow-level variables
-$ctx.variables.baseBranch           // e.g. "main"
+$ctx.variables.baseBranch; // e.g. "main"
 
 // Access the trigger payload
-$ctx.triggerPayload.prNumber        // e.g. 42
-$ctx.triggerPayload.branch          // e.g. "feat/my-feature"
+$ctx.triggerPayload.prNumber; // e.g. 42
+$ctx.triggerPayload.branch; // e.g. "feat/my-feature"
 ```
 
 Inside edge `condition` expressions, `$output` is shorthand for the source node's last output:
 
 ```js
-condition: "$output?.exitCode === 0"
+condition: "$output?.exitCode === 0";
 // equivalent to:
-condition: "$ctx.getNodeOutput('source-node-id')?.exitCode === 0"
+condition: "$ctx.getNodeOutput('source-node-id')?.exitCode === 0";
 ```
 
 ---
@@ -395,13 +411,13 @@ condition: "$ctx.getNodeOutput('source-node-id')?.exitCode === 0"
 
 Anywhere a config string is used, you can interpolate values using double-brace syntax:
 
-| Syntax | Resolves to |
-|---|---|
-| `{{prNumber}}` | Workflow variable or trigger payload field `prNumber` |
-| `{{baseBranch}}` | Workflow variable `baseBranch` |
-| `{{prompt:my-prompt}}` | Contents of library prompt with id `my-prompt` |
-| `{{agent:frontend-agent}}` | Agent profile definition with id `frontend-agent` |
-| `{{skill:code-review}}` | Skill document with id `code-review` |
+| Syntax                     | Resolves to                                           |
+| -------------------------- | ----------------------------------------------------- |
+| `{{prNumber}}`             | Workflow variable or trigger payload field `prNumber` |
+| `{{baseBranch}}`           | Workflow variable `baseBranch`                        |
+| `{{prompt:my-prompt}}`     | Contents of library prompt with id `my-prompt`        |
+| `{{agent:frontend-agent}}` | Agent profile definition with id `frontend-agent`     |
+| `{{skill:code-review}}`    | Skill document with id `code-review`                  |
 
 Library references (`{{prompt:*}}`, `{{agent:*}}`, `{{skill:*}}`) are resolved from `.bosun/library.json` at runtime.
 
@@ -419,15 +435,15 @@ Install any template from the **Workflows → Templates** tab in the web UI. Tem
 
 Automates merge decisions for every PR. After review is requested, it checks CI status, collects diff stats, and asks an agent to choose one of 7 outcomes:
 
-| Decision | Action |
-|---|---|
-| `merge_after_ci_pass` | `gh pr merge --auto --squash` |
-| `prompt` | Agent continues working on the PR |
-| `close_pr` | PR is closed with a reason comment |
-| `re_attempt` | Agent re-starts the task from scratch |
-| `manual_review` | Telegram notification to a human |
-| `wait` | Delay then re-evaluate |
-| `noop` | No action |
+| Decision              | Action                                |
+| --------------------- | ------------------------------------- |
+| `merge_after_ci_pass` | `gh pr merge --auto --squash`         |
+| `prompt`              | Agent continues working on the PR     |
+| `close_pr`            | PR is closed with a reason comment    |
+| `re_attempt`          | Agent re-starts the task from scratch |
+| `manual_review`       | Telegram notification to a human      |
+| `wait`                | Delay then re-evaluate                |
+| `noop`                | No action                             |
 
 **Trigger:** `pr.review_requested`  
 **Key variables:** `ciTimeoutMs` (default 5 min), `cooldownSec` (60), `maxRetries` (3), `baseBranch`
@@ -716,11 +732,13 @@ A global fallback at `BOSUN_HOME` (default `~/bosun`) is consulted when a per-re
 A **prompt** is a freeform Markdown file that defines an agent's personality, specialisation, or task-specific instruction set. Prompts are stored under `.bosun/agents/` and referenced from workflow nodes or agent profiles.
 
 **When to use prompts:**
+
 - Overriding the default coding agent behaviour for a specific domain
 - Providing role-specific context ("You are a security-focused reviewer...")
 - Adding project-specific conventions to any agent call
 
 **Create a prompt:**
+
 ```bash
 # Via CLI
 bosun library add --type prompt --name "Security Reviewer" --file .bosun/agents/security.md
@@ -729,6 +747,7 @@ bosun library add --type prompt --name "Security Reviewer" --file .bosun/agents/
 ```
 
 **Reference a prompt in a workflow:**
+
 ```json
 {
   "type": "action.run_agent",
@@ -746,21 +765,22 @@ An **agent profile** is a JSON configuration object that fully describes how an 
 
 **Agent Profile fields:**
 
-| Field | Type | Description |
-|---|---|---|
-| `id` | string | Unique slug, e.g. `"frontend-agent"` |
-| `name` | string | Display name |
-| `description` | string | What this agent is for |
-| `titlePatterns` | `string[]` | Regex patterns matched against task titles to auto-assign this profile |
-| `scopes` | `string[]` | Repository paths this agent is authorised to touch |
-| `sdk` | string | `"copilot"`, `"codex"`, or `"claude"` |
-| `model` | string | Model override, e.g. `"claude-opus-4.6"` |
-| `promptOverride` | string | Library prompt ID or inline instruction |
-| `skills` | `string[]` | Skill IDs to inject into every session |
-| `hookProfile` | object | Override hook scripts for this profile |
-| `env` | object | Extra environment variables for this agent |
+| Field            | Type       | Description                                                            |
+| ---------------- | ---------- | ---------------------------------------------------------------------- |
+| `id`             | string     | Unique slug, e.g. `"frontend-agent"`                                   |
+| `name`           | string     | Display name                                                           |
+| `description`    | string     | What this agent is for                                                 |
+| `titlePatterns`  | `string[]` | Regex patterns matched against task titles to auto-assign this profile |
+| `scopes`         | `string[]` | Repository paths this agent is authorised to touch                     |
+| `sdk`            | string     | `"copilot"`, `"codex"`, or `"claude"`                                  |
+| `model`          | string     | Model override, e.g. `"claude-opus-4.6"`                               |
+| `promptOverride` | string     | Library prompt ID or inline instruction                                |
+| `skills`         | `string[]` | Skill IDs to inject into every session                                 |
+| `hookProfile`    | object     | Override hook scripts for this profile                                 |
+| `env`            | object     | Extra environment variables for this agent                             |
 
 **Example profile (`.bosun/profiles/frontend-agent.json`):**
+
 ```json
 {
   "id": "frontend-agent",
@@ -783,12 +803,14 @@ An **agent profile** is a JSON configuration object that fully describes how an 
 A **skill** is a Markdown document that provides reusable domain knowledge injected into agent context at session start. Think of skills as "background reading" that every agent gets before starting a task.
 
 **When to use skills:**
+
 - Encoding project coding conventions (naming patterns, folder structure)
 - Domain-specific knowledge (e.g. "how our API authentication works")
 - Shared checklists ("before you open a PR, always...")
 - Tooling guides (e.g. "how to run the integration tests locally")
 
 **Create a skill:**
+
 ```bash
 # Create the markdown file
 cat > .bosun/skills/testing-conventions.md << 'EOF'
@@ -805,6 +827,7 @@ bosun library add --type skill --name "Testing Conventions" --file .bosun/skills
 ```
 
 **Reference a skill in a workflow:**
+
 ```json
 {
   "type": "action.run_agent",
@@ -826,19 +849,19 @@ bosun library add --type skill --name "Testing Conventions" --file .bosun/skills
   "updatedAt": "2025-02-24T00:00:00Z",
   "entries": [
     {
-      "id": "frontend-specialist",        // Unique slug
-      "type": "prompt",                    // "prompt" | "agent" | "skill"
+      "id": "frontend-specialist", // Unique slug
+      "type": "prompt", // "prompt" | "agent" | "skill"
       "name": "Frontend Specialist",
       "description": "Full-stack React/TS agent",
-      "filename": "agents/frontend.md",    // Relative to .bosun/
+      "filename": "agents/frontend.md", // Relative to .bosun/
       "tags": ["frontend", "react", "typescript"],
-      "scope": "repo",                     // "repo" | "global"
-      "workspace": null,                   // Workspace ID if workspace-scoped
-      "meta": {},                          // Arbitrary metadata
+      "scope": "repo", // "repo" | "global"
+      "workspace": null, // Workspace ID if workspace-scoped
+      "meta": {}, // Arbitrary metadata
       "createdAt": "2025-02-24T00:00:00Z",
-      "updatedAt": "2025-02-24T00:00:00Z"
-    }
-  ]
+      "updatedAt": "2025-02-24T00:00:00Z",
+    },
+  ],
 }
 ```
 
@@ -846,23 +869,29 @@ bosun library add --type skill --name "Testing Conventions" --file .bosun/skills
 
 ```js
 import {
-  listEntries, getEntry, getEntryContent,
-  upsertEntry, deleteEntry,
-} from './library-manager.mjs';
+  listEntries,
+  getEntry,
+  getEntryContent,
+  upsertEntry,
+  deleteEntry,
+} from "./library-manager.mjs";
 
 // List all prompts
-const prompts = await listEntries({ type: 'prompt' });
+const prompts = await listEntries({ type: "prompt" });
 
 // Get a specific entry's Markdown content
-const content = await getEntryContent('frontend-specialist');
+const content = await getEntryContent("frontend-specialist");
 
 // Create or update an entry
-await upsertEntry({
-  id: 'my-prompt',
-  type: 'prompt',
-  name: 'My Custom Prompt',
-  filename: 'agents/my-prompt.md',
-}, markdownContent);
+await upsertEntry(
+  {
+    id: "my-prompt",
+    type: "prompt",
+    name: "My Custom Prompt",
+    filename: "agents/my-prompt.md",
+  },
+  markdownContent,
+);
 ```
 
 ---
@@ -926,6 +955,7 @@ bosun library remove my-prompt
 ### Via the Web UI
 
 Navigate to **Library** in the sidebar:
+
 - **Prompts tab** — create/edit/delete prompt markdown
 - **Agents tab** — create/edit agent profiles with a form UI
 - **Skills tab** — create/edit skill documents

@@ -9,6 +9,11 @@ vi.mock("../presence.mjs", () => ({
     instance_id: "test-instance-1",
     coordinator_priority: 100,
   })),
+  buildLocalPresence: vi.fn(() => ({
+    instance_id: "test-instance-1",
+    coordinator_priority: 100,
+  })),
+  notePresence: vi.fn(async () => ({})),
   listActiveInstances: vi.fn(() => []),
   selectCoordinator: vi.fn(() => ({
     instance_id: "coordinator-instance",

@@ -4,6 +4,7 @@
 
 - Purpose: bosun supervises VirtEngine's autonomous coding fleet. It schedules task attempts, runs PR automation, self-heals failures, and reports status via Telegram.
 - Use when: updating task orchestration, executor routing, VK API usage, or notification pipelines.
+- Path mapping in this standalone repo: paths shown as scripts/bosun/... in older docs map to repo-root paths here (strip the scripts/bosun/ prefix when running commands).
 - Key entry points:
   - CLI launcher: `scripts/bosun/cli.mjs:1`
   - Supervisor loop: `scripts/bosun/monitor.mjs:14`
@@ -71,7 +72,7 @@ flowchart TD
 ### Start bosun with defaults
 
 ```bash
-node scripts/bosun/cli.mjs
+node cli.mjs
 ```
 
 ### Run the orchestrator loop
@@ -103,7 +104,7 @@ npm run test
 
 ```bash
 # Disable shared state coordination (default: enabled)
-SHARED_STATE_ENABLED=false node scripts/bosun/cli.mjs
+SHARED_STATE_ENABLED=false node cli.mjs
 
 # Check if shared state is enabled
 node -e "console.log(process.env.SHARED_STATE_ENABLED !== 'false')"
@@ -169,7 +170,7 @@ console.log('Swept', result.sweptCount, 'stale tasks');
   - Fallback: If shared state is disabled/unavailable, local claims in `task-claims.mjs` still prevent same-workstation conflicts
   - References: `scripts/bosun/shared-state-manager.mjs:237`, `scripts/bosun/task-claims.mjs:540`
 - **Debugging shared state conflicts**:
-  - Enable verbose logging: `DEBUG=bosun:* node scripts/bosun/cli.mjs`
+  - Enable verbose logging: `DEBUG=bosun:* node cli.mjs`
   - Check registry file: `.cache/bosun/shared-task-states.json`
   - View event log: `await getSharedState(taskId)` shows full event history (`eventLog` field)
   - Check staleness: Compare `ownerHeartbeat` against `SHARED_STATE_STALE_THRESHOLD_MS`
@@ -355,7 +356,7 @@ Any function called from a hot path (HTTP handler, event loop, timer, setInterva
 
 - Test runner: Vitest (`scripts/bosun/vitest.config.mjs:1`)
 - Run tests:
-  - `cd scripts/bosun && npm run test`
+  - `npm run test`
 - Coverage examples: `scripts/bosun/tests/autofix.test.mjs`, `scripts/bosun/tests/fleet-coordinator.test.mjs`
 
 ## Troubleshooting
