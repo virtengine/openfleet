@@ -41,6 +41,38 @@ function parseBoolEnv(value, fallback) {
   return fallback;
 }
 
+function isWslInteropRuntime() {
+  return Boolean(
+    process.env.WSL_DISTRO_NAME
+    || process.env.WSL_INTEROP
+    || (process.platform === "win32"
+      && String(process.env.HOME || "")
+        .trim()
+        .startsWith("/home/")),
+  );
+}
+
+function resolveDesktopConfigDir() {
+  if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
+  if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
+
+  const preferWindowsDirs = process.platform === "win32" && !isWslInteropRuntime();
+  const baseDir = preferWindowsDirs
+    ? process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || process.env.USERPROFILE
+      || process.env.HOME
+      || homedir()
+    : process.env.HOME
+      || process.env.XDG_CONFIG_HOME
+      || process.env.USERPROFILE
+      || process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || homedir();
+
+  return resolve(baseDir, "bosun");
+}
+
 function isProcessAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -223,7 +255,11 @@ async function ensureDaemonRunning() {
 async function startUiServer() {
   if (uiServerStarted) return;
   const api = await loadUiServerModule();
-  const server = await api.startTelegramUiServer({});
+  const server = await api.startTelegramUiServer({
+    dependencies: {
+      configDir: resolveDesktopConfigDir(),
+    },
+  });
   if (!server) {
     throw new Error("Failed to start Telegram UI server.");
   }

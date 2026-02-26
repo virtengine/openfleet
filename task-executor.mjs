@@ -71,6 +71,7 @@ import {
   getRecentCommits,
   collectDiffStats,
 } from "./diff-stats.mjs";
+import { getBosunCoAuthorTrailer } from "./git-commit-helpers.mjs";
 import { createAnomalyDetector } from "./anomaly-detector.mjs";
 import { normalizeDedupKey, yieldToEventLoop, withRetry } from "./utils.mjs";
 import {
@@ -323,26 +324,22 @@ function categorizeError(err) {
 }
 
 /**
- * Returns the Co-authored-by trailer for bosun-ve[bot], or empty string
- * if the GitHub App ID is not configured. Used to attribute agent commits to
- * the Bosun GitHub App so the bot shows up as a contributor.
+ * Returns the Co-authored-by trailer for bosun-ve[bot].
  *
- * To enable: set BOSUN_GITHUB_APP_ID=<your-app-id> in .env
- * App noreply email format: <id>+bosun-ve[bot]@users.noreply.github.com
+ * Attribution should not be gated by auth mode (OAuth/App/env/gh-cli all valid
+ * execution paths). This uses the canonical helper so commit attribution stays
+ * consistent with the rest of Bosun.
  */
 function getBosunCoAuthorLine() {
-  const appId = String(process.env.BOSUN_GITHUB_APP_ID || "").trim();
-  if (!appId) return "";
-  return `Co-authored-by: bosun-ve[bot] <${appId}+bosun-ve[bot]@users.noreply.github.com>`;
+  return getBosunCoAuthorTrailer();
 }
 
 /**
  * Returns a prompt instruction block telling the agent to append the Bosun
- * co-author trailer to every commit. Empty string when app ID not configured.
+ * co-author trailer to every commit.
  */
 function getBosunCoAuthorInstruction() {
   const line = getBosunCoAuthorLine();
-  if (!line) return "";
   return `\n**Attribution (required — do not omit):**
 Every commit message MUST end with a blank line then this exact trailer:
 \`\`\`

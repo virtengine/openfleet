@@ -75,6 +75,25 @@ const HARD_TIMEOUT_BUFFER_MS = 5 * 60_000; // 5 minutes
 
 /** Tag for console logging */
 const TAG = "[agent-pool]";
+const MAX_PROMPT_BYTES = 180_000;
+
+function sanitizeAndBoundPrompt(text) {
+  if (typeof text !== "string") return "";
+  // eslint-disable-next-line no-control-regex
+  const sanitized = text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+  const bytes = Buffer.byteLength(sanitized, "utf8");
+  if (bytes <= MAX_PROMPT_BYTES) return sanitized;
+  const buf = Buffer.from(sanitized, "utf8").slice(0, MAX_PROMPT_BYTES);
+  const truncated = buf.toString("utf8");
+  const removedBytes = bytes - MAX_PROMPT_BYTES;
+  console.warn(
+    `${TAG} prompt truncated: ${bytes} → ${MAX_PROMPT_BYTES} bytes (removed ${removedBytes})`,
+  );
+  return (
+    truncated +
+    `\n\n[...prompt truncated — ${removedBytes} bytes removed to stay within API limits]`
+  );
+}
 
 function envFlagEnabled(value) {
   const raw = String(value ?? "")
@@ -243,13 +262,8 @@ function hasSdkPrerequisites(name) {
     return { ok: true, reason: null };
   }
   if (name === "copilot") {
-    // Copilot needs either a token or VS Code context
-    const hasToken = process.env.COPILOT_CLI_TOKEN || process.env.GITHUB_TOKEN;
-    // Copilot also works from VS Code extension context — check for common indicators
-    const hasVsCode = process.env.VSCODE_PID || process.env.COPILOT_AGENT_HOST;
-    if (!hasToken && !hasVsCode) {
-      return { ok: false, reason: "no COPILOT_CLI_TOKEN or GITHUB_TOKEN" };
-    }
+    // Copilot auth can come from multiple sources (OAuth manager, gh auth,
+    // VS Code Copilot login, env tokens). Don't block execution here.
     return { ok: true, reason: null };
   }
   if (name === "claude") {
@@ -775,7 +789,11 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
       // Codex steering: send a follow-up message to the live thread
       // Note: the thread is consumed in the streaming loop below, so
       // additional runStreamed calls are queued by the SDK
-      thread.runStreamed(steerPrompt, { signal: controller?.signal }).catch(() => {});
+      thread
+        .runStreamed(sanitizeAndBoundPrompt(steerPrompt), {
+          signal: controller?.signal,
+        })
+        .catch(() => {});
     });
   }
 
@@ -791,7 +809,8 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
 
   // ── 4. Stream the turn ───────────────────────────────────────────────────
   try {
-    const turn = await thread.runStreamed(prompt, {
+    const safePrompt = sanitizeAndBoundPrompt(prompt);
+    const turn = await thread.runStreamed(safePrompt, {
       signal: controller.signal,
     });
 
@@ -2237,7 +2256,8 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
   let hardTimer;
 
   try {
-    const turn = await thread.runStreamed(prompt, {
+    const safePrompt = sanitizeAndBoundPrompt(prompt);
+    const turn = await thread.runStreamed(safePrompt, {
       signal: controller.signal,
     });
     let finalResponse = "";

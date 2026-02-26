@@ -5,7 +5,7 @@ import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { get as httpsGet } from "node:https";
 import { createServer as createHttpsServer } from "node:https";
-import { networkInterfaces } from "node:os";
+import { networkInterfaces, homedir } from "node:os";
 import { connect as netConnect } from "node:net";
 import { resolve, extname, dirname, basename, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -27,6 +27,8 @@ function getLocalLanIp() {
 import { WebSocketServer } from "ws";
 import {
   getKanbanAdapter,
+  getKanbanBackendName,
+  setKanbanBackend,
   markTaskIgnored,
   unmarkTaskIgnored,
 } from "./kanban-adapter.mjs";
@@ -1249,9 +1251,38 @@ let uiDeps = {};
  * Ensures the directory exists.
  */
 function resolveUiConfigDir() {
+  if (process.env.BOSUN_CONFIG_PATH) {
+    const fromConfigPath = dirname(resolve(process.env.BOSUN_CONFIG_PATH));
+    try { mkdirSync(fromConfigPath, { recursive: true }); } catch { /* ok */ }
+    if (!uiDeps.configDir) uiDeps.configDir = fromConfigPath;
+    return fromConfigPath;
+  }
+  const isWslInteropRuntime = Boolean(
+    process.env.WSL_DISTRO_NAME
+    || process.env.WSL_INTEROP
+    || (process.platform === "win32"
+      && String(process.env.HOME || "")
+        .trim()
+        .startsWith("/home/")),
+  );
+  const preferWindowsDirs = process.platform === "win32" && !isWslInteropRuntime;
+  const baseDir = preferWindowsDirs
+    ? process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || process.env.USERPROFILE
+      || process.env.HOME
+      || homedir()
+    : process.env.HOME
+      || process.env.XDG_CONFIG_HOME
+      || process.env.USERPROFILE
+      || process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || homedir();
+
   const dir = uiDeps.configDir
+    || process.env.BOSUN_HOME
     || process.env.BOSUN_DIR
-    || resolve(process.env.HOME || process.env.USERPROFILE || "", "bosun");
+    || resolve(baseDir, "bosun");
   if (dir) {
     try { mkdirSync(dir, { recursive: true }); } catch { /* ok */ }
     // Cache it so subsequent calls don't re-resolve
@@ -1308,6 +1339,8 @@ const SETTINGS_KNOWN_KEYS = [
   "BOSUN_PROMPT_PLANNER",
   "GITHUB_TOKEN", "GITHUB_REPOSITORY", "GITHUB_PROJECT_MODE",
   "GITHUB_PROJECT_NUMBER", "GITHUB_DEFAULT_ASSIGNEE", "GITHUB_AUTO_ASSIGN_CREATOR",
+  "BOSUN_GITHUB_APP_ID", "BOSUN_GITHUB_PRIVATE_KEY_PATH", "BOSUN_GITHUB_CLIENT_ID", "BOSUN_GITHUB_CLIENT_SECRET",
+  "BOSUN_GITHUB_WEBHOOK_SECRET", "BOSUN_GITHUB_USER_TOKEN",
   "GITHUB_PROJECT_WEBHOOK_PATH", "GITHUB_PROJECT_WEBHOOK_SECRET", "GITHUB_PROJECT_WEBHOOK_REQUIRE_SIGNATURE",
   "GITHUB_PROJECT_SYNC_ALERT_FAILURE_THRESHOLD", "GITHUB_PROJECT_SYNC_RATE_LIMIT_ALERT_THRESHOLD",
   "VK_TARGET_BRANCH", "CODEX_ANALYZE_MERGE_STRATEGY", "DEPENDABOT_AUTO_MERGE",
@@ -1342,6 +1375,7 @@ const SETTINGS_SENSITIVE_KEYS = new Set([
   "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GITHUB_TOKEN",
   "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "CODEX_MODEL_PROFILE_XL_API_KEY", "CODEX_MODEL_PROFILE_M_API_KEY",
   "ANTHROPIC_API_KEY", "COPILOT_CLI_TOKEN", "GITHUB_PROJECT_WEBHOOK_SECRET",
+  "BOSUN_GITHUB_CLIENT_SECRET", "BOSUN_GITHUB_WEBHOOK_SECRET", "BOSUN_GITHUB_USER_TOKEN",
   "CLOUDFLARE_TUNNEL_CREDENTIALS",
 ]);
 
@@ -1504,11 +1538,7 @@ function validateConfigSchemaChanges(changes) {
         fieldErrors[envKey] = err.message || "Invalid value";
       }
     }
-    if (Object.keys(fieldErrors).length === 0) {
-      for (const envKey of pathMap.values()) {
-        fieldErrors[envKey] = "Invalid value (config schema)";
-      }
-    }
+    if (Object.keys(fieldErrors).length === 0) return {};
     return fieldErrors;
   } catch {
     return {};
@@ -5758,6 +5788,16 @@ async function handleApi(req, res, url) {
     const regionEnv = (process.env.EXECUTOR_REGIONS || "").trim();
     const regions = regionEnv ? regionEnv.split(",").map((r) => r.trim()).filter(Boolean) : ["auto"];
     const pkg = JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf8"));
+    let runtimeKanbanBackend = "internal";
+    try {
+      runtimeKanbanBackend = String(
+        getKanbanBackendName() || process.env.KANBAN_BACKEND || "internal",
+      ).trim().toLowerCase();
+    } catch {
+      runtimeKanbanBackend = String(
+        process.env.KANBAN_BACKEND || "internal",
+      ).trim().toLowerCase();
+    }
     jsonResponse(res, 200, {
       ok: true,
       version: pkg.version,
@@ -5769,7 +5809,7 @@ async function handleApi(req, res, url) {
       wsEnabled: true,
       authRequired: !isAllowUnsafe(),
       sdk: process.env.EXECUTOR_SDK || "auto",
-      kanbanBackend: process.env.KANBAN_BACKEND || "github",
+      kanbanBackend: runtimeKanbanBackend,
       regions,
     });
     return;
@@ -5790,6 +5830,13 @@ async function handleApi(req, res, url) {
         return;
       }
       process.env[envKey] = value;
+      if (envKey === "KANBAN_BACKEND") {
+        try {
+          setKanbanBackend(String(value).trim().toLowerCase());
+        } catch (err) {
+          console.warn(`[config] failed to switch kanban backend: ${err.message}`);
+        }
+      }
       // Also send chat command for backward compat
       const cmdMap = { sdk: `/sdk ${value}`, kanban: `/kanban ${value}`, region: `/region ${value}` };
       const handler = uiDeps.handleUiCommand;
@@ -5894,6 +5941,15 @@ async function handleApi(req, res, url) {
         const strVal = String(value);
         process.env[key] = strVal;
         strChanges[key] = strVal;
+      }
+      if (Object.prototype.hasOwnProperty.call(strChanges, "KANBAN_BACKEND")) {
+        try {
+          setKanbanBackend(
+            String(strChanges.KANBAN_BACKEND).trim().toLowerCase(),
+          );
+        } catch (err) {
+          console.warn(`[settings] failed to switch kanban backend: ${err.message}`);
+        }
       }
       // Write to .env file
       const updated = updateEnvFile(strChanges);
@@ -6782,7 +6838,43 @@ export async function startTelegramUiServer(options = {}) {
 
   const rawPort = options.port ?? getDefaultPort();
   const port = Number(rawPort);
-  if (!Number.isFinite(port) || port < 0) return null;
+  const isTestRun =
+    Boolean(process.env.VITEST) ||
+    process.env.NODE_ENV === "test" ||
+    Boolean(process.env.JEST_WORKER_ID);
+  const allowEphemeralPort =
+    options.allowEphemeralPort === true ||
+    process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT === "1" ||
+    isTestRun;
+  const portSource =
+    options.port != null
+      ? "options.port"
+      : process.env.TELEGRAM_UI_PORT
+        ? "env.TELEGRAM_UI_PORT"
+        : "default(0)";
+
+  if (!Number.isFinite(port) || port < 0) {
+    console.warn(
+      `[telegram-ui] invalid ui port: raw=${String(rawPort)} source=${portSource}`,
+    );
+    return null;
+  }
+  if (port === 0 && !allowEphemeralPort) {
+    console.warn(
+      `[telegram-ui] refusing ephemeral ui port (resolved 0 from ${portSource}); ` +
+      `set TELEGRAM_UI_PORT (for example 4400) or set BOSUN_UI_ALLOW_EPHEMERAL_PORT=1`,
+    );
+    return null;
+  }
+
+  const autoOpenEnabled = ["1", "true", "yes", "on"].includes(
+    String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "")
+      .trim()
+      .toLowerCase(),
+  );
+  console.log(
+    `[telegram-ui] startup config: port=${port} source=${portSource} autoOpen=${autoOpenEnabled ? "enabled" : "disabled"}`,
+  );
 
   injectUiDependencies(options.dependencies || {});
 
@@ -7042,12 +7134,14 @@ export async function startTelegramUiServer(options = {}) {
   //  - skip when caller passes skipAutoOpen
   //  - skip during Vitest / Jest test runs (avoids opening 20+ tabs during `npm test`)
   //  - only open ONCE per process (singleton guard — prevents loops on server restart)
-  const isTestRun = process.env.VITEST || process.env.NODE_ENV === "test" || process.env.JEST_WORKER_ID;
+  const isTestRunRuntime =
+    process.env.VITEST || process.env.NODE_ENV === "test" || process.env.JEST_WORKER_ID;
   if (
+    autoOpenEnabled &&
     process.env.BOSUN_DESKTOP !== "1" &&
     !options.skipAutoOpen &&
     !_browserOpened &&
-    !isTestRun
+    !isTestRunRuntime
   ) {
     _browserOpened = true;
     const openUrl = `${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`;

@@ -22,9 +22,18 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync } from "node:fs";
 import { resolve, basename, join } from "node:path";
-import { execSync, spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 
 const TAG = "[workspace-manager]";
+
+const _childProcessRequire = createRequire(import.meta.url);
+let _childProcessModule = null;
+function getChildProcess() {
+  if (!_childProcessModule) {
+    _childProcessModule = _childProcessRequire("node:child_process");
+  }
+  return _childProcessModule;
+}
 
 // Lazy-loaded reference to repo-config.mjs (resolved on first use)
 let _repoConfigModule = null;
@@ -345,6 +354,7 @@ export function addRepoToWorkspace(configDir, workspaceId, { url, name, branch, 
 
   const wsPath = getWorkspacePath(configDir, wsId);
   const repoPath = resolve(wsPath, repoName);
+  const childProcess = getChildProcess();
   let cloned = false;
 
   if (!existsSync(repoPath)) {
@@ -354,7 +364,7 @@ export function addRepoToWorkspace(configDir, workspaceId, { url, name, branch, 
     if (branch) cloneArgs.push("--branch", branch);
     cloneArgs.push(url, repoPath);
 
-    const result = spawnSync("git", cloneArgs, {
+    const result = childProcess.spawnSync("git", cloneArgs, {
       encoding: "utf8",
       timeout: 300000, // 5 minutes
       stdio: ["pipe", "pipe", "pipe"],
@@ -463,6 +473,7 @@ export function setActiveRepo(configDir, workspaceId, repoName) {
 export function pullWorkspaceRepos(configDir, workspaceId) {
   const ws = getWorkspace(configDir, workspaceId);
   if (!ws) throw new Error(`Workspace "${workspaceId}" not found`);
+  const childProcess = getChildProcess();
 
   const results = [];
   for (const repo of ws.repos || []) {
@@ -482,7 +493,7 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
       try {
         mkdirSync(ws.path, { recursive: true });
         console.log(TAG, `Cloning ${repoUrl} into ${repoPath}...`);
-        const clone = spawnSync("git", ["clone", repoUrl, repoPath], {
+        const clone = childProcess.spawnSync("git", ["clone", repoUrl, repoPath], {
           encoding: "utf8",
           timeout: 300000,
           stdio: ["pipe", "pipe", "pipe"],
@@ -529,7 +540,7 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
           (repo.slug ? `https://github.com/${repo.slug.replace(/\.git$/i, "")}.git` : "");
         if (isEmpty && repoUrl) {
           console.log(TAG, `Cloning ${repoUrl} into existing empty directory ${repoPath}...`);
-          const clone = spawnSync("git", ["clone", repoUrl, "."], {
+          const clone = childProcess.spawnSync("git", ["clone", repoUrl, "."], {
             encoding: "utf8",
             timeout: 300000,
             stdio: ["pipe", "pipe", "pipe"],
@@ -562,7 +573,7 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
       }
     }
     try {
-      execSync("git pull --rebase", {
+      childProcess.execSync("git pull --rebase", {
         cwd: repoPath,
         encoding: "utf8",
         timeout: 120000,
@@ -697,6 +708,7 @@ export function detectWorkspaces(configDir) {
   if (!existsSync(wsDir)) return [];
 
   const detected = [];
+  const childProcess = getChildProcess();
   for (const entry of readdirSync(wsDir)) {
     const entryPath = resolve(wsDir, entry);
     if (!statSync(entryPath).isDirectory()) continue;
@@ -708,7 +720,7 @@ export function detectWorkspaces(configDir) {
       if (existsSync(resolve(subPath, ".git"))) {
         let slug = "";
         try {
-          const remote = execSync("git remote get-url origin", {
+          const remote = childProcess.execSync("git remote get-url origin", {
             cwd: subPath,
             encoding: "utf8",
             stdio: ["pipe", "pipe", "ignore"],

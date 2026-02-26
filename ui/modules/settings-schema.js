@@ -131,6 +131,12 @@ export const SETTINGS_SCHEMA = [
 
   // ── GitHub / Git ─────────────────────────────────────────
   { key: "GITHUB_TOKEN",                   label: "GitHub Token",               category: "github", type: "secret", sensitive: true, description: "Personal access token or fine-grained token for GitHub API. Required for GitHub kanban backend." },
+  { key: "BOSUN_GITHUB_CLIENT_ID",         label: "GitHub OAuth Client ID",     category: "github", type: "string", description: "OAuth client ID used for GitHub device flow sign-in in the Bosun portal." },
+  { key: "BOSUN_GITHUB_CLIENT_SECRET",     label: "GitHub OAuth Client Secret", category: "github", type: "secret", sensitive: true, description: "OAuth client secret used for GitHub web callback exchange.", advanced: true },
+  { key: "BOSUN_GITHUB_APP_ID",            label: "GitHub App ID",              category: "github", type: "string", description: "Numeric Bosun GitHub App ID used for installation token auth.", advanced: true },
+  { key: "BOSUN_GITHUB_PRIVATE_KEY_PATH",  label: "GitHub App Private Key",     category: "github", type: "string", description: "Absolute path to the Bosun GitHub App .pem private key.", advanced: true },
+  { key: "BOSUN_GITHUB_WEBHOOK_SECRET",    label: "GitHub App Webhook Secret",  category: "github", type: "secret", sensitive: true, description: "Webhook HMAC secret for validating GitHub App webhook deliveries.", advanced: true },
+  { key: "BOSUN_GITHUB_USER_TOKEN",        label: "GitHub User Token Override", category: "github", type: "secret", sensitive: true, description: "Optional direct OAuth user token override (skips auth-state lookup).", advanced: true },
   { key: "GITHUB_REPOSITORY",              label: "Repository",                 category: "github", type: "string", description: "GitHub repository in owner/repo format. Auto-detected from git remote if not set.", validate: "^[\\w.-]+/[\\w.-]+$" },
   { key: "GITHUB_PROJECT_MODE",            label: "Project Mode",               category: "github", type: "select", defaultVal: "issues", options: ["issues", "kanban"], description: "Use GitHub Issues directly, or GitHub Projects v2 kanban board." },
   { key: "GITHUB_PROJECT_NUMBER",          label: "Project Number",             category: "github", type: "number", min: 1, description: "GitHub Projects v2 number. Required when project mode is 'kanban'." },

@@ -98,6 +98,7 @@ import {
   resetMergeStrategyDedup,
 } from "./merge-strategy.mjs";
 import { assessTask, quickAssess } from "./task-assessment.mjs";
+import { getBosunCoAuthorTrailer } from "./git-commit-helpers.mjs";
 import {
   normalizeDedupKey,
   stripAnsi,
@@ -251,6 +252,60 @@ const agentAlertsDedup = new Map();
 
 function getAgentAlertsPath() {
   return resolve(repoRoot, ".cache", "agent-work-logs", "agent-alerts.jsonl");
+}
+
+function getAgentAlertsStatePath() {
+  return resolve(
+    repoRoot,
+    ".cache",
+    "agent-work-logs",
+    "agent-alert-tail-state.json",
+  );
+}
+
+function loadAgentAlertsState() {
+  const statePath = getAgentAlertsStatePath();
+  try {
+    if (!existsSync(statePath)) return;
+    const raw = readFileSync(statePath, "utf8");
+    const parsed = JSON.parse(raw);
+    const offset = Number(parsed?.offset || 0);
+    if (Number.isFinite(offset) && offset >= 0) {
+      agentAlertsOffset = offset;
+    }
+    const dedupEntries = Array.isArray(parsed?.dedupEntries)
+      ? parsed.dedupEntries
+      : [];
+    agentAlertsDedup.clear();
+    for (const entry of dedupEntries) {
+      if (!entry || typeof entry !== "object") continue;
+      const key = String(entry.key || "").trim();
+      const ts = Number(entry.ts || 0);
+      if (!key || !Number.isFinite(ts) || ts <= 0) continue;
+      agentAlertsDedup.set(key, ts);
+    }
+  } catch (err) {
+    console.warn(`[monitor] failed loading alert tail state: ${err.message}`);
+  }
+}
+
+function saveAgentAlertsState() {
+  const statePath = getAgentAlertsStatePath();
+  try {
+    mkdirSync(dirname(statePath), { recursive: true });
+    const dedupEntries = [...agentAlertsDedup.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 200)
+      .map(([key, ts]) => ({ key, ts }));
+    const payload = {
+      offset: agentAlertsOffset,
+      dedupEntries,
+      updatedAt: new Date().toISOString(),
+    };
+    writeFileSync(statePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  } catch (err) {
+    console.warn(`[monitor] failed saving alert tail state: ${err.message}`);
+  }
 }
 
 function rememberAlert(key) {
@@ -590,6 +645,9 @@ async function pollAgentAlerts() {
   } catch {
     return;
   }
+  if (data.length < agentAlertsOffset) {
+    agentAlertsOffset = 0;
+  }
   if (!data || data.length <= agentAlertsOffset) return;
   const chunk = data.slice(agentAlertsOffset);
   agentAlertsOffset = data.length;
@@ -621,6 +679,7 @@ async function pollAgentAlerts() {
       );
     }
   }
+  saveAgentAlertsState();
 }
 
 function startAgentWorkAnalyzer() {
@@ -650,6 +709,7 @@ function stopAgentWorkAnalyzer() {
 
 function startAgentAlertTailer() {
   if (agentAlertsTimer) return;
+  loadAgentAlertsState();
   agentAlertsTimer = setInterval(() => {
     runDetached("agent-alerts:poll", pollAgentAlerts);
   }, AGENT_ALERT_POLL_MS);
@@ -3329,7 +3389,9 @@ async function triggerVibeKanbanRecovery(reason) {
     const notice = codexEnabled
       ? `Codex recovery triggered: vibe-kanban unreachable. Attempting restart. (${link})`
       : `Vibe-kanban recovery triggered (Codex disabled). Attempting restart. (${link})`;
-    void sendTelegramMessage(notice, { parseMode: "HTML" });
+    runDetached("vk-recovery-notify", () =>
+      sendTelegramMessage(notice, { parseMode: "HTML" }),
+    );
   }
   await runCodexRecovery(reason || "vibe-kanban unreachable");
   restartVibeKanbanProcess();
@@ -7024,6 +7086,19 @@ function extractPrNumberFromUrl(prUrl) {
   return match ? parsePositivePrNumber(match[1]) : null;
 }
 
+function buildFlowGateMergeBody(taskTitle, taskId) {
+  const trailer = getBosunCoAuthorTrailer();
+  const safeTitle = String(taskTitle || "Task").trim() || "Task";
+  const safeId = String(taskId || "").trim();
+  const lines = [
+    `Merged by Bosun flow gate for: ${safeTitle}`,
+    safeId ? `Task: ${safeId}` : "",
+    "",
+    trailer,
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
 async function triggerFlowPostReviewMerge(taskId, context = {}) {
   if (!isFlowPrimaryEnabled() || !isFlowReviewGateEnabled()) {
     return false;
@@ -7074,6 +7149,7 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
 
   const autoArgs = ["pr", "merge", String(prNumber)];
   if (repoSlug) autoArgs.push("--repo", repoSlug);
+  autoArgs.push("--body", buildFlowGateMergeBody(taskTitle, id));
   autoArgs.push("--auto", "--squash");
 
   const autoResult = spawnSync("gh", autoArgs, {
@@ -7095,6 +7171,7 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
   if (/clean status|not in the correct state/i.test(autoErr)) {
     const directArgs = ["pr", "merge", String(prNumber)];
     if (repoSlug) directArgs.push("--repo", repoSlug);
+    directArgs.push("--body", buildFlowGateMergeBody(taskTitle, id));
     directArgs.push("--squash");
     const directResult = spawnSync("gh", directArgs, {
       cwd: repoRoot,
@@ -9997,6 +10074,7 @@ async function startTelegramNotifier() {
     await flushMergeNotifications();
     await checkStatusMilestones();
   };
+
 
   // Suppress "Notifier started" message on rapid restarts (e.g. code-change restarts).
   // If the last start was <60s ago, skip the notification — just log locally.
