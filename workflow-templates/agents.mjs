@@ -447,6 +447,7 @@ export const BACKEND_AGENT_TEMPLATE = {
     buildCommand: "npm run build",
     agentSdk: "auto",
     timeoutMs: 3600000,
+    autoFixTimeoutMs: 1200000,
   },
   nodes: [
     node("trigger", "trigger.task_assigned", "Task Assigned", {
@@ -504,7 +505,7 @@ Commit with message "feat: implement [feature]"`,
     }, { x: 400, y: 910 }),
 
     node("all-passed", "condition.expression", "All Checks Passed?", {
-      expression: "$ctx.getNodeOutput('build')?.exitCode === 0 && $ctx.getNodeOutput('test-final')?.exitCode === 0",
+      expression: "$ctx.getNodeOutput('build')?.passed === true && $ctx.getNodeOutput('test-final')?.passed === true && $ctx.getNodeOutput('lint')?.passed === true",
     }, { x: 400, y: 1040, outputs: ["yes", "no"] }),
 
     node("create-pr", "action.create_pr", "Create PR", {
@@ -519,9 +520,71 @@ Commit with message "feat: implement [feature]"`,
       level: "info",
     }, { x: 250, y: 1300 }),
 
+    node("auto-fix", "action.run_agent", "Auto-Fix Validation Failures", {
+      prompt: `# Fix Backend Validation Failures
+
+The first validation pass failed for task **{{taskTitle}}**.
+
+Plan:
+{{plan}}
+
+Current validation outputs:
+- implement.success: {{implement.success}}
+- build.passed: {{build.passed}}
+- test-final.passed: {{test-final.passed}}
+- lint.passed: {{lint.passed}}
+
+Build output:
+{{build.output}}
+
+Test output:
+{{test-final.output}}
+
+Lint output:
+{{lint.output}}
+
+Fix the code so build/tests/lint pass.
+Do NOT weaken, remove, or bypass tests.
+Keep the original task scope.
+
+Run build + tests + lint locally before finishing.
+Commit with message "fix: address backend workflow validation failures"`,
+      sdk: "{{agentSdk}}",
+      timeoutMs: "{{autoFixTimeoutMs}}",
+    }, { x: 620, y: 1170 }),
+
+    node("build-retry", "validation.build", "Build Check (Retry)", {
+      command: "{{buildCommand}}",
+      zeroWarnings: true,
+    }, { x: 620, y: 1300 }),
+
+    node("test-retry", "validation.tests", "Final Test Run (Retry)", {
+      command: "{{testFramework}}",
+    }, { x: 620, y: 1430 }),
+
+    node("lint-retry", "validation.lint", "Lint Check (Retry)", {
+      command: "npm run lint 2>/dev/null || echo 'no lint script'",
+    }, { x: 620, y: 1560 }),
+
+    node("retry-passed", "condition.expression", "Retry Checks Passed?", {
+      expression: "$ctx.getNodeOutput('build-retry')?.passed === true && $ctx.getNodeOutput('test-retry')?.passed === true && $ctx.getNodeOutput('lint-retry')?.passed === true",
+    }, { x: 620, y: 1690, outputs: ["yes", "no"] }),
+
+    node("create-pr-retry", "action.create_pr", "Create PR (After Retry)", {
+      title: "feat: {{taskTitle}}",
+      body: "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation.",
+      branch: "feat/{{taskSlug}}",
+      baseBranch: "main",
+    }, { x: 450, y: 1820 }),
+
+    node("notify-done-retry", "notify.log", "Task Complete (After Retry)", {
+      message: "Backend agent completed task after retry — PR created",
+      level: "info",
+    }, { x: 450, y: 1950 }),
+
     node("notify-fail", "notify.telegram", "Checks Failed", {
-      message: "⚠️ Backend agent: build or tests failed for task {{taskTitle}}. Manual review needed.",
-    }, { x: 600, y: 1170 }),
+      message: "⚠️ Backend agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed.",
+    }, { x: 820, y: 1820 }),
   ],
   edges: [
     edge("trigger", "plan-work"),
@@ -532,8 +595,15 @@ Commit with message "feat: implement [feature]"`,
     edge("test-final", "lint"),
     edge("lint", "all-passed"),
     edge("all-passed", "create-pr", { condition: "$output?.result === true", port: "yes" }),
-    edge("all-passed", "notify-fail", { condition: "$output?.result !== true", port: "no" }),
+    edge("all-passed", "auto-fix", { condition: "$output?.result !== true", port: "no" }),
     edge("create-pr", "notify-done"),
+    edge("auto-fix", "build-retry"),
+    edge("build-retry", "test-retry"),
+    edge("test-retry", "lint-retry"),
+    edge("lint-retry", "retry-passed"),
+    edge("retry-passed", "create-pr-retry", { condition: "$output?.result === true", port: "yes" }),
+    edge("retry-passed", "notify-fail", { condition: "$output?.result !== true", port: "no" }),
+    edge("create-pr-retry", "notify-done-retry"),
   ],
   metadata: {
     author: "bosun",

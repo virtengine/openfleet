@@ -7019,6 +7019,10 @@ export async function startTelegramUiServer(options = {}) {
     Boolean(process.env.VITEST) ||
     process.env.NODE_ENV === "test" ||
     Boolean(process.env.JEST_WORKER_ID);
+  const skipInstanceLock =
+    options.skipInstanceLock === true ||
+    process.env.BOSUN_UI_SKIP_INSTANCE_LOCK === "1" ||
+    isTestRun;
   const allowEphemeralPort =
     options.allowEphemeralPort === true ||
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT === "1" ||
@@ -7055,17 +7059,19 @@ export async function startTelegramUiServer(options = {}) {
 
   injectUiDependencies(options.dependencies || {});
 
-  const lockResult = tryAcquireUiInstanceLock({ preferredPort: port });
-  if (!lockResult.ok) {
-    const existing = lockResult.existing || {};
-    const existingTarget = existing.url
-      || (existing.port
-        ? `${existing.protocol || "http"}://${existing.host || "127.0.0.1"}:${existing.port}`
-        : "unknown");
-    console.warn(
-      `[telegram-ui] duplicate runtime detected (pid=${existing.pid}) — skipping secondary UI server start (${existingTarget})`,
-    );
-    return null;
+  if (!skipInstanceLock) {
+    const lockResult = tryAcquireUiInstanceLock({ preferredPort: port });
+    if (!lockResult.ok) {
+      const existing = lockResult.existing || {};
+      const existingTarget = existing.url
+        || (existing.port
+          ? `${existing.protocol || "http"}://${existing.host || "127.0.0.1"}:${existing.port}`
+          : "unknown");
+      console.warn(
+        `[telegram-ui] duplicate runtime detected (pid=${existing.pid}) — skipping secondary UI server start (${existingTarget})`,
+      );
+      return null;
+    }
   }
 
   // Auto-TLS: generate a self-signed cert for HTTPS unless explicitly disabled
