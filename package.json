@@ -152,6 +152,7 @@
     "github-oauth-portal.mjs",
     "github-reconciler.mjs",
     "get-telegram-chat-id.mjs",
+    "git-commit-helpers.mjs",
     "git-safety.mjs",
     "kanban-adapter.mjs",
     "lib/logger.mjs",
