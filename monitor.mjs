@@ -2313,11 +2313,29 @@ function runDetached(label, promiseOrFn) {
 }
 
 function safeSetInterval(reason, fn, ms) {
-  return setInterval(() => runGuarded(`interval:${reason}`, fn), ms);
+  const normalized = Number(ms);
+  const clamped = Number.isFinite(normalized) && normalized > 0
+    ? Math.min(normalized, 2_147_483_647)
+    : 1;
+  if (clamped !== normalized) {
+    console.warn(
+      `[monitor] timer delay clamped for interval:${reason} (${normalized}ms -> ${clamped}ms)`,
+    );
+  }
+  return setInterval(() => runGuarded(`interval:${reason}`, fn), clamped);
 }
 
 function safeSetTimeout(reason, fn, ms) {
-  return setTimeout(() => runGuarded(`timeout:${reason}`, fn), ms);
+  const normalized = Number(ms);
+  const clamped = Number.isFinite(normalized) && normalized > 0
+    ? Math.min(normalized, 2_147_483_647)
+    : 1;
+  if (clamped !== normalized) {
+    console.warn(
+      `[monitor] timer delay clamped for timeout:${reason} (${normalized}ms -> ${clamped}ms)`,
+    );
+  }
+  return setTimeout(() => runGuarded(`timeout:${reason}`, fn), clamped);
 }
 
 const crashLoopFixAttempts = new Map();
@@ -13543,7 +13561,7 @@ async function startWatcher(force = false) {
       if (watcherDebounce) {
         clearTimeout(watcherDebounce);
       }
-      watcherDebounce = setTimeout(() => {
+      watcherDebounce = safeSetTimeout("watcher-file-change-debounce", () => {
         requestRestart("file-change");
       }, 5000);
     });
@@ -13570,7 +13588,7 @@ function scheduleEnvReload(reason) {
   if (envWatcherDebounce) {
     clearTimeout(envWatcherDebounce);
   }
-  envWatcherDebounce = setTimeout(() => {
+  envWatcherDebounce = safeSetTimeout("env-reload-debounce", () => {
     runDetached("config-reload:env-change", () =>
       reloadConfig(reason || "env-change"),
     );
