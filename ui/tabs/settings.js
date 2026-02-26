@@ -22,6 +22,7 @@ import {
   cloudStorageGet,
   cloudStorageSet,
   cloudStorageRemove,
+  getTelegramUser,
 } from "../modules/telegram.js";
 import { apiFetch, wsConnected } from "../modules/api.js";
 import {
@@ -1198,7 +1199,7 @@ function ServerConfigMode() {
  * ═══════════════════════════════════════════════════════════════ */
 function AppPreferencesMode() {
   const tg = globalThis.Telegram?.WebApp;
-  const user = tg?.initDataUnsafe?.user;
+  const user = getTelegramUser();
 
   /* Preferences (loaded from CloudStorage) */
   const [fontSize, setFontSize] = useState("medium");
@@ -1401,10 +1402,14 @@ function AppPreferencesMode() {
           `}
           <div>
             <div style="font-weight:600;font-size:15px">
-              ${user?.first_name || "Unknown"} ${user?.last_name || ""}
+              ${user
+                ? html`${[user.first_name, user.last_name].filter(Boolean).join(" ") || "Telegram User"}`
+                : html`<span style="opacity:0.7">Operator Console</span>`}
             </div>
             ${user?.username &&
             html`<div class="meta-text">@${user.username}</div>`}
+            ${!user &&
+            html`<div class="meta-text" style="font-size:11px;margin-top:2px">Open in Telegram to see account details.</div>`}
           </div>
         </div>
         <div class="meta-text mt-sm">App version: ${APP_VERSION}</div>

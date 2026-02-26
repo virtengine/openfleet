@@ -866,7 +866,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
  *  Bottom Navigation
  * ═══════════════════════════════════════════════ */
 const PRIMARY_NAV_TABS = ["dashboard", "chat", "tasks", "agents"];
-const MORE_NAV_TABS = ["control", "infra", "logs", "library", "workflows", "settings"];
+const MORE_NAV_TABS = ["control", "infra", "logs", "telemetry", "library", "workflows", "settings"];
 
 function getTabsById(ids) {
   return ids
