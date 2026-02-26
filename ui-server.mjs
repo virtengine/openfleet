@@ -6528,6 +6528,8 @@ async function handleApi(req, res, url) {
 
         // Per-message mode override (e.g. { "content": "...", "mode": "ask" })
         const messageMode = body?.mode || undefined;
+        // Per-message model override (e.g. { "model": "o4-mini" })
+        const messageModel = body?.model || undefined;
 
         // Forward to primary agent if applicable (exec records user + assistant events)
         const exec = session.type === "primary" ? uiDeps.execPrimaryPrompt : null;
@@ -6536,16 +6538,19 @@ async function handleApi(req, res, url) {
           // Respond immediately so the UI doesn't block on agent execution
           jsonResponse(res, 200, { ok: true, messageId });
           broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
-          try {
-            await exec(messageContent, {
-              sessionId,
-              sessionType: "primary",
-              mode: messageMode,
-              attachments,
-              attachmentsAppended,
-            });
+          // Fire-and-forget: run agent asynchronously so the request handler
+          // doesn't block and the agent doesn't appear "busy" to subsequent
+          // messages from chat, telegram, portal, or any other source.
+          exec(messageContent, {
+            sessionId,
+            sessionType: "primary",
+            mode: messageMode,
+            model: messageModel,
+            attachments,
+            attachmentsAppended,
+          }).then(() => {
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
-          } catch (execErr) {
+          }).catch((execErr) => {
             // Record error as system message so user sees feedback
             tracker.recordEvent(sessionId, {
               role: "system",
@@ -6554,7 +6559,7 @@ async function handleApi(req, res, url) {
               timestamp: new Date().toISOString(),
             });
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-error", sessionId });
-          }
+          });
         } else {
           // No agent — record user event and acknowledge
           tracker.recordEvent(sessionId, {

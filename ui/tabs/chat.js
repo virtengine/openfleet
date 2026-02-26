@@ -62,6 +62,7 @@ import {
   activeAgent,
   activeAgentInfo,
   yoloMode,
+  selectedModel,
 } from "../components/agent-selector.js";
 import {
   addPendingMessage,
@@ -548,7 +549,7 @@ export function ChatTab() {
           const sendFn = async (sid, msg) => {
             await apiFetch(`/api/sessions/${encodeURIComponent(sid)}/message`, {
               method: "POST",
-              body: JSON.stringify({ content: msg, mode: agentMode.value, yolo: yoloMode.peek() }),
+              body: JSON.stringify({ content: msg, mode: agentMode.value, yolo: yoloMode.peek(), model: selectedModel.value || undefined }),
             });
           };
 
@@ -569,6 +570,7 @@ export function ChatTab() {
           agent: activeAgent.value,
           mode: agentMode.value,
           yolo: yoloMode.peek(),
+          model: selectedModel.value || undefined,
         });
         const newId = res?.session?.id;
         if (newId) {
@@ -578,7 +580,7 @@ export function ChatTab() {
           try {
             await apiFetch(`/api/sessions/${encodeURIComponent(newId)}/message`, {
               method: "POST",
-              body: JSON.stringify({ content, mode: agentMode.value, yolo: yoloMode.peek() }),
+              body: JSON.stringify({ content, mode: agentMode.value, yolo: yoloMode.peek(), model: selectedModel.value || undefined }),
             });
             confirmMessage(tempId);
           } catch (err) {

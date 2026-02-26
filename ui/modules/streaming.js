@@ -537,7 +537,7 @@ export const agentStatusText = computed(() => {
 });
 
 let _idleTimer = null;
-const IDLE_TIMEOUT = 45000;
+const IDLE_TIMEOUT = 120000;
 
 /**
  * Internal: transition agent state and reset idle timer.

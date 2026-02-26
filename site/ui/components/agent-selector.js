@@ -48,6 +48,10 @@ export const yoloMode = signal(false);
 // Hydrate from localStorage in browser
 try { if (typeof localStorage !== "undefined") yoloMode.value = localStorage.getItem("ve-yolo-mode") === "true"; } catch {}
 
+/** Selected model override — empty string means "default" */
+export const selectedModel = signal("");
+try { if (typeof localStorage !== "undefined") selectedModel.value = localStorage.getItem("ve-selected-model") || ""; } catch {}
+
 /** Computed: resolved active agent object */
 export const activeAgentInfo = computed(() => {
   const agents = availableAgents.value;
@@ -69,6 +73,29 @@ const AGENT_ICONS = {
   "codex-sdk": "⚡",
   "copilot-sdk": "🤖",
   "claude-sdk": "🧠",
+};
+
+const AGENT_MODELS = {
+  "codex-sdk": [
+    { value: "", label: "Default" },
+    { value: "o4-mini", label: "o4-mini" },
+    { value: "o3", label: "o3" },
+    { value: "gpt-4.1", label: "GPT-4.1" },
+    { value: "gpt-4.1-mini", label: "GPT-4.1 Mini" },
+    { value: "gpt-4.1-nano", label: "GPT-4.1 Nano" },
+  ],
+  "copilot-sdk": [
+    { value: "", label: "Default" },
+    { value: "claude-sonnet-4", label: "Claude Sonnet 4" },
+    { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+    { value: "gpt-4.1", label: "GPT-4.1" },
+    { value: "o4-mini", label: "o4-mini" },
+  ],
+  "claude-sdk": [
+    { value: "", label: "Default" },
+    { value: "claude-sonnet-4-20250514", label: "Sonnet 4" },
+    { value: "claude-opus-4-20250514", label: "Opus 4" },
+  ],
 };
 
 const PROVIDER_COLORS = {
@@ -126,6 +153,102 @@ const AGENT_SELECTOR_STYLES = `
 .agent-mode-pill .mode-icon {
   font-size: 11px;
   line-height: 1;
+}
+
+/* ── Compact Icon Dropdown (mode + model) ── */
+.icon-dropdown-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.icon-dropdown-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  background: var(--tg-theme-secondary-bg-color, #1e1e2e);
+  color: var(--tg-theme-text-color, #fff);
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+.icon-dropdown-btn:hover {
+  background: rgba(255,255,255,0.05);
+  border-color: rgba(255,255,255,0.12);
+}
+.icon-dropdown-btn.open {
+  border-color: var(--tg-theme-button-color, #3b82f6);
+}
+.icon-dropdown-btn .dd-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+.icon-dropdown-btn .dd-label {
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.icon-dropdown-btn .dd-chevron {
+  font-size: 8px;
+  opacity: 0.5;
+  transition: transform 0.2s ease;
+}
+.icon-dropdown-btn.open .dd-chevron {
+  transform: rotate(180deg);
+}
+.icon-dropdown-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 160px;
+  background: var(--tg-theme-bg-color, #0f0f23);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  backdrop-filter: blur(16px);
+  padding: 4px;
+  z-index: 1000;
+  animation: agentDropIn 0.15s ease-out;
+  overflow: hidden;
+}
+.icon-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  color: var(--tg-theme-text-color, #fff);
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: background 0.15s ease;
+  font-size: 12px;
+  -webkit-tap-highlight-color: transparent;
+}
+.icon-dropdown-item:hover {
+  background: rgba(255,255,255,0.06);
+}
+.icon-dropdown-item.active {
+  background: rgba(59,130,246,0.15);
+}
+.icon-dropdown-item .item-icon {
+  font-size: 14px;
+  width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.icon-dropdown-item .item-check {
+  margin-left: auto;
+  color: var(--tg-theme-button-color, #3b82f6);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 /* ── Agent Picker Dropdown ── */
@@ -338,6 +461,12 @@ const AGENT_SELECTOR_STYLES = `
   .agent-mode-pill .mode-icon {
     display: none;
   }
+  .icon-dropdown-btn .dd-label {
+    display: none;
+  }
+  .icon-dropdown-btn {
+    padding: 5px 6px;
+  }
   .agent-picker-btn {
     padding: 5px 8px;
     font-size: 11px;
@@ -347,7 +476,7 @@ const AGENT_SELECTOR_STYLES = `
     left: -4px;
   }
   .chat-input-toolbar {
-    gap: 6px;
+    gap: 4px;
     padding: 5px 6px;
   }
   .agent-status-label {
@@ -358,6 +487,9 @@ const AGENT_SELECTOR_STYLES = `
   .agent-mode-pill {
     padding: 6px 14px;
     font-size: 13px;
+  }
+  .icon-dropdown-btn .dd-label {
+    max-width: 140px;
   }
   .agent-picker-dropdown {
     min-width: 260px;
@@ -542,33 +674,127 @@ async function setAgentMode(mode) {
 
 /* ═══════════════════════════════════════════════
  *  AgentModeSelector
- *  Compact pill group: Ask | Agent | Plan
+ *  Compact icon-based dropdown: Ask | Agent | Plan
  * ═══════════════════════════════════════════════ */
 
 export function AgentModeSelector() {
   const currentMode = agentMode.value;
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  const current = MODES.find((m) => m.id === currentMode) || MODES[1];
 
   const handleSelect = useCallback((mode) => {
     if (mode === agentMode.value) return;
     haptic("light");
     setAgentMode(mode);
+    setOpen(false);
   }, []);
 
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
   return html`
-    <div class="agent-mode-group" role="radiogroup" aria-label="Agent mode">
-      ${MODES.map((m) => html`
-        <button
-          key=${m.id}
-          class="agent-mode-pill ${currentMode === m.id ? "active" : ""}"
-          role="radio"
-          aria-checked=${currentMode === m.id}
-          title=${m.description}
-          onClick=${() => handleSelect(m.id)}
-        >
-          <span class="mode-icon">${resolveIcon(m.icon) || m.icon}</span>
-          ${m.label}
-        </button>
-      `)}
+    <div class="icon-dropdown-wrap" ref=${ref}>
+      <button
+        class="icon-dropdown-btn ${open ? "open" : ""}"
+        onClick=${() => setOpen(!open)}
+        title=${current.description}
+        aria-haspopup="listbox"
+        aria-expanded=${open}
+      >
+        <span class="dd-icon">${resolveIcon(current.icon) || current.icon}</span>
+        <span class="dd-label">${current.label}</span>
+        <span class="dd-chevron">▾</span>
+      </button>
+      ${open && html`
+        <div class="icon-dropdown-menu" role="listbox" aria-label="Agent mode">
+          ${MODES.map((m) => html`
+            <button
+              key=${m.id}
+              class="icon-dropdown-item ${currentMode === m.id ? "active" : ""}"
+              role="option"
+              aria-selected=${currentMode === m.id}
+              onClick=${() => handleSelect(m.id)}
+            >
+              <span class="item-icon">${resolveIcon(m.icon) || m.icon}</span>
+              ${m.label}
+              ${currentMode === m.id && html`<span class="item-check">✓</span>`}
+            </button>
+          `)}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+/* ═══════════════════════════════════════════════
+ *  ModelPicker
+ *  Compact icon-based dropdown for model selection
+ * ═══════════════════════════════════════════════ */
+
+export function ModelPicker() {
+  const current = activeAgent.value;
+  const model = selectedModel.value;
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  const models = AGENT_MODELS[current] || AGENT_MODELS["codex-sdk"];
+  const currentModel = models.find((m) => m.value === model) || models[0];
+
+  const handleSelect = useCallback((value) => {
+    selectedModel.value = value;
+    try { localStorage.setItem("ve-selected-model", value); } catch {}
+    haptic("light");
+    setOpen(false);
+  }, []);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  return html`
+    <div class="icon-dropdown-wrap" ref=${ref}>
+      <button
+        class="icon-dropdown-btn ${open ? "open" : ""}"
+        onClick=${() => setOpen(!open)}
+        title="Model: ${currentModel.label}"
+        aria-haspopup="listbox"
+        aria-expanded=${open}
+      >
+        <span class="dd-icon">⚙️</span>
+        <span class="dd-label">${currentModel.label}</span>
+        <span class="dd-chevron">▾</span>
+      </button>
+      ${open && html`
+        <div class="icon-dropdown-menu" role="listbox" aria-label="Model selection">
+          ${models.map((m) => html`
+            <button
+              key=${m.value}
+              class="icon-dropdown-item ${model === m.value ? "active" : ""}"
+              role="option"
+              aria-selected=${model === m.value}
+              onClick=${() => handleSelect(m.value)}
+            >
+              ${m.label}
+              ${model === m.value && html`<span class="item-check">✓</span>`}
+            </button>
+          `)}
+        </div>
+      `}
     </div>
   `;
 }
@@ -695,6 +921,7 @@ export function ChatInputToolbar() {
     <div class="chat-input-toolbar">
       <${AgentPicker} />
       <${AgentModeSelector} />
+      <${ModelPicker} />
       <${YoloToggle} />
       <div class="chat-input-toolbar-spacer" />
       <${AgentStatusBadge} />
