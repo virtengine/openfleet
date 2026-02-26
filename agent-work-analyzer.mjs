@@ -63,12 +63,102 @@ const activeSessions = new Map();
 // Alert cooldowns: "alert_type:attempt_id" -> timestamp
 const alertCooldowns = new Map();
 const ALERT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes between same alert
+const FAILED_SESSION_ALERT_MIN_COOLDOWN_MS = 60 * 60 * 1000; // Keep noisy failed-session summaries coarse-grained
+const ALERT_COOLDOWN_RETENTION_MS = Math.max(
+  FAILED_SESSION_ALERT_MIN_COOLDOWN_MS * 3,
+  3 * 60 * 60 * 1000,
+); // keep cooldown history bounded
+const ALERT_COOLDOWN_REPLAY_MAX_BYTES = Math.max(
+  256 * 1024,
+  Number(process.env.AGENT_ALERT_COOLDOWN_REPLAY_MAX_BYTES || 2 * 1024 * 1024) || 2 * 1024 * 1024,
+);
+
+function getAlertCooldownMs(alert) {
+  const type = String(alert?.type || "").trim().toLowerCase();
+  if (type === "failed_session_high_errors") {
+    return Math.max(ALERT_COOLDOWN_MS, FAILED_SESSION_ALERT_MIN_COOLDOWN_MS);
+  }
+  return Math.max(0, ALERT_COOLDOWN_MS);
+}
+
+function extractTaskToken(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  const prefixMatch = normalized.match(
+    /^([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?:-|$)/i,
+  );
+  return prefixMatch?.[1] || normalized;
+}
+
+function deriveAlertScopeId(alert) {
+  const taskId = extractTaskToken(alert?.task_id);
+  if (taskId) return taskId;
+  return extractTaskToken(alert?.attempt_id);
+}
+
+function buildAlertCooldownKey(alert) {
+  const type = String(alert?.type || "unknown").trim().toLowerCase() || "unknown";
+  const scopeId = deriveAlertScopeId(alert);
+  if (scopeId && (type === "failed_session_high_errors" || type === "stuck_agent")) {
+    return `${type}:task:${scopeId}`;
+  }
+  return `${type}:${String(alert?.attempt_id || "unknown")}`;
+}
+
+function pruneStaleAlertCooldowns(nowMs = Date.now()) {
+  const now = Number(nowMs) || Date.now();
+  const cutoff = now - ALERT_COOLDOWN_RETENTION_MS;
+  for (const [key, ts] of alertCooldowns.entries()) {
+    const lastTs = Number(ts);
+    if (!Number.isFinite(lastTs) || lastTs < cutoff) {
+      alertCooldowns.delete(key);
+    }
+  }
+}
+
+async function hydrateAlertCooldownsFromLog() {
+  if (!existsSync(ALERTS_LOG)) return;
+  try {
+    const fileStat = await stat(ALERTS_LOG);
+    if (!fileStat.size) return;
+    const start = Math.max(0, fileStat.size - ALERT_COOLDOWN_REPLAY_MAX_BYTES);
+    const stream = createReadStream(ALERTS_LOG, { start, encoding: "utf8" });
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
+    const maxCooldownMs = Math.max(ALERT_COOLDOWN_MS, FAILED_SESSION_ALERT_MIN_COOLDOWN_MS);
+    const cutoff = Date.now() - maxCooldownMs;
+    for await (const line of rl) {
+      const trimmed = String(line || "").trim();
+      if (!trimmed) continue;
+      try {
+        const entry = JSON.parse(trimmed);
+        const ts = Date.parse(String(entry?.timestamp || ""));
+        if (!Number.isFinite(ts) || ts < cutoff) continue;
+        const cooldownMs = getAlertCooldownMs(entry);
+        if (ts < Date.now() - cooldownMs) continue;
+        const key = String(entry?._cooldown_key || "").trim() || buildAlertCooldownKey(entry);
+        alertCooldowns.set(key, ts);
+      } catch {
+        // ignore malformed jsonl
+      }
+    }
+  } catch {
+    // best-effort hydration only
+  }
+}
 
 // ── Log Tailing ─────────────────────────────────────────────────────────────
 
 let filePosition = 0;
 let isRunning = false;
 let stuckSweepTimer = null;
+
+function parseEnvBoolean(value, fallback = false) {
+  if (value == null || value === "") return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return fallback;
+}
 
 /**
  * Start the analyzer loop
@@ -88,14 +178,29 @@ export async function startAnalyzer() {
     if (!existsSync(ALERTS_LOG)) {
       await writeFile(ALERTS_LOG, "");
     }
+    await hydrateAlertCooldownsFromLog();
   } catch (err) {
     console.warn(`[agent-work-analyzer] Failed to init alerts log: ${err.message}`);
   }
 
-  // Initial read of existing log
+  // Initial positioning for existing log.
+  // Default behavior is true tailing (start at EOF) to avoid replaying stale
+  // historical sessions on monitor restart, which can re-emit old alerts and
+  // trigger noisy false-positive loops. Operators can opt in to replay for
+  // forensics via AGENT_ANALYZER_REPLAY_STARTUP=1.
   if (existsSync(AGENT_WORK_STREAM)) {
-    filePosition = await processLogFile(filePosition);
-    pruneStaleSessionsAfterReplay();
+    const replayStartup = parseEnvBoolean(
+      process.env.AGENT_ANALYZER_REPLAY_STARTUP,
+      false,
+    );
+    if (replayStartup) {
+      filePosition = await processLogFile(filePosition);
+      pruneStaleSessionsAfterReplay();
+    } else {
+      const streamStats = await stat(AGENT_WORK_STREAM);
+      filePosition = Math.max(0, Number(streamStats?.size || 0));
+      activeSessions.clear();
+    }
   } else {
     // Ensure the stream file exists so the watcher doesn't throw
     try {
@@ -154,7 +259,12 @@ export function stopAnalyzer() {
 async function processLogFile(startPosition) {
   try {
     const stats = await stat(AGENT_WORK_STREAM);
-    if (stats.size <= startPosition) {
+    if (stats.size < startPosition) {
+      // Log file was truncated/rotated. Reset offset so new entries are not
+      // skipped forever after rotation.
+      return 0;
+    }
+    if (stats.size === startPosition) {
       return startPosition; // No new data
     }
 
@@ -450,11 +560,12 @@ function startStuckSweep() {
  * @param {Object} alert - Alert data
  */
 async function emitAlert(alert) {
-  const alertKey = `${alert.type}:${alert.attempt_id}`;
+  const alertKey = buildAlertCooldownKey(alert);
+  const cooldownMs = getAlertCooldownMs(alert);
 
   // Check cooldown
   const lastAlert = alertCooldowns.get(alertKey);
-  if (lastAlert && Date.now() - lastAlert < ALERT_COOLDOWN_MS) {
+  if (lastAlert && Date.now() - lastAlert < cooldownMs) {
     return; // Skip duplicate alerts
   }
 
@@ -462,6 +573,7 @@ async function emitAlert(alert) {
 
   const alertEntry = {
     timestamp: new Date().toISOString(),
+    _cooldown_key: alertKey,
     ...alert,
   };
 
@@ -477,7 +589,7 @@ async function emitAlert(alert) {
 
 // ── Cleanup Old Sessions ────────────────────────────────────────────────────
 
-setInterval(() => {
+const cleanupTimer = setInterval(() => {
   const cutoff = Date.now() - 60 * 60 * 1000; // 1 hour
 
   for (const [attemptId, session] of activeSessions.entries()) {
@@ -486,7 +598,8 @@ setInterval(() => {
       activeSessions.delete(attemptId);
     }
   }
+  pruneStaleAlertCooldowns();
 }, 10 * 60 * 1000); // Cleanup every 10 minutes
+cleanupTimer.unref?.();
 
 // ── Exports ─────────────────────────────────────────────────────────────────
-
