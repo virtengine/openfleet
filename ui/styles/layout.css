@@ -193,6 +193,15 @@
   z-index: 1;
 }
 
+/* Compact mode — activated when bottom-nav is visible (mobile).
+   Reduces side/top padding so content gets more vertical space.
+   Bottom padding is kept via the base rule to clear the fixed nav. */
+.main-content.compact {
+  padding-top: 8px;
+  padding-left: calc(8px + var(--safe-left));
+  padding-right: calc(8px + var(--safe-right));
+}
+
 .modal-open .main-content {
   z-index: 100;
 }
@@ -588,7 +597,7 @@
     margin-right: auto;
     padding-top: 24px;
     padding-right: calc(24px + var(--safe-right));
-    padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 24px);
+    padding-bottom: 0;
     padding-left: calc(24px + var(--safe-left));
   }
 
@@ -763,8 +772,8 @@
   }
 
   .main-content {
-    padding: 20px 24px 32px;
-    padding-bottom: 32px;
+    padding: 20px 24px 0;
+    padding-bottom: 0;
     max-width: var(--content-max);
     margin: 0 auto;
     overflow-y: auto;

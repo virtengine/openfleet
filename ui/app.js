@@ -1767,7 +1767,7 @@ function App() {
             onRefresh=${() => refreshTab(activeTab.value)}
             disabled=${activeTab.value === "chat"}
           >
-            <main class="main-content" ref=${mainRef}>
+            <main class=${`main-content${showBottomNav ? " compact" : ""}`} ref=${mainRef}>
               <${TabErrorBoundary} key=${activeTab.value} tabName=${activeTab.value}>
                 <${CurrentTab} />
               <//>
@@ -1797,7 +1797,7 @@ function App() {
     </div>
     ${showBottomNav
       ? html`<${BottomNav}
-          compact=${isCompactNav}
+          compact=${true}
           moreOpen=${isMoreOpen}
           onToggleMore=${toggleMore}
           onNavigate=${handleNavigate}
