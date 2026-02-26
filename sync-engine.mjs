@@ -1083,12 +1083,19 @@ export class SyncEngine {
   }
 
   /**
-   * Determine whether an error is a 404 Not Found response.
+   * Determine whether an error indicates an externally missing resource.
    */
   #isNotFound(err) {
     if (!err) return false;
     const msg = String(err.message || err).toLowerCase();
-    return msg.includes("404") || msg.includes("not found");
+    const isGraphqlMissingIssue =
+      msg.includes("could not resolve to an issue or pull request") &&
+      (msg.includes("(repository.issue)") || msg.includes("(repository.pullrequest)"));
+    return (
+      msg.includes("404") ||
+      msg.includes("not found") ||
+      isGraphqlMissingIssue
+    );
   }
 
   /**
@@ -1170,4 +1177,5 @@ export class SyncEngine {
 export function createSyncEngine(options) {
   return new SyncEngine(options);
 }
+
 
