@@ -318,6 +318,7 @@ function AttachmentList({ attachments }) {
 const ChatBubble = memo(function ChatBubble({ msg }) {
   const isTool = msg.type === "tool_call" || msg.type === "tool_result";
   const isError = msg.type === "error" || msg.type === "stream_error";
+  const contentText = messageText(msg);
   const role = msg.role ||
     (isTool || isError ? "system" : msg.type === "system" ? "system" : "assistant");
   const bubbleClass = isError
@@ -336,11 +337,15 @@ const ChatBubble = memo(function ChatBubble({ msg }) {
   return html`
     <div class="chat-bubble ${bubbleClass}">
       ${role === "system" && !isTool
-        ? html`<div class="chat-system-text">${msg.content}</div>`
+        ? html`
+            <div class="chat-system-text">
+              <${MessageContent} text=${contentText} />
+            </div>
+          `
         : html`
             ${label ? html`<div class="chat-bubble-label">${label}</div>` : null}
             <div class="chat-bubble-content">
-              <${MessageContent} text=${msg.content} />
+              <${MessageContent} text=${contentText} />
               <${AttachmentList} attachments=${msg.attachments} />
             </div>
             <div class="chat-bubble-time">
