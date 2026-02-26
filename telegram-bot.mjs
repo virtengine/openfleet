@@ -360,6 +360,23 @@ function delayMs(ms) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
+const SAFE_DETACH_PREFIX = "[telegram-bot] async-detach";
+
+function safeDetach(label, taskOrPromise) {
+  const tag = label
+    ? `${SAFE_DETACH_PREFIX}:${String(label)}`
+    : SAFE_DETACH_PREFIX;
+  try {
+    const result =
+      typeof taskOrPromise === "function" ? taskOrPromise() : taskOrPromise;
+    Promise.resolve(result).catch((err) => {
+      console.warn(`${tag} failed: ${err?.message || err}`);
+    });
+  } catch (err) {
+    console.warn(`${tag} failed: ${err?.message || err}`);
+  }
+}
+
 function shouldUseCurlPrimary() {
   return (
     TELEGRAM_CURL_FALLBACK &&
@@ -2307,7 +2324,7 @@ async function handleUpdate(update) {
   // Free-text agent task runs in a separate queue so polling isn't blocked.
   // If agent is already busy, handle immediately so follow-ups can be queued.
   if (isPrimaryBusy()) {
-    void handleFreeText(text, chatId);
+    safeDetach("free-text", () => handleFreeText(text, chatId));
     return;
   }
   enqueueAgentTask(() => handleFreeText(text, chatId));
@@ -6110,7 +6127,7 @@ async function cmdApp(chatId) {
 async function cmdMenu(chatId) {
   syncUiUrlsFromServer();
   if (telegramApiReachable !== false) {
-    void refreshMenuButton();
+    safeDetach("menu-button-refresh", refreshMenuButton);
   }
   clearPendingUiInput(chatId);
   await showUiScreen(chatId, null, "home", {}, { sticky: true });
@@ -6824,10 +6841,10 @@ async function cmdStartTask(chatId, args) {
       );
       return;
     }
-    void executor.executeTask(task, {
+    safeDetach("manual-start", () => executor.executeTask(task, {
       sdk: sdk || undefined,
       model: model || undefined,
-    });
+    }));
     await sendReply(
       chatId,
       `✅ Manual start queued for ${task.title || task.id}.` +
@@ -9139,7 +9156,7 @@ async function cmdBackground(chatId, args) {
       chatId,
       `🛰️ Background task queued: "${task.slice(0, 80)}${task.length > 80 ? "…" : ""}"`,
     );
-    void handleFreeText(task, chatId, { background: true, isolated: true });
+    safeDetach("background-free-text", () => handleFreeText(task, chatId, { background: true, isolated: true }));
     return;
   }
 
@@ -9498,11 +9515,11 @@ async function handleFreeText(text, chatId, options = {}) {
     const elapsed = now - lastEditAt;
     if (elapsed >= EDIT_THROTTLE_MS) {
       editPending = true;
-      void doEdit();
+      safeDetach("agent-edit", doEdit);
     } else {
       editPending = true;
       if (editTimer) clearTimeout(editTimer);
-      editTimer = setTimeout(() => void doEdit(), EDIT_THROTTLE_MS - elapsed);
+      editTimer = setTimeout(() => safeDetach("agent-edit", doEdit), EDIT_THROTTLE_MS - elapsed);
     }
   };
 
@@ -9846,8 +9863,8 @@ function startPresenceLoop() {
       );
     }
   };
-  setTimeout(() => void sendPresence(), intervalMs);
-  setInterval(() => void sendPresence(), intervalMs);
+  setTimeout(() => safeDetach("presence-heartbeat", sendPresence), intervalMs);
+  setInterval(() => safeDetach("presence-heartbeat", sendPresence), intervalMs);
 }
 
 function hasPresenceChanged(prev, curr) {
@@ -10522,16 +10539,16 @@ export async function startTelegramBot() {
 
       // Immediately sync the menu button, then periodically refresh
       if (reachable) {
-        void refreshMenuButton();
+        safeDetach("menu-button-refresh", refreshMenuButton);
       }
       if (reachable && !menuButtonRefreshTimer) {
-        menuButtonRefreshTimer = setInterval(() => void refreshMenuButton(), MENU_BUTTON_REFRESH_MS);
+        menuButtonRefreshTimer = setInterval(() => safeDetach("menu-button-refresh", refreshMenuButton), MENU_BUTTON_REFRESH_MS);
       }
 
       // React immediately when the tunnel URL changes (e.g. after restart)
       onTunnelUrlChange((url) => {
         console.log(`[telegram-bot] tunnel URL changed: ${url} — refreshing menu button`);
-        void refreshMenuButton();
+        safeDetach("menu-button-refresh", refreshMenuButton);
       });
 
       // Notify about firewall issues if detected (24h cooldown)
@@ -10747,7 +10764,7 @@ export function stopTelegramBot(options = {}) {
     }
     stopBatchFlushLoop();
   }
-  void releaseTelegramPollLock();
+  safeDetach("poll-lock-release", releaseTelegramPollLock);
   stopTelegramUiServer();
   if (menuButtonRefreshTimer) {
     clearInterval(menuButtonRefreshTimer);

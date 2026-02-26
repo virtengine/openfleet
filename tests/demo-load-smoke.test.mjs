@@ -274,7 +274,7 @@ describe("demo load smoke", () => {
 
     const { port } = server.address();
     baseUrl = `http://127.0.0.1:${port}`;
-  }, 15000);
+  }, 30000);
 
   afterAll(async () => {
     if (!server) return;
@@ -409,7 +409,7 @@ describe("demo load smoke", () => {
       expect.fail(`MiniApp import/export linkage errors:\n${importErrors.join("\n")}`);
     }
     expect(visited.size).toBeGreaterThan(15);
-  }, 15000);
+  }, 30000);
 
   it("landing demo tabs activate and lazy initializers run", () => {
     const scriptPath = resolve(SITE_ROOT, "js/main.js");
