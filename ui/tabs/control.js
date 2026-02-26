@@ -843,7 +843,7 @@ export function ControlTab() {
                     sendCmd(planFocus ? `/plan ${n} ${planFocus}` : `/plan ${n}`);
                   }}
                 >
-                  📋 Plan
+                  ${iconText("📋 Plan")}
                 </button>
               </div>
             </div>

@@ -9,6 +9,8 @@ import { tasksData, tasksLoaded, showToast, runOptimistic, loadTasks } from "../
 import { apiFetch } from "../modules/api.js";
 import { haptic } from "../modules/telegram.js";
 import { formatRelative, truncate, cloneValue } from "../modules/utils.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
+import { getAgentDisplay } from "../modules/agent-display.js";
 
 const html = htm.bind(h);
 
@@ -84,13 +86,9 @@ function getTaskBaseBranch(task) {
   );
 }
 
-/* ─── Done tasks (closed GitHub issues) loaded separately ─── */
-const doneTasksData = signal([]);
-
 /* ─── Derived column data ─── */
 const columnData = computed(() => {
   const tasks = tasksData.value || [];
-  const doneTasks = doneTasksData.value || [];
   const cols = {};
   for (const col of COLUMNS) {
     cols[col.id] = [];
@@ -98,11 +96,6 @@ const columnData = computed(() => {
   for (const task of tasks) {
     const col = getColumnForStatus(task.status);
     if (cols[col]) cols[col].push(task);
-  }
-  // Merge done tasks, deduplicating by id
-  const seenIds = new Set(cols.done.map((t) => String(t.id)));
-  for (const task of doneTasks) {
-    if (!seenIds.has(String(task.id))) cols.done.push(task);
   }
   return cols;
 });
@@ -348,6 +341,16 @@ function KanbanCard({ task, onOpen }) {
   const baseBranch = getTaskBaseBranch(task);
   const repoName = task.repo || task.repository || "";
   const issueNum = task.issueNumber || task.issue_number || (typeof task.id === "string" && /^\d+$/.test(task.id) ? task.id : null);
+  const hasAgent = Boolean(
+    task?.assignee ||
+    task?.meta?.execution?.sdk ||
+    task?.meta?.execution?.executor ||
+    task?.sdk ||
+    task?.executor ||
+    task?.agent ||
+    task?.agentName,
+  );
+  const agentDisplay = hasAgent ? getAgentDisplay(task) : null;
 
   return html`
     <div
@@ -388,7 +391,12 @@ function KanbanCard({ task, onOpen }) {
         </div>
       `}
       <div class="kanban-card-meta">
-        ${task.assignee && html`<span class="kanban-card-assignee" title=${task.assignee}>${task.assignee.split("-")[0]}</span>`}
+        ${agentDisplay && html`
+          <span
+            class="kanban-card-assignee"
+            title=${agentDisplay.label}
+          >${agentDisplay.icon}</span>
+        `}
         <span class="kanban-card-id">${typeof task.id === "string" ? truncate(task.id, 12) : task.id}</span>
         ${task.created_at && html`<span>${formatRelative(task.created_at)}</span>`}
       </div>
@@ -556,7 +564,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
   return html`
     <div class="kanban-filter-bar">
       <div class="kanban-filter-search">
-        <span class="kanban-filter-icon">🔍</span>
+        <span class="kanban-filter-icon">${resolveIcon("🔍")}</span>
         <input
           type="text"
           class="kanban-filter-input"
@@ -572,7 +580,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
               class="kanban-filter-chip ${filters.repo ? 'active' : ''}"
               onClick=${() => toggleDropdown("repo")}
             >
-              📦 ${filters.repo || "Repository"}
+              ${iconText(`📦 ${filters.repo || "Repository"}`)}
             </button>
             ${showDropdown === "repo" && html`
               <div class="kanban-filter-dropdown">
@@ -609,7 +617,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
               class="kanban-filter-chip ${filters.assignee ? 'active' : ''}"
               onClick=${() => toggleDropdown("assignee")}
             >
-              👤 ${filters.assignee || "Assignee"}
+              ${iconText(`👤 ${filters.assignee || "Assignee"}`)}
             </button>
             ${showDropdown === "assignee" && html`
               <div class="kanban-filter-dropdown">
@@ -622,7 +630,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
           </div>
         `}
         ${hasFilters && html`
-          <button class="kanban-filter-chip clear" onClick=${clearAll}>✕ Clear</button>
+          <button class="kanban-filter-chip clear" onClick=${clearAll}>${iconText("✕ Clear")}</button>
         `}
       </div>
     </div>
@@ -633,26 +641,6 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
 export function KanbanBoard({ onOpenTask }) {
   const [filters, setFilters] = useState({ repo: "", assignee: "", priority: "", search: "" });
   const allTasks = tasksData.value || [];
-
-  // Fetch recently-done (closed) tasks separately — GitHub Issues mode closes issues
-  // instead of labelling them, so they never appear in the default open-issues fetch.
-  useEffect(() => {
-    let cancelled = false;
-    const fetchDone = async () => {
-      try {
-        const res = await apiFetch("/api/tasks?status=done&pageSize=50", { _silent: true });
-        if (!cancelled) {
-          doneTasksData.value = Array.isArray(res?.data) ? res.data : [];
-        }
-      } catch {
-        // non-critical — Done column just shows empty
-      }
-    };
-    fetchDone().catch(() => {});
-    // Re-fetch done tasks every 5 minutes while board is visible
-    const timer = setInterval(() => { fetchDone().catch(() => {}); }, 5 * 60 * 1000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, []);
 
   const filteredTasks = useMemo(() => {
     let tasks = allTasks;
@@ -671,8 +659,6 @@ export function KanbanBoard({ onOpenTask }) {
     return tasks;
   }, [allTasks, filters]);
 
-  const doneTasks = doneTasksData.value || [];
-
   const cols = useMemo(() => {
     const result = {};
     for (const col of COLUMNS) result[col.id] = [];
@@ -680,27 +666,8 @@ export function KanbanBoard({ onOpenTask }) {
       const col = getColumnForStatus(task.status);
       if (result[col]) result[col].push(task);
     }
-    // Merge separately-fetched done/closed tasks into the Done column,
-    // applying the same filters and deduplicating by id.
-    const seenIds = new Set(result.done.map((t) => String(t.id)));
-    let filteredDone = doneTasks;
-    if (filters.repo) filteredDone = filteredDone.filter((t) => (t.repo || t.repository) === filters.repo);
-    if (filters.assignee) filteredDone = filteredDone.filter((t) => t.assignee === filters.assignee);
-    if (filters.priority) filteredDone = filteredDone.filter((t) => t.priority === filters.priority);
-    if (filters.search) {
-      const q = filters.search.toLowerCase();
-      filteredDone = filteredDone.filter((t) =>
-        (t.title || "").toLowerCase().includes(q) ||
-        (t.id || "").toString().toLowerCase().includes(q) ||
-        (t.repo || "").toLowerCase().includes(q) ||
-        (t.assignee || "").toLowerCase().includes(q)
-      );
-    }
-    for (const task of filteredDone) {
-      if (!seenIds.has(String(task.id))) result.done.push(task);
-    }
     return result;
-  }, [filteredTasks, doneTasks, filters]);
+  }, [filteredTasks]);
 
   return html`
     <div class="kanban-container">

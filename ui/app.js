@@ -387,7 +387,7 @@ class TabErrorBoundary extends Component {
       return html`
         <div class="tab-error-boundary">
           <div class="tab-error-pulse">
-            <span style="font-size:20px;color:#ef4444;">⚠</span>
+            <span style="font-size:20px;color:#ef4444;">${resolveIcon("⚠")}</span>
           </div>
           <div>
             <div style="font-size:14px;font-weight:600;margin-bottom:4px;color:var(--text-primary);">
@@ -1005,7 +1005,7 @@ function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
             aria-label="Open Bot Controls"
             onClick=${() => { onClose(); onOpenBot?.(); }}
           >
-            <span class="more-menu-bot-icon">${resolveIcon("🤖")}</span>
+            <span class="more-menu-bot-icon">${resolveIcon("bot")}</span>
             <div class="more-menu-bot-text">
               <span class="more-menu-bot-label">Bot Controls</span>
               <span class="more-menu-bot-sub">Commands, executor, routing</span>
@@ -1669,7 +1669,7 @@ function App() {
           onClick=${toggleInspector}
           aria-label=${inspectorToggleLabel}
         >
-          📋 Inspector
+          ${iconText("📋 Inspector")}
         </button>
       `
     : null;
