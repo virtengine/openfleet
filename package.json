@@ -185,6 +185,7 @@
     "task-assessment.mjs",
     "task-complexity.mjs",
     "task-claims.mjs",
+    "task-context.mjs",
     "task-attachments.mjs",
     "task-executor.mjs",
     "task-store.mjs",

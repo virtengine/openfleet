@@ -9,6 +9,8 @@
  * GitHub appearance: https://github.com/apps/bosun-ve
  */
 
+import { shouldAddBosunCoAuthor as shouldAddBosunCoAuthorByContext } from "./task-context.mjs";
+
 const BOSUN_BOT_TRAILER =
   "Co-authored-by: bosun-ve[bot] <262908237+bosun-ve[bot]@users.noreply.github.com>";
 
@@ -38,17 +40,25 @@ export function appendBosunCoAuthor(message) {
  * @param {string} title - commit title (first line / summary)
  * @param {string} [body] - commit body (optional extended description)
  * @param {Object} [opts]
- * @param {boolean} [opts.addBosunCredit=true] - whether to append the co-author trailer
+ * @param {boolean} [opts.addBosunCredit] - whether to append the co-author trailer
+ * @param {string} [opts.taskId] - optional task ID for task-scoped attribution mode
+ * @param {NodeJS.ProcessEnv} [opts.env] - optional environment override
  * @returns {string} full commit message
  */
-export function buildCommitMessage(title, body = "", { addBosunCredit = true } = {}) {
+export function buildCommitMessage(title, body = "", opts = {}) {
+  const { addBosunCredit, taskId, env } = opts;
   const parts = [title.trimEnd()];
   if (body && body.trim()) {
     parts.push(""); // blank line
     parts.push(body.trimEnd());
   }
   const base = parts.join("\n");
-  return addBosunCredit ? appendBosunCoAuthor(base) : base;
+
+  const withBosunCredit =
+    typeof addBosunCredit === "boolean"
+      ? addBosunCredit
+      : shouldAddBosunCoAuthor({ taskId, env });
+  return withBosunCredit ? appendBosunCoAuthor(base) : base;
 }
 
 // ── PR body helpers ───────────────────────────────────────────────────────────
@@ -80,4 +90,22 @@ export function getBosunCoAuthorTrailer() {
  */
 export function getBosunPrCredit() {
   return BOSUN_PR_CREDIT;
+}
+
+/**
+ * Returns whether Bosun co-author credit should be applied for the current
+ * execution context.
+ *
+ * Defaults to task-scoped behavior and supports opt-in overrides via:
+ * - BOSUN_COAUTHOR_MODE=always
+ * - BOSUN_COAUTHOR_MODE=off
+ *
+ * @param {object} [options]
+ * @param {NodeJS.ProcessEnv} [options.env]
+ * @param {string} [options.taskId]
+ * @param {"task"|"always"|"off"} [options.mode]
+ * @returns {boolean}
+ */
+export function shouldAddBosunCoAuthor(options = {}) {
+  return shouldAddBosunCoAuthorByContext(options);
 }

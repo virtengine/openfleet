@@ -163,6 +163,7 @@ const ENV_KEYS = [
   "INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS",
   "PROJECT_REQUIREMENTS_PROFILE",
   "PROJECT_REQUIREMENTS_NOTES",
+  "BOSUN_COAUTHOR_MODE",
 ];
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -1029,6 +1030,47 @@ describe("task-executor", () => {
   });
 
   describe("prompt enrichment", () => {
+    it("includes Bosun co-author instructions by default for task prompts", () => {
+      const ex = new TaskExecutor({
+        repoSlug: "virtengine/virtengine",
+      });
+
+      spawnSync.mockReturnValueOnce({ stdout: "ve/test-branch\n" });
+      const prompt = ex._buildTaskPrompt(
+        {
+          id: "task-coauthor-default",
+          title: "Implement coauthor-safe behavior",
+          description: "Task description",
+          status: "todo",
+        },
+        "/fake/worktree",
+      );
+
+      expect(prompt).toContain("## Attribution");
+      expect(prompt).toContain("Co-authored-by: bosun-ve[bot]");
+    });
+
+    it("omits Bosun co-author instructions when BOSUN_COAUTHOR_MODE=off", () => {
+      process.env.BOSUN_COAUTHOR_MODE = "off";
+      const ex = new TaskExecutor({
+        repoSlug: "virtengine/virtengine",
+      });
+
+      spawnSync.mockReturnValueOnce({ stdout: "ve/test-branch\n" });
+      const prompt = ex._buildTaskPrompt(
+        {
+          id: "task-coauthor-off",
+          title: "Implement coauthor-safe behavior",
+          description: "Task description",
+          status: "todo",
+        },
+        "/fake/worktree",
+      );
+
+      expect(prompt).not.toContain("Attribution (required — do not omit):");
+      expect(prompt).not.toContain("Co-authored-by: bosun-ve[bot]");
+    });
+
     it("injects backlog replenishment instructions when experimental mode is enabled", () => {
       const ex = new TaskExecutor({
         repoSlug: "virtengine/virtengine",
