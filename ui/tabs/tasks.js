@@ -836,7 +836,7 @@ export function TaskProgressModal({ task, onClose }) {
       <div class="tp-hero">
         <div class="tp-pulse-dot"></div>
         <div class="tp-hero-title">
-          <div class="tp-hero-status-label">⚡ Active — Agent Working</div>
+          <div class="tp-hero-status-label">${iconText("⚡ Active — Agent Working")}</div>
         </div>
         <${Badge} status="inprogress" text="running" />
       </div>
@@ -1662,7 +1662,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             </option>
             ${repositoryOptions.map(
               (repo) =>
-                html`<option value=${repo.slug}>${repo.name}${repo.primary ? " ★" : ""}</option>`,
+                html`<option value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</option>`,
             )}
           </select>
         </div>
@@ -2379,7 +2379,7 @@ export function TasksTab() {
     return html`
       <div class="flex-between mb-sm" style="padding:0 4px">
         <div class="view-toggle">
-          <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
+          <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText("☰ List")}</button>
           <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
         </div>
         <div style="display:flex;gap:8px;align-items:center;">
@@ -2390,7 +2390,7 @@ export function TasksTab() {
               setShowTemplates(true);
             }}
           >
-            ⚡ Templates
+            ${iconText("⚡ Templates")}
           </button>
           <button
             class="btn btn-ghost btn-sm"
@@ -2425,7 +2425,7 @@ export function TasksTab() {
         <${EmptyState}
           message="No tasks yet"
           description="Create a task to start orchestrating agents."
-          icon="\u{1F4CB}"
+          icon="clipboard"
           action=${{
             label: "Create Task",
             onClick: () => {
@@ -2455,7 +2455,7 @@ export function TasksTab() {
 
   const viewToggle = html`
     <div class="view-toggle">
-      <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
+      <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText("☰ List")}</button>
       <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
     </div>
   `;
@@ -2809,7 +2809,7 @@ export function TasksTab() {
                 >
                   <td class="task-td task-td-status">
                     <${Badge} status=${task.status} text=${task.status} />
-                    ${isManual && html`<${Badge} status="warning" text="⚑" />`}
+                    ${isManual && html`<${Badge} status="warning" text="manual" />`}
                   </td>
                   <td class="task-td task-td-pri">
                     ${task.priority
@@ -3171,7 +3171,7 @@ function CreateTaskModalInline({ onClose }) {
               </option>
               ${repositoryOptions.map(
                 (repo) =>
-                  html`<option value=${repo.slug}>${repo.name}${repo.primary ? " ★" : ""}</option>`,
+                  html`<option value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</option>`,
               )}
             </select>
           </div>

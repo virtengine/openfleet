@@ -71,7 +71,10 @@ import {
   getRecentCommits,
   collectDiffStats,
 } from "./diff-stats.mjs";
-import { getBosunCoAuthorTrailer } from "./git-commit-helpers.mjs";
+import {
+  getBosunCoAuthorTrailer,
+  shouldAddBosunCoAuthor,
+} from "./git-commit-helpers.mjs";
 import { createAnomalyDetector } from "./anomaly-detector.mjs";
 import { normalizeDedupKey, yieldToEventLoop, withRetry } from "./utils.mjs";
 import {
@@ -366,11 +369,19 @@ function categorizeError(err) {
 /**
  * Returns the Co-authored-by trailer for bosun-ve[bot].
  *
- * Attribution should not be gated by auth mode (OAuth/App/env/gh-cli all valid
- * execution paths). This uses the canonical helper so commit attribution stays
- * consistent with the rest of Bosun.
+ * By default this is task-scoped and only enabled during Bosun-managed tasks.
+ * BOSUN_COAUTHOR_MODE=always can force global attribution when explicitly
+ * desired (for internal Bosun repo workflows, etc).
  */
-function getBosunCoAuthorLine() {
+function getBosunCoAuthorLine(taskOrTaskId = null) {
+  const taskId = (() => {
+    if (taskOrTaskId == null) return "";
+    if (typeof taskOrTaskId === "string") return taskOrTaskId.trim();
+    const value = taskOrTaskId.id || taskOrTaskId.task_id || "";
+    return String(value || "").trim();
+  })();
+
+  if (!shouldAddBosunCoAuthor({ taskId })) return "";
   return getBosunCoAuthorTrailer();
 }
 
@@ -378,8 +389,9 @@ function getBosunCoAuthorLine() {
  * Returns a prompt instruction block telling the agent to append the Bosun
  * co-author trailer to every commit.
  */
-function getBosunCoAuthorInstruction() {
-  const line = getBosunCoAuthorLine();
+function getBosunCoAuthorInstruction(taskOrTaskId = null) {
+  const line = getBosunCoAuthorLine(taskOrTaskId);
+  if (!line) return "";
   return `\n**Attribution (required — do not omit):**
 Every commit message MUST end with a blank line then this exact trailer:
 \`\`\`
@@ -2901,10 +2913,25 @@ class TaskExecutor {
             stdio: "pipe",
             timeout: 15000,
           });
-          execSync(
-            `git commit -m "feat: auto-commit orphaned agent work\n\nCo-authored-by: bosun-ve[bot] <262908237+bosun-ve[bot]@users.noreply.github.com>" --no-verify`,
-            { cwd: wtPath, stdio: "pipe", timeout: 15000 },
+          const coAuthorLine = getBosunCoAuthorLine(taskIdPrefix);
+          const commitMessage = coAuthorLine
+            ? `feat: auto-commit orphaned agent work\n\n${coAuthorLine}`
+            : "feat: auto-commit orphaned agent work";
+          const commitResult = spawnSync(
+            "git",
+            ["commit", "-m", commitMessage, "--no-verify"],
+            {
+              cwd: wtPath,
+              encoding: "utf8",
+              stdio: "pipe",
+              timeout: 15000,
+            },
           );
+          if (commitResult.status !== 0) {
+            const stderr = String(commitResult.stderr || "").trim();
+            const stdout = String(commitResult.stdout || "").trim();
+            throw new Error(stderr || stdout || "git commit failed");
+          }
           console.log(
             `${TAG} [orphan-recovery] Committed changes in ${dirName}`,
           );
@@ -4793,6 +4820,16 @@ class TaskExecutor {
       ``,
     );
 
+    const coAuthorLine = getBosunCoAuthorLine(task);
+    if (coAuthorLine) {
+      lines.push(
+        `## Attribution`,
+        `Append this trailer at the end of each commit message body (blank line before trailer):`,
+        coAuthorLine,
+        ``,
+      );
+    }
+
     // Append task URL if available
     const taskUrl = task.meta?.task_url || task.taskUrl || task.url;
     if (taskUrl) {
@@ -4848,7 +4885,7 @@ class TaskExecutor {
         REPO_ROOT: promptRepoRoot,
         TASK_WORKSPACE: promptWorkspace,
         TASK_REPOSITORY: promptRepository,
-        COAUTHOR_INSTRUCTION: getBosunCoAuthorInstruction(),
+        COAUTHOR_INSTRUCTION: getBosunCoAuthorInstruction(task),
       },
       fallbackPrompt,
     );
@@ -4921,9 +4958,9 @@ class TaskExecutor {
       `3. Re-run tests to verify`,
       `4. Commit and push your fixes`,
       ``,
-      ...(getBosunCoAuthorLine() ? [
+      ...(getBosunCoAuthorLine(task) ? [
         `Attribution: append this trailer after each commit message body (blank line before it):`,
-        getBosunCoAuthorLine(),
+        getBosunCoAuthorLine(task),
         ``,
       ] : []),
       `Original task description:`,
@@ -6695,6 +6732,3 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
-
-
-

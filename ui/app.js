@@ -387,7 +387,7 @@ class TabErrorBoundary extends Component {
       return html`
         <div class="tab-error-boundary">
           <div class="tab-error-pulse">
-            <span style="font-size:20px;color:#ef4444;">⚠</span>
+            <span style="font-size:20px;color:#ef4444;">${resolveIcon("⚠")}</span>
           </div>
           <div>
             <div style="font-size:14px;font-weight:600;margin-bottom:4px;color:var(--text-primary);">

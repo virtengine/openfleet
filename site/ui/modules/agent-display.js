@@ -77,3 +77,4 @@ export function getAgentDisplay(task = {}) {
     icon: resolveIcon("bot") || "Agent",
   };
 }
+
