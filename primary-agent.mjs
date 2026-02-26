@@ -704,7 +704,7 @@ export function getAvailableAgents() {
       provider: adapter.provider,
       available: !disabled,
       busy,
-      models: getModelsForExecutor(id),
+      models: getModelsForExecutor(adapter.provider), // use provider ("CODEX"/"COPILOT"/"CLAUDE") — always in the alias map
       capabilities: {
         sessions: typeof adapter.listSessions === "function",
         steering: typeof adapter.steer === "function",
