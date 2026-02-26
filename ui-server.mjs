@@ -6129,12 +6129,6 @@ async function handleApi(req, res, url) {
         return;
       }
       const status = executor.getStatus?.() || {};
-      const freeSlots =
-        (status.maxParallel || 0) - (status.activeSlots || 0);
-      if (freeSlots <= 0) {
-        jsonResponse(res, 409, { ok: false, error: "No free slots" });
-        return;
-      }
       if (taskId) {
         const adapter = getKanbanAdapter();
         const task = await adapter.getTask(taskId);

@@ -2145,6 +2145,14 @@ select.input {
   flex-shrink: 0;
 }
 
+.workspace-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
 .workspace-context {
   flex: 1;
   min-height: 0;
@@ -3787,9 +3795,109 @@ select.input {
   margin-top: 4px;
 }
 
+.fleet-fullview-card {
+  margin-bottom: 0;
+}
+
+.fleet-fullview {
+  display: grid;
+  gap: 14px;
+  min-height: 620px;
+}
+
+.fleet-slot-rail {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  padding: 8px;
+  overflow-y: auto;
+  min-height: 120px;
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fleet-slot-item {
+  width: 100%;
+  text-align: left;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.fleet-slot-item:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-strong);
+}
+
+.fleet-slot-item.active {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.fleet-slot-item-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.fleet-slot-item-meta {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.fleet-session-detail {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  overflow: hidden;
+  min-height: 0;
+}
+
+.fleet-session-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fleet-session-body {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.fleet-session-log {
+  max-height: none;
+  height: 100%;
+}
+
 @media (min-width: 720px) {
   .fleet-hero {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  }
+
+  .fleet-fullview {
+    grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .fleet-slot-rail {
+    max-height: none;
+    height: 100%;
   }
 }
 
