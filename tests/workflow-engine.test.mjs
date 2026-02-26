@@ -377,7 +377,8 @@ describe("WorkflowEngine - run history details", () => {
 
       engine.save(wf);
       const runPromise = engine.execute(wf.id, {});
-      // Wait for the long-running node to actually start, then add stuck threshold
+      // Wait for the long-running node to actually start, then wait beyond
+      // the stuck threshold (20ms) so isStuck is true when we query history
       await nodeStarted;
       await new Promise((resolve) => setTimeout(resolve, 30));
 
