@@ -67,6 +67,21 @@ function getSharedHeartbeat(state) {
   return state.ownerHeartbeat || state.heartbeat || state.owner_heartbeat || null;
 }
 
+function getSharedOwnerId(state) {
+  if (!state) return null;
+  return state.ownerId || state.owner_id || null;
+}
+
+function getLocalSharedOwner(task) {
+  if (!task) return null;
+  return (
+    task.sharedStateOwnerId ||
+    task.meta?.sharedState?.ownerId ||
+    task.claimedBy ||
+    null
+  );
+}
+
 function isSharedStateStaleForDecision(state, staleThresholdMs) {
   const heartbeat = getSharedHeartbeat(state);
   if (!heartbeat) return false;
@@ -593,23 +608,25 @@ export class SyncEngine {
       // Check shared state for conflicts before pushing
       if (SHARED_STATE_ENABLED) {
         try {
+          const localOwner = getLocalSharedOwner(task);
           const sharedState = await getSharedState(task.id);
-          const localOwner =
-            task.sharedStateOwnerId ||
-            task.meta?.sharedState?.ownerId ||
-            task.claimedBy ||
-            null;
           if (sharedState) {
             const heartbeat = getSharedHeartbeat(sharedState);
+            const remoteOwner = getSharedOwnerId(sharedState);
             const stale = isHeartbeatStale(
               heartbeat,
               SHARED_STATE_STALE_THRESHOLD_MS,
             );
-            if (!stale && sharedState.ownerId !== localOwner) {
+            if (
+              !stale &&
+              localOwner &&
+              remoteOwner &&
+              remoteOwner !== localOwner
+            ) {
               // Active conflict - skip push and log
               console.log(
                 TAG,
-                `Skipping push for ${task.id} — active claim by ${sharedState.ownerId} (heartbeat: ${heartbeat || "unknown"})`,
+                `Skipping push for ${task.id} — active claim by ${remoteOwner} (heartbeat: ${heartbeat || "unknown"})`,
               );
               result.conflicts++;
               continue;
@@ -1153,3 +1170,4 @@ export class SyncEngine {
 export function createSyncEngine(options) {
   return new SyncEngine(options);
 }
+
