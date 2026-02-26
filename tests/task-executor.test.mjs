@@ -105,30 +105,30 @@ import {
   loadExecutorOptionsFromConfig,
   isInternalExecutorEnabled,
   getExecutorMode,
-} from "../scripts/bosun/tasks/task-executor.mjs""3003;
+} from "../scripts/bosun/tasks/task-executor.mjs";
 import {
   listTasks,
   listProjects,
   getKanbanBackendName,
   updateTaskStatus,
   addComment,
-} from "../scripts/bosun/kanban/kanban-adapter.mjs""3159;
+} from "../scripts/bosun/kanban/kanban-adapter.mjs";
 import {
   execWithRetry,
   getPoolSdkName,
   getActiveThreads,
   ensureThreadRegistryLoaded,
   invalidateThread,
-} from "../scripts/bosun/agents/agent-pool.mjs""3287;
-import { acquireWorktree, releaseWorktree } from "../scripts/bosun/workspaces/worktree-manager.mjs""3429;
+} from "../scripts/bosun/agents/agent-pool.mjs";
+import { acquireWorktree, releaseWorktree } from "../scripts/bosun/workspaces/worktree-manager.mjs";
 import {
   claimTask,
   renewClaim,
   releaseTask as releaseTaskClaim,
-} from "../scripts/bosun/tasks/task-claims.mjs""3505;
-import { initPresence, getPresenceState } from "../scripts/bosun/workspaces/presence.mjs""3605;
-import { loadConfig } from "../scripts/bosun/config/config.mjs""3671;
-import { evaluateBranchSafetyForPush } from "../scripts/bosun/git/git-safety.mjs""3715;
+} from "../scripts/bosun/tasks/task-claims.mjs";
+import { initPresence, getPresenceState } from "../scripts/bosun/workspaces/presence.mjs";
+import { loadConfig } from "../scripts/bosun/config/config.mjs";
+import { evaluateBranchSafetyForPush } from "../scripts/bosun/git/git-safety.mjs";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 

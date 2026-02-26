@@ -9,7 +9,7 @@ import {
   generateWeeklyAgentWorkReport,
   getNextWeeklyReportTime,
   shouldSendWeeklyReport,
-} from "../scripts/bosun/agents/agent-work-report.mjs""161;
+} from "../scripts/bosun/agents/agent-work-report.mjs";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

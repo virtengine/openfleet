@@ -14,7 +14,7 @@ import {
   recordResolutionAttempt,
   formatDirtyTaskSummary,
   DIRTY_TASK_DEFAULTS,
-} from "../scripts/bosun/utils/conflict-resolver.mjs""59;
+} from "../scripts/bosun/utils/conflict-resolver.mjs";
 
 // ── getDirtyTasks ────────────────────────────────────────────────────────────
 

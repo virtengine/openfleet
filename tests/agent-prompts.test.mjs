@@ -7,7 +7,7 @@ import {
   ensureAgentPromptWorkspace,
   getDefaultPromptWorkspace,
   PROMPT_WORKSPACE_DIR,
-} from "../scripts/bosun/agents/agent-prompts.mjs""189;
+} from "../scripts/bosun/agents/agent-prompts.mjs";
 
 describe("agent-prompts workspace", () => {
   const envKeys = [

@@ -18,7 +18,7 @@ import {
   ensureMonitorRunning,
   getQueuedCommands,
   parsePidFileValue,
-} from "../scripts/bosun/telegram-sentinel.mjs""334;
+} from "../scripts/bosun/telegram-sentinel.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cacheDir = resolve(__dirname, "..", ".cache", "test-sentinel");

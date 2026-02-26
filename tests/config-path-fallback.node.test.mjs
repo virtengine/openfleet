@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 
-import { loadConfig } from "../scripts/bosun/config/config.mjs""240;
+import { loadConfig } from "../scripts/bosun/config/config.mjs";
 
 const ENV_KEYS = ["WATCH_PATH", "ORCHESTRATOR_SCRIPT", "BOSUN_CONFIG_PATH"];
 

@@ -8,7 +8,7 @@ import {
   parsePrNumberFromUrl,
   escapeHtml,
   formatHtmlLink,
-} from "../scripts/bosun/utils/utils.mjs""70;
+} from "../scripts/bosun/utils/utils.mjs";
 
 describe("normalizeDedupKey", () => {
   it("normalizes numbers and collapses separators", () => {

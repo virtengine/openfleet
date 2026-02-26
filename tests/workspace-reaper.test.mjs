@@ -8,11 +8,11 @@ import {
   runReaperSweep,
   formatReaperResults,
   calculateReaperMetrics,
-} from "../scripts/bosun/workspaces/workspace-reaper.mjs""253;
+} from "../scripts/bosun/workspaces/workspace-reaper.mjs";
 import {
   saveSharedWorkspaceRegistry,
   claimSharedWorkspace,
-} from "../scripts/bosun/workspaces/shared-workspace-registry.mjs""389;
+} from "../scripts/bosun/workspaces/shared-workspace-registry.mjs";
 
 let TEST_DIR = "";
 let TEST_WORKTREE_BASE = "";

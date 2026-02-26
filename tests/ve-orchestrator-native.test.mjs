@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOrchestratorArgs } from "../scripts/bosun/ve-orchestrator.mjs""47;
+import { parseOrchestratorArgs } from "../scripts/bosun/ve-orchestrator.mjs";
 
 describe("ve-orchestrator native args", () => {
   it("parses PowerShell-compatible flags", () => {

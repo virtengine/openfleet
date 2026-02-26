@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { loadConfig } from "../scripts/bosun/config/config.mjs""238;
+import { loadConfig } from "../scripts/bosun/config/config.mjs";
 
 const ENV_KEYS = [
   "TELEGRAM_INTERVAL_MIN",

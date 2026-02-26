@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { resolveAgentRepoRoot, resolveRepoRoot } from "../scripts/bosun/config/repo-root.mjs""260;
+import { resolveAgentRepoRoot, resolveRepoRoot } from "../scripts/bosun/config/repo-root.mjs";
 
 const ENV_KEYS = [
   "REPO_ROOT",

@@ -8,8 +8,8 @@ import {
   getTemplate,
   listTemplates,
   installTemplate,
-} from "../scripts/bosun/workflow/workflow-templates.mjs""185;
-import { WorkflowEngine } from "../scripts/bosun/workflow/workflow-engine.mjs""326;
+} from "../scripts/bosun/workflow/workflow-templates.mjs";
+import { WorkflowEngine } from "../scripts/bosun/workflow/workflow-engine.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

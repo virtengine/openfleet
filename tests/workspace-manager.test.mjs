@@ -27,7 +27,7 @@ import {
   detectWorkspaces,
   mergeDetectedWorkspaces,
   initializeWorkspaces,
-} from "../scripts/bosun/workspaces/workspace-manager.mjs""396;
+} from "../scripts/bosun/workspaces/workspace-manager.mjs";
 
 // ── Test Helpers ────────────────────────────────────────────────────────────
 

@@ -19,7 +19,7 @@ import {
   registerBuiltinHooks,
   loadHooks,
   resetHooks,
-} from "../scripts/bosun/agents/agent-hooks.mjs""347;
+} from "../scripts/bosun/agents/agent-hooks.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = resolve(__dirname, "..", ".cache", "test-hooks");

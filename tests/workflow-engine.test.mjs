@@ -7,11 +7,11 @@ import {
   WorkflowContext,
   NodeStatus,
   WorkflowStatus,
-} from "../scripts/bosun/workflow/workflow-engine.mjs""189;
+} from "../scripts/bosun/workflow/workflow-engine.mjs";
 import {
   registerNodeType,
   getNodeType,
-} from "../scripts/bosun/workflow/workflow-nodes.mjs""300;
+} from "../scripts/bosun/workflow/workflow-nodes.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

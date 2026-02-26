@@ -24,7 +24,7 @@ import {
   SKILL_DIR,
   PROFILE_DIR,
   resolveEntry,
-} from "../scripts/bosun/utils/library-manager.mjs""246;
+} from "../scripts/bosun/utils/library-manager.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

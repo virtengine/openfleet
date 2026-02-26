@@ -8,7 +8,7 @@ import {
   listWorkspaceIds,
   formatBusMessage,
   formatRegistryDiagnostics,
-} from "../scripts/bosun/workspaces/workspace-registry.mjs""47;
+} from "../scripts/bosun/workspaces/workspace-registry.mjs";
 
 const registryFixture = {
   default_workspace: "primary",

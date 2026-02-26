@@ -6,13 +6,13 @@ import { describe, expect, it, beforeEach, vi, afterEach } from "vitest";
 import {
   createErrorDetector,
   TOKEN_OVERFLOW_PATTERNS,
-} from "../scripts/bosun/utils/error-detector.mjs""199;
+} from "../scripts/bosun/utils/error-detector.mjs";
 import {
   AgentSupervisor,
   createAgentSupervisor,
   SITUATION,
   INTERVENTION,
-} from "../scripts/bosun/agents/agent-supervisor.mjs""290;
+} from "../scripts/bosun/agents/agent-supervisor.mjs";
 
 // ---------------------------------------------------------------------------
 // 1. TOKEN_OVERFLOW_PATTERNS — vendor-specific coverage

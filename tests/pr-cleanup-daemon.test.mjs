@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { PRCleanupDaemon } from "../scripts/bosun/github/pr-cleanup-daemon.mjs""51;
+import { PRCleanupDaemon } from "../scripts/bosun/github/pr-cleanup-daemon.mjs";
 
 describe("PRCleanupDaemon.resolveConflicts", () => {
   it("uses SDK resolver first and succeeds when PR becomes mergeable", async () => {

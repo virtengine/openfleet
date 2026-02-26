@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createReviewAgent, ReviewAgent } from "../scripts/bosun/agents/review-agent.mjs""51;
+import { createReviewAgent, ReviewAgent } from "../scripts/bosun/agents/review-agent.mjs";
 
 /* eslint-disable no-unused-vars */
 

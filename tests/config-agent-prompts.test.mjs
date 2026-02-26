@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { loadAgentPrompts } from "../scripts/bosun/config/config.mjs""207;
+import { loadAgentPrompts } from "../scripts/bosun/config/config.mjs";
 
 describe("loadAgentPrompts generic prompt loading", () => {
   /** @type {string} */

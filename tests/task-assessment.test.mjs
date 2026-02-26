@@ -6,7 +6,7 @@ import {
   extractDecisionJson,
   resetAssessmentDedup,
   VALID_ACTIONS,
-} from "../scripts/bosun/tasks/task-assessment.mjs""63;
+} from "../scripts/bosun/tasks/task-assessment.mjs";
 
 describe("task-assessment", () => {
   beforeEach(() => {

@@ -4,7 +4,7 @@ import {
   createAgentSupervisor,
   SITUATION,
   INTERVENTION,
-} from "../scripts/bosun/agents/agent-supervisor.mjs""74;
+} from "../scripts/bosun/agents/agent-supervisor.mjs";
 
 describe("agent-supervisor", () => {
   /** @type {AgentSupervisor} */

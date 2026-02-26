@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { setKanbanBackend } from "../scripts/bosun/kanban/kanban-adapter.mjs""74;
+import { setKanbanBackend } from "../scripts/bosun/kanban/kanban-adapter.mjs";
 
 // Force VK backend so fetchVk() doesn't short-circuit when config says "github"
 process.env.KANBAN_BACKEND = "vk";

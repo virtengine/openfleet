@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   extractPlannerTasksFromOutput,
   formatCodexResult,
-} from "../scripts/bosun/monitor.mjs""48;
+} from "../scripts/bosun/monitor.mjs";
 
 describe("task planner codex-sdk output parsing", () => {
   it("parses tasks from codex-sdk run() finalResponse payload", () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { ExecutorScheduler } from "../scripts/bosun/config/config.mjs""74;
+import { ExecutorScheduler } from "../scripts/bosun/config/config.mjs";
 
 const baseFailover = {
   strategy: "next-in-line",

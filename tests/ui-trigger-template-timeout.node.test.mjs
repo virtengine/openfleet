@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { getKanbanAdapter, setKanbanBackend } from "../scripts/bosun/kanban/kanban-adapter.mjs""237;
+import { getKanbanAdapter, setKanbanBackend } from "../scripts/bosun/kanban/kanban-adapter.mjs";
 
 const ENV_KEYS = [
   "TELEGRAM_UI_TLS_DISABLE",

@@ -7,7 +7,7 @@ import {
   buildStandardizedEnvFile,
   extractProjectNumber,
   resolveOrCreateGitHubProject,
-} from "../scripts/bosun/setup.mjs""177;
+} from "../scripts/bosun/setup.mjs";
 
 describe("setup env output", () => {
   it("removes duplicate env keys from template output", () => {

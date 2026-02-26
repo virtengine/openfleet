@@ -13,7 +13,7 @@ import {
   setVerboseModules,
   getConsoleLevel,
   installConsoleInterceptor,
-} from "../scripts/bosun/lib/logger.mjs""154;
+} from "../scripts/bosun/lib/logger.mjs";
 
 // ── createLogger tests ──────────────────────────────────────────────────────
 

@@ -12,7 +12,7 @@ import {
   getPresencePrefix,
   initPresence,
   getPresenceState,
-} from "../scripts/bosun/workspaces/presence.mjs""193;
+} from "../scripts/bosun/workspaces/presence.mjs";
 
 let tempRoot = null;
 

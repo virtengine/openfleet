@@ -11,7 +11,7 @@ import {
   DEFAULT_MODEL_PROFILES,
   COMPLETION_CONFIDENCE,
   MODEL_ALIASES,
-} from "../scripts/bosun/tasks/task-complexity.mjs""63;
+} from "../scripts/bosun/tasks/task-complexity.mjs";
 
 // ── classifyComplexity ───────────────────────────────────────────────────────
 

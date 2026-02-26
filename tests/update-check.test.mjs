@@ -3,7 +3,7 @@ import {
   startAutoUpdateLoop,
   stopAutoUpdateLoop,
   __autoUpdateTestHooks,
-} from "../scripts/bosun/core/update-check.mjs""74;
+} from "../scripts/bosun/core/update-check.mjs";
 
 const {
   recordAutoUpdateFailure,
