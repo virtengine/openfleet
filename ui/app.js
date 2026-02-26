@@ -1372,6 +1372,18 @@ function App() {
   useEffect(() => {
     const win = globalThis.window;
     if (!win?.matchMedia) return;
+    const query = win.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`);
+    const update = () => setIsCompactNav(query.matches);
+    update();
+    query.addEventListener?.("change", update);
+    return () => {
+      query.removeEventListener?.("change", update);
+    };
+  }, []);
+
+  useEffect(() => {
+    const win = globalThis.window;
+    if (!win?.matchMedia) return;
     const tabletQuery = win.matchMedia(
       `(min-width: ${TABLET_MIN_WIDTH}px) and (max-width: ${DESKTOP_MIN_WIDTH - 1}px)`,
     );
@@ -1383,17 +1395,6 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    const win = globalThis.window;
-    if (!win?.matchMedia) return;
-    const query = win.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`);
-    const update = () => setIsCompactNav(query.matches);
-    update();
-    query.addEventListener?.("change", update);
-    return () => {
-      query.removeEventListener?.("change", update);
-    };
-  }, []);
 
   useEffect(() => {
     if (!isDesktop || !globalThis.window) return;
@@ -1631,9 +1632,7 @@ function App() {
   const isChatOrAgents = activeTab.value === "chat" || activeTab.value === "agents";
   const showSessionRail = isDesktop && isChatOrAgents;
   const showInspector = isDesktop && isChatOrAgents;
-  const showBottomNav = !isDesktop && !isTablet;
-
-  // On tablet: prefer drawer controls over bottom-nav to avoid dual navigation
+  const showBottomNav = !isDesktop;
   const showDrawerToggles = isTablet;
   const showInspectorToggle = isTablet && isChatOrAgents;
 
@@ -1767,7 +1766,7 @@ function App() {
             onRefresh=${() => refreshTab(activeTab.value)}
             disabled=${activeTab.value === "chat"}
           >
-            <main class=${`main-content${showBottomNav ? " compact" : ""}`} ref=${mainRef}>
+            <main class=${`main-content${showBottomNav && isCompactNav ? " compact" : ""}`} ref=${mainRef}>
               <${TabErrorBoundary} key=${activeTab.value} tabName=${activeTab.value}>
                 <${CurrentTab} />
               <//>
@@ -1797,7 +1796,7 @@ function App() {
     </div>
     ${showBottomNav
       ? html`<${BottomNav}
-          compact=${true}
+          compact=${isCompactNav}
           moreOpen=${isMoreOpen}
           onToggleMore=${toggleMore}
           onNavigate=${handleNavigate}

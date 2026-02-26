@@ -18,6 +18,7 @@ import {
   scheduleRefresh,
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
+import { iconText } from "../modules/icon-utils.js";
 import { cloneValue, truncate } from "../modules/utils.js";
 import { Card, Badge, SkeletonCard, Spinner } from "../components/shared.js";
 import { SegmentedControl, Collapsible } from "../components/forms.js";
