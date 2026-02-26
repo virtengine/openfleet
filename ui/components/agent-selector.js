@@ -813,9 +813,16 @@ export function ModelPicker() {
   const model = selectedModel.value;
   const agentInfo = activeAgentInfo.value;
 
-  // Build model entries: prefer live API list, fall back to static registry
+  // Build model entries: prefer live API list, fall back to static registry.
+  // For custom executor IDs (e.g. "copilot-claude"), derive the right static list
+  // from the agent's provider field ("COPILOT" → "copilot-sdk").
   const apiModels = agentInfo?.models;
-  const staticList = AGENT_MODELS[current] || AGENT_MODELS["codex-sdk"];
+  const providerSdkKey = agentInfo?.provider
+    ? agentInfo.provider.toLowerCase() + "-sdk"   // "COPILOT" → "copilot-sdk"
+    : null;
+  const staticList = AGENT_MODELS[current]
+    || (providerSdkKey && AGENT_MODELS[providerSdkKey])
+    || AGENT_MODELS["codex-sdk"];
   const modelEntries = apiModels && apiModels.length > 0
     ? [
         { value: "", label: "Default" },
