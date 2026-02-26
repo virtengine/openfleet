@@ -1803,10 +1803,14 @@ function normalizeSetupConfiguration({
   );
   env.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS = toBooleanEnvString(
     env.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS,
-    true,
+    false,
   );
   env.COPILOT_AGENT_MAX_REQUESTS = String(
     toPositiveInt(env.COPILOT_AGENT_MAX_REQUESTS || 500, 500),
+  );
+  env.WORKFLOW_AUTOMATION_ENABLED = toBooleanEnvString(
+    env.WORKFLOW_AUTOMATION_ENABLED,
+    true,
   );
   env.EXECUTOR_MODE = normalizeEnum(
     env.EXECUTOR_MODE,
@@ -2775,9 +2779,9 @@ async function main() {
         cooldownMinutes: 5,
         disableOnConsecutiveFailures: 3,
       };
-      configJson.distribution = "weighted";
+      configJson.distribution = "primary-only";
       info(
-        "Using recommended routing defaults: weighted distribution, next-in-line failover.",
+        "Using stable routing defaults: primary-only distribution, next-in-line failover.",
       );
     }
 
@@ -5105,7 +5109,9 @@ async function runNonInteractive({
   env.COPILOT_ENABLE_ASK_USER =
     process.env.COPILOT_ENABLE_ASK_USER || "false";
   env.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS =
-    process.env.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS || "true";
+    process.env.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS || "false";
+  env.WORKFLOW_AUTOMATION_ENABLED =
+    process.env.WORKFLOW_AUTOMATION_ENABLED || "true";
   env.COPILOT_AGENT_MAX_REQUESTS =
     process.env.COPILOT_AGENT_MAX_REQUESTS || "500";
 
@@ -5199,7 +5205,7 @@ async function runNonInteractive({
       process.env.FAILOVER_DISABLE_AFTER || "3",
     ),
   };
-  configJson.distribution = process.env.EXECUTOR_DISTRIBUTION || "weighted";
+  configJson.distribution = process.env.EXECUTOR_DISTRIBUTION || "primary-only";
   configJson.repositories = [
     {
       name: basename(repoRoot),

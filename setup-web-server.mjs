@@ -141,6 +141,56 @@ const KANBAN_BACKENDS = [
   { value: "jira", label: "Atlassian Jira" },
 ];
 
+function buildStableSetupDefaults({
+  projectName,
+  slug,
+  repoRoot,
+  bosunHome,
+  workspacesDir,
+}) {
+  return {
+    projectName: projectName || slug?.split("/").pop() || "my-project",
+    repoSlug: slug,
+    repoRoot,
+    configDir: bosunHome,
+    bosunHome,
+    workspacesDir,
+    executors: [
+      {
+        name: "primary",
+        executor: "CODEX",
+        model: "gpt-5.3-codex",
+        weight: 100,
+        role: "primary",
+        authMode: "oauth",
+        apiKey: "",
+        baseUrl: "",
+        connections: [],
+        codexProfile: "",
+      },
+    ],
+    executor: "CODEX",
+    model: "gpt-5.3-codex",
+    kanbanBackend: "internal",
+    kanbanSyncPolicy: "internal-primary",
+    executorMode: "internal",
+    executorDistribution: "primary-only",
+    maxParallel: 4,
+    maxRetries: 3,
+    failoverStrategy: "next-in-line",
+    failoverCooldownMinutes: 5,
+    failoverDisableOnConsecutive: 3,
+    internalReplenishEnabled: false,
+    internalReplenishMin: 1,
+    internalReplenishMax: 2,
+    workflowAutomationEnabled: true,
+    copilotEnableAllMcpTools: false,
+    // Backward-compatible fields consumed by older setup UI revisions.
+    distribution: "primary-only",
+    cooldownMinutes: 5,
+  };
+}
+
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -443,22 +493,13 @@ function handleDefaults() {
 
   return {
     ok: true,
-    defaults: {
-      projectName: projectName || slug?.split("/").pop() || "my-project",
-      repoSlug: slug,
+    defaults: buildStableSetupDefaults({
+      projectName,
+      slug,
       repoRoot,
-      configDir: bosunHome,
       bosunHome,
       workspacesDir,
-      executor: "COPILOT",
-      model: "claude-sonnet-4",
-      kanbanBackend: "internal",
-      maxParallel: 6,
-      maxRetries: 3,
-      cooldownMinutes: 5,
-      distribution: "weighted",
-      failoverStrategy: "next-in-line",
-    },
+    }),
   };
 }
 
@@ -848,7 +889,7 @@ function handleApply(body) {
         cooldownMinutes: Number(env.failoverCooldownMinutes) || 5,
         disableOnConsecutiveFailures: Number(env.failoverDisableOnConsecutive) || 3,
       },
-      distribution: configJson.distribution || env.executorDistribution || "weighted",
+      distribution: configJson.distribution || env.executorDistribution || "primary-only",
     };
 
     if (configJson.executorMode)               config.executorMode               = configJson.executorMode;
