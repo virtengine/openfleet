@@ -385,8 +385,8 @@ export async function initPrimaryAgent(nameOrConfig = null) {
   return getPrimaryAgentName();
 }
 
-/** Default timeout for primary agent execution (2 minutes for interactive use) */
-const PRIMARY_EXEC_TIMEOUT_MS = Number(process.env.PRIMARY_AGENT_TIMEOUT_MS) || 2 * 60 * 1000;
+/** Default timeout for primary agent execution (10 minutes for agentic tasks) */
+const PRIMARY_EXEC_TIMEOUT_MS = Number(process.env.PRIMARY_AGENT_TIMEOUT_MS) || 10 * 60 * 1000;
 
 /** Maximum number of failover attempts across adapters */
 const MAX_FAILOVER_ATTEMPTS = 2;
@@ -424,13 +424,17 @@ function shouldUseIsolatedPoolExecution(adapter, options = {}) {
 
 /**
  * Wrap a promise with a timeout. Rejects with a clear error when exceeded.
+ * If an AbortController is provided, it will be signalled on timeout so the
+ * underlying agent session can clean up (reset activeTurn, unsubscribe, etc.).
  */
-function withTimeout(promise, ms, label = "operation") {
+function withTimeout(promise, ms, label = "operation", abortController = null) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`AGENT_TIMEOUT: ${label} did not respond within ${ms / 1000}s`)),
-      ms,
-    );
+    const timer = setTimeout(() => {
+      if (abortController && !abortController.signal.aborted) {
+        try { abortController.abort("timeout"); } catch { /* best effort */ }
+      }
+      reject(new Error(`AGENT_TIMEOUT: ${label} did not respond within ${ms / 1000}s`));
+    }, ms);
     promise.then(
       (val) => { clearTimeout(timer); resolve(val); },
       (err) => { clearTimeout(timer); reject(err); },
@@ -534,10 +538,26 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     }
 
     try {
+      // Create an AbortController so withTimeout can signal the adapter to
+      // cancel its in-flight work (reset activeTurn, unsubscribe events, etc.).
+      // If the caller already provided an AbortController, forward its abort
+      // to our timeout controller so both caller-initiated and timeout aborts work.
+      const timeoutAbort = new AbortController();
+      if (options.abortController?.signal) {
+        const callerSignal = options.abortController.signal;
+        if (callerSignal.aborted) {
+          timeoutAbort.abort(callerSignal.reason);
+        } else {
+          callerSignal.addEventListener("abort", () => {
+            timeoutAbort.abort(callerSignal.reason || "user_stop");
+          }, { once: true });
+        }
+      }
       const result = await withTimeout(
-        adapter.exec(framedMessage, { ...options, sessionId }),
+        adapter.exec(framedMessage, { ...options, sessionId, abortController: timeoutAbort }),
         timeoutMs,
         `${adapterName}.exec`,
+        timeoutAbort,
       );
 
       if (result) {
