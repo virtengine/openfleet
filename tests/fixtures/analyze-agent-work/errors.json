@@ -1,0 +1,97 @@
+[
+  {
+    "timestamp": "2026-02-25T10:05:00.000Z",
+    "task_id": "T-100",
+    "attempt_id": "A-1",
+    "task_title": "[m] Improve retries",
+    "task_description": "Retry logic around API failures.",
+    "executor": "codex",
+    "model": "gpt-5",
+    "data": {
+      "error_fingerprint": "timeout_error",
+      "error_message": "Timed out waiting for API response",
+      "error_category": "network"
+    }
+  },
+  {
+    "timestamp": "2026-02-24T10:06:00.000Z",
+    "task_id": "T-100",
+    "attempt_id": "A-2",
+    "task_title": "[m] Improve retries",
+    "task_description": "Retry logic around API failures.",
+    "executor": "codex",
+    "model": "gpt-5",
+    "data": {
+      "error_fingerprint": "timeout_error",
+      "error_message": "Timed out waiting for API response",
+      "error_category": "network"
+    }
+  },
+  {
+    "timestamp": "2026-02-23T10:07:00.000Z",
+    "task_id": "T-300",
+    "attempt_id": "A-3",
+    "task_title": "[l] Refactor queue worker",
+    "task_description": "Refactor queue worker for better retry scheduling.",
+    "data": {
+      "error_fingerprint": "timeout_error",
+      "error_message": "Timed out waiting for API response",
+      "error_category": "network"
+    }
+  },
+  {
+    "timestamp": "2026-02-22T10:08:00.000Z",
+    "task_id": "T-200",
+    "attempt_id": "A-4",
+    "task_title": "[s] Fix login form",
+    "task_description": "Fix login form validation bug.",
+    "executor": "copilot",
+    "model": "claude",
+    "data": {
+      "error_fingerprint": "dependency_missing",
+      "error_message": "Missing dependency: axios",
+      "error_category": "dependency"
+    }
+  },
+  {
+    "timestamp": "2026-02-21T10:09:00.000Z",
+    "task_id": "T-200",
+    "attempt_id": "A-5",
+    "task_title": "[s] Fix login form",
+    "task_description": "Fix login form validation bug.",
+    "executor": "copilot",
+    "model": "claude",
+    "data": {
+      "error_fingerprint": "dependency_missing",
+      "error_message": "Missing dependency: axios",
+      "error_category": "dependency"
+    }
+  },
+  {
+    "timestamp": "2026-02-20T10:10:00.000Z",
+    "task_id": "T-200",
+    "attempt_id": "A-6",
+    "task_title": "[s] Fix login form",
+    "task_description": "Fix login form validation bug.",
+    "executor": "copilot",
+    "model": "claude",
+    "data": {
+      "error_message": "Auth failed for user 123",
+      "error_category": "auth"
+    }
+  },
+  {
+    "timestamp": "2026-01-15T10:10:00.000Z",
+    "task_id": "T-OLD",
+    "attempt_id": "A-OLD",
+    "task_title": "[xs] Legacy task",
+    "task_description": "Legacy task outside reporting window.",
+    "executor": "codex",
+    "model": "gpt-5",
+    "data": {
+      "error_fingerprint": "timeout_error",
+      "error_message": "Timed out waiting for API response",
+      "error_category": "network"
+    }
+  }
+]

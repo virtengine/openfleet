@@ -1,0 +1,57 @@
+[
+  {
+    "timestamp": "2026-02-25T10:00:00.000Z",
+    "task_id": "T-100",
+    "task_title": "[m] Improve retries",
+    "task_description": "Retry logic around API failures.",
+    "executor": "codex",
+    "model": "gpt-5",
+    "metrics": {
+      "duration_ms": 120000
+    }
+  },
+  {
+    "timestamp": "2026-02-24T10:00:00.000Z",
+    "task_id": "T-100",
+    "task_title": "[m] Improve retries",
+    "task_description": "Retry logic around API failures.",
+    "executor": "codex",
+    "model": "gpt-5",
+    "metrics": {
+      "duration_ms": 60000
+    }
+  },
+  {
+    "timestamp": "2026-02-23T10:00:00.000Z",
+    "task_id": "T-200",
+    "task_title": "[s] Fix login form",
+    "task_description": "Fix login form validation bug.",
+    "executor": "copilot",
+    "model": "claude",
+    "metrics": {
+      "duration_ms": 45000
+    }
+  },
+  {
+    "timestamp": "2026-02-22T10:00:00.000Z",
+    "task_id": "T-300",
+    "task_title": "[l] Refactor queue worker",
+    "task_description": "Refactor queue worker for better retry scheduling.",
+    "executor": "codex",
+    "model": "gpt-5",
+    "metrics": {
+      "duration_ms": 180000
+    }
+  },
+  {
+    "timestamp": "2026-01-10T10:00:00.000Z",
+    "task_id": "T-999",
+    "task_title": "[xs] Old task",
+    "task_description": "Old entry outside current reporting window.",
+    "executor": "copilot",
+    "model": "claude",
+    "metrics": {
+      "duration_ms": 5000
+    }
+  }
+]
