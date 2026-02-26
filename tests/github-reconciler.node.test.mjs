@@ -8,6 +8,7 @@ const ENV_KEYS = [
   "KANBAN_BACKEND",
   "GITHUB_PROJECT_MODE",
   "GITHUB_PROJECT_NUMBER",
+  "GITHUB_PROJECT_ID",
   "GITHUB_REPOSITORY",
 ];
 
@@ -45,6 +46,7 @@ describe("GitHubReconciler project status sync", () => {
     process.env.KANBAN_BACKEND = "github";
     process.env.GITHUB_PROJECT_MODE = "kanban";
     process.env.GITHUB_PROJECT_NUMBER = "7";
+    delete process.env.GITHUB_PROJECT_ID;
     process.env.GITHUB_REPOSITORY = "acme/widgets";
     setKanbanBackend("github");
   });
@@ -115,6 +117,57 @@ describe("GitHubReconciler project status sync", () => {
     assert.deepEqual(updates, [["42", "inreview"]]);
   });
 
+
+  it("skips project board sync when adapter has no project-list APIs", async () => {
+    const adapter = getKanbanAdapter();
+    adapter.listTasks = null;
+    adapter.listTasksFromProject = null;
+
+    const updates = [];
+    const reconciler = new GitHubReconciler({
+      repoSlug: "acme/widgets",
+      gh: createGhResponder(),
+      addComment: async () => {},
+      updateTaskStatus: async (issueNumber, status) => {
+        updates.push([String(issueNumber), String(status)]);
+      },
+    });
+
+    const summary = await reconciler.reconcileOnce();
+
+    assert.equal(summary.status, "ok");
+    assert.equal(summary.errors, 0);
+    assert.equal(summary.projectMismatches, 0);
+    assert.deepEqual(updates, []);
+  });
+
+  it("continues reconciliation when listTasks returns a non-iterable payload", async () => {
+    const adapter = getKanbanAdapter();
+    let listTasksCalls = 0;
+    adapter.listTasks = async () => {
+      listTasksCalls += 1;
+      return { unexpected: true };
+    };
+
+    const updates = [];
+    const reconciler = new GitHubReconciler({
+      repoSlug: "acme/widgets",
+      gh: createGhResponder(),
+      addComment: async () => {},
+      updateTaskStatus: async (issueNumber, status) => {
+        updates.push([String(issueNumber), String(status)]);
+      },
+    });
+
+    const summary = await reconciler.reconcileOnce();
+
+    assert.equal(summary.status, "ok");
+    assert.equal(summary.errors, 0);
+    assert.equal(summary.projectMismatches, 0);
+    assert.equal(listTasksCalls, 1);
+    assert.deepEqual(updates, []);
+  });
+
   it("continues reconciliation when project board listing fails", async () => {
     const adapter = getKanbanAdapter();
     let listTasksCalls = 0;
@@ -142,3 +195,4 @@ describe("GitHubReconciler project status sync", () => {
     assert.deepEqual(updates, []);
   });
 });
+

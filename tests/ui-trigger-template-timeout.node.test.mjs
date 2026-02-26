@@ -147,6 +147,94 @@ describe("trigger template stats timeout handling", () => {
     assert.deepEqual(stats.recentSpawned, []);
   });
 
+  it("logs warning and returns template payload when listProjects throws", async () => {
+    const adapter = getKanbanAdapter();
+    adapter.listProjects = async () => {
+      throw new Error("project lookup failed");
+    };
+    adapter.listTasks = async () => {
+      throw new Error("listTasks should not run when listProjects fails");
+    };
+
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => {
+      warnings.push(args.map((arg) => String(arg)).join(" "));
+    };
+
+    try {
+      const srv = await startServer();
+      const port = srv.address().port;
+
+      const response = await fetch(`http://127.0.0.1:${port}/api/triggers/templates`);
+
+      assert.equal(response.status, 200);
+
+      const json = await response.json();
+      assert.equal(json.ok, true);
+      const template = getTemplateById(json, "task-planner");
+      assert.ok(template, "expected task-planner template in response");
+
+      const stats = template.stats;
+      assert.equal(stats.spawnedTotal, 0);
+      assert.equal(stats.activeCount, 0);
+      assert.equal(stats.doneCount, 0);
+      assert.deepEqual(stats.runningAgents, []);
+      assert.deepEqual(stats.recentSpawned, []);
+      assert.equal(
+        warnings.some((line) => line.includes("trigger template stats unavailable")),
+        true,
+      );
+      assert.equal(warnings.some((line) => line.includes("project lookup failed")), true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it("logs warning and returns template payload when listTasks throws", async () => {
+    const adapter = getKanbanAdapter();
+    adapter.listProjects = async () => [{ id: "proj-1", name: "Project" }];
+    adapter.listTasks = async () => {
+      throw new Error("project listing failed");
+    };
+
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => {
+      warnings.push(args.map((arg) => String(arg)).join(" "));
+    };
+
+    try {
+      const srv = await startServer();
+      const port = srv.address().port;
+
+      const response = await fetch(`http://127.0.0.1:${port}/api/triggers/templates`);
+
+      assert.equal(response.status, 200);
+
+      const json = await response.json();
+      assert.equal(json.ok, true);
+      const template = getTemplateById(json, "task-planner");
+      assert.ok(template, "expected task-planner template in response");
+
+      const stats = template.stats;
+      assert.equal(stats.spawnedTotal, 0);
+      assert.equal(stats.activeCount, 0);
+      assert.equal(stats.doneCount, 0);
+      assert.deepEqual(stats.runningAgents, []);
+      assert.deepEqual(stats.recentSpawned, []);
+      assert.equal(
+        warnings.some((line) => line.includes("trigger template stats unavailable")),
+        true,
+      );
+      assert.equal(
+        warnings.some((line) => line.includes("project listing failed")),
+        true,
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
   it("counts trigger-spawned tasks when kanban responses are quick", async () => {
     const adapter = getKanbanAdapter();
     adapter.listProjects = async () => [{ id: "proj-1", name: "Project" }];
