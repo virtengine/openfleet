@@ -98,7 +98,10 @@ import {
   resetMergeStrategyDedup,
 } from "./merge-strategy.mjs";
 import { assessTask, quickAssess } from "./task-assessment.mjs";
-import { getBosunCoAuthorTrailer } from "./git-commit-helpers.mjs";
+import {
+  getBosunCoAuthorTrailer,
+  shouldAddBosunCoAuthor,
+} from "./git-commit-helpers.mjs";
 import {
   normalizeDedupKey,
   stripAnsi,
@@ -7274,15 +7277,15 @@ function extractPrNumberFromUrl(prUrl) {
 }
 
 function buildFlowGateMergeBody(taskTitle, taskId) {
-  const trailer = getBosunCoAuthorTrailer();
   const safeTitle = String(taskTitle || "Task").trim() || "Task";
   const safeId = String(taskId || "").trim();
   const lines = [
     `Merged by Bosun flow gate for: ${safeTitle}`,
     safeId ? `Task: ${safeId}` : "",
-    "",
-    trailer,
   ].filter(Boolean);
+  if (shouldAddBosunCoAuthor({ taskId: safeId })) {
+    lines.push("", getBosunCoAuthorTrailer());
+  }
   return lines.join("\n");
 }
 
