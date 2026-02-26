@@ -86,6 +86,7 @@ function checkVendorFiles() {
 const DEFAULT_PORT = 3456;
 const MAX_PORT_ATTEMPTS = 20;
 const CALLBACK_PORT = Number(process.env.BOSUN_CALLBACK_PORT) || 54317;
+const DEFAULT_TELEGRAM_UI_PORT = 3080;
 
 const MODELS = {
   copilot: [
@@ -222,6 +223,56 @@ function commandExists(cmd) {
   } catch {
     return false;
   }
+}
+
+function toBooleanEnvString(value, fallback = false) {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return fallback ? "true" : "false";
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on", "y"].includes(normalized)) return "true";
+  if (["0", "false", "no", "off", "n"].includes(normalized)) return "false";
+  return fallback ? "true" : "false";
+}
+
+function normalizeTelegramUiPort(rawValue, fallback = DEFAULT_TELEGRAM_UI_PORT) {
+  const parsed = Number(String(rawValue || "").trim());
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return String(Math.round(parsed));
+  }
+  return String(fallback);
+}
+
+function applyTelegramMiniAppSetupEnv(envMap, env, sourceEnv = process.env) {
+  const telegramToken = String(
+    env?.telegramToken || env?.TELEGRAM_BOT_TOKEN || sourceEnv.TELEGRAM_BOT_TOKEN || "",
+  ).trim();
+  if (!telegramToken) return false;
+
+  envMap.TELEGRAM_BOT_TOKEN = telegramToken;
+
+  const miniAppRaw =
+    env?.telegramMiniappEnabled ??
+    env?.telegramMiniAppEnabled ??
+    env?.TELEGRAM_MINIAPP_ENABLED;
+  envMap.TELEGRAM_MINIAPP_ENABLED = toBooleanEnvString(miniAppRaw, true);
+  envMap.TELEGRAM_UI_PORT = normalizeTelegramUiPort(
+    env?.telegramUiPort || env?.TELEGRAM_UI_PORT || sourceEnv.TELEGRAM_UI_PORT,
+  );
+
+  const tunnelRaw =
+    env?.telegramUiTunnel ||
+    env?.TELEGRAM_UI_TUNNEL ||
+    sourceEnv.TELEGRAM_UI_TUNNEL ||
+    "auto";
+  envMap.TELEGRAM_UI_TUNNEL = String(tunnelRaw).trim() || "auto";
+
+  const unsafeRaw =
+    env?.telegramUiAllowUnsafe ??
+    env?.TELEGRAM_UI_ALLOW_UNSAFE ??
+    sourceEnv.TELEGRAM_UI_ALLOW_UNSAFE;
+  envMap.TELEGRAM_UI_ALLOW_UNSAFE = toBooleanEnvString(unsafeRaw, false);
+  return true;
 }
 
 function getCommandVersion(cmd) {
@@ -723,12 +774,7 @@ function handleApply(body) {
       VK_PROJECT_DIR: bosunHome,
     };
 
-    const telegramToken = String(env.telegramToken || "").trim();
-    if (telegramToken) {
-      envMap.TELEGRAM_BOT_TOKEN = telegramToken;
-      envMap.TELEGRAM_UI_TUNNEL = "auto";
-      envMap.TELEGRAM_UI_ALLOW_UNSAFE = "false";
-    }
+    applyTelegramMiniAppSetupEnv(envMap, env, process.env);
     if (env.telegramChatId)      envMap.TELEGRAM_CHAT_ID         = env.telegramChatId;
     if (env.jiraUrl)             envMap.JIRA_BASE_URL            = env.jiraUrl;
     if (env.jiraProjectKey)      envMap.JIRA_PROJECT_KEY         = env.jiraProjectKey;
@@ -1380,6 +1426,8 @@ export async function startSetupServer(options = {}) {
     });
   });
 }
+
+export { applyTelegramMiniAppSetupEnv, normalizeTelegramUiPort };
 
 // Entry point when run directly
 const __filename_setup_web = fileURLToPath(import.meta.url);

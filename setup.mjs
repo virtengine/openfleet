@@ -1683,6 +1683,46 @@ function toBooleanEnvString(value, fallback = false) {
   return parseBooleanEnvValue(value, fallback) ? "true" : "false";
 }
 
+const DEFAULT_TELEGRAM_UI_PORT = 3080;
+
+function normalizeTelegramUiPort(rawValue, fallback = DEFAULT_TELEGRAM_UI_PORT) {
+  const parsed = Number(String(rawValue || "").trim());
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return String(Math.round(parsed));
+  }
+  return String(fallback);
+}
+
+function applyTelegramMiniAppDefaults(env, sourceEnv = process.env) {
+  const telegramToken = String(
+    env.TELEGRAM_BOT_TOKEN || sourceEnv.TELEGRAM_BOT_TOKEN || "",
+  ).trim();
+  if (!telegramToken) return false;
+
+  const miniAppRaw = env.TELEGRAM_MINIAPP_ENABLED;
+  if (
+    miniAppRaw === undefined ||
+    miniAppRaw === null ||
+    String(miniAppRaw).trim() === ""
+  ) {
+    env.TELEGRAM_MINIAPP_ENABLED = "true";
+  } else {
+    env.TELEGRAM_MINIAPP_ENABLED = toBooleanEnvString(miniAppRaw, true);
+  }
+
+  env.TELEGRAM_UI_PORT = normalizeTelegramUiPort(
+    env.TELEGRAM_UI_PORT || sourceEnv.TELEGRAM_UI_PORT,
+  );
+
+  if (!env.TELEGRAM_UI_TUNNEL && !sourceEnv.TELEGRAM_UI_TUNNEL) {
+    env.TELEGRAM_UI_TUNNEL = "auto";
+  }
+  if (!env.TELEGRAM_UI_ALLOW_UNSAFE && !sourceEnv.TELEGRAM_UI_ALLOW_UNSAFE) {
+    env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+  }
+  return true;
+}
+
 function readProcValue(path) {
   try {
     return readFileSync(path, "utf8").trim();
@@ -1745,17 +1785,7 @@ function normalizeSetupConfiguration({
   env.TELEGRAM_INTERVAL_MIN = String(
     toPositiveInt(env.TELEGRAM_INTERVAL_MIN || "10", 10),
   );
-  const telegramToken = String(
-    env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || "",
-  ).trim();
-  if (telegramToken) {
-    if (!env.TELEGRAM_UI_TUNNEL && !process.env.TELEGRAM_UI_TUNNEL) {
-      env.TELEGRAM_UI_TUNNEL = "auto";
-    }
-    if (!env.TELEGRAM_UI_ALLOW_UNSAFE && !process.env.TELEGRAM_UI_ALLOW_UNSAFE) {
-      env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
-    }
-  }
+  applyTelegramMiniAppDefaults(env, process.env);
 
   env.KANBAN_BACKEND = normalizeEnum(
     env.KANBAN_BACKEND,
@@ -5018,6 +5048,7 @@ async function runNonInteractive({
   env.GITHUB_REPO = process.env.GITHUB_REPO || slug || "";
   env.TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
   env.TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+  applyTelegramMiniAppDefaults(env, process.env);
   env.KANBAN_BACKEND = process.env.KANBAN_BACKEND || "internal";
   env.KANBAN_SYNC_POLICY =
     process.env.KANBAN_SYNC_POLICY || "internal-primary";
@@ -5608,6 +5639,8 @@ export async function runSetup() {
 }
 
 export {
+  applyTelegramMiniAppDefaults,
+  normalizeTelegramUiPort,
   extractProjectNumber,
   resolveOrCreateGitHubProjectNumber,
   resolveOrCreateGitHubProject,
