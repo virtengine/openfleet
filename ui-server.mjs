@@ -1,6 +1,6 @@
 import { execSync, spawn, spawnSync } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, watchFile, unwatchFile } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, unlinkSync, watchFile, unwatchFile } from "node:fs";
 import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { get as httpsGet } from "node:https";
@@ -1234,11 +1234,14 @@ let wsServer = null;
 /** Auto-open browser: only once per process, never during tests */
 let _browserOpened = false;
 const AUTO_OPEN_MARKER_FILE = "ui-auto-open.json";
+const UI_INSTANCE_LOCK_FILE = "ui-server.instance.lock.json";
 const DEFAULT_AUTO_OPEN_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12h
 const wsClients = new Set();
 let sessionListenerAttached = false;
 /** @type {ReturnType<typeof setInterval>|null} */
 let wsHeartbeatTimer = null;
+let uiInstanceLockPath = "";
+let uiInstanceLockHeld = false;
 
 /* ─── Log Streaming State ─── */
 /** Map<string, { sockets: Set<WebSocket>, offset: number, pollTimer }> keyed by filePath */
@@ -1297,6 +1300,128 @@ function getAutoOpenCooldownMs() {
   const raw = Number(process.env.BOSUN_UI_AUTO_OPEN_COOLDOWN_MS || "");
   if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_AUTO_OPEN_COOLDOWN_MS;
   return Math.max(60_000, Math.trunc(raw));
+}
+
+function isPidRunning(pid) {
+  const parsed = Number(pid);
+  if (!Number.isFinite(parsed) || parsed <= 0) return false;
+  try {
+    process.kill(parsed, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveUiInstanceLockPath() {
+  const cacheDir = resolve(resolveUiConfigDir(), ".cache");
+  mkdirSync(cacheDir, { recursive: true });
+  return resolve(cacheDir, UI_INSTANCE_LOCK_FILE);
+}
+
+function readUiInstanceLock(path) {
+  try {
+    if (!existsSync(path)) return null;
+    const raw = readFileSync(path, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const pid = Number(parsed.pid || 0);
+    if (!Number.isFinite(pid) || pid <= 0) return null;
+    return {
+      pid,
+      port: Number(parsed.port || 0) || 0,
+      url: String(parsed.url || ""),
+      protocol: String(parsed.protocol || ""),
+      host: String(parsed.host || ""),
+      startedAt: Number(parsed.startedAt || 0) || 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeUiInstanceLock(path, payload = {}) {
+  try {
+    writeFileSync(path, JSON.stringify(payload, null, 2), "utf8");
+  } catch {
+    // best effort
+  }
+}
+
+function tryAcquireUiInstanceLock({ preferredPort = 0 } = {}) {
+  const lockPath = resolveUiInstanceLockPath();
+  uiInstanceLockPath = lockPath;
+  const payload = {
+    pid: process.pid,
+    preferredPort: Number(preferredPort || 0) || 0,
+    port: 0,
+    host: "",
+    protocol: "",
+    url: "",
+    startedAt: Date.now(),
+  };
+
+  const tryCreateLock = () => {
+    writeFileSync(lockPath, JSON.stringify(payload, null, 2), {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    uiInstanceLockHeld = true;
+    return { ok: true };
+  };
+
+  try {
+    return tryCreateLock();
+  } catch (err) {
+    if (err?.code !== "EEXIST") {
+      return { ok: false, existing: null };
+    }
+  }
+
+  const current = readUiInstanceLock(lockPath);
+  if (current && current.pid !== process.pid && isPidRunning(current.pid)) {
+    return { ok: false, existing: current };
+  }
+
+  try {
+    if (existsSync(lockPath)) unlinkSync(lockPath);
+  } catch {
+    // best effort
+  }
+
+  try {
+    return tryCreateLock();
+  } catch {
+    const existing = readUiInstanceLock(lockPath);
+    return { ok: false, existing };
+  }
+}
+
+function updateUiInstanceLock(payload = {}) {
+  if (!uiInstanceLockHeld || !uiInstanceLockPath) return;
+  writeUiInstanceLock(uiInstanceLockPath, {
+    pid: process.pid,
+    preferredPort: Number(payload.preferredPort || 0) || 0,
+    port: Number(payload.port || 0) || 0,
+    host: String(payload.host || ""),
+    protocol: String(payload.protocol || ""),
+    url: String(payload.url || ""),
+    startedAt: Number(payload.startedAt || Date.now()) || Date.now(),
+  });
+}
+
+function releaseUiInstanceLock() {
+  if (!uiInstanceLockPath) return;
+  try {
+    const current = readUiInstanceLock(uiInstanceLockPath);
+    if (!current || current.pid === process.pid || !isPidRunning(current.pid)) {
+      if (existsSync(uiInstanceLockPath)) unlinkSync(uiInstanceLockPath);
+    }
+  } catch {
+    // best effort
+  }
+  uiInstanceLockHeld = false;
+  uiInstanceLockPath = "";
 }
 
 function readAutoOpenMarker() {
@@ -6930,6 +7055,19 @@ export async function startTelegramUiServer(options = {}) {
 
   injectUiDependencies(options.dependencies || {});
 
+  const lockResult = tryAcquireUiInstanceLock({ preferredPort: port });
+  if (!lockResult.ok) {
+    const existing = lockResult.existing || {};
+    const existingTarget = existing.url
+      || (existing.port
+        ? `${existing.protocol || "http"}://${existing.host || "127.0.0.1"}:${existing.port}`
+        : "unknown");
+    console.warn(
+      `[telegram-ui] duplicate runtime detected (pid=${existing.pid}) — skipping secondary UI server start (${existingTarget})`,
+    );
+    return null;
+  }
+
   // Auto-TLS: generate a self-signed cert for HTTPS unless explicitly disabled
   let tlsOpts = null;
   if (!isTlsDisabled()) {
@@ -7035,112 +7173,117 @@ export async function startTelegramUiServer(options = {}) {
     await handleStatic(req, res, url);
   };
 
-  if (tlsOpts) {
-    uiServer = createHttpsServer(tlsOpts, requestHandler);
-    uiServerTls = true;
-  } else {
-    uiServer = createServer(requestHandler);
-    uiServerTls = false;
-  }
+  try {
+    if (tlsOpts) {
+      uiServer = createHttpsServer(tlsOpts, requestHandler);
+      uiServerTls = true;
+    } else {
+      uiServer = createServer(requestHandler);
+      uiServerTls = false;
+    }
 
-  wsServer = new WebSocketServer({ noServer: true });
-  if (!sessionListenerAttached) {
-    sessionListenerAttached = true;
-    addSessionEventListener((payload) => {
-      broadcastSessionMessage(payload);
-    });
-  }
-  wsServer.on("connection", (socket) => {
-    socket.__channels = new Set(["*"]);
-    socket.__lastPong = Date.now();
-    socket.__lastPing = null;
-    socket.__missedPongs = 0;
-    wsClients.add(socket);
-    sendWsMessage(socket, {
-      type: "hello",
-      channels: ["*"],
-      payload: { connected: true },
-      ts: Date.now(),
-    });
+    wsServer = new WebSocketServer({ noServer: true });
+    if (!sessionListenerAttached) {
+      sessionListenerAttached = true;
+      addSessionEventListener((payload) => {
+        broadcastSessionMessage(payload);
+      });
+    }
+    wsServer.on("connection", (socket) => {
+      socket.__channels = new Set(["*"]);
+      socket.__lastPong = Date.now();
+      socket.__lastPing = null;
+      socket.__missedPongs = 0;
+      wsClients.add(socket);
+      sendWsMessage(socket, {
+        type: "hello",
+        channels: ["*"],
+        payload: { connected: true },
+        ts: Date.now(),
+      });
 
-    socket.on("message", (raw) => {
-      try {
-        const message = JSON.parse(String(raw || "{}"));
-        if (message?.type === "subscribe" && Array.isArray(message.channels)) {
-          const channels = message.channels
-            .filter((item) => typeof item === "string" && item.trim())
-            .map((item) => item.trim());
-          socket.__channels = new Set(channels.length ? channels : ["*"]);
-          sendWsMessage(socket, {
-            type: "subscribed",
-            channels: Array.from(socket.__channels),
-            payload: { ok: true },
-            ts: Date.now(),
-          });
-        } else if (message?.type === "ping" && typeof message.ts === "number") {
-          // Client ping → echo back as pong
-          sendWsMessage(socket, { type: "pong", ts: message.ts });
-        } else if (message?.type === "pong" && typeof message.ts === "number") {
-          // Client pong in response to server ping
-          socket.__lastPong = Date.now();
-          socket.__missedPongs = 0;
-        } else if (message?.type === "subscribe-logs") {
-          const logType = message.logType === "agent" ? "agent" : "system";
-          const query = typeof message.query === "string" ? message.query : "";
-          startLogStream(socket, logType, query);
-        } else if (message?.type === "unsubscribe-logs") {
-          stopLogStream(socket);
+      socket.on("message", (raw) => {
+        try {
+          const message = JSON.parse(String(raw || "{}"));
+          if (message?.type === "subscribe" && Array.isArray(message.channels)) {
+            const channels = message.channels
+              .filter((item) => typeof item === "string" && item.trim())
+              .map((item) => item.trim());
+            socket.__channels = new Set(channels.length ? channels : ["*"]);
+            sendWsMessage(socket, {
+              type: "subscribed",
+              channels: Array.from(socket.__channels),
+              payload: { ok: true },
+              ts: Date.now(),
+            });
+          } else if (message?.type === "ping" && typeof message.ts === "number") {
+            // Client ping → echo back as pong
+            sendWsMessage(socket, { type: "pong", ts: message.ts });
+          } else if (message?.type === "pong" && typeof message.ts === "number") {
+            // Client pong in response to server ping
+            socket.__lastPong = Date.now();
+            socket.__missedPongs = 0;
+          } else if (message?.type === "subscribe-logs") {
+            const logType = message.logType === "agent" ? "agent" : "system";
+            const query = typeof message.query === "string" ? message.query : "";
+            startLogStream(socket, logType, query);
+          } else if (message?.type === "unsubscribe-logs") {
+            stopLogStream(socket);
+          }
+        } catch {
+          // Ignore malformed websocket payloads
         }
-      } catch {
-        // Ignore malformed websocket payloads
+      });
+
+      socket.on("close", () => {
+        stopLogStream(socket);
+        wsClients.delete(socket);
+      });
+
+      socket.on("error", () => {
+        stopLogStream(socket);
+        wsClients.delete(socket);
+      });
+    });
+
+    startWsHeartbeat();
+
+    uiServer.on("upgrade", (req, socket, head) => {
+      const url = new URL(
+        req.url || "/",
+        `http://${req.headers.host || "localhost"}`,
+      );
+      if (url.pathname !== "/ws") {
+        socket.destroy();
+        return;
       }
-    });
-
-    socket.on("close", () => {
-      stopLogStream(socket);
-      wsClients.delete(socket);
-    });
-
-    socket.on("error", () => {
-      stopLogStream(socket);
-      wsClients.delete(socket);
-    });
-  });
-
-  startWsHeartbeat();
-
-  uiServer.on("upgrade", (req, socket, head) => {
-    const url = new URL(
-      req.url || "/",
-      `http://${req.headers.host || "localhost"}`,
-    );
-    if (url.pathname !== "/ws") {
-      socket.destroy();
-      return;
-    }
-    if (!requireWsAuth(req, url)) {
-      try {
-        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-      } catch {
-        // no-op
+      if (!requireWsAuth(req, url)) {
+        try {
+          socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        } catch {
+          // no-op
+        }
+        socket.destroy();
+        return;
       }
-      socket.destroy();
-      return;
-    }
-    wsServer.handleUpgrade(req, socket, head, (ws) => {
-      wsServer.emit("connection", ws, req);
+      wsServer.handleUpgrade(req, socket, head, (ws) => {
+        wsServer.emit("connection", ws, req);
+      });
     });
-  });
 
-  // Generate a session token for browser-based access (no config needed)
-  sessionToken = randomBytes(32).toString("hex");
+    // Generate a session token for browser-based access (no config needed)
+    sessionToken = randomBytes(32).toString("hex");
 
-  await new Promise((resolveReady, rejectReady) => {
-    uiServer.once("error", rejectReady);
-    uiServer.listen(port, options.host || DEFAULT_HOST, () => {
-      resolveReady();
+    await new Promise((resolveReady, rejectReady) => {
+      uiServer.once("error", rejectReady);
+      uiServer.listen(port, options.host || DEFAULT_HOST, () => {
+        resolveReady();
+      });
     });
-  });
+  } catch (err) {
+    releaseUiInstanceLock();
+    throw err;
+  }
 
   const publicHost = options.publicHost || process.env.TELEGRAM_UI_PUBLIC_HOST;
   const lanIp = getLocalLanIp();
@@ -7155,6 +7298,14 @@ export async function startTelegramUiServer(options = {}) {
       ? "https"
       : "http";
   uiServerUrl = `${protocol}://${host}:${actualPort}`;
+  updateUiInstanceLock({
+    preferredPort: port,
+    port: actualPort,
+    host,
+    protocol,
+    url: uiServerUrl,
+    startedAt: Date.now(),
+  });
   console.log(`[telegram-ui] server listening on ${uiServerUrl}`);
   if (uiServerTls) {
     console.log(`[telegram-ui] TLS enabled (self-signed) — Telegram WebApp buttons will use HTTPS`);
@@ -7280,6 +7431,7 @@ export function stopTelegramUiServer() {
   uiServerTls = false;
   sessionToken = "";
   resetProjectSyncWebhookMetrics();
+  releaseUiInstanceLock();
 }
 
 export { getLocalLanIp };

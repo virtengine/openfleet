@@ -514,10 +514,10 @@ export async function loadHistoryChunked(sessionId, opts = {}) {
 /**
  * Agent status tracked from WS events.
  * States: "idle" | "thinking" | "executing" | "streaming"
- * @type {import("@preact/signals").Signal<{state:string,adapter:string,startedAt:number,lastEventAt:number}>}
+ * @type {import("@preact/signals").Signal<{state:string,adapter:string,sessionId:string,startedAt:number,lastEventAt:number}>}
  */
 export const agentStatus = signal({
-  state: "idle", adapter: "", startedAt: 0, lastEventAt: 0,
+  state: "idle", adapter: "", sessionId: "", startedAt: 0, lastEventAt: 0,
 });
 
 /**
@@ -547,21 +547,25 @@ const IDLE_TIMEOUT = 120000;
  *
  * @param {string} state
  * @param {string} [adapter]
+ * @param {string} [sessionId]
  */
-function _setAgentState(state, adapter) {
+function _setAgentState(state, adapter, sessionId) {
   const now = Date.now();
   const prev = agentStatus.value;
-  const resolvedAdapter = adapter || prev.adapter;
+  const resolvedAdapter = adapter !== undefined ? adapter : prev.adapter;
+  const resolvedSessionId = sessionId !== undefined ? sessionId : prev.sessionId;
   const stateChanged = state !== prev.state;
   const adapterChanged = resolvedAdapter !== prev.adapter;
+  const sessionChanged = resolvedSessionId !== prev.sessionId;
 
   // Only update the signal (which triggers re-renders) when something
   // the UI actually cares about has changed.
-  if (stateChanged || adapterChanged) {
+  if (stateChanged || adapterChanged || sessionChanged) {
     agentStatus.value = {
       state,
       adapter: resolvedAdapter,
-      startedAt: stateChanged ? now : prev.startedAt,
+      sessionId: resolvedSessionId,
+      startedAt: stateChanged || sessionChanged ? now : prev.startedAt,
       lastEventAt: now,
     };
   }
@@ -572,7 +576,13 @@ function _setAgentState(state, adapter) {
   if (state !== "idle") {
     _idleTimer = setTimeout(() => {
       if (agentStatus.value.state !== "idle") {
-        agentStatus.value = { ...agentStatus.value, state: "idle", lastEventAt: Date.now() };
+        agentStatus.value = {
+          ...agentStatus.value,
+          state: "idle",
+          adapter: "",
+          sessionId: "",
+          lastEventAt: Date.now(),
+        };
       }
     }, IDLE_TIMEOUT);
   }
@@ -581,9 +591,10 @@ function _setAgentState(state, adapter) {
 /**
  * Call when user sends a message — sets state to "thinking".
  * @param {string} [adapter]
+ * @param {string} [sessionId]
  */
-export function markUserMessageSent(adapter) {
-  _setAgentState("thinking", adapter);
+export function markUserMessageSent(adapter, sessionId) {
+  _setAgentState("thinking", adapter, sessionId);
 }
 
 /**
@@ -601,21 +612,24 @@ export function startAgentStatusTracking() {
     const role = message.role;
     const type = message.type;
     const adapter = payload.session?.type || "";
+    const sessionId = payload.sessionId || payload.taskId || payload.session?.id || "";
     const sessionStatus = payload.session?.status || "active";
 
     if (sessionStatus !== "active") {
-      _setAgentState("idle", "");
+      if (!sessionId || agentStatus.value.sessionId === sessionId) {
+        _setAgentState("idle", "", "");
+      }
       return;
     }
 
     if (role === "assistant" || type === "agent_message") {
-      _setAgentState("streaming", adapter);
+      _setAgentState("streaming", adapter, sessionId);
     } else if (type === "tool_call") {
-      _setAgentState("executing", adapter);
+      _setAgentState("executing", adapter, sessionId);
     } else if (type === "tool_result") {
-      _setAgentState("streaming", adapter);
+      _setAgentState("streaming", adapter, sessionId);
     } else if (type === "error" || type === "stream_error") {
-      _setAgentState("idle", "");
+      _setAgentState("idle", "", "");
     }
   });
 }

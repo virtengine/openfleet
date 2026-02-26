@@ -542,7 +542,7 @@ export function ChatTab() {
       } else if (sessionId) {
         // Send as message to current session with optimistic rendering
         const tempId = addPendingMessage(sessionId, content);
-        markUserMessageSent(activeAgent.value);
+        markUserMessageSent(activeAgent.value, sessionId);
 
         // Use sendOrQueue for offline resilience
         const sendFn = async (sid, msg) => {
@@ -574,7 +574,7 @@ export function ChatTab() {
         const newId = res?.session?.id;
         if (newId) {
           const tempId = addPendingMessage(newId, content);
-          markUserMessageSent(activeAgent.value);
+          markUserMessageSent(activeAgent.value, newId);
 
           try {
             await apiFetch(`/api/sessions/${newId}/message`, {
