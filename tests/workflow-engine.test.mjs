@@ -516,21 +516,34 @@ describe("New node types", () => {
 // ── Session Chaining Tests ──────────────────────────────────────────────────
 
 describe("Session chaining - action.run_agent", () => {
-  it("propagates threadId to context", async () => {
+  it("propagates threadId to context and streams agent events into run logs", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
 
     const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+    const launchEphemeralThread = vi.fn().mockImplementation(
+      async (_prompt, _cwd, _timeoutMs, extra) => {
+        extra?.onEvent?.({
+          type: "tool_call",
+          tool_name: "apply_patch",
+        });
+        extra?.onEvent?.({
+          type: "agent_message",
+          message: { content: "Implemented the requested changes." },
+        });
+        return {
+          success: true,
+          output: "done",
+          sdk: "codex",
+          items: [],
+          threadId: "thread-abc-123",
+        };
+      },
+    );
     const mockEngine = {
       services: {
         agentPool: {
-          launchEphemeralThread: vi.fn().mockResolvedValue({
-            success: true,
-            output: "done",
-            sdk: "codex",
-            items: [],
-            threadId: "thread-abc-123",
-          }),
+          launchEphemeralThread,
         },
       },
     };
@@ -542,6 +555,13 @@ describe("Session chaining - action.run_agent", () => {
     expect(result.sessionId).toBe("thread-abc-123");
     expect(ctx.data.sessionId).toBe("thread-abc-123");
     expect(ctx.data.threadId).toBe("thread-abc-123");
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+    expect(launchEphemeralThread.mock.calls[0][3]).toEqual(
+      expect.objectContaining({ onEvent: expect.any(Function) }),
+    );
+    const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
+    expect(runLogText).toMatch(/Tool call: apply_patch/);
+    expect(runLogText).toMatch(/Agent: Implemented the requested changes\./);
   });
 });
 
