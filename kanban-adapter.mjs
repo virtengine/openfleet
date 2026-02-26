@@ -1874,7 +1874,7 @@ class GitHubIssuesAdapter {
 
     try {
       const owner = String(this._projectOwner || this._owner).trim();
-      const items = await this._gh([
+      const itemListResponse = await this._gh([
         "project",
         "item-list",
         String(projectNumber),
@@ -1883,10 +1883,19 @@ class GitHubIssuesAdapter {
         "--format",
         "json",
       ]);
+      const items = Array.isArray(itemListResponse)
+        ? itemListResponse
+        : Array.isArray(itemListResponse?.items)
+          ? itemListResponse.items
+          : null;
 
       if (!Array.isArray(items)) {
+        const shape =
+          itemListResponse && typeof itemListResponse === "object"
+            ? Object.keys(itemListResponse).join(",")
+            : typeof itemListResponse;
         console.warn(
-          `${TAG} project item-list returned non-array for project ${projectNumber}`,
+          `${TAG} project item-list returned unsupported shape for project ${projectNumber} (keys: ${shape || "none"})`,
         );
         return [];
       }
@@ -5103,4 +5112,5 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
+
 
