@@ -38,7 +38,7 @@ const LIBRARY_STYLES = `
 .library-type-pill.active { background: var(--accent, #58a6ff); color: #fff; border-color: var(--accent, #58a6ff); }
 
 .library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
-.library-card { background: var(--card-bg, #1a1a2e); border: 1px solid var(--border, #333);
+.library-card { background: var(--bg-card, #1a1a2e); border: 1px solid var(--border, #333);
   border-radius: 12px; padding: 16px; cursor: pointer; transition: all 0.15s; position: relative; }
 .library-card:hover { border-color: var(--accent, #58a6ff); transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
@@ -61,7 +61,7 @@ const LIBRARY_STYLES = `
   color: var(--text-secondary, #aaa); }
 .library-editor input, .library-editor select, .library-editor textarea {
   padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border, #333);
-  background: var(--input-bg, #0d1117); color: var(--text-primary, #eee); font-size: 0.9em; }
+  background: var(--bg-input, #0d1117); color: var(--text-primary, #eee); font-size: 0.9em; }
 .library-editor textarea { min-height: 160px; font-family: 'Fira Code', monospace; font-size: 0.82em;
   resize: vertical; }
 .library-editor .tag-input-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
@@ -86,7 +86,7 @@ const LIBRARY_STYLES = `
 .library-scope-chip.folder { border-color: rgba(255,166,88,0.25); color: #ffa658; background: rgba(255,166,88,0.1); }
 .library-scope-chip .count { font-weight: 600; margin-left: 4px; }
 
-.library-profile-match { padding: 12px; background: var(--card-bg, #1a1a2e);
+.library-profile-match { padding: 12px; background: var(--bg-card, #1a1a2e);
   border-radius: 10px; border: 1px solid var(--accent, #58a6ff); }
 .library-profile-match-label { font-size: 0.8em; color: var(--text-secondary, #aaa); margin-bottom: 4px; }
 .library-profile-match-name { font-weight: 600; color: var(--text-primary, #eee); }
@@ -99,7 +99,7 @@ const LIBRARY_STYLES = `
 .library-stat-lbl { font-size: 0.75em; color: var(--text-secondary, #aaa); text-transform: uppercase; letter-spacing: 0.05em; }
 
 /* ─ Init banner ─ */
-.library-init-banner { padding: 16px; border-radius: 12px; background: var(--card-bg, #1a1a2e);
+.library-init-banner { padding: 16px; border-radius: 12px; background: var(--bg-card, #1a1a2e);
   border: 1px dashed var(--border, #333); text-align: center; margin-bottom: 16px; }
 .library-init-banner p { color: var(--text-secondary, #aaa); margin: 8px 0; font-size: 0.9em; }
 .library-init-banner button { padding: 8px 20px; border-radius: 8px; border: none;
@@ -513,7 +513,7 @@ function ProfileMatcher() {
           value=${title} onInput=${(e) => setTitle(e.target.value)}
           onKeyDown=${(e) => e.key === "Enter" && doMatch()}
           style="flex:1;padding:6px 10px;border-radius:8px;border:1px solid var(--border,#333);
-            background:var(--input-bg,#0d1117);color:var(--text-primary,#eee);font-size:0.85em;" />
+            background:var(--bg-input,#0d1117);color:var(--text-primary,#eee);font-size:0.85em;" />
         <button class="library-type-pill active" onClick=${doMatch} style="font-size:0.82em;" disabled=${loading}>
           ${loading ? html`<${Spinner} size=${12} />` : "🎯 Match"}
         </button>

@@ -1014,8 +1014,7 @@ function ServerConfigMode() {
       <div class="settings-banner settings-banner-info">
         <span>${resolveIcon("🧭")}</span>
         <span class="settings-banner-text">
-          Settings are saved to <code>${serverMeta.envPath}</code> and synced to
-          <code>${serverMeta.configPath}</code> for supported keys.
+          Settings are saved to <code>${serverMeta.envPath}</code> and synced to <code>${serverMeta.configPath}</code> for supported keys.
         </span>
       </div>
     `}

@@ -828,7 +828,7 @@ const __dirname = dirname(__filename);
 // ── Agent Log Streaming ─────────────────────────────────────────────────────
 
 const AGENT_LOGS_DIR = resolve(__dirname, "logs", "agents");
-const AGENT_WORK_DIR = resolve(__dirname, "..", "..", ".cache", "agent-work-logs");
+const AGENT_WORK_DIR = resolve(__dirname, ".cache", "agent-work-logs");
 const AGENT_WORK_STREAM = resolve(AGENT_WORK_DIR, "agent-work-stream.jsonl");
 const AGENT_WORK_ERRORS = resolve(AGENT_WORK_DIR, "agent-errors.jsonl");
 const AGENT_WORK_METRICS = resolve(AGENT_WORK_DIR, "agent-metrics.jsonl");

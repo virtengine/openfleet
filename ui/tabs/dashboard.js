@@ -286,7 +286,7 @@ export function DashboardTab() {
     totalActive === 0
       ? "dashboard-headline-idle"
       : blocked > 0
-        ? "dashboard-headline-error"
+        ? "dashboard-headline-warn"
         : "dashboard-headline-ok";
 
   // ── Hero badge: all tasks done and nothing pending ──

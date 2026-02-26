@@ -3572,6 +3572,19 @@ function summarizeTelemetry(metrics, days) {
   };
 }
 
+function resolveAgentWorkLogDir() {
+  const candidates = [
+    resolve(repoRoot, ".cache", "agent-work-logs"),
+    // Legacy path used by older task-executor builds.
+    resolve(repoRoot, "..", "..", ".cache", "agent-work-logs"),
+    resolve(repoRoot, "..", ".cache", "agent-work-logs"),
+  ];
+  for (const dir of candidates) {
+    if (existsSync(dir)) return dir;
+  }
+  return candidates[0];
+}
+
 async function listAgentLogFiles(query = "", limit = 60) {
   const entries = [];
   const agentLogsDir = await resolveAgentLogsDir();
@@ -4900,7 +4913,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/telemetry/summary") {
     try {
       const days = Number(url.searchParams.get("days") || "7");
-      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const logDir = resolveAgentWorkLogDir();
       const metricsPath = resolve(logDir, "agent-metrics.jsonl");
       const metrics = await readJsonlTail(metricsPath, 3000);
       const summary = summarizeTelemetry(metrics, days);
@@ -4914,7 +4927,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/telemetry/errors") {
     try {
       const days = Number(url.searchParams.get("days") || "7");
-      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const logDir = resolveAgentWorkLogDir();
       const errorsPath = resolve(logDir, "agent-errors.jsonl");
       const errors = (await readJsonlTail(errorsPath, 2000)).filter((e) =>
         withinDays(e, days),
@@ -4938,7 +4951,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/telemetry/executors") {
     try {
       const days = Number(url.searchParams.get("days") || "7");
-      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const logDir = resolveAgentWorkLogDir();
       const metricsPath = resolve(logDir, "agent-metrics.jsonl");
       const metrics = await readJsonlTail(metricsPath, 3000);
       const summary = summarizeTelemetry(metrics, days);
@@ -4955,7 +4968,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/telemetry/alerts") {
     try {
       const days = Number(url.searchParams.get("days") || "7");
-      const logDir = resolve(repoRoot, ".cache", "agent-work-logs");
+      const logDir = resolveAgentWorkLogDir();
       const alertsPath = resolve(logDir, "agent-alerts.jsonl");
       const alerts = (await readJsonlTail(alertsPath, 500)).filter((a) =>
         withinDays(a, days),
