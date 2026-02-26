@@ -716,19 +716,24 @@ export async function loadAvailableAgents() {
   try {
     const res = await apiFetch("/api/agents/available", { _silent: true });
     const agents = Array.isArray(res) ? res : (res?.agents || res?.data || []);
+    const reportedActive = String(res?.active || "").trim();
     availableAgents.value = agents;
-    // If the current activeAgent is not in the list, select the first available
-    if (agents.length > 0 && !agents.find((a) => a.id === activeAgent.value)) {
-      activeAgent.value = agents[0].id;
+    // Prefer backend-reported active selection when present.
+    if (reportedActive && agents.some((a) => a.id === reportedActive)) {
+      activeAgent.value = reportedActive;
+    } else if (agents.length > 0 && !agents.find((a) => a.id === activeAgent.value)) {
+      // Otherwise keep UX predictable: pick first enabled executor, then first entry.
+      const firstEnabled = agents.find((a) => a.available);
+      activeAgent.value = (firstEnabled || agents[0]).id;
     }
   } catch (err) {
     console.warn("[agent-selector] Failed to load agents:", err);
     // Provide sensible fallback agents for offline/dev mode
     if (availableAgents.value.length === 0) {
       availableAgents.value = [
-        { id: "codex-sdk", name: "Codex", provider: "openai", available: true, busy: false, capabilities: ["agent", "plan"] },
-        { id: "copilot-sdk", name: "Copilot", provider: "github", available: true, busy: false, capabilities: ["ask", "agent", "plan"] },
-        { id: "claude-sdk", name: "Claude", provider: "anthropic", available: true, busy: false, capabilities: ["ask", "agent", "plan"] },
+        { id: "codex-sdk", name: "Codex", provider: "openai", available: true, busy: false, models: AGENT_MODELS["codex-sdk"].map((m) => m.value).filter(Boolean), capabilities: ["agent", "plan"] },
+        { id: "copilot-sdk", name: "Copilot", provider: "github", available: true, busy: false, models: AGENT_MODELS["copilot-sdk"].map((m) => m.value).filter(Boolean), capabilities: ["ask", "agent", "plan"] },
+        { id: "claude-sdk", name: "Claude", provider: "anthropic", available: true, busy: false, models: AGENT_MODELS["claude-sdk"].map((m) => m.value).filter(Boolean), capabilities: ["ask", "agent", "plan"] },
       ];
     }
   } finally {

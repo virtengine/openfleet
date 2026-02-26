@@ -507,7 +507,7 @@ function App() {
   const [repoSlug, setRepoSlug] = useState("");
   const [repoRoot, setRepoRoot] = useState("");
   const [executors, setExecutors] = useState([
-    { name: "primary", executor: "CODEX", model: "gpt-5.3-codex", weight: 100, role: "primary", authMode: "oauth", apiKey: "", baseUrl: "", connections: [], codexProfile: "" },
+    { name: "primary", executor: "CODEX", model: "gpt-5.3-codex", weight: 100, role: "primary", enabled: true, models: [], authMode: "oauth", apiKey: "", baseUrl: "", connections: [], codexProfile: "" },
   ]);
   const [probedModels, setProbedModels] = useState({});
   const [repos, setRepos] = useState([""]);
@@ -634,12 +634,41 @@ function App() {
             model: ex.model || "",
             weight: Number(ex.weight) || 50,
             role: ex.role || (idx === 0 ? "primary" : "backup"),
+            enabled: ex.enabled !== false,
+            models: Array.isArray(ex.models) ? ex.models : [],
             authMode: ex.authMode || "oauth",
             apiKey: ex.apiKey || "",
             baseUrl: ex.baseUrl || "",
             connections: Array.isArray(ex.connections) ? ex.connections : [],
             codexProfile: String(ex.codexProfile || ""),
           })),
+        );
+      }
+      if (Array.isArray(statusData.existingConfig?.executors) && statusData.existingConfig.executors.length > 0) {
+        setExecutors(
+          statusData.existingConfig.executors.map((ex, idx) => {
+            const configuredModels = Array.isArray(ex.models)
+              ? ex.models.map((m) => String(m || "").trim()).filter(Boolean)
+              : [];
+            const variant = String(ex.variant || "DEFAULT").trim();
+            const variantModel = variant && variant.toUpperCase() !== "DEFAULT"
+              ? variant.toLowerCase().replaceAll("_", "-")
+              : "";
+            return {
+              name: ex.name || (idx === 0 ? "primary" : `executor-${idx + 1}`),
+              executor: ex.executor || "CODEX",
+              model: ex.model || configuredModels[0] || variantModel,
+              weight: Number(ex.weight) || 50,
+              role: ex.role || (idx === 0 ? "primary" : "backup"),
+              enabled: ex.enabled !== false,
+              models: configuredModels,
+              authMode: ex.authMode || "oauth",
+              apiKey: ex.apiKey || "",
+              baseUrl: ex.baseUrl || "",
+              connections: Array.isArray(ex.connections) ? ex.connections : [],
+              codexProfile: String(ex.codexProfile || ""),
+            };
+          }),
         );
       }
       if (d.bosunHome)       setBosunHome(d.bosunHome);
@@ -741,6 +770,7 @@ function App() {
             const variant = segments[1] || "DEFAULT";
             const weight = Number(segments[2]) || 50;
             const model = variant === "DEFAULT" ? "" : variant.toLowerCase().replaceAll("_", "-");
+            const existingExecutor = statusData.existingConfig?.executors?.[idx] || {};
             // Detect if an API key was previously configured for this executor type
             const hasApiKey =
               ((execType === "CODEX" || execType === "OPENAI") && !!env.OPENAI_API_KEY) ||
@@ -760,18 +790,20 @@ function App() {
               }
             }
             return {
-              name: idx === 0 ? "primary" : `executor-${idx + 1}`,
+              name: existingExecutor.name || (idx === 0 ? "primary" : `executor-${idx + 1}`),
               executor: execType,
               model,
               weight,
-              role: idx === 0 ? "primary" : "backup",
+              role: existingExecutor.role || (idx === 0 ? "primary" : "backup"),
+              enabled: existingExecutor.enabled !== false,
+              models: Array.isArray(existingExecutor.models) ? existingExecutor.models : [],
               authMode: hasApiKey ? "api-key" : "oauth",
               apiKey: (execType === "CODEX" || execType === "OPENAI") ? (env.OPENAI_API_KEY || "") :
                        (execType === "CLAUDE_CODE" || execType === "ANTHROPIC") ? (env.ANTHROPIC_API_KEY || "") : "",
               baseUrl: (execType === "CODEX" || execType === "OPENAI") ? (env.OPENAI_BASE_URL || "") :
                         (execType === "CLAUDE_CODE" || execType === "ANTHROPIC") ? (env.ANTHROPIC_BASE_URL || "") : "",
               connections,
-              codexProfile: String(statusData.existingConfig?.executors?.[idx]?.codexProfile || ""),
+              codexProfile: String(existingExecutor.codexProfile || ""),
             };
           });
           if (parsed.length > 0) { setExecutors(parsed); envLoaded = true; }
@@ -850,6 +882,7 @@ function App() {
 
   const buildExecutorsEnv = () =>
     executors
+      .filter((ex) => ex.enabled !== false)
       .map((ex) => {
         const variant = (ex.model || "DEFAULT").toUpperCase().replaceAll("-", "_");
         return `${ex.executor}:${variant}:${ex.weight}`;
@@ -859,12 +892,20 @@ function App() {
   const buildExecutorsConfig = () =>
     executors.map((ex) => {
       const connections = (ex.connections || []).filter((c) => c.apiKey || c.baseUrl);
+      const configuredModels = Array.isArray(ex.models) && ex.models.length > 0
+        ? ex.models
+        : ex.model
+          ? [ex.model]
+          : [];
+      const models = [...new Set(configuredModels.filter(Boolean))];
       return {
         name: ex.name,
         executor: ex.executor,
         variant: (ex.model || "DEFAULT").toUpperCase().replaceAll("-", "_"),
         weight: Number(ex.weight) || 50,
         role: ex.role,
+        enabled: ex.enabled !== false,
+        models,
         authMode: ex.authMode || "oauth",
         codexProfile:
           (ex.executor === "CODEX" || ex.executor === "OPENAI")
@@ -1024,6 +1065,8 @@ function App() {
         model: "claude-sonnet-4",
         weight: 50,
         role: "backup",
+        enabled: true,
+        models: [],
         authMode: "oauth",
         apiKey: "",
         baseUrl: "",
@@ -1043,11 +1086,19 @@ function App() {
       updated[idx] = { ...updated[idx], [field]: value };
       // When executor type changes, update model to default + reset connections if type changes
       if (field === "executor") {
+        updated[idx].models = [];
         updated[idx].model = getDefaultModelForExecutor(value);
         // Clear connections if switching away from a multi-connection executor type
         if (!supportsMultiConnections(value)) {
           updated[idx].connections = [];
         }
+      }
+      if (field === "model") {
+        const models = Array.isArray(updated[idx].models)
+          ? [...updated[idx].models]
+          : [];
+        if (value && !models.includes(value)) models.push(value);
+        updated[idx].models = models;
       }
       // Auto-initialise connections when switching to api-key mode on a multi-profile executor
       if (field === "authMode" && value === "api-key") {
@@ -1122,6 +1173,13 @@ function App() {
       }));
       // Auto-select first live model if current model isn't in the new list
       if (result.models?.length) {
+        updateExecutor(
+          idx,
+          "models",
+          result.models
+            .map((m) => (typeof m === "string" ? m : m?.value))
+            .filter(Boolean),
+        );
         const current = ex.model;
         const inList = result.models.some((m) => m.value === current);
         if (!inList) {
@@ -1348,6 +1406,8 @@ function App() {
 
   // ── Step 2: AI Executors ───────────────────────────────────────────────────
 
+  const enabledExecutorsCount = executors.filter((ex) => ex.enabled !== false).length;
+
   const StepExecutors = () => html`
     <h2>AI Executors</h2>
     <p class="step-desc">Configure which AI coding agents bosun will use. You can add multiple executors with weighted distribution.</p>
@@ -1364,12 +1424,19 @@ function App() {
 
     ${executors.map((ex, i) => {
       const probed = probedModels[i] || {};
-      const modelOptions = probed.models?.length ? probed.models : getModelsForExecutor(ex.executor);
+      const configuredModelOptions = Array.isArray(ex.models) && ex.models.length > 0
+        ? ex.models.map((m) => ({ value: m, label: m }))
+        : [];
+      const modelOptions = probed.models?.length
+        ? probed.models
+        : configuredModelOptions.length > 0
+          ? configuredModelOptions
+          : getModelsForExecutor(ex.executor);
       const authMode = ex.authMode || "oauth";
       return html`
       <div class="executor-card">
         <div class="executor-card-header">
-          <h4>${ex.role === "primary" ? "🟢" : "🔵"} Executor ${i + 1}: ${ex.name}</h4>
+          <h4>${ex.enabled === false ? "⚫" : ex.role === "primary" ? "🟢" : "🔵"} Executor ${i + 1}: ${ex.name}</h4>
           ${executors.length > 1 && html`
             <button class="btn btn-sm btn-danger" onclick=${() => removeExecutor(i)}>Remove</button>
           `}
@@ -1385,6 +1452,17 @@ function App() {
               <option value="primary">Primary</option>
               <option value="backup">Backup</option>
             </select>
+          </div>
+          <div class="form-group">
+            <label>Status</label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+              <input type="checkbox"
+                checked=${ex.enabled !== false}
+                onchange=${(e) => updateExecutor(i, "enabled", e.target.checked)}
+                style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+              Enabled
+            </label>
+            <div class="hint">Disabled executors stay in config but are excluded from routing and chat picker lists.</div>
           </div>
           <div class="form-group">
             <label>Executor Type</label>
@@ -1535,6 +1613,11 @@ function App() {
         </div>
       </div>
     `})}
+    ${enabledExecutorsCount === 0 && html`
+      <div class="hint" style="color:var(--warning, #f59e0b);margin:8px 0 12px">
+        Enable at least one executor to continue.
+      </div>
+    `}
     <button class="btn btn-sm" onclick=${addExecutor} style="margin-bottom:12px">+ Add Executor</button>
     ${profile === "advanced" && html`
       <div class="executor-grid" style="margin-top:12px">
@@ -1561,7 +1644,7 @@ function App() {
     `}
     <div class="nav-buttons">
       <button class="btn" onclick=${goPrev}>← Back</button>
-      <button class="btn btn-primary" onclick=${goNext} disabled=${executors.length === 0}>Continue →</button>
+      <button class="btn btn-primary" onclick=${goNext} disabled=${executors.length === 0 || enabledExecutorsCount === 0}>Continue →</button>
     </div>
   `;
 
@@ -2149,7 +2232,7 @@ function App() {
             <td>
               ${executors.map((ex) => html`
                 <div style="margin-bottom:4px">
-                  <strong>${ex.name}</strong> — ${ex.executor} / ${ex.model} (weight: ${ex.weight}, ${ex.role})
+                  <strong>${ex.name}</strong> — ${ex.executor} / ${ex.model} (weight: ${ex.weight}, ${ex.role}, ${ex.enabled !== false ? "enabled" : "disabled"})
                 </div>
               `)}
             </td>

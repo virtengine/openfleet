@@ -519,31 +519,61 @@
   const showcaseFeeds = document.querySelectorAll('.showcase-feed');
   const showcaseGhLink = document.getElementById('showcase-gh-link');
 
-  const FEED_LINKS = {
-    prs: 'https://github.com/virtengine/virtengine/pulls?q=is%3Apr+sort%3Aupdated-desc',
-    commits: 'https://github.com/virtengine/bosun/commits/main',
+  const FEED_META = {
+    commits: {
+      href: 'https://github.com/virtengine/bosun/commits/main',
+      cta: 'View All Commits on GitHub →',
+    },
+    prs: {
+      href: 'https://github.com/virtengine/virtengine/pulls?q=is%3Apr+sort%3Aupdated-desc',
+      cta: 'View VirtEngine PRs on GitHub →',
+    },
   };
+
+  const loadedFeeds = { commits: false, prs: false };
+  var loadPRs = function () {};
+
+  function updateShowcaseLink(feed) {
+    if (!showcaseGhLink) return;
+    var meta = FEED_META[feed] || FEED_META.commits;
+    showcaseGhLink.href = meta.href;
+    showcaseGhLink.textContent = meta.cta;
+  }
+
+  function setActiveShowcaseFeed(feed) {
+    showcaseTabs.forEach(function (t) {
+      t.classList.toggle('showcase-tab--active', t.dataset.feed === feed);
+    });
+    showcaseFeeds.forEach(function (p) {
+      p.classList.toggle('showcase-feed--active', p.dataset.feedPanel === feed);
+    });
+    updateShowcaseLink(feed);
+  }
 
   // Tab switching
   showcaseTabs.forEach(function (tab) {
     tab.addEventListener('click', function () {
       var feed = tab.dataset.feed;
-      showcaseTabs.forEach(function (t) { t.classList.remove('showcase-tab--active'); });
-      tab.classList.add('showcase-tab--active');
-      showcaseFeeds.forEach(function (p) { p.classList.remove('showcase-feed--active'); });
-      var panel = document.querySelector('[data-feed-panel="' + feed + '"]');
-      if (panel) panel.classList.add('showcase-feed--active');
-      if (showcaseGhLink) {
-        showcaseGhLink.href = FEED_LINKS[feed] || FEED_LINKS.prs;
-        showcaseGhLink.textContent = feed === 'commits' ? 'View All Commits on GitHub →' : 'View All PRs on GitHub →';
-      }
-      // Lazy-load commits on first click
-      if (feed === 'commits' && commitContainer && !commitContainer.dataset.loaded) {
-        commitContainer.dataset.loaded = '1';
+      setActiveShowcaseFeed(feed);
+
+      if (feed === 'commits' && !loadedFeeds.commits) {
+        loadedFeeds.commits = true;
         fetchCommits();
+      }
+
+      if (feed === 'prs' && !loadedFeeds.prs) {
+        loadedFeeds.prs = true;
+        loadPRs();
       }
     });
   });
+
+  var activeShowcaseTab = document.querySelector('.showcase-tab--active');
+  if (activeShowcaseTab) {
+    setActiveShowcaseFeed(activeShowcaseTab.dataset.feed || 'commits');
+  } else {
+    setActiveShowcaseFeed('commits');
+  }
 
   if (prContainer) {
     const API = 'https://api.github.com/repos/virtengine/virtengine/pulls';
@@ -607,22 +637,7 @@
       }
     }
 
-    // Lazy-load PRs when section scrolls into view
-    const showcaseSection = document.getElementById('showcase');
-    if (showcaseSection && 'IntersectionObserver' in window) {
-      const prObserver = new IntersectionObserver(
-        (entries) => {
-          if (entries[0].isIntersecting) {
-            fetchPRs();
-            prObserver.disconnect();
-          }
-        },
-        { threshold: 0.1 }
-      );
-      prObserver.observe(showcaseSection);
-    } else {
-      fetchPRs();
-    }
+    loadPRs = fetchPRs;
   }
 
   /* ── Bosun Commit Feed — fetch real commits from bosun repo ──────────── */
@@ -645,6 +660,29 @@
 
     function sha7(sha) { return sha ? sha.slice(0, 7) : ''; }
 
+    function normalizeAuthorName(commit) {
+      var candidates = [
+        commit && commit.author ? commit.author.login : '',
+        commit && commit.committer ? commit.committer.login : '',
+        commit && commit.commit && commit.commit.author ? commit.commit.author.name : '',
+        commit && commit.commit && commit.commit.committer ? commit.commit.committer.name : '',
+      ].filter(Boolean);
+
+      var bosunBotMatch = candidates.some(function (value) {
+        var normalized = String(value).toLowerCase().replace(/\s+/g, '').replace(/_/g, '-');
+        return normalized === 'bosun-ve[bot]' || normalized === 'bosun-ve' || normalized === 'bosun[ve]' || normalized.indexOf('bosun-ve') !== -1;
+      });
+
+      if (bosunBotMatch) return 'bosun-ve[bot]';
+      return candidates[0] || 'unknown';
+    }
+
+    function resolveAuthorActor(commit) {
+      if (commit && commit.author) return commit.author;
+      if (commit && commit.committer) return commit.committer;
+      return null;
+    }
+
     fetch(COMMIT_API, { cache: 'no-store' })
       .then(function (res) {
         if (!res.ok) throw new Error('GitHub API rate limited');
@@ -660,9 +698,10 @@
           var msg = (c.commit && c.commit.message) ? c.commit.message : '';
           var firstLine = msg.split('\n')[0];
           var typeInfo = commitTypeIcon(firstLine);
-          var author = (c.author && c.author.login) || (c.commit && c.commit.author && c.commit.author.name) || 'unknown';
-          var authorUrl = c.author ? c.author.html_url : null;
-          var avatarUrl = c.author ? c.author.avatar_url : null;
+          var author = normalizeAuthorName(c);
+          var authorActor = resolveAuthorActor(c);
+          var authorUrl = authorActor ? authorActor.html_url : null;
+          var avatarUrl = authorActor ? authorActor.avatar_url : null;
           var date = c.commit && c.commit.author ? c.commit.author.date : null;
           var commitUrl = c.html_url || '#';
           var sha = sha7(c.sha);
@@ -686,6 +725,11 @@
         commitContainer.innerHTML =
           '<div class="pr-showcase__error">Unable to load commits. <a href="https://github.com/virtengine/bosun/commits/main" target="_blank" rel="noopener">View on GitHub →</a></div>';
       });
+  }
+
+  if (commitContainer && !loadedFeeds.commits) {
+    loadedFeeds.commits = true;
+    fetchCommits();
   }
 
   function escHtml(str) {

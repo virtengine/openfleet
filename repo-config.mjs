@@ -276,7 +276,8 @@ function mergeArrayUnique(existing, additions) {
  * @returns {boolean}
  */
 function hasTomlSection(toml, header) {
-  return toml.includes(header);
+  const sectionHeaderRegex = new RegExp(`^\\s*${escapeRegex(header)}\\s*$`, "m");
+  return sectionHeaderRegex.test(toml);
 }
 
 /**
@@ -291,6 +292,33 @@ function appendTomlBlockIfMissing(toml, header, block) {
     return { toml, added: false };
   }
   return { toml: toml.trimEnd() + "\n" + block, added: true };
+}
+
+function stripDeprecatedSandboxPermissions(toml) {
+  return String(toml || "").replace(
+    /^\s*sandbox_permissions\s*=.*(?:\r?\n)?/gim,
+    "",
+  );
+}
+
+function ensureMcpStartupTimeout(toml, name, timeoutSec = 120) {
+  const header = `[mcp_servers.${name}]`;
+  const headerIdx = toml.indexOf(header);
+  if (headerIdx === -1) return toml;
+
+  const afterHeader = headerIdx + header.length;
+  const nextSection = toml.indexOf("\n[", afterHeader);
+  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
+  let section = toml.substring(afterHeader, sectionEnd);
+
+  const timeoutRegex = /^startup_timeout_sec\s*=\s*\d+.*$/m;
+  if (timeoutRegex.test(section)) {
+    section = section.replace(timeoutRegex, `startup_timeout_sec = ${timeoutSec}`);
+  } else {
+    section = section.trimEnd() + `\nstartup_timeout_sec = ${timeoutSec}\n`;
+  }
+
+  return toml.substring(0, afterHeader) + section + toml.substring(sectionEnd);
 }
 
 /**
@@ -428,7 +456,7 @@ function mergeCodexToml(existing, generated) {
     if (keyMatch) topLevelKeys.push(keyMatch[1]);
   }
 
-  let result = existing.trimEnd();
+  let result = stripDeprecatedSandboxPermissions(existing.trimEnd());
 
   // Add missing top-level keys
   for (const key of topLevelKeys) {
@@ -455,7 +483,11 @@ function mergeCodexToml(existing, generated) {
     }
   }
 
-  return result.trimEnd() + "\n";
+  result = ensureMcpStartupTimeout(result, "context7", 120);
+  result = ensureMcpStartupTimeout(result, "sequential-thinking", 120);
+  result = ensureMcpStartupTimeout(result, "playwright", 120);
+
+  return stripDeprecatedSandboxPermissions(result).trimEnd() + "\n";
 }
 
 // ── 2. Claude settings.local.json ───────────────────────────────────────────
@@ -625,14 +657,17 @@ export function buildRepoVsCodeMcpConfig() {
       context7: {
         command: "npx",
         args: ["-y", "@upstash/context7-mcp"],
+        startup_timeout_sec: 120,
       },
       "sequential-thinking": {
         command: "npx",
         args: ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+        startup_timeout_sec: 120,
       },
       playwright: {
         command: "npx",
         args: ["-y", "@playwright/mcp@latest"],
+        startup_timeout_sec: 120,
       },
       "microsoft-docs": {
         url: "https://learn.microsoft.com/api/mcp",

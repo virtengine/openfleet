@@ -176,6 +176,46 @@ function truncateText(text, maxChars) {
   return `${raw.slice(0, Math.max(0, maxChars - 3))}...`;
 }
 
+function sanitizeRepoContextText(text) {
+  return String(text || "")
+    .replace(/\0/g, "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+}
+
+function truncateUtf8Bytes(text, maxBytes = 12000) {
+  const raw = String(text || "");
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) return "";
+
+  const suffix = "\n...(truncated)";
+  if (Buffer.byteLength(raw, "utf8") <= maxBytes) {
+    return raw;
+  }
+
+  const suffixBytes = Buffer.byteLength(suffix, "utf8");
+  if (maxBytes <= suffixBytes) {
+    return suffix.slice(0, Math.max(0, maxBytes));
+  }
+
+  const targetBytes = maxBytes - suffixBytes;
+  let low = 0;
+  let high = raw.length;
+  let best = "";
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = raw.slice(0, mid);
+    if (Buffer.byteLength(candidate, "utf8") <= targetBytes) {
+      best = candidate;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return `${best}${suffix}`;
+}
+
 function isBosunStateComment(text) {
   const raw = String(text || "").toLowerCase();
   if (!raw) return false;
@@ -5039,11 +5079,7 @@ class TaskExecutor {
         const fullPath = resolve(normalizedRoot, cf.rel);
         if (existsSync(fullPath)) {
           const content = readFileSync(fullPath, "utf8");
-          // Truncate to 4000 chars to keep prompt reasonable
-          const truncated =
-            content.length > 4000
-              ? content.slice(0, 4000) + "\n...(truncated)"
-              : content;
+          const truncated = truncateUtf8Bytes(sanitizeRepoContextText(content));
           parts.push(`### ${cf.label}\n\n${truncated}`);
         }
       } catch {

@@ -887,14 +887,17 @@ export function buildCommonMcpBlocks() {
     "",
     "# ── Common MCP servers (added by bosun) ──",
     "[mcp_servers.context7]",
+    "startup_timeout_sec = 120",
     'command = "npx"',
     'args = ["-y", "@upstash/context7-mcp"]',
     "",
     "[mcp_servers.sequential-thinking]",
+    "startup_timeout_sec = 120",
     'command = "npx"',
     'args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]',
     "",
     "[mcp_servers.playwright]",
+    "startup_timeout_sec = 120",
     'command = "npx"',
     'args = ["-y", "@playwright/mcp@latest"]',
     "",
@@ -911,6 +914,44 @@ export function buildCommonMcpBlocks() {
 function hasNamedMcpServer(toml, name) {
   return new RegExp(`^\\[mcp_servers\\.${escapeRegex(name)}\\]`, "m").test(
     toml,
+  );
+}
+
+function ensureMcpStartupTimeout(toml, name, timeoutSec = 120) {
+  const header = `[mcp_servers.${name}]`;
+  const headerIdx = toml.indexOf(header);
+  if (headerIdx === -1) return { toml, changed: false };
+
+  const afterHeader = headerIdx + header.length;
+  const nextSection = toml.indexOf("\n[", afterHeader);
+  const sectionEnd = nextSection === -1 ? toml.length : nextSection;
+  let section = toml.substring(afterHeader, sectionEnd);
+
+  const timeoutRegex = /^startup_timeout_sec\s*=\s*\d+.*$/m;
+  let changed = false;
+  if (timeoutRegex.test(section)) {
+    const desired = `startup_timeout_sec = ${timeoutSec}`;
+    const updated = section.replace(timeoutRegex, desired);
+    if (updated !== section) {
+      section = updated;
+      changed = true;
+    }
+  } else {
+    section = section.trimEnd() + `\nstartup_timeout_sec = ${timeoutSec}\n`;
+    changed = true;
+  }
+
+  if (!changed) return { toml, changed: false };
+  return {
+    toml: toml.substring(0, afterHeader) + section + toml.substring(sectionEnd),
+    changed: true,
+  };
+}
+
+function stripDeprecatedSandboxPermissions(toml) {
+  return String(toml || "").replace(
+    /^\s*sandbox_permissions\s*=.*(?:\r?\n)?/gim,
+    "",
   );
 }
 
@@ -1297,6 +1338,207 @@ export function ensureCodexConfig({
     retriesAdded: [],
     noChanges: true,
   };
+
+  const configExisted = existsSync(CONFIG_PATH);
+  const originalToml = readCodexConfig();
+  let toml = stripDeprecatedSandboxPermissions(originalToml);
+  if (!configExisted) {
+    result.created = true;
+    toml = "";
+  }
+
+  const sandboxModeResult = ensureTopLevelSandboxMode(
+    toml,
+    env.CODEX_SANDBOX_MODE,
+  );
+  toml = sandboxModeResult.toml;
+  if (sandboxModeResult.changed) {
+    result.sandboxAdded = true;
+  }
+
+  const repoRoot =
+    env.BOSUN_AGENT_REPO_ROOT ||
+    env.REPO_ROOT ||
+    env.BOSUN_HOME ||
+    process.cwd();
+  const additionalRoots = env.BOSUN_WORKSPACES_DIR
+    ? [env.BOSUN_WORKSPACES_DIR]
+    : [];
+  const sandboxWorkspaceResult = ensureSandboxWorkspaceWrite(toml, {
+    repoRoot,
+    additionalRoots,
+    writableRoots: env.CODEX_SANDBOX_WRITABLE_ROOTS,
+  });
+  toml = sandboxWorkspaceResult.toml;
+  result.sandboxWorkspaceAdded = sandboxWorkspaceResult.added;
+  result.sandboxWorkspaceUpdated =
+    sandboxWorkspaceResult.changed && !sandboxWorkspaceResult.added;
+  result.sandboxWorkspaceRootsAdded = sandboxWorkspaceResult.rootsAdded;
+
+  const pruneResult = pruneStaleSandboxRoots(toml);
+  toml = pruneResult.toml;
+  result.sandboxStaleRootsRemoved = pruneResult.removed;
+
+  if (!hasShellEnvPolicy(toml)) {
+    toml += buildShellEnvPolicy(env.CODEX_SHELL_ENV_POLICY || "all");
+    result.shellEnvAdded = true;
+  }
+
+  const rawPrimary = String(primarySdk || env.PRIMARY_AGENT || "codex")
+    .trim()
+    .toLowerCase();
+  const normalizedPrimary =
+    rawPrimary === "copilot" || rawPrimary.includes("copilot")
+      ? "copilot"
+      : rawPrimary === "claude" || rawPrimary.includes("claude")
+        ? "claude"
+        : rawPrimary === "codex" || rawPrimary.includes("codex")
+          ? "codex"
+          : "codex";
+  if (!hasAgentSdkConfig(toml)) {
+    toml += buildAgentSdkBlock({ primary: normalizedPrimary });
+    result.agentSdkAdded = true;
+  }
+
+  const maxThreads = resolveAgentMaxThreads(env);
+  if (maxThreads.explicit && !maxThreads.value) {
+    result.agentMaxThreadsSkipped = String(maxThreads.raw);
+  } else {
+    const maxThreadsResult = ensureAgentMaxThreads(toml, {
+      maxThreads: maxThreads.value,
+      overwrite: maxThreads.explicit,
+    });
+    toml = maxThreadsResult.toml;
+    if (maxThreadsResult.changed && !maxThreadsResult.skipped) {
+      result.agentMaxThreads = {
+        from: maxThreadsResult.existing,
+        to: maxThreadsResult.applied,
+        explicit: maxThreads.explicit,
+      };
+    } else if (maxThreadsResult.skipped && maxThreads.explicit) {
+      result.agentMaxThreadsSkipped = String(maxThreads.raw);
+    }
+  }
+
+  const featureResult = ensureFeatureFlags(toml, env);
+  result.featuresAdded = featureResult.added;
+  toml = featureResult.toml;
+
+  if (skipVk) {
+    if (hasVibeKanbanMcp(toml)) {
+      toml = removeVibeKanbanMcp(toml);
+      result.vkRemoved = true;
+    }
+  } else if (!hasVibeKanbanMcp(toml)) {
+    toml += buildVibeKanbanBlock({ vkBaseUrl });
+    result.vkAdded = true;
+  } else {
+    const vkEnvValues = {
+      VK_BASE_URL: vkBaseUrl,
+      VK_ENDPOINT_URL: vkBaseUrl,
+    };
+    const beforeVkEnv = toml;
+    if (!hasVibeKanbanEnv(toml)) {
+      toml =
+        toml.trimEnd() +
+        "\n\n[mcp_servers.vibe_kanban.env]\n" +
+        `VK_BASE_URL = "${vkBaseUrl}"\n` +
+        `VK_ENDPOINT_URL = "${vkBaseUrl}"\n`;
+    } else {
+      toml = updateVibeKanbanEnv(toml, vkEnvValues);
+    }
+    if (toml !== beforeVkEnv) {
+      result.vkEnvUpdated = true;
+    }
+  }
+
+  const commonMcpBlocks = [
+    {
+      present: hasContext7Mcp(toml),
+      block: [
+        "",
+        "# ── Common MCP servers (added by bosun) ──",
+        "[mcp_servers.context7]",
+        "startup_timeout_sec = 120",
+        'command = "npx"',
+        'args = ["-y", "@upstash/context7-mcp"]',
+        "",
+      ].join("\n"),
+    },
+    {
+      present: hasNamedMcpServer(toml, "sequential-thinking"),
+      block: [
+        "",
+        "[mcp_servers.sequential-thinking]",
+        "startup_timeout_sec = 120",
+        'command = "npx"',
+        'args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]',
+        "",
+      ].join("\n"),
+    },
+    {
+      present: hasNamedMcpServer(toml, "playwright"),
+      block: [
+        "",
+        "[mcp_servers.playwright]",
+        "startup_timeout_sec = 120",
+        'command = "npx"',
+        'args = ["-y", "@playwright/mcp@latest"]',
+        "",
+      ].join("\n"),
+    },
+    {
+      present: hasMicrosoftDocsMcp(toml),
+      block: [
+        "",
+        "[mcp_servers.microsoft-docs]",
+        'url = "https://learn.microsoft.com/api/mcp"',
+        'tools = ["microsoft_docs_search", "microsoft_code_sample_search"]',
+        "",
+      ].join("\n"),
+    },
+  ];
+  for (const item of commonMcpBlocks) {
+    if (item.present) continue;
+    toml += item.block;
+    result.commonMcpAdded = true;
+  }
+
+  for (const serverName of ["context7", "sequential-thinking", "playwright"]) {
+    const timeoutResult = ensureMcpStartupTimeout(toml, serverName, 120);
+    toml = timeoutResult.toml;
+  }
+
+  const providerResult = ensureModelProviderSectionsFromEnv(toml, env);
+  toml = providerResult.toml;
+  result.profileProvidersAdded = providerResult.added;
+
+  const timeoutAudit = auditStreamTimeouts(toml);
+  for (const item of timeoutAudit) {
+    if (!item.needsUpdate) continue;
+    toml = setStreamTimeout(toml, item.provider, RECOMMENDED_STREAM_IDLE_TIMEOUT_MS);
+    result.timeoutsFixed.push({
+      provider: item.provider,
+      from: item.currentValue,
+      to: RECOMMENDED_STREAM_IDLE_TIMEOUT_MS,
+    });
+  }
+
+  const providers = auditStreamTimeouts(toml).map((item) => item.provider);
+  for (const provider of providers) {
+    const beforeRetry = toml;
+    toml = ensureRetrySettings(toml, provider);
+    if (toml !== beforeRetry) {
+      result.retriesAdded.push(provider);
+    }
+  }
+
+  const changed = toml !== originalToml;
+  result.noChanges = !result.created && !changed;
+
+  if (!dryRun && (result.created || changed)) {
+    writeCodexConfig(toml);
+  }
 
   return result;
 }

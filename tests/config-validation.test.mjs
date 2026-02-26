@@ -164,18 +164,22 @@ describe("loadConfig validation and edge cases", () => {
     ]);
   });
 
-  it("preserves per-executor codexProfile from config file", async () => {
+  it("preserves executor metadata from config file when EXECUTORS env is set", async () => {
+    process.env.EXECUTORS = "CODEX:GPT51_CODEX_MINI:100";
+
     await writeFile(
       resolve(tempConfigDir, "bosun.config.json"),
       JSON.stringify(
         {
           executors: [
             {
-              name: "codex-azure-b",
+              name: "codex-mini",
               executor: "CODEX",
-              variant: "DEFAULT",
+              variant: "GPT51_CODEX_MINI",
               weight: 100,
               role: "primary",
+              enabled: false,
+              models: ["gpt-5.1-codex-mini"],
               codexProfile: "executor-2-profile",
             },
           ],
@@ -195,9 +199,28 @@ describe("loadConfig validation and edge cases", () => {
       tempConfigDir,
     ]);
 
-    expect(config.executorConfig.executors[0].codexProfile).toBe(
-      "executor-2-profile",
-    );
+    expect(config.executorConfig.executors[0].name).toBe("codex-mini");
+    expect(config.executorConfig.executors[0].enabled).toBe(false);
+    expect(config.executorConfig.executors[0].models).toEqual([
+      "gpt-5.1-codex-mini",
+    ]);
+    expect(config.executorConfig.executors[0].codexProfile).toBe("executor-2-profile");
+  });
+
+  it("infers model allow-list from variant when EXECUTORS entry has no model list", () => {
+    process.env.EXECUTORS = "COPILOT:CLAUDE_OPUS_4_6:100";
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.executorConfig.executors[0].models).toContain("claude-opus-4.6");
+    expect(config.executorConfig.executors[0].models).not.toContain("gpt-5.2-codex");
   });
 
   it("keeps trigger system disabled by default", () => {

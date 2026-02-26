@@ -116,6 +116,7 @@ import {
   execSdkCommand,
   getSdkCommands,
   getPrimaryAgentName,
+  getPrimaryAgentSelection,
   switchPrimaryAgent,
   getPrimaryAgentInfo,
 } from "./primary-agent.mjs";
@@ -6447,7 +6448,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/agents/available" && req.method === "GET") {
     try {
       const agents = getAvailableAgents();
-      const active = getPrimaryAgentName();
+      const active = getPrimaryAgentSelection();
       const mode = getAgentMode();
       jsonResponse(res, 200, { ok: true, agents, active, mode });
     } catch (err) {
@@ -6464,13 +6465,13 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "agent is required" });
         return;
       }
-      const previousAgent = getPrimaryAgentName();
+      const previousAgent = getPrimaryAgentSelection();
       const result = await switchPrimaryAgent(agent);
       if (!result.ok) {
         jsonResponse(res, 400, { ok: false, error: result.reason || "Switch failed" });
         return;
       }
-      const newAgent = getPrimaryAgentName();
+      const newAgent = getPrimaryAgentSelection();
       jsonResponse(res, 200, { ok: true, agent: newAgent, previousAgent });
       broadcastUiEvent(["agents", "sessions", "overview"], "invalidate", {
         reason: "agent-switched",

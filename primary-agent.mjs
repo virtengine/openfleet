@@ -39,7 +39,7 @@ import {
   resetClaudeSession,
   initClaudeShell,
 } from "./claude-shell.mjs";
-import { getModelsForExecutor } from "./task-complexity.mjs";
+import { getModelsForExecutor, normalizeExecutorKey } from "./task-complexity.mjs";
 
 /** Valid agent interaction modes */
 const VALID_MODES = ["ask", "agent", "plan"];
@@ -189,6 +189,7 @@ function envFlagEnabled(value) {
 }
 
 let activeAdapter = ADAPTERS["codex-sdk"];
+let activeExecutorSelection = "codex-sdk";
 let primaryProfile = null;
 let primaryFallbackReason = null;
 let initialized = false;
@@ -293,11 +294,44 @@ function selectPrimaryExecutor(config) {
 }
 
 function executorToAdapter(executor) {
-  if (!executor) return null;
-  const normalized = String(executor).toUpperCase();
-  if (normalized === "COPILOT") return "copilot-sdk";
-  if (normalized === "CLAUDE") return "claude-sdk";
+  const key = normalizeExecutorKey(executor);
+  if (key === "copilot") return "copilot-sdk";
+  if (key === "claude") return "claude-sdk";
   return "codex-sdk";
+}
+
+function readAdapterBusy(adapter) {
+  try {
+    return adapter.isBusy();
+  } catch {
+    return false;
+  }
+}
+
+function getAdapterCapabilities(adapter) {
+  return {
+    sessions: typeof adapter.listSessions === "function",
+    steering: typeof adapter.steer === "function",
+    sdkCommands: adapter.sdkCommands || [],
+  };
+}
+
+function resolveAgentSelection(name) {
+  const raw = String(name || "").trim();
+  if (!raw) return null;
+  const normalized = normalizePrimaryAgent(raw);
+  if (ADAPTERS[normalized]) {
+    return { adapterName: normalized, selectionId: normalized };
+  }
+
+  const configured = getAvailableAgents();
+  const match = configured.find((agent) => agent.id === raw);
+  if (!match) return null;
+  const adapterName = normalizePrimaryAgent(
+    match.adapterId || executorToAdapter(match.executor || match.provider),
+  );
+  if (!ADAPTERS[adapterName]) return null;
+  return { adapterName, selectionId: match.id };
 }
 
 function resolvePrimaryAgent(nameOrConfig) {
@@ -322,8 +356,18 @@ function resolvePrimaryAgent(nameOrConfig) {
 }
 
 export function setPrimaryAgent(name) {
+  const resolved = resolveAgentSelection(name);
+  if (resolved) {
+    activeAdapter = ADAPTERS[resolved.adapterName] || ADAPTERS["codex-sdk"];
+    activeExecutorSelection =
+      resolved.selectionId || activeAdapter.name || "codex-sdk";
+    return activeAdapter.name;
+  }
+
   const normalized = normalizePrimaryAgent(name);
-  activeAdapter = ADAPTERS[normalized] || ADAPTERS["codex-sdk"];
+  const adapterName = ADAPTERS[normalized] ? normalized : "codex-sdk";
+  activeAdapter = ADAPTERS[adapterName] || ADAPTERS["codex-sdk"];
+  activeExecutorSelection = adapterName;
   return activeAdapter.name;
 }
 
@@ -331,16 +375,21 @@ export function getPrimaryAgentName() {
   return activeAdapter?.name || "codex-sdk";
 }
 
+export function getPrimaryAgentSelection() {
+  return activeExecutorSelection || getPrimaryAgentName();
+}
+
 export async function switchPrimaryAgent(name) {
-  const normalized = normalizePrimaryAgent(name);
-  if (!ADAPTERS[normalized]) {
+  const target = resolveAgentSelection(name);
+  if (!target) {
     return { ok: false, reason: "unknown_agent" };
   }
-  activeAdapter = ADAPTERS[normalized];
+  activeAdapter = ADAPTERS[target.adapterName];
+  activeExecutorSelection = target.selectionId || target.adapterName;
   primaryFallbackReason = null;
   initialized = false;
   try {
-    await initPrimaryAgent(normalized);
+    await initPrimaryAgent(target.selectionId || target.adapterName);
     return { ok: true, name: getPrimaryAgentName() };
   } catch (err) {
     return { ok: false, reason: err?.message || "init_failed" };
@@ -351,6 +400,12 @@ export async function initPrimaryAgent(nameOrConfig = null) {
   if (initialized) return getPrimaryAgentName();
   const desired = resolvePrimaryAgent(nameOrConfig);
   setPrimaryAgent(desired);
+  if (
+    primaryProfile?.name &&
+    (activeExecutorSelection === activeAdapter.name || !activeExecutorSelection)
+  ) {
+    activeExecutorSelection = String(primaryProfile.name).trim() || activeAdapter.name;
+  }
 
   if (
     activeAdapter.name === "codex-sdk" &&
@@ -618,6 +673,7 @@ export function getPrimaryAgentInfo() {
   const info = activeAdapter.getInfo ? activeAdapter.getInfo() : {};
   return {
     adapter: activeAdapter.name,
+    selectionId: activeExecutorSelection || activeAdapter.name,
     provider: activeAdapter.provider,
     profile: primaryProfile,
     fallbackReason: primaryFallbackReason,
@@ -693,23 +749,61 @@ export function applyModePrefix(userMessage) {
  * @returns {Array<{id:string, name:string, provider:string, available:boolean, busy:boolean, capabilities:object}>}
  */
 export function getAvailableAgents() {
+  let configExecutors = [];
+  try {
+    const cfg = loadConfig();
+    configExecutors = Array.isArray(cfg?.executorConfig?.executors)
+      ? cfg.executorConfig.executors
+      : [];
+  } catch {
+    configExecutors = [];
+  }
+
+  if (configExecutors.length > 0) {
+    return configExecutors.map((entry, index) => {
+      const adapterId = executorToAdapter(entry?.executor);
+      const adapter = ADAPTERS[adapterId] || ADAPTERS["codex-sdk"];
+      const envDisabledKey = `${adapterId.replace("-sdk", "").toUpperCase()}_SDK_DISABLED`;
+      const sdkDisabled = envFlagEnabled(process.env[envDisabledKey]);
+      const profileEnabled = entry?.enabled !== false;
+      const configuredModels = Array.isArray(entry?.models)
+        ? entry.models
+            .map((model) => String(model || "").trim())
+            .filter(Boolean)
+        : [];
+      const models = configuredModels.length > 0
+        ? configuredModels
+        : getModelsForExecutor(entry?.executor || adapter.provider);
+      const name = String(entry?.name || "").trim() || adapter.displayName || adapter.name;
+      return {
+        id: name || `${adapterId}-${index + 1}`,
+        name,
+        provider: adapter.provider,
+        executor: String(entry?.executor || "").toUpperCase() || adapter.provider,
+        variant: String(entry?.variant || "DEFAULT"),
+        adapterId,
+        available: profileEnabled && !sdkDisabled,
+        busy: profileEnabled && !sdkDisabled ? readAdapterBusy(adapter) : false,
+        models,
+        capabilities: getAdapterCapabilities(adapter),
+      };
+    });
+  }
+
   return Object.entries(ADAPTERS).map(([id, adapter]) => {
     const envDisabledKey = `${id.replace("-sdk", "").toUpperCase()}_SDK_DISABLED`;
     const disabled = envFlagEnabled(process.env[envDisabledKey]);
-    let busy = false;
-    try { busy = adapter.isBusy(); } catch { /* ignore */ }
     return {
       id,
       name: adapter.displayName || adapter.name,
       provider: adapter.provider,
+      executor: adapter.provider,
+      variant: "DEFAULT",
+      adapterId: id,
       available: !disabled,
-      busy,
+      busy: readAdapterBusy(adapter),
       models: getModelsForExecutor(adapter.provider), // use provider ("CODEX"/"COPILOT"/"CLAUDE") — always in the alias map
-      capabilities: {
-        sessions: typeof adapter.listSessions === "function",
-        steering: typeof adapter.steer === "function",
-        sdkCommands: adapter.sdkCommands || [],
-      },
+      capabilities: getAdapterCapabilities(adapter),
     };
   });
 }
