@@ -6838,7 +6838,43 @@ export async function startTelegramUiServer(options = {}) {
 
   const rawPort = options.port ?? getDefaultPort();
   const port = Number(rawPort);
-  if (!Number.isFinite(port) || port < 0) return null;
+  const isTestRun =
+    Boolean(process.env.VITEST) ||
+    process.env.NODE_ENV === "test" ||
+    Boolean(process.env.JEST_WORKER_ID);
+  const allowEphemeralPort =
+    options.allowEphemeralPort === true ||
+    process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT === "1" ||
+    isTestRun;
+  const portSource =
+    options.port != null
+      ? "options.port"
+      : process.env.TELEGRAM_UI_PORT
+        ? "env.TELEGRAM_UI_PORT"
+        : "default(0)";
+
+  if (!Number.isFinite(port) || port < 0) {
+    console.warn(
+      `[telegram-ui] invalid ui port: raw=${String(rawPort)} source=${portSource}`,
+    );
+    return null;
+  }
+  if (port === 0 && !allowEphemeralPort) {
+    console.warn(
+      `[telegram-ui] refusing ephemeral ui port (resolved 0 from ${portSource}); ` +
+      `set TELEGRAM_UI_PORT (for example 4400) or set BOSUN_UI_ALLOW_EPHEMERAL_PORT=1`,
+    );
+    return null;
+  }
+
+  const autoOpenEnabled = ["1", "true", "yes", "on"].includes(
+    String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "")
+      .trim()
+      .toLowerCase(),
+  );
+  console.log(
+    `[telegram-ui] startup config: port=${port} source=${portSource} autoOpen=${autoOpenEnabled ? "enabled" : "disabled"}`,
+  );
 
   injectUiDependencies(options.dependencies || {});
 
@@ -7098,12 +7134,14 @@ export async function startTelegramUiServer(options = {}) {
   //  - skip when caller passes skipAutoOpen
   //  - skip during Vitest / Jest test runs (avoids opening 20+ tabs during `npm test`)
   //  - only open ONCE per process (singleton guard — prevents loops on server restart)
-  const isTestRun = process.env.VITEST || process.env.NODE_ENV === "test" || process.env.JEST_WORKER_ID;
+  const isTestRunRuntime =
+    process.env.VITEST || process.env.NODE_ENV === "test" || process.env.JEST_WORKER_ID;
   if (
+    autoOpenEnabled &&
     process.env.BOSUN_DESKTOP !== "1" &&
     !options.skipAutoOpen &&
     !_browserOpened &&
-    !isTestRun
+    !isTestRunRuntime
   ) {
     _browserOpened = true;
     const openUrl = `${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`;
