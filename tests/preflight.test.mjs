@@ -128,6 +128,22 @@ describe("preflight interactive git editor warnings", () => {
     expect(`${warning.title}\n${warning.message}`).toMatch(/code --wait/i);
   });
 
+  it("warns when core.editor is set to code", () => {
+    spawnSyncMock.mockImplementation(
+      createSpawnMock({
+        coreEditor: "code",
+      }),
+    );
+
+    const result = runPreflightChecks({ repoRoot: "C:\\repo" });
+    const warning = getInteractiveEditorWarning(result);
+
+    expect(result.ok).toBe(true);
+    expect(warning).toBeDefined();
+    expect(String(warning.title) + "\n" + String(warning.message)).toMatch(
+      /code/i,
+    );
+  });
   it("warns when GIT_EDITOR is interactive even when core.editor is safe", () => {
     process.env.GIT_EDITOR = "vim";
     spawnSyncMock.mockImplementation(
@@ -171,6 +187,7 @@ describe("preflight interactive git editor warnings", () => {
     const result = runPreflightChecks({ repoRoot: "C:\\repo" });
     const report = formatPreflightReport(result);
 
+    expect(report).toMatch(/attention: interactive git editor detected/i);
     expect(report).toContain("Warnings:");
     expect(report).toMatch(/interactive git editor/i);
     expect(report).toContain("node git-editor-fix.mjs");

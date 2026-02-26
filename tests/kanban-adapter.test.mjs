@@ -31,6 +31,9 @@ const {
   persistSharedStateToIssue,
   readSharedStateFromIssue,
   markTaskIgnored,
+  __resetGhRateLimitBackoffForTests,
+  __resetProjectPayloadWarningStateForTests,
+  __reloadProjectCommandBackoffStateForTests,
 } = await import("../kanban-adapter.mjs");
 const {
   configureTaskStore,
@@ -81,6 +84,8 @@ describe("kanban-adapter github backend", () => {
       kanban: { backend: "github" },
     });
     setKanbanBackend("github");
+    __resetGhRateLimitBackoffForTests();
+    __resetProjectPayloadWarningStateForTests();
   });
 
   afterEach(() => {
@@ -126,6 +131,83 @@ describe("kanban-adapter github backend", () => {
     const args = call[1];
     expect(args).toContain("--repo");
     expect(args).toContain("acme/widgets");
+  });
+
+  it("uses default project backoff delays when GH delay env vars are blank", () => {
+    const previous = {
+      ownerRetry: process.env.GH_PROJECT_OWNER_RETRY_MS,
+      commandBackoff: process.env.GH_PROJECT_COMMAND_BACKOFF_MS,
+      modeFallback: process.env.GH_PROJECT_MODE_FALLBACK_MS,
+      rateBackoff: process.env.GH_PROJECT_RATE_LIMIT_BACKOFF_MS,
+      rateWarn: process.env.GH_RATE_LIMIT_WARNING_THROTTLE_MS,
+      rateRetry: process.env.GH_RATE_LIMIT_RETRY_MS,
+      transientRetry: process.env.GH_TRANSIENT_RETRY_MS,
+      defaultAssigneeRetry: process.env.GH_DEFAULT_ASSIGNEE_RETRY_MS,
+    };
+
+    process.env.GH_PROJECT_OWNER_RETRY_MS = "";
+    process.env.GH_PROJECT_COMMAND_BACKOFF_MS = "";
+    process.env.GH_PROJECT_MODE_FALLBACK_MS = "";
+    process.env.GH_PROJECT_RATE_LIMIT_BACKOFF_MS = "";
+    process.env.GH_RATE_LIMIT_WARNING_THROTTLE_MS = "";
+    process.env.GH_RATE_LIMIT_RETRY_MS = "";
+    process.env.GH_TRANSIENT_RETRY_MS = "";
+    process.env.GH_DEFAULT_ASSIGNEE_RETRY_MS = "";
+
+    try {
+      setKanbanBackend("github");
+      const adapter = getKanbanAdapter();
+      expect(adapter._projectOwnerRetryDelayMs).toBe(300_000);
+      expect(adapter._projectCommandBackoffMs).toBe(60_000);
+      expect(adapter._projectModeFallbackMs).toBe(180_000);
+      expect(adapter._projectRateLimitBackoffMs).toBe(300_000);
+      expect(adapter._rateLimitWarningThrottleMs).toBe(60_000);
+      expect(adapter._rateLimitRetryDelayMs).toBe(60_000);
+      expect(adapter._transientRetryDelayMs).toBe(2_000);
+      expect(adapter._defaultAssigneeRetryDelayMs).toBe(300_000);
+    } finally {
+      if (previous.ownerRetry === undefined) {
+        delete process.env.GH_PROJECT_OWNER_RETRY_MS;
+      } else {
+        process.env.GH_PROJECT_OWNER_RETRY_MS = previous.ownerRetry;
+      }
+      if (previous.commandBackoff === undefined) {
+        delete process.env.GH_PROJECT_COMMAND_BACKOFF_MS;
+      } else {
+        process.env.GH_PROJECT_COMMAND_BACKOFF_MS = previous.commandBackoff;
+      }
+      if (previous.modeFallback === undefined) {
+        delete process.env.GH_PROJECT_MODE_FALLBACK_MS;
+      } else {
+        process.env.GH_PROJECT_MODE_FALLBACK_MS = previous.modeFallback;
+      }
+      if (previous.rateBackoff === undefined) {
+        delete process.env.GH_PROJECT_RATE_LIMIT_BACKOFF_MS;
+      } else {
+        process.env.GH_PROJECT_RATE_LIMIT_BACKOFF_MS = previous.rateBackoff;
+      }
+      if (previous.rateWarn === undefined) {
+        delete process.env.GH_RATE_LIMIT_WARNING_THROTTLE_MS;
+      } else {
+        process.env.GH_RATE_LIMIT_WARNING_THROTTLE_MS = previous.rateWarn;
+      }
+      if (previous.rateRetry === undefined) {
+        delete process.env.GH_RATE_LIMIT_RETRY_MS;
+      } else {
+        process.env.GH_RATE_LIMIT_RETRY_MS = previous.rateRetry;
+      }
+      if (previous.transientRetry === undefined) {
+        delete process.env.GH_TRANSIENT_RETRY_MS;
+      } else {
+        process.env.GH_TRANSIENT_RETRY_MS = previous.transientRetry;
+      }
+      if (previous.defaultAssigneeRetry === undefined) {
+        delete process.env.GH_DEFAULT_ASSIGNEE_RETRY_MS;
+      } else {
+        process.env.GH_DEFAULT_ASSIGNEE_RETRY_MS = previous.defaultAssigneeRetry;
+      }
+      setKanbanBackend("github");
+    }
   });
 
   it("handles non-JSON output for issue close and then fetches updated issue", async () => {
@@ -197,6 +279,7 @@ describe("kanban-adapter github backend", () => {
 
   it("does not default assignee to repo owner when user resolution fails", async () => {
     mockGh("ok");
+    mockGhError(new Error("gh auth status unavailable"));
     mockGhError(new Error("gh api unavailable"));
     mockGh("https://github.com/acme/widgets/issues/77\n");
     mockGh(
@@ -300,6 +383,524 @@ describe("kanban-adapter github backend", () => {
     });
 
     expect(tasks).toHaveLength(2);
+  });
+
+  it("normalizes wrapped project item-list payloads", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockGh(
+      JSON.stringify({
+        items: [
+          {
+            id: "PVTI_123",
+            status: "Todo",
+            content: {
+              number: 101,
+              title: "Wrapped task",
+              body: "",
+              state: "OPEN",
+              url: "https://github.com/acme/widgets/issues/101",
+              labels: [{ name: "bosun" }],
+              assignees: [],
+            },
+          },
+        ],
+      }),
+    );
+
+    const adapter = getKanbanAdapter();
+    const tasks = await adapter.listTasksFromProject("5");
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      id: "101",
+      title: "Wrapped task",
+      status: "todo",
+    });
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("project item-list returned non-array"),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("normalizes object-map project item-list payloads", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockGh(
+      JSON.stringify({
+        items: {
+          PVTI_123: {
+            id: "PVTI_123",
+            status: "Todo",
+            content: {
+              number: 101,
+              title: "Mapped task",
+              body: "",
+              state: "OPEN",
+              url: "https://github.com/acme/widgets/issues/101",
+              labels: [{ name: "bosun" }],
+              assignees: [],
+            },
+          },
+        },
+      }),
+    );
+
+    const adapter = getKanbanAdapter();
+    const tasks = await adapter.listTasksFromProject("5");
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      id: "101",
+      title: "Mapped task",
+      status: "todo",
+    });
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("project item-list returned non-array"),
+    );
+    warnSpy.mockRestore();
+  });
+
+
+  it("deduplicates concurrent project item-list fetches", async () => {
+    mockGh(
+      JSON.stringify([
+        {
+          id: "PVTI_123",
+          status: "Todo",
+          content: {
+            number: 101,
+            title: "Concurrent task",
+            body: "",
+            state: "OPEN",
+            url: "https://github.com/acme/widgets/issues/101",
+            labels: [{ name: "bosun" }],
+            assignees: [],
+          },
+        },
+      ]),
+    );
+
+    const adapter = getKanbanAdapter();
+    const [first, second, third] = await Promise.all([
+      adapter.listTasksFromProject("concurrent-dedup-5"),
+      adapter.listTasksFromProject("concurrent-dedup-5"),
+      adapter.listTasksFromProject("concurrent-dedup-5"),
+    ]);
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(third).toHaveLength(1);
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries project item-list without owner after owner-type failures", async () => {
+    process.env.GITHUB_DEFAULT_ASSIGNEE = "acme";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const ownerTypeError = new Error(
+      "Command failed: gh project item-list 5 --owner acme --format json\nunknown owner type",
+    );
+    ownerTypeError.stderr = "unknown owner type";
+    ownerTypeError.stdout = "";
+    mockGhError(ownerTypeError);
+    mockGh(
+      JSON.stringify([
+        {
+          id: "PVTI_123",
+          status: "Todo",
+          content: {
+            number: 101,
+            title: "Recovered task",
+            body: "",
+            state: "OPEN",
+            url: "https://github.com/acme/widgets/issues/101",
+            labels: [{ name: "bosun" }],
+            assignees: [],
+          },
+        },
+      ]),
+    );
+
+    const adapter = getKanbanAdapter();
+    const tasks = await adapter.listTasksFromProject("5");
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      id: "101",
+      title: "Recovered task",
+      status: "todo",
+    });
+    expect(execFileMock).toHaveBeenCalledTimes(2);
+
+    const firstArgs = execFileMock.mock.calls[0]?.[1] || [];
+    const secondArgs = execFileMock.mock.calls[1]?.[1] || [];
+    expect(firstArgs).toContain("--owner");
+    expect(secondArgs).not.toContain("--owner");
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("recovered project command without explicit owner"),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("retries without owner when owner-type signal is only in stderr", async () => {
+    process.env.GITHUB_DEFAULT_ASSIGNEE = "acme";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const ownerTypeError = new Error(
+      "Command failed: gh project item-list 5 --owner acme --format json",
+    );
+    ownerTypeError.stderr = "unknown owner type";
+    ownerTypeError.stdout = "";
+    mockGhError(ownerTypeError);
+    mockGh(
+      JSON.stringify([
+        {
+          id: "PVTI_123",
+          status: "Todo",
+          content: {
+            number: 101,
+            title: "Recovered from stderr-only owner error",
+            body: "",
+            state: "OPEN",
+            url: "https://github.com/acme/widgets/issues/101",
+            labels: [{ name: "bosun" }],
+            assignees: [],
+          },
+        },
+      ]),
+    );
+
+    const adapter = getKanbanAdapter();
+    const tasks = await adapter.listTasksFromProject("5");
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      id: "101",
+      title: "Recovered from stderr-only owner error",
+      status: "todo",
+    });
+    expect(execFileMock).toHaveBeenCalledTimes(2);
+
+    const firstArgs = execFileMock.mock.calls[0]?.[1] || [];
+    const secondArgs = execFileMock.mock.calls[1]?.[1] || [];
+    expect(firstArgs).toContain("--owner");
+    expect(secondArgs).not.toContain("--owner");
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("recovered project command without explicit owner"),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("uses owner retry backoff window after owner-type item-list failures", async () => {
+    process.env.GITHUB_DEFAULT_ASSIGNEE = "acme";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const ownerTypeError = new Error(
+      "Command failed: gh project item-list owner-backoff-5 --owner acme --format json\nunknown owner type",
+    );
+    ownerTypeError.stderr = "unknown owner type";
+    ownerTypeError.stdout = "";
+
+    mockGhError(ownerTypeError);
+    mockGhError(ownerTypeError);
+
+    vi.useFakeTimers();
+    try {
+      const now = new Date("2026-01-01T00:00:00.000Z");
+      vi.setSystemTime(now);
+
+      const adapter = getKanbanAdapter();
+      const first = await adapter.listTasksFromProject("owner-backoff-5");
+      vi.setSystemTime(new Date(now.getTime() + 2 * 60 * 1000));
+      const second = await adapter.listTasksFromProject("owner-backoff-5");
+
+      expect(first).toEqual([]);
+      expect(second).toEqual([]);
+      expect(execFileMock).toHaveBeenCalledTimes(2);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "failed to list tasks from project owner-backoff-5",
+        ),
+      );
+    } finally {
+      vi.useRealTimers();
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("keeps owner retry backoff when ownerless fallback fails with a different error", async () => {
+    process.env.GITHUB_DEFAULT_ASSIGNEE = "acme";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const ownerTypeError = new Error(
+      "Command failed: gh project item-list mixed-owner-backoff-5 --owner acme --format json\nunknown owner type",
+    );
+    ownerTypeError.stderr = "unknown owner type";
+    ownerTypeError.stdout = "";
+
+    const ownerlessError = new Error(
+      "Command failed: gh project item-list mixed-owner-backoff-5 --format json\nowner is required when not running interactively",
+    );
+    ownerlessError.stderr = "owner is required when not running interactively";
+    ownerlessError.stdout = "";
+
+    mockGhError(ownerTypeError);
+    mockGhError(ownerlessError);
+
+    vi.useFakeTimers();
+    try {
+      const now = new Date("2026-01-01T00:00:00.000Z");
+      vi.setSystemTime(now);
+
+      const adapter = getKanbanAdapter();
+      const first = await adapter.listTasksFromProject("mixed-owner-backoff-5");
+      vi.setSystemTime(new Date(now.getTime() + 2 * 60 * 1000));
+      const second = await adapter.listTasksFromProject("mixed-owner-backoff-5");
+
+      expect(first).toEqual([]);
+      expect(second).toEqual([]);
+      expect(execFileMock).toHaveBeenCalledTimes(2);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "failed to list tasks from project mixed-owner-backoff-5",
+        ),
+      );
+    } finally {
+      vi.useRealTimers();
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("skips GH calls while project owner fallback is in cooldown", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    vi.useFakeTimers();
+    try {
+      const now = new Date("2026-01-01T00:00:00.000Z");
+      vi.setSystemTime(now);
+
+      const adapter = getKanbanAdapter();
+      adapter._invalidProjectOwners.add("acme");
+      adapter._projectOwnerAllInvalidUntil = now.getTime() + 60_000;
+
+      const tasks = await adapter.listTasksFromProject("owner-cooldown-5");
+
+      expect(tasks).toEqual([]);
+      expect(execFileMock).toHaveBeenCalledTimes(0);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("project owner fallback cooling down"),
+      );
+    } finally {
+      vi.useRealTimers();
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("treats empty object-map project item-list payloads as valid", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockGh(
+      JSON.stringify({
+        items: {},
+      }),
+    );
+
+    const adapter = getKanbanAdapter();
+    const tasks = await adapter.listTasksFromProject("5");
+
+    expect(tasks).toEqual([]);
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("project item-list returned non-array"),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("throttles repeated project item-list shape warnings", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockGh(JSON.stringify({ unexpected: true }));
+    mockGh(JSON.stringify({ unexpected: true }));
+
+    const adapter = getKanbanAdapter();
+    const first = await adapter.listTasksFromProject("throttle-5");
+    const second = await adapter.listTasksFromProject("throttle-5");
+
+    expect(first).toEqual([]);
+    expect(second).toEqual([]);
+
+    const warningCalls = warnSpy.mock.calls
+      .map((call) => String(call?.[0] || ""))
+      .filter((line) => line.includes("project item-list returned non-array"));
+    expect(warningCalls).toHaveLength(1);
+    warnSpy.mockRestore();
+  });
+
+  it("throttles repeated project item-list shape warnings across adapter recreation", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockGh(JSON.stringify({ unexpected: true }));
+    mockGh(JSON.stringify({ unexpected: true }));
+
+    const firstAdapter = getKanbanAdapter();
+    const first = await firstAdapter.listTasksFromProject("throttle-shared-5");
+
+    setKanbanBackend("github");
+    const secondAdapter = getKanbanAdapter();
+    const second = await secondAdapter.listTasksFromProject("throttle-shared-5");
+
+    expect(first).toEqual([]);
+    expect(second).toEqual([]);
+
+    const warningCalls = warnSpy.mock.calls
+      .map((call) => String(call?.[0] || ""))
+      .filter((line) => line.includes("project item-list returned non-array"));
+    expect(warningCalls).toHaveLength(1);
+    warnSpy.mockRestore();
+  });
+
+  it("normalizes project-number keys for item-list backoff", async () => {
+    mockGh(JSON.stringify({ unexpected: true }));
+
+    const adapter = getKanbanAdapter();
+    const first = await adapter.listTasksFromProject("normalize-key-5 ");
+    const second = await adapter.listTasksFromProject("normalize-key-5");
+
+    expect(first).toEqual([]);
+    expect(second).toEqual([]);
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies extended item-list backoff after project rate-limit failures", async () => {
+    const prevRetryMs = process.env.GH_RATE_LIMIT_RETRY_MS;
+    const prevProjectRateLimitBackoffMs = process.env.GH_PROJECT_RATE_LIMIT_BACKOFF_MS;
+    process.env.GH_RATE_LIMIT_RETRY_MS = "0";
+    process.env.GH_PROJECT_RATE_LIMIT_BACKOFF_MS = "300000";
+
+    const rateLimitError = new Error(
+      "Command failed: gh project item-list rate-limit-backoff-5 --owner acme --format json\nGraphQL: API rate limit exceeded for user ID 9289791.",
+    );
+    rateLimitError.stderr = "GraphQL: API rate limit exceeded for user ID 9289791.";
+    rateLimitError.stdout = "";
+
+    mockGhError(rateLimitError);
+    mockGhError(rateLimitError);
+
+    vi.useFakeTimers();
+    try {
+      const now = new Date("2026-01-01T00:00:00.000Z");
+      vi.setSystemTime(now);
+
+      const adapter = getKanbanAdapter();
+      const first = await adapter.listTasksFromProject("rate-limit-backoff-5");
+      vi.setSystemTime(new Date(now.getTime() + 2 * 60 * 1000));
+      const second = await adapter.listTasksFromProject("rate-limit-backoff-5");
+
+      expect(first).toEqual([]);
+      expect(second).toEqual([]);
+      expect(execFileMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+      if (prevRetryMs === undefined) {
+        delete process.env.GH_RATE_LIMIT_RETRY_MS;
+      } else {
+        process.env.GH_RATE_LIMIT_RETRY_MS = prevRetryMs;
+      }
+      if (prevProjectRateLimitBackoffMs === undefined) {
+        delete process.env.GH_PROJECT_RATE_LIMIT_BACKOFF_MS;
+      } else {
+        process.env.GH_PROJECT_RATE_LIMIT_BACKOFF_MS = prevProjectRateLimitBackoffMs;
+      }
+    }
+  });
+
+  it("backs off repeated project item-list fetches after invalid payload", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockGh(JSON.stringify({ unexpected: true }));
+
+    const adapter = getKanbanAdapter();
+    const first = await adapter.listTasksFromProject("backoff-5");
+    const second = await adapter.listTasksFromProject("backoff-5");
+
+    expect(first).toEqual([]);
+    expect(second).toEqual([]);
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+
+    const warningCalls = warnSpy.mock.calls
+      .map((call) => String(call?.[0] || ""))
+      .filter((line) => line.includes("project item-list returned non-array"));
+    expect(warningCalls.length).toBeGreaterThanOrEqual(1);
+    warnSpy.mockRestore();
+  });
+
+  it("shares project item-list backoff across adapter recreation", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockGh(JSON.stringify({ unexpected: true }));
+
+    const firstAdapter = getKanbanAdapter();
+    const first = await firstAdapter.listTasksFromProject("backoff-shared-5");
+
+    setKanbanBackend("github");
+    const secondAdapter = getKanbanAdapter();
+    const second = await secondAdapter.listTasksFromProject("backoff-shared-5");
+
+    expect(first).toEqual([]);
+    expect(second).toEqual([]);
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+
+    const warningCalls = warnSpy.mock.calls
+      .map((call) => String(call?.[0] || ""))
+      .filter((line) => line.includes("project item-list returned non-array"));
+    expect(warningCalls.length).toBeGreaterThanOrEqual(1);
+    warnSpy.mockRestore();
+  });
+  it("reloads project item-list backoff state from disk cache", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockGh(JSON.stringify({ unexpected: true }));
+
+    const firstAdapter = getKanbanAdapter();
+    const first = await firstAdapter.listTasksFromProject("backoff-persist-5");
+
+    __reloadProjectCommandBackoffStateForTests();
+
+    setKanbanBackend("github");
+    const secondAdapter = getKanbanAdapter();
+    const second = await secondAdapter.listTasksFromProject("backoff-persist-5");
+
+    expect(first).toEqual([]);
+    expect(second).toEqual([]);
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+
+    const warningCalls = warnSpy.mock.calls
+      .map((call) => String(call?.[0] || ""))
+      .filter((line) => line.includes("project item-list returned non-array"));
+    expect(warningCalls.length).toBeGreaterThanOrEqual(1);
+    warnSpy.mockRestore();
+  });
+
+  it("normalizes wrapped project field-list payloads", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockGh(
+      JSON.stringify({
+        fields: [
+          {
+            id: "PVTSSF_status",
+            name: "Status",
+            type: "SINGLE_SELECT",
+            options: [{ id: "todo-id", name: "Todo" }],
+          },
+        ],
+      }),
+    );
+
+    const adapter = getKanbanAdapter();
+    const fields = await adapter._getProjectFields("5");
+
+    expect(fields).toEqual({
+      statusFieldId: "PVTSSF_status",
+      statusOptions: [{ id: "todo-id", name: "Todo" }],
+    });
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("project field-list returned non-array"),
+    );
+    warnSpy.mockRestore();
   });
 
   it("reopens issue and syncs status labels for open-state transitions", async () => {
@@ -973,5 +1574,6 @@ describe("kanban-adapter internal backend", () => {
     expect(removeTask(created.id)).toBe(false);
   });
 });
+
 
 

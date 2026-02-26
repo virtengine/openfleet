@@ -11,8 +11,12 @@ vi.mock("../config.mjs", () => ({
   loadConfig: loadConfigMock,
 }));
 
-const { getKanbanAdapter, setKanbanBackend } =
-  await import("../kanban-adapter.mjs");
+const {
+  getKanbanAdapter,
+  setKanbanBackend,
+  __resetGhRateLimitBackoffForTests,
+  __resetProjectPayloadWarningStateForTests,
+} = await import("../kanban-adapter.mjs");
 
 /**
  * Helper to mock a gh CLI call. `stdout` will be returned; pass an object
@@ -42,6 +46,8 @@ const ENV_KEYS = [
   "GITHUB_PROJECT_NUMBER",
   "GITHUB_PROJECT_TITLE",
   "GITHUB_PROJECT_AUTO_SYNC",
+  "GITHUB_PROJECT_MODE_FALLBACK_MS",
+  "GH_PROJECT_MODE_FALLBACK_MS",
   "GITHUB_PROJECT_STATUS_TODO",
   "GITHUB_PROJECT_STATUS_INPROGRESS",
   "GITHUB_PROJECT_STATUS_INREVIEW",
@@ -93,6 +99,8 @@ describe("GitHub Projects v2 integration", () => {
       kanban: { backend: "github" },
     });
     setKanbanBackend("github");
+    __resetGhRateLimitBackoffForTests();
+    __resetProjectPayloadWarningStateForTests();
   });
 
   afterEach(() => {
@@ -385,6 +393,27 @@ describe("GitHub Projects v2 integration", () => {
       expect(adapter._normalizeProjectStatus("In Progress")).toBe("inprogress");
     });
 
+    it("suppresses missing-status warnings when field-list command is backed off", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      mockGh({ unexpected: true });
+
+      const adapter = getKanbanAdapter();
+      const result = await adapter._syncStatusToProject(
+        "https://github.com/acme/widgets/issues/42",
+        "7",
+        "todo",
+      );
+
+      expect(result).toBe(false);
+      const warningLines = warnSpy.mock.calls.map((call) => String(call?.[0] || ""));
+      expect(
+        warningLines.some((line) => line.includes("project field-list returned non-array")),
+      ).toBe(true);
+      expect(
+        warningLines.some((line) => line.includes("cannot sync to project: no status field found")),
+      ).toBe(false);
+      warnSpy.mockRestore();
+    });
     it("_syncStatusToProject uses configurable mapping", async () => {
       // Mock field-list to return Status field
       mockGh([
@@ -1290,6 +1319,51 @@ describe("GitHub Projects v2 integration", () => {
       });
       expect(tasks).toHaveLength(1);
       expect(tasks[0]?.id).toBe("10");
+    });
+
+    it("listTasks falls back to issue mode while project-mode fallback is active", async () => {
+      process.env.GH_PROJECT_MODE_FALLBACK_MS = "600000";
+
+      mockGh({ unexpected: true });
+      mockGh([
+        {
+          number: 42,
+          title: "Issue fallback",
+          body: "",
+          state: "open",
+          url: "https://github.com/acme/widgets/issues/42",
+          labels: [{ name: "todo" }],
+          assignees: [],
+          comments: [],
+        },
+      ]);
+      mockGh([]);
+      mockGh([
+        {
+          number: 43,
+          title: "Issue fallback 2",
+          body: "",
+          state: "open",
+          url: "https://github.com/acme/widgets/issues/43",
+          labels: [{ name: "todo" }],
+          assignees: [],
+          comments: [],
+        },
+      ]);
+
+      mockGh([]);
+
+      const adapter = getKanbanAdapter();
+      const first = await adapter.listTasks("", { status: "todo" });
+      const second = await adapter.listTasks("", { status: "todo" });
+
+      expect(first).toHaveLength(1);
+      expect(second).toHaveLength(1);
+
+      const projectCalls = execFileMock.mock.calls.filter((call) =>
+        String((call?.[1] || []).join(" ")).includes("project item-list"),
+      );
+      expect(projectCalls).toHaveLength(1);
     });
 
     it("createTask supports addProjectV2DraftIssue without conversion", async () => {
