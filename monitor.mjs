@@ -478,8 +478,12 @@ async function ensureWorkflowAutomationEngine() {
           delete payload.projectId;
           return createTask(projectId, payload);
         },
-        updateTaskStatus: async (taskId, status) =>
-          updateKanbanTaskStatus(String(taskId || ""), String(status || "")),
+        updateTaskStatus: async (taskId, status, options = {}) =>
+          updateTaskStatus(
+            String(taskId || ""),
+            String(status || ""),
+            options && typeof options === "object" ? options : {},
+          ),
         listTasks: async (projectId, filters = {}) =>
           listKanbanTasks(String(projectId || ""), filters || {}),
       };
@@ -4431,6 +4435,10 @@ async function updateTaskStatus(taskId, newStatus, options = {}) {
     options?.taskData && typeof options.taskData === "object"
       ? options.taskData
       : null;
+  const workflowData =
+    options?.workflowData && typeof options.workflowData === "object"
+      ? options.workflowData
+      : null;
   const taskTitle = String(
     options?.taskTitle || taskData?.title || getInternalTask(normalizedTaskId)?.title || "",
   ).trim();
@@ -4444,6 +4452,43 @@ async function updateTaskStatus(taskId, newStatus, options = {}) {
     taskTitle,
     previousStatus: previousStatus || null,
     status: normalizedStatus,
+    branch: String(
+      options?.branch ||
+        taskData?.branch ||
+        taskData?.branchName ||
+        taskData?.meta?.branch_name ||
+        workflowData?.branch ||
+        "",
+    ).trim() || null,
+    baseBranch: String(
+      options?.baseBranch ||
+        taskData?.baseBranch ||
+        taskData?.base_branch ||
+        taskData?.meta?.base_branch ||
+        workflowData?.baseBranch ||
+        "",
+    ).trim() || null,
+    worktreePath: String(
+      options?.worktreePath ||
+        taskData?.worktreePath ||
+        taskData?.meta?.worktreePath ||
+        workflowData?.worktreePath ||
+        "",
+    ).trim() || null,
+    prNumber: String(
+      options?.prNumber ||
+        taskData?.prNumber ||
+        taskData?.meta?.pr_number ||
+        workflowData?.prNumber ||
+        "",
+    ).trim() || null,
+    prUrl: String(
+      options?.prUrl ||
+        taskData?.prUrl ||
+        taskData?.meta?.pr_url ||
+        workflowData?.prUrl ||
+        "",
+    ).trim() || null,
   };
   const queueTaskStatusWorkflowEvents = () => {
     const statusChanged = previousStatus !== normalizedStatus;
@@ -14536,6 +14581,29 @@ if (isExecutorDisabled()) {
       },
       onTaskCompleted: (task, result) => {
         const taskId = String(task?.id || task?.task_id || "").trim();
+        const branch = String(
+          result?.branch ||
+            task?.branchName ||
+            task?.meta?.branch_name ||
+            "",
+        ).trim() || null;
+        const worktreePath = String(
+          result?.worktreePath ||
+            task?.worktreePath ||
+            task?.meta?.worktreePath ||
+            "",
+        ).trim() || null;
+        const prNumber = result?.prNumber
+          ? String(result.prNumber)
+          : null;
+        const prUrl = String(result?.prUrl || "").trim() || null;
+        const baseBranch = String(
+          result?.baseBranch ||
+            task?.baseBranch ||
+            task?.base_branch ||
+            task?.meta?.base_branch ||
+            "",
+        ).trim() || null;
         console.log(
           `[task-executor] ✅ completed: "${task.title}" (${result.attempts} attempt(s))`,
         );
@@ -14566,6 +14634,11 @@ if (isExecutorDisabled()) {
               taskStatus: "completed",
               attempts: Number(result?.attempts || 0),
               success: result?.success !== false,
+              branch,
+              worktreePath,
+              prNumber,
+              prUrl,
+              baseBranch,
             },
             { dedupKey: `workflow-event:task.completed:${taskId}:${result?.attempts || 0}` },
           );
@@ -14573,6 +14646,27 @@ if (isExecutorDisabled()) {
       },
       onTaskFailed: (task, err) => {
         const taskId = String(task?.id || task?.task_id || "").trim();
+        const branch = String(
+          err?.branch ||
+            task?.branchName ||
+            task?.meta?.branch_name ||
+            "",
+        ).trim() || null;
+        const worktreePath = String(
+          err?.worktreePath ||
+            task?.worktreePath ||
+            task?.meta?.worktreePath ||
+            "",
+        ).trim() || null;
+        const baseBranch = String(
+          err?.baseBranch ||
+            task?.baseBranch ||
+            task?.base_branch ||
+            task?.meta?.base_branch ||
+            "",
+        ).trim() || null;
+        const attempts =
+          Number(err?.attempts || 0) > 0 ? Number(err.attempts) : null;
         console.warn(
           `[task-executor] ❌ failed: "${task.title}" — ${formatMonitorError(err)}`,
         );
@@ -14586,6 +14680,10 @@ if (isExecutorDisabled()) {
               taskTitle: task?.title || "",
               taskStatus: "failed",
               error: errorMessage,
+              branch,
+              worktreePath,
+              baseBranch,
+              attempts,
             },
             { dedupKey: `workflow-event:task.failed:${taskId}:${errorMessage}` },
           );

@@ -520,6 +520,13 @@ Commit with message "feat: implement [feature]"`,
       level: "info",
     }, { x: 250, y: 1300 }),
 
+    node("set-validation-summary", "action.set_variable", "Summarize Validation Output", {
+      key: "validationSummary",
+      value:
+        "(() => { const implement = $ctx.getNodeOutput('implement') || {}; const build = $ctx.getNodeOutput('build') || {}; const test = $ctx.getNodeOutput('test-final') || {}; const lint = $ctx.getNodeOutput('lint') || {}; return ['- implement.success: ' + (implement.success === true), '- build.passed: ' + (build.passed === true), '- test-final.passed: ' + (test.passed === true), '- lint.passed: ' + (lint.passed === true), '', 'Build output:', String(build.output || '').slice(0, 6000), '', 'Test output:', String(test.output || '').slice(0, 6000), '', 'Lint output:', String(lint.output || '').slice(0, 6000)].join('\\n'); })()",
+      isExpression: true,
+    }, { x: 620, y: 1090 }),
+
     node("auto-fix", "action.run_agent", "Auto-Fix Validation Failures", {
       prompt: `# Fix Backend Validation Failures
 
@@ -529,19 +536,7 @@ Plan:
 {{plan}}
 
 Current validation outputs:
-- implement.success: {{implement.success}}
-- build.passed: {{build.passed}}
-- test-final.passed: {{test-final.passed}}
-- lint.passed: {{lint.passed}}
-
-Build output:
-{{build.output}}
-
-Test output:
-{{test-final.output}}
-
-Lint output:
-{{lint.output}}
+{{validationSummary}}
 
 Fix the code so build/tests/lint pass.
 Do NOT weaken, remove, or bypass tests.
@@ -595,7 +590,8 @@ Commit with message "fix: address backend workflow validation failures"`,
     edge("test-final", "lint"),
     edge("lint", "all-passed"),
     edge("all-passed", "create-pr", { condition: "$output?.result === true", port: "yes" }),
-    edge("all-passed", "auto-fix", { condition: "$output?.result !== true", port: "no" }),
+    edge("all-passed", "set-validation-summary", { condition: "$output?.result !== true", port: "no" }),
+    edge("set-validation-summary", "auto-fix"),
     edge("create-pr", "notify-done"),
     edge("auto-fix", "build-retry"),
     edge("build-retry", "test-retry"),

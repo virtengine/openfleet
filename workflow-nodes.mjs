@@ -466,22 +466,41 @@ registerNodeType("condition.switch", {
     type: "object",
     properties: {
       value: { type: "string", description: "Expression to evaluate" },
+      expression: { type: "string", description: "Legacy alias for value" },
+      field: { type: "string", description: "Legacy field lookup key (fallback when no expression is provided)" },
       cases: {
         type: "object",
         description: "Map of case values to output port names",
         additionalProperties: { type: "string" },
       },
     },
-    required: ["value"],
+    required: [],
   },
   async execute(node, ctx) {
-    const expr = node.config?.value || "";
     let value;
-    try {
-      const fn = new Function("$data", "$ctx", `return (${expr});`);
-      value = fn(ctx.data, ctx);
-    } catch {
-      value = ctx.resolve(expr);
+    const expr = node.config?.value || node.config?.expression || "";
+    if (expr) {
+      try {
+        const fn = new Function("$data", "$ctx", `return (${expr});`);
+        value = fn(ctx.data, ctx);
+      } catch {
+        value = ctx.resolve(expr);
+      }
+    } else if (node.config?.field) {
+      const field = String(node.config.field || "").trim();
+      value = field ? ctx.data?.[field] : undefined;
+      if (value === undefined && field) {
+        for (const output of ctx.nodeOutputs?.values?.() || []) {
+          if (
+            output &&
+            typeof output === "object" &&
+            Object.prototype.hasOwnProperty.call(output, field)
+          ) {
+            value = output[field];
+            break;
+          }
+        }
+      }
     }
     const cases = node.config?.cases || {};
     const matchedPort = cases[String(value)] || "default";
@@ -691,6 +710,11 @@ registerNodeType("action.update_task_status", {
     properties: {
       taskId: { type: "string", description: "Task ID (supports {{variables}})" },
       status: { type: "string", enum: ["todo", "inprogress", "inreview", "done", "archived"] },
+      taskTitle: { type: "string", description: "Optional task title for downstream event payloads" },
+      previousStatus: { type: "string", description: "Optional explicit previous status" },
+      workflowEvent: { type: "string", description: "Optional follow-up workflow event to emit after status update" },
+      workflowData: { type: "object", description: "Additional payload for workflowEvent" },
+      workflowDedupKey: { type: "string", description: "Optional dedup key for workflowEvent dispatch" },
     },
     required: ["taskId", "status"],
   },
@@ -698,10 +722,29 @@ registerNodeType("action.update_task_status", {
     const taskId = ctx.resolve(node.config?.taskId || "");
     const status = node.config?.status;
     const kanban = engine.services?.kanban;
+    const workflowEvent = ctx.resolve(node.config?.workflowEvent || "");
+    const workflowData =
+      node.config?.workflowData && typeof node.config.workflowData === "object"
+        ? node.config.workflowData
+        : null;
+    const taskTitle = ctx.resolve(node.config?.taskTitle || "");
+    const previousStatus = ctx.resolve(node.config?.previousStatus || "");
+    const workflowDedupKey = ctx.resolve(node.config?.workflowDedupKey || "");
+    const updateOptions = {};
+    if (taskTitle) updateOptions.taskTitle = taskTitle;
+    if (previousStatus) updateOptions.previousStatus = previousStatus;
+    if (workflowEvent) updateOptions.workflowEvent = workflowEvent;
+    if (workflowData) updateOptions.workflowData = workflowData;
+    if (workflowDedupKey) updateOptions.workflowDedupKey = workflowDedupKey;
 
     if (kanban?.updateTaskStatus) {
-      await kanban.updateTaskStatus(taskId, status);
-      return { success: true, taskId, status };
+      await kanban.updateTaskStatus(taskId, status, updateOptions);
+      return {
+        success: true,
+        taskId,
+        status,
+        workflowEvent: workflowEvent || null,
+      };
     }
     return { success: false, error: "Kanban adapter not available" };
   },
@@ -713,38 +756,97 @@ registerNodeType("action.git_operations", {
     type: "object",
     properties: {
       operation: { type: "string", enum: ["commit", "push", "create_branch", "checkout", "merge", "rebase", "status"] },
+      operations: {
+        type: "array",
+        description: "Legacy multi-step operation list",
+        items: {
+          type: "object",
+          properties: {
+            op: { type: "string" },
+            operation: { type: "string" },
+            message: { type: "string" },
+            branch: { type: "string" },
+            name: { type: "string" },
+            includeTags: { type: "boolean" },
+            paths: { type: "array", items: { type: "string" } },
+          },
+        },
+      },
       message: { type: "string", description: "Commit message (for commit operation)" },
       branch: { type: "string", description: "Branch name" },
       cwd: { type: "string" },
     },
-    required: ["operation"],
+    required: [],
   },
   async execute(node, ctx) {
-    const op = node.config?.operation;
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
-    const branch = ctx.resolve(node.config?.branch || "");
-    const message = ctx.resolve(node.config?.message || "");
+    const resolveOpCommand = (opConfig = {}) => {
+      const op = String(opConfig.op || opConfig.operation || "").trim();
+      const branch = ctx.resolve(opConfig.branch || node.config?.branch || "");
+      const message = ctx.resolve(opConfig.message || node.config?.message || "");
+      const tagName = ctx.resolve(opConfig.name || "");
+      const includeTags = opConfig.includeTags === true;
+      const addPaths = Array.isArray(opConfig.paths) && opConfig.paths.length > 0
+        ? opConfig.paths.map((path) => ctx.resolve(String(path))).join(" ")
+        : "-A";
 
-    const commands = {
-      commit: `git add -A && git commit -m "${message.replace(/"/g, '\\"')}"`,
-      push: "git push --set-upstream origin HEAD",
-      create_branch: `git checkout -b ${branch}`,
-      checkout: `git checkout ${branch}`,
-      merge: `git merge ${branch} --no-edit`,
-      rebase: `git rebase ${branch}`,
-      status: "git status --porcelain",
+      const commands = {
+        add: `git add ${addPaths}`,
+        commit: `git add -A && git commit -m "${message.replace(/"/g, '\\"')}"`,
+        tag: tagName ? `git tag ${tagName}` : "",
+        push: includeTags
+          ? "git push --set-upstream origin HEAD && git push --tags"
+          : "git push --set-upstream origin HEAD",
+        create_branch: `git checkout -b ${branch}`,
+        checkout: `git checkout ${branch}`,
+        merge: `git merge ${branch} --no-edit`,
+        rebase: `git rebase ${branch}`,
+        status: "git status --porcelain",
+      };
+      const cmd = commands[op];
+      if (!cmd) {
+        throw new Error(`Unknown git operation: ${op}`);
+      }
+      return { op, cmd };
     };
 
-    const cmd = commands[op];
-    if (!cmd) throw new Error(`Unknown git operation: ${op}`);
+    const runGitCommand = ({ op, cmd }) => {
+      ctx.log(node.id, `Git ${op}: ${cmd}`);
+      try {
+        const output = execSync(cmd, { cwd, encoding: "utf8", timeout: 120000 });
+        return { success: true, output: output?.trim(), operation: op, command: cmd };
+      } catch (err) {
+        return { success: false, error: err.message, operation: op, command: cmd };
+      }
+    };
 
-    ctx.log(node.id, `Git ${op}: ${cmd}`);
-    try {
-      const output = execSync(cmd, { cwd, encoding: "utf8", timeout: 120000 });
-      return { success: true, output: output?.trim(), operation: op };
-    } catch (err) {
-      return { success: false, error: err.message, operation: op };
+    const operationList = Array.isArray(node.config?.operations)
+      ? node.config.operations
+      : [];
+    if (operationList.length > 0) {
+      const steps = [];
+      for (const spec of operationList) {
+        const resolved = resolveOpCommand(spec || {});
+        const result = runGitCommand(resolved);
+        steps.push(result);
+        if (result.success !== true) {
+          return {
+            success: false,
+            operation: resolved.op,
+            steps,
+            error: result.error,
+          };
+        }
+      }
+      return { success: true, operation: "batch", steps };
     }
+
+    const op = String(node.config?.operation || "").trim();
+    if (!op) {
+      return { success: false, error: "No git operation provided", operation: null };
+    }
+    const resolved = resolveOpCommand({ op });
+    return runGitCommand(resolved);
   },
 });
 
@@ -756,6 +858,8 @@ registerNodeType("action.create_pr", {
       title: { type: "string", description: "PR title" },
       body: { type: "string", description: "PR body" },
       base: { type: "string", description: "Base branch" },
+      baseBranch: { type: "string", description: "Legacy alias for base branch" },
+      branch: { type: "string", description: "Head branch to open PR from" },
       draft: { type: "boolean", default: false },
       cwd: { type: "string" },
     },
@@ -764,15 +868,17 @@ registerNodeType("action.create_pr", {
   async execute(node, ctx) {
     const title = ctx.resolve(node.config?.title || "");
     const body = ctx.resolve(node.config?.body || "");
-    const base = ctx.resolve(node.config?.base || "main");
+    const base = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
+    const branch = ctx.resolve(node.config?.branch || "");
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const draft = node.config?.draft ? "--draft" : "";
+    const head = branch ? `--head ${branch}` : "";
 
-    const cmd = `gh pr create --title "${title.replace(/"/g, '\\"')}" --body "${body.replace(/"/g, '\\"')}" --base ${base} ${draft}`.trim();
+    const cmd = `gh pr create --title "${title.replace(/"/g, '\\"')}" --body "${body.replace(/"/g, '\\"')}" --base ${base} ${head} ${draft}`.trim();
     ctx.log(node.id, `Creating PR: ${title}`);
     try {
       const output = execSync(cmd, { cwd, encoding: "utf8", timeout: 60000 });
-      return { success: true, url: output?.trim(), title };
+      return { success: true, url: output?.trim(), title, base, branch: branch || null };
     } catch (err) {
       return { success: false, error: err.message };
     }
@@ -863,19 +969,32 @@ registerNodeType("action.delay", {
     type: "object",
     properties: {
       ms: { type: "number", description: "Delay in milliseconds (direct)" },
+      delayMs: { type: "number", description: "Legacy alias for ms" },
+      durationMs: { type: "number", description: "Legacy alias for ms" },
       seconds: { type: "number", description: "Delay in seconds" },
       minutes: { type: "number", description: "Delay in minutes" },
       hours: { type: "number", description: "Delay in hours" },
       jitter: { type: "number", default: 0, description: "Random jitter percentage (0-100) to add/subtract from delay" },
       reason: { type: "string", description: "Human-readable reason for the delay (logged)" },
+      message: { type: "string", description: "Legacy alias for reason" },
     },
   },
   async execute(node, ctx) {
+    const baseMs = Number(
+      node.config?.ms ??
+      node.config?.delayMs ??
+      node.config?.durationMs ??
+      0,
+    );
+    const seconds = Number(node.config?.seconds || 0);
+    const minutes = Number(node.config?.minutes || 0);
+    const hours = Number(node.config?.hours || 0);
+
     // Compute total delay from all duration fields
-    let totalMs = node.config?.ms || 0;
-    if (node.config?.seconds) totalMs += node.config.seconds * 1000;
-    if (node.config?.minutes) totalMs += node.config.minutes * 60_000;
-    if (node.config?.hours) totalMs += node.config.hours * 3_600_000;
+    let totalMs = Number.isFinite(baseMs) ? baseMs : 0;
+    if (Number.isFinite(seconds) && seconds > 0) totalMs += seconds * 1000;
+    if (Number.isFinite(minutes) && minutes > 0) totalMs += minutes * 60_000;
+    if (Number.isFinite(hours) && hours > 0) totalMs += hours * 3_600_000;
     if (totalMs <= 0) totalMs = 1000; // Default 1s
 
     // Apply jitter
@@ -886,7 +1005,7 @@ registerNodeType("action.delay", {
       totalMs = Math.max(totalMs, 100); // Floor at 100ms
     }
 
-    const reason = node.config?.reason || "";
+    const reason = ctx.resolve(node.config?.reason || node.config?.message || "");
     ctx.log(node.id, `Waiting ${totalMs}ms${reason ? ` (${reason})` : ""}`);
     await new Promise((r) => setTimeout(r, totalMs));
     return { waited: totalMs, reason };
@@ -1416,6 +1535,8 @@ registerNodeType("agent.run_planner", {
     properties: {
       taskCount: { type: "number", default: 5, description: "Number of tasks to generate" },
       context: { type: "string", description: "Additional context for the planner" },
+      prompt: { type: "string", description: "Optional explicit planner prompt override" },
+      outputVariable: { type: "string", description: "Optional context key to store planner output text" },
       projectId: { type: "string" },
       dedup: { type: "boolean", default: true },
     },
@@ -1423,16 +1544,24 @@ registerNodeType("agent.run_planner", {
   async execute(node, ctx, engine) {
     const count = node.config?.taskCount || 5;
     const context = ctx.resolve(node.config?.context || "");
+    const explicitPrompt = ctx.resolve(node.config?.prompt || "");
+    const outputVariable = ctx.resolve(node.config?.outputVariable || "");
 
     ctx.log(node.id, `Running planner for ${count} tasks`);
 
     // This delegates to the existing planner prompt flow
     const agentPool = engine.services?.agentPool;
     const plannerPrompt = engine.services?.prompts?.planner;
+    const promptText = explicitPrompt ||
+      (plannerPrompt
+        ? `${plannerPrompt}\n\nGenerate exactly ${count} new tasks.\n${context}`
+        : "");
 
-    if (agentPool?.launchEphemeralThread && plannerPrompt) {
-      const prompt = `${plannerPrompt}\n\nGenerate exactly ${count} new tasks.\n${context}`;
-      const result = await agentPool.launchEphemeralThread(prompt, process.cwd(), 15 * 60 * 1000);
+    if (agentPool?.launchEphemeralThread && promptText) {
+      const result = await agentPool.launchEphemeralThread(promptText, process.cwd(), 15 * 60 * 1000);
+      if (outputVariable) {
+        ctx.data[outputVariable] = String(result.output || "").trim();
+      }
       return {
         success: result.success,
         output: result.output,
@@ -1440,7 +1569,12 @@ registerNodeType("agent.run_planner", {
       };
     }
 
-    return { success: false, error: "Agent pool or planner prompt not available" };
+    return {
+      success: false,
+      error: explicitPrompt
+        ? "Agent pool not available"
+        : "Agent pool or planner prompt not available",
+    };
   },
 });
 

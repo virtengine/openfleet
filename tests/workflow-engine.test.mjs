@@ -283,6 +283,55 @@ describe("WorkflowEngine - loop.for_each", () => {
   });
 });
 
+describe("WorkflowEngine - source port routing", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("routes only the selected switch port", async () => {
+    const visited = [];
+    registerNodeType("test.capture_port", {
+      describe: () => "Capture reached branch",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        visited.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "switch",
+          type: "condition.switch",
+          label: "Switch",
+          config: {
+            value: "'left'",
+            cases: {
+              left: "left-port",
+              right: "right-port",
+            },
+          },
+        },
+        { id: "left", type: "test.capture_port", label: "Left", config: {} },
+        { id: "right", type: "test.capture_port", label: "Right", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "switch" },
+        { id: "e2", source: "switch", target: "left", sourcePort: "left-port" },
+        { id: "e3", source: "switch", target: "right", sourcePort: "right-port" },
+      ],
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+    expect(result.errors).toEqual([]);
+    expect(visited).toEqual(["left"]);
+  });
+});
+
 // ── Run History / Detail Tests ──────────────────────────────────────────────
 
 describe("WorkflowEngine - run history details", () => {
@@ -479,6 +528,21 @@ describe("New node types", () => {
     const result = await handler.execute(node, ctx);
     expect(result.waited).toBeGreaterThanOrEqual(10);
     expect(result.reason).toBe("test");
+  });
+
+  it("action.delay supports legacy durationMs/message aliases", async () => {
+    const handler = getNodeType("action.delay");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({});
+    const node = {
+      id: "d2",
+      type: "action.delay",
+      config: { durationMs: 10, message: "legacy" },
+    };
+    const result = await handler.execute(node, ctx);
+    expect(result.waited).toBeGreaterThanOrEqual(10);
+    expect(result.reason).toBe("legacy");
   });
 
   it("flow.gate opens on condition", async () => {

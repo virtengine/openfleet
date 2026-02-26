@@ -704,6 +704,15 @@ export class WorkflowEngine extends EventEmitter {
       for (const nodeId of batch) {
         const node = nodeMap.get(nodeId);
         const edges = adjacency.get(nodeId) || [];
+        const sourceOutput = ctx.getNodeOutput(nodeId);
+        const selectedPortRaw =
+          sourceOutput?.matchedPort ??
+          sourceOutput?.port ??
+          null;
+        const selectedPort =
+          typeof selectedPortRaw === "string" && selectedPortRaw.trim()
+            ? selectedPortRaw.trim()
+            : null;
 
         // Handle loop.for_each: iterate downstream subgraph per item
         if (node?.type === "loop.for_each" && ctx.getNodeStatus(nodeId) === NodeStatus.COMPLETED) {
@@ -764,6 +773,11 @@ export class WorkflowEngine extends EventEmitter {
         }
 
         for (const edge of edges) {
+          const edgePort = String(edge?.sourcePort || "default").trim() || "default";
+          if (selectedPort && edgePort !== selectedPort) {
+            continue;
+          }
+
           // Check edge condition
           if (edge.condition) {
             try {

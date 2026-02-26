@@ -53,7 +53,7 @@ export const PR_MERGE_STRATEGY_TEMPLATE = {
     }, { x: 150, y: 350, outputs: ["yes", "no"] }),
 
     node("wait-for-ci", "action.delay", "Wait for CI", {
-      delayMs: "{{ciTimeoutMs}}",
+      ms: "{{ciTimeoutMs}}",
       reason: "CI is still running",
     }, { x: 150, y: 500 }),
 
@@ -75,8 +75,16 @@ Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optio
       timeoutMs: 900000,
     }, { x: 400, y: 350 }),
 
+    node("parse-decision", "action.set_variable", "Parse Decision JSON", {
+      key: "decision",
+      value:
+        "(() => { const raw = $ctx.getNodeOutput('analyze')?.output || '{}'; if (raw && typeof raw === 'object') return raw; try { return JSON.parse(String(raw)); } catch { return { action: 'manual_review', reason: 'unparseable merge strategy response', message: String(raw || '') }; } })()",
+      isExpression: true,
+    }, { x: 400, y: 430 }),
+
     node("decision-router", "condition.switch", "Route Decision", {
-      field: "action",
+      value:
+        "(() => { const action = String($data?.decision?.action || '').trim().toLowerCase(); return action || 'manual_review'; })()",
       cases: {
         merge_after_ci_pass: "merge",
         prompt: "prompt-agent",
@@ -84,6 +92,7 @@ Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optio
         re_attempt: "retry",
         manual_review: "escalate",
         wait: "wait-for-ci",
+        noop: "default",
       },
     }, { x: 400, y: 520, outputs: ["merge", "prompt-agent", "close", "retry", "escalate", "wait-for-ci", "default"] }),
 
@@ -122,13 +131,15 @@ Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optio
     edge("ci-passed", "analyze", { condition: "$output?.result === true", port: "yes" }),
     edge("get-diff", "analyze"),
     edge("wait-for-ci", "analyze"),
-    edge("analyze", "decision-router"),
+    edge("analyze", "parse-decision"),
+    edge("parse-decision", "decision-router"),
     edge("decision-router", "do-merge", { port: "merge" }),
     edge("decision-router", "do-prompt", { port: "prompt-agent" }),
     edge("decision-router", "do-close", { port: "close" }),
     edge("decision-router", "do-retry", { port: "retry" }),
     edge("decision-router", "do-escalate", { port: "escalate" }),
     edge("decision-router", "wait-for-ci", { port: "wait-for-ci" }),
+    edge("decision-router", "notify-complete", { port: "default" }),
     edge("do-merge", "notify-complete"),
     edge("do-prompt", "notify-complete"),
     edge("do-close", "notify-complete"),
@@ -181,10 +192,10 @@ export const PR_TRIAGE_TEMPLATE = {
     }, { x: 400, y: 180 }),
 
     node("classify-size", "condition.switch", "Classify Size", {
-      expression: "($ctx.getNodeOutput('get-stats')?.additions || 0) + ($ctx.getNodeOutput('get-stats')?.deletions || 0)",
-      cases: { small: "<{{smallThreshold}}", large: ">{{largeThreshold}}" },
-      default: "medium",
-    }, { x: 400, y: 330, outputs: ["small", "medium", "large"] }),
+      value:
+        "(() => { const raw = $ctx.getNodeOutput('get-stats')?.output || '{}'; let stats = {}; try { stats = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { stats = {}; } const delta = Number(stats?.additions || 0) + Number(stats?.deletions || 0); const small = Number($data?.smallThreshold || 50); const large = Number($data?.largeThreshold || 500); if (delta < small) return 'small'; if (delta > large) return 'large'; return 'medium'; })()",
+      cases: { small: "small", medium: "medium", large: "large" },
+    }, { x: 400, y: 330, outputs: ["small", "medium", "large", "default"] }),
 
     node("label-small", "action.run_command", "Label: Size/S", {
       command: "gh pr edit {{prNumber}} --add-label \"size/S\"",
@@ -204,7 +215,8 @@ export const PR_TRIAGE_TEMPLATE = {
     }, { x: 400, y: 630 }),
 
     node("is-breaking", "condition.expression", "Breaking?", {
-      expression: "$ctx.getNodeOutput('detect-breaking')?.breaking === true",
+      expression:
+        "(() => { const raw = $ctx.getNodeOutput('detect-breaking')?.output || '{}'; try { const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw; return parsed?.breaking === true; } catch { return /\"breaking\"\\s*:\\s*true/i.test(String(raw)); } })()",
     }, { x: 400, y: 780, outputs: ["yes", "no"] }),
 
     node("label-breaking", "action.run_command", "Label: Breaking", {
@@ -212,7 +224,7 @@ export const PR_TRIAGE_TEMPLATE = {
     }, { x: 200, y: 920 }),
 
     node("done", "notify.log", "Triage Complete", {
-      message: "PR #{{prNumber}} triaged — size: {{size}}, breaking: {{breaking}}",
+      message: "PR #{{prNumber}} triage workflow completed",
       level: "info",
     }, { x: 400, y: 1050 }),
   ],

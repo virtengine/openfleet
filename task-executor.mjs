@@ -4184,10 +4184,14 @@ class TaskExecutor {
         await releaseTaskClaimLock();
         this._activeSlots.delete(taskId);
         this._removeRuntimeSlot(taskId);
-        this.onTaskFailed?.(
+        const wrappedError = new Error(`Worktree acquisition failed: ${err.message}`);
+        wrappedError.branch = branch || null;
+        wrappedError.baseBranch = resolveTaskBaseBranch(
           task,
-          new Error(`Worktree acquisition failed: ${err.message}`),
-        );
+          this.branchRouting,
+          this.defaultTargetBranch,
+        ) || null;
+        this.onTaskFailed?.(task, wrappedError);
         return;
       }
 
@@ -4209,10 +4213,10 @@ class TaskExecutor {
         await releaseTaskClaimLock();
         this._activeSlots.delete(taskId);
         this._removeRuntimeSlot(taskId);
-        this.onTaskFailed?.(
-          task,
-          new Error("Worktree path invalid or missing"),
-        );
+        const wrappedError = new Error("Worktree path invalid or missing");
+        wrappedError.branch = branch || null;
+        wrappedError.worktreePath = wt?.path || null;
+        this.onTaskFailed?.(task, wrappedError);
         return;
       }
 
@@ -4632,6 +4636,26 @@ class TaskExecutor {
 
       this._activeSlots.delete(taskId);
       this._removeRuntimeSlot(taskId);
+      if (err && typeof err === "object") {
+        if (!err.branch) {
+          err.branch =
+            slot?.branch ||
+            task?.branchName ||
+            task?.meta?.branch_name ||
+            null;
+        }
+        if (!err.worktreePath) {
+          err.worktreePath = slot?.worktreePath || null;
+        }
+        if (!err.baseBranch) {
+          err.baseBranch =
+            slot?.baseBranch ||
+            task?.baseBranch ||
+            task?.base_branch ||
+            task?.meta?.base_branch ||
+            null;
+        }
+      }
       this.onTaskFailed?.(task, err);
       this.sendTelegram?.(
         `❌ Task executor error: "${taskTitle}" — ${(err.message || "").slice(0, 200)}`,
@@ -5057,6 +5081,20 @@ class TaskExecutor {
       this.branchRouting,
       this.defaultTargetBranch,
     );
+    if (result && typeof result === "object") {
+      if (!result.worktreePath) {
+        result.worktreePath = worktreePath || null;
+      }
+      if (!result.branch) {
+        result.branch =
+          task.branchName ||
+          task.meta?.branch_name ||
+          null;
+      }
+      if (!result.baseBranch) {
+        result.baseBranch = baseBranch || null;
+      }
+    }
 
     // Fire SessionStop hook
     executeHooks("SessionStop", {

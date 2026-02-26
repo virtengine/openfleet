@@ -165,6 +165,8 @@ describe("template API functions", () => {
       "template-error-recovery",
       "template-anomaly-watchdog",
       "template-workspace-hygiene",
+      "template-task-finalization-guard",
+      "template-task-repair-worktree",
       "template-pr-conflict-resolver",
       "template-agent-session-monitor",
       "template-release-pipeline",
