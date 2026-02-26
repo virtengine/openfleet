@@ -383,7 +383,10 @@ function topN(obj, n) {
 }
 
 function resolveNowTimestamp(now) {
-  if (now instanceof Date) return now.getTime();
+  if (now instanceof Date) {
+    const ts = now.getTime();
+    return Number.isFinite(ts) ? ts : Date.now();
+  }
   if (typeof now === "number" && Number.isFinite(now)) return now;
   if (typeof now === "string") {
     const parsed = normalizeTimestamp(now);
@@ -391,7 +394,6 @@ function resolveNowTimestamp(now) {
   }
   return Date.now();
 }
-
 export function filterRecordsByWindow(
   records,
   { days, now, timestampKey = "timestamp" } = {},
@@ -407,36 +409,82 @@ export function filterRecordsByWindow(
   });
 }
 
-export function buildErrorClusters(errors, { days, top, now } = {}) {
-  const filteredErrors = filterRecordsByWindow(errors, { days, now });
+export function buildErrorClusters(errors, options = {}) {
+  const safeErrors = Array.isArray(errors) ? errors : [];
+  const windowDays =
+    Number.isFinite(options.days) && options.days > 0 ? options.days : null;
+  const topLimit =
+    Number.isFinite(options.top) && options.top > 0 ? Math.floor(options.top) : null;
+
+  const filteredErrors = filterRecordsByWindow(safeErrors, {
+    days: windowDays,
+    now: options.now,
+  });
   if (filteredErrors.length === 0) return [];
 
-  const byFingerprint = groupBy(
-    filteredErrors,
-    (e) =>
-      e.data?.error_fingerprint ||
-      normalizeErrorFingerprint(e.data?.error_message),
-  );
+  const grouped = new Map();
+  for (const error of filteredErrors) {
+    if (!error || typeof error !== "object") continue;
 
-  const clusters = Object.entries(byFingerprint)
-    .map(([fingerprint, events]) => ({
-      fingerprint,
-      count: events.length,
-      affected_tasks: new Set(events.map((e) => e.task_id)).size,
-      affected_attempts: new Set(events.map((e) => e.attempt_id)).size,
-      first_seen: events[0].timestamp,
-      last_seen: events[events.length - 1].timestamp,
-      sample_message: events[0].data?.error_message || "",
-      categories: [
-        ...new Set(events.map((e) => e.data?.error_category).filter(Boolean)),
-      ],
-    }))
-    .sort((a, b) => b.count - a.count);
+    const fingerprint =
+      error.data?.error_fingerprint ||
+      normalizeErrorFingerprint(error.data?.error_message);
 
-  const topLimit = Number.isFinite(top) && top > 0 ? Math.floor(top) : clusters.length;
+    if (!grouped.has(fingerprint)) {
+      grouped.set(fingerprint, {
+        fingerprint,
+        count: 0,
+        affected_tasks: new Set(),
+        affected_attempts: new Set(),
+        sample_message: "",
+        categories: new Set(),
+        first_seen_ts: null,
+        last_seen_ts: null,
+      });
+    }
+
+    const entry = grouped.get(fingerprint);
+    entry.count += 1;
+    entry.affected_tasks.add(error.task_id || "unknown");
+    entry.affected_attempts.add(error.attempt_id || "unknown");
+    if (!entry.sample_message && error.data?.error_message) {
+      entry.sample_message = error.data.error_message;
+    }
+    if (error.data?.error_category) {
+      entry.categories.add(error.data.error_category);
+    }
+
+    const timestamp = normalizeTimestamp(error.timestamp);
+    if (timestamp !== null) {
+      if (entry.first_seen_ts === null || timestamp < entry.first_seen_ts) {
+        entry.first_seen_ts = timestamp;
+      }
+      if (entry.last_seen_ts === null || timestamp > entry.last_seen_ts) {
+        entry.last_seen_ts = timestamp;
+      }
+    }
+  }
+
+  const clusters = [...grouped.values()]
+    .sort((a, b) => b.count - a.count || a.fingerprint.localeCompare(b.fingerprint))
+    .map((entry) => ({
+      fingerprint: entry.fingerprint,
+      count: entry.count,
+      affected_tasks: entry.affected_tasks.size,
+      affected_attempts: entry.affected_attempts.size,
+      first_seen:
+        entry.first_seen_ts !== null
+          ? new Date(entry.first_seen_ts).toISOString()
+          : null,
+      last_seen:
+        entry.last_seen_ts !== null ? new Date(entry.last_seen_ts).toISOString() : null,
+      sample_message: entry.sample_message,
+      categories: [...entry.categories].sort((a, b) => a.localeCompare(b)),
+    }));
+
+  if (topLimit === null) return clusters;
   return clusters.slice(0, topLimit);
 }
-
 function buildTaskProfiles(metrics, errors) {
   const taskProfiles = new Map();
   const ensureTaskProfile = (taskId) => {
@@ -624,17 +672,24 @@ export function buildErrorCorrelationPayload({
   now,
 } = {}) {
   const windowDays = Number.isFinite(days) && days > 0 ? days : 7;
-  const filteredErrors = filterRecordsByWindow(errors, { days: windowDays, now });
-  const filteredMetrics = filterRecordsByWindow(metrics, { days: windowDays, now });
+  const filteredErrors = filterRecordsByWindow(errors, {
+    days: windowDays,
+    now,
+  });
+  const filteredMetrics = filterRecordsByWindow(metrics, {
+    days: windowDays,
+    now,
+  });
+
   const summary = buildErrorCorrelationSummary({
     errors: filteredErrors,
     metrics: filteredMetrics,
     windowDays,
     top,
   });
+
   return buildErrorCorrelationJsonPayload(summary, { now });
 }
-
 // ── Analysis Commands ───────────────────────────────────────────────────────
 
 /**
