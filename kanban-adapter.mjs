@@ -68,6 +68,8 @@ import {
   mergeTaskAttachments,
 } from "./task-attachments.mjs";
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const TAG = "[kanban]";
 
@@ -243,10 +245,17 @@ function parseBooleanEnv(value, fallback = false) {
 }
 
 function parseDelayMs(value, fallback, min = 0) {
+  if (value == null) return fallback;
+  if (typeof value === "string" && value.trim() === "") return fallback;
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, parsed);
 }
+const GH_PROJECT_OWNER_ERROR_PATTERNS = [
+  /unknown owner type/i,
+  /could not resolve .*owner/i,
+  /project.*not found/i,
+];
 const GH_TRANSIENT_ERROR_PATTERNS = [
   /bad gateway/i,
   /service unavailable/i,
@@ -291,6 +300,218 @@ function isGhTransientError(text) {
   if (!errText) return false;
   if (isGhRateLimitError(errText)) return false;
   return GH_TRANSIENT_ERROR_PATTERNS.some((pattern) => pattern.test(errText));
+}
+
+function isGhNotFoundError(errorOrText) {
+  const text =
+    typeof errorOrText === "string"
+      ? errorOrText
+      : [
+          errorOrText?.message,
+          errorOrText?.stderr,
+          errorOrText?.stdout,
+          errorOrText?.fullText,
+        ]
+          .filter(Boolean)
+          .join("\n");
+  const errText = String(text || "").toLowerCase();
+  if (!errText) return false;
+  if (errText.includes("http 404") || errText.includes("(http 404)")) return true;
+  if (errText.includes("404") && errText.includes("not found")) return true;
+  return false;
+}
+
+function isGhProjectOwnerTypeError(text) {
+  const errText = String(text || "");
+  if (!errText) return false;
+  return GH_PROJECT_OWNER_ERROR_PATTERNS.some((pattern) => pattern.test(errText));
+}
+
+function hasKnownProjectArrayShape(payload, keys = []) {
+  if (Array.isArray(payload)) return true;
+  if (!payload || typeof payload !== "object") return false;
+
+  for (const key of keys) {
+    if (Array.isArray(payload[key])) return true;
+    if (payload[key] && typeof payload[key] === "object") return true;
+  }
+
+  const data = payload.data;
+  if (Array.isArray(data)) return true;
+  if (data && typeof data === "object") {
+    for (const key of keys) {
+      if (Array.isArray(data[key])) return true;
+      if (data[key] && typeof data[key] === "object") return true;
+    }
+  }
+
+  return false;
+}
+
+function coerceProjectArrayPayload(payload, keys = []) {
+  if (Array.isArray(payload)) {
+    return { items: payload, validShape: true };
+  }
+  const items = extractArrayPayload(payload, keys);
+  return {
+    items,
+    validShape: hasKnownProjectArrayShape(payload, keys) || items.length > 0,
+  };
+}
+
+function describePayloadShape(payload) {
+  if (payload == null) return String(payload);
+  if (Array.isArray(payload)) return `array(len=${payload.length})`;
+  if (typeof payload !== "object") return typeof payload;
+  const keys = Object.keys(payload).slice(0, 5).join(",");
+  return `object(keys=${keys || "none"})`;
+}
+
+const PROJECT_PAYLOAD_WARNING_AT = new Map();
+const PROJECT_COMMAND_BACKOFF_UNTIL = new Map();
+
+function canUseBosunStateDir(dirPath) {
+  const candidate = String(dirPath || "").trim();
+  if (!candidate) return false;
+  try {
+    mkdirSync(candidate, { recursive: true });
+    const probeName = `.bosun-state-probe-${process.pid}-${Date.now()}.tmp`;
+    const probePath = resolve(candidate, probeName);
+    writeFileSync(probePath, "ok", "utf8");
+    unlinkSync(probePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveBosunStateDir() {
+  const candidates = [];
+
+  const explicitCacheDir = String(process.env.BOSUN_CACHE_DIR || "").trim();
+  if (explicitCacheDir) {
+    candidates.push(resolve(explicitCacheDir, "bosun"));
+  }
+
+  const repoRoot = String(
+    process.env.BOSUN_REPO_ROOT || process.env.REPO_ROOT || "",
+  ).trim();
+  if (repoRoot) {
+    candidates.push(resolve(repoRoot, ".cache", "bosun"));
+  }
+
+  candidates.push(resolve(process.cwd(), ".cache", "bosun"));
+
+  for (const candidate of candidates) {
+    if (canUseBosunStateDir(candidate)) {
+      return candidate;
+    }
+  }
+
+  return resolve(process.cwd(), ".cache", "bosun");
+}
+
+const BOSUN_STATE_DIR = resolveBosunStateDir();
+const PROJECT_PAYLOAD_WARNING_STATE_PATH = resolve(
+  BOSUN_STATE_DIR,
+  "kanban-project-warning-state.json",
+);
+const PROJECT_COMMAND_BACKOFF_STATE_PATH = resolve(
+  BOSUN_STATE_DIR,
+  "kanban-project-command-backoff-state.json",
+);
+let projectPayloadWarningStateLoaded = false;
+let projectCommandBackoffStateLoaded = false;
+let GH_RATE_LIMIT_BACKOFF_UNTIL = 0;
+let GH_RATE_LIMIT_WARNING_AT = 0;
+let GH_RATE_LIMIT_STREAK = 0;
+
+function loadProjectPayloadWarningStateOnce() {
+  if (projectPayloadWarningStateLoaded) return;
+  projectPayloadWarningStateLoaded = true;
+  try {
+    if (!existsSync(PROJECT_PAYLOAD_WARNING_STATE_PATH)) return;
+    const raw = readFileSync(PROJECT_PAYLOAD_WARNING_STATE_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+    for (const [key, value] of Object.entries(parsed)) {
+      const at = Number(value);
+      if (!Number.isFinite(at) || at <= 0) continue;
+      PROJECT_PAYLOAD_WARNING_AT.set(key, at);
+    }
+  } catch {
+    // best effort
+  }
+}
+
+function persistProjectPayloadWarningState() {
+  try {
+    const dir = BOSUN_STATE_DIR;
+    mkdirSync(dir, { recursive: true });
+    const serializable = Object.fromEntries(PROJECT_PAYLOAD_WARNING_AT.entries());
+    writeFileSync(
+      PROJECT_PAYLOAD_WARNING_STATE_PATH,
+      JSON.stringify(serializable),
+      "utf8",
+    );
+  } catch {
+    // best effort
+  }
+}
+
+function loadProjectCommandBackoffStateOnce() {
+  if (projectCommandBackoffStateLoaded) return;
+  projectCommandBackoffStateLoaded = true;
+  try {
+    if (!existsSync(PROJECT_COMMAND_BACKOFF_STATE_PATH)) return;
+    const raw = readFileSync(PROJECT_COMMAND_BACKOFF_STATE_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+    const now = Date.now();
+    for (const [key, value] of Object.entries(parsed)) {
+      const until = Number(value);
+      if (!Number.isFinite(until) || until <= now) continue;
+      PROJECT_COMMAND_BACKOFF_UNTIL.set(key, until);
+    }
+  } catch {
+    // best effort
+  }
+}
+
+function persistProjectCommandBackoffState() {
+  try {
+    const dir = BOSUN_STATE_DIR;
+    mkdirSync(dir, { recursive: true });
+    const now = Date.now();
+    const serializable = {};
+    for (const [key, value] of PROJECT_COMMAND_BACKOFF_UNTIL.entries()) {
+      const until = Number(value);
+      if (!Number.isFinite(until) || until <= now) continue;
+      serializable[key] = until;
+    }
+    writeFileSync(
+      PROJECT_COMMAND_BACKOFF_STATE_PATH,
+      JSON.stringify(serializable),
+      "utf8",
+    );
+  } catch {
+    // best effort
+  }
+}
+function extractLoginFromGhAuthStatus(rawStatus) {
+  const text = String(rawStatus || "");
+  if (!text) return null;
+  const patterns = [
+    /logged in to [^\s]+ as ([a-z0-9-]+)/i,
+    /account\s+([a-z0-9-]+)\s*\(/i,
+    /as\s+([a-z0-9-]+)\s*\(/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const login = String(match?.[1] || "").trim();
+    if (login) return login;
+  }
+  return null;
 }
 
 function parseRepoSlug(raw) {
@@ -763,8 +984,33 @@ function looksLikeKanbanEntity(value) {
   );
 }
 
+function extractConnectionNodes(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+
+  if (Array.isArray(value.nodes)) {
+    return value.nodes.filter(
+      (entry) => entry && typeof entry === "object" && !Array.isArray(entry),
+    );
+  }
+
+  if (Array.isArray(value.edges)) {
+    const nodes = value.edges
+      .map((edge) => edge?.node)
+      .filter(
+        (entry) => entry && typeof entry === "object" && !Array.isArray(entry),
+      );
+    if (nodes.length > 0) {
+      return nodes;
+    }
+  }
+
+  return [];
+}
+
 function normalizeObjectCollection(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const connectionNodes = extractConnectionNodes(value);
+  if (connectionNodes.length > 0) return connectionNodes;
   const candidates = Object.entries(value)
     .filter(([, candidate]) => looksLikeKanbanEntity(candidate))
     .map(([key, candidate]) => {
@@ -1199,15 +1445,23 @@ class VKAdapter {
 class GitHubIssuesAdapter {
   constructor() {
     this.name = "github";
-    const config = loadConfig();
-    const slugInfo =
+    const envSlugInfo =
       parseRepoSlug(process.env.GITHUB_REPOSITORY) ||
-      parseRepoSlug(config?.repoSlug) ||
       parseRepoSlug(
         process.env.GITHUB_REPO_OWNER && process.env.GITHUB_REPO_NAME
           ? `${process.env.GITHUB_REPO_OWNER}/${process.env.GITHUB_REPO_NAME}`
           : "",
       );
+    let configSlugInfo = null;
+    if (!envSlugInfo) {
+      try {
+        const config = loadConfig();
+        configSlugInfo = parseRepoSlug(config?.repoSlug);
+      } catch {
+        configSlugInfo = null;
+      }
+    }
+    const slugInfo = envSlugInfo || configSlugInfo;
     this._owner = process.env.GITHUB_REPO_OWNER || slugInfo?.owner || "unknown";
     this._repo = process.env.GITHUB_REPO_NAME || slugInfo?.repo || "unknown";
 
@@ -1236,6 +1490,13 @@ class GitHubIssuesAdapter {
     );
     this._defaultAssignee =
       String(process.env.GITHUB_DEFAULT_ASSIGNEE || "").trim() || null;
+    this._defaultAssigneeResolved = Boolean(this._defaultAssignee);
+    this._defaultAssigneeRetryAt = 0;
+    this._defaultAssigneeRetryDelayMs = parseDelayMs(
+      process.env.GH_DEFAULT_ASSIGNEE_RETRY_MS,
+      300_000,
+      0,
+    );
 
     this._projectMode = String(process.env.GITHUB_PROJECT_MODE || "issues")
       .trim()
@@ -1260,6 +1521,49 @@ class GitHubIssuesAdapter {
     this._projectFieldsCache = new Map();
     this._projectFieldsCacheTTL = 300_000; // 5 minutes
     this._repositoryNodeId = null;
+    this._invalidProjectOwners = new Set();
+    this._projectOwnerAllInvalidUntil = 0;
+    this._projectOwnerRetryDelayMs = parseDelayMs(
+      process.env.GH_PROJECT_OWNER_RETRY_MS,
+      300_000,
+      0,
+    );
+    this._projectPayloadWarningAt = PROJECT_PAYLOAD_WARNING_AT;
+    this._projectPayloadWarningThrottleMs = parseDelayMs(
+      process.env.GH_PROJECT_PAYLOAD_WARNING_THROTTLE_MS,
+      300_000,
+      0,
+    );
+    this._projectCommandBackoffUntil = PROJECT_COMMAND_BACKOFF_UNTIL;
+    this._projectCommandBackoffMs = parseDelayMs(
+      process.env.GH_PROJECT_COMMAND_BACKOFF_MS,
+      60_000,
+      0,
+    );
+    this._projectCommandInFlight = new Map();
+    this._projectModeFallbackUntil = 0;
+    this._projectModeFallbackMs = parseDelayMs(
+      process.env.GH_PROJECT_MODE_FALLBACK_MS,
+      180_000,
+      0,
+    );
+    this._ghRateLimitBackoffUntil = GH_RATE_LIMIT_BACKOFF_UNTIL;
+    this._projectRateLimitBackoffMs = parseDelayMs(
+      process.env.GH_PROJECT_RATE_LIMIT_BACKOFF_MS,
+      300_000,
+      0,
+    );
+    this._rateLimitWarningThrottleMs = parseDelayMs(
+      process.env.GH_RATE_LIMIT_WARNING_THROTTLE_MS,
+      60_000,
+      0,
+    );
+    this._rateLimitWarningAt = GH_RATE_LIMIT_WARNING_AT;
+    this._rateLimitBackoffMaxMs = parseDelayMs(
+      process.env.GH_RATE_LIMIT_BACKOFF_MAX_MS,
+      300_000,
+      0,
+    );
 
     // Auto-sync toggle: set GITHUB_PROJECT_AUTO_SYNC=false to disable project sync
     this._projectAutoSync = parseBooleanEnv(
@@ -1282,6 +1586,275 @@ class GitHubIssuesAdapter {
       0,
       Number(process.env.GH_TRANSIENT_RETRY_MAX) || 2,
     );
+    this._issueCommentsNotFoundUntil = new Map();
+    this._issueCommentsNotFoundCacheMs = parseDelayMs(
+      process.env.GH_ISSUE_COMMENTS_NOT_FOUND_CACHE_MS,
+      300_000,
+      0,
+    );
+    this._issueCommentsNotFoundWarningAt = new Map();
+    this._issueCommentsNotFoundWarningThrottleMs = parseDelayMs(
+      process.env.GH_ISSUE_COMMENTS_NOT_FOUND_WARNING_THROTTLE_MS,
+      300_000,
+      0,
+    );
+  }
+
+  _warnProjectPayloadShape(commandName, projectNumber, payload) {
+    loadProjectPayloadWarningStateOnce();
+    const cacheKey = `${commandName}:${String(projectNumber || "").trim()}`;
+    const now = Date.now();
+    const previous = this._projectPayloadWarningAt.get(cacheKey) || 0;
+    const throttleMs = Number(this._projectPayloadWarningThrottleMs) || 0;
+    if (throttleMs > 0 && now - previous < throttleMs) {
+      return;
+    }
+    this._projectPayloadWarningAt.set(cacheKey, now);
+    persistProjectPayloadWarningState();
+    console.warn(
+      `${TAG} project ${commandName} returned non-array for project ${projectNumber} (${describePayloadShape(payload)})`,
+    );
+  }
+
+  _shouldSkipIssueCommentsFetch(issueNumber, now = Date.now()) {
+    const issueKey = String(issueNumber || "").trim();
+    if (!issueKey) return false;
+    const until = Number(this._issueCommentsNotFoundUntil.get(issueKey) || 0);
+    if (!until || until <= now) {
+      this._issueCommentsNotFoundUntil.delete(issueKey);
+      return false;
+    }
+    return true;
+  }
+
+  _cacheIssueCommentsNotFound(issueNumber, now = Date.now()) {
+    const issueKey = String(issueNumber || "").trim();
+    if (!issueKey) return;
+    const cacheMs = Number(this._issueCommentsNotFoundCacheMs) || 0;
+    if (cacheMs <= 0) return;
+    this._issueCommentsNotFoundUntil.set(issueKey, now + cacheMs);
+  }
+
+  _warnIssueCommentsNotFound(issueNumber, err, now = Date.now()) {
+    const issueKey = String(issueNumber || "").trim();
+    if (!issueKey) return;
+    const throttleMs = Number(this._issueCommentsNotFoundWarningThrottleMs) || 0;
+    const previousAt = Number(
+      this._issueCommentsNotFoundWarningAt.get(issueKey) || 0,
+    );
+    if (throttleMs > 0 && previousAt > 0 && now - previousAt < throttleMs) {
+      return;
+    }
+    this._issueCommentsNotFoundWarningAt.set(issueKey, now);
+    const cacheMs = Number(this._issueCommentsNotFoundCacheMs) || 0;
+    const cacheSuffix =
+      cacheMs > 0
+        ? `; suppressing repeat checks for ${Math.max(1, Math.ceil(cacheMs / 1000))}s`
+        : "";
+    console.warn(
+      `[kanban] issue #${issueKey} not found while fetching comments: ${err.message}${cacheSuffix}`,
+    );
+  }
+
+  _projectCommandBackoffKey(commandName, projectNumber) {
+    return `${commandName}:${String(projectNumber || "").trim()}`;
+  }
+
+  _isProjectCommandBackedOff(commandName, projectNumber) {
+    loadProjectCommandBackoffStateOnce();
+    const key = this._projectCommandBackoffKey(commandName, projectNumber);
+    const until = Number(this._projectCommandBackoffUntil.get(key)) || 0;
+    return until > Date.now();
+  }
+
+  _markProjectCommandBackoff(commandName, projectNumber, backoffMsOverride = null) {
+    loadProjectCommandBackoffStateOnce();
+    const sourceBackoffMs =
+      backoffMsOverride == null ? this._projectCommandBackoffMs : backoffMsOverride;
+    const backoffMs = Math.max(0, Number(sourceBackoffMs) || 0);
+    if (backoffMs <= 0) return;
+    const key = this._projectCommandBackoffKey(commandName, projectNumber);
+    const currentUntil = Number(this._projectCommandBackoffUntil.get(key)) || 0;
+    const nextUntil = Date.now() + backoffMs;
+    this._projectCommandBackoffUntil.set(key, Math.max(currentUntil, nextUntil));
+    persistProjectCommandBackoffState();
+  }
+
+  async _withProjectCommandInFlight(commandName, projectNumber, run) {
+    const key = this._projectCommandBackoffKey(commandName, projectNumber);
+    const existing = this._projectCommandInFlight.get(key);
+    if (existing) {
+      return existing;
+    }
+
+    const promise = (async () => {
+      try {
+        return await run();
+      } finally {
+        this._projectCommandInFlight.delete(key);
+      }
+    })();
+
+    this._projectCommandInFlight.set(key, promise);
+    return promise;
+  }
+
+  _isProjectModeFallbackActive() {
+    return Number(this._projectModeFallbackUntil) > Date.now();
+  }
+
+  _activateProjectModeFallback() {
+    const fallbackMs = Math.max(0, Number(this._projectModeFallbackMs) || 0);
+    if (fallbackMs <= 0) return;
+    const nextUntil = Date.now() + fallbackMs;
+    const currentUntil = Number(this._projectModeFallbackUntil) || 0;
+    if (nextUntil > currentUntil) {
+      this._projectModeFallbackUntil = nextUntil;
+    }
+  }
+
+  _clearProjectModeFallback() {
+    this._projectModeFallbackUntil = 0;
+  }
+
+  _getProjectOwnerCandidates() {
+    if (Number(this._projectOwnerAllInvalidUntil) > Date.now()) {
+      return [];
+    }
+
+    const candidates = [];
+    const addCandidate = (value) => {
+      const owner = String(value || "").trim();
+      if (!owner) return;
+      if (!candidates.includes(owner)) {
+        candidates.push(owner);
+      }
+    };
+
+    addCandidate(this._projectOwner);
+    addCandidate(this._owner);
+    addCandidate(process.env.GITHUB_REPOSITORY_OWNER);
+
+    const healthyCandidates = candidates.filter(
+      (owner) => !this._invalidProjectOwners.has(owner),
+    );
+
+    if (healthyCandidates.length > 0) {
+      return healthyCandidates;
+    }
+
+    if (candidates.length > 0) {
+      this._projectOwnerAllInvalidUntil =
+        Date.now() + Math.max(0, Number(this._projectOwnerRetryDelayMs) || 0);
+    }
+    return [];
+  }
+
+  async _runProjectGhCommand(projectArgs, options = {}) {
+    const ownerCandidates = this._getProjectOwnerCandidates();
+    const ownerCooldownUntil = Number(this._projectOwnerAllInvalidUntil) || 0;
+    if (ownerCandidates.length === 0 && ownerCooldownUntil > Date.now()) {
+      const retryAfterMs = Math.max(0, ownerCooldownUntil - Date.now());
+      const cooldownError = new Error(
+        `project owner fallback cooling down for ${retryAfterMs}ms`,
+      );
+      cooldownError.code = "PROJECT_OWNER_BACKOFF";
+      cooldownError.retryAfterMs = retryAfterMs;
+      cooldownError.projectOwnerTypeEncountered = true;
+      throw cooldownError;
+    }
+    let lastOwnerError = null;
+    let invalidOwnerCount = 0;
+    let ownerTypeEncountered = false;
+
+    for (const owner of ownerCandidates) {
+      try {
+        const response = await this._gh(
+          [...projectArgs, "--owner", owner],
+          options,
+        );
+        this._invalidProjectOwners.delete(owner);
+        this._projectOwnerAllInvalidUntil = 0;
+        if (owner !== this._projectOwner) {
+          this._projectOwner = owner;
+          console.warn(`${TAG} switched project owner fallback to ${owner}`);
+        }
+        return response;
+      } catch (err) {
+        const details = [err?.message, err?.stderr, err?.stdout]
+          .filter(Boolean)
+          .join("\n");
+        if (isGhProjectOwnerTypeError(details)) {
+          this._invalidProjectOwners.add(owner);
+          invalidOwnerCount += 1;
+          ownerTypeEncountered = true;
+          lastOwnerError = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (
+      ownerCandidates.length > 0 &&
+      invalidOwnerCount >= ownerCandidates.length
+    ) {
+      this._projectOwnerAllInvalidUntil =
+        Date.now() + Math.max(0, Number(this._projectOwnerRetryDelayMs) || 0);
+    }
+
+    if (lastOwnerError || ownerCandidates.length === 0) {
+      const viewerLogin = await this._resolveDefaultAssignee();
+      if (viewerLogin && !ownerCandidates.includes(viewerLogin)) {
+        try {
+          const response = await this._gh(
+            [...projectArgs, "--owner", viewerLogin],
+            options,
+          );
+          this._invalidProjectOwners.delete(viewerLogin);
+          if (viewerLogin !== this._projectOwner) {
+            this._projectOwner = viewerLogin;
+            console.warn(`${TAG} switched project owner fallback to ${viewerLogin}`);
+          }
+          return response;
+        } catch (viewerErr) {
+          const details = [viewerErr?.message, viewerErr?.stderr, viewerErr?.stdout]
+            .filter(Boolean)
+            .join("\n");
+          if (!isGhProjectOwnerTypeError(details)) {
+            viewerErr.projectOwnerTypeEncountered = ownerTypeEncountered;
+            throw viewerErr;
+          }
+          this._invalidProjectOwners.add(viewerLogin);
+          ownerTypeEncountered = true;
+          lastOwnerError = viewerErr;
+        }
+      }
+      try {
+        // Retry once without explicit --owner after owner-type failures.
+        const response = await this._gh(projectArgs, options);
+        console.warn(`${TAG} recovered project command without explicit owner`);
+        return response;
+      } catch (ownerlessErr) {
+        const details = [ownerlessErr?.message, ownerlessErr?.stderr, ownerlessErr?.stdout]
+          .filter(Boolean)
+          .join("\n");
+        if (!isGhProjectOwnerTypeError(details)) {
+          ownerlessErr.projectOwnerTypeEncountered = ownerTypeEncountered;
+          throw ownerlessErr;
+        }
+        ownerTypeEncountered = true;
+        lastOwnerError = ownerlessErr;
+      }
+
+      if (lastOwnerError) {
+        lastOwnerError.projectOwnerTypeEncountered =
+          Boolean(lastOwnerError.projectOwnerTypeEncountered) ||
+          ownerTypeEncountered;
+      }
+      throw lastOwnerError;
+    }
+    throw new Error("gh project command failed: all owner candidates exhausted");
   }
 
   /**
@@ -1293,6 +1866,9 @@ class GitHubIssuesAdapter {
    */
   async _getProjectFields(projectNumber) {
     if (!projectNumber) return null;
+    if (this._isProjectCommandBackedOff("field-list", projectNumber)) {
+      return null;
+    }
 
     // Return cached value if still valid
     const now = Date.now();
@@ -1302,54 +1878,75 @@ class GitHubIssuesAdapter {
       return cached.fields;
     }
 
-    try {
-      const owner = String(this._projectOwner || this._owner).trim();
-      const fields = await this._gh([
-        "project",
-        "field-list",
-        String(projectNumber),
-        "--owner",
-        owner,
-        "--format",
-        "json",
-      ]);
+    return this._withProjectCommandInFlight(
+      "field-list",
+      projectNumber,
+      async () => {
+        try {
+          const rawFields = await this._runProjectGhCommand([
+            "project",
+            "field-list",
+            String(projectNumber),
+            "--format",
+            "json",
+          ]);
+          const { items: fields, validShape } = coerceProjectArrayPayload(rawFields, [
+            "fields",
+            "items",
+          ]);
 
-      if (!Array.isArray(fields)) {
-        console.warn(
-          `${TAG} project field-list returned non-array for project ${projectNumber}`,
-        );
-        return null;
-      }
+          if (!validShape) {
+            this._warnProjectPayloadShape("field-list", projectNumber, rawFields);
+            this._markProjectCommandBackoff("field-list", projectNumber);
+            return null;
+          }
 
-      // Find the Status field
-      const statusField = fields.find(
-        (f) =>
-          f.name === "Status" &&
-          (f.type === "SINGLE_SELECT" || f.data_type === "SINGLE_SELECT"),
-      );
+          // Find the Status field
+          const statusField = fields.find(
+            (f) =>
+              f.name === "Status" &&
+              (f.type === "SINGLE_SELECT" || f.data_type === "SINGLE_SELECT"),
+          );
 
-      const result = {
-        statusFieldId: statusField?.id || null,
-        statusOptions: (statusField?.options || []).map((opt) => ({
-          id: opt.id,
-          name: opt.name,
-        })),
-      };
+          const result = {
+            statusFieldId: statusField?.id || null,
+            statusOptions: (statusField?.options || []).map((opt) => ({
+              id: opt.id,
+              name: opt.name,
+            })),
+          };
 
-      // Cache the result (also cache the raw fields array for getProjectFields)
-      this._projectFieldsCache.set(cacheKey, {
-        fields: result,
-        rawFields: fields,
-        time: now,
-      });
+          // Cache the result (also cache the raw fields array for getProjectFields)
+          this._projectFieldsCache.set(cacheKey, {
+            fields: result,
+            rawFields: fields,
+            time: now,
+          });
 
-      return result;
-    } catch (err) {
-      console.warn(
-        `${TAG} failed to fetch project fields for ${projectNumber}: ${err.message}`,
-      );
-      return null;
-    }
+          return result;
+        } catch (err) {
+          const details = [err?.message, err?.stderr, err?.stdout]
+            .filter(Boolean)
+            .join("\n");
+          const rateLimitFailure = isGhRateLimitError(details);
+          const rateLimitBackoffMs = Math.max(
+            0,
+            Number(this._projectRateLimitBackoffMs) || 0,
+          );
+          const backoffOverride =
+            rateLimitFailure && rateLimitBackoffMs > 0 ? rateLimitBackoffMs : null;
+          this._markProjectCommandBackoff(
+            "field-list",
+            projectNumber,
+            backoffOverride,
+          );
+          console.warn(
+            `${TAG} failed to fetch project fields for ${projectNumber}: ${err.message}`,
+          );
+          return null;
+        }
+      },
+    );
   }
 
   /**
@@ -1871,54 +2468,94 @@ class GitHubIssuesAdapter {
    */
   async listTasksFromProject(projectNumber, filters = {}) {
     if (!projectNumber) return [];
-
-    try {
-      const owner = String(this._projectOwner || this._owner).trim();
-      const items = await this._gh([
-        "project",
-        "item-list",
-        String(projectNumber),
-        "--owner",
-        owner,
-        "--format",
-        "json",
-      ]);
-
-      if (!Array.isArray(items)) {
-        console.warn(
-          `${TAG} project item-list returned non-array for project ${projectNumber}`,
-        );
-        return [];
-      }
-
-      const tasks = [];
-      for (const item of items) {
-        // Skip non-issue items (draft issues without content, PRs)
-        if (item.content?.type === "PullRequest") continue;
-
-        const task = this._normaliseProjectItem(item);
-        if (task) {
-          task.meta.projectNumber = projectNumber;
-          if (!task.meta.projectFieldValues.Status && item.status) {
-            task.meta.projectFieldValues.Status = item.status;
-          }
-          // Cache the project item ID for later lookups
-          if (task.id && item.id) {
-            this._projectItemCache.set(`${projectNumber}:${task.id}`, item.id);
-          }
-          if (this._matchesProjectFieldFilters(task, filters.projectField)) {
-            tasks.push(task);
-          }
-        }
-      }
-
-      return tasks;
-    } catch (err) {
-      console.warn(
-        `${TAG} failed to list tasks from project ${projectNumber}: ${err.message}`,
-      );
+    if (this._isProjectCommandBackedOff("item-list", projectNumber)) {
       return [];
     }
+
+    const tasks = await this._withProjectCommandInFlight(
+      "item-list",
+      projectNumber,
+      async () => {
+        try {
+          const rawItems = await this._runProjectGhCommand([
+            "project",
+            "item-list",
+            String(projectNumber),
+            "--format",
+            "json",
+          ]);
+          const { items, validShape } = coerceProjectArrayPayload(rawItems, [
+            "items",
+            "nodes",
+          ]);
+
+          if (!validShape) {
+            this._warnProjectPayloadShape("item-list", projectNumber, rawItems);
+            this._markProjectCommandBackoff("item-list", projectNumber);
+            return [];
+          }
+
+          const allTasks = [];
+          for (const item of items) {
+            if (item.content?.type === "PullRequest") continue;
+
+            const task = this._normaliseProjectItem(item);
+            if (task) {
+              task.meta.projectNumber = projectNumber;
+              if (!task.meta.projectFieldValues.Status && item.status) {
+                task.meta.projectFieldValues.Status = item.status;
+              }
+              if (task.id && item.id) {
+                this._projectItemCache.set(`${projectNumber}:${task.id}`, item.id);
+              }
+              allTasks.push(task);
+            }
+          }
+
+          return allTasks;
+        } catch (err) {
+          const details = [err?.message, err?.stderr, err?.stdout]
+            .filter(Boolean)
+            .join("\n");
+          const ownerTypeFailure =
+            Boolean(err?.projectOwnerTypeEncountered) ||
+            isGhProjectOwnerTypeError(details);
+          const rateLimitFailure = isGhRateLimitError(details);
+          const ownerBackoffMs = Math.max(
+            0,
+            Number(this._projectOwnerRetryDelayMs) || 0,
+          );
+          const rateLimitBackoffMs = Math.max(
+            0,
+            Number(this._projectRateLimitBackoffMs) || 0,
+          );
+          let backoffOverride = null;
+          if (ownerTypeFailure && ownerBackoffMs > 0) {
+            backoffOverride = ownerBackoffMs;
+          }
+          if (rateLimitFailure && rateLimitBackoffMs > 0) {
+            backoffOverride = Math.max(backoffOverride || 0, rateLimitBackoffMs);
+          }
+          this._markProjectCommandBackoff(
+            "item-list",
+            projectNumber,
+            backoffOverride,
+          );
+          console.warn(
+            `${TAG} failed to list tasks from project ${projectNumber}: ${err.message}`,
+          );
+          return [];
+        }
+      },
+    );
+
+    if (!filters?.projectField) {
+      return tasks;
+    }
+
+    return tasks.filter((task) =>
+      this._matchesProjectFieldFilters(task, filters.projectField),
+    );
   }
 
   /**
@@ -1940,12 +2577,18 @@ class GitHubIssuesAdapter {
     if (!issueUrl || !projectNumber || !status) return false;
 
     try {
-      const owner = String(this._projectOwner || this._owner).trim();
+      const getOwnerLabel = () => String(this._projectOwner || this._owner).trim();
 
       // Get project fields
       const fields = await this._getProjectFields(projectNumber);
+      const fieldListBackedOff = this._isProjectCommandBackedOff(
+        "field-list",
+        projectNumber,
+      );
       if (!fields || !fields.statusFieldId) {
-        console.warn(`${TAG} cannot sync to project: no status field found`);
+        if (!fieldListBackedOff) {
+          console.warn(`${TAG} cannot sync to project: no status field found`);
+        }
         return false;
       }
 
@@ -1971,13 +2614,11 @@ class GitHubIssuesAdapter {
 
       // First, ensure issue is in the project
       try {
-        await this._gh(
+        await this._runProjectGhCommand(
           [
             "project",
             "item-add",
             String(projectNumber),
-            "--owner",
-            owner,
             "--url",
             issueUrl,
           ],
@@ -2000,14 +2641,14 @@ class GitHubIssuesAdapter {
       const projectId = await this.getProjectNodeId(projectNumber);
       if (!projectId) {
         console.warn(
-          `${TAG} could not resolve project ID for ${owner}/${projectNumber}`,
+          `${TAG} could not resolve project ID for ${getOwnerLabel()}/${projectNumber}`,
         );
         return false;
       }
       const itemId = await this._getProjectItemIdForIssue(projectNumber, issueNum);
       if (!itemId) {
         console.warn(
-          `${TAG} issue not found in project ${owner}/${projectNumber}`,
+          `${TAG} issue not found in project ${getOwnerLabel()}/${projectNumber}`,
         );
         return false;
       }
@@ -2116,18 +2757,89 @@ class GitHubIssuesAdapter {
     const maxTransientRetries = Math.max(0, Number(this._transientRetryMax) || 0);
 
     while (true) {
+      const backoffUntil = Math.max(
+        Number(this._ghRateLimitBackoffUntil) || 0,
+        Number(GH_RATE_LIMIT_BACKOFF_UNTIL) || 0,
+      );
+      const waitMs = backoffUntil - Date.now();
+      if (waitMs > 0) {
+        await sleepMs(waitMs);
+      }
+
       let result;
       try {
         result = await attempt();
       } catch (err) {
         const message = String(err?.message || err);
-        if (err?.isRateLimit && !usedRateLimitRetry) {
-          usedRateLimitRetry = true;
-          console.warn(
-            `${TAG} rate limit detected, waiting ${this._rateLimitRetryDelayMs}ms before retry...`,
+        if (err?.isRateLimit) {
+          const baseRetryDelay = Math.max(
+            0,
+            Number(this._rateLimitRetryDelayMs) || 0,
           );
-          await sleepMs(this._rateLimitRetryDelayMs);
-          continue;
+          const maxRetryDelay = Math.max(
+            baseRetryDelay,
+            Number(this._rateLimitBackoffMaxMs) || 0,
+          );
+          const previousRateLimitStreak = Math.max(
+            0,
+            Number(GH_RATE_LIMIT_STREAK) || 0,
+          );
+          const nextRateLimitStreak = previousRateLimitStreak + 1;
+          GH_RATE_LIMIT_STREAK = nextRateLimitStreak;
+          const retryMultiplier = Math.min(
+            8,
+            2 ** Math.max(0, nextRateLimitStreak - 1),
+          );
+          const retryDelay = Math.min(
+            maxRetryDelay,
+            Math.max(0, Math.round(baseRetryDelay * retryMultiplier)),
+          );
+          const nextBackoffUntil = Math.max(
+            Number(this._ghRateLimitBackoffUntil) || 0,
+            Number(GH_RATE_LIMIT_BACKOFF_UNTIL) || 0,
+            Date.now() + retryDelay,
+          );
+          this._ghRateLimitBackoffUntil = nextBackoffUntil;
+          GH_RATE_LIMIT_BACKOFF_UNTIL = nextBackoffUntil;
+
+          const warningNow = Date.now();
+          const warningThrottleMs = Math.max(
+            0,
+            Number(this._rateLimitWarningThrottleMs) || 0,
+          );
+          const previousWarningAt = Math.max(
+            Number(this._rateLimitWarningAt) || 0,
+            Number(GH_RATE_LIMIT_WARNING_AT) || 0,
+          );
+          if (
+            warningThrottleMs <= 0 ||
+            warningNow - previousWarningAt >= warningThrottleMs
+          ) {
+            console.warn(
+              `${TAG} rate limit detected (streak=${nextRateLimitStreak}), waiting ${retryDelay}ms before retry...`,
+            );
+            this._rateLimitWarningAt = warningNow;
+            GH_RATE_LIMIT_WARNING_AT = warningNow;
+          }
+
+          if (!usedRateLimitRetry) {
+            usedRateLimitRetry = true;
+            await sleepMs(retryDelay);
+            continue;
+          }
+
+          const wrapped = new Error(`gh CLI failed (after rate limit retry): ${message}`);
+          wrapped.stdout = String(err?.stdout || "");
+          wrapped.stderr = String(err?.stderr || "");
+          wrapped.fullText = String(
+            err?.fullText ||
+              [wrapped.message, wrapped.stderr, wrapped.stdout]
+                .filter(Boolean)
+                .join("\n"),
+          );
+          wrapped.isRateLimit = Boolean(err?.isRateLimit);
+          wrapped.isTransient = Boolean(err?.isTransient);
+          throw wrapped;
         }
         if (err?.isTransient && transientRetries < maxTransientRetries) {
           transientRetries += 1;
@@ -2137,10 +2849,22 @@ class GitHubIssuesAdapter {
           await sleepMs(this._transientRetryDelayMs);
           continue;
         }
-        if (err?.isRateLimit && usedRateLimitRetry) {
-          throw new Error(`gh CLI failed (after rate limit retry): ${message}`);
-        }
-        throw new Error(`gh CLI failed: ${message}`);
+        const wrapped = new Error(`gh CLI failed: ${message}`);
+        wrapped.stdout = String(err?.stdout || "");
+        wrapped.stderr = String(err?.stderr || "");
+        wrapped.fullText = String(
+          err?.fullText ||
+            [wrapped.message, wrapped.stderr, wrapped.stdout].filter(Boolean).join("\n"),
+        );
+        wrapped.isRateLimit = Boolean(err?.isRateLimit);
+        wrapped.isTransient = Boolean(err?.isTransient);
+        throw wrapped;
+      }
+
+      if (GH_RATE_LIMIT_STREAK > 0) {
+        GH_RATE_LIMIT_STREAK = 0;
+        this._ghRateLimitBackoffUntil = 0;
+        GH_RATE_LIMIT_BACKOFF_UNTIL = 0;
       }
 
       const text = String(result?.stdout || "").trim();
@@ -2220,52 +2944,81 @@ class GitHubIssuesAdapter {
   }
 
   async listTasks(_projectId, filters = {}) {
-    // If project mode is enabled, read from project board
-    if (this._projectMode === "kanban" && this._projectNumber) {
+    const requestedProjectId = String(_projectId || "")
+      .trim()
+      .toLowerCase();
+    const repoProjectId = `${this._owner}/${this._repo}`.toLowerCase();
+    const configuredProjectIds = [
+      this._projectNumber,
+      this._cachedProjectNumber,
+    ]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean);
+    const projectModeAllowed =
+      !requestedProjectId ||
+      requestedProjectId === repoProjectId ||
+      configuredProjectIds.includes(requestedProjectId) ||
+      Boolean(filters?.projectField);
+    const projectModeEnabled =
+      this._projectMode === "kanban" && this._projectNumber && projectModeAllowed;
+
+    if (projectModeEnabled && this._isProjectModeFallbackActive()) {
+      // Project mode temporarily disabled; fall through to issue mode.
+    } else if (projectModeEnabled) {
       const projectNumber = await this._resolveProjectNumber();
       if (projectNumber) {
-        try {
-          const tasks = await this.listTasksFromProject(projectNumber, filters);
+        if (this._isProjectCommandBackedOff("item-list", projectNumber)) {
+          this._activateProjectModeFallback();
+        } else {
+          try {
+            const tasks = await this.listTasksFromProject(projectNumber, filters);
+            if (this._isProjectCommandBackedOff("item-list", projectNumber)) {
+              this._activateProjectModeFallback();
+            } else {
+              this._clearProjectModeFallback();
 
-          // Apply filters
-          let filtered = tasks;
+              // Apply filters
+              let filtered = tasks;
 
-          if (this._enforceTaskLabel) {
-            filtered = filtered.filter((task) =>
-              this._isTaskScopedForCodex(task),
-            );
-          }
-
-          if (filters.status) {
-            const normalizedFilter = normaliseStatus(filters.status);
-            filtered = filtered.filter(
-              (task) => task.status === normalizedFilter,
-            );
-          }
-
-          // Enrich with shared state from comments
-          for (const task of filtered) {
-            try {
-              const sharedState = normalizeSharedStatePayload(
-                await this.readSharedStateFromIssue(task.id),
-              );
-              if (sharedState) {
-                task.meta.sharedState = sharedState;
-                task.sharedState = sharedState;
+              if (this._enforceTaskLabel) {
+                filtered = filtered.filter((task) =>
+                  this._isTaskScopedForCodex(task),
+                );
               }
-            } catch (err) {
-              console.warn(
-                `[kanban] failed to read shared state for #${task.id}: ${err.message}`,
-              );
-            }
-          }
 
-          return filtered;
-        } catch (err) {
-          console.warn(
-            `${TAG} failed to list tasks from project, falling back to issues: ${err.message}`,
-          );
-          // Fall through to regular issue listing
+              if (filters.status) {
+                const normalizedFilter = normaliseStatus(filters.status);
+                filtered = filtered.filter(
+                  (task) => task.status === normalizedFilter,
+                );
+              }
+
+              // Enrich with shared state from comments
+              for (const task of filtered) {
+                try {
+                  const sharedState = normalizeSharedStatePayload(
+                    await this.readSharedStateFromIssue(task.id),
+                  );
+                  if (sharedState) {
+                    task.meta.sharedState = sharedState;
+                    task.sharedState = sharedState;
+                  }
+                } catch (err) {
+                  console.warn(
+                    `[kanban] failed to read shared state for #${task.id}: ${err.message}`,
+                  );
+                }
+              }
+
+              return filtered;
+            }
+          } catch (err) {
+            this._activateProjectModeFallback();
+            console.warn(
+              `${TAG} failed to list tasks from project, falling back to issues: ${err.message}`,
+            );
+            // Fall through to regular issue listing
+          }
         }
       }
     }
@@ -3227,17 +3980,28 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
    * @private
    */
   async _getIssueComments(issueNumber) {
+    const issueKey = String(issueNumber || "").replace(/^#/, "").trim();
+    const now = Date.now();
+    if (this._shouldSkipIssueCommentsFetch(issueKey, now)) {
+      return [];
+    }
+
     try {
       const result = await this._gh([
         "api",
-        `/repos/${this._owner}/${this._repo}/issues/${issueNumber}/comments`,
+        `/repos/${this._owner}/${this._repo}/issues/${issueKey}/comments`,
         "--jq",
         ".",
       ]);
       return Array.isArray(result) ? result : [];
     } catch (err) {
+      if (isGhNotFoundError(err)) {
+        this._cacheIssueCommentsNotFound(issueKey, now);
+        this._warnIssueCommentsNotFound(issueKey, err, now);
+        return [];
+      }
       console.warn(
-        `[kanban] failed to fetch comments for #${issueNumber}: ${err.message}`,
+        `[kanban] failed to fetch comments for #${issueKey}: ${err.message}`,
       );
       return [];
     }
@@ -3254,19 +4018,53 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
   }
 
   async _resolveDefaultAssignee() {
-    if (this._defaultAssignee) return this._defaultAssignee;
+    if (this._defaultAssigneeResolved) {
+      return this._defaultAssignee;
+    }
+
+    const now = Date.now();
+    if (this._defaultAssigneeRetryAt > now) {
+      return null;
+    }
+
+    try {
+      const authStatus = await this._gh(["auth", "status"], {
+        parseJson: false,
+      });
+      const authLogin = extractLoginFromGhAuthStatus(authStatus);
+      if (authLogin) {
+        this._defaultAssignee = authLogin;
+        this._defaultAssigneeResolved = true;
+        this._defaultAssigneeRetryAt = 0;
+        return this._defaultAssignee;
+      }
+    } catch {
+      // Best effort only. Fallback to API lookup.
+    }
+
     try {
       const login = await this._gh(["api", "user", "--jq", ".login"], {
         parseJson: false,
       });
       const normalized = String(login || "").trim();
-      if (normalized) {
-        this._defaultAssignee = normalized;
+      this._defaultAssignee = normalized || null;
+      this._defaultAssigneeResolved = true;
+      this._defaultAssigneeRetryAt = 0;
+      return this._defaultAssignee;
+    } catch (err) {
+      const details = [err?.message, err?.stderr, err?.stdout]
+        .filter(Boolean)
+        .join("\n");
+      if (isGhRateLimitError(details) || isGhTransientError(details)) {
+        this._defaultAssigneeRetryAt =
+          now + Math.max(0, Number(this._defaultAssigneeRetryDelayMs) || 0);
+        return null;
       }
-    } catch {
       this._defaultAssignee = null;
+      this._defaultAssigneeResolved = true;
+      this._defaultAssigneeRetryAt = 0;
+      return null;
     }
-    return this._defaultAssignee;
   }
 
   async _ensureLabelExists(label) {
@@ -3314,20 +4112,15 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
 
   async _resolveProjectNumber() {
     if (this._cachedProjectNumber) return this._cachedProjectNumber;
-    const owner = String(this._projectOwner || "").trim();
     const title = String(this._projectTitle || "Bosun").trim();
-    if (!owner || !title) return null;
+    if (!title) return null;
 
     try {
-      const projects = await this._gh(
-        ["project", "list", "--owner", owner, "--format", "json"],
+      const rawProjects = await this._runProjectGhCommand(
+        ["project", "list", "--format", "json"],
         { parseJson: true },
       );
-      const list = Array.isArray(projects)
-        ? projects
-        : Array.isArray(projects?.projects)
-          ? projects.projects
-          : [];
+      const list = extractArrayPayload(rawProjects, ["projects", "items"]);
       const existing = list.find(
         (project) =>
           String(project?.title || "")
@@ -3346,8 +4139,8 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
     }
 
     try {
-      const output = await this._gh(
-        ["project", "create", "--owner", owner, "--title", title],
+      const output = await this._runProjectGhCommand(
+        ["project", "create", "--title", title],
         { parseJson: false },
       );
       const createdNumber = this._extractProjectNumber(output);
@@ -3364,19 +4157,16 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
 
   async _ensureIssueLinkedToProject(issueUrl) {
     if (this._projectMode !== "kanban") return;
-    const owner = String(this._projectOwner || "").trim();
-    if (!owner || !issueUrl) return;
+    if (!issueUrl) return;
     const projectNumber = await this._resolveProjectNumber();
     if (!projectNumber) return;
 
     try {
-      await this._gh(
+      await this._runProjectGhCommand(
         [
           "project",
           "item-add",
           String(projectNumber),
-          "--owner",
-          owner,
           "--url",
           issueUrl,
         ],
@@ -3388,7 +4178,7 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
         return;
       }
       console.warn(
-        `[kanban] failed to add issue to project ${owner}/${projectNumber}: ${err.message || err}`,
+        `[kanban] failed to add issue to project ${this._projectOwner || this._owner}/${projectNumber}: ${err.message || err}`,
       );
     }
   }
@@ -4982,6 +5772,38 @@ export function setKanbanBackend(name) {
   console.log(`${TAG} switched to ${normalised} backend`);
 }
 
+export function __resetGhRateLimitBackoffForTests() {
+  GH_RATE_LIMIT_BACKOFF_UNTIL = 0;
+  GH_RATE_LIMIT_WARNING_AT = 0;
+  GH_RATE_LIMIT_STREAK = 0;
+}
+
+export function __resetProjectPayloadWarningStateForTests() {
+  PROJECT_PAYLOAD_WARNING_AT.clear();
+  PROJECT_COMMAND_BACKOFF_UNTIL.clear();
+  projectPayloadWarningStateLoaded = false;
+  projectCommandBackoffStateLoaded = false;
+  try {
+    if (existsSync(PROJECT_PAYLOAD_WARNING_STATE_PATH)) {
+      unlinkSync(PROJECT_PAYLOAD_WARNING_STATE_PATH);
+    }
+  } catch {
+    // best effort for test isolation
+  }
+  try {
+    if (existsSync(PROJECT_COMMAND_BACKOFF_STATE_PATH)) {
+      unlinkSync(PROJECT_COMMAND_BACKOFF_STATE_PATH);
+    }
+  } catch {
+    // best effort for test isolation
+  }
+}
+
+export function __reloadProjectCommandBackoffStateForTests() {
+  PROJECT_COMMAND_BACKOFF_UNTIL.clear();
+  projectCommandBackoffStateLoaded = false;
+  loadProjectCommandBackoffStateOnce();
+}
 /**
  * Get list of available kanban backends.
  * @returns {string[]}
@@ -5103,4 +5925,6 @@ export async function unmarkTaskIgnored(taskId) {
   );
   return false;
 }
+
+
 
