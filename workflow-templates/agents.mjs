@@ -470,7 +470,9 @@ Write comprehensive tests FIRST before any implementation:
 3. Edge cases and error scenarios
 
 Use the project's existing test framework: {{testFramework}}
-Commit with message "test: add tests for [feature]"`,
+Commit with message "test: {{taskTitle}}".
+Subject must start with "test:" and describe how these new tests cover this task. Do not include literal placeholder tokens in the subject; base it on the assigned task title or slug instead.
+`,
       sdk: "{{agentSdk}}",
       timeoutMs: 1200000,
     }, { x: 400, y: 330 }),
@@ -485,7 +487,9 @@ The tests have been written. Now implement the feature to make them pass:
 4. Do NOT modify the tests — make the code fit the contract
 
 Run \`{{testFramework}}\` after implementation.
-Commit with message "feat: implement [feature]"`,
+Commit with message "feat: {{taskTitle}}".
+Subject must start with "feat:" and summarize what changed for this task without literal placeholder tokens; reference the assigned task title or slug when explaining scope.
+`,
       sdk: "{{agentSdk}}",
       timeoutMs: 1800000,
     }, { x: 400, y: 490 }),

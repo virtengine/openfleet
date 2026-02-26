@@ -86,6 +86,14 @@ describe("workflow-templates", () => {
     }
   });
 
+  it("templates never display literal [feature] placeholders", () => {
+    const placeholder = "[feature]";
+    for (const template of WORKFLOW_TEMPLATES) {
+      const serialized = JSON.stringify(template);
+      expect(serialized).not.toContain(placeholder);
+    }
+  });
+
   it("every edge references valid source and target nodes", () => {
     for (const t of WORKFLOW_TEMPLATES) {
       const nodeIds = new Set(t.nodes.map((n) => n.id));
