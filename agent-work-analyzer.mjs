@@ -46,6 +46,10 @@ const STUCK_DETECTION_THRESHOLD_MS = Number(
 const STUCK_SWEEP_INTERVAL_MS = Number(
   process.env.AGENT_STUCK_SWEEP_INTERVAL_MS || "30000",
 ); // 30 seconds
+const STUCK_SESSION_MAX_IDLE_MS = Number(
+  process.env.AGENT_STUCK_SESSION_MAX_IDLE_MS ||
+    String(STUCK_DETECTION_THRESHOLD_MS * 3),
+); // Auto-prune stuck sessions after 3× threshold (default 15 min)
 const INITIAL_REPLAY_MAX_SESSION_AGE_MS = Number(
   process.env.AGENT_INITIAL_REPLAY_MAX_SESSION_AGE_MS ||
     String(Math.max(STUCK_DETECTION_THRESHOLD_MS * 3, 15 * 60 * 1000)),
@@ -389,14 +393,18 @@ async function analyzeSessionEnd(session, event) {
 }
 
 /**
- * Check if agent appears stuck (no activity for X minutes)
+ * Check if agent appears stuck (no activity for X minutes).
+ * Returns idle_ms if stuck (for caller pruning decisions), otherwise 0.
  */
 async function checkStuckAgent(session, nowMs = Date.now()) {
   const lastActivityTime = new Date(session.lastActivity).getTime();
-  if (!Number.isFinite(lastActivityTime)) return;
+  if (!Number.isFinite(lastActivityTime)) return 0;
   const timeSinceActivity = nowMs - lastActivityTime;
 
   if (timeSinceActivity > STUCK_DETECTION_THRESHOLD_MS) {
+    // Escalate severity when stuck for 2× the threshold
+    const severity =
+      timeSinceActivity > STUCK_DETECTION_THRESHOLD_MS * 2 ? "high" : "medium";
     await emitAlert({
       type: "stuck_agent",
       attempt_id: session.attempt_id,
@@ -405,9 +413,11 @@ async function checkStuckAgent(session, nowMs = Date.now()) {
       idle_time_ms: timeSinceActivity,
       threshold_ms: STUCK_DETECTION_THRESHOLD_MS,
       recommendation: "check_agent_health",
-      severity: "medium",
+      severity,
     });
+    return timeSinceActivity;
   }
+  return 0;
 }
 
 function pruneStaleSessionsAfterReplay() {
@@ -426,8 +436,30 @@ function pruneStaleSessionsAfterReplay() {
 async function runStuckSweep() {
   if (!isRunning) return;
   const now = Date.now();
-  for (const session of activeSessions.values()) {
-    await checkStuckAgent(session, now);
+  const toPrune = [];
+
+  for (const [attemptId, session] of activeSessions.entries()) {
+    const idleMs = await checkStuckAgent(session, now);
+    // Auto-prune sessions stuck beyond the max idle age — they are effectively
+    // dead and only generate repeat alerts.  Emit a final "pruned" alert so the
+    // operator knows the session was cleaned up.
+    if (idleMs >= STUCK_SESSION_MAX_IDLE_MS) {
+      toPrune.push(attemptId);
+      await emitAlert({
+        type: "stuck_agent_pruned",
+        attempt_id: session.attempt_id,
+        task_id: session.taskId,
+        executor: session.executor,
+        idle_time_ms: idleMs,
+        max_idle_ms: STUCK_SESSION_MAX_IDLE_MS,
+        recommendation: "session_abandoned",
+        severity: "low",
+      });
+    }
+  }
+
+  for (const id of toPrune) {
+    activeSessions.delete(id);
   }
 }
 

@@ -1,0 +1,4 @@
+{"timestamp":"2026-02-25T09:00:00.000Z","event_type":"session_start","attempt_id":"attempt-f1","task_id":"task-f","task_title":"[m] fallback metric task","task_description":"Implement fallback metric synthesis","executor":"codex","model":"gpt-5.2-codex"}
+{"timestamp":"2026-02-25T09:02:00.000Z","event_type":"tool_call","attempt_id":"attempt-f1","task_id":"task-f"}
+{"timestamp":"2026-02-25T09:04:00.000Z","event_type":"error","attempt_id":"attempt-f1","task_id":"task-f","data":{"error_message":"Transient timeout 12","error_category":"timeout"}}
+{"timestamp":"2026-02-25T09:06:00.000Z","event_type":"session_end","attempt_id":"attempt-f1","task_id":"task-f","data":{"completion_status":"failed","duration_ms":360000}}

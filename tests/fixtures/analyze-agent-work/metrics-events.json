@@ -1,0 +1,127 @@
+[
+  {
+    "timestamp": "2099-01-10T09:30:00.000Z",
+    "task_id": "task-a",
+    "task_title": "[m] Build API endpoints",
+    "task_description": "Implement API route handlers",
+    "executor": "codex",
+    "model": "gpt-5.2-codex",
+    "metrics": {
+      "duration_ms": 240000,
+      "tool_calls": 18,
+      "errors": 2
+    },
+    "outcome": {
+      "status": "failed"
+    },
+    "error_summary": {
+      "total_errors": 2,
+      "error_categories": [
+        "network"
+      ],
+      "error_fingerprints": [
+        "timeout"
+      ]
+    }
+  },
+  {
+    "timestamp": "2099-01-11T08:30:00.000Z",
+    "task_id": "task-b",
+    "task_title": "[s] Fix login redirect",
+    "task_description": "Fix authentication callback state mismatch",
+    "executor": "copilot",
+    "model": "sonnet-4.5",
+    "metrics": {
+      "duration_ms": 90000,
+      "tool_calls": 9,
+      "errors": 1
+    },
+    "outcome": {
+      "status": "failed"
+    },
+    "error_summary": {
+      "total_errors": 1,
+      "error_categories": [
+        "network"
+      ],
+      "error_fingerprints": [
+        "timeout"
+      ]
+    }
+  },
+  {
+    "timestamp": "2099-01-12T11:30:00.000Z",
+    "task_id": "task-c",
+    "task_title": "[l] Migrate auth service",
+    "task_description": "Architect migration across modules and add upgrade handler",
+    "executor": "copilot",
+    "model": "opus-4.6",
+    "metrics": {
+      "duration_ms": 360000,
+      "tool_calls": 26,
+      "errors": 2
+    },
+    "outcome": {
+      "status": "failed"
+    },
+    "error_summary": {
+      "total_errors": 2,
+      "error_categories": [
+        "auth"
+      ],
+      "error_fingerprints": [
+        "auth"
+      ]
+    }
+  },
+  {
+    "timestamp": "2099-01-14T06:00:00.000Z",
+    "task_id": "task-d",
+    "task_title": "[s] Cleanup build temp paths",
+    "task_description": "Fix cleanup of temporary artifacts",
+    "executor": "codex",
+    "model": "gpt-5.1-codex-mini",
+    "metrics": {
+      "duration_ms": 60000,
+      "tool_calls": 6,
+      "errors": 1
+    },
+    "outcome": {
+      "status": "failed"
+    },
+    "error_summary": {
+      "total_errors": 1,
+      "error_categories": [
+        "infra"
+      ],
+      "error_fingerprints": [
+        "disk full at /tmp/build-#"
+      ]
+    }
+  },
+  {
+    "timestamp": "2000-01-01T00:00:00.000Z",
+    "task_id": "task-legacy",
+    "task_title": "[m] Legacy cleanup",
+    "task_description": "Old data outside the active window",
+    "executor": "codex",
+    "model": "gpt-5.2-codex",
+    "metrics": {
+      "duration_ms": 50000,
+      "tool_calls": 4,
+      "errors": 1
+    },
+    "outcome": {
+      "status": "failed"
+    },
+    "error_summary": {
+      "total_errors": 1,
+      "error_categories": [
+        "legacy"
+      ],
+      "error_fingerprints": [
+        "legacy"
+      ]
+    }
+  }
+]

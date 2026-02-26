@@ -60,6 +60,24 @@ Requires:
 - Use `/report weekly` as an alias.
 - Optional scheduler knobs in `.env`: `TELEGRAM_WEEKLY_REPORT_ENABLED`, `TELEGRAM_WEEKLY_REPORT_DAY`, `TELEGRAM_WEEKLY_REPORT_HOUR` (UTC), and `TELEGRAM_WEEKLY_REPORT_DAYS`.
 
+## Troubleshooting
+
+### Interactive git editor blocks automation
+
+Bosun preflight warns when `GIT_EDITOR` or git `core.editor` is set to an interactive editor (for example `code --wait`, `vim`, or `nano`). Interactive editors can deadlock unattended agent commits.
+
+Use the one-command fix:
+
+```bash
+node git-editor-fix.mjs
+```
+
+Then rerun preflight to verify the warning is gone:
+
+```bash
+node preflight.mjs
+```
+
 ## Documentation
 
 **Published docs (website):** https://bosun.virtengine.com/docs/

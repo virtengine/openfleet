@@ -369,6 +369,7 @@ function describePayloadShape(payload) {
 
 const PROJECT_PAYLOAD_WARNING_AT = new Map();
 const PROJECT_COMMAND_BACKOFF_UNTIL = new Map();
+const PROJECT_STATUS_FIELD_WARNING_AT = new Map();
 
 function canUseBosunStateDir(dirPath) {
   const candidate = String(dirPath || "").trim();
@@ -422,6 +423,12 @@ const PROJECT_COMMAND_BACKOFF_STATE_PATH = resolve(
 );
 let projectPayloadWarningStateLoaded = false;
 let projectCommandBackoffStateLoaded = false;
+let projectCommandBackoffStateLastReadAt = 0;
+const PROJECT_COMMAND_BACKOFF_REREAD_INTERVAL_MS = 3_000; // re-read every 3s
+const INVALID_PROJECT_OWNERS_STATE_PATH = resolve(
+  BOSUN_STATE_DIR,
+  "kanban-invalid-project-owners.json",
+);
 let GH_RATE_LIMIT_BACKOFF_UNTIL = 0;
 let GH_RATE_LIMIT_WARNING_AT = 0;
 let GH_RATE_LIMIT_STREAK = 0;
@@ -460,18 +467,29 @@ function persistProjectPayloadWarningState() {
 }
 
 function loadProjectCommandBackoffStateOnce() {
-  if (projectCommandBackoffStateLoaded) return;
+  const now = Date.now();
+  // Re-read periodically to pick up backoff state from sibling processes
+  if (
+    projectCommandBackoffStateLoaded &&
+    now - projectCommandBackoffStateLastReadAt < PROJECT_COMMAND_BACKOFF_REREAD_INTERVAL_MS
+  ) {
+    return;
+  }
   projectCommandBackoffStateLoaded = true;
+  projectCommandBackoffStateLastReadAt = now;
   try {
     if (!existsSync(PROJECT_COMMAND_BACKOFF_STATE_PATH)) return;
     const raw = readFileSync(PROJECT_COMMAND_BACKOFF_STATE_PATH, "utf8");
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
-    const now = Date.now();
     for (const [key, value] of Object.entries(parsed)) {
       const until = Number(value);
       if (!Number.isFinite(until) || until <= now) continue;
-      PROJECT_COMMAND_BACKOFF_UNTIL.set(key, until);
+      // Only update if file has a later backoff than memory
+      const existing = Number(PROJECT_COMMAND_BACKOFF_UNTIL.get(key)) || 0;
+      if (until > existing) {
+        PROJECT_COMMAND_BACKOFF_UNTIL.set(key, until);
+      }
     }
   } catch {
     // best effort
@@ -498,6 +516,56 @@ function persistProjectCommandBackoffState() {
     // best effort
   }
 }
+
+/**
+ * Persist invalid project owners to disk so sibling processes avoid wasted API calls.
+ * Shape: { owners: string[], allInvalidUntil: number }
+ */
+function persistInvalidProjectOwnerState(invalidOwnersSet, allInvalidUntil) {
+  try {
+    const dir = BOSUN_STATE_DIR;
+    mkdirSync(dir, { recursive: true });
+    const now = Date.now();
+    const serializable = {
+      owners: [...invalidOwnersSet],
+      allInvalidUntil: (Number(allInvalidUntil) || 0) > now ? Number(allInvalidUntil) : 0,
+    };
+    writeFileSync(
+      INVALID_PROJECT_OWNERS_STATE_PATH,
+      JSON.stringify(serializable),
+      "utf8",
+    );
+  } catch {
+    // best effort
+  }
+}
+
+/**
+ * Load invalid project owners from disk (called by adapter constructor).
+ * @returns {{ owners: string[], allInvalidUntil: number }}
+ */
+function loadInvalidProjectOwnerState() {
+  try {
+    if (!existsSync(INVALID_PROJECT_OWNERS_STATE_PATH)) return { owners: [], allInvalidUntil: 0 };
+    const raw = readFileSync(INVALID_PROJECT_OWNERS_STATE_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { owners: [], allInvalidUntil: 0 };
+    }
+    const now = Date.now();
+    const owners = Array.isArray(parsed.owners)
+      ? parsed.owners.filter((o) => typeof o === "string" && o.trim())
+      : [];
+    const allInvalidUntil = Number(parsed.allInvalidUntil) || 0;
+    return {
+      owners,
+      allInvalidUntil: allInvalidUntil > now ? allInvalidUntil : 0,
+    };
+  } catch {
+    return { owners: [], allInvalidUntil: 0 };
+  }
+}
+
 function extractLoginFromGhAuthStatus(rawStatus) {
   const text = String(rawStatus || "");
   if (!text) return null;
@@ -1521,8 +1589,10 @@ class GitHubIssuesAdapter {
     this._projectFieldsCache = new Map();
     this._projectFieldsCacheTTL = 300_000; // 5 minutes
     this._repositoryNodeId = null;
-    this._invalidProjectOwners = new Set();
-    this._projectOwnerAllInvalidUntil = 0;
+    // Load persisted invalid-owner state from sibling processes
+    const _persistedOwnerState = loadInvalidProjectOwnerState();
+    this._invalidProjectOwners = new Set(_persistedOwnerState.owners);
+    this._projectOwnerAllInvalidUntil = _persistedOwnerState.allInvalidUntil;
     this._projectOwnerRetryDelayMs = parseDelayMs(
       process.env.GH_PROJECT_OWNER_RETRY_MS,
       300_000,
@@ -1531,6 +1601,12 @@ class GitHubIssuesAdapter {
     this._projectPayloadWarningAt = PROJECT_PAYLOAD_WARNING_AT;
     this._projectPayloadWarningThrottleMs = parseDelayMs(
       process.env.GH_PROJECT_PAYLOAD_WARNING_THROTTLE_MS,
+      300_000,
+      0,
+    );
+    this._projectStatusFieldWarningAt = PROJECT_STATUS_FIELD_WARNING_AT;
+    this._projectStatusFieldWarningThrottleMs = parseDelayMs(
+      process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS,
       300_000,
       0,
     );
@@ -1614,6 +1690,18 @@ class GitHubIssuesAdapter {
     console.warn(
       `${TAG} project ${commandName} returned non-array for project ${projectNumber} (${describePayloadShape(payload)})`,
     );
+  }
+
+  _warnMissingProjectStatusField(projectNumber, now = Date.now()) {
+    const projectKey = String(projectNumber || "").trim();
+    if (!projectKey) return;
+    const throttleMs = Number(this._projectStatusFieldWarningThrottleMs) || 0;
+    const previousAt = Number(this._projectStatusFieldWarningAt.get(projectKey) || 0);
+    if (throttleMs > 0 && previousAt > 0 && now - previousAt < throttleMs) {
+      return;
+    }
+    this._projectStatusFieldWarningAt.set(projectKey, now);
+    console.warn(`${TAG} cannot sync to project: no status field found`);
   }
 
   _shouldSkipIssueCommentsFetch(issueNumber, now = Date.now()) {
@@ -1717,7 +1805,36 @@ class GitHubIssuesAdapter {
     this._projectModeFallbackUntil = 0;
   }
 
+  /**
+   * Persist invalid project owner state to disk for cross-process sharing.
+   * @private
+   */
+  _persistInvalidOwnerState() {
+    persistInvalidProjectOwnerState(
+      this._invalidProjectOwners,
+      this._projectOwnerAllInvalidUntil,
+    );
+  }
+
+  /**
+   * Re-load invalid project owner state from disk (picks up sibling-process updates).
+   * @private
+   */
+  _reloadInvalidOwnerState() {
+    const state = loadInvalidProjectOwnerState();
+    // Merge: add any owners marked invalid by sibling processes
+    for (const owner of state.owners) {
+      this._invalidProjectOwners.add(owner);
+    }
+    // Take the later cooldown
+    if (state.allInvalidUntil > (Number(this._projectOwnerAllInvalidUntil) || 0)) {
+      this._projectOwnerAllInvalidUntil = state.allInvalidUntil;
+    }
+  }
+
   _getProjectOwnerCandidates() {
+    // Reload persisted state from sibling processes before checking
+    this._reloadInvalidOwnerState();
     if (Number(this._projectOwnerAllInvalidUntil) > Date.now()) {
       return [];
     }
@@ -1746,6 +1863,7 @@ class GitHubIssuesAdapter {
     if (candidates.length > 0) {
       this._projectOwnerAllInvalidUntil =
         Date.now() + Math.max(0, Number(this._projectOwnerRetryDelayMs) || 0);
+      this._persistInvalidOwnerState();
     }
     return [];
   }
@@ -1775,6 +1893,7 @@ class GitHubIssuesAdapter {
         );
         this._invalidProjectOwners.delete(owner);
         this._projectOwnerAllInvalidUntil = 0;
+        this._persistInvalidOwnerState();
         if (owner !== this._projectOwner) {
           this._projectOwner = owner;
           console.warn(`${TAG} switched project owner fallback to ${owner}`);
@@ -1786,6 +1905,7 @@ class GitHubIssuesAdapter {
           .join("\n");
         if (isGhProjectOwnerTypeError(details)) {
           this._invalidProjectOwners.add(owner);
+          this._persistInvalidOwnerState();
           invalidOwnerCount += 1;
           ownerTypeEncountered = true;
           lastOwnerError = err;
@@ -1801,6 +1921,7 @@ class GitHubIssuesAdapter {
     ) {
       this._projectOwnerAllInvalidUntil =
         Date.now() + Math.max(0, Number(this._projectOwnerRetryDelayMs) || 0);
+      this._persistInvalidOwnerState();
     }
 
     if (lastOwnerError || ownerCandidates.length === 0) {
@@ -1812,6 +1933,7 @@ class GitHubIssuesAdapter {
             options,
           );
           this._invalidProjectOwners.delete(viewerLogin);
+          this._persistInvalidOwnerState();
           if (viewerLogin !== this._projectOwner) {
             this._projectOwner = viewerLogin;
             console.warn(`${TAG} switched project owner fallback to ${viewerLogin}`);
@@ -1826,6 +1948,7 @@ class GitHubIssuesAdapter {
             throw viewerErr;
           }
           this._invalidProjectOwners.add(viewerLogin);
+          this._persistInvalidOwnerState();
           ownerTypeEncountered = true;
           lastOwnerError = viewerErr;
         }
@@ -2587,7 +2710,7 @@ class GitHubIssuesAdapter {
       );
       if (!fields || !fields.statusFieldId) {
         if (!fieldListBackedOff) {
-          console.warn(`${TAG} cannot sync to project: no status field found`);
+          this._warnMissingProjectStatusField(projectNumber);
         }
         return false;
       }
@@ -5797,11 +5920,19 @@ export function __resetProjectPayloadWarningStateForTests() {
   } catch {
     // best effort for test isolation
   }
+  try {
+    if (existsSync(INVALID_PROJECT_OWNERS_STATE_PATH)) {
+      unlinkSync(INVALID_PROJECT_OWNERS_STATE_PATH);
+    }
+  } catch {
+    // best effort for test isolation
+  }
 }
 
 export function __reloadProjectCommandBackoffStateForTests() {
   PROJECT_COMMAND_BACKOFF_UNTIL.clear();
   projectCommandBackoffStateLoaded = false;
+  projectCommandBackoffStateLastReadAt = 0;
   loadProjectCommandBackoffStateOnce();
 }
 /**

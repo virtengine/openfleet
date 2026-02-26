@@ -1,0 +1,99 @@
+[
+  {
+    "timestamp": "2099-01-10T10:00:00.000Z",
+    "task_id": "task-a",
+    "attempt_id": "attempt-a1",
+    "task_title": "[m] Build API endpoints",
+    "task_description": "Implement API route handlers",
+    "executor": "codex",
+    "model": "gpt-5.2-codex",
+    "data": {
+      "error_fingerprint": "timeout",
+      "error_message": "Request timed out after 30000 ms",
+      "error_category": "network"
+    }
+  },
+  {
+    "timestamp": "2099-01-10T10:30:00.000Z",
+    "task_id": "task-a",
+    "attempt_id": "attempt-a2",
+    "task_title": "[m] Build API endpoints",
+    "task_description": "Implement API route handlers",
+    "executor": "codex",
+    "model": "gpt-5.2-codex",
+    "data": {
+      "error_fingerprint": "timeout",
+      "error_message": "Request timed out after 12000 ms",
+      "error_category": "network"
+    }
+  },
+  {
+    "timestamp": "2099-01-11T09:00:00.000Z",
+    "task_id": "task-b",
+    "attempt_id": "attempt-b1",
+    "task_title": "[s] Fix login redirect",
+    "task_description": "Fix authentication callback state mismatch",
+    "executor": "copilot",
+    "model": "sonnet-4.5",
+    "data": {
+      "error_fingerprint": "timeout",
+      "error_message": "Request timed out after 9000 ms",
+      "error_category": "network"
+    }
+  },
+  {
+    "timestamp": "2099-01-12T12:00:00.000Z",
+    "task_id": "task-c",
+    "attempt_id": "attempt-c1",
+    "task_title": "[l] Migrate auth service",
+    "task_description": "Architect migration across modules and add upgrade handler",
+    "executor": "copilot",
+    "model": "opus-4.6",
+    "data": {
+      "error_fingerprint": "auth",
+      "error_message": "Invalid bearer token",
+      "error_category": "auth"
+    }
+  },
+  {
+    "timestamp": "2099-01-13T12:00:00.000Z",
+    "task_id": "task-c",
+    "attempt_id": "attempt-c2",
+    "task_title": "[l] Migrate auth service",
+    "task_description": "Architect migration across modules and add upgrade handler",
+    "executor": "copilot",
+    "model": "opus-4.6",
+    "data": {
+      "error_fingerprint": "auth",
+      "error_message": "Session signature mismatch",
+      "error_category": "auth"
+    }
+  },
+  {
+    "timestamp": "2099-01-14T07:00:00.000Z",
+    "task_id": "task-d",
+    "attempt_id": "attempt-d1",
+    "task_title": "[s] Cleanup build temp paths",
+    "task_description": "Fix cleanup of temporary artifacts",
+    "executor": "codex",
+    "model": "gpt-5.1-codex-mini",
+    "data": {
+      "error_message": "Disk full at /tmp/build-1234",
+      "error_category": "infra"
+    }
+  },
+  {
+    "timestamp": "2000-01-01T00:00:00.000Z",
+    "task_id": "task-legacy",
+    "attempt_id": "attempt-legacy",
+    "task_title": "[m] Legacy cleanup",
+    "task_description": "Old data outside the active window",
+    "executor": "codex",
+    "model": "gpt-5.2-codex",
+    "data": {
+      "error_fingerprint": "legacy",
+      "error_message": "Legacy failure",
+      "error_category": "legacy"
+    }
+  }
+]
