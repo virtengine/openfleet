@@ -614,9 +614,11 @@ async function pollAgentAlerts() {
       telegramChatId &&
       process.env.AGENT_ALERTS_NOTIFY === "true"
     ) {
-      void sendTelegramMessage(formatAgentAlert(alert), {
-        dedupKey: `agent-alert:${alert.type || "alert"}:${alert.attempt_id || "unknown"}`,
-      }).catch(() => {});
+      runDetached("agent-alerts:telegram", () =>
+        sendTelegramMessage(formatAgentAlert(alert), {
+          dedupKey: `agent-alert:${alert.type || "alert"}:${alert.attempt_id || "unknown"}`,
+        }),
+      );
     }
   }
 }
@@ -649,10 +651,10 @@ function stopAgentWorkAnalyzer() {
 function startAgentAlertTailer() {
   if (agentAlertsTimer) return;
   agentAlertsTimer = setInterval(() => {
-    void pollAgentAlerts();
+    runDetached("agent-alerts:poll", pollAgentAlerts);
   }, AGENT_ALERT_POLL_MS);
   agentAlertsTimer.unref?.();
-  void pollAgentAlerts();
+  runDetached("agent-alerts:poll", pollAgentAlerts);
 }
 
 function stopAgentAlertTailer() {
@@ -2085,7 +2087,9 @@ async function handleMonitorFailure(reason, err) {
     // Ensure we retry after safe-mode window if still running.
     if (!shuttingDown) {
       setTimeout(() => {
-        if (!shuttingDown) void startProcess();
+        if (!shuttingDown) {
+          runDetached("start-process:hard-cap-retry", startProcess);
+        }
       }, pauseMs + 1000);
     }
     return;
@@ -2190,6 +2194,21 @@ function runGuarded(reason, fn) {
     }
   } catch (err) {
     reportGuardedFailure(reason, err);
+  }
+}
+function runDetached(label, promiseOrFn) {
+  const logFailure = (err) => {
+    const message = formatMonitorError(err);
+    console.warn(`[monitor] detached ${label} failed: ${message}`);
+  };
+  try {
+    const result =
+      typeof promiseOrFn === "function" ? promiseOrFn() : promiseOrFn;
+    if (result && typeof result.then === "function") {
+      result.catch((err) => logFailure(err));
+    }
+  } catch (err) {
+    logFailure(err);
   }
 }
 
@@ -2554,15 +2573,19 @@ function notifyVkError(line) {
   ]
     .filter(Boolean)
     .join("\n");
-  void sendTelegramMessage(message, { parseMode: "HTML" });
-  triggerVibeKanbanRecovery(line);
+  runDetached("vk-error:telegram", () =>
+    sendTelegramMessage(message, { parseMode: "HTML" }),
+  );
+  runDetached("vk-recovery:notify", () => triggerVibeKanbanRecovery(line));
 }
 
 function notifyCodexTrigger(context) {
   if (!telegramToken || !telegramChatId) {
     return;
   }
-  void sendTelegramMessage(`Codex triggered: ${context}`);
+  runDetached("codex-trigger:telegram", () =>
+    sendTelegramMessage(`Codex triggered: ${context}`),
+  );
 }
 
 async function runCodexRecovery(reason) {
@@ -2796,7 +2819,10 @@ function scheduleVibeKanbanRestart() {
   console.log(
     `[monitor] restarting vibe-kanban in ${delay}ms (attempt ${vkRestartCount}/${vkMaxRestarts})`,
   );
-  setTimeout(() => void startVibeKanbanProcess(), delay);
+  setTimeout(
+    () => runDetached("vk-restart:scheduled", startVibeKanbanProcess),
+    delay,
+  );
 }
 
 async function canConnectTcp(host, port, timeoutMs = 1200) {
@@ -2894,7 +2920,7 @@ function restartVibeKanbanProcess() {
       /* best effort */
     }
   } else {
-    void startVibeKanbanProcess();
+    runDetached("vk-restart:manual", startVibeKanbanProcess);
   }
 }
 
@@ -3109,7 +3135,9 @@ function ensureVkLogStream() {
   }
 
   // Discover any active sessions immediately and keep polling for new sessions
-  void refreshVkSessionStreams("startup");
+  runDetached("vk-session-discovery:startup", () =>
+    refreshVkSessionStreams("startup"),
+  );
   ensureVkSessionDiscoveryLoop();
 }
 
@@ -3117,7 +3145,9 @@ function ensureVkSessionDiscoveryLoop() {
   if (vkSessionDiscoveryTimer) return;
   if (!Number.isFinite(vkEnsureIntervalMs) || vkEnsureIntervalMs <= 0) return;
   vkSessionDiscoveryTimer = setInterval(() => {
-    void refreshVkSessionStreams("periodic");
+    runDetached("vk-session-discovery:periodic", () =>
+      refreshVkSessionStreams("periodic"),
+    );
   }, vkEnsureIntervalMs);
 }
 
@@ -3409,8 +3439,10 @@ async function fetchVk(path, opts = {}) {
       if (shouldLogVkWarning("network-error")) {
         console.warn(`[monitor] fetchVk ${method} ${path} error: ${msg}`);
       }
-      void triggerVibeKanbanRecovery(
-        `fetchVk ${method} ${path} network error: ${msg}`,
+      runDetached("vk-recovery:network", () =>
+        triggerVibeKanbanRecovery(
+          `fetchVk ${method} ${path} network error: ${msg}`,
+        ),
       );
       noteVkErrorBurst("network-error");
     }
@@ -3428,8 +3460,10 @@ async function fetchVk(path, opts = {}) {
         `[monitor] fetchVk ${method} ${path} error: invalid response object (res=${!!res}, res.ok=${res?.ok})`,
       );
     }
-    void triggerVibeKanbanRecovery(
-      `fetchVk ${method} ${path} invalid response object`,
+    runDetached("vk-recovery:invalid-response", () =>
+      triggerVibeKanbanRecovery(
+        `fetchVk ${method} ${path} invalid response object`,
+      ),
     );
     noteVkErrorBurst("invalid-response");
     return null;
@@ -3443,8 +3477,10 @@ async function fetchVk(path, opts = {}) {
       );
     }
     if (res.status >= 500) {
-      void triggerVibeKanbanRecovery(
-        `fetchVk ${method} ${path} HTTP ${res.status}`,
+      runDetached("vk-recovery:http", () =>
+        triggerVibeKanbanRecovery(
+          `fetchVk ${method} ${path} HTTP ${res.status}`,
+        ),
       );
       noteVkErrorBurst("http-5xx");
     }
@@ -3482,8 +3518,10 @@ async function fetchVk(path, opts = {}) {
         );
       }
     }
-    void triggerVibeKanbanRecovery(
-      `fetchVk ${method} ${path} non-JSON response`,
+    runDetached("vk-recovery:non-json", () =>
+      triggerVibeKanbanRecovery(
+        `fetchVk ${method} ${path} non-JSON response`,
+      ),
     );
     noteVkErrorBurst("non-json");
     if (now - vkNonJsonNotifiedAt > 10 * 60 * 1000) {
@@ -7227,10 +7265,12 @@ async function runMergeStrategyAnalysis(ctx, opts = {}) {
       // Re-run analysis after the wait period
       setTimeout(
         () => {
-          void runMergeStrategyAnalysis({
-            ...ctx,
-            ciStatus: "re-check",
-          });
+          runDetached("merge-strategy:wait-recheck", () =>
+            runMergeStrategyAnalysis({
+              ...ctx,
+              ciStatus: "re-check",
+            }),
+          );
         },
         (execResult.waitSeconds || 300) * 1000,
       );
@@ -7531,10 +7571,12 @@ async function actOnAssessment(ctx, decision) {
       const waitSec = decision.waitSeconds || 300;
       console.log(`[${tag}] → wait ${waitSec}s`);
       setTimeout(() => {
-        void runTaskAssessment({
-          ...ctx,
-          trigger: "reassessment",
-        });
+        runDetached("task-assessment:recheck", () =>
+          runTaskAssessment({
+            ...ctx,
+            trigger: "reassessment",
+          }),
+        );
       }, waitSec * 1000);
       break;
     }
@@ -9253,11 +9295,15 @@ function startTaskPlannerStatusLoop() {
   if (!taskPlannerStatus.enabled || plannerMode === "disabled") return;
   taskPlannerStatus.timer = setInterval(() => {
     if (shuttingDown) return;
-    void publishTaskPlannerStatus("interval");
+    runDetached("task-planner-status:interval", () =>
+      publishTaskPlannerStatus("interval"),
+    );
   }, taskPlannerStatus.intervalMs);
   setTimeout(() => {
     if (shuttingDown) return;
-    void publishTaskPlannerStatus("startup");
+    runDetached("task-planner-status:startup", () =>
+      publishTaskPlannerStatus("startup"),
+    );
   }, 25_000);
 }
 
@@ -9976,10 +10022,16 @@ async function startTelegramNotifier() {
       `[monitor] notifier restarted (suppressed telegram notification — rapid restart)`,
     );
   } else {
-    void sendTelegramMessage(`${projectName} Orchestrator Notifier started.`);
+    runDetached("telegram-notifier:startup", () =>
+      sendTelegramMessage(`${projectName} Orchestrator Notifier started.`),
+    );
   }
-  telegramNotifierTimeout = setTimeout(sendUpdate, intervalMs);
-  telegramNotifierInterval = setInterval(sendUpdate, intervalMs);
+  telegramNotifierTimeout = setTimeout(() => {
+    runDetached("telegram-notifier:tick", sendUpdate);
+  }, intervalMs);
+  telegramNotifierInterval = setInterval(() => {
+    runDetached("telegram-notifier:tick", sendUpdate);
+  }, intervalMs);
 }
 
 async function checkStatusMilestones() {
@@ -10467,7 +10519,9 @@ async function triggerTaskPlanner(
     } else {
       throw new Error(`Unknown planner mode: ${effectiveMode}`);
     }
-    void publishTaskPlannerStatus("trigger-success");
+    runDetached("task-planner-status:trigger-success", () =>
+      publishTaskPlannerStatus("trigger-success"),
+    );
     return result;
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
@@ -10481,7 +10535,9 @@ async function triggerTaskPlanner(
         `Task planner run failed (${effectiveMode}): ${message}`,
       );
     }
-    void publishTaskPlannerStatus("trigger-failed");
+    runDetached("task-planner-status:trigger-failed", () =>
+      publishTaskPlannerStatus("trigger-failed"),
+    );
     throw err; // re-throw so callers (e.g. /plan command) know it failed
   } finally {
     plannerTriggered = false;
@@ -12672,7 +12728,9 @@ async function startProcess() {
     if (!shuttingDown) {
       const retryMs = Math.max(5_000, restartDelayMs || 0);
       safeSetTimeout("startProcess-retry", () => {
-        if (!shuttingDown) void startProcess();
+        if (!shuttingDown) {
+          return startProcess();
+        }
       }, retryMs);
     }
   }
@@ -13184,7 +13242,9 @@ function scheduleEnvReload(reason) {
     clearTimeout(envWatcherDebounce);
   }
   envWatcherDebounce = setTimeout(() => {
-    void reloadConfig(reason || "env-change");
+    runDetached("config-reload:env-change", () =>
+      reloadConfig(reason || "env-change"),
+    );
   }, 400);
 }
 
@@ -14958,3 +15018,5 @@ export {
   getContainerStatus,
   isContainerEnabled,
 };
+
+
