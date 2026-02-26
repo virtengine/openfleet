@@ -45,4 +45,16 @@ describe("async safety guards", () => {
       "autoUpdateTimer = setInterval(() => void poll(), intervalMs);",
     );
   });
+
+
+  it("guards monitor detached scheduler and notifier work", () => {
+    expect(monitorSource).toContain("function runDetached");
+    expect(monitorSource).toContain('runDetached("agent-alerts-poll"');
+    expect(monitorSource).toContain('runDetached("task-planner-status-interval"');
+    expect(monitorSource).toContain('runDetached("telegram-notifier-update"');
+    expect(monitorSource).toContain('runDetached("vk-recovery"');
+    expect(monitorSource).not.toContain("void pollAgentAlerts()");
+    expect(monitorSource).not.toContain('void publishTaskPlannerStatus("interval")');
+    expect(monitorSource).not.toContain("void triggerVibeKanbanRecovery");
+  });
 });

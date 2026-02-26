@@ -614,9 +614,12 @@ async function pollAgentAlerts() {
       telegramChatId &&
       process.env.AGENT_ALERTS_NOTIFY === "true"
     ) {
-      void sendTelegramMessage(formatAgentAlert(alert), {
-        dedupKey: `agent-alert:${alert.type || "alert"}:${alert.attempt_id || "unknown"}`,
-      }).catch(() => {});
+      const telegramDedupKey = `agent-alert:${alert.type || "alert"}:${alert.attempt_id || "unknown"}`;
+      runDetached("agent-alerts-notify", () =>
+        sendTelegramMessage(formatAgentAlert(alert), {
+          dedupKey: telegramDedupKey,
+        }),
+      );
     }
   }
 }
@@ -649,10 +652,10 @@ function stopAgentWorkAnalyzer() {
 function startAgentAlertTailer() {
   if (agentAlertsTimer) return;
   agentAlertsTimer = setInterval(() => {
-    void pollAgentAlerts();
+    runDetached("agent-alerts-poll", pollAgentAlerts);
   }, AGENT_ALERT_POLL_MS);
   agentAlertsTimer.unref?.();
-  void pollAgentAlerts();
+  runDetached("agent-alerts-poll", pollAgentAlerts);
 }
 
 function stopAgentAlertTailer() {
@@ -2193,6 +2196,27 @@ function runGuarded(reason, fn) {
   }
 }
 
+function runDetached(label, promiseOrFn) {
+  const name = label ? String(label) : "task";
+  try {
+    const result =
+      typeof promiseOrFn === "function" ? promiseOrFn() : promiseOrFn;
+    if (result && typeof result.then === "function") {
+      result.catch((err) => {
+        console.warn(
+          `[monitor] detached ${name} failed: ${formatMonitorError(err)}`,
+        );
+      });
+    }
+  } catch (err) {
+    console.warn(
+      `[monitor] detached ${name} failed: ${formatMonitorError(err)}`,
+    );
+  }
+}
+
+
+
 function safeSetInterval(reason, fn, ms) {
   return setInterval(() => runGuarded(`interval:${reason}`, fn), ms);
 }
@@ -2554,8 +2578,10 @@ function notifyVkError(line) {
   ]
     .filter(Boolean)
     .join("\n");
-  void sendTelegramMessage(message, { parseMode: "HTML" });
-  triggerVibeKanbanRecovery(line);
+  runDetached("vk-error-notify", () =>
+    sendTelegramMessage(message, { parseMode: "HTML" }),
+  );
+  runDetached("vk-recovery", () => triggerVibeKanbanRecovery(line));
 }
 
 function notifyCodexTrigger(context) {
@@ -3299,7 +3325,9 @@ async function triggerVibeKanbanRecovery(reason) {
     const notice = codexEnabled
       ? `Codex recovery triggered: vibe-kanban unreachable. Attempting restart. (${link})`
       : `Vibe-kanban recovery triggered (Codex disabled). Attempting restart. (${link})`;
-    void sendTelegramMessage(notice, { parseMode: "HTML" });
+    runDetached("vk-recovery-notify", () =>
+      sendTelegramMessage(notice, { parseMode: "HTML" }),
+    );
   }
   await runCodexRecovery(reason || "vibe-kanban unreachable");
   restartVibeKanbanProcess();
@@ -3409,8 +3437,10 @@ async function fetchVk(path, opts = {}) {
       if (shouldLogVkWarning("network-error")) {
         console.warn(`[monitor] fetchVk ${method} ${path} error: ${msg}`);
       }
-      void triggerVibeKanbanRecovery(
-        `fetchVk ${method} ${path} network error: ${msg}`,
+      runDetached("vk-recovery", () =>
+        triggerVibeKanbanRecovery(
+          `fetchVk ${method} ${path} network error: ${msg}`,
+        ),
       );
       noteVkErrorBurst("network-error");
     }
@@ -3428,8 +3458,10 @@ async function fetchVk(path, opts = {}) {
         `[monitor] fetchVk ${method} ${path} error: invalid response object (res=${!!res}, res.ok=${res?.ok})`,
       );
     }
-    void triggerVibeKanbanRecovery(
-      `fetchVk ${method} ${path} invalid response object`,
+    runDetached("vk-recovery", () =>
+      triggerVibeKanbanRecovery(
+        `fetchVk ${method} ${path} invalid response object`,
+      ),
     );
     noteVkErrorBurst("invalid-response");
     return null;
@@ -3443,8 +3475,10 @@ async function fetchVk(path, opts = {}) {
       );
     }
     if (res.status >= 500) {
-      void triggerVibeKanbanRecovery(
-        `fetchVk ${method} ${path} HTTP ${res.status}`,
+      runDetached("vk-recovery", () =>
+        triggerVibeKanbanRecovery(
+          `fetchVk ${method} ${path} HTTP ${res.status}`,
+        ),
       );
       noteVkErrorBurst("http-5xx");
     }
@@ -3482,8 +3516,10 @@ async function fetchVk(path, opts = {}) {
         );
       }
     }
-    void triggerVibeKanbanRecovery(
-      `fetchVk ${method} ${path} non-JSON response`,
+    runDetached("vk-recovery", () =>
+      triggerVibeKanbanRecovery(
+        `fetchVk ${method} ${path} non-JSON response`,
+      ),
     );
     noteVkErrorBurst("non-json");
     if (now - vkNonJsonNotifiedAt > 10 * 60 * 1000) {
@@ -9253,11 +9289,15 @@ function startTaskPlannerStatusLoop() {
   if (!taskPlannerStatus.enabled || plannerMode === "disabled") return;
   taskPlannerStatus.timer = setInterval(() => {
     if (shuttingDown) return;
-    void publishTaskPlannerStatus("interval");
+    runDetached("task-planner-status-interval", () =>
+      publishTaskPlannerStatus("interval"),
+    );
   }, taskPlannerStatus.intervalMs);
   setTimeout(() => {
     if (shuttingDown) return;
-    void publishTaskPlannerStatus("startup");
+    runDetached("task-planner-status-startup", () =>
+      publishTaskPlannerStatus("startup"),
+    );
   }, 25_000);
 }
 
@@ -9952,6 +9992,9 @@ async function startTelegramNotifier() {
     await checkStatusMilestones();
   };
 
+  const sendUpdateDetached = () =>
+    runDetached("telegram-notifier-update", sendUpdate);
+
   // Suppress "Notifier started" message on rapid restarts (e.g. code-change restarts).
   // If the last start was <60s ago, skip the notification — just log locally.
   const lastStartPath = resolve(
@@ -9976,10 +10019,12 @@ async function startTelegramNotifier() {
       `[monitor] notifier restarted (suppressed telegram notification — rapid restart)`,
     );
   } else {
-    void sendTelegramMessage(`${projectName} Orchestrator Notifier started.`);
+    runDetached("telegram-notifier-startup", () =>
+      sendTelegramMessage(`${projectName} Orchestrator Notifier started.`),
+    );
   }
-  telegramNotifierTimeout = setTimeout(sendUpdate, intervalMs);
-  telegramNotifierInterval = setInterval(sendUpdate, intervalMs);
+  telegramNotifierTimeout = setTimeout(sendUpdateDetached, intervalMs);
+  telegramNotifierInterval = setInterval(sendUpdateDetached, intervalMs);
 }
 
 async function checkStatusMilestones() {
@@ -10467,7 +10512,9 @@ async function triggerTaskPlanner(
     } else {
       throw new Error(`Unknown planner mode: ${effectiveMode}`);
     }
-    void publishTaskPlannerStatus("trigger-success");
+    runDetached("task-planner-status-trigger-success", () =>
+      publishTaskPlannerStatus("trigger-success"),
+    );
     return result;
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
@@ -10481,7 +10528,9 @@ async function triggerTaskPlanner(
         `Task planner run failed (${effectiveMode}): ${message}`,
       );
     }
-    void publishTaskPlannerStatus("trigger-failed");
+    runDetached("task-planner-status-trigger-failed", () =>
+      publishTaskPlannerStatus("trigger-failed"),
+    );
     throw err; // re-throw so callers (e.g. /plan command) know it failed
   } finally {
     plannerTriggered = false;
