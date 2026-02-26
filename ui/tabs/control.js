@@ -853,7 +853,7 @@ export function ControlTab() {
 
         <${Card} className="routing-card">
           <${Collapsible} title="Routing" defaultOpen=${!isCompact}>
-            <div class="meta-text mb-sm">Executor routing and region.</div>
+            <div class="meta-text mb-sm">Quick runtime overrides for executor routing and region. Persistent defaults live in Settings.</div>
             <div class="card-subtitle">SDK</div>
             <${SegmentedControl}
               options=${[
