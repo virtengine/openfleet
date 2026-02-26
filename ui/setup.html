@@ -478,15 +478,14 @@ function App() {
   const [repoSlug, setRepoSlug] = useState("");
   const [repoRoot, setRepoRoot] = useState("");
   const [executors, setExecutors] = useState([
-    { name: "primary", executor: "COPILOT", model: "claude-opus-4.6", weight: 70, role: "primary", authMode: "oauth", apiKey: "", baseUrl: "", codexProfile: "" },
-    { name: "backup", executor: "CODEX", model: "gpt-5.3-codex", weight: 30, role: "backup", authMode: "oauth", apiKey: "", baseUrl: "", codexProfile: "" },
+    { name: "primary", executor: "CODEX", model: "gpt-5.3-codex", weight: 100, role: "primary", authMode: "oauth", apiKey: "", baseUrl: "", codexProfile: "" },
   ]);
   const [probedModels, setProbedModels] = useState({});
   const [repos, setRepos] = useState([""]);
   const [kanbanBackend, setKanbanBackend] = useState("internal");
   const [telegramToken, setTelegramToken] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
-  const [maxParallel, setMaxParallel] = useState(6);
+  const [maxParallel, setMaxParallel] = useState(4);
   const [maxRetries, setMaxRetries] = useState(3);
   const [failoverStrategy, setFailoverStrategy] = useState("next-in-line");
   const [completedSteps, setCompletedSteps] = useState(new Set());
@@ -719,7 +718,7 @@ function App() {
             cooldownMinutes: 5,
             disableOnConsecutiveFailures: 3,
           },
-          distribution: "weighted",
+          distribution: "primary-only",
         },
       });
 
@@ -1007,7 +1006,7 @@ function App() {
 
   const StepExecutors = () => html`
     <h2>AI Executors</h2>
-    <p class="step-desc">Configure which AI coding agents bosun will use. You can add multiple executors with weighted distribution.</p>
+    <p class="step-desc">Configure which AI coding agents bosun will use. Stable default is primary-only routing with failover.</p>
 
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;font-size:0.8rem;line-height:1.6">
       <strong><span class="icon">${resolveIcon("lock")}</span> No API key required in most cases.</strong>
@@ -1141,7 +1140,7 @@ function App() {
         <div class="form-group">
           <label>Max Parallel</label>
           <input type="number" value=${maxParallel} min="1" max="20"
-            oninput=${(e) => setMaxParallel(Number(e.target.value) || 6)} />
+            oninput=${(e) => setMaxParallel(Number(e.target.value) || 4)} />
           <div class="hint">Simultaneous execution slots</div>
         </div>
         <div class="form-group">

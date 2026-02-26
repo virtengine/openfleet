@@ -1958,9 +1958,9 @@ function normalizeSetupConfiguration({
   };
 
   configJson.distribution = normalizeEnum(
-    configJson.distribution || env.EXECUTOR_DISTRIBUTION || "weighted",
+    configJson.distribution || env.EXECUTOR_DISTRIBUTION || "primary-only",
     ["weighted", "round-robin", "primary-only"],
-    "weighted",
+    "primary-only",
   );
 
   if (
@@ -2405,7 +2405,7 @@ async function main() {
     projectName,
     executors: [],
     failover: {},
-    distribution: "weighted",
+    distribution: "primary-only",
     repositories: [],
     agentPrompts: {},
   };
@@ -2766,10 +2766,14 @@ async function main() {
         ),
       };
 
+      const stableDistributionDefaultIdx = Math.max(
+        0,
+        DISTRIBUTION_MODES.findIndex((d) => d.name === "primary-only"),
+      );
       const distIdx = await prompt.choose(
         "\n  Task distribution mode:",
         DISTRIBUTION_MODES.map((d) => `${d.name} — ${d.desc}`),
-        0,
+        stableDistributionDefaultIdx,
       );
       configJson.distribution = DISTRIBUTION_MODES[distIdx].name;
     } else {

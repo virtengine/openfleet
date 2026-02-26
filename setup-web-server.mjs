@@ -717,7 +717,7 @@ function handleApply(body) {
     const envMap = {
       PROJECT_NAME: env.projectName || "",
       GITHUB_REPO: env.repoSlug || "",
-      ORCHESTRATOR_ARGS: env.orchestratorArgs || `-MaxParallel ${env.maxParallel || 6}`,
+      ORCHESTRATOR_ARGS: env.orchestratorArgs || `-MaxParallel ${env.maxParallel || 4}`,
       EXECUTORS: env.executors || "",
       KANBAN_BACKEND: env.kanbanBackend || "internal",
       VK_PROJECT_DIR: bosunHome,
