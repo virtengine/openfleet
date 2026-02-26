@@ -385,8 +385,8 @@ export async function initPrimaryAgent(nameOrConfig = null) {
   return getPrimaryAgentName();
 }
 
-/** Default timeout for primary agent execution (2 minutes for interactive use) */
-const PRIMARY_EXEC_TIMEOUT_MS = Number(process.env.PRIMARY_AGENT_TIMEOUT_MS) || 2 * 60 * 1000;
+/** Default timeout for primary agent execution (15 minutes — agents may work for extended periods) */
+const PRIMARY_EXEC_TIMEOUT_MS = Number(process.env.PRIMARY_AGENT_TIMEOUT_MS) || 15 * 60 * 1000;
 
 /** Maximum number of failover attempts across adapters */
 const MAX_FAILOVER_ATTEMPTS = 2;
