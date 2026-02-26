@@ -1538,6 +1538,7 @@ const SELF_RESTART_FORCE_ACTIVE_SLOT_MIN_AGE_MS = Math.max(
   ) || SELF_RESTART_MAX_DEFER_MS,
 );
 let selfWatcher = null;
+let selfWatcherLib = null;
 let selfWatcherDebounce = null;
 let selfRestartTimer = null;
 let selfRestartLastChangeAt = 0;
@@ -12182,11 +12183,30 @@ function getMonitorMonitorStatusSnapshot() {
 }
 
 function resolveMonitorMonitorErrorTailWindowMs() {
-  const raw = Number(
-    process.env.DEVMODE_MONITOR_MONITOR_ERROR_TAIL_WINDOW_MS || "1200000",
+  const intervalMs = Number(monitorMonitor?.intervalMs);
+  const normalizedIntervalMs =
+    Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 5 * 60_000;
+  const defaultWindowMs = Math.max(
+    10 * 60_000,
+    Math.min(20 * 60_000, normalizedIntervalMs * 3),
   );
-  if (!Number.isFinite(raw) || raw <= 0) return 20 * 60_000;
+  const raw = Number(
+    process.env.DEVMODE_MONITOR_MONITOR_ERROR_TAIL_WINDOW_MS ||
+      String(defaultWindowMs),
+  );
+  if (!Number.isFinite(raw) || raw <= 0) return defaultWindowMs;
   return Math.max(60_000, raw);
+}
+
+function resolveMonitorMonitorStartupErrorTailWindowMs(baseWindowMs) {
+  const base = Number.isFinite(Number(baseWindowMs)) && Number(baseWindowMs) > 0
+    ? Number(baseWindowMs)
+    : resolveMonitorMonitorErrorTailWindowMs();
+  const raw = Number(
+    process.env.DEVMODE_MONITOR_MONITOR_STARTUP_ERROR_TAIL_WINDOW_MS || "120000",
+  );
+  const startupWindow = Number.isFinite(raw) && raw > 0 ? raw : 120_000;
+  return Math.max(30_000, Math.min(base, startupWindow));
 }
 
 function filterMonitorTailByRecency(tail, { windowMs } = {}) {
@@ -12266,11 +12286,19 @@ function sanitizeMonitorTailForPrompt(tail, backend) {
     "<h1>502 Bad Gateway</h1>",
     "nginx/1.18.0",
   ];
+  const benignMonitorTailPatterns = [
+    /ExperimentalWarning:\s+SQLite is an experimental feature/i,
+    /Use `node --trace-warnings .*` to show where the warning was created/i,
+    /local\s+'[^']+'\s+diverged\s+\(\d+↑\s+\d+↓\)\s+but has uncommitted changes\s+[—-]\s+skipping/i,
+  ];
 
   const lines = text.split("\n");
   const filtered = lines.filter((line) => {
     const current = String(line || "");
     if (/A{40,}/.test(current)) return false;
+    if (benignMonitorTailPatterns.some((pattern) => pattern.test(current))) {
+      return false;
+    }
     return !fixtureTokens.some((token) => current.includes(token));
   });
 
@@ -12278,7 +12306,7 @@ function sanitizeMonitorTailForPrompt(tail, backend) {
 
   return [
     filtered.join("\n"),
-    "[monitor] (sanitized synthetic VK fixture noise for non-VK backend)",
+    "[monitor] (sanitized benign tail noise for non-VK backend)",
   ]
     .filter(Boolean)
     .join("\n");
@@ -12376,12 +12404,16 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
     orchestratorTail,
   });
   const monitorTailWindowMs = resolveMonitorMonitorErrorTailWindowMs();
+  const effectiveMonitorTailWindowMs =
+    String(trigger || "").trim().toLowerCase() === "startup"
+      ? resolveMonitorMonitorStartupErrorTailWindowMs(monitorTailWindowMs)
+      : monitorTailWindowMs;
   const rawMonitorTail = await readLogTail(resolve(logDir, "monitor-error.log"), {
     maxLines: 120,
     maxChars: 12000,
   });
   const recentMonitorTail = filterMonitorTailByRecency(rawMonitorTail, {
-    windowMs: monitorTailWindowMs,
+    windowMs: effectiveMonitorTailWindowMs,
   });
   const monitorTail = sanitizeMonitorTailForPrompt(
     recentMonitorTail,
@@ -12389,7 +12421,7 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
   );
   const monitorTailForPrompt =
     String(monitorTail || "").trim() ||
-    `(no recent monitor errors in last ${Math.round(monitorTailWindowMs / 60_000)}m)`;
+    `(no recent monitor errors in last ${Math.round(effectiveMonitorTailWindowMs / 60_000)}m)`;
 
   const anomalyReport = getAnomalyStatusReport();
   const monitorPrompt = agentPrompts?.monitorMonitor || "";
@@ -13069,6 +13101,10 @@ function stopSelfWatcher() {
     selfWatcher.close();
     selfWatcher = null;
   }
+  if (selfWatcherLib) {
+    selfWatcherLib.close();
+    selfWatcherLib = null;
+  }
   if (selfWatcherDebounce) {
     clearTimeout(selfWatcherDebounce);
     selfWatcherDebounce = null;
@@ -13425,7 +13461,7 @@ function startSelfWatcher() {
     return;
   }
   try {
-    selfWatcher = watch(__dirname, { persistent: true }, (_event, filename) => {
+    const handleSourceChange = (_event, filename) => {
       // Only react to .mjs source files
       if (!filename || !filename.endsWith(".mjs")) return;
       // Ignore node_modules and log artifacts
@@ -13436,8 +13472,15 @@ function startSelfWatcher() {
       selfWatcherDebounce = safeSetTimeout("self-watcher-debounce", () => {
         queueSelfRestart(filename);
       }, 1000);
-    });
-    console.log("[monitor] watching own source files for self-restart");
+    };
+    selfWatcher = watch(__dirname, { persistent: true }, handleSourceChange);
+    const libDir = resolve(__dirname, "lib");
+    if (existsSync(libDir)) {
+      selfWatcherLib = watch(libDir, { persistent: true }, handleSourceChange);
+      console.log("[monitor] watching own source files (root + lib/) for self-restart");
+    } else {
+      console.log("[monitor] watching own source files for self-restart");
+    }
   } catch (err) {
     console.warn(`[monitor] self-watcher failed: ${err.message}`);
   }

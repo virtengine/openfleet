@@ -63,12 +63,53 @@ const activeSessions = new Map();
 // Alert cooldowns: "alert_type:attempt_id" -> timestamp
 const alertCooldowns = new Map();
 const ALERT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes between same alert
+const FAILED_SESSION_ALERT_MIN_COOLDOWN_MS = 60 * 60 * 1000; // Keep noisy failed-session summaries coarse-grained
+
+function getAlertCooldownMs(alert) {
+  const type = String(alert?.type || "").trim().toLowerCase();
+  if (type === "failed_session_high_errors") {
+    return Math.max(ALERT_COOLDOWN_MS, FAILED_SESSION_ALERT_MIN_COOLDOWN_MS);
+  }
+  return Math.max(0, ALERT_COOLDOWN_MS);
+}
+
+function extractTaskToken(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  const prefixMatch = normalized.match(
+    /^([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?:-|$)/i,
+  );
+  return prefixMatch?.[1] || normalized;
+}
+
+function deriveAlertScopeId(alert) {
+  const taskId = extractTaskToken(alert?.task_id);
+  if (taskId) return taskId;
+  return extractTaskToken(alert?.attempt_id);
+}
+
+function buildAlertCooldownKey(alert) {
+  const type = String(alert?.type || "unknown").trim().toLowerCase() || "unknown";
+  const scopeId = deriveAlertScopeId(alert);
+  if (scopeId && (type === "failed_session_high_errors" || type === "stuck_agent")) {
+    return `${type}:task:${scopeId}`;
+  }
+  return `${type}:${String(alert?.attempt_id || "unknown")}`;
+}
 
 // ── Log Tailing ─────────────────────────────────────────────────────────────
 
 let filePosition = 0;
 let isRunning = false;
 let stuckSweepTimer = null;
+
+function parseEnvBoolean(value, fallback = false) {
+  if (value == null || value === "") return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return fallback;
+}
 
 /**
  * Start the analyzer loop
@@ -92,10 +133,24 @@ export async function startAnalyzer() {
     console.warn(`[agent-work-analyzer] Failed to init alerts log: ${err.message}`);
   }
 
-  // Initial read of existing log
+  // Initial positioning for existing log.
+  // Default behavior is true tailing (start at EOF) to avoid replaying stale
+  // historical sessions on monitor restart, which can re-emit old alerts and
+  // trigger noisy false-positive loops. Operators can opt in to replay for
+  // forensics via AGENT_ANALYZER_REPLAY_STARTUP=1.
   if (existsSync(AGENT_WORK_STREAM)) {
-    filePosition = await processLogFile(filePosition);
-    pruneStaleSessionsAfterReplay();
+    const replayStartup = parseEnvBoolean(
+      process.env.AGENT_ANALYZER_REPLAY_STARTUP,
+      false,
+    );
+    if (replayStartup) {
+      filePosition = await processLogFile(filePosition);
+      pruneStaleSessionsAfterReplay();
+    } else {
+      const streamStats = await stat(AGENT_WORK_STREAM);
+      filePosition = Math.max(0, Number(streamStats?.size || 0));
+      activeSessions.clear();
+    }
   } else {
     // Ensure the stream file exists so the watcher doesn't throw
     try {
@@ -450,11 +505,12 @@ function startStuckSweep() {
  * @param {Object} alert - Alert data
  */
 async function emitAlert(alert) {
-  const alertKey = `${alert.type}:${alert.attempt_id}`;
+  const alertKey = buildAlertCooldownKey(alert);
+  const cooldownMs = getAlertCooldownMs(alert);
 
   // Check cooldown
   const lastAlert = alertCooldowns.get(alertKey);
-  if (lastAlert && Date.now() - lastAlert < ALERT_COOLDOWN_MS) {
+  if (lastAlert && Date.now() - lastAlert < cooldownMs) {
     return; // Skip duplicate alerts
   }
 
@@ -489,4 +545,3 @@ setInterval(() => {
 }, 10 * 60 * 1000); // Cleanup every 10 minutes
 
 // ── Exports ─────────────────────────────────────────────────────────────────
-

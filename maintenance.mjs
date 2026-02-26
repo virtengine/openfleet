@@ -935,7 +935,7 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           windowsHide: true,
         });
         if (statusCheck.stdout?.trim()) {
-          console.warn(
+          console.log(
             `[maintenance] local '${branch}' diverged (${ahead}↑ ${behind}↓) but has uncommitted changes — skipping`,
           );
           continue;
@@ -988,7 +988,7 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           windowsHide: true,
         });
         if (statusCheck.stdout?.trim()) {
-          console.warn(
+          console.log(
             `[maintenance] '${branch}' is checked out with uncommitted changes — skipping pull`,
           );
           continue;
@@ -1139,4 +1139,3 @@ export async function runMaintenanceSweep(opts = {}) {
     branchesDeleted,
   };
 }
-
