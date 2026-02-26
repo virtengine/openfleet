@@ -1058,6 +1058,183 @@ describe("kanban-adapter github backend", () => {
     warnSpy.mockRestore();
   });
 
+  it("normalizes GraphQL connection project field-list payloads via edges format", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockGh(
+      JSON.stringify({
+        data: {
+          organization: {
+            projectV2: {
+              fields: {
+                edges: [
+                  {
+                    node: {
+                      id: "PVTSSF_status_edge",
+                      name: "Status",
+                      data_type: "SINGLE_SELECT",
+                      options: [{ id: "done-id", name: "Done" }],
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    const adapter = getKanbanAdapter();
+    const fields = await adapter._getProjectFields("6");
+
+    expect(fields).toEqual({
+      statusFieldId: "PVTSSF_status_edge",
+      statusOptions: [{ id: "done-id", name: "Done" }],
+    });
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("project field-list returned non-array"),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("extracts gh auth status login with account format", async () => {
+    mockGh("ok");
+    mockGh("  account octo-user (keyring)\n  Active account: true\n");
+    mockGh("https://github.com/acme/widgets/issues/89\n");
+    mockGh(
+      JSON.stringify({
+        number: 89,
+        title: "auth format test",
+        body: "",
+        state: "open",
+        url: "https://github.com/acme/widgets/issues/89",
+        labels: [],
+        assignees: [{ login: "octo-user" }],
+      }),
+    );
+    mockGh("[]");
+
+    const adapter = getKanbanAdapter();
+    const task = await adapter.createTask("ignored", {
+      title: "auth format test",
+      description: "",
+    });
+
+    expect(task?.id).toBe("89");
+    const issueCreateCall = execFileMock.mock.calls.find(
+      (call) =>
+        Array.isArray(call[1]) &&
+        call[1].includes("issue") &&
+        call[1].includes("create"),
+    );
+    expect(issueCreateCall).toBeTruthy();
+    expect(issueCreateCall[1]).toContain("--assignee");
+    expect(issueCreateCall[1]).toContain("octo-user");
+  });
+
+  it("falls back to gh api user when auth status output has no login", async () => {
+    mockGh("ok");
+    mockGh("  protocol: https\n  host: github.com\n");
+    mockGh(JSON.stringify({ login: "api-user" }));
+    mockGh("https://github.com/acme/widgets/issues/90\n");
+    mockGh(
+      JSON.stringify({
+        number: 90,
+        title: "api user fallback",
+        body: "",
+        state: "open",
+        url: "https://github.com/acme/widgets/issues/90",
+        labels: [],
+        assignees: [{ login: "api-user" }],
+      }),
+    );
+    mockGh("[]");
+
+    const adapter = getKanbanAdapter();
+    const task = await adapter.createTask("ignored", {
+      title: "api user fallback",
+      description: "",
+    });
+
+    expect(task?.id).toBe("90");
+    const authStatusCalls = execFileMock.mock.calls.filter(
+      (call) => Array.isArray(call[1]) && call[1].join(" ").includes("auth status"),
+    );
+    const apiUserCalls = execFileMock.mock.calls.filter(
+      (call) =>
+        Array.isArray(call[1]) &&
+        call[1].includes("api") &&
+        call[1].includes("user") &&
+        !call[1].some((arg) => String(arg).includes("/repos/")),
+    );
+    expect(authStatusCalls).toHaveLength(1);
+    expect(apiUserCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("uses default delay values when env vars are null or undefined", () => {
+    const prevOwnerRetry = process.env.GH_PROJECT_OWNER_RETRY_MS;
+    const prevCommandBackoff = process.env.GH_PROJECT_COMMAND_BACKOFF_MS;
+
+    delete process.env.GH_PROJECT_OWNER_RETRY_MS;
+    delete process.env.GH_PROJECT_COMMAND_BACKOFF_MS;
+
+    try {
+      setKanbanBackend("github");
+      const adapter = getKanbanAdapter();
+      // When env vars are totally absent (undefined/null), defaults should apply
+      expect(adapter._projectOwnerRetryDelayMs).toBe(300_000);
+      expect(adapter._projectCommandBackoffMs).toBe(60_000);
+    } finally {
+      if (prevOwnerRetry === undefined) {
+        delete process.env.GH_PROJECT_OWNER_RETRY_MS;
+      } else {
+        process.env.GH_PROJECT_OWNER_RETRY_MS = prevOwnerRetry;
+      }
+      if (prevCommandBackoff === undefined) {
+        delete process.env.GH_PROJECT_COMMAND_BACKOFF_MS;
+      } else {
+        process.env.GH_PROJECT_COMMAND_BACKOFF_MS = prevCommandBackoff;
+      }
+    }
+  });
+
+  it("uses config repoSlug only when env vars are absent", async () => {
+    delete process.env.GITHUB_REPOSITORY;
+    delete process.env.GITHUB_REPO_OWNER;
+    delete process.env.GITHUB_REPO_NAME;
+    loadConfigMock.mockReturnValue({
+      repoSlug: "config-org/config-repo",
+      kanban: { backend: "github" },
+    });
+
+    setKanbanBackend("github");
+    mockGh("[]");
+
+    const adapter = getKanbanAdapter();
+    await adapter.listTasks("ignored");
+
+    const call = execFileMock.mock.calls[0];
+    expect(call[1]).toContain("--repo");
+    expect(call[1]).toContain("config-org/config-repo");
+  });
+
+  it("prefers env var GITHUB_REPOSITORY over config repoSlug", async () => {
+    process.env.GITHUB_REPOSITORY = "env-org/env-repo";
+    loadConfigMock.mockReturnValue({
+      repoSlug: "config-org/config-repo",
+      kanban: { backend: "github" },
+    });
+
+    setKanbanBackend("github");
+    mockGh("[]");
+
+    const adapter = getKanbanAdapter();
+    await adapter.listTasks("ignored");
+
+    const call = execFileMock.mock.calls[0];
+    expect(call[1]).toContain("--repo");
+    expect(call[1]).toContain("env-org/env-repo");
+  });
+
   it("throttles repeated missing-status-field warnings per project", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const prevThrottle = process.env.GH_PROJECT_STATUS_WARNING_THROTTLE_MS;

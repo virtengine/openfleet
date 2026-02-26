@@ -196,3 +196,77 @@ describe("GitHubReconciler project status sync", () => {
   });
 });
 
+describe("GitHubReconciler resolveProjectBoardId with explicit project ID", () => {
+  beforeEach(() => {
+    envSnapshot = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+    process.env.KANBAN_BACKEND = "github";
+    process.env.GITHUB_PROJECT_MODE = "kanban";
+    process.env.GITHUB_REPOSITORY = "acme/widgets";
+    setKanbanBackend("github");
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (envSnapshot[key] === undefined) delete process.env[key];
+      else process.env[key] = envSnapshot[key];
+    }
+  });
+
+  it("uses explicit GITHUB_PROJECT_ID over GITHUB_PROJECT_NUMBER", () => {
+    process.env.GITHUB_PROJECT_NUMBER = "7";
+    process.env.GITHUB_PROJECT_ID = "PVT_explicit123";
+
+    const reconciler = new GitHubReconciler({
+      repoSlug: "acme/widgets",
+      gh: async () => [],
+      addComment: async () => {},
+      updateTaskStatus: async () => {},
+    });
+
+    assert.equal(reconciler.projectBoardId, "PVT_explicit123");
+  });
+
+  it("returns null when explicit GITHUB_PROJECT_ID is set but empty", () => {
+    process.env.GITHUB_PROJECT_NUMBER = "7";
+    process.env.GITHUB_PROJECT_ID = "";
+
+    const reconciler = new GitHubReconciler({
+      repoSlug: "acme/widgets",
+      gh: async () => [],
+      addComment: async () => {},
+      updateTaskStatus: async () => {},
+    });
+
+    // Explicit empty ID takes priority and returns null
+    assert.equal(reconciler.projectBoardId, null);
+  });
+
+  it("prefers projectNumber when GITHUB_PROJECT_ID env var is not set", () => {
+    process.env.GITHUB_PROJECT_NUMBER = "42";
+    delete process.env.GITHUB_PROJECT_ID;
+
+    const reconciler = new GitHubReconciler({
+      repoSlug: "acme/widgets",
+      gh: async () => [],
+      addComment: async () => {},
+      updateTaskStatus: async () => {},
+    });
+
+    assert.equal(reconciler.projectBoardId, "42");
+  });
+
+  it("uses options.projectId over env vars when explicitly provided", () => {
+    delete process.env.GITHUB_PROJECT_NUMBER;
+    delete process.env.GITHUB_PROJECT_ID;
+
+    const reconciler = new GitHubReconciler({
+      repoSlug: "acme/widgets",
+      projectId: "PVT_fromOptions",
+      gh: async () => [],
+      addComment: async () => {},
+      updateTaskStatus: async () => {},
+    });
+
+    assert.equal(reconciler.projectBoardId, "PVT_fromOptions");
+  });
+});

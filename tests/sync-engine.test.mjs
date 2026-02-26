@@ -568,6 +568,80 @@ describe("sync-engine syncTask backend ID handling", () => {
   });
 });
 
+describe("sync-engine shared-state conflict detection with null owners", () => {
+  const originalSharedStateEnabled = process.env.SHARED_STATE_ENABLED;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockTaskStore.getAllTasks.mockReturnValue([]);
+    mockKanban.listTasks.mockResolvedValue([]);
+    mockKanban.getKanbanBackendName.mockReturnValue("github");
+    process.env.SHARED_STATE_ENABLED = "true";
+  });
+
+  afterEach(() => {
+    if (originalSharedStateEnabled === undefined) {
+      delete process.env.SHARED_STATE_ENABLED;
+    } else {
+      process.env.SHARED_STATE_ENABLED = originalSharedStateEnabled;
+    }
+  });
+
+  it("does not flag conflict when localOwner is null (unclaimed task)", async () => {
+    // Task with no claimedBy/sharedStateOwnerId — localOwner will be null
+    mockTaskStore.getDirtyTasks.mockReturnValue([
+      { id: "100", status: "todo", syncDirty: true },
+    ]);
+    mockKanban.updateTaskStatus.mockResolvedValue({});
+
+    const engine = new SyncEngine({ projectId: "proj-1" });
+    const result = await engine.pushToExternal();
+
+    // Should push successfully, not skip as conflict
+    expect(result.pushed).toBe(1);
+    expect(result.conflicts).toBe(0);
+    expect(mockKanban.updateTaskStatus).toHaveBeenCalledWith("100", "todo");
+  });
+
+  it("does not flag conflict when remoteOwner is null in shared state", async () => {
+    // Task has a local owner but remote shared state has no owner
+    mockTaskStore.getDirtyTasks.mockReturnValue([
+      {
+        id: "101",
+        status: "inprogress",
+        syncDirty: true,
+        claimedBy: "agent-1",
+      },
+    ]);
+    mockKanban.updateTaskStatus.mockResolvedValue({});
+
+    const engine = new SyncEngine({ projectId: "proj-1" });
+    const result = await engine.pushToExternal();
+
+    // Should push successfully — no remote owner means no conflict
+    expect(result.pushed).toBe(1);
+    expect(result.conflicts).toBe(0);
+  });
+
+  it("does not flag conflict when both local and remote owners match", async () => {
+    mockTaskStore.getDirtyTasks.mockReturnValue([
+      {
+        id: "102",
+        status: "inprogress",
+        syncDirty: true,
+        claimedBy: "agent-1",
+      },
+    ]);
+    mockKanban.updateTaskStatus.mockResolvedValue({});
+
+    const engine = new SyncEngine({ projectId: "proj-1" });
+    const result = await engine.pushToExternal();
+
+    expect(result.pushed).toBe(1);
+    expect(result.conflicts).toBe(0);
+  });
+});
+
 describe("sync-engine monitoring counters and alerts", () => {
   const originalRateLimitDelay = SyncEngine.RATE_LIMIT_DELAY_MS;
 
