@@ -53,26 +53,30 @@ const QUICK_ACTIONS = [
     cmd: "/status",
     icon: "📊",
     color: "var(--accent)",
-    targetTab: "dashboard",
+    targetTab: "telemetry",
+    title: "Refresh dashboard data and view system telemetry",
   },
   {
     label: "Health",
     cmd: "/health",
     icon: "💚",
     color: "var(--color-done)",
-    targetTab: "dashboard",
+    targetTab: "infra",
+    title: "Check system health and view infrastructure status",
   },
   {
     label: "Create Task",
     action: "create",
     icon: "➕",
     color: "var(--color-inprogress)",
+    title: "Open the create task dialog",
   },
   {
     label: "Start Task",
     action: "start",
     icon: "▶",
     color: "var(--color-todo)",
+    title: "Pick a queued task and start it now",
   },
   {
     label: "Plan",
@@ -80,6 +84,7 @@ const QUICK_ACTIONS = [
     icon: "📋",
     color: "var(--color-inreview)",
     targetTab: "control",
+    title: "Dispatch the AI task planner to generate new tasks",
   },
   {
     label: "Logs",
@@ -87,6 +92,7 @@ const QUICK_ACTIONS = [
     icon: "📄",
     color: "var(--text-secondary)",
     targetTab: "logs",
+    title: "Fetch and view the last 50 log entries",
   },
   {
     label: "Menu",
@@ -94,6 +100,7 @@ const QUICK_ACTIONS = [
     icon: "☰",
     color: "var(--color-todo)",
     targetTab: "control",
+    title: "Open the bot control panel",
   },
 ];
 
@@ -226,6 +233,7 @@ export function DashboardTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
   const [uptime, setUptime] = useState(null);
+  const [pendingAction, setPendingAction] = useState(null);
   // New state
   const [now, setNow] = useState(() => new Date());
   const [recentCommits, setRecentCommits] = useState([]);
@@ -486,17 +494,23 @@ export function DashboardTab() {
   /* ── Quick-action handler ── */
   const handleQuickAction = async (action, e) => {
     haptic();
+    // Modal-opening actions are instant — no pending state needed
+    if (action.action === "create") {
+      setShowCreate(true);
+      return;
+    }
+    if (action.action === "start") {
+      setShowStartModal(true);
+      return;
+    }
     if (action.targetTab) {
       navigateTo(action.targetTab, {
         resetHistory: action.targetTab === "dashboard",
         forceRefresh: true,
       });
     }
-    if (action.action === "create") {
-      setShowCreate(true);
-    } else if (action.action === "start") {
-      setShowStartModal(true);
-    } else if (action.cmd) {
+    if (action.cmd) {
+      setPendingAction(action.label);
       try {
         if (action.cmd.startsWith("/status")) {
           await refreshTab("dashboard", { force: true });
@@ -528,6 +542,8 @@ export function DashboardTab() {
         }
       } catch {
         showToast("Command failed", "error");
+      } finally {
+        setPendingAction(null);
       }
     }
   };
@@ -796,11 +812,14 @@ export function DashboardTab() {
               (a) => html`
                 <button
                   key=${a.label}
-                  class="dashboard-action-btn"
+                  class="dashboard-action-btn ${pendingAction === a.label ? 'quick-action-pending' : ''}"
                   style="--qa-color: ${a.color}"
+                  title=${a.title || a.label}
+                  aria-label=${a.title || a.label}
+                  disabled=${pendingAction === a.label}
                   onClick=${(e) => handleQuickAction(a, e)}
                 >
-                  <span class="dashboard-action-icon">${a.icon}</span>
+                  <span class="dashboard-action-icon">${pendingAction === a.label ? '⏳' : a.icon}</span>
                   <span class="dashboard-action-label">${a.label}</span>
                 </button>
               `,
