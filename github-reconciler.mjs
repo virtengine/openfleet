@@ -18,6 +18,17 @@ function parseNumber(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function normalizeProjectMode(value) {
+  return String(value || "issues").trim().toLowerCase();
+}
+
+function resolveProjectBoardId(projectNumber, projectId) {
+  const normalizedProjectNumber = String(projectNumber || "").trim();
+  if (normalizedProjectNumber) return normalizedProjectNumber;
+  const normalizedProjectId = String(projectId || "").trim();
+  return normalizedProjectId || null;
+}
+
 function parseRepoSlug(raw) {
   const text = String(raw || "").trim().replace(/^https?:\/\/github\.com\//i, "");
   if (!text) return "";
@@ -154,6 +165,13 @@ export class GitHubReconciler {
     this.sendTelegram = options.sendTelegram || null;
     this.timer = null;
     this.running = false;
+    this.projectMode = normalizeProjectMode(
+      options.projectMode ?? process.env.GITHUB_PROJECT_MODE,
+    );
+    this.projectBoardId = resolveProjectBoardId(
+      options.projectNumber ?? process.env.GITHUB_PROJECT_NUMBER,
+      options.projectId ?? process.env.GITHUB_PROJECT_ID,
+    );
   }
 
   async _listOpenIssues() {
@@ -267,21 +285,24 @@ export class GitHubReconciler {
     // Build a map of project board statuses for issues when in kanban mode
     /** @type {Map<string, string>} issueNumber → project board status */
     const projectStatusMap = new Map();
-    const projectMode = String(process.env.GITHUB_PROJECT_MODE || "issues").trim().toLowerCase();
-    if (projectMode === "kanban") {
+    if (this.projectMode === "kanban" && this.projectBoardId) {
       try {
         const adapter = getKanbanAdapter();
-        if (typeof adapter.listTasksFromProject === "function") {
-          const projectNumber =
-            process.env.GITHUB_PROJECT_NUMBER ||
-            process.env.GITHUB_PROJECT_ID ||
-            null;
-          if (projectNumber) {
-            const projectTasks = await adapter.listTasksFromProject(projectNumber);
-            for (const task of projectTasks) {
-              if (task?.id && task?.status) {
-                projectStatusMap.set(String(task.id), task.status);
-              }
+        const projectTasks =
+          typeof adapter.listTasks === "function"
+            ? await adapter.listTasks(this.projectBoardId)
+            : typeof adapter.listTasksFromProject === "function"
+              ? await adapter.listTasksFromProject(this.projectBoardId)
+              : [];
+
+        if (!Array.isArray(projectTasks)) {
+          console.warn(
+            `${TAG} project board listing returned non-array payload; skipping status reconciliation`,
+          );
+        } else {
+          for (const task of projectTasks) {
+            if (task?.id && task?.status) {
+              projectStatusMap.set(String(task.id), task.status);
             }
           }
         }
@@ -465,3 +486,4 @@ export async function runGitHubReconcilerOnce(options = {}) {
   const reconciler = new GitHubReconciler(options);
   return await reconciler.reconcileOnce();
 }
+
