@@ -868,11 +868,12 @@ export function ControlTab() {
             <div class="card-subtitle mt-sm">Kanban</div>
             <${SegmentedControl}
               options=${[
+                { value: "internal", label: "Internal" },
                 { value: "vk", label: "VK" },
                 { value: "github", label: "GitHub" },
                 { value: "jira", label: "Jira" },
               ]}
-              value=${config?.kanbanBackend || "github"}
+              value=${config?.kanbanBackend || "internal"}
               onChange=${(v) => updateConfig("kanban", v)}
             />
             ${regions.length > 1 && html`

@@ -78,6 +78,44 @@ describe("ui-server mini app", () => {
     expect(ip.length).toBeGreaterThan(0);
   });
 
+  it("reflects runtime kanban backend switches via config update", async () => {
+    process.env.KANBAN_BACKEND = "github";
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    const toInternal = await fetch(`http://127.0.0.1:${port}/api/config/update`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: "kanban", value: "internal" }),
+    });
+    const toInternalJson = await toInternal.json();
+    expect(toInternal.status).toBe(200);
+    expect(toInternalJson.ok).toBe(true);
+
+    const internalRes = await fetch(`http://127.0.0.1:${port}/api/config`);
+    const internalJson = await internalRes.json();
+    expect(internalRes.status).toBe(200);
+    expect(internalJson.kanbanBackend).toBe("internal");
+
+    const toGithub = await fetch(`http://127.0.0.1:${port}/api/config/update`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: "kanban", value: "github" }),
+    });
+    const toGithubJson = await toGithub.json();
+    expect(toGithub.status).toBe(200);
+    expect(toGithubJson.ok).toBe(true);
+
+    const githubRes = await fetch(`http://127.0.0.1:${port}/api/config`);
+    const githubJson = await githubRes.json();
+    expect(githubRes.status).toBe(200);
+    expect(githubJson.kanbanBackend).toBe("github");
+  });
+
   it("accepts signed project webhook and triggers task sync", async () => {
     const mod = await import("../ui-server.mjs");
     const syncTask = vi.fn().mockResolvedValue(undefined);

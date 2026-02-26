@@ -118,6 +118,37 @@ import {
 } from "./presence.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
+
+function isWslInteropRuntime() {
+  return Boolean(
+    process.env.WSL_DISTRO_NAME
+    || process.env.WSL_INTEROP
+    || (process.platform === "win32"
+      && String(process.env.HOME || "")
+        .trim()
+        .startsWith("/home/")),
+  );
+}
+
+function resolveTelegramConfigDir() {
+  if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
+  if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
+
+  const preferWindowsDirs = process.platform === "win32" && !isWslInteropRuntime();
+  const baseDir = preferWindowsDirs
+    ? process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || process.env.USERPROFILE
+      || process.env.HOME
+      || homedir()
+    : process.env.HOME
+      || process.env.XDG_CONFIG_HOME
+      || process.env.USERPROFILE
+      || process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || homedir();
+  return resolve(baseDir, "bosun");
+}
 const repoRoot = resolveRepoRoot();
 const BosunDir = __dirname;
 const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
@@ -2451,7 +2482,7 @@ async function cmdWorkspace(chatId, text) {
     .trim();
   const [sub, ...rest] = raw ? raw.split(/\s+/) : [];
   const subcmd = String(sub || "list").toLowerCase();
-  const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+  const configDir = resolveTelegramConfigDir();
 
   try {
     if (subcmd === "scan") {
@@ -5057,7 +5088,7 @@ Object.assign(UI_SCREENS, {
     body: () => "Choose a local workspace to set active for task routing.",
     keyboard: async (ctx) => {
       const page = parsePageParam(ctx.params?.page);
-      const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+      const configDir = resolveTelegramConfigDir();
       const workspaces = listLocalWorkspaces(configDir);
       const active = getActiveLocalWorkspace(configDir);
       if (!workspaces.length) {
@@ -5321,7 +5352,7 @@ Object.assign(UI_SCREENS, {
     body: () => "Browse, manage, and interact with your managed workspaces.",
     keyboard: async (ctx) => {
       const page = parsePageParam(ctx.params?.page);
-      const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+      const configDir = resolveTelegramConfigDir();
       const workspaces = listLocalWorkspaces(configDir);
       const active = getActiveLocalWorkspace(configDir);
       if (!workspaces.length) {
@@ -10470,7 +10501,7 @@ export async function startTelegramBot() {
           getAgentEventBus: _getAgentEventBus,
           handleUiCommand: handleUiCommand,
           getSyncEngine: _getSyncEngine,
-          configDir: process.env.BOSUN_DIR || join(homedir(), "bosun"),
+          configDir: resolveTelegramConfigDir(),
           onProjectSyncAlert: async (alert) => {
             if (!_sendTelegramMessage) return;
             const text = String(alert?.message || "Project sync alert");
