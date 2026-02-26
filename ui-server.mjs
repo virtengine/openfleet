@@ -525,6 +525,28 @@ async function readPlannerTemplateState() {
   }
 }
 
+function resolveTriggerStatsTimeoutMs() {
+  const parsed = Number(process.env.TELEGRAM_UI_TRIGGER_STATS_TIMEOUT_MS);
+  if (Number.isFinite(parsed) && parsed >= 100) return parsed;
+  return 1200;
+}
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function getTemplateIdFromTask(task = {}) {
   return String(task?.meta?.triggerTemplate?.id || "")
     .trim()
@@ -550,12 +572,21 @@ async function collectTriggerTemplateTaskStats(templates = []) {
 
   try {
     const adapter = getKanbanAdapter();
-    const projects = await adapter.listProjects();
+    const timeoutMs = resolveTriggerStatsTimeoutMs();
+    const projects = await withTimeout(
+      adapter.listProjects(),
+      timeoutMs,
+      "trigger stats listProjects",
+    );
     const activeProject =
       projects?.[0]?.id || projects?.[0]?.project_id || "";
     if (!activeProject) return statsByTemplateId;
 
-    const tasks = await adapter.listTasks(activeProject, {});
+    const tasks = await withTimeout(
+      adapter.listTasks(activeProject, {}),
+      timeoutMs,
+      "trigger stats listTasks",
+    );
     const taskById = new Map();
 
     for (const task of tasks) {
