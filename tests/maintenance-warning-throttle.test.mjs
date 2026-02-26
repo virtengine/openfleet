@@ -9,7 +9,7 @@ import {
   evaluateThrottledWarning,
   resetBranchSyncWarningStateForTests,
   syncLocalTrackingBranches,
-} from "../maintenance.mjs";
+} from "../scripts/bosun/core/maintenance.mjs""293;
 
 function runGit(args, cwd) {
   const result = spawnSync("git", args, {

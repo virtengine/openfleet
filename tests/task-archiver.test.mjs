@@ -21,7 +21,7 @@ import {
   ARCHIVE_AGE_HOURS,
   ARCHIVE_RETENTION_DAYS,
   DEFAULT_MAX_ARCHIVE,
-} from "../task-archiver.mjs";
+} from "../scripts/bosun/tasks/task-archiver.mjs""298;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

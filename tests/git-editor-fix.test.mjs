@@ -67,7 +67,7 @@ describe("git-editor-fix", () => {
   let findTmpclaudeWorkspaces;
 
   beforeEach(async () => {
-    const mod = await import("../git-editor-fix.mjs");
+    const mod = await import("../scripts/bosun/git/git-editor-fix.mjs"");
     configureNonInteractiveGit = mod.configureNonInteractiveGit;
     fixAllWorkspaces = mod.fixAllWorkspaces;
     configureRepoAndWorktrees = mod.configureRepoAndWorktrees;

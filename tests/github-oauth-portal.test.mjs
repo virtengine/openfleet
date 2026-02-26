@@ -74,7 +74,7 @@ function signBody(secret, body) {
 }
 
 async function getPortal() {
-  return await import("../github-oauth-portal.mjs");
+  return await import("../scripts/bosun/github/github-oauth-portal.mjs"");
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

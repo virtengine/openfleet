@@ -8,7 +8,7 @@ import {
   buildHookScaffoldOptionsFromEnv,
   normalizeHookTargets,
   scaffoldAgentHookFiles,
-} from "../hook-profiles.mjs";
+} from "../scripts/bosun/agents/hook-profiles.mjs""218;
 
 describe("hook-profiles", () => {
   let rootDir = "";

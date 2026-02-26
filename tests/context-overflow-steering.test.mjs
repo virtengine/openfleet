@@ -6,13 +6,13 @@ import { describe, expect, it, beforeEach, vi, afterEach } from "vitest";
 import {
   createErrorDetector,
   TOKEN_OVERFLOW_PATTERNS,
-} from "../error-detector.mjs";
+} from "../scripts/bosun/utils/error-detector.mjs""199;
 import {
   AgentSupervisor,
   createAgentSupervisor,
   SITUATION,
   INTERVENTION,
-} from "../agent-supervisor.mjs";
+} from "../scripts/bosun/agents/agent-supervisor.mjs""290;
 
 // ---------------------------------------------------------------------------
 // 1. TOKEN_OVERFLOW_PATTERNS — vendor-specific coverage
@@ -229,7 +229,7 @@ describe("isContextOverflowError", () => {
   let isContextOverflowError;
 
   beforeEach(async () => {
-    const mod = await import("../agent-pool.mjs");
+    const mod = await import("../scripts/bosun/agents/agent-pool.mjs"");
     isContextOverflowError = mod.isContextOverflowError;
   });
 
@@ -286,7 +286,7 @@ describe("steerActiveThread / hasActiveSession", () => {
   let steerActiveThread, hasActiveSession, getActiveSessions;
 
   beforeEach(async () => {
-    const mod = await import("../agent-pool.mjs");
+    const mod = await import("../scripts/bosun/agents/agent-pool.mjs"");
     steerActiveThread = mod.steerActiveThread;
     hasActiveSession = mod.hasActiveSession;
     getActiveSessions = mod.getActiveSessions;

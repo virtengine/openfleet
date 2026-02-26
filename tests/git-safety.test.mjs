@@ -7,7 +7,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 const { evaluateBranchSafetyForPush, normalizeBaseBranch } = await import(
-  "../git-safety.mjs"
+  "../scripts/bosun/git/git-safety.mjs""
 );
 
 describe("git-safety", () => {

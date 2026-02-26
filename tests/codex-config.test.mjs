@@ -6,7 +6,7 @@ import {
   ensureFeatureFlags,
   ensureSandboxWorkspaceWrite,
   ensureTopLevelSandboxPermissions,
-} from "../codex-config.mjs";
+} from "../scripts/bosun/agents/codex-config.mjs""47;
 
 describe("codex-config defaults", () => {
   it("includes expanded MCP server defaults", () => {

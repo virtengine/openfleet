@@ -28,7 +28,7 @@ const {
   __resetGhRateLimitBackoffForTests,
   __resetProjectPayloadWarningStateForTests,
   __reloadProjectCommandBackoffStateForTests,
-} = await import("../kanban-adapter.mjs");
+} = await import("../scripts/bosun/kanban/kanban-adapter.mjs"");
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -510,22 +510,22 @@ describe("shared state issue operations", () => {
   });
 
   it("persistSharedStateToIssue exists and is callable", async () => {
-    const { persistSharedStateToIssue } = await import("../kanban-adapter.mjs");
+    const { persistSharedStateToIssue } = await import("../scripts/bosun/kanban/kanban-adapter.mjs"");
     expect(typeof persistSharedStateToIssue).toBe("function");
   });
 
   it("readSharedStateFromIssue exists and is callable", async () => {
-    const { readSharedStateFromIssue } = await import("../kanban-adapter.mjs");
+    const { readSharedStateFromIssue } = await import("../scripts/bosun/kanban/kanban-adapter.mjs"");
     expect(typeof readSharedStateFromIssue).toBe("function");
   });
 
   it("markTaskIgnored exists and is callable", async () => {
-    const { markTaskIgnored } = await import("../kanban-adapter.mjs");
+    const { markTaskIgnored } = await import("../scripts/bosun/kanban/kanban-adapter.mjs"");
     expect(typeof markTaskIgnored).toBe("function");
   });
 
   it("persistSharedStateToIssue returns false when adapter lacks method", async () => {
-    const { persistSharedStateToIssue } = await import("../kanban-adapter.mjs");
+    const { persistSharedStateToIssue } = await import("../scripts/bosun/kanban/kanban-adapter.mjs"");
     // Set to internal backend which does not support shared state
     setKanbanBackend("internal");
     const result = await persistSharedStateToIssue("42", { ownerId: "agent-1" });
@@ -533,14 +533,14 @@ describe("shared state issue operations", () => {
   });
 
   it("readSharedStateFromIssue returns null when adapter lacks method", async () => {
-    const { readSharedStateFromIssue } = await import("../kanban-adapter.mjs");
+    const { readSharedStateFromIssue } = await import("../scripts/bosun/kanban/kanban-adapter.mjs"");
     setKanbanBackend("internal");
     const result = await readSharedStateFromIssue("42");
     expect(result).toBe(null);
   });
 
   it("markTaskIgnored returns false when adapter lacks method", async () => {
-    const { markTaskIgnored } = await import("../kanban-adapter.mjs");
+    const { markTaskIgnored } = await import("../scripts/bosun/kanban/kanban-adapter.mjs"");
     setKanbanBackend("internal");
     const result = await markTaskIgnored("42", "duplicate");
     expect(result).toBe(false);
@@ -575,7 +575,7 @@ describe("GitHub Reconciler project mode resolution", () => {
   });
 
   it("normalizes projectMode to lowercase", async () => {
-    const { GitHubReconciler } = await import("../github-reconciler.mjs");
+    const { GitHubReconciler } = await import("../scripts/bosun/github/github-reconciler.mjs"");
     const reconciler = new GitHubReconciler({
       repoSlug: "acme/widgets",
       projectMode: "KANBAN",
@@ -585,7 +585,7 @@ describe("GitHub Reconciler project mode resolution", () => {
 
   it("defaults projectMode to issues when not specified", async () => {
     delete process.env.GITHUB_PROJECT_MODE;
-    const { GitHubReconciler } = await import("../github-reconciler.mjs");
+    const { GitHubReconciler } = await import("../scripts/bosun/github/github-reconciler.mjs"");
     const reconciler = new GitHubReconciler({
       repoSlug: "acme/widgets",
     });
@@ -594,7 +594,7 @@ describe("GitHub Reconciler project mode resolution", () => {
 
   it("reads projectMode from env when not in options", async () => {
     process.env.GITHUB_PROJECT_MODE = "kanban";
-    const { GitHubReconciler } = await import("../github-reconciler.mjs");
+    const { GitHubReconciler } = await import("../scripts/bosun/github/github-reconciler.mjs"");
     const reconciler = new GitHubReconciler({
       repoSlug: "acme/widgets",
     });
@@ -602,7 +602,7 @@ describe("GitHub Reconciler project mode resolution", () => {
   });
 
   it("resolves projectBoardId from projectNumber option", async () => {
-    const { GitHubReconciler } = await import("../github-reconciler.mjs");
+    const { GitHubReconciler } = await import("../scripts/bosun/github/github-reconciler.mjs"");
     const reconciler = new GitHubReconciler({
       repoSlug: "acme/widgets",
       projectNumber: "42",
@@ -613,7 +613,7 @@ describe("GitHub Reconciler project mode resolution", () => {
   it("resolves projectBoardId from GITHUB_PROJECT_NUMBER env", async () => {
     process.env.GITHUB_PROJECT_NUMBER = "99";
     delete process.env.GITHUB_PROJECT_ID;
-    const { GitHubReconciler } = await import("../github-reconciler.mjs");
+    const { GitHubReconciler } = await import("../scripts/bosun/github/github-reconciler.mjs"");
     const reconciler = new GitHubReconciler({
       repoSlug: "acme/widgets",
     });
@@ -621,7 +621,7 @@ describe("GitHub Reconciler project mode resolution", () => {
   });
 
   it("prefers explicit projectId option over projectNumber", async () => {
-    const { GitHubReconciler } = await import("../github-reconciler.mjs");
+    const { GitHubReconciler } = await import("../scripts/bosun/github/github-reconciler.mjs"");
     const reconciler = new GitHubReconciler({
       repoSlug: "acme/widgets",
       projectNumber: "7",
@@ -633,7 +633,7 @@ describe("GitHub Reconciler project mode resolution", () => {
   it("returns null projectBoardId when nothing is configured", async () => {
     delete process.env.GITHUB_PROJECT_NUMBER;
     delete process.env.GITHUB_PROJECT_ID;
-    const { GitHubReconciler } = await import("../github-reconciler.mjs");
+    const { GitHubReconciler } = await import("../scripts/bosun/github/github-reconciler.mjs"");
     const reconciler = new GitHubReconciler({
       repoSlug: "acme/widgets",
     });
@@ -643,7 +643,7 @@ describe("GitHub Reconciler project mode resolution", () => {
   it("returns null when explicit projectId is empty string", async () => {
     delete process.env.GITHUB_PROJECT_NUMBER;
     delete process.env.GITHUB_PROJECT_ID;
-    const { GitHubReconciler } = await import("../github-reconciler.mjs");
+    const { GitHubReconciler } = await import("../scripts/bosun/github/github-reconciler.mjs"");
     const reconciler = new GitHubReconciler({
       repoSlug: "acme/widgets",
       projectId: "",
@@ -812,7 +812,7 @@ describe("agent-pool SDK prereq warning throttle", () => {
   });
 
   it("resetPoolSdkCache clears prereq warning throttle state", async () => {
-    const { resetPoolSdkCache } = await import("../agent-pool.mjs");
+    const { resetPoolSdkCache } = await import("../scripts/bosun/agents/agent-pool.mjs"");
     // Should not throw; clears sdkPrereqWarningAt map
     expect(() => resetPoolSdkCache()).not.toThrow();
   });
@@ -950,7 +950,7 @@ describe("preflight report interactive editor attention line", () => {
   // so we import preflight and test the formatPreflightReport function
 
   it("formatPreflightReport includes attention line for interactive editor warnings", async () => {
-    const { formatPreflightReport } = await import("../preflight.mjs");
+    const { formatPreflightReport } = await import("../scripts/bosun/setup/preflight.mjs"");
 
     // Create a mock result with an interactive editor warning
     const mockResult = {
@@ -972,7 +972,7 @@ describe("preflight report interactive editor attention line", () => {
   });
 
   it("formatPreflightReport omits attention line when no editor warning", async () => {
-    const { formatPreflightReport } = await import("../preflight.mjs");
+    const { formatPreflightReport } = await import("../scripts/bosun/setup/preflight.mjs"");
 
     const mockResult = {
       ok: true,

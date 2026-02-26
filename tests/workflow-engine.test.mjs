@@ -7,11 +7,11 @@ import {
   WorkflowContext,
   NodeStatus,
   WorkflowStatus,
-} from "../workflow-engine.mjs";
+} from "../scripts/bosun/workflow/workflow-engine.mjs""189;
 import {
   registerNodeType,
   getNodeType,
-} from "../workflow-nodes.mjs";
+} from "../scripts/bosun/workflow/workflow-nodes.mjs""300;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -543,7 +543,7 @@ describe("Session chaining - action.run_agent", () => {
 
 describe("Anomaly → Workflow bridge", () => {
   it("wrapAnomalyCallback fires workflow triggers", async () => {
-    const { wrapAnomalyCallback, setWorkflowEngine } = await import("../anomaly-detector.mjs");
+    const { wrapAnomalyCallback, setWorkflowEngine } = await import("../scripts/bosun/utils/anomaly-detector.mjs"");
 
     const mockEvaluate = vi.fn();
     setWorkflowEngine({ evaluateTriggers: mockEvaluate });
@@ -589,7 +589,7 @@ describe("Template dedup on install", () => {
   });
 
   it("rejects installing a template that is already installed", async () => {
-    const { installTemplate } = await import("../workflow-templates.mjs");
+    const { installTemplate } = await import("../scripts/bosun/workflow/workflow-templates.mjs"");
 
     // Install once - should succeed
     const wf = installTemplate("template-pr-merge-strategy", engine);

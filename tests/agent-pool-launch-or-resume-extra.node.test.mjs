@@ -5,7 +5,7 @@ import {
   clearThreadRegistry,
   getThreadRecord,
   launchOrResumeThread,
-} from "../agent-pool.mjs";
+} from "../scripts/bosun/agents/agent-pool.mjs""99;
 
 const ENV_KEYS = [
   "CODEX_SDK_DISABLED",

@@ -29,7 +29,7 @@ describe("startup-service", () => {
     vi.resetAllMocks();
 
     // Dynamic import to pick up fresh mocks each time
-    mod = await import("../startup-service.mjs");
+    mod = await import("../scripts/bosun/core/startup-service.mjs"");
   });
 
   describe("getStartupStatus", () => {

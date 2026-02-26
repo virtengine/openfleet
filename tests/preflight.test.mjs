@@ -14,7 +14,7 @@ vi.mock("../pwsh-runtime.mjs", () => ({
 }));
 
 const { formatPreflightReport, runPreflightChecks } = await import(
-  "../preflight.mjs"
+  "../scripts/bosun/setup/preflight.mjs""
 );
 
 const ORIGINAL_ENV = { ...process.env };

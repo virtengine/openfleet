@@ -24,7 +24,7 @@ import {
   SKILL_DIR,
   PROFILE_DIR,
   resolveEntry,
-} from "../library-manager.mjs";
+} from "../scripts/bosun/utils/library-manager.mjs""246;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -511,7 +511,7 @@ describe("renderPromptTemplate with library resolver", () => {
   afterEach(() => cleanup());
 
   it("setLibraryResolver + renderPromptTemplate resolves namespaced refs", async () => {
-    const { renderPromptTemplate, setLibraryResolver } = await import("../agent-prompts.mjs");
+    const { renderPromptTemplate, setLibraryResolver } = await import("../scripts/bosun/agents/agent-prompts.mjs"");
 
     upsertEntry(tmpDir, { type: "prompt", name: "Injected" }, "injected content");
 
@@ -530,7 +530,7 @@ describe("renderPromptTemplate with library resolver", () => {
   });
 
   it("renderPromptTemplate still works without resolver", async () => {
-    const { renderPromptTemplate, setLibraryResolver } = await import("../agent-prompts.mjs");
+    const { renderPromptTemplate, setLibraryResolver } = await import("../scripts/bosun/agents/agent-prompts.mjs"");
     setLibraryResolver(null);
 
     const result = renderPromptTemplate("Hello {{NAME}}", { NAME: "World" });

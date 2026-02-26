@@ -6,7 +6,7 @@ vi.mock("node:child_process", () => ({
   spawnSync: spawnSyncMock,
 }));
 
-const { cleanupStaleBranches } = await import("../maintenance.mjs");
+const { cleanupStaleBranches } = await import("../scripts/bosun/core/maintenance.mjs"");
 
 let TEST_DIR = "";
 let now = 0;

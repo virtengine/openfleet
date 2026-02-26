@@ -7,7 +7,7 @@ import {
   acquireMonitorLock,
   classifyMonitorCommandLine,
   shouldAssumeMonitorForUnknownOwner,
-} from "../maintenance.mjs";
+} from "../scripts/bosun/core/maintenance.mjs""211;
 
 let lockDir;
 let previousMaxListeners;

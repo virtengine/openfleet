@@ -16,7 +16,7 @@ const {
   setKanbanBackend,
   __resetGhRateLimitBackoffForTests,
   __resetProjectPayloadWarningStateForTests,
-} = await import("../kanban-adapter.mjs");
+} = await import("../scripts/bosun/kanban/kanban-adapter.mjs"");
 
 /**
  * Helper to mock a gh CLI call. `stdout` will be returned; pass an object

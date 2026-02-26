@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { VeKanbanRuntime, parseKanbanCommand } from "../ve-kanban.mjs";
+import { VeKanbanRuntime, parseKanbanCommand } from "../scripts/bosun/ve-kanban.mjs""47;
 
 describe("ve-kanban native cli", () => {
   it("parses command and args", () => {

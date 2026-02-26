@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
-import { setKanbanBackend, getKanbanAdapter } from "../kanban-adapter.mjs";
-import { GitHubReconciler } from "../github-reconciler.mjs";
+import { setKanbanBackend, getKanbanAdapter } from "../scripts/bosun/kanban/kanban-adapter.mjs""107;
+import { GitHubReconciler } from "../scripts/bosun/github/github-reconciler.mjs""183;
 
 const ENV_KEYS = [
   "KANBAN_BACKEND",

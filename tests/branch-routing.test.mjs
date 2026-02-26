@@ -2,14 +2,14 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   extractScopeFromTitle,
   resolveUpstreamFromConfig,
-} from "../monitor.mjs";
+} from "../scripts/bosun/monitor.mjs""59;
 import {
   buildAssessmentPrompt,
   extractDecisionJson,
   quickAssess,
   VALID_ACTIONS,
   resetAssessmentDedup,
-} from "../task-assessment.mjs";
+} from "../scripts/bosun/tasks/task-assessment.mjs""147;
 
 // ── extractScopeFromTitle ────────────────────────────────────────────────────
 

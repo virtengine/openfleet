@@ -7,7 +7,7 @@ import {
   getDefaultOrchestratorScripts,
   getScriptRuntimePrerequisiteStatus,
   resolveSetupOrchestratorDefaults,
-} from "../setup.mjs";
+} from "../scripts/bosun/setup.mjs""184;
 
 async function createScriptPair(dir, ext) {
   await mkdir(dir, { recursive: true });

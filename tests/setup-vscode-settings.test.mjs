@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import {
   buildRecommendedVsCodeSettings,
   writeWorkspaceVsCodeSettings,
-} from "../setup.mjs";
+} from "../scripts/bosun/setup.mjs""194;
 
 describe("setup vscode settings", () => {
   it("builds recommended Copilot autonomous defaults", () => {

@@ -5,7 +5,7 @@ import {
   executeDecision,
   extractActionJson,
   resetMergeStrategyDedup,
-} from "../merge-strategy.mjs";
+} from "../scripts/bosun/git/merge-strategy.mjs""63;
 
 describe("merge-strategy", () => {
   beforeEach(() => {

@@ -258,7 +258,7 @@ beforeEach(async () => {
   vi.resetModules();
 
   // Dynamic import to pick up mocks; then grab exports
-  const mod = await import("../agent-pool.mjs");
+  const mod = await import("../scripts/bosun/agents/agent-pool.mjs"");
   getPoolSdkName = mod.getPoolSdkName;
   setPoolSdk = mod.setPoolSdk;
   resetPoolSdkCache = mod.resetPoolSdkCache;

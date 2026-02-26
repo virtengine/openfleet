@@ -105,30 +105,30 @@ import {
   loadExecutorOptionsFromConfig,
   isInternalExecutorEnabled,
   getExecutorMode,
-} from "../task-executor.mjs";
+} from "../scripts/bosun/tasks/task-executor.mjs""3003;
 import {
   listTasks,
   listProjects,
   getKanbanBackendName,
   updateTaskStatus,
   addComment,
-} from "../kanban-adapter.mjs";
+} from "../scripts/bosun/kanban/kanban-adapter.mjs""3159;
 import {
   execWithRetry,
   getPoolSdkName,
   getActiveThreads,
   ensureThreadRegistryLoaded,
   invalidateThread,
-} from "../agent-pool.mjs";
-import { acquireWorktree, releaseWorktree } from "../worktree-manager.mjs";
+} from "../scripts/bosun/agents/agent-pool.mjs""3287;
+import { acquireWorktree, releaseWorktree } from "../scripts/bosun/workspaces/worktree-manager.mjs""3429;
 import {
   claimTask,
   renewClaim,
   releaseTask as releaseTaskClaim,
-} from "../task-claims.mjs";
-import { initPresence, getPresenceState } from "../presence.mjs";
-import { loadConfig } from "../config.mjs";
-import { evaluateBranchSafetyForPush } from "../git-safety.mjs";
+} from "../scripts/bosun/tasks/task-claims.mjs""3505;
+import { initPresence, getPresenceState } from "../scripts/bosun/workspaces/presence.mjs""3605;
+import { loadConfig } from "../scripts/bosun/config/config.mjs""3671;
+import { evaluateBranchSafetyForPush } from "../scripts/bosun/git/git-safety.mjs""3715;
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
@@ -1600,7 +1600,7 @@ describe("task-executor", () => {
         existsSync: vi.fn(() => false),
       }));
 
-      const mod = await import("../task-executor.mjs");
+      const mod = await import("../scripts/bosun/tasks/task-executor.mjs"");
       const inst = mod.getTaskExecutor({ mode: "vk" });
       expect(inst).toBeInstanceOf(mod.TaskExecutor);
     });
@@ -1639,7 +1639,7 @@ describe("task-executor", () => {
         existsSync: vi.fn(() => false),
       }));
 
-      const mod = await import("../task-executor.mjs");
+      const mod = await import("../scripts/bosun/tasks/task-executor.mjs"");
       const first = mod.getTaskExecutor({ mode: "internal" });
       const second = mod.getTaskExecutor({ mode: "hybrid" });
       expect(first).toBe(second);
@@ -1785,10 +1785,10 @@ describe("task-executor", () => {
 
       // Mock successful workflow: acquire worktree, run agent, done
       const { acquireWorktree: mockAcquire } =
-        await import("../worktree-manager.mjs");
+        await import("../scripts/bosun/workspaces/worktree-manager.mjs"");
       mockAcquire.mockResolvedValueOnce({ path: "/fake/wt", created: true });
 
-      const { execWithRetry: mockExec } = await import("../agent-pool.mjs");
+      const { execWithRetry: mockExec } = await import("../scripts/bosun/agents/agent-pool.mjs"");
       mockExec.mockResolvedValueOnce({
         success: true,
         output: "done",
@@ -1823,10 +1823,10 @@ describe("task-executor", () => {
       ex._running = true;
 
       const { acquireWorktree: mockAcquire } =
-        await import("../worktree-manager.mjs");
+        await import("../scripts/bosun/workspaces/worktree-manager.mjs"");
       mockAcquire.mockResolvedValueOnce({ path: "/fake/wt", created: true });
 
-      const { execWithRetry: mockExec } = await import("../agent-pool.mjs");
+      const { execWithRetry: mockExec } = await import("../scripts/bosun/agents/agent-pool.mjs"");
       mockExec.mockResolvedValueOnce({
         success: true,
         output: "done",

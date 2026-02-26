@@ -8,8 +8,8 @@ import {
   getTemplate,
   listTemplates,
   installTemplate,
-} from "../workflow-templates.mjs";
-import { WorkflowEngine } from "../workflow-engine.mjs";
+} from "../scripts/bosun/workflow/workflow-templates.mjs""185;
+import { WorkflowEngine } from "../scripts/bosun/workflow/workflow-engine.mjs""326;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -304,7 +304,7 @@ describe("template dry-run execution", () => {
 
   beforeEach(async () => {
     // Side-effect import registers built-in workflow node types once per test process.
-    await import("../workflow-nodes.mjs");
+    await import("../scripts/bosun/workflow/workflow-nodes.mjs"");
   });
 
   for (const template of WORKFLOW_TEMPLATES) {

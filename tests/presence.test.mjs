@@ -12,7 +12,7 @@ import {
   getPresencePrefix,
   initPresence,
   getPresenceState,
-} from "../presence.mjs";
+} from "../scripts/bosun/workspaces/presence.mjs""193;
 
 let tempRoot = null;
 
@@ -177,7 +177,7 @@ describe("listActiveInstances", () => {
 
   it("returns all instances when TTL is 0", async () => {
     // Inject test data
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       Promise.all([
         m.notePresence({
           instance_id: "inst-1",
@@ -207,7 +207,7 @@ describe("listActiveInstances", () => {
     const now = 10000;
     const ttl = 3000;
 
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       Promise.all([
         m.notePresence(
           { instance_id: "fresh-1" },
@@ -241,7 +241,7 @@ describe("listActiveInstances", () => {
     const now = 10000;
     const ttl = 2000;
 
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       Promise.all([
         m.notePresence(
           { instance_id: "stale-1" },
@@ -265,7 +265,7 @@ describe("listActiveInstances", () => {
     const now = 10000;
     const ttl = 3000;
 
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       Promise.all([
         m.notePresence(
           { instance_id: "exactly-at-boundary" },
@@ -292,7 +292,7 @@ describe("listActiveInstances", () => {
   });
 
   it("uses Date.now() when nowMs not provided", async () => {
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       m.notePresence({
         instance_id: "current",
         last_seen_at: new Date().toISOString(),
@@ -314,7 +314,7 @@ describe("selectCoordinator", () => {
   it("selects single coordinator-eligible instance", async () => {
     const now = 10000;
 
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       m.notePresence(
         {
           instance_id: "solo-coordinator",
@@ -334,7 +334,7 @@ describe("selectCoordinator", () => {
   it("selects instance with highest priority (lowest number)", async () => {
     const now = 10000;
 
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       Promise.all([
         m.notePresence(
           {
@@ -372,7 +372,7 @@ describe("selectCoordinator", () => {
   it("returns null when no active instances", async () => {
     const now = 10000;
 
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       m.notePresence(
         {
           instance_id: "stale",
@@ -390,7 +390,7 @@ describe("selectCoordinator", () => {
   it("returns null when no eligible instances exist", async () => {
     const now = 10000;
 
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       Promise.all([
         m.notePresence(
           {
@@ -418,7 +418,7 @@ describe("selectCoordinator", () => {
   it("breaks priority ties by started_at timestamp", async () => {
     const now = 10000;
 
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       Promise.all([
         m.notePresence(
           {
@@ -450,7 +450,7 @@ describe("selectCoordinator", () => {
   it("breaks ties deterministically by instance_id", async () => {
     const now = 10000;
 
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       Promise.all([
         m.notePresence(
           {
@@ -482,7 +482,7 @@ describe("selectCoordinator", () => {
   it("prefers workspace_role=coordinator", async () => {
     const now = 10000;
 
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       Promise.all([
         m.notePresence(
           {
@@ -526,7 +526,7 @@ describe("formatPresenceSummary", () => {
   it("formats summary with active instances", async () => {
     const now = 10000;
 
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       Promise.all([
         m.notePresence(
           {
@@ -564,7 +564,7 @@ describe("formatPresenceSummary", () => {
   it("marks coordinator in summary", async () => {
     const now = 10000;
 
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       Promise.all([
         m.notePresence(
           {
@@ -613,7 +613,7 @@ describe("formatCoordinatorSummary", () => {
   it("formats coordinator details", async () => {
     const now = 10000;
 
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       m.notePresence(
         {
           instance_id: "coord-123",
@@ -638,7 +638,7 @@ describe("formatCoordinatorSummary", () => {
   it("uses instance_id when label is missing", async () => {
     const now = 10000;
 
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       m.notePresence(
         {
           instance_id: "unlabeled-coord",
@@ -657,7 +657,7 @@ describe("formatCoordinatorSummary", () => {
   it("handles missing optional fields gracefully", async () => {
     const now = 10000;
 
-    await import("../presence.mjs").then((m) =>
+    await import("../scripts/bosun/workspaces/presence.mjs"").then((m) =>
       m.notePresence(
         {
           instance_id: "minimal-coord",

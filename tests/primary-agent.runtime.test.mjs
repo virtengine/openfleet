@@ -102,7 +102,7 @@ describe("primary-agent runtime safeguards", () => {
 
   it("uses dryRun codex config checks at runtime by default", async () => {
     vi.resetModules();
-    const primaryAgent = await import("../primary-agent.mjs");
+    const primaryAgent = await import("../scripts/bosun/agents/primary-agent.mjs"");
 
     await primaryAgent.initPrimaryAgent("codex-sdk");
 
@@ -113,7 +113,7 @@ describe("primary-agent runtime safeguards", () => {
 
   it("falls back to pooled execution when active adapter is busy on another session", async () => {
     vi.resetModules();
-    const primaryAgent = await import("../primary-agent.mjs");
+    const primaryAgent = await import("../scripts/bosun/agents/primary-agent.mjs"");
     await primaryAgent.initPrimaryAgent("codex-sdk");
 
     mockIsCodexBusy.mockReturnValue(true);

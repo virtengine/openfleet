@@ -27,8 +27,8 @@ describe("shared-state-integration", () => {
     }));
 
     // Import modules
-    sharedStateManager = await import("../shared-state-manager.mjs");
-    const kanbanModule = await import("../kanban-adapter.mjs");
+    sharedStateManager = await import("../scripts/bosun/tasks/shared-state-manager.mjs"");
+    const kanbanModule = await import("../scripts/bosun/kanban/kanban-adapter.mjs"");
     kanbanModule.setKanbanBackend("github");
     kanbanAdapter = kanbanModule.getKanbanAdapter();
   });

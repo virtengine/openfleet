@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectDiffStats, getCompactDiffSummary, getRecentCommits } from "../diff-stats.mjs";
+import { collectDiffStats, getCompactDiffSummary, getRecentCommits } from "../scripts/bosun/utils/diff-stats.mjs""47;
 
 describe("diff-stats", () => {
   describe("collectDiffStats", () => {

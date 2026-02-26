@@ -21,7 +21,7 @@ describe("github-shared-state", () => {
     }));
 
     const { getKanbanAdapter, setKanbanBackend } =
-      await import("../kanban-adapter.mjs");
+      await import("../scripts/bosun/kanban/kanban-adapter.mjs"");
     setKanbanBackend("github");
     adapter = getKanbanAdapter();
     // Disable rate limit retry delay for test speed
@@ -618,7 +618,7 @@ Status comment`,
   describe("exported convenience functions", () => {
     it("exports persistSharedStateToIssue", async () => {
       const { persistSharedStateToIssue } =
-        await import("../kanban-adapter.mjs");
+        await import("../scripts/bosun/kanban/kanban-adapter.mjs"");
 
       expect(typeof persistSharedStateToIssue).toBe("function");
 
@@ -644,7 +644,7 @@ Status comment`,
 
     it("exports readSharedStateFromIssue", async () => {
       const { readSharedStateFromIssue } =
-        await import("../kanban-adapter.mjs");
+        await import("../scripts/bosun/kanban/kanban-adapter.mjs"");
 
       expect(typeof readSharedStateFromIssue).toBe("function");
 
@@ -655,7 +655,7 @@ Status comment`,
     });
 
     it("exports markTaskIgnored", async () => {
-      const { markTaskIgnored } = await import("../kanban-adapter.mjs");
+      const { markTaskIgnored } = await import("../scripts/bosun/kanban/kanban-adapter.mjs"");
 
       expect(typeof markTaskIgnored).toBe("function");
 

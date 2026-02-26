@@ -22,7 +22,7 @@ let autofixPromise = null;
 
 async function loadAutofix() {
   if (!autofixPromise) {
-    autofixPromise = import("../autofix.mjs");
+    autofixPromise = import("../scripts/bosun/core/autofix.mjs"");
   }
   return await autofixPromise;
 }

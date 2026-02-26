@@ -23,7 +23,7 @@ describe("shared-state-manager", () => {
 
     beforeEach(async () => {
       ({ claimTaskInSharedState } =
-        await import("../shared-state-manager.mjs"));
+        await import("../scripts/bosun/tasks/shared-state-manager.mjs""));
     });
 
     it("claims a task successfully with initial retry count of 0", async () => {
@@ -48,7 +48,7 @@ describe("shared-state-manager", () => {
     });
 
     it("rejects claim if task has ignore flag", async () => {
-      const { setIgnoreFlag } = await import("../shared-state-manager.mjs");
+      const { setIgnoreFlag } = await import("../scripts/bosun/tasks/shared-state-manager.mjs"");
       await setIgnoreFlag("task-ignored", "human_created", tempRoot);
 
       const result = await claimTaskInSharedState(
@@ -199,7 +199,7 @@ describe("shared-state-manager", () => {
 
     it("increments retry count on new claim after completion", async () => {
       const { releaseSharedState } =
-        await import("../shared-state-manager.mjs");
+        await import("../scripts/bosun/tasks/shared-state-manager.mjs"");
 
       // First attempt
       await claimTaskInSharedState(
@@ -232,7 +232,7 @@ describe("shared-state-manager", () => {
 
     it("preserves lastError from previous failure", async () => {
       const { releaseSharedState } =
-        await import("../shared-state-manager.mjs");
+        await import("../scripts/bosun/tasks/shared-state-manager.mjs"");
 
       await claimTaskInSharedState(
         "task-error",
@@ -268,7 +268,7 @@ describe("shared-state-manager", () => {
 
     beforeEach(async () => {
       ({ claimTaskInSharedState, renewSharedStateHeartbeat } =
-        await import("../shared-state-manager.mjs"));
+        await import("../scripts/bosun/tasks/shared-state-manager.mjs""));
     });
 
     it("renews heartbeat for valid claim", async () => {
@@ -292,7 +292,7 @@ describe("shared-state-manager", () => {
 
       expect(renewResult.success).toBe(true);
 
-      const { getSharedState } = await import("../shared-state-manager.mjs");
+      const { getSharedState } = await import("../scripts/bosun/tasks/shared-state-manager.mjs"");
       const state = await getSharedState("task-1", tempRoot);
       expect(state.ownerHeartbeat).not.toBe(originalHeartbeat);
       expect(state.attemptStatus).toBe("working");
@@ -353,7 +353,7 @@ describe("shared-state-manager", () => {
 
     it("rejects renewal for completed task", async () => {
       const { releaseSharedState } =
-        await import("../shared-state-manager.mjs");
+        await import("../scripts/bosun/tasks/shared-state-manager.mjs"");
 
       await claimTaskInSharedState(
         "task-1",
@@ -387,7 +387,7 @@ describe("shared-state-manager", () => {
 
     beforeEach(async () => {
       ({ claimTaskInSharedState, releaseSharedState, getSharedState } =
-        await import("../shared-state-manager.mjs"));
+        await import("../scripts/bosun/tasks/shared-state-manager.mjs""));
     });
 
     it("releases task with complete status", async () => {
@@ -501,7 +501,7 @@ describe("shared-state-manager", () => {
 
     beforeEach(async () => {
       ({ claimTaskInSharedState, sweepStaleSharedStates, getSharedState } =
-        await import("../shared-state-manager.mjs"));
+        await import("../scripts/bosun/tasks/shared-state-manager.mjs""));
     });
 
     it("marks stale tasks as abandoned", async () => {
@@ -543,7 +543,7 @@ describe("shared-state-manager", () => {
 
     it("does not sweep already completed tasks", async () => {
       const { releaseSharedState } =
-        await import("../shared-state-manager.mjs");
+        await import("../scripts/bosun/tasks/shared-state-manager.mjs"");
 
       await claimTaskInSharedState(
         "task-complete",
@@ -568,7 +568,7 @@ describe("shared-state-manager", () => {
     });
 
     it("does not sweep ignored tasks", async () => {
-      const { setIgnoreFlag } = await import("../shared-state-manager.mjs");
+      const { setIgnoreFlag } = await import("../scripts/bosun/tasks/shared-state-manager.mjs"");
 
       await claimTaskInSharedState(
         "task-ignored",
@@ -630,7 +630,7 @@ describe("shared-state-manager", () => {
         releaseSharedState,
         setIgnoreFlag,
         shouldRetryTask,
-      } = await import("../shared-state-manager.mjs"));
+      } = await import("../scripts/bosun/tasks/shared-state-manager.mjs""));
     });
 
     it("returns true for task with no previous attempts", async () => {
@@ -799,7 +799,7 @@ describe("shared-state-manager", () => {
 
     beforeEach(async () => {
       ({ setIgnoreFlag, clearIgnoreFlag, getSharedState } =
-        await import("../shared-state-manager.mjs"));
+        await import("../scripts/bosun/tasks/shared-state-manager.mjs""));
     });
 
     it("sets ignore flag on new task", async () => {
@@ -814,7 +814,7 @@ describe("shared-state-manager", () => {
 
     it("sets ignore flag on existing task", async () => {
       const { claimTaskInSharedState } =
-        await import("../shared-state-manager.mjs");
+        await import("../scripts/bosun/tasks/shared-state-manager.mjs"");
 
       await claimTaskInSharedState(
         "task-existing",
@@ -857,7 +857,7 @@ describe("shared-state-manager", () => {
 
     it("returns error when clearing flag on non-ignored task", async () => {
       const { claimTaskInSharedState } =
-        await import("../shared-state-manager.mjs");
+        await import("../scripts/bosun/tasks/shared-state-manager.mjs"");
 
       await claimTaskInSharedState(
         "task-1",
@@ -886,7 +886,7 @@ describe("shared-state-manager", () => {
         renewSharedStateHeartbeat,
         releaseSharedState,
         getSharedState,
-      } = await import("../shared-state-manager.mjs"));
+      } = await import("../scripts/bosun/tasks/shared-state-manager.mjs""));
     });
 
     it("tracks all lifecycle events", async () => {
@@ -952,7 +952,7 @@ describe("shared-state-manager", () => {
 
     it("bounds event log to MAX_EVENT_LOG_ENTRIES", async () => {
       const { MAX_EVENT_LOG_ENTRIES } =
-        await import("../shared-state-manager.mjs");
+        await import("../scripts/bosun/tasks/shared-state-manager.mjs"");
 
       // Generate many events
       for (let i = 0; i < MAX_EVENT_LOG_ENTRIES + 10; i++) {
@@ -988,7 +988,7 @@ describe("shared-state-manager", () => {
       await writeFile(registryPath, "{ invalid json }", "utf-8");
 
       const { claimTaskInSharedState } =
-        await import("../shared-state-manager.mjs");
+        await import("../scripts/bosun/tasks/shared-state-manager.mjs"");
 
       const result = await claimTaskInSharedState(
         "task-1",
@@ -1026,7 +1026,7 @@ describe("shared-state-manager", () => {
       );
 
       const { claimTaskInSharedState } =
-        await import("../shared-state-manager.mjs");
+        await import("../scripts/bosun/tasks/shared-state-manager.mjs"");
 
       const result = await claimTaskInSharedState(
         "task-1",
@@ -1052,7 +1052,7 @@ describe("shared-state-manager", () => {
         releaseSharedState,
         setIgnoreFlag,
         getStateStatistics,
-      } = await import("../shared-state-manager.mjs"));
+      } = await import("../scripts/bosun/tasks/shared-state-manager.mjs""));
     });
 
     it("calculates statistics correctly", async () => {
@@ -1125,7 +1125,7 @@ describe("shared-state-manager", () => {
 
     beforeEach(async () => {
       ({ claimTaskInSharedState, releaseSharedState, cleanupOldStates } =
-        await import("../shared-state-manager.mjs"));
+        await import("../scripts/bosun/tasks/shared-state-manager.mjs""));
     });
 
     it("cleans up old completed tasks", async () => {

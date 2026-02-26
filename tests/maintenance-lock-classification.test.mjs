@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyMonitorCommandLine,
   shouldAssumeMonitorForUnknownOwner,
-} from "../maintenance.mjs";
+} from "../scripts/bosun/core/maintenance.mjs""48;
 
 describe("monitor lock command-line classification", () => {
   it("classifies absolute monitor path as monitor", () => {

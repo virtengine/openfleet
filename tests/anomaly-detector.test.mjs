@@ -4,7 +4,7 @@ import {
   AnomalyType,
   Severity,
   createAnomalyDetector,
-} from "../anomaly-detector.mjs";
+} from "../scripts/bosun/utils/anomaly-detector.mjs""74;
 
 // Helper to make a detector with captured anomalies
 function makeDetector(opts = {}) {

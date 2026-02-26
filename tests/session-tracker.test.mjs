@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { createSessionTracker, SessionTracker } from "../session-tracker.mjs";
+import { createSessionTracker, SessionTracker } from "../scripts/bosun/workspaces/session-tracker.mjs""59;
 
 describe("session-tracker", () => {
   /** @type {SessionTracker} */

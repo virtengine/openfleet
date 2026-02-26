@@ -45,7 +45,7 @@ describe("ui-server mini app", () => {
   });
 
   afterEach(async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../scripts/bosun/ui-server.mjs"");
     mod.stopTelegramUiServer();
     for (const key of ENV_KEYS) {
       if (envSnapshot[key] === undefined) delete process.env[key];
@@ -63,7 +63,7 @@ describe("ui-server mini app", () => {
   }
 
   it("exports mini app server helpers", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../scripts/bosun/ui-server.mjs"");
     expect(typeof mod.startTelegramUiServer).toBe("function");
     expect(typeof mod.stopTelegramUiServer).toBe("function");
     expect(typeof mod.getTelegramUiUrl).toBe("function");
@@ -72,14 +72,14 @@ describe("ui-server mini app", () => {
   });
 
   it("getLocalLanIp returns a string", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../scripts/bosun/ui-server.mjs"");
     const ip = mod.getLocalLanIp();
     expect(typeof ip).toBe("string");
     expect(ip.length).toBeGreaterThan(0);
   });
 
   it("accepts signed project webhook and triggers task sync", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../scripts/bosun/ui-server.mjs"");
     const syncTask = vi.fn().mockResolvedValue(undefined);
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
@@ -128,7 +128,7 @@ describe("ui-server mini app", () => {
   });
 
   it("rejects webhook with invalid signature", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../scripts/bosun/ui-server.mjs"");
     const syncTask = vi.fn().mockResolvedValue(undefined);
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
@@ -169,7 +169,7 @@ describe("ui-server mini app", () => {
   });
 
   it("triggers alert hook after repeated webhook sync failures", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../scripts/bosun/ui-server.mjs"");
     const onProjectSyncAlert = vi.fn();
     const syncTask = vi.fn().mockRejectedValue(new Error("sync failed"));
     const server = await mod.startTelegramUiServer({
@@ -217,7 +217,7 @@ describe("ui-server mini app", () => {
   });
 
   it("returns schema field errors for invalid hook targets", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../scripts/bosun/ui-server.mjs"");
     const server = await mod.startTelegramUiServer({
       port: await getFreePort(),
       host: "127.0.0.1",
@@ -241,7 +241,7 @@ describe("ui-server mini app", () => {
   });
 
   it("writes supported settings into config file", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../scripts/bosun/ui-server.mjs"");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
     process.env.BOSUN_CONFIG_PATH = configPath;
@@ -330,7 +330,7 @@ describe("ui-server mini app", () => {
   });
 
   it("does not sync unsupported settings into config file", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../scripts/bosun/ui-server.mjs"");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
     process.env.BOSUN_CONFIG_PATH = configPath;
@@ -368,7 +368,7 @@ describe("ui-server mini app", () => {
   });
 
   it("returns trigger template payload with history/stat fields", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../scripts/bosun/ui-server.mjs"");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-trigger-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
     process.env.BOSUN_CONFIG_PATH = configPath;
@@ -419,7 +419,7 @@ describe("ui-server mini app", () => {
   });
 
   it("persists trigger template updates to config", async () => {
-    const mod = await import("../ui-server.mjs");
+    const mod = await import("../scripts/bosun/ui-server.mjs"");
     const tmpDir = mkdtempSync(join(tmpdir(), "bosun-trigger-config-"));
     const configPath = join(tmpDir, "bosun.config.json");
     process.env.BOSUN_CONFIG_PATH = configPath;

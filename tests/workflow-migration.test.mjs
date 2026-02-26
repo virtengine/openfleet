@@ -9,8 +9,8 @@ import {
   resetMigrationGuard,
   TEMPLATE_MODULE_MAP,
   MODULE_TEMPLATE_MAP,
-} from "../workflow-migration.mjs";
-import { WorkflowEngine } from "../workflow-engine.mjs";
+} from "../scripts/bosun/workflow/workflow-migration.mjs""197;
+import { WorkflowEngine } from "../scripts/bosun/workflow/workflow-engine.mjs""367;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

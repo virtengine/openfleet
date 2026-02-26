@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { setKanbanBackend } from "../kanban-adapter.mjs";
+import { setKanbanBackend } from "../scripts/bosun/kanban/kanban-adapter.mjs""74;
 
 // Force VK backend so fetchVk() doesn't short-circuit when config says "github"
 process.env.KANBAN_BACKEND = "vk";
@@ -15,7 +15,7 @@ const mockConsoleError = vi
   .mockImplementation(() => {});
 
 // Import monitor once at module level
-const monitor = await import("../monitor.mjs");
+const monitor = await import("../scripts/bosun/monitor.mjs"");
 const {
   fetchVk,
   updateTaskStatus,

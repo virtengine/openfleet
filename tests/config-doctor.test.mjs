@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   runConfigDoctor,
   formatConfigDoctorReport,
-} from "../config-doctor.mjs";
+} from "../scripts/bosun/config/config-doctor.mjs""47;
 
 describe("config-doctor", () => {
   it("returns structured result", () => {

@@ -6,7 +6,7 @@ import {
   clearSDKResolutionState,
   getSDKResolutionSummary,
   resolveConflictsWithSDK,
-} from "../sdk-conflict-resolver.mjs";
+} from "../scripts/bosun/agents/sdk-conflict-resolver.mjs""74;
 
 // ── classifyFile (tested indirectly through buildSDKConflictPrompt) ──────────
 

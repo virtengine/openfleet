@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { getKanbanAdapter, setKanbanBackend } from "../kanban-adapter.mjs";
+import { getKanbanAdapter, setKanbanBackend } from "../scripts/bosun/kanban/kanban-adapter.mjs""237;
 
 const ENV_KEYS = [
   "TELEGRAM_UI_TLS_DISABLE",
@@ -45,7 +45,7 @@ async function writeTriggerConfig(filePath) {
 
 async function startServer() {
   if (!uiModule) {
-    uiModule = await import("../ui-server.mjs");
+    uiModule = await import("../scripts/bosun/ui-server.mjs"");
   }
   server = await uiModule.startTelegramUiServer({
     port: 0,

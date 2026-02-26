@@ -35,14 +35,14 @@ const {
   __resetGhRateLimitBackoffForTests,
   __resetProjectPayloadWarningStateForTests,
   __reloadProjectCommandBackoffStateForTests,
-} = await import("../kanban-adapter.mjs");
+} = await import("../scripts/bosun/kanban/kanban-adapter.mjs"");
 const {
   configureTaskStore,
   loadStore,
   addTask,
   removeTask,
   getTask,
-} = await import("../task-store.mjs");
+} = await import("../scripts/bosun/tasks/task-store.mjs"");
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
