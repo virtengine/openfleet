@@ -5805,6 +5805,11 @@ const MERGE_CHECK_THROTTLE_MS = 1500;
 
 const STALE_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 const STALE_MAX_STRIKES = 2; // move to todo after this many stale checks
+const RECOVERABLE_IDLE_STATUSES = new Set(["inprogress", "inreview"]);
+
+function isRecoverableIdleStatus(status) {
+  return RECOVERABLE_IDLE_STATUSES.has(String(status || "").trim().toLowerCase());
+}
 
 /**
  * Age-based stale detection: if a task has been in inprogress/inreview for
@@ -6087,13 +6092,12 @@ async function checkMergedPRsAndUpdateTasks() {
           continue;
         }
 
-        // ── Only recover idle inprogress tasks — never inreview ──
-        // inreview tasks are monitored by merge/conflict checks.
-        // inprogress tasks with an active agent should not be touched.
-        if (taskStatus !== "inprogress") {
+        // ── Recover only idle inprogress/inreview tasks ──
+        // inprogress/inreview tasks with an active agent should not be touched.
+        if (!isRecoverableIdleStatus(taskStatus)) {
           if (shouldLogNoAttempt(task, taskStatus, "no_attempt_skip_status")) {
             console.log(
-              `[monitor] No attempt found for task "${task.title}" (${task.id.substring(0, 8)}...) in ${taskStatus} — skipping (only idle inprogress tasks are recovered)`,
+              `[monitor] No attempt found for task "${task.title}" (${task.id.substring(0, 8)}...) in ${taskStatus} — skipping (only idle inprogress/inreview tasks are recovered)`,
             );
             recordNoAttemptLog(task, taskStatus, "no_attempt_skip_status");
           }
@@ -6117,12 +6121,12 @@ async function checkMergedPRsAndUpdateTasks() {
         if (taskAge >= STALE_TASK_AGE_MS) {
           const ageHours = (taskAge / (60 * 60 * 1000)).toFixed(1);
           console.log(
-            `[monitor] No attempt found for idle task "${task.title}" (${task.id.substring(0, 8)}...) — stale for ${ageHours}h, attempting recovery`,
+            `[monitor] No attempt found for idle ${taskStatus} task "${task.title}" (${task.id.substring(0, 8)}...) — stale for ${ageHours}h, attempting recovery`,
           );
           const success = await safeRecoverTask(
             task.id,
             task.title,
-            `age-based: ${ageHours}h, no agent, no branch/PR`,
+            `age-based: ${taskStatus}, ${ageHours}h, no agent, no branch/PR`,
           );
           if (success) {
             movedTodoCount++;
@@ -6143,13 +6147,13 @@ async function checkMergedPRsAndUpdateTasks() {
         });
         scheduleRecoveryCacheSave();
         console.log(
-          `[monitor] No attempt found for idle task "${task.title}" (${task.id.substring(0, 8)}...) — strike ${strikes}/${STALE_MAX_STRIKES}`,
+          `[monitor] No attempt found for idle ${taskStatus} task "${task.title}" (${task.id.substring(0, 8)}...) — strike ${strikes}/${STALE_MAX_STRIKES}`,
         );
         if (strikes >= STALE_MAX_STRIKES) {
           const success = await safeRecoverTask(
             task.id,
             task.title,
-            `no branch/PR after ${strikes} checks`,
+            `no branch/PR after ${strikes} checks (${taskStatus})`,
           );
           if (success) {
             movedTodoCount++;
@@ -6608,8 +6612,8 @@ async function checkMergedPRsAndUpdateTasks() {
           );
         }
       } else if (!hasOpenPR) {
-        // ── Only recover idle inprogress tasks — never inreview ──
-        if (taskStatus !== "inprogress") {
+        // ── Recover only idle inprogress/inreview tasks ──
+        if (!isRecoverableIdleStatus(taskStatus)) {
           console.log(
             `[monitor] Task "${task.title}" (${task.id.substring(0, 8)}...): no open PR but status=${taskStatus} — skipping recovery`,
           );
@@ -6631,12 +6635,12 @@ async function checkMergedPRsAndUpdateTasks() {
         if (taskAge >= STALE_TASK_AGE_MS) {
           const ageHours = (taskAge / (60 * 60 * 1000)).toFixed(1);
           console.log(
-            `[monitor] Idle task "${task.title}" (${task.id.substring(0, 8)}...): no branch/PR, stale for ${ageHours}h — attempting recovery`,
+            `[monitor] Idle ${taskStatus} task "${task.title}" (${task.id.substring(0, 8)}...): no branch/PR, stale for ${ageHours}h — attempting recovery`,
           );
           const success = await safeRecoverTask(
             task.id,
             task.title,
-            `age-based: ${ageHours}h, no agent, no branch/PR`,
+            `age-based: ${taskStatus}, ${ageHours}h, no agent, no branch/PR`,
           );
           if (success) {
             movedTodoCount++;
@@ -6656,13 +6660,13 @@ async function checkMergedPRsAndUpdateTasks() {
           });
           scheduleRecoveryCacheSave();
           console.log(
-            `[monitor] Idle task "${task.title}" (${task.id.substring(0, 8)}...): no branch, no PR (strike ${strikes}/${STALE_MAX_STRIKES})`,
+            `[monitor] Idle ${taskStatus} task "${task.title}" (${task.id.substring(0, 8)}...): no branch, no PR (strike ${strikes}/${STALE_MAX_STRIKES})`,
           );
           if (strikes >= STALE_MAX_STRIKES) {
             const success = await safeRecoverTask(
               task.id,
               task.title,
-              `abandoned — ${strikes} stale checks`,
+              `abandoned ${taskStatus} — ${strikes} stale checks`,
             );
             if (success) {
               movedTodoCount++;
@@ -16130,6 +16134,7 @@ if (config.prCleanupEnabled !== false) {
 export {
   fetchVk,
   updateTaskStatus,
+  reconcileTaskStatuses,
   safeRecoverTask,
   recoverySkipCache,
   getTaskAgeMs,
