@@ -197,6 +197,25 @@ function detectGitTopLevel(candidatePath) {
 }
 
 /**
+ * Return true when a candidate path resolves to the repository's main worktree.
+ * This is stronger than simple path equality and handles alternate absolute
+ * roots that point at the same checkout.
+ *
+ * @param {string} candidatePath
+ * @param {string} repoRoot
+ * @returns {boolean}
+ */
+function isMainWorktreePath(candidatePath, repoRoot) {
+  if (!candidatePath || !repoRoot) return false;
+  if (pathsEqual(candidatePath, repoRoot)) return true;
+
+  const repoTopLevel = detectGitTopLevel(repoRoot);
+  const candidateTopLevel = detectGitTopLevel(candidatePath);
+  if (!repoTopLevel || !candidateTopLevel) return false;
+  return pathsEqual(candidateTopLevel, repoTopLevel);
+}
+
+/**
  * Resolve the best repository root for singleton initialization.
  * Priority:
  *   1) explicit repoRoot arg
@@ -606,6 +625,12 @@ class WorktreeManager {
   async releaseWorktreeByPath(path) {
     await this.loadRegistry();
     const normalizedPath = resolve(path);
+    if (isMainWorktreePath(normalizedPath, this.repoRoot)) {
+      console.warn(
+        `${TAG} Refusing to remove main working tree path: ${normalizedPath}`,
+      );
+      return { success: false, path: normalizedPath };
+    }
     const key = this._findKeyByPath(normalizedPath);
     if (!key) {
       // Not in registry — try to remove directly
@@ -1051,7 +1076,7 @@ class WorktreeManager {
   async _removeWorktree(key, record) {
     if (!record) return { success: false, path: null };
     const wtPath = record.path;
-    if (pathsEqual(wtPath, this.repoRoot)) {
+    if (isMainWorktreePath(wtPath, this.repoRoot)) {
       console.warn(
         `${TAG} Refusing to remove main working tree path: ${wtPath}`,
       );
@@ -1072,6 +1097,11 @@ class WorktreeManager {
     if (result.status !== 0) {
       const stderr = (result.stderr || "").trim();
       console.warn(`${TAG} Failed to remove worktree at ${wtPath}: ${stderr}`);
+      if (stderr.toLowerCase().includes("is a main working tree")) {
+        this.registry.delete(key);
+        await this.saveRegistry();
+        return { success: false, path: wtPath };
+      }
       // If git fails (e.g. "Directory not empty"), fall back to filesystem removal
       if (existsSync(wtPath)) {
         try {
@@ -1125,7 +1155,7 @@ class WorktreeManager {
    * @returns {Promise<{ success: boolean, path: string|null }>}
    */
   async _forceRemoveWorktree(wtPath) {
-    if (pathsEqual(wtPath, this.repoRoot)) {
+    if (isMainWorktreePath(wtPath, this.repoRoot)) {
       console.warn(`${TAG} Refusing to force-remove main working tree path: ${wtPath}`);
       return { success: false, path: wtPath };
     }
@@ -1137,6 +1167,11 @@ class WorktreeManager {
 
     let success = result.status === 0;
     if (!success) {
+      const stderr = String(result.stderr || "").toLowerCase();
+      if (stderr.includes("is a main working tree")) {
+        console.warn(`${TAG} Refusing to force-remove main working tree path: ${wtPath}`);
+        return { success: false, path: wtPath };
+      }
       console.warn(
         `${TAG} Failed to force-remove worktree at ${wtPath}: ${(result.stderr || "").trim()}`,
       );
@@ -1199,7 +1234,7 @@ class WorktreeManager {
    * @param {string} wtPath
    */
   _forceRemoveWorktreeSync(wtPath) {
-    if (pathsEqual(wtPath, this.repoRoot)) {
+    if (isMainWorktreePath(wtPath, this.repoRoot)) {
       console.warn(`${TAG} Refusing to sync-remove main working tree path: ${wtPath}`);
       return;
     }
