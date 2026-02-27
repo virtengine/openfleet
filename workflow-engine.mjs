@@ -873,6 +873,23 @@ export class WorkflowEngine extends EventEmitter {
       throw new Error(`Unknown node type: "${node.type}". Register it with registerNodeType().`);
     }
 
+    // ── Capability pre-flight check ──────────────────────────────────────
+    // Before executing a node, verify the required services are available.
+    // This catches permission/capability issues early with clear error messages
+    // instead of cryptic failures deep inside node execution.
+    const requiredCapabilities = this._getNodeRequiredCapabilities(node.type);
+    const missingCapabilities = [];
+    for (const cap of requiredCapabilities) {
+      if (!this._hasCapability(cap)) {
+        missingCapabilities.push(cap);
+      }
+    }
+    if (missingCapabilities.length > 0) {
+      const detail = `Node "${node.label || node.id}" (${node.type}) requires capabilities: [${missingCapabilities.join(", ")}] which are not available. ` +
+        `Check that the required services (agent pool, kanban adapter, etc.) are configured and the agent has the necessary permissions.`;
+      ctx.log(node.id, detail, "error");
+      throw new Error(detail);
+    }
     // Resolve config templates against context
     const resolvedConfig = this._resolveConfig(node.config || {}, ctx);
 
@@ -914,6 +931,48 @@ export class WorkflowEngine extends EventEmitter {
       }
     }
     return resolved;
+  }
+
+  // ── Capability helpers ──────────────────────────────────────────────────
+  // Map node-type prefixes / names to the engine.services keys they need.
+  // This lets _executeNode fail-fast with a clear message instead of letting
+  // the handler throw a cryptic "cannot read property X of undefined".
+
+  /** @returns {string[]} service keys the node type needs (may be empty) */
+  _getNodeRequiredCapabilities(nodeType) {
+    // Agent nodes need the agentPool service
+    if (nodeType.startsWith("agent.") || nodeType === "action.run_agent") {
+      return ["agentPool"];
+    }
+    // Session continuation / restart also need agentPool
+    if (nodeType === "action.continue_session" || nodeType === "action.restart_agent") {
+      return ["agentPool"];
+    }
+    // Task-management nodes need kanban
+    if (
+      nodeType === "action.create_task" ||
+      nodeType === "action.update_task_status" ||
+      nodeType === "action.materialize_planner_tasks"
+    ) {
+      return ["kanban"];
+    }
+    // Telegram notification
+    if (nodeType === "notify.telegram") {
+      return ["telegram"];
+    }
+    // condition.task_has_tag reads from kanban
+    if (nodeType === "condition.task_has_tag") {
+      return ["kanban"];
+    }
+    // No special service required (file I/O, git, transforms, logs, etc.)
+    return [];
+  }
+
+  /** Check whether a named capability (service key) is available */
+  _hasCapability(cap) {
+    const svc = this.services?.[cap];
+    // A capability is "present" when its value is a non-null object or function.
+    return svc != null && (typeof svc === "object" || typeof svc === "function");
   }
 
   _evaluateCondition(condition, ctx, sourceNodeId) {

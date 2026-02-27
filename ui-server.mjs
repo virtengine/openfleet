@@ -7357,6 +7357,25 @@ async function handleApi(req, res, url) {
           // Respond immediately so the UI doesn't block on agent execution
           jsonResponse(res, 200, { ok: true, messageId });
           broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
+
+          // Build an onEvent callback so intermediate SDK events (thinking,
+          // tool calls, code edits, etc.) are streamed to the UI in real-time
+          // via the existing session-tracker → WebSocket listener pipeline.
+          // Without this, chat/telegram dispatches only show the final
+          // user+assistant pair instead of the full thought stream that Flows
+          // clients see.
+          const streamOnEvent = (err, event) => {
+            // The adapters call onEvent(err, event) or onEvent(event).
+            // Normalise both calling conventions.
+            const ev = event || err;
+            if (!ev) return;
+            try {
+              tracker.recordEvent(sessionId, ev);
+            } catch {
+              /* best-effort — never crash the agent loop */
+            }
+          };
+
           // Fire-and-forget: run agent asynchronously so the request handler
           // doesn't block and the agent doesn't appear "busy" to subsequent
           // messages from chat, telegram, portal, or any other source.
@@ -7367,6 +7386,7 @@ async function handleApi(req, res, url) {
             model: messageModel,
             attachments,
             attachmentsAppended,
+            onEvent: streamOnEvent,
           }).then(() => {
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
           }).catch((execErr) => {

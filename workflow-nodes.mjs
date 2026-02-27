@@ -2109,15 +2109,23 @@ registerNodeType("agent.select_profile", {
 function parsePlannerJsonFromText(value) {
   const text = normalizeLineEndings(String(value || ""))
     .replace(/\u001b\[[0-9;]*m/g, "")
+    // Strip common agent prefixes: "Agent: ", "Assistant: ", etc.
+    .replace(/^\s*(?:Agent|Assistant|Planner|Output)\s*:\s*/i, "")
     .trim();
   if (!text) return null;
 
   const candidates = [];
+  // Match fenced blocks (```json ... ``` or ``` ... ```)
   const fenceRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
   let match;
   while ((match = fenceRegex.exec(text)) !== null) {
     const body = String(match[1] || "").trim();
     if (body) candidates.push(body);
+  }
+  // Also try stripped text without fences as raw JSON
+  const strippedText = text.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim();
+  if (strippedText && !candidates.includes(strippedText)) {
+    candidates.push(strippedText);
   }
   candidates.push(text);
 
@@ -2252,7 +2260,12 @@ registerNodeType("action.materialize_planner_tasks", {
 
     const parsedTasks = extractPlannerTasksFromWorkflowOutput(outputText, maxTasks);
     if (!parsedTasks.length) {
-      const message = `Planner output from "${plannerNodeId}" did not include parseable tasks`;
+      // Log diagnostic info to help debug planner output format issues
+      const outputPreview = outputText.length > 200
+        ? `${outputText.slice(0, 200)}…`
+        : outputText || "(empty)";
+      const message = `Planner output from "${plannerNodeId}" did not include parseable tasks. ` +
+        `Output length: ${outputText.length} chars. Preview: ${outputPreview}`;
       ctx.log(node.id, message, failOnZero ? "error" : "warn");
       if (failOnZero) throw new Error(message);
       return {
@@ -2261,6 +2274,7 @@ registerNodeType("action.materialize_planner_tasks", {
         createdCount: 0,
         skippedCount: 0,
         reason: "no_parseable_tasks",
+        outputPreview,
       };
     }
 
@@ -2356,9 +2370,19 @@ registerNodeType("agent.run_planner", {
     // This delegates to the existing planner prompt flow
     const agentPool = engine.services?.agentPool;
     const plannerPrompt = engine.services?.prompts?.planner;
+    // Enforce strict output instructions to ensure the downstream materialize node
+    // can parse the planner output. The planner prompt already defines the contract,
+    // but we reinforce it here to prevent agents from wrapping output in prose.
+    const outputEnforcement =
+      `\n\n## CRITICAL OUTPUT REQUIREMENT\n` +
+      `Generate exactly ${count} new tasks.\n` +
+      (context ? `${context}\n\n` : "\n") +
+      `Your response MUST be a single fenced JSON block with shape { "tasks": [...] }.\n` +
+      `Do NOT include any text, commentary, or prose outside the JSON block.\n` +
+      `The downstream system will parse your output as JSON — any extra text will cause task creation to fail.`;
     const promptText = explicitPrompt ||
       (plannerPrompt
-        ? `${plannerPrompt}\n\nGenerate exactly ${count} new tasks.\n${context}`
+        ? `${plannerPrompt}${outputEnforcement}`
         : "");
 
     if (agentPool?.launchEphemeralThread && promptText) {
