@@ -935,6 +935,54 @@ function getBrowserUiUrl() {
   return appendTokenToUrl(base, token) || base;
 }
 
+function getBrowserUiUrlOptions() {
+  const base = String(telegramUiUrl || "").trim();
+  if (!base) return [];
+
+  const token = getSessionToken();
+  const options = [];
+  const seen = new Set();
+  const add = (label, inputUrl) => {
+    const raw = String(inputUrl || "").trim();
+    if (!raw) return;
+    const url = appendTokenToUrl(raw, token) || raw;
+    if (!url) return;
+    if (seen.has(url)) return;
+    seen.add(url);
+    options.push({ label, url });
+  };
+
+  let parsed = null;
+  try {
+    parsed = new URL(base);
+  } catch {
+    parsed = null;
+  }
+
+  if (parsed) {
+    const localhostUrl = `${parsed.protocol}//localhost${parsed.port ? `:${parsed.port}` : ""}`;
+    add("🖥️ Localhost", localhostUrl);
+  }
+
+  if (parsed) {
+    const lanIp = getLocalLanIp?.();
+    if (lanIp && parsed.port) {
+      const lanUrl = `${parsed.protocol}//${lanIp}:${parsed.port}`;
+      add("📶 LAN", lanUrl);
+    }
+  }
+
+  const tunnelUrl = getTunnelUrl();
+  if (tunnelUrl) {
+    add("☁️ Cloudflare", tunnelUrl);
+  }
+
+  if (options.length === 0) {
+    add("🌐 Browser URL", base);
+  }
+  return options;
+}
+
 function syncUiUrlsFromServer() {
   const currentUiUrl = getTelegramUiUrl?.() || null;
   telegramUiUrl = currentUiUrl;
@@ -947,9 +995,10 @@ function syncUiUrlsFromServer() {
 
 // ── Agent session state (for follow-up steering & bottom-pinning) ────────────
 
-let activeAgentSession = null; // { chatId, messageId, taskPreview, abortController, followUpQueue, ... }
-let agentMessageId = null; // current agent streaming message ID
-let agentChatId = null; // chat where agent is running
+const activeAgentSessions = new Map(); // chatId -> session
+let activeAgentSession = null; // legacy pointer to the latest active session
+let agentMessageId = null; // latest agent streaming message ID
+let agentChatId = null; // latest chat where an agent is running
 
 // ── Sticky UI menu state (keep /menu accessible at bottom) ─────────────────
 const stickyMenuState = new Map();
@@ -960,7 +1009,7 @@ const STICKY_MENU_BUMP_MS = 600;
 
 let fastCommandQueue = Promise.resolve();
 let commandQueue = Promise.resolve();
-let agentQueue = Promise.resolve();
+const agentQueues = new Map();
 
 function enqueueFastCommand(task) {
   fastCommandQueue = fastCommandQueue.then(task).catch((err) => {
@@ -974,10 +1023,69 @@ function enqueueCommand(task) {
   });
 }
 
-function enqueueAgentTask(task) {
-  agentQueue = agentQueue.then(task).catch((err) => {
-    console.error(`[telegram-bot] agent error: ${err.message || err}`);
-  });
+function enqueueAgentTask(task, key = "global") {
+  const queueKey = String(key || "global");
+  const prev = agentQueues.get(queueKey) || Promise.resolve();
+  const next = prev
+    .then(task)
+    .catch((err) => {
+      console.error(
+        `[telegram-bot] agent error (${queueKey}): ${err.message || err}`,
+      );
+    })
+    .finally(() => {
+      if (agentQueues.get(queueKey) === next) {
+        agentQueues.delete(queueKey);
+      }
+    });
+  agentQueues.set(queueKey, next);
+}
+
+function getActiveAgentSession(chatId = null) {
+  if (chatId != null) {
+    return activeAgentSessions.get(String(chatId)) || null;
+  }
+  if (
+    activeAgentSession &&
+    activeAgentSessions.has(String(activeAgentSession.chatId || ""))
+  ) {
+    return activeAgentSession;
+  }
+  const first = activeAgentSessions.values().next().value || null;
+  if (first) activeAgentSession = first;
+  return first;
+}
+
+function setActiveAgentSession(chatId, session) {
+  const key = String(chatId || "");
+  if (!key || !session) return;
+  activeAgentSessions.set(key, session);
+  activeAgentSession = session;
+  if (session.messageId) {
+    agentMessageId = session.messageId;
+    agentChatId = key;
+  }
+}
+
+function clearActiveAgentSession(chatId, expectedSession = null) {
+  const key = String(chatId || "");
+  if (!key) return;
+  const current = activeAgentSessions.get(key);
+  if (expectedSession && current && current !== expectedSession) return;
+  activeAgentSessions.delete(key);
+  if (agentChatId === key) {
+    agentChatId = null;
+    agentMessageId = null;
+  }
+  if (
+    activeAgentSession &&
+    String(activeAgentSession.chatId || "") === key
+  ) {
+    activeAgentSession = null;
+  }
+  if (!activeAgentSession && activeAgentSessions.size > 0) {
+    activeAgentSession = Array.from(activeAgentSessions.values()).pop() || null;
+  }
 }
 
 async function getWorkspaceRegistryCached() {
@@ -1102,28 +1210,38 @@ export function injectMonitorFunctions({
  * Re-sends the agent message so it stays at the bottom of the chat.
  */
 export async function bumpAgentMessage() {
-  if (!activeAgentSession || activeAgentSession.background) return;
-  if (!agentMessageId || !agentChatId) return;
-  try {
-    // Delete the old message
-    await deleteDirect(agentChatId, agentMessageId);
-  } catch {
-    /* best effort */
+  const candidates = [];
+  if (agentChatId) {
+    const pinned = getActiveAgentSession(agentChatId);
+    if (pinned) candidates.push(pinned);
   }
-  // Re-send at bottom
-  const session = activeAgentSession;
-  const msg = buildStreamMessage({
-    taskPreview: session.taskPreview,
-    actionLog: session.actionLog,
-    currentThought: session.currentThought,
-    totalActions: session.totalActions,
-    phase: session.phase,
-    finalResponse: null,
-  });
-  const newId = await sendDirect(agentChatId, msg);
-  if (newId) {
-    agentMessageId = newId;
-    session.messageId = newId;
+  if (candidates.length === 0) {
+    for (const session of activeAgentSessions.values()) {
+      if (!session?.background) candidates.push(session);
+    }
+  }
+  for (const session of candidates) {
+    if (!session || session.background) continue;
+    if (!session.messageId || !session.chatId) continue;
+    try {
+      await deleteDirect(session.chatId, session.messageId);
+    } catch {
+      /* best effort */
+    }
+    const msg = buildStreamMessage({
+      taskPreview: session.taskPreview,
+      actionLog: session.actionLog,
+      currentThought: session.currentThought,
+      totalActions: session.totalActions,
+      phase: session.phase,
+      finalResponse: null,
+    });
+    const newId = await sendDirect(session.chatId, msg);
+    if (newId) {
+      session.messageId = newId;
+      agentMessageId = newId;
+      agentChatId = String(session.chatId);
+    }
   }
 }
 
@@ -1131,7 +1249,7 @@ export async function bumpAgentMessage() {
  * Check if agent is active (for external callers like monitor.mjs).
  */
 export function isAgentActive() {
-  return !!activeAgentSession;
+  return activeAgentSessions.size > 0;
 }
 
 function setStickyMenuState(chatId, patch) {
@@ -2381,13 +2499,14 @@ async function handleUpdate(update) {
     return;
   }
 
-  // Free-text agent task runs in a separate queue so polling isn't blocked.
-  // If agent is already busy, handle immediately so follow-ups can be queued.
-  if (isPrimaryBusy()) {
+  // Free-text agent task runs in a separate per-chat queue so one chat does not
+  // block another. If this same chat already has an active run, handle
+  // immediately so follow-ups can be queued into that run.
+  if (isPrimaryBusy() && getActiveAgentSession(chatId)) {
     safeDetach("free-text", () => handleFreeText(text, chatId));
     return;
   }
-  enqueueAgentTask(() => handleFreeText(text, chatId));
+  enqueueAgentTask(() => handleFreeText(text, chatId), chatId);
 }
 
 // ── Command Router ────────────────────────────────────────────────────────────
@@ -4320,19 +4439,38 @@ Object.assign(UI_SCREENS, {
           },
           uiButton("❌", "cb:close_menu"),
         ]);
-        if (telegramUiUrl) {
-          rows.unshift([
-            { text: "🌐 Open in Browser", url: getBrowserUiUrl() || telegramUiUrl },
-          ]);
+        if (getBrowserUiUrlOptions().length > 0) {
+          rows.unshift([uiButton("🌐 Open in Browser", uiGoAction("browser_urls"))]);
         }
       } else if (telegramUiUrl) {
         rows.unshift([
-          { text: "🌐 Open Control Center", url: getBrowserUiUrl() || telegramUiUrl },
+          uiButton("🌐 Open in Browser", uiGoAction("browser_urls")),
           uiButton("❌", "cb:close_menu"),
         ]);
       } else {
         rows.unshift([uiButton("❌ Close Menu", "cb:close_menu")]);
       }
+      return buildKeyboard(rows);
+    },
+  },
+  browser_urls: {
+    title: "Browser URLs",
+    parent: "home",
+    body: () => {
+      const options = getBrowserUiUrlOptions();
+      if (options.length === 0) {
+        return "Mini App URL is not available yet.";
+      }
+      const lines = ["Choose a browser URL. Session token is pre-attached."];
+      for (const option of options) {
+        lines.push(`• ${option.label}`);
+      }
+      return lines.join("\n");
+    },
+    keyboard: () => {
+      const options = getBrowserUiUrlOptions();
+      const rows = options.map((option) => [{ text: option.label, url: option.url }]);
+      rows.push(uiNavRow("home"));
       return buildKeyboard(rows);
     },
   },
@@ -6168,9 +6306,15 @@ async function cmdApp(chatId) {
     );
     return;
   }
-  const rows = [[{ text: "🌐 Open in Browser", url: getBrowserUiUrl() || uiUrl }]];
+  const browserOptions = getBrowserUiUrlOptions();
+  const rows = [];
   if (webAppUrl) {
     rows.unshift([{ text: "📱 Open Control Center", web_app: { url: webAppUrl } }]);
+  }
+  if (browserOptions.length > 0) {
+    rows.push(...browserOptions.map((option) => [{ text: option.label, url: option.url }]));
+  } else {
+    rows.push([{ text: "🌐 Open in Browser", url: getBrowserUiUrl() || uiUrl }]);
   }
   const keyboard = { inline_keyboard: rows };
 
@@ -6399,7 +6543,7 @@ async function cmdAsk(chatId, args) {
     await sendReply(chatId, "Usage: /ask <prompt>");
     return;
   }
-  enqueueAgentTask(() => handleFreeText(prompt, chatId));
+  enqueueAgentTask(() => handleFreeText(prompt, chatId), chatId);
 }
 
 async function cmdStatus(chatId) {
@@ -9220,7 +9364,8 @@ async function cmdBackground(chatId, args) {
     return;
   }
 
-  if (!activeAgentSession) {
+  const session = getActiveAgentSession(chatId);
+  if (!session) {
     await sendReply(
       chatId,
       "No active agent. Usage:\n/background <task>\n(background current agent with /background)",
@@ -9228,19 +9373,20 @@ async function cmdBackground(chatId, args) {
     return;
   }
 
-  activeAgentSession.background = true;
-  activeAgentSession.suppressEdits = true;
+  session.background = true;
+  session.suppressEdits = true;
 
-  if (agentMessageId && agentChatId) {
+  if (session.messageId && session.chatId) {
     try {
-      await deleteDirect(agentChatId, agentMessageId);
+      await deleteDirect(session.chatId, session.messageId);
     } catch {
       /* best effort */
     }
   }
-  agentMessageId = null;
-  if (activeAgentSession) {
-    activeAgentSession.messageId = null;
+  session.messageId = null;
+  if (agentChatId === String(chatId)) {
+    agentMessageId = null;
+    agentChatId = null;
   }
 
   await sendReply(
@@ -9261,25 +9407,26 @@ async function cmdStop(chatId, args) {
     );
     return;
   }
-  if (!activeAgentSession) {
+  const session = getActiveAgentSession(chatId);
+  if (!session) {
     await sendReply(chatId, "No agent is currently running.");
     return;
   }
-  activeAgentSession.aborted = true;
-  if (activeAgentSession.abortController) {
+  session.aborted = true;
+  if (session.abortController) {
     try {
-      activeAgentSession.abortController.abort("user_stop");
+      session.abortController.abort("user_stop");
     } catch {
       /* best effort */
     }
   }
-  if (activeAgentSession.actionLog) {
-    activeAgentSession.actionLog.push({
+  if (session.actionLog) {
+    session.actionLog.push({
       icon: "🛑",
       text: "Stop requested by user (will halt after current step)",
     });
-    if (activeAgentSession.scheduleEdit) {
-      activeAgentSession.scheduleEdit();
+    if (session.scheduleEdit) {
+      session.scheduleEdit();
     }
   }
   await sendReply(chatId, "🛑 Stop signal sent. Agent will halt and wait.");
@@ -9294,7 +9441,8 @@ async function cmdSteer(chatId, steerArgs) {
   }
   const message = steerArgs.trim();
 
-  if (!activeAgentSession || !isPrimaryBusy()) {
+  const session = getActiveAgentSession(chatId);
+  if (!session) {
     await sendReply(chatId, "No active agent. Sending as a new task.");
     await handleFreeText(message, chatId);
     return;
@@ -9302,34 +9450,34 @@ async function cmdSteer(chatId, steerArgs) {
 
   const result = await steerPrimaryPrompt(message);
   if (result.ok) {
-    if (activeAgentSession.actionLog) {
-      activeAgentSession.actionLog.push({
+    if (session.actionLog) {
+      session.actionLog.push({
         icon: "🧭",
         text: `Steering update delivered (${result.mode})`,
       });
-      if (activeAgentSession.scheduleEdit) {
-        activeAgentSession.scheduleEdit();
+      if (session.scheduleEdit) {
+        session.scheduleEdit();
       }
     }
     await sendReply(chatId, `🧭 Steering sent (${result.mode}).`);
     return;
   }
 
-  if (!activeAgentSession.followUpQueue) {
-    activeAgentSession.followUpQueue = [];
+  if (!session.followUpQueue) {
+    session.followUpQueue = [];
   }
-  activeAgentSession.followUpQueue.push(message);
-  const qLen = activeAgentSession.followUpQueue.length;
-  if (activeAgentSession.actionLog) {
+  session.followUpQueue.push(message);
+  const qLen = session.followUpQueue.length;
+  if (session.actionLog) {
     const steerStatus = result.reason || "failed";
-    activeAgentSession.actionLog.push({
+    session.actionLog.push({
       icon: "🧭",
       text: `Steering queued (#${qLen}; steer failed: ${steerStatus})`,
       kind: "followup_queued",
       steerStatus,
     });
-    if (activeAgentSession.scheduleEdit) {
-      activeAgentSession.scheduleEdit();
+    if (session.scheduleEdit) {
+      session.scheduleEdit();
     }
   }
   await sendReply(chatId, `🧭 Steering queued (#${qLen}).`);
@@ -9454,13 +9602,14 @@ function buildStreamMessage({
 async function handleFreeText(text, chatId, options = {}) {
   const backgroundMode = !!options.background;
   const isolatedMode = !!options.isolated;
+  const chatSession = getActiveAgentSession(chatId);
   // ── Follow-up steering: if agent is busy, queue message as follow-up ──
-  if (!isolatedMode && isPrimaryBusy() && activeAgentSession) {
-    if (!activeAgentSession.followUpQueue) {
-      activeAgentSession.followUpQueue = [];
+  if (!isolatedMode && chatSession) {
+    if (!chatSession.followUpQueue) {
+      chatSession.followUpQueue = [];
     }
-    activeAgentSession.followUpQueue.push(text);
-    const qLen = activeAgentSession.followUpQueue.length;
+    chatSession.followUpQueue.push(text);
+    const qLen = chatSession.followUpQueue.length;
 
     // Try immediate steering so the in-flight run can adapt ASAP.
     const steerResult = await steerPrimaryPrompt(text);
@@ -9476,27 +9625,18 @@ async function handleFreeText(text, chatId, options = {}) {
     );
 
     // Add follow-up indicator to the streaming message
-    if (activeAgentSession.actionLog) {
-      activeAgentSession.actionLog.push({
+    if (chatSession.actionLog) {
+      chatSession.actionLog.push({
         icon: "📌",
         text: `Follow-up: "${text.length > 60 ? text.slice(0, 60) + "…" : text}" (${steerNote})`,
         kind: "followup_queued",
         steerStatus,
       });
       // Trigger an edit to show the follow-up in the streaming message
-      if (activeAgentSession.scheduleEdit) {
-        activeAgentSession.scheduleEdit();
+      if (chatSession.scheduleEdit) {
+        chatSession.scheduleEdit();
       }
     }
-    return;
-  }
-
-  // ── Block if agent is busy but no session (shouldn't happen normally) ──
-  if (!isolatedMode && isPrimaryBusy()) {
-    await sendReply(
-      chatId,
-      "⏳ Agent is executing a task. Please wait for it to finish...",
-    );
     return;
   }
 
@@ -9548,7 +9688,7 @@ async function handleFreeText(text, chatId, options = {}) {
   let hadError = false;
 
   const doEdit = async () => {
-    if (backgroundMode || activeAgentSession?.background) return;
+    if (backgroundMode || sessionState.background) return;
     editPending = false;
     const msg = buildStreamMessage({
       taskPreview,
@@ -9569,7 +9709,7 @@ async function handleFreeText(text, chatId, options = {}) {
   };
 
   const scheduleEdit = () => {
-    if (backgroundMode || activeAgentSession?.background) return;
+    if (backgroundMode || sessionState.background) return;
     if (editPending) return;
     const now = Date.now();
     const elapsed = now - lastEditAt;
@@ -9585,7 +9725,7 @@ async function handleFreeText(text, chatId, options = {}) {
 
   // ── Set up agent session (enables follow-up steering & bottom-pinning) ──
   const abortController = new AbortController();
-  activeAgentSession = {
+  const sessionState = {
     chatId,
     messageId,
     taskPreview,
@@ -9600,6 +9740,7 @@ async function handleFreeText(text, chatId, options = {}) {
     background: backgroundMode,
     suppressEdits: backgroundMode,
   };
+  setActiveAgentSession(chatId, sessionState);
   agentMessageId = messageId;
   agentChatId = chatId;
 
@@ -9692,17 +9833,17 @@ async function handleFreeText(text, chatId, options = {}) {
 
     if (action.phase === "thinking") {
       currentThought = action.text;
-      if (activeAgentSession) activeAgentSession.currentThought = action.text;
+      sessionState.currentThought = action.text;
     } else {
       if (action.phase === "done" || action.phase === "running") {
         totalActions++;
-        if (activeAgentSession) activeAgentSession.totalActions = totalActions;
+        sessionState.totalActions = totalActions;
       }
       actionLog.push(action);
       // Keep thought visible while actions proceed (only clear on new non-thinking action)
       if (action.phase !== "thinking") {
         currentThought = null;
-        if (activeAgentSession) activeAgentSession.currentThought = null;
+        sessionState.currentThought = null;
       }
     }
 
@@ -9714,7 +9855,7 @@ async function handleFreeText(text, chatId, options = {}) {
     } else {
       phase = "working…";
     }
-    if (activeAgentSession) activeAgentSession.phase = phase;
+    sessionState.phase = phase;
 
     scheduleEdit();
   };
@@ -9736,8 +9877,8 @@ async function handleFreeText(text, chatId, options = {}) {
 
     // ── Process follow-up queue ───────────────────────────────────
     // If user sent follow-up messages while agent was working, process them now
-    const followUps = activeAgentSession?.followUpQueue || [];
-    if (followUps.length > 0 && !activeAgentSession?.aborted) {
+    const followUps = sessionState.followUpQueue || [];
+    if (followUps.length > 0 && !sessionState.aborted) {
       for (const followUp of followUps) {
         actionLog.push({
           icon: "📌",
@@ -9807,7 +9948,7 @@ async function handleFreeText(text, chatId, options = {}) {
       searchesDone: searchCount,
       statusIcon,
     });
-    if (backgroundMode || activeAgentSession?.background) {
+    if (backgroundMode || sessionState.background) {
       await sendReply(chatId, finalMsg);
     } else {
       const finalMessageId = await editDirect(chatId, messageId, finalMsg);
@@ -9829,7 +9970,7 @@ async function handleFreeText(text, chatId, options = {}) {
       searchesDone: searchCount,
       statusIcon: "❌",
     });
-    if (backgroundMode || activeAgentSession?.background) {
+    if (backgroundMode || sessionState.background) {
       await sendReply(chatId, finalMsg);
     } else {
       const finalMessageId = await editDirect(chatId, messageId, finalMsg);
@@ -9839,9 +9980,7 @@ async function handleFreeText(text, chatId, options = {}) {
     }
   } finally {
     // ── Clean up agent session ────────────────────────────────────
-    activeAgentSession = null;
-    agentMessageId = null;
-    agentChatId = null;
+    clearActiveAgentSession(chatId, sessionState);
   }
 }
 
