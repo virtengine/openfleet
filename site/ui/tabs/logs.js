@@ -36,6 +36,7 @@ import {
 } from "../modules/state.js";
 import { navigateTo } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
+import { iconText } from "../modules/icon-utils.js";
 import { formatBytes } from "../modules/utils.js";
 import { Card, Badge, EmptyState, SkeletonCard, Modal } from "../components/shared.js";
 import { SearchInput } from "../components/forms.js";
@@ -131,6 +132,18 @@ function parseTimestamp(value) {
     const trimmed = value.trim();
     if (!trimmed) return null;
     if (/^\d+$/.test(trimmed)) return parseTimestamp(Number(trimmed));
+
+    // Handle log filename timestamps like 2026-02-25T12-36-00-924Z
+    const embedded = trimmed.match(/(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:-\d{3})?Z)/);
+    if (embedded?.[1]) {
+      const normalized = embedded[1].replace(
+        /(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})(?:-(\d{3}))?Z/,
+        (_m, date, hh, mm, ss, ms) => `${date}T${hh}:${mm}:${ss}${ms ? `.${ms}` : ""}Z`,
+      );
+      const embeddedDate = new Date(normalized);
+      if (Number.isFinite(embeddedDate.getTime())) return embeddedDate;
+    }
+
     const d = new Date(trimmed);
     return Number.isFinite(d.getTime()) ? d : null;
   }
@@ -173,29 +186,6 @@ function normalizeBranchEntry(entry) {
   return String(entry);
 }
 
-/**
- * Parse git %D ref decoration string into local and remote badge arrays.
- * e.g. "HEAD -> main, origin/main, origin/HEAD" → { local: ["main"], remote: ["origin/main"] }
- */
-function parseCommitRefs(refs) {
-  if (!refs || !refs.trim()) return { local: [], remote: [] };
-  const local = [];
-  const remote = [];
-  for (const part of refs.split(",").map((s) => s.trim())) {
-    if (!part) continue;
-    if (part.startsWith("HEAD -> ")) {
-      local.push(part.slice(8).trim());
-    } else if (part === "HEAD" || part === "origin/HEAD") {
-      /* skip bare HEAD pointers */
-    } else if (part.startsWith("origin/") || part.startsWith("upstream/")) {
-      remote.push(part);
-    } else if (!part.startsWith("tag:")) {
-      local.push(part);
-    }
-  }
-  return { local, remote };
-}
-
 /* ─── LogsTab ─── */
 export function LogsTab() {
   const logRef = useRef(null);
@@ -220,15 +210,6 @@ export function LogsTab() {
   const [branchDetail, setBranchDetail] = useState(null);
   const [branchLoading, setBranchLoading] = useState(false);
   const [branchError, setBranchError] = useState(null);
-  const [worktreeList, setWorktreeList] = useState([]);
-  const [selectedCommit, setSelectedCommit] = useState(null);
-
-  /* Load available worktrees once on mount for the branch dropdown */
-  useEffect(() => {
-    apiFetch("/api/worktrees", { _silent: true })
-      .then((res) => setWorktreeList(res.data || []))
-      .catch(() => {});
-  }, []);
 
   useEffect(() => {
     if (!isMobile) return;
@@ -273,9 +254,7 @@ export function LogsTab() {
     ? logsData.value.lines.join("\n")
     : "No logs yet.";
 
-  const rawTailText = agentLogTail?.value?.content
-    ? agentLogTail.value.content
-    : agentLogTail?.value?.lines
+  const rawTailText = agentLogTail?.value?.lines
     ? agentLogTail.value.lines.join("\n")
     : "Select a log file.";
 
@@ -487,15 +466,6 @@ export function LogsTab() {
       .log-ln { min-width: 3.5em; text-align: right; padding-right: 8px; opacity: 0.35; user-select: none; font-size: 0.85em; }
       .log-lt { flex: 1; white-space: pre-wrap; word-break: break-all; }
       .log-hl { background: rgba(250,204,21,0.3); border-radius: 2px; padding: 0 1px; }
-      .branch-badge-local { background: rgba(59,130,246,0.15); color: #3b82f6; border: 1px solid rgba(59,130,246,0.3); border-radius: 3px; padding: 1px 5px; font-size: 0.75em; font-family: monospace; margin-left: 4px; white-space: nowrap; }
-      .branch-badge-remote { background: rgba(168,85,247,0.15); color: #a855f7; border: 1px solid rgba(168,85,247,0.3); border-radius: 3px; padding: 1px 5px; font-size: 0.75em; font-family: monospace; margin-left: 4px; white-space: nowrap; }
-      .commit-list { display: flex; flex-direction: column; gap: 1px; }
-      .commit-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.84em; }
-      .commit-row:hover, .commit-row-selected { background: rgba(128,128,128,0.12); }
-      .commit-hash { font-family: monospace; opacity: 0.55; min-width: 5.5em; font-size: 0.9em; flex-shrink: 0; }
-      .commit-msg { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .commit-time { opacity: 0.45; font-size: 0.83em; white-space: nowrap; flex-shrink: 0; }
-      .commit-detail { background: rgba(128,128,128,0.07); border-radius: 4px; padding: 8px 10px; margin: 2px 0 6px 0; font-size: 0.83em; display: flex; flex-direction: column; gap: 3px; }
     </style>
     <!-- Loading skeleton -->
     ${!logsData?.value && !agentLogFiles?.value && html`<${Card} title="Loading Logs…"><${SkeletonCard} /><//>`}
@@ -598,13 +568,13 @@ export function LogsTab() {
           class="btn btn-ghost btn-sm"
           onClick=${() => copyToClipboard(filteredLogText, "Logs")}
         >
-          📋 Copy
+          ${iconText("📋 Copy")}
         </button>
         <button
           class="btn btn-ghost btn-sm"
           onClick=${downloadLogs}
         >
-          💾 Download
+          ${iconText("💾 Download")}
         </button>
       </div>
     <//>
@@ -621,7 +591,7 @@ export function LogsTab() {
           }}
         />
         <button class="btn btn-secondary btn-sm" onClick=${handleAgentSearch}>
-          🔍 Search
+          ${iconText("🔍 Search")}
         </button>
       </div>
       <div class="range-row mb-md">
@@ -677,7 +647,7 @@ export function LogsTab() {
           class="btn btn-ghost btn-sm"
           onClick=${() => copyToClipboard(rawTailText, "Log tail")}
         >
-          📋 Copy
+          ${iconText("📋 Copy")}
         </button>
       </div>
     <//>
@@ -685,113 +655,54 @@ export function LogsTab() {
     <!-- ── Worktree Context ── -->
     <${Card} title="Worktree Context">
       <div class="input-row mb-sm">
-        ${worktreeList.length > 0
-          ? html`<select
-              class="input"
-              value=${contextQuery}
-              onChange=${(e) => setContextQuery(e.target.value)}
-            >
-              <option value="">— Select a worktree —</option>
-              ${worktreeList.map((wt) => {
-                const label = wt.branch || wt.name || wt.path || "";
-                return html`<option key=${label} value=${label}>${label}</option>`;
-              })}
-            </select>`
-          : html`<input
-              class="input"
-              placeholder="Branch fragment"
-              value=${contextQuery}
-              onInput=${(e) => setContextQuery(e.target.value)}
-              onKeyDown=${(e) => {
-                if (e.key === "Enter") { e.preventDefault(); handleContextLoad(); }
-              }}
-            />`}
+        <input
+          class="input"
+          placeholder="Branch fragment"
+          value=${contextQuery}
+          onInput=${(e) => setContextQuery(e.target.value)}
+          onKeyDown=${(e) => {
+            if (e.key === "Enter") { e.preventDefault(); handleContextLoad(); }
+          }}
+        />
         <button class="btn btn-secondary btn-sm" onClick=${handleContextLoad}>
-          📂 Load
+          ${iconText("📂 Load")}
         </button>
       </div>
-
-      ${agentContext?.value
-        ? (() => {
-            const ctx = agentContext.value.context || agentContext.value;
-            const localBranch = ctx.gitBranch || "";
-            const commits = ctx.recentCommits || [];
-            const aheadBehind = ctx.gitAheadBehind || "";
-            const [ahead, behind] = aheadBehind.split(/\s+/).map(Number);
-            return html`
-              <div class="meta-text mb-sm" style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">
-                <span>Worktree:</span>
-                <span class="mono">${ctx.name || agentContext.value.matches?.[0] || "?"}</span>
-                ${localBranch && html`<span class="branch-badge-local">${localBranch}</span>`}
-                ${localBranch && html`<span class="branch-badge-remote">origin/${localBranch}</span>`}
-                ${(ahead > 0 || behind > 0)
-                  ? html`<span class="pill" style="font-size:0.78em">
-                      ${ahead > 0 ? `↑${ahead}` : ""}${behind > 0 ? ` ↓${behind}` : ""}
-                    </span>`
-                  : ""}
-              </div>
-
-              ${commits.length > 0
-                ? html`
-                  <div class="card-subtitle mb-sm">Commits</div>
-                  <div class="commit-list mb-sm">
-                    ${commits.map((cm) => {
-                      const refs = parseCommitRefs(cm.refs || "");
-                      const isSelected = selectedCommit?.hash === cm.hash;
-                      return html`
-                        <div
-                          key=${cm.hash}
-                          class="commit-row ${isSelected ? "commit-row-selected" : ""}"
-                          onClick=${() => setSelectedCommit(isSelected ? null : cm)}
-                        >
-                          <span class="commit-hash">${cm.hash}</span>
-                          <span class="commit-msg">${cm.message}</span>
-                          <span class="commit-time">${cm.time}</span>
-                          ${refs.local.map((b) => html`<span class="branch-badge-local">${b}</span>`)}
-                          ${refs.remote.map((b) => html`<span class="branch-badge-remote">${b}</span>`)}
-                        </div>
-                        ${isSelected && html`
-                          <div class="commit-detail">
-                            <div><span style="opacity:0.6">Hash:</span> <span class="mono">${cm.hash}</span></div>
-                            <div><span style="opacity:0.6">Message:</span> ${cm.message}</div>
-                            <div><span style="opacity:0.6">When:</span> ${cm.time}</div>
-                            ${refs.local.length > 0 && html`<div><span style="opacity:0.6">Local:</span> ${refs.local.map((b) => html`<span class="branch-badge-local">${b}</span>`)}</div>`}
-                            ${refs.remote.length > 0 && html`<div><span style="opacity:0.6">Remote:</span> ${refs.remote.map((b) => html`<span class="branch-badge-remote">${b}</span>`)}</div>`}
-                          </div>`}
-                      `;
-                    })}
-                  </div>`
-                : ctx.gitLog
-                  ? html`<div class="log-box mb-sm">${ctx.gitLog}</div>`
-                  : html`<div class="meta-text mb-sm">No commit history.</div>`}
-
-              ${ctx.gitStatus && html`
-                <div class="card-subtitle mb-sm">Working Tree Status</div>
-                <div class="log-box mb-sm">${ctx.gitStatus || "Clean."}</div>`}
-
-              ${ctx.gitDiffStat && html`
-                <div class="card-subtitle mb-sm">Diff Stat</div>
-                <div class="log-box mb-sm">${ctx.gitDiffStat}</div>`}
-
-              <div class="btn-row mt-sm">
-                <button
-                  class="btn btn-ghost btn-sm"
-                  onClick=${() =>
-                    copyToClipboard(
-                      [ctx.gitLog, ctx.gitStatus, ctx.gitDiffStat]
-                        .filter(Boolean)
-                        .join("\n\n"),
-                      "Context",
-                    )}
-                >
-                  📋 Copy
-                </button>
-              </div>
-            `;
-          })()
-        : html`<div class="meta-text">Load a worktree context to view git log/status.</div>`}
+      <div class="log-box">
+        ${agentContext?.value
+          ? [
+              "Worktree: " + (agentContext.value.name || "?"),
+              "",
+              agentContext.value.gitLog || "No git log.",
+              "",
+              agentContext.value.gitStatus || "Clean worktree.",
+              "",
+              agentContext.value.diffStat || "No diff stat.",
+            ].join("\n")
+          : "Load a worktree context to view git log/status."}
+      </div>
+      ${agentContext?.value &&
+      html`
+        <div class="btn-row mt-sm">
+          <button
+            class="btn btn-ghost btn-sm"
+            onClick=${() =>
+              copyToClipboard(
+                [
+                  agentContext.value.gitLog,
+                  agentContext.value.gitStatus,
+                  agentContext.value.diffStat,
+                ]
+                  .filter(Boolean)
+                  .join("\n\n"),
+                "Context",
+              )}
+          >
+            ${iconText("📋 Copy")}
+          </button>
+        </div>
+      `}
     <//>
-
 
     <!-- ── Git Snapshot ── -->
     <${Card} title="Git Snapshot">
@@ -809,7 +720,7 @@ export function LogsTab() {
           class="btn btn-ghost btn-sm"
           onClick=${() => copyToClipboard(gitDiff?.value || "", "Diff")}
         >
-          📋 Copy
+          ${iconText("📋 Copy")}
         </button>
       </div>
       <div class="log-box mb-md">
@@ -855,19 +766,19 @@ export function LogsTab() {
           <div class="btn-row mb-sm">
             ${(branchDetail.workspaceTarget || branchDetail.activeSlot || branchDetail.worktree) &&
             html`<button class="btn btn-primary btn-sm" onClick=${() => openWorkspace(branchDetail)}>
-              🔍 Open Workspace Viewer
+              ${iconText("🔍 Open Workspace Viewer")}
             </button>`}
             ${branchDetail.workspaceLink?.url &&
             html`<button
               class="btn btn-secondary btn-sm"
               onClick=${() => openLink(branchDetail.workspaceLink.url)}
             >
-              🔗 Open Workspace Link
+              ${iconText("🔗 Open Workspace Link")}
             </button>`}
             <button
               class="btn btn-ghost btn-sm"
               onClick=${() => copyToClipboard(branchDetail.diffStat || "", "Diff")}
-            >📋 Copy Diff</button>
+            >${iconText("📋 Copy Diff")}</button>
           </div>
           ${workspaceLink &&
           html`

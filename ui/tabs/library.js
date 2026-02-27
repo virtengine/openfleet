@@ -13,6 +13,7 @@ import { haptic } from "../modules/telegram.js";
 import { apiFetch } from "../modules/api.js";
 import { showToast, refreshTab } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import { formatRelative } from "../modules/utils.js";
 import { Card, Badge, EmptyState, Modal, ConfirmDialog, Spinner, ListItem } from "../components/shared.js";
 import { SearchInput, SegmentedControl, Toggle } from "../components/forms.js";
@@ -45,6 +46,7 @@ const LIBRARY_STYLES = `
 
 .library-card-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
 .library-card-icon { font-size: 1.4em; flex-shrink: 0; width: 32px; text-align: center; }
+.library-card-icon svg { width: 20px; height: 20px; vertical-align: middle; }
 .library-card-title { font-weight: 600; font-size: 0.95em; color: var(--text-primary, #eee); }
 .library-card-desc { font-size: 0.82em; color: var(--text-secondary, #aaa); margin-bottom: 8px;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -205,15 +207,15 @@ function LibraryStats() {
       </div>
       <div class="library-stat">
         <div class="library-stat-val" style="color: ${TYPE_COLORS.prompt}">${counts.prompt}</div>
-        <div class="library-stat-lbl">${TYPE_ICONS.prompt} Prompts</div>
+        <div class="library-stat-lbl">${iconText(`${TYPE_ICONS.prompt} Prompts`)}</div>
       </div>
       <div class="library-stat">
         <div class="library-stat-val" style="color: ${TYPE_COLORS.agent}">${counts.agent}</div>
-        <div class="library-stat-lbl">${TYPE_ICONS.agent} Agents</div>
+        <div class="library-stat-lbl">${iconText(`${TYPE_ICONS.agent} Agents`)}</div>
       </div>
       <div class="library-stat">
         <div class="library-stat-val" style="color: ${TYPE_COLORS.skill}">${counts.skill}</div>
-        <div class="library-stat-lbl">${TYPE_ICONS.skill} Skills</div>
+        <div class="library-stat-lbl">${iconText(`${TYPE_ICONS.skill} Skills`)}</div>
       </div>
     </div>
   `;
@@ -232,7 +234,7 @@ function TypePills() {
         <button key=${t.id}
           class=${`library-type-pill ${filterType.value === t.id ? "active" : ""}`}
           onClick=${() => { filterType.value = t.id; }}>
-          ${t.label}
+          ${iconText(t.label)}
         </button>
       `)}
     </div>
@@ -251,7 +253,7 @@ function LibraryCard({ entry, onSelect }) {
           style=${{ "--badge-color": typeColor }} />
       </div>
       <div class="library-card-header">
-        <span class="library-card-icon">${icon}</span>
+        <span class="library-card-icon">${resolveIcon(icon) || icon}</span>
         <div>
           <div class="library-card-title">${entry.name}</div>
         </div>
@@ -264,7 +266,7 @@ function LibraryCard({ entry, onSelect }) {
           <span class="library-card-tag" key=${tag}>${tag}</span>
         `)}
         ${entry.scope && entry.scope !== "global" && html`
-          <span class="library-card-scope">📌 ${entry.scope}</span>
+          <span class="library-card-scope">${iconText(`📌 ${entry.scope}`)}</span>
         `}
       </div>
     </div>
@@ -376,9 +378,9 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
           <label>
             Type
             <select value=${form.type} onChange=${updateField("type")}>
-              <option value="prompt">📝 Prompt</option>
-              <option value="agent">🤖 Agent Profile</option>
-              <option value="skill">🧠 Skill</option>
+              <option value="prompt">Prompt</option>
+              <option value="agent">Agent Profile</option>
+              <option value="skill">Skill</option>
             </select>
           </label>
         `}
@@ -465,7 +467,7 @@ function ScopeDetector() {
   return html`
     <div>
       <button class="btn-ghost library-type-pill" onClick=${loadScopes} style="font-size:0.82em;">
-        ${loading ? html`<${Spinner} size=${12} />` : "🔍"} Detect Scopes
+        ${loading ? html`<${Spinner} size=${12} />` : iconText("🔍 Detect Scopes")}
       </button>
       ${showing && scopes.value.length > 0 && html`
         <div class="library-scopes">
@@ -515,14 +517,14 @@ function ProfileMatcher() {
           style="flex:1;padding:6px 10px;border-radius:8px;border:1px solid var(--border,#333);
             background:var(--bg-input,#0d1117);color:var(--text-primary,#eee);font-size:0.85em;" />
         <button class="library-type-pill active" onClick=${doMatch} style="font-size:0.82em;" disabled=${loading}>
-          ${loading ? html`<${Spinner} size=${12} />` : "🎯 Match"}
+          ${loading ? html`<${Spinner} size=${12} />` : iconText("🎯 Match")}
         </button>
       </div>
       ${match && html`
         <div class="library-profile-match" style="margin-top:8px;">
           <div class="library-profile-match-label">Best match:</div>
           <div>
-            <span class="library-profile-match-name">${TYPE_ICONS.agent} ${match.name}</span>
+            <span class="library-profile-match-name">${iconText(`${TYPE_ICONS.agent} ${match.name}`)}</span>
             <span class="library-profile-match-score">score: ${match.score}</span>
           </div>
           ${match.description && html`
@@ -626,10 +628,10 @@ export function LibraryTab() {
   return html`
     <div class="library-root">
       <div class="library-header">
-        <h2>📚 Library</h2>
+        <h2>${iconText("📚 Library")}</h2>
         <button class="library-type-pill" onClick=${handleRebuild}
           title="Rescan directories and rebuild manifest">
-          🔄 Rebuild
+          ${iconText("🔄 Rebuild")}
         </button>
         <button class="library-type-pill active" onClick=${() => setEditing({})}>
           ＋ New
@@ -640,7 +642,7 @@ export function LibraryTab() {
         <div class="library-init-banner">
           <p><b>Welcome to the Library!</b></p>
           <p>Initialize to scaffold built-in agent profiles and index existing prompts and skills.</p>
-          <button onClick=${handleInit}>🚀 Initialize Library</button>
+          <button onClick=${handleInit}>${iconText("🚀 Initialize Library")}</button>
         </div>
       `}
 
@@ -665,7 +667,7 @@ export function LibraryTab() {
 
       ${!loading && displayed.length === 0 && initialized.value && html`
         <${EmptyState}
-          icon="📚"
+          icon="book"
           title="No resources found"
           message=${searchQuery.value
             ? "Try a different search term or clear the filter."

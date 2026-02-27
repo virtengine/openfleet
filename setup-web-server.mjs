@@ -86,6 +86,7 @@ function checkVendorFiles() {
 const DEFAULT_PORT = 3456;
 const MAX_PORT_ATTEMPTS = 20;
 const CALLBACK_PORT = Number(process.env.BOSUN_CALLBACK_PORT) || 54317;
+const DEFAULT_TELEGRAM_UI_PORT = 3080;
 
 const MODELS = {
   copilot: [
@@ -221,6 +222,296 @@ function commandExists(cmd) {
     return true;
   } catch {
     return false;
+  }
+}
+
+function toBooleanEnvString(value, fallback = false) {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return fallback ? "true" : "false";
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on", "y"].includes(normalized)) return "true";
+  if (["0", "false", "no", "off", "n"].includes(normalized)) return "false";
+  return fallback ? "true" : "false";
+}
+
+function pickNonEmptyValue(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string" && value.trim() === "") continue;
+    return value;
+  }
+  return undefined;
+}
+
+function toBoundedInt(rawValue, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.round(parsed);
+  return Math.min(max, Math.max(min, rounded));
+}
+
+function normalizeEnumValue(rawValue, allowed, fallback) {
+  const normalized = String(rawValue || "").trim().toLowerCase();
+  return allowed.includes(normalized) ? normalized : fallback;
+}
+
+function normalizeTelegramUiPort(rawValue, fallback = DEFAULT_TELEGRAM_UI_PORT) {
+  const parsed = Number(String(rawValue || "").trim());
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return String(Math.round(parsed));
+  }
+  return String(fallback);
+}
+
+function applyTelegramMiniAppSetupEnv(envMap, env, sourceEnv = process.env) {
+  const telegramToken = String(
+    env?.telegramToken || env?.TELEGRAM_BOT_TOKEN || sourceEnv.TELEGRAM_BOT_TOKEN || "",
+  ).trim();
+  if (!telegramToken) return false;
+
+  envMap.TELEGRAM_BOT_TOKEN = telegramToken;
+
+  const miniAppRaw =
+    env?.telegramMiniappEnabled ??
+    env?.telegramMiniAppEnabled ??
+    env?.TELEGRAM_MINIAPP_ENABLED;
+  envMap.TELEGRAM_MINIAPP_ENABLED = toBooleanEnvString(miniAppRaw, true);
+  envMap.TELEGRAM_UI_PORT = normalizeTelegramUiPort(
+    env?.telegramUiPort || env?.TELEGRAM_UI_PORT || sourceEnv.TELEGRAM_UI_PORT,
+  );
+
+  const tunnelRaw =
+    env?.telegramUiTunnel ||
+    env?.TELEGRAM_UI_TUNNEL ||
+    sourceEnv.TELEGRAM_UI_TUNNEL ||
+    "auto";
+  envMap.TELEGRAM_UI_TUNNEL = String(tunnelRaw).trim() || "auto";
+
+  const unsafeRaw =
+    env?.telegramUiAllowUnsafe ??
+    env?.TELEGRAM_UI_ALLOW_UNSAFE ??
+    sourceEnv.TELEGRAM_UI_ALLOW_UNSAFE;
+  envMap.TELEGRAM_UI_ALLOW_UNSAFE = toBooleanEnvString(unsafeRaw, false);
+  return true;
+}
+
+function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.env) {
+  const maxParallel = toBoundedInt(
+    pickNonEmptyValue(env.maxParallel, envMap.MAX_PARALLEL, sourceEnv.MAX_PARALLEL),
+    4,
+    { min: 1, max: 64 },
+  );
+  envMap.MAX_PARALLEL = String(maxParallel);
+
+  envMap.KANBAN_BACKEND = normalizeEnumValue(
+    pickNonEmptyValue(env.kanbanBackend, envMap.KANBAN_BACKEND, sourceEnv.KANBAN_BACKEND),
+    ["internal", "vk", "github", "jira"],
+    "internal",
+  );
+  envMap.KANBAN_SYNC_POLICY = normalizeEnumValue(
+    pickNonEmptyValue(env.kanbanSyncPolicy, envMap.KANBAN_SYNC_POLICY, sourceEnv.KANBAN_SYNC_POLICY),
+    ["internal-primary", "bidirectional"],
+    "internal-primary",
+  );
+  envMap.EXECUTOR_MODE = normalizeEnumValue(
+    pickNonEmptyValue(env.executorMode, envMap.EXECUTOR_MODE, sourceEnv.EXECUTOR_MODE),
+    ["internal", "vk", "hybrid"],
+    "internal",
+  );
+  envMap.EXECUTOR_DISTRIBUTION = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.executorDistribution,
+      envMap.EXECUTOR_DISTRIBUTION,
+      sourceEnv.EXECUTOR_DISTRIBUTION,
+    ),
+    ["primary-only", "weighted", "round-robin"],
+    "primary-only",
+  );
+  envMap.FAILOVER_STRATEGY = normalizeEnumValue(
+    pickNonEmptyValue(env.failoverStrategy, envMap.FAILOVER_STRATEGY, sourceEnv.FAILOVER_STRATEGY),
+    ["next-in-line", "weighted-random", "round-robin"],
+    "next-in-line",
+  );
+  envMap.FAILOVER_MAX_RETRIES = String(
+    toBoundedInt(
+      pickNonEmptyValue(env.maxRetries, envMap.FAILOVER_MAX_RETRIES, sourceEnv.FAILOVER_MAX_RETRIES),
+      3,
+      { min: 0, max: 20 },
+    ),
+  );
+  envMap.FAILOVER_COOLDOWN_MIN = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.failoverCooldownMinutes,
+        envMap.FAILOVER_COOLDOWN_MIN,
+        sourceEnv.FAILOVER_COOLDOWN_MIN,
+      ),
+      5,
+      { min: 1, max: 120 },
+    ),
+  );
+  envMap.FAILOVER_DISABLE_AFTER = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.failoverDisableOnConsecutive,
+        envMap.FAILOVER_DISABLE_AFTER,
+        sourceEnv.FAILOVER_DISABLE_AFTER,
+      ),
+      3,
+      { min: 1, max: 50 },
+    ),
+  );
+  envMap.PROJECT_REQUIREMENTS_PROFILE = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.projectRequirementsProfile,
+      envMap.PROJECT_REQUIREMENTS_PROFILE,
+      sourceEnv.PROJECT_REQUIREMENTS_PROFILE,
+    ),
+    ["simple-feature", "feature", "large-feature", "system", "multi-system"],
+    "feature",
+  );
+
+  envMap.INTERNAL_EXECUTOR_REPLENISH_ENABLED = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.internalReplenishEnabled,
+      envMap.INTERNAL_EXECUTOR_REPLENISH_ENABLED,
+      sourceEnv.INTERNAL_EXECUTOR_REPLENISH_ENABLED,
+    ),
+    false,
+  );
+  const replenishMin = toBoundedInt(
+    pickNonEmptyValue(
+      env.internalReplenishMin,
+      envMap.INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS,
+      sourceEnv.INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS,
+    ),
+    1,
+    { min: 1, max: 2 },
+  );
+  const replenishMax = toBoundedInt(
+    pickNonEmptyValue(
+      env.internalReplenishMax,
+      envMap.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS,
+      sourceEnv.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS,
+    ),
+    2,
+    { min: replenishMin, max: 3 },
+  );
+  envMap.INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS = String(replenishMin);
+  envMap.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS = String(replenishMax);
+
+  envMap.WORKFLOW_AUTOMATION_ENABLED = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.workflowAutomationEnabled,
+      envMap.WORKFLOW_AUTOMATION_ENABLED,
+      sourceEnv.WORKFLOW_AUTOMATION_ENABLED,
+    ),
+    true,
+  );
+  envMap.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.copilotEnableAllMcpTools,
+      envMap.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS,
+      sourceEnv.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS,
+    ),
+    false,
+  );
+
+  envMap.COPILOT_AGENT_MAX_REQUESTS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.copilotAgentMaxRequests,
+        envMap.COPILOT_AGENT_MAX_REQUESTS,
+        sourceEnv.COPILOT_AGENT_MAX_REQUESTS,
+      ),
+      500,
+      { min: 1, max: 5000 },
+    ),
+  );
+  envMap.CODEX_AGENT_MAX_THREADS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.codexAgentMaxThreads,
+        envMap.CODEX_AGENT_MAX_THREADS,
+        sourceEnv.CODEX_AGENT_MAX_THREADS,
+      ),
+      12,
+      { min: 1, max: 256 },
+    ),
+  );
+  envMap.CODEX_TRANSPORT = normalizeEnumValue(
+    pickNonEmptyValue(env.codexTransport, envMap.CODEX_TRANSPORT, sourceEnv.CODEX_TRANSPORT),
+    ["sdk", "auto", "cli"],
+    "sdk",
+  );
+  envMap.COPILOT_TRANSPORT = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.copilotTransport,
+      envMap.COPILOT_TRANSPORT,
+      sourceEnv.COPILOT_TRANSPORT,
+    ),
+    ["sdk", "auto", "cli", "url"],
+    "sdk",
+  );
+  envMap.CODEX_SANDBOX = normalizeEnumValue(
+    pickNonEmptyValue(env.codexSandbox, envMap.CODEX_SANDBOX, sourceEnv.CODEX_SANDBOX),
+    ["workspace-write", "danger-full-access", "read-only"],
+    "workspace-write",
+  );
+
+  envMap.CONTAINER_ENABLED = toBooleanEnvString(
+    pickNonEmptyValue(env.containerEnabled, envMap.CONTAINER_ENABLED, sourceEnv.CONTAINER_ENABLED),
+    false,
+  );
+  envMap.CONTAINER_RUNTIME = normalizeEnumValue(
+    pickNonEmptyValue(env.containerRuntime, envMap.CONTAINER_RUNTIME, sourceEnv.CONTAINER_RUNTIME),
+    ["auto", "docker", "podman", "container"],
+    "auto",
+  );
+  envMap.WHATSAPP_ENABLED = toBooleanEnvString(
+    pickNonEmptyValue(env.whatsappEnabled, envMap.WHATSAPP_ENABLED, sourceEnv.WHATSAPP_ENABLED),
+    false,
+  );
+  envMap.TELEGRAM_INTERVAL_MIN = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.telegramIntervalMin,
+        envMap.TELEGRAM_INTERVAL_MIN,
+        sourceEnv.TELEGRAM_INTERVAL_MIN,
+      ),
+      10,
+      { min: 1, max: 1440 },
+    ),
+  );
+
+  envMap.VK_BASE_URL = String(
+    pickNonEmptyValue(env.vkBaseUrl, envMap.VK_BASE_URL, sourceEnv.VK_BASE_URL) ||
+      "http://127.0.0.1:54089",
+  )
+    .trim()
+    .replace(/\/+$/, "");
+  if (!envMap.VK_BASE_URL) {
+    envMap.VK_BASE_URL = "http://127.0.0.1:54089";
+  }
+  envMap.VK_RECOVERY_PORT = String(
+    toBoundedInt(
+      pickNonEmptyValue(env.vkRecoveryPort, envMap.VK_RECOVERY_PORT, sourceEnv.VK_RECOVERY_PORT),
+      54089,
+      { min: 1, max: 65535 },
+    ),
+  );
+
+  const orchestratorArgs = pickNonEmptyValue(
+    env.orchestratorArgs,
+    envMap.ORCHESTRATOR_ARGS,
+    sourceEnv.ORCHESTRATOR_ARGS,
+  );
+  if (orchestratorArgs !== undefined) {
+    envMap.ORCHESTRATOR_ARGS = String(orchestratorArgs).trim();
+  }
+  if (!envMap.ORCHESTRATOR_ARGS || String(envMap.ORCHESTRATOR_ARGS).trim() === "") {
+    envMap.ORCHESTRATOR_ARGS = `-MaxParallel ${maxParallel}`;
   }
 }
 
@@ -715,47 +1006,23 @@ function handleApply(body) {
     ];
 
     const envMap = {
-      PROJECT_NAME: env.projectName || "",
+      PROJECT_NAME: env.projectName || "my-project",
       GITHUB_REPO: env.repoSlug || "",
-      ORCHESTRATOR_ARGS: env.orchestratorArgs || `-MaxParallel ${env.maxParallel || 4}`,
+      ORCHESTRATOR_ARGS: env.orchestratorArgs || "",
       EXECUTORS: env.executors || "",
-      KANBAN_BACKEND: env.kanbanBackend || "internal",
       VK_PROJECT_DIR: bosunHome,
     };
 
-    const telegramToken = String(env.telegramToken || "").trim();
-    if (telegramToken) {
-      envMap.TELEGRAM_BOT_TOKEN = telegramToken;
-      envMap.TELEGRAM_UI_TUNNEL = "auto";
-      envMap.TELEGRAM_UI_ALLOW_UNSAFE = "false";
-    }
+    applyTelegramMiniAppSetupEnv(envMap, env, process.env);
     if (env.telegramChatId)      envMap.TELEGRAM_CHAT_ID         = env.telegramChatId;
     if (env.jiraUrl)             envMap.JIRA_BASE_URL            = env.jiraUrl;
     if (env.jiraProjectKey)      envMap.JIRA_PROJECT_KEY         = env.jiraProjectKey;
     if (env.jiraApiToken)        envMap.JIRA_API_TOKEN           = env.jiraApiToken;
     if (env.githubProjectNumber) envMap.GITHUB_PROJECT_NUMBER    = String(env.githubProjectNumber);
 
-    // ── Advanced / orchestration settings ──────────────────────────────────
-    if (env.executorMode)                envMap.EXECUTOR_MODE                = env.executorMode;
-    if (env.executorDistribution)        envMap.EXECUTOR_DISTRIBUTION        = env.executorDistribution;
-    if (env.failoverStrategy)            envMap.FAILOVER_STRATEGY            = env.failoverStrategy;
-    if (env.maxParallel != null)         envMap.MAX_PARALLEL                 = String(env.maxParallel);
-    if (env.maxRetries != null)          envMap.FAILOVER_MAX_RETRIES         = String(env.maxRetries);
-    if (env.failoverCooldownMinutes != null)
-                       envMap.FAILOVER_COOLDOWN_MIN        = String(env.failoverCooldownMinutes);
-    if (env.failoverDisableOnConsecutive != null)
-                       envMap.FAILOVER_DISABLE_AFTER       = String(env.failoverDisableOnConsecutive);
+    // ── Optional setup values ───────────────────────────────────────────────
     if (env.primaryAgent)               envMap.PRIMARY_AGENT                 = env.primaryAgent;
-    if (env.projectRequirementsProfile) envMap.PROJECT_REQUIREMENTS_PROFILE  = env.projectRequirementsProfile;
-    if (env.internalReplenishEnabled != null)
-                                         envMap.INTERNAL_EXECUTOR_REPLENISH_ENABLED      = String(!!env.internalReplenishEnabled);
-    if (env.internalReplenishMin != null)
-                                         envMap.INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS = String(env.internalReplenishMin);
-    if (env.internalReplenishMax != null)
-                                         envMap.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS = String(env.internalReplenishMax);
-    if (env.kanbanSyncPolicy)           envMap.KANBAN_SYNC_POLICY            = env.kanbanSyncPolicy;
-    if (env.workflowAutomationEnabled != null)
-                                         envMap.WORKFLOW_AUTOMATION_ENABLED   = String(!!env.workflowAutomationEnabled);
+    if (env.orchestratorScript)         envMap.ORCHESTRATOR_SCRIPT           = env.orchestratorScript;
 
     // ── Codex model profile settings ───────────────────────────────────────
     if (env.codexModelProfile)          envMap.CODEX_MODEL_PROFILE              = env.codexModelProfile;
@@ -764,35 +1031,18 @@ function handleApply(body) {
     if (env.codexXlModel)               envMap.CODEX_MODEL_PROFILE_XL_MODEL     = env.codexXlModel;
     if (env.codexMProvider)             envMap.CODEX_MODEL_PROFILE_M_PROVIDER   = env.codexMProvider;
     if (env.codexMModel)                envMap.CODEX_MODEL_PROFILE_M_MODEL      = env.codexMModel;
-    if (env.codexAgentMaxThreads != null)
-                                         envMap.CODEX_AGENT_MAX_THREADS         = String(env.codexAgentMaxThreads);
-    if (env.codexTransport)             envMap.CODEX_TRANSPORT                  = env.codexTransport;
-    if (env.codexSandbox)               envMap.CODEX_SANDBOX                    = env.codexSandbox;
     if (env.codexSandboxPermissions)    envMap.CODEX_SANDBOX_PERMISSIONS        = env.codexSandboxPermissions;
     if (env.codexSandboxWritableRoots)  envMap.CODEX_SANDBOX_WRITABLE_ROOTS     = env.codexSandboxWritableRoots;
     if (env.codexFeaturesNoBwrap)       envMap.CODEX_FEATURES_NO_BWRAP          = "true";
 
     // ── Copilot settings ───────────────────────────────────────────────────
-    if (env.copilotAgentMaxRequests != null)
-                                         envMap.COPILOT_AGENT_MAX_REQUESTS      = String(env.copilotAgentMaxRequests);
-    if (env.copilotTransport)           envMap.COPILOT_TRANSPORT                = env.copilotTransport;
     if (env.copilotNoExperimental)      envMap.COPILOT_NO_EXPERIMENTAL          = "true";
     if (env.copilotNoAllowAll)          envMap.COPILOT_NO_ALLOW_ALL             = "true";
     if (env.copilotEnableAskUser)       envMap.COPILOT_ENABLE_ASK_USER          = "true";
-    if (env.copilotEnableAllMcpTools != null)
-                                         envMap.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS = String(!!env.copilotEnableAllMcpTools);
     if (env.copilotMcpConfig)           envMap.COPILOT_MCP_CONFIG               = env.copilotMcpConfig;
 
-    // ── Infrastructure settings ────────────────────────────────────────────
-    if (env.containerEnabled)           envMap.CONTAINER_ENABLED               = "true";
-    if (env.containerRuntime && env.containerRuntime !== "auto")
-                                         envMap.CONTAINER_RUNTIME               = env.containerRuntime;
-    if (env.vkBaseUrl)                  envMap.VK_BASE_URL                      = env.vkBaseUrl;
-    if (env.vkRecoveryPort)             envMap.VK_RECOVERY_PORT                 = String(env.vkRecoveryPort);
-    if (env.whatsappEnabled)            envMap.WHATSAPP_ENABLED                 = "true";
-    if (env.telegramIntervalMin != null && Number(env.telegramIntervalMin) !== 10)
-                                         envMap.TELEGRAM_INTERVAL_MIN           = String(env.telegramIntervalMin);
-    if (env.orchestratorScript)         envMap.ORCHESTRATOR_SCRIPT              = env.orchestratorScript;
+    // Ensure every setup field has safe defaults and invalid values are normalized.
+    applyNonBlockingSetupEnvDefaults(envMap, env, process.env);
 
     // Write executor-specific API keys for any executor configured with api-key auth mode.
     // Executors using OAuth login (codex auth login / gh auth login / claude login)
@@ -1380,6 +1630,12 @@ export async function startSetupServer(options = {}) {
     });
   });
 }
+
+export {
+  applyTelegramMiniAppSetupEnv,
+  applyNonBlockingSetupEnvDefaults,
+  normalizeTelegramUiPort,
+};
 
 // Entry point when run directly
 const __filename_setup_web = fileURLToPath(import.meta.url);

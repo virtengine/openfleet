@@ -589,6 +589,11 @@ const AGENT_SELECTOR_STYLES = `
   font-size: 13px;
   line-height: 1;
 }
+.yolo-icon svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
 .yolo-checkbox {
   width: 13px;
   height: 13px;
@@ -968,7 +973,7 @@ function YoloToggle() {
         : 'Enable Yolo mode — agent will skip confirmation prompts'}
       aria-pressed=${isYolo}
     >
-      <span class="yolo-icon">⚡</span>
+      <span class="yolo-icon">${resolveIcon("zap")}</span>
       Yolo
     </button>
   `;
