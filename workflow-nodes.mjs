@@ -1014,8 +1014,6 @@ registerNodeType("action.run_agent", {
       const modelOverride = node.config?.model
         ? String(ctx.resolve(node.config.model) || "").trim() || undefined
         : undefined;
-      const launchExtra = {};
-      if (sdk && sdk !== "auto") launchExtra.sdk = sdk;
       const maxRetainedEvents = Number.isFinite(Number(node.config?.maxRetainedEvents))
         ? Math.max(10, Math.min(500, Math.trunc(Number(node.config.maxRetainedEvents))))
         : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
