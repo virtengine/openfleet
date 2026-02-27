@@ -935,7 +935,30 @@ function getBrowserUiUrl() {
   return appendTokenToUrl(base, token) || base;
 }
 
-function getBrowserUiUrlOptions() {
+function isTelegramInlineButtonUrlAllowed(inputUrl) {
+  try {
+    const parsed = new URL(String(inputUrl || "").trim());
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return false;
+    }
+    const host = String(parsed.hostname || "").toLowerCase();
+    if (!host) return false;
+    // Telegram rejects localhost/loopback URLs for inline keyboard URL buttons.
+    if (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "::1" ||
+      host === "[::1]"
+    ) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getBrowserUiUrlOptions({ forTelegramButtons = true } = {}) {
   const base = String(telegramUiUrl || "").trim();
   if (!base) return [];
 
@@ -949,6 +972,9 @@ function getBrowserUiUrlOptions() {
     if (!url) return;
     if (seen.has(url)) return;
     seen.add(url);
+    if (forTelegramButtons && !isTelegramInlineButtonUrlAllowed(url)) {
+      return;
+    }
     options.push({ label, url });
   };
 
