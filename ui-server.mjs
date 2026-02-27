@@ -1796,6 +1796,7 @@ const SETTINGS_SENSITIVE_KEYS = new Set([
 
 const SETTINGS_KNOWN_SET = new Set(SETTINGS_KNOWN_KEYS);
 let _settingsLastUpdateTime = 0;
+const ASYNC_UI_COMMAND_BASES = new Set(["/plan"]);
 
 function hasSettingValue(value) {
   return value !== undefined && value !== null && value !== "";
@@ -6620,8 +6621,44 @@ async function handleApi(req, res, url) {
       }
       const handler = uiDeps.handleUiCommand;
       if (typeof handler === "function") {
-        const result = await handler(command);
-        jsonResponse(res, 200, { ok: true, data: result || null, command });
+        if (ASYNC_UI_COMMAND_BASES.has(cmdBase)) {
+          setImmediate(() => {
+            let pending;
+            try {
+              pending = Promise.resolve(handler(command));
+            } catch (err) {
+              console.warn(`[ui] async command failed (${command}): ${err?.message || err}`);
+              broadcastUiEvent(["overview", "executor", "tasks"], "invalidate", {
+                reason: "command-failed",
+                command,
+              });
+              return;
+            }
+            pending
+              .then(() => {
+                broadcastUiEvent(["overview", "executor", "tasks"], "invalidate", {
+                  reason: "command-executed",
+                  command,
+                });
+              })
+              .catch((err) => {
+                console.warn(`[ui] async command failed (${command}): ${err?.message || err}`);
+                broadcastUiEvent(["overview", "executor", "tasks"], "invalidate", {
+                  reason: "command-failed",
+                  command,
+                });
+              });
+          });
+          jsonResponse(res, 202, {
+            ok: true,
+            queued: true,
+            command,
+            message: "Command accepted and running in background.",
+          });
+        } else {
+          const result = await handler(command);
+          jsonResponse(res, 200, { ok: true, data: result || null, command });
+        }
       } else {
         // No command handler wired — acknowledge and broadcast refresh
         jsonResponse(res, 200, {
@@ -6632,7 +6669,7 @@ async function handleApi(req, res, url) {
         });
       }
       broadcastUiEvent(["overview", "executor", "tasks"], "invalidate", {
-        reason: "command-executed",
+        reason: ASYNC_UI_COMMAND_BASES.has(cmdBase) ? "command-queued" : "command-executed",
         command,
       });
     } catch (err) {
