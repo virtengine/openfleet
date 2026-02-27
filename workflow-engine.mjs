@@ -47,9 +47,11 @@ const MAX_NODE_RETRIES = readBoundedEnvInt("WORKFLOW_NODE_MAX_RETRIES", 3, {
   min: 0,
   max: 20,
 });
+const NODE_TIMEOUT_MIN_MS = 1000;
+const NODE_TIMEOUT_MAX_MS = 21_600_000;
 const NODE_TIMEOUT_MS = readBoundedEnvInt("WORKFLOW_NODE_TIMEOUT_MS", 10 * 60 * 1000, {
-  min: 1000,
-  max: 21_600_000,
+  min: NODE_TIMEOUT_MIN_MS,
+  max: NODE_TIMEOUT_MAX_MS,
 });
 const MAX_CONCURRENT_BRANCHES = readBoundedEnvInt("WORKFLOW_MAX_CONCURRENT_BRANCHES", 8, {
   min: 1,
@@ -64,6 +66,27 @@ const DEFAULT_RUN_STUCK_THRESHOLD_MS = readBoundedEnvInt(
   5 * 60 * 1000,
   { min: 10000, max: 7_200_000 },
 );
+
+function resolveNodeTimeoutMs(node, resolvedConfig) {
+  const candidates = [
+    resolvedConfig?.timeout,
+    resolvedConfig?.timeoutMs,
+    node?.timeout,
+    node?.timeoutMs,
+    NODE_TIMEOUT_MS,
+  ];
+
+  for (const candidate of candidates) {
+    const parsed = Number(candidate);
+    if (!Number.isFinite(parsed) || parsed <= 0) continue;
+    return Math.min(
+      NODE_TIMEOUT_MAX_MS,
+      Math.max(1, Math.round(parsed)),
+    );
+  }
+
+  return NODE_TIMEOUT_MS;
+}
 
 // ── Node Status ─────────────────────────────────────────────────────────────
 
@@ -860,7 +883,7 @@ export class WorkflowEngine extends EventEmitter {
     }
 
     // Execute with timeout — clear timer on completion to avoid resource leaks
-    const timeout = resolvedConfig.timeout || node.timeout || NODE_TIMEOUT_MS;
+    const timeout = resolveNodeTimeoutMs(node, resolvedConfig);
     let timer;
     try {
       const result = await Promise.race([

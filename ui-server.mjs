@@ -1412,6 +1412,26 @@ function getAutoOpenCooldownMs() {
   return Math.max(60_000, Math.trunc(raw));
 }
 
+function getBrowserOpenMode() {
+  const mode = String(process.env.BOSUN_UI_BROWSER_OPEN_MODE || "manual")
+    .trim()
+    .toLowerCase();
+  if (mode === "auto") return "auto";
+  return "manual";
+}
+
+function shouldAutoOpenBrowser() {
+  const autoOpenRequested = parseBooleanEnv(
+    process.env.BOSUN_UI_AUTO_OPEN_BROWSER,
+    false,
+  );
+  return getBrowserOpenMode() === "auto" && autoOpenRequested;
+}
+
+function shouldLogTokenizedBrowserUrl() {
+  return parseBooleanEnv(process.env.BOSUN_UI_LOG_TOKENIZED_BROWSER_URL, false);
+}
+
 function isPidRunning(pid) {
   const parsed = Number(pid);
   if (!Number.isFinite(parsed) || parsed <= 0) return false;
@@ -7361,13 +7381,10 @@ export async function startTelegramUiServer(options = {}) {
     return null;
   }
 
-  const autoOpenEnabled = ["1", "true", "yes", "on"].includes(
-    String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "")
-      .trim()
-      .toLowerCase(),
-  );
+  const browserOpenMode = getBrowserOpenMode();
+  const autoOpenEnabled = shouldAutoOpenBrowser();
   console.log(
-    `[telegram-ui] startup config: port=${port} source=${portSource} autoOpen=${autoOpenEnabled ? "enabled" : "disabled"}`,
+    `[telegram-ui] startup config: port=${port} source=${portSource} browserOpenMode=${browserOpenMode} autoOpen=${autoOpenEnabled ? "enabled" : "disabled"}`,
   );
 
   if (!skipInstanceLock) {
@@ -7654,7 +7671,13 @@ export async function startTelegramUiServer(options = {}) {
     console.warn(`╚${border}╝\n`);
   }
   console.log(`[telegram-ui] LAN access: ${protocol}://${lanIp}:${actualPort}`);
-  console.log(`[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`);
+  if (shouldLogTokenizedBrowserUrl()) {
+    console.log(`[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`);
+  } else {
+    console.log(
+      `[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort} (token hidden; set BOSUN_UI_LOG_TOKENIZED_BROWSER_URL=1 for debug)`,
+    );
+  }
 
   // Auto-open browser:
   //  - skip in desktop/Electron mode (BOSUN_DESKTOP=1)

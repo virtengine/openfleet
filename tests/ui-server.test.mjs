@@ -12,6 +12,9 @@ describe("ui-server mini app", () => {
     "TELEGRAM_UI_PORT",
     "TELEGRAM_UI_TUNNEL",
     "BOSUN_UI_ALLOW_EPHEMERAL_PORT",
+    "BOSUN_UI_AUTO_OPEN_BROWSER",
+    "BOSUN_UI_BROWSER_OPEN_MODE",
+    "BOSUN_UI_LOG_TOKENIZED_BROWSER_URL",
     "TELEGRAM_INTERVAL_MIN",
     "BOSUN_CONFIG_PATH",
     "BOSUN_HOME",
@@ -116,6 +119,55 @@ describe("ui-server mini app", () => {
     const url = mod.getTelegramUiUrl();
 
     expect(url).toBe(`http://127.0.0.1:${port}`);
+  });
+
+  it("hides tokenized browser URL in startup logs by default", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_BROWSER_OPEN_MODE = "manual";
+    delete process.env.BOSUN_UI_LOG_TOKENIZED_BROWSER_URL;
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const mod = await import("../ui-server.mjs");
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      expect(server).toBeTruthy();
+      const browserLog = logSpy.mock.calls
+        .map((args) => String(args[0] || ""))
+        .find((line) => line.includes("[telegram-ui] Browser access:")) || "";
+      expect(browserLog).toContain("token hidden");
+      expect(browserLog).not.toContain("/?token=");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("can opt in to tokenized browser URL logs", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_BROWSER_OPEN_MODE = "manual";
+    process.env.BOSUN_UI_LOG_TOKENIZED_BROWSER_URL = "true";
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const mod = await import("../ui-server.mjs");
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      expect(server).toBeTruthy();
+      const browserLog = logSpy.mock.calls
+        .map((args) => String(args[0] || ""))
+        .find((line) => line.includes("[telegram-ui] Browser access:")) || "";
+      expect(browserLog).toContain("/?token=");
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it("returns effective settings values and sources for derived/default cases", async () => {

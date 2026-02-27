@@ -1766,13 +1766,28 @@ function tryListen(srv, port) {
 }
 
 function openBrowser(url) {
+  const mode = String(process.env.BOSUN_UI_BROWSER_OPEN_MODE || "manual")
+    .trim()
+    .toLowerCase();
+  const allowByMode = mode === "auto";
+  const setupAutoOpenRaw = String(
+    process.env.BOSUN_SETUP_AUTO_OPEN_BROWSER || "",
+  ).trim();
+  const setupAutoOpenEnabled = setupAutoOpenRaw
+    ? ["1", "true", "yes", "on"].includes(setupAutoOpenRaw.toLowerCase())
+    : true;
+  if (!allowByMode || !setupAutoOpenEnabled) return false;
+
   const cmd =
     process.platform === "win32" ? `start "" "${url}"`
     : process.platform === "darwin" ? `open "${url}"`
     : `xdg-open "${url}"`;
   try {
     execSync(cmd, { stdio: "ignore" });
-  } catch { /* ignore — user can open manually */ }
+    return true;
+  } catch {
+    return false; // user can open manually
+  }
 }
 
 export async function startSetupServer(options = {}) {
@@ -1819,7 +1834,10 @@ export async function startSetupServer(options = {}) {
   └──────────────────────────────────────────────────┘
 `);
 
-  openBrowser(url);
+  const opened = openBrowser(url);
+  if (!opened) {
+    console.log("  Browser auto-open disabled or unavailable — open the URL manually.");
+  }
 
   // Keep the process alive
   return new Promise((resolve) => {
