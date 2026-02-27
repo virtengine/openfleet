@@ -7138,12 +7138,17 @@ export async function startTelegramUiServer(options = {}) {
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT === "1" ||
     isTestRun;
   const persistedPort = readLastUiPort();
+  const shouldReusePersistedPort =
+    options.port == null &&
+    configuredPort === 0 &&
+    allowEphemeralPort &&
+    persistedPort > 0;
   const port =
-    configuredPort === 0 && allowEphemeralPort && persistedPort > 0
+    shouldReusePersistedPort
       ? persistedPort
       : configuredPort;
   const portSource =
-    configuredPort === 0 && allowEphemeralPort && persistedPort > 0
+    shouldReusePersistedPort
       ? "cache.ui-last-port"
       : options.port != null
       ? "options.port"

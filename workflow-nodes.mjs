@@ -38,15 +38,36 @@ function trimLogText(value, max = 180) {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+function extractStreamText(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((entry) => {
+        if (entry == null) return "";
+        if (typeof entry === "string") return entry;
+        if (typeof entry?.text === "string") return entry.text;
+        if (typeof entry?.content === "string") return entry.content;
+        if (typeof entry?.deltaContent === "string") return entry.deltaContent;
+        return "";
+      })
+      .filter(Boolean);
+    return parts.join(" ");
+  }
+  if (typeof value === "object") {
+    if (typeof value?.text === "string") return value.text;
+    if (typeof value?.content === "string") return value.content;
+    if (typeof value?.deltaContent === "string") return value.deltaContent;
+  }
+  return "";
+}
+
 function summarizeAgentStreamEvent(event) {
   const type = String(event?.type || "").trim();
   if (!type) return "";
 
-  if (
-    type === "response.output_text.delta" ||
-    type === "response.output_text.done" ||
-    type === "item.updated"
-  ) {
+  if (type === "item.updated") {
     return "";
   }
 
@@ -63,13 +84,68 @@ function summarizeAgentStreamEvent(event) {
     return `Agent error: ${trimLogText(event?.error || event?.message || "unknown error", 220)}`;
   }
 
+  const item = event?.item;
+  if (item && (type === "item.completed" || type === "item.started")) {
+    const itemType = String(item?.type || "").trim().toLowerCase();
+    const toolName =
+      item?.tool_name ||
+      item?.toolName ||
+      item?.name ||
+      item?.call?.tool_name ||
+      item?.call?.name ||
+      item?.function?.name ||
+      null;
+
+    if (
+      itemType === "tool_call" ||
+      itemType === "mcp_tool_call" ||
+      itemType === "function_call" ||
+      itemType === "tool_use"
+    ) {
+      return `Tool call: ${toolName || "unknown"}`;
+    }
+    if (
+      itemType === "tool_result" ||
+      itemType === "mcp_tool_result" ||
+      itemType === "tool_output"
+    ) {
+      return `Tool result: ${toolName || "unknown"}`;
+    }
+
+    const itemText = trimLogText(
+      extractStreamText(item?.text) ||
+        extractStreamText(item?.summary) ||
+        extractStreamText(item?.content) ||
+        extractStreamText(item?.message?.content) ||
+        extractStreamText(item?.message?.text),
+      220,
+    );
+
+    if (itemType.includes("reason") || itemType.includes("thinking")) {
+      return itemText ? `Thinking: ${itemText}` : "Thinking...";
+    }
+
+    if (
+      itemType === "agent_message" ||
+      itemType === "assistant_message" ||
+      itemType === "message"
+    ) {
+      return itemText ? `Agent: ${itemText}` : "";
+    }
+
+    if (itemText) {
+      return `${itemType || "item"}: ${itemText}`;
+    }
+  }
+
   const messageText = trimLogText(
-    event?.message?.content ||
-      event?.message?.text ||
-      event?.content ||
-      event?.text ||
-      event?.data?.content ||
-      event?.data?.text ||
+    extractStreamText(event?.message?.content) ||
+      extractStreamText(event?.message?.text) ||
+      extractStreamText(event?.content) ||
+      extractStreamText(event?.text) ||
+      extractStreamText(event?.data?.content) ||
+      extractStreamText(event?.data?.text) ||
+      extractStreamText(event?.data?.deltaContent) ||
       "",
     220,
   );
@@ -1558,7 +1634,54 @@ registerNodeType("agent.run_planner", {
         : "");
 
     if (agentPool?.launchEphemeralThread && promptText) {
-      const result = await agentPool.launchEphemeralThread(promptText, process.cwd(), 15 * 60 * 1000);
+      let streamEventCount = 0;
+      let lastStreamLog = "";
+      const startedAt = Date.now();
+      const launchExtra = {
+        onEvent: (event) => {
+          try {
+            const line = summarizeAgentStreamEvent(event);
+            if (!line || line === lastStreamLog) return;
+            lastStreamLog = line;
+            streamEventCount += 1;
+            ctx.log(node.id, line);
+          } catch {
+            // Stream callbacks must never crash workflow execution.
+          }
+        },
+      };
+
+      const heartbeat = setInterval(() => {
+        const elapsedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+        ctx.log(
+          node.id,
+          `Planner still running (${elapsedSec}s elapsed, streamEvents=${streamEventCount})`,
+        );
+      }, WORKFLOW_AGENT_HEARTBEAT_MS);
+
+      let result;
+      try {
+        result = await agentPool.launchEphemeralThread(
+          promptText,
+          process.cwd(),
+          15 * 60 * 1000,
+          launchExtra,
+        );
+      } finally {
+        clearInterval(heartbeat);
+      }
+
+      ctx.log(
+        node.id,
+        `Planner completed: success=${result.success} streamEvents=${streamEventCount}`,
+      );
+
+      const threadId = result.threadId || result.sessionId || null;
+      if (threadId) {
+        ctx.data.sessionId = threadId;
+        ctx.data.threadId = threadId;
+      }
+
       if (outputVariable) {
         ctx.data[outputVariable] = String(result.output || "").trim();
       }
@@ -1566,6 +1689,10 @@ registerNodeType("agent.run_planner", {
         success: result.success,
         output: result.output,
         taskCount: count,
+        sdk: result.sdk,
+        items: result.items,
+        threadId,
+        sessionId: threadId,
       };
     }
 
