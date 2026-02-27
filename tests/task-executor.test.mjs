@@ -1049,7 +1049,7 @@ describe("task-executor", () => {
         expect(renewClaim).toHaveBeenCalled();
         expect(ac.signal.aborted).toBe(true);
         expect(String(ac.signal.reason)).toContain(
-          "claim_lost:claim_token_mismatch",
+          "claim_renewal:claim_token_mismatch",
         );
         expect(ex._taskClaimRenewTimers.has("task-claim-loss")).toBe(false);
       } finally {
@@ -2140,5 +2140,4 @@ describe("task-executor", () => {
     });
   });
 });
-
 
