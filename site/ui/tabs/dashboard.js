@@ -31,6 +31,7 @@ import {
 import { navigateTo } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
 import { cloneValue, formatRelative, truncate } from "../modules/utils.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   Card,
   Badge,
@@ -51,7 +52,7 @@ const QUICK_ACTIONS = [
   {
     label: "Status",
     cmd: "/status",
-    icon: "📊",
+    icon: "chart",
     color: "var(--accent)",
     targetTab: "telemetry",
     title: "Refresh dashboard data and view system telemetry",
@@ -59,7 +60,7 @@ const QUICK_ACTIONS = [
   {
     label: "Health",
     cmd: "/health",
-    icon: "💚",
+    icon: "heart",
     color: "var(--color-done)",
     targetTab: "infra",
     title: "Check system health and view infrastructure status",
@@ -67,21 +68,21 @@ const QUICK_ACTIONS = [
   {
     label: "Create Task",
     action: "create",
-    icon: "➕",
+    icon: "plus",
     color: "var(--color-inprogress)",
     title: "Open the create task dialog",
   },
   {
     label: "Start Task",
     action: "start",
-    icon: "▶",
+    icon: "play",
     color: "var(--color-todo)",
     title: "Pick a queued task and start it now",
   },
   {
     label: "Plan",
     cmd: "/plan",
-    icon: "📋",
+    icon: "clipboard",
     color: "var(--color-inreview)",
     targetTab: "control",
     title: "Dispatch the AI task planner to generate new tasks",
@@ -89,7 +90,7 @@ const QUICK_ACTIONS = [
   {
     label: "Logs",
     cmd: "/logs 50",
-    icon: "📄",
+    icon: "file",
     color: "var(--text-secondary)",
     targetTab: "logs",
     title: "Fetch and view the last 50 log entries",
@@ -97,7 +98,7 @@ const QUICK_ACTIONS = [
   {
     label: "Menu",
     cmd: "/menu",
-    icon: "☰",
+    icon: "menu",
     color: "var(--color-todo)",
     targetTab: "control",
     title: "Open the bot control panel",
@@ -293,7 +294,7 @@ export function DashboardTab() {
     totalActive === 0
       ? "dashboard-headline-idle"
       : blocked > 0
-        ? "dashboard-headline-error"
+        ? "dashboard-headline-warn"
         : "dashboard-headline-ok";
 
   // ── Hero badge: all tasks done and nothing pending ──
@@ -575,13 +576,13 @@ export function DashboardTab() {
       <div class="dashboard-shell">
         <${Card} className="dashboard-card">
           <div class="dashboard-welcome-card">
-            <div class="dashboard-welcome-icon">🎛️</div>
+            <div class="dashboard-welcome-icon">${resolveIcon("sliders")}</div>
             <div class="dashboard-welcome-title">Welcome to VirtEngine Control Center</div>
             <div class="dashboard-welcome-desc">
               Your AI development fleet is ready. Create your first task to get started.
             </div>
             <button class="btn btn-primary" onClick=${() => setShowCreate(true)}>
-              ➕ Create your first task
+              ${iconText("➕ Create your first task")}
             </button>
           </div>
         <//>
@@ -702,7 +703,7 @@ export function DashboardTab() {
           ${fleetAtRest
             ? html`
               <div class="fleet-rest-badge">
-                <div class="fleet-rest-icon">✓</div>
+                <div class="fleet-rest-icon">${resolveIcon("check")}</div>
                 <div class="fleet-rest-label">Fleet at rest</div>
                 <div class="fleet-rest-sub">${done} task${done !== 1 ? "s" : ""} completed · zero pending</div>
               </div>
@@ -819,7 +820,7 @@ export function DashboardTab() {
                   disabled=${pendingAction === a.label}
                   onClick=${(e) => handleQuickAction(a, e)}
                 >
-                  <span class="dashboard-action-icon">${pendingAction === a.label ? '⏳' : a.icon}</span>
+                  <span class="dashboard-action-icon">${resolveIcon(pendingAction === a.label ? "clock" : a.icon) || a.icon}</span>
                   <span class="dashboard-action-label">${a.label}</span>
                 </button>
               `,
@@ -919,7 +920,7 @@ export function DashboardTab() {
 
       ${recentCommits.length > 0 && html`
         <${Card}
-          title=${html`<span class="dashboard-card-title"><span class="dashboard-title-icon">${ICONS.git || '🔀'}</span>Recent Commits</span>`}
+          title=${html`<span class="dashboard-card-title"><span class="dashboard-title-icon">${ICONS.git || resolveIcon("git")}</span>Recent Commits</span>`}
           className="dashboard-card dashboard-commits-card"
         >
           <div class="dashboard-commits">

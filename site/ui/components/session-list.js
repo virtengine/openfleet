@@ -8,6 +8,7 @@ import htm from "htm";
 import { signal, computed } from "@preact/signals";
 import { apiFetch, onWsMessage } from "../modules/api.js";
 import { formatRelative, truncate } from "../modules/utils.js";
+import { resolveIcon } from "../modules/icon-utils.js";
 
 const html = htm.bind(h);
 
@@ -15,13 +16,18 @@ const html = htm.bind(h);
 export const sessionsData = signal([]);
 export const selectedSessionId = signal(null);
 export const sessionMessages = signal([]);
-export const sessionMessagesSessionId = signal(null);
 export const sessionsError = signal(null);
 
 let _wsListenerReady = false;
 
 /** Track the last filter used so createSession can reload with the same filter */
 let _lastLoadFilter = {};
+
+function sessionPath(id, action = "") {
+  const safeId = encodeURIComponent(String(id || "").trim());
+  if (!safeId) return "";
+  return action ? `/api/sessions/${safeId}/${action}` : `/api/sessions/${safeId}`;
+}
 
 /* ─── Data loaders ─── */
 export async function loadSessions(filter = {}) {
@@ -38,18 +44,17 @@ export async function loadSessions(filter = {}) {
 
 export async function loadSessionMessages(id) {
   try {
-    const res = await apiFetch(`/api/sessions/${id}`, { _silent: true });
+    const url = sessionPath(id);
+    if (!url) return { ok: false, error: "invalid" };
+    const res = await apiFetch(url, { _silent: true });
     if (res?.session) {
       const normalized = dedupeMessages(res.session.messages || []);
-      sessionMessagesSessionId.value = id || null;
       sessionMessages.value = normalized;
       return { ok: true, messages: normalized };
     }
-    sessionMessagesSessionId.value = id || null;
     sessionMessages.value = [];
     return { ok: false, error: "empty" };
   } catch {
-    sessionMessagesSessionId.value = id || null;
     sessionMessages.value = [];
     return { ok: false, error: "unavailable" };
   }
@@ -157,11 +162,7 @@ function appendSessionMessage(sessionId, message, sessionMeta) {
   }
 
   // ── Batch sessionMessages per animation frame ──
-  const activeMessageSessionId = sessionMessagesSessionId.value;
-  if (
-    selectedSessionId.value === sessionId ||
-    activeMessageSessionId === sessionId
-  ) {
+  if (selectedSessionId.value === sessionId) {
     _msgBatchBuffer.push(message);
     if (!_msgBatchRaf) {
       _msgBatchRaf = typeof requestAnimationFrame === "function"
@@ -224,7 +225,9 @@ export async function createSession(options = {}) {
 /* ─── Session actions ─── */
 export async function archiveSession(id) {
   try {
-    await apiFetch(`/api/sessions/${id}/archive`, { method: "POST" });
+    const url = sessionPath(id, "archive");
+    if (!url) return false;
+    await apiFetch(url, { method: "POST" });
     if (selectedSessionId.value === id) selectedSessionId.value = null;
     await loadSessions(_lastLoadFilter);
     return true;
@@ -235,7 +238,9 @@ export async function archiveSession(id) {
 
 export async function deleteSession(id) {
   try {
-    await apiFetch(`/api/sessions/${id}/delete`, { method: "POST" });
+    const url = sessionPath(id, "delete");
+    if (!url) return false;
+    await apiFetch(url, { method: "POST" });
     if (selectedSessionId.value === id) selectedSessionId.value = null;
     await loadSessions(_lastLoadFilter);
     return true;
@@ -246,7 +251,9 @@ export async function deleteSession(id) {
 
 export async function resumeSession(id) {
   try {
-    await apiFetch(`/api/sessions/${id}/resume`, { method: "POST" });
+    const url = sessionPath(id, "resume");
+    if (!url) return false;
+    await apiFetch(url, { method: "POST" });
     await loadSessions(_lastLoadFilter);
     return true;
   } catch {
@@ -385,7 +392,7 @@ function SwipeableSessionItem({
                 onClick=${handleArchive}
                 title="Archive session"
               >
-                <span class="session-action-icon">📦</span>
+                <span class="session-action-icon">${resolveIcon("📦")}</span>
                 <span class="session-action-label">Archive</span>
               </button>
             `}
@@ -394,7 +401,7 @@ function SwipeableSessionItem({
           onClick=${handleDelete}
           title=${confirmDelete ? "Confirm delete" : "Delete session"}
         >
-          <span class="session-action-icon">${confirmDelete ? "⚠️" : "🗑"}</span>
+          <span class="session-action-icon">${resolveIcon(confirmDelete ? "⚠️" : "🗑")}</span>
           <span class="session-action-label">${confirmDelete ? "Sure?" : "Delete"}</span>
         </button>
       </div>
@@ -606,7 +613,7 @@ export function SessionList({
           <span class="session-list-title">Sessions</span>
         </div>
         <div class="session-empty">
-          <div class="session-empty-icon">📡</div>
+          <div class="session-empty-icon">${resolveIcon("📡")}</div>
           <div class="session-empty-text">Sessions not available</div>
           <button class="btn btn-primary btn-sm" onClick=${handleRetry}>
             Retry
@@ -671,7 +678,7 @@ export function SessionList({
         ${filtered.length === 0 &&
         html`
           <div class="session-empty">
-            <div class="session-empty-icon">💬</div>
+            <div class="session-empty-icon">${resolveIcon("💬")}</div>
             <div class="session-empty-text">
               ${hasSearch ? "No matching sessions" : "No sessions yet"}
               <div class="session-empty-subtext">

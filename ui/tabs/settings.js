@@ -31,6 +31,8 @@ import {
   executorData,
   configData,
   showToast,
+  setPendingChange,
+  clearPendingChange,
 } from "../modules/state.js";
 import {
   Card,
@@ -396,6 +398,63 @@ body.settings-save-open .main-content {
     padding-bottom: 140px;
   }
 }
+/* Theme picker grid */
+.theme-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.theme-swatch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 8px;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+.theme-swatch:hover {
+  border-color: var(--border, rgba(255,255,255,0.15));
+  background: rgba(255, 255, 255, 0.02);
+}
+.theme-swatch.active {
+  border-color: var(--accent, #5b6eae);
+  background: rgba(91, 110, 174, 0.08);
+  box-shadow: 0 0 12px rgba(91, 110, 174, 0.2);
+}
+.theme-swatch-preview {
+  display: flex;
+  width: 100%;
+  height: 50px;
+  gap: 3px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.swatch-bg, .swatch-accent {
+  flex: 1;
+  border-radius: 4px;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.3);
+}
+.swatch-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary, #fff);
+}
+.swatch-desc {
+  font-size: 11px;
+  color: var(--text-tertiary, #666);
+  text-align: center;
+}
 `;
 
 /* ─── Inject styles once ─── */
@@ -513,6 +572,7 @@ function maskValue(val) {
 function ServerConfigMode() {
   /* Data loading state */
   const [serverData, setServerData] = useState(null);     // { KEY: "value" } from API
+  const [serverSources, setServerSources] = useState(null); // { KEY: "env" | "config" | "default" | "derived" | ... }
   const [serverMeta, setServerMeta] = useState(null);     // { envPath, configPath, configDir }
   const [configSync, setConfigSync] = useState(null);     // { total, updated, skipped, configPath }
   const [loadError, setLoadError] = useState(null);
@@ -540,8 +600,10 @@ function ServerConfigMode() {
   const tooltipTimer = useRef(null);
 
   /* ─── Load server settings on mount ─── */
-  const fetchSettings = useCallback(async () => {
-    setLoading(true);
+  const fetchSettings = useCallback(async (opts = {}) => {
+    const silent = opts?.silent === true;
+    const preserveConfigSync = opts?.preserveConfigSync === true;
+    if (!silent) setLoading(true);
     setLoadError(null);
     try {
       const res = await apiFetch("/api/settings");
@@ -556,23 +618,30 @@ function ServerConfigMode() {
 
       if (isWrapped) {
         setServerData(res.data);
+        setServerSources(
+          res?.sources && typeof res.sources === "object"
+            ? res.sources
+            : null,
+        );
         setServerMeta(res.meta || null);
-        setConfigSync(null);
+        if (!preserveConfigSync) setConfigSync(null);
       } else if (isLegacyObject) {
         // Demo/legacy compatibility: /api/settings may return a plain object.
         setServerData(res);
+        setServerSources(null);
         setServerMeta(null);
-        setConfigSync(null);
+        if (!preserveConfigSync) setConfigSync(null);
       } else {
         throw new Error(res?.error || "Unexpected response format");
       }
     } catch (err) {
       setLoadError(err.message || "Failed to load settings");
       setServerData(null);
+      setServerSources(null);
       setServerMeta(null);
       setConfigSync(null);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -606,11 +675,14 @@ function ServerConfigMode() {
   /* ─── Determine if a value matches its default ─── */
   const isDefault = useCallback(
     (def) => {
+      const source = serverSources?.[def.key];
+      if (source === "default") return true;
+      if (source && source !== "unset") return false;
       if (def.defaultVal == null) return false;
       const current = getValue(def.key);
       return current === "" || current === String(def.defaultVal);
     },
-    [getValue],
+    [getValue, serverSources],
   );
 
   /* ─── Determine if a value was modified from loaded state ─── */
@@ -621,6 +693,12 @@ function ServerConfigMode() {
 
   /* Count of unsaved changes */
   const changeCount = useMemo(() => Object.keys(edits).length, [edits]);
+
+  useEffect(() => {
+    const key = "settings-server";
+    setPendingChange(key, changeCount > 0);
+    return () => clearPendingChange(key);
+  }, [changeCount]);
 
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
@@ -715,11 +793,29 @@ function ServerConfigMode() {
           method: "POST",
           body: JSON.stringify({ changes }),
         });
-      } catch (primaryErr) {
-        // Legacy/demo compatibility endpoint.
+      } catch (error_) {
+        const message = String(error_?.message || "");
+        const shouldTryLegacy =
+          /Request failed \((404|405|501)\)/.test(message)
+          || /Failed to fetch|NetworkError|Load failed/i.test(message);
+
+        if (!shouldTryLegacy) throw error_;
+
+        const legacyKeyMap = {
+          INTERNAL_EXECUTOR_SDK: "sdk",
+          KANBAN_BACKEND: "kanban",
+          EXECUTOR_REGIONS: "region",
+        };
+        const entries = Object.entries(changes);
+        if (entries.length !== 1) throw error_;
+
+        const [envKey, value] = entries[0];
+        const legacyKey = legacyKeyMap[envKey];
+        if (!legacyKey) throw error_;
+
         res = await apiFetch("/api/config/update", {
           method: "POST",
-          body: JSON.stringify(changes),
+          body: JSON.stringify({ key: legacyKey, value }),
         });
       }
       if (res?.ok || (res && typeof res === "object" && !Array.isArray(res))) {
@@ -741,8 +837,8 @@ function ServerConfigMode() {
             configDir: res.configDir || prev?.configDir,
           }));
         }
-        // Merge changes into serverData so they appear as the new baseline
-        setServerData((prev) => ({ ...prev, ...changes }));
+        // Refresh from backend so derived/runtime-resolved values stay accurate.
+        await fetchSettings({ silent: true, preserveConfigSync: true });
         setEdits({});
         if (hasRestartSetting) {
           showToast("Settings take effect after auto-reload (~2 seconds)", "info");
@@ -766,7 +862,7 @@ function ServerConfigMode() {
     } finally {
       setSaving(false);
     }
-  }, [edits, hasRestartSetting, serverMeta]);
+  }, [edits, hasRestartSetting, serverMeta, fetchSettings]);
 
   const handleCancelSave = useCallback(() => {
     setConfirmOpen(false);
@@ -952,7 +1048,7 @@ function ServerConfigMode() {
           </div>
           <div class="setting-row-key">${def.key}</div>
           ${control}
-          ${error && html`<div class="setting-validation-error">⚠ ${error}</div>`}
+          ${error && html`<div class="setting-validation-error">${iconText(`⚠ ${error}`)}</div>`}
         </div>
       `;
     },
@@ -971,7 +1067,7 @@ function ServerConfigMode() {
     ${loadError &&
     html`
       <div class="settings-banner settings-banner-error">
-        <span>⚠️</span>
+        <span>${resolveIcon("⚠️")}</span>
         <span class="settings-banner-text">
           <strong>Backend Unreachable</strong> — ${loadError}
         </span>
@@ -1014,8 +1110,7 @@ function ServerConfigMode() {
       <div class="settings-banner settings-banner-info">
         <span>${resolveIcon("🧭")}</span>
         <span class="settings-banner-text">
-          Settings are saved to <code>${serverMeta.envPath}</code> and synced to
-          <code>${serverMeta.configPath}</code> for supported keys.
+          Settings are saved to <code>${serverMeta.envPath}</code> and synced to <code>${serverMeta.configPath}</code> for supported keys.
         </span>
       </div>
     `}
@@ -1194,6 +1289,59 @@ function ServerConfigMode() {
   `;
 }
 
+/* ── Inline CSS vars to override Telegram's applyTgTheme() inline styles ──
+ * telegram.js sets --bg-primary, --accent etc. as element.style, which beats
+ * any CSS rule (including [data-theme] selectors).  We must use setProperty()
+ * too when applying a named theme, and restore the Telegram values on "system".
+ */
+const THEME_INLINE_VARS = {
+  dark: {
+    "--bg-primary": "#1f1e1c", "--bg-secondary": "#262522", "--bg-card": "#2b2a27",
+    "--text-primary": "#e8e5de", "--text-secondary": "#b5b0a6", "--text-hint": "#908b81",
+    "--accent": "#da7756", "--accent-text": "#1e1d1a",
+  },
+  "dark-blue": {
+    "--bg-primary": "#0b0f14", "--bg-secondary": "#131a24", "--bg-card": "#131a24",
+    "--text-primary": "#f1f5f9", "--text-secondary": "#94a3b8", "--text-hint": "#64748b",
+    "--accent": "#4cc9f0", "--accent-text": "#000000",
+  },
+  midnight: {
+    "--bg-primary": "#0d1117", "--bg-secondary": "#161b22", "--bg-card": "#21262d",
+    "--text-primary": "#e6edf3", "--text-secondary": "#8b949e", "--text-hint": "#6e7681",
+    "--accent": "#7c3aed", "--accent-text": "#ffffff",
+  },
+  dracula: {
+    "--bg-primary": "#282a36", "--bg-secondary": "#21222c", "--bg-card": "#313342",
+    "--text-primary": "#f8f8f2", "--text-secondary": "#9da5c8", "--text-hint": "#6272a4",
+    "--accent": "#ff79c6", "--accent-text": "#282a36",
+  },
+  nord: {
+    "--bg-primary": "#2e3440", "--bg-secondary": "#272c38", "--bg-card": "#3b4252",
+    "--text-primary": "#eceff4", "--text-secondary": "#d8dee9", "--text-hint": "#9ba8be",
+    "--accent": "#88c0d0", "--accent-text": "#2e3440",
+  },
+  monokai: {
+    "--bg-primary": "#272822", "--bg-secondary": "#1e1f1c", "--bg-card": "#32332c",
+    "--text-primary": "#f8f8f2", "--text-secondary": "#a59f85", "--text-hint": "#75715e",
+    "--accent": "#a6e22e", "--accent-text": "#1e1f1c",
+  },
+  "github-dark": {
+    "--bg-primary": "#0d1117", "--bg-secondary": "#161b22", "--bg-card": "#21262d",
+    "--text-primary": "#e6edf3", "--text-secondary": "#8b949e", "--text-hint": "#6e7681",
+    "--accent": "#58a6ff", "--accent-text": "#0d1117",
+  },
+  ayu: {
+    "--bg-primary": "#0a0e14", "--bg-secondary": "#0d1017", "--bg-card": "#131721",
+    "--text-primary": "#bfbdb6", "--text-secondary": "#565b66", "--text-hint": "#494f5c",
+    "--accent": "#ff8f40", "--accent-text": "#0a0e14",
+  },
+  dawn: {
+    "--bg-primary": "#fdf6e3", "--bg-secondary": "#eee8d5", "--bg-card": "#ffffff",
+    "--text-primary": "#657b83", "--text-secondary": "#839496", "--text-hint": "#93a1a1",
+    "--accent": "#b58900", "--accent-text": "#ffffff",
+  },
+};
+
 /* ═══════════════════════════════════════════════════════════════
  *  AppPreferencesMode — existing client-side preferences
  * ═══════════════════════════════════════════════════════════════ */
@@ -1228,10 +1376,27 @@ function AppPreferencesMode() {
 
   /* Apply colour theme to the document */
   function applyColorTheme(theme) {
+    const root = document.documentElement;
+    const tgVarKeys = ["--bg-primary","--bg-secondary","--bg-card","--text-primary","--text-secondary","--text-hint","--accent","--accent-text"];
     if (!theme || theme === "system") {
-      document.documentElement.removeAttribute("data-theme");
+      root.removeAttribute("data-theme");
+      // Restore Telegram-supplied inline vars (or clear ours if no Telegram context)
+      const tp = globalThis.Telegram?.WebApp?.themeParams;
+      if (tp) {
+        if (tp.bg_color)            root.style.setProperty("--bg-primary", tp.bg_color);
+        if (tp.secondary_bg_color)  { root.style.setProperty("--bg-secondary", tp.secondary_bg_color); root.style.setProperty("--bg-card", tp.secondary_bg_color); }
+        if (tp.text_color)          root.style.setProperty("--text-primary", tp.text_color);
+        if (tp.hint_color)          { root.style.setProperty("--text-secondary", tp.hint_color); root.style.setProperty("--text-hint", tp.hint_color); }
+        if (tp.button_color)        root.style.setProperty("--accent", tp.button_color);
+        if (tp.button_text_color)   root.style.setProperty("--accent-text", tp.button_text_color);
+      } else {
+        tgVarKeys.forEach(k => root.style.removeProperty(k));
+      }
     } else {
-      document.documentElement.setAttribute("data-theme", theme);
+      root.setAttribute("data-theme", theme);
+      // Also set as inline styles to beat telegram.js's element.style values
+      const vars = THEME_INLINE_VARS[theme];
+      if (vars) Object.entries(vars).forEach(([k, v]) => root.style.setProperty(k, v));
     }
   }
 
@@ -1402,7 +1567,7 @@ function AppPreferencesMode() {
           `}
           <div>
             <div style="font-weight:600;font-size:15px">
-              ${user?.first_name || "Unknown"} ${user?.last_name || ""}
+              ${user?.first_name || "Local"} ${user?.last_name || ""}
             </div>
             ${user?.username &&
             html`<div class="meta-text">@${user.username}</div>`}
@@ -1416,15 +1581,34 @@ function AppPreferencesMode() {
     <${Collapsible} title=${iconText("🎨 Appearance")} defaultOpen=${false}>
       <${Card}>
         <div class="card-subtitle mb-sm">Color Theme</div>
-        <${SegmentedControl}
-          options=${[
-            { value: "system", label: "System" },
-            { value: "light", label: "Light" },
-            { value: "dark", label: "Dark" },
-          ]}
-          value=${colorTheme}
-          onChange=${handleColorTheme}
-        />
+        <div class="theme-picker-grid">
+          ${[
+            { id: "system", label: "System", bg: "var(--tg-theme-bg-color, #1f1e1c)", accent: "var(--tg-theme-button-color, #da7756)", desc: "Auto" },
+            { id: "dark", label: "Bosun Dark", bg: "#1f1e1c", accent: "#da7756", desc: "Warm" },
+            { id: "dark-blue", label: "Dark Blue", bg: "#0b0f14", accent: "#4cc9f0", desc: "Cyber" },
+            { id: "midnight", label: "Midnight", bg: "#0d1117", accent: "#7c3aed", desc: "Purple" },
+            { id: "dracula", label: "Dracula", bg: "#282a36", accent: "#ff79c6", desc: "Pink" },
+            { id: "nord", label: "Nord", bg: "#2e3440", accent: "#88c0d0", desc: "Arctic" },
+            { id: "monokai", label: "Monokai", bg: "#272822", accent: "#a6e22e", desc: "Classic" },
+            { id: "github-dark", label: "GitHub Dark", bg: "#0d1117", accent: "#58a6ff", desc: "Blue" },
+            { id: "ayu", label: "Ayu", bg: "#0a0e14", accent: "#ff8f40", desc: "Orange" },
+            { id: "dawn", label: "Dawn", bg: "#fdf6e3", accent: "#b58900", desc: "Light" },
+          ].map((theme) => html`
+            <button
+              key=${theme.id}
+              class="theme-swatch ${colorTheme === theme.id ? "active" : ""}"
+              title=${theme.label}
+              onClick=${() => handleColorTheme(theme.id)}
+            >
+              <div class="theme-swatch-preview">
+                <div class="swatch-bg" style="background: ${theme.bg}"></div>
+                <div class="swatch-accent" style="background: ${theme.accent}"></div>
+              </div>
+              <div class="swatch-label">${theme.label}</div>
+              <div class="swatch-desc">${theme.desc}</div>
+            </button>
+          `)}
+        </div>
         <div class="meta-text mt-sm mb-md" style="font-size: 11px;">
           ${colorTheme === "system"
             ? html`Follows your ${tg ? "Telegram" : "OS"} theme automatically.`
@@ -1512,7 +1696,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── Executor Defaults ─── -->
-    <${Collapsible} title="⚙️ Executor Defaults" defaultOpen=${false}>
+    <${Collapsible} title=${iconText("⚙️ Executor Defaults")} defaultOpen=${false}>
       <${Card}>
         <div class="card-subtitle mb-sm">Default Max Parallel</div>
         <div class="range-row mb-md">
@@ -1832,7 +2016,7 @@ function GitHubDeviceFlowCard({ config }) {
     return html`
       <${Card}>
         <div style="text-align:center;padding:12px 0">
-          <div style="font-size:24px;margin-bottom:8px">⚠️</div>
+          <div style="font-size:24px;margin-bottom:8px">${resolveIcon("⚠️")}</div>
           <div style="font-size:13px;color:var(--color-error);margin-bottom:12px">${error}</div>
           <button class="btn btn-sm btn-primary" onClick=${startFlow}>Try Again</button>
         </div>

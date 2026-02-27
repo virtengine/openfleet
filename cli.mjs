@@ -34,6 +34,15 @@ import {
   migrateFromLegacy,
 } from "./compat.mjs";
 
+const MONITOR_START_MAX_WAIT_MS = Math.max(
+  0,
+  Number(process.env.BOSUN_MONITOR_START_MAX_WAIT_MS || "15000") || 15000,
+);
+const MONITOR_START_RETRY_MS = Math.max(
+  100,
+  Number(process.env.BOSUN_MONITOR_START_RETRY_MS || "500") || 500,
+);
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
 
@@ -81,6 +90,7 @@ function showHelp() {
     --no-auto-update            Disable background auto-update polling
     --daemon, -d                Run as a background daemon (detached, with PID file)
     --stop-daemon               Stop a running daemon process
+    --terminate                 Hard-stop all bosun processes (daemon + monitor + companions)
     --daemon-status             Check if daemon is running
 
   ORCHESTRATOR
@@ -674,6 +684,122 @@ function daemonStatus() {
   process.exit(0);
 }
 
+function findAllBosunProcessPids() {
+  const patterns = [
+    "cli.mjs",
+    "monitor.mjs",
+    "telegram-bot.mjs",
+    "telegram-sentinel.mjs",
+    "ui-server.mjs",
+  ];
+  const joined = patterns.join("|");
+  if (process.platform === "win32") {
+    try {
+      const out = execFileSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          `Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^node(\\.exe)?$' -and $_.CommandLine -match '${joined.replace(/\|/g, "|")}' } | Select-Object -ExpandProperty ProcessId`,
+        ],
+        { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 4000 },
+      ).trim();
+      if (!out) return [];
+      return out
+        .split(/\r?\n/)
+        .map((s) => Number.parseInt(String(s).trim(), 10))
+        .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+    } catch {
+      return [];
+    }
+  }
+  try {
+    const out = execFileSync("pgrep", ["-f", joined], {
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 4000,
+    }).trim();
+    if (!out) return [];
+    return out
+      .split(/\r?\n/)
+      .map((s) => Number.parseInt(String(s).trim(), 10))
+      .filter((pid) => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+  } catch {
+    return [];
+  }
+}
+
+function removeKnownPidFiles() {
+  const pidFiles = [
+    DAEMON_PID_FILE,
+    PID_FILE,
+    SENTINEL_PID_FILE,
+    SENTINEL_PID_FILE_LEGACY,
+    resolve(__dirname, "..", ".cache", "bosun.pid"),
+    resolve(process.cwd(), ".cache", "bosun.pid"),
+  ];
+  for (const pidFile of pidFiles) {
+    try {
+      if (existsSync(pidFile)) unlinkSync(pidFile);
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
+function terminateBosun() {
+  const tracked = [
+    getDaemonPid(),
+    readAlivePid(PID_FILE),
+    readAlivePid(SENTINEL_PID_FILE),
+    readAlivePid(SENTINEL_PID_FILE_LEGACY),
+  ].filter((pid) => Number.isFinite(pid) && pid > 0);
+  const ghosts = findGhostDaemonPids();
+  const scanned = findAllBosunProcessPids();
+  const allPids = Array.from(new Set([...tracked, ...ghosts, ...scanned])).filter(
+    (pid) => pid !== process.pid,
+  );
+  if (allPids.length === 0) {
+    removeKnownPidFiles();
+    console.log("  No running bosun processes found.");
+    process.exit(0);
+    return;
+  }
+
+  console.log(`  Terminating ${allPids.length} bosun process(es): ${allPids.join(", ")}`);
+  for (const pid of allPids) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      /* already dead */
+    }
+  }
+
+  const deadline = Date.now() + 5000;
+  let alive = allPids.filter((pid) => isProcessAlive(pid));
+  while (alive.length > 0 && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+    alive = alive.filter((pid) => isProcessAlive(pid));
+  }
+
+  for (const pid of alive) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* already dead */
+    }
+  }
+  removeKnownPidFiles();
+  const killed = allPids.length - alive.length;
+  console.log(`  ✓ Terminated ${killed}/${allPids.length} process(es).`);
+  if (alive.length > 0) {
+    console.log(`  ⚠️  Still alive: ${alive.join(", ")}`);
+    process.exit(1);
+    return;
+  }
+  process.exit(0);
+}
+
 async function main() {
   // Apply legacy CODEX_MONITOR_* → BOSUN_* env aliases before any config ops
   applyAllCompatibility();
@@ -791,6 +917,10 @@ async function main() {
   }
   if (args.includes("--stop-daemon")) {
     stopDaemon();
+    return;
+  }
+  if (args.includes("--terminate")) {
+    terminateBosun();
     return;
   }
   if (args.includes("--daemon-status")) {
@@ -1363,118 +1493,189 @@ function detectExistingMonitorLockOwner(excludePid = null) {
   return null;
 }
 
-function runMonitor() {
+function getRequiredMonitorRuntimeFiles(monitorPath) {
+  const required = [monitorPath];
+  const copilotDir = resolve(
+    __dirname,
+    "node_modules",
+    "@github",
+    "copilot",
+  );
+  const conptyAgentPath = resolve(copilotDir, "conpty_console_list_agent.js");
+  if (process.platform === "win32" && existsSync(copilotDir)) {
+    required.push(conptyAgentPath);
+  }
+  return required;
+}
+
+function listMissingFiles(paths) {
+  return paths.filter((entry) => !existsSync(entry));
+}
+
+async function waitForMonitorRuntimeFiles(monitorPath) {
+  const required = getRequiredMonitorRuntimeFiles(monitorPath);
+  const startedAt = Date.now();
+  let missing = listMissingFiles(required);
+  while (
+    missing.length > 0 &&
+    Date.now() - startedAt < MONITOR_START_MAX_WAIT_MS
+  ) {
+    await new Promise((resolveWait) => {
+      setTimeout(resolveWait, MONITOR_START_RETRY_MS);
+    });
+    missing = listMissingFiles(required);
+  }
+  return {
+    ready: missing.length === 0,
+    missing,
+    waitedMs: Date.now() - startedAt,
+  };
+}
+
+function runMonitor({ restartReason = "" } = {}) {
   return new Promise((resolve, reject) => {
     const monitorPath = fileURLToPath(
       new URL("./monitor.mjs", import.meta.url),
     );
-    monitorChild = fork(monitorPath, process.argv.slice(2), {
-      stdio: "inherit",
-      execArgv: ["--max-old-space-size=4096"],
-      windowsHide: IS_DAEMON_CHILD && process.platform === "win32",
-    });
-    daemonCrashTracker.markStart();
-
-    monitorChild.on("exit", (code, signal) => {
-      const childPid = monitorChild?.pid ?? null;
-      monitorChild = null;
-      if (code === SELF_RESTART_EXIT_CODE) {
-        console.log(
-          "\n  \u21BB Monitor restarting with fresh modules...\n",
-        );
-        // Small delay to let file writes / port releases settle
-        setTimeout(() => resolve(runMonitor()), 2000);
-      } else {
-        const exitCode = code ?? (signal ? 1 : 0);
-        const existingOwner =
-          !gracefulShutdown && exitCode === 1
-            ? detectExistingMonitorLockOwner(childPid)
-            : null;
-        if (existingOwner) {
-          console.log(
-            `\n  bosun is already running (PID ${existingOwner.pid}); exiting duplicate start.\n`,
+    waitForMonitorRuntimeFiles(monitorPath)
+      .then(({ ready, missing, waitedMs }) => {
+        if (!ready) {
+          throw new Error(
+            `monitor runtime files missing after waiting ${Math.round(waitedMs / 1000)}s: ${missing.join(", ")}`,
           );
-          process.exit(0);
-          return;
         }
-        // 4294967295 (0xFFFFFFFF / -1 signed) = OS killed the process (OOM, external termination)
-        const isOSKill = exitCode === 4294967295 || exitCode === -1;
-        const shouldAutoRestart =
-          !gracefulShutdown &&
-          (isOSKill || (IS_DAEMON_CHILD && exitCode !== 0));
-        if (shouldAutoRestart) {
-          const crashState = daemonCrashTracker.recordExit();
-          daemonRestartCount += 1;
-          const delayMs = isOSKill ? 5000 : DAEMON_RESTART_DELAY_MS;
-          if (IS_DAEMON_CHILD && crashState.exceeded) {
-            const durationSec = Math.max(
-              1,
-              Math.round(crashState.runDurationMs / 1000),
-            );
-            const windowSec = Math.max(
-              1,
-              Math.round(crashState.instantCrashWindowMs / 1000),
-            );
-            console.error(
-              `\n  ✖ Monitor crashed too quickly ${crashState.instantCrashCount} times in a row (each <= ${windowSec}s, latest ${durationSec}s). Auto-restart is now paused.`,
-            );
-            sendCrashNotification(exitCode, signal).finally(() =>
-              process.exit(exitCode),
-            );
-            return;
-          }
-          if (
-            IS_DAEMON_CHILD &&
-            DAEMON_MAX_RESTARTS > 0 &&
-            daemonRestartCount > DAEMON_MAX_RESTARTS
-          ) {
-            console.error(
-              `\n  ✖ Monitor crashed too many times (${daemonRestartCount - 1} restarts, max ${DAEMON_MAX_RESTARTS}).`,
-            );
-            sendCrashNotification(exitCode, signal).finally(() =>
-              process.exit(exitCode),
-            );
-            return;
-          }
-          const reasonLabel = signal
-            ? `signal ${signal}`
-            : `exit code ${exitCode}`;
-          const attemptLabel =
-            IS_DAEMON_CHILD && DAEMON_MAX_RESTARTS > 0
-              ? `${daemonRestartCount}/${DAEMON_MAX_RESTARTS}`
-              : `${daemonRestartCount}`;
-          console.error(
-            `\n  ⚠ Monitor exited (${reasonLabel}) — auto-restarting in ${Math.max(1, Math.round(delayMs / 1000))}s${IS_DAEMON_CHILD ? ` [attempt ${attemptLabel}]` : ""}...`,
+        if (waitedMs >= MONITOR_START_RETRY_MS) {
+          console.warn(
+            `[cli] delayed monitor start by ${Math.round(waitedMs / 1000)}s while waiting for runtime files to settle`,
           );
-          sendCrashNotification(exitCode, signal, {
-            autoRestartInMs: delayMs,
-            restartAttempt: daemonRestartCount,
-            maxRestarts: IS_DAEMON_CHILD ? DAEMON_MAX_RESTARTS : 0,
-          }).catch(() => {});
-          setTimeout(() => resolve(runMonitor()), delayMs);
-          return;
         }
-
-        if (exitCode !== 0 && !gracefulShutdown) {
-          console.error(
-            `\n  ✖ Monitor crashed (${signal ? `signal ${signal}` : `exit code ${exitCode}`}) — sending crash notification...`,
-          );
-          sendCrashNotification(exitCode, signal).finally(() =>
-            process.exit(exitCode),
-          );
+        const childEnv = { ...process.env };
+        if (restartReason) {
+          childEnv.BOSUN_MONITOR_RESTART_REASON = restartReason;
         } else {
-          daemonRestartCount = 0;
-          daemonCrashTracker.reset();
-          process.exit(exitCode);
+          delete childEnv.BOSUN_MONITOR_RESTART_REASON;
         }
-      }
-    });
+        monitorChild = fork(monitorPath, process.argv.slice(2), {
+          stdio: "inherit",
+          execArgv: ["--max-old-space-size=4096"],
+          env: childEnv,
+          windowsHide: IS_DAEMON_CHILD && process.platform === "win32",
+        });
+        daemonCrashTracker.markStart();
 
-    monitorChild.on("error", (err) => {
-      monitorChild = null;
-      console.error(`\n  ✖ Monitor failed to start: ${err.message}`);
-      sendCrashNotification(1, null).finally(() => reject(err));
-    });
+        monitorChild.on("exit", (code, signal) => {
+          const childPid = monitorChild?.pid ?? null;
+          monitorChild = null;
+          if (code === SELF_RESTART_EXIT_CODE) {
+            console.log(
+              "\n  ↻ Monitor restarting with fresh modules...\n",
+            );
+            // Small delay to let file writes / port releases settle
+            setTimeout(() => resolve(runMonitor({ restartReason: "self-restart" })), 2000);
+          } else {
+            const exitCode = code ?? (signal ? 1 : 0);
+            const existingOwner =
+              !gracefulShutdown && exitCode === 1
+                ? detectExistingMonitorLockOwner(childPid)
+                : null;
+            if (existingOwner) {
+              console.log(
+                `\n  bosun is already running (PID ${existingOwner.pid}); exiting duplicate start.\n`,
+              );
+              process.exit(0);
+              return;
+            }
+            // 4294967295 (0xFFFFFFFF / -1 signed) = OS killed the process (OOM, external termination)
+            const isOSKill = exitCode === 4294967295 || exitCode === -1;
+            const shouldAutoRestart =
+              !gracefulShutdown &&
+              (isOSKill || (IS_DAEMON_CHILD && exitCode !== 0));
+            if (shouldAutoRestart) {
+              const crashState = daemonCrashTracker.recordExit();
+              daemonRestartCount += 1;
+              const delayMs = isOSKill ? 5000 : DAEMON_RESTART_DELAY_MS;
+              if (IS_DAEMON_CHILD && crashState.exceeded) {
+                const durationSec = Math.max(
+                  1,
+                  Math.round(crashState.runDurationMs / 1000),
+                );
+                const windowSec = Math.max(
+                  1,
+                  Math.round(crashState.instantCrashWindowMs / 1000),
+                );
+                console.error(
+                  `\n  ✖ Monitor crashed too quickly ${crashState.instantCrashCount} times in a row (each <= ${windowSec}s, latest ${durationSec}s). Auto-restart is now paused.`,
+                );
+                sendCrashNotification(exitCode, signal).finally(() =>
+                  process.exit(exitCode),
+                );
+                return;
+              }
+              if (
+                IS_DAEMON_CHILD &&
+                DAEMON_MAX_RESTARTS > 0 &&
+                daemonRestartCount > DAEMON_MAX_RESTARTS
+              ) {
+                console.error(
+                  `\n  ✖ Monitor crashed too many times (${daemonRestartCount - 1} restarts, max ${DAEMON_MAX_RESTARTS}).`,
+                );
+                sendCrashNotification(exitCode, signal).finally(() =>
+                  process.exit(exitCode),
+                );
+                return;
+              }
+              const reasonLabel = signal
+                ? `signal ${signal}`
+                : `exit code ${exitCode}`;
+              const attemptLabel =
+                IS_DAEMON_CHILD && DAEMON_MAX_RESTARTS > 0
+                  ? `${daemonRestartCount}/${DAEMON_MAX_RESTARTS}`
+                  : `${daemonRestartCount}`;
+              console.error(
+                `\n  ⚠ Monitor exited (${reasonLabel}) — auto-restarting in ${Math.max(1, Math.round(delayMs / 1000))}s${IS_DAEMON_CHILD ? ` [attempt ${attemptLabel}]` : ""}...`,
+              );
+              sendCrashNotification(exitCode, signal, {
+                autoRestartInMs: delayMs,
+                restartAttempt: daemonRestartCount,
+                maxRestarts: IS_DAEMON_CHILD ? DAEMON_MAX_RESTARTS : 0,
+              }).catch(() => {});
+              setTimeout(
+                () =>
+                  resolve(
+                    runMonitor({
+                      restartReason: isOSKill ? "os-kill" : "crash",
+                    }),
+                  ),
+                delayMs,
+              );
+              return;
+            }
+
+            if (exitCode !== 0 && !gracefulShutdown) {
+              console.error(
+                `\n  ✖ Monitor crashed (${signal ? `signal ${signal}` : `exit code ${exitCode}`}) — sending crash notification...`,
+              );
+              sendCrashNotification(exitCode, signal).finally(() =>
+                process.exit(exitCode),
+              );
+            } else {
+              daemonRestartCount = 0;
+              daemonCrashTracker.reset();
+              process.exit(exitCode);
+            }
+          }
+        });
+
+        monitorChild.on("error", (err) => {
+          monitorChild = null;
+          console.error(`\n  ✖ Monitor failed to start: ${err.message}`);
+          sendCrashNotification(1, null).finally(() => reject(err));
+        });
+      })
+      .catch((err) => {
+        console.error(`\n  ✖ Monitor failed to start: ${err.message}`);
+        sendCrashNotification(1, null).finally(() => reject(err));
+      });
   });
 }
 
@@ -1500,4 +1701,3 @@ main().catch(async (err) => {
   await sendCrashNotification(1, null).catch(() => {});
   process.exit(1);
 });
-

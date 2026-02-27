@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="color-scheme" content="dark light" />
   <title>Bosun — Task Orchestrator</title>
-  <link rel="icon" href="favicon.png" type="image/png" />
+  <link rel="icon" href="/favicon.png" type="image/png" />
   <script>
     (function() {
       var shim = document.createElement("script");
@@ -31,9 +31,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css" />
-  <link rel="stylesheet" href="styles/kanban.css" />
-  <link rel="stylesheet" href="styles/sessions.css" />
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/styles/kanban.css" />
+  <link rel="stylesheet" href="/styles/sessions.css" />
   <!-- Apply stored colour theme before paint to prevent flash -->
   <script>
     try {
@@ -135,7 +135,7 @@
         tick();
       });
     const loadApp = async (bust = false) => {
-      const base = new URL("app.js", import.meta.url).toString();
+      const base = new URL("/app.js", window.location.origin).toString();
       const url = bust ? `${base}?v=${Date.now()}` : base;
       if (window.importShim) {
         return window.importShim(url);

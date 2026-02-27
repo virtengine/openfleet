@@ -23,6 +23,25 @@ describe("async safety guards", () => {
     );
   });
 
+  it("guards detached monitor scheduler/notifier dispatches", () => {
+    expect(monitorSource).toContain("function runDetached(label, promiseOrFn) {");
+    expect(monitorSource).toContain(
+      'runDetached("agent-alerts:poll-interval", pollAgentAlerts);',
+    );
+    expect(monitorSource).toContain(
+      'runDetached("task-planner-status:interval", () =>',
+    );
+    expect(monitorSource).toContain(
+      'runDetached("telegram-notifier:interval-update", sendUpdate)',
+    );
+    expect(monitorSource).toContain(
+      'runDetached("fetchVk:network-recovery", () =>',
+    );
+    expect(monitorSource).not.toContain("void pollAgentAlerts();");
+    expect(monitorSource).not.toContain('void publishTaskPlannerStatus("interval");');
+    expect(monitorSource).not.toContain("setInterval(sendUpdate, intervalMs);");
+  });
+
   it("guards agent-work-analyzer stuck sweep interval", () => {
     expect(analyzerSource).toContain("runStuckSweep().catch((err) => {");
   });

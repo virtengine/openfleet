@@ -31,6 +31,15 @@ const AUTO_UPDATE_FAILURE_LIMIT =
   Number(process.env.BOSUN_AUTO_UPDATE_FAILURE_LIMIT) || 3;
 const AUTO_UPDATE_DISABLE_WINDOW_MS =
   Number(process.env.BOSUN_AUTO_UPDATE_DISABLE_WINDOW_MS) || 24 * 60 * 60 * 1000;
+const AUTO_UPDATE_RUNTIME_SETTLE_MAX_WAIT_MS = Math.max(
+  0,
+  Number(process.env.BOSUN_AUTO_UPDATE_RUNTIME_SETTLE_MAX_WAIT_MS || "20000") ||
+    20000,
+);
+const AUTO_UPDATE_RUNTIME_SETTLE_RETRY_MS = Math.max(
+  100,
+  Number(process.env.BOSUN_AUTO_UPDATE_RUNTIME_SETTLE_RETRY_MS || "500") || 500,
+);
 const STARTUP_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour (startup notice)
 const AUTO_UPDATE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes (polling loop)
 const NPM_LAUNCH_ERROR_CODES = new Set([
@@ -468,6 +477,38 @@ export function getCurrentVersion() {
   }
 }
 
+function getRequiredRuntimeFiles() {
+  const required = [resolve(__dirname, "monitor.mjs")];
+  const copilotDir = resolve(__dirname, "node_modules", "@github", "copilot");
+  if (process.platform === "win32" && existsSync(copilotDir)) {
+    required.push(resolve(copilotDir, "conpty_console_list_agent.js"));
+  }
+  return required;
+}
+
+function listMissingRuntimeFiles() {
+  return getRequiredRuntimeFiles().filter((entry) => !existsSync(entry));
+}
+
+async function waitForRuntimeFilesToSettle() {
+  const startedAt = Date.now();
+  let missing = listMissingRuntimeFiles();
+  while (
+    missing.length > 0 &&
+    Date.now() - startedAt < AUTO_UPDATE_RUNTIME_SETTLE_MAX_WAIT_MS
+  ) {
+    await new Promise((resolveDelay) => {
+      setTimeout(resolveDelay, AUTO_UPDATE_RUNTIME_SETTLE_RETRY_MS);
+    });
+    missing = listMissingRuntimeFiles();
+  }
+  return {
+    ready: missing.length === 0,
+    missing,
+    waitedMs: Date.now() - startedAt,
+  };
+}
+
 // ── Auto-update polling loop ─────────────────────────────────────────────────
 
 let autoUpdateTimer = null;
@@ -638,6 +679,19 @@ export function startAutoUpdateLoop(opts = {}) {
       const successMsg = `[auto-update] ✅ Updated to v${latest}. Restarting...`;
       console.log(successMsg);
       await safeNotify(successMsg);
+
+      const runtimeStatus = await waitForRuntimeFilesToSettle();
+      if (!runtimeStatus.ready) {
+        const errMsg = `[auto-update] ⚠️ Runtime files not ready after update; skipping restart this cycle. Missing: ${runtimeStatus.missing.join(", ")}`;
+        console.warn(errMsg);
+        await safeNotify(errMsg);
+        return;
+      }
+      if (runtimeStatus.waitedMs >= AUTO_UPDATE_RUNTIME_SETTLE_RETRY_MS) {
+        console.log(
+          `[auto-update] runtime settled after ${Math.round(runtimeStatus.waitedMs / 1000)}s`,
+        );
+      }
 
       // Give Telegram a moment to deliver the notification
       await new Promise((r) => setTimeout(r, 2000));

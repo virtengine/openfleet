@@ -14,8 +14,22 @@ import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 import { resolveRepoRoot } from "./repo-root.mjs";
 import { getGitHubToken } from "./github-auth-manager.mjs";
+import {
+  isTransientStreamError,
+  streamRetryDelay,
+  MAX_STREAM_RETRIES,
+} from "./stream-resilience.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
+
+// Lazy-import MCP registry — cached at module scope per AGENTS.md rules.
+let _mcpRegistry = null;
+async function getMcpRegistry() {
+  if (!_mcpRegistry) {
+    _mcpRegistry = await import("./mcp-registry.mjs");
+  }
+  return _mcpRegistry;
+}
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -174,7 +188,7 @@ function logSessionEvent(logPath, event) {
  * Enables experimental features (fleet, autopilot), auto-permissions,
  * sub-agents, and autonomy.
  */
-function buildCliArgs() {
+async function buildCliArgs() {
   const args = [];
 
   // Always enable experimental features (fleet, autopilot, persisted permissions, etc.)
@@ -216,6 +230,26 @@ function buildCliArgs() {
   const mcpConfigPath = process.env.COPILOT_ADDITIONAL_MCP_CONFIG;
   if (mcpConfigPath) {
     args.push("--additional-mcp-config", mcpConfigPath);
+  }
+
+  // Also write a temp MCP config from the library if installed servers exist
+  // (non-fatal: library MCP is a convenience, not a hard requirement)
+  if (!mcpConfigPath) {
+    try {
+      const registry = await getMcpRegistry();
+      const installed = await registry.listInstalledMcpServers(REPO_ROOT);
+      if (installed && installed.length) {
+        const ids = installed.map((e) => e.id);
+        const resolved = await registry.resolveMcpServersForAgent(REPO_ROOT, ids);
+        if (resolved && resolved.length) {
+          const tmpPath = registry.writeTempCopilotMcpConfig(REPO_ROOT, resolved);
+          args.push("--additional-mcp-config", tmpPath);
+          console.log(`[copilot-shell] injected ${resolved.length} library MCP server(s) via CLI args`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[copilot-shell] failed to inject library MCP servers into CLI args: ${err.message}`);
+    }
   }
 
   if (args.length > 0) {
@@ -399,7 +433,7 @@ async function ensureClientStarted() {
   const sessionMode = (process.env.COPILOT_SESSION_MODE || "local").trim().toLowerCase();
 
   // Build cliArgs for experimental features, permissions, and autonomy
-  const cliArgs = buildCliArgs();
+  const cliArgs = await buildCliArgs();
 
   let clientOptions;
   if (transport === "url") {
@@ -553,7 +587,46 @@ function loadMcpServers(profile = null) {
   return loadMcpServersFromFile(configPath);
 }
 
-function buildSessionConfig() {
+/**
+ * Merge installed MCP library servers into an existing mcpServers map.
+ * Called during session build to inject library-managed MCP servers into
+ * the Copilot SDK session alongside any profile/env servers.
+ *
+ * Non-fatal: if the registry is unavailable or encounters errors, the
+ * original servers map is returned unchanged.
+ *
+ * @param {Object|null} existingServers — mcpServers from profile/env/config
+ * @returns {Promise<Object|null>} — merged servers map
+ */
+async function mergeLibraryMcpServers(existingServers) {
+  try {
+    const registry = await getMcpRegistry();
+    const installed = await registry.listInstalledMcpServers(REPO_ROOT);
+    if (!installed || !installed.length) return existingServers;
+
+    // Resolve all installed servers into full configs
+    const installedIds = installed.map((e) => e.id);
+    const resolved = await registry.resolveMcpServersForAgent(REPO_ROOT, installedIds);
+    if (!resolved || !resolved.length) return existingServers;
+
+    // Convert to Copilot mcpServers format: { [id]: { command, args, env? } | { url } }
+    const copilotJson = registry.buildCopilotMcpJson(resolved);
+    const libraryServers = copilotJson?.mcpServers || {};
+    if (!Object.keys(libraryServers).length) return existingServers;
+
+    // Merge: existing servers take precedence over library ones (user overrides win)
+    const merged = { ...libraryServers, ...(existingServers || {}) };
+    console.log(
+      `[copilot-shell] Merged ${Object.keys(libraryServers).length} library MCP server(s) into session`,
+    );
+    return merged;
+  } catch (err) {
+    console.warn(`[copilot-shell] Failed to merge library MCP servers: ${err.message}`);
+    return existingServers;
+  }
+}
+
+async function buildSessionConfig() {
   const profile = resolveCopilotProfile();
   const config = {
     streaming: true,
@@ -588,7 +661,9 @@ function buildSessionConfig() {
     config.reasoningEffort = effort.toLowerCase();
   }
 
-  const mcpServers = loadMcpServers(profile);
+  // Load MCP servers from profile/env/config, then merge library-managed servers
+  const baseServers = loadMcpServers(profile);
+  const mcpServers = await mergeLibraryMcpServers(baseServers);
   if (mcpServers) config.mcpServers = mcpServers;
   return config;
 }
@@ -600,7 +675,7 @@ async function getSession() {
   const started = await ensureClientStarted();
   if (!started) throw new Error("Copilot SDK not available");
 
-  const config = buildSessionConfig();
+  const config = await buildSessionConfig();
 
   if (activeSessionId && typeof copilotClient?.resumeSession === "function") {
     try {
@@ -640,7 +715,7 @@ export async function execCopilotPrompt(userMessage, options = {}) {
     persistent = false,
   } = options;
 
-  if (activeTurn) {
+  if (activeTurn && !options._holdActiveTurn) {
     return {
       finalResponse:
         "⏳ Agent is still executing a previous task. Please wait.",
@@ -649,7 +724,9 @@ export async function execCopilotPrompt(userMessage, options = {}) {
     };
   }
 
-  activeTurn = true;
+  if (!options._holdActiveTurn) activeTurn = true;
+  /** Sentinel: true while a retry call is pending so finally skips cleanup. */
+  let _retryPending = false;
 
   if (!persistent) {
     // Task executor path — fresh session each call
@@ -771,22 +848,54 @@ export async function execCopilotPrompt(userMessage, options = {}) {
           : `⏱️ Agent timed out after ${timeoutMs / 1000}s`;
       return { finalResponse: msg, items: [], usage: null };
     }
+    // ── Transient stream retry ──────────────────────────────────────────────────
+    // Reset session and re-run; _retryPending holds the activeTurn lock.
+    if (isTransientStreamError(err)) {
+      const retryAttempt = (options._streamRetryAttempt || 0) + 1;
+      if (retryAttempt < MAX_STREAM_RETRIES) {
+        if (typeof unsubscribe === "function") try { unsubscribe(); } catch { /* best effort */ }
+        unsubscribe = null;
+        activeSession = null; // force getSession() to create a fresh session
+        const delay = streamRetryDelay(retryAttempt - 1);
+        console.warn(
+          `[copilot-shell] transient stream error (attempt ${retryAttempt}/${MAX_STREAM_RETRIES}): ${err.message || err} — retrying in ${Math.round(delay)}ms`,
+        );
+        _retryPending = true; // prevent outer finally from releasing activeTurn
+        await new Promise((r) => setTimeout(r, delay));
+        return execCopilotPrompt(userMessage, {
+          ...options,
+          _streamRetryAttempt: retryAttempt,
+          _holdActiveTurn: true, // skip activeTurn guard in recursive call
+        });
+      }
+      console.error(
+        `[copilot-shell] stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts`,
+      );
+      return {
+        finalResponse: `❌ Stream disconnected after ${MAX_STREAM_RETRIES} retries: ${err.message}`,
+        items: [],
+        usage: null,
+      };
+    }
     throw err;
   } finally {
-    if (typeof unsubscribe === "function") {
-      try {
-        unsubscribe();
-      } catch {
-        /* best effort */
+    // Only the outermost invocation (or the final retry) cleans up.
+    if (!_retryPending) {
+      if (typeof unsubscribe === "function") {
+        try {
+          unsubscribe();
+        } catch {
+          /* best effort */
+        }
+      } else if (typeof session.off === "function") {
+        try {
+          session.off(handleEvent);
+        } catch {
+          /* best effort */
+        }
       }
-    } else if (typeof session.off === "function") {
-      try {
-        session.off(handleEvent);
-      } catch {
-        /* best effort */
-      }
+      activeTurn = false;
     }
-    activeTurn = false;
   }
 }
 

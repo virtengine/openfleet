@@ -17,6 +17,7 @@ let uiServerStarted = false;
 let uiOrigin = null;
 let uiApi = null;
 let runtimeConfigLoaded = false;
+const DEFAULT_TELEGRAM_UI_PORT = 3080;
 
 const DAEMON_PID_FILE = resolve(homedir(), ".cache", "bosun", "daemon.pid");
 
@@ -39,6 +40,38 @@ function parseBoolEnv(value, fallback) {
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return fallback;
+}
+
+function isWslInteropRuntime() {
+  return Boolean(
+    process.env.WSL_DISTRO_NAME
+    || process.env.WSL_INTEROP
+    || (process.platform === "win32"
+      && String(process.env.HOME || "")
+        .trim()
+        .startsWith("/home/")),
+  );
+}
+
+function resolveDesktopConfigDir() {
+  if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
+  if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
+
+  const preferWindowsDirs = process.platform === "win32" && !isWslInteropRuntime();
+  const baseDir = preferWindowsDirs
+    ? process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || process.env.USERPROFILE
+      || process.env.HOME
+      || homedir()
+    : process.env.HOME
+      || process.env.XDG_CONFIG_HOME
+      || process.env.USERPROFILE
+      || process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || homedir();
+
+  return resolve(baseDir, "bosun");
 }
 
 function isProcessAlive(pid) {
@@ -124,15 +157,17 @@ async function loadUiServerModule() {
 }
 
 function buildDaemonUiBaseUrl() {
-  const rawPort = Number(process.env.TELEGRAM_UI_PORT || "0");
-  if (!Number.isFinite(rawPort) || rawPort <= 0) return null;
+  const rawPort = Number(process.env.TELEGRAM_UI_PORT || "");
+  const port = Number.isFinite(rawPort) && rawPort > 0
+    ? rawPort
+    : DEFAULT_TELEGRAM_UI_PORT;
   const tlsDisabled = parseBoolEnv(process.env.TELEGRAM_UI_TLS_DISABLE, false);
   const protocol = tlsDisabled ? "http" : "https";
   const host =
     process.env.TELEGRAM_UI_DESKTOP_HOST ||
     process.env.TELEGRAM_UI_HOST ||
     "127.0.0.1";
-  return `${protocol}://${host}:${rawPort}`;
+  return `${protocol}://${host}:${port}`;
 }
 
 async function probeUiServer(url) {
@@ -223,7 +258,14 @@ async function ensureDaemonRunning() {
 async function startUiServer() {
   if (uiServerStarted) return;
   const api = await loadUiServerModule();
-  const server = await api.startTelegramUiServer({});
+  const server = await api.startTelegramUiServer({
+    host: "127.0.0.1",
+    publicHost: "127.0.0.1",
+    skipAutoOpen: true,
+    dependencies: {
+      configDir: resolveDesktopConfigDir(),
+    },
+  });
   if (!server) {
     throw new Error("Failed to start Telegram UI server.");
   }

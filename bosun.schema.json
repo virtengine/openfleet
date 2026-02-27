@@ -49,6 +49,11 @@
           "type": "string",
           "enum": ["internal", "vk", "github", "jira"]
         },
+        "syncPolicy": {
+          "type": "string",
+          "enum": ["internal-primary", "bidirectional"],
+          "default": "internal-primary"
+        },
         "projectId": { "type": "string" },
         "github": {
           "type": "object",
@@ -601,6 +606,37 @@
       "type": "object",
       "description": "Hook definitions loaded by agent-hooks.mjs (event -> hook list).",
       "additionalProperties": true
+    },
+    "mcpServers": {
+      "type": "object",
+      "description": "MCP (Model Context Protocol) server management. Controls which MCP servers are available to agents.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable MCP server integration for agent launches"
+        },
+        "defaultServers": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "MCP server IDs attached to every agent launch by default (e.g. [\"context7\", \"microsoft-docs\"])"
+        },
+        "catalogOverrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "description": "Per-server environment variable overrides",
+            "additionalProperties": { "type": "string" }
+          },
+          "description": "Environment variable overrides keyed by MCP server ID"
+        },
+        "autoInstallDefaults": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically install defaultServers from catalog if not already installed"
+        }
+      }
     }
   }
 }

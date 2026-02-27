@@ -13,7 +13,7 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import {
   mkdir,
   readFile,
@@ -118,6 +118,37 @@ import {
 } from "./presence.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
+
+function isWslInteropRuntime() {
+  return Boolean(
+    process.env.WSL_DISTRO_NAME
+    || process.env.WSL_INTEROP
+    || (process.platform === "win32"
+      && String(process.env.HOME || "")
+        .trim()
+        .startsWith("/home/")),
+  );
+}
+
+function resolveTelegramConfigDir() {
+  if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
+  if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
+
+  const preferWindowsDirs = process.platform === "win32" && !isWslInteropRuntime();
+  const baseDir = preferWindowsDirs
+    ? process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || process.env.USERPROFILE
+      || process.env.HOME
+      || homedir()
+    : process.env.HOME
+      || process.env.XDG_CONFIG_HOME
+      || process.env.USERPROFILE
+      || process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || homedir();
+  return resolve(baseDir, "bosun");
+}
 const repoRoot = resolveRepoRoot();
 const BosunDir = __dirname;
 const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
@@ -125,6 +156,11 @@ const telegramPollLockPath = resolve(
   repoRoot,
   ".cache",
   "telegram-getupdates.lock",
+);
+const telegramPollConflictStatePath = resolve(
+  repoRoot,
+  ".cache",
+  "telegram-getupdates-conflict.json",
 );
 const liveDigestStatePath = resolve(repoRoot, ".cache", "ve-live-digest.json");
 const statusBoardStatePath = resolve(
@@ -164,6 +200,11 @@ const POLL_TIMEOUT_S = 30; // long-poll timeout
 const MAX_MESSAGE_LEN = 4000; // Telegram max is 4096, leave margin
 const POLL_ERROR_BACKOFF_MS = 5000;
 const TELEGRAM_FETCH_FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
+// 409 Conflict cooldown: minimum 60 s, default 15 minutes
+const TELEGRAM_POLL_CONFLICT_COOLDOWN_MS = Math.max(
+  60_000,
+  Number(process.env.TELEGRAM_POLL_CONFLICT_COOLDOWN_MS) || 900_000,
+);
 let TELEGRAM_HTTP_TIMEOUT_MS = Math.max(
   2000,
   Number(process.env.TELEGRAM_HTTP_TIMEOUT_MS || "15000") || 15000,
@@ -196,6 +237,53 @@ let lastPollErrorLogAtMs = 0;
 let lastFallbackSwitchLogMs = 0;
 let pollFailureStreak = 0;
 let telegramApiReachable = null; // null = unknown, true/false after probe
+
+// ── 409 Conflict Cooldown State ──────────────────────────────────────────────
+
+/**
+ * Read persisted 409 conflict state from disk.
+ * Returns { untilMs, reason } or null if missing or corrupt.
+ */
+function readTelegramPollConflictState() {
+  try {
+    if (!existsSync(telegramPollConflictStatePath)) return null;
+    const raw = readFileSync(telegramPollConflictStatePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed.untilMs !== "number") return null;
+    return { untilMs: parsed.untilMs, reason: parsed.reason || "" };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist a 409 conflict cooldown state to disk (best-effort).
+ * @param {number} untilMs - Epoch ms until which polling should be suppressed.
+ * @param {string} reason - Human-readable reason for the cooldown.
+ */
+function writeTelegramPollConflictState(untilMs, reason = "409 Conflict") {
+  try {
+    mkdirSync(resolve(repoRoot, ".cache"), { recursive: true });
+    writeFileSync(
+      telegramPollConflictStatePath,
+      JSON.stringify({ untilMs, reason, updatedAt: new Date().toISOString(), pid: process.pid }),
+      "utf8",
+    );
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Remove the 409 conflict state file (best-effort, called on successful poll).
+ */
+function clearTelegramPollConflictState() {
+  try {
+    unlinkSync(telegramPollConflictStatePath);
+  } catch {
+    /* best-effort */
+  }
+}
 
 function parseAllowedTelegramIds(rawValue) {
   return String(rawValue || "")
@@ -327,6 +415,23 @@ const statusBoardEditDebounceMs = Number(
 
 function delayMs(ms) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+const SAFE_DETACH_PREFIX = "[telegram-bot] async-detach";
+
+function safeDetach(label, taskOrPromise) {
+  const tag = label
+    ? `${SAFE_DETACH_PREFIX}:${String(label)}`
+    : SAFE_DETACH_PREFIX;
+  try {
+    const result =
+      typeof taskOrPromise === "function" ? taskOrPromise() : taskOrPromise;
+    Promise.resolve(result).catch((err) => {
+      console.warn(`${tag} failed: ${err?.message || err}`);
+    });
+  } catch (err) {
+    console.warn(`${tag} failed: ${err?.message || err}`);
+  }
 }
 
 function shouldUseCurlPrimary() {
@@ -852,6 +957,80 @@ function getBrowserUiUrl() {
   return appendTokenToUrl(base, token) || base;
 }
 
+function isTelegramInlineButtonUrlAllowed(inputUrl) {
+  try {
+    const parsed = new URL(String(inputUrl || "").trim());
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return false;
+    }
+    const host = String(parsed.hostname || "").toLowerCase();
+    if (!host) return false;
+    // Telegram rejects localhost/loopback URLs for inline keyboard URL buttons.
+    if (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "::1" ||
+      host === "[::1]"
+    ) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getBrowserUiUrlOptions({ forTelegramButtons = true } = {}) {
+  const base = String(telegramUiUrl || "").trim();
+  if (!base) return [];
+
+  const token = getSessionToken();
+  const options = [];
+  const seen = new Set();
+  const add = (label, inputUrl) => {
+    const raw = String(inputUrl || "").trim();
+    if (!raw) return;
+    const url = appendTokenToUrl(raw, token) || raw;
+    if (!url) return;
+    if (seen.has(url)) return;
+    seen.add(url);
+    if (forTelegramButtons && !isTelegramInlineButtonUrlAllowed(url)) {
+      return;
+    }
+    options.push({ label, url });
+  };
+
+  let parsed = null;
+  try {
+    parsed = new URL(base);
+  } catch {
+    parsed = null;
+  }
+
+  if (parsed) {
+    const localhostUrl = `${parsed.protocol}//localhost${parsed.port ? `:${parsed.port}` : ""}`;
+    add("🖥️ Localhost", localhostUrl);
+  }
+
+  if (parsed) {
+    const lanIp = getLocalLanIp?.();
+    if (lanIp && parsed.port) {
+      const lanUrl = `${parsed.protocol}//${lanIp}:${parsed.port}`;
+      add("📶 LAN", lanUrl);
+    }
+  }
+
+  const tunnelUrl = getTunnelUrl();
+  if (tunnelUrl) {
+    add("☁️ Cloudflare", tunnelUrl);
+  }
+
+  if (options.length === 0) {
+    add("🌐 Browser URL", base);
+  }
+  return options;
+}
+
 function syncUiUrlsFromServer() {
   const currentUiUrl = getTelegramUiUrl?.() || null;
   telegramUiUrl = currentUiUrl;
@@ -864,9 +1043,10 @@ function syncUiUrlsFromServer() {
 
 // ── Agent session state (for follow-up steering & bottom-pinning) ────────────
 
-let activeAgentSession = null; // { chatId, messageId, taskPreview, abortController, followUpQueue, ... }
-let agentMessageId = null; // current agent streaming message ID
-let agentChatId = null; // chat where agent is running
+const activeAgentSessions = new Map(); // chatId -> session
+let activeAgentSession = null; // legacy pointer to the latest active session
+let agentMessageId = null; // latest agent streaming message ID
+let agentChatId = null; // latest chat where an agent is running
 
 // ── Sticky UI menu state (keep /menu accessible at bottom) ─────────────────
 const stickyMenuState = new Map();
@@ -877,7 +1057,7 @@ const STICKY_MENU_BUMP_MS = 600;
 
 let fastCommandQueue = Promise.resolve();
 let commandQueue = Promise.resolve();
-let agentQueue = Promise.resolve();
+const agentQueues = new Map();
 
 function enqueueFastCommand(task) {
   fastCommandQueue = fastCommandQueue.then(task).catch((err) => {
@@ -891,10 +1071,69 @@ function enqueueCommand(task) {
   });
 }
 
-function enqueueAgentTask(task) {
-  agentQueue = agentQueue.then(task).catch((err) => {
-    console.error(`[telegram-bot] agent error: ${err.message || err}`);
-  });
+function enqueueAgentTask(task, key = "global") {
+  const queueKey = String(key || "global");
+  const prev = agentQueues.get(queueKey) || Promise.resolve();
+  const next = prev
+    .then(task)
+    .catch((err) => {
+      console.error(
+        `[telegram-bot] agent error (${queueKey}): ${err.message || err}`,
+      );
+    })
+    .finally(() => {
+      if (agentQueues.get(queueKey) === next) {
+        agentQueues.delete(queueKey);
+      }
+    });
+  agentQueues.set(queueKey, next);
+}
+
+function getActiveAgentSession(chatId = null) {
+  if (chatId != null) {
+    return activeAgentSessions.get(String(chatId)) || null;
+  }
+  if (
+    activeAgentSession &&
+    activeAgentSessions.has(String(activeAgentSession.chatId || ""))
+  ) {
+    return activeAgentSession;
+  }
+  const first = activeAgentSessions.values().next().value || null;
+  if (first) activeAgentSession = first;
+  return first;
+}
+
+function setActiveAgentSession(chatId, session) {
+  const key = String(chatId || "");
+  if (!key || !session) return;
+  activeAgentSessions.set(key, session);
+  activeAgentSession = session;
+  if (session.messageId) {
+    agentMessageId = session.messageId;
+    agentChatId = key;
+  }
+}
+
+function clearActiveAgentSession(chatId, expectedSession = null) {
+  const key = String(chatId || "");
+  if (!key) return;
+  const current = activeAgentSessions.get(key);
+  if (expectedSession && current && current !== expectedSession) return;
+  activeAgentSessions.delete(key);
+  if (agentChatId === key) {
+    agentChatId = null;
+    agentMessageId = null;
+  }
+  if (
+    activeAgentSession &&
+    String(activeAgentSession.chatId || "") === key
+  ) {
+    activeAgentSession = null;
+  }
+  if (!activeAgentSession && activeAgentSessions.size > 0) {
+    activeAgentSession = Array.from(activeAgentSessions.values()).pop() || null;
+  }
 }
 
 async function getWorkspaceRegistryCached() {
@@ -1019,28 +1258,38 @@ export function injectMonitorFunctions({
  * Re-sends the agent message so it stays at the bottom of the chat.
  */
 export async function bumpAgentMessage() {
-  if (!activeAgentSession || activeAgentSession.background) return;
-  if (!agentMessageId || !agentChatId) return;
-  try {
-    // Delete the old message
-    await deleteDirect(agentChatId, agentMessageId);
-  } catch {
-    /* best effort */
+  const candidates = [];
+  if (agentChatId) {
+    const pinned = getActiveAgentSession(agentChatId);
+    if (pinned) candidates.push(pinned);
   }
-  // Re-send at bottom
-  const session = activeAgentSession;
-  const msg = buildStreamMessage({
-    taskPreview: session.taskPreview,
-    actionLog: session.actionLog,
-    currentThought: session.currentThought,
-    totalActions: session.totalActions,
-    phase: session.phase,
-    finalResponse: null,
-  });
-  const newId = await sendDirect(agentChatId, msg);
-  if (newId) {
-    agentMessageId = newId;
-    session.messageId = newId;
+  if (candidates.length === 0) {
+    for (const session of activeAgentSessions.values()) {
+      if (!session?.background) candidates.push(session);
+    }
+  }
+  for (const session of candidates) {
+    if (!session || session.background) continue;
+    if (!session.messageId || !session.chatId) continue;
+    try {
+      await deleteDirect(session.chatId, session.messageId);
+    } catch {
+      /* best effort */
+    }
+    const msg = buildStreamMessage({
+      taskPreview: session.taskPreview,
+      actionLog: session.actionLog,
+      currentThought: session.currentThought,
+      totalActions: session.totalActions,
+      phase: session.phase,
+      finalResponse: null,
+    });
+    const newId = await sendDirect(session.chatId, msg);
+    if (newId) {
+      session.messageId = newId;
+      agentMessageId = newId;
+      agentChatId = String(session.chatId);
+    }
   }
 }
 
@@ -1048,7 +1297,7 @@ export async function bumpAgentMessage() {
  * Check if agent is active (for external callers like monitor.mjs).
  */
 export function isAgentActive() {
-  return !!activeAgentSession;
+  return activeAgentSessions.size > 0;
 }
 
 function setStickyMenuState(chatId, patch) {
@@ -1108,6 +1357,25 @@ async function bumpStickyMenu(chatId) {
   await showUiScreen(chatId, null, state.screenId, state.params || {}, {
     sticky: true,
   });
+}
+
+async function refreshStickyMenu(chatId, screenId = "home", params = {}) {
+  const state = stickyMenuState.get(chatId);
+  if (state?.messageId) {
+    try {
+      await deleteDirect(chatId, state.messageId);
+    } catch {
+      /* best effort */
+    }
+  }
+  const timer = stickyMenuTimers.get(chatId);
+  if (timer) {
+    clearTimeout(timer);
+    stickyMenuTimers.delete(chatId);
+  }
+  stickyMenuState.delete(chatId);
+  clearPendingUiInput(chatId);
+  await showUiScreen(chatId, null, screenId, params, { sticky: true });
 }
 
 // ── Telegram API Helpers ─────────────────────────────────────────────────────
@@ -1991,6 +2259,8 @@ async function pollUpdates() {
     const body = await res.text().catch(() => "");
     console.warn(`[telegram-bot] getUpdates failed: ${res.status} ${body}`);
     if (res.status === 409) {
+      const untilMs = Date.now() + TELEGRAM_POLL_CONFLICT_COOLDOWN_MS;
+      writeTelegramPollConflictState(untilMs, `409 Conflict — cooldown until ${new Date(untilMs).toISOString()}`);
       polling = false;
       await releaseTelegramPollLock();
       return [];
@@ -1999,6 +2269,7 @@ async function pollUpdates() {
     return [];
   }
   resetPollFailureStreak();
+  clearTelegramPollConflictState();
   if (!telegramApiReachable) {
     telegramApiReachable = true;
     // API came back — register commands that were deferred at startup
@@ -2284,7 +2555,7 @@ async function handleUpdate(update) {
     );
     return;
   }
-  enqueueAgentTask(() => handleFreeText(text, chatId));
+  enqueueAgentTask(() => handleFreeText(text, chatId), chatId);
 }
 
 // ── Command Router ────────────────────────────────────────────────────────────
@@ -2456,7 +2727,7 @@ async function cmdWorkspace(chatId, text) {
     .trim();
   const [sub, ...rest] = raw ? raw.split(/\s+/) : [];
   const subcmd = String(sub || "list").toLowerCase();
-  const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+  const configDir = resolveTelegramConfigDir();
 
   try {
     if (subcmd === "scan") {
@@ -3975,13 +4246,13 @@ function uiNavRow(parent) {
   if (!parent) {
     return [
       uiButton("🏠 Home", uiGoAction("home")),
-      uiButton("✖ Close", "cb:close_menu"),
+      uiButton("❌ Close", "cb:close_menu"),
     ];
   }
   return [
     uiButton("⬅️ Back", uiGoAction(parent)),
     uiButton("🏠 Home", uiGoAction("home")),
-    uiButton("✖ Close", "cb:close_menu"),
+    uiButton("❌ Close", "cb:close_menu"),
   ];
 }
 
@@ -4215,21 +4486,40 @@ Object.assign(UI_SCREENS, {
             text: "📱 Open Control Center",
             web_app: { url: telegramWebAppUrl },
           },
-          uiButton("✖", "cb:close_menu"),
+          uiButton("❌", "cb:close_menu"),
         ]);
-        if (telegramUiUrl) {
-          rows.unshift([
-            { text: "🌐 Open in Browser", url: getBrowserUiUrl() || telegramUiUrl },
-          ]);
+        if (getBrowserUiUrlOptions().length > 0) {
+          rows.unshift([uiButton("🌐 Open in Browser", uiGoAction("browser_urls"))]);
         }
       } else if (telegramUiUrl) {
         rows.unshift([
-          { text: "🌐 Open Control Center", url: getBrowserUiUrl() || telegramUiUrl },
-          uiButton("✖", "cb:close_menu"),
+          uiButton("🌐 Open in Browser", uiGoAction("browser_urls")),
+          uiButton("❌", "cb:close_menu"),
         ]);
       } else {
-        rows.unshift([uiButton("✖ Close Menu", "cb:close_menu")]);
+        rows.unshift([uiButton("❌ Close Menu", "cb:close_menu")]);
       }
+      return buildKeyboard(rows);
+    },
+  },
+  browser_urls: {
+    title: "Browser URLs",
+    parent: "home",
+    body: () => {
+      const options = getBrowserUiUrlOptions();
+      if (options.length === 0) {
+        return "Mini App URL is not available yet.";
+      }
+      const lines = ["Choose a browser URL. Session token is pre-attached."];
+      for (const option of options) {
+        lines.push(`• ${option.label}`);
+      }
+      return lines.join("\n");
+    },
+    keyboard: () => {
+      const options = getBrowserUiUrlOptions();
+      const rows = options.map((option) => [{ text: option.label, url: option.url }]);
+      rows.push(uiNavRow("home"));
       return buildKeyboard(rows);
     },
   },
@@ -5062,7 +5352,7 @@ Object.assign(UI_SCREENS, {
     body: () => "Choose a local workspace to set active for task routing.",
     keyboard: async (ctx) => {
       const page = parsePageParam(ctx.params?.page);
-      const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+      const configDir = resolveTelegramConfigDir();
       const workspaces = listLocalWorkspaces(configDir);
       const active = getActiveLocalWorkspace(configDir);
       if (!workspaces.length) {
@@ -5326,7 +5616,7 @@ Object.assign(UI_SCREENS, {
     body: () => "Browse, manage, and interact with your managed workspaces.",
     keyboard: async (ctx) => {
       const page = parsePageParam(ctx.params?.page);
-      const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+      const configDir = resolveTelegramConfigDir();
       const workspaces = listLocalWorkspaces(configDir);
       const active = getActiveLocalWorkspace(configDir);
       if (!workspaces.length) {
@@ -6065,9 +6355,15 @@ async function cmdApp(chatId) {
     );
     return;
   }
-  const rows = [[{ text: "🌐 Open in Browser", url: getBrowserUiUrl() || uiUrl }]];
+  const browserOptions = getBrowserUiUrlOptions();
+  const rows = [];
   if (webAppUrl) {
     rows.unshift([{ text: "📱 Open Control Center", web_app: { url: webAppUrl } }]);
+  }
+  if (browserOptions.length > 0) {
+    rows.push(...browserOptions.map((option) => [{ text: option.label, url: option.url }]));
+  } else {
+    rows.push([{ text: "🌐 Open in Browser", url: getBrowserUiUrl() || uiUrl }]);
   }
   const keyboard = { inline_keyboard: rows };
 
@@ -6296,7 +6592,7 @@ async function cmdAsk(chatId, args) {
     await sendReply(chatId, "Usage: /ask <prompt>");
     return;
   }
-  enqueueAgentTask(() => handleFreeText(prompt, chatId));
+  enqueueAgentTask(() => handleFreeText(prompt, chatId), chatId);
 }
 
 async function cmdStatus(chatId) {
@@ -9121,7 +9417,8 @@ async function cmdBackground(chatId, args) {
     return;
   }
 
-  if (!activeAgentSession) {
+  const session = getActiveAgentSession(chatId);
+  if (!session) {
     await sendReply(
       chatId,
       "No active agent. Usage:\n/background <task>\n(background current agent with /background)",
@@ -9129,19 +9426,20 @@ async function cmdBackground(chatId, args) {
     return;
   }
 
-  activeAgentSession.background = true;
-  activeAgentSession.suppressEdits = true;
+  session.background = true;
+  session.suppressEdits = true;
 
-  if (agentMessageId && agentChatId) {
+  if (session.messageId && session.chatId) {
     try {
-      await deleteDirect(agentChatId, agentMessageId);
+      await deleteDirect(session.chatId, session.messageId);
     } catch {
       /* best effort */
     }
   }
-  agentMessageId = null;
-  if (activeAgentSession) {
-    activeAgentSession.messageId = null;
+  session.messageId = null;
+  if (agentChatId === String(chatId)) {
+    agentMessageId = null;
+    agentChatId = null;
   }
 
   await sendReply(
@@ -9162,25 +9460,26 @@ async function cmdStop(chatId, args) {
     );
     return;
   }
-  if (!activeAgentSession) {
+  const session = getActiveAgentSession(chatId);
+  if (!session) {
     await sendReply(chatId, "No agent is currently running.");
     return;
   }
-  activeAgentSession.aborted = true;
-  if (activeAgentSession.abortController) {
+  session.aborted = true;
+  if (session.abortController) {
     try {
-      activeAgentSession.abortController.abort("user_stop");
+      session.abortController.abort("user_stop");
     } catch {
       /* best effort */
     }
   }
-  if (activeAgentSession.actionLog) {
-    activeAgentSession.actionLog.push({
+  if (session.actionLog) {
+    session.actionLog.push({
       icon: "🛑",
       text: "Stop requested by user (will halt after current step)",
     });
-    if (activeAgentSession.scheduleEdit) {
-      activeAgentSession.scheduleEdit();
+    if (session.scheduleEdit) {
+      session.scheduleEdit();
     }
   }
   await sendReply(chatId, "🛑 Stop signal sent. Agent will halt and wait.");
@@ -9195,7 +9494,8 @@ async function cmdSteer(chatId, steerArgs) {
   }
   const message = steerArgs.trim();
 
-  if (!activeAgentSession || !isPrimaryBusy()) {
+  const session = getActiveAgentSession(chatId);
+  if (!session) {
     await sendReply(chatId, "No active agent. Sending as a new task.");
     await handleFreeText(message, chatId);
     return;
@@ -9203,34 +9503,34 @@ async function cmdSteer(chatId, steerArgs) {
 
   const result = await steerPrimaryPrompt(message);
   if (result.ok) {
-    if (activeAgentSession.actionLog) {
-      activeAgentSession.actionLog.push({
+    if (session.actionLog) {
+      session.actionLog.push({
         icon: "🧭",
         text: `Steering update delivered (${result.mode})`,
       });
-      if (activeAgentSession.scheduleEdit) {
-        activeAgentSession.scheduleEdit();
+      if (session.scheduleEdit) {
+        session.scheduleEdit();
       }
     }
     await sendReply(chatId, `🧭 Steering sent (${result.mode}).`);
     return;
   }
 
-  if (!activeAgentSession.followUpQueue) {
-    activeAgentSession.followUpQueue = [];
+  if (!session.followUpQueue) {
+    session.followUpQueue = [];
   }
-  activeAgentSession.followUpQueue.push(message);
-  const qLen = activeAgentSession.followUpQueue.length;
-  if (activeAgentSession.actionLog) {
+  session.followUpQueue.push(message);
+  const qLen = session.followUpQueue.length;
+  if (session.actionLog) {
     const steerStatus = result.reason || "failed";
-    activeAgentSession.actionLog.push({
+    session.actionLog.push({
       icon: "🧭",
       text: `Steering queued (#${qLen}; steer failed: ${steerStatus})`,
       kind: "followup_queued",
       steerStatus,
     });
-    if (activeAgentSession.scheduleEdit) {
-      activeAgentSession.scheduleEdit();
+    if (session.scheduleEdit) {
+      session.scheduleEdit();
     }
   }
   await sendReply(chatId, `🧭 Steering queued (#${qLen}).`);
@@ -9355,13 +9655,14 @@ function buildStreamMessage({
 async function handleFreeText(text, chatId, options = {}) {
   const backgroundMode = !!options.background;
   const isolatedMode = !!options.isolated;
+  const chatSession = getActiveAgentSession(chatId);
   // ── Follow-up steering: if agent is busy, queue message as follow-up ──
-  if (!isolatedMode && isPrimaryBusy() && activeAgentSession) {
-    if (!activeAgentSession.followUpQueue) {
-      activeAgentSession.followUpQueue = [];
+  if (!isolatedMode && chatSession) {
+    if (!chatSession.followUpQueue) {
+      chatSession.followUpQueue = [];
     }
-    activeAgentSession.followUpQueue.push(text);
-    const qLen = activeAgentSession.followUpQueue.length;
+    chatSession.followUpQueue.push(text);
+    const qLen = chatSession.followUpQueue.length;
 
     // Try immediate steering so the in-flight run can adapt ASAP.
     const steerResult = await steerPrimaryPrompt(text);
@@ -9377,27 +9678,18 @@ async function handleFreeText(text, chatId, options = {}) {
     );
 
     // Add follow-up indicator to the streaming message
-    if (activeAgentSession.actionLog) {
-      activeAgentSession.actionLog.push({
+    if (chatSession.actionLog) {
+      chatSession.actionLog.push({
         icon: "📌",
         text: `Follow-up: "${text.length > 60 ? text.slice(0, 60) + "…" : text}" (${steerNote})`,
         kind: "followup_queued",
         steerStatus,
       });
       // Trigger an edit to show the follow-up in the streaming message
-      if (activeAgentSession.scheduleEdit) {
-        activeAgentSession.scheduleEdit();
+      if (chatSession.scheduleEdit) {
+        chatSession.scheduleEdit();
       }
     }
-    return;
-  }
-
-  // ── Block if agent is busy but no session (shouldn't happen normally) ──
-  if (!isolatedMode && isPrimaryBusy()) {
-    await sendReply(
-      chatId,
-      "⏳ Agent is executing a task. Please wait for it to finish...",
-    );
     return;
   }
 
@@ -9449,7 +9741,7 @@ async function handleFreeText(text, chatId, options = {}) {
   let hadError = false;
 
   const doEdit = async () => {
-    if (backgroundMode || activeAgentSession?.background) return;
+    if (backgroundMode || sessionState.background) return;
     editPending = false;
     const msg = buildStreamMessage({
       taskPreview,
@@ -9470,7 +9762,7 @@ async function handleFreeText(text, chatId, options = {}) {
   };
 
   const scheduleEdit = () => {
-    if (backgroundMode || activeAgentSession?.background) return;
+    if (backgroundMode || sessionState.background) return;
     if (editPending) return;
     const now = Date.now();
     const elapsed = now - lastEditAt;
@@ -9488,7 +9780,7 @@ async function handleFreeText(text, chatId, options = {}) {
 
   // ── Set up agent session (enables follow-up steering & bottom-pinning) ──
   const abortController = new AbortController();
-  activeAgentSession = {
+  const sessionState = {
     chatId,
     messageId,
     taskPreview,
@@ -9503,6 +9795,7 @@ async function handleFreeText(text, chatId, options = {}) {
     background: backgroundMode,
     suppressEdits: backgroundMode,
   };
+  setActiveAgentSession(chatId, sessionState);
   agentMessageId = messageId;
   agentChatId = chatId;
 
@@ -9595,17 +9888,17 @@ async function handleFreeText(text, chatId, options = {}) {
 
     if (action.phase === "thinking") {
       currentThought = action.text;
-      if (activeAgentSession) activeAgentSession.currentThought = action.text;
+      sessionState.currentThought = action.text;
     } else {
       if (action.phase === "done" || action.phase === "running") {
         totalActions++;
-        if (activeAgentSession) activeAgentSession.totalActions = totalActions;
+        sessionState.totalActions = totalActions;
       }
       actionLog.push(action);
       // Keep thought visible while actions proceed (only clear on new non-thinking action)
       if (action.phase !== "thinking") {
         currentThought = null;
-        if (activeAgentSession) activeAgentSession.currentThought = null;
+        sessionState.currentThought = null;
       }
     }
 
@@ -9617,7 +9910,7 @@ async function handleFreeText(text, chatId, options = {}) {
     } else {
       phase = "working…";
     }
-    if (activeAgentSession) activeAgentSession.phase = phase;
+    sessionState.phase = phase;
 
     scheduleEdit();
   };
@@ -9639,8 +9932,8 @@ async function handleFreeText(text, chatId, options = {}) {
 
     // ── Process follow-up queue ───────────────────────────────────
     // If user sent follow-up messages while agent was working, process them now
-    const followUps = activeAgentSession?.followUpQueue || [];
-    if (followUps.length > 0 && !activeAgentSession?.aborted) {
+    const followUps = sessionState.followUpQueue || [];
+    if (followUps.length > 0 && !sessionState.aborted) {
       for (const followUp of followUps) {
         actionLog.push({
           icon: "📌",
@@ -9710,7 +10003,7 @@ async function handleFreeText(text, chatId, options = {}) {
       searchesDone: searchCount,
       statusIcon,
     });
-    if (backgroundMode || activeAgentSession?.background) {
+    if (backgroundMode || sessionState.background) {
       await sendReply(chatId, finalMsg);
     } else {
       const finalMessageId = await editDirect(chatId, messageId, finalMsg);
@@ -9732,7 +10025,7 @@ async function handleFreeText(text, chatId, options = {}) {
       searchesDone: searchCount,
       statusIcon: "❌",
     });
-    if (backgroundMode || activeAgentSession?.background) {
+    if (backgroundMode || sessionState.background) {
       await sendReply(chatId, finalMsg);
     } else {
       const finalMessageId = await editDirect(chatId, messageId, finalMsg);
@@ -9742,9 +10035,7 @@ async function handleFreeText(text, chatId, options = {}) {
     }
   } finally {
     // ── Clean up agent session ────────────────────────────────────
-    activeAgentSession = null;
-    agentMessageId = null;
-    agentChatId = null;
+    clearActiveAgentSession(chatId, sessionState);
   }
 }
 
@@ -10460,11 +10751,22 @@ function stopBatchFlushLoop() {
  * Start the two-way Telegram bot.
  * Call injectMonitorFunctions() first if you want full integration.
  */
-export async function startTelegramBot() {
+export async function startTelegramBot(options = {}) {
   refreshTelegramConfigFromEnv();
   if (!telegramToken || !telegramChatId) {
     console.warn(
       "[telegram-bot] disabled (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)",
+    );
+    return;
+  }
+
+  // ── 409 conflict cooldown guard ──────────────────────────────────────────
+  const conflictState = readTelegramPollConflictState();
+  if (conflictState && conflictState.untilMs > Date.now()) {
+    const remainSec = Math.ceil((conflictState.untilMs - Date.now()) / 1000);
+    console.warn(
+      `[telegram-bot] polling suppressed — 409 conflict cooldown active for ${remainSec}s` +
+      (conflictState.reason ? ` (${conflictState.reason})` : ""),
     );
     return;
   }
@@ -10497,8 +10799,22 @@ export async function startTelegramBot() {
   const miniAppPort = Number(process.env.TELEGRAM_UI_PORT || "0");
 
   if (miniAppEnabled || miniAppPort > 0) {
+    const restartReason = String(
+      options.restartReason || process.env.BOSUN_MONITOR_RESTART_REASON || "",
+    )
+      .trim()
+      .toLowerCase();
+    const suppressPortalAutoOpen =
+      options.suppressPortalAutoOpen === true || restartReason.length > 0;
+    const autoOpenOptIn = ["1", "true", "yes", "on"].includes(
+      String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "").toLowerCase(),
+    );
     try {
       await startTelegramUiServer({
+        // Background monitor/bot runtime should not keep opening browser tabs.
+        // Set BOSUN_UI_AUTO_OPEN_BROWSER=1 to opt-in.
+        skipAutoOpen: suppressPortalAutoOpen || !autoOpenOptIn,
+        restartReason,
         dependencies: {
           execPrimaryPrompt,
           getInternalExecutor: _getInternalExecutor,
@@ -10506,7 +10822,7 @@ export async function startTelegramBot() {
           getAgentEventBus: _getAgentEventBus,
           handleUiCommand: handleUiCommand,
           getSyncEngine: _getSyncEngine,
-          configDir: process.env.BOSUN_DIR || join(homedir(), "bosun"),
+          configDir: resolveTelegramConfigDir(),
           onProjectSyncAlert: async (alert) => {
             if (!_sendTelegramMessage) return;
             const text = String(alert?.message || "Project sync alert");
@@ -10650,8 +10966,9 @@ export async function startTelegramBot() {
   } else {
     await sendDirect(
       telegramChatId,
-      `🤖 Bosun primary agent online (${getPrimaryAgentName()}).\n\nType /menu for the control center or send any message to chat with the agent.`,
+      `🤖 Bosun primary agent online (${getPrimaryAgentName()}).\n\nType /menu for the control center or send any message to chat with the agent.\n\nRefreshing control center menu below…`,
     );
+    await refreshStickyMenu(telegramChatId, "home", {});
 
     // ── SECURITY: Alert when ALLOW_UNSAFE is enabled (especially with tunnel) ──
     const _isUnsafe = ["1", "true", "yes"].includes(

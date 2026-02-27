@@ -18,12 +18,18 @@ import { fileURLToPath } from "node:url";
 import { resolveAgentSdkConfig } from "./agent-sdk.mjs";
 import { resolveRepoRoot } from "./repo-root.mjs";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
+import {
+  isTransientStreamError,
+  streamRetryDelay,
+  MAX_STREAM_RETRIES,
+} from "./stream-resilience.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000; // 60 min for agentic tasks (matches Azure stream timeout)
+// MAX_STREAM_RETRIES, isTransientStreamError, streamRetryDelay ← imported from ./stream-resilience.mjs
 const STATE_FILE = resolve(__dirname, "logs", "codex-shell-state.json");
 const SESSIONS_DIR = resolve(__dirname, "logs", "sessions");
 const MAX_PERSISTENT_TURNS = 50;
@@ -554,30 +560,32 @@ export async function execCodexPrompt(userMessage, options = {}) {
     }
     // else: persistent && same session && under limit → reuse activeThread
 
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    // Build the user prompt with optional status context (built once, reused across retries)
+    let prompt = userMessage;
+    if (statusData) {
+      const statusSnippet = JSON.stringify(statusData, null, 2).slice(0, 2000);
+      prompt = `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.`;
+    } else {
+      prompt = `${userMessage}\n\n\n# YOUR TASK — EXECUTE NOW\n\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output & complete the user's request E2E.`;
+    }
+    // Sanitize & size-guard once — prevents invalid_request_error from oversized
+    // bodies (BytePositionInLine > 80 000) or unescaped control characters.
+    const safePrompt = sanitizeAndTruncatePrompt(prompt);
+
+    let threadResetDone = false;
+
+    for (let attempt = 0; attempt < MAX_STREAM_RETRIES; attempt += 1) {
       const thread = await getThread();
 
-      // Build the user prompt with optional status context
-      let prompt = userMessage;
-      if (statusData) {
-        const statusSnippet = JSON.stringify(statusData, null, 2).slice(
-          0,
-          2000,
-        );
-        prompt = `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.`;
-      } else {
-        prompt = `${userMessage}\n\n\n# YOUR TASK — EXECUTE NOW\n\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output & complete the user's request E2E.`;
-      }
-
-      // Set up timeout
+      // Each attempt gets a fresh AbortController tied to the same timeout budget.
+      // We intentionally do NOT share the same controller across retries: if the
+      // first attempt times out the signal is already aborted and the retry would
+      // immediately fail.  The total wall-clock budget is still bounded by the
+      // outer timeoutMs passed in.
       const controller = abortController || new AbortController();
       const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
 
       try {
-        // Sanitize & size-guard before sending — prevents invalid_request_error
-        // from oversized bodies (BytePositionInLine > 80 000) or control chars.
-        const safePrompt = sanitizeAndTruncatePrompt(prompt);
-
         // Use runStreamed for real-time event streaming
         const streamedTurn = await thread.runStreamed(safePrompt, {
           signal: controller.signal,
@@ -585,6 +593,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
 
         let finalResponse = "";
         const allItems = [];
+        let turnFailedErr = null;
 
         // Process events from the async generator
         for await (const event of streamedTurn.events) {
@@ -592,6 +601,13 @@ export async function execCodexPrompt(userMessage, options = {}) {
           if (event.type === "thread.started" && event.thread_id) {
             activeThreadId = event.thread_id;
             await saveState();
+          }
+
+          // turn.failed is emitted by the SDK when the server signals response.failed.
+          // Convert it into a retriable error so the retry loop can back off & retry.
+          if (event.type === "turn.failed") {
+            const detail = event.error?.message || "response.failed";
+            turnFailedErr = new Error(`stream disconnected before completion: ${detail}`);
           }
 
           // Format and emit event
@@ -628,6 +644,10 @@ export async function execCodexPrompt(userMessage, options = {}) {
           }
         }
 
+        // If a turn.failed event was seen during the stream, treat it as a
+        // transient stream error so the retry loop handles it correctly.
+        if (turnFailedErr) throw turnFailedErr;
+
         clearTimeout(timer);
 
         return {
@@ -638,6 +658,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
         };
       } catch (err) {
         clearTimeout(timer);
+
         if (err.name === "AbortError") {
           const reason = controller.signal.reason;
           const msg =
@@ -646,18 +667,44 @@ export async function execCodexPrompt(userMessage, options = {}) {
               : `⏱️ Agent timed out after ${timeoutMs / 1000}s`;
           return { finalResponse: msg, items: [], usage: null };
         }
-        if (attempt === 0 && isRecoverableThreadError(err)) {
+
+        // ── Thread corruption errors: reset thread & retry once ──────────────
+        if (!threadResetDone && isRecoverableThreadError(err)) {
           console.warn(
             `[codex-shell] recoverable thread error: ${err.message || err} — resetting thread`,
           );
           await resetThread();
-          continue;
+          threadResetDone = true;
+          continue; // retry without counting against stream-retry budget
         }
+
+        // ── Transient stream/network errors: backoff & retry ─────────────────
+        if (isTransientStreamError(err)) {
+          const attemptsLeft = MAX_STREAM_RETRIES - 1 - attempt;
+          if (attemptsLeft > 0) {
+            const delay = streamRetryDelay(attempt);
+            console.warn(
+              `[codex-shell] transient stream error (attempt ${attempt + 1}/${MAX_STREAM_RETRIES}): ${err.message || err} — retrying in ${Math.round(delay)}ms`,
+            );
+            await new Promise((r) => setTimeout(r, delay));
+            continue;
+          }
+          // Exhausted all retries
+          console.error(
+            `[codex-shell] stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts — giving up`,
+          );
+          return {
+            finalResponse: `❌ Stream disconnected after ${MAX_STREAM_RETRIES} retries: ${err.message}`,
+            items: [],
+            usage: null,
+          };
+        }
+
         throw err;
       }
     }
     return {
-      finalResponse: "❌ Agent failed after retry.",
+      finalResponse: "❌ Agent failed after all retry attempts.",
       items: [],
       usage: null,
     };

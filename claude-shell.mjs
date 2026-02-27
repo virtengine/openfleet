@@ -11,6 +11,11 @@ import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { resolveRepoRoot } from "./repo-root.mjs";
+import {
+  isTransientStreamError,
+  streamRetryDelay,
+  MAX_STREAM_RETRIES,
+} from "./stream-resilience.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
@@ -471,7 +476,7 @@ export async function execClaudePrompt(userMessage, options = {}) {
     abortController = null,
   } = options;
 
-  if (activeTurn) {
+  if (activeTurn && !options._holdActiveTurn) {
     return {
       finalResponse:
         "⏳ Agent is still executing a previous task. Please wait.",
@@ -489,7 +494,9 @@ export async function execClaudePrompt(userMessage, options = {}) {
     };
   }
 
-  activeTurn = true;
+  if (!options._holdActiveTurn) activeTurn = true;
+  /** Sentinel: true while a retry call is pending so finally skips cleanup. */
+  let _retryPending = false;
   toolUseById.clear();
 
   const transport = resolveClaudeTransport();
@@ -643,6 +650,33 @@ export async function execClaudePrompt(userMessage, options = {}) {
           : `⏱️ Agent timed out after ${timeoutMs / 1000}s`;
       return { finalResponse: msg, items: [], usage: null };
     }
+    // ── Transient stream retry ──────────────────────────────────────────────────
+    // Network/stream blips are safe to retry without resetting session state.
+    // _retryPending keeps the finally block from releasing activeTurn early.
+    if (isTransientStreamError(err)) {
+      const retryAttempt = (options._streamRetryAttempt || 0) + 1;
+      if (retryAttempt < MAX_STREAM_RETRIES) {
+        if (activeQueue) activeQueue.close();
+        activeQueue = null;
+        activeQuery = null;
+        toolUseById.clear();
+        const delay = streamRetryDelay(retryAttempt - 1);
+        console.warn(
+          `[claude-shell] transient stream error (attempt ${retryAttempt}/${MAX_STREAM_RETRIES}): ${err.message || err} — retrying in ${Math.round(delay)}ms`,
+        );
+        _retryPending = true; // prevent outer finally from releasing activeTurn
+        await new Promise((r) => setTimeout(r, delay));
+        // _retryPending stays true through the return so outer finally skips cleanup
+        return execClaudePrompt(userMessage, {
+          ...options,
+          _streamRetryAttempt: retryAttempt,
+          _holdActiveTurn: true, // skip activeTurn guard in recursive call
+        });
+      }
+      console.error(
+        `[claude-shell] stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts`,
+      );
+    }
     const message = err?.message || String(err || "unknown error");
     return {
       finalResponse: `❌ Claude agent failed: ${message}`,
@@ -650,10 +684,14 @@ export async function execClaudePrompt(userMessage, options = {}) {
       usage: null,
     };
   } finally {
-    if (activeQueue) activeQueue.close();
-    activeQueue = null;
-    activeQuery = null;
-    activeTurn = false;
+    // Only the outermost invocation (or the final retry) cleans up.
+    // When _retryPending is true, the recursive retry call owns the activeTurn lock.
+    if (!_retryPending) {
+      if (activeQueue) activeQueue.close();
+      activeQueue = null;
+      activeQuery = null;
+      activeTurn = false;
+    }
   }
 }
 
