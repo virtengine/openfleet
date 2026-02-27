@@ -2828,6 +2828,82 @@ function textResponse(res, statusCode, body, contentType = "text/plain") {
   res.end(body);
 }
 
+function normalizeTaskStatusKey(status) {
+  return String(status || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+}
+
+function shouldRestartTaskAfterStatusUpdate(previousStatus, nextStatus) {
+  const prev = normalizeTaskStatusKey(previousStatus);
+  const next = normalizeTaskStatusKey(nextStatus);
+  return prev === "inreview" && next === "inprogress";
+}
+
+async function maybeRestartTaskOnReopen({
+  taskId,
+  previousStatus,
+  nextStatus,
+  updatedTask,
+  adapter,
+  executor,
+}) {
+  if (!taskId) {
+    return { attempted: false, started: false, reason: "missing_task_id" };
+  }
+  if (!shouldRestartTaskAfterStatusUpdate(previousStatus, nextStatus)) {
+    return { attempted: false, started: false, reason: "transition_not_eligible" };
+  }
+  if (!executor) {
+    return { attempted: true, started: false, reason: "executor_unavailable" };
+  }
+
+  const status = executor.getStatus?.() || {};
+  const activeSlots = Array.isArray(status?.slots) ? status.slots : [];
+  const alreadyRunning = activeSlots.some(
+    (slot) => String(slot?.taskId || "").trim() === String(taskId).trim(),
+  );
+  if (alreadyRunning) {
+    return { attempted: true, started: false, reason: "already_running" };
+  }
+
+  const maxParallel = Number(status?.maxParallel || 0);
+  const activeCount = Number(status?.activeSlots || activeSlots.length || 0);
+  const hasFreeSlot = maxParallel <= 0 || activeCount < maxParallel;
+  if (!hasFreeSlot) {
+    return { attempted: true, started: false, reason: "no_free_slots" };
+  }
+
+  let taskToRun = updatedTask && typeof updatedTask === "object" ? updatedTask : null;
+  if (!taskToRun?.id && typeof adapter?.getTask === "function") {
+    try {
+      taskToRun = await adapter.getTask(taskId);
+    } catch (err) {
+      return {
+        attempted: true,
+        started: false,
+        reason: "task_lookup_failed",
+        error: err?.message || String(err),
+      };
+    }
+  }
+  if (!taskToRun) {
+    return { attempted: true, started: false, reason: "task_not_found" };
+  }
+
+  executor.executeTask(taskToRun, {
+    force: true,
+    recoveredFromInProgress: true,
+  }).catch((error) => {
+    console.warn(
+      `[telegram-ui] failed to restart reopened task ${taskId}: ${error.message}`,
+    );
+  });
+
+  return { attempted: true, started: true, reason: "restarted" };
+}
+
 function parseInitData(initData) {
   const params = new URLSearchParams(initData);
   const data = {};
@@ -4610,6 +4686,9 @@ async function handleApi(req, res, url) {
         return;
       }
       const adapter = getKanbanAdapter();
+      const previousTask = typeof adapter.getTask === "function"
+        ? await adapter.getTask(taskId).catch(() => null)
+        : null;
       const tagsProvided = body && Object.prototype.hasOwnProperty.call(body, "tags");
       const tags = tagsProvided ? normalizeTagsInput(body?.tags) : undefined;
       const draftProvided = body && Object.prototype.hasOwnProperty.call(body, "draft");
@@ -4652,12 +4731,27 @@ async function handleApi(req, res, url) {
         typeof adapter.updateTask === "function"
           ? await adapter.updateTask(taskId, patch)
           : await adapter.updateTaskStatus(taskId, patch.status);
-      jsonResponse(res, 200, { ok: true, data: updated });
+      const executor = uiDeps.getInternalExecutor?.() || null;
+      const restart = await maybeRestartTaskOnReopen({
+        taskId,
+        previousStatus: previousTask?.status || null,
+        nextStatus: updated?.status || patch.status || null,
+        updatedTask: updated,
+        adapter,
+        executor,
+      });
+      jsonResponse(res, 200, { ok: true, data: updated, restart });
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "task-updated",
         taskId,
         status: updated?.status || patch.status || null,
       });
+      if (restart?.started) {
+        broadcastUiEvent(["tasks", "overview", "executor", "agents"], "invalidate", {
+          reason: "task-restarted",
+          taskId,
+        });
+      }
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
@@ -4673,6 +4767,9 @@ async function handleApi(req, res, url) {
         return;
       }
       const adapter = getKanbanAdapter();
+      const previousTask = typeof adapter.getTask === "function"
+        ? await adapter.getTask(taskId).catch(() => null)
+        : null;
       const tagsProvided = body && Object.prototype.hasOwnProperty.call(body, "tags");
       const tags = tagsProvided ? normalizeTagsInput(body?.tags) : undefined;
       const draftProvided = body && Object.prototype.hasOwnProperty.call(body, "draft");
@@ -4715,12 +4812,27 @@ async function handleApi(req, res, url) {
         typeof adapter.updateTask === "function"
           ? await adapter.updateTask(taskId, patch)
           : await adapter.updateTaskStatus(taskId, patch.status);
-      jsonResponse(res, 200, { ok: true, data: updated });
+      const executor = uiDeps.getInternalExecutor?.() || null;
+      const restart = await maybeRestartTaskOnReopen({
+        taskId,
+        previousStatus: previousTask?.status || null,
+        nextStatus: updated?.status || patch.status || null,
+        updatedTask: updated,
+        adapter,
+        executor,
+      });
+      jsonResponse(res, 200, { ok: true, data: updated, restart });
       broadcastUiEvent(["tasks", "overview"], "invalidate", {
         reason: "task-edited",
         taskId,
         status: updated?.status || patch.status || null,
       });
+      if (restart?.started) {
+        broadcastUiEvent(["tasks", "overview", "executor", "agents"], "invalidate", {
+          reason: "task-restarted",
+          taskId,
+        });
+      }
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }
