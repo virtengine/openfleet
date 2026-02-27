@@ -167,13 +167,108 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   SECRET_SCANNER_TEMPLATE,
 ]);
 
+const _TEMPLATE_BY_ID = new Map(
+  WORKFLOW_TEMPLATES.map((template) => [template.id, template]),
+);
+
+/**
+ * Setup workflow profiles used by `bosun --setup`.
+ * - `manual`: human-driven dispatch with reliability safety nets.
+ * - `balanced`: recommended default for most teams.
+ * - `autonomous`: higher automation with planning + maintenance workflows.
+ */
+export const WORKFLOW_SETUP_PROFILES = Object.freeze({
+  manual: Object.freeze({
+    id: "manual",
+    name: "Manual Dispatch",
+    description:
+      "Best for teams that dispatch tasks manually and want guardrails, " +
+      "review automation, and recovery paths.",
+    recommendedFor: "Hands-on workflow control with low automation risk.",
+    workflowAutomationEnabled: false,
+    templateIds: Object.freeze([
+      "template-error-recovery",
+      "template-task-finalization-guard",
+      "template-task-repair-worktree",
+      "template-review-agent",
+      "template-health-check",
+    ]),
+  }),
+  balanced: Object.freeze({
+    id: "balanced",
+    name: "Balanced (Recommended)",
+    description:
+      "Reliable default with automated PR quality gates and targeted " +
+      "self-healing, without over-automating planning.",
+    recommendedFor: "Most repos and teams adopting Bosun for daily delivery.",
+    workflowAutomationEnabled: true,
+    templateIds: Object.freeze([
+      "template-pr-merge-strategy",
+      "template-review-agent",
+      "template-backend-agent",
+      "template-error-recovery",
+      "template-anomaly-watchdog",
+      "template-agent-session-monitor",
+      "template-task-finalization-guard",
+      "template-task-repair-worktree",
+      "template-dependency-audit",
+    ]),
+  }),
+  autonomous: Object.freeze({
+    id: "autonomous",
+    name: "Autonomous",
+    description:
+      "Higher automation for end-to-end flow: planning, recovery, conflict " +
+      "handling, maintenance, and incident response.",
+    recommendedFor: "Teams optimizing for maximum unattended throughput.",
+    workflowAutomationEnabled: true,
+    templateIds: Object.freeze([
+      "template-pr-merge-strategy",
+      "template-pr-conflict-resolver",
+      "template-review-agent",
+      "template-backend-agent",
+      "template-task-planner",
+      "template-task-replenish",
+      "template-error-recovery",
+      "template-anomaly-watchdog",
+      "template-agent-session-monitor",
+      "template-workspace-hygiene",
+      "template-task-finalization-guard",
+      "template-task-repair-worktree",
+      "template-incident-response",
+      "template-release-pipeline",
+      "template-dependency-audit",
+    ]),
+  }),
+});
+
+function normalizeTemplateIdList(templateIds = []) {
+  const source = Array.isArray(templateIds)
+    ? templateIds
+    : String(templateIds || "").split(",");
+  const normalized = [];
+  for (const raw of source) {
+    const id = String(raw || "").trim();
+    if (!id || !_TEMPLATE_BY_ID.has(id) || normalized.includes(id)) continue;
+    normalized.push(id);
+  }
+  return normalized;
+}
+
+function resolveProfileTemplateIds(profileId) {
+  const normalized = String(profileId || "").trim().toLowerCase();
+  const profile =
+    WORKFLOW_SETUP_PROFILES[normalized] || WORKFLOW_SETUP_PROFILES.balanced;
+  return [...profile.templateIds];
+}
+
 /**
  * Get a template by ID.
  * @param {string} id
  * @returns {object|null}
  */
 export function getTemplate(id) {
-  return WORKFLOW_TEMPLATES.find((t) => t.id === id) || null;
+  return _TEMPLATE_BY_ID.get(id) || null;
 }
 
 /**
@@ -199,6 +294,55 @@ export function listTemplates() {
       enabled: t.enabled !== false,
     };
   });
+}
+
+/**
+ * List setup workflow profiles for the setup wizard.
+ * @returns {Array<{id: string, name: string, description: string, recommendedFor: string, workflowAutomationEnabled: boolean, templateIds: string[]}>}
+ */
+export function listWorkflowSetupProfiles() {
+  return Object.values(WORKFLOW_SETUP_PROFILES).map((profile) => ({
+    id: profile.id,
+    name: profile.name,
+    description: profile.description,
+    recommendedFor: profile.recommendedFor,
+    workflowAutomationEnabled: profile.workflowAutomationEnabled === true,
+    templateIds: [...profile.templateIds],
+  }));
+}
+
+/**
+ * Get a single setup profile by id.
+ * Falls back to `balanced` when unknown.
+ * @param {string} profileId
+ * @returns {{id: string, name: string, description: string, recommendedFor: string, workflowAutomationEnabled: boolean, templateIds: string[]}}
+ */
+export function getWorkflowSetupProfile(profileId = "balanced") {
+  const normalized = String(profileId || "").trim().toLowerCase();
+  const profile =
+    WORKFLOW_SETUP_PROFILES[normalized] || WORKFLOW_SETUP_PROFILES.balanced;
+  return {
+    id: profile.id,
+    name: profile.name,
+    description: profile.description,
+    recommendedFor: profile.recommendedFor,
+    workflowAutomationEnabled: profile.workflowAutomationEnabled === true,
+    templateIds: [...profile.templateIds],
+  };
+}
+
+/**
+ * Resolve template IDs from a setup profile and/or explicit custom template IDs.
+ * Explicit template IDs win when provided.
+ * @param {object} opts
+ * @param {string} [opts.profileId]
+ * @param {string[]|string} [opts.templateIds]
+ * @returns {string[]}
+ */
+export function resolveWorkflowTemplateIds(opts = {}) {
+  const explicit = normalizeTemplateIdList(opts.templateIds || []);
+  if (explicit.length > 0) return explicit;
+  return resolveProfileTemplateIds(opts.profileId || "balanced");
 }
 
 /**
@@ -249,21 +393,35 @@ export function installTemplate(templateId, engine, overrides = {}) {
 }
 
 /**
- * Ensure all recommended templates are installed.
+ * Install a specific set of template IDs.
  * @param {import('./workflow-engine.mjs').WorkflowEngine} engine
- * @param {Record<string, object>} [overridesById] Optional variable overrides keyed by template id.
+ * @param {string[]|string} templateIds
+ * @param {Record<string, object>} [overridesById]
  * @returns {{installed: object[], skipped: string[], errors: Array<{id: string, error: string}>}}
  */
-export function installRecommendedTemplates(engine, overridesById = {}) {
+export function installTemplateSet(engine, templateIds = [], overridesById = {}) {
+  const source = Array.isArray(templateIds)
+    ? templateIds
+    : String(templateIds || "").split(",");
+  const requested = [];
+  for (const raw of source) {
+    const id = String(raw || "").trim();
+    if (!id || requested.includes(id)) continue;
+    requested.push(id);
+  }
   const existing = engine.list();
-  const installed = new Set(
+  const installedLookup = new Set(
     existing.flatMap((wf) => [wf.metadata?.installedFrom, wf.name]).filter(Boolean),
   );
   const results = { installed: [], skipped: [], errors: [] };
 
-  for (const template of WORKFLOW_TEMPLATES) {
-    if (template.recommended !== true) continue;
-    if (installed.has(template.id) || installed.has(template.name)) {
+  for (const templateId of requested) {
+    const template = getTemplate(templateId);
+    if (!template) {
+      results.errors.push({ id: templateId, error: `Template "${templateId}" not found` });
+      continue;
+    }
+    if (installedLookup.has(template.id) || installedLookup.has(template.name)) {
       results.skipped.push(template.id);
       continue;
     }
@@ -271,12 +429,25 @@ export function installRecommendedTemplates(engine, overridesById = {}) {
       const overrides = overridesById[template.id] || overridesById[template.name] || {};
       const wf = installTemplate(template.id, engine, overrides);
       results.installed.push(wf);
-      installed.add(template.id);
-      installed.add(template.name);
+      installedLookup.add(template.id);
+      installedLookup.add(template.name);
     } catch (err) {
       results.errors.push({ id: template.id, error: err.message });
     }
   }
 
   return results;
+}
+
+/**
+ * Ensure all recommended templates are installed.
+ * @param {import('./workflow-engine.mjs').WorkflowEngine} engine
+ * @param {Record<string, object>} [overridesById] Optional variable overrides keyed by template id.
+ * @returns {{installed: object[], skipped: string[], errors: Array<{id: string, error: string}>}}
+ */
+export function installRecommendedTemplates(engine, overridesById = {}) {
+  const recommendedIds = WORKFLOW_TEMPLATES
+    .filter((template) => template.recommended === true)
+    .map((template) => template.id);
+  return installTemplateSet(engine, recommendedIds, overridesById);
 }

@@ -49,17 +49,33 @@ export const ERROR_RECOVERY_TEMPLATE = {
     node("retry-task", "action.run_agent", "Retry Task", {
       prompt: "{{taskExecutorRetryPrompt}}",
       timeoutMs: 3600000,
+      failOnError: true,
+      maxRetries: "{{maxRetries}}",
+      retryDelayMs: 15000,
+      continueOnError: true,
     }, { x: 200, y: 480 }),
+
+    node("retry-succeeded", "condition.expression", "Retry Succeeded?", {
+      expression: "$ctx.getNodeOutput('retry-task')?.success === true",
+    }, { x: 200, y: 620, outputs: ["yes", "no"] }),
+
+    node("notify-recovered", "notify.log", "Log Recovery Success", {
+      message: "Task {{taskId}} recovered automatically by error-recovery workflow",
+      level: "info",
+    }, { x: 90, y: 760 }),
 
     node("escalate", "notify.telegram", "Escalate to Human", {
       message: "🚨 Task **{{taskTitle}}** failed after {{maxRetries}} attempts. Manual intervention needed.\n\nLast error: {{lastError}}",
-    }, { x: 600, y: 180 }),
+    }, { x: 600, y: 620 }),
   ],
   edges: [
     edge("trigger", "check-retries"),
     edge("check-retries", "analyze-error", { condition: "$output?.result === true" }),
     edge("check-retries", "escalate", { condition: "$output?.result !== true" }),
     edge("analyze-error", "retry-task"),
+    edge("retry-task", "retry-succeeded"),
+    edge("retry-succeeded", "notify-recovered", { condition: "$output?.result === true", port: "yes" }),
+    edge("retry-succeeded", "escalate", { condition: "$output?.result !== true", port: "no" }),
   ],
   metadata: {
     author: "bosun",
@@ -405,8 +421,15 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
       body: "Automated PR from task finalization guard for task {{taskId}}.",
       base: "{{baseBranch}}",
       branch: "{{branch}}",
+      failOnError: true,
+      maxRetries: 3,
+      retryDelayMs: 15000,
       continueOnError: true,
     }, { x: 120, y: 760 }),
+
+    node("create-pr-success", "condition.expression", "PR Created?", {
+      expression: "$ctx.getNodeOutput('create-pr')?.success === true",
+    }, { x: 120, y: 830, outputs: ["yes", "no"] }),
 
     node("mark-inreview", "action.update_task_status", "Set In Review", {
       taskId: "{{taskId}}",
@@ -469,7 +492,9 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
     edge("checks-passed", "mark-todo-failed", { condition: "$output?.result !== true" }),
     edge("has-pr", "mark-inreview", { condition: "$output?.result === true" }),
     edge("has-pr", "create-pr", { condition: "$output?.result !== true" }),
-    edge("create-pr", "mark-inreview"),
+    edge("create-pr", "create-pr-success"),
+    edge("create-pr-success", "mark-inreview", { condition: "$output?.result === true", port: "yes" }),
+    edge("create-pr-success", "mark-todo-failed", { condition: "$output?.result !== true", port: "no" }),
     edge("mark-inreview", "notify-pass"),
     edge("mark-todo-failed", "notify-fail"),
     edge("mark-todo-missing", "notify-fail"),
@@ -558,8 +583,15 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
       body: "Automated repair run for task {{taskId}}.",
       base: "{{baseBranch}}",
       branch: "{{branch}}",
+      failOnError: true,
+      maxRetries: 3,
+      retryDelayMs: 15000,
       continueOnError: true,
     }, { x: 250, y: 880 }),
+
+    node("create-pr-success", "condition.expression", "PR Ready?", {
+      expression: "$ctx.getNodeOutput('create-pr')?.success === true",
+    }, { x: 250, y: 950, outputs: ["yes", "no"] }),
 
     node("mark-inreview", "action.update_task_status", "Set In Review", {
       taskId: "{{taskId}}",
@@ -612,7 +644,9 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
     edge("verify", "verify-passed"),
     edge("verify-passed", "create-pr", { condition: "$output?.result === true" }),
     edge("verify-passed", "mark-todo", { condition: "$output?.result !== true" }),
-    edge("create-pr", "mark-inreview"),
+    edge("create-pr", "create-pr-success"),
+    edge("create-pr-success", "mark-inreview", { condition: "$output?.result === true", port: "yes" }),
+    edge("create-pr-success", "mark-todo", { condition: "$output?.result !== true", port: "no" }),
     edge("mark-inreview", "notify-success"),
     edge("mark-todo", "notify-escalate"),
     edge("no-worktree", "notify-escalate"),

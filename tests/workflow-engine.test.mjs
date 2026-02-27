@@ -627,6 +627,191 @@ describe("Session chaining - action.run_agent", () => {
     expect(runLogText).toMatch(/Tool call: apply_patch/);
     expect(runLogText).toMatch(/Agent: Implemented the requested changes\./);
   });
+
+  it("condenses noisy assistant events into narrative summaries", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+    const launchEphemeralThread = vi.fn().mockImplementation(
+      async (_prompt, _cwd, _timeoutMs, extra) => {
+        extra?.onEvent?.({
+          type: "item.completed",
+          item: {
+            type: "reasoning",
+            summary: "Tracing noisy completion logs and extracting only meaningful context.",
+          },
+        });
+        extra?.onEvent?.({
+          type: "assistant.message",
+          data: {
+            content: "",
+            detailedContent:
+              "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:16:function getLocalLanIp() {\n" +
+              "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:133:function ensureLibraryInitialized() {\n" +
+              "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:161:async function getWorkflowEngineModule() {\n" +
+              "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:7394:export function stopTelegramUiServer() {",
+          },
+        });
+        extra?.onEvent?.({
+          type: "assistant.message",
+          data: {
+            content: "",
+            toolRequests: [{ name: "view" }, { name: "find" }, { name: "view" }],
+          },
+        });
+        extra?.onEvent?.({
+          type: "assistant.usage",
+          data: {
+            model: "claude-sonnet-4.6",
+            inputTokens: 5170,
+            outputTokens: 484,
+            duration: 7899,
+          },
+        });
+        return {
+          success: true,
+          output:
+            "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:16:function getLocalLanIp() {\n" +
+            "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:133:function ensureLibraryInitialized() {\n" +
+            "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:161:async function getWorkflowEngineModule() {",
+          sdk: "copilot",
+          items: [
+            {
+              type: "assistant.message",
+              data: {
+                content: "",
+                detailedContent:
+                  "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:16:function getLocalLanIp() {\n" +
+                  "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:133:function ensureLibraryInitialized() {\n" +
+                  "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:161:async function getWorkflowEngineModule() {",
+              },
+            },
+            {
+              type: "assistant.message",
+              data: { content: "", toolRequests: [{ name: "view" }, { name: "find" }] },
+            },
+            {
+              type: "item.completed",
+              item: {
+                type: "reasoning",
+                summary: "Tracing noisy completion logs and extracting only meaningful context.",
+              },
+            },
+            {
+              type: "assistant.usage",
+              data: { model: "claude-sonnet-4.6", inputTokens: 100, outputTokens: 50 },
+            },
+          ],
+          threadId: "thread-noise-test",
+        };
+      },
+    );
+
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = {
+      id: "a2",
+      type: "action.run_agent",
+      config: { prompt: "parse noisy logs", maxRetainedEvents: 20 },
+    };
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.summary).toMatch(/Indexed \d+ code references/);
+    expect(result.narrative).toContain("Thought process:");
+    expect(result.narrative).toContain("Actions:");
+    expect(result.stream).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^Thinking:/),
+        expect.stringMatching(/^Agent detail:/),
+        expect.stringMatching(/^Agent requested tools:/),
+      ]),
+    );
+    expect(Array.isArray(result.items)).toBe(true);
+    expect(result.items.length).toBeGreaterThan(0);
+    expect(result.itemCount).toBe(4);
+    expect(result.omittedItemCount).toBe(0);
+    expect(result.threadId).toBe("thread-noise-test");
+
+    const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
+    expect(runLogText).toMatch(/Agent detail: Indexed/);
+    expect(runLogText).toMatch(/Agent requested tools: view, find/);
+    expect(runLogText).toMatch(/Usage:/);
+  });
+
+  it("agent.run_planner streams planner events and propagates threadId", async () => {
+    const handler = getNodeType("agent.run_planner");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({});
+    const launchEphemeralThread = vi.fn().mockImplementation(
+      async (_prompt, _cwd, _timeoutMs, extra) => {
+        extra?.onEvent?.({
+          type: "item.completed",
+          item: { type: "reasoning", summary: "Reviewing backlog gaps." },
+        });
+        extra?.onEvent?.({
+          type: "tool_call",
+          tool_name: "create_task",
+        });
+        extra?.onEvent?.({
+          type: "item.completed",
+          item: { type: "agent_message", text: "Generated 3 tasks." },
+        });
+        return {
+          success: true,
+          output: "planned output",
+          sdk: "codex",
+          items: [],
+          threadId: "planner-thread-123",
+        };
+      },
+    );
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+        prompts: {
+          planner: "Planner prompt",
+        },
+      },
+    };
+
+    const node = {
+      id: "planner-1",
+      type: "agent.run_planner",
+      config: {
+        taskCount: 3,
+        context: "Focus on reliability",
+        outputVariable: "plannerOutput",
+      },
+    };
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(result.taskCount).toBe(3);
+    expect(result.threadId).toBe("planner-thread-123");
+    expect(result.sessionId).toBe("planner-thread-123");
+    expect(ctx.data.threadId).toBe("planner-thread-123");
+    expect(ctx.data.sessionId).toBe("planner-thread-123");
+    expect(ctx.data.plannerOutput).toBe("planned output");
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+    expect(launchEphemeralThread.mock.calls[0][3]).toEqual(
+      expect.objectContaining({ onEvent: expect.any(Function) }),
+    );
+    const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
+    expect(runLogText).toMatch(/Thinking: Reviewing backlog gaps\./);
+    expect(runLogText).toMatch(/Tool call: create_task/);
+    expect(runLogText).toMatch(/Agent: Generated 3 tasks\./);
+    expect(runLogText).toMatch(/Planner completed: success=true streamEvents=3/);
+  });
 });
 
 // ── Anomaly Detector Integration Tests ──────────────────────────────────────

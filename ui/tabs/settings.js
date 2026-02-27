@@ -570,6 +570,7 @@ function maskValue(val) {
 function ServerConfigMode() {
   /* Data loading state */
   const [serverData, setServerData] = useState(null);     // { KEY: "value" } from API
+  const [serverSources, setServerSources] = useState(null); // { KEY: "env" | "config" | "default" | "derived" | ... }
   const [serverMeta, setServerMeta] = useState(null);     // { envPath, configPath, configDir }
   const [configSync, setConfigSync] = useState(null);     // { total, updated, skipped, configPath }
   const [loadError, setLoadError] = useState(null);
@@ -597,8 +598,10 @@ function ServerConfigMode() {
   const tooltipTimer = useRef(null);
 
   /* ─── Load server settings on mount ─── */
-  const fetchSettings = useCallback(async () => {
-    setLoading(true);
+  const fetchSettings = useCallback(async (opts = {}) => {
+    const silent = opts?.silent === true;
+    const preserveConfigSync = opts?.preserveConfigSync === true;
+    if (!silent) setLoading(true);
     setLoadError(null);
     try {
       const res = await apiFetch("/api/settings");
@@ -613,23 +616,30 @@ function ServerConfigMode() {
 
       if (isWrapped) {
         setServerData(res.data);
+        setServerSources(
+          res?.sources && typeof res.sources === "object"
+            ? res.sources
+            : null,
+        );
         setServerMeta(res.meta || null);
-        setConfigSync(null);
+        if (!preserveConfigSync) setConfigSync(null);
       } else if (isLegacyObject) {
         // Demo/legacy compatibility: /api/settings may return a plain object.
         setServerData(res);
+        setServerSources(null);
         setServerMeta(null);
-        setConfigSync(null);
+        if (!preserveConfigSync) setConfigSync(null);
       } else {
         throw new Error(res?.error || "Unexpected response format");
       }
     } catch (err) {
       setLoadError(err.message || "Failed to load settings");
       setServerData(null);
+      setServerSources(null);
       setServerMeta(null);
       setConfigSync(null);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -663,11 +673,14 @@ function ServerConfigMode() {
   /* ─── Determine if a value matches its default ─── */
   const isDefault = useCallback(
     (def) => {
+      const source = serverSources?.[def.key];
+      if (source === "default") return true;
+      if (source && source !== "unset") return false;
       if (def.defaultVal == null) return false;
       const current = getValue(def.key);
       return current === "" || current === String(def.defaultVal);
     },
-    [getValue],
+    [getValue, serverSources],
   );
 
   /* ─── Determine if a value was modified from loaded state ─── */
@@ -816,8 +829,8 @@ function ServerConfigMode() {
             configDir: res.configDir || prev?.configDir,
           }));
         }
-        // Merge changes into serverData so they appear as the new baseline
-        setServerData((prev) => ({ ...prev, ...changes }));
+        // Refresh from backend so derived/runtime-resolved values stay accurate.
+        await fetchSettings({ silent: true, preserveConfigSync: true });
         setEdits({});
         if (hasRestartSetting) {
           showToast("Settings take effect after auto-reload (~2 seconds)", "info");
@@ -841,7 +854,7 @@ function ServerConfigMode() {
     } finally {
       setSaving(false);
     }
-  }, [edits, hasRestartSetting, serverMeta]);
+  }, [edits, hasRestartSetting, serverMeta, fetchSettings]);
 
   const handleCancelSave = useCallback(() => {
     setConfirmOpen(false);

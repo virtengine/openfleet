@@ -21,6 +21,12 @@ import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import { scaffoldSkills } from "./bosun-skills.mjs";
 import { ensureCodexConfig, ensureTrustedProjects } from "./codex-config.mjs";
+import {
+  listTemplates as listWorkflowTemplates,
+  listWorkflowSetupProfiles,
+  getWorkflowSetupProfile,
+  resolveWorkflowTemplateIds,
+} from "./workflow-templates.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -142,6 +148,36 @@ const KANBAN_BACKENDS = [
   { value: "jira", label: "Atlassian Jira" },
 ];
 
+const WORKFLOW_TEMPLATE_SUMMARIES = Object.freeze(listWorkflowTemplates());
+const WORKFLOW_TEMPLATE_ID_SET = new Set(
+  WORKFLOW_TEMPLATE_SUMMARIES.map((template) => String(template.id || "").trim()).filter(Boolean),
+);
+const WORKFLOW_SETUP_PROFILES = Object.freeze(listWorkflowSetupProfiles());
+const WORKFLOW_SETUP_PROFILE_IDS = new Set(
+  WORKFLOW_SETUP_PROFILES.map((profile) => String(profile.id || "").trim()).filter(Boolean),
+);
+
+function normalizeWorkflowProfile(rawValue, fallback = "balanced") {
+  const normalized = String(rawValue || "").trim().toLowerCase();
+  if (WORKFLOW_SETUP_PROFILE_IDS.has(normalized)) return normalized;
+  return fallback;
+}
+
+function normalizeWorkflowTemplateIds(rawValue, fallback = []) {
+  const source = Array.isArray(rawValue)
+    ? rawValue
+    : String(rawValue || "")
+      .split(",");
+  const normalized = [];
+  for (const entry of source) {
+    const id = String(entry || "").trim();
+    if (!id || !WORKFLOW_TEMPLATE_ID_SET.has(id) || normalized.includes(id)) continue;
+    normalized.push(id);
+  }
+  if (normalized.length > 0) return normalized;
+  return Array.isArray(fallback) ? [...fallback] : [];
+}
+
 function buildStableSetupDefaults({
   projectName,
   slug,
@@ -149,6 +185,7 @@ function buildStableSetupDefaults({
   bosunHome,
   workspacesDir,
 }) {
+  const defaultWorkflowProfile = getWorkflowSetupProfile("balanced");
   return {
     projectName: projectName || slug?.split("/").pop() || "my-project",
     repoSlug: slug,
@@ -185,6 +222,14 @@ function buildStableSetupDefaults({
     internalReplenishMin: 1,
     internalReplenishMax: 2,
     workflowAutomationEnabled: true,
+    workflowProfile: defaultWorkflowProfile.id,
+    workflowDefaultTemplates: [...defaultWorkflowProfile.templateIds],
+    workflowAutoInstall: true,
+    workflowNodeMaxRetries: 3,
+    workflowNodeTimeoutMs: 600000,
+    workflowRunStuckThresholdMs: 300000,
+    workflowMaxPersistedRuns: 200,
+    workflowMaxConcurrentBranches: 8,
     copilotEnableAllMcpTools: false,
     // Backward-compatible fields consumed by older setup UI revisions.
     distribution: "primary-only",
@@ -235,6 +280,27 @@ function toBooleanEnvString(value, fallback = false) {
   return fallback ? "true" : "false";
 }
 
+function pickNonEmptyValue(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string" && value.trim() === "") continue;
+    return value;
+  }
+  return undefined;
+}
+
+function toBoundedInt(rawValue, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.round(parsed);
+  return Math.min(max, Math.max(min, rounded));
+}
+
+function normalizeEnumValue(rawValue, allowed, fallback) {
+  const normalized = String(rawValue || "").trim().toLowerCase();
+  return allowed.includes(normalized) ? normalized : fallback;
+}
+
 function normalizeTelegramUiPort(rawValue, fallback = DEFAULT_TELEGRAM_UI_PORT) {
   const parsed = Number(String(rawValue || "").trim());
   if (Number.isFinite(parsed) && parsed > 0) {
@@ -273,6 +339,310 @@ function applyTelegramMiniAppSetupEnv(envMap, env, sourceEnv = process.env) {
     sourceEnv.TELEGRAM_UI_ALLOW_UNSAFE;
   envMap.TELEGRAM_UI_ALLOW_UNSAFE = toBooleanEnvString(unsafeRaw, false);
   return true;
+}
+
+function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.env) {
+  const maxParallel = toBoundedInt(
+    pickNonEmptyValue(env.maxParallel, envMap.MAX_PARALLEL, sourceEnv.MAX_PARALLEL),
+    4,
+    { min: 1, max: 64 },
+  );
+  envMap.MAX_PARALLEL = String(maxParallel);
+
+  envMap.KANBAN_BACKEND = normalizeEnumValue(
+    pickNonEmptyValue(env.kanbanBackend, envMap.KANBAN_BACKEND, sourceEnv.KANBAN_BACKEND),
+    ["internal", "vk", "github", "jira"],
+    "internal",
+  );
+  envMap.KANBAN_SYNC_POLICY = normalizeEnumValue(
+    pickNonEmptyValue(env.kanbanSyncPolicy, envMap.KANBAN_SYNC_POLICY, sourceEnv.KANBAN_SYNC_POLICY),
+    ["internal-primary", "bidirectional"],
+    "internal-primary",
+  );
+  envMap.EXECUTOR_MODE = normalizeEnumValue(
+    pickNonEmptyValue(env.executorMode, envMap.EXECUTOR_MODE, sourceEnv.EXECUTOR_MODE),
+    ["internal", "vk", "hybrid"],
+    "internal",
+  );
+  envMap.EXECUTOR_DISTRIBUTION = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.executorDistribution,
+      envMap.EXECUTOR_DISTRIBUTION,
+      sourceEnv.EXECUTOR_DISTRIBUTION,
+    ),
+    ["primary-only", "weighted", "round-robin"],
+    "primary-only",
+  );
+  envMap.FAILOVER_STRATEGY = normalizeEnumValue(
+    pickNonEmptyValue(env.failoverStrategy, envMap.FAILOVER_STRATEGY, sourceEnv.FAILOVER_STRATEGY),
+    ["next-in-line", "weighted-random", "round-robin"],
+    "next-in-line",
+  );
+  envMap.FAILOVER_MAX_RETRIES = String(
+    toBoundedInt(
+      pickNonEmptyValue(env.maxRetries, envMap.FAILOVER_MAX_RETRIES, sourceEnv.FAILOVER_MAX_RETRIES),
+      3,
+      { min: 0, max: 20 },
+    ),
+  );
+  envMap.FAILOVER_COOLDOWN_MIN = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.failoverCooldownMinutes,
+        envMap.FAILOVER_COOLDOWN_MIN,
+        sourceEnv.FAILOVER_COOLDOWN_MIN,
+      ),
+      5,
+      { min: 1, max: 120 },
+    ),
+  );
+  envMap.FAILOVER_DISABLE_AFTER = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.failoverDisableOnConsecutive,
+        envMap.FAILOVER_DISABLE_AFTER,
+        sourceEnv.FAILOVER_DISABLE_AFTER,
+      ),
+      3,
+      { min: 1, max: 50 },
+    ),
+  );
+  envMap.PROJECT_REQUIREMENTS_PROFILE = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.projectRequirementsProfile,
+      envMap.PROJECT_REQUIREMENTS_PROFILE,
+      sourceEnv.PROJECT_REQUIREMENTS_PROFILE,
+    ),
+    ["simple-feature", "feature", "large-feature", "system", "multi-system"],
+    "feature",
+  );
+
+  envMap.INTERNAL_EXECUTOR_REPLENISH_ENABLED = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.internalReplenishEnabled,
+      envMap.INTERNAL_EXECUTOR_REPLENISH_ENABLED,
+      sourceEnv.INTERNAL_EXECUTOR_REPLENISH_ENABLED,
+    ),
+    false,
+  );
+  const replenishMin = toBoundedInt(
+    pickNonEmptyValue(
+      env.internalReplenishMin,
+      envMap.INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS,
+      sourceEnv.INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS,
+    ),
+    1,
+    { min: 1, max: 2 },
+  );
+  const replenishMax = toBoundedInt(
+    pickNonEmptyValue(
+      env.internalReplenishMax,
+      envMap.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS,
+      sourceEnv.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS,
+    ),
+    2,
+    { min: replenishMin, max: 3 },
+  );
+  envMap.INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS = String(replenishMin);
+  envMap.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS = String(replenishMax);
+
+  envMap.WORKFLOW_AUTOMATION_ENABLED = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.workflowAutomationEnabled,
+      envMap.WORKFLOW_AUTOMATION_ENABLED,
+      sourceEnv.WORKFLOW_AUTOMATION_ENABLED,
+    ),
+    true,
+  );
+  const workflowProfile = normalizeWorkflowProfile(
+    pickNonEmptyValue(
+      env.workflowProfile,
+      envMap.WORKFLOW_DEFAULT_PROFILE,
+      sourceEnv.WORKFLOW_DEFAULT_PROFILE,
+    ),
+    "balanced",
+  );
+  envMap.WORKFLOW_DEFAULT_PROFILE = workflowProfile;
+  envMap.WORKFLOW_DEFAULT_AUTOINSTALL = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.workflowAutoInstall,
+      envMap.WORKFLOW_DEFAULT_AUTOINSTALL,
+      sourceEnv.WORKFLOW_DEFAULT_AUTOINSTALL,
+    ),
+    true,
+  );
+  const fallbackWorkflowTemplates = resolveWorkflowTemplateIds({
+    profileId: workflowProfile,
+  });
+  const workflowTemplates = normalizeWorkflowTemplateIds(
+    pickNonEmptyValue(
+      env.workflowDefaultTemplates,
+      envMap.WORKFLOW_DEFAULT_TEMPLATES,
+      sourceEnv.WORKFLOW_DEFAULT_TEMPLATES,
+    ),
+    fallbackWorkflowTemplates,
+  );
+  envMap.WORKFLOW_DEFAULT_TEMPLATES =
+    workflowTemplates.length > 0 ? workflowTemplates.join(",") : "none";
+  envMap.WORKFLOW_NODE_MAX_RETRIES = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.workflowNodeMaxRetries,
+        envMap.WORKFLOW_NODE_MAX_RETRIES,
+        sourceEnv.WORKFLOW_NODE_MAX_RETRIES,
+      ),
+      3,
+      { min: 0, max: 20 },
+    ),
+  );
+  envMap.WORKFLOW_NODE_TIMEOUT_MS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.workflowNodeTimeoutMs,
+        envMap.WORKFLOW_NODE_TIMEOUT_MS,
+        sourceEnv.WORKFLOW_NODE_TIMEOUT_MS,
+      ),
+      600000,
+      { min: 1000, max: 21_600_000 },
+    ),
+  );
+  envMap.WORKFLOW_RUN_STUCK_THRESHOLD_MS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.workflowRunStuckThresholdMs,
+        envMap.WORKFLOW_RUN_STUCK_THRESHOLD_MS,
+        sourceEnv.WORKFLOW_RUN_STUCK_THRESHOLD_MS,
+      ),
+      300000,
+      { min: 10000, max: 7_200_000 },
+    ),
+  );
+  envMap.WORKFLOW_MAX_PERSISTED_RUNS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.workflowMaxPersistedRuns,
+        envMap.WORKFLOW_MAX_PERSISTED_RUNS,
+        sourceEnv.WORKFLOW_MAX_PERSISTED_RUNS,
+      ),
+      200,
+      { min: 20, max: 5000 },
+    ),
+  );
+  envMap.WORKFLOW_MAX_CONCURRENT_BRANCHES = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.workflowMaxConcurrentBranches,
+        envMap.WORKFLOW_MAX_CONCURRENT_BRANCHES,
+        sourceEnv.WORKFLOW_MAX_CONCURRENT_BRANCHES,
+      ),
+      8,
+      { min: 1, max: 64 },
+    ),
+  );
+  envMap.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.copilotEnableAllMcpTools,
+      envMap.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS,
+      sourceEnv.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS,
+    ),
+    false,
+  );
+
+  envMap.COPILOT_AGENT_MAX_REQUESTS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.copilotAgentMaxRequests,
+        envMap.COPILOT_AGENT_MAX_REQUESTS,
+        sourceEnv.COPILOT_AGENT_MAX_REQUESTS,
+      ),
+      500,
+      { min: 1, max: 5000 },
+    ),
+  );
+  envMap.CODEX_AGENT_MAX_THREADS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.codexAgentMaxThreads,
+        envMap.CODEX_AGENT_MAX_THREADS,
+        sourceEnv.CODEX_AGENT_MAX_THREADS,
+      ),
+      12,
+      { min: 1, max: 256 },
+    ),
+  );
+  envMap.CODEX_TRANSPORT = normalizeEnumValue(
+    pickNonEmptyValue(env.codexTransport, envMap.CODEX_TRANSPORT, sourceEnv.CODEX_TRANSPORT),
+    ["sdk", "auto", "cli"],
+    "sdk",
+  );
+  envMap.COPILOT_TRANSPORT = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.copilotTransport,
+      envMap.COPILOT_TRANSPORT,
+      sourceEnv.COPILOT_TRANSPORT,
+    ),
+    ["sdk", "auto", "cli", "url"],
+    "sdk",
+  );
+  envMap.CODEX_SANDBOX = normalizeEnumValue(
+    pickNonEmptyValue(env.codexSandbox, envMap.CODEX_SANDBOX, sourceEnv.CODEX_SANDBOX),
+    ["workspace-write", "danger-full-access", "read-only"],
+    "workspace-write",
+  );
+
+  envMap.CONTAINER_ENABLED = toBooleanEnvString(
+    pickNonEmptyValue(env.containerEnabled, envMap.CONTAINER_ENABLED, sourceEnv.CONTAINER_ENABLED),
+    false,
+  );
+  envMap.CONTAINER_RUNTIME = normalizeEnumValue(
+    pickNonEmptyValue(env.containerRuntime, envMap.CONTAINER_RUNTIME, sourceEnv.CONTAINER_RUNTIME),
+    ["auto", "docker", "podman", "container"],
+    "auto",
+  );
+  envMap.WHATSAPP_ENABLED = toBooleanEnvString(
+    pickNonEmptyValue(env.whatsappEnabled, envMap.WHATSAPP_ENABLED, sourceEnv.WHATSAPP_ENABLED),
+    false,
+  );
+  envMap.TELEGRAM_INTERVAL_MIN = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.telegramIntervalMin,
+        envMap.TELEGRAM_INTERVAL_MIN,
+        sourceEnv.TELEGRAM_INTERVAL_MIN,
+      ),
+      10,
+      { min: 1, max: 1440 },
+    ),
+  );
+
+  envMap.VK_BASE_URL = String(
+    pickNonEmptyValue(env.vkBaseUrl, envMap.VK_BASE_URL, sourceEnv.VK_BASE_URL) ||
+      "http://127.0.0.1:54089",
+  )
+    .trim()
+    .replace(/\/+$/, "");
+  if (!envMap.VK_BASE_URL) {
+    envMap.VK_BASE_URL = "http://127.0.0.1:54089";
+  }
+  envMap.VK_RECOVERY_PORT = String(
+    toBoundedInt(
+      pickNonEmptyValue(env.vkRecoveryPort, envMap.VK_RECOVERY_PORT, sourceEnv.VK_RECOVERY_PORT),
+      54089,
+      { min: 1, max: 65535 },
+    ),
+  );
+
+  const orchestratorArgs = pickNonEmptyValue(
+    env.orchestratorArgs,
+    envMap.ORCHESTRATOR_ARGS,
+    sourceEnv.ORCHESTRATOR_ARGS,
+  );
+  if (orchestratorArgs !== undefined) {
+    envMap.ORCHESTRATOR_ARGS = String(orchestratorArgs).trim();
+  }
+  if (!envMap.ORCHESTRATOR_ARGS || String(envMap.ORCHESTRATOR_ARGS).trim() === "") {
+    envMap.ORCHESTRATOR_ARGS = `-MaxParallel ${maxParallel}`;
+  }
 }
 
 function getCommandVersion(cmd) {
@@ -562,6 +932,27 @@ function handleExecutors() {
   return { ok: true, executors: EXECUTOR_TYPES, kanbanBackends: KANBAN_BACKENDS };
 }
 
+function handleWorkflowTemplates() {
+  const profileLookup = new Map(
+    WORKFLOW_SETUP_PROFILES.map((profile) => [profile.id, profile]),
+  );
+  const templates = WORKFLOW_TEMPLATE_SUMMARIES.map((template) => ({
+    ...template,
+    setupProfileIds: Array.from(profileLookup.values())
+      .filter((profile) => profile.templateIds.includes(template.id))
+      .map((profile) => profile.id),
+  }));
+  return {
+    ok: true,
+    templates,
+    profiles: WORKFLOW_SETUP_PROFILES.map((profile) => ({
+      ...profile,
+      templateCount: profile.templateIds.length,
+    })),
+    recommendedProfile: "balanced",
+  };
+}
+
 /**
  * Attempt to fetch the live model list from an OpenAI-compatible endpoint.
  * Falls back to the static MODELS list if the probe fails.
@@ -766,11 +1157,10 @@ function handleApply(body) {
     ];
 
     const envMap = {
-      PROJECT_NAME: env.projectName || "",
+      PROJECT_NAME: env.projectName || "my-project",
       GITHUB_REPO: env.repoSlug || "",
-      ORCHESTRATOR_ARGS: env.orchestratorArgs || `-MaxParallel ${env.maxParallel || 4}`,
+      ORCHESTRATOR_ARGS: env.orchestratorArgs || "",
       EXECUTORS: env.executors || "",
-      KANBAN_BACKEND: env.kanbanBackend || "internal",
       VK_PROJECT_DIR: bosunHome,
     };
 
@@ -781,27 +1171,9 @@ function handleApply(body) {
     if (env.jiraApiToken)        envMap.JIRA_API_TOKEN           = env.jiraApiToken;
     if (env.githubProjectNumber) envMap.GITHUB_PROJECT_NUMBER    = String(env.githubProjectNumber);
 
-    // ── Advanced / orchestration settings ──────────────────────────────────
-    if (env.executorMode)                envMap.EXECUTOR_MODE                = env.executorMode;
-    if (env.executorDistribution)        envMap.EXECUTOR_DISTRIBUTION        = env.executorDistribution;
-    if (env.failoverStrategy)            envMap.FAILOVER_STRATEGY            = env.failoverStrategy;
-    if (env.maxParallel != null)         envMap.MAX_PARALLEL                 = String(env.maxParallel);
-    if (env.maxRetries != null)          envMap.FAILOVER_MAX_RETRIES         = String(env.maxRetries);
-    if (env.failoverCooldownMinutes != null)
-                       envMap.FAILOVER_COOLDOWN_MIN        = String(env.failoverCooldownMinutes);
-    if (env.failoverDisableOnConsecutive != null)
-                       envMap.FAILOVER_DISABLE_AFTER       = String(env.failoverDisableOnConsecutive);
+    // ── Optional setup values ───────────────────────────────────────────────
     if (env.primaryAgent)               envMap.PRIMARY_AGENT                 = env.primaryAgent;
-    if (env.projectRequirementsProfile) envMap.PROJECT_REQUIREMENTS_PROFILE  = env.projectRequirementsProfile;
-    if (env.internalReplenishEnabled != null)
-                                         envMap.INTERNAL_EXECUTOR_REPLENISH_ENABLED      = String(!!env.internalReplenishEnabled);
-    if (env.internalReplenishMin != null)
-                                         envMap.INTERNAL_EXECUTOR_REPLENISH_MIN_NEW_TASKS = String(env.internalReplenishMin);
-    if (env.internalReplenishMax != null)
-                                         envMap.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS = String(env.internalReplenishMax);
-    if (env.kanbanSyncPolicy)           envMap.KANBAN_SYNC_POLICY            = env.kanbanSyncPolicy;
-    if (env.workflowAutomationEnabled != null)
-                                         envMap.WORKFLOW_AUTOMATION_ENABLED   = String(!!env.workflowAutomationEnabled);
+    if (env.orchestratorScript)         envMap.ORCHESTRATOR_SCRIPT           = env.orchestratorScript;
 
     // ── Codex model profile settings ───────────────────────────────────────
     if (env.codexModelProfile)          envMap.CODEX_MODEL_PROFILE              = env.codexModelProfile;
@@ -810,35 +1182,18 @@ function handleApply(body) {
     if (env.codexXlModel)               envMap.CODEX_MODEL_PROFILE_XL_MODEL     = env.codexXlModel;
     if (env.codexMProvider)             envMap.CODEX_MODEL_PROFILE_M_PROVIDER   = env.codexMProvider;
     if (env.codexMModel)                envMap.CODEX_MODEL_PROFILE_M_MODEL      = env.codexMModel;
-    if (env.codexAgentMaxThreads != null)
-                                         envMap.CODEX_AGENT_MAX_THREADS         = String(env.codexAgentMaxThreads);
-    if (env.codexTransport)             envMap.CODEX_TRANSPORT                  = env.codexTransport;
-    if (env.codexSandbox)               envMap.CODEX_SANDBOX                    = env.codexSandbox;
     if (env.codexSandboxPermissions)    envMap.CODEX_SANDBOX_PERMISSIONS        = env.codexSandboxPermissions;
     if (env.codexSandboxWritableRoots)  envMap.CODEX_SANDBOX_WRITABLE_ROOTS     = env.codexSandboxWritableRoots;
     if (env.codexFeaturesNoBwrap)       envMap.CODEX_FEATURES_NO_BWRAP          = "true";
 
     // ── Copilot settings ───────────────────────────────────────────────────
-    if (env.copilotAgentMaxRequests != null)
-                                         envMap.COPILOT_AGENT_MAX_REQUESTS      = String(env.copilotAgentMaxRequests);
-    if (env.copilotTransport)           envMap.COPILOT_TRANSPORT                = env.copilotTransport;
     if (env.copilotNoExperimental)      envMap.COPILOT_NO_EXPERIMENTAL          = "true";
     if (env.copilotNoAllowAll)          envMap.COPILOT_NO_ALLOW_ALL             = "true";
     if (env.copilotEnableAskUser)       envMap.COPILOT_ENABLE_ASK_USER          = "true";
-    if (env.copilotEnableAllMcpTools != null)
-                                         envMap.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS = String(!!env.copilotEnableAllMcpTools);
     if (env.copilotMcpConfig)           envMap.COPILOT_MCP_CONFIG               = env.copilotMcpConfig;
 
-    // ── Infrastructure settings ────────────────────────────────────────────
-    if (env.containerEnabled)           envMap.CONTAINER_ENABLED               = "true";
-    if (env.containerRuntime && env.containerRuntime !== "auto")
-                                         envMap.CONTAINER_RUNTIME               = env.containerRuntime;
-    if (env.vkBaseUrl)                  envMap.VK_BASE_URL                      = env.vkBaseUrl;
-    if (env.vkRecoveryPort)             envMap.VK_RECOVERY_PORT                 = String(env.vkRecoveryPort);
-    if (env.whatsappEnabled)            envMap.WHATSAPP_ENABLED                 = "true";
-    if (env.telegramIntervalMin != null && Number(env.telegramIntervalMin) !== 10)
-                                         envMap.TELEGRAM_INTERVAL_MIN           = String(env.telegramIntervalMin);
-    if (env.orchestratorScript)         envMap.ORCHESTRATOR_SCRIPT              = env.orchestratorScript;
+    // Ensure every setup field has safe defaults and invalid values are normalized.
+    applyNonBlockingSetupEnvDefaults(envMap, env, process.env);
 
     // Write executor-specific API keys for any executor configured with api-key auth mode.
     // Executors using OAuth login (codex auth login / gh auth login / claude login)
@@ -937,6 +1292,54 @@ function handleApply(body) {
       },
       distribution: configJson.distribution || env.executorDistribution || "primary-only",
     };
+
+    const workflowProfile = normalizeWorkflowProfile(
+      configJson.workflowDefaults?.profile || env.workflowProfile,
+      "balanced",
+    );
+    const fallbackWorkflowTemplateIds = resolveWorkflowTemplateIds({ profileId: workflowProfile });
+    const workflowDefaultTemplateIds = normalizeWorkflowTemplateIds(
+      configJson.workflowDefaults?.templates || env.workflowDefaultTemplates,
+      fallbackWorkflowTemplateIds,
+    );
+    const workflowAutoInstall = Boolean(
+      configJson.workflowDefaults?.autoInstall ??
+      env.workflowAutoInstall ??
+      true,
+    );
+    const workflowEngineConfig = {
+      nodeMaxRetries: toBoundedInt(
+        configJson.workflowEngine?.nodeMaxRetries ?? env.workflowNodeMaxRetries,
+        3,
+        { min: 0, max: 20 },
+      ),
+      nodeTimeoutMs: toBoundedInt(
+        configJson.workflowEngine?.nodeTimeoutMs ?? env.workflowNodeTimeoutMs,
+        600000,
+        { min: 1000, max: 21_600_000 },
+      ),
+      runStuckThresholdMs: toBoundedInt(
+        configJson.workflowEngine?.runStuckThresholdMs ?? env.workflowRunStuckThresholdMs,
+        300000,
+        { min: 10000, max: 7_200_000 },
+      ),
+      maxPersistedRuns: toBoundedInt(
+        configJson.workflowEngine?.maxPersistedRuns ?? env.workflowMaxPersistedRuns,
+        200,
+        { min: 20, max: 5000 },
+      ),
+      maxConcurrentBranches: toBoundedInt(
+        configJson.workflowEngine?.maxConcurrentBranches ?? env.workflowMaxConcurrentBranches,
+        8,
+        { min: 1, max: 64 },
+      ),
+    };
+    config.workflowDefaults = {
+      profile: workflowProfile,
+      autoInstall: workflowAutoInstall,
+      templates: workflowDefaultTemplateIds,
+    };
+    config.workflowEngine = workflowEngineConfig;
 
     if (configJson.executorMode)               config.executorMode               = configJson.executorMode;
     if (configJson.primaryAgent)               config.primaryAgent               = configJson.primaryAgent;
@@ -1092,6 +1495,9 @@ async function handleRequest(req, res) {
           return;
         case "executors":
           jsonResponse(res, 200, handleExecutors());
+          return;
+        case "workflows":
+          jsonResponse(res, 200, handleWorkflowTemplates());
           return;
         case "validate":
           if (req.method !== "POST") {
@@ -1427,7 +1833,11 @@ export async function startSetupServer(options = {}) {
   });
 }
 
-export { applyTelegramMiniAppSetupEnv, normalizeTelegramUiPort };
+export {
+  applyTelegramMiniAppSetupEnv,
+  applyNonBlockingSetupEnvDefaults,
+  normalizeTelegramUiPort,
+};
 
 // Entry point when run directly
 const __filename_setup_web = fileURLToPath(import.meta.url);

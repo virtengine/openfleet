@@ -10,6 +10,11 @@ test("monitor prompt tail sanitizes benign sqlite/trace/dirty-diverged noise", (
   assert.match(src, /ExperimentalWarning:\\s\+SQLite is an experimental feature/i);
   assert.match(src, /Use `node --trace-warnings \.\*` to show where the warning was created/i);
   assert.match(src, /but has uncommitted changes\\s\+\[—-\]\\s\+skipping/i);
+  assert.match(src, /workspace sync:\\s\+\\d\+\\s\+repo\\\(s\\\)\\s\+failed in\\s\+\[\^\(]\+\$/i);
+  assert.match(src, /const normalized = current/);
+  assert.match(src, /pattern\.test\(current\) \|\| pattern\.test\(normalized\)/);
+  assert.match(src, /const fixtureTokensLower = fixtureTokens\.map\(\(token\) =>/);
+  assert.match(src, /currentLower\.includes\(token\) \|\| normalizedLower\.includes\(token\)/);
   assert.match(src, /sanitized benign tail noise for non-VK backend/);
 });
 

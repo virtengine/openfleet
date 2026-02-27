@@ -28,6 +28,56 @@ import {
 } from "./worktree-manager.mjs";
 
 const isWindows = process.platform === "win32";
+const BRANCH_SYNC_LOG_THROTTLE_MS = Math.max(
+  5_000,
+  Number(process.env.BRANCH_SYNC_LOG_THROTTLE_MS || "300000") || 300000,
+);
+const branchSyncLogState = new Map();
+
+function logThrottledBranchSync(
+  key,
+  message,
+  level = "warn",
+  throttleMs = BRANCH_SYNC_LOG_THROTTLE_MS,
+) {
+  const normalizedKey = String(key || "default").trim() || "default";
+  const now = Date.now();
+  const state = branchSyncLogState.get(normalizedKey) || {
+    lastLoggedAt: 0,
+    suppressed: 0,
+  };
+
+  if (
+    state.lastLoggedAt > 0 &&
+    now - state.lastLoggedAt < Math.max(1_000, Number(throttleMs) || BRANCH_SYNC_LOG_THROTTLE_MS)
+  ) {
+    state.suppressed += 1;
+    branchSyncLogState.set(normalizedKey, state);
+    return;
+  }
+
+  const suppressed = state.suppressed || 0;
+  const suffix =
+    suppressed > 0
+      ? ` (suppressed ${suppressed} similar message(s) in last ${Math.round(Math.max(1_000, Number(throttleMs) || BRANCH_SYNC_LOG_THROTTLE_MS) / 1000)}s)`
+      : "";
+  const line = `${message}${suffix}`;
+
+  if (level === "error") {
+    console.error(line);
+  } else if (level === "info") {
+    console.info(line);
+  } else if (level === "log") {
+    console.log(line);
+  } else {
+    console.warn(line);
+  }
+
+  branchSyncLogState.set(normalizedKey, {
+    lastLoggedAt: now,
+    suppressed: 0,
+  });
+}
 
 /**
  * Get all running processes matching a filter.
@@ -826,10 +876,10 @@ function isProcessAlive(pid) {
  * branches spawned from it start stale, causing avoidable rebase conflicts.
  * This function periodically pulls so the local ref stays current.
  *
- * Safe: only does `--ff-only` — never creates merge commits. If the local
- * branch has diverged (someone committed directly), it logs a warning and
- * skips.  Also skips if the branch is currently checked out with uncommitted
- * work (git will refuse the checkout anyway).
+ * Safe: only does `--ff-only` — never creates merge commits. It skips when
+ * the checked-out branch has uncommitted changes (git will refuse the checkout
+ * anyway). If local and remote both have unique commits, it logs a warning and
+ * skips.
  *
  * @param {string} repoRoot
  * @param {string[]} [branches] - branches to sync (default: ["main"])
@@ -848,7 +898,11 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
       windowsHide: true,
     });
   } catch (e) {
-    console.warn(`[maintenance] git fetch --all failed: ${e.message}`);
+    logThrottledBranchSync(
+      "sync:fetch-failed",
+      `[maintenance] git fetch --all failed: ${e.message}`,
+      "warn",
+    );
     return 0;
   }
 
@@ -913,13 +967,17 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           { cwd: repoRoot, encoding: "utf8", timeout: 30_000, windowsHide: true },
         );
         if (push.status === 0) {
-          console.log(
+          logThrottledBranchSync(
+            `sync:${branch}:push-success`,
             `[maintenance] pushed local '${branch}' to origin (${ahead} commit(s) ahead)`,
+            "info",
           );
           synced++;
         } else {
-          console.warn(
+          logThrottledBranchSync(
+            `sync:${branch}:push-failed`,
             `[maintenance] git push '${branch}' failed: ${(push.stderr || push.stdout || "").toString().trim()}`,
+            "warn",
           );
         }
         continue;
@@ -935,8 +993,10 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           windowsHide: true,
         });
         if (statusCheck.stdout?.trim()) {
-          console.log(
+          logThrottledBranchSync(
+            `sync:${branch}:diverged-dirty`,
             `[maintenance] local '${branch}' diverged (${ahead}↑ ${behind}↓) but has uncommitted changes — skipping`,
+            "info",
           );
           continue;
         }
@@ -961,18 +1021,24 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
             { cwd: repoRoot, encoding: "utf8", timeout: 30_000, windowsHide: true },
           );
           if (push.status === 0) {
-            console.log(
+            logThrottledBranchSync(
+              `sync:${branch}:rebase-push-success`,
               `[maintenance] rebased and pushed '${branch}' (was ${ahead}↑ ${behind}↓)`,
+              "info",
             );
             synced++;
           } else {
-            console.warn(
+            logThrottledBranchSync(
+              `sync:${branch}:rebase-push-failed`,
               `[maintenance] push after rebase of '${branch}' failed: ${(push.stderr || push.stdout || "").toString().trim()}`,
+              "warn",
             );
           }
         } else {
-          console.warn(
+          logThrottledBranchSync(
+            `sync:${branch}:diverged-not-checked-out`,
             `[maintenance] local '${branch}' diverged (${ahead}↑ ${behind}↓) and not checked out — skipping (rebase requires checkout)`,
+            "warn",
           );
         }
         continue;
@@ -988,8 +1054,10 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           windowsHide: true,
         });
         if (statusCheck.stdout?.trim()) {
-          console.log(
+          logThrottledBranchSync(
+            `sync:${branch}:dirty-pull-skip`,
             `[maintenance] '${branch}' is checked out with uncommitted changes — skipping pull`,
+            "info",
           );
           continue;
         }
@@ -1001,13 +1069,17 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           windowsHide: true,
         });
         if (pull.status === 0) {
-          console.log(
+          logThrottledBranchSync(
+            `sync:${branch}:pull-success`,
             `[maintenance] fast-forwarded checked-out '${branch}' (was ${behind} behind)`,
+            "info",
           );
           synced++;
         } else {
-          console.warn(
+          logThrottledBranchSync(
+            `sync:${branch}:pull-failed`,
             `[maintenance] git pull --ff-only on '${branch}' failed: ${(pull.stderr || pull.stdout || "").toString().trim()}`,
+            "warn",
           );
         }
       } else {
@@ -1019,22 +1091,34 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
           { cwd: repoRoot, timeout: 5000, windowsHide: true },
         );
         if (update.status === 0) {
-          console.log(
+          logThrottledBranchSync(
+            `sync:${branch}:update-ref-success`,
             `[maintenance] fast-forwarded '${branch}' → ${remoteRef} (was ${behind} behind)`,
+            "info",
           );
           synced++;
         } else {
-          console.warn(`[maintenance] update-ref failed for '${branch}'`);
+          logThrottledBranchSync(
+            `sync:${branch}:update-ref-failed`,
+            `[maintenance] update-ref failed for '${branch}'`,
+            "warn",
+          );
         }
       }
     } catch (e) {
-      console.warn(`[maintenance] error syncing '${branch}': ${e.message}`);
+      logThrottledBranchSync(
+        `sync:${branch}:unexpected-error`,
+        `[maintenance] error syncing '${branch}': ${e.message}`,
+        "error",
+      );
     }
   }
 
   if (synced > 0) {
-    console.log(
+    logThrottledBranchSync(
+      "sync:summary",
       `[maintenance] synced ${synced}/${toSync.length} local tracking branch(es)`,
+      "info",
     );
   }
   return synced;

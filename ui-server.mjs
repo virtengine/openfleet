@@ -161,6 +161,81 @@ let _wfInitPromise = null;
 let _wfInitDone = false;
 let _wfLoadedBase = null;
 
+function parseBooleanEnv(rawValue, fallback = false) {
+  if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") {
+    return fallback;
+  }
+  const normalized = String(rawValue).trim().toLowerCase();
+  if (["1", "true", "yes", "on", "y"].includes(normalized)) return true;
+  if (["0", "false", "no", "off", "n"].includes(normalized)) return false;
+  return fallback;
+}
+
+function parseTemplateIdList(rawValue) {
+  return String(rawValue || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function resolveWorkflowBootstrapSelection(templatesModule) {
+  const autoInstallEnabled = parseBooleanEnv(
+    process.env.WORKFLOW_DEFAULT_AUTOINSTALL,
+    true,
+  );
+  if (!autoInstallEnabled) {
+    return {
+      enabled: false,
+      source: "disabled",
+      profileId: null,
+      templateIds: [],
+    };
+  }
+
+  const hasTemplateEnv = Object.prototype.hasOwnProperty.call(
+    process.env,
+    "WORKFLOW_DEFAULT_TEMPLATES",
+  );
+  const rawTemplateEnv = String(process.env.WORKFLOW_DEFAULT_TEMPLATES || "").trim();
+  if (hasTemplateEnv) {
+    const lowered = rawTemplateEnv.toLowerCase();
+    if (!rawTemplateEnv || ["none", "off", "disabled", "false"].includes(lowered)) {
+      return {
+        enabled: true,
+        source: "custom:none",
+        profileId: null,
+        templateIds: [],
+      };
+    }
+    return {
+      enabled: true,
+      source: "custom:list",
+      profileId: null,
+      templateIds: parseTemplateIdList(rawTemplateEnv),
+    };
+  }
+
+  const profileId = String(
+    process.env.WORKFLOW_DEFAULT_PROFILE || "balanced",
+  ).trim().toLowerCase();
+
+  if (typeof templatesModule?.resolveWorkflowTemplateIds === "function") {
+    return {
+      enabled: true,
+      source: "profile",
+      profileId,
+      templateIds: templatesModule.resolveWorkflowTemplateIds({ profileId }),
+    };
+  }
+
+  return {
+    enabled: true,
+    source: "recommended",
+    profileId: null,
+    templateIds: [],
+  };
+}
+
 async function getWorkflowEngineModule() {
   if (_wfEngine) return _wfEngine;
   if (_wfInitDone) return _wfEngine;          // failed previously → don't retry
@@ -282,18 +357,45 @@ async function getWorkflowEngineModule() {
       }
     }
 
-    if (!_wfRecommendedInstalled && _wfTemplates?.installRecommendedTemplates) {
+    if (!_wfRecommendedInstalled && _wfTemplates) {
       try {
         const engine = _wfEngine.getWorkflowEngine();
-        const result = _wfTemplates.installRecommendedTemplates(engine);
+        const selection = resolveWorkflowBootstrapSelection(_wfTemplates);
+        let result = { installed: [], skipped: [], errors: [] };
+
+        if (selection.enabled) {
+          if (
+            Array.isArray(selection.templateIds) &&
+            selection.templateIds.length > 0 &&
+            typeof _wfTemplates.installTemplateSet === "function"
+          ) {
+            result = _wfTemplates.installTemplateSet(engine, selection.templateIds);
+          } else if (
+            selection.source === "recommended" &&
+            typeof _wfTemplates.installRecommendedTemplates === "function"
+          ) {
+            result = _wfTemplates.installRecommendedTemplates(engine);
+          }
+        }
+
         if (result.installed.length) {
-          console.log(`[workflows] Installed ${result.installed.length} recommended templates`);
+          const suffix = selection.profileId ? ` (profile: ${selection.profileId})` : "";
+          console.log(
+            `[workflows] Installed ${result.installed.length} default workflow templates${suffix}`,
+          );
+        } else if (!selection.enabled) {
+          console.log("[workflows] Default template auto-install disabled by WORKFLOW_DEFAULT_AUTOINSTALL=false");
+        } else if (
+          selection.source.startsWith("custom:") &&
+          selection.templateIds.length === 0
+        ) {
+          console.log("[workflows] Default template selection is empty (custom:none)");
         }
         if (result.errors.length) {
-          console.warn("[workflows] Recommended template install errors:", result.errors);
+          console.warn("[workflows] Default template install errors:", result.errors);
         }
       } catch (err) {
-        console.warn("[workflows] Recommended template install failed:", err.message);
+        console.warn("[workflows] Default template install failed:", err.message);
       } finally {
         _wfRecommendedInstalled = true;
       }
@@ -1671,6 +1773,101 @@ const SETTINGS_SENSITIVE_KEYS = new Set([
 const SETTINGS_KNOWN_SET = new Set(SETTINGS_KNOWN_KEYS);
 let _settingsLastUpdateTime = 0;
 
+function hasSettingValue(value) {
+  return value !== undefined && value !== null && value !== "";
+}
+
+function getConfigValueAtPath(obj, pathParts = []) {
+  let cursor = obj;
+  for (const part of pathParts) {
+    if (!cursor || typeof cursor !== "object" || !Object.prototype.hasOwnProperty.call(cursor, part)) {
+      return undefined;
+    }
+    cursor = cursor[part];
+  }
+  return cursor;
+}
+
+function toSettingsDisplayValue(def, rawValue) {
+  if (!hasSettingValue(rawValue)) return "";
+  if (def?.type === "boolean") {
+    if (typeof rawValue === "boolean") return rawValue ? "true" : "false";
+    const normalized = String(rawValue).trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return "true";
+    if (["0", "false", "no", "off"].includes(normalized)) return "false";
+  }
+  if (Array.isArray(rawValue)) {
+    return rawValue.map((entry) => String(entry ?? "")).join(",");
+  }
+  return String(rawValue);
+}
+
+function resolveDerivedSettingsValue(key) {
+  if (key === "TELEGRAM_MINIAPP_ENABLED") {
+    const rawPort = Number(process.env.TELEGRAM_UI_PORT || "0");
+    if (Number.isFinite(rawPort) && rawPort > 0) {
+      return { value: true, source: "derived" };
+    }
+  }
+  return null;
+}
+
+function buildSettingsResponseData() {
+  const data = {};
+  const sources = {};
+  const schema = getConfigSchema();
+  const defsByKey = new Map(
+    SETTINGS_SCHEMA.map((def) => [String(def?.key || ""), def]),
+  );
+  const { configData } = readConfigDocument();
+
+  for (const key of SETTINGS_KNOWN_KEYS) {
+    const def = defsByKey.get(key);
+    let rawValue = process.env[key];
+    let source = hasSettingValue(rawValue) ? "env" : "unset";
+
+    if (source === "unset") {
+      const derived = resolveDerivedSettingsValue(key);
+      if (derived && hasSettingValue(derived.value)) {
+        rawValue = derived.value;
+        source = derived.source || "derived";
+      }
+    }
+
+    if (source === "unset" && schema) {
+      const pathInfo = mapEnvKeyToConfigPath(key, schema);
+      if (pathInfo) {
+        const configValue = getConfigValueAtPath(configData, pathInfo.pathParts);
+        if (hasSettingValue(configValue)) {
+          rawValue = configValue;
+          source = "config";
+        } else {
+          const propSchema = getSchemaProperty(schema, pathInfo.pathParts);
+          if (propSchema && Object.prototype.hasOwnProperty.call(propSchema, "default")) {
+            rawValue = propSchema.default;
+            source = "default";
+          }
+        }
+      }
+    }
+
+    if (source === "unset" && def && Object.prototype.hasOwnProperty.call(def, "defaultVal")) {
+      rawValue = def.defaultVal;
+      source = "default";
+    }
+
+    const displayValue = toSettingsDisplayValue(def, rawValue);
+    if (SETTINGS_SENSITIVE_KEYS.has(key)) {
+      data[key] = displayValue ? "••••••" : "";
+    } else {
+      data[key] = displayValue;
+    }
+    sources[key] = source;
+  }
+
+  return { data, sources };
+}
+
 function updateEnvFile(changes) {
   const envPath = resolve(resolveUiConfigDir(), '.env');
   let content = '';
@@ -2946,14 +3143,6 @@ function stopWsHeartbeat() {
     clearInterval(wsHeartbeatTimer);
     wsHeartbeatTimer = null;
   }
-}
-
-function parseBooleanEnv(value, fallback = false) {
-  if (value === undefined || value === null || value === "") return fallback;
-  const raw = String(value).trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(raw)) return true;
-  if (["0", "false", "no", "off"].includes(raw)) return false;
-  return fallback;
 }
 
 function getGitHubWebhookPath() {
@@ -6147,15 +6336,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/settings") {
     try {
-      const data = {};
-      for (const key of SETTINGS_KNOWN_KEYS) {
-        const val = process.env[key];
-        if (SETTINGS_SENSITIVE_KEYS.has(key)) {
-          data[key] = val ? "••••••" : "";
-        } else {
-          data[key] = val || "";
-        }
-      }
+      const { data, sources } = buildSettingsResponseData();
       const envPath = resolve(resolveUiConfigDir(), ".env");
       const configPath = resolveConfigPath();
       const configExists = existsSync(configPath);
@@ -6163,6 +6344,7 @@ async function handleApi(req, res, url) {
       jsonResponse(res, 200, {
         ok: true,
         data,
+        sources,
         meta: {
           envPath,
           configPath,
@@ -7147,12 +7329,17 @@ export async function startTelegramUiServer(options = {}) {
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT === "1" ||
     isTestRun;
   const persistedPort = readLastUiPort();
+  const shouldReusePersistedPort =
+    options.port == null &&
+    configuredPort === 0 &&
+    allowEphemeralPort &&
+    persistedPort > 0;
   const port =
-    configuredPort === 0 && allowEphemeralPort && persistedPort > 0
+    shouldReusePersistedPort
       ? persistedPort
       : configuredPort;
   const portSource =
-    configuredPort === 0 && allowEphemeralPort && persistedPort > 0
+    shouldReusePersistedPort
       ? "cache.ui-last-port"
       : options.port != null
       ? "options.port"

@@ -8,6 +8,7 @@ describe("ui-server mini app", () => {
   const ENV_KEYS = [
     "TELEGRAM_UI_TLS_DISABLE",
     "TELEGRAM_UI_ALLOW_UNSAFE",
+    "TELEGRAM_MINIAPP_ENABLED",
     "TELEGRAM_UI_PORT",
     "TELEGRAM_UI_TUNNEL",
     "BOSUN_UI_ALLOW_EPHEMERAL_PORT",
@@ -115,6 +116,39 @@ describe("ui-server mini app", () => {
     const url = mod.getTelegramUiUrl();
 
     expect(url).toBe(`http://127.0.0.1:${port}`);
+  });
+
+  it("returns effective settings values and sources for derived/default cases", async () => {
+    delete process.env.TELEGRAM_MINIAPP_ENABLED;
+    process.env.TELEGRAM_UI_PORT = "4400";
+    delete process.env.GITHUB_PROJECT_MODE;
+
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-settings-view-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify({ $schema: "./bosun.schema.json" }, null, 2) + "\n",
+      "utf8",
+    );
+
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/settings`);
+    const json = await response.json();
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.data?.TELEGRAM_MINIAPP_ENABLED).toBe("true");
+    expect(json.sources?.TELEGRAM_MINIAPP_ENABLED).toBe("derived");
+    expect(json.data?.GITHUB_PROJECT_MODE).toBe("issues");
+    expect(json.sources?.GITHUB_PROJECT_MODE).toBe("default");
+
+    rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("reflects runtime kanban backend switches via config update", async () => {
