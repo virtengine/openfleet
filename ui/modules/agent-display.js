@@ -8,19 +8,19 @@ const AGENT_SDKS = [
   {
     key: "codex",
     label: "Codex",
-    icon: "⚡",
+    icon: "zap",
     aliases: ["codex", "openai", "gpt", "o3", "o4"],
   },
   {
     key: "copilot",
     label: "Copilot",
-    icon: "🤖",
+    icon: "bot",
     aliases: ["copilot", "github"],
   },
   {
     key: "claude",
     label: "Claude",
-    icon: "🧠",
+    icon: "cpu",
     aliases: ["claude", "anthropic"],
   },
 ];
@@ -74,6 +74,6 @@ export function getAgentDisplay(task = {}) {
   return {
     key: "agent",
     label: "Agent",
-    icon: resolveIcon("🤖") || "🤖",
+    icon: resolveIcon("bot") || "Agent",
   };
 }

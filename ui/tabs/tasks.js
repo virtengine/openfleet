@@ -35,7 +35,10 @@ import {
   scheduleRefresh,
   loadTasks,
   updateTaskManualState,
+  setPendingChange,
+  clearPendingChange,
 } from "../modules/state.js";
+import { routeParams, setRouteParams } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
 import {
   cloneValue,
@@ -54,6 +57,7 @@ import {
   Modal,
   EmptyState,
   ListItem,
+  SaveDiscardBar,
 } from "../components/shared.js";
 import { SegmentedControl, SearchInput, Toggle } from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
@@ -836,7 +840,7 @@ export function TaskProgressModal({ task, onClose }) {
       <div class="tp-hero">
         <div class="tp-pulse-dot"></div>
         <div class="tp-hero-title">
-          <div class="tp-hero-status-label">⚡ Active — Agent Working</div>
+          <div class="tp-hero-status-label">${iconText("⚡ Active — Agent Working")}</div>
         </div>
         <${Badge} status="inprogress" text="running" />
       </div>
@@ -1215,8 +1219,11 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   );
   const [repository, setRepository] = useState(task?.repository || "");
   const attachmentInputRef = useRef(null);
+  const baselineRef = useRef("");
   const activeWsId = activeWorkspaceId.value || "";
   const canDispatch = Boolean(onStart && task?.id);
+  const pendingKey = `task-detail:${task?.id || "new"}`;
+  const draftStorageKey = `ve-task-detail-draft:${task?.id || "new"}`;
 
   const workspaceOptions = managedWorkspaces.value || [];
   const selectedWorkspace = useMemo(
@@ -1239,7 +1246,119 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     setManualReason(getManualReason(task));
     setWorkspaceId(task?.workspace || activeWorkspaceId.value || "");
     setRepository(task?.repository || "");
+    baselineRef.current = "";
   }, [task?.id]);
+
+  const snapshotValue = useMemo(
+    () => JSON.stringify({
+      title,
+      description,
+      baseBranch,
+      status,
+      priority,
+      tagsInput,
+      draft,
+      manualReason,
+      workspaceId,
+      repository,
+    }),
+    [
+      title,
+      description,
+      baseBranch,
+      status,
+      priority,
+      tagsInput,
+      draft,
+      manualReason,
+      workspaceId,
+      repository,
+    ],
+  );
+
+  useEffect(() => {
+    if (!task?.id) return;
+    if (!baselineRef.current) {
+      baselineRef.current = snapshotValue;
+    }
+  }, [task?.id, snapshotValue]);
+
+  const isDirty = baselineRef.current && baselineRef.current !== snapshotValue;
+
+  const closeModal = useCallback(() => {
+    if (isDirty && typeof window !== "undefined" && typeof window.confirm === "function") {
+      const ok = window.confirm("Discard unsaved task changes?");
+      if (!ok) return;
+    }
+    clearPendingChange(pendingKey);
+    onClose();
+  }, [isDirty, onClose, pendingKey]);
+
+  useEffect(() => {
+    setPendingChange(pendingKey, Boolean(isDirty));
+    return () => clearPendingChange(pendingKey);
+  }, [pendingKey, isDirty]);
+
+  useEffect(() => {
+    if (!task?.id) return;
+    try {
+      const raw = localStorage.getItem(draftStorageKey);
+      if (!raw) return;
+      const draftData = JSON.parse(raw);
+      if (!draftData || typeof draftData !== "object") return;
+      if (typeof draftData.title === "string") setTitle(draftData.title);
+      if (typeof draftData.description === "string") setDescription(draftData.description);
+      if (typeof draftData.baseBranch === "string") setBaseBranch(draftData.baseBranch);
+      if (typeof draftData.status === "string") setStatus(draftData.status);
+      if (typeof draftData.priority === "string") setPriority(draftData.priority);
+      if (typeof draftData.tagsInput === "string") setTagsInput(draftData.tagsInput);
+      if (typeof draftData.manualReason === "string") setManualReason(draftData.manualReason);
+      if (typeof draftData.workspaceId === "string") setWorkspaceId(draftData.workspaceId);
+      if (typeof draftData.repository === "string") setRepository(draftData.repository);
+      if (typeof draftData.draft === "boolean") setDraft(draftData.draft);
+    } catch {
+      /* ignore malformed drafts */
+    }
+  }, [task?.id, draftStorageKey]);
+
+  useEffect(() => {
+    if (!task?.id) return;
+    const timer = setTimeout(() => {
+      try {
+        localStorage.setItem(
+          draftStorageKey,
+          JSON.stringify({
+            title,
+            description,
+            baseBranch,
+            status,
+            priority,
+            tagsInput,
+            draft,
+            manualReason,
+            workspaceId,
+            repository,
+          }),
+        );
+      } catch {
+        /* storage best effort */
+      }
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [
+    task?.id,
+    draftStorageKey,
+    title,
+    description,
+    baseBranch,
+    status,
+    priority,
+    tagsInput,
+    draft,
+    manualReason,
+    workspaceId,
+    repository,
+  ]);
 
   useEffect(() => {
     if (!workspaceOptions.length) {
@@ -1263,7 +1382,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     }
   }, [workspaceId, repositoryOptions.length]);
 
-  const handleSave = async () => {
+  const handleSave = async ({ closeAfterSave = false } = {}) => {
     setSaving(true);
     haptic("medium");
     const prev = cloneValue(tasksData.value);
@@ -1317,11 +1436,37 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         },
       );
       showToast("Task saved", "success");
-      onClose();
+      baselineRef.current = snapshotValue;
+      clearPendingChange(pendingKey);
+      try {
+        localStorage.removeItem(draftStorageKey);
+      } catch {
+        /* ignore */
+      }
+      if (closeAfterSave) closeModal();
     } catch {
       /* toast via apiFetch */
     }
     setSaving(false);
+  };
+
+  const handleDiscard = () => {
+    setTitle(task?.title || "");
+    setDescription(task?.description || "");
+    setBaseBranch(getTaskBaseBranch(task));
+    setStatus(task?.status || "todo");
+    setPriority(task?.priority || "");
+    setTagsInput(getTaskTags(task).join(", "));
+    setDraft(Boolean(task?.draft || task?.status === "draft"));
+    setManualReason(getManualReason(task));
+    setWorkspaceId(task?.workspace || activeWorkspaceId.value || "");
+    setRepository(task?.repository || "");
+    clearPendingChange(pendingKey);
+    try {
+      localStorage.removeItem(draftStorageKey);
+    } catch {
+      /* ignore */
+    }
   };
 
   const handleStatusUpdate = async (newStatus) => {
@@ -1356,7 +1501,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           tasksData.value = prev;
         },
       );
-      if (newStatus === "done" || newStatus === "cancelled") onClose();
+      if (newStatus === "done" || newStatus === "cancelled") closeModal();
       else {
         setStatus(newStatus);
         setDraft(wantsDraft);
@@ -1420,7 +1565,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         body: JSON.stringify({ taskId: task.id }),
       });
       showToast("Task retried", "success");
-      onClose();
+      closeModal();
       scheduleRefresh(150);
     } catch {
       /* toast */
@@ -1484,7 +1629,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   };
 
   return html`
-    <${Modal} title=${task?.title || "Task Detail"} onClose=${onClose} contentClassName="modal-content-wide">
+    <${Modal} title=${task?.title || "Task Detail"} onClose=${closeModal} contentClassName="modal-content-wide">
       <div class="task-modal-summary">
         <div class="task-modal-id" style="user-select:all">ID: ${task?.id}</div>
         <div class="task-modal-badges">
@@ -1662,7 +1807,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             </option>
             ${repositoryOptions.map(
               (repo) =>
-                html`<option value=${repo.slug}>${repo.name}${repo.primary ? " ★" : ""}</option>`,
+                html`<option value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</option>`,
             )}
           </select>
         </div>
@@ -1781,6 +1926,20 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           </div>
         `}
 
+        ${isDirty &&
+        html`
+          <${SaveDiscardBar}
+            dirty=${isDirty}
+            message="Task changes are not saved"
+            saveLabel="Save"
+            discardLabel="Discard"
+            saving=${saving}
+            onSave=${() => handleSave({ closeAfterSave: false })}
+            onDiscard=${handleDiscard}
+            className="modal-form-span"
+          />
+        `}
+
         <div class="btn-row modal-form-span">
           ${(task?.status === "error" || task?.status === "cancelled") &&
           html`
@@ -1790,10 +1949,10 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           `}
           <button
             class="btn btn-secondary btn-sm"
-            onClick=${handleSave}
+            onClick=${() => handleSave({ closeAfterSave: true })}
             disabled=${saving}
           >
-            ${saving ? "Saving…" : iconText("💾 Save")}
+            ${saving ? "Saving…" : "Save and Close"}
           </button>
           <button
             class="btn btn-ghost btn-sm"
@@ -1888,6 +2047,7 @@ export function TasksTab() {
   const trimmedSearch = searchVal.trim();
   const statusLabel =
     STATUS_CHIPS.find((s) => s.value === filterVal)?.label || "All";
+  const routeTaskId = String(routeParams.value?.taskId || "").trim();
   const priorityLabel =
     PRIORITY_CHIPS.find((p) => p.value === priorityVal)?.label || "Any";
   const sortLabel =
@@ -2268,6 +2428,7 @@ export function TasksTab() {
   };
 
   const openDetail = async (taskId) => {
+    setRouteParams(taskId ? { taskId } : {}, { replace: false, skipGuard: true });
     haptic();
     const local = tasks.find((t) => t.id === taskId);
     const result = await apiFetch(
@@ -2276,6 +2437,12 @@ export function TasksTab() {
     ).catch(() => ({ data: local }));
     setDetailTask(result.data || local);
   };
+
+  useEffect(() => {
+    if (!routeTaskId) return;
+    if (detailTask?.id === routeTaskId) return;
+    openDetail(routeTaskId);
+  }, [routeTaskId]);
 
   /* ── Batch operations ── */
   const toggleSelect = (id) => {
@@ -2379,7 +2546,7 @@ export function TasksTab() {
     return html`
       <div class="flex-between mb-sm" style="padding:0 4px">
         <div class="view-toggle">
-          <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
+          <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText("☰ List")}</button>
           <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
         </div>
         <div style="display:flex;gap:8px;align-items:center;">
@@ -2390,7 +2557,7 @@ export function TasksTab() {
               setShowTemplates(true);
             }}
           >
-            ⚡ Templates
+            ${iconText("⚡ Templates")}
           </button>
           <button
             class="btn btn-ghost btn-sm"
@@ -2425,7 +2592,7 @@ export function TasksTab() {
         <${EmptyState}
           message="No tasks yet"
           description="Create a task to start orchestrating agents."
-          icon="\u{1F4CB}"
+          icon="clipboard"
           action=${{
             label: "Create Task",
             onClick: () => {
@@ -2455,7 +2622,7 @@ export function TasksTab() {
 
   const viewToggle = html`
     <div class="view-toggle">
-      <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
+      <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText("☰ List")}</button>
       <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
     </div>
   `;
@@ -2809,7 +2976,7 @@ export function TasksTab() {
                 >
                   <td class="task-td task-td-status">
                     <${Badge} status=${task.status} text=${task.status} />
-                    ${isManual && html`<${Badge} status="warning" text="⚑" />`}
+                    ${isManual && html`<${Badge} status="warning" text="manual" />`}
                   </td>
                   <td class="task-td task-td-pri">
                     ${task.priority
@@ -2891,14 +3058,20 @@ export function TasksTab() {
     html`
       <${TaskProgressModal}
         task=${detailTask}
-        onClose=${() => setDetailTask(null)}
+        onClose=${() => {
+          setDetailTask(null);
+          setRouteParams({}, { replace: true, skipGuard: true });
+        }}
       />
     `}
     ${detailTask && isReviewStatus(detailTask.status) &&
     html`
       <${TaskReviewModal}
         task=${detailTask}
-        onClose=${() => setDetailTask(null)}
+        onClose=${() => {
+          setDetailTask(null);
+          setRouteParams({}, { replace: true, skipGuard: true });
+        }}
         onStart=${(task) => openStartModal(task)}
       />
     `}
@@ -2906,7 +3079,10 @@ export function TasksTab() {
     html`
       <${TaskDetailModal}
         task=${detailTask}
-        onClose=${() => setDetailTask(null)}
+        onClose=${() => {
+          setDetailTask(null);
+          setRouteParams({}, { replace: true, skipGuard: true });
+        }}
         onStart=${(task) => openStartModal(task)}
       />
     `}
@@ -2952,6 +3128,7 @@ function CreateTaskModalInline({ onClose }) {
   const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId.value || "");
   const [repository, setRepository] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const draftStorageKey = "ve-task-create-draft";
 
   const handleRewrite = async () => {
     if (!title.trim() || rewriting) return;
@@ -2974,6 +3151,59 @@ function CreateTaskModalInline({ onClose }) {
     setRewriting(false);
   };
   const activeWsId = activeWorkspaceId.value || "";
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(draftStorageKey);
+      if (!raw) return;
+      const draftData = JSON.parse(raw);
+      if (typeof draftData.title === "string") setTitle(draftData.title);
+      if (typeof draftData.description === "string") setDescription(draftData.description);
+      if (typeof draftData.baseBranch === "string") setBaseBranch(draftData.baseBranch);
+      if (typeof draftData.priority === "string") setPriority(draftData.priority);
+      if (typeof draftData.tagsInput === "string") setTagsInput(draftData.tagsInput);
+      if (typeof draftData.workspaceId === "string") setWorkspaceId(draftData.workspaceId);
+      if (typeof draftData.repository === "string") setRepository(draftData.repository);
+      if (typeof draftData.draft === "boolean") setDraft(draftData.draft);
+      if (typeof draftData.showAdvanced === "boolean") setShowAdvanced(draftData.showAdvanced);
+    } catch {
+      /* ignore malformed drafts */
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        localStorage.setItem(
+          draftStorageKey,
+          JSON.stringify({
+            title,
+            description,
+            baseBranch,
+            priority,
+            tagsInput,
+            workspaceId,
+            repository,
+            draft,
+            showAdvanced,
+          }),
+        );
+      } catch {
+        /* ignore storage errors */
+      }
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [
+    title,
+    description,
+    baseBranch,
+    priority,
+    tagsInput,
+    workspaceId,
+    repository,
+    draft,
+    showAdvanced,
+  ]);
 
   const workspaceOptions = managedWorkspaces.value || [];
   const selectedWorkspace = useMemo(
@@ -3028,6 +3258,11 @@ function CreateTaskModalInline({ onClose }) {
         }),
       });
       showToast("Task created", "success");
+      try {
+        localStorage.removeItem(draftStorageKey);
+      } catch {
+        /* ignore */
+      }
       onClose();
       await loadTasks();
     } catch {
@@ -3171,7 +3406,7 @@ function CreateTaskModalInline({ onClose }) {
               </option>
               ${repositoryOptions.map(
                 (repo) =>
-                  html`<option value=${repo.slug}>${repo.name}${repo.primary ? " ★" : ""}</option>`,
+                  html`<option value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</option>`,
               )}
             </select>
           </div>

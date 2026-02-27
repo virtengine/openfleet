@@ -1,0 +1,29 @@
+[
+  {
+    "timestamp": "2026-02-25T10:00:00.000Z",
+    "task_id": "task-1",
+    "task_title": "[m] add exports",
+    "task_description": "Implement baseline analytics reporting.",
+    "executor": "CODEX",
+    "model": "gpt-5.2-codex",
+    "metrics": { "duration_ms": 60000 }
+  },
+  {
+    "timestamp": "2026-02-24T10:00:00.000Z",
+    "task_id": "task-2",
+    "task_title": "[s] fix auth",
+    "task_description": "Adjust auth fallback handling.",
+    "executor": "COPILOT",
+    "model": "claude-sonnet-4.6",
+    "metrics": { "duration_ms": 120000 }
+  },
+  {
+    "timestamp": "2026-02-10T10:00:00.000Z",
+    "task_id": "task-3",
+    "task_title": "[l] legacy cleanup",
+    "task_description": "Tune legacy pipeline behavior.",
+    "executor": "CODEX",
+    "model": "gpt-5.2-codex",
+    "metrics": { "duration_ms": 180000 }
+  }
+]

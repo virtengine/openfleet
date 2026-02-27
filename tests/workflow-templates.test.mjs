@@ -7,7 +7,11 @@ import {
   TEMPLATE_CATEGORIES,
   getTemplate,
   listTemplates,
+  listWorkflowSetupProfiles,
+  getWorkflowSetupProfile,
+  resolveWorkflowTemplateIds,
   installTemplate,
+  installTemplateSet,
 } from "../workflow-templates.mjs";
 import { WorkflowEngine } from "../workflow-engine.mjs";
 
@@ -165,6 +169,9 @@ describe("template API functions", () => {
       "template-error-recovery",
       "template-anomaly-watchdog",
       "template-workspace-hygiene",
+      "template-task-finalization-guard",
+      "template-task-repair-worktree",
+      "template-task-status-transition-manager",
       "template-pr-conflict-resolver",
       "template-agent-session-monitor",
       "template-release-pipeline",
@@ -201,6 +208,69 @@ describe("template API functions", () => {
 
   it("installTemplate throws for unknown template", () => {
     expect(() => installTemplate("template-nope", engine)).toThrow(/not found/);
+  });
+});
+
+describe("workflow setup profiles", () => {
+  it("exposes built-in setup profiles with template selections", () => {
+    const profiles = listWorkflowSetupProfiles();
+    const ids = profiles.map((profile) => profile.id);
+    expect(ids).toContain("manual");
+    expect(ids).toContain("balanced");
+    expect(ids).toContain("autonomous");
+    for (const profile of profiles) {
+      expect(Array.isArray(profile.templateIds)).toBe(true);
+      expect(profile.templateIds.length).toBeGreaterThan(0);
+      expect(typeof profile.workflowAutomationEnabled).toBe("boolean");
+    }
+  });
+
+  it("returns balanced profile as fallback", () => {
+    const profile = getWorkflowSetupProfile("nope");
+    expect(profile.id).toBe("balanced");
+    expect(Array.isArray(profile.templateIds)).toBe(true);
+    expect(profile.templateIds.length).toBeGreaterThan(0);
+  });
+
+  it("resolves explicit template lists and filters unknown IDs", () => {
+    const resolved = resolveWorkflowTemplateIds({
+      profileId: "manual",
+      templateIds: [
+        "template-task-planner",
+        "template-nope",
+        "template-task-planner",
+        "template-error-recovery",
+      ],
+    });
+    expect(resolved).toEqual([
+      "template-task-planner",
+      "template-error-recovery",
+    ]);
+  });
+});
+
+describe("installTemplateSet", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("installs only the requested templates and skips duplicates", () => {
+    const result = installTemplateSet(engine, [
+      "template-error-recovery",
+      "template-task-planner",
+      "template-nope",
+    ]);
+    expect(result.installed.length).toBe(2);
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0].id).toBe("template-nope");
+
+    const second = installTemplateSet(engine, [
+      "template-error-recovery",
+      "template-task-planner",
+    ]);
+    expect(second.installed.length).toBe(0);
+    expect(second.skipped.length).toBe(2);
   });
 });
 
