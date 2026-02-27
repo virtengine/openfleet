@@ -169,7 +169,7 @@ function RepoRow({ repo, workspaceId }) {
   return html`
     <div class="ws-manager-repo-row">
       <span class="ws-manager-repo-name ${repo.exists ? "" : "missing"}">
-        ${repo.primary ? html`<span class="ws-manager-repo-star" title="Primary">★</span>` : null}
+        ${repo.primary ? html`<span class="ws-manager-repo-star" title="Primary">${resolveIcon("star")}</span>` : null}
         ${repo.name}
       </span>
       <span class="ws-manager-repo-status ${repo.exists ? "ok" : "err"}">
@@ -312,7 +312,7 @@ function WorkspaceCard({ ws }) {
             onClick=${handlePull}
             disabled=${pulling}
             title="Pull all repos"
-          >${pulling ? html`<${Spinner} /> Pulling` : "⟳ Pull"}</button>
+          >${pulling ? html`<${Spinner} /> Pulling` : iconText("🔄 Pull")}</button>
           <button
             class="ws-manager-btn ghost sm danger-text"
             onClick=${() => { haptic("light"); setDelConfirm(true); }}
@@ -481,7 +481,7 @@ export function WorkspaceSwitcher() {
           onClick=${() => { haptic("medium"); setManagerOpen(true); }}
           title="Set up a workspace"
         >
-          <span class="ws-switcher-icon">⬡</span>
+          <span class="ws-switcher-icon">${resolveIcon("settings")}</span>
           <span class="ws-switcher-name">Set up workspace</span>
         </button>
         <${WorkspaceManager}
@@ -503,7 +503,7 @@ export function WorkspaceSwitcher() {
           <option key=${ws.id} value=${ws.id}>${ws.name || ws.id}</option>
         `)}
         <option disabled>──────────</option>
-        <option value="__manage__">⚙ Manage Workspaces</option>
+        <option value="__manage__">Manage Workspaces</option>
       </select>
 
       <${WorkspaceManager}

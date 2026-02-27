@@ -84,7 +84,8 @@ function createSpawnMock({ coreEditor = ":" } = {}) {
     if (normalized.startsWith("df -kP")) {
       return {
         status: 0,
-        stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 1000000 100000 900000 10% /\n",
+        stdout:
+          "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 52428800 10485760 41943040 20% /\n",
         stderr: "",
       };
     }

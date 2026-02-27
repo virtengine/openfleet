@@ -621,3 +621,52 @@ export function ListItem({ title, subtitle, trailing, onClick, icon }) {
     </div>
   `;
 }
+
+/**
+ * Shared floating save/discard action bar for dirty forms.
+ * @param {{
+ *  dirty: boolean,
+ *  message?: string,
+ *  saveLabel?: string,
+ *  discardLabel?: string,
+ *  onSave: () => void,
+ *  onDiscard: () => void,
+ *  saving?: boolean,
+ *  disabled?: boolean,
+ *  className?: string
+ * }} props
+ */
+export function SaveDiscardBar({
+  dirty,
+  message = "Changes pending",
+  saveLabel = "Save",
+  discardLabel = "Discard",
+  onSave,
+  onDiscard,
+  saving = false,
+  disabled = false,
+  className = "",
+}) {
+  if (!dirty) return null;
+  return html`
+    <div class=${classNames("ve-save-discard-bar", className)}>
+      <div class="ve-save-discard-message">${message}</div>
+      <div class="ve-save-discard-actions">
+        <button
+          class="btn btn-ghost btn-sm"
+          onClick=${onDiscard}
+          disabled=${disabled || saving}
+        >
+          ${discardLabel}
+        </button>
+        <button
+          class="btn btn-primary btn-sm"
+          onClick=${onSave}
+          disabled=${disabled || saving}
+        >
+          ${saving ? "Saving…" : saveLabel}
+        </button>
+      </div>
+    </div>
+  `;
+}

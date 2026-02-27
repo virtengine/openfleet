@@ -48,6 +48,7 @@ Requires:
 
 - Routes work across Codex, Copilot, and Claude executors
 - Automates retries, failover, and PR lifecycle management
+- Auto-labels attached PRs with `bosun-needs-fix` when CI fails (`Build + Tests`)
 - Monitors runs and recovers from stalled or broken states
 - Provides Telegram control and a Mini App dashboard
 - Integrates with GitHub, Jira, and Vibe-Kanban boards

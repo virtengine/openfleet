@@ -2956,6 +2956,19 @@
       // ── Health ──
       if (route === '/api/health')
         return STATE.health;
+      if (route === '/api/health-stats') {
+        const done = STATE.tasks.filter((t) => t.status === 'done').length;
+        const failed = STATE.tasks.filter((t) => t.status === 'error').length;
+        const total = done + failed;
+        return {
+          ok: true,
+          successRuns: done,
+          failedRuns: failed,
+          total,
+          failRate: total > 0 ? failed / total : 0,
+          windowHours: 6,
+        };
+      }
 
       // ── Infrastructure ──
       if (route === '/api/infra')

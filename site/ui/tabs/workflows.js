@@ -723,7 +723,7 @@ function NodePalette({ nodeTypes: types, onSelect, onClose }) {
           placeholder="Search nodes..."
           value=${search}
           onInput=${(e) => setSearch(e.target.value)}
-          style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--color-border, #2a3040); background: var(--color-bg-secondary, #1a1f2e); color: white; font-size: 13px; outline: none;"
+          style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--color-border, #2a3040); background: var(--color-bg-secondary, #1a1f2e); color: var(--color-text, white); font-size: 13px; outline: none;"
           autofocus
         />
         <button onClick=${onClose} class="wf-btn wf-btn-sm" style="font-size: 16px; line-height: 1;">
@@ -903,7 +903,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
             type="text"
             value=${node.label || ""}
             onInput=${(e) => onUpdateLabel(e.target.value)}
-            style="width: 100%; background: transparent; border: none; color: white; font-size: 15px; font-weight: 600; outline: none; padding: 2px 0;"
+            style="width: 100%; background: transparent; border: none; color: var(--color-text, white); font-size: 15px; font-weight: 600; outline: none; padding: 2px 0;"
           />
           <div style="font-size: 11px; color: ${meta.color}; font-family: monospace;">${node.type}</div>
         </div>
@@ -1211,7 +1211,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
                     onChange=${(e) => onFieldChange(key, e.target.checked)}
                     style="width: 16px; height: 16px;"
                   />
-                  <span style="font-size: 13px; color: white;">${value ? "Enabled" : "Disabled"}</span>
+                  <span style="font-size: 13px; color: var(--color-text, white);">${value ? "Enabled" : "Disabled"}</span>
                 </label>
               ` : fieldType === "number" ? html`
                 <input
@@ -1269,7 +1269,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
             onChange=${(e) => onUpdate({ continueOnError: e.target.checked })}
             style="width: 16px; height: 16px;"
           />
-          <span style="font-size: 13px; color: white;">Continue on Error</span>
+          <span style="font-size: 13px; color: var(--color-text, white);">Continue on Error</span>
         </label>
         <div style="font-size: 10px; color: var(--color-text-secondary, #6b7280); margin-top: 4px;">
           If checked, workflow continues even if this node fails
@@ -1436,8 +1436,9 @@ function WorkflowListView() {
           Available Templates (${availableTemplates.length})${tmpls.length !== availableTemplates.length ? html` <span style="font-size: 11px; font-weight: 400; opacity: 0.6;">· ${tmpls.length - availableTemplates.length} installed</span>` : ""}
         </h3>
         ${availableTemplates.length === 0 && html`
-          <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px;">
-            All templates are installed! 🎉
+          <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px;">
+            <span class="icon-inline">${resolveIcon("star")}</span>
+            <span>All templates are installed!</span>
           </div>
         `}
         ${(() => {
@@ -1536,7 +1537,11 @@ function getNodeCardBorder(status) {
 
 function safePrettyJson(value) {
   try {
-    return JSON.stringify(value, null, 2);
+    const json = JSON.stringify(value, null, 2);
+    const maxChars = 120000;
+    if (json.length <= maxChars) return json;
+    const omitted = json.length - maxChars;
+    return `${json.slice(0, maxChars)}\n\n… [truncated ${omitted} chars]`;
   } catch {
     return String(value ?? "");
   }
@@ -1697,6 +1702,8 @@ function RunHistoryView() {
             const nodeStatus = nodeStatuses[nodeId];
             const nodeStatusStyles = getRunStatusBadgeStyles(nodeStatus);
             const nodeOutput = nodeOutputs[nodeId];
+            const nodeSummary = typeof nodeOutput?.summary === "string" ? nodeOutput.summary.trim() : "";
+            const nodeNarrative = typeof nodeOutput?.narrative === "string" ? nodeOutput.narrative.trim() : "";
             return html`
               <details key=${nodeId} style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid ${getNodeCardBorder(nodeStatus)}; border-radius: 8px; padding: 8px 10px;">
                 <summary style="cursor: pointer; display: flex; align-items: center; gap: 8px;">
@@ -1705,6 +1712,12 @@ function RunHistoryView() {
                     ${nodeStatus || "unknown"}
                   </span>
                 </summary>
+                ${(nodeSummary || nodeNarrative) && html`
+                  <div style="margin-top: 8px; font-size: 12px; color: #d1d5db; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px; white-space: pre-wrap; word-break: break-word;">
+                    ${nodeSummary ? html`<div><b>Summary:</b> ${nodeSummary}</div>` : ""}
+                    ${nodeNarrative ? html`<div style="margin-top: ${nodeSummary ? "6px" : "0"};"><b>Narrative:</b> ${nodeNarrative}</div>` : ""}
+                  </div>
+                `}
                 <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(nodeOutput)}</pre>
               </details>
             `;
@@ -1902,12 +1915,12 @@ export function WorkflowsTab() {
         font-family: inherit;
         white-space: nowrap;
       }
-      .wf-btn:hover { border-color: #3b82f6; background: #1e293b; }
+      .wf-btn:hover { border-color: #3b82f6; background: var(--bg-card-hover); }
       .wf-btn-primary { background: #3b82f6; border-color: #3b82f6; color: white; }
       .wf-btn-primary:hover { background: #2563eb; }
       .wf-btn-danger:hover { border-color: #ef4444; background: #dc262620; }
-      .wf-btn-ghost { background: #111827; border-color: #374151; color: #d1d5db; }
-      .wf-btn-ghost:hover { background: #1f2937; border-color: #60a5fa; color: #e5e7eb; }
+      .wf-btn-ghost { background: var(--bg-card); border-color: var(--color-border, #374151); color: var(--color-text-secondary, #d1d5db); }
+      .wf-btn-ghost:hover { background: var(--bg-card-hover); border-color: #60a5fa; color: var(--color-text, #e5e7eb); }
       .wf-btn-sm { padding: 3px 8px; font-size: 11px; border-radius: 6px; }
       .wf-btn .btn-icon { display: inline-flex; align-items: center; justify-content: center; line-height: 0; vertical-align: middle; }
       .wf-btn .btn-icon svg { width: 1em; height: 1em; display: inline-block; stroke-width: 1.8; }
@@ -1927,7 +1940,7 @@ export function WorkflowsTab() {
         border: 1px solid var(--color-border, #2a3040);
         border-radius: 6px;
         background: var(--color-bg-secondary, #1a1f2e);
-        color: white;
+        color: var(--color-text, white);
         font-size: 13px;
         font-family: inherit;
         outline: none;
@@ -1949,9 +1962,9 @@ export function WorkflowsTab() {
         margin-bottom: 12px;
       }
       .wf-chip {
-        background: #111827;
-        color: #cbd5e1;
-        border: 1px solid #334155;
+        background: var(--bg-card);
+        color: var(--color-text-secondary, #cbd5e1);
+        border: 1px solid var(--color-border, #334155);
         border-radius: 999px;
         font-size: 11px;
         padding: 4px 10px;
@@ -1999,14 +2012,17 @@ export function WorkflowsTab() {
         font-family: inherit;
       }
       .wf-context-menu button:hover { background: var(--color-bg-secondary, #1a1f2e); }
-      .wf-preset-btn:hover { border-color: #3b82f6 !important; background: #1e293b !important; }
+      .wf-preset-btn:hover { border-color: #3b82f6 !important; background: var(--bg-card-hover) !important; }
       .wf-preset-section { animation: wf-fade-in 0.15s ease; }
       @keyframes wf-fade-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
       .wf-canvas-container { height: calc(100vh - 140px); min-height: 500px; }
       @media (min-width: 1200px) { .wf-canvas-container { height: calc(100vh - 120px); min-height: 700px; } }
     </style>
 
-    <div style="padding: 8px;">
+    <div
+      class="wf-theme"
+      style="padding: 8px; --color-bg: var(--bg-card); --color-bg-secondary: var(--bg-secondary); --color-border: var(--border); --color-text: var(--text-primary); --color-text-secondary: var(--text-secondary);"
+    >
       ${mode === "canvas" && activeWorkflow.value
         ? html`<${WorkflowCanvas} workflow=${activeWorkflow.value} />`
         : mode === "runs"

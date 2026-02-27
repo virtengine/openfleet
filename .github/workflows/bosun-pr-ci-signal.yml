@@ -1,0 +1,201 @@
+name: "Bosun: PR CI Signal"
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  signal:
+    name: Sync Bosun CI signal
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply/clear Bosun failure signal for attached PRs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const run = context.payload.workflow_run || {};
+            const pullRequests = Array.isArray(run.pull_requests) ? run.pull_requests : [];
+            const prNumber = Number(pullRequests[0]?.number || 0);
+            const failureMarker = "<!-- bosun-ci-failure -->";
+            const attachedLabel = "bosun-attached";
+            const needsFixLabel = "bosun-needs-fix";
+
+            if (!prNumber) {
+              core.info("No PR is associated with this CI run; skipping.");
+              return;
+            }
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: prNumber,
+            });
+            const labels = (pr.labels || [])
+              .map((entry) => (typeof entry === "string" ? entry : entry?.name))
+              .filter(Boolean);
+            if (!labels.includes(attachedLabel)) {
+              core.info(`PR #${prNumber} is not labeled '${attachedLabel}'; skipping.`);
+              return;
+            }
+
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number: prNumber, per_page: 100 },
+            );
+            const existingFailureComment = comments.find((comment) =>
+              typeof comment.body === "string" && comment.body.includes(failureMarker),
+            );
+
+            const failedConclusions = new Set([
+              "failure",
+              "timed_out",
+              "action_required",
+              "startup_failure",
+              "stale",
+            ]);
+            const successConclusions = new Set(["success"]);
+            const conclusion = String(run.conclusion || "").toLowerCase();
+            const isFailure = failedConclusions.has(conclusion);
+            const isSuccess = successConclusions.has(conclusion);
+
+            const ensureLabel = async (name, color, description) => {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+              } catch (err) {
+                if (err?.status !== 404) {
+                  core.warning(
+                    `Unable to read label '${name}': ${String(err?.message || err)}`,
+                  );
+                  return;
+                }
+                try {
+                  await github.rest.issues.createLabel({
+                    owner,
+                    repo,
+                    name,
+                    color,
+                    description,
+                  });
+                } catch (createErr) {
+                  core.warning(
+                    `Unable to create label '${name}': ${String(createErr?.message || createErr)}`,
+                  );
+                }
+              }
+            };
+
+            const addLabel = async (name) => {
+              try {
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number: prNumber,
+                  labels: [name],
+                });
+              } catch (err) {
+                core.warning(
+                  `Unable to add label '${name}' to PR #${prNumber}: ${String(err?.message || err)}`,
+                );
+              }
+            };
+
+            const removeLabel = async (name) => {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: prNumber,
+                  name,
+                });
+              } catch (err) {
+                if (err?.status !== 404) {
+                  core.warning(
+                    `Unable to remove label '${name}' from PR #${prNumber}: ${String(err?.message || err)}`,
+                  );
+                }
+              }
+            };
+
+            if (isFailure) {
+              let failedJobs = [];
+              try {
+                const jobs = await github.paginate(
+                  github.rest.actions.listJobsForWorkflowRun,
+                  { owner, repo, run_id: run.id, per_page: 100 },
+                );
+                failedJobs = jobs
+                  .filter((job) => String(job.conclusion || "").toLowerCase() === "failure")
+                  .map((job) => String(job.name || "").trim())
+                  .filter(Boolean);
+              } catch (err) {
+                core.warning(`Unable to list failed jobs for run ${run.id}: ${String(err?.message || err)}`);
+              }
+
+              await ensureLabel(
+                needsFixLabel,
+                "b60205",
+                "Attached PR with failing CI that Bosun should pick up for repair",
+              );
+              await addLabel(needsFixLabel);
+
+              const body = [
+                failureMarker,
+                "Bosun CI signal: attached PR currently has failing checks.",
+                "",
+                `- Workflow: ${run.name || "CI"}`,
+                `- Conclusion: ${conclusion || "unknown"}`,
+                `- Run: ${run.html_url || ""}`,
+                `- Head SHA: ${run.head_sha || pr.head?.sha || "unknown"}`,
+                `- Failed jobs: ${failedJobs.length > 0 ? failedJobs.join(", ") : "unknown"}`,
+              ].join("\n");
+
+              if (existingFailureComment) {
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: existingFailureComment.id,
+                  body,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: prNumber,
+                  body,
+                });
+              }
+
+              core.info(`PR #${prNumber}: marked as '${needsFixLabel}' for failing CI.`);
+              return;
+            }
+
+            if (isSuccess) {
+              await removeLabel(needsFixLabel);
+              if (existingFailureComment) {
+                try {
+                  await github.rest.issues.deleteComment({
+                    owner,
+                    repo,
+                    comment_id: existingFailureComment.id,
+                  });
+                } catch (err) {
+                  core.warning(
+                    `Unable to delete stale CI failure marker comment on PR #${prNumber}: ${String(err?.message || err)}`,
+                  );
+                }
+              }
+              core.info(`PR #${prNumber}: cleared '${needsFixLabel}' after successful CI.`);
+              return;
+            }
+
+            core.info(
+              `PR #${prNumber}: CI conclusion '${conclusion || "unknown"}' does not trigger Bosun signal changes.`,
+            );

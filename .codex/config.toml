@@ -81,21 +81,24 @@ VK_ENDPOINT_URL = "http://127.0.0.1:54089"
 [mcp_servers.context7]
 command = "npx"
 args = ["-y", "@upstash/context7-mcp"]
+startup_timeout_sec = 120
 
 [mcp_servers.sequential-thinking]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+startup_timeout_sec = 120
 
 [mcp_servers.playwright]
 command = "npx"
 args = ["-y", "@playwright/mcp@latest"]
+startup_timeout_sec = 120
 
 [mcp_servers.microsoft-docs]
 url = "https://learn.microsoft.com/api/mcp"
+tools = ["microsoft_docs_search", "microsoft_code_sample_search"]
 
 [sandbox_workspace_write]
 network_access = true
 exclude_tmpdir_env_var = false
 exclude_slash_tmp = false
 writable_roots = ["C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.git", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.cache\\worktrees", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.cache", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh"]
-sandbox_permissions = "disk-full-write-access"

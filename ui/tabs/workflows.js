@@ -12,7 +12,7 @@ const html = htm.bind(h);
 import { haptic } from "../modules/telegram.js";
 import { apiFetch } from "../modules/api.js";
 import { showToast, refreshTab } from "../modules/state.js";
-import { navigateTo } from "../modules/router.js";
+import { navigateTo, routeParams, setRouteParams } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import { formatDate, formatDuration, formatRelative } from "../modules/utils.js";
@@ -43,6 +43,7 @@ function returnToWorkflowList() {
   selectedRunId.value = null;
   selectedRunDetail.value = null;
   viewMode.value = "list";
+  setRouteParams({}, { replace: true, skipGuard: true });
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -87,6 +88,7 @@ async function saveWorkflow(def) {
       activeWorkflow.value = data.workflow;
       showToast("Workflow saved", "success");
       loadWorkflows();
+      setRouteParams({ workflowId: data.workflow.id }, { replace: true, skipGuard: true });
     }
     return data?.workflow;
   } catch (err) {
@@ -101,6 +103,7 @@ async function deleteWorkflow(id) {
     if (activeWorkflow.value?.id === id) {
       activeWorkflow.value = null;
       viewMode.value = "list";
+      setRouteParams({}, { replace: true, skipGuard: true });
     }
     loadWorkflows();
   } catch (err) {
@@ -125,6 +128,43 @@ async function executeWorkflow(id) {
   }
 }
 
+async function setWorkflowEnabled(id, enabled) {
+  try {
+    const detail = await apiFetch(`/api/workflows/${id}`);
+    const wf = detail?.workflow;
+    if (!wf) throw new Error("Workflow not found");
+
+    const data = await apiFetch("/api/workflows/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...wf,
+        enabled: enabled !== false,
+      }),
+    });
+
+    const saved = data?.workflow;
+    if (!saved) throw new Error("Workflow save failed");
+
+    if (activeWorkflow.value?.id === saved.id) {
+      activeWorkflow.value = saved;
+    }
+    workflows.value = (workflows.value || []).map((item) =>
+      item.id === saved.id ? { ...item, enabled: saved.enabled !== false } : item,
+    );
+
+    showToast(saved.enabled === false ? "Workflow paused" : "Workflow resumed", "success");
+    loadWorkflows();
+    return saved;
+  } catch (err) {
+    showToast(
+      enabled === false ? "Failed to pause workflow" : "Failed to resume workflow",
+      "error",
+    );
+    return null;
+  }
+}
+
 async function installTemplate(templateId) {
   try {
     const data = await apiFetch("/api/workflows/install-template", {
@@ -137,6 +177,7 @@ async function installTemplate(templateId) {
       viewMode.value = "canvas";
       showToast("Template installed", "success");
       loadWorkflows();
+      setRouteParams({ workflowId: data.workflow.id }, { replace: false, skipGuard: true });
     }
   } catch (err) {
     showToast("Failed to install template", "error");
@@ -168,6 +209,8 @@ async function loadRunDetail(runId) {
     if (data?.run) {
       selectedRunId.value = runId;
       selectedRunDetail.value = data.run;
+      viewMode.value = "runs";
+      setRouteParams({ runsView: true, runId }, { replace: false, skipGuard: true });
     }
   } catch (err) {
     showToast("Failed to load run details", "error");
@@ -218,11 +261,45 @@ function WorkflowCanvas({ workflow, onSave }) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [contextMenu, setContextMenu] = useState(null);
+  const [spacePanning, setSpacePanning] = useState(false);
 
   useEffect(() => {
     setNodes(workflow?.nodes || []);
     setEdges(workflow?.edges || []);
   }, [workflow?.id, workflow?.nodes?.length, workflow?.edges?.length]);
+
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.code !== "Space") return;
+      const target = e.target;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+      setSpacePanning(true);
+    };
+    const onKeyUp = (e) => {
+      if (e.code !== "Space") return;
+      setSpacePanning(false);
+    };
+    const onWindowBlur = () => {
+      setSpacePanning(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onWindowBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onWindowBlur);
+    };
+  }, []);
 
   // Canvas dimensions
   const NODE_W = 220;
@@ -240,9 +317,34 @@ function WorkflowCanvas({ workflow, onSave }) {
 
   // ── Mouse events ──────────────────────────────────────────
 
+  const movePointer = useCallback((clientX, clientY) => {
+    const canvasPos = toCanvas(clientX, clientY);
+    setMousePos(canvasPos);
+
+    if (panStart) {
+      setPan({ x: clientX - panStart.x, y: clientY - panStart.y });
+      return;
+    }
+    if (dragState) {
+      setNodes((prev) =>
+        prev.map((n) =>
+          n.id === dragState.nodeId
+            ? {
+                ...n,
+                position: {
+                  x: canvasPos.x - dragState.offsetX,
+                  y: canvasPos.y - dragState.offsetY,
+                },
+              }
+            : n,
+        ),
+      );
+    }
+  }, [toCanvas, panStart, dragState]);
+
   const onMouseDown = useCallback((e) => {
-    if (e.button === 1 || (e.button === 0 && e.ctrlKey)) {
-      // Middle click or ctrl+click = pan
+    if (e.button === 1 || (e.button === 0 && (e.ctrlKey || spacePanning))) {
+      // Middle click or ctrl/space + drag = pan
       setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
       e.preventDefault();
     } else if (e.button === 0 && e.target === canvasRef.current?.querySelector(".canvas-bg")) {
@@ -252,24 +354,11 @@ function WorkflowCanvas({ workflow, onSave }) {
       setEditingNode(null);
       setContextMenu(null);
     }
-  }, [pan]);
+  }, [pan, spacePanning]);
 
   const onMouseMove = useCallback((e) => {
-    const canvasPos = toCanvas(e.clientX, e.clientY);
-    setMousePos(canvasPos);
-
-    if (panStart) {
-      setPan({ x: e.clientX - panStart.x, y: e.clientY - panStart.y });
-      return;
-    }
-    if (dragState) {
-      setNodes(prev => prev.map(n =>
-        n.id === dragState.nodeId
-          ? { ...n, position: { x: canvasPos.x - dragState.offsetX, y: canvasPos.y - dragState.offsetY } }
-          : n
-      ));
-    }
-  }, [panStart, dragState, toCanvas]);
+    movePointer(e.clientX, e.clientY);
+  }, [movePointer]);
 
   const onMouseUp = useCallback(() => {
     if (panStart) setPanStart(null);
@@ -280,6 +369,45 @@ function WorkflowCanvas({ workflow, onSave }) {
     if (connecting) {
       setConnecting(null);
     }
+  }, [panStart, dragState, connecting]);
+
+  const onPointerDown = useCallback((e) => {
+    if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
+    const isNodeTarget = Boolean(e.target?.closest?.(".wf-node"));
+    if (!isNodeTarget) {
+      setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+      selectedNodeId.value = null;
+      selectedEdgeId.value = null;
+      setEditingNode(null);
+      setContextMenu(null);
+    }
+    try {
+      canvasRef.current?.setPointerCapture?.(e.pointerId);
+    } catch {}
+    e.preventDefault();
+  }, [pan]);
+
+  const onPointerMove = useCallback((e) => {
+    if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
+    if (!panStart && !dragState && !connecting) return;
+    movePointer(e.clientX, e.clientY);
+    e.preventDefault();
+  }, [panStart, dragState, connecting, movePointer]);
+
+  const onPointerUp = useCallback((e) => {
+    if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
+    try {
+      canvasRef.current?.releasePointerCapture?.(e.pointerId);
+    } catch {}
+    if (panStart) setPanStart(null);
+    if (dragState) {
+      setDragState(null);
+      autoSave();
+    }
+    if (connecting) {
+      setConnecting(null);
+    }
+    e.preventDefault();
   }, [panStart, dragState, connecting]);
 
   const onWheel = useCallback((e) => {
@@ -305,6 +433,26 @@ function WorkflowCanvas({ workflow, onSave }) {
     }
   }, [nodes, toCanvas]);
 
+  const onNodePointerDown = useCallback((nodeId, e) => {
+    if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
+    e.stopPropagation();
+    selectedNodeId.value = nodeId;
+    setContextMenu(null);
+    const canvasPos = toCanvas(e.clientX, e.clientY);
+    const node = nodes.find((n) => n.id === nodeId);
+    if (node) {
+      setDragState({
+        nodeId,
+        offsetX: canvasPos.x - (node.position?.x || 0),
+        offsetY: canvasPos.y - (node.position?.y || 0),
+      });
+    }
+    try {
+      canvasRef.current?.setPointerCapture?.(e.pointerId);
+    } catch {}
+    e.preventDefault();
+  }, [nodes, toCanvas]);
+
   const onNodeDoubleClick = useCallback((nodeId) => {
     setEditingNode(nodeId);
   }, []);
@@ -323,6 +471,17 @@ function WorkflowCanvas({ workflow, onSave }) {
     setConnecting({ sourceId: nodeId, startX: e.clientX, startY: e.clientY });
   }, []);
 
+  const onOutputPortPointerDown = useCallback((nodeId, e) => {
+    if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
+    e.stopPropagation();
+    setConnecting({ sourceId: nodeId, startX: e.clientX, startY: e.clientY });
+    movePointer(e.clientX, e.clientY);
+    try {
+      canvasRef.current?.setPointerCapture?.(e.pointerId);
+    } catch {}
+    e.preventDefault();
+  }, [movePointer]);
+
   const onInputPortMouseUp = useCallback((nodeId) => {
     if (connecting && connecting.sourceId !== nodeId) {
       const edgeId = `${connecting.sourceId}->${nodeId}`;
@@ -339,6 +498,13 @@ function WorkflowCanvas({ workflow, onSave }) {
     }
     setConnecting(null);
   }, [connecting, edges]);
+
+  const onInputPortPointerUp = useCallback((nodeId, e) => {
+    if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
+    e.stopPropagation();
+    onInputPortMouseUp(nodeId);
+    e.preventDefault();
+  }, [onInputPortMouseUp]);
 
   // ── CRUD ──────────────────────────────────────────────────
 
@@ -438,7 +604,11 @@ function WorkflowCanvas({ workflow, onSave }) {
   // ── Render ────────────────────────────────────────────────
 
   return html`
-    <div class="wf-canvas-container" style="position: relative; width: 100%; overflow: hidden; background: var(--color-bg-secondary, #0f1117);">
+    <div
+      class="wf-canvas-container"
+      data-ptr-ignore="true"
+      style="position: relative; width: 100%; overflow: hidden; overscroll-behavior: contain; background: var(--color-bg-secondary, #0f1117);"
+    >
 
       <!-- Toolbar -->
       <div class="wf-toolbar" style="position: absolute; top: 12px; left: 12px; right: 12px; z-index: 20; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
@@ -452,13 +622,37 @@ function WorkflowCanvas({ workflow, onSave }) {
           <span class="btn-icon">${resolveIcon("save")}</span>
           Save
         </button>
-        <button class="wf-btn" onClick=${() => { if (workflow?.id) executeWorkflow(workflow.id); }}>
+        <button
+          class="wf-btn"
+          style=${workflow?.enabled === false ? "opacity: 0.65;" : ""}
+          onClick=${() => {
+            if (!workflow?.id) return;
+            if (workflow?.enabled === false) {
+              showToast("Workflow is paused. Resume it before running.", "warning");
+              return;
+            }
+            executeWorkflow(workflow.id);
+          }}
+        >
           <span class="btn-icon">${resolveIcon("play")}</span>
           Run
+        </button>
+        <button
+          class="wf-btn"
+          onClick=${() => {
+            if (!workflow?.id) return;
+            setWorkflowEnabled(workflow.id, workflow?.enabled === false);
+          }}
+        >
+          <span class="btn-icon">${resolveIcon(workflow?.enabled === false ? "play" : "pause")}</span>
+          ${workflow?.enabled === false ? "Resume" : "Pause"}
         </button>
         <div style="flex:1;"></div>
         <span class="wf-badge" style="font-size: 11px; opacity: 0.7;">
           ${nodes.length} nodes · ${edges.length} edges · Zoom: ${Math.round(zoom * 100)}%
+        </span>
+        <span class="wf-badge" style="font-size: 11px; opacity: 0.75;">
+          ${workflow?.enabled === false ? "Paused" : "Active"} · Pan: touch drag, Ctrl/Space + drag
         </span>
         <button class="wf-btn wf-btn-sm" onClick=${() => setZoom(1)}>Reset Zoom</button>
         <button class="wf-btn wf-btn-sm" onClick=${() => setPan({ x: 0, y: 0 })}>Reset Pan</button>
@@ -477,10 +671,15 @@ function WorkflowCanvas({ workflow, onSave }) {
       <!-- SVG Canvas -->
       <svg
         ref=${canvasRef}
-        style="position: absolute; inset: 0; width: 100%; height: 100%; cursor: ${panStart ? 'grabbing' : dragState ? 'move' : 'default'};"
+        style="position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; user-select: none; -webkit-user-select: none; cursor: ${panStart ? 'grabbing' : dragState ? 'move' : spacePanning ? 'grab' : 'default'};"
         onMouseDown=${onMouseDown}
         onMouseMove=${onMouseMove}
         onMouseUp=${onMouseUp}
+        onMouseLeave=${onMouseUp}
+        onPointerDown=${onPointerDown}
+        onPointerMove=${onPointerMove}
+        onPointerUp=${onPointerUp}
+        onPointerCancel=${onPointerUp}
         onWheel=${onWheel}
         onContextMenu=${(e) => e.preventDefault()}
       >
@@ -579,6 +778,7 @@ function WorkflowCanvas({ workflow, onSave }) {
                 class="wf-node"
                 transform="translate(${x} ${y})"
                 onMouseDown=${(e) => onNodeMouseDown(node.id, e)}
+                onPointerDown=${(e) => onNodePointerDown(node.id, e)}
                 onDblClick=${() => onNodeDoubleClick(node.id)}
                 onContextMenu=${(e) => onNodeContextMenu(node.id, e)}
                 style="cursor: grab;"
@@ -631,6 +831,7 @@ function WorkflowCanvas({ workflow, onSave }) {
                   stroke-width="2"
                   style="cursor: crosshair;"
                   onMouseUp=${() => onInputPortMouseUp(node.id)}
+                  onPointerUp=${(e) => onInputPortPointerUp(node.id, e)}
                 />
 
                 <!-- Output port (right) -->
@@ -643,6 +844,7 @@ function WorkflowCanvas({ workflow, onSave }) {
                   stroke-width="2"
                   style="cursor: crosshair;"
                   onMouseDown=${(e) => onOutputPortMouseDown(node.id, e)}
+                  onPointerDown=${(e) => onOutputPortPointerDown(node.id, e)}
                 />
               </g>
             `;
@@ -723,7 +925,7 @@ function NodePalette({ nodeTypes: types, onSelect, onClose }) {
           placeholder="Search nodes..."
           value=${search}
           onInput=${(e) => setSearch(e.target.value)}
-          style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--color-border, #2a3040); background: var(--color-bg-secondary, #1a1f2e); color: white; font-size: 13px; outline: none;"
+          style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--color-border, #2a3040); background: var(--color-bg-secondary, #1a1f2e); color: var(--color-text, white); font-size: 13px; outline: none;"
           autofocus
         />
         <button onClick=${onClose} class="wf-btn wf-btn-sm" style="font-size: 16px; line-height: 1;">
@@ -903,7 +1105,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
             type="text"
             value=${node.label || ""}
             onInput=${(e) => onUpdateLabel(e.target.value)}
-            style="width: 100%; background: transparent; border: none; color: white; font-size: 15px; font-weight: 600; outline: none; padding: 2px 0;"
+            style="width: 100%; background: transparent; border: none; color: var(--color-text, white); font-size: 15px; font-weight: 600; outline: none; padding: 2px 0;"
           />
           <div style="font-size: 11px; color: ${meta.color}; font-family: monospace;">${node.type}</div>
         </div>
@@ -1211,7 +1413,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
                     onChange=${(e) => onFieldChange(key, e.target.checked)}
                     style="width: 16px; height: 16px;"
                   />
-                  <span style="font-size: 13px; color: white;">${value ? "Enabled" : "Disabled"}</span>
+                  <span style="font-size: 13px; color: var(--color-text, white);">${value ? "Enabled" : "Disabled"}</span>
                 </label>
               ` : fieldType === "number" ? html`
                 <input
@@ -1269,7 +1471,7 @@ function NodeConfigEditor({ node, nodeTypes: types, onUpdate, onUpdateLabel, onC
             onChange=${(e) => onUpdate({ continueOnError: e.target.checked })}
             style="width: 16px; height: 16px;"
           />
-          <span style="font-size: 13px; color: white;">Continue on Error</span>
+          <span style="font-size: 13px; color: var(--color-text, white);">Continue on Error</span>
         </label>
         <div style="font-size: 10px; color: var(--color-text-secondary, #6b7280); margin-top: 4px;">
           If checked, workflow continues even if this node fails
@@ -1379,7 +1581,7 @@ function WorkflowListView() {
                   <span class="icon-inline" style="font-size: 14px;">${resolveIcon(getNodeMeta(wf.trigger || "action")?.icon) || ICONS.dot}</span>
                   <span style="font-weight: 600; font-size: 14px; flex: 1;">${wf.name}</span>
                   <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
-                    ${wf.enabled ? "Active" : "Disabled"}
+                    ${wf.enabled ? "Active" : "Paused"}
                   </span>
                 </div>
                 ${wf.description && html`
@@ -1392,7 +1594,29 @@ function WorkflowListView() {
                   <span>·</span>
                   <span>${wf.category || "custom"}</span>
                   <div style="flex: 1;"></div>
-                  <button class="wf-btn wf-btn-sm" style="font-size: 11px;" onClick=${(e) => { e.stopPropagation(); executeWorkflow(wf.id); }}>
+                  <button
+                    class="wf-btn wf-btn-sm"
+                    style="font-size: 11px;"
+                    onClick=${(e) => {
+                      e.stopPropagation();
+                      setWorkflowEnabled(wf.id, !wf.enabled);
+                    }}
+                  >
+                    <span class="icon-inline">${resolveIcon(wf.enabled ? "pause" : "play")}</span>
+                    ${wf.enabled ? "Pause" : "Resume"}
+                  </button>
+                  <button
+                    class="wf-btn wf-btn-sm"
+                    style=${`font-size: 11px; ${wf.enabled ? "" : "opacity: 0.65;"}`}
+                    onClick=${(e) => {
+                      e.stopPropagation();
+                      if (!wf.enabled) {
+                        showToast("Workflow is paused. Resume it before running.", "warning");
+                        return;
+                      }
+                      executeWorkflow(wf.id);
+                    }}
+                  >
                     <span class="icon-inline">${resolveIcon("play")}</span>
                   </button>
                   <button class="wf-btn wf-btn-sm wf-btn-danger" style="font-size: 11px;" onClick=${(e) => { e.stopPropagation(); if (confirm("Delete " + wf.name + "?")) deleteWorkflow(wf.id); }}>
@@ -1436,8 +1660,9 @@ function WorkflowListView() {
           Available Templates (${availableTemplates.length})${tmpls.length !== availableTemplates.length ? html` <span style="font-size: 11px; font-weight: 400; opacity: 0.6;">· ${tmpls.length - availableTemplates.length} installed</span>` : ""}
         </h3>
         ${availableTemplates.length === 0 && html`
-          <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px;">
-            All templates are installed! 🎉
+          <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px;">
+            <span class="icon-inline">${resolveIcon("star")}</span>
+            <span>All templates are installed!</span>
           </div>
         `}
         ${(() => {
@@ -1527,6 +1752,36 @@ function getRunActivityAt(run) {
   return candidates.length > 0 ? Math.max(...candidates) : null;
 }
 
+function buildNodeStatusesFromRunDetail(run) {
+  const detail = run?.detail || {};
+  const statuses = { ...(detail?.nodeStatuses || {}) };
+  const statusEvents = Array.isArray(detail?.nodeStatusEvents) ? detail.nodeStatusEvents : [];
+  const logs = Array.isArray(detail?.logs) ? detail.logs : [];
+
+  for (const event of statusEvents) {
+    const nodeId = String(event?.nodeId || "").trim();
+    const status = String(event?.status || "").trim();
+    if (!nodeId || !status) continue;
+    statuses[nodeId] = status;
+  }
+
+  // Backfill older runs that only recorded nodeId in logs.
+  if (Object.keys(statuses).length === 0) {
+    const fallbackStatus = run?.status === "failed"
+      ? "failed"
+      : run?.status === "completed"
+        ? "completed"
+        : "running";
+    for (const entry of logs) {
+      const nodeId = String(entry?.nodeId || "").trim();
+      if (!nodeId || statuses[nodeId]) continue;
+      statuses[nodeId] = fallbackStatus;
+    }
+  }
+
+  return statuses;
+}
+
 function getNodeCardBorder(status) {
   if (status === "running") return "#3b82f680";
   if (status === "failed") return "#ef444480";
@@ -1536,7 +1791,11 @@ function getNodeCardBorder(status) {
 
 function safePrettyJson(value) {
   try {
-    return JSON.stringify(value, null, 2);
+    const json = JSON.stringify(value, null, 2);
+    const maxChars = 120000;
+    if (json.length <= maxChars) return json;
+    const omitted = json.length - maxChars;
+    return `${json.slice(0, maxChars)}\n\n… [truncated ${omitted} chars]`;
   } catch {
     return String(value ?? "");
   }
@@ -1634,10 +1893,10 @@ function RunHistoryView() {
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
-    const nodeStatuses = selectedRun?.detail?.nodeStatuses || {};
-    const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
     const logs = Array.isArray(selectedRun?.detail?.logs) ? selectedRun.detail.logs : [];
     const errors = Array.isArray(selectedRun?.detail?.errors) ? selectedRun.detail.errors : [];
+    const nodeStatuses = buildNodeStatusesFromRunDetail(selectedRun);
+    const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
     const nodeIds = Object.keys(nodeStatuses).sort((a, b) => {
       const rankDiff = getNodeStatusRank(nodeStatuses[a]) - getNodeStatusRank(nodeStatuses[b]);
       if (rankDiff !== 0) return rankDiff;
@@ -1697,6 +1956,8 @@ function RunHistoryView() {
             const nodeStatus = nodeStatuses[nodeId];
             const nodeStatusStyles = getRunStatusBadgeStyles(nodeStatus);
             const nodeOutput = nodeOutputs[nodeId];
+            const nodeSummary = typeof nodeOutput?.summary === "string" ? nodeOutput.summary.trim() : "";
+            const nodeNarrative = typeof nodeOutput?.narrative === "string" ? nodeOutput.narrative.trim() : "";
             return html`
               <details key=${nodeId} style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid ${getNodeCardBorder(nodeStatus)}; border-radius: 8px; padding: 8px 10px;">
                 <summary style="cursor: pointer; display: flex; align-items: center; gap: 8px;">
@@ -1705,6 +1966,12 @@ function RunHistoryView() {
                     ${nodeStatus || "unknown"}
                   </span>
                 </summary>
+                ${(nodeSummary || nodeNarrative) && html`
+                  <div style="margin-top: 8px; font-size: 12px; color: #d1d5db; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px; white-space: pre-wrap; word-break: break-word;">
+                    ${nodeSummary ? html`<div><b>Summary:</b> ${nodeSummary}</div>` : ""}
+                    ${nodeNarrative ? html`<div style="margin-top: ${nodeSummary ? "6px" : "0"};"><b>Narrative:</b> ${nodeNarrative}</div>` : ""}
+                  </div>
+                `}
                 <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(nodeOutput)}</pre>
               </details>
             `;
@@ -1873,6 +2140,73 @@ export function WorkflowsTab() {
   }, []);
 
   useEffect(() => {
+    const route = routeParams.value || {};
+    const workflowId = String(route.workflowId || "").trim();
+    const runId = String(route.runId || "").trim();
+    const wantsRuns = Boolean(route.runsView) || Boolean(runId);
+
+    if (wantsRuns) {
+      viewMode.value = "runs";
+      loadRuns();
+      if (runId) {
+        loadRunDetail(runId);
+      } else {
+        selectedRunId.value = null;
+        selectedRunDetail.value = null;
+      }
+      return;
+    }
+
+    if (workflowId) {
+      apiFetch(`/api/workflows/${encodeURIComponent(workflowId)}`)
+        .then((d) => {
+          activeWorkflow.value = d?.workflow || activeWorkflow.value;
+          if (activeWorkflow.value?.id === workflowId || d?.workflow?.id === workflowId) {
+            viewMode.value = "canvas";
+          }
+        })
+        .catch(() => {
+          const existing = (workflows.value || []).find((wf) => wf.id === workflowId);
+          if (existing) {
+            activeWorkflow.value = existing;
+            viewMode.value = "canvas";
+          }
+        });
+      return;
+    }
+
+    if (viewMode.value !== "list") {
+      selectedRunId.value = null;
+      selectedRunDetail.value = null;
+      activeWorkflow.value = null;
+      viewMode.value = "list";
+    }
+  }, [routeParams.value]);
+
+  useEffect(() => {
+    const mode = viewMode.value;
+    if (mode === "canvas" && activeWorkflow.value?.id) {
+      setRouteParams(
+        { workflowId: activeWorkflow.value.id },
+        { replace: true, skipGuard: true },
+      );
+      return;
+    }
+    if (mode === "runs") {
+      if (selectedRunId.value) {
+        setRouteParams(
+          { runsView: true, runId: selectedRunId.value },
+          { replace: true, skipGuard: true },
+        );
+      } else {
+        setRouteParams({ runsView: true }, { replace: true, skipGuard: true });
+      }
+      return;
+    }
+    setRouteParams({}, { replace: true, skipGuard: true });
+  }, [viewMode.value, activeWorkflow.value?.id, selectedRunId.value]);
+
+  useEffect(() => {
     const handler = (e) => {
       if (e.key !== "Escape") return;
       const activeTag = document.activeElement?.tagName || "";
@@ -1902,12 +2236,12 @@ export function WorkflowsTab() {
         font-family: inherit;
         white-space: nowrap;
       }
-      .wf-btn:hover { border-color: #3b82f6; background: #1e293b; }
+      .wf-btn:hover { border-color: #3b82f6; background: var(--bg-card-hover); }
       .wf-btn-primary { background: #3b82f6; border-color: #3b82f6; color: white; }
       .wf-btn-primary:hover { background: #2563eb; }
       .wf-btn-danger:hover { border-color: #ef4444; background: #dc262620; }
-      .wf-btn-ghost { background: #111827; border-color: #374151; color: #d1d5db; }
-      .wf-btn-ghost:hover { background: #1f2937; border-color: #60a5fa; color: #e5e7eb; }
+      .wf-btn-ghost { background: var(--bg-card); border-color: var(--color-border, #374151); color: var(--color-text-secondary, #d1d5db); }
+      .wf-btn-ghost:hover { background: var(--bg-card-hover); border-color: #60a5fa; color: var(--color-text, #e5e7eb); }
       .wf-btn-sm { padding: 3px 8px; font-size: 11px; border-radius: 6px; }
       .wf-btn .btn-icon { display: inline-flex; align-items: center; justify-content: center; line-height: 0; vertical-align: middle; }
       .wf-btn .btn-icon svg { width: 1em; height: 1em; display: inline-block; stroke-width: 1.8; }
@@ -1927,7 +2261,7 @@ export function WorkflowsTab() {
         border: 1px solid var(--color-border, #2a3040);
         border-radius: 6px;
         background: var(--color-bg-secondary, #1a1f2e);
-        color: white;
+        color: var(--color-text, white);
         font-size: 13px;
         font-family: inherit;
         outline: none;
@@ -1949,9 +2283,9 @@ export function WorkflowsTab() {
         margin-bottom: 12px;
       }
       .wf-chip {
-        background: #111827;
-        color: #cbd5e1;
-        border: 1px solid #334155;
+        background: var(--bg-card);
+        color: var(--color-text-secondary, #cbd5e1);
+        border: 1px solid var(--color-border, #334155);
         border-radius: 999px;
         font-size: 11px;
         padding: 4px 10px;
@@ -1999,14 +2333,17 @@ export function WorkflowsTab() {
         font-family: inherit;
       }
       .wf-context-menu button:hover { background: var(--color-bg-secondary, #1a1f2e); }
-      .wf-preset-btn:hover { border-color: #3b82f6 !important; background: #1e293b !important; }
+      .wf-preset-btn:hover { border-color: #3b82f6 !important; background: var(--bg-card-hover) !important; }
       .wf-preset-section { animation: wf-fade-in 0.15s ease; }
       @keyframes wf-fade-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
       .wf-canvas-container { height: calc(100vh - 140px); min-height: 500px; }
       @media (min-width: 1200px) { .wf-canvas-container { height: calc(100vh - 120px); min-height: 700px; } }
     </style>
 
-    <div style="padding: 8px;">
+    <div
+      class="wf-theme"
+      style="padding: 8px; --color-bg: var(--bg-card); --color-bg-secondary: var(--bg-secondary); --color-border: var(--border); --color-text: var(--text-primary); --color-text-secondary: var(--text-secondary);"
+    >
       ${mode === "canvas" && activeWorkflow.value
         ? html`<${WorkflowCanvas} workflow=${activeWorkflow.value} />`
         : mode === "runs"

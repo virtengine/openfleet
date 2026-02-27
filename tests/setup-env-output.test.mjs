@@ -3,6 +3,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
+  applyTelegramMiniAppDefaults,
   applyEnvFileToProcess,
   buildStandardizedEnvFile,
   extractProjectNumber,
@@ -47,6 +48,35 @@ describe("setup env output", () => {
       delete process.env.BOSUN_TEST_KEY;
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it("enables Telegram Mini App defaults when Telegram is configured", () => {
+    const env = {
+      TELEGRAM_BOT_TOKEN: "123456:abc-token",
+    };
+
+    const configured = applyTelegramMiniAppDefaults(env, {});
+    expect(configured).toBe(true);
+    expect(env.TELEGRAM_MINIAPP_ENABLED).toBe("true");
+    expect(env.TELEGRAM_UI_PORT).toBe("3080");
+    expect(env.TELEGRAM_UI_TUNNEL).toBe("auto");
+    expect(env.TELEGRAM_UI_ALLOW_UNSAFE).toBe("false");
+  });
+
+  it("keeps explicit Telegram Mini App overrides from setup inputs", () => {
+    const env = {
+      TELEGRAM_BOT_TOKEN: "123456:abc-token",
+      TELEGRAM_MINIAPP_ENABLED: "false",
+      TELEGRAM_UI_PORT: "4410",
+      TELEGRAM_UI_TUNNEL: "cloudflared",
+      TELEGRAM_UI_ALLOW_UNSAFE: "true",
+    };
+
+    applyTelegramMiniAppDefaults(env, {});
+    expect(env.TELEGRAM_MINIAPP_ENABLED).toBe("false");
+    expect(env.TELEGRAM_UI_PORT).toBe("4410");
+    expect(env.TELEGRAM_UI_TUNNEL).toBe("cloudflared");
+    expect(env.TELEGRAM_UI_ALLOW_UNSAFE).toBe("true");
   });
 });
 
