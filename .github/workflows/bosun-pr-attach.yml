@@ -68,6 +68,8 @@ jobs:
               "",
               "This PR is tracked by Bosun attachment automation.",
               "- Marker label: bosun-attached",
+              "- CI failure signal label: bosun-needs-fix",
+              "- CI failure marker: <!-- bosun-ci-failure -->",
               "- Trigger: " + trigger,
             ].join("\n");
 
