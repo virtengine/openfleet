@@ -1746,6 +1746,36 @@ function getRunActivityAt(run) {
   return candidates.length > 0 ? Math.max(...candidates) : null;
 }
 
+function buildNodeStatusesFromRunDetail(run) {
+  const detail = run?.detail || {};
+  const statuses = { ...(detail?.nodeStatuses || {}) };
+  const statusEvents = Array.isArray(detail?.nodeStatusEvents) ? detail.nodeStatusEvents : [];
+  const logs = Array.isArray(detail?.logs) ? detail.logs : [];
+
+  for (const event of statusEvents) {
+    const nodeId = String(event?.nodeId || "").trim();
+    const status = String(event?.status || "").trim();
+    if (!nodeId || !status) continue;
+    statuses[nodeId] = status;
+  }
+
+  // Backfill older runs that only recorded nodeId in logs.
+  if (Object.keys(statuses).length === 0) {
+    const fallbackStatus = run?.status === "failed"
+      ? "failed"
+      : run?.status === "completed"
+        ? "completed"
+        : "running";
+    for (const entry of logs) {
+      const nodeId = String(entry?.nodeId || "").trim();
+      if (!nodeId || statuses[nodeId]) continue;
+      statuses[nodeId] = fallbackStatus;
+    }
+  }
+
+  return statuses;
+}
+
 function getNodeCardBorder(status) {
   if (status === "running") return "#3b82f680";
   if (status === "failed") return "#ef444480";
@@ -1857,10 +1887,10 @@ function RunHistoryView() {
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
-    const nodeStatuses = selectedRun?.detail?.nodeStatuses || {};
-    const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
     const logs = Array.isArray(selectedRun?.detail?.logs) ? selectedRun.detail.logs : [];
     const errors = Array.isArray(selectedRun?.detail?.errors) ? selectedRun.detail.errors : [];
+    const nodeStatuses = buildNodeStatusesFromRunDetail(selectedRun);
+    const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
     const nodeIds = Object.keys(nodeStatuses).sort((a, b) => {
       const rankDiff = getNodeStatusRank(nodeStatuses[a]) - getNodeStatusRank(nodeStatuses[b]);
       if (rankDiff !== 0) return rankDiff;

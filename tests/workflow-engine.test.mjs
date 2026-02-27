@@ -628,6 +628,43 @@ describe("Session chaining - action.run_agent", () => {
     expect(runLogText).toMatch(/Agent: Implemented the requested changes\./);
   });
 
+  it("ignores noisy delta stream events while keeping meaningful agent updates", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+    const launchEphemeralThread = vi.fn().mockImplementation(
+      async (_prompt, _cwd, _timeoutMs, extra) => {
+        extra?.onEvent?.({ type: "assistant.reasoning_delta", data: { content: "test" } });
+        extra?.onEvent?.({ type: "assistant.reasoning_delta", data: { content: ":" } });
+        extra?.onEvent?.({ type: "assistant.message", data: { content: "Added regression coverage." } });
+        return {
+          success: true,
+          output: "ok",
+          sdk: "codex",
+          items: [],
+          threadId: "thread-delta-filter",
+        };
+      },
+    );
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = { id: "a-delta", type: "action.run_agent", config: { prompt: "delta test" } };
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(result.threadId).toBe("thread-delta-filter");
+    const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
+    expect(runLogText).not.toContain("assistant.reasoning_delta");
+    expect(runLogText).toMatch(/Agent: Added regression coverage\./);
+  });
+
   it("condenses noisy assistant events into narrative summaries", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();

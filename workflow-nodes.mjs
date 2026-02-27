@@ -261,6 +261,15 @@ function summarizeAgentStreamEvent(event) {
   const type = String(event?.type || "").trim();
   if (!type) return "";
 
+  // Ignore token-level deltas that create noisy duplicate run logs.
+  if (
+    /reasoning(?:_|[.])delta/i.test(type) ||
+    /(?:^|[.])delta$/i.test(type) ||
+    /(?:_|[.])delta(?:_|[.])/i.test(type)
+  ) {
+    return "";
+  }
+
   if (type === "item.updated") {
     return "";
   }
