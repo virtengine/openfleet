@@ -2060,6 +2060,8 @@ class TaskExecutor {
     this._listTasksFailureCount = 0;
     this._listTasksBackoffUntil = 0;
     this._listTasksBackoffReason = "";
+    // Throttle draft-task filtering log messages (every 5 min max)
+    this._lastDraftFilterLogAt = 0;
     this._projectResolveFailureWindowStart = 0;
     this._projectResolveFailureCount = 0;
     this._projectResolveBackoffUntil = 0;
@@ -3742,9 +3744,14 @@ class TaskExecutor {
         const before = tasks.length;
         tasks = tasks.filter((task) => !isDraftTask(task));
         if (tasks.length !== before) {
-          console.debug(
-            `${TAG} filtered ${before - tasks.length} draft task(s)`,
-          );
+          const draftCount = before - tasks.length;
+          const now = Date.now();
+          if (!this._lastDraftFilterLogAt || now - this._lastDraftFilterLogAt > 300_000) {
+            console.debug(
+              `${TAG} filtered ${draftCount} draft task(s)`,
+            );
+            this._lastDraftFilterLogAt = now;
+          }
         }
       }
 
@@ -3930,6 +3937,7 @@ class TaskExecutor {
     const executionRepoSlug = taskRepoContext.repoSlug || this.repoSlug;
     const worktreeManager = this._getWorktreeManager(executionRepoRoot);
     let taskClaimToken = null;
+    let attemptId = null;
 
     const releaseTaskClaimLock = async () => {
       this._stopTaskClaimRenewal(taskId);
@@ -3946,6 +3954,18 @@ class TaskExecutor {
         );
       } finally {
         taskClaimToken = null;
+      }
+    };
+
+    const clearAttemptTracking = () => {
+      if (!attemptId) return;
+      anomalyAbortTargets.delete(attemptId);
+      if (anomalyDetector) {
+        try {
+          anomalyDetector.resetProcess(attemptId);
+        } catch {
+          /* best-effort */
+        }
       }
     };
 
@@ -4402,7 +4422,7 @@ class TaskExecutor {
       // workspace-scoped executionRepoRoot, NOT the developer's personal repo.
       process.env.BOSUN_AGENT_REPO_ROOT = executionRepoRoot;
 
-      const attemptId = `${taskId}-${randomUUID()}`;
+      attemptId = `${taskId}-${randomUUID()}`;
       const taskMeta = {
         task_id: taskId,
         task_title: taskTitle,
@@ -4654,7 +4674,7 @@ class TaskExecutor {
           diff_lines_deleted: diffStats?.totalDeletions ?? null,
         },
       });
-      anomalyAbortTargets.delete(attemptId);
+      clearAttemptTracking();
 
       // 7. Handle result
       slot.status = validatedResult.success ? "completing" : "failed";
@@ -4685,6 +4705,7 @@ class TaskExecutor {
       console.error(
         `${TAG} fatal error executing task "${taskTitle}": ${err.message}`,
       );
+      clearAttemptTracking();
       slot.status = "failed";
       this._taskCooldowns.set(taskId, Date.now());
       this._slotAbortControllers.delete(taskId);

@@ -86,6 +86,24 @@ const HARD_TIMEOUT_BUFFER_MS = 5 * 60_000; // 5 minutes
 /** Tag for console logging */
 const TAG = "[agent-pool]";
 const MAX_PROMPT_BYTES = 180_000;
+const MAX_SET_TIMEOUT_MS = 2_147_483_647; // Node.js setTimeout 32-bit signed max
+let timeoutClampWarningKey = "";
+
+function clampTimerDelayMs(delayMs, label = "timer") {
+  const parsed = Number(delayMs);
+  if (!Number.isFinite(parsed) || parsed < 1) return 1;
+  const clamped = Math.min(Math.trunc(parsed), MAX_SET_TIMEOUT_MS);
+  if (clamped !== Math.trunc(parsed)) {
+    const warningKey = `${label}:${parsed}`;
+    if (timeoutClampWarningKey !== warningKey) {
+      timeoutClampWarningKey = warningKey;
+      console.warn(
+        `${TAG} ${label} delay ${parsed}ms exceeds Node timer max; clamped to ${MAX_SET_TIMEOUT_MS}ms`,
+      );
+    }
+  }
+  return clamped;
+}
 
 function sanitizeAndBoundPrompt(text) {
   if (typeof text !== "string") return "";
@@ -172,7 +190,7 @@ function createScopedAbortController(externalAC, timeoutMs) {
     if (!controller.signal.aborted) {
       controller.abort("timeout");
     }
-  }, timeoutMs);
+  }, clampTimerDelayMs(timeoutMs, "abort-timeout"));
   if (timeoutHandle && typeof timeoutHandle.unref === "function") {
     timeoutHandle.unref();
   }
@@ -706,6 +724,8 @@ export function getAvailableSdks() {
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string }>}
  */
 async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
+  // Coerce to number — prevents string concatenation in setTimeout arithmetic
+  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
   const {
     onEvent,
     abortController: externalAC,
@@ -833,7 +853,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     const hardTimeoutPromise = new Promise((_, reject) => {
       hardTimer = setTimeout(
         () => reject(new Error("hard_timeout")),
-        timeoutMs + HARD_TIMEOUT_BUFFER_MS,
+        clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-hard-timeout"),
       );
     });
 
@@ -971,6 +991,8 @@ function autoRespondToUserInput(request) {
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string }>}
  */
 async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
+  // Coerce to number — prevents string concatenation in setTimeout arithmetic
+  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
   const {
     onEvent,
     abortController: externalAC,
@@ -1236,7 +1258,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
           // the run to continue rather than stalling for the full hard timeout.
           if (finalResponse.trim()) return finish(resolveP);
           finish(() => rejectP(new Error("timeout_waiting_for_idle")));
-        }, timeoutMs + 1000);
+        }, clampTimerDelayMs(timeoutMs + 1000, "copilot-idle-timeout"));
         if (idleTimer && typeof idleTimer.unref === "function") {
           idleTimer.unref();
         }
@@ -1247,7 +1269,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
       const copilotHardTimeout = new Promise((_, reject) => {
         const ht = setTimeout(
           () => reject(new Error("hard_timeout")),
-          timeoutMs + HARD_TIMEOUT_BUFFER_MS,
+          clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "copilot-hard-timeout"),
         );
         // Don't let this timer keep the process alive
         if (ht && typeof ht.unref === "function") ht.unref();
@@ -1367,6 +1389,8 @@ async function resumeCopilotThread(
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string }>}
  */
 async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
+  // Coerce to number — prevents string concatenation in setTimeout arithmetic
+  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
   const {
     onEvent,
     abortController: externalAC,
@@ -1623,7 +1647,10 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     })();
 
     const hardTimeout = new Promise((_, reject) => {
-      hardTimer = setTimeout(() => reject(new Error("hard-timeout")), hardTimeoutMs);
+      hardTimer = setTimeout(
+        () => reject(new Error("hard-timeout")),
+        clampTimerDelayMs(hardTimeoutMs, "claude-hard-timeout"),
+      );
       if (hardTimer && typeof hardTimer.unref === "function") {
         hardTimer.unref();
       }
@@ -2256,6 +2283,8 @@ function isPoisonedCodexResumeError(errorValue) {
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string, threadId: string|null }>}
  */
 async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
+  // Coerce to number — prevents string concatenation in setTimeout arithmetic
+  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
   const { onEvent, abortController: externalAC, envOverrides = null } = extra;
 
   let CodexClass;
@@ -2337,7 +2366,7 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     const hardTimeoutPromise = new Promise((_, reject) => {
       hardTimer = setTimeout(
         () => reject(new Error("hard_timeout")),
-        timeoutMs + HARD_TIMEOUT_BUFFER_MS,
+        clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-resume-hard-timeout"),
       );
     });
 

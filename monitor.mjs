@@ -8271,7 +8271,13 @@ async function actOnAssessment(ctx, decision) {
     case "reprompt_same":
       console.log(`[${tag}] → reprompt same session`);
       if (decision.prompt && agentPoolEnabled) {
-        void execPooledPrompt(decision.prompt, { timeoutMs: 15 * 60 * 1000 });
+        execPooledPrompt(decision.prompt, { timeoutMs: 15 * 60 * 1000 }).catch(
+          (err) => {
+            console.warn(
+              `[${tag}] reprompt_same failed: ${err?.message || err}`,
+            );
+          },
+        );
       }
       break;
 
@@ -14755,7 +14761,11 @@ function isStreamNoise(msg) {
     msg.includes("EPIPE") ||
     msg.includes("ERR_STREAM_PREMATURE_CLOSE") ||
     msg.includes("ERR_STREAM_DESTROYED") ||
+    msg.includes("stream was destroyed") ||
+    msg.includes("Cannot call write after a stream was destroyed") ||
     msg.includes("write after end") ||
+    msg.includes("write after a stream was destroyed") ||
+    msg.includes("Cannot call write after") ||
     msg.includes("This socket has been ended") ||
     msg.includes("Cannot read properties of null") ||
     msg.includes("ECONNRESET") ||
@@ -14771,7 +14781,7 @@ function isStreamNoise(msg) {
 }
 
 process.on("uncaughtException", (err) => {
-  const msg = err?.message || "";
+  const msg = (err?.code ? err.code + ": " : "") + (err?.message || "");
   // Always suppress stream noise — not just during shutdown
   if (isStreamNoise(msg)) {
     console.error(
@@ -14808,7 +14818,7 @@ process.on("uncaughtException", (err) => {
 });
 
 process.on("unhandledRejection", (reason) => {
-  const msg = reason?.message || String(reason || "");
+  const msg = (reason?.code ? reason.code + ": " : "") + (reason?.message || String(reason || ""));
   // Always write breadcrumb — unhandled rejections can cause exit code 1
   try {
     const crashDir = config?.logDir || resolve(__dirname, "logs");
