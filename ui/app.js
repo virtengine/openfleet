@@ -122,7 +122,7 @@ import {
 import { DashboardTab } from "./tabs/dashboard.js";
 import { TasksTab } from "./tabs/tasks.js";
 import { ChatTab } from "./tabs/chat.js";
-import { AgentsTab } from "./tabs/agents.js";
+import { AgentsTab, FleetSessionsTab } from "./tabs/agents.js";
 import { InfraTab } from "./tabs/infra.js";
 import { ControlTab } from "./tabs/control.js";
 import { LogsTab } from "./tabs/logs.js";
@@ -431,6 +431,7 @@ const TAB_COMPONENTS = {
   tasks: TasksTab,
   chat: ChatTab,
   agents: AgentsTab,
+  "fleet-sessions": FleetSessionsTab,
   infra: InfraTab,
   control: ControlTab,
   logs: LogsTab,
@@ -560,6 +561,7 @@ function SidebarNav({ collapsed = false, onToggle }) {
         ${TAB_CONFIG.map((tab) => {
           const isActive = activeTab.value === tab.id;
           const isHome = tab.id === "dashboard";
+          const isChild = !!tab.parent;
           let badge = 0;
           if (tab.id === "tasks") {
             badge = getActiveTaskCount();
@@ -569,8 +571,8 @@ function SidebarNav({ collapsed = false, onToggle }) {
           return html`
             <button
               key=${tab.id}
-              class="sidebar-nav-item ${isActive ? "active" : ""}"
-              style="position:relative"
+              class="sidebar-nav-item ${isActive ? "active" : ""} ${isChild ? "sidebar-nav-child" : ""}"
+              style=${`position:relative${isChild ? ";padding-left:28px;font-size:0.85em" : ""}`}
               aria-label=${tab.label}
               aria-current=${isActive ? "page" : null}
               title=${collapsed ? tab.label : undefined}
@@ -1582,7 +1584,7 @@ function App() {
   useEffect(() => {
     const el = mainRef.current;
     if (!el) return;
-    const swipeTabs = TAB_CONFIG.filter((t) => t.id !== "settings");
+    const swipeTabs = TAB_CONFIG.filter((t) => t.id !== "settings" && !t.parent);
     let startX = 0;
     let startY = 0;
     let startTime = 0;
@@ -1643,11 +1645,12 @@ function App() {
   }, []);
 
   const CurrentTab = TAB_COMPONENTS[activeTab.value] || DashboardTab;
-  const isChatOrAgents = activeTab.value === "chat" || activeTab.value === "agents";
-  const showSessionRail = isDesktop && isChatOrAgents;
+  const isChatOrAgents = activeTab.value === "chat" || activeTab.value === "agents" || activeTab.value === "fleet-sessions";
+  const isChat = activeTab.value === "chat";
+  const showSessionRail = isDesktop && isChat;
   const showInspector = isDesktop && isChatOrAgents;
   const showBottomNav = !isDesktop;
-  const railSessionType = activeTab.value === "agents" ? "task" : "primary";
+  const railSessionType = "primary";
   const showDrawerToggles = isTablet;
   const showInspectorToggle = isTablet && isChatOrAgents;
 

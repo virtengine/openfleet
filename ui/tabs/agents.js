@@ -1503,14 +1503,7 @@ export function AgentsTab() {
       </div>
 
       <div class="fleet-span">
-        <${FleetSessionsPanel}
-          slots=${slots}
-          onOpenWorkspace=${openWorkspace}
-          onForceStop=${handleForceStop}
-        />
-      </div>
-
-      ${agents.length > 0 &&
+        ${agents.length > 0 &&
       html`
         <div class="fleet-span">
           <${Collapsible} title="Agent Threads" defaultOpen=${false}>
@@ -1969,5 +1962,70 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
         </div>
       </div>
     <//>
+  `;
+}
+
+/* ─── Fleet Sessions Tab (standalone) ─── */
+export function FleetSessionsTab() {
+  const executor = executorData.value;
+  const execData = executor?.data;
+  const slots = execData?.slots || [];
+
+  useEffect(() => {
+    let active = true;
+    const refreshTaskSessions = () => {
+      if (!active) return;
+      loadSessions({ type: "task" });
+    };
+    refreshTaskSessions();
+    const interval = setInterval(refreshTaskSessions, 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  /* Force stop a specific agent slot */
+  const handleForceStop = async (slot) => {
+    const ok = await showConfirm(
+      `Force-stop agent working on "${truncate(slot.taskTitle || slot.taskId || "task", 40)}"?`,
+    );
+    if (!ok) return;
+    haptic("heavy");
+    try {
+      await apiFetch("/api/executor/stop-slot", {
+        method: "POST",
+        body: JSON.stringify({ slotIndex: slot.index, taskId: slot.taskId }),
+      });
+      showToast("Stop signal sent", "success");
+      scheduleRefresh(200);
+    } catch {
+      /* toast via apiFetch */
+    }
+  };
+
+  /* Open workspace viewer for an agent */
+  const [selectedAgent, setSelectedAgent] = useState(null);
+  const openWorkspace = (slot, i) => {
+    haptic();
+    setSelectedAgent({ ...slot, index: i });
+  };
+
+  return html`
+    <div class="fleet-layout">
+      <div class="fleet-span">
+        <${FleetSessionsPanel}
+          slots=${slots}
+          onOpenWorkspace=${openWorkspace}
+          onForceStop=${handleForceStop}
+        />
+      </div>
+    </div>
+    ${selectedAgent && html`
+      <${WorkspaceViewer}
+        agent=${selectedAgent}
+        onClose=${() => setSelectedAgent(null)}
+      />
+    `}
   `;
 }
