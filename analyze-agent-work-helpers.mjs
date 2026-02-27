@@ -10,7 +10,7 @@ export function normalizeErrorFingerprint(message) {
   if (!text) return "unknown";
   return text
     .replace(/0x[0-9a-f]+/gi, "0x#")
-    .replace(/\b\d+\b/g, "#")
+    .replace(/\d+(?:\.\d+)?/g, "#")
     .replace(/\s+/g, " ")
     .slice(0, 120);
 }
