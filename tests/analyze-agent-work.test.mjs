@@ -128,3 +128,120 @@ describe("analyze-agent-work helpers", () => {
     expect(first.by_executor[0].percent).toBe(100);
   });
 });
+
+// -- JSONL Fixture Tests (T6) -----------------------------------------------
+
+// Load JSONL fixtures at module scope using the static readFileSync import
+function parseJsonl(content) {
+  return content
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line));
+}
+
+const JSONL_FIXTURE_DIR = resolve(process.cwd(), "tests/fixtures/analyze-agent-work");
+const errorsJsonl = parseJsonl(readFileSync(resolve(JSONL_FIXTURE_DIR, "agent-errors-sample.jsonl"), "utf8"));
+const metricsJsonl = parseJsonl(readFileSync(resolve(JSONL_FIXTURE_DIR, "agent-metrics-sample.jsonl"), "utf8"));
+const JSONL_NOW = new Date("2026-02-26T00:01:00.000Z");
+
+describe("analyze-agent-work JSONL fixture determinism", () => {
+  it("agent-errors-sample.jsonl contains 15 records", () => {
+    expect(errorsJsonl.length).toBe(15);
+  });
+
+  it("agent-metrics-sample.jsonl contains 20 records", () => {
+    expect(metricsJsonl.length).toBe(20);
+  });
+
+  it("all JSONL error records have required fields", () => {
+    for (const record of errorsJsonl) {
+      expect(record).toHaveProperty("timestamp");
+      expect(record).toHaveProperty("task_id");
+      expect(record).toHaveProperty("executor");
+      expect(record).toHaveProperty("data");
+    }
+  });
+
+  it("all JSONL metric records have required fields", () => {
+    for (const record of metricsJsonl) {
+      expect(record).toHaveProperty("timestamp");
+      expect(record).toHaveProperty("task_id");
+      expect(record).toHaveProperty("executor");
+      expect(record).toHaveProperty("metrics");
+    }
+  });
+
+  it("filterRecordsByWindow filters JSONL errors to a 7-day window", () => {
+    const filtered = filterRecordsByWindow(errorsJsonl, { days: 7, now: JSONL_NOW });
+    const old = filtered.filter((r) => r.task_id === "err-task-old");
+    expect(old).toHaveLength(0);
+    const badTs = filtered.filter((r) => r.task_id === "err-task-bad");
+    expect(badTs).toHaveLength(1);
+  });
+
+  it("filterRecordsByWindow filters JSONL metrics to a 7-day window", () => {
+    const filtered = filterRecordsByWindow(metricsJsonl, { days: 7, now: JSONL_NOW });
+    const old = filtered.filter((r) => r.task_id === "metric-task-old");
+    expect(old).toHaveLength(0);
+  });
+
+  it("buildErrorClusters from JSONL data ranks timeout as top cluster", () => {
+    const windowed = filterRecordsByWindow(errorsJsonl, { days: 7, now: JSONL_NOW });
+    const clusters = buildErrorClusters(windowed);
+    expect(clusters.length).toBeGreaterThan(0);
+    expect(clusters[0].fingerprint).toBe("timeout");
+    expect(clusters[0].count).toBeGreaterThanOrEqual(4);
+  });
+
+  it("buildErrorClusters produces at least 3 distinct fingerprints from JSONL sample", () => {
+    const windowed = filterRecordsByWindow(errorsJsonl, { days: 7, now: JSONL_NOW });
+    const clusters = buildErrorClusters(windowed);
+    expect(new Set(clusters.map((c) => c.fingerprint)).size).toBeGreaterThanOrEqual(3);
+  });
+
+  it("buildErrorCorrelationJsonPayload returns stable shape from JSONL fixtures", () => {
+    const windowedErrors = filterRecordsByWindow(errorsJsonl, { days: 7, now: JSONL_NOW });
+    const windowedMetrics = filterRecordsByWindow(metricsJsonl, { days: 7, now: JSONL_NOW });
+    const summary = buildErrorCorrelationSummary({
+      errors: windowedErrors,
+      metrics: windowedMetrics,
+      windowDays: 7,
+      top: 5,
+    });
+    const payload = buildErrorCorrelationJsonPayload(summary, { now: JSONL_NOW });
+    expect(Object.keys(payload).sort()).toEqual(
+      ["correlations", "generated_at", "top", "total_errors", "total_fingerprints", "window_days"].sort(),
+    );
+    expect(payload.window_days).toBe(7);
+    expect(typeof payload.total_errors).toBe("number");
+    expect(Array.isArray(payload.correlations)).toBe(true);
+  });
+
+  it("each correlation entry has the expected key set", () => {
+    const windowedErrors = filterRecordsByWindow(errorsJsonl, { days: 7, now: JSONL_NOW });
+    const windowedMetrics = filterRecordsByWindow(metricsJsonl, { days: 7, now: JSONL_NOW });
+    const summary = buildErrorCorrelationSummary({ errors: windowedErrors, metrics: windowedMetrics, windowDays: 7, top: 5 });
+    const payload = buildErrorCorrelationJsonPayload(summary, { now: JSONL_NOW });
+    for (const entry of payload.correlations) {
+      expect(Object.keys(entry).sort()).toEqual(
+        ["by_complexity", "by_executor", "by_size", "count", "fingerprint", "first_seen", "last_seen", "sample_message", "task_count"].sort(),
+      );
+    }
+  });
+
+  it("clusters are sorted descending by count", () => {
+    const windowed = filterRecordsByWindow(errorsJsonl, { days: 7, now: JSONL_NOW });
+    const clusters = buildErrorClusters(windowed);
+    for (let i = 1; i < clusters.length; i++) {
+      expect(clusters[i - 1].count).toBeGreaterThanOrEqual(clusters[i].count);
+    }
+  });
+
+  it("normalizeErrorFingerprint extracts a stable fingerprint from similar messages", () => {
+    const fp1 = normalizeErrorFingerprint("Operation timed out after 30s");
+    const fp2 = normalizeErrorFingerprint("Operation timed out after 60s");
+    expect(fp1).toBe(fp2);
+    expect(typeof fp1).toBe("string");
+    expect(fp1.length).toBeGreaterThan(0);
+  });
+});
