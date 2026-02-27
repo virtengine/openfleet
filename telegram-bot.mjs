@@ -765,18 +765,24 @@ async function releaseTelegramPollLock() {
   }
 }
 
+const TELEGRAM_ASYNC_SAFE_PREFIX = "[telegram-bot] async safety";
+
+function logDetachedTelegramFailure(tag, err) {
+  const detail = err?.stack || err?.message || String(err);
+  console.warn(`${TELEGRAM_ASYNC_SAFE_PREFIX} (${tag}): ${detail}`);
+}
+
 function detachTelegramTask(tag, taskOrFactory) {
+  const taskFactory =
+    typeof taskOrFactory === "function" ? taskOrFactory : () => taskOrFactory;
+  let task;
   try {
-    const task =
-      typeof taskOrFactory === "function" ? taskOrFactory() : taskOrFactory;
-    Promise.resolve(task).catch((err) => {
-      const detail = err?.stack || err?.message || String(err);
-      console.warn(`[telegram-bot] detached async failure (${tag}): ${detail}`);
-    });
+    task = taskFactory();
   } catch (err) {
-    const detail = err?.stack || err?.message || String(err);
-    console.warn(`[telegram-bot] detached async failure (${tag}): ${detail}`);
+    logDetachedTelegramFailure(tag, err);
+    return;
   }
+  Promise.resolve(task).catch((err) => logDetachedTelegramFailure(tag, err));
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -1087,7 +1093,7 @@ function scheduleStickyMenuBump(chatId, lastMessageId) {
   if (existing) clearTimeout(existing);
   const timer = setTimeout(() => {
     stickyMenuTimers.delete(chatId);
-    bumpStickyMenu(chatId).catch(() => {});
+    detachTelegramTask("sticky-menu:bump", () => bumpStickyMenu(chatId));
   }, STICKY_MENU_BUMP_MS);
   stickyMenuTimers.set(chatId, timer);
 }
@@ -9946,19 +9952,21 @@ function scheduleLiveDigestEdit() {
     clearTimeout(d.editTimer);
   }
   d.editPending = true;
-  d.editTimer = setTimeout(async () => {
-    d.editPending = false;
-    d.editTimer = null;
-    if (!d.messageId || !d.chatId) return;
-    const text = buildLiveDigestText();
-    try {
-      const newId = await editDirect(d.chatId, d.messageId, text);
-      if (newId && newId !== d.messageId) {
-        d.messageId = newId; // editDirect fell back to sendDirect
+  d.editTimer = setTimeout(() => {
+    detachTelegramTask("live-digest:edit", async () => {
+      d.editPending = false;
+      d.editTimer = null;
+      if (!d.messageId || !d.chatId) return;
+      const text = buildLiveDigestText();
+      try {
+        const newId = await editDirect(d.chatId, d.messageId, text);
+        if (newId && newId !== d.messageId) {
+          d.messageId = newId; // editDirect fell back to sendDirect
+        }
+      } catch (err) {
+        console.warn(`[telegram-bot] live digest edit failed: ${err.message}`);
       }
-    } catch (err) {
-      console.warn(`[telegram-bot] live digest edit failed: ${err.message}`);
-    }
+    });
   }, liveDigestEditDebounceMs);
 }
 
@@ -9982,13 +9990,20 @@ function sealLiveDigest() {
   if (d.editTimer) clearTimeout(d.editTimer);
   const text = buildLiveDigestText();
   if (d.messageId && d.chatId) {
-    editDirect(d.chatId, d.messageId, text).catch(() => {});
+    detachTelegramTask("live-digest:seal-edit", () =>
+      editDirect(d.chatId, d.messageId, text),
+    );
   }
 
   // Fire digest sealed callback (used by devmode auto code fix)
   if (_onDigestSealed) {
     try {
-      _onDigestSealed({ entries: sealedEntries, text: sealedText });
+      const result = _onDigestSealed({ entries: sealedEntries, text: sealedText });
+      if (result && typeof result.then === "function") {
+        result.catch((err) =>
+          logDetachedTelegramFailure("live-digest:on-sealed", err),
+        );
+      }
     } catch (err) {
       console.warn(
         `[telegram-bot] onDigestSealed callback error: ${err.message}`,
@@ -10060,7 +10075,9 @@ export async function restoreLiveDigest() {
     liveDigest.sealed = false;
     // Re-schedule the seal timer for remaining window time
     const remaining = windowMs - (now - state.startedAt);
-    liveDigest.sealTimer = setTimeout(() => sealLiveDigest(), remaining);
+    liveDigest.sealTimer = setTimeout(() => {
+      detachTelegramTask("live-digest:seal-restore", sealLiveDigest);
+    }, remaining);
     console.log(
       `[telegram-bot] restored live digest (${liveDigest.entries.length} entries, ${Math.round(remaining / 1000)}s remaining)`,
     );
@@ -10111,7 +10128,9 @@ async function addToLiveDigest(text, priority, category) {
     persistLiveDigest();
 
     // Schedule seal
-    liveDigest.sealTimer = setTimeout(() => sealLiveDigest(), windowMs);
+    liveDigest.sealTimer = setTimeout(() => {
+      detachTelegramTask("live-digest:seal-window", sealLiveDigest);
+    }, windowMs);
   } else {
     // Subsequent event — debounced edit
     scheduleLiveDigestEdit();
@@ -10145,24 +10164,26 @@ function persistStatusBoard() {
  */
 function scheduleStatusBoardEdit(text, opts) {
   if (statusBoard.editTimer) clearTimeout(statusBoard.editTimer);
-  statusBoard.editTimer = setTimeout(async () => {
-    statusBoard.editTimer = null;
-    if (!statusBoard.messageId || !statusBoard.chatId) return;
-    try {
-      const newId = await editDirect(
-        statusBoard.chatId,
-        statusBoard.messageId,
-        text,
-        opts,
-      );
-      if (newId && newId !== statusBoard.messageId) {
-        // editDirect fell back to a new message — persist the new ID
-        statusBoard.messageId = newId;
-        persistStatusBoard();
+  statusBoard.editTimer = setTimeout(() => {
+    detachTelegramTask("status-board:edit", async () => {
+      statusBoard.editTimer = null;
+      if (!statusBoard.messageId || !statusBoard.chatId) return;
+      try {
+        const newId = await editDirect(
+          statusBoard.chatId,
+          statusBoard.messageId,
+          text,
+          opts,
+        );
+        if (newId && newId !== statusBoard.messageId) {
+          // editDirect fell back to a new message — persist the new ID
+          statusBoard.messageId = newId;
+          persistStatusBoard();
+        }
+      } catch (err) {
+        console.warn(`[telegram-bot] status board edit failed: ${err.message}`);
       }
-    } catch (err) {
-      console.warn(`[telegram-bot] status board edit failed: ${err.message}`);
-    }
+    });
   }, statusBoardEditDebounceMs);
 }
 
@@ -10757,76 +10778,78 @@ let _statusWriterTimer = null;
 export function startStatusFileWriter(intervalMs = 30000) {
   if (_statusWriterTimer) return;
   const statusDir = dirname(statusPath);
-  _statusWriterTimer = setInterval(async () => {
-    try {
-      const executor = _getInternalExecutor?.();
-      if (!executor) return;
-      const status = executor.getStatus?.();
-      if (!status) return;
-      await mkdir(statusDir, { recursive: true });
-
-      let data = {};
+  _statusWriterTimer = setInterval(() => {
+    detachTelegramTask("status-file-writer", async () => {
       try {
-        const raw = await readFile(statusPath, "utf8");
-        data = JSON.parse(raw);
-      } catch {
-        /* fresh file */
+        const executor = _getInternalExecutor?.();
+        if (!executor) return;
+        const status = executor.getStatus?.();
+        if (!status) return;
+        await mkdir(statusDir, { recursive: true });
+
+        let data = {};
+        try {
+          const raw = await readFile(statusPath, "utf8");
+          data = JSON.parse(raw);
+        } catch {
+          /* fresh file */
+        }
+
+        // Convert executor slots to the attempts format
+        const attempts = {};
+        for (const slot of status.slots) {
+          attempts[slot.taskId] = {
+            task_id: slot.taskId,
+            task_title: slot.taskTitle,
+            branch: slot.branch,
+            status: slot.status,
+            executor: slot.sdk,
+            started_at: new Date(
+              Number(slot.startedAt || Date.now()),
+            ).toISOString(),
+            updated_at: new Date().toISOString(),
+            attempt: slot.attempt,
+            agent_instance_id:
+              Number.isFinite(slot.agentInstanceId) && slot.agentInstanceId > 0
+                ? Number(slot.agentInstanceId)
+                : null,
+          };
+        }
+
+        let storeStats = null;
+        try {
+          storeStats = _getTaskStoreStats?.() || null;
+        } catch {
+          storeStats = null;
+        }
+
+        let reviewTasks = [];
+        try {
+          reviewTasks = (_getTasksPendingReview?.() || [])
+            .map((task) => task?.id)
+            .filter(Boolean);
+        } catch {
+          reviewTasks = [];
+        }
+
+        data.attempts = attempts;
+        data.last_executor_sync = new Date().toISOString();
+        data.executor_mode = status.mode || "unknown";
+        data.active_slots = `${status.activeSlots}/${status.maxParallel}`;
+        data.review_tasks = reviewTasks;
+        data.manual_review_tasks = [];
+        if (!data.counts || typeof data.counts !== "object") data.counts = {};
+        data.counts.running = Number(status.activeSlots || 0);
+        data.counts.review = Number(storeStats?.inreview || reviewTasks.length);
+        data.counts.error = Number(storeStats?.blocked || 0);
+        data.counts.manual_review = 0;
+
+        const { writeFile } = await import("node:fs/promises");
+        await writeFile(statusPath, JSON.stringify(data, null, 2));
+      } catch (err) {
+        console.warn("[telegram-bot] Status file write error:", err.message);
       }
-
-      // Convert executor slots to the attempts format
-      const attempts = {};
-      for (const slot of status.slots) {
-        attempts[slot.taskId] = {
-          task_id: slot.taskId,
-          task_title: slot.taskTitle,
-          branch: slot.branch,
-          status: slot.status,
-          executor: slot.sdk,
-          started_at: new Date(
-            Number(slot.startedAt || Date.now()),
-          ).toISOString(),
-          updated_at: new Date().toISOString(),
-          attempt: slot.attempt,
-          agent_instance_id:
-            Number.isFinite(slot.agentInstanceId) && slot.agentInstanceId > 0
-              ? Number(slot.agentInstanceId)
-              : null,
-        };
-      }
-
-      let storeStats = null;
-      try {
-        storeStats = _getTaskStoreStats?.() || null;
-      } catch {
-        storeStats = null;
-      }
-
-      let reviewTasks = [];
-      try {
-        reviewTasks = (_getTasksPendingReview?.() || [])
-          .map((task) => task?.id)
-          .filter(Boolean);
-      } catch {
-        reviewTasks = [];
-      }
-
-      data.attempts = attempts;
-      data.last_executor_sync = new Date().toISOString();
-      data.executor_mode = status.mode || "unknown";
-      data.active_slots = `${status.activeSlots}/${status.maxParallel}`;
-      data.review_tasks = reviewTasks;
-      data.manual_review_tasks = [];
-      if (!data.counts || typeof data.counts !== "object") data.counts = {};
-      data.counts.running = Number(status.activeSlots || 0);
-      data.counts.review = Number(storeStats?.inreview || reviewTasks.length);
-      data.counts.error = Number(storeStats?.blocked || 0);
-      data.counts.manual_review = 0;
-
-      const { writeFile } = await import("node:fs/promises");
-      await writeFile(statusPath, JSON.stringify(data, null, 2));
-    } catch (err) {
-      console.warn("[telegram-bot] Status file write error:", err.message);
-    }
+    });
   }, intervalMs);
 
   if (_statusWriterTimer.unref) _statusWriterTimer.unref();
