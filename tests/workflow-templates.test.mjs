@@ -171,6 +171,7 @@ describe("template API functions", () => {
       "template-workspace-hygiene",
       "template-task-finalization-guard",
       "template-task-repair-worktree",
+      "template-task-status-transition-manager",
       "template-pr-conflict-resolver",
       "template-agent-session-monitor",
       "template-release-pipeline",

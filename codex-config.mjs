@@ -1341,6 +1341,7 @@ export function ensureCodexConfig({
     profileProvidersAdded: [],
     timeoutsFixed: [],
     retriesAdded: [],
+    trustedProjectsAdded: [],
     noChanges: true,
   };
 
@@ -1546,6 +1547,18 @@ export function ensureCodexConfig({
     writeCodexConfig(toml);
   }
 
+  // Keep project-level .codex/config.toml files active by trusting the
+  // current execution roots in the global user config. Without this, Codex CLI
+  // warns that project config is disabled and ignores repo-scoped settings.
+  const trustPaths = [repoRoot, ...additionalRoots]
+    .map((p) => String(p || "").trim())
+    .filter(Boolean)
+    .filter((p) => isAbsolute(p));
+  if (trustPaths.length > 0) {
+    const trustResult = ensureTrustedProjects(trustPaths, { dryRun });
+    result.trustedProjectsAdded = trustResult.added;
+  }
+
   return result;
 }
 
@@ -1679,6 +1692,39 @@ function formatTomlArrayEscaped(values) {
   return `[${values.map((v) => `"${tomlEscapeStr(v)}"`).join(", ")}]`;
 }
 
+function toWindowsNamespacePath(pathValue) {
+  if (process.platform !== "win32") return null;
+  const value = String(pathValue || "").trim();
+  if (!value) return null;
+  if (value.startsWith("\\\\?\\")) return value;
+  if (/^[a-zA-Z]:\\/.test(value)) return `\\\\?\\${value}`;
+  return null;
+}
+
+function normalizeTrustedPathForCompare(pathValue) {
+  const raw = String(pathValue || "").trim();
+  if (!raw) return "";
+  if (process.platform === "win32") {
+    let normalized = raw.replace(/\//g, "\\");
+    if (normalized.startsWith("\\\\?\\UNC\\")) {
+      normalized = `\\\\${normalized.slice(8)}`;
+    } else if (normalized.startsWith("\\\\?\\")) {
+      normalized = normalized.slice(4);
+    }
+    normalized = normalized.replace(/[\\/]+$/, "");
+    return normalized.toLowerCase();
+  }
+  return resolve(raw).replace(/\/+$/, "");
+}
+
+function buildTrustedPathVariants(pathValue) {
+  const base = resolve(pathValue);
+  const variants = [base];
+  const namespaced = toWindowsNamespacePath(base);
+  if (namespaced && namespaced !== base) variants.push(namespaced);
+  return variants;
+}
+
 /**
  * Parse a TOML basic-string array literal, unescaping backslash sequences.
  */
@@ -1721,7 +1767,9 @@ function parseTomlArrayLiteralEscaped(raw) {
  */
 export function ensureTrustedProjects(paths, { dryRun = false } = {}) {
   const result = { added: [], already: [], path: CONFIG_PATH };
-  const desired = (paths || []).map((p) => resolve(p)).filter(Boolean);
+  const desired = (paths || [])
+    .flatMap((p) => buildTrustedPathVariants(p))
+    .filter(Boolean);
   if (desired.length === 0) return result;
 
   let toml = readCodexConfig() || "";
@@ -1729,13 +1777,19 @@ export function ensureTrustedProjects(paths, { dryRun = false } = {}) {
   // Parse existing trusted_projects (multi-line arrays may span lines)
   const existingMatch = toml.match(/^trusted_projects\s*=\s*(\[[^\]]*\])/m);
   const existing = existingMatch ? parseTomlArrayLiteralEscaped(existingMatch[1]) : [];
+  const existingNormalized = new Set(
+    existing.map((p) => normalizeTrustedPathForCompare(p)).filter(Boolean),
+  );
 
   let changed = false;
   for (const p of desired) {
-    if (existing.includes(p)) {
+    const normalized = normalizeTrustedPathForCompare(p);
+    if (!normalized) continue;
+    if (existingNormalized.has(normalized)) {
       result.already.push(p);
     } else {
       existing.push(p);
+      existingNormalized.add(normalized);
       result.added.push(p);
       changed = true;
     }

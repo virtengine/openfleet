@@ -669,6 +669,100 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  Task Status Transition Manager
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const TASK_STATUS_TRANSITION_MANAGER_TEMPLATE = {
+  id: "template-task-status-transition-manager",
+  name: "Task Status Transition Manager",
+  description:
+    "Central workflow-owned task status transitions. Consumes task lifecycle " +
+    "transition requests from executors/monitor and applies canonical status updates.",
+  category: "reliability",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.event",
+  variables: {},
+  nodes: [
+    node("trigger", "trigger.event", "Transition Requested", {
+      eventType: "task.transition.requested",
+    }, { x: 420, y: 60 }),
+
+    node("route-status", "condition.switch", "Route Target Status", {
+      value: "$data?.targetStatus || $data?.status || ''",
+      cases: {
+        inprogress: "inprogress",
+        inreview: "inreview",
+        done: "done",
+        todo: "todo",
+      },
+    }, {
+      x: 420,
+      y: 220,
+      outputs: ["inprogress", "inreview", "done", "todo", "default"],
+    }),
+
+    node("set-inprogress", "action.update_task_status", "Set In Progress", {
+      taskId: "{{taskId}}",
+      status: "inprogress",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 120, y: 390 }),
+
+    node("set-inreview", "action.update_task_status", "Set In Review", {
+      taskId: "{{taskId}}",
+      status: "inreview",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 320, y: 390 }),
+
+    node("set-done", "action.update_task_status", "Set Done", {
+      taskId: "{{taskId}}",
+      status: "done",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 520, y: 390 }),
+
+    node("set-todo", "action.update_task_status", "Set Todo", {
+      taskId: "{{taskId}}",
+      status: "todo",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 720, y: 390 }),
+
+    node("unknown-status", "notify.log", "Unknown Status Requested", {
+      message: "Task {{taskId}} transition ignored: unsupported target status '{{targetStatus}}'",
+      level: "warn",
+    }, { x: 420, y: 520 }),
+  ],
+  edges: [
+    edge("trigger", "route-status"),
+    edge("route-status", "set-inprogress", { port: "inprogress" }),
+    edge("route-status", "set-inreview", { port: "inreview" }),
+    edge("route-status", "set-done", { port: "done" }),
+    edge("route-status", "set-todo", { port: "todo" }),
+    edge("route-status", "unknown-status", { port: "default" }),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-02-27T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["task", "status", "lifecycle", "workflow-owned"],
+    replaces: {
+      module: "task-executor.mjs",
+      functions: ["direct status transition writes"],
+      calledFrom: [
+        "task-executor.mjs:executeTask",
+        "task-executor.mjs:_recoverInterruptedInProgressTasks",
+        "task-executor.mjs:_handleTaskResult",
+      ],
+      description:
+        "Moves task state mutations from executor code into a dedicated " +
+        "workflow so all status changes are auditable and event-driven.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  Incident Response
 // ═══════════════════════════════════════════════════════════════════════════
 

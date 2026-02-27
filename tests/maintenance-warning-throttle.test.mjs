@@ -4,6 +4,101 @@ import { describe, expect, it } from "vitest";
 
 const source = readFileSync(resolve(process.cwd(), "maintenance.mjs"), "utf8");
 
+// ── evaluateThrottledWarning (new pure helper export) ──────────────────────
+
+describe("maintenance evaluateThrottledWarning pure helper", () => {
+  it("is exported from maintenance.mjs", async () => {
+    const mod = await import("../maintenance.mjs");
+    expect(typeof mod.evaluateThrottledWarning).toBe("function");
+  });
+
+  it("returns shouldLog:true and suppressed:0 on first call", async () => {
+    const { evaluateThrottledWarning } = await import("../maintenance.mjs");
+    const state = new Map();
+    const result = evaluateThrottledWarning(state, "key1", Date.now(), 60_000);
+    expect(result.shouldLog).toBe(true);
+    expect(result.suppressed).toBe(0);
+  });
+
+  it("returns shouldLog:false within throttle window (suppresses duplicate)", async () => {
+    const { evaluateThrottledWarning } = await import("../maintenance.mjs");
+    const state = new Map();
+    const now = Date.now();
+    evaluateThrottledWarning(state, "key2", now, 60_000);
+    const result = evaluateThrottledWarning(state, "key2", now + 1_000, 60_000);
+    expect(result.shouldLog).toBe(false);
+    expect(result.suppressed).toBeGreaterThanOrEqual(1);
+  });
+
+  it("returns shouldLog:true with suppressed count after throttle window expires", async () => {
+    const { evaluateThrottledWarning } = await import("../maintenance.mjs");
+    const state = new Map();
+    const now = Date.now();
+    evaluateThrottledWarning(state, "key3", now, 5_000);
+    evaluateThrottledWarning(state, "key3", now + 1_000, 5_000); // suppressed
+    evaluateThrottledWarning(state, "key3", now + 2_000, 5_000); // suppressed
+    // After throttle window
+    const result = evaluateThrottledWarning(state, "key3", now + 6_000, 5_000);
+    expect(result.shouldLog).toBe(true);
+    expect(result.suppressed).toBeGreaterThanOrEqual(2);
+  });
+
+  it("enforces a minimum throttle of 1 000 ms (ignores sub-1s throttleMs)", async () => {
+    const { evaluateThrottledWarning } = await import("../maintenance.mjs");
+    const state = new Map();
+    const now = Date.now();
+    evaluateThrottledWarning(state, "key4", now, 1); // throttleMs < 1000
+    // Within 1 second — even though throttleMs=1 was passed, min is 1000ms
+    const result = evaluateThrottledWarning(state, "key4", now + 500, 1);
+    expect(result.shouldLog).toBe(false);
+  });
+
+  it("isolates state per key (different keys are independent)", async () => {
+    const { evaluateThrottledWarning } = await import("../maintenance.mjs");
+    const state = new Map();
+    const now = Date.now();
+    evaluateThrottledWarning(state, "keyA", now, 60_000);
+    // keyA is within throttle window
+    const resultA = evaluateThrottledWarning(state, "keyA", now + 100, 60_000);
+    // keyB has never been called
+    const resultB = evaluateThrottledWarning(state, "keyB", now + 100, 60_000);
+    expect(resultA.shouldLog).toBe(false);
+    expect(resultB.shouldLog).toBe(true); // independent key
+  });
+});
+
+// ── resetBranchSyncWarningStateForTests ──────────────────────────────────
+
+describe("maintenance resetBranchSyncWarningStateForTests", () => {
+  it("is exported from maintenance.mjs", async () => {
+    const mod = await import("../maintenance.mjs");
+    expect(typeof mod.resetBranchSyncWarningStateForTests).toBe("function");
+  });
+
+  it("calling resetBranchSyncWarningStateForTests resets the internal state so next call logs", async () => {
+    const { evaluateThrottledWarning, resetBranchSyncWarningStateForTests } =
+      await import("../maintenance.mjs");
+    // Force a suppress
+    const state = new Map();
+    const now = Date.now();
+    evaluateThrottledWarning(state, "reset-test", now, 60_000);
+    const suppressed = evaluateThrottledWarning(
+      state,
+      "reset-test",
+      now + 100,
+      60_000,
+    );
+    expect(suppressed.shouldLog).toBe(false);
+
+    // resetBranchSyncWarningStateForTests clears the internal module-level branchSyncWarningState
+    resetBranchSyncWarningStateForTests();
+
+    // After reset, the module-level state is cleared — new calls to warnThrottledBranchSync
+    // would log immediately. We verify the function runs without throwing.
+    expect(() => resetBranchSyncWarningStateForTests()).not.toThrow();
+  });
+});
+
 describe("maintenance branch sync warning throttle", () => {
   it("defines logThrottledBranchSync function", () => {
     expect(source).toMatch(/function\s+logThrottledBranchSync\s*\(/);

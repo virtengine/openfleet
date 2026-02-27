@@ -32,7 +32,67 @@ const BRANCH_SYNC_LOG_THROTTLE_MS = Math.max(
   5_000,
   Number(process.env.BRANCH_SYNC_LOG_THROTTLE_MS || "300000") || 300000,
 );
+const MAINTENANCE_WARNING_THROTTLE_MS = BRANCH_SYNC_LOG_THROTTLE_MS;
 const branchSyncLogState = new Map();
+const branchSyncWarningState = new Map();
+
+/**
+ * Pure throttle-state evaluator.
+ *
+ * @param {Map} state - Mutable Map tracking { lastLoggedAt, suppressed } per key.
+ * @param {string} key - Throttle bucket key.
+ * @param {number} nowMs - Current epoch milliseconds.
+ * @param {number} throttleMs - Throttle window; minimum clamped to 1 000 ms.
+ * @returns {{ shouldLog: boolean, suppressed: number }}
+ */
+export function evaluateThrottledWarning(state, key, nowMs, throttleMs) {
+  const normalizedKey = String(key || "default").trim() || "default";
+  const effectiveThrottle = Math.max(1_000, Number(throttleMs) || 1_000);
+  const entry = state.get(normalizedKey) || { lastLoggedAt: 0, suppressed: 0 };
+
+  if (entry.lastLoggedAt > 0 && nowMs - entry.lastLoggedAt < effectiveThrottle) {
+    const next = { lastLoggedAt: entry.lastLoggedAt, suppressed: entry.suppressed + 1 };
+    state.set(normalizedKey, next);
+    return { shouldLog: false, suppressed: next.suppressed };
+  }
+
+  const suppressed = entry.suppressed;
+  state.set(normalizedKey, { lastLoggedAt: nowMs, suppressed: 0 });
+  return { shouldLog: true, suppressed };
+}
+
+/**
+ * Reset the module-level branchSyncWarningState map. Intended for test isolation only.
+ */
+export function resetBranchSyncWarningStateForTests() {
+  branchSyncWarningState.clear();
+}
+
+/**
+ * Emit a throttled branch-sync warning using the module-level warning state.
+ */
+function warnThrottledBranchSync(key, message) {
+  const { shouldLog, suppressed } = evaluateThrottledWarning(
+    branchSyncWarningState,
+    key,
+    Date.now(),
+    MAINTENANCE_WARNING_THROTTLE_MS,
+  );
+  if (!shouldLog) return;
+  const suffix =
+    suppressed > 0
+      ? ` (suppressed ${suppressed} similar message(s) in last ${Math.round(MAINTENANCE_WARNING_THROTTLE_MS / 1000)}s)`
+      : "";
+  console.warn(`${message}${suffix}`);
+}
+
+/**
+ * Clear the throttle state for a given branch-sync warning key (e.g. on clean path).
+ */
+function clearBranchSyncWarning(key) {
+  const normalizedKey = String(key || "default").trim() || "default";
+  branchSyncWarningState.delete(normalizedKey);
+}
 
 function logThrottledBranchSync(
   key,

@@ -261,6 +261,15 @@ function summarizeAgentStreamEvent(event) {
   const type = String(event?.type || "").trim();
   if (!type) return "";
 
+  // Ignore token-level deltas that create noisy duplicate run logs.
+  if (
+    /reasoning(?:_|[.])delta/i.test(type) ||
+    /(?:^|[.])delta$/i.test(type) ||
+    /(?:_|[.])delta(?:_|[.])/i.test(type)
+  ) {
+    return "";
+  }
+
   if (type === "item.updated") {
     return "";
   }
@@ -1180,6 +1189,7 @@ registerNodeType("action.update_task_status", {
     const previousStatus = ctx.resolve(node.config?.previousStatus || "");
     const workflowDedupKey = ctx.resolve(node.config?.workflowDedupKey || "");
     const updateOptions = {};
+    updateOptions.source = "workflow";
     if (taskTitle) updateOptions.taskTitle = taskTitle;
     if (previousStatus) updateOptions.previousStatus = previousStatus;
     if (workflowEvent) updateOptions.workflowEvent = workflowEvent;

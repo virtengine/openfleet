@@ -308,6 +308,12 @@ const RE_ERROR_NOISE = [
 // Session completion indicators
 const RE_SESSION_DONE = /"Done"\s*:\s*"/;
 const STR_TASK_COMPLETE = "task_complete";
+const INTERNAL_SESSION_COMPLETION_MARKERS = [
+  "EVT[turn.completed]",
+  "EVT[session.completed]",
+  "EVT[response.completed]",
+  "EVT[thread.completed]",
+];
 
 // ── Main Detector Class ─────────────────────────────────────────────────────
 
@@ -1061,7 +1067,13 @@ export class AnomalyDetector {
    * Detect session completion (mark as dead to stop analysis).
    */
   #detectSessionCompletion(line, state) {
-    if (RE_SESSION_DONE.test(line) || line.includes(STR_TASK_COMPLETE)) {
+    if (
+      RE_SESSION_DONE.test(line) ||
+      line.includes(STR_TASK_COMPLETE) ||
+      INTERNAL_SESSION_COMPLETION_MARKERS.some((marker) =>
+        line.includes(marker),
+      )
+    ) {
       state.isDead = true;
     }
   }

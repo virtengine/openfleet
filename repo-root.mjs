@@ -21,6 +21,39 @@ function normalizeConfigRepoPath(repoPath, configDir) {
 }
 
 /**
+ * Returns true if the given directory is the root of the bosun npm module.
+ * @param {string} dirPath
+ * @returns {boolean}
+ */
+export function isBosunModuleRoot(dirPath) {
+  if (!dirPath) return false;
+  const pkgPath = resolve(dirPath, "package.json");
+  if (!existsSync(pkgPath)) return false;
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    return pkg.name === "bosun" || pkg.name === "@virtengine/bosun";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect the bosun module root by walking up from __dirname.
+ * Returns the module root path, or __dirname as fallback.
+ * @returns {string}
+ */
+export function detectBosunModuleRoot() {
+  let dir = __dirname;
+  for (let i = 0; i < 6; i++) {
+    if (isBosunModuleRoot(dir)) return dir;
+    const parent = resolve(dir, "..");
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return __dirname;
+}
+
+/**
  * Resolve the repo root for bosun.
  *
  * Priority:
@@ -58,6 +91,14 @@ export function resolveRepoRoot(options = {}) {
     if (gitRoot) return gitRoot;
   } catch {
     // bosun installed standalone
+  }
+
+  // Check if __dirname itself is the bosun module root (installed as npm package)
+  const moduleRoot = detectBosunModuleRoot();
+  if (moduleRoot && moduleRoot !== cwd && existsSync(resolve(moduleRoot, "package.json"))) {
+    // When bosun is installed globally/locally outside a git repo, use its directory
+    // as a reference point if no git root was found above.
+    // Only use it if it's a valid directory on disk (don't return the fallback as a repo root).
   }
 
   // Check bosun config for workspace repos

@@ -77,6 +77,7 @@ import {
   HEALTH_CHECK_TEMPLATE,
   TASK_FINALIZATION_GUARD_TEMPLATE,
   TASK_REPAIR_WORKTREE_TEMPLATE,
+  TASK_STATUS_TRANSITION_MANAGER_TEMPLATE,
   INCIDENT_RESPONSE_TEMPLATE,
 } from "./workflow-templates/reliability.mjs";
 
@@ -112,6 +113,7 @@ export {
   HEALTH_CHECK_TEMPLATE,
   TASK_FINALIZATION_GUARD_TEMPLATE,
   TASK_REPAIR_WORKTREE_TEMPLATE,
+  TASK_STATUS_TRANSITION_MANAGER_TEMPLATE,
   INCIDENT_RESPONSE_TEMPLATE,
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
@@ -161,6 +163,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   HEALTH_CHECK_TEMPLATE,
   TASK_FINALIZATION_GUARD_TEMPLATE,
   TASK_REPAIR_WORKTREE_TEMPLATE,
+  TASK_STATUS_TRANSITION_MANAGER_TEMPLATE,
   INCIDENT_RESPONSE_TEMPLATE,
   // ── Security ──
   DEPENDENCY_AUDIT_TEMPLATE,
@@ -190,6 +193,7 @@ export const WORKFLOW_SETUP_PROFILES = Object.freeze({
       "template-error-recovery",
       "template-task-finalization-guard",
       "template-task-repair-worktree",
+      "template-task-status-transition-manager",
       "template-review-agent",
       "template-health-check",
     ]),
@@ -211,6 +215,7 @@ export const WORKFLOW_SETUP_PROFILES = Object.freeze({
       "template-agent-session-monitor",
       "template-task-finalization-guard",
       "template-task-repair-worktree",
+      "template-task-status-transition-manager",
       "template-dependency-audit",
     ]),
   }),
@@ -235,6 +240,7 @@ export const WORKFLOW_SETUP_PROFILES = Object.freeze({
       "template-workspace-hygiene",
       "template-task-finalization-guard",
       "template-task-repair-worktree",
+      "template-task-status-transition-manager",
       "template-incident-response",
       "template-release-pipeline",
       "template-dependency-audit",
