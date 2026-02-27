@@ -598,7 +598,11 @@ function WorkflowCanvas({ workflow, onSave }) {
   // ── Render ────────────────────────────────────────────────
 
   return html`
-    <div class="wf-canvas-container" style="position: relative; width: 100%; overflow: hidden; background: var(--color-bg-secondary, #0f1117);">
+    <div
+      class="wf-canvas-container"
+      data-ptr-ignore="true"
+      style="position: relative; width: 100%; overflow: hidden; overscroll-behavior: contain; background: var(--color-bg-secondary, #0f1117);"
+    >
 
       <!-- Toolbar -->
       <div class="wf-toolbar" style="position: absolute; top: 12px; left: 12px; right: 12px; z-index: 20; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
