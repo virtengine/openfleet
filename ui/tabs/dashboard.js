@@ -52,47 +52,47 @@ const QUICK_ACTIONS = [
   {
     label: "Status",
     cmd: "/status",
-    icon: "📊",
+    icon: "chart",
     color: "var(--accent)",
     targetTab: "dashboard",
   },
   {
     label: "Health",
     cmd: "/health",
-    icon: "💚",
+    icon: "heart",
     color: "var(--color-done)",
     targetTab: "dashboard",
   },
   {
     label: "Create Task",
     action: "create",
-    icon: "➕",
+    icon: "plus",
     color: "var(--color-inprogress)",
   },
   {
     label: "Start Task",
     action: "start",
-    icon: "▶",
+    icon: "play",
     color: "var(--color-todo)",
   },
   {
     label: "Plan",
     cmd: "/plan",
-    icon: "📋",
+    icon: "clipboard",
     color: "var(--color-inreview)",
     targetTab: "control",
   },
   {
     label: "Logs",
     cmd: "/logs 50",
-    icon: "📄",
+    icon: "file",
     color: "var(--text-secondary)",
     targetTab: "logs",
   },
   {
     label: "Menu",
     cmd: "/menu",
-    icon: "☰",
+    icon: "menu",
     color: "var(--color-todo)",
     targetTab: "control",
   },
@@ -227,6 +227,7 @@ export function DashboardTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [showStartModal, setShowStartModal] = useState(false);
   const [uptime, setUptime] = useState(null);
+  const [healthStats, setHealthStats] = useState(null);
   // New state
   const [now, setNow] = useState(() => new Date());
   const [recentCommits, setRecentCommits] = useState([]);
@@ -259,12 +260,19 @@ export function DashboardTab() {
     ? ((execData.activeSlots || 0) / execData.maxParallel) * 100
     : 0;
 
-  // ── Health score (0–100) ──
+  // ── Health score (0–100) based on real 6h run history ──
   let healthScore = 100;
   if (executor?.paused) healthScore -= 20;
-  healthScore -= Math.min(40, errorRateValue * 2);
+  if (healthStats?.total > 0) {
+    // Primary signal: failure rate over last 6 hours
+    healthScore -= Math.min(50, Math.round(healthStats.failRate * 60));
+  } else {
+    // No run history yet — fall back to current snapshot blocked ratio
+    healthScore -= Math.min(30, Math.round(errorRateValue * 1.5));
+  }
   if ((execData?.activeSlots ?? 0) === 0 && backlog > 0) healthScore -= 10;
-  if (slotPct > 50 && blocked === 0) healthScore += 10;
+  if (blocked > 0) healthScore -= Math.min(15, blocked * 5);
+  if (slotPct > 50 && blocked === 0 && (!healthStats || healthStats.failRate < 0.1)) healthScore += 5;
   healthScore = Math.min(100, Math.max(0, Math.round(healthScore)));
 
   // ── Clock ──
@@ -311,6 +319,19 @@ export function DashboardTab() {
       })
       .catch(() => {});
     return () => { active = false; };
+  }, []);
+
+  // ── 6-hour run health stats (refreshes every 30s) ──
+  useEffect(() => {
+    let active = true;
+    const fetch6h = () => {
+      apiFetch("/api/health-stats", { _silent: true })
+        .then((res) => { if (active && res?.ok) setHealthStats(res); })
+        .catch(() => {});
+    };
+    fetch6h();
+    const t = setInterval(fetch6h, 30_000);
+    return () => { active = false; clearInterval(t); };
   }, []);
 
   // ── Listen for ve:create-task keyboard shortcut ──
@@ -560,7 +581,7 @@ export function DashboardTab() {
       <div class="dashboard-shell">
         <${Card} className="dashboard-card">
           <div class="dashboard-welcome-card">
-            <div class="dashboard-welcome-icon">${resolveIcon("🎛")}</div>
+            <div class="dashboard-welcome-icon">${resolveIcon("sliders")}</div>
             <div class="dashboard-welcome-title">Welcome to VirtEngine Control Center</div>
             <div class="dashboard-welcome-desc">
               Your AI development fleet is ready. Create your first task to get started.
@@ -625,16 +646,20 @@ export function DashboardTab() {
               </div>
             </div>
             <div class="dashboard-health-item">
-              <div class="dashboard-health-label">Error rate</div>
-              <div class="dashboard-health-value">${errorRate}%</div>
+              <div class="dashboard-health-label">6h fail rate</div>
+              <div class="dashboard-health-value" style="color:${healthStats?.total > 0 && healthStats.failRate > 0 ? 'var(--color-error)' : 'inherit'}">
+                ${healthStats?.total > 0 ? `${Math.round(healthStats.failRate * 100)}%` : "—"}
+              </div>
             </div>
             <div class="dashboard-health-item">
-              <div class="dashboard-health-label">Active</div>
-              <div class="dashboard-health-value">${totalActive}</div>
+              <div class="dashboard-health-label">6h runs</div>
+              <div class="dashboard-health-value">
+                ${healthStats?.total > 0 ? `${healthStats.successRuns}/${healthStats.total}` : "—"}
+              </div>
             </div>
             <div class="dashboard-health-item">
-              <div class="dashboard-health-label">Total tasks</div>
-              <div class="dashboard-health-value">${totalTasks}</div>
+              <div class="dashboard-health-label">Blocked</div>
+              <div class="dashboard-health-value" style="color:${blocked > 0 ? 'var(--color-error)' : 'inherit'}">${blocked}</div>
             </div>
           </div>
           <div class="dashboard-health-progress">
@@ -687,7 +712,7 @@ export function DashboardTab() {
           ${fleetAtRest
             ? html`
               <div class="fleet-rest-badge">
-                <div class="fleet-rest-icon">${resolveIcon("✓")}</div>
+                <div class="fleet-rest-icon">${resolveIcon("check")}</div>
                 <div class="fleet-rest-label">Fleet at rest</div>
                 <div class="fleet-rest-sub">${done} task${done !== 1 ? "s" : ""} completed · zero pending</div>
               </div>
@@ -901,7 +926,7 @@ export function DashboardTab() {
 
       ${recentCommits.length > 0 && html`
         <${Card}
-          title=${html`<span class="dashboard-card-title"><span class="dashboard-title-icon">${ICONS.git || resolveIcon("🔀")}</span>Recent Commits</span>`}
+          title=${html`<span class="dashboard-card-title"><span class="dashboard-title-icon">${ICONS.git || resolveIcon("git")}</span>Recent Commits</span>`}
           className="dashboard-card dashboard-commits-card"
         >
           <div class="dashboard-commits">

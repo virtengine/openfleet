@@ -387,7 +387,7 @@ class TabErrorBoundary extends Component {
       return html`
         <div class="tab-error-boundary">
           <div class="tab-error-pulse">
-            <span style="font-size:20px;color:#ef4444;">⚠</span>
+            <span style="font-size:20px;color:#ef4444;">${resolveIcon("⚠")}</span>
           </div>
           <div>
             <div style="font-size:14px;font-weight:600;margin-bottom:4px;color:var(--text-primary);">
@@ -1005,7 +1005,7 @@ function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
             aria-label="Open Bot Controls"
             onClick=${() => { onClose(); onOpenBot?.(); }}
           >
-            <span class="more-menu-bot-icon">${resolveIcon("🤖")}</span>
+            <span class="more-menu-bot-icon">${resolveIcon("bot")}</span>
             <div class="more-menu-bot-text">
               <span class="more-menu-bot-label">Bot Controls</span>
               <span class="more-menu-bot-sub">Commands, executor, routing</span>
@@ -1360,6 +1360,18 @@ function App() {
   useEffect(() => {
     const win = globalThis.window;
     if (!win?.matchMedia) return;
+    const query = win.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`);
+    const update = () => setIsCompactNav(query.matches);
+    update();
+    query.addEventListener?.("change", update);
+    return () => {
+      query.removeEventListener?.("change", update);
+    };
+  }, []);
+
+  useEffect(() => {
+    const win = globalThis.window;
+    if (!win?.matchMedia) return;
     const tabletQuery = win.matchMedia(
       `(min-width: ${TABLET_MIN_WIDTH}px) and (max-width: ${DESKTOP_MIN_WIDTH - 1}px)`,
     );
@@ -1371,17 +1383,6 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    const win = globalThis.window;
-    if (!win?.matchMedia) return;
-    const query = win.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`);
-    const update = () => setIsCompactNav(query.matches);
-    update();
-    query.addEventListener?.("change", update);
-    return () => {
-      query.removeEventListener?.("change", update);
-    };
-  }, []);
 
   useEffect(() => {
     if (!isDesktop || !globalThis.window) return;
@@ -1619,9 +1620,7 @@ function App() {
   const isChatOrAgents = activeTab.value === "chat" || activeTab.value === "agents";
   const showSessionRail = isDesktop && isChatOrAgents;
   const showInspector = isDesktop && isChatOrAgents;
-  const showBottomNav = !isDesktop && !isTablet;
-
-  // On tablet: prefer drawer controls over bottom-nav to avoid dual navigation
+  const showBottomNav = !isDesktop;
   const showDrawerToggles = isTablet;
   const showInspectorToggle = isTablet && isChatOrAgents;
 
@@ -1669,7 +1668,7 @@ function App() {
           onClick=${toggleInspector}
           aria-label=${inspectorToggleLabel}
         >
-          📋 Inspector
+          ${iconText("📋 Inspector")}
         </button>
       `
     : null;
@@ -1754,7 +1753,7 @@ function App() {
             onRefresh=${() => refreshTab(activeTab.value)}
             disabled=${activeTab.value === "chat"}
           >
-            <main class="main-content" ref=${mainRef}>
+            <main class=${`main-content${showBottomNav && isCompactNav ? " compact" : ""}`} ref=${mainRef}>
               <${TabErrorBoundary} key=${activeTab.value} tabName=${activeTab.value}>
                 <${CurrentTab} />
               <//>

@@ -44,6 +44,22 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "./repo-root.mjs";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
+import { getGitHubToken } from "./github-auth-manager.mjs";
+import {
+  isTransientStreamError,
+  streamRetryDelay,
+  MAX_STREAM_RETRIES,
+} from "./stream-resilience.mjs";
+
+// Lazy-load MCP registry to avoid circular dependencies.
+// Cached at module scope per AGENTS.md hard rules.
+let _mcpRegistry = null;
+async function getMcpRegistry() {
+  if (!_mcpRegistry) {
+    _mcpRegistry = await import("./mcp-registry.mjs");
+  }
+  return _mcpRegistry;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -76,6 +92,36 @@ const HARD_TIMEOUT_BUFFER_MS = 5 * 60_000; // 5 minutes
 /** Tag for console logging */
 const TAG = "[agent-pool]";
 const MAX_PROMPT_BYTES = 180_000;
+const MAX_SET_TIMEOUT_MS = 2_147_483_647; // Node.js setTimeout 32-bit signed max
+let timeoutClampWarningKey = "";
+const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 120_000;
+
+function clampTimerDelayMs(delayMs, label = "timer") {
+  const parsed = Number(delayMs);
+  if (!Number.isFinite(parsed) || parsed < 1) return 1;
+  const clamped = Math.min(Math.trunc(parsed), MAX_SET_TIMEOUT_MS);
+  if (clamped !== Math.trunc(parsed)) {
+    const warningKey = `${label}:${parsed}`;
+    if (timeoutClampWarningKey !== warningKey) {
+      timeoutClampWarningKey = warningKey;
+      console.warn(
+        `${TAG} ${label} delay ${parsed}ms exceeds Node timer max; clamped to ${MAX_SET_TIMEOUT_MS}ms`,
+      );
+    }
+  }
+  return clamped;
+}
+
+function getFirstEventTimeoutMs(totalTimeoutMs) {
+  const configured = Number(
+    process.env.AGENT_POOL_FIRST_EVENT_TIMEOUT_MS || DEFAULT_FIRST_EVENT_TIMEOUT_MS,
+  );
+  if (!Number.isFinite(configured) || configured <= 0) return null;
+  const budgetMs = Number(totalTimeoutMs);
+  if (!Number.isFinite(budgetMs) || budgetMs <= 2_000) return null;
+  const maxAllowed = Math.max(5_000, budgetMs - 1_000);
+  return clampTimerDelayMs(Math.min(Math.trunc(configured), maxAllowed), "first-event-timeout");
+}
 
 function sanitizeAndBoundPrompt(text) {
   if (typeof text !== "string") return "";
@@ -100,6 +146,82 @@ function envFlagEnabled(value) {
     .trim()
     .toLowerCase();
   return ["1", "true", "yes", "on", "y"].includes(raw);
+}
+
+const GITHUB_TOKEN_CACHE_TTL_MS = 60_000;
+let cachedGithubSessionToken = null;
+let cachedGithubSessionTokenAt = 0;
+let githubSessionTokenPromise = null;
+let githubTokenSourceLogged = "";
+
+function parseGithubRepoSlug(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return { owner: "", repo: "" };
+  const m = text.match(/^([^/\s]+)\/([^/\s]+)$/);
+  if (!m) return { owner: "", repo: "" };
+  return { owner: m[1], repo: m[2] };
+}
+
+async function resolveGithubSessionToken() {
+  const now = Date.now();
+  if (
+    cachedGithubSessionToken &&
+    now - cachedGithubSessionTokenAt < GITHUB_TOKEN_CACHE_TTL_MS
+  ) {
+    return cachedGithubSessionToken;
+  }
+  if (githubSessionTokenPromise) return githubSessionTokenPromise;
+
+  githubSessionTokenPromise = (async () => {
+    const explicitToken =
+      process.env.GH_TOKEN ||
+      process.env.GITHUB_TOKEN ||
+      process.env.COPILOT_CLI_TOKEN ||
+      process.env.GITHUB_PAT ||
+      "";
+    if (explicitToken) {
+      cachedGithubSessionToken = explicitToken;
+      cachedGithubSessionTokenAt = Date.now();
+      return explicitToken;
+    }
+
+    try {
+      const { owner, repo } = parseGithubRepoSlug(process.env.GITHUB_REPOSITORY);
+      const { token, type } = await getGitHubToken({
+        owner: owner || undefined,
+        repo: repo || undefined,
+      });
+      if (token) {
+        cachedGithubSessionToken = token;
+        cachedGithubSessionTokenAt = Date.now();
+        if (githubTokenSourceLogged !== type) {
+          githubTokenSourceLogged = type || "unknown";
+          console.log(`${TAG} injected GitHub token into agent session env (${type || "unknown"})`);
+        }
+        return token;
+      }
+    } catch {
+      // best effort
+    }
+    return "";
+  })();
+
+  try {
+    return await githubSessionTokenPromise;
+  } finally {
+    githubSessionTokenPromise = null;
+  }
+}
+
+function injectGitHubSessionEnv(baseEnv, token) {
+  const env = { ...(baseEnv || {}) };
+  const resolved = String(token || "").trim();
+  if (!resolved) return env;
+  if (!env.GH_TOKEN) env.GH_TOKEN = resolved;
+  if (!env.GITHUB_TOKEN) env.GITHUB_TOKEN = resolved;
+  if (!env.GITHUB_PAT) env.GITHUB_PAT = resolved;
+  if (!env.COPILOT_CLI_TOKEN) env.COPILOT_CLI_TOKEN = resolved;
+  return env;
 }
 
 /**
@@ -162,7 +284,7 @@ function createScopedAbortController(externalAC, timeoutMs) {
     if (!controller.signal.aborted) {
       controller.abort("timeout");
     }
-  }, timeoutMs);
+  }, clampTimerDelayMs(timeoutMs, "abort-timeout"));
   if (timeoutHandle && typeof timeoutHandle.unref === "function") {
     timeoutHandle.unref();
   }
@@ -243,7 +365,7 @@ function shouldFallbackForSdkError(error) {
  * @param {string} name  SDK canonical name
  * @returns {{ ok: boolean, reason: string|null }}
  */
-function hasSdkPrerequisites(name) {
+function hasSdkPrerequisites(name, runtimeEnv = process.env) {
   // Test mocks bypass prerequisite checks
   if (process.env[`__MOCK_${name.toUpperCase()}_AVAILABLE`] === "1") {
     return { ok: true, reason: null };
@@ -252,10 +374,10 @@ function hasSdkPrerequisites(name) {
   if (name === "codex") {
     // Codex needs an OpenAI API key (or Azure key, or profile-specific key)
     const hasKey =
-      process.env.OPENAI_API_KEY ||
-      process.env.AZURE_OPENAI_API_KEY ||
-      process.env.CODEX_MODEL_PROFILE_XL_API_KEY ||
-      process.env.CODEX_MODEL_PROFILE_M_API_KEY;
+      runtimeEnv.OPENAI_API_KEY ||
+      runtimeEnv.AZURE_OPENAI_API_KEY ||
+      runtimeEnv.CODEX_MODEL_PROFILE_XL_API_KEY ||
+      runtimeEnv.CODEX_MODEL_PROFILE_M_API_KEY;
     if (!hasKey) {
       return { ok: false, reason: "no API key (OPENAI_API_KEY / AZURE_OPENAI_API_KEY)" };
     }
@@ -267,7 +389,7 @@ function hasSdkPrerequisites(name) {
     return { ok: true, reason: null };
   }
   if (name === "claude") {
-    const hasKey = process.env.ANTHROPIC_API_KEY;
+    const hasKey = runtimeEnv.ANTHROPIC_API_KEY;
     if (!hasKey) {
       return { ok: false, reason: "no ANTHROPIC_API_KEY" };
     }
@@ -323,6 +445,36 @@ async function withSanitizedOpenAiEnv(fn) {
   } finally {
     for (const [key, value] of Object.entries(saved)) {
       if (value !== undefined) process.env[key] = value;
+    }
+  }
+}
+
+async function withTemporaryEnv(overrides, fn) {
+  if (!overrides || typeof overrides !== "object") {
+    return await fn();
+  }
+  const prev = new Map();
+  const touched = [];
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!key) continue;
+    prev.set(key, process.env[key]);
+    touched.push(key);
+    if (value == null) {
+      delete process.env[key];
+    } else {
+      process.env[key] = String(value);
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const key of touched) {
+      const oldValue = prev.get(key);
+      if (oldValue == null) {
+        delete process.env[key];
+      } else {
+        process.env[key] = oldValue;
+      }
     }
   }
 }
@@ -696,6 +848,8 @@ export function getAvailableSdks() {
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string }>}
  */
 async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
+  // Coerce to number — prevents string concatenation in setTimeout arithmetic
+  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
   const {
     onEvent,
     abortController: externalAC,
@@ -806,6 +960,9 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   // Hard timeout: safety net if the SDK's async iterator ignores AbortSignal.
   // Fires HARD_TIMEOUT_BUFFER_MS after the soft timeout to forcibly break the loop.
   let hardTimer;
+  let firstEventTimer = null;
+  let firstEventTimeoutHit = false;
+  let eventCount = 0;
 
   // ── 4. Stream the turn ───────────────────────────────────────────────────
   try {
@@ -816,19 +973,23 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
 
     let finalResponse = "";
     const allItems = [];
-
     // Race the event iterator against a hard timeout.
     // The soft timeout fires controller.abort() which the SDK should honor.
     // The hard timeout is a safety net in case the SDK iterator ignores the abort.
     const hardTimeoutPromise = new Promise((_, reject) => {
       hardTimer = setTimeout(
         () => reject(new Error("hard_timeout")),
-        timeoutMs + HARD_TIMEOUT_BUFFER_MS,
+        clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-hard-timeout"),
       );
     });
 
     const iterateEvents = async () => {
       for await (const event of turn.events) {
+        eventCount += 1;
+        if (firstEventTimer) {
+          clearTimeout(firstEventTimer);
+          firstEventTimer = null;
+        }
         if (controller.signal.aborted) break;
         if (event?.type === "thread.started" && event?.thread_id) {
           emitThreadReady(event.thread_id);
@@ -849,8 +1010,19 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
       }
     };
 
+    const firstEventTimeoutMs = getFirstEventTimeoutMs(timeoutMs);
+    if (firstEventTimeoutMs) {
+      firstEventTimer = setTimeout(() => {
+        if (eventCount > 0 || controller.signal.aborted) return;
+        firstEventTimeoutHit = true;
+        controller.abort("first_event_timeout");
+      }, firstEventTimeoutMs);
+      if (typeof firstEventTimer.unref === "function") firstEventTimer.unref();
+    }
+
     await Promise.race([iterateEvents(), hardTimeoutPromise]);
     clearTimeout(hardTimer);
+    if (firstEventTimer) clearTimeout(firstEventTimer);
     clearAbortScope();
 
     const output =
@@ -867,20 +1039,42 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   } catch (err) {
     clearAbortScope();
     if (hardTimer) clearTimeout(hardTimer);
+    if (firstEventTimer) clearTimeout(firstEventTimer);
     if (steerKey) unregisterActiveSession(steerKey);
     const isTimeout =
       err.name === "AbortError" ||
       String(err) === "timeout" ||
       err.message === "hard_timeout";
     if (isTimeout) {
+      const firstEventSuffix = firstEventTimeoutHit
+        ? ` (no events received within ${getFirstEventTimeoutMs(timeoutMs)}ms)`
+        : "";
       return {
         success: false,
         output: "",
         items: [],
-        error: `${TAG} codex timeout after ${timeoutMs}ms${err.message === "hard_timeout" ? " (hard timeout — SDK iterator unresponsive)" : ""}`,
+        error: `${TAG} codex timeout after ${timeoutMs}ms${err.message === "hard_timeout" ? " (hard timeout — SDK iterator unresponsive)" : ""}${firstEventSuffix}`,
         sdk: "codex",
         threadId: null,
       };
+    }
+    // ── Transient stream / network error ─ retry without resetting thread state ─
+    if (isTransientStreamError(err)) {
+      const retryAttempt = (extra._streamRetryAttempt || 0) + 1;
+      if (retryAttempt < MAX_STREAM_RETRIES) {
+        const delay = streamRetryDelay(retryAttempt - 1);
+        console.warn(
+          `${TAG} codex transient stream error (attempt ${retryAttempt}/${MAX_STREAM_RETRIES}): ${err.message || err} — retrying in ${Math.round(delay)}ms`,
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        return launchCodexThread(prompt, cwd, timeoutMs, {
+          ...extra,
+          _streamRetryAttempt: retryAttempt,
+        });
+      }
+      console.error(
+        `${TAG} codex stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts`,
+      );
     }
     return {
       success: false,
@@ -897,7 +1091,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
  * Build CLI arguments for ephemeral Copilot agent-pool sessions.
  * Mirrors copilot-shell.mjs buildCliArgs() for feature parity.
  */
-function buildPoolCopilotCliArgs() {
+function buildPoolCopilotCliArgs(mcpConfigPath) {
   const args = [];
   if (!envFlagEnabled(process.env.COPILOT_NO_EXPERIMENTAL)) {
     args.push("--experimental");
@@ -915,9 +1109,10 @@ function buildPoolCopilotCliArgs() {
   if (envFlagEnabled(process.env.COPILOT_DISABLE_BUILTIN_MCPS)) {
     args.push("--disable-builtin-mcps");
   }
-  const mcpConfigPath = process.env.COPILOT_ADDITIONAL_MCP_CONFIG;
-  if (mcpConfigPath) {
-    args.push("--additional-mcp-config", mcpConfigPath);
+  // MCP config: prefer per-launch resolved config, fall back to env var
+  const effectiveMcpConfig = mcpConfigPath || process.env.COPILOT_ADDITIONAL_MCP_CONFIG;
+  if (effectiveMcpConfig) {
+    args.push("--additional-mcp-config", effectiveMcpConfig);
   }
   return args;
 }
@@ -960,6 +1155,8 @@ function autoRespondToUserInput(request) {
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string }>}
  */
 async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
+  // Coerce to number — prevents string concatenation in setTimeout arithmetic
+  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
   const {
     onEvent,
     abortController: externalAC,
@@ -967,6 +1164,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
     onThreadReady = null,
     model: requestedModel = null,
     taskKey: steerKey = null,
+    envOverrides = null,
   } = extra;
 
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
@@ -987,11 +1185,15 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
   }
 
   // ── 2. Detect auth token ─────────────────────────────────────────────────
+  const runtimeEnv =
+    envOverrides && typeof envOverrides === "object"
+      ? { ...process.env, ...envOverrides }
+      : process.env;
   const token =
-    process.env.COPILOT_CLI_TOKEN ||
-    process.env.GITHUB_TOKEN ||
-    process.env.GH_TOKEN ||
-    process.env.GITHUB_PAT ||
+    runtimeEnv.COPILOT_CLI_TOKEN ||
+    runtimeEnv.GITHUB_TOKEN ||
+    runtimeEnv.GH_TOKEN ||
+    runtimeEnv.GITHUB_PAT ||
     undefined;
 
   // ── 3. Create & start ephemeral client (LOCAL mode) ──────────────────────
@@ -1012,10 +1214,10 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
   const autoApprovePermissions = shouldAutoApproveCopilotPermissions();
   const clientEnv = autoApprovePermissions
     ? {
-        ...process.env,
-        COPILOT_ALLOW_ALL: process.env.COPILOT_ALLOW_ALL || "true",
+        ...runtimeEnv,
+        COPILOT_ALLOW_ALL: runtimeEnv.COPILOT_ALLOW_ALL || "true",
       }
-    : process.env;
+    : runtimeEnv;
   try {
     await withSanitizedOpenAiEnv(async () => {
       let clientOpts;
@@ -1024,7 +1226,17 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
         clientOpts = { cliUrl, env: clientEnv };
       } else {
         // Local mode (default): stdio for full capability
-        const cliArgs = buildPoolCopilotCliArgs();
+        // Write temp MCP config if resolved MCP servers are available
+        let mcpConfigPath = null;
+        if (extra._resolvedMcpServers?.length) {
+          try {
+            const registry = await getMcpRegistry();
+            mcpConfigPath = registry.writeTempCopilotMcpConfig(cwd, extra._resolvedMcpServers);
+          } catch (mcpErr) {
+            console.warn(`${TAG} copilot MCP config write failed (non-fatal): ${mcpErr.message}`);
+          }
+        }
+        const cliArgs = buildPoolCopilotCliArgs(mcpConfigPath);
         clientOpts = {
           cwd,
           env: clientEnv,
@@ -1215,7 +1427,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
           // the run to continue rather than stalling for the full hard timeout.
           if (finalResponse.trim()) return finish(resolveP);
           finish(() => rejectP(new Error("timeout_waiting_for_idle")));
-        }, timeoutMs + 1000);
+        }, clampTimerDelayMs(timeoutMs + 1000, "copilot-idle-timeout"));
         if (idleTimer && typeof idleTimer.unref === "function") {
           idleTimer.unref();
         }
@@ -1226,7 +1438,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
       const copilotHardTimeout = new Promise((_, reject) => {
         const ht = setTimeout(
           () => reject(new Error("hard_timeout")),
-          timeoutMs + HARD_TIMEOUT_BUFFER_MS,
+          clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "copilot-hard-timeout"),
         );
         // Don't let this timer keep the process alive
         if (ht && typeof ht.unref === "function") ht.unref();
@@ -1282,6 +1494,24 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
         sdk: "copilot",
         threadId: resumeThreadId,
       };
+    }
+    // ── Transient stream / network error ─ retry with a fresh Copilot session ─
+    if (!isTimeout && !isIdleWaitTimeout && isTransientStreamError(err)) {
+      const retryAttempt = (extra._streamRetryAttempt || 0) + 1;
+      if (retryAttempt < MAX_STREAM_RETRIES) {
+        const delay = streamRetryDelay(retryAttempt - 1);
+        console.warn(
+          `${TAG} copilot transient stream error (attempt ${retryAttempt}/${MAX_STREAM_RETRIES}): ${errMsg} — retrying in ${Math.round(delay)}ms`,
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        return launchCopilotThread(prompt, cwd, timeoutMs, {
+          ...extra,
+          _streamRetryAttempt: retryAttempt,
+        });
+      }
+      console.error(
+        `${TAG} copilot stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts`,
+      );
     }
     return {
       success: false,
@@ -1346,6 +1576,8 @@ async function resumeCopilotThread(
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string }>}
  */
 async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
+  // Coerce to number — prevents string concatenation in setTimeout arithmetic
+  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
   const {
     onEvent,
     abortController: externalAC,
@@ -1355,6 +1587,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     onThreadReady = null,
     model: requestedModel = null,
     taskKey: steerKey = null,
+    envOverrides = null,
   } = extra;
 
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
@@ -1375,10 +1608,14 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
   }
 
   // ── 2. Detect auth ──────────────────────────────────────────────────────
+  const runtimeEnv =
+    envOverrides && typeof envOverrides === "object"
+      ? { ...process.env, ...envOverrides }
+      : process.env;
   const apiKey =
-    process.env.ANTHROPIC_API_KEY ||
-    process.env.CLAUDE_API_KEY ||
-    process.env.CLAUDE_KEY ||
+    runtimeEnv.ANTHROPIC_API_KEY ||
+    runtimeEnv.CLAUDE_API_KEY ||
+    runtimeEnv.CLAUDE_KEY ||
     undefined;
 
   // ── 3. Build message queue ───────────────────────────────────────────────
@@ -1465,6 +1702,27 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
   }
 
   // ── 4. Execute query ─────────────────────────────────────────────────────
+  // Inject MCP server config for Claude via environment variable
+  let _claudeMcpEnvCleanup = null;
+  if (extra._resolvedMcpServers?.length) {
+    try {
+      const registry = await getMcpRegistry();
+      const { envVar } = registry.buildClaudeMcpEnv(extra._resolvedMcpServers);
+      if (envVar) {
+        const prev = process.env.CLAUDE_MCP_SERVERS;
+        process.env.CLAUDE_MCP_SERVERS = envVar;
+        _claudeMcpEnvCleanup = () => {
+          if (prev === undefined) {
+            delete process.env.CLAUDE_MCP_SERVERS;
+          } else {
+            process.env.CLAUDE_MCP_SERVERS = prev;
+          }
+        };
+      }
+    } catch (mcpErr) {
+      console.warn(`${TAG} claude MCP env setup failed (non-fatal): ${mcpErr.message}`);
+    }
+  }
   try {
     const msgQueue = createMessageQueue();
 
@@ -1497,31 +1755,33 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
       settingSources: ["user", "project"],
       permissionMode:
         claudePermissionMode ||
-        process.env.CLAUDE_PERMISSION_MODE ||
+        runtimeEnv.CLAUDE_PERMISSION_MODE ||
         "bypassPermissions",
     };
     if (apiKey) options.apiKey = apiKey;
     const explicitAllowedTools = normalizeList(claudeAllowedTools);
     const allowedTools = explicitAllowedTools.length
       ? explicitAllowedTools
-      : normalizeList(process.env.CLAUDE_ALLOWED_TOOLS);
+      : normalizeList(runtimeEnv.CLAUDE_ALLOWED_TOOLS);
     if (allowedTools.length) {
       options.allowedTools = allowedTools;
     }
 
     const model = String(
       requestedModel ||
-        process.env.CLAUDE_MODEL ||
-        process.env.CLAUDE_CODE_MODEL ||
-        process.env.ANTHROPIC_MODEL ||
+        runtimeEnv.CLAUDE_MODEL ||
+        runtimeEnv.CLAUDE_CODE_MODEL ||
+        runtimeEnv.ANTHROPIC_MODEL ||
         "",
     ).trim();
     if (model) options.model = model;
 
-    const result = queryFn({
-      prompt: msgQueue.iterator(),
-      options,
-    });
+    const result = await withTemporaryEnv(runtimeEnv, async () =>
+      queryFn({
+        prompt: msgQueue.iterator(),
+        options,
+      }),
+    );
 
     let finalResponse = "";
     let activeClaudeSessionId = resumeThreadId || null;
@@ -1581,7 +1841,10 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     })();
 
     const hardTimeout = new Promise((_, reject) => {
-      hardTimer = setTimeout(() => reject(new Error("hard-timeout")), hardTimeoutMs);
+      hardTimer = setTimeout(
+        () => reject(new Error("hard-timeout")),
+        clampTimerDelayMs(hardTimeoutMs, "claude-hard-timeout"),
+      );
       if (hardTimer && typeof hardTimer.unref === "function") {
         hardTimer.unref();
       }
@@ -1596,6 +1859,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
 
     const output =
       finalResponse.trim() || "(Agent completed with no text output)";
+    if (typeof _claudeMcpEnvCleanup === "function") _claudeMcpEnvCleanup();
     return {
       success: true,
       output,
@@ -1605,6 +1869,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
       threadId: activeClaudeSessionId,
     };
   } catch (err) {
+    if (typeof _claudeMcpEnvCleanup === "function") _claudeMcpEnvCleanup();
     clearAbortScope();
     if (hardTimer) clearTimeout(hardTimer);
     if (steerKey) unregisterActiveSession(steerKey);
@@ -1621,6 +1886,24 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
         sdk: "claude",
         threadId: resumeThreadId,
       };
+    }
+    // ── Transient stream / network error ─ retry with a fresh Claude query ──
+    if (isTransientStreamError(err)) {
+      const retryAttempt = (extra._streamRetryAttempt || 0) + 1;
+      if (retryAttempt < MAX_STREAM_RETRIES) {
+        const delay = streamRetryDelay(retryAttempt - 1);
+        console.warn(
+          `${TAG} claude transient stream error (attempt ${retryAttempt}/${MAX_STREAM_RETRIES}): ${err.message || err} — retrying in ${Math.round(delay)}ms`,
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        return launchClaudeThread(prompt, cwd, timeoutMs, {
+          ...extra,
+          _streamRetryAttempt: retryAttempt,
+        });
+      }
+      console.error(
+        `${TAG} claude stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts`,
+      );
     }
     return {
       success: false,
@@ -1714,9 +1997,46 @@ export async function launchEphemeralThread(
   timeoutMs = DEFAULT_TIMEOUT_MS,
   extra = {},
 ) {
+  const resolvedGithubToken = await resolveGithubSessionToken();
+  const baseRuntimeEnv =
+    extra?.envOverrides && typeof extra.envOverrides === "object"
+      ? { ...process.env, ...extra.envOverrides }
+      : { ...process.env };
+  const sessionEnv = injectGitHubSessionEnv(baseRuntimeEnv, resolvedGithubToken);
+  const launchExtra = {
+    ...extra,
+    envOverrides: sessionEnv,
+  };
+
+  // ── Resolve MCP servers for this launch ──────────────────────────────────
+  try {
+    if (!launchExtra._mcpResolved) {
+      const cfg = loadConfig();
+      const mcpCfg = cfg.mcpServers || {};
+      if (mcpCfg.enabled !== false) {
+        const requestedIds = launchExtra.mcpServers || [];
+        const defaultIds = mcpCfg.defaultServers || [];
+        if (requestedIds.length || defaultIds.length) {
+          const registry = await getMcpRegistry();
+          const resolved = await registry.resolveMcpServersForAgent(
+            cwd,
+            requestedIds,
+            { defaultServers: defaultIds, catalogOverrides: mcpCfg.catalogOverrides || {} },
+          );
+          if (resolved.length) {
+            launchExtra._resolvedMcpServers = resolved;
+          }
+        }
+      }
+      launchExtra._mcpResolved = true;
+    }
+  } catch (mcpErr) {
+    console.warn(`${TAG} MCP server resolution failed (non-fatal): ${mcpErr.message}`);
+  }
+
   // Determine the primary SDK to try
-  const requestedSdk = extra.sdk
-    ? String(extra.sdk).trim().toLowerCase()
+  const requestedSdk = launchExtra.sdk
+    ? String(launchExtra.sdk).trim().toLowerCase()
     : null;
 
   const primaryName =
@@ -1724,7 +2044,7 @@ export async function launchEphemeralThread(
       ? requestedSdk
       : resolvePoolSdkName();
 
-  const attemptOrder = extra?.disableFallback
+  const attemptOrder = launchExtra?.disableFallback
     ? [primaryName]
     : [
         primaryName,
@@ -1735,7 +2055,7 @@ export async function launchEphemeralThread(
   const triedSdkNames = [];
   const missingPrereqSdks = [];
   const cooledDownSdks = [];
-  const ignoreSdkCooldown = extra?.ignoreSdkCooldown === true;
+  const ignoreSdkCooldown = launchExtra?.ignoreSdkCooldown === true;
 
   for (const name of attemptOrder) {
     const adapter = SDK_ADAPTERS[name];
@@ -1761,7 +2081,7 @@ export async function launchEphemeralThread(
     }
 
     // Check prerequisites before wasting time trying an unconfigured SDK
-    const prereq = hasSdkPrerequisites(name);
+    const prereq = hasSdkPrerequisites(name, sessionEnv);
     if (!prereq.ok) {
       missingPrereqSdks.push({ name, reason: prereq.reason });
       if (name === primaryName) {
@@ -1788,7 +2108,7 @@ export async function launchEphemeralThread(
 
     triedSdkNames.push(name);
     const launcher = await adapter.load();
-    const result = await launcher(prompt, cwd, timeoutMs, extra);
+    const result = await launcher(prompt, cwd, timeoutMs, launchExtra);
     lastAttemptResult = result;
 
     if (result.success) {
@@ -2186,6 +2506,8 @@ function isPoisonedCodexResumeError(errorValue) {
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string, threadId: string|null }>}
  */
 async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
+  // Coerce to number — prevents string concatenation in setTimeout arithmetic
+  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
   const { onEvent, abortController: externalAC, envOverrides = null } = extra;
 
   let CodexClass;
@@ -2254,6 +2576,9 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     timeoutMs,
   );
   let hardTimer;
+  let firstEventTimer = null;
+  let firstEventTimeoutHit = false;
+  let eventCount = 0;
 
   try {
     const safePrompt = sanitizeAndBoundPrompt(prompt);
@@ -2267,12 +2592,17 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     const hardTimeoutPromise = new Promise((_, reject) => {
       hardTimer = setTimeout(
         () => reject(new Error("hard_timeout")),
-        timeoutMs + HARD_TIMEOUT_BUFFER_MS,
+        clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-resume-hard-timeout"),
       );
     });
 
     const iterateEvents = async () => {
       for await (const event of turn.events) {
+        eventCount += 1;
+        if (firstEventTimer) {
+          clearTimeout(firstEventTimer);
+          firstEventTimer = null;
+        }
         if (controller.signal.aborted) break;
         if (typeof onEvent === "function")
           try {
@@ -2289,8 +2619,19 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
       }
     };
 
+    const firstEventTimeoutMs = getFirstEventTimeoutMs(timeoutMs);
+    if (firstEventTimeoutMs) {
+      firstEventTimer = setTimeout(() => {
+        if (eventCount > 0 || controller.signal.aborted) return;
+        firstEventTimeoutHit = true;
+        controller.abort("first_event_timeout");
+      }, firstEventTimeoutMs);
+      if (typeof firstEventTimer.unref === "function") firstEventTimer.unref();
+    }
+
     await Promise.race([iterateEvents(), hardTimeoutPromise]);
     clearTimeout(hardTimer);
+    if (firstEventTimer) clearTimeout(firstEventTimer);
     clearAbortScope();
 
     const newThreadId = thread.id || threadId;
@@ -2305,16 +2646,21 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
   } catch (err) {
     clearAbortScope();
     if (hardTimer) clearTimeout(hardTimer);
+    if (firstEventTimer) clearTimeout(firstEventTimer);
     const isTimeout =
       err.name === "AbortError" ||
       String(err) === "timeout" ||
       err.message === "hard_timeout";
+    const firstEventSuffix =
+      isTimeout && firstEventTimeoutHit
+        ? ` (no events received within ${getFirstEventTimeoutMs(timeoutMs)}ms)`
+        : "";
     return {
       success: false,
       output: "",
       items: [],
       error: isTimeout
-        ? `${TAG} codex resume timeout after ${timeoutMs}ms${err.message === "hard_timeout" ? " (hard timeout)" : ""}`
+        ? `${TAG} codex resume timeout after ${timeoutMs}ms${err.message === "hard_timeout" ? " (hard timeout)" : ""}${firstEventSuffix}`
         : `Thread resume error: ${err.message}`,
       sdk: "codex",
       threadId: null,
@@ -2386,6 +2732,15 @@ export async function launchOrResumeThread(
 ) {
   await ensureThreadRegistryLoaded();
   const { taskKey, ...restExtra } = extra;
+  const resolvedGithubToken = await resolveGithubSessionToken();
+  const restBaseEnv =
+    restExtra?.envOverrides && typeof restExtra.envOverrides === "object"
+      ? { ...process.env, ...restExtra.envOverrides }
+      : { ...process.env };
+  restExtra.envOverrides = injectGitHubSessionEnv(
+    restBaseEnv,
+    resolvedGithubToken,
+  );
   // Pass taskKey through as steer key so SDK launchers can register active sessions
   restExtra.taskKey = taskKey;
   if (restExtra.sdk) {

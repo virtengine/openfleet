@@ -3,7 +3,10 @@ import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
+  renameSync,
+  unlinkSync,
   watch,
   writeFileSync,
   appendFileSync,
@@ -18,7 +21,7 @@ import {
 } from "node:fs/promises";
 import { clearLine, createInterface, cursorTo } from "node:readline";
 import net from "node:net";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainThread } from "node:worker_threads";
 
@@ -68,6 +71,7 @@ import {
   execPooledPrompt,
   launchEphemeralThread,
   launchOrResumeThread,
+  execWithRetry,
   getAvailableSdks,
   forceNewThread,
   steerActiveThread,
@@ -98,6 +102,10 @@ import {
   resetMergeStrategyDedup,
 } from "./merge-strategy.mjs";
 import { assessTask, quickAssess } from "./task-assessment.mjs";
+import {
+  getBosunCoAuthorTrailer,
+  shouldAddBosunCoAuthor,
+} from "./git-commit-helpers.mjs";
 import {
   normalizeDedupKey,
   stripAnsi,
@@ -184,6 +192,7 @@ import {
   isExecutorDisabled,
   getExecutorMode,
   loadExecutorOptionsFromConfig,
+  setTaskStatusTransitionHandler,
 } from "./task-executor.mjs";
 import {
   configureFromArgs,
@@ -251,6 +260,60 @@ const agentAlertsDedup = new Map();
 
 function getAgentAlertsPath() {
   return resolve(repoRoot, ".cache", "agent-work-logs", "agent-alerts.jsonl");
+}
+
+function getAgentAlertsStatePath() {
+  return resolve(
+    repoRoot,
+    ".cache",
+    "agent-work-logs",
+    "agent-alert-tail-state.json",
+  );
+}
+
+function loadAgentAlertsState() {
+  const statePath = getAgentAlertsStatePath();
+  try {
+    if (!existsSync(statePath)) return;
+    const raw = readFileSync(statePath, "utf8");
+    const parsed = JSON.parse(raw);
+    const offset = Number(parsed?.offset || 0);
+    if (Number.isFinite(offset) && offset >= 0) {
+      agentAlertsOffset = offset;
+    }
+    const dedupEntries = Array.isArray(parsed?.dedupEntries)
+      ? parsed.dedupEntries
+      : [];
+    agentAlertsDedup.clear();
+    for (const entry of dedupEntries) {
+      if (!entry || typeof entry !== "object") continue;
+      const key = String(entry.key || "").trim();
+      const ts = Number(entry.ts || 0);
+      if (!key || !Number.isFinite(ts) || ts <= 0) continue;
+      agentAlertsDedup.set(key, ts);
+    }
+  } catch (err) {
+    console.warn(`[monitor] failed loading alert tail state: ${err.message}`);
+  }
+}
+
+function saveAgentAlertsState() {
+  const statePath = getAgentAlertsStatePath();
+  try {
+    mkdirSync(dirname(statePath), { recursive: true });
+    const dedupEntries = [...agentAlertsDedup.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 200)
+      .map(([key, ts]) => ({ key, ts }));
+    const payload = {
+      offset: agentAlertsOffset,
+      dedupEntries,
+      updatedAt: new Date().toISOString(),
+    };
+    writeFileSync(statePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  } catch (err) {
+    console.warn(`[monitor] failed saving alert tail state: ${err.message}`);
+  }
 }
 
 function rememberAlert(key) {
@@ -325,6 +388,7 @@ let workflowAutomationInitDone = false;
 let workflowAutomationReadyLogged = false;
 let workflowAutomationUnavailableLogged = false;
 let workflowConflictResolverPausedLogged = false;
+let workflowTaskReconcilePausedLogged = false;
 
 /**
  * Cache of module names that have an enabled workflow replacement.
@@ -423,8 +487,12 @@ async function ensureWorkflowAutomationEngine() {
           delete payload.projectId;
           return createTask(projectId, payload);
         },
-        updateTaskStatus: async (taskId, status) =>
-          updateKanbanTaskStatus(String(taskId || ""), String(status || "")),
+        updateTaskStatus: async (taskId, status, options = {}) =>
+          updateTaskStatus(
+            String(taskId || ""),
+            String(status || ""),
+            options && typeof options === "object" ? options : {},
+          ),
         listTasks: async (projectId, filters = {}) =>
           listKanbanTasks(String(projectId || ""), filters || {}),
       };
@@ -432,6 +500,7 @@ async function ensureWorkflowAutomationEngine() {
       const agentPoolService = {
         launchEphemeralThread,
         launchOrResumeThread,
+        execWithRetry,
         async continueSession(sessionId, prompt, opts = {}) {
           const timeout = Number(opts.timeout) || 60 * 60 * 1000;
           const cwd = opts.cwd || process.cwd();
@@ -580,6 +649,44 @@ function queueWorkflowEvent(eventType, eventData = {}, opts = {}) {
   dispatchWorkflowEvent(eventType, eventData, opts).catch(() => {});
 }
 
+function configureExecutorTaskStatusTransitions() {
+  if (!workflowAutomationEnabled) {
+    setTaskStatusTransitionHandler(null);
+    return;
+  }
+
+  setTaskStatusTransitionHandler(async (taskId, status, options = {}) => {
+    const normalizedTaskId = String(taskId || "").trim();
+    const normalizedStatus = String(status || "").trim().toLowerCase();
+    if (!normalizedTaskId || !normalizedStatus) return false;
+    const payload =
+      options && typeof options === "object" ? { ...options } : {};
+
+    queueWorkflowEvent(
+      "task.transition.requested",
+      {
+        taskId: normalizedTaskId,
+        targetStatus: normalizedStatus,
+        status: normalizedStatus,
+        taskTitle: String(payload.taskTitle || "").trim() || null,
+        source: String(payload.source || "task-executor").trim() || "task-executor",
+        branch: payload.branch || null,
+        baseBranch: payload.baseBranch || null,
+        worktreePath: payload.worktreePath || null,
+        prNumber: payload.prNumber || null,
+        prUrl: payload.prUrl || null,
+        error: payload.error || null,
+      },
+      {
+        dedupKey:
+          payload.workflowDedupKey ||
+          `workflow-event:task.transition.requested:${normalizedTaskId}:${normalizedStatus}`,
+      },
+    );
+    return true;
+  });
+}
+
 async function pollAgentAlerts() {
   if (process.env.VITEST) return;
   const path = getAgentAlertsPath();
@@ -589,6 +696,9 @@ async function pollAgentAlerts() {
     data = await readFile(path, "utf8");
   } catch {
     return;
+  }
+  if (data.length < agentAlertsOffset) {
+    agentAlertsOffset = 0;
   }
   if (!data || data.length <= agentAlertsOffset) return;
   const chunk = data.slice(agentAlertsOffset);
@@ -620,7 +730,25 @@ async function pollAgentAlerts() {
         }),
       );
     }
+
+    // Act on high-error alerts: apply a cooldown so the task-executor does not
+    // immediately restart the same session against an API that is failing.
+    if (alert.type === "failed_session_high_errors" && alert.task_id && internalTaskExecutor) {
+      try {
+        const taskId = alert.task_id;
+        const cooldownUntil = Date.now() + 15 * 60_000; // 15-minute cooldown
+        if (typeof internalTaskExecutor.applyTaskCooldown === "function") {
+          internalTaskExecutor.applyTaskCooldown(taskId, cooldownUntil);
+        } else if (internalTaskExecutor._skipUntil instanceof Map) {
+          internalTaskExecutor._skipUntil.set(taskId, cooldownUntil);
+        }
+        console.warn(
+          `[monitor] 15m cooldown applied to task ${taskId} after ${alert.error_count || "?"} API errors (executor: ${alert.executor || "unknown"})`,
+        );
+      } catch { /* best effort */ }
+    }
   }
+  saveAgentAlertsState();
 }
 
 function startAgentWorkAnalyzer() {
@@ -650,6 +778,7 @@ function stopAgentWorkAnalyzer() {
 
 function startAgentAlertTailer() {
   if (agentAlertsTimer) return;
+  loadAgentAlertsState();
   agentAlertsTimer = setInterval(() => {
     runDetached("agent-alerts:poll-interval", pollAgentAlerts);
   }, AGENT_ALERT_POLL_MS);
@@ -727,6 +856,7 @@ workflowAutomationEnabled = parseEnvBoolean(
     ? dedupMs
     : 15_000;
 }
+configureExecutorTaskStatusTransitions();
 
 // Install console interceptor with log file (after config provides logDir)
 {
@@ -1000,31 +1130,244 @@ if (!isMainThread || chdirUnsupportedInRuntime) {
 // ── Periodic Workspace Sync ─────────────────────────────────────────────────
 // Every 30 minutes, fetch latest changes for all workspace repos so agents
 // always work against recent upstream. Only runs if workspaces are configured.
-const WORKSPACE_SYNC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const WORKSPACE_SYNC_INTERVAL_MS = parseEnvInteger(
+  process.env.BOSUN_WORKSPACE_SYNC_INTERVAL_MS,
+  30 * 60 * 1000,
+  { min: 60 * 1000, max: 120 * 60 * 1000 },
+); // 1m..120m (default 30m)
+const WORKSPACE_SYNC_INITIAL_DELAY_MS = parseEnvInteger(
+  process.env.BOSUN_WORKSPACE_SYNC_INITIAL_DELAY_MS,
+  20 * 1000,
+  { min: 0, max: 5 * 60 * 1000 },
+); // 0s..5m (default 20s)
+const WORKSPACE_SYNC_INITIAL_JITTER_MS = parseEnvInteger(
+  process.env.BOSUN_WORKSPACE_SYNC_INITIAL_JITTER_MS,
+  5 * 1000,
+  { min: 0, max: 60 * 1000 },
+); // 0s..60s (default 5s)
+const WORKSPACE_SYNC_WARN_THROTTLE_MS = parseEnvInteger(
+  process.env.BOSUN_WORKSPACE_SYNC_WARN_THROTTLE_MS,
+  6 * 60 * 60 * 1000,
+  { min: 60 * 1000, max: 24 * 60 * 60 * 1000 },
+); // 1m..24h (default 6h)
+const WORKSPACE_SYNC_SLOW_WARN_MS = parseEnvInteger(
+  process.env.BOSUN_WORKSPACE_SYNC_SLOW_WARN_MS,
+  90 * 1000,
+  { min: 5 * 1000, max: 10 * 60 * 1000 },
+); // 5s..10m (default 90s)
+const WORKSPACE_SYNC_WARN_MAX_KEYS = parseEnvInteger(
+  process.env.BOSUN_WORKSPACE_SYNC_WARN_MAX_KEYS,
+  500,
+  { min: 50, max: 5000 },
+); // 50..5000 (default 500)
 let workspaceSyncTimer = null;
+let workspaceSyncInitialTimer = null;
+let workspaceSyncInFlight = false;
+const workspaceSyncWarnSeen = new Map();
+function stopWorkspaceSyncTimers() {
+  if (workspaceSyncInitialTimer) {
+    clearTimeout(workspaceSyncInitialTimer);
+    workspaceSyncInitialTimer = null;
+  }
+  if (workspaceSyncTimer) {
+    clearInterval(workspaceSyncTimer);
+    workspaceSyncTimer = null;
+  }
+}
+function shouldEmitWorkspaceSyncWarn(key, now = Date.now()) {
+  for (const [seenKey, seenAt] of workspaceSyncWarnSeen.entries()) {
+    if (now - Number(seenAt || 0) >= WORKSPACE_SYNC_WARN_THROTTLE_MS) {
+      workspaceSyncWarnSeen.delete(seenKey);
+    }
+  }
+  const last = Number(workspaceSyncWarnSeen.get(key) || 0);
+  if (last > 0 && now - last < WORKSPACE_SYNC_WARN_THROTTLE_MS) return false;
+  workspaceSyncWarnSeen.set(key, now);
+  // keep memory bounded
+  if (workspaceSyncWarnSeen.size > WORKSPACE_SYNC_WARN_MAX_KEYS) {
+    const oldestKey = workspaceSyncWarnSeen.keys().next().value;
+    if (oldestKey) workspaceSyncWarnSeen.delete(oldestKey);
+  }
+  return true;
+}
+function clearWorkspaceSyncWarnForWorkspace(workspaceId) {
+  const prefix = `${workspaceId}:`;
+  for (const key of workspaceSyncWarnSeen.keys()) {
+    if (String(key).startsWith(prefix)) {
+      workspaceSyncWarnSeen.delete(key);
+    }
+  }
+}
+function isBenignWorkspaceSyncFailure(errorText) {
+  const text = String(errorText || "").toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes("uncommitted changes") ||
+    text.includes("unstaged changes") ||
+    text.includes("your index contains uncommitted changes") ||
+    text.includes("cannot pull with rebase") ||
+    text.includes("cannot rebase") ||
+    text.includes("please commit or stash") ||
+    text.includes("please commit your changes or stash them") ||
+    text.includes("would be overwritten by merge") ||
+    text.includes("working tree contains unstaged changes") ||
+    text.includes("non-fast-forward") ||
+    text.includes("fetch first") ||
+    text.includes("local changes would be overwritten by checkout") ||
+    text.includes("cannot fast-forward") ||
+    text.includes("is behind")
+  );
+}
 {
   const wsArray = config.repositories?.filter((r) => r.workspace) || [];
   if (wsArray.length > 0) {
     const workspaceIds = [...new Set(wsArray.map((r) => r.workspace).filter(Boolean))];
     const doWorkspaceSync = () => {
-      for (const wsId of workspaceIds) {
-        try {
-          const results = pullWorkspaceRepos(config.configDir, wsId);
-          const failed = results.filter((r) => !r.success);
-          if (failed.length > 0) {
-            console.warn(`[monitor] workspace sync: ${failed.length} repo(s) failed in ${wsId}`);
-          } else {
-            console.log(`[monitor] workspace sync: ${wsId} up to date (${results.length} repos)`);
+      if (shuttingDown) return;
+      if (workspaceSyncInFlight) {
+        console.log("[monitor] workspace sync: previous run still in progress — skipping overlap");
+        return;
+      }
+      workspaceSyncInFlight = true;
+      const runStartedAt = Date.now();
+      let workspaceCount = 0;
+      let repoCount = 0;
+      let failedRepoCount = 0;
+      let workspaceExceptionCount = 0;
+      try {
+        for (const wsId of workspaceIds) {
+          workspaceCount += 1;
+          if (shuttingDown) break;
+          try {
+            const results = pullWorkspaceRepos(config.configDir, wsId);
+            repoCount += Array.isArray(results) ? results.length : 0;
+            const failed = results.filter((r) => !r.success);
+            failedRepoCount += failed.length;
+            if (failed.length > 0) {
+              const benignFailed = failed.filter((r) => isBenignWorkspaceSyncFailure(r?.error));
+              const nonBenignFailed = failed.filter((r) => !isBenignWorkspaceSyncFailure(r?.error));
+              if (nonBenignFailed.length === 0) {
+                clearWorkspaceSyncWarnForWorkspace(wsId);
+                console.log(
+                  `[monitor] workspace sync: ${wsId} skipped ${failed.length} repo(s) with local changes`,
+                );
+              } else {
+                const sampleSource = nonBenignFailed[0] || failed[0];
+                const sample = String(sampleSource?.error || "unknown error")
+                  .replace(/\s+/g, " ")
+                  .trim();
+                const snippet = sample.slice(0, 180);
+                const fingerprint = normalizeDedupKey(getErrorFingerprint(snippet)).slice(0, 120);
+                const repoSample = Array.from(
+                  new Set(
+                    nonBenignFailed
+                      .map((r) => String(r?.name || "").trim())
+                      .filter(Boolean),
+                  ),
+                )
+                  .sort((a, b) => a.localeCompare(b))
+                  .slice(0, 3);
+                const repoLabel = repoSample.length ? ` [repos: ${repoSample.join(", ")}]` : "";
+                const benignSuffix = benignFailed.length
+                  ? ` (+${benignFailed.length} benign skipped)`
+                  : "";
+                const warnKey = `${wsId}:${nonBenignFailed.length}:${repoSample.join("|")}:${fingerprint}`;
+                if (shouldEmitWorkspaceSyncWarn(warnKey)) {
+                  console.warn(
+                    `[monitor] workspace sync: ${nonBenignFailed.length} repo(s) failed in ${wsId}${benignSuffix}${repoLabel} (sample: ${snippet || "unknown error"})`,
+                  );
+                } else {
+                  console.log(
+                    `[monitor] workspace sync: ${nonBenignFailed.length} repo(s) failed in ${wsId}${benignSuffix}${repoLabel} (duplicate warning suppressed)`,
+                  );
+                }
+              }
+            } else {
+              clearWorkspaceSyncWarnForWorkspace(wsId);
+              console.log(`[monitor] workspace sync: ${wsId} up to date (${results.length} repos)`);
+            }
+          } catch (err) {
+            failedRepoCount += 1;
+            workspaceExceptionCount += 1;
+            const errText = formatMonitorError(err).replace(/\s+/g, " ").trim();
+            const errSnippet = (errText || "unknown error").slice(0, 180);
+            const errFingerprint = normalizeDedupKey(getErrorFingerprint(errSnippet)).slice(0, 120);
+            const warnKey = `${wsId}:exception:${errFingerprint}`;
+            if (shouldEmitWorkspaceSyncWarn(warnKey)) {
+              console.warn(`[monitor] workspace sync failed for ${wsId}: ${errSnippet}`);
+            } else {
+              console.log(`[monitor] workspace sync failed for ${wsId} (duplicate warning suppressed)`);
+            }
           }
-        } catch (err) {
-          console.warn(`[monitor] workspace sync failed for ${wsId}: ${err.message}`);
         }
+      } finally {
+        const durationMs = Date.now() - runStartedAt;
+        const summary = `[monitor] workspace sync: cycle complete (${workspaceCount} workspace(s), ${repoCount} repo(s), ${failedRepoCount} failure(s), ${workspaceExceptionCount} exception(s), ${Math.round(durationMs / 1000)}s)`;
+        if (repoCount > 0 && failedRepoCount >= repoCount) {
+          console.warn(
+            `[monitor] workspace sync: all repos failed this cycle (${failedRepoCount}/${repoCount})`,
+          );
+        }
+        if (workspaceExceptionCount > 0) {
+          console.warn(
+            `[monitor] workspace sync: ${workspaceExceptionCount} workspace exception(s) this cycle`,
+          );
+        }
+        if (workspaceCount > 0 && workspaceExceptionCount >= workspaceCount) {
+          console.warn(
+            `[monitor] workspace sync: all workspaces raised exceptions this cycle (${workspaceExceptionCount}/${workspaceCount})`,
+          );
+        }
+        if (workspaceCount > 0 && repoCount === 0) {
+          console.warn(
+            `[monitor] workspace sync: no repos processed across ${workspaceCount} workspace(s) this cycle`,
+          );
+        }
+        if (durationMs >= WORKSPACE_SYNC_SLOW_WARN_MS) {
+          console.warn(`${summary} [slow>=${Math.round(WORKSPACE_SYNC_SLOW_WARN_MS / 1000)}s]`);
+        } else {
+          console.log(summary);
+        }
+        workspaceSyncInFlight = false;
       }
     };
+    const workspaceSyncInitialJitterMs =
+      WORKSPACE_SYNC_INITIAL_JITTER_MS > 0
+        ? Math.floor(Math.random() * (WORKSPACE_SYNC_INITIAL_JITTER_MS + 1))
+        : 0;
+    const workspaceSyncInitialDelayEffectiveMs = Math.max(
+      0,
+      WORKSPACE_SYNC_INITIAL_DELAY_MS + workspaceSyncInitialJitterMs,
+    );
+    workspaceSyncInitialTimer = setTimeout(() => {
+      workspaceSyncInitialTimer = null;
+      doWorkspaceSync();
+    }, workspaceSyncInitialDelayEffectiveMs);
+    if (workspaceSyncInitialTimer?.unref) workspaceSyncInitialTimer.unref();
     workspaceSyncTimer = setInterval(doWorkspaceSync, WORKSPACE_SYNC_INTERVAL_MS);
     // Unref so the timer doesn't keep the process alive during shutdown
     if (workspaceSyncTimer?.unref) workspaceSyncTimer.unref();
-    console.log(`[monitor] workspace sync: scheduled every ${WORKSPACE_SYNC_INTERVAL_MS / 60000} min for ${workspaceIds.length} workspace(s)`);
+    console.log(
+      `[monitor] workspace sync: scheduled every ${WORKSPACE_SYNC_INTERVAL_MS / 60000} min for ${workspaceIds.length} workspace(s); initial run in ${Math.round(workspaceSyncInitialDelayEffectiveMs / 1000)}s (base=${Math.round(WORKSPACE_SYNC_INITIAL_DELAY_MS / 1000)}s, jitter<=${Math.round(WORKSPACE_SYNC_INITIAL_JITTER_MS / 1000)}s)`,
+    );
+    console.log(
+      `[monitor] workspace sync: warn-throttle=${Math.round(WORKSPACE_SYNC_WARN_THROTTLE_MS / 60000)}m slow-threshold=${Math.round(WORKSPACE_SYNC_SLOW_WARN_MS / 1000)}s max-warn-keys=${WORKSPACE_SYNC_WARN_MAX_KEYS}`,
+    );
+    if (WORKSPACE_SYNC_WARN_THROTTLE_MS < WORKSPACE_SYNC_INTERVAL_MS) {
+      console.warn(
+        `[monitor] workspace sync: warn-throttle (${Math.round(WORKSPACE_SYNC_WARN_THROTTLE_MS / 1000)}s) is below interval (${Math.round(WORKSPACE_SYNC_INTERVAL_MS / 1000)}s); duplicate warning suppression may be ineffective`,
+      );
+    }
+    if (WORKSPACE_SYNC_SLOW_WARN_MS >= WORKSPACE_SYNC_INTERVAL_MS) {
+      console.warn(
+        `[monitor] workspace sync: slow-threshold (${Math.round(WORKSPACE_SYNC_SLOW_WARN_MS / 1000)}s) is >= interval (${Math.round(WORKSPACE_SYNC_INTERVAL_MS / 1000)}s); slow-cycle warnings may be delayed`,
+      );
+    }
+    if (workspaceSyncInitialDelayEffectiveMs >= WORKSPACE_SYNC_INTERVAL_MS) {
+      console.warn(
+        `[monitor] workspace sync: effective initial-delay (${Math.round(workspaceSyncInitialDelayEffectiveMs / 1000)}s) is >= interval (${Math.round(WORKSPACE_SYNC_INTERVAL_MS / 1000)}s); startup sync may not run before first periodic cycle`,
+      );
+    }
   }
 }
 
@@ -1157,9 +1500,26 @@ function isMonitorMonitorEnabled() {
 }
 
 function isSelfRestartWatcherEnabled() {
+  const devMode = isDevMode();
+  const force = process.env.SELF_RESTART_WATCH_FORCE;
+  const forceEnabled = isTruthyFlag(force);
+  const npmLifecycleEvent = String(process.env.npm_lifecycle_event || "")
+    .trim()
+    .toLowerCase();
+  const launchedViaNpmStartScript =
+    npmLifecycleEvent === "start" || npmLifecycleEvent.startsWith("start:");
   const explicit = process.env.SELF_RESTART_WATCH_ENABLED;
   if (explicit !== undefined && String(explicit).trim() !== "") {
     return !isFalsyFlag(explicit);
+  }
+  if (!devMode && !forceEnabled) {
+    return false;
+  }
+  if (devMode && !forceEnabled && !launchedViaNpmStartScript) {
+    // Plain `bosun` command launches from a source checkout should behave like
+    // npm/prod installs by default: no self-restart watcher unless explicitly
+    // enabled. Auto-updates still handle published package changes.
+    return false;
   }
   if (
     String(executorMode || "")
@@ -1176,12 +1536,214 @@ function isSelfRestartWatcherEnabled() {
   // Dev mode (source checkout / monorepo) → watch for code changes.
   // npm mode (installed via npm) → do NOT watch; source only changes via
   // npm update, which is handled by the auto-update loop instead.
-  return isDevMode();
+  return devMode;
 }
 
 const MONITOR_MONITOR_DEFAULT_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const MONITOR_MONITOR_RECOMMENDED_MIN_TIMEOUT_MS = 600_000;
+const MONITOR_MONITOR_STARTUP_CYCLE_DELAY_MS = parseEnvInteger(
+  process.env.DEVMODE_MONITOR_MONITOR_STARTUP_CYCLE_DELAY_MS,
+  15_000,
+  { min: 0, max: 5 * 60_000 },
+);
+const MONITOR_MONITOR_STARTUP_STATUS_DELAY_MS = parseEnvInteger(
+  process.env.DEVMODE_MONITOR_MONITOR_STARTUP_STATUS_DELAY_MS,
+  20_000,
+  { min: 0, max: 5 * 60_000 },
+);
+const MONITOR_MONITOR_STARTUP_STATUS_AFTER_CYCLE_MIN_MS = parseEnvInteger(
+  process.env.DEVMODE_MONITOR_MONITOR_STARTUP_STATUS_AFTER_CYCLE_MIN_MS,
+  2_000,
+  { min: 0, max: 30_000 },
+);
+const MONITOR_MONITOR_STARTUP_JITTER_MS = parseEnvInteger(
+  process.env.DEVMODE_MONITOR_MONITOR_STARTUP_JITTER_MS,
+  3_000,
+  { min: 0, max: 60_000 },
+);
+const MONITOR_MONITOR_STARTUP_STATUS_MIN_GAP_MS = parseEnvInteger(
+  process.env.DEVMODE_MONITOR_MONITOR_STARTUP_STATUS_MIN_GAP_MS,
+  5 * 60_000,
+  { min: 30_000, max: 30 * 60_000 },
+);
+const MONITOR_MONITOR_STARTUP_STATUS_GATE_PATH = resolve(
+  repoRoot,
+  ".bosun",
+  ".cache",
+  "monitor-monitor-startup-status-gate.json",
+);
+const MONITOR_MONITOR_STARTUP_STATUS_GATE_TMP_PATH =
+  `${MONITOR_MONITOR_STARTUP_STATUS_GATE_PATH}.tmp`;
+const MONITOR_MONITOR_STARTUP_STATUS_GATE_CORRUPT_PREFIX =
+  `${basename(MONITOR_MONITOR_STARTUP_STATUS_GATE_PATH)}.corrupt-`;
+const MONITOR_MONITOR_STARTUP_STATUS_GATE_CORRUPT_MAX_FILES = parseEnvInteger(
+  process.env.DEVMODE_MONITOR_MONITOR_STARTUP_STATUS_GATE_CORRUPT_MAX_FILES,
+  5,
+  { min: 1, max: 50 },
+);
+const MONITOR_MONITOR_WATCHDOG_FORCE_RESET_DELAY_MS = parseEnvInteger(
+  process.env.DEVMODE_MONITOR_MONITOR_WATCHDOG_FORCE_RESET_DELAY_MS,
+  60_000,
+  { min: 10_000, max: 10 * 60_000 },
+);
+const MONITOR_MONITOR_SKIP_STREAK_WARN_THRESHOLD = parseEnvInteger(
+  process.env.DEVMODE_MONITOR_MONITOR_SKIP_STREAK_WARN_THRESHOLD,
+  5,
+  { min: 2, max: 200 },
+);
+const MONITOR_MONITOR_SKIP_STREAK_WARN_MIN_GAP_MS = parseEnvInteger(
+  process.env.DEVMODE_MONITOR_MONITOR_SKIP_STREAK_WARN_MIN_GAP_MS,
+  60_000,
+  { min: 10_000, max: 30 * 60_000 },
+);
+const MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_WINDOW_MS = parseEnvInteger(
+  process.env.DEVMODE_MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_WINDOW_MS,
+  15 * 60_000,
+  { min: 60_000, max: 24 * 60 * 60_000 },
+);
+const MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_THRESHOLD = parseEnvInteger(
+  process.env.DEVMODE_MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_THRESHOLD,
+  3,
+  { min: 2, max: 100 },
+);
 const monitorMonitorTimeoutWarningKeys = new Set();
+const monitorMonitorStartupGateWarningKeys = new Set();
+
+function warnStartupStatusGateIssueOnce(key, message) {
+  if (!key || monitorMonitorStartupGateWarningKeys.has(key)) return;
+  monitorMonitorStartupGateWarningKeys.add(key);
+  console.warn(message);
+}
+
+function cleanupStartupStatusGateTempFile() {
+  try {
+    if (existsSync(MONITOR_MONITOR_STARTUP_STATUS_GATE_TMP_PATH)) {
+      unlinkSync(MONITOR_MONITOR_STARTUP_STATUS_GATE_TMP_PATH);
+    }
+  } catch (err) {
+    warnStartupStatusGateIssueOnce(
+      "cleanup-temp",
+      `[monitor-monitor] startup gate temp cleanup failed: ${err?.message || err}`,
+    );
+  }
+}
+
+function cleanupStartupStatusGateCorruptFiles() {
+  try {
+    const gateDir = dirname(MONITOR_MONITOR_STARTUP_STATUS_GATE_PATH);
+    if (!existsSync(gateDir)) return;
+    const candidates = readdirSync(gateDir)
+      .filter((name) =>
+        String(name || "").startsWith(MONITOR_MONITOR_STARTUP_STATUS_GATE_CORRUPT_PREFIX),
+      )
+      .sort((a, b) => {
+        const ta = Number(
+          String(a || "").slice(MONITOR_MONITOR_STARTUP_STATUS_GATE_CORRUPT_PREFIX.length),
+        );
+        const tb = Number(
+          String(b || "").slice(MONITOR_MONITOR_STARTUP_STATUS_GATE_CORRUPT_PREFIX.length),
+        );
+        const na = Number.isFinite(ta) ? ta : 0;
+        const nb = Number.isFinite(tb) ? tb : 0;
+        return nb - na;
+      });
+    for (const name of candidates.slice(MONITOR_MONITOR_STARTUP_STATUS_GATE_CORRUPT_MAX_FILES)) {
+      try {
+        unlinkSync(resolve(gateDir, name));
+      } catch (err) {
+        warnStartupStatusGateIssueOnce(
+          "cleanup-corrupt-entry",
+          `[monitor-monitor] startup gate corrupt cleanup failed: ${err?.message || err}`,
+        );
+      }
+    }
+  } catch (err) {
+    warnStartupStatusGateIssueOnce(
+      "cleanup-corrupt-list",
+      `[monitor-monitor] startup gate corrupt scan failed: ${err?.message || err}`,
+    );
+  }
+}
+
+function readStartupStatusGateTs() {
+  try {
+    cleanupStartupStatusGateTempFile();
+    cleanupStartupStatusGateCorruptFiles();
+    if (!existsSync(MONITOR_MONITOR_STARTUP_STATUS_GATE_PATH)) return 0;
+    const raw = readFileSync(MONITOR_MONITOR_STARTUP_STATUS_GATE_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    const ts = Number(parsed?.lastStartupStatusAt || 0);
+    if (!Number.isFinite(ts) || ts <= 0) return 0;
+    const now = Date.now();
+    const maxFutureSkewMs = Math.max(
+      60_000,
+      MONITOR_MONITOR_STARTUP_STATUS_MIN_GAP_MS,
+    );
+    if (ts > now + maxFutureSkewMs) {
+      throw new Error(`startup gate timestamp is too far in future: ${ts}`);
+    }
+    return ts;
+  } catch (err) {
+    try {
+      if (existsSync(MONITOR_MONITOR_STARTUP_STATUS_GATE_PATH)) {
+        renameSync(
+          MONITOR_MONITOR_STARTUP_STATUS_GATE_PATH,
+          `${MONITOR_MONITOR_STARTUP_STATUS_GATE_PATH}.corrupt-${Date.now()}`,
+        );
+      }
+    } catch (quarantineErr) {
+      warnStartupStatusGateIssueOnce(
+        "read-quarantine",
+        `[monitor-monitor] startup gate quarantine failed: ${quarantineErr?.message || quarantineErr}`,
+      );
+    }
+    warnStartupStatusGateIssueOnce(
+      "read-invalid",
+      `[monitor-monitor] startup gate read failed; using fallback: ${err?.message || err}`,
+    );
+    return 0;
+  }
+}
+
+function writeStartupStatusGateTs(tsMs) {
+  try {
+    cleanupStartupStatusGateTempFile();
+    const ts = Number(tsMs || 0);
+    if (!Number.isFinite(ts) || ts <= 0) return;
+    mkdirSync(resolve(repoRoot, ".bosun", ".cache"), { recursive: true });
+    writeFileSync(
+      MONITOR_MONITOR_STARTUP_STATUS_GATE_TMP_PATH,
+      `${JSON.stringify(
+        {
+          lastStartupStatusAt: ts,
+          updatedAt: new Date(ts).toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    renameSync(
+      MONITOR_MONITOR_STARTUP_STATUS_GATE_TMP_PATH,
+      MONITOR_MONITOR_STARTUP_STATUS_GATE_PATH,
+    );
+  } catch (err) {
+    try {
+      if (existsSync(MONITOR_MONITOR_STARTUP_STATUS_GATE_TMP_PATH)) {
+        unlinkSync(MONITOR_MONITOR_STARTUP_STATUS_GATE_TMP_PATH);
+      }
+    } catch (cleanupErr) {
+      warnStartupStatusGateIssueOnce(
+        "write-temp-cleanup",
+        `[monitor-monitor] startup gate temp cleanup after write failed: ${cleanupErr?.message || cleanupErr}`,
+      );
+    }
+    warnStartupStatusGateIssueOnce(
+      "write-failed",
+      `[monitor-monitor] startup gate write failed: ${err?.message || err}`,
+    );
+  }
+}
 
 function parsePositiveMs(value) {
   const parsed = Number(value);
@@ -1266,9 +1828,25 @@ const monitorMonitor = {
   running: false,
   timer: null,
   statusTimer: null,
+  startupCycleTimer: null,
+  startupStatusTimer: null,
   heartbeatAt: 0,
+  lastAttemptAt: 0,
+  lastAttemptTrigger: "startup",
+  lastSkipAt: 0,
+  lastSkipReason: "",
+  skipStreak: 0,
+  lastSkipStreakWarned: 0,
+  lastSkipStreakWarnAt: 0,
+  supervisorRestartCountWindow: 0,
+  supervisorRestartLastWarnAt: 0,
+  supervisorStartCountTotal: 0,
+  supervisorLastStartedAt: 0,
+  supervisorStartTimes: [],
   lastRunAt: 0,
   lastStatusAt: 0,
+  lastStatusReason: "",
+  lastStatusText: "",
   lastTrigger: "startup",
   lastOutcome: "not-started",
   lastError: "",
@@ -1285,7 +1863,7 @@ const monitorMonitor = {
 };
 if (monitorMonitor.enabled) {
   console.log(
-    `[monitor] monitor-monitor ENABLED (interval ${Math.round(monitorMonitor.intervalMs / 1000)}s, status ${Math.round(monitorMonitor.statusIntervalMs / 60_000)}m, timeout ${Math.round(monitorMonitor.timeoutMs / 1000)}s)`,
+    `[monitor] monitor-monitor ENABLED (interval ${Math.round(monitorMonitor.intervalMs / 1000)}s, status ${Math.round(monitorMonitor.statusIntervalMs / 60_000)}m, timeout ${Math.round(monitorMonitor.timeoutMs / 1000)}s, watchdog+${Math.round(MONITOR_MONITOR_WATCHDOG_FORCE_RESET_DELAY_MS / 1000)}s, skip-warn>=${MONITOR_MONITOR_SKIP_STREAK_WARN_THRESHOLD}, skip-warn-gap>=${Math.round(MONITOR_MONITOR_SKIP_STREAK_WARN_MIN_GAP_MS / 1000)}s)`,
   );
 }
 
@@ -1440,11 +2018,11 @@ const ALLOW_INTERNAL_RUNTIME_RESTARTS = isTruthyFlag(
 );
 const SELF_RESTART_DEFER_HARD_CAP = Math.max(
   1,
-  Number(process.env.SELF_RESTART_DEFER_HARD_CAP || "20") || 20,
+  Number(process.env.SELF_RESTART_DEFER_HARD_CAP || "6") || 6,
 );
 const SELF_RESTART_MAX_DEFER_MS = Math.max(
   60_000,
-  Number(process.env.SELF_RESTART_MAX_DEFER_MS || "600000") || 600000,
+  Number(process.env.SELF_RESTART_MAX_DEFER_MS || "180000") || 180000,
 );
 const SELF_RESTART_FORCE_ACTIVE_SLOT_MIN_AGE_MS = Math.max(
   60_000,
@@ -1454,6 +2032,7 @@ const SELF_RESTART_FORCE_ACTIVE_SLOT_MIN_AGE_MS = Math.max(
   ) || SELF_RESTART_MAX_DEFER_MS,
 );
 let selfWatcher = null;
+let selfWatcherLib = null;
 let selfWatcherDebounce = null;
 let selfRestartTimer = null;
 let selfRestartLastChangeAt = 0;
@@ -1530,6 +2109,21 @@ try {
 let telegramNotifierInterval = null;
 let telegramNotifierTimeout = null;
 let weeklyReportLastSentAt = null;
+const monitorRestartReason = String(
+  process.env.BOSUN_MONITOR_RESTART_REASON || "",
+)
+  .trim()
+  .toLowerCase();
+
+function getTelegramBotStartOptions() {
+  const restartReason = isSelfRestart
+    ? "self-restart"
+    : monitorRestartReason;
+  return {
+    restartReason,
+    suppressPortalAutoOpen: restartReason.length > 0,
+  };
+}
 let vkRecoveryLastAt = 0;
 let vkNonJsonNotifiedAt = 0;
 let vkNonJsonContentTypeLoggedAt = 0;
@@ -2217,11 +2811,29 @@ function runDetached(label, promiseOrFn) {
 }
 
 function safeSetInterval(reason, fn, ms) {
-  return setInterval(() => runGuarded(`interval:${reason}`, fn), ms);
+  const normalized = Number(ms);
+  const clamped = Number.isFinite(normalized) && normalized > 0
+    ? Math.min(normalized, 2_147_483_647)
+    : 1;
+  if (clamped !== normalized) {
+    console.warn(
+      `[monitor] timer delay clamped for interval:${reason} (${normalized}ms -> ${clamped}ms)`,
+    );
+  }
+  return setInterval(() => runGuarded(`interval:${reason}`, fn), clamped);
 }
 
 function safeSetTimeout(reason, fn, ms) {
-  return setTimeout(() => runGuarded(`timeout:${reason}`, fn), ms);
+  const normalized = Number(ms);
+  const clamped = Number.isFinite(normalized) && normalized > 0
+    ? Math.min(normalized, 2_147_483_647)
+    : 1;
+  if (clamped !== normalized) {
+    console.warn(
+      `[monitor] timer delay clamped for timeout:${reason} (${normalized}ms -> ${clamped}ms)`,
+    );
+  }
+  return setTimeout(() => runGuarded(`timeout:${reason}`, fn), clamped);
 }
 
 const crashLoopFixAttempts = new Map();
@@ -4347,6 +4959,10 @@ async function updateTaskStatus(taskId, newStatus, options = {}) {
     options?.taskData && typeof options.taskData === "object"
       ? options.taskData
       : null;
+  const workflowData =
+    options?.workflowData && typeof options.workflowData === "object"
+      ? options.workflowData
+      : null;
   const taskTitle = String(
     options?.taskTitle || taskData?.title || getInternalTask(normalizedTaskId)?.title || "",
   ).trim();
@@ -4360,6 +4976,43 @@ async function updateTaskStatus(taskId, newStatus, options = {}) {
     taskTitle,
     previousStatus: previousStatus || null,
     status: normalizedStatus,
+    branch: String(
+      options?.branch ||
+        taskData?.branch ||
+        taskData?.branchName ||
+        taskData?.meta?.branch_name ||
+        workflowData?.branch ||
+        "",
+    ).trim() || null,
+    baseBranch: String(
+      options?.baseBranch ||
+        taskData?.baseBranch ||
+        taskData?.base_branch ||
+        taskData?.meta?.base_branch ||
+        workflowData?.baseBranch ||
+        "",
+    ).trim() || null,
+    worktreePath: String(
+      options?.worktreePath ||
+        taskData?.worktreePath ||
+        taskData?.meta?.worktreePath ||
+        workflowData?.worktreePath ||
+        "",
+    ).trim() || null,
+    prNumber: String(
+      options?.prNumber ||
+        taskData?.prNumber ||
+        taskData?.meta?.pr_number ||
+        workflowData?.prNumber ||
+        "",
+    ).trim() || null,
+    prUrl: String(
+      options?.prUrl ||
+        taskData?.prUrl ||
+        taskData?.meta?.pr_url ||
+        workflowData?.prUrl ||
+        "",
+    ).trim() || null,
   };
   const queueTaskStatusWorkflowEvents = () => {
     const statusChanged = previousStatus !== normalizedStatus;
@@ -4419,6 +5072,29 @@ async function updateTaskStatus(taskId, newStatus, options = {}) {
     }
   };
 
+  const transitionSource = String(options?.source || "").trim().toLowerCase();
+  const workflowBypass = options?.bypassWorkflowOwnership === true;
+  if (workflowAutomationEnabled && transitionSource !== "workflow" && !workflowBypass) {
+    const engine = await ensureWorkflowAutomationEngine().catch(() => null);
+    if (engine) {
+      queueWorkflowEvent(
+        "task.transition.requested",
+        {
+          ...baseWorkflowPayload,
+          targetStatus: normalizedStatus,
+          source: transitionSource || "legacy-monitor",
+          error: options?.error || null,
+        },
+        {
+          dedupKey:
+            options?.workflowDedupKey ||
+            `workflow-event:task.transition.requested:${normalizedTaskId}:${normalizedStatus}`,
+        },
+      );
+      return true;
+    }
+  }
+
   const backend = getActiveKanbanBackend();
   if (backend !== "vk") {
     const resolvedTaskId = resolveTaskIdForBackend(taskId, backend);
@@ -4429,7 +5105,11 @@ async function updateTaskStatus(taskId, newStatus, options = {}) {
       return false;
     }
     try {
-      await updateKanbanTaskStatus(resolvedTaskId, newStatus);
+      await updateKanbanTaskStatus(
+        resolvedTaskId,
+        newStatus,
+        options && typeof options === "object" ? options : {},
+      );
       clearRecoveryCaches(taskId);
       if (resolvedTaskId !== taskId) {
         clearRecoveryCaches(resolvedTaskId);
@@ -4717,12 +5397,39 @@ async function isBranchMerged(branch, baseBranch) {
     const baseRef = `${baseInfo.remote}/${baseInfo.name}`;
     const ghHead = branchInfo.name || branch;
 
-    // ── Strategy 1: Check GitHub for a merged PR with this head branch ──
-    // This is the most reliable signal — if GitHub says merged, it's merged.
+    // ── Strategy 1: Check GitHub PR state for this head branch ───────────
+    // Open PR always wins over historical merged PRs for the same head.
+    // A branch can have an old merged PR and a newer open PR with fresh commits.
+    // In that case, treat as NOT merged.
     if (ghAvailable()) {
       try {
+        const openResult = execSync(
+          `gh pr list --head "${ghHead}" --state open --json number,baseRefName --limit 10`,
+          {
+            cwd: repoRoot,
+            encoding: "utf8",
+            stdio: ["pipe", "pipe", "ignore"],
+            timeout: 15000,
+          },
+        ).trim();
+        const openPRs = JSON.parse(openResult || "[]");
+        const hasOpenForTarget = openPRs.some((pr) => {
+          const prBase = normalizeBranchName(pr?.baseRefName);
+          return !prBase || prBase === baseInfo.name;
+        });
+        if (hasOpenForTarget || openPRs.length > 0) {
+          console.log(
+            `[monitor] Branch ${branch} has open PR(s) — treating as NOT merged`,
+          );
+          return false;
+        }
+      } catch {
+        // best-effort
+      }
+
+      try {
         const ghResult = execSync(
-          `gh pr list --head "${ghHead}" --state merged --json number,mergedAt --limit 1`,
+          `gh pr list --head "${ghHead}" --base "${baseInfo.name}" --state merged --json number,mergedAt --limit 1`,
           {
             cwd: repoRoot,
             encoding: "utf8",
@@ -4738,7 +5445,27 @@ async function isBranchMerged(branch, baseBranch) {
           return true;
         }
       } catch {
-        // gh failed — fall through to git-based checks
+        // Fallback for older gh variants / edge cases that reject --base here.
+        try {
+          const ghResult = execSync(
+            `gh pr list --head "${ghHead}" --state merged --json number,mergedAt --limit 1`,
+            {
+              cwd: repoRoot,
+              encoding: "utf8",
+              stdio: ["pipe", "pipe", "ignore"],
+              timeout: 15000,
+            },
+          ).trim();
+          const mergedPRs = JSON.parse(ghResult || "[]");
+          if (mergedPRs.length > 0) {
+            console.log(
+              `[monitor] Branch ${branch} has merged PR #${mergedPRs[0].number}`,
+            );
+            return true;
+          }
+        } catch {
+          // gh failed — fall through to git-based checks
+        }
       }
     }
 
@@ -4806,6 +5533,45 @@ const mergedTaskCache = new Set();
  */
 const mergedBranchCache = new Set();
 
+function normalizeMergedBranchKey(branch) {
+  const normalized = normalizeBranchName(branch);
+  if (normalized) return normalized;
+  const raw = String(branch || "").trim();
+  return raw || "";
+}
+
+function addMergedBranchCache(branch) {
+  const key = normalizeMergedBranchKey(branch);
+  if (!key) return false;
+  mergedBranchCache.add(key);
+  return true;
+}
+
+function hasMergedBranchCache(branch) {
+  const key = normalizeMergedBranchKey(branch);
+  if (!key) return false;
+  return mergedBranchCache.has(key);
+}
+
+function removeMergedBranchCache(branch) {
+  const key = normalizeMergedBranchKey(branch);
+  if (!key) return false;
+  return mergedBranchCache.delete(key);
+}
+
+async function isMergedBranchCacheEntryStillValid(branch, baseBranch) {
+  if (!hasMergedBranchCache(branch)) return false;
+  const stillMerged = await isBranchMerged(branch, baseBranch);
+  if (stillMerged) return true;
+  if (removeMergedBranchCache(branch)) {
+    saveMergedTaskCache();
+    console.log(
+      `[monitor] Branch ${branch} removed from merged cache after revalidation`,
+    );
+  }
+  return false;
+}
+
 /** Path to the persistent merged-task cache file */
 const mergedTaskCachePath = resolve(
   config.cacheDir || resolve(config.repoRoot, ".cache"),
@@ -4825,7 +5591,7 @@ function loadMergedTaskCache() {
       }
       if (Array.isArray(data.branches)) {
         for (const b of data.branches) {
-          mergedBranchCache.add(b);
+          addMergedBranchCache(b);
         }
       }
       const total = mergedTaskCache.size + mergedBranchCache.size;
@@ -5119,6 +5885,11 @@ const MERGE_CHECK_THROTTLE_MS = 1500;
 
 const STALE_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 const STALE_MAX_STRIKES = 2; // move to todo after this many stale checks
+const RECOVERABLE_IDLE_STATUSES = new Set(["inprogress", "inreview"]);
+
+function isRecoverableIdleStatus(status) {
+  return RECOVERABLE_IDLE_STATUSES.has(String(status || "").trim().toLowerCase());
+}
 
 /**
  * Age-based stale detection: if a task has been in inprogress/inreview for
@@ -5152,6 +5923,24 @@ loadRecoveryCache();
  */
 async function checkMergedPRsAndUpdateTasks() {
   try {
+    if (
+      isWorkflowReplacingModule("task-executor.mjs") ||
+      isWorkflowReplacingModule("monitor.mjs")
+    ) {
+      if (!workflowTaskReconcilePausedLogged) {
+        workflowTaskReconcilePausedLogged = true;
+        console.log(
+          "[monitor] skipping legacy task-status reconciliation — handled by workflow replacement",
+        );
+      }
+      return {
+        checked: 0,
+        movedDone: 0,
+        movedReview: 0,
+        movedTodo: 0,
+        skippedByWorkflowReplacement: true,
+      };
+    }
     console.log("[monitor] Checking for merged PRs to update task status...");
     const workflowOwnsLegacyConflictResolution =
       isWorkflowReplacingModule("pr-cleanup-daemon.mjs") ||
@@ -5169,9 +5958,27 @@ async function checkMergedPRsAndUpdateTasks() {
         }
       }
     });
-    const reviewTasks = Array.from(taskMap.values()).filter(
-      (entry) => !mergedTaskCache.has(entry.task.id),
-    );
+    const reviewTasks = [];
+    let prunedMergedTaskCacheCount = 0;
+    for (const entry of taskMap.values()) {
+      const taskId = String(entry?.task?.id || "").trim();
+      if (!taskId) continue;
+      if (!mergedTaskCache.has(taskId)) {
+        reviewTasks.push(entry);
+        continue;
+      }
+      // Task is active (inprogress/inreview) so a previous done-cache entry
+      // is stale (e.g. task reopened or status rollback) and must be purged.
+      mergedTaskCache.delete(taskId);
+      prunedMergedTaskCacheCount++;
+      reviewTasks.push(entry);
+    }
+    if (prunedMergedTaskCacheCount > 0) {
+      saveMergedTaskCache();
+      console.log(
+        `[monitor] Pruned ${prunedMergedTaskCacheCount} stale merged-task cache entr${prunedMergedTaskCacheCount === 1 ? "y" : "ies"} for active tasks`,
+      );
+    }
     if (reviewTasks.length === 0) {
       console.log(
         "[monitor] No tasks in review/inprogress status (after dedup)",
@@ -5383,13 +6190,12 @@ async function checkMergedPRsAndUpdateTasks() {
           continue;
         }
 
-        // ── Only recover idle inprogress tasks — never inreview ──
-        // inreview tasks are monitored by merge/conflict checks.
-        // inprogress tasks with an active agent should not be touched.
-        if (taskStatus !== "inprogress") {
+        // ── Recover only idle inprogress/inreview tasks ──
+        // inprogress/inreview tasks with an active agent should not be touched.
+        if (!isRecoverableIdleStatus(taskStatus)) {
           if (shouldLogNoAttempt(task, taskStatus, "no_attempt_skip_status")) {
             console.log(
-              `[monitor] No attempt found for task "${task.title}" (${task.id.substring(0, 8)}...) in ${taskStatus} — skipping (only idle inprogress tasks are recovered)`,
+              `[monitor] No attempt found for task "${task.title}" (${task.id.substring(0, 8)}...) in ${taskStatus} — skipping (only idle inprogress/inreview tasks are recovered)`,
             );
             recordNoAttemptLog(task, taskStatus, "no_attempt_skip_status");
           }
@@ -5413,12 +6219,12 @@ async function checkMergedPRsAndUpdateTasks() {
         if (taskAge >= STALE_TASK_AGE_MS) {
           const ageHours = (taskAge / (60 * 60 * 1000)).toFixed(1);
           console.log(
-            `[monitor] No attempt found for idle task "${task.title}" (${task.id.substring(0, 8)}...) — stale for ${ageHours}h, attempting recovery`,
+            `[monitor] No attempt found for idle ${taskStatus} task "${task.title}" (${task.id.substring(0, 8)}...) — stale for ${ageHours}h, attempting recovery`,
           );
           const success = await safeRecoverTask(
             task.id,
             task.title,
-            `age-based: ${ageHours}h, no agent, no branch/PR`,
+            `age-based: ${taskStatus}, ${ageHours}h, no agent, no branch/PR`,
           );
           if (success) {
             movedTodoCount++;
@@ -5439,13 +6245,13 @@ async function checkMergedPRsAndUpdateTasks() {
         });
         scheduleRecoveryCacheSave();
         console.log(
-          `[monitor] No attempt found for idle task "${task.title}" (${task.id.substring(0, 8)}...) — strike ${strikes}/${STALE_MAX_STRIKES}`,
+          `[monitor] No attempt found for idle ${taskStatus} task "${task.title}" (${task.id.substring(0, 8)}...) — strike ${strikes}/${STALE_MAX_STRIKES}`,
         );
         if (strikes >= STALE_MAX_STRIKES) {
           const success = await safeRecoverTask(
             task.id,
             task.title,
-            `no branch/PR after ${strikes} checks`,
+            `no branch/PR after ${strikes} checks (${taskStatus})`,
           );
           if (success) {
             movedTodoCount++;
@@ -5466,34 +6272,40 @@ async function checkMergedPRsAndUpdateTasks() {
 
       // ── Branch-level dedup: skip if ANY branch is already known-merged ──
       const knownBranch = candidates.find(
-        (c) => c.branch && mergedBranchCache.has(c.branch),
+        (c) => c.branch && hasMergedBranchCache(c.branch),
       );
-      if (knownBranch) {
-        const canFinalize = await shouldFinalizeMergedTask(task, {
-          branch: knownBranch.branch,
-          prNumber: knownBranch.prNumber,
-          reason: "known_merged_branch",
-        });
-        if (!canFinalize) {
+      if (knownBranch?.branch) {
+        const cachedStillMerged = await isMergedBranchCacheEntryStillValid(
+          knownBranch.branch,
+          knownBranch.baseBranch,
+        );
+        if (cachedStillMerged) {
+          const canFinalize = await shouldFinalizeMergedTask(task, {
+            branch: knownBranch.branch,
+            prNumber: knownBranch.prNumber,
+            reason: "known_merged_branch",
+          });
+          if (!canFinalize) {
+            continue;
+          }
+          mergedTaskCache.add(task.id);
+          pendingMergeStrategyByTask.delete(String(task.id || "").trim());
+          // Cache all branches for this task
+          for (const c of candidates) {
+            if (c.branch) addMergedBranchCache(c.branch);
+          }
+          saveMergedTaskCache();
+          void updateTaskStatus(task.id, "done", {
+            taskData: task,
+            workflowEvent: "pr.merged",
+            workflowData: {
+              prNumber: knownBranch.prNumber || null,
+              branch: knownBranch.branch || null,
+              triggerReason: "known_merged_branch",
+            },
+          });
           continue;
         }
-        mergedTaskCache.add(task.id);
-        pendingMergeStrategyByTask.delete(String(task.id || "").trim());
-        // Cache all branches for this task
-        for (const c of candidates) {
-          if (c.branch) mergedBranchCache.add(c.branch);
-        }
-        saveMergedTaskCache();
-        void updateTaskStatus(task.id, "done", {
-          taskData: task,
-          workflowEvent: "pr.merged",
-          workflowData: {
-            prNumber: knownBranch.prNumber || null,
-            branch: knownBranch.branch || null,
-            triggerReason: "known_merged_branch",
-          },
-        });
-        continue;
       }
 
       // ── Check ALL candidates for a merged PR/branch ──
@@ -5557,7 +6369,7 @@ async function checkMergedPRsAndUpdateTasks() {
             mergedTaskCache.add(task.id);
             pendingMergeStrategyByTask.delete(String(task.id || "").trim());
             for (const c of candidates) {
-              if (c.branch) mergedBranchCache.add(c.branch);
+              if (c.branch) addMergedBranchCache(c.branch);
             }
             saveMergedTaskCache();
             completedTaskNames.push(task.title);
@@ -5642,7 +6454,7 @@ async function checkMergedPRsAndUpdateTasks() {
           mergedTaskCache.add(task.id);
           pendingMergeStrategyByTask.delete(String(task.id || "").trim());
           for (const c of candidates) {
-            if (c.branch) mergedBranchCache.add(c.branch);
+            if (c.branch) addMergedBranchCache(c.branch);
           }
           saveMergedTaskCache();
           completedTaskNames.push(task.title);
@@ -5898,8 +6710,8 @@ async function checkMergedPRsAndUpdateTasks() {
           );
         }
       } else if (!hasOpenPR) {
-        // ── Only recover idle inprogress tasks — never inreview ──
-        if (taskStatus !== "inprogress") {
+        // ── Recover only idle inprogress/inreview tasks ──
+        if (!isRecoverableIdleStatus(taskStatus)) {
           console.log(
             `[monitor] Task "${task.title}" (${task.id.substring(0, 8)}...): no open PR but status=${taskStatus} — skipping recovery`,
           );
@@ -5921,12 +6733,12 @@ async function checkMergedPRsAndUpdateTasks() {
         if (taskAge >= STALE_TASK_AGE_MS) {
           const ageHours = (taskAge / (60 * 60 * 1000)).toFixed(1);
           console.log(
-            `[monitor] Idle task "${task.title}" (${task.id.substring(0, 8)}...): no branch/PR, stale for ${ageHours}h — attempting recovery`,
+            `[monitor] Idle ${taskStatus} task "${task.title}" (${task.id.substring(0, 8)}...): no branch/PR, stale for ${ageHours}h — attempting recovery`,
           );
           const success = await safeRecoverTask(
             task.id,
             task.title,
-            `age-based: ${ageHours}h, no agent, no branch/PR`,
+            `age-based: ${taskStatus}, ${ageHours}h, no agent, no branch/PR`,
           );
           if (success) {
             movedTodoCount++;
@@ -5946,13 +6758,13 @@ async function checkMergedPRsAndUpdateTasks() {
           });
           scheduleRecoveryCacheSave();
           console.log(
-            `[monitor] Idle task "${task.title}" (${task.id.substring(0, 8)}...): no branch, no PR (strike ${strikes}/${STALE_MAX_STRIKES})`,
+            `[monitor] Idle ${taskStatus} task "${task.title}" (${task.id.substring(0, 8)}...): no branch, no PR (strike ${strikes}/${STALE_MAX_STRIKES})`,
           );
           if (strikes >= STALE_MAX_STRIKES) {
             const success = await safeRecoverTask(
               task.id,
               task.title,
-              `abandoned — ${strikes} stale checks`,
+              `abandoned ${taskStatus} — ${strikes} stale checks`,
             );
             if (success) {
               movedTodoCount++;
@@ -7019,6 +7831,19 @@ function extractPrNumberFromUrl(prUrl) {
   return match ? parsePositivePrNumber(match[1]) : null;
 }
 
+function buildFlowGateMergeBody(taskTitle, taskId) {
+  const safeTitle = String(taskTitle || "Task").trim() || "Task";
+  const safeId = String(taskId || "").trim();
+  const lines = [
+    `Merged by Bosun flow gate for: ${safeTitle}`,
+    safeId ? `Task: ${safeId}` : "",
+  ].filter(Boolean);
+  if (shouldAddBosunCoAuthor({ taskId: safeId })) {
+    lines.push("", getBosunCoAuthorTrailer());
+  }
+  return lines.join("\n");
+}
+
 async function triggerFlowPostReviewMerge(taskId, context = {}) {
   if (!isFlowPrimaryEnabled() || !isFlowReviewGateEnabled()) {
     return false;
@@ -7069,6 +7894,7 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
 
   const autoArgs = ["pr", "merge", String(prNumber)];
   if (repoSlug) autoArgs.push("--repo", repoSlug);
+  autoArgs.push("--body", buildFlowGateMergeBody(taskTitle, id));
   autoArgs.push("--auto", "--squash");
 
   const autoResult = spawnSync("gh", autoArgs, {
@@ -7090,6 +7916,7 @@ async function triggerFlowPostReviewMerge(taskId, context = {}) {
   if (/clean status|not in the correct state/i.test(autoErr)) {
     const directArgs = ["pr", "merge", String(prNumber)];
     if (repoSlug) directArgs.push("--repo", repoSlug);
+    directArgs.push("--body", buildFlowGateMergeBody(taskTitle, id));
     directArgs.push("--squash");
     const directResult = spawnSync("gh", directArgs, {
       cwd: repoRoot,
@@ -7527,7 +8354,13 @@ async function actOnAssessment(ctx, decision) {
     case "reprompt_same":
       console.log(`[${tag}] → reprompt same session`);
       if (decision.prompt && agentPoolEnabled) {
-        void execPooledPrompt(decision.prompt, { timeoutMs: 15 * 60 * 1000 });
+        execPooledPrompt(decision.prompt, { timeoutMs: 15 * 60 * 1000 }).catch(
+          (err) => {
+            console.warn(
+              `[${tag}] reprompt_same failed: ${err?.message || err}`,
+            );
+          },
+        );
       }
       break;
 
@@ -7932,7 +8765,16 @@ async function smartPRFlow(attemptId, shortId, status) {
     const attemptInfo = await getAttemptInfo(attemptId);
     let taskData = null;
     if (attemptInfo?.branch) {
-      if (mergedBranchCache.has(attemptInfo.branch)) {
+      if (
+        await isMergedBranchCacheEntryStillValid(
+          attemptInfo.branch,
+          attemptInfo?.target_branch ||
+            attemptInfo?.targetBranch ||
+            attemptInfo?.base_branch ||
+            attemptInfo?.baseBranch ||
+            null,
+        )
+      ) {
         console.log(
           `[monitor] ${tag}: branch already in merged cache — archiving`,
         );
@@ -7961,7 +8803,7 @@ async function smartPRFlow(attemptId, shortId, status) {
         console.log(
           `[monitor] ${tag}: branch ${attemptInfo.branch} confirmed merged — ${canFinalize ? "completing task" : "awaiting review gate"}`,
         );
-        mergedBranchCache.add(attemptInfo.branch);
+        addMergedBranchCache(attemptInfo.branch);
         if (attemptInfo.task_id && canFinalize) {
           mergedTaskCache.add(attemptInfo.task_id);
           pendingMergeStrategyByTask.delete(
@@ -8467,7 +9309,16 @@ async function resolveAndTriggerSmartPR(shortId, status) {
     // ── Early merged-branch check: skip if branch is already merged ──
     const resolvedAttempt = match;
     if (resolvedAttempt?.branch) {
-      if (mergedBranchCache.has(resolvedAttempt.branch)) {
+      if (
+        await isMergedBranchCacheEntryStillValid(
+          resolvedAttempt.branch,
+          resolvedAttempt?.target_branch ||
+            resolvedAttempt?.targetBranch ||
+            resolvedAttempt?.base_branch ||
+            resolvedAttempt?.baseBranch ||
+            null,
+        )
+      ) {
         console.log(
           `[monitor] smartPR(${shortId}): branch ${resolvedAttempt.branch} already in mergedBranchCache — skipping`,
         );
@@ -8496,7 +9347,7 @@ async function resolveAndTriggerSmartPR(shortId, status) {
         console.log(
           `[monitor] smartPR(${shortId}): branch ${resolvedAttempt.branch} confirmed merged — ${canFinalize ? "completing task and skipping PR flow" : "awaiting review gate"}`,
         );
-        mergedBranchCache.add(resolvedAttempt.branch);
+        addMergedBranchCache(resolvedAttempt.branch);
         if (resolvedAttempt.task_id && canFinalize) {
           mergedTaskCache.add(resolvedAttempt.task_id);
           pendingMergeStrategyByTask.delete(
@@ -11680,19 +12531,72 @@ function formatElapsedMs(ms) {
   return remMin > 0 ? `${hr}h ${remMin}m ago` : `${hr}h ago`;
 }
 
-function buildMonitorMonitorStatusText(reason = "heartbeat") {
+function formatDurationMs(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return "0s";
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  const remMin = min % 60;
+  return remMin > 0 ? `${hr}h ${remMin}m` : `${hr}h`;
+}
+
+function buildMonitorMonitorStatusText(
+  reason = "heartbeat",
+  currentSdk = getCurrentMonitorSdk(),
+) {
   const now = Date.now();
-  const currentSdk = getCurrentMonitorSdk();
+  const runAgeMs =
+    monitorMonitor.running && Number.isFinite(monitorMonitor.heartbeatAt)
+      ? now - monitorMonitor.heartbeatAt
+      : null;
   const lastRun = monitorMonitor.lastRunAt
     ? formatElapsedMs(now - monitorMonitor.lastRunAt)
-    : "never";
+    : runAgeMs !== null
+      ? `in progress (${formatDurationMs(runAgeMs)})`
+      : "never";
   const lastStatus = monitorMonitor.lastStatusAt
     ? formatElapsedMs(now - monitorMonitor.lastStatusAt)
     : "first update";
+  const lastOutcome =
+    monitorMonitor.running &&
+    String(monitorMonitor.lastOutcome || "").toLowerCase() === "not-started"
+      ? "in-progress"
+      : monitorMonitor.lastOutcome || "unknown";
   const lastDigestLine = String(monitorMonitor.lastDigestText || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .find(Boolean);
+  const lastAttemptTrigger =
+    monitorMonitor.lastAttemptTrigger || monitorMonitor.lastTrigger || "";
+  const lastAttempted =
+    monitorMonitor.lastAttemptAt && Number.isFinite(monitorMonitor.lastAttemptAt)
+      ? formatElapsedMs(now - monitorMonitor.lastAttemptAt)
+      : "never";
+  const lastSkipReason = String(monitorMonitor.lastSkipReason || "").trim();
+  const lastSkipped =
+    monitorMonitor.lastSkipAt && Number.isFinite(monitorMonitor.lastSkipAt)
+      ? formatElapsedMs(now - monitorMonitor.lastSkipAt)
+      : "never";
+  const supervisorLastStarted =
+    monitorMonitor.supervisorLastStartedAt &&
+    Number.isFinite(monitorMonitor.supervisorLastStartedAt)
+      ? formatElapsedMs(now - monitorMonitor.supervisorLastStartedAt)
+      : "never";
+  const supervisorRestartWindowMin = Math.max(
+    1,
+    Math.round(MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_WINDOW_MS / 60_000),
+  );
+  const supervisorRestartCountWindow = Math.max(
+    0,
+    Number(monitorMonitor.supervisorRestartCountWindow || 0),
+  );
+  const supervisorRestartsUntilWarn = Math.max(
+    0,
+    Number(MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_THRESHOLD || 0) -
+      supervisorRestartCountWindow,
+  );
 
   const lines = [
     "🛰️ Bosun-Monitor Update",
@@ -11700,11 +12604,17 @@ function buildMonitorMonitorStatusText(reason = "heartbeat") {
     `- Running: ${monitorMonitor.running ? "yes" : "no"}`,
     `- Current SDK: ${currentSdk}`,
     `- SDK order: ${monitorMonitor.sdkOrder.join(" -> ") || "codex"}`,
+    `- Last attempt trigger: ${lastAttemptTrigger || "n/a"} (${lastAttempted})`,
+    `- Last skip: ${lastSkipReason || "none"} (${lastSkipped})`,
+    `- Skip streak: ${Math.max(0, Number(monitorMonitor.skipStreak || 0))}`,
+    `- Supervisor restarts (window ${supervisorRestartWindowMin}m): ${supervisorRestartCountWindow}`,
+    `- Supervisor restarts until warn: ${supervisorRestartsUntilWarn}`,
+    `- Supervisor starts: total=${Math.max(0, Number(monitorMonitor.supervisorStartCountTotal || 0))}, last=${supervisorLastStarted}`,
     `- Last trigger: ${monitorMonitor.lastTrigger || "n/a"}`,
     `- Last run: ${lastRun}`,
     `- Previous status: ${lastStatus}`,
     `- Consecutive failures: ${monitorMonitor.consecutiveFailures}`,
-    `- Last outcome: ${monitorMonitor.lastOutcome || "unknown"}`,
+    `- Last outcome: ${lastOutcome}`,
   ];
 
   if (monitorMonitor.lastError) {
@@ -11719,17 +12629,57 @@ function buildMonitorMonitorStatusText(reason = "heartbeat") {
 }
 
 async function publishMonitorMonitorStatus(reason = "heartbeat") {
-  const text = buildMonitorMonitorStatusText(reason);
-  monitorMonitor.lastStatusAt = Date.now();
-  console.log(
-    `[monitor-monitor] status (${reason}) sdk=${getCurrentMonitorSdk()} failures=${monitorMonitor.consecutiveFailures}`,
+  const now = Date.now();
+  const statusSdk = getCurrentMonitorSdk();
+  const text = buildMonitorMonitorStatusText(reason, statusSdk);
+  const persistedStartupStatusAt =
+    reason === "startup" ? readStartupStatusGateTs() : 0;
+  const latestStartupStatusAt = Math.max(
+    Number(monitorMonitor.lastStatusAt || 0),
+    Number(persistedStartupStatusAt || 0),
   );
-  if (telegramToken && telegramChatId) {
-    await sendTelegramMessage(text, {
-      dedupKey: `monitor-monitor-status-${reason}-${getCurrentMonitorSdk()}`,
-      exactDedup: true,
-      skipDedup: reason === "interval",
-    });
+  const startupStatusSeenRecently =
+    monitorMonitor.lastStatusReason === "startup" || persistedStartupStatusAt > 0;
+  if (
+    reason === "startup" &&
+    startupStatusSeenRecently &&
+    latestStartupStatusAt > 0 &&
+    Number(monitorMonitor.lastRunAt || 0) <= latestStartupStatusAt &&
+    now - latestStartupStatusAt < MONITOR_MONITOR_STARTUP_STATUS_MIN_GAP_MS
+  ) {
+    console.log(
+      `[monitor-monitor] status (startup) skipped (duplicate within ${Math.round(MONITOR_MONITOR_STARTUP_STATUS_MIN_GAP_MS / 1000)}s)`,
+    );
+    return;
+  }
+  const prevStatusAt = monitorMonitor.lastStatusAt;
+  const prevStatusReason = monitorMonitor.lastStatusReason;
+  const prevStatusText = monitorMonitor.lastStatusText;
+  monitorMonitor.lastStatusAt = now;
+  monitorMonitor.lastStatusReason = reason;
+  monitorMonitor.lastStatusText = text;
+  try {
+    if (telegramToken && telegramChatId) {
+      await sendTelegramMessage(text, {
+        dedupKey: `monitor-monitor-status-${reason}-${statusSdk}`,
+        exactDedup: true,
+        skipDedup: reason === "interval",
+      });
+    }
+    if (reason === "startup") {
+      writeStartupStatusGateTs(now);
+    }
+    console.log(
+      `[monitor-monitor] status (${reason}) sdk=${statusSdk} failures=${monitorMonitor.consecutiveFailures}`,
+    );
+  } catch (err) {
+    monitorMonitor.lastStatusAt = prevStatusAt;
+    monitorMonitor.lastStatusReason = prevStatusReason;
+    monitorMonitor.lastStatusText = prevStatusText;
+    console.warn(
+      `[monitor-monitor] status (${reason}) publish failed: ${err?.message || err}`,
+    );
+    throw err;
   }
 }
 
@@ -11879,6 +12829,28 @@ function getMonitorMonitorStatusSnapshot() {
     intervalMs: monitorMonitor.intervalMs,
     statusIntervalMs: monitorMonitor.statusIntervalMs,
     timeoutMs: monitorMonitor.timeoutMs,
+    lastAttemptAt: monitorMonitor.lastAttemptAt || 0,
+    lastAttemptTrigger: monitorMonitor.lastAttemptTrigger || "",
+    lastSkipAt: monitorMonitor.lastSkipAt || 0,
+    lastSkipReason: monitorMonitor.lastSkipReason || "",
+    skipStreak: monitorMonitor.skipStreak || 0,
+    lastSkipStreakWarned: monitorMonitor.lastSkipStreakWarned || 0,
+    lastSkipStreakWarnAt: monitorMonitor.lastSkipStreakWarnAt || 0,
+    supervisorRestartCountWindow:
+      monitorMonitor.supervisorRestartCountWindow || 0,
+    supervisorRestartLastWarnAt:
+      monitorMonitor.supervisorRestartLastWarnAt || 0,
+    supervisorRestartWarnWindowMs:
+      MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_WINDOW_MS,
+    supervisorRestartWarnThreshold:
+      MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_THRESHOLD,
+    supervisorRestartsUntilWarn: Math.max(
+      0,
+      Number(MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_THRESHOLD || 0) -
+        Number(monitorMonitor.supervisorRestartCountWindow || 0),
+    ),
+    supervisorStartCountTotal: monitorMonitor.supervisorStartCountTotal || 0,
+    supervisorLastStartedAt: monitorMonitor.supervisorLastStartedAt || 0,
     lastRunAt: monitorMonitor.lastRunAt || 0,
     lastStatusAt: monitorMonitor.lastStatusAt || 0,
     lastTrigger: monitorMonitor.lastTrigger || "",
@@ -11889,11 +12861,30 @@ function getMonitorMonitorStatusSnapshot() {
 }
 
 function resolveMonitorMonitorErrorTailWindowMs() {
-  const raw = Number(
-    process.env.DEVMODE_MONITOR_MONITOR_ERROR_TAIL_WINDOW_MS || "1200000",
+  const intervalMs = Number(monitorMonitor?.intervalMs);
+  const normalizedIntervalMs =
+    Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 5 * 60_000;
+  const defaultWindowMs = Math.max(
+    10 * 60_000,
+    Math.min(20 * 60_000, normalizedIntervalMs * 3),
   );
-  if (!Number.isFinite(raw) || raw <= 0) return 20 * 60_000;
+  const raw = Number(
+    process.env.DEVMODE_MONITOR_MONITOR_ERROR_TAIL_WINDOW_MS ||
+      String(defaultWindowMs),
+  );
+  if (!Number.isFinite(raw) || raw <= 0) return defaultWindowMs;
   return Math.max(60_000, raw);
+}
+
+function resolveMonitorMonitorStartupErrorTailWindowMs(baseWindowMs) {
+  const base = Number.isFinite(Number(baseWindowMs)) && Number(baseWindowMs) > 0
+    ? Number(baseWindowMs)
+    : resolveMonitorMonitorErrorTailWindowMs();
+  const raw = Number(
+    process.env.DEVMODE_MONITOR_MONITOR_STARTUP_ERROR_TAIL_WINDOW_MS || "120000",
+  );
+  const startupWindow = Number.isFinite(raw) && raw > 0 ? raw : 120_000;
+  return Math.max(30_000, Math.min(base, startupWindow));
 }
 
 function filterMonitorTailByRecency(tail, { windowMs } = {}) {
@@ -11973,19 +12964,44 @@ function sanitizeMonitorTailForPrompt(tail, backend) {
     "<h1>502 Bad Gateway</h1>",
     "nginx/1.18.0",
   ];
+  const fixtureTokensLower = fixtureTokens.map((token) =>
+    String(token || "").toLowerCase(),
+  );
+  const benignMonitorTailPatterns = [
+    /ExperimentalWarning:\s+SQLite is an experimental feature/i,
+    /Use `node --trace-warnings .*` to show where the warning was created/i,
+    /local\s+'[^']+'\s+diverged\s+\(\d+↑\s+\d+↓\)\s+but has uncommitted changes\s+[—-]\s+skipping/i,
+    /workspace sync:\s+\d+\s+repo\(s\)\s+failed in\s+[^(]+$/i,
+  ];
 
   const lines = text.split("\n");
   const filtered = lines.filter((line) => {
     const current = String(line || "");
+    const normalized = current
+      .replace(/^\d{4}-\d{2}-\d{2}T[0-9:.+-]+Z?\s+/, "")
+      .replace(/^\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+/, "")
+      .replace(/^(?:\[[^\]]+\]\s*)+/, "")
+      .trim();
+    const currentLower = current.toLowerCase();
+    const normalizedLower = normalized.toLowerCase();
     if (/A{40,}/.test(current)) return false;
-    return !fixtureTokens.some((token) => current.includes(token));
+    if (
+      benignMonitorTailPatterns.some(
+        (pattern) => pattern.test(current) || pattern.test(normalized),
+      )
+    ) {
+      return false;
+    }
+    return !fixtureTokensLower.some(
+      (token) => currentLower.includes(token) || normalizedLower.includes(token),
+    );
   });
 
   if (filtered.length === lines.length) return text;
 
   return [
     filtered.join("\n"),
-    "[monitor] (sanitized synthetic VK fixture noise for non-VK backend)",
+    "[monitor] (sanitized benign tail noise for non-VK backend)",
   ]
     .filter(Boolean)
     .join("\n");
@@ -12083,12 +13099,16 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
     orchestratorTail,
   });
   const monitorTailWindowMs = resolveMonitorMonitorErrorTailWindowMs();
+  const effectiveMonitorTailWindowMs =
+    String(trigger || "").trim().toLowerCase() === "startup"
+      ? resolveMonitorMonitorStartupErrorTailWindowMs(monitorTailWindowMs)
+      : monitorTailWindowMs;
   const rawMonitorTail = await readLogTail(resolve(logDir, "monitor-error.log"), {
     maxLines: 120,
     maxChars: 12000,
   });
   const recentMonitorTail = filterMonitorTailByRecency(rawMonitorTail, {
-    windowMs: monitorTailWindowMs,
+    windowMs: effectiveMonitorTailWindowMs,
   });
   const monitorTail = sanitizeMonitorTailForPrompt(
     recentMonitorTail,
@@ -12096,7 +13116,7 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
   );
   const monitorTailForPrompt =
     String(monitorTail || "").trim() ||
-    `(no recent monitor errors in last ${Math.round(monitorTailWindowMs / 60_000)}m)`;
+    `(no recent monitor errors in last ${Math.round(effectiveMonitorTailWindowMs / 60_000)}m)`;
 
   const anomalyReport = getAnomalyStatusReport();
   const monitorPrompt = agentPrompts?.monitorMonitor || "";
@@ -12148,6 +13168,50 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
   ].join("\n");
 }
 
+function clearMonitorMonitorWatchdogTimer({ preserveRunning = false } = {}) {
+  if (!monitorMonitor._watchdogForceResetTimer) return;
+  if (preserveRunning && monitorMonitor.running) return;
+  clearTimeout(monitorMonitor._watchdogForceResetTimer);
+  monitorMonitor._watchdogForceResetTimer = null;
+}
+
+function recordMonitorMonitorSkip(reason = "unknown") {
+  monitorMonitor.lastSkipReason = String(reason || "unknown");
+  monitorMonitor.lastSkipAt = Date.now();
+  const skipStreak = Math.max(
+    0,
+    Number(monitorMonitor.skipStreak || 0),
+  ) + 1;
+  monitorMonitor.skipStreak = skipStreak;
+  const lastWarned = Math.max(
+    0,
+    Number(monitorMonitor.lastSkipStreakWarned || 0),
+  );
+  const now = Date.now();
+  const lastWarnAt = Math.max(
+    0,
+    Number(monitorMonitor.lastSkipStreakWarnAt || 0),
+  );
+  if (skipStreak < MONITOR_MONITOR_SKIP_STREAK_WARN_THRESHOLD) return;
+  if (
+    lastWarned > 0 &&
+    skipStreak - lastWarned < MONITOR_MONITOR_SKIP_STREAK_WARN_THRESHOLD
+  ) {
+    return;
+  }
+  if (
+    lastWarnAt > 0 &&
+    now - lastWarnAt < MONITOR_MONITOR_SKIP_STREAK_WARN_MIN_GAP_MS
+  ) {
+    return;
+  }
+  monitorMonitor.lastSkipStreakWarned = skipStreak;
+  monitorMonitor.lastSkipStreakWarnAt = now;
+  console.warn(
+    `[monitor-monitor] skip streak ${skipStreak} (reason=${monitorMonitor.lastSkipReason}) while prior run is still active`,
+  );
+}
+
 async function runMonitorMonitorCycle({
   trigger = "interval",
   entries = [],
@@ -12155,14 +13219,34 @@ async function runMonitorMonitorCycle({
 } = {}) {
   refreshMonitorMonitorRuntime();
   if (!monitorMonitor.enabled) return;
-  monitorMonitor.lastTrigger = trigger;
+  monitorMonitor.lastAttemptTrigger = trigger;
+  monitorMonitor.lastAttemptAt = Date.now();
 
   if (monitorMonitor.running) {
-    const runAge = Date.now() - monitorMonitor.heartbeatAt;
-    if (
-      monitorMonitor.abortController &&
-      runAge > monitorMonitor.timeoutMs + 60_000
-    ) {
+    const heartbeatAt = Number(monitorMonitor.heartbeatAt || 0);
+    const runAge =
+      Number.isFinite(heartbeatAt) && heartbeatAt > 0
+        ? Date.now() - heartbeatAt
+        : Number.POSITIVE_INFINITY;
+    const runStaleThresholdMs =
+      monitorMonitor.timeoutMs + MONITOR_MONITOR_WATCHDOG_FORCE_RESET_DELAY_MS;
+    if (!monitorMonitor.abortController) {
+      if (runAge > runStaleThresholdMs) {
+        console.warn(
+          `[monitor-monitor] force-resetting stale run without abort controller after ${Math.round(runAge / 1000)}s`,
+        );
+        monitorMonitor.running = false;
+        monitorMonitor._watchdogAbortCount = 0;
+        clearMonitorMonitorWatchdogTimer();
+        monitorMonitor.consecutiveFailures += 1;
+        recordMonitorSdkFailure(getCurrentMonitorSdk());
+        monitorMonitor.lastOutcome = "force-reset (no-abort-controller)";
+        monitorMonitor.lastError = `stale running=true without abort controller after ${Math.round(runAge / 1000)}s`;
+      } else {
+        recordMonitorMonitorSkip("running-no-abort-controller");
+        return;
+      }
+    } else if (runAge > runStaleThresholdMs) {
       const watchdogCount = (monitorMonitor._watchdogAbortCount || 0) + 1;
       monitorMonitor._watchdogAbortCount = watchdogCount;
       console.warn(
@@ -12182,22 +13266,32 @@ async function runMonitorMonitorCycle({
         monitorMonitor.running = false;
         monitorMonitor.abortController = null;
         monitorMonitor._watchdogAbortCount = 0;
+        clearMonitorMonitorWatchdogTimer();
         monitorMonitor.consecutiveFailures += 1;
         recordMonitorSdkFailure(getCurrentMonitorSdk());
         monitorMonitor.lastOutcome = "force-reset (watchdog)";
         monitorMonitor.lastError = `watchdog force-reset after ${Math.round(runAge / 1000)}s`;
         // Don't return — allow the cycle to start fresh below
       } else {
-        // Schedule an accelerated force-reset in 60s instead of waiting for
+        // Schedule an accelerated force-reset instead of waiting for
         // the next full interval cycle (which could be 5+ minutes away).
         // If the abort signal actually kills the run, the scheduled callback
         // will find monitorMonitor.running === false and no-op.
         if (!monitorMonitor._watchdogForceResetTimer) {
+          const watchdogRunHeartbeatAt = Number(monitorMonitor.heartbeatAt || 0);
           monitorMonitor._watchdogForceResetTimer = setTimeout(() => {
             monitorMonitor._watchdogForceResetTimer = null;
             if (!monitorMonitor.running) return; // Already resolved
+            // Ignore stale timer from an earlier run that already completed and
+            // got replaced by a new run before this timeout fired.
+            if (
+              watchdogRunHeartbeatAt > 0 &&
+              Number(monitorMonitor.heartbeatAt || 0) !== watchdogRunHeartbeatAt
+            ) {
+              return;
+            }
             console.warn(
-              `[monitor-monitor] accelerated force-reset — abort signal was ignored for 60s`,
+              `[monitor-monitor] accelerated force-reset — abort signal was ignored for ${Math.round(MONITOR_MONITOR_WATCHDOG_FORCE_RESET_DELAY_MS / 1000)}s`,
             );
             monitorMonitor.running = false;
             monitorMonitor.abortController = null;
@@ -12206,15 +13300,24 @@ async function runMonitorMonitorCycle({
             recordMonitorSdkFailure(getCurrentMonitorSdk());
             monitorMonitor.lastOutcome = "force-reset (watchdog-accelerated)";
             monitorMonitor.lastError = `watchdog accelerated force-reset after ${Math.round((Date.now() - monitorMonitor.heartbeatAt) / 1000)}s`;
-          }, 60_000);
+          }, MONITOR_MONITOR_WATCHDOG_FORCE_RESET_DELAY_MS);
         }
+        recordMonitorMonitorSkip("running-watchdog-await");
         return;
       }
     } else {
+      recordMonitorMonitorSkip("running-active");
       return;
     }
   }
 
+  clearMonitorMonitorWatchdogTimer({ preserveRunning: true });
+  monitorMonitor.lastTrigger = trigger;
+  monitorMonitor.lastSkipReason = "";
+  monitorMonitor.lastSkipAt = 0;
+  monitorMonitor.skipStreak = 0;
+  monitorMonitor.lastSkipStreakWarned = 0;
+  monitorMonitor.lastSkipStreakWarnAt = 0;
   monitorMonitor.running = true;
   monitorMonitor.heartbeatAt = Date.now();
   monitorMonitor._watchdogAbortCount = 0;
@@ -12335,6 +13438,7 @@ async function runMonitorMonitorCycle({
     );
   } finally {
     // CRITICAL: Always reset running flag, even if runOnce throws or times out
+    clearMonitorMonitorWatchdogTimer();
     monitorMonitor.lastRunAt = Date.now();
     monitorMonitor.running = false;
     monitorMonitor.abortController = null;
@@ -12344,6 +13448,33 @@ async function runMonitorMonitorCycle({
 function startMonitorMonitorSupervisor() {
   refreshMonitorMonitorRuntime();
   if (!monitorMonitor.enabled) return;
+  const now = Date.now();
+  const restartWindowMs = Math.max(
+    60_000,
+    MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_WINDOW_MS,
+  );
+  const recentStarts = Array.isArray(monitorMonitor.supervisorStartTimes)
+    ? monitorMonitor.supervisorStartTimes.filter(
+        (ts) => Number.isFinite(ts) && ts > 0 && now - ts <= restartWindowMs,
+      )
+    : [];
+  recentStarts.push(now);
+  monitorMonitor.supervisorStartTimes = recentStarts.slice(-200);
+  monitorMonitor.supervisorRestartCountWindow = recentStarts.length;
+  monitorMonitor.supervisorStartCountTotal = Math.max(
+    0,
+    Number(monitorMonitor.supervisorStartCountTotal || 0),
+  ) + 1;
+  monitorMonitor.supervisorLastStartedAt = now;
+  if (
+    recentStarts.length >= MONITOR_MONITOR_SUPERVISOR_RESTART_WARN_THRESHOLD &&
+    now - Number(monitorMonitor.supervisorRestartLastWarnAt || 0) >= restartWindowMs
+  ) {
+    monitorMonitor.supervisorRestartLastWarnAt = now;
+    console.warn(
+      `[monitor] monitor-monitor supervisor restarted ${recentStarts.length} times within ${Math.round(restartWindowMs / 60_000)}m window`,
+    );
+  }
 
   if (monitorMonitor.timer) {
     clearInterval(monitorMonitor.timer);
@@ -12353,6 +13484,15 @@ function startMonitorMonitorSupervisor() {
     clearInterval(monitorMonitor.statusTimer);
     monitorMonitor.statusTimer = null;
   }
+  if (monitorMonitor.startupCycleTimer) {
+    clearTimeout(monitorMonitor.startupCycleTimer);
+    monitorMonitor.startupCycleTimer = null;
+  }
+  if (monitorMonitor.startupStatusTimer) {
+    clearTimeout(monitorMonitor.startupStatusTimer);
+    monitorMonitor.startupStatusTimer = null;
+  }
+  clearMonitorMonitorWatchdogTimer({ preserveRunning: true });
 
   monitorMonitor.timer = safeSetInterval("monitor-monitor-cycle", () => {
     if (shuttingDown) return;
@@ -12366,15 +13506,56 @@ function startMonitorMonitorSupervisor() {
   console.log(
     `[monitor] monitor-monitor supervisor started (${Math.round(monitorMonitor.intervalMs / 1000)}s run interval, ${Math.round(monitorMonitor.statusIntervalMs / 60_000)}m status interval, sdk order: ${monitorMonitor.sdkOrder.join(" -> ")})`,
   );
+  console.log(
+    `[monitor] monitor-monitor startup gate: status-gap=${Math.round(MONITOR_MONITOR_STARTUP_STATUS_MIN_GAP_MS / 1000)}s jitter<=${Math.round(MONITOR_MONITOR_STARTUP_JITTER_MS / 1000)}s corrupt-retain=${MONITOR_MONITOR_STARTUP_STATUS_GATE_CORRUPT_MAX_FILES}`,
+  );
+  if (MONITOR_MONITOR_WATCHDOG_FORCE_RESET_DELAY_MS >= monitorMonitor.intervalMs) {
+    console.warn(
+      `[monitor] monitor-monitor watchdog delay (${Math.round(MONITOR_MONITOR_WATCHDOG_FORCE_RESET_DELAY_MS / 1000)}s) is >= run interval (${Math.round(monitorMonitor.intervalMs / 1000)}s); accelerated force-reset may not preempt the next scheduled cycle`,
+    );
+  }
+  if (MONITOR_MONITOR_STARTUP_STATUS_DELAY_MS < MONITOR_MONITOR_STARTUP_CYCLE_DELAY_MS) {
+    console.warn(
+      `[monitor] monitor-monitor startup status delay (${Math.round(MONITOR_MONITOR_STARTUP_STATUS_DELAY_MS / 1000)}s) is below startup cycle delay (${Math.round(MONITOR_MONITOR_STARTUP_CYCLE_DELAY_MS / 1000)}s); startup status may post before first cycle begins`,
+    );
+  }
+  const startupJitterMs =
+    MONITOR_MONITOR_STARTUP_JITTER_MS > 0
+      ? Math.floor(Math.random() * (MONITOR_MONITOR_STARTUP_JITTER_MS + 1))
+      : 0;
+  const startupCycleDelayEffectiveMs = Math.max(
+    0,
+    MONITOR_MONITOR_STARTUP_CYCLE_DELAY_MS + startupJitterMs,
+  );
+  const startupStatusDelayEffectiveMs = Math.max(
+    0,
+    MONITOR_MONITOR_STARTUP_STATUS_DELAY_MS + startupJitterMs,
+  );
+  let startupStatusDelayAdjustedMs = startupStatusDelayEffectiveMs;
+  if (startupStatusDelayAdjustedMs < startupCycleDelayEffectiveMs) {
+    startupStatusDelayAdjustedMs =
+      startupCycleDelayEffectiveMs +
+      Math.max(0, MONITOR_MONITOR_STARTUP_STATUS_AFTER_CYCLE_MIN_MS);
+    console.warn(
+      `[monitor] monitor-monitor startup status delay auto-adjusted to ${Math.round(startupStatusDelayAdjustedMs / 1000)}s to follow startup cycle (${Math.round(startupCycleDelayEffectiveMs / 1000)}s)`,
+    );
+  }
+  if (startupJitterMs > 0) {
+    console.log(
+      `[monitor] monitor-monitor startup jitter applied: +${Math.round(startupJitterMs / 1000)}s (cycle=${Math.round(startupCycleDelayEffectiveMs / 1000)}s, status=${Math.round(startupStatusDelayAdjustedMs / 1000)}s)`,
+    );
+  }
 
-  safeSetTimeout("monitor-monitor-startup-cycle", () => {
+  monitorMonitor.startupCycleTimer = safeSetTimeout("monitor-monitor-startup-cycle", () => {
+    monitorMonitor.startupCycleTimer = null;
     if (shuttingDown) return;
     return runMonitorMonitorCycle({ trigger: "startup" });
-  }, 15_000);
-  safeSetTimeout("monitor-monitor-startup-status", () => {
+  }, startupCycleDelayEffectiveMs);
+  monitorMonitor.startupStatusTimer = safeSetTimeout("monitor-monitor-startup-status", () => {
+    monitorMonitor.startupStatusTimer = null;
     if (shuttingDown) return;
     return publishMonitorMonitorStatus("startup");
-  }, 20_000);
+  }, startupStatusDelayAdjustedMs);
 }
 
 function stopMonitorMonitorSupervisor({ preserveRunning = false } = {}) {
@@ -12386,6 +13567,15 @@ function stopMonitorMonitorSupervisor({ preserveRunning = false } = {}) {
     clearInterval(monitorMonitor.statusTimer);
     monitorMonitor.statusTimer = null;
   }
+  if (monitorMonitor.startupCycleTimer) {
+    clearTimeout(monitorMonitor.startupCycleTimer);
+    monitorMonitor.startupCycleTimer = null;
+  }
+  if (monitorMonitor.startupStatusTimer) {
+    clearTimeout(monitorMonitor.startupStatusTimer);
+    monitorMonitor.startupStatusTimer = null;
+  }
+  clearMonitorMonitorWatchdogTimer({ preserveRunning });
   // Only abort a running cycle if explicitly requested (hard shutdown).
   // During self-restart, preserve the running agent so it completes its work.
   if (!preserveRunning && monitorMonitor.abortController) {
@@ -12774,6 +13964,10 @@ function stopSelfWatcher() {
     selfWatcher.close();
     selfWatcher = null;
   }
+  if (selfWatcherLib) {
+    selfWatcherLib.close();
+    selfWatcherLib = null;
+  }
   if (selfWatcherDebounce) {
     clearTimeout(selfWatcherDebounce);
     selfWatcherDebounce = null;
@@ -13130,7 +14324,7 @@ function startSelfWatcher() {
     return;
   }
   try {
-    selfWatcher = watch(__dirname, { persistent: true }, (_event, filename) => {
+    const handleSourceChange = (_event, filename) => {
       // Only react to .mjs source files
       if (!filename || !filename.endsWith(".mjs")) return;
       // Ignore node_modules and log artifacts
@@ -13141,8 +14335,15 @@ function startSelfWatcher() {
       selfWatcherDebounce = safeSetTimeout("self-watcher-debounce", () => {
         queueSelfRestart(filename);
       }, 1000);
-    });
-    console.log("[monitor] watching own source files for self-restart");
+    };
+    selfWatcher = watch(__dirname, { persistent: true }, handleSourceChange);
+    const libDir = resolve(__dirname, "lib");
+    if (existsSync(libDir)) {
+      selfWatcherLib = watch(libDir, { persistent: true }, handleSourceChange);
+      console.log("[monitor] watching own source files (root + lib/) for self-restart");
+    } else {
+      console.log("[monitor] watching own source files for self-restart");
+    }
   } catch (err) {
     console.warn(`[monitor] self-watcher failed: ${err.message}`);
   }
@@ -13205,7 +14406,7 @@ async function startWatcher(force = false) {
       if (watcherDebounce) {
         clearTimeout(watcherDebounce);
       }
-      watcherDebounce = setTimeout(() => {
+      watcherDebounce = safeSetTimeout("watcher-file-change-debounce", () => {
         requestRestart("file-change");
       }, 5000);
     });
@@ -13232,8 +14433,10 @@ function scheduleEnvReload(reason) {
   if (envWatcherDebounce) {
     clearTimeout(envWatcherDebounce);
   }
-  envWatcherDebounce = setTimeout(() => {
-    void reloadConfig(reason || "env-change");
+  envWatcherDebounce = safeSetTimeout("env-reload-debounce", () => {
+    runDetached("config-reload:env-change", () =>
+      reloadConfig(reason || "env-change"),
+    );
   }, 400);
 }
 
@@ -13359,6 +14562,7 @@ function applyConfig(nextConfig, options = {}) {
     nextConfig.triggerSystem && typeof nextConfig.triggerSystem === "object"
       ? nextConfig.triggerSystem
       : { enabled: false, templates: [], defaults: { executor: "auto", model: "auto" } };
+  configureExecutorTaskStatusTransitions();
   if (workflowAutomationEnabled) {
     ensureWorkflowAutomationEngine().catch(() => {});
   }
@@ -13432,7 +14636,7 @@ function applyConfig(nextConfig, options = {}) {
     } else {
       stopSelfWatcher();
       console.log(
-        "[monitor] self-restart watcher disabled (set SELF_RESTART_WATCH_ENABLED=1 to force-enable)",
+        "[monitor] self-restart watcher disabled (set SELF_RESTART_WATCH_FORCE=1 to allow in npm/prod mode)",
       );
     }
   }
@@ -13446,7 +14650,7 @@ function applyConfig(nextConfig, options = {}) {
   }
   if (prevTelegramBotEnabled !== telegramBotEnabled) {
     if (telegramBotEnabled) {
-      void startTelegramBot();
+      void startTelegramBot(getTelegramBotStartOptions());
     } else {
       stopTelegramBot();
     }
@@ -13514,6 +14718,7 @@ async function reloadConfig(reason) {
 
 process.on("SIGINT", async () => {
   shuttingDown = true;
+  stopWorkspaceSyncTimers();
   stopTaskPlannerStatusLoop();
   stopGitHubReconciler();
   // Stop monitor-monitor immediately (it's safely restartable)
@@ -13567,6 +14772,7 @@ process.on("SIGINT", async () => {
 // Windows: closing the terminal window doesn't send SIGINT/SIGTERM reliably.
 process.on("exit", () => {
   shuttingDown = true;
+  stopWorkspaceSyncTimers();
   stopTaskPlannerStatusLoop();
   stopGitHubReconciler();
   stopMonitorMonitorSupervisor();
@@ -13582,6 +14788,7 @@ process.on("exit", () => {
 
 process.on("SIGTERM", async () => {
   shuttingDown = true;
+  stopWorkspaceSyncTimers();
   stopTaskPlannerStatusLoop();
   stopGitHubReconciler();
   // Stop monitor-monitor immediately (it's safely restartable)
@@ -13635,7 +14842,11 @@ function isStreamNoise(msg) {
     msg.includes("EPIPE") ||
     msg.includes("ERR_STREAM_PREMATURE_CLOSE") ||
     msg.includes("ERR_STREAM_DESTROYED") ||
+    msg.includes("stream was destroyed") ||
+    msg.includes("Cannot call write after a stream was destroyed") ||
     msg.includes("write after end") ||
+    msg.includes("write after a stream was destroyed") ||
+    msg.includes("Cannot call write after") ||
     msg.includes("This socket has been ended") ||
     msg.includes("Cannot read properties of null") ||
     msg.includes("ECONNRESET") ||
@@ -13651,7 +14862,7 @@ function isStreamNoise(msg) {
 }
 
 process.on("uncaughtException", (err) => {
-  const msg = err?.message || "";
+  const msg = (err?.code ? err.code + ": " : "") + (err?.message || "");
   // Always suppress stream noise — not just during shutdown
   if (isStreamNoise(msg)) {
     console.error(
@@ -13688,7 +14899,7 @@ process.on("uncaughtException", (err) => {
 });
 
 process.on("unhandledRejection", (reason) => {
-  const msg = reason?.message || String(reason || "");
+  const msg = (reason?.code ? reason.code + ": " : "") + (reason?.message || String(reason || ""));
   // Always write breadcrumb — unhandled rejections can cause exit code 1
   try {
     const crashDir = config?.logDir || resolve(__dirname, "logs");
@@ -13860,17 +15071,16 @@ if (!isMonitorTestRuntime) {
     process.exit(0);
   }
 
-// ── Codex CLI config.toml: ensure VK MCP + stream timeouts ──────────────────
+// ── Codex CLI config.toml: ensure global defaults + stream timeouts ─────────
 try {
   const vkPort = config.vkRecoveryPort || "54089";
   const vkBaseUrl = config.vkEndpointUrl || `http://127.0.0.1:${vkPort}`;
-  const skipVk = !isVkRuntimeRequired();
   const allowRuntimeCodexMutation = isTruthyFlag(
     process.env.BOSUN_ALLOW_RUNTIME_GLOBAL_CODEX_MUTATION,
   );
   const tomlResult = ensureCodexConfig({
     vkBaseUrl,
-    skipVk,
+    skipVk: true,
     dryRun: !allowRuntimeCodexMutation,
   });
   if (!tomlResult.noChanges) {
@@ -14034,8 +15244,22 @@ if (selfRestartWatcherEnabled) {
   const normalizedExecutorMode = String(executorMode || "")
     .trim()
     .toLowerCase();
-  const disabledReason = !isDevMode()
+  const explicitSelfRestartWatch = process.env.SELF_RESTART_WATCH_ENABLED;
+  const hasExplicitSelfRestartWatch =
+    explicitSelfRestartWatch !== undefined &&
+    String(explicitSelfRestartWatch).trim() !== "";
+  const forceSelfRestartWatch = isTruthyFlag(process.env.SELF_RESTART_WATCH_FORCE);
+  const npmLifecycleEvent = String(process.env.npm_lifecycle_event || "")
+    .trim()
+    .toLowerCase();
+  const launchedViaNpmStartScript =
+    npmLifecycleEvent === "start" || npmLifecycleEvent.startsWith("start:");
+  const disabledReason = hasExplicitSelfRestartWatch
+    ? "explicitly"
+    : !isDevMode()
     ? "npm/prod mode — updates via auto-update loop"
+    : !forceSelfRestartWatch && !launchedViaNpmStartScript
+      ? "CLI command mode in source checkout — use npm run start or SELF_RESTART_WATCH_ENABLED=1 to enable"
     : normalizedExecutorMode === "internal" || normalizedExecutorMode === "hybrid"
       ? `executor mode "${normalizedExecutorMode}" (continuous task-driven code changes)`
       : "explicitly";
@@ -14302,12 +15526,41 @@ if (isExecutorDisabled()) {
       },
       onTaskCompleted: (task, result) => {
         const taskId = String(task?.id || task?.task_id || "").trim();
+        const finalizationFailed =
+          result?.finalized === false ||
+          String(result?.finalizationReason || "").trim().toLowerCase() ===
+            "no_commits";
+        const branch = String(
+          result?.branch ||
+            task?.branchName ||
+            task?.meta?.branch_name ||
+            "",
+        ).trim() || null;
+        const worktreePath = String(
+          result?.worktreePath ||
+            task?.worktreePath ||
+            task?.meta?.worktreePath ||
+            "",
+        ).trim() || null;
+        const prNumber = result?.prNumber
+          ? String(result.prNumber)
+          : null;
+        const prUrl = String(result?.prUrl || "").trim() || null;
+        const baseBranch = String(
+          result?.baseBranch ||
+            task?.baseBranch ||
+            task?.base_branch ||
+            task?.meta?.base_branch ||
+            "",
+        ).trim() || null;
         console.log(
-          `[task-executor] ✅ completed: "${task.title}" (${result.attempts} attempt(s))`,
+          finalizationFailed
+            ? `[task-executor] ⚠ completed without finalization: "${task.title}" (${result.attempts} attempt(s), reason=${result?.finalizationReason || "unknown"})`
+            : `[task-executor] ✅ completed: "${task.title}" (${result.attempts} attempt(s))`,
         );
-        if (agentEventBus) {
+        if (!finalizationFailed && agentEventBus) {
           agentEventBus.onTaskCompleted(task, result);
-        } else {
+        } else if (!finalizationFailed) {
           // Fallback: queue review directly if event bus not ready
           if (reviewAgent && result.success) {
             try {
@@ -14324,21 +15577,69 @@ if (isExecutorDisabled()) {
           }
         }
         if (taskId) {
-          queueWorkflowEvent(
-            "task.completed",
-            {
-              taskId,
-              taskTitle: task?.title || "",
-              taskStatus: "completed",
-              attempts: Number(result?.attempts || 0),
-              success: result?.success !== false,
-            },
-            { dedupKey: `workflow-event:task.completed:${taskId}:${result?.attempts || 0}` },
-          );
+          if (finalizationFailed) {
+            queueWorkflowEvent(
+              "task.finalization_failed",
+              {
+                taskId,
+                taskTitle: task?.title || "",
+                taskStatus: "todo",
+                attempts: Number(result?.attempts || 0),
+                success: false,
+                branch,
+                worktreePath,
+                prNumber,
+                prUrl,
+                baseBranch,
+                reason: result?.finalizationReason || "unknown",
+              },
+              {
+                dedupKey: `workflow-event:task.finalization_failed:${taskId}:${result?.attempts || 0}:${result?.finalizationReason || "unknown"}`,
+              },
+            );
+          } else {
+            queueWorkflowEvent(
+              "task.completed",
+              {
+                taskId,
+                taskTitle: task?.title || "",
+                taskStatus: "completed",
+                attempts: Number(result?.attempts || 0),
+                success: result?.success !== false,
+                branch,
+                worktreePath,
+                prNumber,
+                prUrl,
+                baseBranch,
+              },
+              { dedupKey: `workflow-event:task.completed:${taskId}:${result?.attempts || 0}` },
+            );
+          }
         }
       },
       onTaskFailed: (task, err) => {
         const taskId = String(task?.id || task?.task_id || "").trim();
+        const branch = String(
+          err?.branch ||
+            task?.branchName ||
+            task?.meta?.branch_name ||
+            "",
+        ).trim() || null;
+        const worktreePath = String(
+          err?.worktreePath ||
+            task?.worktreePath ||
+            task?.meta?.worktreePath ||
+            "",
+        ).trim() || null;
+        const baseBranch = String(
+          err?.baseBranch ||
+            task?.baseBranch ||
+            task?.base_branch ||
+            task?.meta?.base_branch ||
+            "",
+        ).trim() || null;
+        const attempts =
+          Number(err?.attempts || 0) > 0 ? Number(err.attempts) : null;
         console.warn(
           `[task-executor] ❌ failed: "${task.title}" — ${formatMonitorError(err)}`,
         );
@@ -14352,6 +15653,10 @@ if (isExecutorDisabled()) {
               taskTitle: task?.title || "",
               taskStatus: "failed",
               error: errorMessage,
+              branch,
+              worktreePath,
+              baseBranch,
+              attempts,
             },
             { dedupKey: `workflow-event:task.failed:${taskId}:${errorMessage}` },
           );
@@ -14854,7 +16159,7 @@ injectMonitorFunctions({
   },
 });
 if (telegramBotEnabled) {
-  void startTelegramBot();
+  void startTelegramBot(getTelegramBotStartOptions());
 
   // Process any commands queued by telegram-sentinel while monitor was down
   try {
@@ -14972,6 +16277,7 @@ if (config.prCleanupEnabled !== false) {
 export {
   fetchVk,
   updateTaskStatus,
+  reconcileTaskStatuses,
   safeRecoverTask,
   recoverySkipCache,
   getTaskAgeMs,

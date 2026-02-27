@@ -263,6 +263,13 @@ When Bosun creates commits, it appends a `Co-authored-by` trailer so that
 Co-authored-by: bosun-ve[bot] <262908237+bosun-ve[bot]@users.noreply.github.com>
 ```
 
+Attribution is task-scoped by default (only Bosun-managed task sessions).
+Override only when explicitly desired:
+
+- `BOSUN_COAUTHOR_MODE=task` (default)
+- `BOSUN_COAUTHOR_MODE=always`
+- `BOSUN_COAUTHOR_MODE=off`
+
 Use helpers from `git-commit-helpers.mjs`:
 
 ```javascript
@@ -273,7 +280,10 @@ import {
 } from "./git-commit-helpers.mjs";
 
 const msg = buildCommitMessage("feat: add thing", "Extended description");
-// → "feat: add thing\n\nExtended description\n\nCo-authored-by: bosun-ve[bot] <...>"
+// → Includes trailer automatically when running in Bosun task context
+
+const forced = buildCommitMessage("feat: add thing", "Extended description", { addBosunCredit: true });
+// → Always includes trailer (independent of task context)
 
 const prBody = appendBosunPrCredit("My PR description");
 // → "My PR description\n\n---\n*Created by [Bosun Bot](...)*"

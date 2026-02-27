@@ -12,6 +12,7 @@ import { h } from "preact";
 import { useState, useEffect, useRef, useCallback } from "preact/hooks";
 import htm from "htm";
 import { haptic } from "./telegram.js";
+import { resolveIcon } from "./icon-utils.js";
 
 const html = htm.bind(h);
 
@@ -256,7 +257,7 @@ export function VoiceMicButton({ onTranscript, disabled = false, title, classNam
       aria-label=${listening ? "Stop voice recording" : "Start voice input"}
       aria-pressed=${listening}
     >
-      ${listening ? "⏹" : "🎤"}
+      ${resolveIcon(listening ? "⏹" : "🎤")}
     </button>
   `;
 }
@@ -287,7 +288,7 @@ export function VoiceMicButtonInline({ onTranscript, disabled = false }) {
       aria-label=${listening ? "Stop" : "Voice"}
       aria-pressed=${listening}
     >
-      ${listening ? "⏹" : "🎤"}
+      ${resolveIcon(listening ? "⏹" : "🎤")}
     </button>
   `;
 }

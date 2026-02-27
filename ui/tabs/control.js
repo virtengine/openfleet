@@ -18,7 +18,7 @@ import {
   scheduleRefresh,
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
-import { iconText } from "../modules/icon-utils.js";
+import { iconText as iconTextUtil } from "../modules/icon-utils.js";
 import { cloneValue, truncate } from "../modules/utils.js";
 import { Card, Badge, SkeletonCard, Spinner } from "../components/shared.js";
 import { SegmentedControl, Collapsible } from "../components/forms.js";
@@ -45,6 +45,18 @@ const CMD_REGISTRY = [
 const CAT_COLORS = {
   System: '#6366f1', Tasks: '#f59e0b', Logs: '#10b981',
   Git: '#f97316', Agent: '#8b5cf6', Shell: '#64748b',
+};
+
+// Defensive wrapper: keep Control tab rendering even if icon helper is unavailable
+// in an older/cached bundle state.
+const iconText = (text, options) => {
+  try {
+    if (typeof iconTextUtil === "function") return iconTextUtil(text, options);
+  } catch {
+    /* graceful fallback below */
+  }
+  if (text == null) return "";
+  return String(text);
 };
 
 /* ─── Persistent history key & limits ─── */
@@ -853,7 +865,7 @@ export function ControlTab() {
 
         <${Card} className="routing-card">
           <${Collapsible} title="Routing" defaultOpen=${!isCompact}>
-            <div class="meta-text mb-sm">Executor routing and region.</div>
+            <div class="meta-text mb-sm">Quick runtime overrides for executor routing and region. Persistent defaults live in Settings.</div>
             <div class="card-subtitle">SDK</div>
             <${SegmentedControl}
               options=${[

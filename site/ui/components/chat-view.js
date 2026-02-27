@@ -15,7 +15,6 @@ import {
   sessionMessages,
   loadSessionMessages,
   loadSessions,
-  selectedSessionId,
   sessionsData,
 } from "./session-list.js";
 import {
@@ -214,13 +213,61 @@ function categorizeMessage(msg) {
   return "message";
 }
 
-function isThinkingTraceMessage(msg) {
+function isTraceEventMessage(msg) {
   if (!msg) return false;
-  const category = categorizeMessage(msg);
-  if (category === "tool" || category === "result") {
+  const type = (msg.type || "").toLowerCase();
+  if (
+    type === "tool_call" ||
+    type === "tool_result" ||
+    type === "tool_output" ||
+    type === "error" ||
+    type === "stream_error" ||
+    type === "system"
+  ) {
     return true;
   }
-  return (msg.type || "").toLowerCase() === "system";
+  return (msg.role || "").toLowerCase() === "system";
+}
+
+function messageText(msg) {
+  if (typeof msg?.content === "string") return msg.content;
+  if (msg?.content == null) return "";
+  try {
+    return JSON.stringify(msg.content, null, 2);
+  } catch {
+    return String(msg.content);
+  }
+}
+
+function summarizeLine(text, limit = 160) {
+  const compact = String(text || "").replace(/\s+/g, " ").trim();
+  if (!compact) return "";
+  return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
+}
+
+function describeTraceMessage(msg) {
+  const type = (msg?.type || "").toLowerCase();
+  const text = messageText(msg);
+  const firstLine = summarizeLine(text.split(/\r?\n/, 1)[0], 180);
+
+  if (type === "tool_call") {
+    const title = firstLine
+      ? /^ran\b/i.test(firstLine)
+        ? firstLine
+        : `Ran ${firstLine}`
+      : "Ran tool call";
+    return { kind: "tool", tag: "TOOL", title, text };
+  }
+
+  if (type === "tool_result" || type === "tool_output") {
+    return { kind: "result", tag: "RESULT", title: firstLine || "Tool output", text };
+  }
+
+  if (type === "error" || type === "stream_error") {
+    return { kind: "error", tag: "ERROR", title: firstLine || "Tool error", text };
+  }
+
+  return { kind: "thinking", tag: "STEP", title: firstLine || "Thinking step", text };
 }
 
 function formatMessageLine(msg) {
@@ -271,6 +318,7 @@ function AttachmentList({ attachments }) {
 const ChatBubble = memo(function ChatBubble({ msg }) {
   const isTool = msg.type === "tool_call" || msg.type === "tool_result";
   const isError = msg.type === "error" || msg.type === "stream_error";
+  const contentText = messageText(msg);
   const role = msg.role ||
     (isTool || isError ? "system" : msg.type === "system" ? "system" : "assistant");
   const bubbleClass = isError
@@ -289,11 +337,15 @@ const ChatBubble = memo(function ChatBubble({ msg }) {
   return html`
     <div class="chat-bubble ${bubbleClass}">
       ${role === "system" && !isTool
-        ? html`<div class="chat-system-text">${msg.content}</div>`
+        ? html`
+            <div class="chat-system-text">
+              <${MessageContent} text=${contentText} />
+            </div>
+          `
         : html`
             ${label ? html`<div class="chat-bubble-label">${label}</div>` : null}
             <div class="chat-bubble-content">
-              <${MessageContent} text=${msg.content} />
+              <${MessageContent} text=${contentText} />
               <${AttachmentList} attachments=${msg.attachments} />
             </div>
             <div class="chat-bubble-time">
@@ -304,39 +356,33 @@ const ChatBubble = memo(function ChatBubble({ msg }) {
   `;
 }, (prev, next) => prev.msg === next.msg);
 
-const ThinkingPanel = memo(function ThinkingPanel({ entries }) {
-  if (!Array.isArray(entries) || entries.length === 0) return null;
+const TraceEvent = memo(function TraceEvent({ msg }) {
+  const info = describeTraceMessage(msg);
+  const text = info.text || "";
+  const lineCount = text ? text.split(/\r?\n/).length : 0;
+  const hasBody = text.length > 0 && (lineCount > 1 || text.length > 220);
+  const longBody = lineCount > 12 || text.length > 1200;
+
   return html`
-    <details class="chat-thinking-panel">
-      <summary class="chat-thinking-summary">
-        ${iconText(`🧠 Thinking · ${entries.length} ${entries.length === 1 ? "step" : "steps"}`)}
-      </summary>
-      <div class="chat-thinking-body">
-        ${entries.map((entry, index) => {
-          const category = categorizeMessage(entry);
-          const label =
-            category === "tool"
-              ? "Tool"
-              : category === "result"
-                ? "Result"
-                : category === "error"
-                  ? "Error"
-                  : "System";
-          return html`
-            <div class="chat-thinking-item" key=${entry.id || entry.timestamp || `thinking-${index}`}>
-              <div class="chat-thinking-item-label">${label}</div>
-              <div class="chat-thinking-item-content">
-                <${MessageContent} text=${entry.content || ""} />
-              </div>
-            </div>
-          `;
-        })}
+    <div class="chat-trace-item ${info.kind}">
+      <div class="chat-trace-head">
+        <span class="chat-trace-tag ${info.kind}">${info.tag}</span>
+        <span class="chat-trace-title">${info.title}</span>
+        <span class="chat-trace-time">
+          ${msg.timestamp ? formatRelative(msg.timestamp) : ""}
+        </span>
       </div>
-    </details>
+      ${hasBody && html`
+        <div class="chat-trace-content ${longBody ? "chat-trace-content-scroll" : ""}">
+          <${MessageContent} text=${text} />
+        </div>
+      `}
+    </div>
   `;
-});
+}, (prev, next) => prev.msg === next.msg);
 
 /* ─── Chat View component ─── */
+
 export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -464,8 +510,21 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   let statusText = "";
   try {
     errorCount = totalErrorCount.value || 0;
-    statusState = paused ? "paused" : (agentStatus.value?.state || "idle");
-    statusText = paused ? "Stream paused" : (agentStatusText.value || "Ready");
+    const globalStatus = agentStatus.value || {};
+    const currentSessionId = String(sessionId || "");
+    const statusSessionId = String(globalStatus.sessionId || "");
+    const statusMatchesSession =
+      statusSessionId.length > 0 && statusSessionId === currentSessionId;
+    statusState = paused
+      ? "paused"
+      : statusMatchesSession
+        ? globalStatus.state || "idle"
+        : "idle";
+    statusText = paused
+      ? "Stream paused"
+      : statusMatchesSession
+        ? agentStatusText.value || "Ready"
+        : "Ready";
   } catch (err) {
     console.warn("[ChatView] Failed to read status signals:", err);
     statusState = paused ? "paused" : "idle";
@@ -473,45 +532,16 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   }
 
   const renderItems = useMemo(() => {
-    const items = [];
-    let pendingThinking = [];
-    let panelIndex = 0;
-
-    const flushThinking = (anchor = "") => {
-      if (pendingThinking.length === 0) return;
-      const seed = pendingThinking[0]?.id || pendingThinking[0]?.timestamp || panelIndex;
-      items.push({
-        kind: "thinking",
-        key: `thinking-${sessionId || "session"}-${seed}-${anchor}-${panelIndex}`,
-        entries: pendingThinking,
-      });
-      pendingThinking = [];
-      panelIndex += 1;
-    };
-
-    for (const msg of visibleMessages) {
-      if (isThinkingTraceMessage(msg)) {
-        pendingThinking.push(msg);
-        continue;
-      }
-
-      const isAssistantMessage =
-        (msg.role || "") === "assistant" || (msg.type || "") === "agent_message";
-      if (isAssistantMessage) {
-        flushThinking(msg.id || msg.timestamp || "assistant");
-      }
-
-      const baseKey = msg.id || msg.timestamp || "msg";
-      items.push({
-        kind: "message",
-        key: `message-${baseKey}-${items.length}`,
+    return visibleMessages.map((msg, index) => {
+      const baseKey = msg.id || msg.timestamp || `msg-${index}`;
+      const trace = isTraceEventMessage(msg);
+      return {
+        kind: trace ? "trace" : "message",
+        key: `${trace ? "trace" : "message"}-${baseKey}-${index}`,
         msg,
-      });
-    }
-
-    flushThinking("tail");
-    return items;
-  }, [visibleMessages, sessionId]);
+      };
+    });
+  }, [visibleMessages]);
 
   const refreshMessages = useCallback(async () => {
     if (!sessionId) return;
@@ -1008,8 +1038,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             </button>
           </div>
         `}
-        ${renderItems.map((item) => item.kind === "thinking"
-          ? html`<${ThinkingPanel} key=${item.key} entries=${item.entries} />`
+        ${renderItems.map((item) => item.kind === "trace"
+          ? html`<${TraceEvent} key=${item.key} msg=${item.msg} />`
           : html`<${ChatBubble} key=${item.key} msg=${item.msg} />`
         )}
 
@@ -1029,7 +1059,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
                   ${pm.status === "sending"
                     ? "Sending…"
                     : pm.status === "uncertain"
-                      ? html`<span class="chat-pending-warn">⚠ Uncertain</span>
+                      ? html`<span class="chat-pending-warn">${iconText("⚠ Uncertain")}</span>
                               <button class="btn btn-ghost btn-xs chat-retry-btn"
                                 onClick=${() => retryPendingMessage(pm.tempId)}>↻ Retry</button>`
                       : pm.status === "failed"
@@ -1087,7 +1117,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
                   class="btn btn-ghost btn-xs chat-attachment-remove"
                   onClick=${() => removeAttachment(index)}
                   title="Remove attachment"
-                >✕</button>
+                >${resolveIcon("✕")}</button>
               </div>
             `)}
             ${uploadingAttachments && html`

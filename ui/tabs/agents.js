@@ -2,7 +2,7 @@
  *  Tab: Agents — thread/slot cards, capacity, detail expansion
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
-import { useState, useCallback, useEffect, useRef } from "preact/hooks";
+import { useState, useCallback, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
 
 const html = htm.bind(h);
@@ -103,6 +103,9 @@ function WorkspaceViewer({ agent, onClose }) {
     fileAccess: null,
     capturedAt: null,
   });
+  const [expandedEventItems, setExpandedEventItems] = useState(() => new Set());
+  const [expandedFileItems, setExpandedFileItems] = useState(() => new Set());
+  const [expandedModelResponse, setExpandedModelResponse] = useState(false);
   const logRef = useRef(null);
 
   const query = agent.branch || agent.taskId || agent.sessionId || "";
@@ -180,6 +183,9 @@ function WorkspaceViewer({ agent, onClose }) {
     setFileFilter("all");
     setFileSearch("");
     setStreamSnapshot({ events: [], fileAccess: null, capturedAt: null });
+    setExpandedEventItems(new Set());
+    setExpandedFileItems(new Set());
+    setExpandedModelResponse(false);
   }, [query]);
 
   const handleStop = async () => {
@@ -230,6 +236,67 @@ function WorkspaceViewer({ agent, onClose }) {
     setTimeout(() => URL.revokeObjectURL(url), 1500);
   };
 
+  const toggleExpandedEvent = useCallback((key) => {
+    if (!key) return;
+    setExpandedEventItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toggleExpandedFile = useCallback((key) => {
+    if (!key) return;
+    setExpandedFileItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toMultilineText = (value) => {
+    if (value == null) return "";
+    if (typeof value === "string") return value;
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  };
+
+  const toSingleLinePreview = (value, limit = 220) => {
+    const compact = String(value || "").replace(/\s+/g, " ").trim();
+    if (!compact) return "";
+    return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
+  };
+
+  const isModelResponseMessage = (msg) => {
+    if (!msg) return false;
+    const role = String(msg.role || "").toLowerCase();
+    const type = String(msg.type || "").toLowerCase();
+    if (role === "assistant") return true;
+    if (
+      type === "agent_message" ||
+      type === "assistant" ||
+      type === "assistant_message"
+    ) {
+      return true;
+    }
+    if (role) return false;
+    if (!msg.content) return false;
+    return ![
+      "tool_call",
+      "tool_result",
+      "tool_output",
+      "error",
+      "stream_error",
+      "system",
+      "user",
+    ].includes(type);
+  };
+
   const renderChanges = () => {
     const ctx = contextData?.context;
     const matches = contextData?.matches || {};
@@ -240,6 +307,14 @@ function WorkspaceViewer({ agent, onClose }) {
     const fileAccess = contextData?.fileAccessSummary || null;
     const fileAccessFiles = fileAccess?.files || [];
     const streamMessages = sessionMessages.value || [];
+    const latestModelResponse =
+      streamMessages
+        .slice()
+        .reverse()
+        .find((msg) => isModelResponseMessage(msg)) || null;
+    const latestModelResponseText = latestModelResponse
+      ? toMultilineText(latestModelResponse.content || "")
+      : "";
     const rawToolEvents = streamMessages
       .filter((msg) => msg?.type === "tool_call" || msg?.type === "tool_result" || msg?.type === "error")
       .slice(-200)
@@ -513,6 +588,34 @@ function WorkspaceViewer({ agent, onClose }) {
           </div>
           ${streamPaused && snapshotMeta &&
             html`<div class="meta-text mt-xs">Paused at ${snapshotMeta}</div>`}
+          ${latestModelResponseText &&
+            html`
+              <div class="stream-final-response ${expandedModelResponse ? "expanded" : ""}">
+                <button
+                  class="stream-item-toggle stream-item-toggle-final"
+                  type="button"
+                  onClick=${() => setExpandedModelResponse((prev) => !prev)}
+                >
+                  <div class="stream-item-header">
+                    <span class="stream-tag stream-tag-model">MODEL</span>
+                    <span class="stream-item-title">Latest model response</span>
+                    ${latestModelResponse?.timestamp &&
+                      html`<span class="stream-item-time">
+                        ${formatRelative(latestModelResponse.timestamp)}
+                      </span>`}
+                  </div>
+                  <div class="stream-item-preview">
+                    ${toSingleLinePreview(latestModelResponseText, 260)}
+                  </div>
+                  <span class="stream-item-chevron">${expandedModelResponse ? "▾" : "▸"}</span>
+                </button>
+                <div class="stream-item-details ${expandedModelResponse ? "expanded" : ""}">
+                  <div class="stream-item-details-inner">
+                    <pre class="stream-item-pre">${latestModelResponseText}</pre>
+                  </div>
+                </div>
+              </div>
+            `}
           ${filteredEvents.length === 0 &&
             html`<div class="stream-empty">
               <div class="stream-empty-icon">${resolveIcon("🛰")}</div>
@@ -522,18 +625,41 @@ function WorkspaceViewer({ agent, onClose }) {
             </div>`}
           ${filteredEvents.length > 0 &&
             html`<div class="stream-list">
-              ${filteredEvents.map((evt) => html`
-                <div class="stream-item stream-${evt.type}" key=${evt._id}>
-                  <div class="stream-item-header">
-                    <span class="stream-tag stream-tag-${evt.type}">
-                      ${toolLabel(evt.type)}
-                    </span>
-                    ${evt.tool && html`<span class="stream-item-tool mono">${evt.tool}</span>`}
-                    ${evt.timestamp && html`<span class="stream-item-time">${formatRelative(evt.timestamp)}</span>`}
+              ${filteredEvents.map((evt) => {
+                const rowKey = evt._id;
+                const bodyText = toMultilineText(evt.content || evt.detail || "");
+                const hasBody = bodyText.trim().length > 0;
+                const expanded = rowKey ? expandedEventItems.has(rowKey) : false;
+                return html`
+                  <div class="stream-item stream-${evt.type} ${expanded ? "expanded" : ""}" key=${rowKey}>
+                    <button
+                      class="stream-item-toggle"
+                      type="button"
+                      onClick=${() => hasBody && toggleExpandedEvent(rowKey)}
+                      disabled=${!hasBody}
+                    >
+                      <div class="stream-item-header">
+                        <span class="stream-tag stream-tag-${evt.type}">
+                          ${toolLabel(evt.type)}
+                        </span>
+                        ${evt.tool && html`<span class="stream-item-tool mono">${evt.tool}</span>`}
+                        <span class="stream-item-title">
+                          ${toSingleLinePreview(bodyText, 240) || "No details"}
+                        </span>
+                        ${evt.timestamp && html`<span class="stream-item-time">${formatRelative(evt.timestamp)}</span>`}
+                      </div>
+                      ${hasBody && html`<span class="stream-item-chevron">${expanded ? "▾" : "▸"}</span>`}
+                    </button>
+                    ${hasBody && html`
+                      <div class="stream-item-details ${expanded ? "expanded" : ""}">
+                        <div class="stream-item-details-inner ${bodyText.length > 1600 ? "stream-item-details-scroll" : ""}">
+                          <pre class="stream-item-pre">${bodyText}</pre>
+                        </div>
+                      </div>
+                    `}
                   </div>
-                  ${evt.content && html`<div class="stream-item-body">${truncate(evt.content, 260)}</div>`}
-                </div>
-              `)}
+                `;
+              })}
             </div>`}
         </div>
       `;
@@ -632,16 +758,36 @@ function WorkspaceViewer({ agent, onClose }) {
             </div>`}
           ${filteredFiles.length > 0 &&
             html`<div class="stream-list">
-              ${filteredFiles.map((entry) => html`
-                <div class="stream-item stream-file" key=${entry.path}>
-                  <div class="stream-item-header">
-                    <span class="stream-tag stream-tag-file">FILE</span>
-                    <span class="mono">${entry.path}</span>
+              ${filteredFiles.map((entry) => {
+                const rowKey = `${entry.path || "unknown"}::${(entry.kinds || []).join(",")}`;
+                const expanded = expandedFileItems.has(rowKey);
+                const details = [
+                  `Path: ${entry.path || "unknown"}`,
+                  entry.kinds?.length
+                    ? `Access kinds: ${entry.kinds.join(", ")}`
+                    : "Access kinds: unknown",
+                ].join("\n");
+                return html`
+                  <div class="stream-item stream-file ${expanded ? "expanded" : ""}" key=${rowKey}>
+                    <button
+                      class="stream-item-toggle"
+                      type="button"
+                      onClick=${() => toggleExpandedFile(rowKey)}
+                    >
+                      <div class="stream-item-header">
+                        <span class="stream-tag stream-tag-file">FILE</span>
+                        <span class="stream-item-title mono">${entry.path}</span>
+                      </div>
+                      <span class="stream-item-chevron">${expanded ? "▾" : "▸"}</span>
+                    </button>
+                    <div class="stream-item-details ${expanded ? "expanded" : ""}">
+                      <div class="stream-item-details-inner">
+                        <pre class="stream-item-pre">${details}</pre>
+                      </div>
+                    </div>
                   </div>
-                  ${entry.kinds?.length &&
-                    html`<div class="stream-item-body">Access: ${entry.kinds.join(", ")}</div>`}
-                </div>
-              `)}
+                `;
+              })}
             </div>`}
         </div>
       `;
@@ -797,7 +943,7 @@ function WorkspaceViewer({ agent, onClose }) {
               class="btn btn-danger btn-sm"
               disabled=${agent.index == null}
               onClick=${handleStop}
-            >⛔ Stop</button>
+            >${iconText("⛔ Stop")}</button>
           </div>
         </div>
       </div>
@@ -1244,7 +1390,7 @@ export function AgentsTab() {
               ? slots.map(
                   (slot, i) => html`
                     <div
-                      key=${i}
+                      key=${slot?.taskId || slot?.sessionId || `slot-${i}`}
                       class="task-card fleet-agent-card ${expandedSlot === i
                         ? "task-card-expanded"
                         : ""}"
@@ -1343,7 +1489,7 @@ export function AgentsTab() {
                         class="btn btn-danger btn-sm"
                         onClick=${() => handleForceStop({ ...slot, index: i })}
                       >
-                        ⛔ Stop
+                        ${iconText("⛔ Stop")}
                       </button>
                     </div>
                   </div>
@@ -1373,7 +1519,7 @@ export function AgentsTab() {
                 ${agents.map(
                   (t, i) => html`
                     <${StatCard}
-                      key=${i}
+                      key=${t.taskKey || t.id || `thread-${i}`}
                       value=${t.turnCount || 0}
                       label="${truncate(t.taskKey || `Thread ${i}`, 20)} (${t.sdk ||
                       "?"})"
@@ -1500,7 +1646,7 @@ function ContextViewer({ sessionId }) {
 
   if (error) {
     return html`<div class="chat-view chat-empty-state">
-      <div class="session-empty-icon" style="color:var(--color-error)">⚠️</div>
+      <div class="session-empty-icon" style="color:var(--color-error)">${resolveIcon("⚠️")}</div>
       <div class="session-empty-text">${error}</div>
       <button class="btn btn-primary btn-sm mt-sm" onClick=${() => { setLoading(true); setError(null); fetchContext(); }}>${iconText("🔄 Retry")}</button>
     </div>`;
@@ -1628,23 +1774,33 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
   const logRef = useRef(null);
   const allSessions = sessionsData.value || [];
 
-  const entries = slots
-    .map((slot, index) => {
-      const session =
-        allSessions.find((s) => s?.id && slot?.sessionId && s.id === slot.sessionId) ||
-        allSessions.find((s) => {
-          if (!slot?.taskId) return false;
-          return s?.taskId === slot.taskId || s?.id === slot.taskId;
-        }) ||
-        null;
-      const key = String(slot?.taskId || slot?.sessionId || `slot-${index}`);
-      return { key, slot, index, session };
-    })
-    .sort((a, b) => {
-      const aScore = new Date(a.slot?.startedAt || 0).getTime() || 0;
-      const bScore = new Date(b.slot?.startedAt || 0).getTime() || 0;
-      return bScore - aScore;
-    });
+  /* Stabilise entries with useMemo so the reference only changes when the
+     underlying data actually changes – prevents infinite render loops that
+     previously caused "insertBefore" DOM errors. */
+  const entries = useMemo(() => {
+    return (slots || [])
+      .map((slot, index) => {
+        const session =
+          allSessions.find((s) => s?.id && slot?.sessionId && s.id === slot.sessionId) ||
+          allSessions.find((s) => {
+            if (!slot?.taskId) return false;
+            return s?.taskId === slot.taskId || s?.id === slot.taskId;
+          }) ||
+          null;
+        const key = String(slot?.taskId || slot?.sessionId || `slot-${index}`);
+        return { key, slot, index, session };
+      })
+      .sort((a, b) => {
+        const aScore = new Date(a.slot?.startedAt || 0).getTime() || 0;
+        const bScore = new Date(b.slot?.startedAt || 0).getTime() || 0;
+        return bScore - aScore;
+      });
+  }, [slots, allSessions]);
+
+  /* Build a stable fingerprint so the effect only fires when entries actually
+     change rather than on every render (entries is now memoised but we still
+     guard with a primitive dep). */
+  const entriesFingerprint = entries.map((e) => e.key).join(",");
 
   useEffect(() => {
     if (!entries.length) {
@@ -1653,7 +1809,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
     }
     const existing = entries.some((entry) => entry.key === selectedSlotKey);
     if (!existing) setSelectedSlotKey(entries[0].key);
-  }, [entries, selectedSlotKey]);
+  }, [entriesFingerprint]);
 
   const selectedEntry =
     entries.find((entry) => entry.key === selectedSlotKey) || entries[0] || null;
@@ -1710,7 +1866,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
         <div class="fleet-slot-rail">
           ${entries.length === 0
             ? html`<div class="meta-text">No active slots</div>`
-            : entries.map((entry) => html`
+            : html`${entries.map((entry) => html`
                 <button
                   key=${entry.key}
                   class="fleet-slot-item ${selectedEntry?.key === entry.key ? "active" : ""}"
@@ -1728,7 +1884,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                     Slot ${(entry.index ?? 0) + 1} · ${entry.slot?.taskId || "no-task-id"}
                   </div>
                 </button>
-              `)}
+              `)}`}
         </div>
         <div class="session-detail fleet-session-detail">
           ${selectedEntry
@@ -1749,7 +1905,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                       ${iconText("🔍 Workspace")}
                     </button>
                     <button class="btn btn-danger btn-sm" onClick=${() => onForceStop({ ...selectedEntry.slot, index: selectedEntry.index })}>
-                      ⛔ Stop
+                      ${iconText("⛔ Stop")}
                     </button>
                   </div>
                 </div>
@@ -1772,34 +1928,36 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                   >${iconText("📄 Logs")}</button>
                 </div>
                 <div class="fleet-session-body">
-                  ${detailTab === "stream" &&
-                  (sessionId
-                    ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
-                    : html`
-                        <div class="chat-view chat-empty-state">
-                          <div class="session-empty-icon">${resolveIcon("💬")}</div>
-                          <div class="session-empty-text">No linked chat session found for this slot</div>
-                        </div>
-                      `)}
-                  ${detailTab === "context" &&
-                  (contextId
-                    ? html`<${ContextViewer} sessionId=${contextId} />`
-                    : html`
-                        <div class="chat-view chat-empty-state">
-                          <div class="session-empty-icon">${resolveIcon("📋")}</div>
-                          <div class="session-empty-text">No context source available</div>
-                        </div>
-                      `)}
-                  ${detailTab === "diff" &&
-                  (sessionId
-                    ? html`<${DiffViewer} sessionId=${sessionId} />`
-                    : html`
-                        <div class="chat-view chat-empty-state">
-                          <div class="session-empty-icon">${resolveIcon("📝")}</div>
-                          <div class="session-empty-text">Diff requires a linked session</div>
-                        </div>
-                      `)}
-                  ${detailTab === "logs" && html`<div class="workspace-log fleet-session-log" ref=${logRef}>${logText}</div>`}
+                  ${detailTab === "stream"
+                    ? sessionId
+                      ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
+                      : html`
+                          <div class="chat-view chat-empty-state">
+                            <div class="session-empty-icon">${resolveIcon("💬")}</div>
+                            <div class="session-empty-text">No linked chat session found for this slot</div>
+                          </div>
+                        `
+                    : detailTab === "context"
+                      ? contextId
+                        ? html`<${ContextViewer} sessionId=${contextId} />`
+                        : html`
+                            <div class="chat-view chat-empty-state">
+                              <div class="session-empty-icon">${resolveIcon("📋")}</div>
+                              <div class="session-empty-text">No context source available</div>
+                            </div>
+                          `
+                      : detailTab === "diff"
+                        ? sessionId
+                          ? html`<${DiffViewer} sessionId=${sessionId} />`
+                          : html`
+                              <div class="chat-view chat-empty-state">
+                                <div class="session-empty-icon">${resolveIcon("📝")}</div>
+                                <div class="session-empty-text">Diff requires a linked session</div>
+                              </div>
+                            `
+                        : detailTab === "logs"
+                          ? html`<div class="workspace-log fleet-session-log" ref=${logRef}>${logText}</div>`
+                          : null}
                 </div>
               `
             : html`

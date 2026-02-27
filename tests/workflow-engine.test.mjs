@@ -283,6 +283,55 @@ describe("WorkflowEngine - loop.for_each", () => {
   });
 });
 
+describe("WorkflowEngine - source port routing", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("routes only the selected switch port", async () => {
+    const visited = [];
+    registerNodeType("test.capture_port", {
+      describe: () => "Capture reached branch",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        visited.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "switch",
+          type: "condition.switch",
+          label: "Switch",
+          config: {
+            value: "'left'",
+            cases: {
+              left: "left-port",
+              right: "right-port",
+            },
+          },
+        },
+        { id: "left", type: "test.capture_port", label: "Left", config: {} },
+        { id: "right", type: "test.capture_port", label: "Right", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "switch" },
+        { id: "e2", source: "switch", target: "left", sourcePort: "left-port" },
+        { id: "e3", source: "switch", target: "right", sourcePort: "right-port" },
+      ],
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+    expect(result.errors).toEqual([]);
+    expect(visited).toEqual(["left"]);
+  });
+});
+
 // ── Run History / Detail Tests ──────────────────────────────────────────────
 
 describe("WorkflowEngine - run history details", () => {
@@ -481,6 +530,21 @@ describe("New node types", () => {
     expect(result.reason).toBe("test");
   });
 
+  it("action.delay supports legacy durationMs/message aliases", async () => {
+    const handler = getNodeType("action.delay");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({});
+    const node = {
+      id: "d2",
+      type: "action.delay",
+      config: { durationMs: 10, message: "legacy" },
+    };
+    const result = await handler.execute(node, ctx);
+    expect(result.waited).toBeGreaterThanOrEqual(10);
+    expect(result.reason).toBe("legacy");
+  });
+
   it("flow.gate opens on condition", async () => {
     const handler = getNodeType("flow.gate");
     expect(handler).toBeDefined();
@@ -548,7 +612,11 @@ describe("Session chaining - action.run_agent", () => {
       },
     };
 
-    const node = { id: "a1", type: "action.run_agent", config: { prompt: "Test prompt" } };
+    const node = {
+      id: "a1",
+      type: "action.run_agent",
+      config: { prompt: "Test prompt", autoRecover: false, failOnError: true },
+    };
     const result = await handler.execute(node, ctx, mockEngine);
 
     expect(result.threadId).toBe("thread-abc-123");
@@ -563,7 +631,334 @@ describe("Session chaining - action.run_agent", () => {
     expect(runLogText).toMatch(/Tool call: apply_patch/);
     expect(runLogText).toMatch(/Agent: Implemented the requested changes\./);
   });
+
+  it("propagates threadId to context from execWithRetry", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+  });
+
+  it("ignores noisy delta stream events while keeping meaningful agent updates", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+    const launchEphemeralThread = vi.fn().mockImplementation(
+      async (_prompt, _cwd, _timeoutMs, extra) => {
+        extra?.onEvent?.({ type: "assistant.reasoning_delta", data: { content: "test" } });
+        extra?.onEvent?.({ type: "assistant.reasoning_delta", data: { content: ":" } });
+        extra?.onEvent?.({ type: "assistant.message", data: { content: "Added regression coverage." } });
+        return {
+          success: true,
+          output: "ok",
+          sdk: "codex",
+          items: [],
+          threadId: "thread-delta-filter",
+        };
+      },
+    );
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = { id: "a-delta", type: "action.run_agent", config: { prompt: "delta test" } };
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(result.threadId).toBe("thread-delta-filter");
+    const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
+    expect(runLogText).not.toContain("assistant.reasoning_delta");
+    expect(runLogText).toMatch(/Agent: Added regression coverage\./);
+  });
+
+  it("condenses noisy assistant events into narrative summaries", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+    const launchEphemeralThread = vi.fn().mockImplementation(
+      async (_prompt, _cwd, _timeoutMs, extra) => {
+        extra?.onEvent?.({
+          type: "item.completed",
+          item: {
+            type: "reasoning",
+            summary: "Tracing noisy completion logs and extracting only meaningful context.",
+          },
+        });
+        extra?.onEvent?.({
+          type: "assistant.message",
+          data: {
+            content: "",
+            detailedContent:
+              "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:16:function getLocalLanIp() {\n" +
+              "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:133:function ensureLibraryInitialized() {\n" +
+              "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:161:async function getWorkflowEngineModule() {\n" +
+              "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:7394:export function stopTelegramUiServer() {",
+          },
+        });
+        extra?.onEvent?.({
+          type: "assistant.message",
+          data: {
+            content: "",
+            toolRequests: [{ name: "view" }, { name: "find" }, { name: "view" }],
+          },
+        });
+        extra?.onEvent?.({
+          type: "assistant.usage",
+          data: {
+            model: "claude-sonnet-4.6",
+            inputTokens: 5170,
+            outputTokens: 484,
+            duration: 7899,
+          },
+        });
+        return {
+          success: true,
+          output:
+            "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:16:function getLocalLanIp() {\n" +
+            "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:133:function ensureLibraryInitialized() {\n" +
+            "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:161:async function getWorkflowEngineModule() {",
+          sdk: "copilot",
+          items: [
+            {
+              type: "assistant.message",
+              data: {
+                content: "",
+                detailedContent:
+                  "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:16:function getLocalLanIp() {\n" +
+                  "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:133:function ensureLibraryInitialized() {\n" +
+                  "C:\\Users\\jON\\AppData\\Roaming\\bosun\\workspaces\\virtengine-gh\\bosun\\ui-server.mjs:161:async function getWorkflowEngineModule() {",
+              },
+            },
+            {
+              type: "assistant.message",
+              data: { content: "", toolRequests: [{ name: "view" }, { name: "find" }] },
+            },
+            {
+              type: "item.completed",
+              item: {
+                type: "reasoning",
+                summary: "Tracing noisy completion logs and extracting only meaningful context.",
+              },
+            },
+            {
+              type: "assistant.usage",
+              data: { model: "claude-sonnet-4.6", inputTokens: 100, outputTokens: 50 },
+            },
+          ],
+          threadId: "thread-noise-test",
+        };
+      },
+    );
+
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+      },
+    };
+
+    const node = {
+      id: "a2",
+      type: "action.run_agent",
+      config: { prompt: "parse noisy logs", maxRetainedEvents: 20 },
+    };
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.summary).toMatch(/Indexed \d+ code references/);
+    expect(result.narrative).toContain("Thought process:");
+    expect(result.narrative).toContain("Actions:");
+    expect(result.stream).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^Thinking:/),
+        expect.stringMatching(/^Agent detail:/),
+        expect.stringMatching(/^Agent requested tools:/),
+      ]),
+    );
+    expect(Array.isArray(result.items)).toBe(true);
+    expect(result.items.length).toBeGreaterThan(0);
+    expect(result.itemCount).toBe(4);
+    expect(result.omittedItemCount).toBe(0);
+    expect(result.threadId).toBe("thread-noise-test");
+
+    const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
+    expect(runLogText).toMatch(/Agent detail: Indexed/);
+    expect(runLogText).toMatch(/Agent requested tools: view, find/);
+    expect(runLogText).toMatch(/Usage:/);
+  });
+
+  it("propagates threadId to context from execWithRetry when autoRecover=true", async () => {
+    const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn().mockResolvedValue({
+            success: true,
+            output: "done",
+            sdk: "codex",
+            items: [],
+            threadId: "thread-fallback-unused",
+          }),
+          execWithRetry: vi.fn().mockResolvedValue({
+            success: true,
+            output: "done",
+            sdk: "codex",
+            items: [],
+            threadId: "thread-abc-123",
+            attempts: 2,
+            continues: 1,
+            resumed: true,
+          }),
+        },
+      },
+    };
+    const node = { id: "a1b", type: "action.run_agent", config: { prompt: "Test prompt", autoRecover: true } };
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.threadId).toBe("thread-abc-123");
+    expect(result.sessionId).toBe("thread-abc-123");
+    expect(ctx.data.sessionId).toBe("thread-abc-123");
+    expect(ctx.data.threadId).toBe("thread-abc-123");
+    expect(result.attempts).toBe(2);
+    expect(mockEngine.services.agentPool.execWithRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws when agent execution returns success=false when failOnError=true", async () => {
+    const handler = getNodeType("action.run_agent");
+    const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn().mockResolvedValue({
+            success: false,
+            error: "agent crashed",
+          }),
+        },
+      },
+    };
+    const node = {
+      id: "a2",
+      type: "action.run_agent",
+      config: { prompt: "Test prompt", autoRecover: false, failOnError: true },
+    };
+    await expect(handler.execute(node, ctx, mockEngine)).rejects.toThrow(/agent crashed/i);
+  });
+
+  it("continues existing session before retrying fresh", async () => {
+    const handler = getNodeType("action.run_agent");
+    const ctx = new WorkflowContext({
+      worktreePath: "/tmp/test",
+      sessionId: "thread-existing-1",
+    });
+    const continueSession = vi.fn().mockResolvedValue({
+      success: true,
+      output: "continued",
+      threadId: "thread-existing-1",
+      sdk: "copilot",
+    });
+    const execWithRetry = vi.fn().mockResolvedValue({
+      success: true,
+      output: "should-not-be-used",
+      threadId: "thread-new",
+      sdk: "copilot",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn().mockResolvedValue({
+            success: true,
+            output: "fallback",
+            sdk: "copilot",
+            threadId: "thread-fallback",
+          }),
+          continueSession,
+          execWithRetry,
+        },
+      },
+    };
+    const node = { id: "a3", type: "action.run_agent", config: { prompt: "Continue work", continueOnSession: true } };
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result.success).toBe(true);
+    expect(result.threadId).toBe("thread-existing-1");
+    expect(continueSession).toHaveBeenCalledTimes(1);
+    expect(execWithRetry).not.toHaveBeenCalled();
+  });
 });
+
+it("agent.run_planner streams planner events and propagates threadId", async () => {
+  const handler = getNodeType("agent.run_planner");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  const launchEphemeralThread = vi.fn().mockImplementation(
+    async (_prompt, _cwd, _timeoutMs, extra) => {
+      extra?.onEvent?.({
+        type: "item.completed",
+        item: { type: "reasoning", summary: "Reviewing backlog gaps." },
+      });
+      extra?.onEvent?.({
+        type: "tool_call",
+        tool_name: "create_task",
+      });
+      extra?.onEvent?.({
+        type: "item.completed",
+        item: { type: "agent_message", text: "Generated 3 tasks." },
+      });
+      return {
+        success: true,
+        output: "planned output",
+        sdk: "codex",
+        items: [],
+        threadId: "planner-thread-123",
+      };
+    },
+  );
+  const mockEngine = {
+    services: {
+      agentPool: {
+        launchEphemeralThread,
+      },
+      prompts: {
+        planner: "Planner prompt",
+      },
+    },
+  };
+
+  const node = {
+    id: "planner-1",
+    type: "agent.run_planner",
+    config: {
+      taskCount: 3,
+      context: "Focus on reliability",
+      outputVariable: "plannerOutput",
+    },
+  };
+  const result = await handler.execute(node, ctx, mockEngine);
+
+  expect(result.success).toBe(true);
+  expect(result.taskCount).toBe(3);
+  expect(result.threadId).toBe("planner-thread-123");
+  expect(result.sessionId).toBe("planner-thread-123");
+  expect(ctx.data.threadId).toBe("planner-thread-123");
+  expect(ctx.data.sessionId).toBe("planner-thread-123");
+  expect(ctx.data.plannerOutput).toBe("planned output");
+  expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+  expect(launchEphemeralThread.mock.calls[0][3]).toEqual(
+    expect.objectContaining({ onEvent: expect.any(Function) }),
+  );
+  const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
+  expect(runLogText).toMatch(/Thinking: Reviewing backlog gaps\./);
+  expect(runLogText).toMatch(/Tool call: create_task/);
+  expect(runLogText).toMatch(/Agent: Generated 3 tasks\./);
+  expect(runLogText).toMatch(/Planner completed: success=true streamEvents=3/);
+  });
 
 // ── Anomaly Detector Integration Tests ──────────────────────────────────────
 
@@ -732,5 +1127,34 @@ describe("WorkflowEngine - timeout timer cleanup", () => {
     expect(result.errors.length).toBe(0);
     const output = result.getNodeOutput("fast");
     expect(output.fast).toBe(true);
+  });
+
+  it("honors timeoutMs from node config", async () => {
+    registerNodeType("test.slow_node_for_timeout_ms", {
+      describe: () => "Sleeps long enough to trigger timeoutMs",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        return { done: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "slow",
+          type: "test.slow_node_for_timeout_ms",
+          label: "Slow",
+          config: { timeoutMs: 1000, maxRetries: 0, retryDelayMs: 0 },
+        },
+      ],
+      [{ id: "e1", source: "trigger", target: "slow" }]
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(String(result.errors[0]?.error || "")).toContain("timed out after 1000ms");
   });
 });

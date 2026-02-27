@@ -595,16 +595,20 @@ class InternalAdapter {
     return this._normalizeTask(getInternalTask(String(taskId || "")));
   }
 
-  async updateTaskStatus(taskId, status) {
+  async updateTaskStatus(taskId, status, options = {}) {
     const normalizedId = String(taskId || "").trim();
     if (!normalizedId) {
       throw new Error("[kanban] internal updateTaskStatus requires taskId");
     }
     const normalizedStatus = normaliseStatus(status);
+    const source =
+      options && typeof options === "object" && options.source
+        ? String(options.source)
+        : "orchestrator";
     const updated = setInternalTaskStatus(
       normalizedId,
       normalizedStatus,
-      "orchestrator",
+      source,
     );
     if (!updated) {
       throw new Error(`[kanban] internal task not found: ${normalizedId}`);

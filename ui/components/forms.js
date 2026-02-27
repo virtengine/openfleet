@@ -14,6 +14,7 @@ import {
 import htm from "htm";
 
 const html = htm.bind(h);
+const PTR_OPT_OUT_SELECTOR = '[data-ptr-ignore="true"], [data-disable-pull-to-refresh="true"]';
 
 import { ICONS } from "../modules/icons.js";
 import { haptic } from "../modules/telegram.js";
@@ -118,6 +119,11 @@ export function PullToRefresh({ onRefresh, children, disabled = false }) {
   const handleTouchStart = useCallback((e) => {
     if (disabled) return;
     if (!containerRef.current) return;
+    const target = e.target;
+    if (target instanceof Element && target.closest(PTR_OPT_OUT_SELECTOR)) {
+      pullingRef.current = false;
+      return;
+    }
     const scrollContainer = containerRef.current.querySelector('.main-content') || containerRef.current;
     if (scrollContainer.scrollTop <= 0) {
       startYRef.current = e.touches[0].clientY;

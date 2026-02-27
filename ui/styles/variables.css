@@ -259,6 +259,381 @@
   color-scheme: light;
 }
 
+/* ═══════════════════════════════════════════════════════════════
+ *  THEME DEFINITIONS — applied via [data-theme="..."] on :root
+ *  Each theme fully overrides the dark default using hard-coded
+ *  values so Telegram CSS variables don't bleed through.
+ * ═══════════════════════════════════════════════════════════════ */
+
+/* ── Bosun Dark (default — just alias back to :root, listed for clarity) ── */
+:root[data-theme="dark"] {
+  /* inherited from :root defaults — no override needed */
+}
+
+/* ── Dark Blue — Teal/Cyber (Demo default look) ── */
+:root[data-theme="dark-blue"] {
+  --bg-primary:    #0b0f14;
+  --bg-secondary:  #131a24;
+  --bg-card:       #141d2b;
+  --bg-surface:    #0e1621;
+  --bg-input:      #1a2636;
+  --bg-card-hover: rgba(76, 201, 240, 0.06);
+  --bg-elevated:   #172234;
+
+  --text-primary:   #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-hint:      #64748b;
+  --text-bright:    #ffffff;
+  --text-muted:     rgba(148, 163, 184, 0.8);
+
+  --accent:       #4cc9f0;
+  --accent-text:  #000000;
+  --accent-hover: #5dd8ff;
+  --accent-soft:  rgba(76, 201, 240, 0.14);
+  --link-color:   #67d8ff;
+  --destructive:  #ef4444;
+
+  --border:        #1e293b;
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --separator:     #1e293b;
+
+  --glass-bg:        rgba(11, 15, 20, 0.94);
+  --glass-border:    rgba(76, 201, 240, 0.1);
+  --glass-highlight: rgba(255, 255, 255, 0.02);
+  --shadow-md:  0 6px 16px rgba(0, 0, 0, 0.45);
+  --shadow-lg:  0 12px 28px rgba(0, 0, 0, 0.5);
+
+  --accent-glow:    rgba(76, 201, 240, 0.2);
+  --accent-subtle:  rgba(76, 201, 240, 0.1);
+  --gradient-accent: linear-gradient(135deg, #4cc9f0 0%, #5dd8ff 100%);
+  --gradient-accent-hover: linear-gradient(135deg, #5dd8ff 0%, #7ee8ff 100%);
+
+  --sidebar-bg:     #0e1621;
+  --sidebar-hover:  #152032;
+  --sidebar-active: #1a2a42;
+  --backdrop:       rgba(0, 0, 0, 0.75);
+  color-scheme: dark;
+}
+
+/* ── Midnight — Deep purple-black (VS Code Dark+) ── */
+:root[data-theme="midnight"] {
+  --bg-primary:    #0d1117;
+  --bg-secondary:  #161b22;
+  --bg-card:       #21262d;
+  --bg-surface:    #161b22;
+  --bg-input:      #21262d;
+  --bg-card-hover: rgba(124, 58, 237, 0.06);
+  --bg-elevated:   #1c2128;
+
+  --text-primary:   #e6edf3;
+  --text-secondary: #8b949e;
+  --text-hint:      #6e7681;
+  --text-bright:    #ffffff;
+  --text-muted:     rgba(139, 148, 158, 0.8);
+
+  --accent:       #7c3aed;
+  --accent-text:  #ffffff;
+  --accent-hover: #8b5cf6;
+  --accent-soft:  rgba(124, 58, 237, 0.15);
+  --link-color:   #a78bfa;
+  --destructive:  #f85149;
+
+  --border:        rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --separator:     rgba(255, 255, 255, 0.08);
+
+  --glass-bg:        rgba(13, 17, 23, 0.94);
+  --glass-border:    rgba(124, 58, 237, 0.15);
+  --glass-highlight: rgba(255, 255, 255, 0.02);
+  --shadow-md:  0 6px 16px rgba(0, 0, 0, 0.5);
+  --shadow-lg:  0 12px 28px rgba(0, 0, 0, 0.55);
+
+  --accent-glow:    rgba(124, 58, 237, 0.22);
+  --accent-subtle:  rgba(124, 58, 237, 0.12);
+  --gradient-accent: linear-gradient(135deg, #7c3aed 0%, #8b5cf6 100%);
+  --gradient-accent-hover: linear-gradient(135deg, #8b5cf6 0%, #a78bfa 100%);
+
+  --sidebar-bg:     #161b22;
+  --sidebar-hover:  #21262d;
+  --sidebar-active: #2d3748;
+  --backdrop:       rgba(0, 0, 0, 0.8);
+  color-scheme: dark;
+}
+
+/* ── Dracula — Classic purple/pink dark ── */
+:root[data-theme="dracula"] {
+  --bg-primary:    #282a36;
+  --bg-secondary:  #21222c;
+  --bg-card:       #313342;
+  --bg-surface:    #21222c;
+  --bg-input:      #313342;
+  --bg-card-hover: rgba(255, 121, 198, 0.06);
+  --bg-elevated:   #2c2e3f;
+
+  --text-primary:   #f8f8f2;
+  --text-secondary: #9da5c8;
+  --text-hint:      #6272a4;
+  --text-bright:    #ffffff;
+  --text-muted:     rgba(157, 165, 200, 0.8);
+
+  --accent:       #ff79c6;
+  --accent-text:  #282a36;
+  --accent-hover: #ff92d0;
+  --accent-soft:  rgba(255, 121, 198, 0.14);
+  --link-color:   #8be9fd;
+  --destructive:  #ff5555;
+
+  --border:        rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --separator:     rgba(255, 255, 255, 0.07);
+
+  --glass-bg:        rgba(33, 34, 44, 0.96);
+  --glass-border:    rgba(255, 121, 198, 0.12);
+  --glass-highlight: rgba(255, 255, 255, 0.02);
+  --shadow-md:  0 6px 16px rgba(0, 0, 0, 0.4);
+  --shadow-lg:  0 12px 28px rgba(0, 0, 0, 0.45);
+
+  --accent-glow:    rgba(255, 121, 198, 0.2);
+  --accent-subtle:  rgba(255, 121, 198, 0.1);
+  --gradient-accent: linear-gradient(135deg, #ff79c6 0%, #bd93f9 100%);
+  --gradient-accent-hover: linear-gradient(135deg, #ff92d0 0%, #caa6ff 100%);
+
+  --sidebar-bg:     #21222c;
+  --sidebar-hover:  #2f3240;
+  --sidebar-active: #3a3d52;
+  --backdrop:       rgba(0, 0, 0, 0.7);
+  color-scheme: dark;
+}
+
+/* ── Nord — Arctic blue-gray palette ── */
+:root[data-theme="nord"] {
+  --bg-primary:    #2e3440;
+  --bg-secondary:  #272c38;
+  --bg-card:       #3b4252;
+  --bg-surface:    #272c38;
+  --bg-input:      #3b4252;
+  --bg-card-hover: rgba(136, 192, 208, 0.06);
+  --bg-elevated:   #434c5e;
+
+  --text-primary:   #eceff4;
+  --text-secondary: #d8dee9;
+  --text-hint:      #9ba8be;
+  --text-bright:    #ffffff;
+  --text-muted:     rgba(216, 222, 233, 0.75);
+
+  --accent:       #88c0d0;
+  --accent-text:  #2e3440;
+  --accent-hover: #9dcfdf;
+  --accent-soft:  rgba(136, 192, 208, 0.15);
+  --link-color:   #81a1c1;
+  --destructive:  #bf616a;
+
+  --border:        rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --separator:     rgba(255, 255, 255, 0.1);
+
+  --glass-bg:        rgba(46, 52, 64, 0.95);
+  --glass-border:    rgba(136, 192, 208, 0.12);
+  --glass-highlight: rgba(255, 255, 255, 0.03);
+  --shadow-md:  0 6px 16px rgba(0, 0, 0, 0.35);
+  --shadow-lg:  0 12px 28px rgba(0, 0, 0, 0.4);
+
+  --accent-glow:    rgba(136, 192, 208, 0.18);
+  --accent-subtle:  rgba(136, 192, 208, 0.1);
+  --gradient-accent: linear-gradient(135deg, #88c0d0 0%, #81a1c1 100%);
+  --gradient-accent-hover: linear-gradient(135deg, #9dcfdf 0%, #91b4d4 100%);
+
+  --sidebar-bg:     #272c38;
+  --sidebar-hover:  #3b4252;
+  --sidebar-active: #4c566a;
+  --backdrop:       rgba(0, 0, 0, 0.65);
+  color-scheme: dark;
+}
+
+/* ── Monokai — Classic Sublime Text theme ── */
+:root[data-theme="monokai"] {
+  --bg-primary:    #272822;
+  --bg-secondary:  #1e1f1c;
+  --bg-card:       #32332c;
+  --bg-surface:    #1e1f1c;
+  --bg-input:      #32332c;
+  --bg-card-hover: rgba(166, 226, 46, 0.06);
+  --bg-elevated:   #2c2d27;
+
+  --text-primary:   #f8f8f2;
+  --text-secondary: #a59f85;
+  --text-hint:      #75715e;
+  --text-bright:    #ffffff;
+  --text-muted:     rgba(165, 159, 133, 0.8);
+
+  --accent:       #a6e22e;
+  --accent-text:  #1e1f1c;
+  --accent-hover: #b8f542;
+  --accent-soft:  rgba(166, 226, 46, 0.14);
+  --link-color:   #66d9e8;
+  --destructive:  #f92672;
+
+  --border:        rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.13);
+  --separator:     rgba(255, 255, 255, 0.07);
+
+  --glass-bg:        rgba(39, 40, 34, 0.96);
+  --glass-border:    rgba(166, 226, 46, 0.1);
+  --glass-highlight: rgba(255, 255, 255, 0.02);
+  --shadow-md:  0 6px 16px rgba(0, 0, 0, 0.4);
+  --shadow-lg:  0 12px 28px rgba(0, 0, 0, 0.45);
+
+  --accent-glow:    rgba(166, 226, 46, 0.18);
+  --accent-subtle:  rgba(166, 226, 46, 0.1);
+  --gradient-accent: linear-gradient(135deg, #a6e22e 0%, #b8f542 100%);
+  --gradient-accent-hover: linear-gradient(135deg, #b8f542 0%, #c9ff55 100%);
+
+  --sidebar-bg:     #1e1f1c;
+  --sidebar-hover:  #2c2d27;
+  --sidebar-active: #383830;
+  --backdrop:       rgba(0, 0, 0, 0.7);
+  color-scheme: dark;
+}
+
+/* ── GitHub Dark — GitHub's official dark UI ── */
+:root[data-theme="github-dark"] {
+  --bg-primary:    #0d1117;
+  --bg-secondary:  #161b22;
+  --bg-card:       #21262d;
+  --bg-surface:    #161b22;
+  --bg-input:      #0d1117;
+  --bg-card-hover: rgba(88, 166, 255, 0.06);
+  --bg-elevated:   #21262d;
+
+  --text-primary:   #e6edf3;
+  --text-secondary: #8b949e;
+  --text-hint:      #6e7681;
+  --text-bright:    #ffffff;
+  --text-muted:     rgba(139, 148, 158, 0.8);
+
+  --accent:       #58a6ff;
+  --accent-text:  #0d1117;
+  --accent-hover: #79b8ff;
+  --accent-soft:  rgba(88, 166, 255, 0.14);
+  --link-color:   #79b8ff;
+  --destructive:  #f85149;
+
+  --border:        #30363d;
+  --border-strong: #484f58;
+  --separator:     #21262d;
+
+  --glass-bg:        rgba(13, 17, 23, 0.95);
+  --glass-border:    rgba(88, 166, 255, 0.12);
+  --glass-highlight: rgba(255, 255, 255, 0.02);
+  --shadow-md:  0 6px 16px rgba(0, 0, 0, 0.5);
+  --shadow-lg:  0 12px 28px rgba(0, 0, 0, 0.55);
+
+  --accent-glow:    rgba(88, 166, 255, 0.2);
+  --accent-subtle:  rgba(88, 166, 255, 0.1);
+  --gradient-accent: linear-gradient(135deg, #58a6ff 0%, #79b8ff 100%);
+  --gradient-accent-hover: linear-gradient(135deg, #79b8ff 0%, #9ecaff 100%);
+
+  --sidebar-bg:     #161b22;
+  --sidebar-hover:  #21262d;
+  --sidebar-active: #2d3748;
+  --backdrop:       rgba(0, 0, 0, 0.8);
+  color-scheme: dark;
+}
+
+/* ── Ayu Dark — Deep dark with warm orange accent ── */
+:root[data-theme="ayu"] {
+  --bg-primary:    #0a0e14;
+  --bg-secondary:  #0d1017;
+  --bg-card:       #131721;
+  --bg-surface:    #0d1017;
+  --bg-input:      #141720;
+  --bg-card-hover: rgba(255, 143, 64, 0.06);
+  --bg-elevated:   #11161f;
+
+  --text-primary:   #bfbdb6;
+  --text-secondary: #565b66;
+  --text-hint:      #494f5c;
+  --text-bright:    #e6e1cf;
+  --text-muted:     rgba(86, 91, 102, 0.9);
+
+  --accent:       #ff8f40;
+  --accent-text:  #0a0e14;
+  --accent-hover: #f29668;
+  --accent-soft:  rgba(255, 143, 64, 0.14);
+  --link-color:   #59c2ff;
+  --destructive:  #ff3333;
+
+  --border:        rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.1);
+  --separator:     rgba(255, 255, 255, 0.05);
+
+  --glass-bg:        rgba(10, 14, 20, 0.96);
+  --glass-border:    rgba(255, 143, 64, 0.1);
+  --glass-highlight: rgba(255, 255, 255, 0.01);
+  --shadow-md:  0 6px 16px rgba(0, 0, 0, 0.55);
+  --shadow-lg:  0 12px 28px rgba(0, 0, 0, 0.6);
+
+  --accent-glow:    rgba(255, 143, 64, 0.2);
+  --accent-subtle:  rgba(255, 143, 64, 0.1);
+  --gradient-accent: linear-gradient(135deg, #ff8f40 0%, #f29668 100%);
+  --gradient-accent-hover: linear-gradient(135deg, #f29668 0%, #ffb085 100%);
+
+  --sidebar-bg:     #0d1017;
+  --sidebar-hover:  #131721;
+  --sidebar-active: #1c1e28;
+  --backdrop:       rgba(0, 0, 0, 0.82);
+  color-scheme: dark;
+}
+
+/* ── Dawn — Warm solarized light theme ── */
+:root[data-theme="dawn"] {
+  --bg-primary:    #fdf6e3;
+  --bg-secondary:  #eee8d5;
+  --bg-card:       #ffffff;
+  --bg-surface:    #f5efdc;
+  --bg-input:      #ffffff;
+  --bg-card-hover: rgba(181, 137, 0, 0.06);
+  --bg-elevated:   #ffffff;
+
+  --text-primary:   #657b83;
+  --text-secondary: #839496;
+  --text-hint:      #93a1a1;
+  --text-bright:    #002b36;
+  --text-muted:     rgba(131, 148, 150, 0.85);
+
+  --accent:       #b58900;
+  --accent-text:  #ffffff;
+  --accent-hover: #c9960e;
+  --accent-soft:  rgba(181, 137, 0, 0.12);
+  --link-color:   #268bd2;
+  --destructive:  #dc322f;
+
+  --border:        rgba(0, 43, 54, 0.12);
+  --border-strong: rgba(0, 43, 54, 0.18);
+  --separator:     rgba(0, 43, 54, 0.1);
+
+  --glass-bg:        rgba(253, 246, 227, 0.94);
+  --glass-border:    rgba(181, 137, 0, 0.15);
+  --glass-highlight: rgba(255, 255, 255, 0.7);
+  --shadow-sm:  0 1px 2px rgba(0, 43, 54, 0.08);
+  --shadow-md:  0 6px 16px rgba(0, 43, 54, 0.1);
+  --shadow-lg:  0 12px 28px rgba(0, 43, 54, 0.12);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --shadow-glow: 0 0 12px rgba(181, 137, 0, 0.15);
+
+  --accent-glow:    rgba(181, 137, 0, 0.15);
+  --accent-subtle:  rgba(181, 137, 0, 0.08);
+  --gradient-accent: linear-gradient(135deg, #b58900 0%, #c9960e 100%);
+  --gradient-accent-hover: linear-gradient(135deg, #c9960e 0%, #dda824 100%);
+  --gradient-surface: linear-gradient(180deg, rgba(253, 246, 227, 0.98) 0%, rgba(238, 232, 213, 0.99) 100%);
+
+  --sidebar-bg:     #eee8d5;
+  --sidebar-hover:  #e5dfcc;
+  --sidebar-active: #d9d2bc;
+  --backdrop:       rgba(0, 43, 54, 0.5);
+  color-scheme: light;
+}
+
 /* ─── Premium Desktop Scrollbars ─── */
 @media (min-width: 1200px) {
   ::-webkit-scrollbar {

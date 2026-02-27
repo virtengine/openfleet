@@ -234,6 +234,33 @@ function ensureLoaded() {
   }
 }
 
+function buildCorruptBackupPath() {
+  const iso = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${storePath}.corrupt-${iso}.json`;
+}
+
+function backupCorruptStorePayload(raw, parseErr) {
+  const backupPath = buildCorruptBackupPath();
+  try {
+    const dir = dirname(backupPath);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    writeFileSync(backupPath, raw, "utf-8");
+    console.error(
+      TAG,
+      `Detected corrupt store JSON at ${storePath}. Backed up payload to ${backupPath}.`,
+      parseErr?.message || parseErr,
+    );
+  } catch (backupErr) {
+    console.error(
+      TAG,
+      `Detected corrupt store JSON at ${storePath}, but failed to write backup:`,
+      backupErr?.message || backupErr,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Store management
 // ---------------------------------------------------------------------------
@@ -245,7 +272,25 @@ export function loadStore() {
   try {
     if (existsSync(storePath)) {
       const raw = readFileSync(storePath, "utf-8");
-      const data = JSON.parse(raw);
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch (parseErr) {
+        const backupPath = `${storePath}.bak`;
+        try {
+          writeFileSync(backupPath, raw, "utf-8");
+          console.warn(
+            TAG,
+            `Corrupt store detected; backed up original to ${backupPath}`,
+          );
+        } catch (backupErr) {
+          console.warn(
+            TAG,
+            `Corrupt store detected; failed to back up to ${backupPath}: ${backupErr?.message || backupErr}`,
+          );
+        }
+        throw parseErr;
+      }
       _store = {
         _meta: { ...defaultMeta(), ...(data._meta || {}) },
         tasks: data.tasks || {},
@@ -308,6 +353,18 @@ export function saveStore() {
     .catch((err) => {
       console.error(TAG, "Write chain error:", err.message);
     });
+}
+
+/**
+ * Await all queued writes. Intended for deterministic tests and maintenance code.
+ */
+export async function waitForStoreWrites() {
+  ensureLoaded();
+  try {
+    await _writeChain;
+  } catch {
+    // saveStore already logs failures; caller just needs chain drain semantics
+  }
 }
 
 /**

@@ -4586,6 +4586,21 @@ select.input {
   text-overflow: ellipsis;
 }
 
+@media (min-width: 769px) {
+  .fleet-ticker-wrap {
+    height: auto;
+    overflow: visible;
+  }
+  .fleet-ticker-inner {
+    animation: none;
+    gap: 3px;
+  }
+  .fleet-ticker-item {
+    height: auto;
+    padding: 1px 0;
+  }
+}
+
 /* ═══════════════════════════════════════════════
  *  Tab Error Boundary improvements
  * ═══════════════════════════════════════════════ */
@@ -5518,4 +5533,33 @@ select.input {
   width: 14px;
   height: 14px;
   stroke-width: 1.7;
+}
+
+/* ── Shared save/discard bar ─────────────────────────────────────────── */
+.ve-save-discard-bar {
+  position: sticky;
+  bottom: calc(var(--safe-bottom, 0px) + 10px);
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md, 10px);
+  background: color-mix(in srgb, var(--bg-card) 84%, var(--accent) 16%);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+}
+
+.ve-save-discard-message {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.ve-save-discard-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }

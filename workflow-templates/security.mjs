@@ -51,7 +51,7 @@ export const DEPENDENCY_AUDIT_TEMPLATE = {
     }, { x: 400, y: 440, outputs: ["yes", "no"] }),
 
     node("classify-severity", "condition.switch", "Classify Severity", {
-      expression: "(() => { const out = $ctx.getNodeOutput('run-audit')?.output || '{}'; try { const d = JSON.parse(out); const v = d.metadata || {}; if ((v.vulnerabilities?.critical || 0) > 0) return 'critical'; if ((v.vulnerabilities?.high || 0) > 0) return 'high'; return 'moderate'; } catch { if (out.includes('critical')) return 'critical'; if (out.includes('high')) return 'high'; return 'moderate'; } })()",
+      value: "(() => { const out = $ctx.getNodeOutput('run-audit')?.output || '{}'; try { const d = JSON.parse(out); const v = d.metadata || {}; if ((v.vulnerabilities?.critical || 0) > 0) return 'critical'; if ((v.vulnerabilities?.high || 0) > 0) return 'high'; return 'moderate'; } catch { if (out.includes('critical')) return 'critical'; if (out.includes('high')) return 'high'; return 'moderate'; } })()",
       cases: {
         critical: "critical",
         high: "high",
