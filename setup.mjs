@@ -5645,6 +5645,10 @@ export {
   resolveOrCreateGitHubProjectNumber,
   resolveOrCreateGitHubProject,
   runGhCommand,
+  readSetupProgress,
+  writeSetupSnapshot,
+  buildWorkspaceChoices,
+  getGitHubAuthScopes,
   buildRecommendedVsCodeSettings,
   writeWorkspaceVsCodeSettings,
 };

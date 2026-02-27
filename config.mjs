@@ -54,6 +54,65 @@ function isPathInside(parent, child) {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/**
+ * Returns true if the given directory appears to be the root of the bosun npm module
+ * (i.e. contains a package.json with `"name": "bosun"` or the bosun main entry point).
+ * @param {string} dirPath
+ * @returns {boolean}
+ */
+function isBosunModuleRoot(dirPath) {
+  if (!dirPath) return false;
+  const pkgPath = resolve(dirPath, "package.json");
+  if (!existsSync(pkgPath)) return false;
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    return pkg.name === "bosun" || pkg.name === "@virtengine/bosun";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect the bosun module root starting from the current file's directory,
+ * walking up until a package.json with name "bosun" (or "@virtengine/bosun") is found.
+ * Returns the module root path or __dirname as fallback.
+ * @returns {string}
+ */
+function detectBosunModuleRoot() {
+  let dir = __dirname;
+  for (let i = 0; i < 6; i++) {
+    if (isBosunModuleRoot(dir)) return dir;
+    const parent = resolve(dir, "..");
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return __dirname;
+}
+
+/**
+ * Resolve the watch path with smart fallback logic.
+ *
+ * Priority:
+ *  1. configuredWatchPath — if it exists on disk, use it as-is.
+ *  2. scriptPath — if configuredWatchPath is missing/nonexistent.
+ *  3. repoRoot or configDir — last resort.
+ *
+ * @param {{ configuredWatchPath?: string, scriptPath?: string, repoRoot?: string, configDir?: string }} opts
+ * @returns {string}
+ */
+function resolveDefaultWatchPath({ configuredWatchPath, scriptPath, repoRoot: root, configDir } = {}) {
+  if (configuredWatchPath && existsSync(configuredWatchPath)) {
+    return configuredWatchPath;
+  }
+  if (scriptPath && existsSync(scriptPath)) {
+    return scriptPath;
+  }
+  // Fall back — return scriptPath regardless (caller specified it as configured)
+  if (scriptPath) return scriptPath;
+  if (configuredWatchPath) return configuredWatchPath;
+  return root || configDir || __dirname;
+}
+
 function isWslInteropRuntime() {
   return Boolean(
     process.env.WSL_DISTRO_NAME ||
@@ -659,7 +718,23 @@ function detectRepoRoot() {
     // bosun installed standalone, not in a repo
   }
 
-  // 4. Check bosun config for workspace repos
+  // 4. Module root detection — when bosun is installed as a standalone npm package,
+  //    use the module root directory as a stable base for config resolution.
+  const moduleRoot = detectBosunModuleRoot();
+  if (moduleRoot && moduleRoot !== process.cwd()) {
+    try {
+      const gitRoot = execSync("git rev-parse --show-toplevel", {
+        encoding: "utf8",
+        cwd: moduleRoot,
+        stdio: ["pipe", "pipe", "ignore"],
+      }).trim();
+      if (gitRoot) return gitRoot;
+    } catch {
+      // module root is not inside a git repo
+    }
+  }
+
+  // 5. Check bosun config for workspace repos
   const configDirs = getConfigSearchDirs();
   let fallbackRepo = null;
   for (const cfgName of CONFIG_FILES) {
@@ -681,7 +756,7 @@ function detectRepoRoot() {
   }
   if (fallbackRepo) return fallbackRepo;
 
-  // 5. Final fallback — warn and return cwd.  This is unlikely to be a valid
+  // 6. Final fallback — warn and return cwd.
   // git repo (e.g. when the daemon spawns with cwd=homedir), but returning
   // null would crash downstream callers like resolve(repoRoot).  The warning
   // helps diagnose "not a git repository" errors from child processes.

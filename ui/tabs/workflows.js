@@ -12,7 +12,7 @@ const html = htm.bind(h);
 import { haptic } from "../modules/telegram.js";
 import { apiFetch } from "../modules/api.js";
 import { showToast, refreshTab } from "../modules/state.js";
-import { navigateTo } from "../modules/router.js";
+import { navigateTo, routeParams, setRouteParams } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import { formatDate, formatDuration, formatRelative } from "../modules/utils.js";
@@ -43,6 +43,7 @@ function returnToWorkflowList() {
   selectedRunId.value = null;
   selectedRunDetail.value = null;
   viewMode.value = "list";
+  setRouteParams({}, { replace: true, skipGuard: true });
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -87,6 +88,7 @@ async function saveWorkflow(def) {
       activeWorkflow.value = data.workflow;
       showToast("Workflow saved", "success");
       loadWorkflows();
+      setRouteParams({ workflowId: data.workflow.id }, { replace: true, skipGuard: true });
     }
     return data?.workflow;
   } catch (err) {
@@ -101,6 +103,7 @@ async function deleteWorkflow(id) {
     if (activeWorkflow.value?.id === id) {
       activeWorkflow.value = null;
       viewMode.value = "list";
+      setRouteParams({}, { replace: true, skipGuard: true });
     }
     loadWorkflows();
   } catch (err) {
@@ -174,6 +177,7 @@ async function installTemplate(templateId) {
       viewMode.value = "canvas";
       showToast("Template installed", "success");
       loadWorkflows();
+      setRouteParams({ workflowId: data.workflow.id }, { replace: false, skipGuard: true });
     }
   } catch (err) {
     showToast("Failed to install template", "error");
@@ -205,6 +209,8 @@ async function loadRunDetail(runId) {
     if (data?.run) {
       selectedRunId.value = runId;
       selectedRunDetail.value = data.run;
+      viewMode.value = "runs";
+      setRouteParams({ runsView: true, runId }, { replace: false, skipGuard: true });
     }
   } catch (err) {
     showToast("Failed to load run details", "error");
@@ -1746,6 +1752,36 @@ function getRunActivityAt(run) {
   return candidates.length > 0 ? Math.max(...candidates) : null;
 }
 
+function buildNodeStatusesFromRunDetail(run) {
+  const detail = run?.detail || {};
+  const statuses = { ...(detail?.nodeStatuses || {}) };
+  const statusEvents = Array.isArray(detail?.nodeStatusEvents) ? detail.nodeStatusEvents : [];
+  const logs = Array.isArray(detail?.logs) ? detail.logs : [];
+
+  for (const event of statusEvents) {
+    const nodeId = String(event?.nodeId || "").trim();
+    const status = String(event?.status || "").trim();
+    if (!nodeId || !status) continue;
+    statuses[nodeId] = status;
+  }
+
+  // Backfill older runs that only recorded nodeId in logs.
+  if (Object.keys(statuses).length === 0) {
+    const fallbackStatus = run?.status === "failed"
+      ? "failed"
+      : run?.status === "completed"
+        ? "completed"
+        : "running";
+    for (const entry of logs) {
+      const nodeId = String(entry?.nodeId || "").trim();
+      if (!nodeId || statuses[nodeId]) continue;
+      statuses[nodeId] = fallbackStatus;
+    }
+  }
+
+  return statuses;
+}
+
 function getNodeCardBorder(status) {
   if (status === "running") return "#3b82f680";
   if (status === "failed") return "#ef444480";
@@ -1755,7 +1791,11 @@ function getNodeCardBorder(status) {
 
 function safePrettyJson(value) {
   try {
-    return JSON.stringify(value, null, 2);
+    const json = JSON.stringify(value, null, 2);
+    const maxChars = 120000;
+    if (json.length <= maxChars) return json;
+    const omitted = json.length - maxChars;
+    return `${json.slice(0, maxChars)}\n\n… [truncated ${omitted} chars]`;
   } catch {
     return String(value ?? "");
   }
@@ -1853,10 +1893,10 @@ function RunHistoryView() {
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
-    const nodeStatuses = selectedRun?.detail?.nodeStatuses || {};
-    const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
     const logs = Array.isArray(selectedRun?.detail?.logs) ? selectedRun.detail.logs : [];
     const errors = Array.isArray(selectedRun?.detail?.errors) ? selectedRun.detail.errors : [];
+    const nodeStatuses = buildNodeStatusesFromRunDetail(selectedRun);
+    const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
     const nodeIds = Object.keys(nodeStatuses).sort((a, b) => {
       const rankDiff = getNodeStatusRank(nodeStatuses[a]) - getNodeStatusRank(nodeStatuses[b]);
       if (rankDiff !== 0) return rankDiff;
@@ -1916,6 +1956,8 @@ function RunHistoryView() {
             const nodeStatus = nodeStatuses[nodeId];
             const nodeStatusStyles = getRunStatusBadgeStyles(nodeStatus);
             const nodeOutput = nodeOutputs[nodeId];
+            const nodeSummary = typeof nodeOutput?.summary === "string" ? nodeOutput.summary.trim() : "";
+            const nodeNarrative = typeof nodeOutput?.narrative === "string" ? nodeOutput.narrative.trim() : "";
             return html`
               <details key=${nodeId} style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid ${getNodeCardBorder(nodeStatus)}; border-radius: 8px; padding: 8px 10px;">
                 <summary style="cursor: pointer; display: flex; align-items: center; gap: 8px;">
@@ -1924,6 +1966,12 @@ function RunHistoryView() {
                     ${nodeStatus || "unknown"}
                   </span>
                 </summary>
+                ${(nodeSummary || nodeNarrative) && html`
+                  <div style="margin-top: 8px; font-size: 12px; color: #d1d5db; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px; white-space: pre-wrap; word-break: break-word;">
+                    ${nodeSummary ? html`<div><b>Summary:</b> ${nodeSummary}</div>` : ""}
+                    ${nodeNarrative ? html`<div style="margin-top: ${nodeSummary ? "6px" : "0"};"><b>Narrative:</b> ${nodeNarrative}</div>` : ""}
+                  </div>
+                `}
                 <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(nodeOutput)}</pre>
               </details>
             `;
@@ -2090,6 +2138,73 @@ export function WorkflowsTab() {
     loadTemplates();
     loadNodeTypes();
   }, []);
+
+  useEffect(() => {
+    const route = routeParams.value || {};
+    const workflowId = String(route.workflowId || "").trim();
+    const runId = String(route.runId || "").trim();
+    const wantsRuns = Boolean(route.runsView) || Boolean(runId);
+
+    if (wantsRuns) {
+      viewMode.value = "runs";
+      loadRuns();
+      if (runId) {
+        loadRunDetail(runId);
+      } else {
+        selectedRunId.value = null;
+        selectedRunDetail.value = null;
+      }
+      return;
+    }
+
+    if (workflowId) {
+      apiFetch(`/api/workflows/${encodeURIComponent(workflowId)}`)
+        .then((d) => {
+          activeWorkflow.value = d?.workflow || activeWorkflow.value;
+          if (activeWorkflow.value?.id === workflowId || d?.workflow?.id === workflowId) {
+            viewMode.value = "canvas";
+          }
+        })
+        .catch(() => {
+          const existing = (workflows.value || []).find((wf) => wf.id === workflowId);
+          if (existing) {
+            activeWorkflow.value = existing;
+            viewMode.value = "canvas";
+          }
+        });
+      return;
+    }
+
+    if (viewMode.value !== "list") {
+      selectedRunId.value = null;
+      selectedRunDetail.value = null;
+      activeWorkflow.value = null;
+      viewMode.value = "list";
+    }
+  }, [routeParams.value]);
+
+  useEffect(() => {
+    const mode = viewMode.value;
+    if (mode === "canvas" && activeWorkflow.value?.id) {
+      setRouteParams(
+        { workflowId: activeWorkflow.value.id },
+        { replace: true, skipGuard: true },
+      );
+      return;
+    }
+    if (mode === "runs") {
+      if (selectedRunId.value) {
+        setRouteParams(
+          { runsView: true, runId: selectedRunId.value },
+          { replace: true, skipGuard: true },
+        );
+      } else {
+        setRouteParams({ runsView: true }, { replace: true, skipGuard: true });
+      }
+      return;
+    }
+    setRouteParams({}, { replace: true, skipGuard: true });
+  }, [viewMode.value, activeWorkflow.value?.id, selectedRunId.value]);
 
   useEffect(() => {
     const handler = (e) => {

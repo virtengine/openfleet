@@ -192,6 +192,7 @@ import {
   isExecutorDisabled,
   getExecutorMode,
   loadExecutorOptionsFromConfig,
+  setTaskStatusTransitionHandler,
 } from "./task-executor.mjs";
 import {
   configureFromArgs,
@@ -387,6 +388,7 @@ let workflowAutomationInitDone = false;
 let workflowAutomationReadyLogged = false;
 let workflowAutomationUnavailableLogged = false;
 let workflowConflictResolverPausedLogged = false;
+let workflowTaskReconcilePausedLogged = false;
 
 /**
  * Cache of module names that have an enabled workflow replacement.
@@ -647,6 +649,44 @@ function queueWorkflowEvent(eventType, eventData = {}, opts = {}) {
   dispatchWorkflowEvent(eventType, eventData, opts).catch(() => {});
 }
 
+function configureExecutorTaskStatusTransitions() {
+  if (!workflowAutomationEnabled) {
+    setTaskStatusTransitionHandler(null);
+    return;
+  }
+
+  setTaskStatusTransitionHandler(async (taskId, status, options = {}) => {
+    const normalizedTaskId = String(taskId || "").trim();
+    const normalizedStatus = String(status || "").trim().toLowerCase();
+    if (!normalizedTaskId || !normalizedStatus) return false;
+    const payload =
+      options && typeof options === "object" ? { ...options } : {};
+
+    queueWorkflowEvent(
+      "task.transition.requested",
+      {
+        taskId: normalizedTaskId,
+        targetStatus: normalizedStatus,
+        status: normalizedStatus,
+        taskTitle: String(payload.taskTitle || "").trim() || null,
+        source: String(payload.source || "task-executor").trim() || "task-executor",
+        branch: payload.branch || null,
+        baseBranch: payload.baseBranch || null,
+        worktreePath: payload.worktreePath || null,
+        prNumber: payload.prNumber || null,
+        prUrl: payload.prUrl || null,
+        error: payload.error || null,
+      },
+      {
+        dedupKey:
+          payload.workflowDedupKey ||
+          `workflow-event:task.transition.requested:${normalizedTaskId}:${normalizedStatus}`,
+      },
+    );
+    return true;
+  });
+}
+
 async function pollAgentAlerts() {
   if (process.env.VITEST) return;
   const path = getAgentAlertsPath();
@@ -816,6 +856,7 @@ workflowAutomationEnabled = parseEnvBoolean(
     ? dedupMs
     : 15_000;
 }
+configureExecutorTaskStatusTransitions();
 
 // Install console interceptor with log file (after config provides logDir)
 {
@@ -1459,9 +1500,26 @@ function isMonitorMonitorEnabled() {
 }
 
 function isSelfRestartWatcherEnabled() {
+  const devMode = isDevMode();
+  const force = process.env.SELF_RESTART_WATCH_FORCE;
+  const forceEnabled = isTruthyFlag(force);
+  const npmLifecycleEvent = String(process.env.npm_lifecycle_event || "")
+    .trim()
+    .toLowerCase();
+  const launchedViaNpmStartScript =
+    npmLifecycleEvent === "start" || npmLifecycleEvent.startsWith("start:");
   const explicit = process.env.SELF_RESTART_WATCH_ENABLED;
   if (explicit !== undefined && String(explicit).trim() !== "") {
     return !isFalsyFlag(explicit);
+  }
+  if (!devMode && !forceEnabled) {
+    return false;
+  }
+  if (devMode && !forceEnabled && !launchedViaNpmStartScript) {
+    // Plain `bosun` command launches from a source checkout should behave like
+    // npm/prod installs by default: no self-restart watcher unless explicitly
+    // enabled. Auto-updates still handle published package changes.
+    return false;
   }
   if (
     String(executorMode || "")
@@ -1478,7 +1536,7 @@ function isSelfRestartWatcherEnabled() {
   // Dev mode (source checkout / monorepo) → watch for code changes.
   // npm mode (installed via npm) → do NOT watch; source only changes via
   // npm update, which is handled by the auto-update loop instead.
-  return isDevMode();
+  return devMode;
 }
 
 const MONITOR_MONITOR_DEFAULT_TIMEOUT_MS = 6 * 60 * 60 * 1000;
@@ -5021,6 +5079,29 @@ async function updateTaskStatus(taskId, newStatus, options = {}) {
     }
   };
 
+  const transitionSource = String(options?.source || "").trim().toLowerCase();
+  const workflowBypass = options?.bypassWorkflowOwnership === true;
+  if (workflowAutomationEnabled && transitionSource !== "workflow" && !workflowBypass) {
+    const engine = await ensureWorkflowAutomationEngine().catch(() => null);
+    if (engine) {
+      queueWorkflowEvent(
+        "task.transition.requested",
+        {
+          ...baseWorkflowPayload,
+          targetStatus: normalizedStatus,
+          source: transitionSource || "legacy-monitor",
+          error: options?.error || null,
+        },
+        {
+          dedupKey:
+            options?.workflowDedupKey ||
+            `workflow-event:task.transition.requested:${normalizedTaskId}:${normalizedStatus}`,
+        },
+      );
+      return true;
+    }
+  }
+
   const backend = getActiveKanbanBackend();
   if (backend !== "vk") {
     const resolvedTaskId = resolveTaskIdForBackend(taskId, backend);
@@ -5031,7 +5112,11 @@ async function updateTaskStatus(taskId, newStatus, options = {}) {
       return false;
     }
     try {
-      await updateKanbanTaskStatus(resolvedTaskId, newStatus);
+      await updateKanbanTaskStatus(
+        resolvedTaskId,
+        newStatus,
+        options && typeof options === "object" ? options : {},
+      );
       clearRecoveryCaches(taskId);
       if (resolvedTaskId !== taskId) {
         clearRecoveryCaches(resolvedTaskId);
@@ -5845,6 +5930,24 @@ loadRecoveryCache();
  */
 async function checkMergedPRsAndUpdateTasks() {
   try {
+    if (
+      isWorkflowReplacingModule("task-executor.mjs") ||
+      isWorkflowReplacingModule("monitor.mjs")
+    ) {
+      if (!workflowTaskReconcilePausedLogged) {
+        workflowTaskReconcilePausedLogged = true;
+        console.log(
+          "[monitor] skipping legacy task-status reconciliation — handled by workflow replacement",
+        );
+      }
+      return {
+        checked: 0,
+        movedDone: 0,
+        movedReview: 0,
+        movedTodo: 0,
+        skippedByWorkflowReplacement: true,
+      };
+    }
     console.log("[monitor] Checking for merged PRs to update task status...");
     const workflowOwnsLegacyConflictResolution =
       isWorkflowReplacingModule("pr-cleanup-daemon.mjs") ||
@@ -8260,7 +8363,13 @@ async function actOnAssessment(ctx, decision) {
     case "reprompt_same":
       console.log(`[${tag}] → reprompt same session`);
       if (decision.prompt && agentPoolEnabled) {
-        void execPooledPrompt(decision.prompt, { timeoutMs: 15 * 60 * 1000 });
+        execPooledPrompt(decision.prompt, { timeoutMs: 15 * 60 * 1000 }).catch(
+          (err) => {
+            console.warn(
+              `[${tag}] reprompt_same failed: ${err?.message || err}`,
+            );
+          },
+        );
       }
       break;
 
@@ -14465,6 +14574,7 @@ function applyConfig(nextConfig, options = {}) {
     nextConfig.triggerSystem && typeof nextConfig.triggerSystem === "object"
       ? nextConfig.triggerSystem
       : { enabled: false, templates: [], defaults: { executor: "auto", model: "auto" } };
+  configureExecutorTaskStatusTransitions();
   if (workflowAutomationEnabled) {
     ensureWorkflowAutomationEngine().catch(() => {});
   }
@@ -14538,7 +14648,7 @@ function applyConfig(nextConfig, options = {}) {
     } else {
       stopSelfWatcher();
       console.log(
-        "[monitor] self-restart watcher disabled (set SELF_RESTART_WATCH_ENABLED=1 to force-enable)",
+        "[monitor] self-restart watcher disabled (set SELF_RESTART_WATCH_FORCE=1 to allow in npm/prod mode)",
       );
     }
   }
@@ -14744,7 +14854,11 @@ function isStreamNoise(msg) {
     msg.includes("EPIPE") ||
     msg.includes("ERR_STREAM_PREMATURE_CLOSE") ||
     msg.includes("ERR_STREAM_DESTROYED") ||
+    msg.includes("stream was destroyed") ||
+    msg.includes("Cannot call write after a stream was destroyed") ||
     msg.includes("write after end") ||
+    msg.includes("write after a stream was destroyed") ||
+    msg.includes("Cannot call write after") ||
     msg.includes("This socket has been ended") ||
     msg.includes("Cannot read properties of null") ||
     msg.includes("ECONNRESET") ||
@@ -14760,7 +14874,7 @@ function isStreamNoise(msg) {
 }
 
 process.on("uncaughtException", (err) => {
-  const msg = err?.message || "";
+  const msg = (err?.code ? err.code + ": " : "") + (err?.message || "");
   // Always suppress stream noise — not just during shutdown
   if (isStreamNoise(msg)) {
     console.error(
@@ -14797,7 +14911,7 @@ process.on("uncaughtException", (err) => {
 });
 
 process.on("unhandledRejection", (reason) => {
-  const msg = reason?.message || String(reason || "");
+  const msg = (reason?.code ? reason.code + ": " : "") + (reason?.message || String(reason || ""));
   // Always write breadcrumb — unhandled rejections can cause exit code 1
   try {
     const crashDir = config?.logDir || resolve(__dirname, "logs");
@@ -15142,8 +15256,22 @@ if (selfRestartWatcherEnabled) {
   const normalizedExecutorMode = String(executorMode || "")
     .trim()
     .toLowerCase();
-  const disabledReason = !isDevMode()
+  const explicitSelfRestartWatch = process.env.SELF_RESTART_WATCH_ENABLED;
+  const hasExplicitSelfRestartWatch =
+    explicitSelfRestartWatch !== undefined &&
+    String(explicitSelfRestartWatch).trim() !== "";
+  const forceSelfRestartWatch = isTruthyFlag(process.env.SELF_RESTART_WATCH_FORCE);
+  const npmLifecycleEvent = String(process.env.npm_lifecycle_event || "")
+    .trim()
+    .toLowerCase();
+  const launchedViaNpmStartScript =
+    npmLifecycleEvent === "start" || npmLifecycleEvent.startsWith("start:");
+  const disabledReason = hasExplicitSelfRestartWatch
+    ? "explicitly"
+    : !isDevMode()
     ? "npm/prod mode — updates via auto-update loop"
+    : !forceSelfRestartWatch && !launchedViaNpmStartScript
+      ? "CLI command mode in source checkout — use npm run start or SELF_RESTART_WATCH_ENABLED=1 to enable"
     : normalizedExecutorMode === "internal" || normalizedExecutorMode === "hybrid"
       ? `executor mode "${normalizedExecutorMode}" (continuous task-driven code changes)`
       : "explicitly";
@@ -15410,6 +15538,10 @@ if (isExecutorDisabled()) {
       },
       onTaskCompleted: (task, result) => {
         const taskId = String(task?.id || task?.task_id || "").trim();
+        const finalizationFailed =
+          result?.finalized === false ||
+          String(result?.finalizationReason || "").trim().toLowerCase() ===
+            "no_commits";
         const branch = String(
           result?.branch ||
             task?.branchName ||
@@ -15434,11 +15566,13 @@ if (isExecutorDisabled()) {
             "",
         ).trim() || null;
         console.log(
-          `[task-executor] ✅ completed: "${task.title}" (${result.attempts} attempt(s))`,
+          finalizationFailed
+            ? `[task-executor] ⚠ completed without finalization: "${task.title}" (${result.attempts} attempt(s), reason=${result?.finalizationReason || "unknown"})`
+            : `[task-executor] ✅ completed: "${task.title}" (${result.attempts} attempt(s))`,
         );
-        if (agentEventBus) {
+        if (!finalizationFailed && agentEventBus) {
           agentEventBus.onTaskCompleted(task, result);
-        } else {
+        } else if (!finalizationFailed) {
           // Fallback: queue review directly if event bus not ready
           if (reviewAgent && result.success) {
             try {
@@ -15455,22 +15589,44 @@ if (isExecutorDisabled()) {
           }
         }
         if (taskId) {
-          queueWorkflowEvent(
-            "task.completed",
-            {
-              taskId,
-              taskTitle: task?.title || "",
-              taskStatus: "completed",
-              attempts: Number(result?.attempts || 0),
-              success: result?.success !== false,
-              branch,
-              worktreePath,
-              prNumber,
-              prUrl,
-              baseBranch,
-            },
-            { dedupKey: `workflow-event:task.completed:${taskId}:${result?.attempts || 0}` },
-          );
+          if (finalizationFailed) {
+            queueWorkflowEvent(
+              "task.finalization_failed",
+              {
+                taskId,
+                taskTitle: task?.title || "",
+                taskStatus: "todo",
+                attempts: Number(result?.attempts || 0),
+                success: false,
+                branch,
+                worktreePath,
+                prNumber,
+                prUrl,
+                baseBranch,
+                reason: result?.finalizationReason || "unknown",
+              },
+              {
+                dedupKey: `workflow-event:task.finalization_failed:${taskId}:${result?.attempts || 0}:${result?.finalizationReason || "unknown"}`,
+              },
+            );
+          } else {
+            queueWorkflowEvent(
+              "task.completed",
+              {
+                taskId,
+                taskTitle: task?.title || "",
+                taskStatus: "completed",
+                attempts: Number(result?.attempts || 0),
+                success: result?.success !== false,
+                branch,
+                worktreePath,
+                prNumber,
+                prUrl,
+                baseBranch,
+              },
+              { dedupKey: `workflow-event:task.completed:${taskId}:${result?.attempts || 0}` },
+            );
+          }
         }
       },
       onTaskFailed: (task, err) => {

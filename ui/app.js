@@ -90,8 +90,14 @@ import {
   initWsInvalidationListener,
   loadNotificationPrefs,
   applyStoredDefaults,
+  hasPendingChanges,
 } from "./modules/state.js";
-import { activeTab, navigateTo, shouldBlockTabSwipe, TAB_CONFIG } from "./modules/router.js";
+import {
+  activeTab,
+  navigateTo,
+  shouldBlockTabSwipe,
+  TAB_CONFIG,
+} from "./modules/router.js";
 import { formatRelative } from "./modules/utils.js";
 
 /* ── Component imports ── */
@@ -594,7 +600,7 @@ function SidebarNav({ collapsed = false, onToggle }) {
   `;
 }
 
-function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onCollapse, onExpand }) {
+function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onCollapse, onExpand, sessionType = "primary" }) {
   const [showArchived, setShowArchived] = useState(false);
   const sessions = sessionsData.value || [];
   const activeCount = sessions.filter(
@@ -602,16 +608,11 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
   ).length;
 
   useEffect(() => {
-    let mounted = true;
-    loadSessions();
-    const interval = setInterval(() => {
-      if (mounted) loadSessions();
-    }, 5000);
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, []);
+    // Session polling belongs to the active tab (Chat/Agents). The rail only
+    // performs a one-time fallback load to avoid filter thrash/flicker.
+    if ((sessionsData.value || []).length > 0) return;
+    void loadSessions({ type: sessionType }).catch(() => {});
+  }, [sessionType]);
 
   useEffect(() => {
     if (selectedSessionId.value || sessions.length === 0) return;
@@ -1372,6 +1373,18 @@ function App() {
   useEffect(() => {
     const win = globalThis.window;
     if (!win?.matchMedia) return;
+    const query = win.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`);
+    const update = () => setIsCompactNav(query.matches);
+    update();
+    query.addEventListener?.("change", update);
+    return () => {
+      query.removeEventListener?.("change", update);
+    };
+  }, []);
+
+  useEffect(() => {
+    const win = globalThis.window;
+    if (!win?.matchMedia) return;
     const tabletQuery = win.matchMedia(
       `(min-width: ${TABLET_MIN_WIDTH}px) and (max-width: ${DESKTOP_MIN_WIDTH - 1}px)`,
     );
@@ -1383,17 +1396,6 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    const win = globalThis.window;
-    if (!win?.matchMedia) return;
-    const query = win.matchMedia(`(max-width: ${COMPACT_NAV_MAX_WIDTH}px)`);
-    const update = () => setIsCompactNav(query.matches);
-    update();
-    query.addEventListener?.("change", update);
-    return () => {
-      query.removeEventListener?.("change", update);
-    };
-  }, []);
 
   useEffect(() => {
     if (!isDesktop || !globalThis.window) return;
@@ -1500,8 +1502,11 @@ function App() {
     // Load notification preferences early (non-blocking)
     loadNotificationPrefs();
 
-    // Load initial data for the default tab, then apply stored executor defaults
-    refreshTab("dashboard", { background: true, manual: false }).then(() => applyStoredDefaults());
+    // Load initial data for the route-selected tab, then apply stored defaults.
+    refreshTab(activeTab.value || "dashboard", {
+      background: true,
+      manual: false,
+    }).then(() => applyStoredDefaults());
 
     // Global keyboard shortcuts (1-7 for tabs, Escape for modals)
     function handleGlobalKeys(e) {
@@ -1547,6 +1552,16 @@ function App() {
       disconnectWebSocket();
       document.removeEventListener("keydown", handleGlobalKeys);
     };
+  }, []);
+
+  useEffect(() => {
+    const onBeforeUnload = (event) => {
+      if (!hasPendingChanges.value) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    globalThis.addEventListener?.("beforeunload", onBeforeUnload);
+    return () => globalThis.removeEventListener?.("beforeunload", onBeforeUnload);
   }, []);
 
   useEffect(() => {
@@ -1631,9 +1646,8 @@ function App() {
   const isChatOrAgents = activeTab.value === "chat" || activeTab.value === "agents";
   const showSessionRail = isDesktop && isChatOrAgents;
   const showInspector = isDesktop && isChatOrAgents;
-  const showBottomNav = !isDesktop && !isTablet;
-
-  // On tablet: prefer drawer controls over bottom-nav to avoid dual navigation
+  const showBottomNav = !isDesktop;
+  const railSessionType = activeTab.value === "agents" ? "task" : "primary";
   const showDrawerToggles = isTablet;
   const showInspectorToggle = isTablet && isChatOrAgents;
 
@@ -1743,6 +1757,7 @@ function App() {
             collapsed=${railCollapsed}
             onCollapse=${collapseRail}
             onExpand=${expandRail}
+            sessionType=${railSessionType}
           />`
         : null}
       <div class="app-main">
@@ -1767,7 +1782,7 @@ function App() {
             onRefresh=${() => refreshTab(activeTab.value)}
             disabled=${activeTab.value === "chat"}
           >
-            <main class=${`main-content${showBottomNav ? " compact" : ""}`} ref=${mainRef}>
+            <main class=${`main-content${showBottomNav && isCompactNav ? " compact" : ""}`} ref=${mainRef}>
               <${TabErrorBoundary} key=${activeTab.value} tabName=${activeTab.value}>
                 <${CurrentTab} />
               <//>
@@ -1797,7 +1812,7 @@ function App() {
     </div>
     ${showBottomNav
       ? html`<${BottomNav}
-          compact=${true}
+          compact=${isCompactNav}
           moreOpen=${isMoreOpen}
           onToggleMore=${toggleMore}
           onNavigate=${handleNavigate}

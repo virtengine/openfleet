@@ -72,6 +72,15 @@ function fallbackBuildSandboxWorkspaceWrite(options = {}) {
   }
   if (repoRoot && isAbsolute(repoRoot)) {
     roots.add(repoRoot);
+    const ancestor =
+      typeof codexConfig?.ensureGitAncestor === "function"
+        ? codexConfig.ensureGitAncestor(repoRoot)
+        : null;
+    const gitDir =
+      String(ancestor?.gitDir || "").trim() || resolve(repoRoot, ".git");
+    if (gitDir && isAbsolute(gitDir)) {
+      roots.add(gitDir);
+    }
     const parent = dirname(repoRoot);
     if (parent && parent !== repoRoot) roots.add(parent);
   }

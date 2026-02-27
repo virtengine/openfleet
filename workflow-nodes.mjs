@@ -31,11 +31,201 @@ const WORKFLOW_AGENT_HEARTBEAT_MS = (() => {
   if (!Number.isFinite(raw)) return 30000;
   return Math.max(5000, Math.min(120000, Math.trunc(raw)));
 })();
+const WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT = (() => {
+  const raw = Number(process.env.WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT || 80);
+  if (!Number.isFinite(raw)) return 80;
+  return Math.max(20, Math.min(500, Math.trunc(raw)));
+})();
 
 function trimLogText(value, max = 180) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return "";
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function normalizeLineEndings(value) {
+  if (value == null) return "";
+  return String(value)
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+}
+
+function simplifyPathLabel(filePath) {
+  const normalized = String(filePath || "").replace(/\\/g, "/");
+  if (!normalized) return "";
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length >= 2) return parts.slice(-2).join("/");
+  return parts[0] || normalized;
+}
+
+function parsePathListingLine(line) {
+  const raw = String(line || "").trim();
+  if (!raw) return null;
+  const windowsMatch = raw.match(/^([A-Za-z]:\\[^:]+):(\d+):\s*(.+)?$/);
+  if (windowsMatch) {
+    return {
+      path: windowsMatch[1],
+      line: Number(windowsMatch[2]),
+      detail: String(windowsMatch[3] || "").trim(),
+    };
+  }
+  const unixMatch = raw.match(/^(\/[^:]+):(\d+):\s*(.+)?$/);
+  if (unixMatch) {
+    return {
+      path: unixMatch[1],
+      line: Number(unixMatch[2]),
+      detail: String(unixMatch[3] || "").trim(),
+    };
+  }
+  return null;
+}
+
+function extractSymbolHint(detail) {
+  const text = String(detail || "");
+  if (!text) return "";
+  const patterns = [
+    /\b(?:async\s+)?function\s+([A-Za-z0-9_$]+)/i,
+    /\bclass\s+([A-Za-z0-9_$]+)/i,
+    /\b(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?\(/i,
+    /\b([A-Za-z0-9_$]+)\s*:\s*function\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return "";
+}
+
+function summarizePathListingBlock(value) {
+  const lines = normalizeLineEndings(value)
+    .split("\n")
+    .map((line) => String(line || "").trim())
+    .filter(Boolean);
+  if (!lines.length) return "";
+
+  const entries = [];
+  for (const line of lines) {
+    const parsed = parsePathListingLine(line);
+    if (parsed) entries.push(parsed);
+  }
+
+  if (entries.length < 3) return "";
+  const fileStats = new Map();
+  const symbols = new Set();
+  for (const entry of entries) {
+    const label = simplifyPathLabel(entry.path) || entry.path;
+    const current = fileStats.get(label) || { count: 0 };
+    current.count += 1;
+    fileStats.set(label, current);
+    const symbol = extractSymbolHint(entry.detail);
+    if (symbol) symbols.add(symbol);
+  }
+
+  const fileList = Array.from(fileStats.entries())
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 4)
+    .map(([label, stat]) => `${label} (${stat.count})`)
+    .join(", ");
+  const symbolList = Array.from(symbols).slice(0, 6).join(", ");
+
+  const summaryParts = [
+    `Indexed ${entries.length} code references across ${fileStats.size} file${fileStats.size === 1 ? "" : "s"}`,
+  ];
+  if (fileList) summaryParts.push(`Top files: ${fileList}`);
+  if (symbolList) summaryParts.push(`Symbols: ${symbolList}`);
+
+  return trimLogText(summaryParts.join(". "), 320);
+}
+
+function normalizeNarrativeText(value, options = {}) {
+  const maxParagraphs = Number.isFinite(options.maxParagraphs) ? options.maxParagraphs : 4;
+  const maxChars = Number.isFinite(options.maxChars) ? options.maxChars : 2200;
+  const raw = normalizeLineEndings(value);
+  if (!raw) return "";
+
+  const pathSummary = summarizePathListingBlock(raw);
+  if (pathSummary) return pathSummary;
+
+  const paragraphs = raw
+    .split(/\n{2,}/)
+    .map((paragraph) =>
+      paragraph
+        .split("\n")
+        .map((line) => String(line || "").trim())
+        .filter(Boolean)
+        .join(" "),
+    )
+    .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, Math.max(1, maxParagraphs));
+
+  const text = paragraphs.join("\n\n").trim();
+  if (!text) return "";
+  return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text;
+}
+
+function summarizeAssistantUsage(data = {}) {
+  const usage = data?.usage && typeof data.usage === "object" ? data.usage : data;
+  if (!usage || typeof usage !== "object") return "";
+
+  const pickNumber = (...keys) => {
+    for (const key of keys) {
+      const candidate = Number(usage?.[key]);
+      if (Number.isFinite(candidate) && candidate >= 0) return candidate;
+    }
+    return null;
+  };
+
+  const model = trimLogText(usage?.model || data?.model || "", 60);
+  const prompt = pickNumber("prompt_tokens", "inputTokens", "promptTokens");
+  const completion = pickNumber("completion_tokens", "outputTokens", "completionTokens");
+  const total = pickNumber("total_tokens", "totalTokens");
+  const durationMs = pickNumber("duration", "durationMs");
+  const parts = [];
+
+  if (model) parts.push(`model=${model}`);
+  if (prompt != null) parts.push(`prompt=${prompt}`);
+  if (completion != null) parts.push(`completion=${completion}`);
+  if (total != null) parts.push(`total=${total}`);
+  if (durationMs != null) parts.push(`duration=${Math.round(durationMs)}ms`);
+  if (!parts.length) return "";
+  return `Usage: ${parts.join(" · ")}`;
+}
+
+function summarizeAssistantMessageData(data = {}) {
+  const messageText = normalizeNarrativeText(
+    extractStreamText(data?.content) ||
+      extractStreamText(data?.text) ||
+      extractStreamText(data?.deltaContent),
+    { maxParagraphs: 1, maxChars: 260 },
+  );
+  if (messageText) return `Agent: ${trimLogText(messageText, 220)}`;
+
+  const detailText = normalizeNarrativeText(data?.detailedContent, {
+    maxParagraphs: 1,
+    maxChars: 260,
+  });
+  if (detailText) return `Agent detail: ${trimLogText(detailText, 220)}`;
+
+  const toolRequests = Array.isArray(data?.toolRequests)
+    ? data.toolRequests
+        .map((req) => String(req?.name || "").trim())
+        .filter(Boolean)
+    : [];
+  if (toolRequests.length) {
+    const unique = Array.from(new Set(toolRequests)).slice(0, 4).join(", ");
+    return `Agent requested tools: ${unique}`;
+  }
+
+  const reasoningText = normalizeNarrativeText(data?.reasoningOpaque, {
+    maxParagraphs: 1,
+    maxChars: 220,
+  });
+  if (reasoningText) return `Thinking: ${trimLogText(reasoningText, 220)}`;
+
+  return "";
 }
 
 function extractStreamText(value) {
@@ -59,6 +249,10 @@ function extractStreamText(value) {
     if (typeof value?.text === "string") return value.text;
     if (typeof value?.content === "string") return value.content;
     if (typeof value?.deltaContent === "string") return value.deltaContent;
+    if (typeof value?.detailedContent === "string") return value.detailedContent;
+    if (typeof value?.summary === "string") return value.summary;
+    if (typeof value?.reasoning === "string") return value.reasoning;
+    if (typeof value?.reasoningOpaque === "string") return value.reasoningOpaque;
   }
   return "";
 }
@@ -66,6 +260,15 @@ function extractStreamText(value) {
 function summarizeAgentStreamEvent(event) {
   const type = String(event?.type || "").trim();
   if (!type) return "";
+
+  // Ignore token-level deltas that create noisy duplicate run logs.
+  if (
+    /reasoning(?:_|[.])delta/i.test(type) ||
+    /(?:^|[.])delta$/i.test(type) ||
+    /(?:_|[.])delta(?:_|[.])/i.test(type)
+  ) {
+    return "";
+  }
 
   if (type === "item.updated") {
     return "";
@@ -75,13 +278,31 @@ function summarizeAgentStreamEvent(event) {
     return `Tool call: ${event?.tool_name || event?.data?.tool_name || "unknown"}`;
   }
 
+  if (type === "function_call") {
+    return `Tool call: ${event?.name || event?.tool_name || "unknown"}`;
+  }
+
   if (type === "tool_result") {
     const name = event?.tool_name || event?.data?.tool_name || "unknown";
     return `Tool result: ${name}`;
   }
 
+  if (type === "function_call_output" || type === "tool_output") {
+    const name = event?.name || event?.tool_name || event?.data?.tool_name || "unknown";
+    return `Tool result: ${name}`;
+  }
+
   if (type === "error") {
     return `Agent error: ${trimLogText(event?.error || event?.message || "unknown error", 220)}`;
+  }
+
+  if (type === "assistant.usage") {
+    const usageLine = summarizeAssistantUsage(event?.data || {});
+    return usageLine || "Usage update";
+  }
+
+  if (type === "assistant.message") {
+    return summarizeAssistantMessageData(event?.data || {});
   }
 
   const item = event?.item;
@@ -146,6 +367,10 @@ function summarizeAgentStreamEvent(event) {
       extractStreamText(event?.data?.content) ||
       extractStreamText(event?.data?.text) ||
       extractStreamText(event?.data?.deltaContent) ||
+      normalizeNarrativeText(event?.data?.detailedContent, {
+        maxParagraphs: 1,
+        maxChars: 220,
+      }) ||
       "",
     220,
   );
@@ -171,6 +396,127 @@ function summarizeAgentStreamEvent(event) {
   }
 
   return "";
+}
+
+function buildAgentEventPreview(items = [], streamLines = [], maxEvents = WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT) {
+  const lines = [];
+  if (Array.isArray(streamLines) && streamLines.length) {
+    lines.push(...streamLines);
+  }
+
+  if (Array.isArray(items) && items.length) {
+    for (const entry of items) {
+      const line = summarizeAgentStreamEvent(entry);
+      if (line) lines.push(line);
+    }
+  }
+
+  const deduped = [];
+  const seen = new Set();
+  for (const line of lines) {
+    const normalized = trimLogText(line, 260);
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(normalized);
+  }
+
+  const limit = Number.isFinite(maxEvents)
+    ? Math.max(10, Math.min(500, Math.trunc(maxEvents)))
+    : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
+  return deduped.slice(-limit);
+}
+
+function condenseAgentItems(items = [], maxEvents = WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const limit = Number.isFinite(maxEvents)
+    ? Math.max(10, Math.min(500, Math.trunc(maxEvents)))
+    : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
+  const slice = items.slice(-limit);
+  return slice.map((entry) => ({
+    type: String(entry?.type || entry?.item?.type || "event"),
+    summary:
+      summarizeAgentStreamEvent(entry) ||
+      trimLogText(
+        normalizeNarrativeText(
+          extractStreamText(entry?.message?.content) ||
+            extractStreamText(entry?.content) ||
+            extractStreamText(entry?.text) ||
+            extractStreamText(entry?.data?.content) ||
+            extractStreamText(entry?.item?.text) ||
+            extractStreamText(entry?.item?.content),
+          { maxParagraphs: 1, maxChars: 220 },
+        ),
+        220,
+      ) ||
+      "event",
+    timestamp: entry?.timestamp || entry?.data?.timestamp || null,
+  }));
+}
+
+function buildAgentExecutionDigest(result = {}, streamLines = [], maxEvents = WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT) {
+  const eventPreview = buildAgentEventPreview(result?.items || [], streamLines, maxEvents);
+  const thoughts = eventPreview
+    .filter((line) => line.startsWith("Thinking:"))
+    .map((line) => line.replace(/^Thinking:\s*/i, "").trim())
+    .filter(Boolean);
+  const actionLines = eventPreview
+    .filter(
+      (line) =>
+        line.startsWith("Tool call:") ||
+        line.startsWith("Tool result:") ||
+        line.startsWith("Agent requested tools:"),
+    )
+    .map((line) =>
+      line
+        .replace(/^Tool call:\s*/i, "called ")
+        .replace(/^Tool result:\s*/i, "received result from ")
+        .replace(/^Agent requested tools:\s*/i, "requested tools ")
+        .trim(),
+    )
+    .filter(Boolean);
+  const agentMessages = eventPreview
+    .filter((line) => line.startsWith("Agent:"))
+    .map((line) => line.replace(/^Agent:\s*/i, "").trim())
+    .filter(Boolean);
+
+  let summary = normalizeNarrativeText(result?.output || "", { maxParagraphs: 2, maxChars: 900 });
+  if (!summary || summary === "(Agent completed with no text output)") {
+    summary = agentMessages[agentMessages.length - 1] || "";
+  }
+  if (!summary && eventPreview.length > 0) {
+    summary = eventPreview[eventPreview.length - 1];
+  }
+  summary = trimLogText(summary, 900);
+
+  const narrativeParts = [];
+  if (summary && summary !== "(Agent completed with no text output)") {
+    narrativeParts.push(summary);
+  }
+  if (thoughts.length) {
+    narrativeParts.push(`Thought process: ${thoughts.slice(0, 4).join(" ")}`);
+  }
+  if (actionLines.length) {
+    narrativeParts.push(`Actions: ${actionLines.slice(0, 8).join("; ")}`);
+  }
+  if (!narrativeParts.length && eventPreview.length) {
+    narrativeParts.push(eventPreview.slice(-3).join(" "));
+  }
+
+  const itemCount = Array.isArray(result?.items) ? result.items.length : 0;
+  const retainedItems = condenseAgentItems(result?.items || [], maxEvents);
+  const omittedItemCount = Math.max(0, itemCount - retainedItems.length);
+
+  return {
+    summary,
+    narrative: narrativeParts.join("\n\n").trim(),
+    thoughts: thoughts.slice(0, 8),
+    stream: eventPreview,
+    items: retainedItems,
+    itemCount,
+    omittedItemCount,
+  };
 }
 
 function normalizeLegacyWorkflowCommand(command) {
@@ -609,6 +955,7 @@ registerNodeType("action.run_agent", {
       continuePrompt: { type: "string", description: "Prompt used when continuing an existing session" },
       sessionRetries: { type: "number", default: 2, description: "Additional session-aware retries for execWithRetry" },
       maxContinues: { type: "number", default: 2, description: "Max idle-continue attempts for execWithRetry" },
+      maxRetainedEvents: { type: "number", default: WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT, description: "Maximum agent events retained in run output" },
     },
     required: ["prompt"],
   },
@@ -636,6 +983,7 @@ registerNodeType("action.run_agent", {
     if (agentPool?.launchEphemeralThread) {
       let streamEventCount = 0;
       let lastStreamLog = "";
+      const streamLines = [];
       const startedAt = Date.now();
       const resolvedSessionId = String(
         ctx.resolve(
@@ -666,6 +1014,11 @@ registerNodeType("action.run_agent", {
       const modelOverride = node.config?.model
         ? String(ctx.resolve(node.config.model) || "").trim() || undefined
         : undefined;
+      const launchExtra = {};
+      if (sdk && sdk !== "auto") launchExtra.sdk = sdk;
+      const maxRetainedEvents = Number.isFinite(Number(node.config?.maxRetainedEvents))
+        ? Math.max(10, Math.min(500, Math.trunc(Number(node.config.maxRetainedEvents))))
+        : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
 
       const launchExtra = {};
       if (sessionId) launchExtra.resumeThreadId = sessionId;
@@ -677,6 +1030,10 @@ registerNodeType("action.run_agent", {
           if (!line || line === lastStreamLog) return;
           lastStreamLog = line;
           streamEventCount += 1;
+          if (streamLines.length >= maxRetainedEvents) {
+            streamLines.shift();
+          }
+          streamLines.push(line);
           ctx.log(node.id, line);
         } catch {
           // Stream callbacks must never crash workflow execution.
@@ -770,6 +1127,7 @@ registerNodeType("action.run_agent", {
         ctx.data.sessionId = threadId;
         ctx.data.threadId = threadId;
       }
+      const digest = buildAgentExecutionDigest(result, streamLines, maxRetainedEvents);
 
       if (!success) {
         const errorMessage =
@@ -791,10 +1149,16 @@ registerNodeType("action.run_agent", {
       }
 
       return {
-        success: true,
-        output: result?.output,
-        sdk: result?.sdk,
-        items: result?.items,
+        success: result.success,
+        output: result.output,
+        summary: digest.summary,
+        narrative: digest.narrative,
+        thoughts: digest.thoughts,
+        stream: digest.stream,
+        sdk: result.sdk,
+        items: digest.items,
+        itemCount: digest.itemCount,
+        omittedItemCount: digest.omittedItemCount,
         threadId,
         sessionId: threadId,
         attempts: result?.attempts,
@@ -939,6 +1303,7 @@ registerNodeType("action.update_task_status", {
     const previousStatus = ctx.resolve(node.config?.previousStatus || "");
     const workflowDedupKey = ctx.resolve(node.config?.workflowDedupKey || "");
     const updateOptions = {};
+    updateOptions.source = "workflow";
     if (taskTitle) updateOptions.taskTitle = taskTitle;
     if (previousStatus) updateOptions.previousStatus = previousStatus;
     if (workflowEvent) updateOptions.workflowEvent = workflowEvent;
@@ -1754,6 +2119,7 @@ registerNodeType("agent.run_planner", {
       outputVariable: { type: "string", description: "Optional context key to store planner output text" },
       projectId: { type: "string" },
       dedup: { type: "boolean", default: true },
+      maxRetainedEvents: { type: "number", default: WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT, description: "Maximum planner events retained in run output" },
     },
   },
   async execute(node, ctx, engine) {
@@ -1775,7 +2141,11 @@ registerNodeType("agent.run_planner", {
     if (agentPool?.launchEphemeralThread && promptText) {
       let streamEventCount = 0;
       let lastStreamLog = "";
+      const streamLines = [];
       const startedAt = Date.now();
+      const maxRetainedEvents = Number.isFinite(Number(node.config?.maxRetainedEvents))
+        ? Math.max(10, Math.min(500, Math.trunc(Number(node.config.maxRetainedEvents))))
+        : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
       const launchExtra = {
         onEvent: (event) => {
           try {
@@ -1783,6 +2153,10 @@ registerNodeType("agent.run_planner", {
             if (!line || line === lastStreamLog) return;
             lastStreamLog = line;
             streamEventCount += 1;
+            if (streamLines.length >= maxRetainedEvents) {
+              streamLines.shift();
+            }
+            streamLines.push(line);
             ctx.log(node.id, line);
           } catch {
             // Stream callbacks must never crash workflow execution.
@@ -1824,12 +2198,19 @@ registerNodeType("agent.run_planner", {
       if (outputVariable) {
         ctx.data[outputVariable] = String(result.output || "").trim();
       }
+      const digest = buildAgentExecutionDigest(result, streamLines, maxRetainedEvents);
       return {
         success: result.success,
         output: result.output,
+        summary: digest.summary,
+        narrative: digest.narrative,
+        thoughts: digest.thoughts,
+        stream: digest.stream,
         taskCount: count,
         sdk: result.sdk,
-        items: result.items,
+        items: digest.items,
+        itemCount: digest.itemCount,
+        omittedItemCount: digest.omittedItemCount,
         threadId,
         sessionId: threadId,
       };

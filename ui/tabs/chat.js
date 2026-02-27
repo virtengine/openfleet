@@ -50,6 +50,7 @@ import {
   archiveSession,
   resumeSession,
 } from "../components/session-list.js";
+import { routeParams, setRouteParams } from "../modules/router.js";
 import { ChatView } from "../components/chat-view.js";
 import { apiFetch } from "../modules/api.js";
 import { showToast } from "../modules/state.js";
@@ -269,6 +270,7 @@ export function ChatTab() {
     }
   });
   const textareaRef = useRef(null);
+  const routeSessionId = String(routeParams.value?.sessionId || "").trim();
 
   /* ── Load sessions + agents on mount ── */
   useEffect(() => {
@@ -435,6 +437,20 @@ export function ChatTab() {
       }
     } catch { /* signal read error - ignore */ }
   }, [isMobile]);
+
+  useEffect(() => {
+    if (!routeSessionId) return;
+    if (sessionId === routeSessionId) return;
+    selectedSessionId.value = routeSessionId;
+  }, [routeSessionId]);
+
+  useEffect(() => {
+    if (sessionId) {
+      setRouteParams({ sessionId }, { replace: true, skipGuard: true });
+    } else {
+      setRouteParams({}, { replace: true, skipGuard: true });
+    }
+  }, [sessionId]);
 
   /* ── Auto-focus textarea when switching sessions (desktop only) ── */
   useEffect(() => {

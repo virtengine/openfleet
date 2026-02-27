@@ -453,7 +453,11 @@ describe("task-executor", () => {
 
       await ex._recoverInterruptedInProgressTasks();
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("stale-1", "todo");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "stale-1",
+        "todo",
+        expect.any(Object),
+      );
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
@@ -477,7 +481,11 @@ describe("task-executor", () => {
 
       await ex._recoverInterruptedInProgressTasks();
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("blocked-1", "todo");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "blocked-1",
+        "todo",
+        expect.any(Object),
+      );
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
@@ -505,7 +513,11 @@ describe("task-executor", () => {
         expect.objectContaining({ id: "resume-2" }),
         expect.objectContaining({ recoveredFromInProgress: true }),
       );
-      expect(updateTaskStatus).not.toHaveBeenCalledWith("resume-2", "todo");
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "resume-2",
+        "todo",
+        expect.any(Object),
+      );
     });
 
     it("keeps no-commit block precedence even when a resumable thread exists", async () => {
@@ -530,7 +542,11 @@ describe("task-executor", () => {
 
       await ex._recoverInterruptedInProgressTasks();
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("blocked-thread-1", "todo");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "blocked-thread-1",
+        "todo",
+        expect.any(Object),
+      );
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
@@ -564,7 +580,11 @@ describe("task-executor", () => {
 
       await expect(ex._recoverInterruptedInProgressTasks()).resolves.toBeUndefined();
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("blocked-err-1", "todo");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "blocked-err-1",
+        "todo",
+        expect.any(Object),
+      );
       expect(ex._slotRuntimeState.has("blocked-err-1")).toBe(false);
       expect(executeSpy).not.toHaveBeenCalled();
     });
@@ -711,6 +731,7 @@ describe("task-executor", () => {
       expect(updateTaskStatus).toHaveBeenCalledWith(
         "task-123-uuid",
         "inprogress",
+        expect.any(Object),
       );
     });
 
@@ -1165,8 +1186,16 @@ describe("task-executor", () => {
         { agentMadeNewCommits: false },
       );
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("planner-1", "done");
-      expect(updateTaskStatus).not.toHaveBeenCalledWith("planner-1", "todo");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "planner-1",
+        "done",
+        expect.any(Object),
+      );
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "planner-1",
+        "todo",
+        expect.any(Object),
+      );
       expect(ex._noCommitCounts.has("planner-1")).toBe(false);
       expect(ex._skipUntil.has("planner-1")).toBe(false);
       expect(onTaskCompleted).toHaveBeenCalledWith(
@@ -1198,8 +1227,16 @@ describe("task-executor", () => {
         { agentMadeNewCommits: false },
       );
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("planner-2", "todo");
-      expect(updateTaskStatus).not.toHaveBeenCalledWith("planner-2", "done");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "planner-2",
+        "todo",
+        expect.any(Object),
+      );
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "planner-2",
+        "done",
+        expect.any(Object),
+      );
       expect(ex._noCommitCounts.get("planner-2")).toBe(1);
       expect(ex._skipUntil.has("planner-2")).toBe(true);
     });
@@ -1229,8 +1266,16 @@ describe("task-executor", () => {
         { agentMadeNewCommits: false },
       );
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("preflight-1", "done");
-      expect(updateTaskStatus).not.toHaveBeenCalledWith("preflight-1", "todo");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "preflight-1",
+        "done",
+        expect.any(Object),
+      );
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "preflight-1",
+        "todo",
+        expect.any(Object),
+      );
       expect(ex._noCommitCounts.has("preflight-1")).toBe(false);
       expect(ex._skipUntil.has("preflight-1")).toBe(false);
       expect(
@@ -1269,8 +1314,16 @@ describe("task-executor", () => {
         { agentMadeNewCommits: false },
       );
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("preflight-1b", "done");
-      expect(updateTaskStatus).not.toHaveBeenCalledWith("preflight-1b", "todo");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "preflight-1b",
+        "done",
+        expect.any(Object),
+      );
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "preflight-1b",
+        "todo",
+        expect.any(Object),
+      );
       expect(ex._noCommitCounts.has("preflight-1b")).toBe(false);
       expect(ex._skipUntil.has("preflight-1b")).toBe(false);
       expect(
@@ -1301,8 +1354,16 @@ describe("task-executor", () => {
         { agentMadeNewCommits: false },
       );
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("preflight-2", "todo");
-      expect(updateTaskStatus).not.toHaveBeenCalledWith("preflight-2", "done");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "preflight-2",
+        "todo",
+        expect.any(Object),
+      );
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "preflight-2",
+        "done",
+        expect.any(Object),
+      );
       expect(ex._noCommitCounts.get("preflight-2")).toBe(1);
       expect(ex._skipUntil.has("preflight-2")).toBe(true);
       expect(
@@ -1729,8 +1790,16 @@ describe("task-executor", () => {
       // Should dispatch at most maxParallel (2) tasks
       // Wait a tick for the fire-and-forget executeTask promises
       await new Promise((r) => setTimeout(r, 50));
-      expect(updateTaskStatus).toHaveBeenCalledWith("t1", "inprogress");
-      expect(updateTaskStatus).toHaveBeenCalledWith("t2", "inprogress");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "t1",
+        "inprogress",
+        expect.any(Object),
+      );
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "t2",
+        "inprogress",
+        expect.any(Object),
+      );
     });
 
     it("skips tasks already in active slots", async () => {
@@ -1760,8 +1829,16 @@ describe("task-executor", () => {
       await new Promise((r) => setTimeout(r, 50));
 
       // t1 was already in slots, should not be dispatched again
-      expect(updateTaskStatus).not.toHaveBeenCalledWith("t1", "inprogress");
-      expect(updateTaskStatus).toHaveBeenCalledWith("t2", "inprogress");
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "t1",
+        "inprogress",
+        expect.any(Object),
+      );
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "t2",
+        "inprogress",
+        expect.any(Object),
+      );
     });
 
     it("skips tasks in cooldown", async () => {
@@ -1965,7 +2042,11 @@ describe("task-executor", () => {
       );
 
       // Should close the issue
-      expect(updateTaskStatus).toHaveBeenCalledWith("42", "done");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "42",
+        "done",
+        expect.any(Object),
+      );
     });
 
     it("_closeIssueAfterMerge uses externalId when task id is non-numeric", async () => {
@@ -1985,7 +2066,11 @@ describe("task-executor", () => {
         "151",
         expect.stringContaining("Issue Resolved"),
       );
-      expect(updateTaskStatus).toHaveBeenCalledWith("151", "done");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "151",
+        "done",
+        expect.any(Object),
+      );
     });
 
     it("_closeIssueAfterMerge skips for non-github backend", async () => {

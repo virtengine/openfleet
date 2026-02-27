@@ -10,8 +10,14 @@ describe("ui-server mini app", () => {
     "TELEGRAM_UI_ALLOW_UNSAFE",
     "TELEGRAM_MINIAPP_ENABLED",
     "TELEGRAM_UI_PORT",
+    "TELEGRAM_UI_TUNNEL",
+    "BOSUN_UI_ALLOW_EPHEMERAL_PORT",
+    "BOSUN_UI_AUTO_OPEN_BROWSER",
+    "BOSUN_UI_BROWSER_OPEN_MODE",
+    "BOSUN_UI_LOG_TOKENIZED_BROWSER_URL",
     "TELEGRAM_INTERVAL_MIN",
     "BOSUN_CONFIG_PATH",
+    "BOSUN_HOME",
     "KANBAN_BACKEND",
     "GITHUB_PROJECT_MODE",
     "GITHUB_PROJECT_WEBHOOK_SECRET",
@@ -81,6 +87,87 @@ describe("ui-server mini app", () => {
     const ip = mod.getLocalLanIp();
     expect(typeof ip).toBe("string");
     expect(ip.length).toBeGreaterThan(0);
+  });
+
+  it("starts with TELEGRAM_UI_PORT=0 by falling back to non-ephemeral default", async () => {
+    process.env.TELEGRAM_UI_PORT = "0";
+    process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "0";
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+
+    expect(server).toBeTruthy();
+    expect(server.address().port).toBeGreaterThan(0);
+  });
+
+  it("uses http URL for local publicHost when TLS is disabled", async () => {
+    process.env.TELEGRAM_UI_TLS_DISABLE = "true";
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      publicHost: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+    const url = mod.getTelegramUiUrl();
+
+    expect(url).toBe(`http://127.0.0.1:${port}`);
+  });
+
+  it("hides tokenized browser URL in startup logs by default", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_BROWSER_OPEN_MODE = "manual";
+    delete process.env.BOSUN_UI_LOG_TOKENIZED_BROWSER_URL;
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const mod = await import("../ui-server.mjs");
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      expect(server).toBeTruthy();
+      const browserLog = logSpy.mock.calls
+        .map((args) => String(args[0] || ""))
+        .find((line) => line.includes("[telegram-ui] Browser access:")) || "";
+      expect(browserLog).toContain("token hidden");
+      expect(browserLog).not.toContain("/?token=");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("can opt in to tokenized browser URL logs", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    process.env.BOSUN_UI_BROWSER_OPEN_MODE = "manual";
+    process.env.BOSUN_UI_LOG_TOKENIZED_BROWSER_URL = "true";
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const mod = await import("../ui-server.mjs");
+      const server = await mod.startTelegramUiServer({
+        port: await getFreePort(),
+        host: "127.0.0.1",
+        skipInstanceLock: true,
+        skipAutoOpen: true,
+      });
+      expect(server).toBeTruthy();
+      const browserLog = logSpy.mock.calls
+        .map((args) => String(args[0] || ""))
+        .find((line) => line.includes("[telegram-ui] Browser access:")) || "";
+      expect(browserLog).toContain("/?token=");
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it("returns effective settings values and sources for derived/default cases", async () => {

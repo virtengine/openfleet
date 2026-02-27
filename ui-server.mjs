@@ -32,6 +32,7 @@ import {
   markTaskIgnored,
   unmarkTaskIgnored,
 } from "./kanban-adapter.mjs";
+import { getAllTasks as getAllInternalTasks } from "./task-store.mjs";
 import {
   getActiveThreads,
   launchEphemeralThread,
@@ -1295,9 +1296,13 @@ function unsetConfigPathValue(obj, pathParts) {
   }
 }
 
+const DEFAULT_TELEGRAM_UI_PORT = 3080;
+
 // Read port lazily — .env may not be loaded at module import time
 function getDefaultPort() {
-  return Number(process.env.TELEGRAM_UI_PORT || "0") || 0;
+  const raw = Number(process.env.TELEGRAM_UI_PORT || "");
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return DEFAULT_TELEGRAM_UI_PORT;
 }
 const DEFAULT_HOST = process.env.TELEGRAM_UI_HOST || "0.0.0.0";
 // Lazy evaluation — .env may not be loaded yet when this module is first imported
@@ -1408,6 +1413,26 @@ function getAutoOpenCooldownMs() {
   const raw = Number(process.env.BOSUN_UI_AUTO_OPEN_COOLDOWN_MS || "");
   if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_AUTO_OPEN_COOLDOWN_MS;
   return Math.max(60_000, Math.trunc(raw));
+}
+
+function getBrowserOpenMode() {
+  const mode = String(process.env.BOSUN_UI_BROWSER_OPEN_MODE || "manual")
+    .trim()
+    .toLowerCase();
+  if (mode === "auto") return "auto";
+  return "manual";
+}
+
+function shouldAutoOpenBrowser() {
+  const autoOpenRequested = parseBooleanEnv(
+    process.env.BOSUN_UI_AUTO_OPEN_BROWSER,
+    false,
+  );
+  return getBrowserOpenMode() === "auto" && autoOpenRequested;
+}
+
+function shouldLogTokenizedBrowserUrl() {
+  return parseBooleanEnv(process.env.BOSUN_UI_LOG_TOKENIZED_BROWSER_URL, false);
 }
 
 function isPidRunning(pid) {
@@ -1712,6 +1737,7 @@ const SETTINGS_KNOWN_KEYS = [
   "EXECUTOR_MODE", "INTERNAL_EXECUTOR_PARALLEL", "INTERNAL_EXECUTOR_SDK",
   "INTERNAL_EXECUTOR_TIMEOUT_MS", "INTERNAL_EXECUTOR_MAX_RETRIES", "INTERNAL_EXECUTOR_POLL_MS",
   "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED", "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
+  "CODEX_SDK_DISABLED", "COPILOT_SDK_DISABLED", "CLAUDE_SDK_DISABLED",
   "PRIMARY_AGENT", "EXECUTORS", "EXECUTOR_DISTRIBUTION", "FAILOVER_STRATEGY",
   "COMPLEXITY_ROUTING_ENABLED", "PROJECT_REQUIREMENTS_PROFILE",
   "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "CODEX_MODEL",
@@ -2060,13 +2086,16 @@ export function getSessionToken() {
 }
 
 // ── Auto-TLS self-signed certificate generation ──────────────────────
-const TLS_CACHE_DIR = resolve(__dirname, ".cache", "tls");
-const TLS_CERT_PATH = resolve(TLS_CACHE_DIR, "server.crt");
-const TLS_KEY_PATH = resolve(TLS_CACHE_DIR, "server.key");
 function isTlsDisabled() {
   return ["1", "true", "yes"].includes(
     String(process.env.TELEGRAM_UI_TLS_DISABLE || "").toLowerCase(),
   );
+}
+
+function resolveUiSubCachePath(...segments) {
+  const path = resolve(resolveUiConfigDir(), ".cache", ...segments);
+  try { mkdirSync(dirname(path), { recursive: true }); } catch { /* best effort */ }
+  return path;
 }
 
 /**
@@ -2111,20 +2140,23 @@ function findOpenssl() {
  */
 function ensureSelfSignedCert() {
   try {
-    if (!existsSync(TLS_CACHE_DIR)) {
-      mkdirSync(TLS_CACHE_DIR, { recursive: true });
+    const tlsDir = dirname(resolveUiSubCachePath("tls", ".keep"));
+    const tlsCertPath = resolve(tlsDir, "server.crt");
+    const tlsKeyPath = resolve(tlsDir, "server.key");
+    if (!existsSync(tlsDir)) {
+      mkdirSync(tlsDir, { recursive: true });
     }
 
     // Reuse existing cert if still valid
-    if (existsSync(TLS_CERT_PATH) && existsSync(TLS_KEY_PATH)) {
+    if (existsSync(tlsCertPath) && existsSync(tlsKeyPath)) {
       try {
-        const certPem = readFileSync(TLS_CERT_PATH, "utf8");
+        const certPem = readFileSync(tlsCertPath, "utf8");
         const cert = new X509Certificate(certPem);
         const notAfter = new Date(cert.validTo);
         if (notAfter > new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)) {
           return {
-            key: readFileSync(TLS_KEY_PATH),
-            cert: readFileSync(TLS_CERT_PATH),
+            key: readFileSync(tlsKeyPath),
+            cert: readFileSync(tlsCertPath),
           };
         }
       } catch {
@@ -2138,7 +2170,7 @@ function ensureSelfSignedCert() {
     const subjectAltName = `DNS:localhost,IP:127.0.0.1,IP:${lanIp}`;
     execSync(
       `"${opensslBin}" req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 ` +
-        `-keyout "${TLS_KEY_PATH}" -out "${TLS_CERT_PATH}" ` +
+        `-keyout "${tlsKeyPath}" -out "${tlsCertPath}" ` +
         `-days 825 -nodes -batch ` +
         `-subj "/CN=bosun" ` +
         `-addext "subjectAltName=${subjectAltName}"`,
@@ -2149,8 +2181,8 @@ function ensureSelfSignedCert() {
       `[telegram-ui] auto-generated self-signed TLS cert (SAN: ${subjectAltName})`,
     );
     return {
-      key: readFileSync(TLS_KEY_PATH),
-      cert: readFileSync(TLS_CERT_PATH),
+      key: readFileSync(tlsKeyPath),
+      cert: readFileSync(tlsCertPath),
     };
   } catch (err) {
     const hint = osPlatform() === "win32"
@@ -2343,9 +2375,7 @@ function _notifyTunnelChange(url) {
 
 // ── Cloudflared binary auto-download ─────────────────────────────────
 
-const CF_CACHE_DIR = resolve(__dirname, ".cache", "bin");
 const CF_BIN_NAME = osPlatform() === "win32" ? "cloudflared.exe" : "cloudflared";
-const CF_CACHED_PATH = resolve(CF_CACHE_DIR, CF_BIN_NAME);
 
 /**
  * Get the cloudflared download URL for the current platform+arch.
@@ -2402,6 +2432,8 @@ function downloadFile(url, destPath, maxRedirects = 5) {
  * If not found anywhere and mode=auto, auto-downloads to .cache/bin/.
  */
 async function findCloudflared() {
+  const cfCacheDir = dirname(resolveUiSubCachePath("bin", ".keep"));
+  const cfCachedPath = resolve(cfCacheDir, CF_BIN_NAME);
   // 1. Check system PATH
   try {
     const cmd = osPlatform() === "win32"
@@ -2412,8 +2444,8 @@ async function findCloudflared() {
   } catch { /* not on PATH */ }
 
   // 2. Check cached binary
-  if (existsSync(CF_CACHED_PATH)) {
-    return CF_CACHED_PATH;
+  if (existsSync(cfCachedPath)) {
+    return cfCachedPath;
   }
 
   // 3. Auto-download
@@ -2425,15 +2457,15 @@ async function findCloudflared() {
 
   console.log("[telegram-ui] cloudflared not found — auto-downloading...");
   try {
-    mkdirSync(CF_CACHE_DIR, { recursive: true });
-    await downloadFile(dlUrl, CF_CACHED_PATH);
+    mkdirSync(cfCacheDir, { recursive: true });
+    await downloadFile(dlUrl, cfCachedPath);
     if (osPlatform() !== "win32") {
-      chmodSync(CF_CACHED_PATH, 0o755);
+      chmodSync(cfCachedPath, 0o755);
       // Small delay to ensure OS fully releases file locks after chmod
       await new Promise((r) => setTimeout(r, 100));
     }
-    console.log(`[telegram-ui] cloudflared downloaded to ${CF_CACHED_PATH}`);
-    return CF_CACHED_PATH;
+    console.log(`[telegram-ui] cloudflared downloaded to ${cfCachedPath}`);
+    return cfCachedPath;
   } catch (err) {
     console.warn(`[telegram-ui] cloudflared auto-download failed: ${err.message}`);
     return null;
@@ -2544,8 +2576,7 @@ async function startNamedTunnel(cfBin, tunnelName, credentialsPath, localPort) {
 
   // Named tunnels require config file with ingress rules.
   // We'll create a temporary config on the fly.
-  const configPath = resolve(__dirname, ".cache", "cloudflared-config.yml");
-  mkdirSync(dirname(configPath), { recursive: true });
+  const configPath = resolveUiCachePath("cloudflared-config.yml");
 
   const configYaml = `
 tunnel: ${tunnelName}
@@ -6260,6 +6291,27 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (path === "/api/health-stats") {
+    const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+    const cutoff = new Date(Date.now() - SIX_HOURS_MS).toISOString();
+    let successRuns = 0;
+    let failedRuns = 0;
+    try {
+      const tasks = getAllInternalTasks();
+      for (const task of tasks) {
+        for (const entry of (task.statusHistory || [])) {
+          if (entry.timestamp < cutoff) continue;
+          if (entry.status === "done") successRuns++;
+          else if (entry.status === "error") failedRuns++;
+        }
+      }
+    } catch { /* task store not loaded or unavailable */ }
+    const total = successRuns + failedRuns;
+    const failRate = total > 0 ? failedRuns / total : 0;
+    jsonResponse(res, 200, { ok: true, successRuns, failedRuns, total, failRate, windowHours: 6 });
+    return;
+  }
+
   if (path === "/api/config") {
     const regionEnv = (process.env.EXECUTOR_REGIONS || "").trim();
     const regions = regionEnv ? regionEnv.split(",").map((r) => r.trim()).filter(Boolean) : ["auto"];
@@ -7338,7 +7390,7 @@ export async function startTelegramUiServer(options = {}) {
       ? "options.port"
       : process.env.TELEGRAM_UI_PORT
         ? "env.TELEGRAM_UI_PORT"
-        : "default(0)";
+        : `default(${DEFAULT_TELEGRAM_UI_PORT})`;
 
   if (!Number.isFinite(port) || port < 0) {
     console.warn(
@@ -7354,13 +7406,10 @@ export async function startTelegramUiServer(options = {}) {
     return null;
   }
 
-  const autoOpenEnabled = ["1", "true", "yes", "on"].includes(
-    String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "")
-      .trim()
-      .toLowerCase(),
-  );
+  const browserOpenMode = getBrowserOpenMode();
+  const autoOpenEnabled = shouldAutoOpenBrowser();
   console.log(
-    `[telegram-ui] startup config: port=${port} source=${portSource} autoOpen=${autoOpenEnabled ? "enabled" : "disabled"}`,
+    `[telegram-ui] startup config: port=${port} source=${portSource} browserOpenMode=${browserOpenMode} autoOpen=${autoOpenEnabled ? "enabled" : "disabled"}`,
   );
 
   if (!skipInstanceLock) {
@@ -7599,12 +7648,18 @@ export async function startTelegramUiServer(options = {}) {
   const lanIp = getLocalLanIp();
   const host = publicHost || lanIp;
   const actualPort = uiServer.address().port;
+  const isLocalOrPrivateHost = (value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized.startsWith("192.")
+      || normalized.startsWith("10.")
+      || normalized.startsWith("172.")
+      || normalized.startsWith("127.")
+      || normalized === "localhost"
+      || normalized === "::1";
+  };
   const protocol = uiServerTls
     ? "https"
-    : publicHost &&
-        !publicHost.startsWith("192.") &&
-        !publicHost.startsWith("10.") &&
-        !publicHost.startsWith("172.")
+    : publicHost && !isLocalOrPrivateHost(publicHost)
       ? "https"
       : "http";
   uiServerUrl = `${protocol}://${host}:${actualPort}`;
@@ -7641,7 +7696,13 @@ export async function startTelegramUiServer(options = {}) {
     console.warn(`╚${border}╝\n`);
   }
   console.log(`[telegram-ui] LAN access: ${protocol}://${lanIp}:${actualPort}`);
-  console.log(`[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`);
+  if (shouldLogTokenizedBrowserUrl()) {
+    console.log(`[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`);
+  } else {
+    console.log(
+      `[telegram-ui] Browser access: ${protocol}://${lanIp}:${actualPort} (token hidden; set BOSUN_UI_LOG_TOKENIZED_BROWSER_URL=1 for debug)`,
+    );
+  }
 
   // Auto-open browser:
   //  - skip in desktop/Electron mode (BOSUN_DESKTOP=1)

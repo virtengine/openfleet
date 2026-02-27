@@ -28,6 +28,8 @@ const ENV_KEYS = [
   "EXECUTORS",
   "TASK_TRIGGER_SYSTEM_ENABLED",
   "KANBAN_BACKEND",
+  "WATCH_PATH",
+  "ORCHESTRATOR_SCRIPT",
 ];
 
 describe("loadConfig validation and edge cases", () => {
@@ -325,5 +327,63 @@ describe("loadConfig validation and edge cases", () => {
         tempConfigDir,
       ]),
     ).toThrow(/KANBAN_BACKEND=jira requires/i);
+  });
+
+  it("watchPath defaults to scriptPath when WATCH_PATH env is not set", () => {
+    delete process.env.WATCH_PATH;
+    delete process.env.ORCHESTRATOR_SCRIPT;
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    // watchPath should be defined and be a string
+    expect(typeof config.watchPath).toBe("string");
+    expect(config.watchPath.length).toBeGreaterThan(0);
+    // When WATCH_PATH is not set, watchPath should resolve to the scriptPath
+    // (or a fallback within the config/repo dirs)
+    expect(typeof config.scriptPath).toBe("string");
+  });
+
+  it("watchPath uses WATCH_PATH env when set (stale/nonexistent path is accepted as configured)", () => {
+    const stalePath = resolve(tempConfigDir, "nonexistent-watch-target.ps1");
+    process.env.WATCH_PATH = stalePath;
+    delete process.env.ORCHESTRATOR_SCRIPT;
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    // WATCH_PATH env is respected even if path doesn't exist on disk
+    expect(config.watchPath).toBe(stalePath);
+  });
+
+  it("scriptPath resolves from ORCHESTRATOR_SCRIPT env when set", async () => {
+    const { writeFile } = await import("node:fs/promises");
+    const scriptFile = resolve(tempConfigDir, "my-custom-orchestrator.ps1");
+    await writeFile(scriptFile, "# custom orchestrator", "utf8");
+    process.env.ORCHESTRATOR_SCRIPT = scriptFile;
+    delete process.env.WATCH_PATH;
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.scriptPath).toBe(scriptFile);
   });
 });

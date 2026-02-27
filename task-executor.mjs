@@ -24,7 +24,7 @@ import {
   listTasks,
   listProjects,
   getTask,
-  updateTaskStatus,
+  updateTaskStatus as updateKanbanTaskStatus,
   addComment,
 } from "./kanban-adapter.mjs";
 import {
@@ -141,6 +141,31 @@ const EXPECTED_NO_COMMIT_TAGS = new Set([
   "diagnostic",
   "preflight",
 ]);
+
+/** @type {null|((taskId: string, status: string, options?: object) => Promise<boolean>|boolean)} */
+let taskStatusTransitionHandler = null;
+
+export function setTaskStatusTransitionHandler(handler) {
+  taskStatusTransitionHandler = typeof handler === "function" ? handler : null;
+}
+
+function hasExternalTaskStatusTransitionHandler() {
+  return typeof taskStatusTransitionHandler === "function";
+}
+
+async function transitionTaskStatus(taskId, status, options = {}) {
+  if (hasExternalTaskStatusTransitionHandler()) {
+    const result = await taskStatusTransitionHandler(taskId, status, options);
+    return result !== false;
+  }
+  await updateKanbanTaskStatus(taskId, status, options);
+  return true;
+}
+
+function transitionInternalTaskStatus(taskId, status, source) {
+  if (hasExternalTaskStatusTransitionHandler()) return null;
+  return setInternalStatus(taskId, status, source);
+}
 
 function parseNumberEnv(name, fallback) {
   const value = Number(process.env[name]);
@@ -2060,6 +2085,8 @@ class TaskExecutor {
     this._listTasksFailureCount = 0;
     this._listTasksBackoffUntil = 0;
     this._listTasksBackoffReason = "";
+    // Throttle draft-task filtering log messages (every 5 min max)
+    this._lastDraftFilterLogAt = 0;
     this._projectResolveFailureWindowStart = 0;
     this._projectResolveFailureCount = 0;
     this._projectResolveBackoffUntil = 0;
@@ -3154,7 +3181,9 @@ class TaskExecutor {
       const internalStatus = internalTask?.status || null;
       if (internalTask && internalStatus && internalStatus !== "inprogress") {
         try {
-          await updateTaskStatus(id, internalStatus);
+          await transitionTaskStatus(id, internalStatus, {
+            source: "task-executor-recovery-drift",
+          });
         } catch {
           /* best effort */
         }
@@ -3185,12 +3214,18 @@ class TaskExecutor {
       const noCommitCount = this._noCommitCounts.get(id) || 0;
       if (noCommitCount >= MAX_NO_COMMIT_ATTEMPTS) {
         try {
-          await updateTaskStatus(id, "todo");
+          await transitionTaskStatus(id, "todo", {
+            source: "task-executor-recovery-no-commit-block",
+          });
         } catch {
           /* best effort */
         }
         try {
-          setInternalStatus(id, "todo", "task-executor-recovery-no-commit-block");
+          transitionInternalTaskStatus(
+            id,
+            "todo",
+            "task-executor-recovery-no-commit-block",
+          );
         } catch {
           /* best effort */
         }
@@ -3231,12 +3266,14 @@ class TaskExecutor {
       }
 
       try {
-        await updateTaskStatus(id, "todo");
+        await transitionTaskStatus(id, "todo", {
+          source: "task-executor-recovery",
+        });
       } catch {
         /* best effort */
       }
       try {
-        setInternalStatus(id, "todo", "task-executor-recovery");
+        transitionInternalTaskStatus(id, "todo", "task-executor-recovery");
       } catch {
         /* best effort */
       }
@@ -3742,9 +3779,14 @@ class TaskExecutor {
         const before = tasks.length;
         tasks = tasks.filter((task) => !isDraftTask(task));
         if (tasks.length !== before) {
-          console.debug(
-            `${TAG} filtered ${before - tasks.length} draft task(s)`,
-          );
+          const draftCount = before - tasks.length;
+          const now = Date.now();
+          if (!this._lastDraftFilterLogAt || now - this._lastDraftFilterLogAt > 300_000) {
+            console.debug(
+              `${TAG} filtered ${draftCount} draft task(s)`,
+            );
+            this._lastDraftFilterLogAt = now;
+          }
         }
       }
 
@@ -3930,6 +3972,7 @@ class TaskExecutor {
     const executionRepoSlug = taskRepoContext.repoSlug || this.repoSlug;
     const worktreeManager = this._getWorktreeManager(executionRepoRoot);
     let taskClaimToken = null;
+    let attemptId = null;
 
     const releaseTaskClaimLock = async () => {
       this._stopTaskClaimRenewal(taskId);
@@ -3946,6 +3989,18 @@ class TaskExecutor {
         );
       } finally {
         taskClaimToken = null;
+      }
+    };
+
+    const clearAttemptTracking = () => {
+      if (!attemptId) return;
+      anomalyAbortTargets.delete(attemptId);
+      if (anomalyDetector) {
+        try {
+          anomalyDetector.resetProcess(attemptId);
+        } catch {
+          /* best-effort */
+        }
       }
     };
 
@@ -4179,13 +4234,17 @@ class TaskExecutor {
 
       // 2. Update task status → "inprogress"
       try {
-        await updateTaskStatus(taskId, "inprogress");
+        await transitionTaskStatus(taskId, "inprogress", {
+          source: "task-executor",
+          taskTitle,
+          branch,
+        });
       } catch (err) {
         console.warn(`${TAG} failed to set task to inprogress: ${err.message}`);
       }
       // Mirror to internal store
       try {
-        setInternalStatus(taskId, "inprogress", "task-executor");
+        transitionInternalTaskStatus(taskId, "inprogress", "task-executor");
       } catch {
         /* best-effort */
       }
@@ -4244,7 +4303,11 @@ class TaskExecutor {
         );
         this._taskCooldowns.set(taskId, Date.now());
         try {
-          await updateTaskStatus(taskId, "todo");
+          await transitionTaskStatus(taskId, "todo", {
+            source: "task-executor-worktree-acquire-failed",
+            taskTitle,
+            branch,
+          });
         } catch {
           /* best-effort */
         }
@@ -4273,7 +4336,11 @@ class TaskExecutor {
           /* best-effort */
         }
         try {
-          await updateTaskStatus(taskId, "todo");
+          await transitionTaskStatus(taskId, "todo", {
+            source: "task-executor-worktree-invalid",
+            taskTitle,
+            branch,
+          });
         } catch {
           /* best-effort */
         }
@@ -4402,7 +4469,7 @@ class TaskExecutor {
       // workspace-scoped executionRepoRoot, NOT the developer's personal repo.
       process.env.BOSUN_AGENT_REPO_ROOT = executionRepoRoot;
 
-      const attemptId = `${taskId}-${randomUUID()}`;
+      attemptId = `${taskId}-${randomUUID()}`;
       const taskMeta = {
         task_id: taskId,
         task_title: taskTitle,
@@ -4654,7 +4721,7 @@ class TaskExecutor {
           diff_lines_deleted: diffStats?.totalDeletions ?? null,
         },
       });
-      anomalyAbortTargets.delete(attemptId);
+      clearAttemptTracking();
 
       // 7. Handle result
       slot.status = validatedResult.success ? "completing" : "failed";
@@ -4685,12 +4752,17 @@ class TaskExecutor {
       console.error(
         `${TAG} fatal error executing task "${taskTitle}": ${err.message}`,
       );
+      clearAttemptTracking();
       slot.status = "failed";
       this._taskCooldowns.set(taskId, Date.now());
       this._slotAbortControllers.delete(taskId);
 
       try {
-        await updateTaskStatus(taskId, "todo");
+        await transitionTaskStatus(taskId, "todo", {
+          source: "task-executor-session-failed",
+          taskTitle,
+          branch,
+        });
       } catch {
         /* best-effort */
       }
@@ -5196,7 +5268,13 @@ class TaskExecutor {
           `${tag} already completed with PR — skipping re-processing`,
         );
         try {
-          await updateTaskStatus(task.id, "inreview");
+          await transitionTaskStatus(task.id, "inreview", {
+            source: "task-executor-completed-with-pr-cache",
+            taskTitle,
+            branch: result?.branch || task?.branchName || null,
+            baseBranch: result?.baseBranch || baseBranch || null,
+            worktreePath,
+          });
         } catch {
           /* best-effort */
         }
@@ -5210,6 +5288,9 @@ class TaskExecutor {
         (hasAnyCommits &&
           !this._completedWithPR.has(task.id) &&
           !this._prCreatedForBranch.has(task.id));
+      result.hasCommits = hasCommits;
+      result.finalized = true;
+      result.finalizationReason = null;
 
       if (!hasCommits && isPlannerTaskData(task)) {
         try {
@@ -5223,14 +5304,20 @@ class TaskExecutor {
                 output: result.output,
                 hasCommits: false,
               });
-              setInternalStatus(task.id, "done", "task-executor");
+              transitionInternalTaskStatus(task.id, "done", "task-executor");
               updateInternalTask(task.id, { externalStatus: "done" });
               this._errorDetector.resetTask(task.id);
             } catch {
               /* best-effort */
             }
             try {
-              await updateTaskStatus(task.id, "done");
+              await transitionTaskStatus(task.id, "done", {
+                source: "task-executor-planner-complete",
+                taskTitle,
+                branch: result?.branch || task?.branchName || null,
+                baseBranch: result?.baseBranch || baseBranch || null,
+                worktreePath,
+              });
             } catch {
               /* best-effort */
             }
@@ -5264,14 +5351,20 @@ class TaskExecutor {
             output: result.output,
             hasCommits: false,
           });
-          setInternalStatus(task.id, "done", "task-executor");
+          transitionInternalTaskStatus(task.id, "done", "task-executor");
           updateInternalTask(task.id, { externalStatus: "done" });
           this._errorDetector.resetTask(task.id);
         } catch {
           /* best-effort */
         }
         try {
-          await updateTaskStatus(task.id, "done");
+          await transitionTaskStatus(task.id, "done", {
+            source: "task-executor-no-code-change-expected",
+            taskTitle,
+            branch: result?.branch || task?.branchName || null,
+            baseBranch: result?.baseBranch || baseBranch || null,
+            worktreePath,
+          });
         } catch {
           /* best-effort */
         }
@@ -5296,7 +5389,7 @@ class TaskExecutor {
             output: result.output,
             hasCommits: true,
           });
-          setInternalStatus(task.id, "inreview", "task-executor");
+          transitionInternalTaskStatus(task.id, "inreview", "task-executor");
           this._errorDetector.resetTask(task.id);
         } catch {
           /* best-effort */
@@ -5349,7 +5442,15 @@ class TaskExecutor {
             /* best-effort */
           }
           try {
-            await updateTaskStatus(task.id, "inreview");
+            await transitionTaskStatus(task.id, "inreview", {
+              source: "task-executor-pr-created",
+              taskTitle,
+              branch: pr?.branch || result?.branch || task?.branchName || null,
+              baseBranch: result?.baseBranch || baseBranch || null,
+              worktreePath,
+              prNumber,
+              prUrl,
+            });
           } catch {
             /* best-effort */
           }
@@ -5379,7 +5480,13 @@ class TaskExecutor {
           // PR creation failed but task has commits — mark as completed anyway to prevent loop
           this._completedWithPR.add(task.id);
           try {
-            await updateTaskStatus(task.id, "inreview");
+            await transitionTaskStatus(task.id, "inreview", {
+              source: "task-executor-pr-create-failed",
+              taskTitle,
+              branch: result?.branch || task?.branchName || null,
+              baseBranch: result?.baseBranch || baseBranch || null,
+              worktreePath,
+            });
           } catch {
             /* best-effort */
           }
@@ -5399,14 +5506,20 @@ class TaskExecutor {
             output: result.output,
             hasCommits: true,
           });
-          setInternalStatus(task.id, "inreview", "task-executor");
+          transitionInternalTaskStatus(task.id, "inreview", "task-executor");
           this._errorDetector.resetTask(task.id);
         } catch {
           /* best-effort */
         }
 
         try {
-          await updateTaskStatus(task.id, "inreview");
+          await transitionTaskStatus(task.id, "inreview", {
+            source: "task-executor-auto-pr-disabled",
+            taskTitle,
+            branch: result?.branch || task?.branchName || null,
+            baseBranch: result?.baseBranch || baseBranch || null,
+            worktreePath,
+          });
         } catch {
           /* best-effort */
         }
@@ -5416,6 +5529,8 @@ class TaskExecutor {
       } else {
         // No commits — agent completed without making changes.
         // This is NOT a real completion. Apply anti-thrash protection.
+        result.finalized = false;
+        result.finalizationReason = "no_commits";
         const prevCount = this._noCommitCounts.get(taskKey || normalizeTaskIdKey(task.id)) || 0;
         const noCommitCount = prevCount + 1;
         this._noCommitCounts.set(taskKey || normalizeTaskIdKey(task.id), noCommitCount);
@@ -5472,7 +5587,13 @@ class TaskExecutor {
 
         // Set back to todo — NOT inreview (nothing to review)
         try {
-          await updateTaskStatus(task.id, "todo");
+          await transitionTaskStatus(task.id, "todo", {
+            source: "task-executor-no-commit",
+            taskTitle,
+            branch: result?.branch || task?.branchName || null,
+            baseBranch: result?.baseBranch || baseBranch || null,
+            worktreePath,
+          });
         } catch {
           /* best-effort */
         }
@@ -5572,7 +5693,14 @@ class TaskExecutor {
       }
 
       try {
-        await updateTaskStatus(task.id, "todo");
+        await transitionTaskStatus(task.id, "todo", {
+          source: "task-executor-failed",
+          taskTitle,
+          branch: result?.branch || task?.branchName || null,
+          baseBranch: result?.baseBranch || baseBranch || null,
+          worktreePath,
+          error: result?.error || null,
+        });
       } catch {
         /* best-effort */
       }
@@ -6213,10 +6341,13 @@ class TaskExecutor {
 
     try {
       if (task?.id) {
-        setInternalStatus(task.id, "done", "task-executor");
+        transitionInternalTaskStatus(task.id, "done", "task-executor");
         updateInternalTask(task.id, { externalStatus: "done" });
       }
-      await updateTaskStatus(issueNumber, "done");
+      await transitionTaskStatus(issueNumber, "done", {
+        source: "task-executor-issue-finalize",
+        taskTitle: task?.title || "",
+      });
       console.log(
         `${TAG} closed issue #${issueNumber} after PR #${prNumber} merge`,
       );
