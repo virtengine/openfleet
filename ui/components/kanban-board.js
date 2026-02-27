@@ -7,7 +7,7 @@ import htm from "htm";
 import { signal, computed } from "@preact/signals";
 import { tasksData, tasksLoaded, showToast, runOptimistic, loadTasks } from "../modules/state.js";
 import { apiFetch } from "../modules/api.js";
-import { haptic } from "../modules/telegram.js";
+import { haptic, showConfirm } from "../modules/telegram.js";
 import { formatRelative, truncate, cloneValue } from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import { getAgentDisplay } from "../modules/agent-display.js";
@@ -216,6 +216,9 @@ async function _handleTouchDrop(colId) {
       },
     );
     showToast(`Moved to ${col ? col.title : colId}`, "success");
+    if (newStatus === "inreview") {
+      await maybeReactivateOnReview(taskId, currentTask?.title || taskId).catch(() => {});
+    }
     // Force refresh from server to ensure consistency
     setTimeout(() => loadTasks(), 500);
   } catch (err) {
@@ -240,6 +243,33 @@ async function createTaskInColumn(columnStatus, title) {
   } catch {
     /* toast via apiFetch */
   }
+}
+
+async function maybeReactivateOnReview(taskId, taskTitle = "") {
+  const normalizedTaskId = String(taskId || "").trim();
+  if (!normalizedTaskId) return false;
+  const label = String(taskTitle || normalizedTaskId).trim();
+  const ok = await showConfirm(
+    `Task moved to review. Reactivate agent session for "${label}" now?`,
+  );
+  if (!ok) return false;
+  haptic("medium");
+  const res = await apiFetch("/api/tasks/start", {
+    method: "POST",
+    body: JSON.stringify({ taskId: normalizedTaskId }),
+  });
+  if (res?.queued) {
+    showToast("Agent reactivation queued (waiting for free slot)", "info");
+  } else if (res?.wasPaused) {
+    showToast("Agent reactivated (executor was paused)", "warning");
+  } else {
+    showToast("Agent session reactivated", "success");
+  }
+  tasksData.value = (tasksData.value || []).map((t) =>
+    matchTaskId(t.id, normalizedTaskId) ? { ...t, status: "inprogress" } : t,
+  );
+  setTimeout(() => loadTasks(), 150);
+  return true;
 }
 
 /* ─── KanbanCard ─── */
@@ -463,6 +493,9 @@ function KanbanColumn({ col, tasks, onOpen }) {
         },
       );
       showToast(`Moved to ${col.title}`, "success");
+      if (newStatus === "inreview") {
+        await maybeReactivateOnReview(taskId, currentTask?.title || taskId).catch(() => {});
+      }
       // Force refresh from server to ensure consistency
       setTimeout(() => loadTasks(), 500);
     } catch (err) {
