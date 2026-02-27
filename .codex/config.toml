@@ -7,13 +7,6 @@
 # Sandbox mode (added by bosun)
 sandbox_mode = "workspace-write"
 
-# ── Workspace-write sandbox defaults (added by bosun) ──
-[sandbox_workspace_write]
-network_access = true
-exclude_tmpdir_env_var = false
-exclude_slash_tmp = false
-writable_roots = ["C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.git", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.cache\\worktrees", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.cache", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh", "/tmp"]
-
 # ── Feature flags (added by bosun) ──
 [features]
 # Enable sub-agent discovery via CODEX.md
@@ -40,8 +33,9 @@ unified_exec = true
 shell_snapshot = true
 # Request-level approval rules
 request_rule = true
-# Compress requests (DISABLED — breaks Azure wire_api=responses)
-enable_request_compression = false
+# Compress requests — DISABLED: causes invalid_request_error JSON body failures
+# ('}' invalid after property name) when used with Azure wire_api=responses.
+# enable_request_compression = true
 # Remote model support
 remote_models = true
 # Auto-install MCP skill deps
@@ -67,23 +61,44 @@ subagents = true
 # Access to VS Code tools (Copilot extension).
 vscode_tools = false
 
+# ── Vibe-Kanban MCP (added by bosun) ──
+[mcp_servers.vibe_kanban]
+startup_timeout_sec = 120
+args = [
+    "-y",
+    "vibe-kanban@latest",
+    "--mcp",
+]
+command = "npx"
+tools = ["*"]
+
+[mcp_servers.vibe_kanban.env]
+# Ensure MCP always targets the correct VK API endpoint.
+VK_BASE_URL = "http://127.0.0.1:54089"
+VK_ENDPOINT_URL = "http://127.0.0.1:54089"
+
 # ── Common MCP servers (added by bosun) ──
 [mcp_servers.context7]
-startup_timeout_sec = 120
 command = "npx"
 args = ["-y", "@upstash/context7-mcp"]
+startup_timeout_sec = 120
 
 [mcp_servers.sequential-thinking]
-startup_timeout_sec = 120
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+startup_timeout_sec = 120
 
 [mcp_servers.playwright]
-startup_timeout_sec = 120
 command = "npx"
 args = ["-y", "@playwright/mcp@latest"]
+startup_timeout_sec = 120
 
 [mcp_servers.microsoft-docs]
 url = "https://learn.microsoft.com/api/mcp"
 tools = ["microsoft_docs_search", "microsoft_code_sample_search"]
 
+[sandbox_workspace_write]
+network_access = true
+exclude_tmpdir_env_var = false
+exclude_slash_tmp = false
+writable_roots = ["C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.git", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.cache\\worktrees", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh\\bosun\\.cache", "C:\\Users\\jON\\Documents\\source\\repos\\virtengine-gh"]

@@ -13,7 +13,7 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import {
   mkdir,
   readFile,
@@ -118,6 +118,37 @@ import {
 } from "./presence.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
+
+function isWslInteropRuntime() {
+  return Boolean(
+    process.env.WSL_DISTRO_NAME
+    || process.env.WSL_INTEROP
+    || (process.platform === "win32"
+      && String(process.env.HOME || "")
+        .trim()
+        .startsWith("/home/")),
+  );
+}
+
+function resolveTelegramConfigDir() {
+  if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
+  if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
+
+  const preferWindowsDirs = process.platform === "win32" && !isWslInteropRuntime();
+  const baseDir = preferWindowsDirs
+    ? process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || process.env.USERPROFILE
+      || process.env.HOME
+      || homedir()
+    : process.env.HOME
+      || process.env.XDG_CONFIG_HOME
+      || process.env.USERPROFILE
+      || process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || homedir();
+  return resolve(baseDir, "bosun");
+}
 const repoRoot = resolveRepoRoot();
 const BosunDir = __dirname;
 const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
@@ -125,6 +156,11 @@ const telegramPollLockPath = resolve(
   repoRoot,
   ".cache",
   "telegram-getupdates.lock",
+);
+const telegramPollConflictStatePath = resolve(
+  repoRoot,
+  ".cache",
+  "telegram-getupdates-conflict.json",
 );
 const liveDigestStatePath = resolve(repoRoot, ".cache", "ve-live-digest.json");
 const statusBoardStatePath = resolve(
@@ -164,6 +200,11 @@ const POLL_TIMEOUT_S = 30; // long-poll timeout
 const MAX_MESSAGE_LEN = 4000; // Telegram max is 4096, leave margin
 const POLL_ERROR_BACKOFF_MS = 5000;
 const TELEGRAM_FETCH_FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
+// 409 Conflict cooldown: minimum 60 s, default 15 minutes
+const TELEGRAM_POLL_CONFLICT_COOLDOWN_MS = Math.max(
+  60_000,
+  Number(process.env.TELEGRAM_POLL_CONFLICT_COOLDOWN_MS) || 900_000,
+);
 let TELEGRAM_HTTP_TIMEOUT_MS = Math.max(
   2000,
   Number(process.env.TELEGRAM_HTTP_TIMEOUT_MS || "15000") || 15000,
@@ -196,6 +237,53 @@ let lastPollErrorLogAtMs = 0;
 let lastFallbackSwitchLogMs = 0;
 let pollFailureStreak = 0;
 let telegramApiReachable = null; // null = unknown, true/false after probe
+
+// ── 409 Conflict Cooldown State ──────────────────────────────────────────────
+
+/**
+ * Read persisted 409 conflict state from disk.
+ * Returns { untilMs, reason } or null if missing or corrupt.
+ */
+function readTelegramPollConflictState() {
+  try {
+    if (!existsSync(telegramPollConflictStatePath)) return null;
+    const raw = readFileSync(telegramPollConflictStatePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed.untilMs !== "number") return null;
+    return { untilMs: parsed.untilMs, reason: parsed.reason || "" };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist a 409 conflict cooldown state to disk (best-effort).
+ * @param {number} untilMs - Epoch ms until which polling should be suppressed.
+ * @param {string} reason - Human-readable reason for the cooldown.
+ */
+function writeTelegramPollConflictState(untilMs, reason = "409 Conflict") {
+  try {
+    mkdirSync(resolve(repoRoot, ".cache"), { recursive: true });
+    writeFileSync(
+      telegramPollConflictStatePath,
+      JSON.stringify({ untilMs, reason, updatedAt: new Date().toISOString(), pid: process.pid }),
+      "utf8",
+    );
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Remove the 409 conflict state file (best-effort, called on successful poll).
+ */
+function clearTelegramPollConflictState() {
+  try {
+    unlinkSync(telegramPollConflictStatePath);
+  } catch {
+    /* best-effort */
+  }
+}
 
 function parseAllowedTelegramIds(rawValue) {
   return String(rawValue || "")
@@ -327,6 +415,23 @@ const statusBoardEditDebounceMs = Number(
 
 function delayMs(ms) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+const SAFE_DETACH_PREFIX = "[telegram-bot] async-detach";
+
+function safeDetach(label, taskOrPromise) {
+  const tag = label
+    ? `${SAFE_DETACH_PREFIX}:${String(label)}`
+    : SAFE_DETACH_PREFIX;
+  try {
+    const result =
+      typeof taskOrPromise === "function" ? taskOrPromise() : taskOrPromise;
+    Promise.resolve(result).catch((err) => {
+      console.warn(`${tag} failed: ${err?.message || err}`);
+    });
+  } catch (err) {
+    console.warn(`${tag} failed: ${err?.message || err}`);
+  }
 }
 
 function shouldUseCurlPrimary() {
@@ -1086,6 +1191,25 @@ async function bumpStickyMenu(chatId) {
   await showUiScreen(chatId, null, state.screenId, state.params || {}, {
     sticky: true,
   });
+}
+
+async function refreshStickyMenu(chatId, screenId = "home", params = {}) {
+  const state = stickyMenuState.get(chatId);
+  if (state?.messageId) {
+    try {
+      await deleteDirect(chatId, state.messageId);
+    } catch {
+      /* best effort */
+    }
+  }
+  const timer = stickyMenuTimers.get(chatId);
+  if (timer) {
+    clearTimeout(timer);
+    stickyMenuTimers.delete(chatId);
+  }
+  stickyMenuState.delete(chatId);
+  clearPendingUiInput(chatId);
+  await showUiScreen(chatId, null, screenId, params, { sticky: true });
 }
 
 // ── Telegram API Helpers ─────────────────────────────────────────────────────
@@ -1969,6 +2093,8 @@ async function pollUpdates() {
     const body = await res.text().catch(() => "");
     console.warn(`[telegram-bot] getUpdates failed: ${res.status} ${body}`);
     if (res.status === 409) {
+      const untilMs = Date.now() + TELEGRAM_POLL_CONFLICT_COOLDOWN_MS;
+      writeTelegramPollConflictState(untilMs, `409 Conflict — cooldown until ${new Date(untilMs).toISOString()}`);
       polling = false;
       await releaseTelegramPollLock();
       return [];
@@ -1977,6 +2103,7 @@ async function pollUpdates() {
     return [];
   }
   resetPollFailureStreak();
+  clearTelegramPollConflictState();
   if (!telegramApiReachable) {
     telegramApiReachable = true;
     // API came back — register commands that were deferred at startup
@@ -2257,7 +2384,7 @@ async function handleUpdate(update) {
   // Free-text agent task runs in a separate queue so polling isn't blocked.
   // If agent is already busy, handle immediately so follow-ups can be queued.
   if (isPrimaryBusy()) {
-    void handleFreeText(text, chatId);
+    safeDetach("free-text", () => handleFreeText(text, chatId));
     return;
   }
   enqueueAgentTask(() => handleFreeText(text, chatId));
@@ -2432,7 +2559,7 @@ async function cmdWorkspace(chatId, text) {
     .trim();
   const [sub, ...rest] = raw ? raw.split(/\s+/) : [];
   const subcmd = String(sub || "list").toLowerCase();
-  const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+  const configDir = resolveTelegramConfigDir();
 
   try {
     if (subcmd === "scan") {
@@ -3951,13 +4078,13 @@ function uiNavRow(parent) {
   if (!parent) {
     return [
       uiButton("🏠 Home", uiGoAction("home")),
-      uiButton("✖ Close", "cb:close_menu"),
+      uiButton("❌ Close", "cb:close_menu"),
     ];
   }
   return [
     uiButton("⬅️ Back", uiGoAction(parent)),
     uiButton("🏠 Home", uiGoAction("home")),
-    uiButton("✖ Close", "cb:close_menu"),
+    uiButton("❌ Close", "cb:close_menu"),
   ];
 }
 
@@ -4191,7 +4318,7 @@ Object.assign(UI_SCREENS, {
             text: "📱 Open Control Center",
             web_app: { url: telegramWebAppUrl },
           },
-          uiButton("✖", "cb:close_menu"),
+          uiButton("❌", "cb:close_menu"),
         ]);
         if (telegramUiUrl) {
           rows.unshift([
@@ -4201,10 +4328,10 @@ Object.assign(UI_SCREENS, {
       } else if (telegramUiUrl) {
         rows.unshift([
           { text: "🌐 Open Control Center", url: getBrowserUiUrl() || telegramUiUrl },
-          uiButton("✖", "cb:close_menu"),
+          uiButton("❌", "cb:close_menu"),
         ]);
       } else {
-        rows.unshift([uiButton("✖ Close Menu", "cb:close_menu")]);
+        rows.unshift([uiButton("❌ Close Menu", "cb:close_menu")]);
       }
       return buildKeyboard(rows);
     },
@@ -5038,7 +5165,7 @@ Object.assign(UI_SCREENS, {
     body: () => "Choose a local workspace to set active for task routing.",
     keyboard: async (ctx) => {
       const page = parsePageParam(ctx.params?.page);
-      const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+      const configDir = resolveTelegramConfigDir();
       const workspaces = listLocalWorkspaces(configDir);
       const active = getActiveLocalWorkspace(configDir);
       if (!workspaces.length) {
@@ -5302,7 +5429,7 @@ Object.assign(UI_SCREENS, {
     body: () => "Browse, manage, and interact with your managed workspaces.",
     keyboard: async (ctx) => {
       const page = parsePageParam(ctx.params?.page);
-      const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+      const configDir = resolveTelegramConfigDir();
       const workspaces = listLocalWorkspaces(configDir);
       const active = getActiveLocalWorkspace(configDir);
       if (!workspaces.length) {
@@ -6060,7 +6187,7 @@ async function cmdApp(chatId) {
 async function cmdMenu(chatId) {
   syncUiUrlsFromServer();
   if (telegramApiReachable !== false) {
-    void refreshMenuButton();
+    safeDetach("menu-button-refresh", refreshMenuButton);
   }
   clearPendingUiInput(chatId);
   await showUiScreen(chatId, null, "home", {}, { sticky: true });
@@ -6774,10 +6901,10 @@ async function cmdStartTask(chatId, args) {
       );
       return;
     }
-    void executor.executeTask(task, {
+    safeDetach("manual-start", () => executor.executeTask(task, {
       sdk: sdk || undefined,
       model: model || undefined,
-    });
+    }));
     await sendReply(
       chatId,
       `✅ Manual start queued for ${task.title || task.id}.` +
@@ -9089,7 +9216,7 @@ async function cmdBackground(chatId, args) {
       chatId,
       `🛰️ Background task queued: "${task.slice(0, 80)}${task.length > 80 ? "…" : ""}"`,
     );
-    void handleFreeText(task, chatId, { background: true, isolated: true });
+    safeDetach("background-free-text", () => handleFreeText(task, chatId, { background: true, isolated: true }));
     return;
   }
 
@@ -9448,11 +9575,11 @@ async function handleFreeText(text, chatId, options = {}) {
     const elapsed = now - lastEditAt;
     if (elapsed >= EDIT_THROTTLE_MS) {
       editPending = true;
-      void doEdit();
+      safeDetach("agent-edit", doEdit);
     } else {
       editPending = true;
       if (editTimer) clearTimeout(editTimer);
-      editTimer = setTimeout(() => void doEdit(), EDIT_THROTTLE_MS - elapsed);
+      editTimer = setTimeout(() => safeDetach("agent-edit", doEdit), EDIT_THROTTLE_MS - elapsed);
     }
   };
 
@@ -9796,8 +9923,8 @@ function startPresenceLoop() {
       );
     }
   };
-  setTimeout(() => void sendPresence(), intervalMs);
-  setInterval(() => void sendPresence(), intervalMs);
+  setTimeout(() => safeDetach("presence-heartbeat", sendPresence), intervalMs);
+  setInterval(() => safeDetach("presence-heartbeat", sendPresence), intervalMs);
 }
 
 function hasPresenceChanged(prev, curr) {
@@ -10400,11 +10527,22 @@ function stopBatchFlushLoop() {
  * Start the two-way Telegram bot.
  * Call injectMonitorFunctions() first if you want full integration.
  */
-export async function startTelegramBot() {
+export async function startTelegramBot(options = {}) {
   refreshTelegramConfigFromEnv();
   if (!telegramToken || !telegramChatId) {
     console.warn(
       "[telegram-bot] disabled (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)",
+    );
+    return;
+  }
+
+  // ── 409 conflict cooldown guard ──────────────────────────────────────────
+  const conflictState = readTelegramPollConflictState();
+  if (conflictState && conflictState.untilMs > Date.now()) {
+    const remainSec = Math.ceil((conflictState.untilMs - Date.now()) / 1000);
+    console.warn(
+      `[telegram-bot] polling suppressed — 409 conflict cooldown active for ${remainSec}s` +
+      (conflictState.reason ? ` (${conflictState.reason})` : ""),
     );
     return;
   }
@@ -10437,8 +10575,22 @@ export async function startTelegramBot() {
   const miniAppPort = Number(process.env.TELEGRAM_UI_PORT || "0");
 
   if (miniAppEnabled || miniAppPort > 0) {
+    const restartReason = String(
+      options.restartReason || process.env.BOSUN_MONITOR_RESTART_REASON || "",
+    )
+      .trim()
+      .toLowerCase();
+    const suppressPortalAutoOpen =
+      options.suppressPortalAutoOpen === true || restartReason.length > 0;
+    const autoOpenOptIn = ["1", "true", "yes", "on"].includes(
+      String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "").toLowerCase(),
+    );
     try {
       await startTelegramUiServer({
+        // Background monitor/bot runtime should not keep opening browser tabs.
+        // Set BOSUN_UI_AUTO_OPEN_BROWSER=1 to opt-in.
+        skipAutoOpen: suppressPortalAutoOpen || !autoOpenOptIn,
+        restartReason,
         dependencies: {
           execPrimaryPrompt,
           getInternalExecutor: _getInternalExecutor,
@@ -10446,7 +10598,7 @@ export async function startTelegramBot() {
           getAgentEventBus: _getAgentEventBus,
           handleUiCommand: handleUiCommand,
           getSyncEngine: _getSyncEngine,
-          configDir: process.env.BOSUN_DIR || join(homedir(), "bosun"),
+          configDir: resolveTelegramConfigDir(),
           onProjectSyncAlert: async (alert) => {
             if (!_sendTelegramMessage) return;
             const text = String(alert?.message || "Project sync alert");
@@ -10467,16 +10619,16 @@ export async function startTelegramBot() {
 
       // Immediately sync the menu button, then periodically refresh
       if (reachable) {
-        void refreshMenuButton();
+        safeDetach("menu-button-refresh", refreshMenuButton);
       }
       if (reachable && !menuButtonRefreshTimer) {
-        menuButtonRefreshTimer = setInterval(() => void refreshMenuButton(), MENU_BUTTON_REFRESH_MS);
+        menuButtonRefreshTimer = setInterval(() => safeDetach("menu-button-refresh", refreshMenuButton), MENU_BUTTON_REFRESH_MS);
       }
 
       // React immediately when the tunnel URL changes (e.g. after restart)
       onTunnelUrlChange((url) => {
         console.log(`[telegram-bot] tunnel URL changed: ${url} — refreshing menu button`);
-        void refreshMenuButton();
+        safeDetach("menu-button-refresh", refreshMenuButton);
       });
 
       // Notify about firewall issues if detected (24h cooldown)
@@ -10588,8 +10740,9 @@ export async function startTelegramBot() {
   } else {
     await sendDirect(
       telegramChatId,
-      `🤖 Bosun primary agent online (${getPrimaryAgentName()}).\n\nType /menu for the control center or send any message to chat with the agent.`,
+      `🤖 Bosun primary agent online (${getPrimaryAgentName()}).\n\nType /menu for the control center or send any message to chat with the agent.\n\nRefreshing control center menu below…`,
     );
+    await refreshStickyMenu(telegramChatId, "home", {});
 
     // ── SECURITY: Alert when ALLOW_UNSAFE is enabled (especially with tunnel) ──
     const _isUnsafe = ["1", "true", "yes"].includes(
@@ -10691,7 +10844,7 @@ export function stopTelegramBot(options = {}) {
     }
     stopBatchFlushLoop();
   }
-  void releaseTelegramPollLock();
+  safeDetach("poll-lock-release", releaseTelegramPollLock);
   stopTelegramUiServer();
   if (menuButtonRefreshTimer) {
     clearInterval(menuButtonRefreshTimer);

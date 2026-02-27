@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
+const mockConfigState = vi.hoisted(() => ({
+  current: { primaryAgent: "codex-sdk" },
+}));
+
 const mockEnsureCodexConfig = vi.hoisted(() => vi.fn(() => ({ noChanges: true })));
 const mockPrintConfigSummary = vi.hoisted(() => vi.fn());
 const mockEnsureRepoConfigs = vi.hoisted(() => vi.fn(() => ({})));
@@ -30,7 +34,7 @@ const mockInitClaudeShell = vi.hoisted(() => vi.fn(async () => true));
 const mockExecPooledPrompt = vi.hoisted(() => vi.fn(async () => ({ finalResponse: "pooled-ok", items: [] })));
 
 vi.mock("../config.mjs", () => ({
-  loadConfig: () => ({ primaryAgent: "codex-sdk" }),
+  loadConfig: () => mockConfigState.current,
 }));
 
 vi.mock("../codex-config.mjs", () => ({
@@ -91,7 +95,11 @@ vi.mock("../agent-pool.mjs", () => ({
 describe("primary-agent runtime safeguards", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockConfigState.current = { primaryAgent: "codex-sdk" };
     delete process.env.BOSUN_ALLOW_RUNTIME_GLOBAL_CODEX_MUTATION;
+    delete process.env.CODEX_SDK_DISABLED;
+    delete process.env.COPILOT_SDK_DISABLED;
+    delete process.env.CLAUDE_SDK_DISABLED;
     mockIsCodexBusy.mockReturnValue(false);
     mockGetThreadInfo.mockReturnValue({
       sessionId: "active-codex-session",
@@ -133,5 +141,77 @@ describe("primary-agent runtime safeguards", () => {
       expect.objectContaining({ sdk: "codex" }),
     );
     expect(result.finalResponse).toBe("pooled-ok");
+  });
+
+  it("surfaces configured executor profiles with model allow-lists and enabled flags", async () => {
+    mockConfigState.current = {
+      primaryAgent: "codex-sdk",
+      executorConfig: {
+        executors: [
+          {
+            name: "copilot-claude",
+            executor: "COPILOT",
+            variant: "CLAUDE_OPUS_4_6",
+            enabled: true,
+            models: ["claude-opus-4.6"],
+          },
+          {
+            name: "codex-backup",
+            executor: "CODEX",
+            variant: "DEFAULT",
+            enabled: false,
+            models: ["gpt-5.3-codex"],
+          },
+        ],
+      },
+    };
+
+    vi.resetModules();
+    const primaryAgent = await import("../primary-agent.mjs");
+
+    const agents = primaryAgent.getAvailableAgents();
+    const copilotClaude = agents.find((agent) => agent.id === "copilot-claude");
+    const codexBackup = agents.find((agent) => agent.id === "codex-backup");
+
+    expect(copilotClaude).toEqual(
+      expect.objectContaining({
+        available: true,
+        adapterId: "copilot-sdk",
+        models: ["claude-opus-4.6"],
+      }),
+    );
+    expect(codexBackup).toEqual(
+      expect.objectContaining({
+        available: false,
+        adapterId: "codex-sdk",
+        models: ["gpt-5.3-codex"],
+      }),
+    );
+  });
+
+  it("switches by configured profile id and preserves selection id", async () => {
+    mockConfigState.current = {
+      primaryAgent: "codex-sdk",
+      executorConfig: {
+        executors: [
+          {
+            name: "copilot-claude",
+            executor: "COPILOT",
+            variant: "CLAUDE_OPUS_4_6",
+            enabled: true,
+            models: ["claude-opus-4.6"],
+          },
+        ],
+      },
+    };
+
+    vi.resetModules();
+    const primaryAgent = await import("../primary-agent.mjs");
+
+    const switched = await primaryAgent.switchPrimaryAgent("copilot-claude");
+
+    expect(switched.ok).toBe(true);
+    expect(primaryAgent.getPrimaryAgentName()).toBe("copilot-sdk");
+    expect(primaryAgent.getPrimaryAgentSelection()).toBe("copilot-claude");
   });
 });

@@ -34,10 +34,34 @@ function inferRepoRoot(startDir) {
   }
 }
 
+function resolveBosunHomeDir() {
+  const explicit = String(
+    process.env.BOSUN_HOME || process.env.BOSUN_DIR || "",
+  ).trim();
+  if (explicit) return resolve(explicit);
+
+  const base = String(
+    process.env.APPDATA ||
+      process.env.LOCALAPPDATA ||
+      process.env.USERPROFILE ||
+      process.env.HOME ||
+      "",
+  ).trim();
+  if (!base) return null;
+  if (/[/\\]bosun$/i.test(base)) return resolve(base);
+  return resolve(base, "bosun");
+}
+
 function resolveDefaultStorePath() {
-  const repoRoot =
-    inferRepoRoot(process.cwd()) || resolve(__dirname, "..", "..");
-  return resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
+  const repoRoot = inferRepoRoot(process.cwd());
+  if (repoRoot) {
+    return resolve(repoRoot, ".bosun", ".cache", "kanban-state.json");
+  }
+  const bosunHome = resolveBosunHomeDir();
+  if (bosunHome) {
+    return resolve(bosunHome, ".cache", "kanban-state.json");
+  }
+  return resolve(__dirname, ".cache", "kanban-state.json");
 }
 
 let storePath = resolveDefaultStorePath();
@@ -58,13 +82,15 @@ let _didLogInitialLoad = false;
 
 export function configureTaskStore(options = {}) {
   const baseDir = options.baseDir ? resolve(options.baseDir) : null;
+  const repoRoot = inferRepoRoot(process.cwd());
+  const homeDir = resolveBosunHomeDir();
+  const defaultBase = baseDir || repoRoot || homeDir || resolve(__dirname);
+  const needsBosunSubdir = Boolean(baseDir || repoRoot);
   const nextPath = options.storePath
     ? resolve(baseDir || process.cwd(), options.storePath)
     : resolve(
-        baseDir ||
-          inferRepoRoot(process.cwd()) ||
-          resolve(__dirname, "..", ".."),
-        ".bosun",
+        defaultBase,
+        needsBosunSubdir ? ".bosun" : "",
         ".cache",
         "kanban-state.json",
       );
@@ -208,50 +234,6 @@ function ensureLoaded() {
   }
 }
 
-function buildCorruptBackupPath() {
-  const safeTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `${storePath}.corrupt-${safeTimestamp}.json`;
-}
-
-function snapshotCorruptPayload(rawPayload, parseError) {
-  const backupPath = buildCorruptBackupPath();
-  try {
-    const dir = dirname(storePath);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-    writeFileSync(backupPath, rawPayload ?? "", "utf-8");
-    console.error(
-      TAG,
-      `Corrupted store payload snapshot saved: ${backupPath} (${parseError?.message || parseError})`,
-    );
-  } catch (backupErr) {
-    console.error(
-      TAG,
-      `Failed to snapshot corrupted store payload: ${backupErr?.message || backupErr}`,
-    );
-  }
-}
-
-function writeSafeEmptyStore() {
-  try {
-    const dir = dirname(storePath);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-    writeFileSync(
-      storePath,
-      JSON.stringify({ _meta: defaultMeta(), tasks: {} }, null, 2),
-      "utf-8",
-    );
-  } catch (err) {
-    console.error(
-      TAG,
-      `Failed to persist safe empty store after corruption recovery: ${err?.message || err}`,
-    );
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Store management
 // ---------------------------------------------------------------------------
@@ -267,30 +249,20 @@ export function loadStore() {
       try {
         data = JSON.parse(raw);
       } catch (parseErr) {
-        snapshotCorruptPayload(raw, parseErr);
-        _store = { _meta: defaultMeta(), tasks: {} };
-        writeSafeEmptyStore();
-        _loaded = true;
-        return;
-      }
-      if (!data || typeof data !== "object" || Array.isArray(data)) {
-        const invalidShapeError = new Error("Store root must be an object");
-        snapshotCorruptPayload(raw, invalidShapeError);
-        _store = { _meta: defaultMeta(), tasks: {} };
-        writeSafeEmptyStore();
-        _loaded = true;
-        return;
-      }
-      if (
-        data.tasks !== undefined &&
-        (!data.tasks || typeof data.tasks !== "object" || Array.isArray(data.tasks))
-      ) {
-        const invalidTasksError = new Error("Store tasks must be an object");
-        snapshotCorruptPayload(raw, invalidTasksError);
-        _store = { _meta: defaultMeta(), tasks: {} };
-        writeSafeEmptyStore();
-        _loaded = true;
-        return;
+        const backupPath = `${storePath}.bak`;
+        try {
+          writeFileSync(backupPath, raw, "utf-8");
+          console.warn(
+            TAG,
+            `Corrupt store detected; backed up original to ${backupPath}`,
+          );
+        } catch (backupErr) {
+          console.warn(
+            TAG,
+            `Corrupt store detected; failed to back up to ${backupPath}: ${backupErr?.message || backupErr}`,
+          );
+        }
+        throw parseErr;
       }
       _store = {
         _meta: { ...defaultMeta(), ...(data._meta || {}) },
@@ -354,18 +326,6 @@ export function saveStore() {
     .catch((err) => {
       console.error(TAG, "Write chain error:", err.message);
     });
-}
-
-/**
- * Wait until all queued writes have completed.
- * Primarily useful for deterministic tests and graceful shutdown flows.
- */
-export async function waitForStoreWrites() {
-  try {
-    await _writeChain;
-  } catch {
-    // saveStore() logs failures internally; callers only need queue drain semantics
-  }
 }
 
 /**
@@ -504,14 +464,21 @@ export function setTaskStatus(taskId, status, source) {
   }
 
   const prev = task.status;
+  const tsNow = now();
   task.status = status;
-  task.updatedAt = now();
-  task.lastActivityAt = now();
+  task.updatedAt = tsNow;
+  task.lastActivityAt = tsNow;
+
+  // No-op transition: keep activity fresh without polluting history/logs.
+  if (prev === status) {
+    saveStore();
+    return { ...task };
+  }
 
   // Append to history (FIFO, max 50)
   task.statusHistory.push({
     status,
-    timestamp: now(),
+    timestamp: tsNow,
     source: source || "unknown",
   });
   if (task.statusHistory.length > MAX_STATUS_HISTORY) {

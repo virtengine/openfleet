@@ -351,12 +351,6 @@
   overflow: hidden;
 }
 
-.btn svg {
-  width: 1em;
-  height: 1em;
-  display: inline-block;
-}
-
 .btn-icon-compact {
   gap: 4px;
 }
@@ -1910,7 +1904,7 @@ select.input {
 .slot-running {
   background: rgba(59, 130, 246, 0.12);
   border-color: rgba(59, 130, 246, 0.4);
-  animation: glowPulse 2s ease-in-out infinite;
+  animation: slot-pulse 2s ease-in-out infinite;
 }
 
 .slot-error {
@@ -2224,7 +2218,7 @@ select.input {
   display: flex;
   flex-direction: column;
   gap: 24px;
-  max-width: var(--content-max);
+  max-width: 1200px;
   margin: 0 auto;
   padding: 16px;
 }
@@ -2682,10 +2676,8 @@ select.input {
   right: 0;
   height: 4px;
   background: var(--qa-color, var(--accent));
-  opacity: 0;
-  transform: scaleX(0.65);
-  transform-origin: center;
-  transition: opacity 0.2s ease, transform 0.2s ease, height 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+  opacity: 0.8;
+  transition: height 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .dashboard-action-btn:hover {
@@ -2695,11 +2687,7 @@ select.input {
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
-.dashboard-action-btn:hover::before,
-.dashboard-action-btn:focus-visible::before,
-.dashboard-action-btn:active::before {
-  opacity: 0.8;
-  transform: scaleX(1);
+.dashboard-action-btn:hover::before {
   height: 6px;
 }
 
@@ -3909,13 +3897,6 @@ select.input {
   font-size: 1.1em;
 }
 
-.btn-icon svg {
-  width: 1em;
-  height: 1em;
-  display: inline-block;
-  vertical-align: -0.15em;
-}
-
 /* ═══════════════════════════════════════════════
  *  Snapshot Bar  (replaces Work Summary card)
  * ═══════════════════════════════════════════════ */
@@ -3997,28 +3978,28 @@ select.input {
 
 /* Column widths via header cells */
 .task-th:nth-child(1) {
-  width: 92px;
+  width: 120px;
 }
 
-/* Priority */
+/* Status */
 .task-th:nth-child(2) {
-  width: 64px;
-}
-
-/* Title — flex grows */
-.task-th:nth-child(3) {}
-
-/* Branch */
-.task-th:nth-child(4) {
-  width: 96px;
-}
-
-/* Repo */
-.task-th:nth-child(5) {
   width: 76px;
 }
 
-/* Updated */
+/* Priority */
+.task-th:nth-child(3) {}
+
+/* Title — flex grows */
+.task-th:nth-child(4) {
+  width: 140px;
+}
+
+/* Branch */
+.task-th:nth-child(5) {
+  width: 110px;
+}
+
+/* Repo */
 .task-th:nth-child(6) {
   width: 90px;
 }
@@ -4051,7 +4032,7 @@ select.input {
 }
 
 .task-th-grow {
-  width: clamp(180px, 38vw, 320px);
+  width: auto;
 }
 
 .task-th-arrow {
@@ -4784,7 +4765,7 @@ select.input {
 /* ═══════════════════════════════════════════════
  *  Desktop Premium Density Overrides
  * ═══════════════════════════════════════════════ */
-@media (min-width: 1400px) {
+@media (min-width: 1200px) {
 
   /* Cards */
   .card {

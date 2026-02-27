@@ -685,14 +685,7 @@
 
       <!-- Feed tabs -->
       <div class="showcase-tabs reveal" id="showcase-tabs">
-        <button class="showcase-tab showcase-tab--active" data-feed="prs">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M12 19V5"/>
-            <path d="M5 12l7-7 7 7"/>
-          </svg>
-          Open PRs
-        </button>
-        <button class="showcase-tab" data-feed="commits">
+        <button class="showcase-tab showcase-tab--active" data-feed="commits">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="3" y="7" width="18" height="13" rx="2"/>
             <path d="M3 7l9 6 9-6"/>
@@ -700,10 +693,17 @@
           </svg>
           Bosun Commits
         </button>
+        <button class="showcase-tab" data-feed="prs">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 19V5"/>
+            <path d="M5 12l7-7 7 7"/>
+          </svg>
+          VirtEngine
+        </button>
       </div>
 
       <!-- PR feed -->
-      <div class="pr-showcase reveal showcase-feed showcase-feed--active" id="pr-showcase" data-feed-panel="prs">
+      <div class="pr-showcase reveal showcase-feed" id="pr-showcase" data-feed-panel="prs">
         <div class="pr-showcase__loading">
           <span class="pr-showcase__spinner"></span>
           Loading recent PRs from VirtEngine...
@@ -711,7 +711,7 @@
       </div>
 
       <!-- Bosun commit feed -->
-      <div class="pr-showcase reveal showcase-feed" id="commit-showcase" data-feed-panel="commits">
+      <div class="pr-showcase reveal showcase-feed showcase-feed--active" id="commit-showcase" data-feed-panel="commits">
         <div class="pr-showcase__loading">
           <span class="pr-showcase__spinner"></span>
           Loading recent commits to bosun...
@@ -719,8 +719,8 @@
       </div>
 
       <div class="pr-showcase__footer reveal" style="text-align: center; margin-top: 1.5rem;">
-        <a id="showcase-gh-link" href="https://github.com/virtengine/virtengine/pulls?q=is%3Apr+sort%3Aupdated-desc" class="btn btn--ghost btn--sm" target="_blank" rel="noopener">
-          View All PRs on GitHub →
+        <a id="showcase-gh-link" href="https://github.com/virtengine/bosun/commits/main" class="btn btn--ghost btn--sm" target="_blank" rel="noopener">
+          View All Commits on GitHub →
         </a>
       </div>
     </div>

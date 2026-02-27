@@ -22,7 +22,7 @@
       --text-dim: #64748b;
       --accent: #6366f1;
       --accent-light: #818cf8;
-      --accent-glow: rgba(99, 102, 241, 0.25);
+      --accent-glow: rgba(99, 102, 241, 0.12);
       --success: #22c55e;
       --success-bg: rgba(34, 197, 94, 0.1);
       --warning: #f59e0b;
@@ -43,10 +43,6 @@
     body {
       font-family: var(--font-sans);
       background: var(--bg-primary);
-      background-image:
-        radial-gradient(circle at 20% 10%, rgba(76,201,240,.12), transparent 55%),
-        radial-gradient(circle at 80% 0%, rgba(94,234,212,.08), transparent 45%),
-        radial-gradient(circle at 50% 100%, rgba(59,130,246,.08), transparent 60%);
       color: var(--text-primary);
       min-height: 100vh;
       -webkit-font-smoothing: antialiased;
@@ -75,7 +71,6 @@
       position: absolute; inset: 0;
       border-radius: 50%;
       border: 2px solid rgba(99,102,241,.15);
-      animation: spin 3s linear infinite;
     }
     .setup-logo .ring-inner {
       position: absolute; inset: 6px;
@@ -83,21 +78,17 @@
       border: 2px solid transparent;
       border-top-color: #6366f1;
       border-right-color: rgba(99,102,241,.4);
-      animation: spin 1.5s linear infinite reverse;
     }
     .setup-logo .dot {
       position: absolute; top: 50%; left: 50%;
       width: 14px; height: 14px; margin: -7px 0 0 -7px;
       border-radius: 50%;
-      background: linear-gradient(135deg, #6366f1, #a78bfa);
-      box-shadow: 0 0 16px rgba(99,102,241,.5);
+      background: #6366f1;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     .setup-title {
       font-size: 1.6rem; font-weight: 700;
-      background: linear-gradient(135deg, #f1f5f9, #94a3b8);
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-      background-clip: text;
+      color: var(--text-primary);
     }
     .setup-subtitle { color: var(--text-dim); font-size: 0.9rem; margin-top: 4px; }
 
@@ -123,7 +114,7 @@
       border-color: var(--accent);
       background: var(--accent);
       color: #fff;
-      box-shadow: 0 0 12px var(--accent-glow);
+      /* box-shadow removed for cleaner look */
     }
     .progress-step.completed .step-dot {
       border-color: var(--success);
@@ -194,7 +185,7 @@
     }
     input:focus, select:focus, textarea:focus {
       border-color: var(--border-focus);
-      box-shadow: 0 0 0 3px var(--accent-glow);
+      box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
     }
     select {
       cursor: pointer;
@@ -360,6 +351,99 @@
     .profile-card h4 { font-size: 0.9rem; margin-bottom: 4px; }
     .profile-card p { font-size: 0.73rem; color: var(--text-dim); line-height: 1.4; }
 
+    /* ── Workflow Setup ─────────────────────────────────────────────── */
+    .workflow-profile-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .workflow-profile-card {
+      border: 1px solid var(--border-primary);
+      border-radius: var(--radius-sm);
+      background: var(--bg-input);
+      padding: 12px;
+      cursor: pointer;
+      transition: all var(--transition);
+    }
+    .workflow-profile-card:hover { border-color: var(--text-dim); background: var(--bg-hover); }
+    .workflow-profile-card.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.08);
+      background: rgba(99,102,241,.08);
+    }
+    .workflow-profile-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+    .workflow-profile-reco {
+      font-size: 0.68rem;
+      color: var(--text-dim);
+      line-height: 1.4;
+    }
+    .workflow-template-list {
+      max-height: 420px;
+      overflow: auto;
+      border: 1px solid var(--border-primary);
+      border-radius: var(--radius-sm);
+      background: var(--bg-input);
+      padding: 8px;
+    }
+    .workflow-template-row {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 10px;
+      padding: 10px;
+      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      transition: border-color var(--transition), background var(--transition);
+      margin-bottom: 6px;
+      background: rgba(255,255,255,0.01);
+    }
+    .workflow-template-row:last-child { margin-bottom: 0; }
+    .workflow-template-row:hover { border-color: var(--border-primary); background: rgba(255,255,255,0.02); }
+    .workflow-template-row.selected { border-color: rgba(34,197,94,.35); background: rgba(34,197,94,.06); }
+    .workflow-template-checkbox {
+      margin-top: 2px;
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .workflow-template-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      font-size: 0.8rem;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .workflow-chip {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--border-primary);
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 0.66rem;
+      color: var(--text-dim);
+    }
+    .workflow-chip.recommended {
+      color: #86efac;
+      border-color: rgba(34,197,94,.35);
+      background: rgba(34,197,94,.1);
+    }
+    .workflow-template-desc {
+      font-size: 0.72rem;
+      color: var(--text-secondary);
+      line-height: 1.45;
+    }
+
     /* ── Loading Spinner ─────────────────────────────────────────────── */
     .spinner {
       display: inline-block; width: 16px; height: 16px;
@@ -418,6 +502,7 @@ const STEPS = [
   { id: "executors", label: "AI Executors", icon: "🤖" },
   { id: "repos", label: "Repositories", icon: "📁" },
   { id: "kanban", label: "Task Mgmt", icon: "📋" },
+  { id: "workflows", label: "Workflows", icon: "🧭" },
   { id: "notifications", label: "Notifications", icon: "🔔" },
   { id: "advanced", label: "Advanced", icon: "⚙️" },
   { id: "review", label: "Review", icon: "🚀" },
@@ -500,6 +585,8 @@ function App() {
   const [executorTypes, setExecutorTypes] = useState([]);
   const [kanbanBackends, setKanbanBackends] = useState([]);
   const [status, setStatus] = useState(null);
+  const [workflowTemplates, setWorkflowTemplates] = useState([]);
+  const [workflowProfiles, setWorkflowProfiles] = useState([]);
 
   // Config state
   const [profile, setProfile] = useState("standard");
@@ -507,15 +594,14 @@ function App() {
   const [repoSlug, setRepoSlug] = useState("");
   const [repoRoot, setRepoRoot] = useState("");
   const [executors, setExecutors] = useState([
-    { name: "primary", executor: "COPILOT", model: "claude-opus-4.6", weight: 70, role: "primary", authMode: "oauth", apiKey: "", baseUrl: "", connections: [], codexProfile: "" },
-    { name: "backup", executor: "CODEX", model: "gpt-5.3-codex", weight: 30, role: "backup", authMode: "oauth", apiKey: "", baseUrl: "", connections: [], codexProfile: "" },
+    { name: "primary", executor: "CODEX", model: "gpt-5.3-codex", weight: 100, role: "primary", enabled: true, models: [], authMode: "oauth", apiKey: "", baseUrl: "", connections: [], codexProfile: "" },
   ]);
   const [probedModels, setProbedModels] = useState({});
   const [repos, setRepos] = useState([""]);
   const [kanbanBackend, setKanbanBackend] = useState("internal");
   const [telegramToken, setTelegramToken] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
-  const [maxParallel, setMaxParallel] = useState(6);
+  const [maxParallel, setMaxParallel] = useState(4);
   const [maxRetries, setMaxRetries] = useState(3);
   const [failoverStrategy, setFailoverStrategy] = useState("next-in-line");
   const [completedSteps, setCompletedSteps] = useState(new Set());
@@ -533,7 +619,7 @@ function App() {
 
   // ── Advanced / orchestration settings ─────────────────────────────────────
   const [executorMode, setExecutorMode] = useState("internal");
-  const [executorDistribution, setExecutorDistribution] = useState("weighted");
+  const [executorDistribution, setExecutorDistribution] = useState("primary-only");
   const [failoverCooldownMinutes, setFailoverCooldownMinutes] = useState(5);
   const [failoverDisableOnConsecutive, setFailoverDisableOnConsecutive] = useState(3);
   const [primaryAgent, setPrimaryAgent] = useState("");
@@ -542,6 +628,14 @@ function App() {
   const [internalReplenishMin, setInternalReplenishMin] = useState(1);
   const [internalReplenishMax, setInternalReplenishMax] = useState(2);
   const [workflowAutomationEnabled, setWorkflowAutomationEnabled] = useState(true);
+  const [workflowProfile, setWorkflowProfile] = useState("balanced");
+  const [workflowDefaultTemplates, setWorkflowDefaultTemplates] = useState([]);
+  const [workflowAutoInstall, setWorkflowAutoInstall] = useState(true);
+  const [workflowNodeMaxRetries, setWorkflowNodeMaxRetries] = useState(3);
+  const [workflowNodeTimeoutMs, setWorkflowNodeTimeoutMs] = useState(600000);
+  const [workflowRunStuckThresholdMs, setWorkflowRunStuckThresholdMs] = useState(300000);
+  const [workflowMaxPersistedRuns, setWorkflowMaxPersistedRuns] = useState(200);
+  const [workflowMaxConcurrentBranches, setWorkflowMaxConcurrentBranches] = useState(8);
   // Kanban
   const [kanbanSyncPolicy, setKanbanSyncPolicy] = useState("internal-primary");
   // Multi-workspace
@@ -566,7 +660,7 @@ function App() {
   const [copilotNoExperimental, setCopilotNoExperimental] = useState(false);
   const [copilotNoAllowAll, setCopilotNoAllowAll] = useState(false);
   const [copilotEnableAskUser, setCopilotEnableAskUser] = useState(false);
-  const [copilotEnableAllMcpTools, setCopilotEnableAllMcpTools] = useState(true);
+  const [copilotEnableAllMcpTools, setCopilotEnableAllMcpTools] = useState(false);
   const [copilotMcpConfig, setCopilotMcpConfig] = useState(".vscode/mcp.json");
   // Infrastructure
   const [containerEnabled, setContainerEnabled] = useState(false);
@@ -577,6 +671,42 @@ function App() {
   const [telegramIntervalMin, setTelegramIntervalMin] = useState(10);
   const [orchestratorScript, setOrchestratorScript] = useState("");
 
+  const getWorkflowProfileById = (profileId, profileList = workflowProfiles) =>
+    (profileList || []).find((profile_) => profile_.id === profileId) || null;
+
+  const getWorkflowTemplateIdsForProfile = (profileId, profileList = workflowProfiles) => {
+    const profile_ = getWorkflowProfileById(profileId, profileList);
+    return Array.isArray(profile_?.templateIds) ? [...profile_.templateIds] : [];
+  };
+
+  const applyWorkflowProfileSelection = (profileId, profileList = workflowProfiles) => {
+    const normalized = String(profileId || "").trim().toLowerCase() || "balanced";
+    const profile_ =
+      getWorkflowProfileById(normalized, profileList) ||
+      getWorkflowProfileById("balanced", profileList);
+    const resolvedProfileId = profile_?.id || "balanced";
+    const templateIds = getWorkflowTemplateIdsForProfile(resolvedProfileId, profileList);
+    setWorkflowProfile(resolvedProfileId);
+    setWorkflowDefaultTemplates(templateIds);
+    if (profile_ && typeof profile_.workflowAutomationEnabled === "boolean") {
+      setWorkflowAutomationEnabled(profile_.workflowAutomationEnabled);
+    }
+    setWorkflowAutoInstall(true);
+  };
+
+  const toggleWorkflowTemplate = (templateId, checked) => {
+    const id = String(templateId || "").trim();
+    if (!id) return;
+    setWorkflowDefaultTemplates((prev) => {
+      const current = Array.isArray(prev) ? [...prev] : [];
+      const has = current.includes(id);
+      if (checked === true && !has) return [...current, id];
+      if (checked === false && has) return current.filter((entry) => entry !== id);
+      if (checked === undefined) return has ? current.filter((entry) => entry !== id) : [...current, id];
+      return current;
+    });
+  };
+
   // ── Load initial data ──────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -585,13 +715,16 @@ function App() {
       apiGet("defaults"),
       apiGet("models"),
       apiGet("executors"),
+      apiGet("workflows"),
       apiGet("status"),
-    ]).then(([prereqData, defaultsData, modelsData, execData, statusData]) => {
+    ]).then(([prereqData, defaultsData, modelsData, execData, workflowData, statusData]) => {
       setPrereqs(prereqData.prerequisites);
       setDefaults(defaultsData.defaults);
       setModels(modelsData.models || {});
       setExecutorTypes(execData.executors || []);
       setKanbanBackends(execData.kanbanBackends || []);
+      setWorkflowTemplates(workflowData.templates || []);
+      setWorkflowProfiles(workflowData.profiles || []);
       setStatus(statusData);
 
       // Apply defaults
@@ -603,6 +736,125 @@ function App() {
       if (d.maxRetries)      setMaxRetries(d.maxRetries);
       if (d.failoverStrategy) setFailoverStrategy(d.failoverStrategy);
       if (d.kanbanBackend)   setKanbanBackend(d.kanbanBackend);
+      if (d.kanbanSyncPolicy) setKanbanSyncPolicy(d.kanbanSyncPolicy);
+      if (d.executorMode) setExecutorMode(d.executorMode);
+      if (d.executorDistribution) setExecutorDistribution(d.executorDistribution);
+      if (d.failoverCooldownMinutes != null) {
+        setFailoverCooldownMinutes(Number(d.failoverCooldownMinutes) || 5);
+      }
+      if (d.failoverDisableOnConsecutive != null) {
+        setFailoverDisableOnConsecutive(Number(d.failoverDisableOnConsecutive) || 3);
+      }
+      if (d.internalReplenishEnabled != null) {
+        setInternalReplenishEnabled(Boolean(d.internalReplenishEnabled));
+      }
+      if (d.internalReplenishMin != null) {
+        setInternalReplenishMin(Number(d.internalReplenishMin) || 1);
+      }
+      if (d.internalReplenishMax != null) {
+        setInternalReplenishMax(Number(d.internalReplenishMax) || 2);
+      }
+      if (d.workflowAutomationEnabled != null) {
+        setWorkflowAutomationEnabled(Boolean(d.workflowAutomationEnabled));
+      }
+      if (d.workflowProfile) {
+        applyWorkflowProfileSelection(String(d.workflowProfile), workflowData.profiles || []);
+      }
+      if (Array.isArray(d.workflowDefaultTemplates) && d.workflowDefaultTemplates.length > 0) {
+        setWorkflowDefaultTemplates(d.workflowDefaultTemplates.map((templateId) => String(templateId).trim()).filter(Boolean));
+      }
+      if (d.workflowAutoInstall != null) {
+        setWorkflowAutoInstall(Boolean(d.workflowAutoInstall));
+      }
+      if (d.workflowNodeMaxRetries != null) {
+        setWorkflowNodeMaxRetries(Number(d.workflowNodeMaxRetries) || 3);
+      }
+      if (d.workflowNodeTimeoutMs != null) {
+        setWorkflowNodeTimeoutMs(Number(d.workflowNodeTimeoutMs) || 600000);
+      }
+      if (d.workflowRunStuckThresholdMs != null) {
+        setWorkflowRunStuckThresholdMs(Number(d.workflowRunStuckThresholdMs) || 300000);
+      }
+      if (d.workflowMaxPersistedRuns != null) {
+        setWorkflowMaxPersistedRuns(Number(d.workflowMaxPersistedRuns) || 200);
+      }
+      if (d.workflowMaxConcurrentBranches != null) {
+        setWorkflowMaxConcurrentBranches(Number(d.workflowMaxConcurrentBranches) || 8);
+      }
+      if (d.copilotEnableAllMcpTools != null) {
+        setCopilotEnableAllMcpTools(Boolean(d.copilotEnableAllMcpTools));
+      }
+      if (Array.isArray(d.executors) && d.executors.length > 0) {
+        setExecutors(
+          d.executors.map((ex, idx) => ({
+            name: ex.name || (idx === 0 ? "primary" : `executor-${idx + 1}`),
+            executor: ex.executor || "CODEX",
+            model: ex.model || "",
+            weight: Number(ex.weight) || 50,
+            role: ex.role || (idx === 0 ? "primary" : "backup"),
+            enabled: ex.enabled !== false,
+            models: Array.isArray(ex.models) ? ex.models : [],
+            authMode: ex.authMode || "oauth",
+            apiKey: ex.apiKey || "",
+            baseUrl: ex.baseUrl || "",
+            connections: Array.isArray(ex.connections) ? ex.connections : [],
+            codexProfile: String(ex.codexProfile || ""),
+          })),
+        );
+      }
+      if (Array.isArray(statusData.existingConfig?.executors) && statusData.existingConfig.executors.length > 0) {
+        setExecutors(
+          statusData.existingConfig.executors.map((ex, idx) => {
+            const configuredModels = Array.isArray(ex.models)
+              ? ex.models.map((m) => String(m || "").trim()).filter(Boolean)
+              : [];
+            const variant = String(ex.variant || "DEFAULT").trim();
+            const variantModel = variant && variant.toUpperCase() !== "DEFAULT"
+              ? variant.toLowerCase().replaceAll("_", "-")
+              : "";
+            return {
+              name: ex.name || (idx === 0 ? "primary" : `executor-${idx + 1}`),
+              executor: ex.executor || "CODEX",
+              model: ex.model || configuredModels[0] || variantModel,
+              weight: Number(ex.weight) || 50,
+              role: ex.role || (idx === 0 ? "primary" : "backup"),
+              enabled: ex.enabled !== false,
+              models: configuredModels,
+              authMode: ex.authMode || "oauth",
+              apiKey: ex.apiKey || "",
+              baseUrl: ex.baseUrl || "",
+              connections: Array.isArray(ex.connections) ? ex.connections : [],
+              codexProfile: String(ex.codexProfile || ""),
+            };
+          }),
+        );
+      }
+      const existingWorkflowDefaults = statusData.existingConfig?.workflowDefaults || {};
+      if (existingWorkflowDefaults.profile) {
+        applyWorkflowProfileSelection(String(existingWorkflowDefaults.profile), workflowData.profiles || []);
+      }
+      if (Array.isArray(existingWorkflowDefaults.templates) && existingWorkflowDefaults.templates.length > 0) {
+        setWorkflowDefaultTemplates(existingWorkflowDefaults.templates.map((templateId) => String(templateId).trim()).filter(Boolean));
+      }
+      if (existingWorkflowDefaults.autoInstall != null) {
+        setWorkflowAutoInstall(Boolean(existingWorkflowDefaults.autoInstall));
+      }
+      const existingWorkflowEngine = statusData.existingConfig?.workflowEngine || {};
+      if (existingWorkflowEngine.nodeMaxRetries != null) {
+        setWorkflowNodeMaxRetries(Number(existingWorkflowEngine.nodeMaxRetries) || 3);
+      }
+      if (existingWorkflowEngine.nodeTimeoutMs != null) {
+        setWorkflowNodeTimeoutMs(Number(existingWorkflowEngine.nodeTimeoutMs) || 600000);
+      }
+      if (existingWorkflowEngine.runStuckThresholdMs != null) {
+        setWorkflowRunStuckThresholdMs(Number(existingWorkflowEngine.runStuckThresholdMs) || 300000);
+      }
+      if (existingWorkflowEngine.maxPersistedRuns != null) {
+        setWorkflowMaxPersistedRuns(Number(existingWorkflowEngine.maxPersistedRuns) || 200);
+      }
+      if (existingWorkflowEngine.maxConcurrentBranches != null) {
+        setWorkflowMaxConcurrentBranches(Number(existingWorkflowEngine.maxConcurrentBranches) || 8);
+      }
       if (d.bosunHome)       setBosunHome(d.bosunHome);
       if (d.workspacesDir)   setWorkspacesDir(d.workspacesDir);
 
@@ -632,10 +884,22 @@ function App() {
       // Advanced / orchestration
       if (env.EXECUTOR_MODE) { setExecutorMode(env.EXECUTOR_MODE); envLoaded = true; }
       if (env.FAILOVER_STRATEGY) { setFailoverStrategy(env.FAILOVER_STRATEGY); envLoaded = true; }
-      if (env.MAX_PARALLEL) { setMaxParallel(Number(env.MAX_PARALLEL) || 6); envLoaded = true; }
-      if (env.MAX_RETRIES) { setMaxRetries(Number(env.MAX_RETRIES) || 3); envLoaded = true; }
-      if (env.FAILOVER_COOLDOWN_MINUTES) { setFailoverCooldownMinutes(Number(env.FAILOVER_COOLDOWN_MINUTES) || 5); envLoaded = true; }
-      if (env.FAILOVER_DISABLE_ON_CONSECUTIVE_FAILURES) { setFailoverDisableOnConsecutive(Number(env.FAILOVER_DISABLE_ON_CONSECUTIVE_FAILURES) || 3); envLoaded = true; }
+      if (env.MAX_PARALLEL) { setMaxParallel(Number(env.MAX_PARALLEL) || 4); envLoaded = true; }
+      const failoverMaxRetriesRaw = env.FAILOVER_MAX_RETRIES || env.MAX_RETRIES;
+      if (failoverMaxRetriesRaw) {
+        setMaxRetries(Number(failoverMaxRetriesRaw) || 3);
+        envLoaded = true;
+      }
+      const failoverCooldownRaw = env.FAILOVER_COOLDOWN_MIN || env.FAILOVER_COOLDOWN_MINUTES;
+      if (failoverCooldownRaw) {
+        setFailoverCooldownMinutes(Number(failoverCooldownRaw) || 5);
+        envLoaded = true;
+      }
+      const failoverDisableRaw = env.FAILOVER_DISABLE_AFTER || env.FAILOVER_DISABLE_ON_CONSECUTIVE_FAILURES;
+      if (failoverDisableRaw) {
+        setFailoverDisableOnConsecutive(Number(failoverDisableRaw) || 3);
+        envLoaded = true;
+      }
       if (env.PRIMARY_AGENT) { setPrimaryAgent(env.PRIMARY_AGENT); envLoaded = true; }
       if (env.PROJECT_REQUIREMENTS_PROFILE) { setProjectRequirementsProfile(env.PROJECT_REQUIREMENTS_PROFILE); envLoaded = true; }
       if (env.INTERNAL_EXECUTOR_REPLENISH_ENABLED) { setInternalReplenishEnabled(env.INTERNAL_EXECUTOR_REPLENISH_ENABLED === "true"); envLoaded = true; }
@@ -643,6 +907,42 @@ function App() {
       if (env.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS) { setInternalReplenishMax(Number(env.INTERNAL_EXECUTOR_REPLENISH_MAX_NEW_TASKS) || 2); envLoaded = true; }
       if (env.KANBAN_SYNC_POLICY) { setKanbanSyncPolicy(env.KANBAN_SYNC_POLICY); envLoaded = true; }
       if (env.WORKFLOW_AUTOMATION_ENABLED !== undefined) { setWorkflowAutomationEnabled(env.WORKFLOW_AUTOMATION_ENABLED !== "false"); envLoaded = true; }
+      if (env.WORKFLOW_DEFAULT_PROFILE) {
+        applyWorkflowProfileSelection(env.WORKFLOW_DEFAULT_PROFILE, workflowData.profiles || []);
+        envLoaded = true;
+      }
+      if (env.WORKFLOW_DEFAULT_TEMPLATES !== undefined) {
+        const rawTemplates = String(env.WORKFLOW_DEFAULT_TEMPLATES || "").trim().toLowerCase();
+        const parsedTemplates = rawTemplates && rawTemplates !== "none"
+          ? rawTemplates.split(",").map((value) => value.trim()).filter(Boolean)
+          : [];
+        setWorkflowDefaultTemplates(parsedTemplates);
+        envLoaded = true;
+      }
+      if (env.WORKFLOW_DEFAULT_AUTOINSTALL !== undefined) {
+        setWorkflowAutoInstall(env.WORKFLOW_DEFAULT_AUTOINSTALL !== "false");
+        envLoaded = true;
+      }
+      if (env.WORKFLOW_NODE_MAX_RETRIES) {
+        setWorkflowNodeMaxRetries(Number(env.WORKFLOW_NODE_MAX_RETRIES) || 3);
+        envLoaded = true;
+      }
+      if (env.WORKFLOW_NODE_TIMEOUT_MS) {
+        setWorkflowNodeTimeoutMs(Number(env.WORKFLOW_NODE_TIMEOUT_MS) || 600000);
+        envLoaded = true;
+      }
+      if (env.WORKFLOW_RUN_STUCK_THRESHOLD_MS) {
+        setWorkflowRunStuckThresholdMs(Number(env.WORKFLOW_RUN_STUCK_THRESHOLD_MS) || 300000);
+        envLoaded = true;
+      }
+      if (env.WORKFLOW_MAX_PERSISTED_RUNS) {
+        setWorkflowMaxPersistedRuns(Number(env.WORKFLOW_MAX_PERSISTED_RUNS) || 200);
+        envLoaded = true;
+      }
+      if (env.WORKFLOW_MAX_CONCURRENT_BRANCHES) {
+        setWorkflowMaxConcurrentBranches(Number(env.WORKFLOW_MAX_CONCURRENT_BRANCHES) || 8);
+        envLoaded = true;
+      }
       // Codex model profiles
       if (env.CODEX_MODEL_PROFILE) { setCodexModelProfile(env.CODEX_MODEL_PROFILE); envLoaded = true; }
       if (env.CODEX_MODEL_PROFILE_SUBAGENT) { setCodexModelProfileSubagent(env.CODEX_MODEL_PROFILE_SUBAGENT); envLoaded = true; }
@@ -690,6 +990,7 @@ function App() {
             const variant = segments[1] || "DEFAULT";
             const weight = Number(segments[2]) || 50;
             const model = variant === "DEFAULT" ? "" : variant.toLowerCase().replaceAll("_", "-");
+            const existingExecutor = statusData.existingConfig?.executors?.[idx] || {};
             // Detect if an API key was previously configured for this executor type
             const hasApiKey =
               ((execType === "CODEX" || execType === "OPENAI") && !!env.OPENAI_API_KEY) ||
@@ -709,18 +1010,20 @@ function App() {
               }
             }
             return {
-              name: idx === 0 ? "primary" : `executor-${idx + 1}`,
+              name: existingExecutor.name || (idx === 0 ? "primary" : `executor-${idx + 1}`),
               executor: execType,
               model,
               weight,
-              role: idx === 0 ? "primary" : "backup",
+              role: existingExecutor.role || (idx === 0 ? "primary" : "backup"),
+              enabled: existingExecutor.enabled !== false,
+              models: Array.isArray(existingExecutor.models) ? existingExecutor.models : [],
               authMode: hasApiKey ? "api-key" : "oauth",
               apiKey: (execType === "CODEX" || execType === "OPENAI") ? (env.OPENAI_API_KEY || "") :
                        (execType === "CLAUDE_CODE" || execType === "ANTHROPIC") ? (env.ANTHROPIC_API_KEY || "") : "",
               baseUrl: (execType === "CODEX" || execType === "OPENAI") ? (env.OPENAI_BASE_URL || "") :
                         (execType === "CLAUDE_CODE" || execType === "ANTHROPIC") ? (env.ANTHROPIC_BASE_URL || "") : "",
               connections,
-              codexProfile: String(statusData.existingConfig?.executors?.[idx]?.codexProfile || ""),
+              codexProfile: String(existingExecutor.codexProfile || ""),
             };
           });
           if (parsed.length > 0) { setExecutors(parsed); envLoaded = true; }
@@ -799,6 +1102,7 @@ function App() {
 
   const buildExecutorsEnv = () =>
     executors
+      .filter((ex) => ex.enabled !== false)
       .map((ex) => {
         const variant = (ex.model || "DEFAULT").toUpperCase().replaceAll("-", "_");
         return `${ex.executor}:${variant}:${ex.weight}`;
@@ -808,12 +1112,20 @@ function App() {
   const buildExecutorsConfig = () =>
     executors.map((ex) => {
       const connections = (ex.connections || []).filter((c) => c.apiKey || c.baseUrl);
+      const configuredModels = Array.isArray(ex.models) && ex.models.length > 0
+        ? ex.models
+        : ex.model
+          ? [ex.model]
+          : [];
+      const models = [...new Set(configuredModels.filter(Boolean))];
       return {
         name: ex.name,
         executor: ex.executor,
         variant: (ex.model || "DEFAULT").toUpperCase().replaceAll("-", "_"),
         weight: Number(ex.weight) || 50,
         role: ex.role,
+        enabled: ex.enabled !== false,
+        models,
         authMode: ex.authMode || "oauth",
         codexProfile:
           (ex.executor === "CODEX" || ex.executor === "OPENAI")
@@ -864,6 +1176,14 @@ function App() {
           internalReplenishMax,
           kanbanSyncPolicy,
           workflowAutomationEnabled,
+          workflowProfile,
+          workflowDefaultTemplates,
+          workflowAutoInstall,
+          workflowNodeMaxRetries,
+          workflowNodeTimeoutMs,
+          workflowRunStuckThresholdMs,
+          workflowMaxPersistedRuns,
+          workflowMaxConcurrentBranches,
           // Codex model profiles
           codexModelProfile,
           codexModelProfileSubagent,
@@ -916,6 +1236,18 @@ function App() {
             minNewTasks: Number(internalReplenishMin) || 1,
             maxNewTasks: Number(internalReplenishMax) || 2,
           } : { enabled: false },
+          workflowDefaults: {
+            profile: workflowProfile,
+            autoInstall: workflowAutoInstall,
+            templates: (workflowDefaultTemplates || []).filter(Boolean),
+          },
+          workflowEngine: {
+            nodeMaxRetries: Number(workflowNodeMaxRetries) || 3,
+            nodeTimeoutMs: Number(workflowNodeTimeoutMs) || 600000,
+            runStuckThresholdMs: Number(workflowRunStuckThresholdMs) || 300000,
+            maxPersistedRuns: Number(workflowMaxPersistedRuns) || 200,
+            maxConcurrentBranches: Number(workflowMaxConcurrentBranches) || 8,
+          },
           workspaces: multiWorkspaceEnabled
             ? workspaces.filter((ws) => ws.name.trim()).map((ws) => ({
                 id: ws.id,
@@ -973,6 +1305,8 @@ function App() {
         model: "claude-sonnet-4",
         weight: 50,
         role: "backup",
+        enabled: true,
+        models: [],
         authMode: "oauth",
         apiKey: "",
         baseUrl: "",
@@ -992,11 +1326,19 @@ function App() {
       updated[idx] = { ...updated[idx], [field]: value };
       // When executor type changes, update model to default + reset connections if type changes
       if (field === "executor") {
+        updated[idx].models = [];
         updated[idx].model = getDefaultModelForExecutor(value);
         // Clear connections if switching away from a multi-connection executor type
         if (!supportsMultiConnections(value)) {
           updated[idx].connections = [];
         }
+      }
+      if (field === "model") {
+        const models = Array.isArray(updated[idx].models)
+          ? [...updated[idx].models]
+          : [];
+        if (value && !models.includes(value)) models.push(value);
+        updated[idx].models = models;
       }
       // Auto-initialise connections when switching to api-key mode on a multi-profile executor
       if (field === "authMode" && value === "api-key") {
@@ -1071,6 +1413,13 @@ function App() {
       }));
       // Auto-select first live model if current model isn't in the new list
       if (result.models?.length) {
+        updateExecutor(
+          idx,
+          "models",
+          result.models
+            .map((m) => (typeof m === "string" ? m : m?.value))
+            .filter(Boolean),
+        );
         const current = ex.model;
         const inList = result.models.some((m) => m.value === current);
         if (!inList) {
@@ -1159,6 +1508,9 @@ function App() {
             </p>
             <p style="margin-top:16px;color:var(--text-secondary)">
               You can close this tab. Run <code style="font-family:var(--font-mono);color:var(--accent-light)">bosun</code> to start the orchestrator.
+            </p>
+            <p style="margin-top:6px;color:var(--text-dim);font-size:0.8rem">
+              To update any setting later, run <code style="font-family:var(--font-mono);color:var(--accent-light)">bosun --setup</code> again.
             </p>
           </div>
         </div>
@@ -1297,6 +1649,8 @@ function App() {
 
   // ── Step 2: AI Executors ───────────────────────────────────────────────────
 
+  const enabledExecutorsCount = executors.filter((ex) => ex.enabled !== false).length;
+
   const StepExecutors = () => html`
     <h2>AI Executors</h2>
     <p class="step-desc">Configure which AI coding agents bosun will use. You can add multiple executors with weighted distribution.</p>
@@ -1313,12 +1667,19 @@ function App() {
 
     ${executors.map((ex, i) => {
       const probed = probedModels[i] || {};
-      const modelOptions = probed.models?.length ? probed.models : getModelsForExecutor(ex.executor);
+      const configuredModelOptions = Array.isArray(ex.models) && ex.models.length > 0
+        ? ex.models.map((m) => ({ value: m, label: m }))
+        : [];
+      const modelOptions = probed.models?.length
+        ? probed.models
+        : configuredModelOptions.length > 0
+          ? configuredModelOptions
+          : getModelsForExecutor(ex.executor);
       const authMode = ex.authMode || "oauth";
       return html`
       <div class="executor-card">
         <div class="executor-card-header">
-          <h4>${ex.role === "primary" ? "🟢" : "🔵"} Executor ${i + 1}: ${ex.name}</h4>
+          <h4>${ex.enabled === false ? "⚫" : ex.role === "primary" ? "🟢" : "🔵"} Executor ${i + 1}: ${ex.name}</h4>
           ${executors.length > 1 && html`
             <button class="btn btn-sm btn-danger" onclick=${() => removeExecutor(i)}>Remove</button>
           `}
@@ -1334,6 +1695,17 @@ function App() {
               <option value="primary">Primary</option>
               <option value="backup">Backup</option>
             </select>
+          </div>
+          <div class="form-group">
+            <label>Status</label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+              <input type="checkbox"
+                checked=${ex.enabled !== false}
+                onchange=${(e) => updateExecutor(i, "enabled", e.target.checked)}
+                style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+              Enabled
+            </label>
+            <div class="hint">Disabled executors stay in config but are excluded from routing and chat picker lists.</div>
           </div>
           <div class="form-group">
             <label>Executor Type</label>
@@ -1484,13 +1856,18 @@ function App() {
         </div>
       </div>
     `})}
+    ${enabledExecutorsCount === 0 && html`
+      <div class="hint" style="color:var(--warning, #f59e0b);margin:8px 0 12px">
+        Enable at least one executor to continue.
+      </div>
+    `}
     <button class="btn btn-sm" onclick=${addExecutor} style="margin-bottom:12px">+ Add Executor</button>
     ${profile === "advanced" && html`
       <div class="executor-grid" style="margin-top:12px">
         <div class="form-group">
           <label>Max Parallel</label>
           <input type="number" value=${maxParallel} min="1" max="20"
-            oninput=${(e) => setMaxParallel(Number(e.target.value) || 6)} />
+            oninput=${(e) => setMaxParallel(Number(e.target.value) || 4)} />
           <div class="hint">Simultaneous execution slots</div>
         </div>
         <div class="form-group">
@@ -1510,7 +1887,7 @@ function App() {
     `}
     <div class="nav-buttons">
       <button class="btn" onclick=${goPrev}>← Back</button>
-      <button class="btn btn-primary" onclick=${goNext} disabled=${executors.length === 0}>Continue →</button>
+      <button class="btn btn-primary" onclick=${goNext} disabled=${executors.length === 0 || enabledExecutorsCount === 0}>Continue →</button>
     </div>
   `;
 
@@ -1673,7 +2050,122 @@ function App() {
     </div>
   `;
 
-  // ── Step 5: Notifications ──────────────────────────────────────────────────
+  // ── Step 5: Workflows ──────────────────────────────────────────────────────
+
+  const StepWorkflows = () => {
+    const profileCards = workflowProfiles || [];
+    const templates = [...(workflowTemplates || [])].sort((a, b) => {
+      const categoryOrderA = Number(a?.categoryOrder || 99);
+      const categoryOrderB = Number(b?.categoryOrder || 99);
+      if (categoryOrderA !== categoryOrderB) return categoryOrderA - categoryOrderB;
+      return String(a?.name || "").localeCompare(String(b?.name || ""));
+    });
+    const selectedSet = new Set((workflowDefaultTemplates || []).map((id) => String(id)));
+    const selectedCount = selectedSet.size;
+
+    const applyProfileTemplates = (profileId) => {
+      applyWorkflowProfileSelection(profileId, profileCards);
+    };
+
+    const selectRecommendedOnly = () => {
+      const recommended = templates
+        .filter((template) => template.recommended === true)
+        .map((template) => template.id);
+      setWorkflowDefaultTemplates(recommended);
+      setWorkflowProfile("balanced");
+      setWorkflowAutoInstall(true);
+    };
+
+    const clearTemplateSelection = () => {
+      setWorkflowDefaultTemplates([]);
+      setWorkflowProfile("manual");
+    };
+
+    return html`
+      <h2>Workflow Defaults</h2>
+      <p class="step-desc">
+        Pick which workflows Bosun should auto-install and enable by default. Choose a setup profile, then fine-tune the exact templates.
+      </p>
+
+      <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:14px;font-size:0.79rem;line-height:1.55">
+        <strong>Tip:</strong> You can run <code style="font-family:var(--font-mono);color:var(--accent-light)">bosun --setup</code> anytime to update workflow defaults, executors, and advanced settings.
+      </div>
+
+      <div class="workflow-profile-grid">
+        ${profileCards.map((profile_) => html`
+          <div
+            class="workflow-profile-card ${workflowProfile === profile_.id ? "selected" : ""}"
+            onclick=${() => applyProfileTemplates(profile_.id)}
+          >
+            <div class="workflow-profile-title">
+              <span>${profile_.name}</span>
+              <span class="workflow-chip">${profile_.templateCount || profile_?.templateIds?.length || 0} templates</span>
+            </div>
+            <div class="workflow-profile-reco">${profile_.description}</div>
+            <div class="workflow-profile-reco" style="margin-top:6px;color:var(--text-dim)">
+              Recommended for: ${profile_.recommendedFor}
+            </div>
+          </div>
+        `)}
+      </div>
+
+      <div class="form-group" style="margin-bottom:10px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+          <input type="checkbox" checked=${workflowAutoInstall}
+            onchange=${(e) => setWorkflowAutoInstall(e.target.checked)}
+            style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+          Auto-install selected workflow templates on startup
+        </label>
+        <div class="hint">If disabled, templates stay available in the Workflows tab but won’t be installed automatically.</div>
+      </div>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+        <div class="hint">Selected templates: <strong>${selectedCount}</strong> / ${templates.length}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-sm" onclick=${() => applyProfileTemplates(workflowProfile || "balanced")}>Apply Profile Defaults</button>
+          <button class="btn btn-sm" onclick=${selectRecommendedOnly}>Use Recommended Only</button>
+          <button class="btn btn-sm btn-danger" onclick=${clearTemplateSelection}>Clear Selection</button>
+        </div>
+      </div>
+
+      <div class="workflow-template-list">
+        ${templates.map((template) => {
+          const checked = selectedSet.has(String(template.id));
+          return html`
+            <label class="workflow-template-row ${checked ? "selected" : ""}">
+              <input
+                class="workflow-template-checkbox"
+                type="checkbox"
+                checked=${checked}
+                onchange=${(e) => toggleWorkflowTemplate(template.id, e.target.checked)}
+              />
+              <div>
+                <div class="workflow-template-title">
+                  <span>${template.name}</span>
+                  ${template.recommended ? html`<span class="workflow-chip recommended">recommended</span>` : null}
+                  ${template.categoryLabel ? html`<span class="workflow-chip">${template.categoryLabel}</span>` : null}
+                </div>
+                <div class="workflow-template-desc">${template.description}</div>
+              </div>
+            </label>
+          `;
+        })}
+      </div>
+
+      ${workflowAutoInstall && selectedCount === 0 && html`
+        <div class="hint" style="margin-top:10px;color:var(--warning)">
+          No templates selected. Bosun can still run, but workflow automation won’t perform any default actions.
+        </div>
+      `}
+
+      <div class="nav-buttons">
+        <button class="btn" onclick=${goPrev}>← Back</button>
+        <button class="btn btn-primary" onclick=${goNext}>Continue →</button>
+      </div>
+    `;
+  };
+
+  // ── Step 6: Notifications ──────────────────────────────────────────────────
 
   const StepNotifications = () => html`
     <h2>Notifications</h2>
@@ -1738,7 +2230,7 @@ function App() {
     </div>
   `;
 
-  // ── Step 6: Advanced Settings ──────────────────────────────────────────────
+  // ── Step 7: Advanced Settings ──────────────────────────────────────────────
 
   const StepAdvanced = () => {
     // Section is rendered as a real Preact component (`<${Section}/>`) so its
@@ -1782,7 +2274,7 @@ function App() {
           <div class="form-group">
             <label>Max Parallel Tasks</label>
             <input type="number" value=${maxParallel} min="1" max="32"
-              oninput=${(e) => setMaxParallel(Number(e.target.value) || 6)} />
+              oninput=${(e) => setMaxParallel(Number(e.target.value) || 4)} />
             <div class="hint">Simultaneous agent slots</div>
           </div>
           <div class="form-group">
@@ -1864,6 +2356,56 @@ function App() {
             <label>Disable after N consecutive failures</label>
             <input type="number" value=${failoverDisableOnConsecutive} min="1" max="20"
               oninput=${(e) => setFailoverDisableOnConsecutive(Number(e.target.value) || 3)} />
+          </div>
+        </div>
+      <//>
+
+      <${Section} title="🧭 Workflow Engine">
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>Default Workflow Profile</label>
+            <select value=${workflowProfile} onchange=${(e) => applyWorkflowProfileSelection(e.target.value)}>
+              ${(workflowProfiles || []).length > 0
+                ? (workflowProfiles || []).map((profile_) => html`
+                    <option value=${profile_.id}>${profile_.name}</option>
+                  `)
+                : html`<option value="balanced">Balanced</option>`}
+            </select>
+            <div class="hint">Controls which templates are selected by default in the Workflows setup step.</div>
+          </div>
+          <div class="form-group">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;margin-top:24px">
+              <input type="checkbox" checked=${workflowAutoInstall}
+                onchange=${(e) => setWorkflowAutoInstall(e.target.checked)}
+                style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+              Auto-install selected templates
+            </label>
+          </div>
+          <div class="form-group">
+            <label>Node Max Retries</label>
+            <input type="number" value=${workflowNodeMaxRetries} min="0" max="20"
+              oninput=${(e) => setWorkflowNodeMaxRetries(Number(e.target.value) || 0)} />
+            <div class="hint">Global retry fallback for workflow nodes when node-level retry is not set.</div>
+          </div>
+          <div class="form-group">
+            <label>Node Timeout (ms)</label>
+            <input type="number" value=${workflowNodeTimeoutMs} min="1000" max="21600000"
+              oninput=${(e) => setWorkflowNodeTimeoutMs(Number(e.target.value) || 600000)} />
+          </div>
+          <div class="form-group">
+            <label>Run Stuck Threshold (ms)</label>
+            <input type="number" value=${workflowRunStuckThresholdMs} min="10000" max="7200000"
+              oninput=${(e) => setWorkflowRunStuckThresholdMs(Number(e.target.value) || 300000)} />
+          </div>
+          <div class="form-group">
+            <label>Max Persisted Workflow Runs</label>
+            <input type="number" value=${workflowMaxPersistedRuns} min="20" max="5000"
+              oninput=${(e) => setWorkflowMaxPersistedRuns(Number(e.target.value) || 200)} />
+          </div>
+          <div class="form-group">
+            <label>Max Concurrent Branches</label>
+            <input type="number" value=${workflowMaxConcurrentBranches} min="1" max="64"
+              oninput=${(e) => setWorkflowMaxConcurrentBranches(Number(e.target.value) || 8)} />
           </div>
         </div>
       <//>
@@ -2079,7 +2621,7 @@ function App() {
     `;
   };
 
-  // ── Step 7: Review & Apply ─────────────────────────────────────────────────
+  // ── Step 8: Review & Apply ─────────────────────────────────────────────────
 
   const StepReview = () => {
     const filteredRepos = repos.filter((r) => r.trim());
@@ -2098,7 +2640,7 @@ function App() {
             <td>
               ${executors.map((ex) => html`
                 <div style="margin-bottom:4px">
-                  <strong>${ex.name}</strong> — ${ex.executor} / ${ex.model} (weight: ${ex.weight}, ${ex.role})
+                  <strong>${ex.name}</strong> — ${ex.executor} / ${ex.model} (weight: ${ex.weight}, ${ex.role}, ${ex.enabled !== false ? "enabled" : "disabled"})
                 </div>
               `)}
             </td>
@@ -2108,6 +2650,16 @@ function App() {
             <td>${filteredRepos.length > 0 ? filteredRepos.join(", ") : "—"}</td>
           </tr>
           <tr><th>Kanban Backend</th><td>${kanbanBackend}</td></tr>
+          <tr><th>Workflow Profile</th><td>${workflowProfile || "balanced"}</td></tr>
+          <tr>
+            <th>Workflow Templates</th>
+            <td>
+              ${(workflowDefaultTemplates || []).length > 0
+                ? workflowDefaultTemplates.join(", ")
+                : "none"}
+            </td>
+          </tr>
+          <tr><th>Workflow Auto-Install</th><td>${workflowAutoInstall ? "Enabled" : "Disabled"}</td></tr>
           <tr><th>Telegram</th><td>${telegramEnabled && telegramToken ? "Configured" : "Skipped"}</td></tr>
           ${profile === "advanced" ? html`
             <tr><th>Max Parallel</th><td>${maxParallel}</td></tr>
@@ -2116,6 +2668,11 @@ function App() {
             <tr><th>Distribution</th><td>${executorDistribution}</td></tr>
             <tr><th>Executor Mode</th><td>${executorMode}</td></tr>
             <tr><th>Workflow Automation</th><td>${workflowAutomationEnabled ? "Enabled" : "Disabled"}</td></tr>
+            <tr><th>Workflow Node Retries</th><td>${workflowNodeMaxRetries}</td></tr>
+            <tr><th>Workflow Node Timeout (ms)</th><td>${workflowNodeTimeoutMs}</td></tr>
+            <tr><th>Workflow Stuck Threshold (ms)</th><td>${workflowRunStuckThresholdMs}</td></tr>
+            <tr><th>Workflow Run History</th><td>${workflowMaxPersistedRuns}</td></tr>
+            <tr><th>Workflow Parallel Branches</th><td>${workflowMaxConcurrentBranches}</td></tr>
           ` : html`
             <tr><th>Max Parallel</th><td>${maxParallel}</td></tr>
             <tr><th>Failover Strategy</th><td>${failoverStrategy}</td></tr>
@@ -2144,9 +2701,10 @@ function App() {
       case 2: return StepExecutors();
       case 3: return StepRepos();
       case 4: return StepKanban();
-      case 5: return StepNotifications();
-      case 6: return StepAdvanced();
-      case 7: return StepReview();
+      case 5: return StepWorkflows();
+      case 6: return StepNotifications();
+      case 7: return StepAdvanced();
+      case 8: return StepReview();
       default: return StepPrerequisites();
     }
   };

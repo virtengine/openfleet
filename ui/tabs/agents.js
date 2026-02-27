@@ -2,7 +2,7 @@
  *  Tab: Agents — thread/slot cards, capacity, detail expansion
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
-import { useState, useCallback, useEffect, useRef } from "preact/hooks";
+import { useState, useCallback, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
 
 const html = htm.bind(h);
@@ -33,7 +33,6 @@ import {
 import { ProgressBar } from "../components/charts.js";
 import { Collapsible } from "../components/forms.js";
 import {
-  SessionList,
   loadSessions,
   loadSessionMessages,
   selectedSessionId,
@@ -71,6 +70,23 @@ function formatDuration(startedAt) {
   return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
 }
 
+function taskSortScore(task) {
+  const rawId = String(task?.id || "");
+  const digits = rawId.match(/\d+/g);
+  const numeric = digits?.length ? Number(digits[digits.length - 1]) : NaN;
+  if (Number.isFinite(numeric)) return numeric;
+  const createdAt = new Date(task?.createdAt || task?.created_at || 0).getTime();
+  if (Number.isFinite(createdAt) && createdAt > 0) return createdAt;
+  return 0;
+}
+
+function formatTaskOptionLabel(task) {
+  const rawId = String(task?.id || "").trim();
+  const digits = rawId.match(/\d+/g);
+  const numberToken = digits?.length ? digits[digits.length - 1] : rawId || "?";
+  return `#${numberToken} ${task?.title || "(untitled task)"}`;
+}
+
 /* ─── Workspace Viewer Modal ─── */
 function WorkspaceViewer({ agent, onClose }) {
   const [logText, setLogText] = useState("Loading…");
@@ -87,6 +103,9 @@ function WorkspaceViewer({ agent, onClose }) {
     fileAccess: null,
     capturedAt: null,
   });
+  const [expandedEventItems, setExpandedEventItems] = useState(() => new Set());
+  const [expandedFileItems, setExpandedFileItems] = useState(() => new Set());
+  const [expandedModelResponse, setExpandedModelResponse] = useState(false);
   const logRef = useRef(null);
 
   const query = agent.branch || agent.taskId || agent.sessionId || "";
@@ -164,6 +183,9 @@ function WorkspaceViewer({ agent, onClose }) {
     setFileFilter("all");
     setFileSearch("");
     setStreamSnapshot({ events: [], fileAccess: null, capturedAt: null });
+    setExpandedEventItems(new Set());
+    setExpandedFileItems(new Set());
+    setExpandedModelResponse(false);
   }, [query]);
 
   const handleStop = async () => {
@@ -214,6 +236,67 @@ function WorkspaceViewer({ agent, onClose }) {
     setTimeout(() => URL.revokeObjectURL(url), 1500);
   };
 
+  const toggleExpandedEvent = useCallback((key) => {
+    if (!key) return;
+    setExpandedEventItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toggleExpandedFile = useCallback((key) => {
+    if (!key) return;
+    setExpandedFileItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toMultilineText = (value) => {
+    if (value == null) return "";
+    if (typeof value === "string") return value;
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  };
+
+  const toSingleLinePreview = (value, limit = 220) => {
+    const compact = String(value || "").replace(/\s+/g, " ").trim();
+    if (!compact) return "";
+    return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
+  };
+
+  const isModelResponseMessage = (msg) => {
+    if (!msg) return false;
+    const role = String(msg.role || "").toLowerCase();
+    const type = String(msg.type || "").toLowerCase();
+    if (role === "assistant") return true;
+    if (
+      type === "agent_message" ||
+      type === "assistant" ||
+      type === "assistant_message"
+    ) {
+      return true;
+    }
+    if (role) return false;
+    if (!msg.content) return false;
+    return ![
+      "tool_call",
+      "tool_result",
+      "tool_output",
+      "error",
+      "stream_error",
+      "system",
+      "user",
+    ].includes(type);
+  };
+
   const renderChanges = () => {
     const ctx = contextData?.context;
     const matches = contextData?.matches || {};
@@ -224,6 +307,14 @@ function WorkspaceViewer({ agent, onClose }) {
     const fileAccess = contextData?.fileAccessSummary || null;
     const fileAccessFiles = fileAccess?.files || [];
     const streamMessages = sessionMessages.value || [];
+    const latestModelResponse =
+      streamMessages
+        .slice()
+        .reverse()
+        .find((msg) => isModelResponseMessage(msg)) || null;
+    const latestModelResponseText = latestModelResponse
+      ? toMultilineText(latestModelResponse.content || "")
+      : "";
     const rawToolEvents = streamMessages
       .filter((msg) => msg?.type === "tool_call" || msg?.type === "tool_result" || msg?.type === "error")
       .slice(-200)
@@ -497,6 +588,34 @@ function WorkspaceViewer({ agent, onClose }) {
           </div>
           ${streamPaused && snapshotMeta &&
             html`<div class="meta-text mt-xs">Paused at ${snapshotMeta}</div>`}
+          ${latestModelResponseText &&
+            html`
+              <div class="stream-final-response ${expandedModelResponse ? "expanded" : ""}">
+                <button
+                  class="stream-item-toggle stream-item-toggle-final"
+                  type="button"
+                  onClick=${() => setExpandedModelResponse((prev) => !prev)}
+                >
+                  <div class="stream-item-header">
+                    <span class="stream-tag stream-tag-model">MODEL</span>
+                    <span class="stream-item-title">Latest model response</span>
+                    ${latestModelResponse?.timestamp &&
+                      html`<span class="stream-item-time">
+                        ${formatRelative(latestModelResponse.timestamp)}
+                      </span>`}
+                  </div>
+                  <div class="stream-item-preview">
+                    ${toSingleLinePreview(latestModelResponseText, 260)}
+                  </div>
+                  <span class="stream-item-chevron">${expandedModelResponse ? "▾" : "▸"}</span>
+                </button>
+                <div class="stream-item-details ${expandedModelResponse ? "expanded" : ""}">
+                  <div class="stream-item-details-inner">
+                    <pre class="stream-item-pre">${latestModelResponseText}</pre>
+                  </div>
+                </div>
+              </div>
+            `}
           ${filteredEvents.length === 0 &&
             html`<div class="stream-empty">
               <div class="stream-empty-icon">${resolveIcon("🛰")}</div>
@@ -506,18 +625,41 @@ function WorkspaceViewer({ agent, onClose }) {
             </div>`}
           ${filteredEvents.length > 0 &&
             html`<div class="stream-list">
-              ${filteredEvents.map((evt) => html`
-                <div class="stream-item stream-${evt.type}" key=${evt._id}>
-                  <div class="stream-item-header">
-                    <span class="stream-tag stream-tag-${evt.type}">
-                      ${toolLabel(evt.type)}
-                    </span>
-                    ${evt.tool && html`<span class="stream-item-tool mono">${evt.tool}</span>`}
-                    ${evt.timestamp && html`<span class="stream-item-time">${formatRelative(evt.timestamp)}</span>`}
+              ${filteredEvents.map((evt) => {
+                const rowKey = evt._id;
+                const bodyText = toMultilineText(evt.content || evt.detail || "");
+                const hasBody = bodyText.trim().length > 0;
+                const expanded = rowKey ? expandedEventItems.has(rowKey) : false;
+                return html`
+                  <div class="stream-item stream-${evt.type} ${expanded ? "expanded" : ""}" key=${rowKey}>
+                    <button
+                      class="stream-item-toggle"
+                      type="button"
+                      onClick=${() => hasBody && toggleExpandedEvent(rowKey)}
+                      disabled=${!hasBody}
+                    >
+                      <div class="stream-item-header">
+                        <span class="stream-tag stream-tag-${evt.type}">
+                          ${toolLabel(evt.type)}
+                        </span>
+                        ${evt.tool && html`<span class="stream-item-tool mono">${evt.tool}</span>`}
+                        <span class="stream-item-title">
+                          ${toSingleLinePreview(bodyText, 240) || "No details"}
+                        </span>
+                        ${evt.timestamp && html`<span class="stream-item-time">${formatRelative(evt.timestamp)}</span>`}
+                      </div>
+                      ${hasBody && html`<span class="stream-item-chevron">${expanded ? "▾" : "▸"}</span>`}
+                    </button>
+                    ${hasBody && html`
+                      <div class="stream-item-details ${expanded ? "expanded" : ""}">
+                        <div class="stream-item-details-inner ${bodyText.length > 1600 ? "stream-item-details-scroll" : ""}">
+                          <pre class="stream-item-pre">${bodyText}</pre>
+                        </div>
+                      </div>
+                    `}
                   </div>
-                  ${evt.content && html`<div class="stream-item-body">${truncate(evt.content, 260)}</div>`}
-                </div>
-              `)}
+                `;
+              })}
             </div>`}
         </div>
       `;
@@ -616,16 +758,36 @@ function WorkspaceViewer({ agent, onClose }) {
             </div>`}
           ${filteredFiles.length > 0 &&
             html`<div class="stream-list">
-              ${filteredFiles.map((entry) => html`
-                <div class="stream-item stream-file" key=${entry.path}>
-                  <div class="stream-item-header">
-                    <span class="stream-tag stream-tag-file">FILE</span>
-                    <span class="mono">${entry.path}</span>
+              ${filteredFiles.map((entry) => {
+                const rowKey = `${entry.path || "unknown"}::${(entry.kinds || []).join(",")}`;
+                const expanded = expandedFileItems.has(rowKey);
+                const details = [
+                  `Path: ${entry.path || "unknown"}`,
+                  entry.kinds?.length
+                    ? `Access kinds: ${entry.kinds.join(", ")}`
+                    : "Access kinds: unknown",
+                ].join("\n");
+                return html`
+                  <div class="stream-item stream-file ${expanded ? "expanded" : ""}" key=${rowKey}>
+                    <button
+                      class="stream-item-toggle"
+                      type="button"
+                      onClick=${() => toggleExpandedFile(rowKey)}
+                    >
+                      <div class="stream-item-header">
+                        <span class="stream-tag stream-tag-file">FILE</span>
+                        <span class="stream-item-title mono">${entry.path}</span>
+                      </div>
+                      <span class="stream-item-chevron">${expanded ? "▾" : "▸"}</span>
+                    </button>
+                    <div class="stream-item-details ${expanded ? "expanded" : ""}">
+                      <div class="stream-item-details-inner">
+                        <pre class="stream-item-pre">${details}</pre>
+                      </div>
+                    </div>
                   </div>
-                  ${entry.kinds?.length &&
-                    html`<div class="stream-item-body">Access: ${entry.kinds.join(", ")}</div>`}
-                </div>
-              `)}
+                `;
+              })}
             </div>`}
         </div>
       `;
@@ -751,20 +913,22 @@ function WorkspaceViewer({ agent, onClose }) {
             >${iconText("📄 Logs")}</button>
           </div>
 
-          ${activeTab === "stream" &&
-          html`
-            ${sessionId
-              ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
-              : html`
-                  <div class="chat-view chat-empty-state">
-                    <div class="session-empty-icon">${resolveIcon("💬")}</div>
-                    <div class="session-empty-text">No session stream available</div>
-                  </div>
-                `}
-          `}
-          ${activeTab === "changes" && renderChanges()}
-          ${activeTab === "logs" &&
-          html`<div class="workspace-log" ref=${logRef}>${logText}</div>`}
+          <div class="workspace-body">
+            ${activeTab === "stream" &&
+            html`
+              ${sessionId
+                ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
+                : html`
+                    <div class="chat-view chat-empty-state">
+                      <div class="session-empty-icon">${resolveIcon("💬")}</div>
+                      <div class="session-empty-text">No session stream available</div>
+                    </div>
+                  `}
+            `}
+            ${activeTab === "changes" && renderChanges()}
+            ${activeTab === "logs" &&
+            html`<div class="workspace-log" ref=${logRef}>${logText}</div>`}
+          </div>
 
           <div class="workspace-controls">
             <input
@@ -779,7 +943,7 @@ function WorkspaceViewer({ agent, onClose }) {
               class="btn btn-danger btn-sm"
               disabled=${agent.index == null}
               onClick=${handleStop}
-            >⛔ Stop</button>
+            >${iconText("⛔ Stop")}</button>
           </div>
         </div>
       </div>
@@ -792,8 +956,45 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
   const [taskId, setTaskId] = useState("");
   const [prompt, setPrompt] = useState("");
   const [dispatching, setDispatching] = useState(false);
+  const [taskChoices, setTaskChoices] = useState([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
 
-  const canDispatch = freeSlots > 0 && (taskId.trim() || prompt.trim());
+  const canDispatch = Boolean(taskId.trim() || prompt.trim());
+
+  const loadDispatchTasks = useCallback(() => {
+    setTasksLoading(true);
+    apiFetch("/api/tasks?limit=1000", { _silent: true })
+      .then((res) => {
+        const tasks = Array.isArray(res?.data) ? res.data : [];
+        const choices = tasks
+          .filter((task) => {
+            const status = String(task?.status || "").toLowerCase();
+            return task?.draft === true || status === "draft" || status === "todo";
+          })
+          .sort((a, b) => taskSortScore(b) - taskSortScore(a));
+        setTaskChoices(choices);
+      })
+      .catch(() => {
+        setTaskChoices([]);
+      })
+      .finally(() => {
+        setTasksLoading(false);
+      });
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const tick = () => {
+      if (!active) return;
+      loadDispatchTasks();
+    };
+    tick();
+    const interval = setInterval(tick, 12000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [loadDispatchTasks]);
 
   const handleDispatch = async () => {
     if (!canDispatch || dispatching) return;
@@ -808,9 +1009,10 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
         body: JSON.stringify(body),
       });
       if (res.ok !== false) {
-        showToast(`Dispatched to slot ${(res.slotIndex ?? 0) + 1}`, "success");
+        showToast("Dispatch started", "success");
         setTaskId("");
         setPrompt("");
+        loadDispatchTasks();
         scheduleRefresh(200);
       }
     } catch {
@@ -823,23 +1025,32 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
   return html`
     <${Card}
       title="Dispatch"
-      subtitle="Start a slot with a task ID or a focused prompt"
+      subtitle="Start a dedicated agent with a backlog task or focused prompt"
       className=${className}
     >
       <div class="dispatch-section">
         <div class="meta-text mb-sm">
           ${freeSlots > 0
-            ? `${freeSlots} slot${freeSlots > 1 ? "s" : ""} available`
-            : "No free slots"}
+            ? `${freeSlots} slot${freeSlots > 1 ? "s" : ""} currently free`
+            : "All slots are active — dispatch still creates a dedicated agent"}
         </div>
         <div class="input-row">
-          <input
+          <select
             class="input"
-            placeholder="Task ID"
+            aria-label="Task"
             value=${taskId}
             ref=${inputRef}
-            onInput=${(e) => { setTaskId(e.target.value); if (e.target.value) setPrompt(""); }}
-          />
+            onChange=${(e) => { setTaskId(e.target.value); if (e.target.value) setPrompt(""); }}
+          >
+            <option value="">
+              ${tasksLoading ? "Loading tasks…" : "Select backlog or draft task"}
+            </option>
+            ${taskChoices.map((task) => html`
+              <option key=${task.id} value=${task.id}>
+                ${formatTaskOptionLabel(task)}
+              </option>
+            `)}
+          </select>
         </div>
         <div class="divider-label">or</div>
         <textarea
@@ -1179,7 +1390,7 @@ export function AgentsTab() {
               ? slots.map(
                   (slot, i) => html`
                     <div
-                      key=${i}
+                      key=${slot?.taskId || slot?.sessionId || `slot-${i}`}
                       class="task-card fleet-agent-card ${expandedSlot === i
                         ? "task-card-expanded"
                         : ""}"
@@ -1278,7 +1489,7 @@ export function AgentsTab() {
                         class="btn btn-danger btn-sm"
                         onClick=${() => handleForceStop({ ...slot, index: i })}
                       >
-                        ⛔ Stop
+                        ${iconText("⛔ Stop")}
                       </button>
                     </div>
                   </div>
@@ -1291,6 +1502,14 @@ export function AgentsTab() {
       <//>
       </div>
 
+      <div class="fleet-span">
+        <${FleetSessionsPanel}
+          slots=${slots}
+          onOpenWorkspace=${openWorkspace}
+          onForceStop=${handleForceStop}
+        />
+      </div>
+
       ${agents.length > 0 &&
       html`
         <div class="fleet-span">
@@ -1300,7 +1519,7 @@ export function AgentsTab() {
                 ${agents.map(
                   (t, i) => html`
                     <${StatCard}
-                      key=${i}
+                      key=${t.taskKey || t.id || `thread-${i}`}
                       value=${t.turnCount || 0}
                       label="${truncate(t.taskKey || `Thread ${i}`, 20)} (${t.sdk ||
                       "?"})"
@@ -1427,7 +1646,7 @@ function ContextViewer({ sessionId }) {
 
   if (error) {
     return html`<div class="chat-view chat-empty-state">
-      <div class="session-empty-icon" style="color:var(--color-error)">⚠️</div>
+      <div class="session-empty-icon" style="color:var(--color-error)">${resolveIcon("⚠️")}</div>
       <div class="session-empty-text">${error}</div>
       <button class="btn btn-primary btn-sm mt-sm" onClick=${() => { setLoading(true); setError(null); fetchContext(); }}>${iconText("🔄 Retry")}</button>
     </div>`;
@@ -1547,48 +1766,206 @@ function ContextViewer({ sessionId }) {
   `;
 }
 
-/* ─── Sessions Panel — split view with list + detail ─── */
-function SessionsPanel() {
-  const [detailTab, setDetailTab] = useState("chat");
-  const sessionId = selectedSessionId.value;
+/* ─── Fleet Full Session View ─── */
+function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
+  const [detailTab, setDetailTab] = useState("stream");
+  const [selectedSlotKey, setSelectedSlotKey] = useState(null);
+  const [logText, setLogText] = useState("(no logs yet)");
+  const logRef = useRef(null);
+  const allSessions = sessionsData.value || [];
 
-  const handleBack = useCallback(() => {
-    selectedSessionId.value = null;
-  }, []);
+  /* Stabilise entries with useMemo so the reference only changes when the
+     underlying data actually changes – prevents infinite render loops that
+     previously caused "insertBefore" DOM errors. */
+  const entries = useMemo(() => {
+    return (slots || [])
+      .map((slot, index) => {
+        const session =
+          allSessions.find((s) => s?.id && slot?.sessionId && s.id === slot.sessionId) ||
+          allSessions.find((s) => {
+            if (!slot?.taskId) return false;
+            return s?.taskId === slot.taskId || s?.id === slot.taskId;
+          }) ||
+          null;
+        const key = String(slot?.taskId || slot?.sessionId || `slot-${index}`);
+        return { key, slot, index, session };
+      })
+      .sort((a, b) => {
+        const aScore = new Date(a.slot?.startedAt || 0).getTime() || 0;
+        const bScore = new Date(b.slot?.startedAt || 0).getTime() || 0;
+        return bScore - aScore;
+      });
+  }, [slots, allSessions]);
+
+  /* Build a stable fingerprint so the effect only fires when entries actually
+     change rather than on every render (entries is now memoised but we still
+     guard with a primitive dep). */
+  const entriesFingerprint = entries.map((e) => e.key).join(",");
+
+  useEffect(() => {
+    if (!entries.length) {
+      setSelectedSlotKey(null);
+      return;
+    }
+    const existing = entries.some((entry) => entry.key === selectedSlotKey);
+    if (!existing) setSelectedSlotKey(entries[0].key);
+  }, [entriesFingerprint]);
+
+  const selectedEntry =
+    entries.find((entry) => entry.key === selectedSlotKey) || entries[0] || null;
+  const sessionId = selectedEntry?.session?.id || null;
+  const contextId = sessionId || selectedEntry?.slot?.taskId || null;
+
+  useEffect(() => {
+    if (sessionId) selectedSessionId.value = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    const query =
+      selectedEntry?.slot?.branch ||
+      selectedEntry?.slot?.taskId ||
+      selectedEntry?.session?.id ||
+      "";
+    if (!query) {
+      setLogText("(no logs yet)");
+      return undefined;
+    }
+    let active = true;
+    const fetchLogs = () => {
+      apiFetch(`/api/agent-logs/tail?query=${encodeURIComponent(query)}&lines=220`, { _silent: true })
+        .then((res) => {
+          if (!active) return;
+          const data = res.data ?? res ?? "";
+          const content =
+            typeof data === "string"
+              ? data
+              : data?.content || data?.lines || data?.data || "";
+          const text = Array.isArray(content) ? content.join("\n") : content || "";
+          setLogText(text || "(no logs yet)");
+          if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+        })
+        .catch(() => {
+          if (active) setLogText("(failed to load logs)");
+        });
+    };
+    fetchLogs();
+    const interval = setInterval(fetchLogs, 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [selectedEntry?.key]);
 
   return html`
-    <${Card} title="Sessions">
-      <div class="session-split">
-        <${SessionList} onSelect=${() => setDetailTab("chat")} />
-        <div class="session-detail">
-          ${sessionId && html`
-            <button class="session-back-btn" onClick=${handleBack}>
-              ← Back to sessions
-            </button>
-            <div class="session-detail-tabs">
-              <button
-                class="session-detail-tab ${detailTab === "chat" ? "active" : ""}"
-                onClick=${() => setDetailTab("chat")}
-              >${iconText("💬 Chat")}</button>
-              <button
-                class="session-detail-tab ${detailTab === "diff" ? "active" : ""}"
-                onClick=${() => setDetailTab("diff")}
-              >${iconText("📝 Diff")}</button>
-              <button
-                class="session-detail-tab ${detailTab === "context" ? "active" : ""}"
-                onClick=${() => setDetailTab("context")}
-              >${iconText("📋 Context")}</button>
-            </div>
-          `}
-          ${detailTab === "chat" && html`<${ChatView} sessionId=${sessionId} />`}
-          ${detailTab === "diff" && sessionId && html`<${DiffViewer} sessionId=${sessionId} />`}
-          ${detailTab === "context" && sessionId && html`<${ContextViewer} sessionId=${sessionId} />`}
-          ${!sessionId && detailTab !== "chat" && html`
-            <div class="chat-view chat-empty-state">
-              <div class="session-empty-icon">${resolveIcon("💬")}</div>
-              <div class="session-empty-text">Select a session</div>
-            </div>
-          `}
+    <${Card}
+      title="Fleet Session View"
+      subtitle="Slots and agent sessions with full execution detail"
+      className="fleet-fullview-card"
+    >
+      <div class="fleet-fullview">
+        <div class="fleet-slot-rail">
+          ${entries.length === 0
+            ? html`<div class="meta-text">No active slots</div>`
+            : html`${entries.map((entry) => html`
+                <button
+                  key=${entry.key}
+                  class="fleet-slot-item ${selectedEntry?.key === entry.key ? "active" : ""}"
+                  onClick=${() => {
+                    haptic();
+                    setSelectedSlotKey(entry.key);
+                    setDetailTab("stream");
+                  }}
+                >
+                  <div class="fleet-slot-item-title">
+                    <${StatusDot} status=${entry.slot?.status || "busy"} />
+                    ${truncate(entry.slot?.taskTitle || "(untitled)", 50)}
+                  </div>
+                  <div class="fleet-slot-item-meta">
+                    Slot ${(entry.index ?? 0) + 1} · ${entry.slot?.taskId || "no-task-id"}
+                  </div>
+                </button>
+              `)}`}
+        </div>
+        <div class="session-detail fleet-session-detail">
+          ${selectedEntry
+            ? html`
+                <div class="fleet-session-header">
+                  <div>
+                    <div class="task-card-title">
+                      <${StatusDot} status=${selectedEntry.slot?.status || "busy"} />
+                      ${selectedEntry.slot?.taskTitle || "(untitled)"}
+                    </div>
+                    <div class="task-card-meta">
+                      ${selectedEntry.slot?.taskId || "?"} · Slot ${(selectedEntry.index ?? 0) + 1}
+                      ${selectedEntry.slot?.branch ? ` · ${selectedEntry.slot.branch}` : ""}
+                    </div>
+                  </div>
+                  <div class="btn-row">
+                    <button class="btn btn-ghost btn-sm" onClick=${() => onOpenWorkspace(selectedEntry.slot, selectedEntry.index)}>
+                      ${iconText("🔍 Workspace")}
+                    </button>
+                    <button class="btn btn-danger btn-sm" onClick=${() => onForceStop({ ...selectedEntry.slot, index: selectedEntry.index })}>
+                      ${iconText("⛔ Stop")}
+                    </button>
+                  </div>
+                </div>
+                <div class="session-detail-tabs">
+                  <button
+                    class="session-detail-tab ${detailTab === "stream" ? "active" : ""}"
+                    onClick=${() => setDetailTab("stream")}
+                  >${iconText("💬 Stream")}</button>
+                  <button
+                    class="session-detail-tab ${detailTab === "context" ? "active" : ""}"
+                    onClick=${() => setDetailTab("context")}
+                  >${iconText("📋 Context")}</button>
+                  <button
+                    class="session-detail-tab ${detailTab === "diff" ? "active" : ""}"
+                    onClick=${() => setDetailTab("diff")}
+                  >${iconText("📝 Diff")}</button>
+                  <button
+                    class="session-detail-tab ${detailTab === "logs" ? "active" : ""}"
+                    onClick=${() => setDetailTab("logs")}
+                  >${iconText("📄 Logs")}</button>
+                </div>
+                <div class="fleet-session-body">
+                  ${detailTab === "stream"
+                    ? sessionId
+                      ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
+                      : html`
+                          <div class="chat-view chat-empty-state">
+                            <div class="session-empty-icon">${resolveIcon("💬")}</div>
+                            <div class="session-empty-text">No linked chat session found for this slot</div>
+                          </div>
+                        `
+                    : detailTab === "context"
+                      ? contextId
+                        ? html`<${ContextViewer} sessionId=${contextId} />`
+                        : html`
+                            <div class="chat-view chat-empty-state">
+                              <div class="session-empty-icon">${resolveIcon("📋")}</div>
+                              <div class="session-empty-text">No context source available</div>
+                            </div>
+                          `
+                      : detailTab === "diff"
+                        ? sessionId
+                          ? html`<${DiffViewer} sessionId=${sessionId} />`
+                          : html`
+                              <div class="chat-view chat-empty-state">
+                                <div class="session-empty-icon">${resolveIcon("📝")}</div>
+                                <div class="session-empty-text">Diff requires a linked session</div>
+                              </div>
+                            `
+                        : detailTab === "logs"
+                          ? html`<div class="workspace-log fleet-session-log" ref=${logRef}>${logText}</div>`
+                          : null}
+                </div>
+              `
+            : html`
+                <div class="chat-view chat-empty-state">
+                  <div class="session-empty-icon">${resolveIcon("💬")}</div>
+                  <div class="session-empty-text">Select a slot to open full session view</div>
+                </div>
+              `}
         </div>
       </div>
     <//>

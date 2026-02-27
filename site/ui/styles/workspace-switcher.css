@@ -77,6 +77,11 @@
   font-size: 14px;
   opacity: 0.7;
 }
+.ws-switcher-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
 
 .ws-switcher-name {
   overflow: hidden;
@@ -443,6 +448,11 @@
   color: #f59e0b;
   font-size: 11px;
 }
+.ws-manager-repo-star svg {
+  width: 11px;
+  height: 11px;
+  display: block;
+}
 
 .ws-manager-repo-status {
   font-size: 11px;
@@ -611,6 +621,12 @@
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
   white-space: nowrap;
+}
+
+.ws-manager-btn svg {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
 }
 
 .ws-manager-btn:disabled {

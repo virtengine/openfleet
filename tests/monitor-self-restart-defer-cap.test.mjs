@@ -5,12 +5,12 @@ import { describe, expect, it } from "vitest";
 describe("monitor self-restart defer hard caps", () => {
   const monitorSource = readFileSync(resolve(process.cwd(), "monitor.mjs"), "utf8");
 
-  it("defaults SELF_RESTART_DEFER_HARD_CAP to 20", () => {
-    expect(monitorSource).toContain('process.env.SELF_RESTART_DEFER_HARD_CAP || "20"');
+  it("defaults SELF_RESTART_DEFER_HARD_CAP to 6", () => {
+    expect(monitorSource).toContain('process.env.SELF_RESTART_DEFER_HARD_CAP || "6"');
   });
 
   it("defines a max deferred-time cap", () => {
-    expect(monitorSource).toContain('process.env.SELF_RESTART_MAX_DEFER_MS || "600000"');
+    expect(monitorSource).toContain('process.env.SELF_RESTART_MAX_DEFER_MS || "180000"');
   });
 
   it("defines a minimum active-slot age before forced restart", () => {

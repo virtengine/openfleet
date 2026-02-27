@@ -2,6 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { executeBlockingHooks, executeHooks, loadHooks, registerBuiltinHooks } from "./agent-hooks.mjs";
+import { shouldRunAgentHookBridge } from "./task-context.mjs";
 
 const TAG = "[agent-hook-bridge]";
 
@@ -161,12 +162,11 @@ function mapEvents(sourceEvent, payload) {
 }
 
 async function run() {
-  // ── VE_MANAGED guard ──────────────────────────────────────────────────────
-  // Only execute hooks for sessions managed by bosun.
-  // bosun sets VE_MANAGED=1 in all spawned agent environments.
-  // If this env var is missing, we're running inside a standalone agent session
-  // that just happens to have the hook files in its config — exit silently.
-  if (!process.env.VE_MANAGED && !process.env.BOSUN_HOOKS_FORCE) {
+  // ── task-context guard ────────────────────────────────────────────────────
+  // Execute hooks only for active Bosun task sessions.
+  // This prevents globally scaffolded hook configs from affecting standalone
+  // sessions in user repos. BOSUN_HOOKS_FORCE remains an explicit override.
+  if (!shouldRunAgentHookBridge(process.env)) {
     process.exit(0);
   }
 

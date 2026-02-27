@@ -113,6 +113,12 @@ export const RELEASE_PIPELINE_TEMPLATE = {
       command: "node -p \"require('./package.json').version\"",
     }, { x: 400, y: 310 }),
 
+    node("set-version", "action.set_variable", "Set Version Variable", {
+      key: "version",
+      value: "(() => String($ctx.getNodeOutput('read-version')?.output || '').trim())()",
+      isExpression: true,
+    }, { x: 400, y: 380 }),
+
     node("generate-changelog", "action.run_agent", "Generate Changelog", {
       prompt: `# Generate Changelog Entry
 
@@ -140,7 +146,7 @@ Commit the result with message "docs: update changelog for vX.Y.Z".`,
     }, { x: 400, y: 700 }),
 
     node("test-passed", "condition.expression", "Tests Passed?", {
-      expression: "$ctx.getNodeOutput('test')?.exitCode === 0",
+      expression: "$ctx.getNodeOutput('test')?.passed === true",
     }, { x: 400, y: 830, outputs: ["yes", "no"] }),
 
     node("commit-tag", "action.git_operations", "Commit & Tag", {
@@ -158,7 +164,7 @@ Commit the result with message "docs: update changelog for vX.Y.Z".`,
     }, { x: 250, y: 1090 }),
 
     node("create-gh-release", "action.run_command", "GitHub Release", {
-      command: "gh release create v$(node -p \"require('./package.json').version\") --generate-notes --title \"v$(node -p \"require('./package.json').version\")\"",
+      command: "gh release create v{{version}} --generate-notes --title \"v{{version}}\"",
       continueOnError: true,
     }, { x: 250, y: 1220 }),
 
@@ -173,7 +179,8 @@ Commit the result with message "docs: update changelog for vX.Y.Z".`,
   edges: [
     edge("trigger", "bump-version"),
     edge("bump-version", "read-version"),
-    edge("read-version", "generate-changelog"),
+    edge("read-version", "set-version"),
+    edge("set-version", "generate-changelog"),
     edge("generate-changelog", "build"),
     edge("build", "test"),
     edge("test", "test-passed"),
@@ -240,7 +247,7 @@ export const CANARY_DEPLOY_TEMPLATE = {
     }, { x: 400, y: 310 }),
 
     node("staging-ok", "condition.expression", "Staging Deploy OK?", {
-      expression: "$ctx.getNodeOutput('deploy-staging')?.exitCode === 0",
+      expression: "$ctx.getNodeOutput('deploy-staging')?.success === true",
     }, { x: 400, y: 440, outputs: ["yes", "no"] }),
 
     node("smoke-tests", "action.run_command", "Run Smoke Tests", {
@@ -249,12 +256,12 @@ export const CANARY_DEPLOY_TEMPLATE = {
     }, { x: 250, y: 570 }),
 
     node("smoke-passed", "condition.expression", "Smoke Tests Passed?", {
-      expression: "$ctx.getNodeOutput('smoke-tests')?.exitCode === 0",
+      expression: "$ctx.getNodeOutput('smoke-tests')?.success === true",
     }, { x: 250, y: 700, outputs: ["yes", "no"] }),
 
     node("wait-bake", "action.delay", "Bake Time", {
-      durationMs: "{{promotionDelayMs}}",
-      message: "Waiting for bake time before promoting to production",
+      ms: "{{promotionDelayMs}}",
+      reason: "Waiting for bake time before promoting to production",
     }, { x: 100, y: 830 }),
 
     node("promote-prod", "action.run_command", "Promote to Production", {
