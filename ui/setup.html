@@ -478,7 +478,7 @@ function App() {
   const [repoSlug, setRepoSlug] = useState("");
   const [repoRoot, setRepoRoot] = useState("");
   const [executors, setExecutors] = useState([
-    { name: "primary", executor: "CODEX", model: "gpt-5.3-codex", weight: 100, role: "primary", authMode: "oauth", apiKey: "", baseUrl: "", codexProfile: "" },
+    { name: "primary", executor: "CODEX", model: "gpt-5.3-codex", weight: 100, role: "primary", enabled: true, authMode: "oauth", apiKey: "", baseUrl: "", codexProfile: "" },
   ]);
   const [probedModels, setProbedModels] = useState({});
   const [repos, setRepos] = useState([""]);
@@ -656,6 +656,7 @@ function App() {
 
   const buildExecutorsEnv = () =>
     executors
+      .filter((ex) => ex.enabled !== false)
       .map((ex) => {
         const variant = (ex.model || "DEFAULT").toUpperCase().replaceAll("-", "_");
         return `${ex.executor}:${variant}:${ex.weight}`;
@@ -669,6 +670,7 @@ function App() {
       variant: (ex.model || "DEFAULT").toUpperCase().replaceAll("-", "_"),
       weight: Number(ex.weight) || 50,
       role: ex.role,
+      enabled: ex.enabled !== false,
       authMode: ex.authMode || "oauth",
       apiKey: ex.authMode === "api-key" ? (ex.apiKey || "") : "",
       baseUrl: ex.authMode === "api-key" ? (ex.baseUrl || "") : "",
@@ -765,6 +767,7 @@ function App() {
         model: "claude-sonnet-4",
         weight: 50,
         role: "backup",
+        enabled: true,
         authMode: "oauth",
         apiKey: "",
         baseUrl: "",
@@ -1029,6 +1032,15 @@ function App() {
             <span class="icon" style="color:${ex.role === "primary" ? "var(--success)" : "#60a5fa"}">${resolveIcon("dot")}</span>
             Executor ${i + 1}: ${ex.name}
           </h4>
+          <label style="display:flex;align-items:center;gap:6px;font-size:0.75rem;color:var(--text-secondary);">
+            <input
+              type="checkbox"
+              checked=${ex.enabled !== false}
+              onchange=${(e) => updateExecutor(i, "enabled", e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer"
+            />
+            Enabled
+          </label>
           ${executors.length > 1 && html`
             <button class="btn btn-sm btn-danger" onclick=${() => removeExecutor(i)}>Remove</button>
           `}
@@ -1135,6 +1147,9 @@ function App() {
       </div>
     `})}
     <button class="btn btn-sm" onclick=${addExecutor} style="margin-bottom:12px">+ Add Executor</button>
+    <div class="hint" style="margin-bottom:12px">
+      Enabled executors: ${executors.filter((ex) => ex.enabled !== false).length} / ${executors.length}
+    </div>
     ${profile === "advanced" && html`
         <div class="executor-grid" style="margin-top:12px">
         <div class="form-group">
@@ -1169,7 +1184,7 @@ function App() {
       `}
     <div class="nav-buttons">
       <button class="btn" onclick=${goPrev}>← Back</button>
-      <button class="btn btn-primary" onclick=${goNext} disabled=${executors.length === 0}>Continue →</button>
+      <button class="btn btn-primary" onclick=${goNext} disabled=${executors.filter((ex) => ex.enabled !== false).length === 0}>Continue →</button>
     </div>
   `;
 

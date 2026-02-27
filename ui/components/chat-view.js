@@ -349,6 +349,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const [showStreamMeta, setShowStreamMeta] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const [filters, setFilters] = useState({
     tool: false,
     result: false,
@@ -662,6 +663,26 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       uploadAttachments(files);
     }
   }, [uploadAttachments]);
+
+  const handleDragOver = useCallback((e) => {
+    if (readOnly) return;
+    e.preventDefault();
+    if (!dragActive) setDragActive(true);
+  }, [readOnly, dragActive]);
+
+  const handleDragLeave = useCallback(() => {
+    if (dragActive) setDragActive(false);
+  }, [dragActive]);
+
+  const handleDrop = useCallback((e) => {
+    if (readOnly) return;
+    e.preventDefault();
+    setDragActive(false);
+    const files = e.dataTransfer?.files;
+    if (files && files.length) {
+      uploadAttachments(files);
+    }
+  }, [readOnly, uploadAttachments]);
 
   const removeAttachment = useCallback((index) => {
     setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
@@ -1114,13 +1135,16 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           </button>
           <textarea
             ref=${inputRef}
-            class="input chat-input"
+            class="input chat-input ${dragActive ? "chat-input-drag" : ""}"
             placeholder="Send a message…"
             rows="1"
             value=${input}
             onInput=${handleInput}
             onKeyDown=${handleKeyDown}
             onPaste=${handlePaste}
+            onDragOver=${handleDragOver}
+            onDragLeave=${handleDragLeave}
+            onDrop=${handleDrop}
           />
           <button
             class="btn btn-primary chat-send-btn"

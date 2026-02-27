@@ -31,6 +31,8 @@ import {
   executorData,
   configData,
   showToast,
+  setPendingChange,
+  clearPendingChange,
 } from "../modules/state.js";
 import {
   Card,
@@ -621,6 +623,12 @@ function ServerConfigMode() {
 
   /* Count of unsaved changes */
   const changeCount = useMemo(() => Object.keys(edits).length, [edits]);
+
+  useEffect(() => {
+    const key = "settings-server";
+    setPendingChange(key, changeCount > 0);
+    return () => clearPendingChange(key);
+  }, [changeCount]);
 
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
@@ -1419,7 +1427,7 @@ function AppPreferencesMode() {
           `}
           <div>
             <div style="font-weight:600;font-size:15px">
-              ${user?.first_name || "Unknown"} ${user?.last_name || ""}
+              ${user?.first_name || "Local"} ${user?.last_name || ""}
             </div>
             ${user?.username &&
             html`<div class="meta-text">@${user.username}</div>`}
