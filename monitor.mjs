@@ -724,7 +724,7 @@ async function pollAgentAlerts() {
       telegramChatId &&
       process.env.AGENT_ALERTS_NOTIFY === "true"
     ) {
-      runDetached("agent-alerts:telegram", () =>
+      runDetached("agent-alerts:notify", () =>
         sendTelegramMessage(formatAgentAlert(alert), {
           dedupKey: `agent-alert:${alert.type || "alert"}:${alert.attempt_id || "unknown"}`,
         }),
@@ -780,10 +780,10 @@ function startAgentAlertTailer() {
   if (agentAlertsTimer) return;
   loadAgentAlertsState();
   agentAlertsTimer = setInterval(() => {
-    runDetached("agent-alerts:poll", pollAgentAlerts);
+    runDetached("agent-alerts:poll-interval", pollAgentAlerts);
   }, AGENT_ALERT_POLL_MS);
   agentAlertsTimer.unref?.();
-  runDetached("agent-alerts:poll", pollAgentAlerts);
+  runDetached("agent-alerts:poll-startup", pollAgentAlerts);
 }
 
 function stopAgentAlertTailer() {
@@ -2681,9 +2681,7 @@ async function handleMonitorFailure(reason, err) {
     // Ensure we retry after safe-mode window if still running.
     if (!shuttingDown) {
       setTimeout(() => {
-        if (!shuttingDown) {
-          runDetached("start-process:hard-cap-retry", startProcess);
-        }
+        if (!shuttingDown) void startProcess();
       }, pauseMs + 1000);
     }
     return;
@@ -2790,19 +2788,25 @@ function runGuarded(reason, fn) {
     reportGuardedFailure(reason, err);
   }
 }
+
 function runDetached(label, promiseOrFn) {
-  const logFailure = (err) => {
-    const message = formatMonitorError(err);
-    console.warn(`[monitor] detached ${label} failed: ${message}`);
-  };
+  if (shuttingDown) return;
   try {
-    const result =
+    const pending =
       typeof promiseOrFn === "function" ? promiseOrFn() : promiseOrFn;
-    if (result && typeof result.then === "function") {
-      result.catch((err) => logFailure(err));
+    if (pending && typeof pending.then === "function") {
+      pending.catch((err) => {
+        const error = err instanceof Error ? err : new Error(formatMonitorError(err));
+        console.warn(
+          `[monitor] detached task failed (${label}): ${error.stack || error.message}`,
+        );
+      });
     }
   } catch (err) {
-    logFailure(err);
+    const error = err instanceof Error ? err : new Error(formatMonitorError(err));
+    console.warn(
+      `[monitor] detached task failed (${label}): ${error.stack || error.message}`,
+    );
   }
 }
 
@@ -3185,19 +3189,17 @@ function notifyVkError(line) {
   ]
     .filter(Boolean)
     .join("\n");
-  runDetached("vk-error:telegram", () =>
+  runDetached("vk-error:notify", () =>
     sendTelegramMessage(message, { parseMode: "HTML" }),
   );
-  runDetached("vk-recovery:notify", () => triggerVibeKanbanRecovery(line));
+  runDetached("vk-error:trigger-recovery", () => triggerVibeKanbanRecovery(line));
 }
 
 function notifyCodexTrigger(context) {
   if (!telegramToken || !telegramChatId) {
     return;
   }
-  runDetached("codex-trigger:telegram", () =>
-    sendTelegramMessage(`Codex triggered: ${context}`),
-  );
+  void sendTelegramMessage(`Codex triggered: ${context}`);
 }
 
 async function runCodexRecovery(reason) {
@@ -3431,10 +3433,7 @@ function scheduleVibeKanbanRestart() {
   console.log(
     `[monitor] restarting vibe-kanban in ${delay}ms (attempt ${vkRestartCount}/${vkMaxRestarts})`,
   );
-  setTimeout(
-    () => runDetached("vk-restart:scheduled", startVibeKanbanProcess),
-    delay,
-  );
+  setTimeout(() => void startVibeKanbanProcess(), delay);
 }
 
 async function canConnectTcp(host, port, timeoutMs = 1200) {
@@ -3532,7 +3531,7 @@ function restartVibeKanbanProcess() {
       /* best effort */
     }
   } else {
-    runDetached("vk-restart:manual", startVibeKanbanProcess);
+    void startVibeKanbanProcess();
   }
 }
 
@@ -3747,9 +3746,7 @@ function ensureVkLogStream() {
   }
 
   // Discover any active sessions immediately and keep polling for new sessions
-  runDetached("vk-session-discovery:startup", () =>
-    refreshVkSessionStreams("startup"),
-  );
+  void refreshVkSessionStreams("startup");
   ensureVkSessionDiscoveryLoop();
 }
 
@@ -3757,9 +3754,7 @@ function ensureVkSessionDiscoveryLoop() {
   if (vkSessionDiscoveryTimer) return;
   if (!Number.isFinite(vkEnsureIntervalMs) || vkEnsureIntervalMs <= 0) return;
   vkSessionDiscoveryTimer = setInterval(() => {
-    runDetached("vk-session-discovery:periodic", () =>
-      refreshVkSessionStreams("periodic"),
-    );
+    void refreshVkSessionStreams("periodic");
   }, vkEnsureIntervalMs);
 }
 
@@ -3941,9 +3936,7 @@ async function triggerVibeKanbanRecovery(reason) {
     const notice = codexEnabled
       ? `Codex recovery triggered: vibe-kanban unreachable. Attempting restart. (${link})`
       : `Vibe-kanban recovery triggered (Codex disabled). Attempting restart. (${link})`;
-    runDetached("vk-recovery-notify", () =>
-      sendTelegramMessage(notice, { parseMode: "HTML" }),
-    );
+    void sendTelegramMessage(notice, { parseMode: "HTML" });
   }
   await runCodexRecovery(reason || "vibe-kanban unreachable");
   restartVibeKanbanProcess();
@@ -4053,7 +4046,7 @@ async function fetchVk(path, opts = {}) {
       if (shouldLogVkWarning("network-error")) {
         console.warn(`[monitor] fetchVk ${method} ${path} error: ${msg}`);
       }
-      runDetached("vk-recovery:network", () =>
+      runDetached("fetchVk:network-recovery", () =>
         triggerVibeKanbanRecovery(
           `fetchVk ${method} ${path} network error: ${msg}`,
         ),
@@ -4074,7 +4067,7 @@ async function fetchVk(path, opts = {}) {
         `[monitor] fetchVk ${method} ${path} error: invalid response object (res=${!!res}, res.ok=${res?.ok})`,
       );
     }
-    runDetached("vk-recovery:invalid-response", () =>
+    runDetached("fetchVk:invalid-response-recovery", () =>
       triggerVibeKanbanRecovery(
         `fetchVk ${method} ${path} invalid response object`,
       ),
@@ -4091,7 +4084,7 @@ async function fetchVk(path, opts = {}) {
       );
     }
     if (res.status >= 500) {
-      runDetached("vk-recovery:http", () =>
+      runDetached("fetchVk:http-5xx-recovery", () =>
         triggerVibeKanbanRecovery(
           `fetchVk ${method} ${path} HTTP ${res.status}`,
         ),
@@ -4132,7 +4125,7 @@ async function fetchVk(path, opts = {}) {
         );
       }
     }
-    runDetached("vk-recovery:non-json", () =>
+    runDetached("fetchVk:non-json-recovery", () =>
       triggerVibeKanbanRecovery(
         `fetchVk ${method} ${path} non-JSON response`,
       ),
@@ -8094,12 +8087,10 @@ async function runMergeStrategyAnalysis(ctx, opts = {}) {
       // Re-run analysis after the wait period
       setTimeout(
         () => {
-          runDetached("merge-strategy:wait-recheck", () =>
-            runMergeStrategyAnalysis({
-              ...ctx,
-              ciStatus: "re-check",
-            }),
-          );
+          void runMergeStrategyAnalysis({
+            ...ctx,
+            ciStatus: "re-check",
+          });
         },
         (execResult.waitSeconds || 300) * 1000,
       );
@@ -8406,12 +8397,10 @@ async function actOnAssessment(ctx, decision) {
       const waitSec = decision.waitSeconds || 300;
       console.log(`[${tag}] → wait ${waitSec}s`);
       setTimeout(() => {
-        runDetached("task-assessment:recheck", () =>
-          runTaskAssessment({
-            ...ctx,
-            trigger: "reassessment",
-          }),
-        );
+        void runTaskAssessment({
+          ...ctx,
+          trigger: "reassessment",
+        });
       }, waitSec * 1000);
       break;
     }
@@ -10379,7 +10368,7 @@ globalThis.__bosunNotifyAnomaly = (anomaly) => {
 
 function enqueueTelegramCommand(handler) {
   telegramCommandQueue.push(handler);
-  void drainTelegramCommandQueue();
+  runDetached("telegram-commands:drain", drainTelegramCommandQueue);
 }
 
 function drainTelegramCommandQueue() {
@@ -10851,7 +10840,6 @@ async function startTelegramNotifier() {
     await checkStatusMilestones();
   };
 
-
   // Suppress "Notifier started" message on rapid restarts (e.g. code-change restarts).
   // If the last start was <60s ago, skip the notification — just log locally.
   const lastStartPath = resolve(
@@ -10876,16 +10864,18 @@ async function startTelegramNotifier() {
       `[monitor] notifier restarted (suppressed telegram notification — rapid restart)`,
     );
   } else {
-    runDetached("telegram-notifier:startup", () =>
+    runDetached("telegram-notifier:startup-message", () =>
       sendTelegramMessage(`${projectName} Orchestrator Notifier started.`),
     );
   }
-  telegramNotifierTimeout = setTimeout(() => {
-    runDetached("telegram-notifier:tick", sendUpdate);
-  }, intervalMs);
-  telegramNotifierInterval = setInterval(() => {
-    runDetached("telegram-notifier:tick", sendUpdate);
-  }, intervalMs);
+  telegramNotifierTimeout = setTimeout(
+    () => runDetached("telegram-notifier:timeout-update", sendUpdate),
+    intervalMs,
+  );
+  telegramNotifierInterval = setInterval(
+    () => runDetached("telegram-notifier:interval-update", sendUpdate),
+    intervalMs,
+  );
 }
 
 async function checkStatusMilestones() {
@@ -13921,9 +13911,7 @@ async function startProcess() {
     if (!shuttingDown) {
       const retryMs = Math.max(5_000, restartDelayMs || 0);
       safeSetTimeout("startProcess-retry", () => {
-        if (!shuttingDown) {
-          return startProcess();
-        }
+        if (!shuttingDown) void startProcess();
       }, retryMs);
     }
   }
@@ -16057,10 +16045,7 @@ if (isExecutorDisabled()) {
       if (projectId) {
         syncEngine = createSyncEngine({
           projectId,
-          syncIntervalMs: Math.max(
-            60_000,
-            Number(process.env.KANBAN_SYNC_INTERVAL_MS) || 5 * 60 * 1000,
-          ), // default 5 min (env: KANBAN_SYNC_INTERVAL_MS)
+          syncIntervalMs: 60_000, // 1 minute
           syncPolicy: kanbanConfig?.syncPolicy || "internal-primary",
           sendTelegram:
             telegramToken && telegramChatId
@@ -16080,7 +16065,7 @@ if (isExecutorDisabled()) {
         });
         syncEngine.start();
         console.log(
-          `[monitor] sync engine started (interval: ${Math.max(60_000, Number(process.env.KANBAN_SYNC_INTERVAL_MS) || 5 * 60 * 1000) / 1000}s, backend=${activeKanbanBackend}, policy=${kanbanConfig?.syncPolicy || "internal-primary"}, project=${projectId})`,
+          `[monitor] sync engine started (interval: 60s, backend=${activeKanbanBackend}, policy=${kanbanConfig?.syncPolicy || "internal-primary"}, project=${projectId})`,
         );
       } else {
         console.log(
