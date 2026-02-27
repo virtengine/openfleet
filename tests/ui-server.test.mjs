@@ -647,4 +647,38 @@ describe("ui-server mini app", () => {
 
     rmSync(tmpDir, { recursive: true, force: true });
   }, 15000);
+
+  it("queues /plan commands in background to avoid request timeouts", async () => {
+    const mod = await import("../ui-server.mjs");
+    let resolveCommand;
+    const pendingCommand = new Promise((resolve) => {
+      resolveCommand = resolve;
+    });
+    const handleUiCommand = vi.fn().mockImplementation(() => pendingCommand);
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      dependencies: {
+        handleUiCommand,
+      },
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/command`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: "/plan 5 fix flaky tests" }),
+    });
+    const json = await response.json();
+
+    expect(response.status).toBe(202);
+    expect(json.ok).toBe(true);
+    expect(json.queued).toBe(true);
+    expect(json.command).toBe("/plan 5 fix flaky tests");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(handleUiCommand).toHaveBeenCalledWith("/plan 5 fix flaky tests");
+
+    resolveCommand({ executed: true });
+    await pendingCommand;
+  });
 });
