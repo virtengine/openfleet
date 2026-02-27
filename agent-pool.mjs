@@ -88,6 +88,7 @@ const TAG = "[agent-pool]";
 const MAX_PROMPT_BYTES = 180_000;
 const MAX_SET_TIMEOUT_MS = 2_147_483_647; // Node.js setTimeout 32-bit signed max
 let timeoutClampWarningKey = "";
+const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 120_000;
 
 function clampTimerDelayMs(delayMs, label = "timer") {
   const parsed = Number(delayMs);
@@ -103,6 +104,17 @@ function clampTimerDelayMs(delayMs, label = "timer") {
     }
   }
   return clamped;
+}
+
+function getFirstEventTimeoutMs(totalTimeoutMs) {
+  const configured = Number(
+    process.env.AGENT_POOL_FIRST_EVENT_TIMEOUT_MS || DEFAULT_FIRST_EVENT_TIMEOUT_MS,
+  );
+  if (!Number.isFinite(configured) || configured <= 0) return null;
+  const budgetMs = Number(totalTimeoutMs);
+  if (!Number.isFinite(budgetMs) || budgetMs <= 2_000) return null;
+  const maxAllowed = Math.max(5_000, budgetMs - 1_000);
+  return clampTimerDelayMs(Math.min(Math.trunc(configured), maxAllowed), "first-event-timeout");
 }
 
 function sanitizeAndBoundPrompt(text) {
@@ -836,6 +848,9 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   // Hard timeout: safety net if the SDK's async iterator ignores AbortSignal.
   // Fires HARD_TIMEOUT_BUFFER_MS after the soft timeout to forcibly break the loop.
   let hardTimer;
+  let firstEventTimer = null;
+  let firstEventTimeoutHit = false;
+  let eventCount = 0;
 
   // ── 4. Stream the turn ───────────────────────────────────────────────────
   try {
@@ -846,7 +861,6 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
 
     let finalResponse = "";
     const allItems = [];
-
     // Race the event iterator against a hard timeout.
     // The soft timeout fires controller.abort() which the SDK should honor.
     // The hard timeout is a safety net in case the SDK iterator ignores the abort.
@@ -859,6 +873,11 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
 
     const iterateEvents = async () => {
       for await (const event of turn.events) {
+        eventCount += 1;
+        if (firstEventTimer) {
+          clearTimeout(firstEventTimer);
+          firstEventTimer = null;
+        }
         if (controller.signal.aborted) break;
         if (event?.type === "thread.started" && event?.thread_id) {
           emitThreadReady(event.thread_id);
@@ -879,8 +898,19 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
       }
     };
 
+    const firstEventTimeoutMs = getFirstEventTimeoutMs(timeoutMs);
+    if (firstEventTimeoutMs) {
+      firstEventTimer = setTimeout(() => {
+        if (eventCount > 0 || controller.signal.aborted) return;
+        firstEventTimeoutHit = true;
+        controller.abort("first_event_timeout");
+      }, firstEventTimeoutMs);
+      if (typeof firstEventTimer.unref === "function") firstEventTimer.unref();
+    }
+
     await Promise.race([iterateEvents(), hardTimeoutPromise]);
     clearTimeout(hardTimer);
+    if (firstEventTimer) clearTimeout(firstEventTimer);
     clearAbortScope();
 
     const output =
@@ -897,17 +927,21 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   } catch (err) {
     clearAbortScope();
     if (hardTimer) clearTimeout(hardTimer);
+    if (firstEventTimer) clearTimeout(firstEventTimer);
     if (steerKey) unregisterActiveSession(steerKey);
     const isTimeout =
       err.name === "AbortError" ||
       String(err) === "timeout" ||
       err.message === "hard_timeout";
     if (isTimeout) {
+      const firstEventSuffix = firstEventTimeoutHit
+        ? ` (no events received within ${getFirstEventTimeoutMs(timeoutMs)}ms)`
+        : "";
       return {
         success: false,
         output: "",
         items: [],
-        error: `${TAG} codex timeout after ${timeoutMs}ms${err.message === "hard_timeout" ? " (hard timeout — SDK iterator unresponsive)" : ""}`,
+        error: `${TAG} codex timeout after ${timeoutMs}ms${err.message === "hard_timeout" ? " (hard timeout — SDK iterator unresponsive)" : ""}${firstEventSuffix}`,
         sdk: "codex",
         threadId: null,
       };
@@ -2353,6 +2387,9 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     timeoutMs,
   );
   let hardTimer;
+  let firstEventTimer = null;
+  let firstEventTimeoutHit = false;
+  let eventCount = 0;
 
   try {
     const safePrompt = sanitizeAndBoundPrompt(prompt);
@@ -2372,6 +2409,11 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
 
     const iterateEvents = async () => {
       for await (const event of turn.events) {
+        eventCount += 1;
+        if (firstEventTimer) {
+          clearTimeout(firstEventTimer);
+          firstEventTimer = null;
+        }
         if (controller.signal.aborted) break;
         if (typeof onEvent === "function")
           try {
@@ -2388,8 +2430,19 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
       }
     };
 
+    const firstEventTimeoutMs = getFirstEventTimeoutMs(timeoutMs);
+    if (firstEventTimeoutMs) {
+      firstEventTimer = setTimeout(() => {
+        if (eventCount > 0 || controller.signal.aborted) return;
+        firstEventTimeoutHit = true;
+        controller.abort("first_event_timeout");
+      }, firstEventTimeoutMs);
+      if (typeof firstEventTimer.unref === "function") firstEventTimer.unref();
+    }
+
     await Promise.race([iterateEvents(), hardTimeoutPromise]);
     clearTimeout(hardTimer);
+    if (firstEventTimer) clearTimeout(firstEventTimer);
     clearAbortScope();
 
     const newThreadId = thread.id || threadId;
@@ -2404,16 +2457,21 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
   } catch (err) {
     clearAbortScope();
     if (hardTimer) clearTimeout(hardTimer);
+    if (firstEventTimer) clearTimeout(firstEventTimer);
     const isTimeout =
       err.name === "AbortError" ||
       String(err) === "timeout" ||
       err.message === "hard_timeout";
+    const firstEventSuffix =
+      isTimeout && firstEventTimeoutHit
+        ? ` (no events received within ${getFirstEventTimeoutMs(timeoutMs)}ms)`
+        : "";
     return {
       success: false,
       output: "",
       items: [],
       error: isTimeout
-        ? `${TAG} codex resume timeout after ${timeoutMs}ms${err.message === "hard_timeout" ? " (hard timeout)" : ""}`
+        ? `${TAG} codex resume timeout after ${timeoutMs}ms${err.message === "hard_timeout" ? " (hard timeout)" : ""}${firstEventSuffix}`
         : `Thread resume error: ${err.message}`,
       sdk: "codex",
       threadId: null,

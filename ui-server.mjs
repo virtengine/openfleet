@@ -32,6 +32,7 @@ import {
   markTaskIgnored,
   unmarkTaskIgnored,
 } from "./kanban-adapter.mjs";
+import { getAllTasks as getAllInternalTasks } from "./task-store.mjs";
 import {
   getActiveThreads,
   launchEphemeralThread,
@@ -1734,6 +1735,7 @@ const SETTINGS_KNOWN_KEYS = [
   "EXECUTOR_MODE", "INTERNAL_EXECUTOR_PARALLEL", "INTERNAL_EXECUTOR_SDK",
   "INTERNAL_EXECUTOR_TIMEOUT_MS", "INTERNAL_EXECUTOR_MAX_RETRIES", "INTERNAL_EXECUTOR_POLL_MS",
   "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED", "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
+  "CODEX_SDK_DISABLED", "COPILOT_SDK_DISABLED", "CLAUDE_SDK_DISABLED",
   "PRIMARY_AGENT", "EXECUTORS", "EXECUTOR_DISTRIBUTION", "FAILOVER_STRATEGY",
   "COMPLEXITY_ROUTING_ENABLED", "PROJECT_REQUIREMENTS_PROFILE",
   "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "CODEX_MODEL",
@@ -6284,6 +6286,27 @@ async function handleApi(req, res, url) {
       lanIp: getLocalLanIp(),
       url: getTelegramUiUrl(),
     });
+    return;
+  }
+
+  if (path === "/api/health-stats") {
+    const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+    const cutoff = new Date(Date.now() - SIX_HOURS_MS).toISOString();
+    let successRuns = 0;
+    let failedRuns = 0;
+    try {
+      const tasks = getAllInternalTasks();
+      for (const task of tasks) {
+        for (const entry of (task.statusHistory || [])) {
+          if (entry.timestamp < cutoff) continue;
+          if (entry.status === "done") successRuns++;
+          else if (entry.status === "error") failedRuns++;
+        }
+      }
+    } catch { /* task store not loaded or unavailable */ }
+    const total = successRuns + failedRuns;
+    const failRate = total > 0 ? failedRuns / total : 0;
+    jsonResponse(res, 200, { ok: true, successRuns, failedRuns, total, failRate, windowHours: 6 });
     return;
   }
 
