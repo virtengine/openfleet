@@ -731,19 +731,26 @@ async function pollAgentAlerts() {
       );
     }
 
-    // Act on high-error alerts: apply a cooldown so the task-executor does not
-    // immediately restart the same session against an API that is failing.
-    if (alert.type === "failed_session_high_errors" && alert.task_id && internalTaskExecutor) {
+    // Act on failed-session alerts: apply a cooldown so task-executor does not
+    // immediately restart the same session against a failing API/provider.
+    if (
+      (alert.type === "failed_session_high_errors" || alert.type === "failed_session_transient_errors") &&
+      alert.task_id &&
+      internalTaskExecutor
+    ) {
       try {
         const taskId = alert.task_id;
-        const cooldownUntil = Date.now() + 15 * 60_000; // 15-minute cooldown
+        const cooldownMs = alert.type === "failed_session_transient_errors"
+          ? 30 * 60_000
+          : 15 * 60_000;
+        const cooldownUntil = Date.now() + cooldownMs;
         if (typeof internalTaskExecutor.applyTaskCooldown === "function") {
           internalTaskExecutor.applyTaskCooldown(taskId, cooldownUntil);
         } else if (internalTaskExecutor._skipUntil instanceof Map) {
           internalTaskExecutor._skipUntil.set(taskId, cooldownUntil);
         }
         console.warn(
-          `[monitor] 15m cooldown applied to task ${taskId} after ${alert.error_count || "?"} API errors (executor: ${alert.executor || "unknown"})`,
+          `[monitor] ${Math.round(cooldownMs / 60_000)}m cooldown applied to task ${taskId} after ${alert.error_count || "?"} API errors (${alert.type}, executor: ${alert.executor || "unknown"})`,
         );
       } catch { /* best effort */ }
     }

@@ -7,11 +7,15 @@ const src = readFileSync(resolve(process.cwd(), "agent-work-analyzer.mjs"), "utf
 
 test("failed-session alerts use task-scoped cooldown key and 1h cooldown floor", () => {
   assert.match(src, /const FAILED_SESSION_ALERT_MIN_COOLDOWN_MS = 60 \* 60 \* 1000/);
+  assert.match(src, /const FAILED_SESSION_TRANSIENT_ALERT_MIN_COOLDOWN_MS = 2 \* 60 \* 60 \* 1000/);
   assert.match(src, /function getAlertCooldownMs\(alert\)/);
   assert.match(src, /type === "failed_session_high_errors"/);
+  assert.match(src, /type === "failed_session_transient_errors"/);
   assert.match(src, /Math\.max\(ALERT_COOLDOWN_MS, FAILED_SESSION_ALERT_MIN_COOLDOWN_MS\)/);
+  assert.match(src, /Math\.max\(ALERT_COOLDOWN_MS, FAILED_SESSION_TRANSIENT_ALERT_MIN_COOLDOWN_MS\)/);
   assert.match(src, /function buildAlertCooldownKey\(alert\)/);
   assert.match(src, /failed_session_high_errors/);
+  assert.match(src, /failed_session_transient_errors/);
   assert.match(src, /return `\$\{type\}:task:\$\{scopeId\}`/);
 });
 
@@ -26,7 +30,9 @@ test("cooldowns hydrate from alert log on startup to survive restarts", () => {
   assert.match(src, /const ALERT_COOLDOWN_REPLAY_MAX_BYTES = Math\.max\(/);
   assert.match(src, /AGENT_ALERT_COOLDOWN_REPLAY_MAX_BYTES/);
   assert.match(src, /async function hydrateAlertCooldownsFromLog\(\)/);
-  assert.match(src, /const maxCooldownMs = Math\.max\(ALERT_COOLDOWN_MS, FAILED_SESSION_ALERT_MIN_COOLDOWN_MS\)/);
+  assert.match(src, /const maxCooldownMs = Math\.max\(/);
+  assert.match(src, /FAILED_SESSION_ALERT_MIN_COOLDOWN_MS/);
+  assert.match(src, /FAILED_SESSION_TRANSIENT_ALERT_MIN_COOLDOWN_MS/);
   assert.match(src, /const key = String\(entry\?\._cooldown_key \|\| ""\)\.trim\(\) \|\| buildAlertCooldownKey\(entry\)/);
   assert.match(src, /await hydrateAlertCooldownsFromLog\(\);/);
 });

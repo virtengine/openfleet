@@ -121,6 +121,25 @@ describe("workflow-templates", () => {
       }
     }
   });
+
+  it("task planner template materializes planner output before success notification", () => {
+    const planner = getTemplate("template-task-planner");
+    expect(planner).toBeDefined();
+
+    const materialize = planner.nodes.find((n) => n.id === "materialize-tasks");
+    expect(materialize).toBeDefined();
+    expect(materialize.type).toBe("action.materialize_planner_tasks");
+    expect(materialize.config?.failOnZero).toBe(true);
+
+    const edgeToMaterialize = planner.edges.find(
+      (e) => e.source === "run-planner" && e.target === "materialize-tasks",
+    );
+    const edgeToCheck = planner.edges.find(
+      (e) => e.source === "materialize-tasks" && e.target === "check-result",
+    );
+    expect(edgeToMaterialize).toBeDefined();
+    expect(edgeToCheck).toBeDefined();
+  });
 });
 
 // ── Template API ────────────────────────────────────────────────────────────

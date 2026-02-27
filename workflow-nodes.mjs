@@ -2106,6 +2106,231 @@ registerNodeType("agent.select_profile", {
   },
 });
 
+function parsePlannerJsonFromText(value) {
+  const text = normalizeLineEndings(String(value || ""))
+    .replace(/\u001b\[[0-9;]*m/g, "")
+    .trim();
+  if (!text) return null;
+
+  const candidates = [];
+  const fenceRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let match;
+  while ((match = fenceRegex.exec(text)) !== null) {
+    const body = String(match[1] || "").trim();
+    if (body) candidates.push(body);
+  }
+  candidates.push(text);
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {
+      // Try extracting a balanced object from prose-wrapped output.
+    }
+
+    const start = candidate.indexOf("{");
+    if (start < 0) continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < candidate.length; i += 1) {
+      const ch = candidate[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === "\\") {
+          escaped = true;
+        } else if (ch === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === "\"") {
+        inString = true;
+        continue;
+      }
+      if (ch === "{") depth += 1;
+      if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          const jsonSlice = candidate.slice(start, i + 1);
+          try {
+            const parsed = JSON.parse(jsonSlice);
+            if (parsed && typeof parsed === "object") return parsed;
+          } catch {
+            // Keep scanning.
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function normalizePlannerTaskForCreation(task, index) {
+  if (!task || typeof task !== "object") return null;
+  const title = String(task.title || "").trim();
+  if (!title) return null;
+
+  const lines = [];
+  const description = String(task.description || "").trim();
+  if (description) lines.push(description);
+
+  const appendList = (heading, values) => {
+    if (!Array.isArray(values) || values.length === 0) return;
+    const items = values
+      .map((item) => String(item || "").trim())
+      .filter(Boolean);
+    if (!items.length) return;
+    lines.push("", `## ${heading}`);
+    for (const item of items) lines.push(`- ${item}`);
+  };
+
+  appendList("Implementation Steps", task.implementation_steps);
+  appendList("Acceptance Criteria", task.acceptance_criteria);
+  appendList("Verification", task.verification);
+
+  const baseBranch = String(task.base_branch || "").trim();
+  if (baseBranch) {
+    lines.push("", `Base branch: \`${baseBranch}\``);
+  }
+
+  return {
+    title,
+    description: lines.join("\n").trim(),
+    index,
+    baseBranch: baseBranch || null,
+  };
+}
+
+function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
+  const parsed = parsePlannerJsonFromText(output);
+  if (!parsed || !Array.isArray(parsed.tasks)) return [];
+
+  const max = Number.isFinite(Number(maxTasks))
+    ? Math.max(1, Math.min(100, Math.trunc(Number(maxTasks))))
+    : 5;
+  const dedup = new Set();
+  const tasks = [];
+  for (let i = 0; i < parsed.tasks.length && tasks.length < max; i += 1) {
+    const normalized = normalizePlannerTaskForCreation(parsed.tasks[i], i);
+    if (!normalized) continue;
+    const key = normalized.title.toLowerCase();
+    if (dedup.has(key)) continue;
+    dedup.add(key);
+    tasks.push(normalized);
+  }
+  return tasks;
+}
+
+registerNodeType("action.materialize_planner_tasks", {
+  describe: () => "Parse planner JSON output and create backlog tasks in Kanban",
+  schema: {
+    type: "object",
+    properties: {
+      plannerNodeId: { type: "string", default: "run-planner", description: "Node ID that produced planner output" },
+      maxTasks: { type: "number", default: 5, description: "Maximum number of tasks to materialize" },
+      status: { type: "string", default: "todo", description: "Status for created tasks" },
+      dedup: { type: "boolean", default: true, description: "Skip titles already in backlog" },
+      failOnZero: { type: "boolean", default: true, description: "Fail node when zero tasks are created" },
+      minCreated: { type: "number", default: 1, description: "Minimum created tasks required for success" },
+      projectId: { type: "string", description: "Optional explicit project ID for list/create operations" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const plannerNodeId = String(ctx.resolve(node.config?.plannerNodeId || "run-planner")).trim() || "run-planner";
+    const plannerOutput = ctx.getNodeOutput(plannerNodeId) || {};
+    const outputText = String(plannerOutput?.output || "").trim();
+    const maxTasks = Number(ctx.resolve(node.config?.maxTasks || ctx.data?.taskCount || 5)) || 5;
+    const failOnZero = node.config?.failOnZero !== false;
+    const minCreated = Number(ctx.resolve(node.config?.minCreated || 1)) || 1;
+    const dedupEnabled = node.config?.dedup !== false;
+    const status = String(ctx.resolve(node.config?.status || "todo")).trim() || "todo";
+    const projectId = String(ctx.resolve(node.config?.projectId || "")).trim();
+
+    const parsedTasks = extractPlannerTasksFromWorkflowOutput(outputText, maxTasks);
+    if (!parsedTasks.length) {
+      const message = `Planner output from "${plannerNodeId}" did not include parseable tasks`;
+      ctx.log(node.id, message, failOnZero ? "error" : "warn");
+      if (failOnZero) throw new Error(message);
+      return {
+        success: false,
+        parsedCount: 0,
+        createdCount: 0,
+        skippedCount: 0,
+        reason: "no_parseable_tasks",
+      };
+    }
+
+    const kanban = engine.services?.kanban;
+    if (!kanban?.createTask) {
+      throw new Error("Kanban adapter not available for planner materialization");
+    }
+
+    const existingTitleSet = new Set();
+    if (dedupEnabled && kanban?.listTasks && projectId) {
+      try {
+        const existing = await kanban.listTasks(projectId, {});
+        const rows = Array.isArray(existing) ? existing : [];
+        for (const row of rows) {
+          const title = String(row?.title || "").trim().toLowerCase();
+          if (title) existingTitleSet.add(title);
+        }
+      } catch (err) {
+        ctx.log(node.id, `Could not prefetch tasks for dedup: ${err.message}`, "warn");
+      }
+    }
+
+    const created = [];
+    const skipped = [];
+    for (const task of parsedTasks) {
+      const key = task.title.toLowerCase();
+      if (dedupEnabled && existingTitleSet.has(key)) {
+        skipped.push({ title: task.title, reason: "duplicate_title" });
+        continue;
+      }
+
+      const payload = {
+        title: task.title,
+        description: task.description,
+        status,
+      };
+      if (projectId) payload.projectId = projectId;
+      const createdTask = await kanban.createTask(payload);
+      created.push({
+        id: createdTask?.id || null,
+        title: task.title,
+      });
+      existingTitleSet.add(key);
+    }
+
+    const createdCount = created.length;
+    const skippedCount = skipped.length;
+    ctx.log(
+      node.id,
+      `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount}`,
+    );
+
+    if (failOnZero && createdCount < Math.max(1, minCreated)) {
+      throw new Error(
+        `Planner materialization created ${createdCount} tasks (required: ${Math.max(1, minCreated)})`,
+      );
+    }
+
+    return {
+      success: createdCount >= Math.max(1, minCreated),
+      parsedCount: parsedTasks.length,
+      createdCount,
+      skippedCount,
+      created,
+      skipped,
+      tasks: parsedTasks,
+    };
+  },
+});
+
 registerNodeType("agent.run_planner", {
   describe: () => "Run the task planner agent to generate new backlog tasks",
   schema: {

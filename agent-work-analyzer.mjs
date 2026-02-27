@@ -64,8 +64,9 @@ const activeSessions = new Map();
 const alertCooldowns = new Map();
 const ALERT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes between same alert
 const FAILED_SESSION_ALERT_MIN_COOLDOWN_MS = 60 * 60 * 1000; // Keep noisy failed-session summaries coarse-grained
+const FAILED_SESSION_TRANSIENT_ALERT_MIN_COOLDOWN_MS = 2 * 60 * 60 * 1000; // Transient API/provider failures should back off longer
 const ALERT_COOLDOWN_RETENTION_MS = Math.max(
-  FAILED_SESSION_ALERT_MIN_COOLDOWN_MS * 3,
+  FAILED_SESSION_TRANSIENT_ALERT_MIN_COOLDOWN_MS * 3,
   3 * 60 * 60 * 1000,
 ); // keep cooldown history bounded
 const ALERT_COOLDOWN_REPLAY_MAX_BYTES = Math.max(
@@ -77,6 +78,9 @@ function getAlertCooldownMs(alert) {
   const type = String(alert?.type || "").trim().toLowerCase();
   if (type === "failed_session_high_errors") {
     return Math.max(ALERT_COOLDOWN_MS, FAILED_SESSION_ALERT_MIN_COOLDOWN_MS);
+  }
+  if (type === "failed_session_transient_errors") {
+    return Math.max(ALERT_COOLDOWN_MS, FAILED_SESSION_TRANSIENT_ALERT_MIN_COOLDOWN_MS);
   }
   return Math.max(0, ALERT_COOLDOWN_MS);
 }
@@ -99,10 +103,33 @@ function deriveAlertScopeId(alert) {
 function buildAlertCooldownKey(alert) {
   const type = String(alert?.type || "unknown").trim().toLowerCase() || "unknown";
   const scopeId = deriveAlertScopeId(alert);
-  if (scopeId && (type === "failed_session_high_errors" || type === "stuck_agent")) {
+  if (
+    scopeId &&
+    (
+      type === "failed_session_high_errors" ||
+      type === "failed_session_transient_errors" ||
+      type === "stuck_agent"
+    )
+  ) {
     return `${type}:task:${scopeId}`;
   }
   return `${type}:${String(alert?.attempt_id || "unknown")}`;
+}
+
+function isTransientFailureFingerprint(value) {
+  const text = String(value || "").toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes("reconnect") ||
+    text.includes("stream disconnected") ||
+    text.includes("response.failed") ||
+    text.includes("rate limit") ||
+    text.includes("high demand") ||
+    text.includes("provisioned throughput") ||
+    text.includes("timeout") ||
+    text.includes("econnreset") ||
+    text.includes("temporarily unavailable")
+  );
 }
 
 function pruneStaleAlertCooldowns(nowMs = Date.now()) {
@@ -124,7 +151,11 @@ async function hydrateAlertCooldownsFromLog() {
     const start = Math.max(0, fileStat.size - ALERT_COOLDOWN_REPLAY_MAX_BYTES);
     const stream = createReadStream(ALERTS_LOG, { start, encoding: "utf8" });
     const rl = createInterface({ input: stream, crlfDelay: Infinity });
-    const maxCooldownMs = Math.max(ALERT_COOLDOWN_MS, FAILED_SESSION_ALERT_MIN_COOLDOWN_MS);
+    const maxCooldownMs = Math.max(
+      ALERT_COOLDOWN_MS,
+      FAILED_SESSION_ALERT_MIN_COOLDOWN_MS,
+      FAILED_SESSION_TRANSIENT_ALERT_MIN_COOLDOWN_MS,
+    );
     const cutoff = Date.now() - maxCooldownMs;
     for await (const line of rl) {
       const trimmed = String(line || "").trim();
@@ -514,17 +545,25 @@ async function analyzeSessionEnd(session, event) {
     completion_status === "failed" &&
     session.errors.length >= ERROR_LOOP_THRESHOLD
   ) {
+    const errorFingerprints = [...new Set(session.errors.map((e) => e.fingerprint))];
+    const transientErrorCount = errorFingerprints.filter((fp) => isTransientFailureFingerprint(fp)).length;
+    const transientOnlySession = transientErrorCount > 0 && transientErrorCount === errorFingerprints.length;
+    const alertType = transientOnlySession
+      ? "failed_session_transient_errors"
+      : "failed_session_high_errors";
+    const recommendation = transientOnlySession
+      ? "switch_sdk_or_backoff_retry"
+      : "analyze_root_cause";
+
     await emitAlert({
-      type: "failed_session_high_errors",
+      type: alertType,
       attempt_id: session.attempt_id,
       task_id: session.taskId,
       executor: session.executor,
       error_count: session.errors.length,
-      error_fingerprints: [
-        ...new Set(session.errors.map((e) => e.fingerprint)),
-      ],
-      recommendation: "analyze_root_cause",
-      severity: "high",
+      error_fingerprints: errorFingerprints,
+      recommendation,
+      severity: transientOnlySession ? "medium" : "high",
     });
   }
 }

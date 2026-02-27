@@ -960,6 +960,98 @@ it("agent.run_planner streams planner events and propagates threadId", async () 
   expect(runLogText).toMatch(/Planner completed: success=true streamEvents=3/);
   });
 
+it("action.materialize_planner_tasks parses fenced JSON and creates tasks", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "Planner analysis complete.",
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): create tasks", "description": "A", "verification": ["v1"] },',
+      '    { "title": "[m] fix(workflow): duplicate title", "description": "B" }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi
+    .fn()
+    .mockResolvedValueOnce({ id: "task-1001" })
+    .mockResolvedValueOnce({ id: "task-1002" });
+  const listTasks = vi.fn().mockResolvedValue([
+    { id: "existing-1", title: "[m] fix(workflow): duplicate title" },
+  ]);
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+        listTasks,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      projectId: "proj-123",
+      status: "todo",
+      failOnZero: true,
+      dedup: true,
+      minCreated: 1,
+    },
+  };
+  const result = await handler.execute(node, ctx, mockEngine);
+
+  expect(result.success).toBe(true);
+  expect(result.parsedCount).toBe(2);
+  expect(result.createdCount).toBe(1);
+  expect(result.skippedCount).toBe(1);
+  expect(result.created[0]).toEqual({
+    id: "task-1001",
+    title: "[m] fix(workflow): create tasks",
+  });
+  expect(listTasks).toHaveBeenCalledTimes(1);
+  expect(createTask).toHaveBeenCalledTimes(1);
+});
+
+it("action.materialize_planner_tasks fails loudly when planner output has no parseable tasks", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: "I could not generate tasks in JSON format this run.",
+  });
+
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask: vi.fn(),
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      failOnZero: true,
+    },
+  };
+
+  await expect(handler.execute(node, ctx, mockEngine)).rejects.toThrow(
+    /did not include parseable tasks/i,
+  );
+});
+
 // ── Anomaly Detector Integration Tests ──────────────────────────────────────
 
 describe("Anomaly → Workflow bridge", () => {
