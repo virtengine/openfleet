@@ -387,6 +387,7 @@ let workflowAutomationInitDone = false;
 let workflowAutomationReadyLogged = false;
 let workflowAutomationUnavailableLogged = false;
 let workflowConflictResolverPausedLogged = false;
+let workflowTaskReconcilePausedLogged = false;
 
 /**
  * Cache of module names that have an enabled workflow replacement.
@@ -5922,6 +5923,24 @@ loadRecoveryCache();
  */
 async function checkMergedPRsAndUpdateTasks() {
   try {
+    if (
+      isWorkflowReplacingModule("task-executor.mjs") ||
+      isWorkflowReplacingModule("monitor.mjs")
+    ) {
+      if (!workflowTaskReconcilePausedLogged) {
+        workflowTaskReconcilePausedLogged = true;
+        console.log(
+          "[monitor] skipping legacy task-status reconciliation — handled by workflow replacement",
+        );
+      }
+      return {
+        checked: 0,
+        movedDone: 0,
+        movedReview: 0,
+        movedTodo: 0,
+        skippedByWorkflowReplacement: true,
+      };
+    }
     console.log("[monitor] Checking for merged PRs to update task status...");
     const workflowOwnsLegacyConflictResolution =
       isWorkflowReplacingModule("pr-cleanup-daemon.mjs") ||
