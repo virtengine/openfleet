@@ -119,13 +119,17 @@
 }
 
 .header-status {
-  display: flex;
+  display: inline-flex;
   flex-direction: row;
   align-items: center;
   gap: 8px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .header-freshness {
+  display: inline-flex;
+  align-items: center;
   font-size: 11px;
   opacity: 0.6;
   white-space: nowrap;
