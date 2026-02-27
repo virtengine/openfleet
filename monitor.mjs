@@ -14549,7 +14549,7 @@ function applyConfig(nextConfig, options = {}) {
     } else {
       stopSelfWatcher();
       console.log(
-        "[monitor] self-restart watcher disabled (set SELF_RESTART_WATCH_ENABLED=1 to force-enable)",
+        "[monitor] self-restart watcher disabled (set SELF_RESTART_WATCH_FORCE=1 to allow in npm/prod mode)",
       );
     }
   }
