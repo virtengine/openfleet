@@ -90,8 +90,14 @@ import {
   initWsInvalidationListener,
   loadNotificationPrefs,
   applyStoredDefaults,
+  hasPendingChanges,
 } from "./modules/state.js";
-import { activeTab, navigateTo, shouldBlockTabSwipe, TAB_CONFIG } from "./modules/router.js";
+import {
+  activeTab,
+  navigateTo,
+  shouldBlockTabSwipe,
+  TAB_CONFIG,
+} from "./modules/router.js";
 import { formatRelative } from "./modules/utils.js";
 
 /* ── Component imports ── */
@@ -1496,8 +1502,11 @@ function App() {
     // Load notification preferences early (non-blocking)
     loadNotificationPrefs();
 
-    // Load initial data for the default tab, then apply stored executor defaults
-    refreshTab("dashboard", { background: true, manual: false }).then(() => applyStoredDefaults());
+    // Load initial data for the route-selected tab, then apply stored defaults.
+    refreshTab(activeTab.value || "dashboard", {
+      background: true,
+      manual: false,
+    }).then(() => applyStoredDefaults());
 
     // Global keyboard shortcuts (1-7 for tabs, Escape for modals)
     function handleGlobalKeys(e) {
@@ -1543,6 +1552,16 @@ function App() {
       disconnectWebSocket();
       document.removeEventListener("keydown", handleGlobalKeys);
     };
+  }, []);
+
+  useEffect(() => {
+    const onBeforeUnload = (event) => {
+      if (!hasPendingChanges.value) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    globalThis.addEventListener?.("beforeunload", onBeforeUnload);
+    return () => globalThis.removeEventListener?.("beforeunload", onBeforeUnload);
   }, []);
 
   useEffect(() => {

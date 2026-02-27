@@ -12,7 +12,7 @@ const html = htm.bind(h);
 import { haptic } from "../modules/telegram.js";
 import { apiFetch } from "../modules/api.js";
 import { showToast, refreshTab } from "../modules/state.js";
-import { navigateTo } from "../modules/router.js";
+import { navigateTo, routeParams, setRouteParams } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import { formatDate, formatDuration, formatRelative } from "../modules/utils.js";
@@ -43,6 +43,7 @@ function returnToWorkflowList() {
   selectedRunId.value = null;
   selectedRunDetail.value = null;
   viewMode.value = "list";
+  setRouteParams({}, { replace: true, skipGuard: true });
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -87,6 +88,7 @@ async function saveWorkflow(def) {
       activeWorkflow.value = data.workflow;
       showToast("Workflow saved", "success");
       loadWorkflows();
+      setRouteParams({ workflowId: data.workflow.id }, { replace: true, skipGuard: true });
     }
     return data?.workflow;
   } catch (err) {
@@ -101,6 +103,7 @@ async function deleteWorkflow(id) {
     if (activeWorkflow.value?.id === id) {
       activeWorkflow.value = null;
       viewMode.value = "list";
+      setRouteParams({}, { replace: true, skipGuard: true });
     }
     loadWorkflows();
   } catch (err) {
@@ -174,6 +177,7 @@ async function installTemplate(templateId) {
       viewMode.value = "canvas";
       showToast("Template installed", "success");
       loadWorkflows();
+      setRouteParams({ workflowId: data.workflow.id }, { replace: false, skipGuard: true });
     }
   } catch (err) {
     showToast("Failed to install template", "error");
@@ -205,6 +209,8 @@ async function loadRunDetail(runId) {
     if (data?.run) {
       selectedRunId.value = runId;
       selectedRunDetail.value = data.run;
+      viewMode.value = "runs";
+      setRouteParams({ runsView: true, runId }, { replace: false, skipGuard: true });
     }
   } catch (err) {
     showToast("Failed to load run details", "error");
@@ -2132,6 +2138,73 @@ export function WorkflowsTab() {
     loadTemplates();
     loadNodeTypes();
   }, []);
+
+  useEffect(() => {
+    const route = routeParams.value || {};
+    const workflowId = String(route.workflowId || "").trim();
+    const runId = String(route.runId || "").trim();
+    const wantsRuns = Boolean(route.runsView) || Boolean(runId);
+
+    if (wantsRuns) {
+      viewMode.value = "runs";
+      loadRuns();
+      if (runId) {
+        loadRunDetail(runId);
+      } else {
+        selectedRunId.value = null;
+        selectedRunDetail.value = null;
+      }
+      return;
+    }
+
+    if (workflowId) {
+      apiFetch(`/api/workflows/${encodeURIComponent(workflowId)}`)
+        .then((d) => {
+          activeWorkflow.value = d?.workflow || activeWorkflow.value;
+          if (activeWorkflow.value?.id === workflowId || d?.workflow?.id === workflowId) {
+            viewMode.value = "canvas";
+          }
+        })
+        .catch(() => {
+          const existing = (workflows.value || []).find((wf) => wf.id === workflowId);
+          if (existing) {
+            activeWorkflow.value = existing;
+            viewMode.value = "canvas";
+          }
+        });
+      return;
+    }
+
+    if (viewMode.value !== "list") {
+      selectedRunId.value = null;
+      selectedRunDetail.value = null;
+      activeWorkflow.value = null;
+      viewMode.value = "list";
+    }
+  }, [routeParams.value]);
+
+  useEffect(() => {
+    const mode = viewMode.value;
+    if (mode === "canvas" && activeWorkflow.value?.id) {
+      setRouteParams(
+        { workflowId: activeWorkflow.value.id },
+        { replace: true, skipGuard: true },
+      );
+      return;
+    }
+    if (mode === "runs") {
+      if (selectedRunId.value) {
+        setRouteParams(
+          { runsView: true, runId: selectedRunId.value },
+          { replace: true, skipGuard: true },
+        );
+      } else {
+        setRouteParams({ runsView: true }, { replace: true, skipGuard: true });
+      }
+      return;
+    }
+    setRouteParams({}, { replace: true, skipGuard: true });
+  }, [viewMode.value, activeWorkflow.value?.id, selectedRunId.value]);
 
   useEffect(() => {
     const handler = (e) => {

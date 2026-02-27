@@ -1554,6 +1554,11 @@ ul.md-list li::before {
   box-sizing: border-box;
 }
 
+.chat-input.chat-input-drag {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--bg-card) 82%, var(--accent) 18%);
+}
+
 .chat-send-btn {
   flex-shrink: 0;
   width: 36px;

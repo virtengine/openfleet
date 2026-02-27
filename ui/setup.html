@@ -1871,6 +1871,9 @@ function App() {
       </div>
     `}
     <button class="btn btn-sm" onclick=${addExecutor} style="margin-bottom:12px">+ Add Executor</button>
+    <div class="hint" style="margin-bottom:12px">
+      Enabled executors: ${executors.filter((ex) => ex.enabled !== false).length} / ${executors.length}
+    </div>
     ${profile === "advanced" && html`
       <div class="executor-grid" style="margin-top:12px">
         <div class="form-group">
