@@ -2488,31 +2488,44 @@ class TaskExecutor {
     this._running = true;
     // Start watchdog to detect and kill stalled agent slots
     this._startWatchdog();
-    // Resume interrupted in-progress tasks first, then poll todo backlog.
-    void ensureThreadRegistryLoaded()
-      .catch((err) => {
+
+    const startRecovery = async () => {
+      try {
+        await ensureThreadRegistryLoaded();
+      } catch (err) {
         console.warn(
-          `${TAG} thread registry load warning: ${err.message || err}`,
+          `${TAG} thread registry load warning: ${err?.message || err}`,
         );
-      })
-      .then(() => {
-        const pruned = pruneAllExhaustedThreads();
-        if (pruned > 0) {
-          console.log(
-            `${TAG} cleaned up ${pruned} stale agent threads on startup`,
-          );
-        }
-      })
-      .then(() => this._recoverInterruptedInProgressTasks())
-      .catch((err) => {
+      }
+
+      const pruned = pruneAllExhaustedThreads();
+      if (pruned > 0) {
+        console.log(
+          `${TAG} cleaned up ${pruned} stale agent threads on startup`,
+        );
+      }
+
+      try {
+        await this._recoverInterruptedInProgressTasks();
+      } catch (err) {
         console.warn(
-          `${TAG} in-progress recovery warning: ${err.message || err}`,
+          `${TAG} in-progress recovery warning: ${err?.message || err}`,
         );
+      }
+    };
+
+    startRecovery()
+      .catch((err) => {
+        console.warn(`${TAG} thread recovery error: ${err?.message || err}`);
       })
       .finally(() => {
-        void this._pollLoop();
+        this._runPollLoopSafely();
       });
-    this._pollTimer = setInterval(() => this._pollLoop(), this.pollIntervalMs);
+
+    this._pollTimer = setInterval(
+      () => this._runPollLoopSafely(),
+      this.pollIntervalMs,
+    );
     console.log(
       `${TAG} started — polling every ${this.pollIntervalMs / 1000}s for up to ${this.maxParallel} parallel tasks`,
     );
@@ -3517,49 +3530,65 @@ class TaskExecutor {
     return Math.min(Math.max(minutes, 60), 24 * 60);
   }
 
+  async _renewTaskClaim(taskId, claimToken, taskTitle = "") {
+    if (!taskId || !claimToken) return null;
+    try {
+      const renewed = await renewClaim({
+        taskId,
+        claimToken,
+        instanceId: this._instanceId,
+        ttlMinutes: this._getTaskClaimTtlMinutes(),
+      });
+      if (!renewed?.success) {
+        const reason = String(renewed?.error || "unknown");
+        const err = new Error(reason);
+        err.fatalClaimRenew = FATAL_CLAIM_RENEW_ERRORS.has(reason);
+        throw err;
+      }
+      return renewed;
+    } catch (err) {
+      const reason = String(err?.message || err || "unknown");
+      const wrapped = new Error(reason);
+      wrapped.fatalClaimRenew =
+        Boolean(err?.fatalClaimRenew) ||
+        FATAL_CLAIM_RENEW_ERRORS.has(reason);
+      throw wrapped;
+    }
+  }
+
+  _handleTaskClaimRenewalFailure(
+    taskId,
+    taskTitle,
+    reason,
+    { fatal = false } = {},
+  ) {
+    if (!taskId) return;
+    this._stopTaskClaimRenewal(taskId);
+    const slot = this._activeSlots.get(taskId);
+    const taskLabel = taskTitle || slot?.taskTitle || taskId;
+    const normalizedReason = String(reason || "unknown");
+    const message = fatal
+      ? `${TAG} claim ownership lost for "${taskLabel}" (${normalizedReason}) — aborting task to avoid duplicate execution`
+      : `${TAG} claim renewal failure for "${taskLabel}" (${normalizedReason}) — aborting task to trigger cleanup`;
+    console.warn(message);
+    const ac = this._slotAbortControllers.get(taskId);
+    if (ac && !ac.signal.aborted) {
+      ac.abort(`claim_renewal:${normalizedReason}`);
+    }
+  }
+
   _startTaskClaimRenewal(taskId, claimToken, taskTitle = "") {
     if (!taskId || !claimToken) return;
     this._stopTaskClaimRenewal(taskId);
     const intervalMs = this.taskClaimRenewIntervalMs;
-    const renew = async () => {
-      try {
-        const renewed = await renewClaim({
-          taskId,
-          claimToken,
-          instanceId: this._instanceId,
-          ttlMinutes: this._getTaskClaimTtlMinutes(),
-        });
-        if (!renewed?.success) {
-          const renewError = String(renewed?.error || "unknown");
-          if (FATAL_CLAIM_RENEW_ERRORS.has(renewError)) {
-            this._stopTaskClaimRenewal(taskId);
-            const slot = this._activeSlots.get(taskId);
-            const taskLabel = taskTitle || slot?.taskTitle || taskId;
-            const ac = this._slotAbortControllers.get(taskId);
-            if (slot?.status === "running" && ac && !ac.signal.aborted) {
-              console.warn(
-                `${TAG} claim ownership lost for "${taskLabel}" (${renewError}) — aborting task to avoid duplicate execution`,
-              );
-              ac.abort(`claim_lost:${renewError}`);
-            } else {
-              console.warn(
-                `${TAG} claim ownership lost for "${taskLabel}" (${renewError}); stopping renewals`,
-              );
-            }
-            return;
-          }
-          console.warn(
-            `${TAG} claim renewal failed for "${taskTitle || taskId}": ${renewError}`,
-          );
-        }
-      } catch (err) {
-        console.warn(
-          `${TAG} claim renewal warning for "${taskTitle || taskId}": ${err?.message || err}`,
-        );
-      }
+    const handleError = (err) => {
+      const reason = String(err?.message || err || "unknown");
+      this._handleTaskClaimRenewalFailure(taskId, taskTitle, reason, {
+        fatal: Boolean(err?.fatalClaimRenew),
+      });
     };
     const timer = setInterval(() => {
-      void renew();
+      this._renewTaskClaim(taskId, claimToken, taskTitle).catch(handleError);
     }, intervalMs);
     if (timer?.unref) timer.unref();
     this._taskClaimRenewTimers.set(taskId, timer);
@@ -3709,6 +3738,14 @@ class TaskExecutor {
   }
 
   // ── Poll Loop ─────────────────────────────────────────────────────────────
+
+  _runPollLoopSafely() {
+    return this._pollLoop().catch((err) => {
+      console.error(
+        `${TAG} poll loop unexpected rejection: ${err?.message || err}`,
+      );
+    });
+  }
 
   /**
    * Check kanban for todo tasks and dispatch execution.

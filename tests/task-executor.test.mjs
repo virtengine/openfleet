@@ -652,6 +652,68 @@ describe("task-executor", () => {
       await ex._pollLoop();
       expect(ex._pollInProgress).toBe(false);
     });
+
+    it("catches unexpected poll loop rejections", async () => {
+      const ex = new TaskExecutor();
+      const err = new Error("boom");
+      const pollSpy = vi
+        .spyOn(ex, "_pollLoop")
+        .mockRejectedValueOnce(err);
+      const errorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+
+      await ex._runPollLoopSafely();
+
+      expect(pollSpy).toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalled();
+      expect(errorSpy.mock.calls[0][0]).toContain(
+        "poll loop unexpected rejection: boom",
+      );
+    });
+  });
+
+  describe("claim renewal helpers", () => {
+    it("rejects renewal when shared state reports an ownership loss", async () => {
+      const ex = new TaskExecutor();
+      renewClaim.mockResolvedValueOnce({
+        success: false,
+        error: "claim_token_mismatch",
+      });
+
+      await expect(
+        ex._renewTaskClaim("task-A", "token-A"),
+      ).rejects.toMatchObject({
+        message: "claim_token_mismatch",
+        fatalClaimRenew: true,
+      });
+    });
+
+    it("aborts the slot and clears the timer after a renewal failure", () => {
+      const ex = new TaskExecutor();
+      const ac = new AbortController();
+      const abortSpy = vi.spyOn(ac, "abort");
+      const clearSpy = vi
+        .spyOn(global, "clearInterval")
+        .mockImplementation(() => {});
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      ex._slotAbortControllers.set("task-B", ac);
+      ex._activeSlots.set("task-B", {
+        taskId: "task-B",
+        taskTitle: "Renewal Fail",
+      });
+      const timerId = Symbol("renewal-timer");
+      ex._taskClaimRenewTimers.set("task-B", timerId);
+
+      ex._handleTaskClaimRenewalFailure("task-B", "Renewal Fail", "network err", {
+        fatal: false,
+      });
+
+      expect(clearSpy).toHaveBeenCalledWith(timerId);
+      expect(abortSpy).toHaveBeenCalledWith("claim_renewal:network err");
+      expect(ex._taskClaimRenewTimers.has("task-B")).toBe(false);
+    });
   });
 
   // ────────────────────────────────────────────────────────────────────────
@@ -1008,7 +1070,7 @@ describe("task-executor", () => {
         expect(renewClaim).toHaveBeenCalled();
         expect(ac.signal.aborted).toBe(true);
         expect(String(ac.signal.reason)).toContain(
-          "claim_lost:claim_token_mismatch",
+          "claim_renewal:claim_token_mismatch",
         );
         expect(ex._taskClaimRenewTimers.has("task-claim-loss")).toBe(false);
       } finally {
@@ -2163,6 +2225,4 @@ describe("task-executor", () => {
     });
   });
 });
-
-
 
