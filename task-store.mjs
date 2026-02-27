@@ -208,6 +208,50 @@ function ensureLoaded() {
   }
 }
 
+function buildCorruptBackupPath() {
+  const safeTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${storePath}.corrupt-${safeTimestamp}.json`;
+}
+
+function snapshotCorruptPayload(rawPayload, parseError) {
+  const backupPath = buildCorruptBackupPath();
+  try {
+    const dir = dirname(storePath);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    writeFileSync(backupPath, rawPayload ?? "", "utf-8");
+    console.error(
+      TAG,
+      `Corrupted store payload snapshot saved: ${backupPath} (${parseError?.message || parseError})`,
+    );
+  } catch (backupErr) {
+    console.error(
+      TAG,
+      `Failed to snapshot corrupted store payload: ${backupErr?.message || backupErr}`,
+    );
+  }
+}
+
+function writeSafeEmptyStore() {
+  try {
+    const dir = dirname(storePath);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    writeFileSync(
+      storePath,
+      JSON.stringify({ _meta: defaultMeta(), tasks: {} }, null, 2),
+      "utf-8",
+    );
+  } catch (err) {
+    console.error(
+      TAG,
+      `Failed to persist safe empty store after corruption recovery: ${err?.message || err}`,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Store management
 // ---------------------------------------------------------------------------
@@ -219,7 +263,35 @@ export function loadStore() {
   try {
     if (existsSync(storePath)) {
       const raw = readFileSync(storePath, "utf-8");
-      const data = JSON.parse(raw);
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch (parseErr) {
+        snapshotCorruptPayload(raw, parseErr);
+        _store = { _meta: defaultMeta(), tasks: {} };
+        writeSafeEmptyStore();
+        _loaded = true;
+        return;
+      }
+      if (!data || typeof data !== "object" || Array.isArray(data)) {
+        const invalidShapeError = new Error("Store root must be an object");
+        snapshotCorruptPayload(raw, invalidShapeError);
+        _store = { _meta: defaultMeta(), tasks: {} };
+        writeSafeEmptyStore();
+        _loaded = true;
+        return;
+      }
+      if (
+        data.tasks !== undefined &&
+        (!data.tasks || typeof data.tasks !== "object" || Array.isArray(data.tasks))
+      ) {
+        const invalidTasksError = new Error("Store tasks must be an object");
+        snapshotCorruptPayload(raw, invalidTasksError);
+        _store = { _meta: defaultMeta(), tasks: {} };
+        writeSafeEmptyStore();
+        _loaded = true;
+        return;
+      }
       _store = {
         _meta: { ...defaultMeta(), ...(data._meta || {}) },
         tasks: data.tasks || {},
@@ -282,6 +354,18 @@ export function saveStore() {
     .catch((err) => {
       console.error(TAG, "Write chain error:", err.message);
     });
+}
+
+/**
+ * Wait until all queued writes have completed.
+ * Primarily useful for deterministic tests and graceful shutdown flows.
+ */
+export async function waitForStoreWrites() {
+  try {
+    await _writeChain;
+  } catch {
+    // saveStore() logs failures internally; callers only need queue drain semantics
+  }
 }
 
 /**
