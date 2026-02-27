@@ -6,6 +6,14 @@ if [ -z "$ROOT" ]; then
   exit 0
 fi
 
+# Block direct commits to 'main' — main must always mirror upstream.
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+if [ "$BRANCH" = "main" ]; then
+  echo "[hooks] ERROR: Direct commits to 'main' are not allowed." >&2
+  echo "[hooks] Create a feature branch and commit there instead." >&2
+  exit 1
+fi
+
 if [ ! -f "$ROOT/package.json" ]; then
   exit 0
 fi
