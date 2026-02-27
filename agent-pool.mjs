@@ -44,6 +44,7 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "./repo-root.mjs";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
+import { getGitHubToken } from "./github-auth-manager.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -81,6 +82,82 @@ function envFlagEnabled(value) {
     .trim()
     .toLowerCase();
   return ["1", "true", "yes", "on", "y"].includes(raw);
+}
+
+const GITHUB_TOKEN_CACHE_TTL_MS = 60_000;
+let cachedGithubSessionToken = null;
+let cachedGithubSessionTokenAt = 0;
+let githubSessionTokenPromise = null;
+let githubTokenSourceLogged = "";
+
+function parseGithubRepoSlug(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return { owner: "", repo: "" };
+  const m = text.match(/^([^/\s]+)\/([^/\s]+)$/);
+  if (!m) return { owner: "", repo: "" };
+  return { owner: m[1], repo: m[2] };
+}
+
+async function resolveGithubSessionToken() {
+  const now = Date.now();
+  if (
+    cachedGithubSessionToken &&
+    now - cachedGithubSessionTokenAt < GITHUB_TOKEN_CACHE_TTL_MS
+  ) {
+    return cachedGithubSessionToken;
+  }
+  if (githubSessionTokenPromise) return githubSessionTokenPromise;
+
+  githubSessionTokenPromise = (async () => {
+    const explicitToken =
+      process.env.GH_TOKEN ||
+      process.env.GITHUB_TOKEN ||
+      process.env.COPILOT_CLI_TOKEN ||
+      process.env.GITHUB_PAT ||
+      "";
+    if (explicitToken) {
+      cachedGithubSessionToken = explicitToken;
+      cachedGithubSessionTokenAt = Date.now();
+      return explicitToken;
+    }
+
+    try {
+      const { owner, repo } = parseGithubRepoSlug(process.env.GITHUB_REPOSITORY);
+      const { token, type } = await getGitHubToken({
+        owner: owner || undefined,
+        repo: repo || undefined,
+      });
+      if (token) {
+        cachedGithubSessionToken = token;
+        cachedGithubSessionTokenAt = Date.now();
+        if (githubTokenSourceLogged !== type) {
+          githubTokenSourceLogged = type || "unknown";
+          console.log(`${TAG} injected GitHub token into agent session env (${type || "unknown"})`);
+        }
+        return token;
+      }
+    } catch {
+      // best effort
+    }
+    return "";
+  })();
+
+  try {
+    return await githubSessionTokenPromise;
+  } finally {
+    githubSessionTokenPromise = null;
+  }
+}
+
+function injectGitHubSessionEnv(baseEnv, token) {
+  const env = { ...(baseEnv || {}) };
+  const resolved = String(token || "").trim();
+  if (!resolved) return env;
+  if (!env.GH_TOKEN) env.GH_TOKEN = resolved;
+  if (!env.GITHUB_TOKEN) env.GITHUB_TOKEN = resolved;
+  if (!env.GITHUB_PAT) env.GITHUB_PAT = resolved;
+  if (!env.COPILOT_CLI_TOKEN) env.COPILOT_CLI_TOKEN = resolved;
+  return env;
 }
 
 /**
@@ -224,7 +301,7 @@ function shouldFallbackForSdkError(error) {
  * @param {string} name  SDK canonical name
  * @returns {{ ok: boolean, reason: string|null }}
  */
-function hasSdkPrerequisites(name) {
+function hasSdkPrerequisites(name, runtimeEnv = process.env) {
   // Test mocks bypass prerequisite checks
   if (process.env[`__MOCK_${name.toUpperCase()}_AVAILABLE`] === "1") {
     return { ok: true, reason: null };
@@ -233,10 +310,10 @@ function hasSdkPrerequisites(name) {
   if (name === "codex") {
     // Codex needs an OpenAI API key (or Azure key, or profile-specific key)
     const hasKey =
-      process.env.OPENAI_API_KEY ||
-      process.env.AZURE_OPENAI_API_KEY ||
-      process.env.CODEX_MODEL_PROFILE_XL_API_KEY ||
-      process.env.CODEX_MODEL_PROFILE_M_API_KEY;
+      runtimeEnv.OPENAI_API_KEY ||
+      runtimeEnv.AZURE_OPENAI_API_KEY ||
+      runtimeEnv.CODEX_MODEL_PROFILE_XL_API_KEY ||
+      runtimeEnv.CODEX_MODEL_PROFILE_M_API_KEY;
     if (!hasKey) {
       return { ok: false, reason: "no API key (OPENAI_API_KEY / AZURE_OPENAI_API_KEY)" };
     }
@@ -244,16 +321,20 @@ function hasSdkPrerequisites(name) {
   }
   if (name === "copilot") {
     // Copilot needs either a token or VS Code context
-    const hasToken = process.env.COPILOT_CLI_TOKEN || process.env.GITHUB_TOKEN;
+    const hasToken =
+      runtimeEnv.COPILOT_CLI_TOKEN ||
+      runtimeEnv.GITHUB_TOKEN ||
+      runtimeEnv.GH_TOKEN ||
+      runtimeEnv.GITHUB_PAT;
     // Copilot also works from VS Code extension context — check for common indicators
-    const hasVsCode = process.env.VSCODE_PID || process.env.COPILOT_AGENT_HOST;
+    const hasVsCode = runtimeEnv.VSCODE_PID || runtimeEnv.COPILOT_AGENT_HOST;
     if (!hasToken && !hasVsCode) {
       return { ok: false, reason: "no COPILOT_CLI_TOKEN or GITHUB_TOKEN" };
     }
     return { ok: true, reason: null };
   }
   if (name === "claude") {
-    const hasKey = process.env.ANTHROPIC_API_KEY;
+    const hasKey = runtimeEnv.ANTHROPIC_API_KEY;
     if (!hasKey) {
       return { ok: false, reason: "no ANTHROPIC_API_KEY" };
     }
@@ -309,6 +390,36 @@ async function withSanitizedOpenAiEnv(fn) {
   } finally {
     for (const [key, value] of Object.entries(saved)) {
       if (value !== undefined) process.env[key] = value;
+    }
+  }
+}
+
+async function withTemporaryEnv(overrides, fn) {
+  if (!overrides || typeof overrides !== "object") {
+    return await fn();
+  }
+  const prev = new Map();
+  const touched = [];
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!key) continue;
+    prev.set(key, process.env[key]);
+    touched.push(key);
+    if (value == null) {
+      delete process.env[key];
+    } else {
+      process.env[key] = String(value);
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const key of touched) {
+      const oldValue = prev.get(key);
+      if (oldValue == null) {
+        delete process.env[key];
+      } else {
+        process.env[key] = oldValue;
+      }
     }
   }
 }
@@ -948,6 +1059,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
     onThreadReady = null,
     model: requestedModel = null,
     taskKey: steerKey = null,
+    envOverrides = null,
   } = extra;
 
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
@@ -968,11 +1080,15 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
   }
 
   // ── 2. Detect auth token ─────────────────────────────────────────────────
+  const runtimeEnv =
+    envOverrides && typeof envOverrides === "object"
+      ? { ...process.env, ...envOverrides }
+      : process.env;
   const token =
-    process.env.COPILOT_CLI_TOKEN ||
-    process.env.GITHUB_TOKEN ||
-    process.env.GH_TOKEN ||
-    process.env.GITHUB_PAT ||
+    runtimeEnv.COPILOT_CLI_TOKEN ||
+    runtimeEnv.GITHUB_TOKEN ||
+    runtimeEnv.GH_TOKEN ||
+    runtimeEnv.GITHUB_PAT ||
     undefined;
 
   // ── 3. Create & start ephemeral client (LOCAL mode) ──────────────────────
@@ -993,10 +1109,10 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
   const autoApprovePermissions = shouldAutoApproveCopilotPermissions();
   const clientEnv = autoApprovePermissions
     ? {
-        ...process.env,
-        COPILOT_ALLOW_ALL: process.env.COPILOT_ALLOW_ALL || "true",
+        ...runtimeEnv,
+        COPILOT_ALLOW_ALL: runtimeEnv.COPILOT_ALLOW_ALL || "true",
       }
-    : process.env;
+    : runtimeEnv;
   try {
     await withSanitizedOpenAiEnv(async () => {
       let clientOpts;
@@ -1336,6 +1452,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     onThreadReady = null,
     model: requestedModel = null,
     taskKey: steerKey = null,
+    envOverrides = null,
   } = extra;
 
   // ── 1. Load the SDK ──────────────────────────────────────────────────────
@@ -1356,10 +1473,14 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
   }
 
   // ── 2. Detect auth ──────────────────────────────────────────────────────
+  const runtimeEnv =
+    envOverrides && typeof envOverrides === "object"
+      ? { ...process.env, ...envOverrides }
+      : process.env;
   const apiKey =
-    process.env.ANTHROPIC_API_KEY ||
-    process.env.CLAUDE_API_KEY ||
-    process.env.CLAUDE_KEY ||
+    runtimeEnv.ANTHROPIC_API_KEY ||
+    runtimeEnv.CLAUDE_API_KEY ||
+    runtimeEnv.CLAUDE_KEY ||
     undefined;
 
   // ── 3. Build message queue ───────────────────────────────────────────────
@@ -1478,31 +1599,33 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
       settingSources: ["user", "project"],
       permissionMode:
         claudePermissionMode ||
-        process.env.CLAUDE_PERMISSION_MODE ||
+        runtimeEnv.CLAUDE_PERMISSION_MODE ||
         "bypassPermissions",
     };
     if (apiKey) options.apiKey = apiKey;
     const explicitAllowedTools = normalizeList(claudeAllowedTools);
     const allowedTools = explicitAllowedTools.length
       ? explicitAllowedTools
-      : normalizeList(process.env.CLAUDE_ALLOWED_TOOLS);
+      : normalizeList(runtimeEnv.CLAUDE_ALLOWED_TOOLS);
     if (allowedTools.length) {
       options.allowedTools = allowedTools;
     }
 
     const model = String(
       requestedModel ||
-        process.env.CLAUDE_MODEL ||
-        process.env.CLAUDE_CODE_MODEL ||
-        process.env.ANTHROPIC_MODEL ||
+        runtimeEnv.CLAUDE_MODEL ||
+        runtimeEnv.CLAUDE_CODE_MODEL ||
+        runtimeEnv.ANTHROPIC_MODEL ||
         "",
     ).trim();
     if (model) options.model = model;
 
-    const result = queryFn({
-      prompt: msgQueue.iterator(),
-      options,
-    });
+    const result = await withTemporaryEnv(runtimeEnv, async () =>
+      queryFn({
+        prompt: msgQueue.iterator(),
+        options,
+      }),
+    );
 
     let finalResponse = "";
     let activeClaudeSessionId = resumeThreadId || null;
@@ -1695,9 +1818,20 @@ export async function launchEphemeralThread(
   timeoutMs = DEFAULT_TIMEOUT_MS,
   extra = {},
 ) {
+  const resolvedGithubToken = await resolveGithubSessionToken();
+  const baseRuntimeEnv =
+    extra?.envOverrides && typeof extra.envOverrides === "object"
+      ? { ...process.env, ...extra.envOverrides }
+      : { ...process.env };
+  const sessionEnv = injectGitHubSessionEnv(baseRuntimeEnv, resolvedGithubToken);
+  const launchExtra = {
+    ...extra,
+    envOverrides: sessionEnv,
+  };
+
   // Determine the primary SDK to try
-  const requestedSdk = extra.sdk
-    ? String(extra.sdk).trim().toLowerCase()
+  const requestedSdk = launchExtra.sdk
+    ? String(launchExtra.sdk).trim().toLowerCase()
     : null;
 
   const primaryName =
@@ -1740,7 +1874,7 @@ export async function launchEphemeralThread(
     }
 
     // Check prerequisites before wasting time trying an unconfigured SDK
-    const prereq = hasSdkPrerequisites(name);
+    const prereq = hasSdkPrerequisites(name, sessionEnv);
     if (!prereq.ok) {
       missingPrereqSdks.push({ name, reason: prereq.reason });
       if (name === primaryName) {
@@ -1759,7 +1893,7 @@ export async function launchEphemeralThread(
 
     triedSdkNames.push(name);
     const launcher = await adapter.load();
-    const result = await launcher(prompt, cwd, timeoutMs, extra);
+    const result = await launcher(prompt, cwd, timeoutMs, launchExtra);
     lastAttemptResult = result;
 
     if (result.success) {
@@ -2356,6 +2490,15 @@ export async function launchOrResumeThread(
 ) {
   await ensureThreadRegistryLoaded();
   const { taskKey, ...restExtra } = extra;
+  const resolvedGithubToken = await resolveGithubSessionToken();
+  const restBaseEnv =
+    restExtra?.envOverrides && typeof restExtra.envOverrides === "object"
+      ? { ...process.env, ...restExtra.envOverrides }
+      : { ...process.env };
+  restExtra.envOverrides = injectGitHubSessionEnv(
+    restBaseEnv,
+    resolvedGithubToken,
+  );
   // Pass taskKey through as steer key so SDK launchers can register active sessions
   restExtra.taskKey = taskKey;
   timeoutMs = clampMonitorMonitorTimeout(timeoutMs, taskKey);
@@ -2950,4 +3093,3 @@ export function getActiveThreads() {
   }
   return result;
 }
-

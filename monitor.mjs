@@ -231,6 +231,7 @@ import {
   listProjects as listKanbanProjects,
   createTask as createKanbanTask,
 } from "./kanban-adapter.mjs";
+import { getGitHubToken } from "./github-auth-manager.mjs";
 import { resolvePromptTemplate } from "./agent-prompts.mjs";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -313,6 +314,49 @@ function parseEnvInteger(value, defaultValue, { min = null, max = null } = {}) {
   if (Number.isFinite(min) && parsed < min) return defaultValue;
   if (Number.isFinite(max) && parsed > max) return defaultValue;
   return parsed;
+}
+
+function parseRepoSlug(value) {
+  const text = String(value || "").trim();
+  const m = text.match(/^([^/\s]+)\/([^/\s]+)$/);
+  if (!m) return { owner: "", repo: "" };
+  return { owner: m[1], repo: m[2] };
+}
+
+async function injectGitHubSessionEnvFromBosunAuth() {
+  const explicit =
+    process.env.GH_TOKEN ||
+    process.env.GITHUB_TOKEN ||
+    process.env.COPILOT_CLI_TOKEN ||
+    process.env.GITHUB_PAT ||
+    "";
+  if (explicit) return false;
+
+  try {
+    const slug =
+      process.env.GITHUB_REPOSITORY ||
+      (process.env.GITHUB_REPO_OWNER && process.env.GITHUB_REPO_NAME
+        ? `${process.env.GITHUB_REPO_OWNER}/${process.env.GITHUB_REPO_NAME}`
+        : "") ||
+      repoSlug ||
+      "";
+    const { owner, repo } = parseRepoSlug(slug);
+    const { token, type } = await getGitHubToken({
+      owner: owner || undefined,
+      repo: repo || undefined,
+    });
+    if (!token) return false;
+    if (!process.env.GH_TOKEN) process.env.GH_TOKEN = token;
+    if (!process.env.GITHUB_TOKEN) process.env.GITHUB_TOKEN = token;
+    if (!process.env.GITHUB_PAT) process.env.GITHUB_PAT = token;
+    if (!process.env.COPILOT_CLI_TOKEN) process.env.COPILOT_CLI_TOKEN = token;
+    console.log(
+      `[monitor] injected GitHub token into agent runtime env (${type || "unknown"})`,
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 let workflowAutomationEnabled = false;
@@ -853,6 +897,8 @@ let {
   githubReconcile: githubReconcileConfig,
 } = config;
 
+await injectGitHubSessionEnvFromBosunAuth();
+
 const telegramWeeklyReportEnabled = parseEnvBoolean(
   process.env.TELEGRAM_WEEKLY_REPORT_ENABLED,
   false,
@@ -889,6 +935,7 @@ let githubReconcile = githubReconcileConfig || {
   trackingLabels: ["tracking"],
 };
 let chdirUnsupportedInRuntime = false;
+watchEnabled = applyRuntimeWatchPolicy(watchEnabled);
 
 function isChdirUnsupportedError(err) {
   if (!err) {
@@ -1154,10 +1201,41 @@ function isMonitorMonitorEnabled() {
   return true;
 }
 
+function isPackagedNpmRuntime() {
+  const normalizedDir = String(__dirname || "")
+    .replace(/\\/g, "/")
+    .toLowerCase();
+  if (!/\/node_modules\/bosun(?:\/|$)/.test(normalizedDir)) {
+    return false;
+  }
+  // Source checkout keeps .git; packaged global installs do not.
+  return !existsSync(resolve(__dirname, ".git"));
+}
+
+function shouldAllowPackagedRuntimeWatchers() {
+  if (isTruthyFlag(process.env.BOSUN_FORCE_FILE_WATCHERS || "false")) {
+    return true;
+  }
+  const explicit = process.env.SELF_RESTART_WATCH_ENABLED;
+  if (explicit !== undefined && String(explicit).trim() !== "") {
+    return !isFalsyFlag(explicit);
+  }
+  return false;
+}
+
+function applyRuntimeWatchPolicy(enabled) {
+  if (!enabled) return false;
+  if (!isPackagedNpmRuntime()) return true;
+  return shouldAllowPackagedRuntimeWatchers();
+}
+
 function isSelfRestartWatcherEnabled() {
   const explicit = process.env.SELF_RESTART_WATCH_ENABLED;
   if (explicit !== undefined && String(explicit).trim() !== "") {
     return !isFalsyFlag(explicit);
+  }
+  if (isPackagedNpmRuntime() && !shouldAllowPackagedRuntimeWatchers()) {
+    return false;
   }
   if (
     String(executorMode || "")
@@ -13239,7 +13317,7 @@ function applyConfig(nextConfig, options = {}) {
   restartDelayMs = nextConfig.restartDelayMs;
   maxRestarts = nextConfig.maxRestarts;
   logDir = nextConfig.logDir;
-  watchEnabled = nextConfig.watchEnabled;
+  watchEnabled = applyRuntimeWatchPolicy(nextConfig.watchEnabled);
   watchPath = resolve(nextConfig.watchPath);
   echoLogs = nextConfig.echoLogs;
   autoFixEnabled = nextConfig.autoFixEnabled;
@@ -13258,6 +13336,7 @@ function applyConfig(nextConfig, options = {}) {
   telegramBotEnabled = nextConfig.telegramBotEnabled;
   telegramCommandEnabled = nextConfig.telegramCommandEnabled;
   repoSlug = nextConfig.repoSlug;
+  void injectGitHubSessionEnvFromBosunAuth();
   repoUrlBase = nextConfig.repoUrlBase;
   vkRecoveryPort = nextConfig.vkRecoveryPort;
   vkRecoveryHost = nextConfig.vkRecoveryHost;
@@ -13985,7 +14064,9 @@ if (selfRestartWatcherEnabled) {
   const normalizedExecutorMode = String(executorMode || "")
     .trim()
     .toLowerCase();
-  const disabledReason = !isDevMode()
+  const disabledReason = isPackagedNpmRuntime() && !shouldAllowPackagedRuntimeWatchers()
+    ? "packaged npm runtime (watchers off; updates handled by auto-update loop)"
+    : !isDevMode()
     ? "npm/prod mode — updates via auto-update loop"
     : normalizedExecutorMode === "internal" || normalizedExecutorMode === "hybrid"
       ? `executor mode "${normalizedExecutorMode}" (continuous task-driven code changes)`
