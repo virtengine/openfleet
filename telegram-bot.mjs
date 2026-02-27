@@ -13,7 +13,7 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import {
   mkdir,
   readFile,
@@ -157,6 +157,11 @@ const telegramPollLockPath = resolve(
   ".cache",
   "telegram-getupdates.lock",
 );
+const telegramPollConflictStatePath = resolve(
+  repoRoot,
+  ".cache",
+  "telegram-getupdates-conflict.json",
+);
 const liveDigestStatePath = resolve(repoRoot, ".cache", "ve-live-digest.json");
 const statusBoardStatePath = resolve(
   repoRoot,
@@ -195,6 +200,11 @@ const POLL_TIMEOUT_S = 30; // long-poll timeout
 const MAX_MESSAGE_LEN = 4000; // Telegram max is 4096, leave margin
 const POLL_ERROR_BACKOFF_MS = 5000;
 const TELEGRAM_FETCH_FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
+// 409 Conflict cooldown: minimum 60 s, default 15 minutes
+const TELEGRAM_POLL_CONFLICT_COOLDOWN_MS = Math.max(
+  60_000,
+  Number(process.env.TELEGRAM_POLL_CONFLICT_COOLDOWN_MS) || 900_000,
+);
 let TELEGRAM_HTTP_TIMEOUT_MS = Math.max(
   2000,
   Number(process.env.TELEGRAM_HTTP_TIMEOUT_MS || "15000") || 15000,
@@ -227,6 +237,53 @@ let lastPollErrorLogAtMs = 0;
 let lastFallbackSwitchLogMs = 0;
 let pollFailureStreak = 0;
 let telegramApiReachable = null; // null = unknown, true/false after probe
+
+// ── 409 Conflict Cooldown State ──────────────────────────────────────────────
+
+/**
+ * Read persisted 409 conflict state from disk.
+ * Returns { untilMs, reason } or null if missing or corrupt.
+ */
+function readTelegramPollConflictState() {
+  try {
+    if (!existsSync(telegramPollConflictStatePath)) return null;
+    const raw = readFileSync(telegramPollConflictStatePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed.untilMs !== "number") return null;
+    return { untilMs: parsed.untilMs, reason: parsed.reason || "" };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist a 409 conflict cooldown state to disk (best-effort).
+ * @param {number} untilMs - Epoch ms until which polling should be suppressed.
+ * @param {string} reason - Human-readable reason for the cooldown.
+ */
+function writeTelegramPollConflictState(untilMs, reason = "409 Conflict") {
+  try {
+    mkdirSync(resolve(repoRoot, ".cache"), { recursive: true });
+    writeFileSync(
+      telegramPollConflictStatePath,
+      JSON.stringify({ untilMs, reason, updatedAt: new Date().toISOString(), pid: process.pid }),
+      "utf8",
+    );
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Remove the 409 conflict state file (best-effort, called on successful poll).
+ */
+function clearTelegramPollConflictState() {
+  try {
+    unlinkSync(telegramPollConflictStatePath);
+  } catch {
+    /* best-effort */
+  }
+}
 
 function parseAllowedTelegramIds(rawValue) {
   return String(rawValue || "")
@@ -2036,6 +2093,8 @@ async function pollUpdates() {
     const body = await res.text().catch(() => "");
     console.warn(`[telegram-bot] getUpdates failed: ${res.status} ${body}`);
     if (res.status === 409) {
+      const untilMs = Date.now() + TELEGRAM_POLL_CONFLICT_COOLDOWN_MS;
+      writeTelegramPollConflictState(untilMs, `409 Conflict — cooldown until ${new Date(untilMs).toISOString()}`);
       polling = false;
       await releaseTelegramPollLock();
       return [];
@@ -2044,6 +2103,7 @@ async function pollUpdates() {
     return [];
   }
   resetPollFailureStreak();
+  clearTelegramPollConflictState();
   if (!telegramApiReachable) {
     telegramApiReachable = true;
     // API came back — register commands that were deferred at startup
@@ -10467,11 +10527,22 @@ function stopBatchFlushLoop() {
  * Start the two-way Telegram bot.
  * Call injectMonitorFunctions() first if you want full integration.
  */
-export async function startTelegramBot() {
+export async function startTelegramBot(options = {}) {
   refreshTelegramConfigFromEnv();
   if (!telegramToken || !telegramChatId) {
     console.warn(
       "[telegram-bot] disabled (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)",
+    );
+    return;
+  }
+
+  // ── 409 conflict cooldown guard ──────────────────────────────────────────
+  const conflictState = readTelegramPollConflictState();
+  if (conflictState && conflictState.untilMs > Date.now()) {
+    const remainSec = Math.ceil((conflictState.untilMs - Date.now()) / 1000);
+    console.warn(
+      `[telegram-bot] polling suppressed — 409 conflict cooldown active for ${remainSec}s` +
+      (conflictState.reason ? ` (${conflictState.reason})` : ""),
     );
     return;
   }
@@ -10504,13 +10575,22 @@ export async function startTelegramBot() {
   const miniAppPort = Number(process.env.TELEGRAM_UI_PORT || "0");
 
   if (miniAppEnabled || miniAppPort > 0) {
+    const restartReason = String(
+      options.restartReason || process.env.BOSUN_MONITOR_RESTART_REASON || "",
+    )
+      .trim()
+      .toLowerCase();
+    const suppressPortalAutoOpen =
+      options.suppressPortalAutoOpen === true || restartReason.length > 0;
+    const autoOpenOptIn = ["1", "true", "yes", "on"].includes(
+      String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "").toLowerCase(),
+    );
     try {
       await startTelegramUiServer({
         // Background monitor/bot runtime should not keep opening browser tabs.
         // Set BOSUN_UI_AUTO_OPEN_BROWSER=1 to opt-in.
-        skipAutoOpen: !["1", "true", "yes", "on"].includes(
-          String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "").toLowerCase(),
-        ),
+        skipAutoOpen: suppressPortalAutoOpen || !autoOpenOptIn,
+        restartReason,
         dependencies: {
           execPrimaryPrompt,
           getInternalExecutor: _getInternalExecutor,

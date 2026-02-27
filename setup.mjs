@@ -30,7 +30,6 @@ import { fileURLToPath } from "node:url";
 import {
   readCodexConfig,
   getConfigPath,
-  hasVibeKanbanMcp,
   auditStreamTimeouts,
   ensureCodexConfig,
   printConfigSummary,
@@ -1684,6 +1683,46 @@ function toBooleanEnvString(value, fallback = false) {
   return parseBooleanEnvValue(value, fallback) ? "true" : "false";
 }
 
+const DEFAULT_TELEGRAM_UI_PORT = 3080;
+
+function normalizeTelegramUiPort(rawValue, fallback = DEFAULT_TELEGRAM_UI_PORT) {
+  const parsed = Number(String(rawValue || "").trim());
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return String(Math.round(parsed));
+  }
+  return String(fallback);
+}
+
+function applyTelegramMiniAppDefaults(env, sourceEnv = process.env) {
+  const telegramToken = String(
+    env.TELEGRAM_BOT_TOKEN || sourceEnv.TELEGRAM_BOT_TOKEN || "",
+  ).trim();
+  if (!telegramToken) return false;
+
+  const miniAppRaw = env.TELEGRAM_MINIAPP_ENABLED;
+  if (
+    miniAppRaw === undefined ||
+    miniAppRaw === null ||
+    String(miniAppRaw).trim() === ""
+  ) {
+    env.TELEGRAM_MINIAPP_ENABLED = "true";
+  } else {
+    env.TELEGRAM_MINIAPP_ENABLED = toBooleanEnvString(miniAppRaw, true);
+  }
+
+  env.TELEGRAM_UI_PORT = normalizeTelegramUiPort(
+    env.TELEGRAM_UI_PORT || sourceEnv.TELEGRAM_UI_PORT,
+  );
+
+  if (!env.TELEGRAM_UI_TUNNEL && !sourceEnv.TELEGRAM_UI_TUNNEL) {
+    env.TELEGRAM_UI_TUNNEL = "auto";
+  }
+  if (!env.TELEGRAM_UI_ALLOW_UNSAFE && !sourceEnv.TELEGRAM_UI_ALLOW_UNSAFE) {
+    env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+  }
+  return true;
+}
+
 function readProcValue(path) {
   try {
     return readFileSync(path, "utf8").trim();
@@ -1746,17 +1785,7 @@ function normalizeSetupConfiguration({
   env.TELEGRAM_INTERVAL_MIN = String(
     toPositiveInt(env.TELEGRAM_INTERVAL_MIN || "10", 10),
   );
-  const telegramToken = String(
-    env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || "",
-  ).trim();
-  if (telegramToken) {
-    if (!env.TELEGRAM_UI_TUNNEL && !process.env.TELEGRAM_UI_TUNNEL) {
-      env.TELEGRAM_UI_TUNNEL = "auto";
-    }
-    if (!env.TELEGRAM_UI_ALLOW_UNSAFE && !process.env.TELEGRAM_UI_ALLOW_UNSAFE) {
-      env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
-    }
-  }
+  applyTelegramMiniAppDefaults(env, process.env);
 
   env.KANBAN_BACKEND = normalizeEnum(
     env.KANBAN_BACKEND,
@@ -2794,19 +2823,24 @@ async function main() {
     const usedSdks = new Set(
       configJson.executors.map((e) => String(e.executor).toUpperCase()),
     );
-    // Auto-disable SDKs that aren't in any executor config and have no API key
-    if (!usedSdks.has("COPILOT") && !process.env.COPILOT_CLI_TOKEN && !process.env.GITHUB_TOKEN) {
-      env.COPILOT_SDK_DISABLED = "true";
-    }
-    if (!usedSdks.has("CLAUDE") && !process.env.ANTHROPIC_API_KEY) {
-      env.CLAUDE_SDK_DISABLED = "true";
-    }
+    // Disable SDKs not represented in executor config — unconditional, prevents
+    // accidental routing to an SDK the user hasn't configured.
+    if (!usedSdks.has("CODEX"))   { env.CODEX_SDK_DISABLED   = "true"; } else { delete env.CODEX_SDK_DISABLED;   }
+    if (!usedSdks.has("COPILOT")) { env.COPILOT_SDK_DISABLED = "true"; } else { delete env.COPILOT_SDK_DISABLED; }
+    if (!usedSdks.has("CLAUDE"))  { env.CLAUDE_SDK_DISABLED  = "true"; } else { delete env.CLAUDE_SDK_DISABLED;  }
 
     if (isAdvancedSetup) {
       console.log();
       info("SDK fallback configuration — which SDKs should be available for fallback?");
       console.log(chalk.dim("  SDKs not in your executor preset will be tried as fallback on failure."));
       console.log(chalk.dim("  Disable SDKs you don't have credentials for to avoid error cascades.\n"));
+
+      const wantCodexFallback = usedSdks.has("CODEX") || await prompt.confirm(
+        "Enable Codex SDK fallback? (requires OPENAI_API_KEY)",
+        !!process.env.OPENAI_API_KEY || usedSdks.has("CODEX"),
+      );
+      if (!wantCodexFallback) env.CODEX_SDK_DISABLED = "true";
+      else delete env.CODEX_SDK_DISABLED;
 
       const wantCopilotFallback = usedSdks.has("COPILOT") || await prompt.confirm(
         "Enable Copilot SDK fallback? (requires COPILOT_CLI_TOKEN or GITHUB_TOKEN)",
@@ -2821,12 +2855,6 @@ async function main() {
       );
       if (!wantClaudeFallback) env.CLAUDE_SDK_DISABLED = "true";
       else delete env.CLAUDE_SDK_DISABLED;
-
-      const wantCodexFallback = usedSdks.has("CODEX") || await prompt.confirm(
-        "Enable Codex SDK fallback? (requires OPENAI_API_KEY)",
-        true,
-      );
-      if (!wantCodexFallback) env.CODEX_SDK_DISABLED = "true";
     }
     saveSetupSnapshot(4, "Executor / Agent Configuration", env, configJson);
     } // end step 4
@@ -4358,26 +4386,9 @@ async function main() {
       info(`Found existing config: ${configTomlPath}`);
     }
 
-    // Check vibe-kanban MCP
-    if (vkNeeded) {
-      if (existingToml && hasVibeKanbanMcp(existingToml)) {
-        info("Vibe-Kanban MCP server already configured in config.toml.");
-        const updateVk = await prompt.confirm(
-          "Update VK env vars to match your setup values?",
-          true,
-        );
-        if (!updateVk) {
-          env._SKIP_VK_TOML = "1";
-        }
-      } else {
-        info("Will add Vibe-Kanban MCP server to Codex config for agent use.");
-      }
-    } else {
-      env._SKIP_VK_TOML = "1";
-      info(
-        "Skipping Vibe-Kanban MCP setup (VK not selected as board or executor).",
-      );
-    }
+    info(
+      "Vibe-Kanban MCP is workspace-scoped and will only be written to repo .codex/config.toml when VK runtime is selected and configured.",
+    );
 
     // Check stream timeouts
     const timeouts = auditStreamTimeouts(existingToml);
@@ -5037,6 +5048,7 @@ async function runNonInteractive({
   env.GITHUB_REPO = process.env.GITHUB_REPO || slug || "";
   env.TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
   env.TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+  applyTelegramMiniAppDefaults(env, process.env);
   env.KANBAN_BACKEND = process.env.KANBAN_BACKEND || "internal";
   env.KANBAN_SYNC_POLICY =
     process.env.KANBAN_SYNC_POLICY || "internal-primary";
@@ -5392,12 +5404,42 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
     warn(`Could not update Copilot MCP config: ${copilotMcpResult.error}`);
   }
 
+  const vkPort = env.VK_RECOVERY_PORT || "54089";
+  const vkBaseUrl = String(
+    env.VK_BASE_URL || `http://127.0.0.1:${vkPort}`,
+  ).trim();
+  const kanbanIsVk =
+    String(env.KANBAN_BACKEND || "").trim().toLowerCase() === "vk" ||
+    ["vk", "hybrid"].includes(
+      String(env.EXECUTOR_MODE || "").trim().toLowerCase(),
+    );
+  const includeWorkspaceVkMcp = kanbanIsVk && vkBaseUrl.length > 0;
+
+  // Derive primary SDK from executor configuration.
+  const primaryExecutor = (configJson.executors || []).find(
+    (e) => e.role === "primary",
+  );
+  const executorToPrimarySdk = {
+    CODEX: "codex",
+    COPILOT: "copilot",
+    CLAUDE: "claude",
+  };
+  const primarySdk = primaryExecutor
+    ? executorToPrimarySdk[String(primaryExecutor.executor).toUpperCase()] ||
+      "codex"
+    : "codex";
+  const repoConfigOptions = {
+    vkBaseUrl,
+    skipVk: !includeWorkspaceVkMcp,
+    primarySdk,
+  };
+
   // ── Repo-level AI configs for all workspace repos ──────
   heading("Repo-Level AI Configs");
   try {
     const { ensureRepoConfigs, printRepoConfigSummary } = await import("./repo-config.mjs");
     // Apply to the primary repo
-    const repoResult = ensureRepoConfigs(repoRoot);
+    const repoResult = ensureRepoConfigs(repoRoot, repoConfigOptions);
     printRepoConfigSummary(repoResult, (msg) => console.log(msg));
 
     // Also apply to all workspace repos under $BOSUN_DIR/workspaces/
@@ -5411,7 +5453,7 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
           for (const repo of ws.repos || []) {
             const wsRepoPath = resolve(wsDir, ws.id || ws.name || "", repo.name);
             if (wsRepoPath !== repoRoot && existsSync(wsRepoPath)) {
-              const wsResult = ensureRepoConfigs(wsRepoPath);
+              const wsResult = ensureRepoConfigs(wsRepoPath, repoConfigOptions);
               const anyChange = Object.values(wsResult).some((r) => r.created || r.updated);
               if (anyChange) {
                 info(`Workspace repo: ${repo.name}`);
@@ -5430,40 +5472,20 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
 
   // ── Codex CLI config.toml ─────────────────────────────
   heading("Codex CLI Config");
-
-  if (env._SKIP_VK_TOML === "1") {
-    info("Skipped Vibe-Kanban MCP config update.");
-  } else {
-    const vkPort = env.VK_RECOVERY_PORT || "54089";
-    const vkBaseUrl = env.VK_BASE_URL || `http://127.0.0.1:${vkPort}`;
-    const kanbanIsVk =
-      (env.KANBAN_BACKEND || "internal").toLowerCase() === "vk" ||
-      ["vk", "hybrid"].includes((env.EXECUTOR_MODE || "internal").toLowerCase());
-    // Derive primary SDK from executor configuration
-    const primaryExecutor = (configJson.executors || []).find(
-      (e) => e.role === "primary",
-    );
-    const executorToPrimarySdk = {
-      CODEX: "codex",
-      COPILOT: "copilot",
-      CLAUDE: "claude",
-    };
-    const primarySdk = primaryExecutor
-      ? executorToPrimarySdk[String(primaryExecutor.executor).toUpperCase()] || "codex"
-      : "codex";
-
-    const tomlResult = ensureCodexConfig({
-      vkBaseUrl,
-      skipVk: !kanbanIsVk,
-      dryRun: false,
-      primarySdk,
-      env: {
-        ...process.env,
-        ...env,
-      },
-    });
-    printConfigSummary(tomlResult, (msg) => console.log(msg));
-  }
+  info(
+    "Global ~/.codex/config.toml will not include Vibe-Kanban MCP (workspace-only policy).",
+  );
+  const tomlResult = ensureCodexConfig({
+    vkBaseUrl,
+    skipVk: true,
+    dryRun: false,
+    primarySdk,
+    env: {
+      ...process.env,
+      ...env,
+    },
+  });
+  printConfigSummary(tomlResult, (msg) => console.log(msg));
 
   // ── Install dependencies ───────────────────────────────
   heading("Installing Dependencies");
@@ -5617,10 +5639,16 @@ export async function runSetup() {
 }
 
 export {
+  applyTelegramMiniAppDefaults,
+  normalizeTelegramUiPort,
   extractProjectNumber,
   resolveOrCreateGitHubProjectNumber,
   resolveOrCreateGitHubProject,
   runGhCommand,
+  readSetupProgress,
+  writeSetupSnapshot,
+  buildWorkspaceChoices,
+  getGitHubAuthScopes,
   buildRecommendedVsCodeSettings,
   writeWorkspaceVsCodeSettings,
 };

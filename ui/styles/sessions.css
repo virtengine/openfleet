@@ -920,7 +920,12 @@
   color: var(--text-primary);
   border: none;
   border-radius: 18px 18px 18px 4px;
-  padding: 12px 4px;
+  padding: 12px 14px;
+}
+
+.chat-bubble-final {
+  border: 1px solid rgba(34, 197, 94, 0.28);
+  background: rgba(34, 197, 94, 0.1);
 }
 
 .chat-bubble.system {
@@ -972,8 +977,15 @@
   display: block;
 }
 
+.chat-bubble-label-final {
+  display: block;
+  color: #86efac;
+}
+
 .chat-bubble-content {
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .chat-bubble-time {
@@ -1011,6 +1023,30 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  max-height: min(46vh, 420px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+
+.chat-thinking-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-thinking-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-thinking-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+}
+
+.chat-thinking-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .chat-thinking-item {
@@ -1032,6 +1068,154 @@
 .chat-thinking-item-content {
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+.chat-trace-item {
+  align-self: stretch;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  margin: 1px 0 3px;
+  overflow: hidden;
+}
+
+.chat-trace-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.chat-trace-head-toggle {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.chat-trace-head-toggle:disabled {
+  cursor: default;
+}
+
+.chat-trace-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 50px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.08);
+  flex-shrink: 0;
+}
+
+.chat-trace-tag.thinking {
+  color: #fde68a;
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.chat-trace-tag.tool {
+  color: #93c5fd;
+  border-color: rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.16);
+}
+
+.chat-trace-tag.result {
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.16);
+}
+
+.chat-trace-tag.error {
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.14);
+}
+
+.chat-trace-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.chat-trace-time {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-hint);
+}
+
+.chat-trace-chevron {
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--text-hint);
+}
+
+.chat-trace-content-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 180ms ease, border-color 180ms ease;
+  border-top: 1px solid transparent;
+}
+
+.chat-trace-content-wrap.expanded {
+  grid-template-rows: 1fr;
+  border-top-color: var(--border);
+}
+
+.chat-trace-content {
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.chat-trace-content-wrap.expanded .chat-trace-content {
+  padding: 8px 10px 10px;
+}
+
+.chat-trace-content .md-rendered {
+  font-size: 12px;
+}
+
+.chat-trace-content-scroll {
+  max-height: min(46vh, 380px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+
+.chat-trace-content-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-trace-content-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-trace-content-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+}
+
+.chat-trace-content-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 /* Subtle entrance for bubbles — only the last few get the animation

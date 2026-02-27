@@ -2177,6 +2177,24 @@ body.is-miniapp-fullscreen {
 .commit-label--ci       { background: rgba(245,158,11,0.15); color: #f59e0b; }
 .commit-label--perf     { background: rgba(236,72,153,0.15); color: #ec4899; }
 
+.commit-coauthor-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(76, 201, 240, 0.12);
+  color: #4cc9f0;
+  border: 1px solid rgba(76, 201, 240, 0.25);
+  letter-spacing: 0.04em;
+}
+
+.commit-card--coauthored {
+  border-color: rgba(76, 201, 240, 0.2);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    DEMO TABS — Multi-Channel Interaction Section
    ═══════════════════════════════════════════════════════════════════════════ */

@@ -245,7 +245,25 @@ export function loadStore() {
   try {
     if (existsSync(storePath)) {
       const raw = readFileSync(storePath, "utf-8");
-      const data = JSON.parse(raw);
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch (parseErr) {
+        const backupPath = `${storePath}.bak`;
+        try {
+          writeFileSync(backupPath, raw, "utf-8");
+          console.warn(
+            TAG,
+            `Corrupt store detected; backed up original to ${backupPath}`,
+          );
+        } catch (backupErr) {
+          console.warn(
+            TAG,
+            `Corrupt store detected; failed to back up to ${backupPath}: ${backupErr?.message || backupErr}`,
+          );
+        }
+        throw parseErr;
+      }
       _store = {
         _meta: { ...defaultMeta(), ...(data._meta || {}) },
         tasks: data.tasks || {},

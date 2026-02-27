@@ -45,6 +45,16 @@ import { loadConfig } from "./config.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "./repo-root.mjs";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
 
+// Lazy-load MCP registry to avoid circular dependencies.
+// Cached at module scope per AGENTS.md hard rules.
+let _mcpRegistry = null;
+async function getMcpRegistry() {
+  if (!_mcpRegistry) {
+    _mcpRegistry = await import("./mcp-registry.mjs");
+  }
+  return _mcpRegistry;
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -76,6 +86,36 @@ const HARD_TIMEOUT_BUFFER_MS = 5 * 60_000; // 5 minutes
 /** Tag for console logging */
 const TAG = "[agent-pool]";
 const MAX_PROMPT_BYTES = 180_000;
+const MAX_SET_TIMEOUT_MS = 2_147_483_647; // Node.js setTimeout 32-bit signed max
+let timeoutClampWarningKey = "";
+const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 120_000;
+
+function clampTimerDelayMs(delayMs, label = "timer") {
+  const parsed = Number(delayMs);
+  if (!Number.isFinite(parsed) || parsed < 1) return 1;
+  const clamped = Math.min(Math.trunc(parsed), MAX_SET_TIMEOUT_MS);
+  if (clamped !== Math.trunc(parsed)) {
+    const warningKey = `${label}:${parsed}`;
+    if (timeoutClampWarningKey !== warningKey) {
+      timeoutClampWarningKey = warningKey;
+      console.warn(
+        `${TAG} ${label} delay ${parsed}ms exceeds Node timer max; clamped to ${MAX_SET_TIMEOUT_MS}ms`,
+      );
+    }
+  }
+  return clamped;
+}
+
+function getFirstEventTimeoutMs(totalTimeoutMs) {
+  const configured = Number(
+    process.env.AGENT_POOL_FIRST_EVENT_TIMEOUT_MS || DEFAULT_FIRST_EVENT_TIMEOUT_MS,
+  );
+  if (!Number.isFinite(configured) || configured <= 0) return null;
+  const budgetMs = Number(totalTimeoutMs);
+  if (!Number.isFinite(budgetMs) || budgetMs <= 2_000) return null;
+  const maxAllowed = Math.max(5_000, budgetMs - 1_000);
+  return clampTimerDelayMs(Math.min(Math.trunc(configured), maxAllowed), "first-event-timeout");
+}
 
 function sanitizeAndBoundPrompt(text) {
   if (typeof text !== "string") return "";
@@ -162,7 +202,7 @@ function createScopedAbortController(externalAC, timeoutMs) {
     if (!controller.signal.aborted) {
       controller.abort("timeout");
     }
-  }, timeoutMs);
+  }, clampTimerDelayMs(timeoutMs, "abort-timeout"));
   if (timeoutHandle && typeof timeoutHandle.unref === "function") {
     timeoutHandle.unref();
   }
@@ -696,6 +736,8 @@ export function getAvailableSdks() {
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string }>}
  */
 async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
+  // Coerce to number — prevents string concatenation in setTimeout arithmetic
+  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
   const {
     onEvent,
     abortController: externalAC,
@@ -806,6 +848,9 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   // Hard timeout: safety net if the SDK's async iterator ignores AbortSignal.
   // Fires HARD_TIMEOUT_BUFFER_MS after the soft timeout to forcibly break the loop.
   let hardTimer;
+  let firstEventTimer = null;
+  let firstEventTimeoutHit = false;
+  let eventCount = 0;
 
   // ── 4. Stream the turn ───────────────────────────────────────────────────
   try {
@@ -816,19 +861,23 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
 
     let finalResponse = "";
     const allItems = [];
-
     // Race the event iterator against a hard timeout.
     // The soft timeout fires controller.abort() which the SDK should honor.
     // The hard timeout is a safety net in case the SDK iterator ignores the abort.
     const hardTimeoutPromise = new Promise((_, reject) => {
       hardTimer = setTimeout(
         () => reject(new Error("hard_timeout")),
-        timeoutMs + HARD_TIMEOUT_BUFFER_MS,
+        clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-hard-timeout"),
       );
     });
 
     const iterateEvents = async () => {
       for await (const event of turn.events) {
+        eventCount += 1;
+        if (firstEventTimer) {
+          clearTimeout(firstEventTimer);
+          firstEventTimer = null;
+        }
         if (controller.signal.aborted) break;
         if (event?.type === "thread.started" && event?.thread_id) {
           emitThreadReady(event.thread_id);
@@ -849,8 +898,19 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
       }
     };
 
+    const firstEventTimeoutMs = getFirstEventTimeoutMs(timeoutMs);
+    if (firstEventTimeoutMs) {
+      firstEventTimer = setTimeout(() => {
+        if (eventCount > 0 || controller.signal.aborted) return;
+        firstEventTimeoutHit = true;
+        controller.abort("first_event_timeout");
+      }, firstEventTimeoutMs);
+      if (typeof firstEventTimer.unref === "function") firstEventTimer.unref();
+    }
+
     await Promise.race([iterateEvents(), hardTimeoutPromise]);
     clearTimeout(hardTimer);
+    if (firstEventTimer) clearTimeout(firstEventTimer);
     clearAbortScope();
 
     const output =
@@ -867,17 +927,21 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
   } catch (err) {
     clearAbortScope();
     if (hardTimer) clearTimeout(hardTimer);
+    if (firstEventTimer) clearTimeout(firstEventTimer);
     if (steerKey) unregisterActiveSession(steerKey);
     const isTimeout =
       err.name === "AbortError" ||
       String(err) === "timeout" ||
       err.message === "hard_timeout";
     if (isTimeout) {
+      const firstEventSuffix = firstEventTimeoutHit
+        ? ` (no events received within ${getFirstEventTimeoutMs(timeoutMs)}ms)`
+        : "";
       return {
         success: false,
         output: "",
         items: [],
-        error: `${TAG} codex timeout after ${timeoutMs}ms${err.message === "hard_timeout" ? " (hard timeout — SDK iterator unresponsive)" : ""}`,
+        error: `${TAG} codex timeout after ${timeoutMs}ms${err.message === "hard_timeout" ? " (hard timeout — SDK iterator unresponsive)" : ""}${firstEventSuffix}`,
         sdk: "codex",
         threadId: null,
       };
@@ -897,7 +961,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
  * Build CLI arguments for ephemeral Copilot agent-pool sessions.
  * Mirrors copilot-shell.mjs buildCliArgs() for feature parity.
  */
-function buildPoolCopilotCliArgs() {
+function buildPoolCopilotCliArgs(mcpConfigPath) {
   const args = [];
   if (!envFlagEnabled(process.env.COPILOT_NO_EXPERIMENTAL)) {
     args.push("--experimental");
@@ -915,9 +979,10 @@ function buildPoolCopilotCliArgs() {
   if (envFlagEnabled(process.env.COPILOT_DISABLE_BUILTIN_MCPS)) {
     args.push("--disable-builtin-mcps");
   }
-  const mcpConfigPath = process.env.COPILOT_ADDITIONAL_MCP_CONFIG;
-  if (mcpConfigPath) {
-    args.push("--additional-mcp-config", mcpConfigPath);
+  // MCP config: prefer per-launch resolved config, fall back to env var
+  const effectiveMcpConfig = mcpConfigPath || process.env.COPILOT_ADDITIONAL_MCP_CONFIG;
+  if (effectiveMcpConfig) {
+    args.push("--additional-mcp-config", effectiveMcpConfig);
   }
   return args;
 }
@@ -960,6 +1025,8 @@ function autoRespondToUserInput(request) {
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string }>}
  */
 async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
+  // Coerce to number — prevents string concatenation in setTimeout arithmetic
+  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
   const {
     onEvent,
     abortController: externalAC,
@@ -1024,7 +1091,17 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
         clientOpts = { cliUrl, env: clientEnv };
       } else {
         // Local mode (default): stdio for full capability
-        const cliArgs = buildPoolCopilotCliArgs();
+        // Write temp MCP config if resolved MCP servers are available
+        let mcpConfigPath = null;
+        if (extra._resolvedMcpServers?.length) {
+          try {
+            const registry = await getMcpRegistry();
+            mcpConfigPath = registry.writeTempCopilotMcpConfig(cwd, extra._resolvedMcpServers);
+          } catch (mcpErr) {
+            console.warn(`${TAG} copilot MCP config write failed (non-fatal): ${mcpErr.message}`);
+          }
+        }
+        const cliArgs = buildPoolCopilotCliArgs(mcpConfigPath);
         clientOpts = {
           cwd,
           env: clientEnv,
@@ -1215,7 +1292,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
           // the run to continue rather than stalling for the full hard timeout.
           if (finalResponse.trim()) return finish(resolveP);
           finish(() => rejectP(new Error("timeout_waiting_for_idle")));
-        }, timeoutMs + 1000);
+        }, clampTimerDelayMs(timeoutMs + 1000, "copilot-idle-timeout"));
         if (idleTimer && typeof idleTimer.unref === "function") {
           idleTimer.unref();
         }
@@ -1226,7 +1303,7 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
       const copilotHardTimeout = new Promise((_, reject) => {
         const ht = setTimeout(
           () => reject(new Error("hard_timeout")),
-          timeoutMs + HARD_TIMEOUT_BUFFER_MS,
+          clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "copilot-hard-timeout"),
         );
         // Don't let this timer keep the process alive
         if (ht && typeof ht.unref === "function") ht.unref();
@@ -1346,6 +1423,8 @@ async function resumeCopilotThread(
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string }>}
  */
 async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
+  // Coerce to number — prevents string concatenation in setTimeout arithmetic
+  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
   const {
     onEvent,
     abortController: externalAC,
@@ -1465,6 +1544,27 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
   }
 
   // ── 4. Execute query ─────────────────────────────────────────────────────
+  // Inject MCP server config for Claude via environment variable
+  let _claudeMcpEnvCleanup = null;
+  if (extra._resolvedMcpServers?.length) {
+    try {
+      const registry = await getMcpRegistry();
+      const { envVar } = registry.buildClaudeMcpEnv(extra._resolvedMcpServers);
+      if (envVar) {
+        const prev = process.env.CLAUDE_MCP_SERVERS;
+        process.env.CLAUDE_MCP_SERVERS = envVar;
+        _claudeMcpEnvCleanup = () => {
+          if (prev === undefined) {
+            delete process.env.CLAUDE_MCP_SERVERS;
+          } else {
+            process.env.CLAUDE_MCP_SERVERS = prev;
+          }
+        };
+      }
+    } catch (mcpErr) {
+      console.warn(`${TAG} claude MCP env setup failed (non-fatal): ${mcpErr.message}`);
+    }
+  }
   try {
     const msgQueue = createMessageQueue();
 
@@ -1581,7 +1681,10 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
     })();
 
     const hardTimeout = new Promise((_, reject) => {
-      hardTimer = setTimeout(() => reject(new Error("hard-timeout")), hardTimeoutMs);
+      hardTimer = setTimeout(
+        () => reject(new Error("hard-timeout")),
+        clampTimerDelayMs(hardTimeoutMs, "claude-hard-timeout"),
+      );
       if (hardTimer && typeof hardTimer.unref === "function") {
         hardTimer.unref();
       }
@@ -1596,6 +1699,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
 
     const output =
       finalResponse.trim() || "(Agent completed with no text output)";
+    if (typeof _claudeMcpEnvCleanup === "function") _claudeMcpEnvCleanup();
     return {
       success: true,
       output,
@@ -1605,6 +1709,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
       threadId: activeClaudeSessionId,
     };
   } catch (err) {
+    if (typeof _claudeMcpEnvCleanup === "function") _claudeMcpEnvCleanup();
     clearAbortScope();
     if (hardTimer) clearTimeout(hardTimer);
     if (steerKey) unregisterActiveSession(steerKey);
@@ -1714,6 +1819,32 @@ export async function launchEphemeralThread(
   timeoutMs = DEFAULT_TIMEOUT_MS,
   extra = {},
 ) {
+  // ── Resolve MCP servers for this launch ──────────────────────────────────
+  try {
+    if (!extra._mcpResolved) {
+      const cfg = loadConfig();
+      const mcpCfg = cfg.mcpServers || {};
+      if (mcpCfg.enabled !== false) {
+        const requestedIds = extra.mcpServers || [];
+        const defaultIds = mcpCfg.defaultServers || [];
+        if (requestedIds.length || defaultIds.length) {
+          const registry = await getMcpRegistry();
+          const resolved = await registry.resolveMcpServersForAgent(
+            cwd,
+            requestedIds,
+            { defaultServers: defaultIds, catalogOverrides: mcpCfg.catalogOverrides || {} },
+          );
+          if (resolved.length) {
+            extra._resolvedMcpServers = resolved;
+          }
+        }
+      }
+      extra._mcpResolved = true;
+    }
+  } catch (mcpErr) {
+    console.warn(`${TAG} MCP server resolution failed (non-fatal): ${mcpErr.message}`);
+  }
+
   // Determine the primary SDK to try
   const requestedSdk = extra.sdk
     ? String(extra.sdk).trim().toLowerCase()
@@ -2186,6 +2317,8 @@ function isPoisonedCodexResumeError(errorValue) {
  * @returns {Promise<{ success: boolean, output: string, items: Array, error: string|null, sdk: string, threadId: string|null }>}
  */
 async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
+  // Coerce to number — prevents string concatenation in setTimeout arithmetic
+  timeoutMs = Number(timeoutMs) || DEFAULT_TIMEOUT_MS;
   const { onEvent, abortController: externalAC, envOverrides = null } = extra;
 
   let CodexClass;
@@ -2254,6 +2387,9 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     timeoutMs,
   );
   let hardTimer;
+  let firstEventTimer = null;
+  let firstEventTimeoutHit = false;
+  let eventCount = 0;
 
   try {
     const safePrompt = sanitizeAndBoundPrompt(prompt);
@@ -2267,12 +2403,17 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
     const hardTimeoutPromise = new Promise((_, reject) => {
       hardTimer = setTimeout(
         () => reject(new Error("hard_timeout")),
-        timeoutMs + HARD_TIMEOUT_BUFFER_MS,
+        clampTimerDelayMs(timeoutMs + HARD_TIMEOUT_BUFFER_MS, "codex-resume-hard-timeout"),
       );
     });
 
     const iterateEvents = async () => {
       for await (const event of turn.events) {
+        eventCount += 1;
+        if (firstEventTimer) {
+          clearTimeout(firstEventTimer);
+          firstEventTimer = null;
+        }
         if (controller.signal.aborted) break;
         if (typeof onEvent === "function")
           try {
@@ -2289,8 +2430,19 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
       }
     };
 
+    const firstEventTimeoutMs = getFirstEventTimeoutMs(timeoutMs);
+    if (firstEventTimeoutMs) {
+      firstEventTimer = setTimeout(() => {
+        if (eventCount > 0 || controller.signal.aborted) return;
+        firstEventTimeoutHit = true;
+        controller.abort("first_event_timeout");
+      }, firstEventTimeoutMs);
+      if (typeof firstEventTimer.unref === "function") firstEventTimer.unref();
+    }
+
     await Promise.race([iterateEvents(), hardTimeoutPromise]);
     clearTimeout(hardTimer);
+    if (firstEventTimer) clearTimeout(firstEventTimer);
     clearAbortScope();
 
     const newThreadId = thread.id || threadId;
@@ -2305,16 +2457,21 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
   } catch (err) {
     clearAbortScope();
     if (hardTimer) clearTimeout(hardTimer);
+    if (firstEventTimer) clearTimeout(firstEventTimer);
     const isTimeout =
       err.name === "AbortError" ||
       String(err) === "timeout" ||
       err.message === "hard_timeout";
+    const firstEventSuffix =
+      isTimeout && firstEventTimeoutHit
+        ? ` (no events received within ${getFirstEventTimeoutMs(timeoutMs)}ms)`
+        : "";
     return {
       success: false,
       output: "",
       items: [],
       error: isTimeout
-        ? `${TAG} codex resume timeout after ${timeoutMs}ms${err.message === "hard_timeout" ? " (hard timeout)" : ""}`
+        ? `${TAG} codex resume timeout after ${timeoutMs}ms${err.message === "hard_timeout" ? " (hard timeout)" : ""}${firstEventSuffix}`
         : `Thread resume error: ${err.message}`,
       sdk: "codex",
       threadId: null,

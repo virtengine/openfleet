@@ -9,6 +9,7 @@ const html = htm.bind(h);
 
 import { haptic, showConfirm } from "../modules/telegram.js";
 import { apiFetch, sendCommandToChat } from "../modules/api.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   executorData,
   agentsData,
@@ -32,7 +33,6 @@ import {
 import { ProgressBar } from "../components/charts.js";
 import { Collapsible } from "../components/forms.js";
 import {
-  SessionList,
   loadSessions,
   loadSessionMessages,
   selectedSessionId,
@@ -70,8 +70,25 @@ function formatDuration(startedAt) {
   return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
 }
 
+function taskSortScore(task) {
+  const rawId = String(task?.id || "");
+  const digits = rawId.match(/\d+/g);
+  const numeric = digits?.length ? Number(digits[digits.length - 1]) : NaN;
+  if (Number.isFinite(numeric)) return numeric;
+  const createdAt = new Date(task?.createdAt || task?.created_at || 0).getTime();
+  if (Number.isFinite(createdAt) && createdAt > 0) return createdAt;
+  return 0;
+}
+
+function formatTaskOptionLabel(task) {
+  const rawId = String(task?.id || "").trim();
+  const digits = rawId.match(/\d+/g);
+  const numberToken = digits?.length ? digits[digits.length - 1] : rawId || "?";
+  return `#${numberToken} ${task?.title || "(untitled task)"}`;
+}
+
 /* ─── Workspace Viewer Modal ─── */
-function WorkspaceViewer({ agent, onClose, embedded = false }) {
+function WorkspaceViewer({ agent, onClose }) {
   const [logText, setLogText] = useState("Loading…");
   const [contextData, setContextData] = useState(null);
   const [steerInput, setSteerInput] = useState("");
@@ -89,8 +106,20 @@ function WorkspaceViewer({ agent, onClose, embedded = false }) {
   const logRef = useRef(null);
 
   const query = agent.branch || agent.taskId || agent.sessionId || "";
+  const linkedSession =
+    (sessionsData.value || []).find((s) => {
+      if (!s) return false;
+      const sid = String(s.id || "");
+      const taskId = String(s.taskId || "");
+      const branch = String(s.branch || "");
+      return (
+        (agent.sessionId && sid === String(agent.sessionId)) ||
+        (agent.taskId && taskId === String(agent.taskId)) ||
+        (agent.branch && branch === String(agent.branch))
+      );
+    }) || null;
   const sessionId =
-    contextData?.session?.id || agent.taskId || agent.sessionId || null;
+    contextData?.session?.id || agent.sessionId || linkedSession?.id || null;
 
   useEffect(() => {
     if (!query) return;
@@ -341,7 +370,7 @@ function WorkspaceViewer({ agent, onClose, embedded = false }) {
               ${sessionInfo.preview &&
                 html`<div class="meta-text mt-xs">${truncate(sessionInfo.preview, 120)}</div>`}
               <button class="btn btn-ghost btn-sm mt-sm" onClick=${() => setActiveTab("stream")}>
-                💬 View Stream
+                ${iconText("💬 View Stream")}
               </button>
             </div>
           `}
@@ -486,7 +515,7 @@ function WorkspaceViewer({ agent, onClose, embedded = false }) {
             html`<div class="meta-text mt-xs">Paused at ${snapshotMeta}</div>`}
           ${filteredEvents.length === 0 &&
             html`<div class="stream-empty">
-              <div class="stream-empty-icon">🛰️</div>
+              <div class="stream-empty-icon">${resolveIcon("🛰")}</div>
               <div class="stream-empty-text">
                 ${toolEvents.length === 0 ? "No tool events yet" : "No events match filters"}
               </div>
@@ -596,7 +625,7 @@ function WorkspaceViewer({ agent, onClose, embedded = false }) {
             html`<div class="meta-text mt-xs">Paused at ${snapshotMeta}</div>`}
           ${filteredFiles.length === 0 &&
             html`<div class="stream-empty">
-              <div class="stream-empty-icon">📂</div>
+              <div class="stream-empty-icon">${resolveIcon("📂")}</div>
               <div class="stream-empty-text">
                 ${summaryFiles.length === 0 ? "No file access recorded" : "No files match filters"}
               </div>
@@ -644,7 +673,7 @@ function WorkspaceViewer({ agent, onClose, embedded = false }) {
             ${sessionInfo.preview &&
               html`<div class="meta-text mt-xs">${truncate(sessionInfo.preview, 140)}</div>`}
             <button class="btn btn-ghost btn-sm mt-sm" onClick=${() => setActiveTab("stream")}>
-              💬 View Stream
+              ${iconText("💬 View Stream")}
             </button>
           </div>
         `}
@@ -706,8 +735,11 @@ function WorkspaceViewer({ agent, onClose, embedded = false }) {
     `;
   };
 
-  const viewerBody = html`
-    <div class="workspace-viewer ${embedded ? "workspace-viewer-embedded" : ""}">
+  return html`
+    <div class="modal-overlay" onClick=${(e) => e.target === e.currentTarget && onClose()}>
+      <div class="modal-content modal-content-wide workspace-modal-content">
+        <div class="modal-handle" />
+        <div class="workspace-viewer">
           <div class="workspace-header">
             <div>
               <div class="task-card-title">
@@ -718,31 +750,31 @@ function WorkspaceViewer({ agent, onClose, embedded = false }) {
                 ${agent.branch || "?"} · Slot ${(agent.index ?? 0) + 1} · ${formatDuration(agent.startedAt)}
               </div>
             </div>
-            <button class="btn btn-ghost btn-sm" onClick=${onClose}>${embedded ? "Clear" : "✕"}</button>
+            <button class="btn btn-ghost btn-sm" onClick=${onClose}>${resolveIcon("✕")}</button>
           </div>
           <div class="session-detail-tabs workspace-tabs">
             <button
               class="session-detail-tab ${activeTab === "stream" ? "active" : ""}"
               onClick=${() => setActiveTab("stream")}
-            >💬 Stream</button>
+            >${iconText("💬 Stream")}</button>
             <button
               class="session-detail-tab ${activeTab === "changes" ? "active" : ""}"
               onClick=${() => setActiveTab("changes")}
-            >📝 Changes</button>
+            >${iconText("📝 Changes")}</button>
             <button
               class="session-detail-tab ${activeTab === "logs" ? "active" : ""}"
               onClick=${() => setActiveTab("logs")}
-            >📄 Logs</button>
+            >${iconText("📄 Logs")}</button>
           </div>
 
-          <div class="workspace-main">
+          <div class="workspace-body">
             ${activeTab === "stream" &&
             html`
               ${sessionId
                 ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
                 : html`
                     <div class="chat-view chat-empty-state">
-                      <div class="session-empty-icon">💬</div>
+                      <div class="session-empty-icon">${resolveIcon("💬")}</div>
                       <div class="session-empty-text">No session stream available</div>
                     </div>
                   `}
@@ -760,20 +792,14 @@ function WorkspaceViewer({ agent, onClose, embedded = false }) {
               onInput=${(e) => setSteerInput(e.target.value)}
               onKeyDown=${(e) => { if (e.key === "Enter") { e.preventDefault(); handleSteer(); } }}
             />
-            <button class="btn btn-primary btn-sm" onClick=${handleSteer}>🎯</button>
+            <button class="btn btn-primary btn-sm" onClick=${handleSteer}>${resolveIcon("🎯")}</button>
             <button
               class="btn btn-danger btn-sm"
               disabled=${agent.index == null}
               onClick=${handleStop}
-            >⛔ Stop</button>
+            >${iconText("⛔ Stop")}</button>
           </div>
-  `;
-  if (embedded) return viewerBody;
-  return html`
-    <div class="modal-overlay" onClick=${(e) => e.target === e.currentTarget && onClose()}>
-      <div class="modal-content modal-content-wide">
-        <div class="modal-handle" />
-        ${viewerBody}
+        </div>
       </div>
     </div>
   `;
@@ -784,50 +810,45 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
   const [taskId, setTaskId] = useState("");
   const [prompt, setPrompt] = useState("");
   const [dispatching, setDispatching] = useState(false);
-  const [taskOptions, setTaskOptions] = useState([]);
-  const [taskOptionsLoading, setTaskOptionsLoading] = useState(true);
+  const [taskChoices, setTaskChoices] = useState([]);
+  const [tasksLoading, setTasksLoading] = useState(false);
 
   const canDispatch = Boolean(taskId.trim() || prompt.trim());
 
-  useEffect(() => {
-    let alive = true;
-    const parseTaskOrder = (id) => {
-      const m = String(id || "").match(/(\d+)(?!.*\d)/);
-      return m ? Number.parseInt(m[1], 10) : Number.NaN;
-    };
-    const sortDesc = (a, b) => {
-      const an = parseTaskOrder(a?.id);
-      const bn = parseTaskOrder(b?.id);
-      if (Number.isFinite(an) && Number.isFinite(bn)) return bn - an;
-      return String(b?.id || "").localeCompare(String(a?.id || ""), undefined, { numeric: true });
-    };
-    const loadTaskOptions = async () => {
-      setTaskOptionsLoading(true);
-      try {
-        const [backlogRes, draftRes] = await Promise.all([
-          apiFetch("/api/tasks?page=0&pageSize=200&status=todo&sort=updated", { _silent: true }),
-          apiFetch("/api/tasks?page=0&pageSize=200&status=draft&sort=updated", { _silent: true }),
-        ]);
-        if (!alive) return;
-        const merged = [...(backlogRes?.data || []), ...(draftRes?.data || [])];
-        const byId = new Map();
-        for (const task of merged) {
-          const id = String(task?.id || "").trim();
-          if (!id) continue;
-          if (!byId.has(id)) byId.set(id, task);
-        }
-        setTaskOptions(Array.from(byId.values()).sort(sortDesc));
-      } catch {
-        if (alive) setTaskOptions([]);
-      } finally {
-        if (alive) setTaskOptionsLoading(false);
-      }
-    };
-    loadTaskOptions();
-    return () => {
-      alive = false;
-    };
+  const loadDispatchTasks = useCallback(() => {
+    setTasksLoading(true);
+    apiFetch("/api/tasks?limit=1000", { _silent: true })
+      .then((res) => {
+        const tasks = Array.isArray(res?.data) ? res.data : [];
+        const choices = tasks
+          .filter((task) => {
+            const status = String(task?.status || "").toLowerCase();
+            return task?.draft === true || status === "draft" || status === "todo";
+          })
+          .sort((a, b) => taskSortScore(b) - taskSortScore(a));
+        setTaskChoices(choices);
+      })
+      .catch(() => {
+        setTaskChoices([]);
+      })
+      .finally(() => {
+        setTasksLoading(false);
+      });
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const tick = () => {
+      if (!active) return;
+      loadDispatchTasks();
+    };
+    tick();
+    const interval = setInterval(tick, 12000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [loadDispatchTasks]);
 
   const handleDispatch = async () => {
     if (!canDispatch || dispatching) return;
@@ -842,9 +863,10 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
         body: JSON.stringify(body),
       });
       if (res.ok !== false) {
-        showToast(`Dispatched to slot ${(res.slotIndex ?? 0) + 1}`, "success");
+        showToast("Dispatch started", "success");
         setTaskId("");
         setPrompt("");
+        loadDispatchTasks();
         scheduleRefresh(200);
       }
     } catch {
@@ -857,31 +879,29 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
   return html`
     <${Card}
       title="Dispatch"
-      subtitle="Start a slot with a task ID or a focused prompt"
+      subtitle="Start a dedicated agent with a backlog task or focused prompt"
       className=${className}
     >
       <div class="dispatch-section">
         <div class="meta-text mb-sm">
           ${freeSlots > 0
-            ? `${freeSlots} slot${freeSlots > 1 ? "s" : ""} free · dispatch always allowed`
-            : "No free slots · dispatch will still spawn a new agent"}
+            ? `${freeSlots} slot${freeSlots > 1 ? "s" : ""} currently free`
+            : "All slots are active — dispatch still creates a dedicated agent"}
         </div>
         <div class="input-row">
           <select
             class="input"
+            aria-label="Task"
             value=${taskId}
             ref=${inputRef}
-            onChange=${(e) => {
-              setTaskId(e.target.value);
-              if (e.target.value) setPrompt("");
-            }}
+            onChange=${(e) => { setTaskId(e.target.value); if (e.target.value) setPrompt(""); }}
           >
             <option value="">
-              ${taskOptionsLoading ? "Loading backlog/draft tasks…" : "Select task: #id title"}
+              ${tasksLoading ? "Loading tasks…" : "Select backlog or draft task"}
             </option>
-            ${taskOptions.map((task) => html`
+            ${taskChoices.map((task) => html`
               <option key=${task.id} value=${task.id}>
-                #${task.id} ${task.title || "(untitled)"}
+                ${formatTaskOptionLabel(task)}
               </option>
             `)}
           </select>
@@ -899,7 +919,7 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
           disabled=${!canDispatch || dispatching}
           onClick=${handleDispatch}
         >
-          ${dispatching ? "Dispatching…" : "🚀 Dispatch"}
+          ${dispatching ? "Dispatching…" : iconText("🚀 Dispatch")}
         </button>
       </div>
     <//>
@@ -912,9 +932,12 @@ export function AgentsTab() {
   const agents = agentsData?.value || [];
   const execData = executor?.data;
   const slots = execData?.slots || [];
-  const maxParallel = execData?.maxParallel || 0;
-  const activeSlots = execData?.activeSlots || 0;
-  const sessions = sessionsData.value || [];
+  const maxParallel = execData?.maxParallel || (slots.length || 0);
+  const derivedActiveSlots = slots.filter((slot) => {
+    const status = String(slot?.status || "").toLowerCase();
+    return status === "running" || status === "busy";
+  }).length;
+  const activeSlots = slots.length ? derivedActiveSlots : (execData?.activeSlots || 0);
 
   const [expandedSlot, setExpandedSlot] = useState(null);
   const [selectedAgent, setSelectedAgent] = useState(null);
@@ -927,6 +950,7 @@ export function AgentsTab() {
 
   useEffect(() => {
     const current = selectedSessionId.value;
+    const sessions = sessionsData.value || [];
     if (current || sessions.length === 0) return;
     const activeSession =
       sessions.find((s) => s.status === "active" || s.status === "running") ||
@@ -934,7 +958,21 @@ export function AgentsTab() {
     if (activeSession?.id) {
       selectedSessionId.value = activeSession.id;
     }
-  }, [sessions, selectedSessionId.value]);
+  }, [sessionsData.value, selectedSessionId.value]);
+
+  useEffect(() => {
+    let active = true;
+    const refreshTaskSessions = () => {
+      if (!active) return;
+      loadSessions({ type: "task" });
+    };
+    refreshTaskSessions();
+    const interval = setInterval(refreshTaskSessions, 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   useEffect(() => {
     if (!workspaceTarget) return;
@@ -959,31 +997,6 @@ export function AgentsTab() {
     }
     agentWorkspaceTarget.value = null;
   }, [workspaceTarget, slots]);
-
-  useEffect(() => {
-    const sessionId = selectedSessionId.value;
-    if (!sessionId) return;
-    const selectedSession = sessions.find((s) => s.id === sessionId);
-    if (!selectedSession) return;
-    const slotIndex = slots.findIndex((slot) => {
-      if (selectedSession.taskId && slot.taskId === selectedSession.taskId) return true;
-      if (selectedSession.branch && slot.branch === selectedSession.branch) return true;
-      return false;
-    });
-    if (slotIndex >= 0) {
-      setSelectedAgent({ ...slots[slotIndex], index: slotIndex });
-      return;
-    }
-    setSelectedAgent((prev) =>
-      prev || {
-        taskId: selectedSession.taskId || selectedSession.id || null,
-        taskTitle: selectedSession.title || selectedSession.taskId || selectedSession.id || "Session",
-        branch: selectedSession.branch || null,
-        sessionId: selectedSession.id || null,
-        status: selectedSession.status || "idle",
-        index: null,
-      });
-  }, [selectedSessionId.value, sessions, slots]);
 
   useEffect(() => {
     let mq;
@@ -1037,13 +1050,6 @@ export function AgentsTab() {
   const openWorkspace = (slot, i) => {
     haptic();
     setSelectedAgent({ ...slot, index: i });
-    const matchedSession =
-      sessions.find((session) => {
-        if (slot.taskId && session.taskId === slot.taskId) return true;
-        if (slot.branch && session.branch === slot.branch) return true;
-        return false;
-      }) || null;
-    if (matchedSession?.id) selectedSessionId.value = matchedSession.id;
   };
 
   /* Capacity utilisation */
@@ -1170,7 +1176,7 @@ export function AgentsTab() {
 
           <div class="fleet-quick-actions">
             <button class="btn btn-primary btn-sm" onClick=${handleFocusDispatch}>
-              🚀 Dispatch
+              ${iconText("🚀 Dispatch")}
             </button>
             <button class="btn btn-secondary btn-sm" onClick=${handleFleetRefresh}>
               ↻ Refresh
@@ -1179,7 +1185,7 @@ export function AgentsTab() {
               class="btn btn-ghost btn-sm"
               onClick=${() => navigateTo("logs")}
             >
-              📄 Logs
+              ${iconText("📄 Logs")}
             </button>
           </div>
         <//>
@@ -1197,7 +1203,7 @@ export function AgentsTab() {
             <div class="meta-text mb-sm">Tap a slot to open the workspace.</div>
             <div class="slot-grid">
               ${Array.from(
-                { length: Math.max(maxParallel, slots.length, 1) },
+                { length: Math.max(maxParallel, slots.length, activeSlots, 1) },
                 (_, i) => {
                   const slot = slots[i];
                   const st = slot ? slot.status || "busy" : "idle";
@@ -1316,7 +1322,7 @@ export function AgentsTab() {
                             (slot.taskId || slot.branch || "").slice(0, 12),
                           )}
                       >
-                        📄 Logs
+                        ${iconText("📄 Logs")}
                       </button>
                       <button
                         class="btn btn-ghost btn-sm"
@@ -1325,87 +1331,37 @@ export function AgentsTab() {
                             `/steer focus on ${slot.taskTitle || slot.taskId}`,
                           )}
                       >
-                        🎯 Steer
+                        ${iconText("🎯 Steer")}
                       </button>
                       <button
                         class="btn btn-ghost btn-sm"
                         onClick=${() => openWorkspace(slot, i)}
                       >
-                        🔍 View
+                        ${iconText("🔍 View")}
                       </button>
                       <button
                         class="btn btn-danger btn-sm"
                         onClick=${() => handleForceStop({ ...slot, index: i })}
                       >
-                        ⛔ Stop
+                        ${iconText("⛔ Stop")}
                       </button>
                     </div>
                   </div>
                 `,
               )
-            : html`<${EmptyState} message="No active agents." />`}
+            : html`<${EmptyState} message=${activeSlots > 0
+              ? "Active slots reported, but slot details haven't arrived yet."
+              : "No active agents."} />`}
         <//>
       <//>
       </div>
 
       <div class="fleet-span">
-        <${Card}
-          title="Fleet Full View"
-          subtitle="Sessions and active slots with full agent context"
-          className="fleet-full-card"
-        >
-          <div class="fleet-full-layout">
-            <div class="fleet-full-list">
-              <div class="fleet-label">Active Slots</div>
-              ${slots.length
-                ? slots.map((slot, i) => html`
-                    <button
-                      key=${`slot-${slot.taskId || i}`}
-                      class="branch-row"
-                      onClick=${() => openWorkspace(slot, i)}
-                    >
-                      <span class="branch-name">${slot.taskTitle || slot.taskId || `Slot ${i + 1}`}</span>
-                      <span class="branch-raw">#${slot.taskId || "n/a"} · ${slot.status || "running"}</span>
-                    </button>
-                  `)
-                : html`<div class="meta-text">No active slots</div>`}
-              <div class="fleet-label mt-md">Sessions</div>
-              <div class="fleet-session-list">
-                ${sessions.length
-                  ? sessions.map((session) => html`
-                      <button
-                        key=${session.id}
-                        class="branch-row ${selectedSessionId.value === session.id ? "task-card-selected" : ""}"
-                        onClick=${() => { selectedSessionId.value = session.id; }}
-                      >
-                        <span class="branch-name">
-                          <${StatusDot} status=${session.status || "idle"} />
-                          ${session.title || session.taskId || session.id}
-                        </span>
-                        <span class="branch-raw">#${session.taskId || session.id} · ${session.status || "idle"}</span>
-                      </button>
-                    `)
-                  : html`<div class="meta-text">No sessions available</div>`}
-              </div>
-            </div>
-            <div class="fleet-full-main">
-              ${selectedAgent
-                ? html`
-                    <${WorkspaceViewer}
-                      agent=${selectedAgent}
-                      embedded=${true}
-                      onClose=${() => setSelectedAgent(null)}
-                    />
-                  `
-                : html`
-                    <div class="chat-view chat-empty-state">
-                      <div class="session-empty-icon">🧭</div>
-                      <div class="session-empty-text">Select a slot or session to open full view</div>
-                    </div>
-                  `}
-            </div>
-          </div>
-        <//>
+        <${FleetSessionsPanel}
+          slots=${slots}
+          onOpenWorkspace=${openWorkspace}
+          onForceStop=${handleForceStop}
+        />
       </div>
 
       ${agents.length > 0 &&
@@ -1431,6 +1387,13 @@ export function AgentsTab() {
       `}
 
     </div>
+
+    ${selectedAgent && html`
+      <${WorkspaceViewer}
+        agent=${selectedAgent}
+        onClose=${() => setSelectedAgent(null)}
+      />
+    `}
   `;
 }
 
@@ -1537,15 +1500,15 @@ function ContextViewer({ sessionId }) {
 
   if (error) {
     return html`<div class="chat-view chat-empty-state">
-      <div class="session-empty-icon" style="color:var(--color-error)">⚠️</div>
+      <div class="session-empty-icon" style="color:var(--color-error)">${resolveIcon("⚠️")}</div>
       <div class="session-empty-text">${error}</div>
-      <button class="btn btn-primary btn-sm mt-sm" onClick=${() => { setLoading(true); setError(null); fetchContext(); }}>🔄 Retry</button>
+      <button class="btn btn-primary btn-sm mt-sm" onClick=${() => { setLoading(true); setError(null); fetchContext(); }}>${iconText("🔄 Retry")}</button>
     </div>`;
   }
 
   if (!ctx?.context) {
     return html`<div class="chat-view chat-empty-state">
-      <div class="session-empty-icon">📋</div>
+      <div class="session-empty-icon">${resolveIcon("📋")}</div>
       <div class="session-empty-text">No context available for this session</div>
     </div>`;
   }
@@ -1657,48 +1620,194 @@ function ContextViewer({ sessionId }) {
   `;
 }
 
-/* ─── Sessions Panel — split view with list + detail ─── */
-function SessionsPanel() {
-  const [detailTab, setDetailTab] = useState("chat");
-  const sessionId = selectedSessionId.value;
+/* ─── Fleet Full Session View ─── */
+function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
+  const [detailTab, setDetailTab] = useState("stream");
+  const [selectedSlotKey, setSelectedSlotKey] = useState(null);
+  const [logText, setLogText] = useState("(no logs yet)");
+  const logRef = useRef(null);
+  const allSessions = sessionsData.value || [];
 
-  const handleBack = useCallback(() => {
-    selectedSessionId.value = null;
-  }, []);
+  const entries = slots
+    .map((slot, index) => {
+      const session =
+        allSessions.find((s) => s?.id && slot?.sessionId && s.id === slot.sessionId) ||
+        allSessions.find((s) => {
+          if (!slot?.taskId) return false;
+          return s?.taskId === slot.taskId || s?.id === slot.taskId;
+        }) ||
+        null;
+      const key = String(slot?.taskId || slot?.sessionId || `slot-${index}`);
+      return { key, slot, index, session };
+    })
+    .sort((a, b) => {
+      const aScore = new Date(a.slot?.startedAt || 0).getTime() || 0;
+      const bScore = new Date(b.slot?.startedAt || 0).getTime() || 0;
+      return bScore - aScore;
+    });
+
+  useEffect(() => {
+    if (!entries.length) {
+      setSelectedSlotKey(null);
+      return;
+    }
+    const existing = entries.some((entry) => entry.key === selectedSlotKey);
+    if (!existing) setSelectedSlotKey(entries[0].key);
+  }, [entries, selectedSlotKey]);
+
+  const selectedEntry =
+    entries.find((entry) => entry.key === selectedSlotKey) || entries[0] || null;
+  const sessionId = selectedEntry?.session?.id || null;
+  const contextId = sessionId || selectedEntry?.slot?.taskId || null;
+
+  useEffect(() => {
+    if (sessionId) selectedSessionId.value = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    const query =
+      selectedEntry?.slot?.branch ||
+      selectedEntry?.slot?.taskId ||
+      selectedEntry?.session?.id ||
+      "";
+    if (!query) {
+      setLogText("(no logs yet)");
+      return undefined;
+    }
+    let active = true;
+    const fetchLogs = () => {
+      apiFetch(`/api/agent-logs/tail?query=${encodeURIComponent(query)}&lines=220`, { _silent: true })
+        .then((res) => {
+          if (!active) return;
+          const data = res.data ?? res ?? "";
+          const content =
+            typeof data === "string"
+              ? data
+              : data?.content || data?.lines || data?.data || "";
+          const text = Array.isArray(content) ? content.join("\n") : content || "";
+          setLogText(text || "(no logs yet)");
+          if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+        })
+        .catch(() => {
+          if (active) setLogText("(failed to load logs)");
+        });
+    };
+    fetchLogs();
+    const interval = setInterval(fetchLogs, 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [selectedEntry?.key]);
 
   return html`
-    <${Card} title="Sessions">
-      <div class="session-split">
-        <${SessionList} onSelect=${() => setDetailTab("chat")} />
-        <div class="session-detail">
-          ${sessionId && html`
-            <button class="session-back-btn" onClick=${handleBack}>
-              ← Back to sessions
-            </button>
-            <div class="session-detail-tabs">
-              <button
-                class="session-detail-tab ${detailTab === "chat" ? "active" : ""}"
-                onClick=${() => setDetailTab("chat")}
-              >💬 Chat</button>
-              <button
-                class="session-detail-tab ${detailTab === "diff" ? "active" : ""}"
-                onClick=${() => setDetailTab("diff")}
-              >📝 Diff</button>
-              <button
-                class="session-detail-tab ${detailTab === "context" ? "active" : ""}"
-                onClick=${() => setDetailTab("context")}
-              >📋 Context</button>
-            </div>
-          `}
-          ${detailTab === "chat" && html`<${ChatView} sessionId=${sessionId} />`}
-          ${detailTab === "diff" && sessionId && html`<${DiffViewer} sessionId=${sessionId} />`}
-          ${detailTab === "context" && sessionId && html`<${ContextViewer} sessionId=${sessionId} />`}
-          ${!sessionId && detailTab !== "chat" && html`
-            <div class="chat-view chat-empty-state">
-              <div class="session-empty-icon">💬</div>
-              <div class="session-empty-text">Select a session</div>
-            </div>
-          `}
+    <${Card}
+      title="Fleet Session View"
+      subtitle="Slots and agent sessions with full execution detail"
+      className="fleet-fullview-card"
+    >
+      <div class="fleet-fullview">
+        <div class="fleet-slot-rail">
+          ${entries.length === 0
+            ? html`<div class="meta-text">No active slots</div>`
+            : html`${entries.map((entry) => html`
+                <button
+                  key=${entry.key}
+                  class="fleet-slot-item ${selectedEntry?.key === entry.key ? "active" : ""}"
+                  onClick=${() => {
+                    haptic();
+                    setSelectedSlotKey(entry.key);
+                    setDetailTab("stream");
+                  }}
+                >
+                  <div class="fleet-slot-item-title">
+                    <${StatusDot} status=${entry.slot?.status || "busy"} />
+                    ${truncate(entry.slot?.taskTitle || "(untitled)", 50)}
+                  </div>
+                  <div class="fleet-slot-item-meta">
+                    Slot ${(entry.index ?? 0) + 1} · ${entry.slot?.taskId || "no-task-id"}
+                  </div>
+                </button>
+              `)}`}
+        </div>
+        <div class="session-detail fleet-session-detail">
+          ${selectedEntry
+            ? html`
+                <div class="fleet-session-header">
+                  <div>
+                    <div class="task-card-title">
+                      <${StatusDot} status=${selectedEntry.slot?.status || "busy"} />
+                      ${selectedEntry.slot?.taskTitle || "(untitled)"}
+                    </div>
+                    <div class="task-card-meta">
+                      ${selectedEntry.slot?.taskId || "?"} · Slot ${(selectedEntry.index ?? 0) + 1}
+                      ${selectedEntry.slot?.branch ? ` · ${selectedEntry.slot.branch}` : ""}
+                    </div>
+                  </div>
+                  <div class="btn-row">
+                    <button class="btn btn-ghost btn-sm" onClick=${() => onOpenWorkspace(selectedEntry.slot, selectedEntry.index)}>
+                      ${iconText("🔍 Workspace")}
+                    </button>
+                    <button class="btn btn-danger btn-sm" onClick=${() => onForceStop({ ...selectedEntry.slot, index: selectedEntry.index })}>
+                      ${iconText("⛔ Stop")}
+                    </button>
+                  </div>
+                </div>
+                <div class="session-detail-tabs">
+                  <button
+                    class="session-detail-tab ${detailTab === "stream" ? "active" : ""}"
+                    onClick=${() => setDetailTab("stream")}
+                  >${iconText("💬 Stream")}</button>
+                  <button
+                    class="session-detail-tab ${detailTab === "context" ? "active" : ""}"
+                    onClick=${() => setDetailTab("context")}
+                  >${iconText("📋 Context")}</button>
+                  <button
+                    class="session-detail-tab ${detailTab === "diff" ? "active" : ""}"
+                    onClick=${() => setDetailTab("diff")}
+                  >${iconText("📝 Diff")}</button>
+                  <button
+                    class="session-detail-tab ${detailTab === "logs" ? "active" : ""}"
+                    onClick=${() => setDetailTab("logs")}
+                  >${iconText("📄 Logs")}</button>
+                </div>
+                <div class="fleet-session-body">
+                  ${detailTab === "stream" &&
+                  (sessionId
+                    ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
+                    : html`
+                        <div class="chat-view chat-empty-state">
+                          <div class="session-empty-icon">${resolveIcon("💬")}</div>
+                          <div class="session-empty-text">No linked chat session found for this slot</div>
+                        </div>
+                      `)}
+                  ${detailTab === "context" &&
+                  (contextId
+                    ? html`<${ContextViewer} sessionId=${contextId} />`
+                    : html`
+                        <div class="chat-view chat-empty-state">
+                          <div class="session-empty-icon">${resolveIcon("📋")}</div>
+                          <div class="session-empty-text">No context source available</div>
+                        </div>
+                      `)}
+                  ${detailTab === "diff" &&
+                  (sessionId
+                    ? html`<${DiffViewer} sessionId=${sessionId} />`
+                    : html`
+                        <div class="chat-view chat-empty-state">
+                          <div class="session-empty-icon">${resolveIcon("📝")}</div>
+                          <div class="session-empty-text">Diff requires a linked session</div>
+                        </div>
+                      `)}
+                  ${detailTab === "logs" && html`<div class="workspace-log fleet-session-log" ref=${logRef}>${logText}</div>`}
+                </div>
+              `
+            : html`
+                <div class="chat-view chat-empty-state">
+                  <div class="session-empty-icon">${resolveIcon("💬")}</div>
+                  <div class="session-empty-text">Select a slot to open full session view</div>
+                </div>
+              `}
         </div>
       </div>
     <//>

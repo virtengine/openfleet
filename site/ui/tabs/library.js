@@ -13,6 +13,7 @@ import { haptic } from "../modules/telegram.js";
 import { apiFetch } from "../modules/api.js";
 import { showToast, refreshTab } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
+import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import { formatRelative } from "../modules/utils.js";
 import { Card, Badge, EmptyState, Modal, ConfirmDialog, Spinner, ListItem } from "../components/shared.js";
 import { SearchInput, SegmentedControl, Toggle } from "../components/forms.js";
@@ -23,11 +24,12 @@ import { SearchInput, SegmentedControl, Toggle } from "../components/forms.js";
 
 const LIBRARY_STYLES = `
 /* ── Library Tab ────────────────────────────────────── */
-.library-root { padding: 12px; max-width: var(--content-max); margin: 0 auto; }
-.library-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.library-root { padding: 12px; max-width: none; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+.library-root .card { margin-bottom: 0; }
+.library-header { display: flex; align-items: center; gap: 12px; margin: 0; flex-wrap: wrap; }
 .library-header h2 { margin: 0; font-size: 1.2em; flex: 1; min-width: 120px; }
 
-.library-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.library-toolbar { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; margin: 0; }
 .library-toolbar .search-wrap { flex: 1; min-width: 200px; }
 
 .library-type-pills { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -37,7 +39,7 @@ const LIBRARY_STYLES = `
 .library-type-pill:hover { border-color: var(--accent, #58a6ff); color: var(--text-primary, #eee); }
 .library-type-pill.active { background: var(--accent, #58a6ff); color: #fff; border-color: var(--accent, #58a6ff); }
 
-.library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.library-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; }
 .library-card { background: var(--bg-card, #1a1a2e); border: 1px solid var(--border, #333);
   border-radius: 12px; padding: 16px; cursor: pointer; transition: all 0.15s; position: relative; }
 .library-card:hover { border-color: var(--accent, #58a6ff); transform: translateY(-1px);
@@ -45,6 +47,7 @@ const LIBRARY_STYLES = `
 
 .library-card-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
 .library-card-icon { font-size: 1.4em; flex-shrink: 0; width: 32px; text-align: center; }
+.library-card-icon svg { width: 20px; height: 20px; vertical-align: middle; }
 .library-card-title { font-weight: 600; font-size: 0.95em; color: var(--text-primary, #eee); }
 .library-card-desc { font-size: 0.82em; color: var(--text-secondary, #aaa); margin-bottom: 8px;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -93,17 +96,46 @@ const LIBRARY_STYLES = `
 .library-profile-match-score { font-size: 0.75em; color: var(--accent, #58a6ff); margin-left: 8px; }
 
 /* ─ Stats bar ─ */
-.library-stats { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+.library-stats { display: flex; gap: 16px; margin: 0; flex-wrap: wrap; }
 .library-stat { text-align: center; }
 .library-stat-val { font-size: 1.6em; font-weight: 700; color: var(--text-primary, #eee); }
 .library-stat-lbl { font-size: 0.75em; color: var(--text-secondary, #aaa); text-transform: uppercase; letter-spacing: 0.05em; }
 
 /* ─ Init banner ─ */
 .library-init-banner { padding: 16px; border-radius: 12px; background: var(--bg-card, #1a1a2e);
-  border: 1px dashed var(--border, #333); text-align: center; margin-bottom: 16px; }
+  border: 1px dashed var(--border, #333); text-align: center; margin: 0; }
 .library-init-banner p { color: var(--text-secondary, #aaa); margin: 8px 0; font-size: 0.9em; }
 .library-init-banner button { padding: 8px 20px; border-radius: 8px; border: none;
   background: var(--accent, #58a6ff); color: #fff; cursor: pointer; font-weight: 600; }
+
+/* ─ Responsive behavior ─ */
+@media (min-width: 1000px) {
+  .library-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (min-width: 1400px) {
+  .library-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+@media (max-width: 700px) {
+  .library-root { padding: 8px; }
+  .library-header { gap: 8px; }
+  .library-toolbar { gap: 6px; }
+  .library-toolbar .search-wrap { flex: 1 1 100%; min-width: 0; }
+  .library-grid { grid-template-columns: 1fr; }
+  .library-card { padding: 12px; }
+  .library-card-scope { margin-left: 0; }
+  .library-actions { flex-wrap: wrap; justify-content: stretch; }
+  .library-actions button { flex: 1 1 140px; padding: 10px 12px; }
+}
+
+@media (max-width: 520px) {
+  .library-type-pills { gap: 4px; }
+  .library-type-pill { font-size: 0.8em; padding: 4px 10px; }
+  .library-stats { gap: 10px; }
+  .library-stat { min-width: 64px; }
+  .library-stat-val { font-size: 1.3em; }
+}
 `;
 
 let stylesInjected = false;
@@ -205,15 +237,15 @@ function LibraryStats() {
       </div>
       <div class="library-stat">
         <div class="library-stat-val" style="color: ${TYPE_COLORS.prompt}">${counts.prompt}</div>
-        <div class="library-stat-lbl">${TYPE_ICONS.prompt} Prompts</div>
+        <div class="library-stat-lbl">${iconText(`${TYPE_ICONS.prompt} Prompts`)}</div>
       </div>
       <div class="library-stat">
         <div class="library-stat-val" style="color: ${TYPE_COLORS.agent}">${counts.agent}</div>
-        <div class="library-stat-lbl">${TYPE_ICONS.agent} Agents</div>
+        <div class="library-stat-lbl">${iconText(`${TYPE_ICONS.agent} Agents`)}</div>
       </div>
       <div class="library-stat">
         <div class="library-stat-val" style="color: ${TYPE_COLORS.skill}">${counts.skill}</div>
-        <div class="library-stat-lbl">${TYPE_ICONS.skill} Skills</div>
+        <div class="library-stat-lbl">${iconText(`${TYPE_ICONS.skill} Skills`)}</div>
       </div>
     </div>
   `;
@@ -232,7 +264,7 @@ function TypePills() {
         <button key=${t.id}
           class=${`library-type-pill ${filterType.value === t.id ? "active" : ""}`}
           onClick=${() => { filterType.value = t.id; }}>
-          ${t.label}
+          ${iconText(t.label)}
         </button>
       `)}
     </div>
@@ -251,7 +283,7 @@ function LibraryCard({ entry, onSelect }) {
           style=${{ "--badge-color": typeColor }} />
       </div>
       <div class="library-card-header">
-        <span class="library-card-icon">${icon}</span>
+        <span class="library-card-icon">${resolveIcon(icon) || icon}</span>
         <div>
           <div class="library-card-title">${entry.name}</div>
         </div>
@@ -264,7 +296,7 @@ function LibraryCard({ entry, onSelect }) {
           <span class="library-card-tag" key=${tag}>${tag}</span>
         `)}
         ${entry.scope && entry.scope !== "global" && html`
-          <span class="library-card-scope">📌 ${entry.scope}</span>
+          <span class="library-card-scope">${iconText(`📌 ${entry.scope}`)}</span>
         `}
       </div>
     </div>
@@ -376,9 +408,9 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
           <label>
             Type
             <select value=${form.type} onChange=${updateField("type")}>
-              <option value="prompt">📝 Prompt</option>
-              <option value="agent">🤖 Agent Profile</option>
-              <option value="skill">🧠 Skill</option>
+              <option value="prompt">Prompt</option>
+              <option value="agent">Agent Profile</option>
+              <option value="skill">Skill</option>
             </select>
           </label>
         `}
@@ -465,7 +497,7 @@ function ScopeDetector() {
   return html`
     <div>
       <button class="btn-ghost library-type-pill" onClick=${loadScopes} style="font-size:0.82em;">
-        ${loading ? html`<${Spinner} size=${12} />` : "🔍"} Detect Scopes
+        ${loading ? html`<${Spinner} size=${12} />` : iconText("🔍 Detect Scopes")}
       </button>
       ${showing && scopes.value.length > 0 && html`
         <div class="library-scopes">
@@ -515,14 +547,14 @@ function ProfileMatcher() {
           style="flex:1;padding:6px 10px;border-radius:8px;border:1px solid var(--border,#333);
             background:var(--bg-input,#0d1117);color:var(--text-primary,#eee);font-size:0.85em;" />
         <button class="library-type-pill active" onClick=${doMatch} style="font-size:0.82em;" disabled=${loading}>
-          ${loading ? html`<${Spinner} size=${12} />` : "🎯 Match"}
+          ${loading ? html`<${Spinner} size=${12} />` : iconText("🎯 Match")}
         </button>
       </div>
       ${match && html`
         <div class="library-profile-match" style="margin-top:8px;">
           <div class="library-profile-match-label">Best match:</div>
           <div>
-            <span class="library-profile-match-name">${TYPE_ICONS.agent} ${match.name}</span>
+            <span class="library-profile-match-name">${iconText(`${TYPE_ICONS.agent} ${match.name}`)}</span>
             <span class="library-profile-match-score">score: ${match.score}</span>
           </div>
           ${match.description && html`
@@ -626,10 +658,10 @@ export function LibraryTab() {
   return html`
     <div class="library-root">
       <div class="library-header">
-        <h2>📚 Library</h2>
+        <h2>${iconText("📚 Library")}</h2>
         <button class="library-type-pill" onClick=${handleRebuild}
           title="Rescan directories and rebuild manifest">
-          🔄 Rebuild
+          ${iconText("🔄 Rebuild")}
         </button>
         <button class="library-type-pill active" onClick=${() => setEditing({})}>
           ＋ New
@@ -640,7 +672,7 @@ export function LibraryTab() {
         <div class="library-init-banner">
           <p><b>Welcome to the Library!</b></p>
           <p>Initialize to scaffold built-in agent profiles and index existing prompts and skills.</p>
-          <button onClick=${handleInit}>🚀 Initialize Library</button>
+          <button onClick=${handleInit}>${iconText("🚀 Initialize Library")}</button>
         </div>
       `}
 
@@ -665,7 +697,7 @@ export function LibraryTab() {
 
       ${!loading && displayed.length === 0 && initialized.value && html`
         <${EmptyState}
-          icon="📚"
+          icon="book"
           title="No resources found"
           message=${searchQuery.value
             ? "Try a different search term or clear the filter."

@@ -604,7 +604,11 @@ function WorkflowCanvas({ workflow, onSave }) {
   // ── Render ────────────────────────────────────────────────
 
   return html`
-    <div class="wf-canvas-container" style="position: relative; width: 100%; overflow: hidden; background: var(--color-bg-secondary, #0f1117);">
+    <div
+      class="wf-canvas-container"
+      data-ptr-ignore="true"
+      style="position: relative; width: 100%; overflow: hidden; overscroll-behavior: contain; background: var(--color-bg-secondary, #0f1117);"
+    >
 
       <!-- Toolbar -->
       <div class="wf-toolbar" style="position: absolute; top: 12px; left: 12px; right: 12px; z-index: 20; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
@@ -1656,8 +1660,9 @@ function WorkflowListView() {
           Available Templates (${availableTemplates.length})${tmpls.length !== availableTemplates.length ? html` <span style="font-size: 11px; font-weight: 400; opacity: 0.6;">· ${tmpls.length - availableTemplates.length} installed</span>` : ""}
         </h3>
         ${availableTemplates.length === 0 && html`
-          <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px;">
-            All templates are installed! 🎉
+          <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px;">
+            <span class="icon-inline">${resolveIcon("star")}</span>
+            <span>All templates are installed!</span>
           </div>
         `}
         ${(() => {
@@ -1747,6 +1752,36 @@ function getRunActivityAt(run) {
   return candidates.length > 0 ? Math.max(...candidates) : null;
 }
 
+function buildNodeStatusesFromRunDetail(run) {
+  const detail = run?.detail || {};
+  const statuses = { ...(detail?.nodeStatuses || {}) };
+  const statusEvents = Array.isArray(detail?.nodeStatusEvents) ? detail.nodeStatusEvents : [];
+  const logs = Array.isArray(detail?.logs) ? detail.logs : [];
+
+  for (const event of statusEvents) {
+    const nodeId = String(event?.nodeId || "").trim();
+    const status = String(event?.status || "").trim();
+    if (!nodeId || !status) continue;
+    statuses[nodeId] = status;
+  }
+
+  // Backfill older runs that only recorded nodeId in logs.
+  if (Object.keys(statuses).length === 0) {
+    const fallbackStatus = run?.status === "failed"
+      ? "failed"
+      : run?.status === "completed"
+        ? "completed"
+        : "running";
+    for (const entry of logs) {
+      const nodeId = String(entry?.nodeId || "").trim();
+      if (!nodeId || statuses[nodeId]) continue;
+      statuses[nodeId] = fallbackStatus;
+    }
+  }
+
+  return statuses;
+}
+
 function getNodeCardBorder(status) {
   if (status === "running") return "#3b82f680";
   if (status === "failed") return "#ef444480";
@@ -1756,7 +1791,11 @@ function getNodeCardBorder(status) {
 
 function safePrettyJson(value) {
   try {
-    return JSON.stringify(value, null, 2);
+    const json = JSON.stringify(value, null, 2);
+    const maxChars = 120000;
+    if (json.length <= maxChars) return json;
+    const omitted = json.length - maxChars;
+    return `${json.slice(0, maxChars)}\n\n… [truncated ${omitted} chars]`;
   } catch {
     return String(value ?? "");
   }
@@ -1854,10 +1893,10 @@ function RunHistoryView() {
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
-    const nodeStatuses = selectedRun?.detail?.nodeStatuses || {};
-    const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
     const logs = Array.isArray(selectedRun?.detail?.logs) ? selectedRun.detail.logs : [];
     const errors = Array.isArray(selectedRun?.detail?.errors) ? selectedRun.detail.errors : [];
+    const nodeStatuses = buildNodeStatusesFromRunDetail(selectedRun);
+    const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
     const nodeIds = Object.keys(nodeStatuses).sort((a, b) => {
       const rankDiff = getNodeStatusRank(nodeStatuses[a]) - getNodeStatusRank(nodeStatuses[b]);
       if (rankDiff !== 0) return rankDiff;
@@ -1917,6 +1956,8 @@ function RunHistoryView() {
             const nodeStatus = nodeStatuses[nodeId];
             const nodeStatusStyles = getRunStatusBadgeStyles(nodeStatus);
             const nodeOutput = nodeOutputs[nodeId];
+            const nodeSummary = typeof nodeOutput?.summary === "string" ? nodeOutput.summary.trim() : "";
+            const nodeNarrative = typeof nodeOutput?.narrative === "string" ? nodeOutput.narrative.trim() : "";
             return html`
               <details key=${nodeId} style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid ${getNodeCardBorder(nodeStatus)}; border-radius: 8px; padding: 8px 10px;">
                 <summary style="cursor: pointer; display: flex; align-items: center; gap: 8px;">
@@ -1925,6 +1966,12 @@ function RunHistoryView() {
                     ${nodeStatus || "unknown"}
                   </span>
                 </summary>
+                ${(nodeSummary || nodeNarrative) && html`
+                  <div style="margin-top: 8px; font-size: 12px; color: #d1d5db; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px; white-space: pre-wrap; word-break: break-word;">
+                    ${nodeSummary ? html`<div><b>Summary:</b> ${nodeSummary}</div>` : ""}
+                    ${nodeNarrative ? html`<div style="margin-top: ${nodeSummary ? "6px" : "0"};"><b>Narrative:</b> ${nodeNarrative}</div>` : ""}
+                  </div>
+                `}
                 <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(nodeOutput)}</pre>
               </details>
             `;

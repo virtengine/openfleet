@@ -384,6 +384,7 @@ export const TEMPLATE_MODULE_MAP = Object.freeze({
   "template-stale-pr-reaper":        "workspace-reaper.mjs",
   "template-agent-session-monitor":  "session-tracker.mjs",
   "template-nightly-report":         "telegram-sentinel.mjs",
+  "template-task-status-transition-manager": "task-executor.mjs",
 });
 
 /**

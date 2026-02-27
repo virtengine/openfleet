@@ -24,7 +24,7 @@ import {
   listTasks,
   listProjects,
   getTask,
-  updateTaskStatus,
+  updateTaskStatus as updateKanbanTaskStatus,
   addComment,
 } from "./kanban-adapter.mjs";
 import {
@@ -71,7 +71,10 @@ import {
   getRecentCommits,
   collectDiffStats,
 } from "./diff-stats.mjs";
-import { getBosunCoAuthorTrailer } from "./git-commit-helpers.mjs";
+import {
+  getBosunCoAuthorTrailer,
+  shouldAddBosunCoAuthor,
+} from "./git-commit-helpers.mjs";
 import { createAnomalyDetector } from "./anomaly-detector.mjs";
 import { normalizeDedupKey, yieldToEventLoop, withRetry } from "./utils.mjs";
 import {
@@ -139,6 +142,31 @@ const EXPECTED_NO_COMMIT_TAGS = new Set([
   "preflight",
 ]);
 
+/** @type {null|((taskId: string, status: string, options?: object) => Promise<boolean>|boolean)} */
+let taskStatusTransitionHandler = null;
+
+export function setTaskStatusTransitionHandler(handler) {
+  taskStatusTransitionHandler = typeof handler === "function" ? handler : null;
+}
+
+function hasExternalTaskStatusTransitionHandler() {
+  return typeof taskStatusTransitionHandler === "function";
+}
+
+async function transitionTaskStatus(taskId, status, options = {}) {
+  if (hasExternalTaskStatusTransitionHandler()) {
+    const result = await taskStatusTransitionHandler(taskId, status, options);
+    return result !== false;
+  }
+  await updateKanbanTaskStatus(taskId, status, options);
+  return true;
+}
+
+function transitionInternalTaskStatus(taskId, status, source) {
+  if (hasExternalTaskStatusTransitionHandler()) return null;
+  return setInternalStatus(taskId, status, source);
+}
+
 function parseNumberEnv(name, fallback) {
   const value = Number(process.env[name]);
   return Number.isFinite(value) ? value : fallback;
@@ -174,6 +202,46 @@ function truncateText(text, maxChars) {
   const raw = String(text || "");
   if (!maxChars || raw.length <= maxChars) return raw;
   return `${raw.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function sanitizeRepoContextText(text) {
+  return String(text || "")
+    .replace(/\0/g, "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+}
+
+function truncateUtf8Bytes(text, maxBytes = 12000) {
+  const raw = String(text || "");
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) return "";
+
+  const suffix = "\n...(truncated)";
+  if (Buffer.byteLength(raw, "utf8") <= maxBytes) {
+    return raw;
+  }
+
+  const suffixBytes = Buffer.byteLength(suffix, "utf8");
+  if (maxBytes <= suffixBytes) {
+    return suffix.slice(0, Math.max(0, maxBytes));
+  }
+
+  const targetBytes = maxBytes - suffixBytes;
+  let low = 0;
+  let high = raw.length;
+  let best = "";
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = raw.slice(0, mid);
+    if (Buffer.byteLength(candidate, "utf8") <= targetBytes) {
+      best = candidate;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return `${best}${suffix}`;
 }
 
 function isBosunStateComment(text) {
@@ -326,11 +394,19 @@ function categorizeError(err) {
 /**
  * Returns the Co-authored-by trailer for bosun-ve[bot].
  *
- * Attribution should not be gated by auth mode (OAuth/App/env/gh-cli all valid
- * execution paths). This uses the canonical helper so commit attribution stays
- * consistent with the rest of Bosun.
+ * By default this is task-scoped and only enabled during Bosun-managed tasks.
+ * BOSUN_COAUTHOR_MODE=always can force global attribution when explicitly
+ * desired (for internal Bosun repo workflows, etc).
  */
-function getBosunCoAuthorLine() {
+function getBosunCoAuthorLine(taskOrTaskId = null) {
+  const taskId = (() => {
+    if (taskOrTaskId == null) return "";
+    if (typeof taskOrTaskId === "string") return taskOrTaskId.trim();
+    const value = taskOrTaskId.id || taskOrTaskId.task_id || "";
+    return String(value || "").trim();
+  })();
+
+  if (!shouldAddBosunCoAuthor({ taskId })) return "";
   return getBosunCoAuthorTrailer();
 }
 
@@ -338,8 +414,9 @@ function getBosunCoAuthorLine() {
  * Returns a prompt instruction block telling the agent to append the Bosun
  * co-author trailer to every commit.
  */
-function getBosunCoAuthorInstruction() {
-  const line = getBosunCoAuthorLine();
+function getBosunCoAuthorInstruction(taskOrTaskId = null) {
+  const line = getBosunCoAuthorLine(taskOrTaskId);
+  if (!line) return "";
   return `\n**Attribution (required — do not omit):**
 Every commit message MUST end with a blank line then this exact trailer:
 \`\`\`
@@ -2008,6 +2085,8 @@ class TaskExecutor {
     this._listTasksFailureCount = 0;
     this._listTasksBackoffUntil = 0;
     this._listTasksBackoffReason = "";
+    // Throttle draft-task filtering log messages (every 5 min max)
+    this._lastDraftFilterLogAt = 0;
     this._projectResolveFailureWindowStart = 0;
     this._projectResolveFailureCount = 0;
     this._projectResolveBackoffUntil = 0;
@@ -2861,10 +2940,25 @@ class TaskExecutor {
             stdio: "pipe",
             timeout: 15000,
           });
-          execSync(
-            `git commit -m "feat: auto-commit orphaned agent work\n\nCo-authored-by: bosun-ve[bot] <262908237+bosun-ve[bot]@users.noreply.github.com>" --no-verify`,
-            { cwd: wtPath, stdio: "pipe", timeout: 15000 },
+          const coAuthorLine = getBosunCoAuthorLine(taskIdPrefix);
+          const commitMessage = coAuthorLine
+            ? `feat: auto-commit orphaned agent work\n\n${coAuthorLine}`
+            : "feat: auto-commit orphaned agent work";
+          const commitResult = spawnSync(
+            "git",
+            ["commit", "-m", commitMessage, "--no-verify"],
+            {
+              cwd: wtPath,
+              encoding: "utf8",
+              stdio: "pipe",
+              timeout: 15000,
+            },
           );
+          if (commitResult.status !== 0) {
+            const stderr = String(commitResult.stderr || "").trim();
+            const stdout = String(commitResult.stdout || "").trim();
+            throw new Error(stderr || stdout || "git commit failed");
+          }
           console.log(
             `${TAG} [orphan-recovery] Committed changes in ${dirName}`,
           );
@@ -3087,7 +3181,9 @@ class TaskExecutor {
       const internalStatus = internalTask?.status || null;
       if (internalTask && internalStatus && internalStatus !== "inprogress") {
         try {
-          await updateTaskStatus(id, internalStatus);
+          await transitionTaskStatus(id, internalStatus, {
+            source: "task-executor-recovery-drift",
+          });
         } catch {
           /* best effort */
         }
@@ -3118,12 +3214,18 @@ class TaskExecutor {
       const noCommitCount = this._noCommitCounts.get(id) || 0;
       if (noCommitCount >= MAX_NO_COMMIT_ATTEMPTS) {
         try {
-          await updateTaskStatus(id, "todo");
+          await transitionTaskStatus(id, "todo", {
+            source: "task-executor-recovery-no-commit-block",
+          });
         } catch {
           /* best effort */
         }
         try {
-          setInternalStatus(id, "todo", "task-executor-recovery-no-commit-block");
+          transitionInternalTaskStatus(
+            id,
+            "todo",
+            "task-executor-recovery-no-commit-block",
+          );
         } catch {
           /* best effort */
         }
@@ -3164,12 +3266,14 @@ class TaskExecutor {
       }
 
       try {
-        await updateTaskStatus(id, "todo");
+        await transitionTaskStatus(id, "todo", {
+          source: "task-executor-recovery",
+        });
       } catch {
         /* best effort */
       }
       try {
-        setInternalStatus(id, "todo", "task-executor-recovery");
+        transitionInternalTaskStatus(id, "todo", "task-executor-recovery");
       } catch {
         /* best effort */
       }
@@ -3675,9 +3779,14 @@ class TaskExecutor {
         const before = tasks.length;
         tasks = tasks.filter((task) => !isDraftTask(task));
         if (tasks.length !== before) {
-          console.debug(
-            `${TAG} filtered ${before - tasks.length} draft task(s)`,
-          );
+          const draftCount = before - tasks.length;
+          const now = Date.now();
+          if (!this._lastDraftFilterLogAt || now - this._lastDraftFilterLogAt > 300_000) {
+            console.debug(
+              `${TAG} filtered ${draftCount} draft task(s)`,
+            );
+            this._lastDraftFilterLogAt = now;
+          }
         }
       }
 
@@ -3863,6 +3972,7 @@ class TaskExecutor {
     const executionRepoSlug = taskRepoContext.repoSlug || this.repoSlug;
     const worktreeManager = this._getWorktreeManager(executionRepoRoot);
     let taskClaimToken = null;
+    let attemptId = null;
 
     const releaseTaskClaimLock = async () => {
       this._stopTaskClaimRenewal(taskId);
@@ -3879,6 +3989,18 @@ class TaskExecutor {
         );
       } finally {
         taskClaimToken = null;
+      }
+    };
+
+    const clearAttemptTracking = () => {
+      if (!attemptId) return;
+      anomalyAbortTargets.delete(attemptId);
+      if (anomalyDetector) {
+        try {
+          anomalyDetector.resetProcess(attemptId);
+        } catch {
+          /* best-effort */
+        }
       }
     };
 
@@ -4112,13 +4234,17 @@ class TaskExecutor {
 
       // 2. Update task status → "inprogress"
       try {
-        await updateTaskStatus(taskId, "inprogress");
+        await transitionTaskStatus(taskId, "inprogress", {
+          source: "task-executor",
+          taskTitle,
+          branch,
+        });
       } catch (err) {
         console.warn(`${TAG} failed to set task to inprogress: ${err.message}`);
       }
       // Mirror to internal store
       try {
-        setInternalStatus(taskId, "inprogress", "task-executor");
+        transitionInternalTaskStatus(taskId, "inprogress", "task-executor");
       } catch {
         /* best-effort */
       }
@@ -4177,17 +4303,25 @@ class TaskExecutor {
         );
         this._taskCooldowns.set(taskId, Date.now());
         try {
-          await updateTaskStatus(taskId, "todo");
+          await transitionTaskStatus(taskId, "todo", {
+            source: "task-executor-worktree-acquire-failed",
+            taskTitle,
+            branch,
+          });
         } catch {
           /* best-effort */
         }
         await releaseTaskClaimLock();
         this._activeSlots.delete(taskId);
         this._removeRuntimeSlot(taskId);
-        this.onTaskFailed?.(
+        const wrappedError = new Error(`Worktree acquisition failed: ${err.message}`);
+        wrappedError.branch = branch || null;
+        wrappedError.baseBranch = resolveTaskBaseBranch(
           task,
-          new Error(`Worktree acquisition failed: ${err.message}`),
-        );
+          this.branchRouting,
+          this.defaultTargetBranch,
+        ) || null;
+        this.onTaskFailed?.(task, wrappedError);
         return;
       }
 
@@ -4202,17 +4336,21 @@ class TaskExecutor {
           /* best-effort */
         }
         try {
-          await updateTaskStatus(taskId, "todo");
+          await transitionTaskStatus(taskId, "todo", {
+            source: "task-executor-worktree-invalid",
+            taskTitle,
+            branch,
+          });
         } catch {
           /* best-effort */
         }
         await releaseTaskClaimLock();
         this._activeSlots.delete(taskId);
         this._removeRuntimeSlot(taskId);
-        this.onTaskFailed?.(
-          task,
-          new Error("Worktree path invalid or missing"),
-        );
+        const wrappedError = new Error("Worktree path invalid or missing");
+        wrappedError.branch = branch || null;
+        wrappedError.worktreePath = wt?.path || null;
+        this.onTaskFailed?.(task, wrappedError);
         return;
       }
 
@@ -4331,7 +4469,7 @@ class TaskExecutor {
       // workspace-scoped executionRepoRoot, NOT the developer's personal repo.
       process.env.BOSUN_AGENT_REPO_ROOT = executionRepoRoot;
 
-      const attemptId = `${taskId}-${randomUUID()}`;
+      attemptId = `${taskId}-${randomUUID()}`;
       const taskMeta = {
         task_id: taskId,
         task_title: taskTitle,
@@ -4583,7 +4721,7 @@ class TaskExecutor {
           diff_lines_deleted: diffStats?.totalDeletions ?? null,
         },
       });
-      anomalyAbortTargets.delete(attemptId);
+      clearAttemptTracking();
 
       // 7. Handle result
       slot.status = validatedResult.success ? "completing" : "failed";
@@ -4614,12 +4752,17 @@ class TaskExecutor {
       console.error(
         `${TAG} fatal error executing task "${taskTitle}": ${err.message}`,
       );
+      clearAttemptTracking();
       slot.status = "failed";
       this._taskCooldowns.set(taskId, Date.now());
       this._slotAbortControllers.delete(taskId);
 
       try {
-        await updateTaskStatus(taskId, "todo");
+        await transitionTaskStatus(taskId, "todo", {
+          source: "task-executor-session-failed",
+          taskTitle,
+          branch,
+        });
       } catch {
         /* best-effort */
       }
@@ -4632,6 +4775,26 @@ class TaskExecutor {
 
       this._activeSlots.delete(taskId);
       this._removeRuntimeSlot(taskId);
+      if (err && typeof err === "object") {
+        if (!err.branch) {
+          err.branch =
+            slot?.branch ||
+            task?.branchName ||
+            task?.meta?.branch_name ||
+            null;
+        }
+        if (!err.worktreePath) {
+          err.worktreePath = slot?.worktreePath || null;
+        }
+        if (!err.baseBranch) {
+          err.baseBranch =
+            slot?.baseBranch ||
+            task?.baseBranch ||
+            task?.base_branch ||
+            task?.meta?.base_branch ||
+            null;
+        }
+      }
       this.onTaskFailed?.(task, err);
       this.sendTelegram?.(
         `❌ Task executor error: "${taskTitle}" — ${(err.message || "").slice(0, 200)}`,
@@ -4729,6 +4892,16 @@ class TaskExecutor {
       ``,
     );
 
+    const coAuthorLine = getBosunCoAuthorLine(task);
+    if (coAuthorLine) {
+      lines.push(
+        `## Attribution`,
+        `Append this trailer at the end of each commit message body (blank line before trailer):`,
+        coAuthorLine,
+        ``,
+      );
+    }
+
     // Append task URL if available
     const taskUrl = task.meta?.task_url || task.taskUrl || task.url;
     if (taskUrl) {
@@ -4784,7 +4957,7 @@ class TaskExecutor {
         REPO_ROOT: promptRepoRoot,
         TASK_WORKSPACE: promptWorkspace,
         TASK_REPOSITORY: promptRepository,
-        COAUTHOR_INSTRUCTION: getBosunCoAuthorInstruction(),
+        COAUTHOR_INSTRUCTION: getBosunCoAuthorInstruction(task),
       },
       fallbackPrompt,
     );
@@ -4857,9 +5030,9 @@ class TaskExecutor {
       `3. Re-run tests to verify`,
       `4. Commit and push your fixes`,
       ``,
-      ...(getBosunCoAuthorLine() ? [
+      ...(getBosunCoAuthorLine(task) ? [
         `Attribution: append this trailer after each commit message body (blank line before it):`,
-        getBosunCoAuthorLine(),
+        getBosunCoAuthorLine(task),
         ``,
       ] : []),
       `Original task description:`,
@@ -5015,11 +5188,7 @@ class TaskExecutor {
         const fullPath = resolve(normalizedRoot, cf.rel);
         if (existsSync(fullPath)) {
           const content = readFileSync(fullPath, "utf8");
-          // Truncate to 4000 chars to keep prompt reasonable
-          const truncated =
-            content.length > 4000
-              ? content.slice(0, 4000) + "\n...(truncated)"
-              : content;
+          const truncated = truncateUtf8Bytes(sanitizeRepoContextText(content));
           parts.push(`### ${cf.label}\n\n${truncated}`);
         }
       } catch {
@@ -5057,6 +5226,20 @@ class TaskExecutor {
       this.branchRouting,
       this.defaultTargetBranch,
     );
+    if (result && typeof result === "object") {
+      if (!result.worktreePath) {
+        result.worktreePath = worktreePath || null;
+      }
+      if (!result.branch) {
+        result.branch =
+          task.branchName ||
+          task.meta?.branch_name ||
+          null;
+      }
+      if (!result.baseBranch) {
+        result.baseBranch = baseBranch || null;
+      }
+    }
 
     // Fire SessionStop hook
     executeHooks("SessionStop", {
@@ -5085,7 +5268,13 @@ class TaskExecutor {
           `${tag} already completed with PR — skipping re-processing`,
         );
         try {
-          await updateTaskStatus(task.id, "inreview");
+          await transitionTaskStatus(task.id, "inreview", {
+            source: "task-executor-completed-with-pr-cache",
+            taskTitle,
+            branch: result?.branch || task?.branchName || null,
+            baseBranch: result?.baseBranch || baseBranch || null,
+            worktreePath,
+          });
         } catch {
           /* best-effort */
         }
@@ -5099,6 +5288,9 @@ class TaskExecutor {
         (hasAnyCommits &&
           !this._completedWithPR.has(task.id) &&
           !this._prCreatedForBranch.has(task.id));
+      result.hasCommits = hasCommits;
+      result.finalized = true;
+      result.finalizationReason = null;
 
       if (!hasCommits && isPlannerTaskData(task)) {
         try {
@@ -5112,14 +5304,20 @@ class TaskExecutor {
                 output: result.output,
                 hasCommits: false,
               });
-              setInternalStatus(task.id, "done", "task-executor");
+              transitionInternalTaskStatus(task.id, "done", "task-executor");
               updateInternalTask(task.id, { externalStatus: "done" });
               this._errorDetector.resetTask(task.id);
             } catch {
               /* best-effort */
             }
             try {
-              await updateTaskStatus(task.id, "done");
+              await transitionTaskStatus(task.id, "done", {
+                source: "task-executor-planner-complete",
+                taskTitle,
+                branch: result?.branch || task?.branchName || null,
+                baseBranch: result?.baseBranch || baseBranch || null,
+                worktreePath,
+              });
             } catch {
               /* best-effort */
             }
@@ -5153,14 +5351,20 @@ class TaskExecutor {
             output: result.output,
             hasCommits: false,
           });
-          setInternalStatus(task.id, "done", "task-executor");
+          transitionInternalTaskStatus(task.id, "done", "task-executor");
           updateInternalTask(task.id, { externalStatus: "done" });
           this._errorDetector.resetTask(task.id);
         } catch {
           /* best-effort */
         }
         try {
-          await updateTaskStatus(task.id, "done");
+          await transitionTaskStatus(task.id, "done", {
+            source: "task-executor-no-code-change-expected",
+            taskTitle,
+            branch: result?.branch || task?.branchName || null,
+            baseBranch: result?.baseBranch || baseBranch || null,
+            worktreePath,
+          });
         } catch {
           /* best-effort */
         }
@@ -5185,7 +5389,7 @@ class TaskExecutor {
             output: result.output,
             hasCommits: true,
           });
-          setInternalStatus(task.id, "inreview", "task-executor");
+          transitionInternalTaskStatus(task.id, "inreview", "task-executor");
           this._errorDetector.resetTask(task.id);
         } catch {
           /* best-effort */
@@ -5238,7 +5442,15 @@ class TaskExecutor {
             /* best-effort */
           }
           try {
-            await updateTaskStatus(task.id, "inreview");
+            await transitionTaskStatus(task.id, "inreview", {
+              source: "task-executor-pr-created",
+              taskTitle,
+              branch: pr?.branch || result?.branch || task?.branchName || null,
+              baseBranch: result?.baseBranch || baseBranch || null,
+              worktreePath,
+              prNumber,
+              prUrl,
+            });
           } catch {
             /* best-effort */
           }
@@ -5268,7 +5480,13 @@ class TaskExecutor {
           // PR creation failed but task has commits — mark as completed anyway to prevent loop
           this._completedWithPR.add(task.id);
           try {
-            await updateTaskStatus(task.id, "inreview");
+            await transitionTaskStatus(task.id, "inreview", {
+              source: "task-executor-pr-create-failed",
+              taskTitle,
+              branch: result?.branch || task?.branchName || null,
+              baseBranch: result?.baseBranch || baseBranch || null,
+              worktreePath,
+            });
           } catch {
             /* best-effort */
           }
@@ -5288,14 +5506,20 @@ class TaskExecutor {
             output: result.output,
             hasCommits: true,
           });
-          setInternalStatus(task.id, "inreview", "task-executor");
+          transitionInternalTaskStatus(task.id, "inreview", "task-executor");
           this._errorDetector.resetTask(task.id);
         } catch {
           /* best-effort */
         }
 
         try {
-          await updateTaskStatus(task.id, "inreview");
+          await transitionTaskStatus(task.id, "inreview", {
+            source: "task-executor-auto-pr-disabled",
+            taskTitle,
+            branch: result?.branch || task?.branchName || null,
+            baseBranch: result?.baseBranch || baseBranch || null,
+            worktreePath,
+          });
         } catch {
           /* best-effort */
         }
@@ -5305,6 +5529,8 @@ class TaskExecutor {
       } else {
         // No commits — agent completed without making changes.
         // This is NOT a real completion. Apply anti-thrash protection.
+        result.finalized = false;
+        result.finalizationReason = "no_commits";
         const prevCount = this._noCommitCounts.get(taskKey || normalizeTaskIdKey(task.id)) || 0;
         const noCommitCount = prevCount + 1;
         this._noCommitCounts.set(taskKey || normalizeTaskIdKey(task.id), noCommitCount);
@@ -5361,7 +5587,13 @@ class TaskExecutor {
 
         // Set back to todo — NOT inreview (nothing to review)
         try {
-          await updateTaskStatus(task.id, "todo");
+          await transitionTaskStatus(task.id, "todo", {
+            source: "task-executor-no-commit",
+            taskTitle,
+            branch: result?.branch || task?.branchName || null,
+            baseBranch: result?.baseBranch || baseBranch || null,
+            worktreePath,
+          });
         } catch {
           /* best-effort */
         }
@@ -5461,7 +5693,14 @@ class TaskExecutor {
       }
 
       try {
-        await updateTaskStatus(task.id, "todo");
+        await transitionTaskStatus(task.id, "todo", {
+          source: "task-executor-failed",
+          taskTitle,
+          branch: result?.branch || task?.branchName || null,
+          baseBranch: result?.baseBranch || baseBranch || null,
+          worktreePath,
+          error: result?.error || null,
+        });
       } catch {
         /* best-effort */
       }
@@ -6102,10 +6341,13 @@ class TaskExecutor {
 
     try {
       if (task?.id) {
-        setInternalStatus(task.id, "done", "task-executor");
+        transitionInternalTaskStatus(task.id, "done", "task-executor");
         updateInternalTask(task.id, { externalStatus: "done" });
       }
-      await updateTaskStatus(issueNumber, "done");
+      await transitionTaskStatus(issueNumber, "done", {
+        source: "task-executor-issue-finalize",
+        taskTitle: task?.title || "",
+      });
       console.log(
         `${TAG} closed issue #${issueNumber} after PR #${prNumber} merge`,
       );
@@ -6621,6 +6863,3 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
-
-
-
