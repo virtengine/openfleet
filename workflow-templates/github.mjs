@@ -21,9 +21,9 @@ export const PR_MERGE_STRATEGY_TEMPLATE = {
   id: "template-pr-merge-strategy",
   name: "PR Merge Strategy",
   description:
-    "Automated PR merge decision workflow. Analyzes diffs, CI status, " +
-    "and agent output to decide: merge, prompt agent, re-attempt, " +
-    "close, request manual review, or wait. Based on Bosun's merge-strategy engine.",
+    "Automated PR merge decision workflow with resilient retry paths. " +
+    "Analyzes CI + agent output, executes merge/prompt/close/re-attempt " +
+    "actions, and escalates gracefully when any branch action fails.",
   category: "github",
   enabled: true,
   recommended: true,
@@ -98,25 +98,52 @@ Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optio
 
     node("do-merge", "action.run_command", "Auto-Merge PR", {
       command: "gh pr merge {{prNumber}} --auto --squash",
+      failOnError: true,
+      maxRetries: "{{maxRetries}}",
+      retryDelayMs: 30000,
+      continueOnError: true,
     }, { x: 100, y: 680 }),
 
     node("do-prompt", "action.run_agent", "Prompt Agent", {
       prompt: "Continue working on the PR. Instructions: {{decision.message}}",
       timeoutMs: 3600000,
+      failOnError: true,
+      maxRetries: 2,
+      retryDelayMs: 15000,
+      continueOnError: true,
     }, { x: 300, y: 680 }),
 
     node("do-close", "action.run_command", "Close PR", {
       command: "gh pr close {{prNumber}} --comment \"{{decision.reason}}\"",
+      failOnError: true,
+      maxRetries: 2,
+      retryDelayMs: 15000,
+      continueOnError: true,
     }, { x: 500, y: 680 }),
 
     node("do-retry", "action.run_agent", "Re-attempt Task", {
       prompt: "Start the task over from scratch. Previous attempt failed: {{decision.reason}}",
       timeoutMs: 3600000,
+      failOnError: true,
+      maxRetries: 2,
+      retryDelayMs: 15000,
+      continueOnError: true,
     }, { x: 700, y: 680 }),
 
     node("do-escalate", "notify.telegram", "Escalate to Human", {
       message: "👀 PR #{{prNumber}} needs manual review: {{decision.reason}}",
     }, { x: 900, y: 680 }),
+
+    node("action-succeeded", "condition.expression", "Action Succeeded?", {
+      expression:
+        "(() => { const action = String($data?.decision?.action || '').trim().toLowerCase(); if (action === 'merge_after_ci_pass') return $ctx.getNodeOutput('do-merge')?.success === true; if (action === 'prompt') return $ctx.getNodeOutput('do-prompt')?.success === true; if (action === 'close_pr') return $ctx.getNodeOutput('do-close')?.success === true; if (action === 're_attempt') return $ctx.getNodeOutput('do-retry')?.success === true; if (action === 'manual_review') return $ctx.getNodeOutput('do-escalate')?.sent !== false; return true; })()",
+    }, { x: 480, y: 770, outputs: ["yes", "no"] }),
+
+    node("notify-action-failed", "notify.telegram", "Escalate Action Failure", {
+      message:
+        "⚠️ PR #{{prNumber}} workflow action failed after retries ({{decision.action}}). " +
+        "Reason: {{decision.reason}}. Manual follow-up required.",
+    }, { x: 760, y: 850 }),
 
     node("notify-complete", "notify.log", "Log Result", {
       message: "PR #{{prNumber}} merge strategy: {{decision.action}} — {{decision.reason}}",
@@ -140,11 +167,14 @@ Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optio
     edge("decision-router", "do-escalate", { port: "escalate" }),
     edge("decision-router", "wait-for-ci", { port: "wait-for-ci" }),
     edge("decision-router", "notify-complete", { port: "default" }),
-    edge("do-merge", "notify-complete"),
-    edge("do-prompt", "notify-complete"),
-    edge("do-close", "notify-complete"),
-    edge("do-retry", "notify-complete"),
-    edge("do-escalate", "notify-complete"),
+    edge("do-merge", "action-succeeded"),
+    edge("do-prompt", "action-succeeded"),
+    edge("do-close", "action-succeeded"),
+    edge("do-retry", "action-succeeded"),
+    edge("do-escalate", "action-succeeded"),
+    edge("action-succeeded", "notify-complete", { condition: "$output?.result === true", port: "yes" }),
+    edge("action-succeeded", "notify-action-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("notify-action-failed", "notify-complete"),
   ],
   metadata: {
     author: "bosun",
@@ -279,6 +309,7 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
   variables: {
     checkIntervalMs: 1800000,
     maxConcurrentFixes: 3,
+    maxRetries: 3,
   },
   nodes: [
     node("trigger", "trigger.schedule", "Check Every 30min", {
@@ -290,60 +321,95 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
       command: "gh pr list --json number,title,headRefName,mergeable,statusCheckRollup --limit 20",
     }, { x: 400, y: 180 }),
 
+    node("target-pr", "action.set_variable", "Pick Conflict PR", {
+      key: "targetPrNumber",
+      value:
+        "(() => { const raw = $ctx.getNodeOutput('list-prs')?.output || '[]'; let prs = []; try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; } if (!Array.isArray(prs)) return ''; const conflict = prs.find((pr) => ['CONFLICTING', 'BEHIND'].includes(String(pr?.mergeable || '').toUpperCase())); return conflict?.number ? String(conflict.number) : ''; })()",
+      isExpression: true,
+    }, { x: 400, y: 260 }),
+
+    node("target-branch", "action.set_variable", "Capture Conflict Branch", {
+      key: "targetPrBranch",
+      value:
+        "(() => { const raw = $ctx.getNodeOutput('list-prs')?.output || '[]'; let prs = []; try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; } if (!Array.isArray(prs)) return ''; const conflict = prs.find((pr) => String(pr?.number || '') === String($data?.targetPrNumber || '')); return conflict?.headRefName || ''; })()",
+      isExpression: true,
+    }, { x: 400, y: 340 }),
+
     node("has-conflicts", "condition.expression", "Any Conflicts?", {
-      expression: "($ctx.getNodeOutput('list-prs')?.output || '').includes('CONFLICTING') || ($ctx.getNodeOutput('list-prs')?.output || '').includes('BEHIND')",
-    }, { x: 400, y: 330 }),
+      expression: "Boolean($data?.targetPrNumber)",
+    }, { x: 400, y: 430 }),
 
     node("resolve-conflicts", "action.run_agent", "Resolve Conflicts", {
-      prompt: `You are a merge conflict resolution agent. For each PR with conflicts:
-1. Check out the branch
-2. Rebase onto main (or the base branch)
-3. Resolve any conflicts — prefer the feature branch changes but ensure tests pass
-4. Force-push the rebased branch
-5. Verify CI passes
+      prompt: `You are a merge conflict resolution agent for PR #{{targetPrNumber}} on branch {{targetPrBranch}}.
+1. Check out the PR branch
+2. Rebase onto main (or the configured base branch)
+3. Resolve merge conflicts while preserving intended behavior
+4. Run the repo's build/tests to validate the resolution
+5. Push the resolved branch and leave CI re-running
 
-Only fix conflicts, do NOT change any logic. Keep changes minimal.`,
+Only perform minimal conflict-resolution changes. Do NOT add unrelated refactors.`,
       sdk: "auto",
       timeoutMs: 1800000,
-    }, { x: 200, y: 500 }),
+      failOnError: true,
+      maxRetries: "{{maxRetries}}",
+      retryDelayMs: 30000,
+      continueOnError: true,
+    }, { x: 200, y: 590 }),
 
     node("verify-ci", "action.run_command", "Verify CI Green", {
-      command: "gh pr checks --json name,state",
-    }, { x: 200, y: 660 }),
+      command: "gh pr checks {{targetPrNumber}} --json name,state",
+      failOnError: true,
+      maxRetries: "{{maxRetries}}",
+      retryDelayMs: 30000,
+      continueOnError: true,
+    }, { x: 200, y: 750 }),
 
-    node("auto-merge", "condition.expression", "CI Passed?", {
-      expression: "$ctx.getNodeOutput('verify-ci')?.success === true",
-    }, { x: 200, y: 810 }),
+    node("ci-passed", "condition.expression", "CI Passed?", {
+      expression:
+        "(() => { const out = $ctx.getNodeOutput('verify-ci'); if (!out || out.success !== true) return false; let checks = []; try { checks = JSON.parse(out.output || '[]'); } catch { return false; } if (!Array.isArray(checks) || checks.length === 0) return false; const ok = new Set(['SUCCESS', 'PASSED', 'PASS', 'COMPLETED', 'NEUTRAL', 'SKIPPED']); return checks.every((c) => ok.has(String(c?.state || '').toUpperCase())); })()",
+    }, { x: 200, y: 910 }),
 
     node("do-merge", "action.run_command", "Auto-Merge", {
-      command: "gh pr merge --auto --squash",
-    }, { x: 100, y: 960 }),
+      command: "gh pr merge {{targetPrNumber}} --auto --squash",
+      failOnError: true,
+      maxRetries: "{{maxRetries}}",
+      retryDelayMs: 20000,
+      continueOnError: true,
+    }, { x: 100, y: 1040 }),
+
+    node("merge-succeeded", "condition.expression", "Merge Succeeded?", {
+      expression: "$ctx.getNodeOutput('do-merge')?.success === true",
+    }, { x: 100, y: 1140 }),
 
     node("notify-fixed", "notify.telegram", "Notify Fixed", {
-      message: "🔧 PR conflicts auto-resolved and merged",
+      message: "🔧 PR #{{targetPrNumber}} conflicts auto-resolved and merged",
       silent: true,
-    }, { x: 100, y: 1100 }),
+    }, { x: 100, y: 1260 }),
 
     node("notify-failed", "notify.log", "Log CI Failed", {
-      message: "PR conflict resolved but CI still failing — needs manual review",
+      message: "PR #{{targetPrNumber}} conflict auto-resolution could not complete cleanly — manual review required",
       level: "warn",
-    }, { x: 400, y: 960 }),
+    }, { x: 420, y: 1040 }),
 
     node("skip", "notify.log", "No Conflicts", {
       message: "All PRs are clean — no conflicts found",
       level: "info",
-    }, { x: 600, y: 330 }),
+    }, { x: 620, y: 430 }),
   ],
   edges: [
     edge("trigger", "list-prs"),
-    edge("list-prs", "has-conflicts"),
+    edge("list-prs", "target-pr"),
+    edge("target-pr", "target-branch"),
+    edge("target-branch", "has-conflicts"),
     edge("has-conflicts", "resolve-conflicts", { condition: "$output?.result === true" }),
     edge("has-conflicts", "skip", { condition: "$output?.result !== true" }),
     edge("resolve-conflicts", "verify-ci"),
-    edge("verify-ci", "auto-merge"),
-    edge("auto-merge", "do-merge", { condition: "$output?.result === true" }),
-    edge("auto-merge", "notify-failed", { condition: "$output?.result !== true" }),
-    edge("do-merge", "notify-fixed"),
+    edge("verify-ci", "ci-passed"),
+    edge("ci-passed", "do-merge", { condition: "$output?.result === true" }),
+    edge("ci-passed", "notify-failed", { condition: "$output?.result !== true" }),
+    edge("do-merge", "merge-succeeded"),
+    edge("merge-succeeded", "notify-fixed", { condition: "$output?.result === true" }),
+    edge("merge-succeeded", "notify-failed", { condition: "$output?.result !== true" }),
   ],
   metadata: {
     author: "bosun",

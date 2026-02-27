@@ -513,12 +513,24 @@ Commit with message "feat: implement [feature]"`,
       body: "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing.",
       branch: "feat/{{taskSlug}}",
       baseBranch: "main",
+      failOnError: true,
+      maxRetries: 3,
+      retryDelayMs: 15000,
+      continueOnError: true,
     }, { x: 250, y: 1170 }),
+
+    node("pr-created", "condition.expression", "PR Created?", {
+      expression: "$ctx.getNodeOutput('create-pr')?.success === true",
+    }, { x: 250, y: 1240, outputs: ["yes", "no"] }),
 
     node("notify-done", "notify.log", "Task Complete", {
       message: "Backend agent completed task — PR created",
       level: "info",
-    }, { x: 250, y: 1300 }),
+    }, { x: 180, y: 1320 }),
+
+    node("notify-pr-failed", "notify.telegram", "Escalate PR Creation Failure", {
+      message: "⚠️ Backend agent passed validation for {{taskTitle}} but failed to open PR after retries. Manual PR creation required.",
+    }, { x: 420, y: 1320 }),
 
     node("set-validation-summary", "action.set_variable", "Summarize Validation Output", {
       key: "validationSummary",
@@ -570,16 +582,28 @@ Commit with message "fix: address backend workflow validation failures"`,
       body: "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation.",
       branch: "feat/{{taskSlug}}",
       baseBranch: "main",
+      failOnError: true,
+      maxRetries: 3,
+      retryDelayMs: 15000,
+      continueOnError: true,
     }, { x: 450, y: 1820 }),
+
+    node("pr-created-retry", "condition.expression", "PR Created (Retry Path)?", {
+      expression: "$ctx.getNodeOutput('create-pr-retry')?.success === true",
+    }, { x: 450, y: 1890, outputs: ["yes", "no"] }),
 
     node("notify-done-retry", "notify.log", "Task Complete (After Retry)", {
       message: "Backend agent completed task after retry — PR created",
       level: "info",
-    }, { x: 450, y: 1950 }),
+    }, { x: 360, y: 1980 }),
 
     node("notify-fail", "notify.telegram", "Checks Failed", {
       message: "⚠️ Backend agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed.",
     }, { x: 820, y: 1820 }),
+
+    node("notify-pr-failed-retry", "notify.telegram", "Escalate PR Failure (Retry Path)", {
+      message: "⚠️ Backend agent remediation passed for {{taskTitle}} but PR creation failed after retries. Manual PR creation required.",
+    }, { x: 620, y: 1980 }),
   ],
   edges: [
     edge("trigger", "plan-work"),
@@ -592,14 +616,18 @@ Commit with message "fix: address backend workflow validation failures"`,
     edge("all-passed", "create-pr", { condition: "$output?.result === true", port: "yes" }),
     edge("all-passed", "set-validation-summary", { condition: "$output?.result !== true", port: "no" }),
     edge("set-validation-summary", "auto-fix"),
-    edge("create-pr", "notify-done"),
+    edge("create-pr", "pr-created"),
+    edge("pr-created", "notify-done", { condition: "$output?.result === true", port: "yes" }),
+    edge("pr-created", "notify-pr-failed", { condition: "$output?.result !== true", port: "no" }),
     edge("auto-fix", "build-retry"),
     edge("build-retry", "test-retry"),
     edge("test-retry", "lint-retry"),
     edge("lint-retry", "retry-passed"),
     edge("retry-passed", "create-pr-retry", { condition: "$output?.result === true", port: "yes" }),
     edge("retry-passed", "notify-fail", { condition: "$output?.result !== true", port: "no" }),
-    edge("create-pr-retry", "notify-done-retry"),
+    edge("create-pr-retry", "pr-created-retry"),
+    edge("pr-created-retry", "notify-done-retry", { condition: "$output?.result === true", port: "yes" }),
+    edge("pr-created-retry", "notify-pr-failed-retry", { condition: "$output?.result !== true", port: "no" }),
   ],
   metadata: {
     author: "bosun",

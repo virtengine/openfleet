@@ -600,6 +600,7 @@ registerNodeType("action.run_agent", {
       timeoutMs: { type: "number", default: 3600000, description: "Agent timeout in ms" },
       agentProfile: { type: "string", description: "Agent profile name (e.g., 'frontend', 'backend')" },
       includeTaskContext: { type: "boolean", default: true, description: "Append task comments/attachments if available" },
+      failOnError: { type: "boolean", default: false, description: "Throw when agent returns success=false (enables workflow retries)" },
     },
     required: ["prompt"],
   },
@@ -665,6 +666,14 @@ registerNodeType("action.run_agent", {
         `Agent completed: success=${result.success} streamEvents=${streamEventCount}`,
       );
 
+      if (node.config?.failOnError && result.success !== true) {
+        const errorMessage = trimLogText(
+          result.error || result.output || "Agent reported failure",
+          400,
+        );
+        throw new Error(errorMessage || "Agent reported failure");
+      }
+
       // Propagate session/thread IDs for downstream chaining
       const threadId = result.threadId || result.sessionId || null;
       if (threadId) {
@@ -689,8 +698,13 @@ registerNodeType("action.run_agent", {
         `node -e "import('./agent-pool.mjs').then(m => m.launchEphemeralThread(process.argv[1], process.argv[2], ${timeoutMs}).then(r => console.log(JSON.stringify(r))))" "${finalPrompt.replace(/"/g, '\\"')}" "${cwd}"`,
         { cwd: resolve(dirname(new URL(import.meta.url).pathname)), timeout: timeoutMs + 30000, encoding: "utf8" }
       );
-      return JSON.parse(output);
+      const parsed = JSON.parse(output);
+      if (node.config?.failOnError && parsed?.success === false) {
+        throw new Error(trimLogText(parsed?.error || parsed?.output || "Agent reported failure", 400));
+      }
+      return parsed;
     } catch (err) {
+      if (node.config?.failOnError) throw err;
       return { success: false, error: err.message };
     }
   },
@@ -706,6 +720,7 @@ registerNodeType("action.run_command", {
       timeoutMs: { type: "number", default: 300000 },
       shell: { type: "string", default: "auto", enum: ["auto", "bash", "pwsh", "cmd"] },
       captureOutput: { type: "boolean", default: true },
+      failOnError: { type: "boolean", default: false, description: "Throw on non-zero exit status (enables workflow retries)" },
     },
     required: ["command"],
   },
@@ -732,13 +747,18 @@ registerNodeType("action.run_command", {
     } catch (err) {
       const output = err.stdout?.toString() || "";
       const stderr = err.stderr?.toString() || "";
-      return {
+      const result = {
         success: false,
         output,
         stderr,
         exitCode: err.status,
         error: err.message,
       };
+      if (node.config?.failOnError) {
+        const reason = trimLogText(stderr || output || err.message, 400) || err.message;
+        throw new Error(reason);
+      }
+      return result;
     }
   },
 });
@@ -938,6 +958,7 @@ registerNodeType("action.create_pr", {
       branch: { type: "string", description: "Head branch to open PR from" },
       draft: { type: "boolean", default: false },
       cwd: { type: "string" },
+      failOnError: { type: "boolean", default: false, description: "Throw when PR creation fails (enables workflow retries)" },
     },
     required: ["title"],
   },
@@ -956,6 +977,12 @@ registerNodeType("action.create_pr", {
       const output = execSync(cmd, { cwd, encoding: "utf8", timeout: 60000 });
       return { success: true, url: output?.trim(), title, base, branch: branch || null };
     } catch (err) {
+      if (node.config?.failOnError) {
+        const stderr = err.stderr?.toString() || "";
+        const stdout = err.stdout?.toString() || "";
+        const reason = trimLogText(stderr || stdout || err.message, 400) || err.message;
+        throw new Error(reason);
+      }
       return { success: false, error: err.message };
     }
   },

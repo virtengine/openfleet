@@ -21,6 +21,12 @@ import { execSync } from "node:child_process";
 import { homedir } from "node:os";
 import { scaffoldSkills } from "./bosun-skills.mjs";
 import { ensureCodexConfig, ensureTrustedProjects } from "./codex-config.mjs";
+import {
+  listTemplates as listWorkflowTemplates,
+  listWorkflowSetupProfiles,
+  getWorkflowSetupProfile,
+  resolveWorkflowTemplateIds,
+} from "./workflow-templates.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -142,6 +148,36 @@ const KANBAN_BACKENDS = [
   { value: "jira", label: "Atlassian Jira" },
 ];
 
+const WORKFLOW_TEMPLATE_SUMMARIES = Object.freeze(listWorkflowTemplates());
+const WORKFLOW_TEMPLATE_ID_SET = new Set(
+  WORKFLOW_TEMPLATE_SUMMARIES.map((template) => String(template.id || "").trim()).filter(Boolean),
+);
+const WORKFLOW_SETUP_PROFILES = Object.freeze(listWorkflowSetupProfiles());
+const WORKFLOW_SETUP_PROFILE_IDS = new Set(
+  WORKFLOW_SETUP_PROFILES.map((profile) => String(profile.id || "").trim()).filter(Boolean),
+);
+
+function normalizeWorkflowProfile(rawValue, fallback = "balanced") {
+  const normalized = String(rawValue || "").trim().toLowerCase();
+  if (WORKFLOW_SETUP_PROFILE_IDS.has(normalized)) return normalized;
+  return fallback;
+}
+
+function normalizeWorkflowTemplateIds(rawValue, fallback = []) {
+  const source = Array.isArray(rawValue)
+    ? rawValue
+    : String(rawValue || "")
+      .split(",");
+  const normalized = [];
+  for (const entry of source) {
+    const id = String(entry || "").trim();
+    if (!id || !WORKFLOW_TEMPLATE_ID_SET.has(id) || normalized.includes(id)) continue;
+    normalized.push(id);
+  }
+  if (normalized.length > 0) return normalized;
+  return Array.isArray(fallback) ? [...fallback] : [];
+}
+
 function buildStableSetupDefaults({
   projectName,
   slug,
@@ -149,6 +185,7 @@ function buildStableSetupDefaults({
   bosunHome,
   workspacesDir,
 }) {
+  const defaultWorkflowProfile = getWorkflowSetupProfile("balanced");
   return {
     projectName: projectName || slug?.split("/").pop() || "my-project",
     repoSlug: slug,
@@ -185,6 +222,14 @@ function buildStableSetupDefaults({
     internalReplenishMin: 1,
     internalReplenishMax: 2,
     workflowAutomationEnabled: true,
+    workflowProfile: defaultWorkflowProfile.id,
+    workflowDefaultTemplates: [...defaultWorkflowProfile.templateIds],
+    workflowAutoInstall: true,
+    workflowNodeMaxRetries: 3,
+    workflowNodeTimeoutMs: 600000,
+    workflowRunStuckThresholdMs: 300000,
+    workflowMaxPersistedRuns: 200,
+    workflowMaxConcurrentBranches: 8,
     copilotEnableAllMcpTools: false,
     // Backward-compatible fields consumed by older setup UI revisions.
     distribution: "primary-only",
@@ -408,6 +453,91 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
       sourceEnv.WORKFLOW_AUTOMATION_ENABLED,
     ),
     true,
+  );
+  const workflowProfile = normalizeWorkflowProfile(
+    pickNonEmptyValue(
+      env.workflowProfile,
+      envMap.WORKFLOW_DEFAULT_PROFILE,
+      sourceEnv.WORKFLOW_DEFAULT_PROFILE,
+    ),
+    "balanced",
+  );
+  envMap.WORKFLOW_DEFAULT_PROFILE = workflowProfile;
+  envMap.WORKFLOW_DEFAULT_AUTOINSTALL = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.workflowAutoInstall,
+      envMap.WORKFLOW_DEFAULT_AUTOINSTALL,
+      sourceEnv.WORKFLOW_DEFAULT_AUTOINSTALL,
+    ),
+    true,
+  );
+  const fallbackWorkflowTemplates = resolveWorkflowTemplateIds({
+    profileId: workflowProfile,
+  });
+  const workflowTemplates = normalizeWorkflowTemplateIds(
+    pickNonEmptyValue(
+      env.workflowDefaultTemplates,
+      envMap.WORKFLOW_DEFAULT_TEMPLATES,
+      sourceEnv.WORKFLOW_DEFAULT_TEMPLATES,
+    ),
+    fallbackWorkflowTemplates,
+  );
+  envMap.WORKFLOW_DEFAULT_TEMPLATES =
+    workflowTemplates.length > 0 ? workflowTemplates.join(",") : "none";
+  envMap.WORKFLOW_NODE_MAX_RETRIES = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.workflowNodeMaxRetries,
+        envMap.WORKFLOW_NODE_MAX_RETRIES,
+        sourceEnv.WORKFLOW_NODE_MAX_RETRIES,
+      ),
+      3,
+      { min: 0, max: 20 },
+    ),
+  );
+  envMap.WORKFLOW_NODE_TIMEOUT_MS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.workflowNodeTimeoutMs,
+        envMap.WORKFLOW_NODE_TIMEOUT_MS,
+        sourceEnv.WORKFLOW_NODE_TIMEOUT_MS,
+      ),
+      600000,
+      { min: 1000, max: 21_600_000 },
+    ),
+  );
+  envMap.WORKFLOW_RUN_STUCK_THRESHOLD_MS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.workflowRunStuckThresholdMs,
+        envMap.WORKFLOW_RUN_STUCK_THRESHOLD_MS,
+        sourceEnv.WORKFLOW_RUN_STUCK_THRESHOLD_MS,
+      ),
+      300000,
+      { min: 10000, max: 7_200_000 },
+    ),
+  );
+  envMap.WORKFLOW_MAX_PERSISTED_RUNS = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.workflowMaxPersistedRuns,
+        envMap.WORKFLOW_MAX_PERSISTED_RUNS,
+        sourceEnv.WORKFLOW_MAX_PERSISTED_RUNS,
+      ),
+      200,
+      { min: 20, max: 5000 },
+    ),
+  );
+  envMap.WORKFLOW_MAX_CONCURRENT_BRANCHES = String(
+    toBoundedInt(
+      pickNonEmptyValue(
+        env.workflowMaxConcurrentBranches,
+        envMap.WORKFLOW_MAX_CONCURRENT_BRANCHES,
+        sourceEnv.WORKFLOW_MAX_CONCURRENT_BRANCHES,
+      ),
+      8,
+      { min: 1, max: 64 },
+    ),
   );
   envMap.COPILOT_ENABLE_ALL_GITHUB_MCP_TOOLS = toBooleanEnvString(
     pickNonEmptyValue(
@@ -802,6 +932,27 @@ function handleExecutors() {
   return { ok: true, executors: EXECUTOR_TYPES, kanbanBackends: KANBAN_BACKENDS };
 }
 
+function handleWorkflowTemplates() {
+  const profileLookup = new Map(
+    WORKFLOW_SETUP_PROFILES.map((profile) => [profile.id, profile]),
+  );
+  const templates = WORKFLOW_TEMPLATE_SUMMARIES.map((template) => ({
+    ...template,
+    setupProfileIds: Array.from(profileLookup.values())
+      .filter((profile) => profile.templateIds.includes(template.id))
+      .map((profile) => profile.id),
+  }));
+  return {
+    ok: true,
+    templates,
+    profiles: WORKFLOW_SETUP_PROFILES.map((profile) => ({
+      ...profile,
+      templateCount: profile.templateIds.length,
+    })),
+    recommendedProfile: "balanced",
+  };
+}
+
 /**
  * Attempt to fetch the live model list from an OpenAI-compatible endpoint.
  * Falls back to the static MODELS list if the probe fails.
@@ -1142,6 +1293,54 @@ function handleApply(body) {
       distribution: configJson.distribution || env.executorDistribution || "primary-only",
     };
 
+    const workflowProfile = normalizeWorkflowProfile(
+      configJson.workflowDefaults?.profile || env.workflowProfile,
+      "balanced",
+    );
+    const fallbackWorkflowTemplateIds = resolveWorkflowTemplateIds({ profileId: workflowProfile });
+    const workflowDefaultTemplateIds = normalizeWorkflowTemplateIds(
+      configJson.workflowDefaults?.templates || env.workflowDefaultTemplates,
+      fallbackWorkflowTemplateIds,
+    );
+    const workflowAutoInstall = Boolean(
+      configJson.workflowDefaults?.autoInstall ??
+      env.workflowAutoInstall ??
+      true,
+    );
+    const workflowEngineConfig = {
+      nodeMaxRetries: toBoundedInt(
+        configJson.workflowEngine?.nodeMaxRetries ?? env.workflowNodeMaxRetries,
+        3,
+        { min: 0, max: 20 },
+      ),
+      nodeTimeoutMs: toBoundedInt(
+        configJson.workflowEngine?.nodeTimeoutMs ?? env.workflowNodeTimeoutMs,
+        600000,
+        { min: 1000, max: 21_600_000 },
+      ),
+      runStuckThresholdMs: toBoundedInt(
+        configJson.workflowEngine?.runStuckThresholdMs ?? env.workflowRunStuckThresholdMs,
+        300000,
+        { min: 10000, max: 7_200_000 },
+      ),
+      maxPersistedRuns: toBoundedInt(
+        configJson.workflowEngine?.maxPersistedRuns ?? env.workflowMaxPersistedRuns,
+        200,
+        { min: 20, max: 5000 },
+      ),
+      maxConcurrentBranches: toBoundedInt(
+        configJson.workflowEngine?.maxConcurrentBranches ?? env.workflowMaxConcurrentBranches,
+        8,
+        { min: 1, max: 64 },
+      ),
+    };
+    config.workflowDefaults = {
+      profile: workflowProfile,
+      autoInstall: workflowAutoInstall,
+      templates: workflowDefaultTemplateIds,
+    };
+    config.workflowEngine = workflowEngineConfig;
+
     if (configJson.executorMode)               config.executorMode               = configJson.executorMode;
     if (configJson.primaryAgent)               config.primaryAgent               = configJson.primaryAgent;
     if (configJson.projectRequirementsProfile) config.projectRequirementsProfile = configJson.projectRequirementsProfile;
@@ -1296,6 +1495,9 @@ async function handleRequest(req, res) {
           return;
         case "executors":
           jsonResponse(res, 200, handleExecutors());
+          return;
+        case "workflows":
+          jsonResponse(res, 200, handleWorkflowTemplates());
           return;
         case "validate":
           if (req.method !== "POST") {

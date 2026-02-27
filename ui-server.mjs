@@ -161,6 +161,81 @@ let _wfInitPromise = null;
 let _wfInitDone = false;
 let _wfLoadedBase = null;
 
+function parseBooleanEnv(rawValue, fallback = false) {
+  if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") {
+    return fallback;
+  }
+  const normalized = String(rawValue).trim().toLowerCase();
+  if (["1", "true", "yes", "on", "y"].includes(normalized)) return true;
+  if (["0", "false", "no", "off", "n"].includes(normalized)) return false;
+  return fallback;
+}
+
+function parseTemplateIdList(rawValue) {
+  return String(rawValue || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function resolveWorkflowBootstrapSelection(templatesModule) {
+  const autoInstallEnabled = parseBooleanEnv(
+    process.env.WORKFLOW_DEFAULT_AUTOINSTALL,
+    true,
+  );
+  if (!autoInstallEnabled) {
+    return {
+      enabled: false,
+      source: "disabled",
+      profileId: null,
+      templateIds: [],
+    };
+  }
+
+  const hasTemplateEnv = Object.prototype.hasOwnProperty.call(
+    process.env,
+    "WORKFLOW_DEFAULT_TEMPLATES",
+  );
+  const rawTemplateEnv = String(process.env.WORKFLOW_DEFAULT_TEMPLATES || "").trim();
+  if (hasTemplateEnv) {
+    const lowered = rawTemplateEnv.toLowerCase();
+    if (!rawTemplateEnv || ["none", "off", "disabled", "false"].includes(lowered)) {
+      return {
+        enabled: true,
+        source: "custom:none",
+        profileId: null,
+        templateIds: [],
+      };
+    }
+    return {
+      enabled: true,
+      source: "custom:list",
+      profileId: null,
+      templateIds: parseTemplateIdList(rawTemplateEnv),
+    };
+  }
+
+  const profileId = String(
+    process.env.WORKFLOW_DEFAULT_PROFILE || "balanced",
+  ).trim().toLowerCase();
+
+  if (typeof templatesModule?.resolveWorkflowTemplateIds === "function") {
+    return {
+      enabled: true,
+      source: "profile",
+      profileId,
+      templateIds: templatesModule.resolveWorkflowTemplateIds({ profileId }),
+    };
+  }
+
+  return {
+    enabled: true,
+    source: "recommended",
+    profileId: null,
+    templateIds: [],
+  };
+}
+
 async function getWorkflowEngineModule() {
   if (_wfEngine) return _wfEngine;
   if (_wfInitDone) return _wfEngine;          // failed previously → don't retry
@@ -282,18 +357,45 @@ async function getWorkflowEngineModule() {
       }
     }
 
-    if (!_wfRecommendedInstalled && _wfTemplates?.installRecommendedTemplates) {
+    if (!_wfRecommendedInstalled && _wfTemplates) {
       try {
         const engine = _wfEngine.getWorkflowEngine();
-        const result = _wfTemplates.installRecommendedTemplates(engine);
+        const selection = resolveWorkflowBootstrapSelection(_wfTemplates);
+        let result = { installed: [], skipped: [], errors: [] };
+
+        if (selection.enabled) {
+          if (
+            Array.isArray(selection.templateIds) &&
+            selection.templateIds.length > 0 &&
+            typeof _wfTemplates.installTemplateSet === "function"
+          ) {
+            result = _wfTemplates.installTemplateSet(engine, selection.templateIds);
+          } else if (
+            selection.source === "recommended" &&
+            typeof _wfTemplates.installRecommendedTemplates === "function"
+          ) {
+            result = _wfTemplates.installRecommendedTemplates(engine);
+          }
+        }
+
         if (result.installed.length) {
-          console.log(`[workflows] Installed ${result.installed.length} recommended templates`);
+          const suffix = selection.profileId ? ` (profile: ${selection.profileId})` : "";
+          console.log(
+            `[workflows] Installed ${result.installed.length} default workflow templates${suffix}`,
+          );
+        } else if (!selection.enabled) {
+          console.log("[workflows] Default template auto-install disabled by WORKFLOW_DEFAULT_AUTOINSTALL=false");
+        } else if (
+          selection.source.startsWith("custom:") &&
+          selection.templateIds.length === 0
+        ) {
+          console.log("[workflows] Default template selection is empty (custom:none)");
         }
         if (result.errors.length) {
-          console.warn("[workflows] Recommended template install errors:", result.errors);
+          console.warn("[workflows] Default template install errors:", result.errors);
         }
       } catch (err) {
-        console.warn("[workflows] Recommended template install failed:", err.message);
+        console.warn("[workflows] Default template install failed:", err.message);
       } finally {
         _wfRecommendedInstalled = true;
       }
@@ -3032,14 +3134,6 @@ function stopWsHeartbeat() {
     clearInterval(wsHeartbeatTimer);
     wsHeartbeatTimer = null;
   }
-}
-
-function parseBooleanEnv(value, fallback = false) {
-  if (value === undefined || value === null || value === "") return fallback;
-  const raw = String(value).trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(raw)) return true;
-  if (["0", "false", "no", "off"].includes(raw)) return false;
-  return fallback;
 }
 
 function getGitHubWebhookPath() {
