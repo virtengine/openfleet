@@ -14857,7 +14857,12 @@ function isStreamNoise(msg) {
     msg.includes("This operation was aborted") ||
     msg.includes("setRawMode EIO") ||
     msg.includes("hard_timeout") ||
-    msg.includes("watchdog-timeout")
+    msg.includes("watchdog-timeout") ||
+    // Spawn failures: codex/copilot binary not found — transient noise, not a monitor bug
+    msg.includes("ENOENT") ||
+    msg.includes("The system cannot find the file specified") ||
+    msg.includes("os error 2") ||
+    msg.includes("spawn failed")
   );
 }
 

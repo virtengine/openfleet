@@ -355,6 +355,12 @@ function shouldFallbackForSdkError(error) {
   if (message.includes("overloaded") || message.includes("server error")) {
     return true;
   }
+  // Spawn failures: binary not found on Windows (.cmd resolution)
+  if (message.includes("enoent")) return true;
+  if (message.includes("file not found") || message.includes("file specified")) return true;
+  if (message.includes("os error 2")) return true;
+  if (message.includes("spawn failed")) return true;
+  if (message.includes("codex exec exited")) return true;
   return false;
 }
 
@@ -635,6 +641,16 @@ function shouldApplySdkCooldown(error) {
   if (message.includes("enotfound")) return true;
   if (message.includes("connection reset")) return true;
   if (message.includes("etimedout")) return true;
+  // Spawn failures (binary not found) — apply cooldown so we try fallback SDK
+  if (message.includes("enoent")) return true;
+  if (message.includes("file not found") || message.includes("file specified")) return true;
+  if (message.includes("os error 2")) return true;
+  if (message.includes("spawn failed")) return true;
+  // Spawn failures: codex binary not found on Windows (.cmd not resolved)
+  if (message.includes("enoent")) return true;
+  if (message.includes("file not found") || message.includes("file specified")) return true;
+  if (message.includes("os error 2")) return true;
+  if (message.includes("spawn failed")) return true;
   return false;
 }
 
