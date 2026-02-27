@@ -180,6 +180,7 @@
     "shared-workspace-cli.mjs",
     "shared-workspace-registry.mjs",
     "shared-workspaces.json",
+    "stream-resilience.mjs",
     "sync-engine.mjs",
     "task-archiver.mjs",
     "task-assessment.mjs",

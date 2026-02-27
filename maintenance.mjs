@@ -1019,6 +1019,55 @@ export function syncLocalTrackingBranches(repoRoot, branches) {
 
       if (behind === 0 && ahead === 0) continue; // Already in sync
 
+      // 'main' must always mirror upstream — NEVER push local commits.
+      // Hard-reset instead of rebase-push to prevent workspace drift.
+      if (branch === "main" && ahead > 0) {
+        if (branch === currentBranch) {
+          const reset = spawnSync("git", ["reset", "--hard", remoteRef], {
+            cwd: repoRoot,
+            encoding: "utf8",
+            timeout: 10_000,
+            windowsHide: true,
+          });
+          if (reset.status === 0) {
+            logThrottledBranchSync(
+              `sync:${branch}:hard-reset`,
+              `[maintenance] hard-reset 'main' to ${remoteRef} (was ${ahead}\u2191 ${behind}\u2193) — main must not diverge from upstream`,
+              "warn",
+            );
+            synced++;
+          } else {
+            logThrottledBranchSync(
+              `sync:${branch}:hard-reset-failed`,
+              `[maintenance] hard-reset of 'main' to ${remoteRef} failed`,
+              "error",
+            );
+          }
+        } else {
+          // Not checked out — force-update the ref directly
+          const update = spawnSync(
+            "git",
+            ["update-ref", `refs/heads/${branch}`, `refs/remotes/${remoteRef}`],
+            { cwd: repoRoot, timeout: 5000, windowsHide: true },
+          );
+          if (update.status === 0) {
+            logThrottledBranchSync(
+              `sync:${branch}:force-update-ref`,
+              `[maintenance] force-updated 'main' ref to ${remoteRef} (was ${ahead}\u2191 ${behind}\u2193) — discarded local-only commits`,
+              "warn",
+            );
+            synced++;
+          } else {
+            logThrottledBranchSync(
+              `sync:${branch}:force-update-ref-failed`,
+              `[maintenance] force-update of 'main' ref to ${remoteRef} failed`,
+              "error",
+            );
+          }
+        }
+        continue;
+      }
+
       // Local is ahead of remote but not behind — try a plain push
       if (behind === 0 && ahead > 0) {
         const push = spawnSync(
