@@ -14,6 +14,11 @@ import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 import { resolveRepoRoot } from "./repo-root.mjs";
 import { getGitHubToken } from "./github-auth-manager.mjs";
+import {
+  isTransientStreamError,
+  streamRetryDelay,
+  MAX_STREAM_RETRIES,
+} from "./stream-resilience.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
@@ -710,7 +715,7 @@ export async function execCopilotPrompt(userMessage, options = {}) {
     persistent = false,
   } = options;
 
-  if (activeTurn) {
+  if (activeTurn && !options._holdActiveTurn) {
     return {
       finalResponse:
         "⏳ Agent is still executing a previous task. Please wait.",
@@ -719,7 +724,9 @@ export async function execCopilotPrompt(userMessage, options = {}) {
     };
   }
 
-  activeTurn = true;
+  if (!options._holdActiveTurn) activeTurn = true;
+  /** Sentinel: true while a retry call is pending so finally skips cleanup. */
+  let _retryPending = false;
 
   if (!persistent) {
     // Task executor path — fresh session each call
@@ -841,22 +848,54 @@ export async function execCopilotPrompt(userMessage, options = {}) {
           : `⏱️ Agent timed out after ${timeoutMs / 1000}s`;
       return { finalResponse: msg, items: [], usage: null };
     }
+    // ── Transient stream retry ──────────────────────────────────────────────────
+    // Reset session and re-run; _retryPending holds the activeTurn lock.
+    if (isTransientStreamError(err)) {
+      const retryAttempt = (options._streamRetryAttempt || 0) + 1;
+      if (retryAttempt < MAX_STREAM_RETRIES) {
+        if (typeof unsubscribe === "function") try { unsubscribe(); } catch { /* best effort */ }
+        unsubscribe = null;
+        activeSession = null; // force getSession() to create a fresh session
+        const delay = streamRetryDelay(retryAttempt - 1);
+        console.warn(
+          `[copilot-shell] transient stream error (attempt ${retryAttempt}/${MAX_STREAM_RETRIES}): ${err.message || err} — retrying in ${Math.round(delay)}ms`,
+        );
+        _retryPending = true; // prevent outer finally from releasing activeTurn
+        await new Promise((r) => setTimeout(r, delay));
+        return execCopilotPrompt(userMessage, {
+          ...options,
+          _streamRetryAttempt: retryAttempt,
+          _holdActiveTurn: true, // skip activeTurn guard in recursive call
+        });
+      }
+      console.error(
+        `[copilot-shell] stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts`,
+      );
+      return {
+        finalResponse: `❌ Stream disconnected after ${MAX_STREAM_RETRIES} retries: ${err.message}`,
+        items: [],
+        usage: null,
+      };
+    }
     throw err;
   } finally {
-    if (typeof unsubscribe === "function") {
-      try {
-        unsubscribe();
-      } catch {
-        /* best effort */
+    // Only the outermost invocation (or the final retry) cleans up.
+    if (!_retryPending) {
+      if (typeof unsubscribe === "function") {
+        try {
+          unsubscribe();
+        } catch {
+          /* best effort */
+        }
+      } else if (typeof session.off === "function") {
+        try {
+          session.off(handleEvent);
+        } catch {
+          /* best effort */
+        }
       }
-    } else if (typeof session.off === "function") {
-      try {
-        session.off(handleEvent);
-      } catch {
-        /* best effort */
-      }
+      activeTurn = false;
     }
-    activeTurn = false;
   }
 }
 

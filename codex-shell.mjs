@@ -18,19 +18,18 @@ import { fileURLToPath } from "node:url";
 import { resolveAgentSdkConfig } from "./agent-sdk.mjs";
 import { resolveRepoRoot } from "./repo-root.mjs";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
+import {
+  isTransientStreamError,
+  streamRetryDelay,
+  MAX_STREAM_RETRIES,
+} from "./stream-resilience.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000; // 60 min for agentic tasks (matches Azure stream timeout)
-
-// ── Stream Resilience ────────────────────────────────────────────────────────
-// Azure gpt-5.x streams are prone to transient disconnections (response.failed).
-// We retry up to MAX_STREAM_RETRIES times with exponential backoff before giving up.
-const MAX_STREAM_RETRIES = 5;
-const STREAM_RETRY_BASE_MS = 2_000;  // 2 s → 4 s → 8 s → 16 s → 32 s
-const STREAM_RETRY_MAX_MS = 32_000;
+// MAX_STREAM_RETRIES, isTransientStreamError, streamRetryDelay ← imported from ./stream-resilience.mjs
 const STATE_FILE = resolve(__dirname, "logs", "codex-shell-state.json");
 const SESSIONS_DIR = resolve(__dirname, "logs", "sessions");
 const MAX_PERSISTENT_TURNS = 50;
@@ -473,39 +472,6 @@ function formatEvent(event) {
     default:
       return null;
   }
-}
-
-/**
- * Transient stream/network errors from Azure that are safe to retry without
- * resetting the thread.  The root cause is usually an intermittent TCP reset
- * or a transient Azure service blip (502/503/529), not corrupt thread state.
- */
-function isTransientStreamError(err) {
-  const msg = (err?.message || String(err || "")).toLowerCase();
-  return (
-    msg.includes("stream disconnected") ||
-    msg.includes("response.failed") ||
-    msg.includes("stream closed before") ||
-    msg.includes("stream ended before") ||
-    msg.includes("connection reset") ||
-    msg.includes("econnreset") ||
-    msg.includes("socket hang up") ||
-    msg.includes("network socket disconnected") ||
-    msg.includes("etimedout") ||
-    msg.includes("epipe") ||
-    // Azure transient HTTP errors
-    msg.includes("502") ||
-    msg.includes("503") ||
-    msg.includes("529") ||
-    msg.includes("service_unavailable") ||
-    msg.includes("rate_limit_exceeded")
-  );
-}
-
-/** Exponential backoff with jitter. */
-function streamRetryDelay(attempt) {
-  const base = Math.min(STREAM_RETRY_BASE_MS * 2 ** attempt, STREAM_RETRY_MAX_MS);
-  return base + Math.random() * 1_000;
 }
 
 function isRecoverableThreadError(err) {

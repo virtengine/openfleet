@@ -45,6 +45,11 @@ import { loadConfig } from "./config.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "./repo-root.mjs";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
 import { getGitHubToken } from "./github-auth-manager.mjs";
+import {
+  isTransientStreamError,
+  streamRetryDelay,
+  MAX_STREAM_RETRIES,
+} from "./stream-resilience.mjs";
 
 // Lazy-load MCP registry to avoid circular dependencies.
 // Cached at module scope per AGENTS.md hard rules.
@@ -1053,6 +1058,24 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
         threadId: null,
       };
     }
+    // ── Transient stream / network error ─ retry without resetting thread state ─
+    if (isTransientStreamError(err)) {
+      const retryAttempt = (extra._streamRetryAttempt || 0) + 1;
+      if (retryAttempt < MAX_STREAM_RETRIES) {
+        const delay = streamRetryDelay(retryAttempt - 1);
+        console.warn(
+          `${TAG} codex transient stream error (attempt ${retryAttempt}/${MAX_STREAM_RETRIES}): ${err.message || err} — retrying in ${Math.round(delay)}ms`,
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        return launchCodexThread(prompt, cwd, timeoutMs, {
+          ...extra,
+          _streamRetryAttempt: retryAttempt,
+        });
+      }
+      console.error(
+        `${TAG} codex stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts`,
+      );
+    }
     return {
       success: false,
       output: "",
@@ -1472,6 +1495,24 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
         threadId: resumeThreadId,
       };
     }
+    // ── Transient stream / network error ─ retry with a fresh Copilot session ─
+    if (!isTimeout && !isIdleWaitTimeout && isTransientStreamError(err)) {
+      const retryAttempt = (extra._streamRetryAttempt || 0) + 1;
+      if (retryAttempt < MAX_STREAM_RETRIES) {
+        const delay = streamRetryDelay(retryAttempt - 1);
+        console.warn(
+          `${TAG} copilot transient stream error (attempt ${retryAttempt}/${MAX_STREAM_RETRIES}): ${errMsg} — retrying in ${Math.round(delay)}ms`,
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        return launchCopilotThread(prompt, cwd, timeoutMs, {
+          ...extra,
+          _streamRetryAttempt: retryAttempt,
+        });
+      }
+      console.error(
+        `${TAG} copilot stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts`,
+      );
+    }
     return {
       success: false,
       output: "",
@@ -1845,6 +1886,24 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
         sdk: "claude",
         threadId: resumeThreadId,
       };
+    }
+    // ── Transient stream / network error ─ retry with a fresh Claude query ──
+    if (isTransientStreamError(err)) {
+      const retryAttempt = (extra._streamRetryAttempt || 0) + 1;
+      if (retryAttempt < MAX_STREAM_RETRIES) {
+        const delay = streamRetryDelay(retryAttempt - 1);
+        console.warn(
+          `${TAG} claude transient stream error (attempt ${retryAttempt}/${MAX_STREAM_RETRIES}): ${err.message || err} — retrying in ${Math.round(delay)}ms`,
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        return launchClaudeThread(prompt, cwd, timeoutMs, {
+          ...extra,
+          _streamRetryAttempt: retryAttempt,
+        });
+      }
+      console.error(
+        `${TAG} claude stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts`,
+      );
     }
     return {
       success: false,
