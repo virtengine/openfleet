@@ -614,9 +614,11 @@ async function pollAgentAlerts() {
       telegramChatId &&
       process.env.AGENT_ALERTS_NOTIFY === "true"
     ) {
-      void sendTelegramMessage(formatAgentAlert(alert), {
-        dedupKey: `agent-alert:${alert.type || "alert"}:${alert.attempt_id || "unknown"}`,
-      }).catch(() => {});
+      runDetached("agent-alerts:notify", () =>
+        sendTelegramMessage(formatAgentAlert(alert), {
+          dedupKey: `agent-alert:${alert.type || "alert"}:${alert.attempt_id || "unknown"}`,
+        }),
+      );
     }
   }
 }
@@ -649,10 +651,10 @@ function stopAgentWorkAnalyzer() {
 function startAgentAlertTailer() {
   if (agentAlertsTimer) return;
   agentAlertsTimer = setInterval(() => {
-    void pollAgentAlerts();
+    runDetached("agent-alerts:poll-interval", pollAgentAlerts);
   }, AGENT_ALERT_POLL_MS);
   agentAlertsTimer.unref?.();
-  void pollAgentAlerts();
+  runDetached("agent-alerts:poll-startup", pollAgentAlerts);
 }
 
 function stopAgentAlertTailer() {
@@ -2193,6 +2195,27 @@ function runGuarded(reason, fn) {
   }
 }
 
+function runDetached(label, promiseOrFn) {
+  if (shuttingDown) return;
+  try {
+    const pending =
+      typeof promiseOrFn === "function" ? promiseOrFn() : promiseOrFn;
+    if (pending && typeof pending.then === "function") {
+      pending.catch((err) => {
+        const error = err instanceof Error ? err : new Error(formatMonitorError(err));
+        console.warn(
+          `[monitor] detached task failed (${label}): ${error.stack || error.message}`,
+        );
+      });
+    }
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(formatMonitorError(err));
+    console.warn(
+      `[monitor] detached task failed (${label}): ${error.stack || error.message}`,
+    );
+  }
+}
+
 function safeSetInterval(reason, fn, ms) {
   return setInterval(() => runGuarded(`interval:${reason}`, fn), ms);
 }
@@ -2554,8 +2577,10 @@ function notifyVkError(line) {
   ]
     .filter(Boolean)
     .join("\n");
-  void sendTelegramMessage(message, { parseMode: "HTML" });
-  triggerVibeKanbanRecovery(line);
+  runDetached("vk-error:notify", () =>
+    sendTelegramMessage(message, { parseMode: "HTML" }),
+  );
+  runDetached("vk-error:trigger-recovery", () => triggerVibeKanbanRecovery(line));
 }
 
 function notifyCodexTrigger(context) {
@@ -3409,8 +3434,10 @@ async function fetchVk(path, opts = {}) {
       if (shouldLogVkWarning("network-error")) {
         console.warn(`[monitor] fetchVk ${method} ${path} error: ${msg}`);
       }
-      void triggerVibeKanbanRecovery(
-        `fetchVk ${method} ${path} network error: ${msg}`,
+      runDetached("fetchVk:network-recovery", () =>
+        triggerVibeKanbanRecovery(
+          `fetchVk ${method} ${path} network error: ${msg}`,
+        ),
       );
       noteVkErrorBurst("network-error");
     }
@@ -3428,8 +3455,10 @@ async function fetchVk(path, opts = {}) {
         `[monitor] fetchVk ${method} ${path} error: invalid response object (res=${!!res}, res.ok=${res?.ok})`,
       );
     }
-    void triggerVibeKanbanRecovery(
-      `fetchVk ${method} ${path} invalid response object`,
+    runDetached("fetchVk:invalid-response-recovery", () =>
+      triggerVibeKanbanRecovery(
+        `fetchVk ${method} ${path} invalid response object`,
+      ),
     );
     noteVkErrorBurst("invalid-response");
     return null;
@@ -3443,8 +3472,10 @@ async function fetchVk(path, opts = {}) {
       );
     }
     if (res.status >= 500) {
-      void triggerVibeKanbanRecovery(
-        `fetchVk ${method} ${path} HTTP ${res.status}`,
+      runDetached("fetchVk:http-5xx-recovery", () =>
+        triggerVibeKanbanRecovery(
+          `fetchVk ${method} ${path} HTTP ${res.status}`,
+        ),
       );
       noteVkErrorBurst("http-5xx");
     }
@@ -3482,8 +3513,10 @@ async function fetchVk(path, opts = {}) {
         );
       }
     }
-    void triggerVibeKanbanRecovery(
-      `fetchVk ${method} ${path} non-JSON response`,
+    runDetached("fetchVk:non-json-recovery", () =>
+      triggerVibeKanbanRecovery(
+        `fetchVk ${method} ${path} non-JSON response`,
+      ),
     );
     noteVkErrorBurst("non-json");
     if (now - vkNonJsonNotifiedAt > 10 * 60 * 1000) {
@@ -9253,11 +9286,15 @@ function startTaskPlannerStatusLoop() {
   if (!taskPlannerStatus.enabled || plannerMode === "disabled") return;
   taskPlannerStatus.timer = setInterval(() => {
     if (shuttingDown) return;
-    void publishTaskPlannerStatus("interval");
+    runDetached("task-planner-status:interval", () =>
+      publishTaskPlannerStatus("interval"),
+    );
   }, taskPlannerStatus.intervalMs);
   setTimeout(() => {
     if (shuttingDown) return;
-    void publishTaskPlannerStatus("startup");
+    runDetached("task-planner-status:startup", () =>
+      publishTaskPlannerStatus("startup"),
+    );
   }, 25_000);
 }
 
@@ -9480,7 +9517,7 @@ globalThis.__bosunNotifyAnomaly = (anomaly) => {
 
 function enqueueTelegramCommand(handler) {
   telegramCommandQueue.push(handler);
-  void drainTelegramCommandQueue();
+  runDetached("telegram-commands:drain", drainTelegramCommandQueue);
 }
 
 function drainTelegramCommandQueue() {
@@ -9976,10 +10013,18 @@ async function startTelegramNotifier() {
       `[monitor] notifier restarted (suppressed telegram notification — rapid restart)`,
     );
   } else {
-    void sendTelegramMessage(`${projectName} Orchestrator Notifier started.`);
+    runDetached("telegram-notifier:startup-message", () =>
+      sendTelegramMessage(`${projectName} Orchestrator Notifier started.`),
+    );
   }
-  telegramNotifierTimeout = setTimeout(sendUpdate, intervalMs);
-  telegramNotifierInterval = setInterval(sendUpdate, intervalMs);
+  telegramNotifierTimeout = setTimeout(
+    () => runDetached("telegram-notifier:timeout-update", sendUpdate),
+    intervalMs,
+  );
+  telegramNotifierInterval = setInterval(
+    () => runDetached("telegram-notifier:interval-update", sendUpdate),
+    intervalMs,
+  );
 }
 
 async function checkStatusMilestones() {
@@ -10467,7 +10512,9 @@ async function triggerTaskPlanner(
     } else {
       throw new Error(`Unknown planner mode: ${effectiveMode}`);
     }
-    void publishTaskPlannerStatus("trigger-success");
+    runDetached("task-planner-status:trigger-success", () =>
+      publishTaskPlannerStatus("trigger-success"),
+    );
     return result;
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
@@ -10481,7 +10528,9 @@ async function triggerTaskPlanner(
         `Task planner run failed (${effectiveMode}): ${message}`,
       );
     }
-    void publishTaskPlannerStatus("trigger-failed");
+    runDetached("task-planner-status:trigger-failed", () =>
+      publishTaskPlannerStatus("trigger-failed"),
+    );
     throw err; // re-throw so callers (e.g. /plan command) know it failed
   } finally {
     plannerTriggered = false;
