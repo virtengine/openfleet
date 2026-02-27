@@ -9251,13 +9251,13 @@ function startTaskPlannerStatusLoop() {
     Number(process.env.DEVMODE_TASK_PLANNER_STATUS_INTERVAL_MS || "1800000"),
   );
   if (!taskPlannerStatus.enabled || plannerMode === "disabled") return;
-  taskPlannerStatus.timer = setInterval(() => {
+  taskPlannerStatus.timer = safeSetInterval("task-planner-status", () => {
     if (shuttingDown) return;
-    void publishTaskPlannerStatus("interval");
+    return publishTaskPlannerStatus("interval");
   }, taskPlannerStatus.intervalMs);
-  setTimeout(() => {
+  safeSetTimeout("task-planner-status-startup", () => {
     if (shuttingDown) return;
-    void publishTaskPlannerStatus("startup");
+    return publishTaskPlannerStatus("startup");
   }, 25_000);
 }
 
@@ -9903,14 +9903,20 @@ function startTelegramCommandListener() {
   if (telegramCommandPolling) {
     return;
   }
-  void acquireTelegramPollLock("monitor").then((ok) => {
-    if (!ok) {
-      telegramCommandEnabled = false;
-      return;
-    }
-    telegramCommandPolling = true;
-    void pollTelegramCommands();
-  });
+  acquireTelegramPollLock("monitor")
+    .then((ok) => {
+      if (!ok) {
+        telegramCommandEnabled = false;
+        return;
+      }
+      telegramCommandPolling = true;
+      return pollTelegramCommands();
+    })
+    .catch((err) => {
+      console.warn(
+        `[monitor] telegram command listener start failed: ${err?.message || err}`,
+      );
+    });
 }
 
 async function startTelegramNotifier() {
@@ -9976,10 +9982,24 @@ async function startTelegramNotifier() {
       `[monitor] notifier restarted (suppressed telegram notification — rapid restart)`,
     );
   } else {
-    void sendTelegramMessage(`${projectName} Orchestrator Notifier started.`);
+    try {
+      await sendTelegramMessage(`${projectName} Orchestrator Notifier started.`);
+    } catch (err) {
+      console.warn(
+        `[monitor] notifier startup message failed: ${err?.message || err}`,
+      );
+    }
   }
-  telegramNotifierTimeout = setTimeout(sendUpdate, intervalMs);
-  telegramNotifierInterval = setInterval(sendUpdate, intervalMs);
+  telegramNotifierTimeout = safeSetTimeout(
+    "telegram-notifier-initial",
+    sendUpdate,
+    intervalMs,
+  );
+  telegramNotifierInterval = safeSetInterval(
+    "telegram-notifier-interval",
+    sendUpdate,
+    intervalMs,
+  );
 }
 
 async function checkStatusMilestones() {
@@ -10467,7 +10487,11 @@ async function triggerTaskPlanner(
     } else {
       throw new Error(`Unknown planner mode: ${effectiveMode}`);
     }
-    void publishTaskPlannerStatus("trigger-success");
+    publishTaskPlannerStatus("trigger-success").catch((statusErr) => {
+      console.warn(
+        `[monitor] task planner status publish failed (trigger-success): ${statusErr?.message || statusErr}`,
+      );
+    });
     return result;
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
@@ -10481,7 +10505,11 @@ async function triggerTaskPlanner(
         `Task planner run failed (${effectiveMode}): ${message}`,
       );
     }
-    void publishTaskPlannerStatus("trigger-failed");
+    publishTaskPlannerStatus("trigger-failed").catch((statusErr) => {
+      console.warn(
+        `[monitor] task planner status publish failed (trigger-failed): ${statusErr?.message || statusErr}`,
+      );
+    });
     throw err; // re-throw so callers (e.g. /plan command) know it failed
   } finally {
     plannerTriggered = false;

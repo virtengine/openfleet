@@ -2413,7 +2413,7 @@ class TaskExecutor {
     // Start watchdog to detect and kill stalled agent slots
     this._startWatchdog();
     // Resume interrupted in-progress tasks first, then poll todo backlog.
-    void ensureThreadRegistryLoaded()
+    ensureThreadRegistryLoaded()
       .catch((err) => {
         console.warn(
           `${TAG} thread registry load warning: ${err.message || err}`,
@@ -2434,9 +2434,15 @@ class TaskExecutor {
         );
       })
       .finally(() => {
-        void this._pollLoop();
+        this._pollLoop().catch((err) => {
+          console.error(`${TAG} initial poll loop failed: ${err?.message || err}`);
+        });
       });
-    this._pollTimer = setInterval(() => this._pollLoop(), this.pollIntervalMs);
+    this._pollTimer = setInterval(() => {
+      this._pollLoop().catch((err) => {
+        console.error(`${TAG} poll timer failure: ${err?.message || err}`);
+      });
+    }, this.pollIntervalMs);
     console.log(
       `${TAG} started — polling every ${this.pollIntervalMs / 1000}s for up to ${this.maxParallel} parallel tasks`,
     );
@@ -3185,7 +3191,7 @@ class TaskExecutor {
       available,
     );
     for (const task of toDispatch) {
-      void this.executeTask(task, { recoveredFromInProgress: true }).catch((err) => {
+      this.executeTask(task, { recoveredFromInProgress: true }).catch((err) => {
         console.error(
           `${TAG} in-progress recovery executeTask failed for "${task?.title || task?.id}": ${err.message || err}`,
         );
@@ -3458,7 +3464,11 @@ class TaskExecutor {
       }
     };
     const timer = setInterval(() => {
-      void renew();
+      renew().catch((err) => {
+        console.warn(
+          `${TAG} claim renewal timer failure for "${taskTitle || taskId}": ${err?.message || err}`,
+        );
+      });
     }, intervalMs);
     if (timer?.unref) timer.unref();
     this._taskClaimRenewTimers.set(taskId, timer);
@@ -6624,6 +6634,5 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
-
 
 

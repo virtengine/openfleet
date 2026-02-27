@@ -92,7 +92,7 @@
     "desktop:dist": "npm -C desktop run dist",
     "build": "node vendor-sync.mjs",
     "shared-workspaces": "node shared-workspace-cli.mjs",
-    "syntax:check": "node -e \"const fs=require('fs'),path=require('path');const files=fs.readdirSync('.').filter(f=>f.endsWith('.mjs'));let fail=0;for(const f of files){try{require('child_process').execSync('node --check '+f,{stdio:'pipe'});}catch(e){console.error('Syntax error: '+f);console.error(e.stderr.toString());fail=1;}}if(fail)process.exit(1);console.log('Syntax OK: '+files.length+' files checked');\"",
+    "syntax:check": "node --experimental-vm-modules -e \"const fs=require('fs');const vm=require('vm');const files=fs.readdirSync('.').filter(f=>f.endsWith('.mjs'));let fail=0;for(const f of files){try{new vm.SourceTextModule(fs.readFileSync(f,'utf8'),{identifier:f});}catch(e){const detail=e&&e.stack?e.stack:(e&&e.message?e.message:String(e));console.error('Syntax error: '+f);console.error(detail);fail=1;}}if(fail)process.exit(1);console.log('Syntax OK: '+files.length+' files checked');\"",
     "pretest": "npm run syntax:check",
     "test": "vitest run --config vitest.config.mjs",
     "test:watch": "vitest",

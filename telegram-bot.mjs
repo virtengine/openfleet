@@ -191,7 +191,7 @@ let TELEGRAM_CURL_FALLBACK = !["0", "false", "no"].includes(
   ).toLowerCase(),
 );
 let telegramAllowedChatIds = new Set();
-let telegramPreferCurlUntilMs = 0;
+let telegramFetchFailureCooldownUntil = 0;
 let lastPollErrorLogAtMs = 0;
 let lastFallbackSwitchLogMs = 0;
 let pollFailureStreak = 0;
@@ -333,7 +333,7 @@ function shouldUseCurlPrimary() {
   return (
     TELEGRAM_CURL_FALLBACK &&
     hasCurlBinary() &&
-    Date.now() < telegramPreferCurlUntilMs
+    Date.now() < telegramFetchFailureCooldownUntil
   );
 }
 
@@ -576,7 +576,7 @@ async function telegramApiFetch(method, requestOptions = {}) {
       });
     } catch (curlErr) {
       if (!isRetryableNetworkError(curlErr)) throw curlErr;
-      telegramPreferCurlUntilMs = 0;
+      telegramFetchFailureCooldownUntil = 0;
     }
   }
   const maxAttempts = Math.max(1, retries);
@@ -654,7 +654,7 @@ async function telegramApiFetch(method, requestOptions = {}) {
       if (TELEGRAM_CURL_FALLBACK && hasCurlBinary()) {
         const shouldPinCurl = shouldPinCurlFallback(operation);
         if (shouldPinCurl) {
-          telegramPreferCurlUntilMs =
+          telegramFetchFailureCooldownUntil =
             Date.now() + TELEGRAM_FETCH_FAILURE_COOLDOWN_MS;
         }
         const now = Date.now();
@@ -672,7 +672,7 @@ async function telegramApiFetch(method, requestOptions = {}) {
             operation,
           });
         } catch (curlErr) {
-          telegramPreferCurlUntilMs = 0;
+          telegramFetchFailureCooldownUntil = 0;
           const curlRetryable = isRetryableNetworkError(curlErr);
           if (!curlRetryable || attempt >= maxAttempts) {
             throw curlErr;
