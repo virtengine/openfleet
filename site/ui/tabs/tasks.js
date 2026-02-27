@@ -702,6 +702,42 @@ function isReviewStatus(s) {
   return ["inreview", "review", "pr-open", "pr-review"].includes(String(s || ""));
 }
 
+async function reactivateTaskSession(taskId, options = {}) {
+  const normalizedTaskId = String(taskId || "").trim();
+  if (!normalizedTaskId) return false;
+
+  const askFirst = options?.askFirst !== false;
+  const title = String(options?.title || "this task").trim();
+
+  if (askFirst) {
+    const ok = await showConfirm(
+      `Task moved to review. Reactivate agent session for "${title}" now?`,
+    );
+    if (!ok) return false;
+  }
+
+  haptic("medium");
+  const res = await apiFetch("/api/tasks/start", {
+    method: "POST",
+    body: JSON.stringify({ taskId: normalizedTaskId }),
+  });
+  if (res?.queued) {
+    showToast("Agent reactivation queued (waiting for free slot)", "info");
+  } else if (res?.wasPaused) {
+    showToast("Agent reactivated (executor was paused)", "warning");
+  } else {
+    showToast("Agent session reactivated", "success");
+  }
+
+  tasksData.value = (tasksData.value || []).map((t) =>
+    String(t?.id || "").trim() === normalizedTaskId
+      ? { ...t, status: "inprogress" }
+      : t,
+  );
+  scheduleRefresh(150);
+  return true;
+}
+
 /* ─── Derive agent steps from task title/description ─── */
 function deriveSteps(task) {
   const t = String(task?.title || "").toLowerCase();
@@ -820,6 +856,10 @@ export function TaskProgressModal({ task, onClose }) {
         t.id === task.id ? { ...t, status: "inreview" } : t,
       );
       showToast("Task moved to review", "success");
+      await reactivateTaskSession(task.id, {
+        askFirst: true,
+        title: task?.title || task?.id || "this task",
+      }).catch(() => {});
       scheduleRefresh(200);
       onClose();
     } catch { /* toast via apiFetch */ }
@@ -1008,6 +1048,10 @@ export function TaskReviewModal({ task, onClose, onStart }) {
         t.id === task.id ? { ...t, status: "inprogress" } : t,
       );
       showToast("Task reopened as active", "success");
+      await reactivateTaskSession(task.id, {
+        askFirst: false,
+        title: task?.title || task?.id || "this task",
+      }).catch(() => {});
       scheduleRefresh(200);
       onClose();
     } catch { /* toast via apiFetch */ }
@@ -1353,6 +1397,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
       else {
         setStatus(newStatus);
         setDraft(wantsDraft);
+      }
+      if (newStatus === "inreview") {
+        await reactivateTaskSession(task.id, {
+          askFirst: true,
+          title: task?.title || task?.id || "this task",
+        }).catch(() => {});
       }
     } catch {
       /* toast */
@@ -2227,6 +2277,13 @@ export function TasksTab() {
         tasksData.value = prev;
       },
     ).catch(() => {});
+    if (newStatus === "inreview") {
+      const task = (tasksData.value || []).find((t) => String(t?.id) === String(taskId));
+      await reactivateTaskSession(taskId, {
+        askFirst: true,
+        title: task?.title || taskId,
+      }).catch(() => {});
+    }
   };
 
   const startTask = async ({ taskId, sdk, model }) => {

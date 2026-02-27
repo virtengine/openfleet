@@ -71,6 +71,7 @@ import {
   execPooledPrompt,
   launchEphemeralThread,
   launchOrResumeThread,
+  execWithRetry,
   getAvailableSdks,
   forceNewThread,
   steerActiveThread,
@@ -497,6 +498,7 @@ async function ensureWorkflowAutomationEngine() {
       const agentPoolService = {
         launchEphemeralThread,
         launchOrResumeThread,
+        execWithRetry,
         async continueSession(sessionId, prompt, opts = {}) {
           const timeout = Number(opts.timeout) || 60 * 60 * 1000;
           const cwd = opts.cwd || process.cwd();

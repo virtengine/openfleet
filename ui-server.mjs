@@ -36,6 +36,7 @@ import {
   getActiveThreads,
   launchEphemeralThread,
   launchOrResumeThread,
+  execWithRetry,
   invalidateThread,
 } from "./agent-pool.mjs";
 import { resolveAgentPrompts } from "./agent-prompts.mjs";
@@ -313,6 +314,7 @@ async function getWorkflowEngineModule() {
         const agentPoolService = {
           launchEphemeralThread,
           launchOrResumeThread,
+          execWithRetry,
           async continueSession(sessionId, prompt, opts = {}) {
             const timeout = Number(opts.timeout) || 60 * 60 * 1000;
             const cwd = opts.cwd || process.cwd();

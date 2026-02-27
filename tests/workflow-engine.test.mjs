@@ -612,7 +612,11 @@ describe("Session chaining - action.run_agent", () => {
       },
     };
 
-    const node = { id: "a1", type: "action.run_agent", config: { prompt: "Test prompt" } };
+    const node = {
+      id: "a1",
+      type: "action.run_agent",
+      config: { prompt: "Test prompt", autoRecover: false, failOnError: true },
+    };
     const result = await handler.execute(node, ctx, mockEngine);
 
     expect(result.threadId).toBe("thread-abc-123");
@@ -628,74 +632,174 @@ describe("Session chaining - action.run_agent", () => {
     expect(runLogText).toMatch(/Agent: Implemented the requested changes\./);
   });
 
-  it("agent.run_planner streams planner events and propagates threadId", async () => {
-    const handler = getNodeType("agent.run_planner");
+  it("propagates threadId to context from execWithRetry", async () => {
+    const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
 
-    const ctx = new WorkflowContext({});
-    const launchEphemeralThread = vi.fn().mockImplementation(
-      async (_prompt, _cwd, _timeoutMs, extra) => {
-        extra?.onEvent?.({
-          type: "item.completed",
-          item: { type: "reasoning", summary: "Reviewing backlog gaps." },
-        });
-        extra?.onEvent?.({
-          type: "tool_call",
-          tool_name: "create_task",
-        });
-        extra?.onEvent?.({
-          type: "item.completed",
-          item: { type: "agent_message", text: "Generated 3 tasks." },
-        });
-        return {
-          success: true,
-          output: "planned output",
-          sdk: "codex",
-          items: [],
-          threadId: "planner-thread-123",
-        };
-      },
-    );
+    const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
     const mockEngine = {
       services: {
         agentPool: {
-          launchEphemeralThread,
-        },
-        prompts: {
-          planner: "Planner prompt",
+          launchEphemeralThread: vi.fn().mockResolvedValue({
+            success: true,
+            output: "done",
+            sdk: "codex",
+            items: [],
+            threadId: "thread-fallback-unused",
+          }),
+          execWithRetry: vi.fn().mockResolvedValue({
+            success: true,
+            output: "done",
+            sdk: "codex",
+            items: [],
+            threadId: "thread-abc-123",
+            attempts: 2,
+            continues: 1,
+            resumed: true,
+          }),
         },
       },
     };
-
-    const node = {
-      id: "planner-1",
-      type: "agent.run_planner",
-      config: {
-        taskCount: 3,
-        context: "Focus on reliability",
-        outputVariable: "plannerOutput",
-      },
-    };
+    const node = { id: "a1b", type: "action.run_agent", config: { prompt: "Test prompt" } };
     const result = await handler.execute(node, ctx, mockEngine);
 
+    expect(result.threadId).toBe("thread-abc-123");
+    expect(result.sessionId).toBe("thread-abc-123");
+    expect(ctx.data.sessionId).toBe("thread-abc-123");
+    expect(ctx.data.threadId).toBe("thread-abc-123");
+    expect(result.attempts).toBe(2);
+    expect(mockEngine.services.agentPool.execWithRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws when agent execution returns success=false when failOnError=true", async () => {
+    const handler = getNodeType("action.run_agent");
+    const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn().mockResolvedValue({
+            success: false,
+            error: "agent crashed",
+          }),
+        },
+      },
+    };
+    const node = {
+      id: "a2",
+      type: "action.run_agent",
+      config: { prompt: "Test prompt", autoRecover: false, failOnError: true },
+    };
+    await expect(handler.execute(node, ctx, mockEngine)).rejects.toThrow(/agent crashed/i);
+  });
+
+  it("continues existing session before retrying fresh", async () => {
+    const handler = getNodeType("action.run_agent");
+    const ctx = new WorkflowContext({
+      worktreePath: "/tmp/test",
+      sessionId: "thread-existing-1",
+    });
+    const continueSession = vi.fn().mockResolvedValue({
+      success: true,
+      output: "continued",
+      threadId: "thread-existing-1",
+      sdk: "copilot",
+    });
+    const execWithRetry = vi.fn().mockResolvedValue({
+      success: true,
+      output: "should-not-be-used",
+      threadId: "thread-new",
+      sdk: "copilot",
+    });
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread: vi.fn().mockResolvedValue({
+            success: true,
+            output: "fallback",
+            sdk: "copilot",
+            threadId: "thread-fallback",
+          }),
+          continueSession,
+          execWithRetry,
+        },
+      },
+    };
+    const node = { id: "a3", type: "action.run_agent", config: { prompt: "Continue work", continueOnSession: true } };
+    const result = await handler.execute(node, ctx, mockEngine);
     expect(result.success).toBe(true);
-    expect(result.taskCount).toBe(3);
-    expect(result.threadId).toBe("planner-thread-123");
-    expect(result.sessionId).toBe("planner-thread-123");
-    expect(ctx.data.threadId).toBe("planner-thread-123");
-    expect(ctx.data.sessionId).toBe("planner-thread-123");
-    expect(ctx.data.plannerOutput).toBe("planned output");
-    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
-    expect(launchEphemeralThread.mock.calls[0][3]).toEqual(
-      expect.objectContaining({ onEvent: expect.any(Function) }),
-    );
-    const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
-    expect(runLogText).toMatch(/Thinking: Reviewing backlog gaps\./);
-    expect(runLogText).toMatch(/Tool call: create_task/);
-    expect(runLogText).toMatch(/Agent: Generated 3 tasks\./);
-    expect(runLogText).toMatch(/Planner completed: success=true streamEvents=3/);
+    expect(result.threadId).toBe("thread-existing-1");
+    expect(continueSession).toHaveBeenCalledTimes(1);
+    expect(execWithRetry).not.toHaveBeenCalled();
   });
 });
+
+it("agent.run_planner streams planner events and propagates threadId", async () => {
+  const handler = getNodeType("agent.run_planner");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  const launchEphemeralThread = vi.fn().mockImplementation(
+    async (_prompt, _cwd, _timeoutMs, extra) => {
+      extra?.onEvent?.({
+        type: "item.completed",
+        item: { type: "reasoning", summary: "Reviewing backlog gaps." },
+      });
+      extra?.onEvent?.({
+        type: "tool_call",
+        tool_name: "create_task",
+      });
+      extra?.onEvent?.({
+        type: "item.completed",
+        item: { type: "agent_message", text: "Generated 3 tasks." },
+      });
+      return {
+        success: true,
+        output: "planned output",
+        sdk: "codex",
+        items: [],
+        threadId: "planner-thread-123",
+      };
+    },
+  );
+  const mockEngine = {
+    services: {
+      agentPool: {
+        launchEphemeralThread,
+      },
+      prompts: {
+        planner: "Planner prompt",
+      },
+    },
+  };
+
+  const node = {
+    id: "planner-1",
+    type: "agent.run_planner",
+    config: {
+      taskCount: 3,
+      context: "Focus on reliability",
+      outputVariable: "plannerOutput",
+    },
+  };
+  const result = await handler.execute(node, ctx, mockEngine);
+
+  expect(result.success).toBe(true);
+  expect(result.taskCount).toBe(3);
+  expect(result.threadId).toBe("planner-thread-123");
+  expect(result.sessionId).toBe("planner-thread-123");
+  expect(ctx.data.threadId).toBe("planner-thread-123");
+  expect(ctx.data.sessionId).toBe("planner-thread-123");
+  expect(ctx.data.plannerOutput).toBe("planned output");
+  expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+  expect(launchEphemeralThread.mock.calls[0][3]).toEqual(
+    expect.objectContaining({ onEvent: expect.any(Function) }),
+  );
+  const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
+  expect(runLogText).toMatch(/Thinking: Reviewing backlog gaps\./);
+  expect(runLogText).toMatch(/Tool call: create_task/);
+  expect(runLogText).toMatch(/Agent: Generated 3 tasks\./);
+  expect(runLogText).toMatch(/Planner completed: success=true streamEvents=3/);
+  });
 
 // ── Anomaly Detector Integration Tests ──────────────────────────────────────
 

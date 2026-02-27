@@ -596,11 +596,19 @@ registerNodeType("action.run_agent", {
     properties: {
       prompt: { type: "string", description: "Agent prompt (supports {{variables}})" },
       sdk: { type: "string", enum: ["codex", "copilot", "claude", "auto"], default: "auto" },
+      model: { type: "string", description: "Optional model override for the selected SDK" },
       cwd: { type: "string", description: "Working directory for the agent" },
       timeoutMs: { type: "number", default: 3600000, description: "Agent timeout in ms" },
       agentProfile: { type: "string", description: "Agent profile name (e.g., 'frontend', 'backend')" },
       includeTaskContext: { type: "boolean", default: true, description: "Append task comments/attachments if available" },
       failOnError: { type: "boolean", default: false, description: "Throw when agent returns success=false (enables workflow retries)" },
+      sessionId: { type: "string", description: "Existing session/thread ID to continue if available" },
+      taskKey: { type: "string", description: "Stable key used for session-aware retries/resume" },
+      autoRecover: { type: "boolean", default: true, description: "Enable continue/retry/fallback recovery ladder when agent fails" },
+      continueOnSession: { type: "boolean", default: true, description: "Try continuing existing session before starting fresh" },
+      continuePrompt: { type: "string", description: "Prompt used when continuing an existing session" },
+      sessionRetries: { type: "number", default: 2, description: "Additional session-aware retries for execWithRetry" },
+      maxContinues: { type: "number", default: 2, description: "Max idle-continue attempts for execWithRetry" },
     },
     required: ["prompt"],
   },
@@ -629,9 +637,40 @@ registerNodeType("action.run_agent", {
       let streamEventCount = 0;
       let lastStreamLog = "";
       const startedAt = Date.now();
-      const launchExtra = {};
-      if (sdk && sdk !== "auto") launchExtra.sdk = sdk;
+      const resolvedSessionId = String(
+        ctx.resolve(
+          node.config?.sessionId || ctx.data?.sessionId || ctx.data?.threadId || "",
+        ) || "",
+      ).trim();
+      const sessionId = resolvedSessionId || null;
+      const explicitTaskKey = String(ctx.resolve(node.config?.taskKey || "") || "").trim();
+      const recoveryTaskKey =
+        explicitTaskKey ||
+        sessionId ||
+        `${ctx.data?._workflowId || "workflow"}:${ctx.id}:${node.id}`;
+      const autoRecover = node.config?.autoRecover !== false;
+      const continueOnSession = node.config?.continueOnSession !== false;
+      const continuePrompt = ctx.resolve(
+        node.config?.continuePrompt ||
+        "Continue exactly where you left off. Resume execution from the last incomplete step, avoid redoing completed work, and finish the task end-to-end.",
+      );
+      const parsedSessionRetries = Number(node.config?.sessionRetries);
+      const parsedMaxContinues = Number(node.config?.maxContinues);
+      const sessionRetries = Number.isFinite(parsedSessionRetries)
+        ? Math.max(0, Math.min(10, Math.floor(parsedSessionRetries)))
+        : 2;
+      const maxContinues = Number.isFinite(parsedMaxContinues)
+        ? Math.max(0, Math.min(10, Math.floor(parsedMaxContinues)))
+        : 2;
+      const sdkOverride = sdk === "auto" ? undefined : sdk;
+      const modelOverride = node.config?.model
+        ? String(ctx.resolve(node.config.model) || "").trim() || undefined
+        : undefined;
 
+      const launchExtra = {};
+      if (sessionId) launchExtra.resumeThreadId = sessionId;
+      if (sdkOverride) launchExtra.sdk = sdkOverride;
+      if (modelOverride) launchExtra.model = modelOverride;
       launchExtra.onEvent = (event) => {
         try {
           const line = summarizeAgentStreamEvent(event);
@@ -649,45 +688,118 @@ registerNodeType("action.run_agent", {
         ctx.log(node.id, `Agent still running (${elapsedSec}s elapsed)`);
       }, WORKFLOW_AGENT_HEARTBEAT_MS);
 
-      let result;
+      let result = null;
+      let success = false;
+
       try {
-        result = await agentPool.launchEphemeralThread(
-          finalPrompt,
-          cwd,
-          timeoutMs,
-          launchExtra,
-        );
+        // Recovery step 1: continue the existing session when available.
+        if (
+          autoRecover &&
+          continueOnSession &&
+          sessionId &&
+          typeof agentPool.continueSession === "function"
+        ) {
+          ctx.log(node.id, `Recovery: continuing existing session ${sessionId}`);
+          try {
+            result = await agentPool.continueSession(sessionId, continuePrompt, {
+              timeout: timeoutMs,
+              cwd,
+              sdk: sdkOverride,
+              model: modelOverride,
+            });
+            if (result?.success) {
+              ctx.log(node.id, "Recovery: continue-session succeeded");
+            } else {
+              ctx.log(
+                node.id,
+                `Recovery: continue-session failed (${result?.error || "unknown error"})`,
+                "warn",
+              );
+              result = null;
+            }
+          } catch (err) {
+            ctx.log(
+              node.id,
+              `Recovery: continue-session threw (${err?.message || err})`,
+              "warn",
+            );
+            result = null;
+          }
+        }
+
+        // Recovery step 2: session-aware retry chain (resume -> fresh -> fallback SDKs).
+        if (!result && autoRecover && typeof agentPool.execWithRetry === "function") {
+          ctx.log(
+            node.id,
+            `Recovery: execWithRetry taskKey=${recoveryTaskKey} retries=${sessionRetries} continues=${maxContinues}`,
+          );
+          result = await agentPool.execWithRetry(finalPrompt, {
+            taskKey: recoveryTaskKey,
+            cwd,
+            timeoutMs,
+            maxRetries: sessionRetries,
+            maxContinues,
+            sdk: sdkOverride,
+            model: modelOverride,
+          });
+        }
+
+        // Recovery step 3: best-effort launch/resume if execWithRetry is unavailable.
+        if (!result && autoRecover && typeof agentPool.launchOrResumeThread === "function") {
+          ctx.log(node.id, `Recovery: launchOrResumeThread taskKey=${recoveryTaskKey}`);
+          result = await agentPool.launchOrResumeThread(finalPrompt, cwd, timeoutMs, {
+            taskKey: recoveryTaskKey,
+            sdk: sdkOverride,
+            model: modelOverride,
+          });
+        }
+
+        // Fallback: single launch (optionally resumes when session ID exists).
+        if (!result) {
+          result = await agentPool.launchEphemeralThread(finalPrompt, cwd, timeoutMs, launchExtra);
+        }
+        success = result?.success === true;
       } finally {
         clearInterval(heartbeat);
       }
-
-      ctx.log(
-        node.id,
-        `Agent completed: success=${result.success} streamEvents=${streamEventCount}`,
-      );
-
-      if (node.config?.failOnError && result.success !== true) {
-        const errorMessage = trimLogText(
-          result.error || result.output || "Agent reported failure",
-          400,
-        );
-        throw new Error(errorMessage || "Agent reported failure");
-      }
+      ctx.log(node.id, `Agent completed: success=${success} streamEvents=${streamEventCount}`);
 
       // Propagate session/thread IDs for downstream chaining
-      const threadId = result.threadId || result.sessionId || null;
+      const threadId = result?.threadId || result?.sessionId || sessionId || null;
       if (threadId) {
         ctx.data.sessionId = threadId;
         ctx.data.threadId = threadId;
       }
 
+      if (!success) {
+        const errorMessage =
+          result?.error ||
+          `Agent execution failed in node "${node.label || node.id}"`;
+        if (node.config?.failOnError) throw new Error(errorMessage);
+        return {
+          success: false,
+          error: errorMessage,
+          output: result?.output,
+          sdk: result?.sdk,
+          items: result?.items,
+          threadId,
+          sessionId: threadId,
+          attempts: result?.attempts,
+          continues: result?.continues,
+          resumed: result?.resumed,
+        };
+      }
+
       return {
-        success: result.success,
-        output: result.output,
-        sdk: result.sdk,
-        items: result.items,
+        success: true,
+        output: result?.output,
+        sdk: result?.sdk,
+        items: result?.items,
         threadId,
         sessionId: threadId,
+        attempts: result?.attempts,
+        continues: result?.continues,
+        resumed: result?.resumed,
       };
     }
 
