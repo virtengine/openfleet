@@ -16,6 +16,7 @@ import {
   loadSessionMessages,
   loadSessions,
   sessionsData,
+  sessionPagination,
 } from "./session-list.js";
 import {
   pendingMessages,
@@ -444,11 +445,12 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const [paused, setPaused] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [unreadCount, setUnreadCount] = useState(0);
-  const [visibleCount, setVisibleCount] = useState(200);
+  const [visibleCount, setVisibleCount] = useState(20);
   const [showStreamMeta, setShowStreamMeta] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [filters, setFilters] = useState({
     tool: false,
     result: false,
@@ -611,9 +613,22 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const refreshMessages = useCallback(async () => {
     if (!sessionId) return;
     setLoading(true);
-    const res = await loadSessionMessages(sessionId).finally(() => setLoading(false));
+    const res = await loadSessionMessages(sessionId, { limit: 20 }).finally(() => setLoading(false));
     setLoadError(res?.ok ? null : res?.error || "unavailable");
   }, [sessionId]);
+
+  /** Load older messages (triggered by scroll-to-top or "Load older" button) */
+  const loadOlderMessages = useCallback(async () => {
+    if (!sessionId || loadingOlder) return;
+    const pag = sessionPagination.value;
+    if (!pag || !pag.hasMore) return;
+    setLoadingOlder(true);
+    const newOffset = Math.max(0, pag.offset - 20);
+    const limit = pag.offset - newOffset;
+    if (limit <= 0) { setLoadingOlder(false); return; }
+    await loadSessionMessages(sessionId, { limit, offset: newOffset, prepend: true })
+      .finally(() => setLoadingOlder(false));
+  }, [sessionId, loadingOlder]);
 
   /* Load messages on mount; WS push via initSessionWsListener handles real-time */
   useEffect(() => {
@@ -624,7 +639,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       if (!active) return;
       if (!paused) {
         setLoading(true);
-        loadSessionMessages(sessionId).then((res) => {
+        loadSessionMessages(sessionId, { limit: 20 }).then((res) => {
           if (active) setLoadError(res?.ok ? null : res?.error || "unavailable");
         }).finally(() => {
           if (active) setLoading(false);
@@ -637,7 +652,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     // Fallback: poll slowly as safety net (30s) - WS does the heavy lifting
     const interval = setInterval(() => {
       if (active && !paused) {
-        loadSessionMessages(sessionId).then((res) => {
+        loadSessionMessages(sessionId, { limit: 20 }).then((res) => {
           if (active && res?.ok === false) setLoadError(res?.error || "unavailable");
         });
       }
@@ -673,7 +688,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
   /* Reset visible window when session or filters change */
   useEffect(() => {
-    setVisibleCount(200);
+    setVisibleCount(20);
     setUnreadCount(0);
     setAutoScroll(true);
   }, [sessionId, filterKey]);
@@ -1076,16 +1091,23 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       `}
 
       <div class="chat-messages" ref=${messagesRef}>
-        ${hasMoreMessages && html`
+        ${(hasMoreMessages || sessionPagination.value?.hasMore) && html`
           <div class="chat-load-earlier">
             <button
               class="btn btn-ghost btn-sm"
-              onClick=${() => setVisibleCount((prev) => prev + 200)}
+              disabled=${loadingOlder}
+              onClick=${() => {
+                if (hasMoreMessages) {
+                  setVisibleCount((prev) => prev + 20);
+                } else if (sessionPagination.value?.hasMore) {
+                  loadOlderMessages();
+                }
+              }}
             >
-              Load earlier messages
+              ${loadingOlder ? "Loading…" : "Load older messages"}
             </button>
             <span class="chat-load-count">
-              Showing ${visibleMessages.length} of ${filteredMessages.length}
+              Showing ${visibleMessages.length} of ${sessionPagination.value?.total || filteredMessages.length}
             </span>
           </div>
         `}

@@ -1362,6 +1362,28 @@ const logStreamers = new Map();
 let uiDeps = {};
 
 /**
+ * Resolve the execPrimaryPrompt function. Prefers the injected dependency,
+ * falls back to importing directly from primary-agent.mjs so the chat
+ * agent works even when the UI server starts standalone.
+ */
+let _fallbackExecPrimaryPrompt = null;
+async function resolveExecPrimaryPrompt() {
+  if (typeof uiDeps.execPrimaryPrompt === "function") return uiDeps.execPrimaryPrompt;
+  if (_fallbackExecPrimaryPrompt) return _fallbackExecPrimaryPrompt;
+  try {
+    const mod = await import("./primary-agent.mjs");
+    if (typeof mod.execPrimaryPrompt === "function") {
+      _fallbackExecPrimaryPrompt = mod.execPrimaryPrompt;
+      console.log("[ui-server] loaded execPrimaryPrompt fallback from primary-agent.mjs");
+      return _fallbackExecPrimaryPrompt;
+    }
+  } catch (err) {
+    console.warn("[ui-server] failed to load execPrimaryPrompt fallback:", err.message);
+  }
+  return null;
+}
+
+/**
  * Resolve the bosun config directory. Falls back through:
  *   1. uiDeps.configDir (injected at server start)
  *   2. BOSUN_DIR env var
@@ -7217,7 +7239,26 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
           return;
         }
-        jsonResponse(res, 200, { ok: true, session });
+        // Support ?limit=N&offset=N for message pagination
+        const reqUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+        const limitParam = reqUrl.searchParams.get("limit");
+        const offsetParam = reqUrl.searchParams.get("offset");
+        if (limitParam) {
+          const limit = Math.max(1, Math.min(Number(limitParam) || 20, 500));
+          const allMessages = session.messages || [];
+          const total = allMessages.length;
+          const offset = offsetParam != null
+            ? Math.max(0, Math.min(Number(offsetParam) || 0, total))
+            : Math.max(0, total - limit);
+          const sliced = allMessages.slice(offset, offset + limit);
+          jsonResponse(res, 200, {
+            ok: true,
+            session: { ...session, messages: sliced },
+            pagination: { total, offset, limit, hasMore: offset > 0 },
+          });
+        } else {
+          jsonResponse(res, 200, { ok: true, session });
+        }
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
       }
@@ -7306,7 +7347,11 @@ async function handleApi(req, res, url) {
         const messageModel = body?.model || undefined;
 
         // Forward to primary agent if applicable (exec records user + assistant events)
-        const exec = session.type === "primary" ? uiDeps.execPrimaryPrompt : null;
+        let exec = session.type === "primary" ? uiDeps.execPrimaryPrompt : null;
+        // Fallback: resolve execPrimaryPrompt from primary-agent.mjs if not injected
+        if (!exec && session.type === "primary") {
+          exec = await resolveExecPrimaryPrompt();
+        }
         if (exec) {
           // Don't record user event here — execPrimaryPrompt records it
           // Respond immediately so the UI doesn't block on agent execution
@@ -7335,14 +7380,20 @@ async function handleApi(req, res, url) {
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-error", sessionId });
           });
         } else {
-          // No agent — record user event and acknowledge
+          // No agent available — record user event and notify user
           tracker.recordEvent(sessionId, {
             role: "user",
             content: messageContent,
             attachments,
             timestamp: new Date().toISOString(),
           });
-          jsonResponse(res, 200, { ok: true, messageId });
+          tracker.recordEvent(sessionId, {
+            role: "system",
+            type: "error",
+            content: "⚠️ No agent is available to process this message. The primary agent may not be initialized — try restarting bosun or check the Logs tab for details.",
+            timestamp: new Date().toISOString(),
+          });
+          jsonResponse(res, 200, { ok: true, messageId, warning: "no_agent_available" });
           broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
         }
       } catch (err) {

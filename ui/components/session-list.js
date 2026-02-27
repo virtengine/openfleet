@@ -17,6 +17,8 @@ export const sessionsData = signal([]);
 export const selectedSessionId = signal(null);
 export const sessionMessages = signal([]);
 export const sessionsError = signal(null);
+/** Pagination metadata from the last loadSessionMessages call */
+export const sessionPagination = signal(null);
 
 let _wsListenerReady = false;
 
@@ -42,20 +44,34 @@ export async function loadSessions(filter = {}) {
   }
 }
 
-export async function loadSessionMessages(id) {
+export async function loadSessionMessages(id, opts = {}) {
   try {
-    const url = sessionPath(id);
+    let url = sessionPath(id);
     if (!url) return { ok: false, error: "invalid" };
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.offset != null) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    if (qs) url += `?${qs}`;
     const res = await apiFetch(url, { _silent: true });
     if (res?.session) {
       const normalized = dedupeMessages(res.session.messages || []);
-      sessionMessages.value = normalized;
-      return { ok: true, messages: normalized };
+      if (opts.prepend && sessionMessages.value?.length) {
+        // Prepend older messages (loading history on scroll up)
+        const merged = dedupeMessages([...normalized, ...sessionMessages.value]);
+        sessionMessages.value = merged;
+      } else {
+        sessionMessages.value = normalized;
+      }
+      sessionPagination.value = res.pagination || null;
+      return { ok: true, messages: normalized, pagination: res.pagination || null };
     }
     sessionMessages.value = [];
+    sessionPagination.value = null;
     return { ok: false, error: "empty" };
   } catch {
     sessionMessages.value = [];
+    sessionPagination.value = null;
     return { ok: false, error: "unavailable" };
   }
 }
