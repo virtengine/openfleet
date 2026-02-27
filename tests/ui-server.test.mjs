@@ -8,6 +8,7 @@ describe("ui-server mini app", () => {
   const ENV_KEYS = [
     "TELEGRAM_UI_TLS_DISABLE",
     "TELEGRAM_UI_ALLOW_UNSAFE",
+    "TELEGRAM_MINIAPP_ENABLED",
     "TELEGRAM_UI_PORT",
     "TELEGRAM_INTERVAL_MIN",
     "BOSUN_CONFIG_PATH",
@@ -80,6 +81,77 @@ describe("ui-server mini app", () => {
     const ip = mod.getLocalLanIp();
     expect(typeof ip).toBe("string");
     expect(ip.length).toBeGreaterThan(0);
+  });
+
+  it("returns effective settings values and sources for derived/default cases", async () => {
+    delete process.env.TELEGRAM_MINIAPP_ENABLED;
+    process.env.TELEGRAM_UI_PORT = "4400";
+    delete process.env.GITHUB_PROJECT_MODE;
+
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-settings-view-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify({ $schema: "./bosun.schema.json" }, null, 2) + "\n",
+      "utf8",
+    );
+
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/settings`);
+    const json = await response.json();
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.data?.TELEGRAM_MINIAPP_ENABLED).toBe("true");
+    expect(json.sources?.TELEGRAM_MINIAPP_ENABLED).toBe("derived");
+    expect(json.data?.GITHUB_PROJECT_MODE).toBe("issues");
+    expect(json.sources?.GITHUB_PROJECT_MODE).toBe("default");
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("reflects runtime kanban backend switches via config update", async () => {
+    process.env.KANBAN_BACKEND = "github";
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+    });
+    const port = server.address().port;
+
+    const toInternal = await fetch(`http://127.0.0.1:${port}/api/config/update`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: "kanban", value: "internal" }),
+    });
+    const toInternalJson = await toInternal.json();
+    expect(toInternal.status).toBe(200);
+    expect(toInternalJson.ok).toBe(true);
+
+    const internalRes = await fetch(`http://127.0.0.1:${port}/api/config`);
+    const internalJson = await internalRes.json();
+    expect(internalRes.status).toBe(200);
+    expect(internalJson.kanbanBackend).toBe("internal");
+
+    const toGithub = await fetch(`http://127.0.0.1:${port}/api/config/update`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: "kanban", value: "github" }),
+    });
+    const toGithubJson = await toGithub.json();
+    expect(toGithub.status).toBe(200);
+    expect(toGithubJson.ok).toBe(true);
+
+    const githubRes = await fetch(`http://127.0.0.1:${port}/api/config`);
+    const githubJson = await githubRes.json();
+    expect(githubRes.status).toBe(200);
+    expect(githubJson.kanbanBackend).toBe("github");
   });
 
   it("accepts signed project webhook and triggers task sync", async () => {

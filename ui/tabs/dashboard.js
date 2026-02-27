@@ -52,47 +52,47 @@ const QUICK_ACTIONS = [
   {
     label: "Status",
     cmd: "/status",
-    icon: "📊",
+    icon: "chart",
     color: "var(--accent)",
     targetTab: "dashboard",
   },
   {
     label: "Health",
     cmd: "/health",
-    icon: "💚",
+    icon: "heart",
     color: "var(--color-done)",
     targetTab: "dashboard",
   },
   {
     label: "Create Task",
     action: "create",
-    icon: "➕",
+    icon: "plus",
     color: "var(--color-inprogress)",
   },
   {
     label: "Start Task",
     action: "start",
-    icon: "▶",
+    icon: "play",
     color: "var(--color-todo)",
   },
   {
     label: "Plan",
     cmd: "/plan",
-    icon: "📋",
+    icon: "clipboard",
     color: "var(--color-inreview)",
     targetTab: "control",
   },
   {
     label: "Logs",
     cmd: "/logs 50",
-    icon: "📄",
+    icon: "file",
     color: "var(--text-secondary)",
     targetTab: "logs",
   },
   {
     label: "Menu",
     cmd: "/menu",
-    icon: "☰",
+    icon: "menu",
     color: "var(--color-todo)",
     targetTab: "control",
   },
@@ -560,7 +560,7 @@ export function DashboardTab() {
       <div class="dashboard-shell">
         <${Card} className="dashboard-card">
           <div class="dashboard-welcome-card">
-            <div class="dashboard-welcome-icon">${resolveIcon("🎛")}</div>
+            <div class="dashboard-welcome-icon">${resolveIcon("sliders")}</div>
             <div class="dashboard-welcome-title">Welcome to VirtEngine Control Center</div>
             <div class="dashboard-welcome-desc">
               Your AI development fleet is ready. Create your first task to get started.
@@ -687,7 +687,7 @@ export function DashboardTab() {
           ${fleetAtRest
             ? html`
               <div class="fleet-rest-badge">
-                <div class="fleet-rest-icon">${resolveIcon("✓")}</div>
+                <div class="fleet-rest-icon">${resolveIcon("check")}</div>
                 <div class="fleet-rest-label">Fleet at rest</div>
                 <div class="fleet-rest-sub">${done} task${done !== 1 ? "s" : ""} completed · zero pending</div>
               </div>
@@ -901,7 +901,7 @@ export function DashboardTab() {
 
       ${recentCommits.length > 0 && html`
         <${Card}
-          title=${html`<span class="dashboard-card-title"><span class="dashboard-title-icon">${ICONS.git || resolveIcon("🔀")}</span>Recent Commits</span>`}
+          title=${html`<span class="dashboard-card-title"><span class="dashboard-title-icon">${ICONS.git || resolveIcon("git")}</span>Recent Commits</span>`}
           className="dashboard-card dashboard-commits-card"
         >
           <div class="dashboard-commits">

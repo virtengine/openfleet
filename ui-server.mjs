@@ -1,11 +1,11 @@
 import { execSync, spawn, spawnSync } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, watchFile, unwatchFile } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, unlinkSync, watchFile, unwatchFile } from "node:fs";
 import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { get as httpsGet } from "node:https";
 import { createServer as createHttpsServer } from "node:https";
-import { networkInterfaces } from "node:os";
+import { networkInterfaces, homedir } from "node:os";
 import { connect as netConnect } from "node:net";
 import { resolve, extname, dirname, basename, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -27,6 +27,8 @@ function getLocalLanIp() {
 import { WebSocketServer } from "ws";
 import {
   getKanbanAdapter,
+  getKanbanBackendName,
+  setKanbanBackend,
   markTaskIgnored,
   unmarkTaskIgnored,
 } from "./kanban-adapter.mjs";
@@ -114,6 +116,7 @@ import {
   execSdkCommand,
   getSdkCommands,
   getPrimaryAgentName,
+  getPrimaryAgentSelection,
   switchPrimaryAgent,
   getPrimaryAgentInfo,
 } from "./primary-agent.mjs";
@@ -157,6 +160,81 @@ let _wfRecommendedInstalled = false;
 let _wfInitPromise = null;
 let _wfInitDone = false;
 let _wfLoadedBase = null;
+
+function parseBooleanEnv(rawValue, fallback = false) {
+  if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") {
+    return fallback;
+  }
+  const normalized = String(rawValue).trim().toLowerCase();
+  if (["1", "true", "yes", "on", "y"].includes(normalized)) return true;
+  if (["0", "false", "no", "off", "n"].includes(normalized)) return false;
+  return fallback;
+}
+
+function parseTemplateIdList(rawValue) {
+  return String(rawValue || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function resolveWorkflowBootstrapSelection(templatesModule) {
+  const autoInstallEnabled = parseBooleanEnv(
+    process.env.WORKFLOW_DEFAULT_AUTOINSTALL,
+    true,
+  );
+  if (!autoInstallEnabled) {
+    return {
+      enabled: false,
+      source: "disabled",
+      profileId: null,
+      templateIds: [],
+    };
+  }
+
+  const hasTemplateEnv = Object.prototype.hasOwnProperty.call(
+    process.env,
+    "WORKFLOW_DEFAULT_TEMPLATES",
+  );
+  const rawTemplateEnv = String(process.env.WORKFLOW_DEFAULT_TEMPLATES || "").trim();
+  if (hasTemplateEnv) {
+    const lowered = rawTemplateEnv.toLowerCase();
+    if (!rawTemplateEnv || ["none", "off", "disabled", "false"].includes(lowered)) {
+      return {
+        enabled: true,
+        source: "custom:none",
+        profileId: null,
+        templateIds: [],
+      };
+    }
+    return {
+      enabled: true,
+      source: "custom:list",
+      profileId: null,
+      templateIds: parseTemplateIdList(rawTemplateEnv),
+    };
+  }
+
+  const profileId = String(
+    process.env.WORKFLOW_DEFAULT_PROFILE || "balanced",
+  ).trim().toLowerCase();
+
+  if (typeof templatesModule?.resolveWorkflowTemplateIds === "function") {
+    return {
+      enabled: true,
+      source: "profile",
+      profileId,
+      templateIds: templatesModule.resolveWorkflowTemplateIds({ profileId }),
+    };
+  }
+
+  return {
+    enabled: true,
+    source: "recommended",
+    profileId: null,
+    templateIds: [],
+  };
+}
 
 async function getWorkflowEngineModule() {
   if (_wfEngine) return _wfEngine;
@@ -279,18 +357,45 @@ async function getWorkflowEngineModule() {
       }
     }
 
-    if (!_wfRecommendedInstalled && _wfTemplates?.installRecommendedTemplates) {
+    if (!_wfRecommendedInstalled && _wfTemplates) {
       try {
         const engine = _wfEngine.getWorkflowEngine();
-        const result = _wfTemplates.installRecommendedTemplates(engine);
+        const selection = resolveWorkflowBootstrapSelection(_wfTemplates);
+        let result = { installed: [], skipped: [], errors: [] };
+
+        if (selection.enabled) {
+          if (
+            Array.isArray(selection.templateIds) &&
+            selection.templateIds.length > 0 &&
+            typeof _wfTemplates.installTemplateSet === "function"
+          ) {
+            result = _wfTemplates.installTemplateSet(engine, selection.templateIds);
+          } else if (
+            selection.source === "recommended" &&
+            typeof _wfTemplates.installRecommendedTemplates === "function"
+          ) {
+            result = _wfTemplates.installRecommendedTemplates(engine);
+          }
+        }
+
         if (result.installed.length) {
-          console.log(`[workflows] Installed ${result.installed.length} recommended templates`);
+          const suffix = selection.profileId ? ` (profile: ${selection.profileId})` : "";
+          console.log(
+            `[workflows] Installed ${result.installed.length} default workflow templates${suffix}`,
+          );
+        } else if (!selection.enabled) {
+          console.log("[workflows] Default template auto-install disabled by WORKFLOW_DEFAULT_AUTOINSTALL=false");
+        } else if (
+          selection.source.startsWith("custom:") &&
+          selection.templateIds.length === 0
+        ) {
+          console.log("[workflows] Default template selection is empty (custom:none)");
         }
         if (result.errors.length) {
-          console.warn("[workflows] Recommended template install errors:", result.errors);
+          console.warn("[workflows] Default template install errors:", result.errors);
         }
       } catch (err) {
-        console.warn("[workflows] Recommended template install failed:", err.message);
+        console.warn("[workflows] Default template install failed:", err.message);
       } finally {
         _wfRecommendedInstalled = true;
       }
@@ -1231,10 +1336,18 @@ let uiServerTls = false;
 let wsServer = null;
 /** Auto-open browser: only once per process, never during tests */
 let _browserOpened = false;
+const AUTO_OPEN_MARKER_FILE = "ui-auto-open.json";
+const UI_INSTANCE_LOCK_FILE = "ui-server.instance.lock.json";
+const UI_SESSION_TOKEN_FILE = "ui-session-token.json";
+const UI_LAST_PORT_FILE = "ui-last-port.json";
+const DEFAULT_AUTO_OPEN_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12h
+const DEFAULT_SESSION_TOKEN_TTL_MS = AUTH_MAX_AGE_SEC * 1000;
 const wsClients = new Set();
 let sessionListenerAttached = false;
 /** @type {ReturnType<typeof setInterval>|null} */
 let wsHeartbeatTimer = null;
+let uiInstanceLockPath = "";
+let uiInstanceLockHeld = false;
 
 /* ─── Log Streaming State ─── */
 /** Map<string, { sockets: Set<WebSocket>, offset: number, pollTimer }> keyed by filePath */
@@ -1249,15 +1362,320 @@ let uiDeps = {};
  * Ensures the directory exists.
  */
 function resolveUiConfigDir() {
+  if (process.env.BOSUN_CONFIG_PATH) {
+    const fromConfigPath = dirname(resolve(process.env.BOSUN_CONFIG_PATH));
+    try { mkdirSync(fromConfigPath, { recursive: true }); } catch { /* ok */ }
+    if (!uiDeps.configDir) uiDeps.configDir = fromConfigPath;
+    return fromConfigPath;
+  }
+  const isWslInteropRuntime = Boolean(
+    process.env.WSL_DISTRO_NAME
+    || process.env.WSL_INTEROP
+    || (process.platform === "win32"
+      && String(process.env.HOME || "")
+        .trim()
+        .startsWith("/home/")),
+  );
+  const preferWindowsDirs = process.platform === "win32" && !isWslInteropRuntime;
+  const baseDir = preferWindowsDirs
+    ? process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || process.env.USERPROFILE
+      || process.env.HOME
+      || homedir()
+    : process.env.HOME
+      || process.env.XDG_CONFIG_HOME
+      || process.env.USERPROFILE
+      || process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || homedir();
+
   const dir = uiDeps.configDir
+    || process.env.BOSUN_HOME
     || process.env.BOSUN_DIR
-    || resolve(process.env.HOME || process.env.USERPROFILE || "", "bosun");
+    || resolve(baseDir, "bosun");
   if (dir) {
     try { mkdirSync(dir, { recursive: true }); } catch { /* ok */ }
     // Cache it so subsequent calls don't re-resolve
     if (!uiDeps.configDir) uiDeps.configDir = dir;
   }
   return dir;
+}
+
+function getAutoOpenCooldownMs() {
+  const raw = Number(process.env.BOSUN_UI_AUTO_OPEN_COOLDOWN_MS || "");
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_AUTO_OPEN_COOLDOWN_MS;
+  return Math.max(60_000, Math.trunc(raw));
+}
+
+function isPidRunning(pid) {
+  const parsed = Number(pid);
+  if (!Number.isFinite(parsed) || parsed <= 0) return false;
+  try {
+    process.kill(parsed, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveUiInstanceLockPath() {
+  const cacheDir = resolve(resolveUiConfigDir(), ".cache");
+  mkdirSync(cacheDir, { recursive: true });
+  return resolve(cacheDir, UI_INSTANCE_LOCK_FILE);
+}
+
+function readUiInstanceLock(path) {
+  try {
+    if (!existsSync(path)) return null;
+    const raw = readFileSync(path, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const pid = Number(parsed.pid || 0);
+    if (!Number.isFinite(pid) || pid <= 0) return null;
+    return {
+      pid,
+      port: Number(parsed.port || 0) || 0,
+      url: String(parsed.url || ""),
+      protocol: String(parsed.protocol || ""),
+      host: String(parsed.host || ""),
+      startedAt: Number(parsed.startedAt || 0) || 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeUiInstanceLock(path, payload = {}) {
+  try {
+    writeFileSync(path, JSON.stringify(payload, null, 2), "utf8");
+  } catch {
+    // best effort
+  }
+}
+
+function tryAcquireUiInstanceLock({ preferredPort = 0 } = {}) {
+  const lockPath = resolveUiInstanceLockPath();
+  uiInstanceLockPath = lockPath;
+  const payload = {
+    pid: process.pid,
+    preferredPort: Number(preferredPort || 0) || 0,
+    port: 0,
+    host: "",
+    protocol: "",
+    url: "",
+    startedAt: Date.now(),
+  };
+
+  const tryCreateLock = () => {
+    writeFileSync(lockPath, JSON.stringify(payload, null, 2), {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    uiInstanceLockHeld = true;
+    return { ok: true };
+  };
+
+  try {
+    return tryCreateLock();
+  } catch (err) {
+    if (err?.code !== "EEXIST") {
+      return { ok: false, existing: null };
+    }
+  }
+
+  const current = readUiInstanceLock(lockPath);
+  if (current && current.pid !== process.pid && isPidRunning(current.pid)) {
+    return { ok: false, existing: current };
+  }
+
+  try {
+    if (existsSync(lockPath)) unlinkSync(lockPath);
+  } catch {
+    // best effort
+  }
+
+  try {
+    return tryCreateLock();
+  } catch {
+    const existing = readUiInstanceLock(lockPath);
+    return { ok: false, existing };
+  }
+}
+
+function updateUiInstanceLock(payload = {}) {
+  if (!uiInstanceLockHeld || !uiInstanceLockPath) return;
+  writeUiInstanceLock(uiInstanceLockPath, {
+    pid: process.pid,
+    preferredPort: Number(payload.preferredPort || 0) || 0,
+    port: Number(payload.port || 0) || 0,
+    host: String(payload.host || ""),
+    protocol: String(payload.protocol || ""),
+    url: String(payload.url || ""),
+    startedAt: Number(payload.startedAt || Date.now()) || Date.now(),
+  });
+}
+
+function releaseUiInstanceLock() {
+  if (!uiInstanceLockPath) return;
+  try {
+    const current = readUiInstanceLock(uiInstanceLockPath);
+    if (!current || current.pid === process.pid || !isPidRunning(current.pid)) {
+      if (existsSync(uiInstanceLockPath)) unlinkSync(uiInstanceLockPath);
+    }
+  } catch {
+    // best effort
+  }
+  uiInstanceLockHeld = false;
+  uiInstanceLockPath = "";
+}
+
+function readAutoOpenMarker() {
+  try {
+    const cacheDir = resolve(resolveUiConfigDir(), ".cache");
+    const markerPath = resolve(cacheDir, AUTO_OPEN_MARKER_FILE);
+    if (!existsSync(markerPath)) return null;
+    const payload = JSON.parse(readFileSync(markerPath, "utf8"));
+    const openedAt = Number(payload?.openedAt || 0);
+    if (!Number.isFinite(openedAt) || openedAt <= 0) return null;
+    return { openedAt, markerPath };
+  } catch {
+    return null;
+  }
+}
+
+function writeAutoOpenMarker(data = {}) {
+  try {
+    const cacheDir = resolve(resolveUiConfigDir(), ".cache");
+    mkdirSync(cacheDir, { recursive: true });
+    const markerPath = resolve(cacheDir, AUTO_OPEN_MARKER_FILE);
+    writeFileSync(
+      markerPath,
+      JSON.stringify(
+        {
+          openedAt: Date.now(),
+          url: String(data.url || ""),
+          pid: process.pid,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  } catch {
+    /* best effort */
+  }
+}
+
+function shouldAutoOpenBrowserNow() {
+  const marker = readAutoOpenMarker();
+  if (!marker?.openedAt) return true;
+  const cooldownMs = getAutoOpenCooldownMs();
+  return Date.now() - marker.openedAt >= cooldownMs;
+}
+
+function getSessionTokenTtlMs() {
+  const raw = Number(process.env.BOSUN_UI_SESSION_TOKEN_TTL_MS || "");
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_SESSION_TOKEN_TTL_MS;
+  return Math.max(5 * 60 * 1000, Math.trunc(raw));
+}
+
+function resolveUiCachePath(fileName) {
+  const cacheDir = resolve(resolveUiConfigDir(), ".cache");
+  mkdirSync(cacheDir, { recursive: true });
+  return resolve(cacheDir, fileName);
+}
+
+function isValidSessionToken(token) {
+  return /^[a-f0-9]{64}$/i.test(String(token || ""));
+}
+
+function readPersistedSessionToken() {
+  try {
+    const tokenPath = resolveUiCachePath(UI_SESSION_TOKEN_FILE);
+    if (!existsSync(tokenPath)) return "";
+    const payload = JSON.parse(readFileSync(tokenPath, "utf8"));
+    const token = String(payload?.token || "").trim();
+    const createdAt = Number(payload?.createdAt || 0);
+    if (!isValidSessionToken(token)) return "";
+    if (!Number.isFinite(createdAt) || createdAt <= 0) return "";
+    if (Date.now() - createdAt > getSessionTokenTtlMs()) return "";
+    return token;
+  } catch {
+    return "";
+  }
+}
+
+function persistSessionToken(token) {
+  if (!isValidSessionToken(token)) return;
+  try {
+    const tokenPath = resolveUiCachePath(UI_SESSION_TOKEN_FILE);
+    writeFileSync(
+      tokenPath,
+      JSON.stringify(
+        {
+          token,
+          createdAt: Date.now(),
+          pid: process.pid,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  } catch {
+    // best effort
+  }
+}
+
+function ensureSessionToken() {
+  if (isValidSessionToken(sessionToken)) return sessionToken;
+  const persisted = readPersistedSessionToken();
+  if (persisted) {
+    sessionToken = persisted;
+    return sessionToken;
+  }
+  sessionToken = randomBytes(32).toString("hex");
+  persistSessionToken(sessionToken);
+  return sessionToken;
+}
+
+function readLastUiPort() {
+  try {
+    const portPath = resolveUiCachePath(UI_LAST_PORT_FILE);
+    if (!existsSync(portPath)) return 0;
+    const payload = JSON.parse(readFileSync(portPath, "utf8"));
+    const port = Number(payload?.port || 0);
+    if (!Number.isFinite(port) || port <= 0 || port > 65535) return 0;
+    return Math.trunc(port);
+  } catch {
+    return 0;
+  }
+}
+
+function persistLastUiPort(port) {
+  const normalized = Number(port || 0);
+  if (!Number.isFinite(normalized) || normalized <= 0 || normalized > 65535) {
+    return;
+  }
+  try {
+    const portPath = resolveUiCachePath(UI_LAST_PORT_FILE);
+    writeFileSync(
+      portPath,
+      JSON.stringify(
+        {
+          port: Math.trunc(normalized),
+          updatedAt: Date.now(),
+          pid: process.pid,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  } catch {
+    // best effort
+  }
 }
 
 const projectSyncWebhookMetrics = {
@@ -1308,6 +1726,8 @@ const SETTINGS_KNOWN_KEYS = [
   "BOSUN_PROMPT_PLANNER",
   "GITHUB_TOKEN", "GITHUB_REPOSITORY", "GITHUB_PROJECT_MODE",
   "GITHUB_PROJECT_NUMBER", "GITHUB_DEFAULT_ASSIGNEE", "GITHUB_AUTO_ASSIGN_CREATOR",
+  "BOSUN_GITHUB_APP_ID", "BOSUN_GITHUB_PRIVATE_KEY_PATH", "BOSUN_GITHUB_CLIENT_ID", "BOSUN_GITHUB_CLIENT_SECRET",
+  "BOSUN_GITHUB_WEBHOOK_SECRET", "BOSUN_GITHUB_USER_TOKEN",
   "GITHUB_PROJECT_WEBHOOK_PATH", "GITHUB_PROJECT_WEBHOOK_SECRET", "GITHUB_PROJECT_WEBHOOK_REQUIRE_SIGNATURE",
   "GITHUB_PROJECT_SYNC_ALERT_FAILURE_THRESHOLD", "GITHUB_PROJECT_SYNC_RATE_LIMIT_ALERT_THRESHOLD",
   "VK_TARGET_BRANCH", "CODEX_ANALYZE_MERGE_STRATEGY", "DEPENDABOT_AUTO_MERGE",
@@ -1342,11 +1762,107 @@ const SETTINGS_SENSITIVE_KEYS = new Set([
   "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "GITHUB_TOKEN",
   "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "CODEX_MODEL_PROFILE_XL_API_KEY", "CODEX_MODEL_PROFILE_M_API_KEY",
   "ANTHROPIC_API_KEY", "COPILOT_CLI_TOKEN", "GITHUB_PROJECT_WEBHOOK_SECRET",
+  "BOSUN_GITHUB_CLIENT_SECRET", "BOSUN_GITHUB_WEBHOOK_SECRET", "BOSUN_GITHUB_USER_TOKEN",
   "CLOUDFLARE_TUNNEL_CREDENTIALS",
 ]);
 
 const SETTINGS_KNOWN_SET = new Set(SETTINGS_KNOWN_KEYS);
 let _settingsLastUpdateTime = 0;
+
+function hasSettingValue(value) {
+  return value !== undefined && value !== null && value !== "";
+}
+
+function getConfigValueAtPath(obj, pathParts = []) {
+  let cursor = obj;
+  for (const part of pathParts) {
+    if (!cursor || typeof cursor !== "object" || !Object.prototype.hasOwnProperty.call(cursor, part)) {
+      return undefined;
+    }
+    cursor = cursor[part];
+  }
+  return cursor;
+}
+
+function toSettingsDisplayValue(def, rawValue) {
+  if (!hasSettingValue(rawValue)) return "";
+  if (def?.type === "boolean") {
+    if (typeof rawValue === "boolean") return rawValue ? "true" : "false";
+    const normalized = String(rawValue).trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return "true";
+    if (["0", "false", "no", "off"].includes(normalized)) return "false";
+  }
+  if (Array.isArray(rawValue)) {
+    return rawValue.map((entry) => String(entry ?? "")).join(",");
+  }
+  return String(rawValue);
+}
+
+function resolveDerivedSettingsValue(key) {
+  if (key === "TELEGRAM_MINIAPP_ENABLED") {
+    const rawPort = Number(process.env.TELEGRAM_UI_PORT || "0");
+    if (Number.isFinite(rawPort) && rawPort > 0) {
+      return { value: true, source: "derived" };
+    }
+  }
+  return null;
+}
+
+function buildSettingsResponseData() {
+  const data = {};
+  const sources = {};
+  const schema = getConfigSchema();
+  const defsByKey = new Map(
+    SETTINGS_SCHEMA.map((def) => [String(def?.key || ""), def]),
+  );
+  const { configData } = readConfigDocument();
+
+  for (const key of SETTINGS_KNOWN_KEYS) {
+    const def = defsByKey.get(key);
+    let rawValue = process.env[key];
+    let source = hasSettingValue(rawValue) ? "env" : "unset";
+
+    if (source === "unset") {
+      const derived = resolveDerivedSettingsValue(key);
+      if (derived && hasSettingValue(derived.value)) {
+        rawValue = derived.value;
+        source = derived.source || "derived";
+      }
+    }
+
+    if (source === "unset" && schema) {
+      const pathInfo = mapEnvKeyToConfigPath(key, schema);
+      if (pathInfo) {
+        const configValue = getConfigValueAtPath(configData, pathInfo.pathParts);
+        if (hasSettingValue(configValue)) {
+          rawValue = configValue;
+          source = "config";
+        } else {
+          const propSchema = getSchemaProperty(schema, pathInfo.pathParts);
+          if (propSchema && Object.prototype.hasOwnProperty.call(propSchema, "default")) {
+            rawValue = propSchema.default;
+            source = "default";
+          }
+        }
+      }
+    }
+
+    if (source === "unset" && def && Object.prototype.hasOwnProperty.call(def, "defaultVal")) {
+      rawValue = def.defaultVal;
+      source = "default";
+    }
+
+    const displayValue = toSettingsDisplayValue(def, rawValue);
+    if (SETTINGS_SENSITIVE_KEYS.has(key)) {
+      data[key] = displayValue ? "••••••" : "";
+    } else {
+      data[key] = displayValue;
+    }
+    sources[key] = source;
+  }
+
+  return { data, sources };
+}
 
 function updateEnvFile(changes) {
   const envPath = resolve(resolveUiConfigDir(), '.env');
@@ -1504,11 +2020,7 @@ function validateConfigSchemaChanges(changes) {
         fieldErrors[envKey] = err.message || "Invalid value";
       }
     }
-    if (Object.keys(fieldErrors).length === 0) {
-      for (const envKey of pathMap.values()) {
-        fieldErrors[envKey] = "Invalid value (config schema)";
-      }
-    }
+    if (Object.keys(fieldErrors).length === 0) return {};
     return fieldErrors;
   } catch {
     return {};
@@ -2622,14 +3134,6 @@ function stopWsHeartbeat() {
     clearInterval(wsHeartbeatTimer);
     wsHeartbeatTimer = null;
   }
-}
-
-function parseBooleanEnv(value, fallback = false) {
-  if (value === undefined || value === null || value === "") return fallback;
-  const raw = String(value).trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(raw)) return true;
-  if (["0", "false", "no", "off"].includes(raw)) return false;
-  return fallback;
 }
 
 function getGitHubWebhookPath() {
@@ -5758,6 +6262,16 @@ async function handleApi(req, res, url) {
     const regionEnv = (process.env.EXECUTOR_REGIONS || "").trim();
     const regions = regionEnv ? regionEnv.split(",").map((r) => r.trim()).filter(Boolean) : ["auto"];
     const pkg = JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf8"));
+    let runtimeKanbanBackend = "internal";
+    try {
+      runtimeKanbanBackend = String(
+        getKanbanBackendName() || process.env.KANBAN_BACKEND || "internal",
+      ).trim().toLowerCase();
+    } catch {
+      runtimeKanbanBackend = String(
+        process.env.KANBAN_BACKEND || "internal",
+      ).trim().toLowerCase();
+    }
     jsonResponse(res, 200, {
       ok: true,
       version: pkg.version,
@@ -5769,7 +6283,7 @@ async function handleApi(req, res, url) {
       wsEnabled: true,
       authRequired: !isAllowUnsafe(),
       sdk: process.env.EXECUTOR_SDK || "auto",
-      kanbanBackend: process.env.KANBAN_BACKEND || "github",
+      kanbanBackend: runtimeKanbanBackend,
       regions,
     });
     return;
@@ -5790,6 +6304,13 @@ async function handleApi(req, res, url) {
         return;
       }
       process.env[envKey] = value;
+      if (envKey === "KANBAN_BACKEND") {
+        try {
+          setKanbanBackend(String(value).trim().toLowerCase());
+        } catch (err) {
+          console.warn(`[config] failed to switch kanban backend: ${err.message}`);
+        }
+      }
       // Also send chat command for backward compat
       const cmdMap = { sdk: `/sdk ${value}`, kanban: `/kanban ${value}`, region: `/region ${value}` };
       const handler = uiDeps.handleUiCommand;
@@ -5806,15 +6327,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/settings") {
     try {
-      const data = {};
-      for (const key of SETTINGS_KNOWN_KEYS) {
-        const val = process.env[key];
-        if (SETTINGS_SENSITIVE_KEYS.has(key)) {
-          data[key] = val ? "••••••" : "";
-        } else {
-          data[key] = val || "";
-        }
-      }
+      const { data, sources } = buildSettingsResponseData();
       const envPath = resolve(resolveUiConfigDir(), ".env");
       const configPath = resolveConfigPath();
       const configExists = existsSync(configPath);
@@ -5822,6 +6335,7 @@ async function handleApi(req, res, url) {
       jsonResponse(res, 200, {
         ok: true,
         data,
+        sources,
         meta: {
           envPath,
           configPath,
@@ -5894,6 +6408,15 @@ async function handleApi(req, res, url) {
         const strVal = String(value);
         process.env[key] = strVal;
         strChanges[key] = strVal;
+      }
+      if (Object.prototype.hasOwnProperty.call(strChanges, "KANBAN_BACKEND")) {
+        try {
+          setKanbanBackend(
+            String(strChanges.KANBAN_BACKEND).trim().toLowerCase(),
+          );
+        } catch (err) {
+          console.warn(`[settings] failed to switch kanban backend: ${err.message}`);
+        }
       }
       // Write to .env file
       const updated = updateEnvFile(strChanges);
@@ -6214,7 +6737,7 @@ async function handleApi(req, res, url) {
   if (path === "/api/agents/available" && req.method === "GET") {
     try {
       const agents = getAvailableAgents();
-      const active = getPrimaryAgentName();
+      const active = getPrimaryAgentSelection();
       const mode = getAgentMode();
       jsonResponse(res, 200, { ok: true, agents, active, mode });
     } catch (err) {
@@ -6231,13 +6754,13 @@ async function handleApi(req, res, url) {
         jsonResponse(res, 400, { ok: false, error: "agent is required" });
         return;
       }
-      const previousAgent = getPrimaryAgentName();
+      const previousAgent = getPrimaryAgentSelection();
       const result = await switchPrimaryAgent(agent);
       if (!result.ok) {
         jsonResponse(res, 400, { ok: false, error: result.reason || "Switch failed" });
         return;
       }
-      const newAgent = getPrimaryAgentName();
+      const newAgent = getPrimaryAgentSelection();
       jsonResponse(res, 200, { ok: true, agent: newAgent, previousAgent });
       broadcastUiEvent(["agents", "sessions", "overview"], "invalidate", {
         reason: "agent-switched",
@@ -6780,11 +7303,78 @@ async function handleStatic(req, res, url) {
 export async function startTelegramUiServer(options = {}) {
   if (uiServer) return uiServer;
 
-  const rawPort = options.port ?? getDefaultPort();
-  const port = Number(rawPort);
-  if (!Number.isFinite(port) || port < 0) return null;
-
   injectUiDependencies(options.dependencies || {});
+
+  const rawPort = options.port ?? getDefaultPort();
+  const configuredPort = Number(rawPort);
+  const isTestRun =
+    Boolean(process.env.VITEST) ||
+    process.env.NODE_ENV === "test" ||
+    Boolean(process.env.JEST_WORKER_ID);
+  const skipInstanceLock =
+    options.skipInstanceLock === true ||
+    process.env.BOSUN_UI_SKIP_INSTANCE_LOCK === "1" ||
+    isTestRun;
+  const allowEphemeralPort =
+    options.allowEphemeralPort === true ||
+    process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT === "1" ||
+    isTestRun;
+  const persistedPort = readLastUiPort();
+  const shouldReusePersistedPort =
+    options.port == null &&
+    configuredPort === 0 &&
+    allowEphemeralPort &&
+    persistedPort > 0;
+  const port =
+    shouldReusePersistedPort
+      ? persistedPort
+      : configuredPort;
+  const portSource =
+    shouldReusePersistedPort
+      ? "cache.ui-last-port"
+      : options.port != null
+      ? "options.port"
+      : process.env.TELEGRAM_UI_PORT
+        ? "env.TELEGRAM_UI_PORT"
+        : "default(0)";
+
+  if (!Number.isFinite(port) || port < 0) {
+    console.warn(
+      `[telegram-ui] invalid ui port: raw=${String(rawPort)} source=${portSource}`,
+    );
+    return null;
+  }
+  if (port === 0 && !allowEphemeralPort) {
+    console.warn(
+      `[telegram-ui] refusing ephemeral ui port (resolved 0 from ${portSource}); ` +
+      `set TELEGRAM_UI_PORT (for example 4400) or set BOSUN_UI_ALLOW_EPHEMERAL_PORT=1`,
+    );
+    return null;
+  }
+
+  const autoOpenEnabled = ["1", "true", "yes", "on"].includes(
+    String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "")
+      .trim()
+      .toLowerCase(),
+  );
+  console.log(
+    `[telegram-ui] startup config: port=${port} source=${portSource} autoOpen=${autoOpenEnabled ? "enabled" : "disabled"}`,
+  );
+
+  if (!skipInstanceLock) {
+    const lockResult = tryAcquireUiInstanceLock({ preferredPort: port });
+    if (!lockResult.ok) {
+      const existing = lockResult.existing || {};
+      const existingTarget = existing.url
+        || (existing.port
+          ? `${existing.protocol || "http"}://${existing.host || "127.0.0.1"}:${existing.port}`
+          : "unknown");
+      console.warn(
+        `[telegram-ui] duplicate runtime detected (pid=${existing.pid}) — skipping secondary UI server start (${existingTarget})`,
+      );
+      return null;
+    }
+  }
 
   // Auto-TLS: generate a self-signed cert for HTTPS unless explicitly disabled
   let tlsOpts = null;
@@ -6891,112 +7481,117 @@ export async function startTelegramUiServer(options = {}) {
     await handleStatic(req, res, url);
   };
 
-  if (tlsOpts) {
-    uiServer = createHttpsServer(tlsOpts, requestHandler);
-    uiServerTls = true;
-  } else {
-    uiServer = createServer(requestHandler);
-    uiServerTls = false;
-  }
+  try {
+    if (tlsOpts) {
+      uiServer = createHttpsServer(tlsOpts, requestHandler);
+      uiServerTls = true;
+    } else {
+      uiServer = createServer(requestHandler);
+      uiServerTls = false;
+    }
 
-  wsServer = new WebSocketServer({ noServer: true });
-  if (!sessionListenerAttached) {
-    sessionListenerAttached = true;
-    addSessionEventListener((payload) => {
-      broadcastSessionMessage(payload);
-    });
-  }
-  wsServer.on("connection", (socket) => {
-    socket.__channels = new Set(["*"]);
-    socket.__lastPong = Date.now();
-    socket.__lastPing = null;
-    socket.__missedPongs = 0;
-    wsClients.add(socket);
-    sendWsMessage(socket, {
-      type: "hello",
-      channels: ["*"],
-      payload: { connected: true },
-      ts: Date.now(),
-    });
+    wsServer = new WebSocketServer({ noServer: true });
+    if (!sessionListenerAttached) {
+      sessionListenerAttached = true;
+      addSessionEventListener((payload) => {
+        broadcastSessionMessage(payload);
+      });
+    }
+    wsServer.on("connection", (socket) => {
+      socket.__channels = new Set(["*"]);
+      socket.__lastPong = Date.now();
+      socket.__lastPing = null;
+      socket.__missedPongs = 0;
+      wsClients.add(socket);
+      sendWsMessage(socket, {
+        type: "hello",
+        channels: ["*"],
+        payload: { connected: true },
+        ts: Date.now(),
+      });
 
-    socket.on("message", (raw) => {
-      try {
-        const message = JSON.parse(String(raw || "{}"));
-        if (message?.type === "subscribe" && Array.isArray(message.channels)) {
-          const channels = message.channels
-            .filter((item) => typeof item === "string" && item.trim())
-            .map((item) => item.trim());
-          socket.__channels = new Set(channels.length ? channels : ["*"]);
-          sendWsMessage(socket, {
-            type: "subscribed",
-            channels: Array.from(socket.__channels),
-            payload: { ok: true },
-            ts: Date.now(),
-          });
-        } else if (message?.type === "ping" && typeof message.ts === "number") {
-          // Client ping → echo back as pong
-          sendWsMessage(socket, { type: "pong", ts: message.ts });
-        } else if (message?.type === "pong" && typeof message.ts === "number") {
-          // Client pong in response to server ping
-          socket.__lastPong = Date.now();
-          socket.__missedPongs = 0;
-        } else if (message?.type === "subscribe-logs") {
-          const logType = message.logType === "agent" ? "agent" : "system";
-          const query = typeof message.query === "string" ? message.query : "";
-          startLogStream(socket, logType, query);
-        } else if (message?.type === "unsubscribe-logs") {
-          stopLogStream(socket);
+      socket.on("message", (raw) => {
+        try {
+          const message = JSON.parse(String(raw || "{}"));
+          if (message?.type === "subscribe" && Array.isArray(message.channels)) {
+            const channels = message.channels
+              .filter((item) => typeof item === "string" && item.trim())
+              .map((item) => item.trim());
+            socket.__channels = new Set(channels.length ? channels : ["*"]);
+            sendWsMessage(socket, {
+              type: "subscribed",
+              channels: Array.from(socket.__channels),
+              payload: { ok: true },
+              ts: Date.now(),
+            });
+          } else if (message?.type === "ping" && typeof message.ts === "number") {
+            // Client ping → echo back as pong
+            sendWsMessage(socket, { type: "pong", ts: message.ts });
+          } else if (message?.type === "pong" && typeof message.ts === "number") {
+            // Client pong in response to server ping
+            socket.__lastPong = Date.now();
+            socket.__missedPongs = 0;
+          } else if (message?.type === "subscribe-logs") {
+            const logType = message.logType === "agent" ? "agent" : "system";
+            const query = typeof message.query === "string" ? message.query : "";
+            startLogStream(socket, logType, query);
+          } else if (message?.type === "unsubscribe-logs") {
+            stopLogStream(socket);
+          }
+        } catch {
+          // Ignore malformed websocket payloads
         }
-      } catch {
-        // Ignore malformed websocket payloads
+      });
+
+      socket.on("close", () => {
+        stopLogStream(socket);
+        wsClients.delete(socket);
+      });
+
+      socket.on("error", () => {
+        stopLogStream(socket);
+        wsClients.delete(socket);
+      });
+    });
+
+    startWsHeartbeat();
+
+    uiServer.on("upgrade", (req, socket, head) => {
+      const url = new URL(
+        req.url || "/",
+        `http://${req.headers.host || "localhost"}`,
+      );
+      if (url.pathname !== "/ws") {
+        socket.destroy();
+        return;
       }
-    });
-
-    socket.on("close", () => {
-      stopLogStream(socket);
-      wsClients.delete(socket);
-    });
-
-    socket.on("error", () => {
-      stopLogStream(socket);
-      wsClients.delete(socket);
-    });
-  });
-
-  startWsHeartbeat();
-
-  uiServer.on("upgrade", (req, socket, head) => {
-    const url = new URL(
-      req.url || "/",
-      `http://${req.headers.host || "localhost"}`,
-    );
-    if (url.pathname !== "/ws") {
-      socket.destroy();
-      return;
-    }
-    if (!requireWsAuth(req, url)) {
-      try {
-        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-      } catch {
-        // no-op
+      if (!requireWsAuth(req, url)) {
+        try {
+          socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        } catch {
+          // no-op
+        }
+        socket.destroy();
+        return;
       }
-      socket.destroy();
-      return;
-    }
-    wsServer.handleUpgrade(req, socket, head, (ws) => {
-      wsServer.emit("connection", ws, req);
+      wsServer.handleUpgrade(req, socket, head, (ws) => {
+        wsServer.emit("connection", ws, req);
+      });
     });
-  });
 
-  // Generate a session token for browser-based access (no config needed)
-  sessionToken = randomBytes(32).toString("hex");
+    // Reuse a recent session token when possible so browser sessions survive restarts.
+    ensureSessionToken();
 
-  await new Promise((resolveReady, rejectReady) => {
-    uiServer.once("error", rejectReady);
-    uiServer.listen(port, options.host || DEFAULT_HOST, () => {
-      resolveReady();
+    await new Promise((resolveReady, rejectReady) => {
+      uiServer.once("error", rejectReady);
+      uiServer.listen(port, options.host || DEFAULT_HOST, () => {
+        resolveReady();
+      });
     });
-  });
+  } catch (err) {
+    releaseUiInstanceLock();
+    throw err;
+  }
 
   const publicHost = options.publicHost || process.env.TELEGRAM_UI_PUBLIC_HOST;
   const lanIp = getLocalLanIp();
@@ -7011,6 +7606,15 @@ export async function startTelegramUiServer(options = {}) {
       ? "https"
       : "http";
   uiServerUrl = `${protocol}://${host}:${actualPort}`;
+  updateUiInstanceLock({
+    preferredPort: port,
+    port: actualPort,
+    host,
+    protocol,
+    url: uiServerUrl,
+    startedAt: Date.now(),
+  });
+  persistLastUiPort(actualPort);
   console.log(`[telegram-ui] server listening on ${uiServerUrl}`);
   if (uiServerTls) {
     console.log(`[telegram-ui] TLS enabled (self-signed) — Telegram WebApp buttons will use HTTPS`);
@@ -7042,15 +7646,32 @@ export async function startTelegramUiServer(options = {}) {
   //  - skip when caller passes skipAutoOpen
   //  - skip during Vitest / Jest test runs (avoids opening 20+ tabs during `npm test`)
   //  - only open ONCE per process (singleton guard — prevents loops on server restart)
-  const isTestRun = process.env.VITEST || process.env.NODE_ENV === "test" || process.env.JEST_WORKER_ID;
+  const isTestRunRuntime =
+    process.env.VITEST || process.env.NODE_ENV === "test" || process.env.JEST_WORKER_ID;
+  const restartReason = String(
+    options.restartReason || process.env.BOSUN_MONITOR_RESTART_REASON || "",
+  ).trim();
+  const suppressAutoOpenForRestart = restartReason.length > 0;
+  if (suppressAutoOpenForRestart && autoOpenEnabled) {
+    console.log(
+      `[telegram-ui] auto-open suppressed during restart (${restartReason})`,
+    );
+  }
   if (
+    autoOpenEnabled &&
     process.env.BOSUN_DESKTOP !== "1" &&
     !options.skipAutoOpen &&
+    !suppressAutoOpenForRestart &&
     !_browserOpened &&
-    !isTestRun
+    !isTestRunRuntime &&
+    shouldAutoOpenBrowserNow()
   ) {
     _browserOpened = true;
-    const openUrl = `${protocol}://${lanIp}:${actualPort}/?token=${sessionToken}`;
+    const openHost = String(
+      process.env.BOSUN_UI_AUTO_OPEN_HOST || "127.0.0.1",
+    ).trim();
+    const openProtocol = uiServerTls ? "https" : "http";
+    const openUrl = `${openProtocol}://${openHost}:${actualPort}/?token=${sessionToken}`;
     try {
       const { exec } = await import("node:child_process");
       if (process.platform === "win32") {
@@ -7060,6 +7681,7 @@ export async function startTelegramUiServer(options = {}) {
       } else {
         exec(`xdg-open "${openUrl}"`);
       }
+      writeAutoOpenMarker({ url: openUrl });
     } catch { /* ignore auto-open failure */ }
   }
 
@@ -7126,8 +7748,8 @@ export function stopTelegramUiServer() {
   }
   uiServer = null;
   uiServerTls = false;
-  sessionToken = "";
   resetProjectSyncWebhookMetrics();
+  releaseUiInstanceLock();
 }
 
 export { getLocalLanIp };

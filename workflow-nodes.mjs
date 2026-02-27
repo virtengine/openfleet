@@ -20,7 +20,7 @@
 import { registerNodeType } from "./workflow-engine.mjs";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { execSync, spawnSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 const TAG = "[workflow-nodes]";
@@ -38,15 +38,36 @@ function trimLogText(value, max = 180) {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+function extractStreamText(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((entry) => {
+        if (entry == null) return "";
+        if (typeof entry === "string") return entry;
+        if (typeof entry?.text === "string") return entry.text;
+        if (typeof entry?.content === "string") return entry.content;
+        if (typeof entry?.deltaContent === "string") return entry.deltaContent;
+        return "";
+      })
+      .filter(Boolean);
+    return parts.join(" ");
+  }
+  if (typeof value === "object") {
+    if (typeof value?.text === "string") return value.text;
+    if (typeof value?.content === "string") return value.content;
+    if (typeof value?.deltaContent === "string") return value.deltaContent;
+  }
+  return "";
+}
+
 function summarizeAgentStreamEvent(event) {
   const type = String(event?.type || "").trim();
   if (!type) return "";
 
-  if (
-    type === "response.output_text.delta" ||
-    type === "response.output_text.done" ||
-    type === "item.updated"
-  ) {
+  if (type === "item.updated") {
     return "";
   }
 
@@ -63,13 +84,68 @@ function summarizeAgentStreamEvent(event) {
     return `Agent error: ${trimLogText(event?.error || event?.message || "unknown error", 220)}`;
   }
 
+  const item = event?.item;
+  if (item && (type === "item.completed" || type === "item.started")) {
+    const itemType = String(item?.type || "").trim().toLowerCase();
+    const toolName =
+      item?.tool_name ||
+      item?.toolName ||
+      item?.name ||
+      item?.call?.tool_name ||
+      item?.call?.name ||
+      item?.function?.name ||
+      null;
+
+    if (
+      itemType === "tool_call" ||
+      itemType === "mcp_tool_call" ||
+      itemType === "function_call" ||
+      itemType === "tool_use"
+    ) {
+      return `Tool call: ${toolName || "unknown"}`;
+    }
+    if (
+      itemType === "tool_result" ||
+      itemType === "mcp_tool_result" ||
+      itemType === "tool_output"
+    ) {
+      return `Tool result: ${toolName || "unknown"}`;
+    }
+
+    const itemText = trimLogText(
+      extractStreamText(item?.text) ||
+        extractStreamText(item?.summary) ||
+        extractStreamText(item?.content) ||
+        extractStreamText(item?.message?.content) ||
+        extractStreamText(item?.message?.text),
+      220,
+    );
+
+    if (itemType.includes("reason") || itemType.includes("thinking")) {
+      return itemText ? `Thinking: ${itemText}` : "Thinking...";
+    }
+
+    if (
+      itemType === "agent_message" ||
+      itemType === "assistant_message" ||
+      itemType === "message"
+    ) {
+      return itemText ? `Agent: ${itemText}` : "";
+    }
+
+    if (itemText) {
+      return `${itemType || "item"}: ${itemText}`;
+    }
+  }
+
   const messageText = trimLogText(
-    event?.message?.content ||
-      event?.message?.text ||
-      event?.content ||
-      event?.text ||
-      event?.data?.content ||
-      event?.data?.text ||
+    extractStreamText(event?.message?.content) ||
+      extractStreamText(event?.message?.text) ||
+      extractStreamText(event?.content) ||
+      extractStreamText(event?.text) ||
+      extractStreamText(event?.data?.content) ||
+      extractStreamText(event?.data?.text) ||
+      extractStreamText(event?.data?.deltaContent) ||
       "",
     220,
   );
@@ -466,22 +542,41 @@ registerNodeType("condition.switch", {
     type: "object",
     properties: {
       value: { type: "string", description: "Expression to evaluate" },
+      expression: { type: "string", description: "Legacy alias for value" },
+      field: { type: "string", description: "Legacy field lookup key (fallback when no expression is provided)" },
       cases: {
         type: "object",
         description: "Map of case values to output port names",
         additionalProperties: { type: "string" },
       },
     },
-    required: ["value"],
+    required: [],
   },
   async execute(node, ctx) {
-    const expr = node.config?.value || "";
     let value;
-    try {
-      const fn = new Function("$data", "$ctx", `return (${expr});`);
-      value = fn(ctx.data, ctx);
-    } catch {
-      value = ctx.resolve(expr);
+    const expr = node.config?.value || node.config?.expression || "";
+    if (expr) {
+      try {
+        const fn = new Function("$data", "$ctx", `return (${expr});`);
+        value = fn(ctx.data, ctx);
+      } catch {
+        value = ctx.resolve(expr);
+      }
+    } else if (node.config?.field) {
+      const field = String(node.config.field || "").trim();
+      value = field ? ctx.data?.[field] : undefined;
+      if (value === undefined && field) {
+        for (const output of ctx.nodeOutputs?.values?.() || []) {
+          if (
+            output &&
+            typeof output === "object" &&
+            Object.prototype.hasOwnProperty.call(output, field)
+          ) {
+            value = output[field];
+            break;
+          }
+        }
+      }
     }
     const cases = node.config?.cases || {};
     const matchedPort = cases[String(value)] || "default";
@@ -505,6 +600,7 @@ registerNodeType("action.run_agent", {
       timeoutMs: { type: "number", default: 3600000, description: "Agent timeout in ms" },
       agentProfile: { type: "string", description: "Agent profile name (e.g., 'frontend', 'backend')" },
       includeTaskContext: { type: "boolean", default: true, description: "Append task comments/attachments if available" },
+      failOnError: { type: "boolean", default: false, description: "Throw when agent returns success=false (enables workflow retries)" },
     },
     required: ["prompt"],
   },
@@ -570,6 +666,14 @@ registerNodeType("action.run_agent", {
         `Agent completed: success=${result.success} streamEvents=${streamEventCount}`,
       );
 
+      if (node.config?.failOnError && result.success !== true) {
+        const errorMessage = trimLogText(
+          result.error || result.output || "Agent reported failure",
+          400,
+        );
+        throw new Error(errorMessage || "Agent reported failure");
+      }
+
       // Propagate session/thread IDs for downstream chaining
       const threadId = result.threadId || result.sessionId || null;
       if (threadId) {
@@ -594,8 +698,13 @@ registerNodeType("action.run_agent", {
         `node -e "import('./agent-pool.mjs').then(m => m.launchEphemeralThread(process.argv[1], process.argv[2], ${timeoutMs}).then(r => console.log(JSON.stringify(r))))" "${finalPrompt.replace(/"/g, '\\"')}" "${cwd}"`,
         { cwd: resolve(dirname(new URL(import.meta.url).pathname)), timeout: timeoutMs + 30000, encoding: "utf8" }
       );
-      return JSON.parse(output);
+      const parsed = JSON.parse(output);
+      if (node.config?.failOnError && parsed?.success === false) {
+        throw new Error(trimLogText(parsed?.error || parsed?.output || "Agent reported failure", 400));
+      }
+      return parsed;
     } catch (err) {
+      if (node.config?.failOnError) throw err;
       return { success: false, error: err.message };
     }
   },
@@ -611,6 +720,7 @@ registerNodeType("action.run_command", {
       timeoutMs: { type: "number", default: 300000 },
       shell: { type: "string", default: "auto", enum: ["auto", "bash", "pwsh", "cmd"] },
       captureOutput: { type: "boolean", default: true },
+      failOnError: { type: "boolean", default: false, description: "Throw on non-zero exit status (enables workflow retries)" },
     },
     required: ["command"],
   },
@@ -637,13 +747,18 @@ registerNodeType("action.run_command", {
     } catch (err) {
       const output = err.stdout?.toString() || "";
       const stderr = err.stderr?.toString() || "";
-      return {
+      const result = {
         success: false,
         output,
         stderr,
         exitCode: err.status,
         error: err.message,
       };
+      if (node.config?.failOnError) {
+        const reason = trimLogText(stderr || output || err.message, 400) || err.message;
+        throw new Error(reason);
+      }
+      return result;
     }
   },
 });
@@ -691,6 +806,11 @@ registerNodeType("action.update_task_status", {
     properties: {
       taskId: { type: "string", description: "Task ID (supports {{variables}})" },
       status: { type: "string", enum: ["todo", "inprogress", "inreview", "done", "archived"] },
+      taskTitle: { type: "string", description: "Optional task title for downstream event payloads" },
+      previousStatus: { type: "string", description: "Optional explicit previous status" },
+      workflowEvent: { type: "string", description: "Optional follow-up workflow event to emit after status update" },
+      workflowData: { type: "object", description: "Additional payload for workflowEvent" },
+      workflowDedupKey: { type: "string", description: "Optional dedup key for workflowEvent dispatch" },
     },
     required: ["taskId", "status"],
   },
@@ -698,10 +818,29 @@ registerNodeType("action.update_task_status", {
     const taskId = ctx.resolve(node.config?.taskId || "");
     const status = node.config?.status;
     const kanban = engine.services?.kanban;
+    const workflowEvent = ctx.resolve(node.config?.workflowEvent || "");
+    const workflowData =
+      node.config?.workflowData && typeof node.config.workflowData === "object"
+        ? node.config.workflowData
+        : null;
+    const taskTitle = ctx.resolve(node.config?.taskTitle || "");
+    const previousStatus = ctx.resolve(node.config?.previousStatus || "");
+    const workflowDedupKey = ctx.resolve(node.config?.workflowDedupKey || "");
+    const updateOptions = {};
+    if (taskTitle) updateOptions.taskTitle = taskTitle;
+    if (previousStatus) updateOptions.previousStatus = previousStatus;
+    if (workflowEvent) updateOptions.workflowEvent = workflowEvent;
+    if (workflowData) updateOptions.workflowData = workflowData;
+    if (workflowDedupKey) updateOptions.workflowDedupKey = workflowDedupKey;
 
     if (kanban?.updateTaskStatus) {
-      await kanban.updateTaskStatus(taskId, status);
-      return { success: true, taskId, status };
+      await kanban.updateTaskStatus(taskId, status, updateOptions);
+      return {
+        success: true,
+        taskId,
+        status,
+        workflowEvent: workflowEvent || null,
+      };
     }
     return { success: false, error: "Kanban adapter not available" };
   },
@@ -713,38 +852,97 @@ registerNodeType("action.git_operations", {
     type: "object",
     properties: {
       operation: { type: "string", enum: ["commit", "push", "create_branch", "checkout", "merge", "rebase", "status"] },
+      operations: {
+        type: "array",
+        description: "Legacy multi-step operation list",
+        items: {
+          type: "object",
+          properties: {
+            op: { type: "string" },
+            operation: { type: "string" },
+            message: { type: "string" },
+            branch: { type: "string" },
+            name: { type: "string" },
+            includeTags: { type: "boolean" },
+            paths: { type: "array", items: { type: "string" } },
+          },
+        },
+      },
       message: { type: "string", description: "Commit message (for commit operation)" },
       branch: { type: "string", description: "Branch name" },
       cwd: { type: "string" },
     },
-    required: ["operation"],
+    required: [],
   },
   async execute(node, ctx) {
-    const op = node.config?.operation;
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
-    const branch = ctx.resolve(node.config?.branch || "");
-    const message = ctx.resolve(node.config?.message || "");
+    const resolveOpCommand = (opConfig = {}) => {
+      const op = String(opConfig.op || opConfig.operation || "").trim();
+      const branch = ctx.resolve(opConfig.branch || node.config?.branch || "");
+      const message = ctx.resolve(opConfig.message || node.config?.message || "");
+      const tagName = ctx.resolve(opConfig.name || "");
+      const includeTags = opConfig.includeTags === true;
+      const addPaths = Array.isArray(opConfig.paths) && opConfig.paths.length > 0
+        ? opConfig.paths.map((path) => ctx.resolve(String(path))).join(" ")
+        : "-A";
 
-    const commands = {
-      commit: `git add -A && git commit -m "${message.replace(/"/g, '\\"')}"`,
-      push: "git push --set-upstream origin HEAD",
-      create_branch: `git checkout -b ${branch}`,
-      checkout: `git checkout ${branch}`,
-      merge: `git merge ${branch} --no-edit`,
-      rebase: `git rebase ${branch}`,
-      status: "git status --porcelain",
+      const commands = {
+        add: `git add ${addPaths}`,
+        commit: `git add -A && git commit -m "${message.replace(/"/g, '\\"')}"`,
+        tag: tagName ? `git tag ${tagName}` : "",
+        push: includeTags
+          ? "git push --set-upstream origin HEAD && git push --tags"
+          : "git push --set-upstream origin HEAD",
+        create_branch: `git checkout -b ${branch}`,
+        checkout: `git checkout ${branch}`,
+        merge: `git merge ${branch} --no-edit`,
+        rebase: `git rebase ${branch}`,
+        status: "git status --porcelain",
+      };
+      const cmd = commands[op];
+      if (!cmd) {
+        throw new Error(`Unknown git operation: ${op}`);
+      }
+      return { op, cmd };
     };
 
-    const cmd = commands[op];
-    if (!cmd) throw new Error(`Unknown git operation: ${op}`);
+    const runGitCommand = ({ op, cmd }) => {
+      ctx.log(node.id, `Git ${op}: ${cmd}`);
+      try {
+        const output = execSync(cmd, { cwd, encoding: "utf8", timeout: 120000 });
+        return { success: true, output: output?.trim(), operation: op, command: cmd };
+      } catch (err) {
+        return { success: false, error: err.message, operation: op, command: cmd };
+      }
+    };
 
-    ctx.log(node.id, `Git ${op}: ${cmd}`);
-    try {
-      const output = execSync(cmd, { cwd, encoding: "utf8", timeout: 120000 });
-      return { success: true, output: output?.trim(), operation: op };
-    } catch (err) {
-      return { success: false, error: err.message, operation: op };
+    const operationList = Array.isArray(node.config?.operations)
+      ? node.config.operations
+      : [];
+    if (operationList.length > 0) {
+      const steps = [];
+      for (const spec of operationList) {
+        const resolved = resolveOpCommand(spec || {});
+        const result = runGitCommand(resolved);
+        steps.push(result);
+        if (result.success !== true) {
+          return {
+            success: false,
+            operation: resolved.op,
+            steps,
+            error: result.error,
+          };
+        }
+      }
+      return { success: true, operation: "batch", steps };
     }
+
+    const op = String(node.config?.operation || "").trim();
+    if (!op) {
+      return { success: false, error: "No git operation provided", operation: null };
+    }
+    const resolved = resolveOpCommand({ op });
+    return runGitCommand(resolved);
   },
 });
 
@@ -756,24 +954,35 @@ registerNodeType("action.create_pr", {
       title: { type: "string", description: "PR title" },
       body: { type: "string", description: "PR body" },
       base: { type: "string", description: "Base branch" },
+      baseBranch: { type: "string", description: "Legacy alias for base branch" },
+      branch: { type: "string", description: "Head branch to open PR from" },
       draft: { type: "boolean", default: false },
       cwd: { type: "string" },
+      failOnError: { type: "boolean", default: false, description: "Throw when PR creation fails (enables workflow retries)" },
     },
     required: ["title"],
   },
   async execute(node, ctx) {
     const title = ctx.resolve(node.config?.title || "");
     const body = ctx.resolve(node.config?.body || "");
-    const base = ctx.resolve(node.config?.base || "main");
+    const base = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
+    const branch = ctx.resolve(node.config?.branch || "");
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
     const draft = node.config?.draft ? "--draft" : "";
+    const head = branch ? `--head ${branch}` : "";
 
-    const cmd = `gh pr create --title "${title.replace(/"/g, '\\"')}" --body "${body.replace(/"/g, '\\"')}" --base ${base} ${draft}`.trim();
+    const cmd = `gh pr create --title "${title.replace(/"/g, '\\"')}" --body "${body.replace(/"/g, '\\"')}" --base ${base} ${head} ${draft}`.trim();
     ctx.log(node.id, `Creating PR: ${title}`);
     try {
       const output = execSync(cmd, { cwd, encoding: "utf8", timeout: 60000 });
-      return { success: true, url: output?.trim(), title };
+      return { success: true, url: output?.trim(), title, base, branch: branch || null };
     } catch (err) {
+      if (node.config?.failOnError) {
+        const stderr = err.stderr?.toString() || "";
+        const stdout = err.stdout?.toString() || "";
+        const reason = trimLogText(stderr || stdout || err.message, 400) || err.message;
+        throw new Error(reason);
+      }
       return { success: false, error: err.message };
     }
   },
@@ -863,19 +1072,32 @@ registerNodeType("action.delay", {
     type: "object",
     properties: {
       ms: { type: "number", description: "Delay in milliseconds (direct)" },
+      delayMs: { type: "number", description: "Legacy alias for ms" },
+      durationMs: { type: "number", description: "Legacy alias for ms" },
       seconds: { type: "number", description: "Delay in seconds" },
       minutes: { type: "number", description: "Delay in minutes" },
       hours: { type: "number", description: "Delay in hours" },
       jitter: { type: "number", default: 0, description: "Random jitter percentage (0-100) to add/subtract from delay" },
       reason: { type: "string", description: "Human-readable reason for the delay (logged)" },
+      message: { type: "string", description: "Legacy alias for reason" },
     },
   },
   async execute(node, ctx) {
+    const baseMs = Number(
+      node.config?.ms ??
+      node.config?.delayMs ??
+      node.config?.durationMs ??
+      0,
+    );
+    const seconds = Number(node.config?.seconds || 0);
+    const minutes = Number(node.config?.minutes || 0);
+    const hours = Number(node.config?.hours || 0);
+
     // Compute total delay from all duration fields
-    let totalMs = node.config?.ms || 0;
-    if (node.config?.seconds) totalMs += node.config.seconds * 1000;
-    if (node.config?.minutes) totalMs += node.config.minutes * 60_000;
-    if (node.config?.hours) totalMs += node.config.hours * 3_600_000;
+    let totalMs = Number.isFinite(baseMs) ? baseMs : 0;
+    if (Number.isFinite(seconds) && seconds > 0) totalMs += seconds * 1000;
+    if (Number.isFinite(minutes) && minutes > 0) totalMs += minutes * 60_000;
+    if (Number.isFinite(hours) && hours > 0) totalMs += hours * 3_600_000;
     if (totalMs <= 0) totalMs = 1000; // Default 1s
 
     // Apply jitter
@@ -886,7 +1108,7 @@ registerNodeType("action.delay", {
       totalMs = Math.max(totalMs, 100); // Floor at 100ms
     }
 
-    const reason = node.config?.reason || "";
+    const reason = ctx.resolve(node.config?.reason || node.config?.message || "");
     ctx.log(node.id, `Waiting ${totalMs}ms${reason ? ` (${reason})` : ""}`);
     await new Promise((r) => setTimeout(r, totalMs));
     return { waited: totalMs, reason };
@@ -1416,6 +1638,8 @@ registerNodeType("agent.run_planner", {
     properties: {
       taskCount: { type: "number", default: 5, description: "Number of tasks to generate" },
       context: { type: "string", description: "Additional context for the planner" },
+      prompt: { type: "string", description: "Optional explicit planner prompt override" },
+      outputVariable: { type: "string", description: "Optional context key to store planner output text" },
       projectId: { type: "string" },
       dedup: { type: "boolean", default: true },
     },
@@ -1423,24 +1647,88 @@ registerNodeType("agent.run_planner", {
   async execute(node, ctx, engine) {
     const count = node.config?.taskCount || 5;
     const context = ctx.resolve(node.config?.context || "");
+    const explicitPrompt = ctx.resolve(node.config?.prompt || "");
+    const outputVariable = ctx.resolve(node.config?.outputVariable || "");
 
     ctx.log(node.id, `Running planner for ${count} tasks`);
 
     // This delegates to the existing planner prompt flow
     const agentPool = engine.services?.agentPool;
     const plannerPrompt = engine.services?.prompts?.planner;
+    const promptText = explicitPrompt ||
+      (plannerPrompt
+        ? `${plannerPrompt}\n\nGenerate exactly ${count} new tasks.\n${context}`
+        : "");
 
-    if (agentPool?.launchEphemeralThread && plannerPrompt) {
-      const prompt = `${plannerPrompt}\n\nGenerate exactly ${count} new tasks.\n${context}`;
-      const result = await agentPool.launchEphemeralThread(prompt, process.cwd(), 15 * 60 * 1000);
+    if (agentPool?.launchEphemeralThread && promptText) {
+      let streamEventCount = 0;
+      let lastStreamLog = "";
+      const startedAt = Date.now();
+      const launchExtra = {
+        onEvent: (event) => {
+          try {
+            const line = summarizeAgentStreamEvent(event);
+            if (!line || line === lastStreamLog) return;
+            lastStreamLog = line;
+            streamEventCount += 1;
+            ctx.log(node.id, line);
+          } catch {
+            // Stream callbacks must never crash workflow execution.
+          }
+        },
+      };
+
+      const heartbeat = setInterval(() => {
+        const elapsedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+        ctx.log(
+          node.id,
+          `Planner still running (${elapsedSec}s elapsed, streamEvents=${streamEventCount})`,
+        );
+      }, WORKFLOW_AGENT_HEARTBEAT_MS);
+
+      let result;
+      try {
+        result = await agentPool.launchEphemeralThread(
+          promptText,
+          process.cwd(),
+          15 * 60 * 1000,
+          launchExtra,
+        );
+      } finally {
+        clearInterval(heartbeat);
+      }
+
+      ctx.log(
+        node.id,
+        `Planner completed: success=${result.success} streamEvents=${streamEventCount}`,
+      );
+
+      const threadId = result.threadId || result.sessionId || null;
+      if (threadId) {
+        ctx.data.sessionId = threadId;
+        ctx.data.threadId = threadId;
+      }
+
+      if (outputVariable) {
+        ctx.data[outputVariable] = String(result.output || "").trim();
+      }
       return {
         success: result.success,
         output: result.output,
         taskCount: count,
+        sdk: result.sdk,
+        items: result.items,
+        threadId,
+        sessionId: threadId,
       };
     }
 
-    return { success: false, error: "Agent pool or planner prompt not available" };
+    return {
+      success: false,
+      error: explicitPrompt
+        ? "Agent pool not available"
+        : "Agent pool or planner prompt not available",
+    };
   },
 });
 
@@ -1932,6 +2220,366 @@ registerNodeType("action.refresh_worktree", {
     } catch (err) {
       return { success: false, error: err.message, operation: op };
     }
+  },
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  MCP Tool Call — execute a tool on an installed MCP server
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Lazy-import MCP registry — cached at module scope per AGENTS.md rules.
+let _mcpRegistry = null;
+async function getMcpRegistry() {
+  if (!_mcpRegistry) {
+    _mcpRegistry = await import("./mcp-registry.mjs");
+  }
+  return _mcpRegistry;
+}
+
+/**
+ * Spawn a stdio MCP server, send a JSON-RPC request, and collect the response.
+ * Implements the MCP stdio transport: newline-delimited JSON-RPC over stdin/stdout.
+ *
+ * @param {Object} server — resolved MCP server config (command, args, env)
+ * @param {string} method — JSON-RPC method (e.g. "tools/call", "tools/list")
+ * @param {Object} params — JSON-RPC params
+ * @param {number} timeoutMs — max wait time
+ * @returns {Promise<Object>} — JSON-RPC result
+ */
+function mcpStdioRequest(server, method, params, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    const env = { ...process.env, ...(server.env || {}) };
+    const child = spawn(server.command, server.args || [], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env,
+      shell: process.platform === "win32",
+      timeout: timeoutMs + 5000,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const requestId = randomUUID();
+
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        child.kill("SIGTERM");
+        reject(new Error(`MCP stdio request timed out after ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      // Try to parse complete JSON-RPC responses (newline-delimited)
+      const lines = stdout.split("\n");
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const msg = JSON.parse(trimmed);
+          // Handle initialize response — send the actual tool call
+          if (msg.id === `${requestId}-init` && msg.result) {
+            // Send initialized notification
+            const initialized = JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n";
+            child.stdin.write(initialized);
+            // Now send the actual tool call
+            const toolCall = JSON.stringify({
+              jsonrpc: "2.0",
+              id: requestId,
+              method,
+              params,
+            }) + "\n";
+            child.stdin.write(toolCall);
+          }
+          // Handle the actual tool call response
+          if (msg.id === requestId && !settled) {
+            settled = true;
+            clearTimeout(timer);
+            child.kill("SIGTERM");
+            if (msg.error) {
+              reject(new Error(`MCP error ${msg.error.code}: ${msg.error.message}`));
+            } else {
+              resolve(msg.result);
+            }
+          }
+        } catch {
+          // Not valid JSON yet — partial line, keep accumulating
+        }
+      }
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", (err) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error(`MCP stdio spawn error: ${err.message}`));
+      }
+    });
+
+    child.on("close", (code) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        if (code !== 0) {
+          reject(new Error(`MCP server exited with code ${code}: ${stderr.slice(0, 500)}`));
+        } else {
+          reject(new Error("MCP server closed without responding"));
+        }
+      }
+    });
+
+    // Send initialize request first (MCP protocol handshake)
+    const initRequest = JSON.stringify({
+      jsonrpc: "2.0",
+      id: `${requestId}-init`,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "bosun-workflow", version: "1.0.0" },
+      },
+    }) + "\n";
+    child.stdin.write(initRequest);
+  });
+}
+
+/**
+ * Send an HTTP JSON-RPC request to a URL-based MCP server.
+ *
+ * @param {string} url — MCP server URL
+ * @param {string} method — JSON-RPC method
+ * @param {Object} params — JSON-RPC params
+ * @param {number} timeoutMs — max wait time
+ * @returns {Promise<Object>} — JSON-RPC result
+ */
+async function mcpUrlRequest(url, method, params, timeoutMs = 30000) {
+  const requestId = randomUUID();
+  const body = JSON.stringify({
+    jsonrpc: "2.0",
+    id: requestId,
+    method,
+    params,
+  });
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`MCP HTTP ${res.status}: ${text.slice(0, 500)}`);
+    }
+
+    const json = await res.json();
+    if (json.error) {
+      throw new Error(`MCP error ${json.error.code}: ${json.error.message}`);
+    }
+    return json.result;
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === "AbortError") {
+      throw new Error(`MCP URL request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  }
+}
+
+registerNodeType("action.mcp_tool_call", {
+  describe: () => "Call a tool on an installed MCP server from the library",
+  schema: {
+    type: "object",
+    properties: {
+      server: {
+        type: "string",
+        description: "MCP server ID from the library (e.g. 'github', 'filesystem', 'context7')",
+      },
+      tool: {
+        type: "string",
+        description: "Tool name to invoke on the MCP server",
+      },
+      input: {
+        type: "object",
+        description: "Tool input arguments (server-specific)",
+        additionalProperties: true,
+      },
+      timeoutMs: {
+        type: "number",
+        default: 30000,
+        description: "Timeout in ms for the MCP tool call",
+      },
+      outputVariable: {
+        type: "string",
+        description: "Variable name to store the result in ctx.data",
+      },
+    },
+    required: ["server", "tool"],
+  },
+  async execute(node, ctx) {
+    const serverId = ctx.resolve(node.config?.server || "");
+    const toolName = ctx.resolve(node.config?.tool || "");
+    const input = node.config?.input || {};
+    const timeoutMs = node.config?.timeoutMs || 30000;
+
+    if (!serverId) throw new Error("action.mcp_tool_call: 'server' is required");
+    if (!toolName) throw new Error("action.mcp_tool_call: 'tool' is required");
+
+    ctx.log(node.id, `MCP tool call: ${serverId}/${toolName}`);
+
+    // Resolve the MCP server from the library/catalog
+    const registry = await getMcpRegistry();
+    const rootDir = ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+    const resolved = await registry.resolveMcpServersForAgent(rootDir, [serverId]);
+
+    if (!resolved || !resolved.length) {
+      throw new Error(
+        `action.mcp_tool_call: MCP server "${serverId}" not found. ` +
+        `Install it first via the library: installMcpServer("${serverId}")`,
+      );
+    }
+
+    const server = resolved[0];
+    ctx.log(node.id, `Resolved server: ${server.name} (${server.transport})`);
+
+    // Resolve any {{variable}} references in tool input
+    const resolvedInput = {};
+    for (const [key, value] of Object.entries(input)) {
+      resolvedInput[key] = typeof value === "string" ? ctx.resolve(value) : value;
+    }
+
+    let result;
+    try {
+      if (server.transport === "url" && server.url) {
+        // URL-based MCP server — direct HTTP JSON-RPC
+        result = await mcpUrlRequest(server.url, "tools/call", {
+          name: toolName,
+          arguments: resolvedInput,
+        }, timeoutMs);
+      } else if (server.command) {
+        // Stdio-based MCP server — spawn process and communicate via JSON-RPC
+        result = await mcpStdioRequest(server, "tools/call", {
+          name: toolName,
+          arguments: resolvedInput,
+        }, timeoutMs);
+      } else {
+        throw new Error(
+          `MCP server "${serverId}" has no command or url configured`,
+        );
+      }
+    } catch (err) {
+      ctx.log(node.id, `MCP tool call failed: ${err.message}`);
+      return {
+        success: false,
+        error: err.message,
+        server: serverId,
+        tool: toolName,
+      };
+    }
+
+    ctx.log(node.id, `MCP tool call completed successfully`);
+
+    // Extract content from MCP tool call result
+    const content = result?.content || result;
+    const textContent = Array.isArray(content)
+      ? content
+          .filter((c) => c.type === "text")
+          .map((c) => c.text)
+          .join("\n")
+      : typeof content === "string"
+        ? content
+        : JSON.stringify(content);
+
+    const output = {
+      success: true,
+      server: serverId,
+      tool: toolName,
+      result: content,
+      text: textContent,
+      isError: result?.isError || false,
+    };
+
+    // Store in ctx.data if outputVariable is set
+    if (node.config?.outputVariable) {
+      ctx.data[node.config.outputVariable] = output;
+    }
+
+    return output;
+  },
+});
+
+registerNodeType("action.mcp_list_tools", {
+  describe: () => "List available tools on an installed MCP server",
+  schema: {
+    type: "object",
+    properties: {
+      server: {
+        type: "string",
+        description: "MCP server ID from the library",
+      },
+      timeoutMs: {
+        type: "number",
+        default: 30000,
+        description: "Timeout in ms",
+      },
+      outputVariable: {
+        type: "string",
+        description: "Variable name to store the tool list in ctx.data",
+      },
+    },
+    required: ["server"],
+  },
+  async execute(node, ctx) {
+    const serverId = ctx.resolve(node.config?.server || "");
+    const timeoutMs = node.config?.timeoutMs || 30000;
+
+    if (!serverId) throw new Error("action.mcp_list_tools: 'server' is required");
+
+    ctx.log(node.id, `Listing tools for MCP server: ${serverId}`);
+
+    const registry = await getMcpRegistry();
+    const rootDir = ctx.data?.worktreePath || ctx.data?.repoRoot || process.cwd();
+    const resolved = await registry.resolveMcpServersForAgent(rootDir, [serverId]);
+
+    if (!resolved || !resolved.length) {
+      throw new Error(`action.mcp_list_tools: MCP server "${serverId}" not found`);
+    }
+
+    const server = resolved[0];
+    let result;
+
+    try {
+      if (server.transport === "url" && server.url) {
+        result = await mcpUrlRequest(server.url, "tools/list", {}, timeoutMs);
+      } else if (server.command) {
+        result = await mcpStdioRequest(server, "tools/list", {}, timeoutMs);
+      } else {
+        throw new Error(`MCP server "${serverId}" has no command or url`);
+      }
+    } catch (err) {
+      ctx.log(node.id, `Failed to list tools: ${err.message}`);
+      return { success: false, error: err.message, server: serverId, tools: [] };
+    }
+
+    const tools = result?.tools || [];
+    ctx.log(node.id, `Found ${tools.length} tool(s) on ${serverId}`);
+
+    const output = { success: true, server: serverId, tools };
+    if (node.config?.outputVariable) {
+      ctx.data[node.config.outputVariable] = output;
+    }
+    return output;
   },
 });
 

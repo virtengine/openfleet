@@ -1436,8 +1436,9 @@ function WorkflowListView() {
           Available Templates (${availableTemplates.length})${tmpls.length !== availableTemplates.length ? html` <span style="font-size: 11px; font-weight: 400; opacity: 0.6;">· ${tmpls.length - availableTemplates.length} installed</span>` : ""}
         </h3>
         ${availableTemplates.length === 0 && html`
-          <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px;">
-            All templates are installed! 🎉
+          <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px;">
+            <span class="icon-inline">${resolveIcon("star")}</span>
+            <span>All templates are installed!</span>
           </div>
         `}
         ${(() => {

@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+MSG_FILE="${1:-}"
+if [ -z "$MSG_FILE" ] || [ ! -f "$MSG_FILE" ]; then
+  exit 0
+fi
+
+if [ "${BOSUN_HOOK_SKIP_BOT_TRAILER:-}" = "1" ]; then
+  exit 0
+fi
+
+TRAILER="Co-authored-by: bosun-ve[bot] <262908237+bosun-ve[bot]@users.noreply.github.com>"
+
+if grep -Fq "$TRAILER" "$MSG_FILE"; then
+  exit 0
+fi
+
+printf "\n%s\n" "$TRAILER" >> "$MSG_FILE"
+echo "[hooks] appended Bosun bot attribution trailer" >&2

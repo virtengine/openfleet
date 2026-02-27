@@ -118,6 +118,37 @@ import {
 } from "./presence.mjs";
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
+
+function isWslInteropRuntime() {
+  return Boolean(
+    process.env.WSL_DISTRO_NAME
+    || process.env.WSL_INTEROP
+    || (process.platform === "win32"
+      && String(process.env.HOME || "")
+        .trim()
+        .startsWith("/home/")),
+  );
+}
+
+function resolveTelegramConfigDir() {
+  if (process.env.BOSUN_HOME) return resolve(process.env.BOSUN_HOME);
+  if (process.env.BOSUN_DIR) return resolve(process.env.BOSUN_DIR);
+
+  const preferWindowsDirs = process.platform === "win32" && !isWslInteropRuntime();
+  const baseDir = preferWindowsDirs
+    ? process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || process.env.USERPROFILE
+      || process.env.HOME
+      || homedir()
+    : process.env.HOME
+      || process.env.XDG_CONFIG_HOME
+      || process.env.USERPROFILE
+      || process.env.APPDATA
+      || process.env.LOCALAPPDATA
+      || homedir();
+  return resolve(baseDir, "bosun");
+}
 const repoRoot = resolveRepoRoot();
 const BosunDir = __dirname;
 const statusPath = resolve(repoRoot, ".cache", "ve-orchestrator-status.json");
@@ -327,6 +358,23 @@ const statusBoardEditDebounceMs = Number(
 
 function delayMs(ms) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+const SAFE_DETACH_PREFIX = "[telegram-bot] async-detach";
+
+function safeDetach(label, taskOrPromise) {
+  const tag = label
+    ? `${SAFE_DETACH_PREFIX}:${String(label)}`
+    : SAFE_DETACH_PREFIX;
+  try {
+    const result =
+      typeof taskOrPromise === "function" ? taskOrPromise() : taskOrPromise;
+    Promise.resolve(result).catch((err) => {
+      console.warn(`${tag} failed: ${err?.message || err}`);
+    });
+  } catch (err) {
+    console.warn(`${tag} failed: ${err?.message || err}`);
+  }
 }
 
 function shouldUseCurlPrimary() {
@@ -2276,7 +2324,7 @@ async function handleUpdate(update) {
   // Free-text agent task runs in a separate queue so polling isn't blocked.
   // If agent is already busy, handle immediately so follow-ups can be queued.
   if (isPrimaryBusy()) {
-    void handleFreeText(text, chatId);
+    safeDetach("free-text", () => handleFreeText(text, chatId));
     return;
   }
   enqueueAgentTask(() => handleFreeText(text, chatId));
@@ -2451,7 +2499,7 @@ async function cmdWorkspace(chatId, text) {
     .trim();
   const [sub, ...rest] = raw ? raw.split(/\s+/) : [];
   const subcmd = String(sub || "list").toLowerCase();
-  const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+  const configDir = resolveTelegramConfigDir();
 
   try {
     if (subcmd === "scan") {
@@ -5057,7 +5105,7 @@ Object.assign(UI_SCREENS, {
     body: () => "Choose a local workspace to set active for task routing.",
     keyboard: async (ctx) => {
       const page = parsePageParam(ctx.params?.page);
-      const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+      const configDir = resolveTelegramConfigDir();
       const workspaces = listLocalWorkspaces(configDir);
       const active = getActiveLocalWorkspace(configDir);
       if (!workspaces.length) {
@@ -5321,7 +5369,7 @@ Object.assign(UI_SCREENS, {
     body: () => "Browse, manage, and interact with your managed workspaces.",
     keyboard: async (ctx) => {
       const page = parsePageParam(ctx.params?.page);
-      const configDir = process.env.BOSUN_DIR || join(homedir(), "bosun");
+      const configDir = resolveTelegramConfigDir();
       const workspaces = listLocalWorkspaces(configDir);
       const active = getActiveLocalWorkspace(configDir);
       if (!workspaces.length) {
@@ -6079,7 +6127,7 @@ async function cmdApp(chatId) {
 async function cmdMenu(chatId) {
   syncUiUrlsFromServer();
   if (telegramApiReachable !== false) {
-    void refreshMenuButton();
+    safeDetach("menu-button-refresh", refreshMenuButton);
   }
   clearPendingUiInput(chatId);
   await showUiScreen(chatId, null, "home", {}, { sticky: true });
@@ -6793,10 +6841,10 @@ async function cmdStartTask(chatId, args) {
       );
       return;
     }
-    void executor.executeTask(task, {
+    safeDetach("manual-start", () => executor.executeTask(task, {
       sdk: sdk || undefined,
       model: model || undefined,
-    });
+    }));
     await sendReply(
       chatId,
       `✅ Manual start queued for ${task.title || task.id}.` +
@@ -9108,7 +9156,7 @@ async function cmdBackground(chatId, args) {
       chatId,
       `🛰️ Background task queued: "${task.slice(0, 80)}${task.length > 80 ? "…" : ""}"`,
     );
-    void handleFreeText(task, chatId, { background: true, isolated: true });
+    safeDetach("background-free-text", () => handleFreeText(task, chatId, { background: true, isolated: true }));
     return;
   }
 
@@ -9467,11 +9515,11 @@ async function handleFreeText(text, chatId, options = {}) {
     const elapsed = now - lastEditAt;
     if (elapsed >= EDIT_THROTTLE_MS) {
       editPending = true;
-      void doEdit();
+      safeDetach("agent-edit", doEdit);
     } else {
       editPending = true;
       if (editTimer) clearTimeout(editTimer);
-      editTimer = setTimeout(() => void doEdit(), EDIT_THROTTLE_MS - elapsed);
+      editTimer = setTimeout(() => safeDetach("agent-edit", doEdit), EDIT_THROTTLE_MS - elapsed);
     }
   };
 
@@ -9815,8 +9863,8 @@ function startPresenceLoop() {
       );
     }
   };
-  setTimeout(() => void sendPresence(), intervalMs);
-  setInterval(() => void sendPresence(), intervalMs);
+  setTimeout(() => safeDetach("presence-heartbeat", sendPresence), intervalMs);
+  setInterval(() => safeDetach("presence-heartbeat", sendPresence), intervalMs);
 }
 
 function hasPresenceChanged(prev, curr) {
@@ -10419,7 +10467,7 @@ function stopBatchFlushLoop() {
  * Start the two-way Telegram bot.
  * Call injectMonitorFunctions() first if you want full integration.
  */
-export async function startTelegramBot() {
+export async function startTelegramBot(options = {}) {
   refreshTelegramConfigFromEnv();
   if (!telegramToken || !telegramChatId) {
     console.warn(
@@ -10456,13 +10504,22 @@ export async function startTelegramBot() {
   const miniAppPort = Number(process.env.TELEGRAM_UI_PORT || "0");
 
   if (miniAppEnabled || miniAppPort > 0) {
+    const restartReason = String(
+      options.restartReason || process.env.BOSUN_MONITOR_RESTART_REASON || "",
+    )
+      .trim()
+      .toLowerCase();
+    const suppressPortalAutoOpen =
+      options.suppressPortalAutoOpen === true || restartReason.length > 0;
+    const autoOpenOptIn = ["1", "true", "yes", "on"].includes(
+      String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "").toLowerCase(),
+    );
     try {
       await startTelegramUiServer({
         // Background monitor/bot runtime should not keep opening browser tabs.
         // Set BOSUN_UI_AUTO_OPEN_BROWSER=1 to opt-in.
-        skipAutoOpen: !["1", "true", "yes", "on"].includes(
-          String(process.env.BOSUN_UI_AUTO_OPEN_BROWSER || "").toLowerCase(),
-        ),
+        skipAutoOpen: suppressPortalAutoOpen || !autoOpenOptIn,
+        restartReason,
         dependencies: {
           execPrimaryPrompt,
           getInternalExecutor: _getInternalExecutor,
@@ -10470,7 +10527,7 @@ export async function startTelegramBot() {
           getAgentEventBus: _getAgentEventBus,
           handleUiCommand: handleUiCommand,
           getSyncEngine: _getSyncEngine,
-          configDir: process.env.BOSUN_DIR || join(homedir(), "bosun"),
+          configDir: resolveTelegramConfigDir(),
           onProjectSyncAlert: async (alert) => {
             if (!_sendTelegramMessage) return;
             const text = String(alert?.message || "Project sync alert");
@@ -10491,16 +10548,16 @@ export async function startTelegramBot() {
 
       // Immediately sync the menu button, then periodically refresh
       if (reachable) {
-        void refreshMenuButton();
+        safeDetach("menu-button-refresh", refreshMenuButton);
       }
       if (reachable && !menuButtonRefreshTimer) {
-        menuButtonRefreshTimer = setInterval(() => void refreshMenuButton(), MENU_BUTTON_REFRESH_MS);
+        menuButtonRefreshTimer = setInterval(() => safeDetach("menu-button-refresh", refreshMenuButton), MENU_BUTTON_REFRESH_MS);
       }
 
       // React immediately when the tunnel URL changes (e.g. after restart)
       onTunnelUrlChange((url) => {
         console.log(`[telegram-bot] tunnel URL changed: ${url} — refreshing menu button`);
-        void refreshMenuButton();
+        safeDetach("menu-button-refresh", refreshMenuButton);
       });
 
       // Notify about firewall issues if detected (24h cooldown)
@@ -10716,7 +10773,7 @@ export function stopTelegramBot(options = {}) {
     }
     stopBatchFlushLoop();
   }
-  void releaseTelegramPollLock();
+  safeDetach("poll-lock-release", releaseTelegramPollLock);
   stopTelegramUiServer();
   if (menuButtonRefreshTimer) {
     clearInterval(menuButtonRefreshTimer);

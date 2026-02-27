@@ -283,6 +283,55 @@ describe("WorkflowEngine - loop.for_each", () => {
   });
 });
 
+describe("WorkflowEngine - source port routing", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("routes only the selected switch port", async () => {
+    const visited = [];
+    registerNodeType("test.capture_port", {
+      describe: () => "Capture reached branch",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        visited.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "switch",
+          type: "condition.switch",
+          label: "Switch",
+          config: {
+            value: "'left'",
+            cases: {
+              left: "left-port",
+              right: "right-port",
+            },
+          },
+        },
+        { id: "left", type: "test.capture_port", label: "Left", config: {} },
+        { id: "right", type: "test.capture_port", label: "Right", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "switch" },
+        { id: "e2", source: "switch", target: "left", sourcePort: "left-port" },
+        { id: "e3", source: "switch", target: "right", sourcePort: "right-port" },
+      ],
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+    expect(result.errors).toEqual([]);
+    expect(visited).toEqual(["left"]);
+  });
+});
+
 // ── Run History / Detail Tests ──────────────────────────────────────────────
 
 describe("WorkflowEngine - run history details", () => {
@@ -481,6 +530,21 @@ describe("New node types", () => {
     expect(result.reason).toBe("test");
   });
 
+  it("action.delay supports legacy durationMs/message aliases", async () => {
+    const handler = getNodeType("action.delay");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({});
+    const node = {
+      id: "d2",
+      type: "action.delay",
+      config: { durationMs: 10, message: "legacy" },
+    };
+    const result = await handler.execute(node, ctx);
+    expect(result.waited).toBeGreaterThanOrEqual(10);
+    expect(result.reason).toBe("legacy");
+  });
+
   it("flow.gate opens on condition", async () => {
     const handler = getNodeType("flow.gate");
     expect(handler).toBeDefined();
@@ -562,6 +626,74 @@ describe("Session chaining - action.run_agent", () => {
     const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
     expect(runLogText).toMatch(/Tool call: apply_patch/);
     expect(runLogText).toMatch(/Agent: Implemented the requested changes\./);
+  });
+
+  it("agent.run_planner streams planner events and propagates threadId", async () => {
+    const handler = getNodeType("agent.run_planner");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({});
+    const launchEphemeralThread = vi.fn().mockImplementation(
+      async (_prompt, _cwd, _timeoutMs, extra) => {
+        extra?.onEvent?.({
+          type: "item.completed",
+          item: { type: "reasoning", summary: "Reviewing backlog gaps." },
+        });
+        extra?.onEvent?.({
+          type: "tool_call",
+          tool_name: "create_task",
+        });
+        extra?.onEvent?.({
+          type: "item.completed",
+          item: { type: "agent_message", text: "Generated 3 tasks." },
+        });
+        return {
+          success: true,
+          output: "planned output",
+          sdk: "codex",
+          items: [],
+          threadId: "planner-thread-123",
+        };
+      },
+    );
+    const mockEngine = {
+      services: {
+        agentPool: {
+          launchEphemeralThread,
+        },
+        prompts: {
+          planner: "Planner prompt",
+        },
+      },
+    };
+
+    const node = {
+      id: "planner-1",
+      type: "agent.run_planner",
+      config: {
+        taskCount: 3,
+        context: "Focus on reliability",
+        outputVariable: "plannerOutput",
+      },
+    };
+    const result = await handler.execute(node, ctx, mockEngine);
+
+    expect(result.success).toBe(true);
+    expect(result.taskCount).toBe(3);
+    expect(result.threadId).toBe("planner-thread-123");
+    expect(result.sessionId).toBe("planner-thread-123");
+    expect(ctx.data.threadId).toBe("planner-thread-123");
+    expect(ctx.data.sessionId).toBe("planner-thread-123");
+    expect(ctx.data.plannerOutput).toBe("planned output");
+    expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+    expect(launchEphemeralThread.mock.calls[0][3]).toEqual(
+      expect.objectContaining({ onEvent: expect.any(Function) }),
+    );
+    const runLogText = ctx.logs.map((entry) => String(entry?.message || "")).join("\n");
+    expect(runLogText).toMatch(/Thinking: Reviewing backlog gaps\./);
+    expect(runLogText).toMatch(/Tool call: create_task/);
+    expect(runLogText).toMatch(/Agent: Generated 3 tasks\./);
+    expect(runLogText).toMatch(/Planner completed: success=true streamEvents=3/);
   });
 });
 

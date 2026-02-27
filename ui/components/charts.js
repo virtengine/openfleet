@@ -73,18 +73,17 @@ export function DonutChart({ segments = [], size = 120, strokeWidth = 12 }) {
           opacity="0.3"
         />
         ${arcs}
+        <text
+          x=${cx}
+          y=${cy}
+          text-anchor="middle"
+          dominant-baseline="central"
+          font-size="18"
+          font-weight="700"
+          fill="var(--text-primary, #fff)"
+          style="font-family: inherit"
+        >${total}</text>
       </svg>
-      <div
-        class="donut-center"
-        style="
-        position: absolute; top: 50%; left: 50%;
-        transform: translate(-50%, -50%);
-        font-size: 22px; font-weight: 700;
-        color: var(--text-primary, #fff);
-      "
-      >
-        ${total}
-      </div>
     </div>
     <div class="donut-legend">
       ${segments.map(

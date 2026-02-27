@@ -45,6 +45,16 @@ import { loadConfig } from "./config.mjs";
 import { resolveRepoRoot, resolveAgentRepoRoot } from "./repo-root.mjs";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
 
+// Lazy-load MCP registry to avoid circular dependencies.
+// Cached at module scope per AGENTS.md hard rules.
+let _mcpRegistry = null;
+async function getMcpRegistry() {
+  if (!_mcpRegistry) {
+    _mcpRegistry = await import("./mcp-registry.mjs");
+  }
+  return _mcpRegistry;
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -75,6 +85,25 @@ const HARD_TIMEOUT_BUFFER_MS = 5 * 60_000; // 5 minutes
 
 /** Tag for console logging */
 const TAG = "[agent-pool]";
+const MAX_PROMPT_BYTES = 180_000;
+
+function sanitizeAndBoundPrompt(text) {
+  if (typeof text !== "string") return "";
+  // eslint-disable-next-line no-control-regex
+  const sanitized = text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+  const bytes = Buffer.byteLength(sanitized, "utf8");
+  if (bytes <= MAX_PROMPT_BYTES) return sanitized;
+  const buf = Buffer.from(sanitized, "utf8").slice(0, MAX_PROMPT_BYTES);
+  const truncated = buf.toString("utf8");
+  const removedBytes = bytes - MAX_PROMPT_BYTES;
+  console.warn(
+    `${TAG} prompt truncated: ${bytes} → ${MAX_PROMPT_BYTES} bytes (removed ${removedBytes})`,
+  );
+  return (
+    truncated +
+    `\n\n[...prompt truncated — ${removedBytes} bytes removed to stay within API limits]`
+  );
+}
 
 function envFlagEnabled(value) {
   const raw = String(value ?? "")
@@ -243,13 +272,8 @@ function hasSdkPrerequisites(name) {
     return { ok: true, reason: null };
   }
   if (name === "copilot") {
-    // Copilot needs either a token or VS Code context
-    const hasToken = process.env.COPILOT_CLI_TOKEN || process.env.GITHUB_TOKEN;
-    // Copilot also works from VS Code extension context — check for common indicators
-    const hasVsCode = process.env.VSCODE_PID || process.env.COPILOT_AGENT_HOST;
-    if (!hasToken && !hasVsCode) {
-      return { ok: false, reason: "no COPILOT_CLI_TOKEN or GITHUB_TOKEN" };
-    }
+    // Copilot auth can come from multiple sources (OAuth manager, gh auth,
+    // VS Code Copilot login, env tokens). Don't block execution here.
     return { ok: true, reason: null };
   }
   if (name === "claude") {
@@ -775,7 +799,11 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
       // Codex steering: send a follow-up message to the live thread
       // Note: the thread is consumed in the streaming loop below, so
       // additional runStreamed calls are queued by the SDK
-      thread.runStreamed(steerPrompt, { signal: controller?.signal }).catch(() => {});
+      thread
+        .runStreamed(sanitizeAndBoundPrompt(steerPrompt), {
+          signal: controller?.signal,
+        })
+        .catch(() => {});
     });
   }
 
@@ -791,7 +819,8 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
 
   // ── 4. Stream the turn ───────────────────────────────────────────────────
   try {
-    const turn = await thread.runStreamed(prompt, {
+    const safePrompt = sanitizeAndBoundPrompt(prompt);
+    const turn = await thread.runStreamed(safePrompt, {
       signal: controller.signal,
     });
 
@@ -878,7 +907,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
  * Build CLI arguments for ephemeral Copilot agent-pool sessions.
  * Mirrors copilot-shell.mjs buildCliArgs() for feature parity.
  */
-function buildPoolCopilotCliArgs() {
+function buildPoolCopilotCliArgs(mcpConfigPath) {
   const args = [];
   if (!envFlagEnabled(process.env.COPILOT_NO_EXPERIMENTAL)) {
     args.push("--experimental");
@@ -896,9 +925,10 @@ function buildPoolCopilotCliArgs() {
   if (envFlagEnabled(process.env.COPILOT_DISABLE_BUILTIN_MCPS)) {
     args.push("--disable-builtin-mcps");
   }
-  const mcpConfigPath = process.env.COPILOT_ADDITIONAL_MCP_CONFIG;
-  if (mcpConfigPath) {
-    args.push("--additional-mcp-config", mcpConfigPath);
+  // MCP config: prefer per-launch resolved config, fall back to env var
+  const effectiveMcpConfig = mcpConfigPath || process.env.COPILOT_ADDITIONAL_MCP_CONFIG;
+  if (effectiveMcpConfig) {
+    args.push("--additional-mcp-config", effectiveMcpConfig);
   }
   return args;
 }
@@ -1005,7 +1035,17 @@ async function launchCopilotThread(prompt, cwd, timeoutMs, extra = {}) {
         clientOpts = { cliUrl, env: clientEnv };
       } else {
         // Local mode (default): stdio for full capability
-        const cliArgs = buildPoolCopilotCliArgs();
+        // Write temp MCP config if resolved MCP servers are available
+        let mcpConfigPath = null;
+        if (extra._resolvedMcpServers?.length) {
+          try {
+            const registry = await getMcpRegistry();
+            mcpConfigPath = registry.writeTempCopilotMcpConfig(cwd, extra._resolvedMcpServers);
+          } catch (mcpErr) {
+            console.warn(`${TAG} copilot MCP config write failed (non-fatal): ${mcpErr.message}`);
+          }
+        }
+        const cliArgs = buildPoolCopilotCliArgs(mcpConfigPath);
         clientOpts = {
           cwd,
           env: clientEnv,
@@ -1446,6 +1486,27 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
   }
 
   // ── 4. Execute query ─────────────────────────────────────────────────────
+  // Inject MCP server config for Claude via environment variable
+  let _claudeMcpEnvCleanup = null;
+  if (extra._resolvedMcpServers?.length) {
+    try {
+      const registry = await getMcpRegistry();
+      const { envVar } = registry.buildClaudeMcpEnv(extra._resolvedMcpServers);
+      if (envVar) {
+        const prev = process.env.CLAUDE_MCP_SERVERS;
+        process.env.CLAUDE_MCP_SERVERS = envVar;
+        _claudeMcpEnvCleanup = () => {
+          if (prev === undefined) {
+            delete process.env.CLAUDE_MCP_SERVERS;
+          } else {
+            process.env.CLAUDE_MCP_SERVERS = prev;
+          }
+        };
+      }
+    } catch (mcpErr) {
+      console.warn(`${TAG} claude MCP env setup failed (non-fatal): ${mcpErr.message}`);
+    }
+  }
   try {
     const msgQueue = createMessageQueue();
 
@@ -1577,6 +1638,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
 
     const output =
       finalResponse.trim() || "(Agent completed with no text output)";
+    if (typeof _claudeMcpEnvCleanup === "function") _claudeMcpEnvCleanup();
     return {
       success: true,
       output,
@@ -1586,6 +1648,7 @@ async function launchClaudeThread(prompt, cwd, timeoutMs, extra = {}) {
       threadId: activeClaudeSessionId,
     };
   } catch (err) {
+    if (typeof _claudeMcpEnvCleanup === "function") _claudeMcpEnvCleanup();
     clearAbortScope();
     if (hardTimer) clearTimeout(hardTimer);
     if (steerKey) unregisterActiveSession(steerKey);
@@ -1695,6 +1758,32 @@ export async function launchEphemeralThread(
   timeoutMs = DEFAULT_TIMEOUT_MS,
   extra = {},
 ) {
+  // ── Resolve MCP servers for this launch ──────────────────────────────────
+  try {
+    if (!extra._mcpResolved) {
+      const cfg = loadConfig();
+      const mcpCfg = cfg.mcpServers || {};
+      if (mcpCfg.enabled !== false) {
+        const requestedIds = extra.mcpServers || [];
+        const defaultIds = mcpCfg.defaultServers || [];
+        if (requestedIds.length || defaultIds.length) {
+          const registry = await getMcpRegistry();
+          const resolved = await registry.resolveMcpServersForAgent(
+            cwd,
+            requestedIds,
+            { defaultServers: defaultIds, catalogOverrides: mcpCfg.catalogOverrides || {} },
+          );
+          if (resolved.length) {
+            extra._resolvedMcpServers = resolved;
+          }
+        }
+      }
+      extra._mcpResolved = true;
+    }
+  } catch (mcpErr) {
+    console.warn(`${TAG} MCP server resolution failed (non-fatal): ${mcpErr.message}`);
+  }
+
   // Determine the primary SDK to try
   const requestedSdk = extra.sdk
     ? String(extra.sdk).trim().toLowerCase()
@@ -2237,7 +2326,8 @@ async function resumeCodexThread(threadId, prompt, cwd, timeoutMs, extra = {}) {
   let hardTimer;
 
   try {
-    const turn = await thread.runStreamed(prompt, {
+    const safePrompt = sanitizeAndBoundPrompt(prompt);
+    const turn = await thread.runStreamed(safePrompt, {
       signal: controller.signal,
     });
     let finalResponse = "";

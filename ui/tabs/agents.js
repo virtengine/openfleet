@@ -797,7 +797,7 @@ function WorkspaceViewer({ agent, onClose }) {
               class="btn btn-danger btn-sm"
               disabled=${agent.index == null}
               onClick=${handleStop}
-            >⛔ Stop</button>
+            >${iconText("⛔ Stop")}</button>
           </div>
         </div>
       </div>
@@ -1343,7 +1343,7 @@ export function AgentsTab() {
                         class="btn btn-danger btn-sm"
                         onClick=${() => handleForceStop({ ...slot, index: i })}
                       >
-                        ⛔ Stop
+                        ${iconText("⛔ Stop")}
                       </button>
                     </div>
                   </div>
@@ -1500,7 +1500,7 @@ function ContextViewer({ sessionId }) {
 
   if (error) {
     return html`<div class="chat-view chat-empty-state">
-      <div class="session-empty-icon" style="color:var(--color-error)">⚠️</div>
+      <div class="session-empty-icon" style="color:var(--color-error)">${resolveIcon("⚠️")}</div>
       <div class="session-empty-text">${error}</div>
       <button class="btn btn-primary btn-sm mt-sm" onClick=${() => { setLoading(true); setError(null); fetchContext(); }}>${iconText("🔄 Retry")}</button>
     </div>`;
@@ -1710,7 +1710,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
         <div class="fleet-slot-rail">
           ${entries.length === 0
             ? html`<div class="meta-text">No active slots</div>`
-            : entries.map((entry) => html`
+            : html`${entries.map((entry) => html`
                 <button
                   key=${entry.key}
                   class="fleet-slot-item ${selectedEntry?.key === entry.key ? "active" : ""}"
@@ -1728,7 +1728,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                     Slot ${(entry.index ?? 0) + 1} · ${entry.slot?.taskId || "no-task-id"}
                   </div>
                 </button>
-              `)}
+              `)}`}
         </div>
         <div class="session-detail fleet-session-detail">
           ${selectedEntry
@@ -1749,7 +1749,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                       ${iconText("🔍 Workspace")}
                     </button>
                     <button class="btn btn-danger btn-sm" onClick=${() => onForceStop({ ...selectedEntry.slot, index: selectedEntry.index })}>
-                      ⛔ Stop
+                      ${iconText("⛔ Stop")}
                     </button>
                   </div>
                 </div>

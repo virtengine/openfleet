@@ -36,11 +36,34 @@ import { EventEmitter } from "node:events";
 const TAG = "[workflow-engine]";
 const WORKFLOW_DIR_NAME = "workflows";
 const WORKFLOW_RUNS_DIR = "workflow-runs";
-const MAX_NODE_RETRIES = 3;
-const NODE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes per node default
-const MAX_CONCURRENT_BRANCHES = 8;
-const MAX_PERSISTED_RUNS = 200;
-const DEFAULT_RUN_STUCK_THRESHOLD_MS = 5 * 60 * 1000;
+function readBoundedEnvInt(name, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const parsed = Number(process.env[name]);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.round(parsed);
+  return Math.min(max, Math.max(min, rounded));
+}
+
+const MAX_NODE_RETRIES = readBoundedEnvInt("WORKFLOW_NODE_MAX_RETRIES", 3, {
+  min: 0,
+  max: 20,
+});
+const NODE_TIMEOUT_MS = readBoundedEnvInt("WORKFLOW_NODE_TIMEOUT_MS", 10 * 60 * 1000, {
+  min: 1000,
+  max: 21_600_000,
+});
+const MAX_CONCURRENT_BRANCHES = readBoundedEnvInt("WORKFLOW_MAX_CONCURRENT_BRANCHES", 8, {
+  min: 1,
+  max: 64,
+});
+const MAX_PERSISTED_RUNS = readBoundedEnvInt("WORKFLOW_MAX_PERSISTED_RUNS", 200, {
+  min: 20,
+  max: 5000,
+});
+const DEFAULT_RUN_STUCK_THRESHOLD_MS = readBoundedEnvInt(
+  "WORKFLOW_RUN_STUCK_THRESHOLD_MS",
+  5 * 60 * 1000,
+  { min: 10000, max: 7_200_000 },
+);
 
 // ── Node Status ─────────────────────────────────────────────────────────────
 
@@ -632,9 +655,13 @@ export class WorkflowEngine extends EventEmitter {
     const ready = new Set(queue);
 
     while (ready.size > 0) {
-      // Execute all ready nodes (parallel where possible)
-      const batch = Array.from(ready);
+      // Execute ready nodes in bounded parallel batches.
+      const pendingReady = Array.from(ready);
+      const batch = pendingReady.slice(0, MAX_CONCURRENT_BRANCHES);
       ready.clear();
+      for (const deferredNodeId of pendingReady.slice(MAX_CONCURRENT_BRANCHES)) {
+        ready.add(deferredNodeId);
+      }
 
       const results = await Promise.allSettled(
         batch.map(async (nodeId) => {
@@ -645,9 +672,23 @@ export class WorkflowEngine extends EventEmitter {
           ctx.setNodeStatus(nodeId, NodeStatus.RUNNING);
           this.emit("node:start", { nodeId, type: node.type, label: node.label });
 
-          // Retry loop — uses per-node maxRetries or global MAX_NODE_RETRIES
-          const maxRetries = (node.config?.retryable === false) ? 0 : (node.config?.maxRetries ?? MAX_NODE_RETRIES);
-          const baseRetryDelay = node.config?.retryDelayMs ?? 1000;
+          // Retry loop — uses per-node maxRetries/retryDelayMs with global fallbacks.
+          const resolvedMaxRetriesRaw =
+            node.config?.maxRetries !== undefined
+              ? Number(ctx.resolve(node.config.maxRetries))
+              : MAX_NODE_RETRIES;
+          const maxRetries = node.config?.retryable === false
+            ? 0
+            : Number.isFinite(resolvedMaxRetriesRaw)
+              ? Math.max(0, Math.trunc(resolvedMaxRetriesRaw))
+              : MAX_NODE_RETRIES;
+          const resolvedRetryDelayRaw =
+            node.config?.retryDelayMs !== undefined
+              ? Number(ctx.resolve(node.config.retryDelayMs))
+              : 1000;
+          const baseRetryDelay = Number.isFinite(resolvedRetryDelayRaw)
+            ? Math.max(0, Math.trunc(resolvedRetryDelayRaw))
+            : 1000;
           let lastErr;
 
           for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -704,6 +745,15 @@ export class WorkflowEngine extends EventEmitter {
       for (const nodeId of batch) {
         const node = nodeMap.get(nodeId);
         const edges = adjacency.get(nodeId) || [];
+        const sourceOutput = ctx.getNodeOutput(nodeId);
+        const selectedPortRaw =
+          sourceOutput?.matchedPort ??
+          sourceOutput?.port ??
+          null;
+        const selectedPort =
+          typeof selectedPortRaw === "string" && selectedPortRaw.trim()
+            ? selectedPortRaw.trim()
+            : null;
 
         // Handle loop.for_each: iterate downstream subgraph per item
         if (node?.type === "loop.for_each" && ctx.getNodeStatus(nodeId) === NodeStatus.COMPLETED) {
@@ -764,6 +814,11 @@ export class WorkflowEngine extends EventEmitter {
         }
 
         for (const edge of edges) {
+          const edgePort = String(edge?.sourcePort || "default").trim() || "default";
+          if (selectedPort && edgePort !== selectedPort) {
+            continue;
+          }
+
           // Check edge condition
           if (edge.condition) {
             try {

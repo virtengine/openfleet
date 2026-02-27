@@ -6,6 +6,8 @@
  *   - Anomaly Watchdog (recommended)
  *   - Workspace Hygiene (recommended)
  *   - Health Check
+ *   - Task Finalization Guard (recommended)
+ *   - Task Repair Worktree (recommended)
  *   - Incident Response (recommended)
  */
 
@@ -47,17 +49,33 @@ export const ERROR_RECOVERY_TEMPLATE = {
     node("retry-task", "action.run_agent", "Retry Task", {
       prompt: "{{taskExecutorRetryPrompt}}",
       timeoutMs: 3600000,
+      failOnError: true,
+      maxRetries: "{{maxRetries}}",
+      retryDelayMs: 15000,
+      continueOnError: true,
     }, { x: 200, y: 480 }),
+
+    node("retry-succeeded", "condition.expression", "Retry Succeeded?", {
+      expression: "$ctx.getNodeOutput('retry-task')?.success === true",
+    }, { x: 200, y: 620, outputs: ["yes", "no"] }),
+
+    node("notify-recovered", "notify.log", "Log Recovery Success", {
+      message: "Task {{taskId}} recovered automatically by error-recovery workflow",
+      level: "info",
+    }, { x: 90, y: 760 }),
 
     node("escalate", "notify.telegram", "Escalate to Human", {
       message: "🚨 Task **{{taskTitle}}** failed after {{maxRetries}} attempts. Manual intervention needed.\n\nLast error: {{lastError}}",
-    }, { x: 600, y: 180 }),
+    }, { x: 600, y: 620 }),
   ],
   edges: [
     edge("trigger", "check-retries"),
     edge("check-retries", "analyze-error", { condition: "$output?.result === true" }),
     edge("check-retries", "escalate", { condition: "$output?.result !== true" }),
     edge("analyze-error", "retry-task"),
+    edge("retry-task", "retry-succeeded"),
+    edge("retry-succeeded", "notify-recovered", { condition: "$output?.result === true", port: "yes" }),
+    edge("retry-succeeded", "escalate", { condition: "$output?.result !== true", port: "no" }),
   ],
   metadata: {
     author: "bosun",
@@ -347,6 +365,305 @@ export const HEALTH_CHECK_TEMPLATE = {
       description: "Replaces manual config-doctor runs with a scheduled health " +
         "check workflow. Config validation, git state, and agent status " +
         "checks run in parallel with automatic alerting.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Task Finalization Guard
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const TASK_FINALIZATION_GUARD_TEMPLATE = {
+  id: "template-task-finalization-guard",
+  name: "Task Finalization Guard",
+  description:
+    "Shared post-completion quality gate for all agents. Runs pre-push " +
+    "validation in the task worktree, normalizes status transitions, and " +
+    "hands off failures to a dedicated repair workflow.",
+  category: "reliability",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.event",
+  variables: {
+    finalizationTimeoutMs: 3600000,
+    baseBranch: "main",
+    finalizationCommand:
+      "node -e \"const cp=require('node:child_process');const cmds=['npm run prepush --if-present','npm run prepush:check --if-present','npm run build','npm test','npm run lint --if-present'];for(const cmd of cmds){cp.execSync(cmd,{stdio:'inherit'});} \"",
+  },
+  nodes: [
+    node("trigger", "trigger.event", "Task Completed", {
+      eventType: "task.completed",
+    }, { x: 400, y: 50 }),
+
+    node("has-worktree", "condition.expression", "Worktree Context Available?", {
+      expression: "Boolean($data?.worktreePath)",
+    }, { x: 400, y: 190 }),
+
+    node("run-finalization", "action.run_command", "Run Finalization Checks", {
+      command: "{{finalizationCommand}}",
+      cwd: "{{worktreePath}}",
+      timeoutMs: "{{finalizationTimeoutMs}}",
+      continueOnError: true,
+    }, { x: 220, y: 330 }),
+
+    node("checks-passed", "condition.expression", "Checks Passed?", {
+      expression: "$ctx.getNodeOutput('run-finalization')?.success === true",
+    }, { x: 220, y: 470 }),
+
+    node("has-pr", "condition.expression", "PR Already Exists?", {
+      expression: "Boolean($data?.prNumber || $data?.prUrl)",
+    }, { x: 120, y: 620 }),
+
+    node("create-pr", "action.create_pr", "Create PR If Missing", {
+      title: "{{taskTitle}}",
+      body: "Automated PR from task finalization guard for task {{taskId}}.",
+      base: "{{baseBranch}}",
+      branch: "{{branch}}",
+      failOnError: true,
+      maxRetries: 3,
+      retryDelayMs: 15000,
+      continueOnError: true,
+    }, { x: 120, y: 760 }),
+
+    node("create-pr-success", "condition.expression", "PR Created?", {
+      expression: "$ctx.getNodeOutput('create-pr')?.success === true",
+    }, { x: 120, y: 830, outputs: ["yes", "no"] }),
+
+    node("mark-inreview", "action.update_task_status", "Set In Review", {
+      taskId: "{{taskId}}",
+      status: "inreview",
+      taskTitle: "{{taskTitle}}",
+      workflowEvent: "task.finalization_passed",
+      workflowData: {
+        stage: "finalization",
+        result: "passed",
+        branch: "{{branch}}",
+        worktreePath: "{{worktreePath}}",
+        prNumber: "{{prNumber}}",
+        prUrl: "{{prUrl}}",
+      },
+    }, { x: 240, y: 900 }),
+
+    node("mark-todo-failed", "action.update_task_status", "Mark Todo (Checks Failed)", {
+      taskId: "{{taskId}}",
+      status: "todo",
+      taskTitle: "{{taskTitle}}",
+      workflowEvent: "task.finalization_failed",
+      workflowData: {
+        stage: "finalization",
+        reason: "verification_failed",
+        branch: "{{branch}}",
+        worktreePath: "{{worktreePath}}",
+        baseBranch: "{{baseBranch}}",
+      },
+    }, { x: 480, y: 620 }),
+
+    node("mark-todo-missing", "action.update_task_status", "Mark Todo (Missing Context)", {
+      taskId: "{{taskId}}",
+      status: "todo",
+      taskTitle: "{{taskTitle}}",
+      workflowEvent: "task.finalization_failed",
+      workflowData: {
+        stage: "finalization",
+        reason: "missing_worktree_context",
+        branch: "{{branch}}",
+        worktreePath: "{{worktreePath}}",
+        baseBranch: "{{baseBranch}}",
+      },
+    }, { x: 620, y: 330 }),
+
+    node("notify-pass", "notify.log", "Log Finalization Success", {
+      message: "Task {{taskId}} finalization passed — moved to inreview",
+      level: "info",
+    }, { x: 240, y: 1040 }),
+
+    node("notify-fail", "notify.telegram", "Notify Finalization Failure", {
+      message: "⚠️ Task finalization failed for **{{taskTitle}}** ({{taskId}}). Repair workflow handoff triggered.",
+    }, { x: 540, y: 900 }),
+  ],
+  edges: [
+    edge("trigger", "has-worktree"),
+    edge("has-worktree", "run-finalization", { condition: "$output?.result === true" }),
+    edge("has-worktree", "mark-todo-missing", { condition: "$output?.result !== true" }),
+    edge("run-finalization", "checks-passed"),
+    edge("checks-passed", "has-pr", { condition: "$output?.result === true" }),
+    edge("checks-passed", "mark-todo-failed", { condition: "$output?.result !== true" }),
+    edge("has-pr", "mark-inreview", { condition: "$output?.result === true" }),
+    edge("has-pr", "create-pr", { condition: "$output?.result !== true" }),
+    edge("create-pr", "create-pr-success"),
+    edge("create-pr-success", "mark-inreview", { condition: "$output?.result === true", port: "yes" }),
+    edge("create-pr-success", "mark-todo-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("mark-inreview", "notify-pass"),
+    edge("mark-todo-failed", "notify-fail"),
+    edge("mark-todo-missing", "notify-fail"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-02-26T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["finalization", "quality-gate", "prepush", "handoff", "reliability"],
+    replaces: {
+      module: "task-executor.mjs",
+      functions: ["_handleTaskResult finalization gate"],
+      calledFrom: ["task-executor.mjs:_handleTaskResult"],
+      description:
+        "Adds a shared post-completion finalization workflow so task quality " +
+        "checks and status transitions are consistent across all agents.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Task Repair Worktree
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const TASK_REPAIR_WORKTREE_TEMPLATE = {
+  id: "template-task-repair-worktree",
+  name: "Task Repair Worktree",
+  description:
+    "Recovery workflow for tasks that fail execution or finalization. " +
+    "Refreshes worktree state, runs a repair agent, re-validates quality " +
+    "gates, and escalates only after automated repair fails.",
+  category: "reliability",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.event",
+  variables: {
+    repairTimeoutMs: 5400000,
+    verificationTimeoutMs: 3600000,
+    baseBranch: "main",
+    verificationCommand:
+      "node -e \"const cp=require('node:child_process');const cmds=['npm run prepush --if-present','npm run prepush:check --if-present','npm run build','npm test','npm run lint --if-present'];for(const cmd of cmds){cp.execSync(cmd,{stdio:'inherit'});} \"",
+    repairPrompt:
+      "Task {{taskId}} ({{taskTitle}}) failed. Error: {{error}}. Repair the implementation in {{worktreePath}} without bypassing tests, then leave the branch ready for PR.",
+  },
+  nodes: [
+    node("trigger-failed", "trigger.event", "Task Failed", {
+      eventType: "task.failed",
+    }, { x: 250, y: 50 }),
+
+    node("trigger-finalization", "trigger.event", "Finalization Failed", {
+      eventType: "task.finalization_failed",
+    }, { x: 550, y: 50 }),
+
+    node("has-worktree", "condition.expression", "Worktree Context Available?", {
+      expression: "Boolean($data?.worktreePath)",
+    }, { x: 400, y: 180 }),
+
+    node("refresh-worktree", "action.refresh_worktree", "Refresh Worktree", {
+      operation: "fetch",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+    }, { x: 400, y: 320 }),
+
+    node("repair-agent", "action.run_agent", "Repair Task", {
+      prompt: "{{repairPrompt}}",
+      cwd: "{{worktreePath}}",
+      timeoutMs: "{{repairTimeoutMs}}",
+    }, { x: 400, y: 460 }),
+
+    node("verify", "action.run_command", "Re-run Quality Gates", {
+      command: "{{verificationCommand}}",
+      cwd: "{{worktreePath}}",
+      timeoutMs: "{{verificationTimeoutMs}}",
+      continueOnError: true,
+    }, { x: 400, y: 600 }),
+
+    node("verify-passed", "condition.expression", "Repair Passed?", {
+      expression: "$ctx.getNodeOutput('verify')?.success === true",
+    }, { x: 400, y: 740 }),
+
+    node("create-pr", "action.create_pr", "Create/Update PR", {
+      title: "{{taskTitle}}",
+      body: "Automated repair run for task {{taskId}}.",
+      base: "{{baseBranch}}",
+      branch: "{{branch}}",
+      failOnError: true,
+      maxRetries: 3,
+      retryDelayMs: 15000,
+      continueOnError: true,
+    }, { x: 250, y: 880 }),
+
+    node("create-pr-success", "condition.expression", "PR Ready?", {
+      expression: "$ctx.getNodeOutput('create-pr')?.success === true",
+    }, { x: 250, y: 950, outputs: ["yes", "no"] }),
+
+    node("mark-inreview", "action.update_task_status", "Set In Review", {
+      taskId: "{{taskId}}",
+      status: "inreview",
+      taskTitle: "{{taskTitle}}",
+      workflowEvent: "task.repair_succeeded",
+      workflowData: {
+        stage: "repair",
+        result: "passed",
+        branch: "{{branch}}",
+        worktreePath: "{{worktreePath}}",
+      },
+    }, { x: 250, y: 1020 }),
+
+    node("mark-todo", "action.update_task_status", "Mark Todo (Repair Failed)", {
+      taskId: "{{taskId}}",
+      status: "todo",
+      taskTitle: "{{taskTitle}}",
+      workflowEvent: "task.repair_failed",
+      workflowData: {
+        stage: "repair",
+        reason: "verification_failed",
+        branch: "{{branch}}",
+        worktreePath: "{{worktreePath}}",
+        baseBranch: "{{baseBranch}}",
+      },
+    }, { x: 560, y: 880 }),
+
+    node("notify-success", "notify.telegram", "Notify Repair Success", {
+      message: "✅ Repair workflow recovered **{{taskTitle}}** ({{taskId}}) and moved it to inreview.",
+      silent: true,
+    }, { x: 250, y: 1160 }),
+
+    node("notify-escalate", "notify.telegram", "Escalate Repair Failure", {
+      message: "🚨 Repair workflow could not recover **{{taskTitle}}** ({{taskId}}). Manual intervention required.",
+    }, { x: 560, y: 1020 }),
+
+    node("no-worktree", "notify.log", "Missing Worktree Context", {
+      message: "Task repair skipped for {{taskId}} — missing worktreePath in event payload",
+      level: "warn",
+    }, { x: 700, y: 320 }),
+  ],
+  edges: [
+    edge("trigger-failed", "has-worktree"),
+    edge("trigger-finalization", "has-worktree"),
+    edge("has-worktree", "refresh-worktree", { condition: "$output?.result === true" }),
+    edge("has-worktree", "no-worktree", { condition: "$output?.result !== true" }),
+    edge("refresh-worktree", "repair-agent"),
+    edge("repair-agent", "verify"),
+    edge("verify", "verify-passed"),
+    edge("verify-passed", "create-pr", { condition: "$output?.result === true" }),
+    edge("verify-passed", "mark-todo", { condition: "$output?.result !== true" }),
+    edge("create-pr", "create-pr-success"),
+    edge("create-pr-success", "mark-inreview", { condition: "$output?.result === true", port: "yes" }),
+    edge("create-pr-success", "mark-todo", { condition: "$output?.result !== true", port: "no" }),
+    edge("mark-inreview", "notify-success"),
+    edge("mark-todo", "notify-escalate"),
+    edge("no-worktree", "notify-escalate"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-02-26T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["repair", "recovery", "worktree", "resilience", "automation"],
+    replaces: {
+      module: "task-executor.mjs",
+      functions: ["retry/escalation recovery path"],
+      calledFrom: ["task-executor.mjs:_handleTaskResult"],
+      description:
+        "Introduces a dedicated automated repair workflow that takes over " +
+        "when task execution or finalization fails.",
     },
   },
 };

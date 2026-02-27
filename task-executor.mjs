@@ -71,6 +71,10 @@ import {
   getRecentCommits,
   collectDiffStats,
 } from "./diff-stats.mjs";
+import {
+  getBosunCoAuthorTrailer,
+  shouldAddBosunCoAuthor,
+} from "./git-commit-helpers.mjs";
 import { createAnomalyDetector } from "./anomaly-detector.mjs";
 import { normalizeDedupKey, yieldToEventLoop, withRetry } from "./utils.mjs";
 import {
@@ -173,6 +177,46 @@ function truncateText(text, maxChars) {
   const raw = String(text || "");
   if (!maxChars || raw.length <= maxChars) return raw;
   return `${raw.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function sanitizeRepoContextText(text) {
+  return String(text || "")
+    .replace(/\0/g, "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+}
+
+function truncateUtf8Bytes(text, maxBytes = 12000) {
+  const raw = String(text || "");
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) return "";
+
+  const suffix = "\n...(truncated)";
+  if (Buffer.byteLength(raw, "utf8") <= maxBytes) {
+    return raw;
+  }
+
+  const suffixBytes = Buffer.byteLength(suffix, "utf8");
+  if (maxBytes <= suffixBytes) {
+    return suffix.slice(0, Math.max(0, maxBytes));
+  }
+
+  const targetBytes = maxBytes - suffixBytes;
+  let low = 0;
+  let high = raw.length;
+  let best = "";
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = raw.slice(0, mid);
+    if (Buffer.byteLength(candidate, "utf8") <= targetBytes) {
+      best = candidate;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return `${best}${suffix}`;
 }
 
 function isBosunStateComment(text) {
@@ -323,25 +367,30 @@ function categorizeError(err) {
 }
 
 /**
- * Returns the Co-authored-by trailer for bosun-ve[bot], or empty string
- * if the GitHub App ID is not configured. Used to attribute agent commits to
- * the Bosun GitHub App so the bot shows up as a contributor.
+ * Returns the Co-authored-by trailer for bosun-ve[bot].
  *
- * To enable: set BOSUN_GITHUB_APP_ID=<your-app-id> in .env
- * App noreply email format: <id>+bosun-ve[bot]@users.noreply.github.com
+ * By default this is task-scoped and only enabled during Bosun-managed tasks.
+ * BOSUN_COAUTHOR_MODE=always can force global attribution when explicitly
+ * desired (for internal Bosun repo workflows, etc).
  */
-function getBosunCoAuthorLine() {
-  const appId = String(process.env.BOSUN_GITHUB_APP_ID || "").trim();
-  if (!appId) return "";
-  return `Co-authored-by: bosun-ve[bot] <${appId}+bosun-ve[bot]@users.noreply.github.com>`;
+function getBosunCoAuthorLine(taskOrTaskId = null) {
+  const taskId = (() => {
+    if (taskOrTaskId == null) return "";
+    if (typeof taskOrTaskId === "string") return taskOrTaskId.trim();
+    const value = taskOrTaskId.id || taskOrTaskId.task_id || "";
+    return String(value || "").trim();
+  })();
+
+  if (!shouldAddBosunCoAuthor({ taskId })) return "";
+  return getBosunCoAuthorTrailer();
 }
 
 /**
  * Returns a prompt instruction block telling the agent to append the Bosun
- * co-author trailer to every commit. Empty string when app ID not configured.
+ * co-author trailer to every commit.
  */
-function getBosunCoAuthorInstruction() {
-  const line = getBosunCoAuthorLine();
+function getBosunCoAuthorInstruction(taskOrTaskId = null) {
+  const line = getBosunCoAuthorLine(taskOrTaskId);
   if (!line) return "";
   return `\n**Attribution (required — do not omit):**
 Every commit message MUST end with a blank line then this exact trailer:
@@ -2877,10 +2926,25 @@ class TaskExecutor {
             stdio: "pipe",
             timeout: 15000,
           });
-          execSync(
-            `git commit -m "feat: auto-commit orphaned agent work\n\nCo-authored-by: bosun-ve[bot] <262908237+bosun-ve[bot]@users.noreply.github.com>" --no-verify`,
-            { cwd: wtPath, stdio: "pipe", timeout: 15000 },
+          const coAuthorLine = getBosunCoAuthorLine(taskIdPrefix);
+          const commitMessage = coAuthorLine
+            ? `feat: auto-commit orphaned agent work\n\n${coAuthorLine}`
+            : "feat: auto-commit orphaned agent work";
+          const commitResult = spawnSync(
+            "git",
+            ["commit", "-m", commitMessage, "--no-verify"],
+            {
+              cwd: wtPath,
+              encoding: "utf8",
+              stdio: "pipe",
+              timeout: 15000,
+            },
           );
+          if (commitResult.status !== 0) {
+            const stderr = String(commitResult.stderr || "").trim();
+            const stdout = String(commitResult.stdout || "").trim();
+            throw new Error(stderr || stdout || "git commit failed");
+          }
           console.log(
             `${TAG} [orphan-recovery] Committed changes in ${dirName}`,
           );
@@ -4224,10 +4288,14 @@ class TaskExecutor {
         await releaseTaskClaimLock();
         this._activeSlots.delete(taskId);
         this._removeRuntimeSlot(taskId);
-        this.onTaskFailed?.(
+        const wrappedError = new Error(`Worktree acquisition failed: ${err.message}`);
+        wrappedError.branch = branch || null;
+        wrappedError.baseBranch = resolveTaskBaseBranch(
           task,
-          new Error(`Worktree acquisition failed: ${err.message}`),
-        );
+          this.branchRouting,
+          this.defaultTargetBranch,
+        ) || null;
+        this.onTaskFailed?.(task, wrappedError);
         return;
       }
 
@@ -4249,10 +4317,10 @@ class TaskExecutor {
         await releaseTaskClaimLock();
         this._activeSlots.delete(taskId);
         this._removeRuntimeSlot(taskId);
-        this.onTaskFailed?.(
-          task,
-          new Error("Worktree path invalid or missing"),
-        );
+        const wrappedError = new Error("Worktree path invalid or missing");
+        wrappedError.branch = branch || null;
+        wrappedError.worktreePath = wt?.path || null;
+        this.onTaskFailed?.(task, wrappedError);
         return;
       }
 
@@ -4672,6 +4740,26 @@ class TaskExecutor {
 
       this._activeSlots.delete(taskId);
       this._removeRuntimeSlot(taskId);
+      if (err && typeof err === "object") {
+        if (!err.branch) {
+          err.branch =
+            slot?.branch ||
+            task?.branchName ||
+            task?.meta?.branch_name ||
+            null;
+        }
+        if (!err.worktreePath) {
+          err.worktreePath = slot?.worktreePath || null;
+        }
+        if (!err.baseBranch) {
+          err.baseBranch =
+            slot?.baseBranch ||
+            task?.baseBranch ||
+            task?.base_branch ||
+            task?.meta?.base_branch ||
+            null;
+        }
+      }
       this.onTaskFailed?.(task, err);
       this.sendTelegram?.(
         `❌ Task executor error: "${taskTitle}" — ${(err.message || "").slice(0, 200)}`,
@@ -4769,6 +4857,16 @@ class TaskExecutor {
       ``,
     );
 
+    const coAuthorLine = getBosunCoAuthorLine(task);
+    if (coAuthorLine) {
+      lines.push(
+        `## Attribution`,
+        `Append this trailer at the end of each commit message body (blank line before trailer):`,
+        coAuthorLine,
+        ``,
+      );
+    }
+
     // Append task URL if available
     const taskUrl = task.meta?.task_url || task.taskUrl || task.url;
     if (taskUrl) {
@@ -4824,7 +4922,7 @@ class TaskExecutor {
         REPO_ROOT: promptRepoRoot,
         TASK_WORKSPACE: promptWorkspace,
         TASK_REPOSITORY: promptRepository,
-        COAUTHOR_INSTRUCTION: getBosunCoAuthorInstruction(),
+        COAUTHOR_INSTRUCTION: getBosunCoAuthorInstruction(task),
       },
       fallbackPrompt,
     );
@@ -4897,9 +4995,9 @@ class TaskExecutor {
       `3. Re-run tests to verify`,
       `4. Commit and push your fixes`,
       ``,
-      ...(getBosunCoAuthorLine() ? [
+      ...(getBosunCoAuthorLine(task) ? [
         `Attribution: append this trailer after each commit message body (blank line before it):`,
-        getBosunCoAuthorLine(),
+        getBosunCoAuthorLine(task),
         ``,
       ] : []),
       `Original task description:`,
@@ -5055,11 +5153,7 @@ class TaskExecutor {
         const fullPath = resolve(normalizedRoot, cf.rel);
         if (existsSync(fullPath)) {
           const content = readFileSync(fullPath, "utf8");
-          // Truncate to 4000 chars to keep prompt reasonable
-          const truncated =
-            content.length > 4000
-              ? content.slice(0, 4000) + "\n...(truncated)"
-              : content;
+          const truncated = truncateUtf8Bytes(sanitizeRepoContextText(content));
           parts.push(`### ${cf.label}\n\n${truncated}`);
         }
       } catch {
@@ -5097,6 +5191,20 @@ class TaskExecutor {
       this.branchRouting,
       this.defaultTargetBranch,
     );
+    if (result && typeof result === "object") {
+      if (!result.worktreePath) {
+        result.worktreePath = worktreePath || null;
+      }
+      if (!result.branch) {
+        result.branch =
+          task.branchName ||
+          task.meta?.branch_name ||
+          null;
+      }
+      if (!result.baseBranch) {
+        result.baseBranch = baseBranch || null;
+      }
+    }
 
     // Fire SessionStop hook
     executeHooks("SessionStop", {
@@ -6661,6 +6769,3 @@ export function isExecutorDisabled() {
 
 export { TaskExecutor };
 export default TaskExecutor;
-
-
-

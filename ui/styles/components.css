@@ -4586,6 +4586,21 @@ select.input {
   text-overflow: ellipsis;
 }
 
+@media (min-width: 769px) {
+  .fleet-ticker-wrap {
+    height: auto;
+    overflow: visible;
+  }
+  .fleet-ticker-inner {
+    animation: none;
+    gap: 3px;
+  }
+  .fleet-ticker-item {
+    height: auto;
+    padding: 1px 0;
+  }
+}
+
 /* ═══════════════════════════════════════════════
  *  Tab Error Boundary improvements
  * ═══════════════════════════════════════════════ */
