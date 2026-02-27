@@ -765,6 +765,20 @@ async function releaseTelegramPollLock() {
   }
 }
 
+function detachTelegramTask(tag, taskOrFactory) {
+  try {
+    const task =
+      typeof taskOrFactory === "function" ? taskOrFactory() : taskOrFactory;
+    Promise.resolve(task).catch((err) => {
+      const detail = err?.stack || err?.message || String(err);
+      console.warn(`[telegram-bot] detached async failure (${tag}): ${detail}`);
+    });
+  } catch (err) {
+    const detail = err?.stack || err?.message || String(err);
+    console.warn(`[telegram-bot] detached async failure (${tag}): ${detail}`);
+  }
+}
+
 // ── State ────────────────────────────────────────────────────────────────────
 
 let lastUpdateId = 0;
@@ -2257,7 +2271,9 @@ async function handleUpdate(update) {
   // Free-text agent task runs in a separate queue so polling isn't blocked.
   // If agent is already busy, handle immediately so follow-ups can be queued.
   if (isPrimaryBusy()) {
-    void handleFreeText(text, chatId);
+    detachTelegramTask("free-text:primary-busy", () =>
+      handleFreeText(text, chatId),
+    );
     return;
   }
   enqueueAgentTask(() => handleFreeText(text, chatId));
@@ -6060,7 +6076,7 @@ async function cmdApp(chatId) {
 async function cmdMenu(chatId) {
   syncUiUrlsFromServer();
   if (telegramApiReachable !== false) {
-    void refreshMenuButton();
+    detachTelegramTask("menu-button:cmd-menu", refreshMenuButton);
   }
   clearPendingUiInput(chatId);
   await showUiScreen(chatId, null, "home", {}, { sticky: true });
@@ -6774,10 +6790,12 @@ async function cmdStartTask(chatId, args) {
       );
       return;
     }
-    void executor.executeTask(task, {
-      sdk: sdk || undefined,
-      model: model || undefined,
-    });
+    detachTelegramTask("manual-start:execute-task", () =>
+      executor.executeTask(task, {
+        sdk: sdk || undefined,
+        model: model || undefined,
+      }),
+    );
     await sendReply(
       chatId,
       `✅ Manual start queued for ${task.title || task.id}.` +
@@ -9089,7 +9107,9 @@ async function cmdBackground(chatId, args) {
       chatId,
       `🛰️ Background task queued: "${task.slice(0, 80)}${task.length > 80 ? "…" : ""}"`,
     );
-    void handleFreeText(task, chatId, { background: true, isolated: true });
+    detachTelegramTask("free-text:background-command", () =>
+      handleFreeText(task, chatId, { background: true, isolated: true }),
+    );
     return;
   }
 
@@ -9448,11 +9468,13 @@ async function handleFreeText(text, chatId, options = {}) {
     const elapsed = now - lastEditAt;
     if (elapsed >= EDIT_THROTTLE_MS) {
       editPending = true;
-      void doEdit();
+      detachTelegramTask("stream-edit:immediate", doEdit);
     } else {
       editPending = true;
       if (editTimer) clearTimeout(editTimer);
-      editTimer = setTimeout(() => void doEdit(), EDIT_THROTTLE_MS - elapsed);
+      editTimer = setTimeout(() => {
+        detachTelegramTask("stream-edit:throttled", doEdit);
+      }, EDIT_THROTTLE_MS - elapsed);
     }
   };
 
@@ -9796,8 +9818,12 @@ function startPresenceLoop() {
       );
     }
   };
-  setTimeout(() => void sendPresence(), intervalMs);
-  setInterval(() => void sendPresence(), intervalMs);
+  setTimeout(() => {
+    detachTelegramTask("presence:initial", sendPresence);
+  }, intervalMs);
+  setInterval(() => {
+    detachTelegramTask("presence:interval", sendPresence);
+  }, intervalMs);
 }
 
 function hasPresenceChanged(prev, curr) {
@@ -10467,16 +10493,18 @@ export async function startTelegramBot() {
 
       // Immediately sync the menu button, then periodically refresh
       if (reachable) {
-        void refreshMenuButton();
+        detachTelegramTask("menu-button:startup", refreshMenuButton);
       }
       if (reachable && !menuButtonRefreshTimer) {
-        menuButtonRefreshTimer = setInterval(() => void refreshMenuButton(), MENU_BUTTON_REFRESH_MS);
+        menuButtonRefreshTimer = setInterval(() => {
+          detachTelegramTask("menu-button:interval", refreshMenuButton);
+        }, MENU_BUTTON_REFRESH_MS);
       }
 
       // React immediately when the tunnel URL changes (e.g. after restart)
       onTunnelUrlChange((url) => {
         console.log(`[telegram-bot] tunnel URL changed: ${url} — refreshing menu button`);
-        void refreshMenuButton();
+        detachTelegramTask("menu-button:tunnel-change", refreshMenuButton);
       });
 
       // Notify about firewall issues if detected (24h cooldown)
@@ -10691,7 +10719,7 @@ export function stopTelegramBot(options = {}) {
     }
     stopBatchFlushLoop();
   }
-  void releaseTelegramPollLock();
+  detachTelegramTask("poll-lock:release", releaseTelegramPollLock);
   stopTelegramUiServer();
   if (menuButtonRefreshTimer) {
     clearInterval(menuButtonRefreshTimer);
