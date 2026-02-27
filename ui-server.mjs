@@ -1293,9 +1293,13 @@ function unsetConfigPathValue(obj, pathParts) {
   }
 }
 
+const DEFAULT_TELEGRAM_UI_PORT = 3080;
+
 // Read port lazily — .env may not be loaded at module import time
 function getDefaultPort() {
-  return Number(process.env.TELEGRAM_UI_PORT || "0") || 0;
+  const raw = Number(process.env.TELEGRAM_UI_PORT || "");
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return DEFAULT_TELEGRAM_UI_PORT;
 }
 const DEFAULT_HOST = process.env.TELEGRAM_UI_HOST || "0.0.0.0";
 // Lazy evaluation — .env may not be loaded yet when this module is first imported
@@ -2058,13 +2062,16 @@ export function getSessionToken() {
 }
 
 // ── Auto-TLS self-signed certificate generation ──────────────────────
-const TLS_CACHE_DIR = resolve(__dirname, ".cache", "tls");
-const TLS_CERT_PATH = resolve(TLS_CACHE_DIR, "server.crt");
-const TLS_KEY_PATH = resolve(TLS_CACHE_DIR, "server.key");
 function isTlsDisabled() {
   return ["1", "true", "yes"].includes(
     String(process.env.TELEGRAM_UI_TLS_DISABLE || "").toLowerCase(),
   );
+}
+
+function resolveUiSubCachePath(...segments) {
+  const path = resolve(resolveUiConfigDir(), ".cache", ...segments);
+  try { mkdirSync(dirname(path), { recursive: true }); } catch { /* best effort */ }
+  return path;
 }
 
 /**
@@ -2109,20 +2116,23 @@ function findOpenssl() {
  */
 function ensureSelfSignedCert() {
   try {
-    if (!existsSync(TLS_CACHE_DIR)) {
-      mkdirSync(TLS_CACHE_DIR, { recursive: true });
+    const tlsDir = dirname(resolveUiSubCachePath("tls", ".keep"));
+    const tlsCertPath = resolve(tlsDir, "server.crt");
+    const tlsKeyPath = resolve(tlsDir, "server.key");
+    if (!existsSync(tlsDir)) {
+      mkdirSync(tlsDir, { recursive: true });
     }
 
     // Reuse existing cert if still valid
-    if (existsSync(TLS_CERT_PATH) && existsSync(TLS_KEY_PATH)) {
+    if (existsSync(tlsCertPath) && existsSync(tlsKeyPath)) {
       try {
-        const certPem = readFileSync(TLS_CERT_PATH, "utf8");
+        const certPem = readFileSync(tlsCertPath, "utf8");
         const cert = new X509Certificate(certPem);
         const notAfter = new Date(cert.validTo);
         if (notAfter > new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)) {
           return {
-            key: readFileSync(TLS_KEY_PATH),
-            cert: readFileSync(TLS_CERT_PATH),
+            key: readFileSync(tlsKeyPath),
+            cert: readFileSync(tlsCertPath),
           };
         }
       } catch {
@@ -2136,7 +2146,7 @@ function ensureSelfSignedCert() {
     const subjectAltName = `DNS:localhost,IP:127.0.0.1,IP:${lanIp}`;
     execSync(
       `"${opensslBin}" req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 ` +
-        `-keyout "${TLS_KEY_PATH}" -out "${TLS_CERT_PATH}" ` +
+        `-keyout "${tlsKeyPath}" -out "${tlsCertPath}" ` +
         `-days 825 -nodes -batch ` +
         `-subj "/CN=bosun" ` +
         `-addext "subjectAltName=${subjectAltName}"`,
@@ -2147,8 +2157,8 @@ function ensureSelfSignedCert() {
       `[telegram-ui] auto-generated self-signed TLS cert (SAN: ${subjectAltName})`,
     );
     return {
-      key: readFileSync(TLS_KEY_PATH),
-      cert: readFileSync(TLS_CERT_PATH),
+      key: readFileSync(tlsKeyPath),
+      cert: readFileSync(tlsCertPath),
     };
   } catch (err) {
     const hint = osPlatform() === "win32"
@@ -2341,9 +2351,7 @@ function _notifyTunnelChange(url) {
 
 // ── Cloudflared binary auto-download ─────────────────────────────────
 
-const CF_CACHE_DIR = resolve(__dirname, ".cache", "bin");
 const CF_BIN_NAME = osPlatform() === "win32" ? "cloudflared.exe" : "cloudflared";
-const CF_CACHED_PATH = resolve(CF_CACHE_DIR, CF_BIN_NAME);
 
 /**
  * Get the cloudflared download URL for the current platform+arch.
@@ -2400,6 +2408,8 @@ function downloadFile(url, destPath, maxRedirects = 5) {
  * If not found anywhere and mode=auto, auto-downloads to .cache/bin/.
  */
 async function findCloudflared() {
+  const cfCacheDir = dirname(resolveUiSubCachePath("bin", ".keep"));
+  const cfCachedPath = resolve(cfCacheDir, CF_BIN_NAME);
   // 1. Check system PATH
   try {
     const cmd = osPlatform() === "win32"
@@ -2410,8 +2420,8 @@ async function findCloudflared() {
   } catch { /* not on PATH */ }
 
   // 2. Check cached binary
-  if (existsSync(CF_CACHED_PATH)) {
-    return CF_CACHED_PATH;
+  if (existsSync(cfCachedPath)) {
+    return cfCachedPath;
   }
 
   // 3. Auto-download
@@ -2423,15 +2433,15 @@ async function findCloudflared() {
 
   console.log("[telegram-ui] cloudflared not found — auto-downloading...");
   try {
-    mkdirSync(CF_CACHE_DIR, { recursive: true });
-    await downloadFile(dlUrl, CF_CACHED_PATH);
+    mkdirSync(cfCacheDir, { recursive: true });
+    await downloadFile(dlUrl, cfCachedPath);
     if (osPlatform() !== "win32") {
-      chmodSync(CF_CACHED_PATH, 0o755);
+      chmodSync(cfCachedPath, 0o755);
       // Small delay to ensure OS fully releases file locks after chmod
       await new Promise((r) => setTimeout(r, 100));
     }
-    console.log(`[telegram-ui] cloudflared downloaded to ${CF_CACHED_PATH}`);
-    return CF_CACHED_PATH;
+    console.log(`[telegram-ui] cloudflared downloaded to ${cfCachedPath}`);
+    return cfCachedPath;
   } catch (err) {
     console.warn(`[telegram-ui] cloudflared auto-download failed: ${err.message}`);
     return null;
@@ -2542,8 +2552,7 @@ async function startNamedTunnel(cfBin, tunnelName, credentialsPath, localPort) {
 
   // Named tunnels require config file with ingress rules.
   // We'll create a temporary config on the fly.
-  const configPath = resolve(__dirname, ".cache", "cloudflared-config.yml");
-  mkdirSync(dirname(configPath), { recursive: true });
+  const configPath = resolveUiCachePath("cloudflared-config.yml");
 
   const configYaml = `
 tunnel: ${tunnelName}
@@ -7336,7 +7345,7 @@ export async function startTelegramUiServer(options = {}) {
       ? "options.port"
       : process.env.TELEGRAM_UI_PORT
         ? "env.TELEGRAM_UI_PORT"
-        : "default(0)";
+        : `default(${DEFAULT_TELEGRAM_UI_PORT})`;
 
   if (!Number.isFinite(port) || port < 0) {
     console.warn(
@@ -7597,12 +7606,18 @@ export async function startTelegramUiServer(options = {}) {
   const lanIp = getLocalLanIp();
   const host = publicHost || lanIp;
   const actualPort = uiServer.address().port;
+  const isLocalOrPrivateHost = (value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized.startsWith("192.")
+      || normalized.startsWith("10.")
+      || normalized.startsWith("172.")
+      || normalized.startsWith("127.")
+      || normalized === "localhost"
+      || normalized === "::1";
+  };
   const protocol = uiServerTls
     ? "https"
-    : publicHost &&
-        !publicHost.startsWith("192.") &&
-        !publicHost.startsWith("10.") &&
-        !publicHost.startsWith("172.")
+    : publicHost && !isLocalOrPrivateHost(publicHost)
       ? "https"
       : "http";
   uiServerUrl = `${protocol}://${host}:${actualPort}`;

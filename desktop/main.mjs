@@ -17,6 +17,7 @@ let uiServerStarted = false;
 let uiOrigin = null;
 let uiApi = null;
 let runtimeConfigLoaded = false;
+const DEFAULT_TELEGRAM_UI_PORT = 3080;
 
 const DAEMON_PID_FILE = resolve(homedir(), ".cache", "bosun", "daemon.pid");
 
@@ -156,15 +157,17 @@ async function loadUiServerModule() {
 }
 
 function buildDaemonUiBaseUrl() {
-  const rawPort = Number(process.env.TELEGRAM_UI_PORT || "0");
-  if (!Number.isFinite(rawPort) || rawPort <= 0) return null;
+  const rawPort = Number(process.env.TELEGRAM_UI_PORT || "");
+  const port = Number.isFinite(rawPort) && rawPort > 0
+    ? rawPort
+    : DEFAULT_TELEGRAM_UI_PORT;
   const tlsDisabled = parseBoolEnv(process.env.TELEGRAM_UI_TLS_DISABLE, false);
   const protocol = tlsDisabled ? "http" : "https";
   const host =
     process.env.TELEGRAM_UI_DESKTOP_HOST ||
     process.env.TELEGRAM_UI_HOST ||
     "127.0.0.1";
-  return `${protocol}://${host}:${rawPort}`;
+  return `${protocol}://${host}:${port}`;
 }
 
 async function probeUiServer(url) {
