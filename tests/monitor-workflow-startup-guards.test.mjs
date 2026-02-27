@@ -24,5 +24,13 @@ describe("monitor workflow startup guards", () => {
       "Auto self-restart from file churn causes unnecessary restart storms.",
     );
   });
-});
 
+  it("requires npm start lifecycle for dev-mode self-restart watcher by default", () => {
+    expect(monitorSource).toContain("process.env.npm_lifecycle_event");
+    expect(monitorSource).toContain('npmLifecycleEvent === "start"');
+    expect(monitorSource).toContain('npmLifecycleEvent.startsWith("start:")');
+    expect(monitorSource).toContain(
+      "CLI command mode in source checkout",
+    );
+  });
+});

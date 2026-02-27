@@ -1457,9 +1457,26 @@ function isMonitorMonitorEnabled() {
 }
 
 function isSelfRestartWatcherEnabled() {
+  const devMode = isDevMode();
+  const force = process.env.SELF_RESTART_WATCH_FORCE;
+  const forceEnabled = isTruthyFlag(force);
+  const npmLifecycleEvent = String(process.env.npm_lifecycle_event || "")
+    .trim()
+    .toLowerCase();
+  const launchedViaNpmStartScript =
+    npmLifecycleEvent === "start" || npmLifecycleEvent.startsWith("start:");
   const explicit = process.env.SELF_RESTART_WATCH_ENABLED;
   if (explicit !== undefined && String(explicit).trim() !== "") {
     return !isFalsyFlag(explicit);
+  }
+  if (!devMode && !forceEnabled) {
+    return false;
+  }
+  if (devMode && !forceEnabled && !launchedViaNpmStartScript) {
+    // Plain `bosun` command launches from a source checkout should behave like
+    // npm/prod installs by default: no self-restart watcher unless explicitly
+    // enabled. Auto-updates still handle published package changes.
+    return false;
   }
   if (
     String(executorMode || "")
@@ -1476,7 +1493,7 @@ function isSelfRestartWatcherEnabled() {
   // Dev mode (source checkout / monorepo) → watch for code changes.
   // npm mode (installed via npm) → do NOT watch; source only changes via
   // npm update, which is handled by the auto-update loop instead.
-  return isDevMode();
+  return devMode;
 }
 
 const MONITOR_MONITOR_DEFAULT_TIMEOUT_MS = 6 * 60 * 60 * 1000;
@@ -15136,8 +15153,22 @@ if (selfRestartWatcherEnabled) {
   const normalizedExecutorMode = String(executorMode || "")
     .trim()
     .toLowerCase();
-  const disabledReason = !isDevMode()
+  const explicitSelfRestartWatch = process.env.SELF_RESTART_WATCH_ENABLED;
+  const hasExplicitSelfRestartWatch =
+    explicitSelfRestartWatch !== undefined &&
+    String(explicitSelfRestartWatch).trim() !== "";
+  const forceSelfRestartWatch = isTruthyFlag(process.env.SELF_RESTART_WATCH_FORCE);
+  const npmLifecycleEvent = String(process.env.npm_lifecycle_event || "")
+    .trim()
+    .toLowerCase();
+  const launchedViaNpmStartScript =
+    npmLifecycleEvent === "start" || npmLifecycleEvent.startsWith("start:");
+  const disabledReason = hasExplicitSelfRestartWatch
+    ? "explicitly"
+    : !isDevMode()
     ? "npm/prod mode — updates via auto-update loop"
+    : !forceSelfRestartWatch && !launchedViaNpmStartScript
+      ? "CLI command mode in source checkout — use npm run start or SELF_RESTART_WATCH_ENABLED=1 to enable"
     : normalizedExecutorMode === "internal" || normalizedExecutorMode === "hybrid"
       ? `executor mode "${normalizedExecutorMode}" (continuous task-driven code changes)`
       : "explicitly";
