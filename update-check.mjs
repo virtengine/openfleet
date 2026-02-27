@@ -139,15 +139,9 @@ function runNpmCommand(args, options = {}) {
       if (result.ok) return result.value;
       continue;
     }
-    // On Windows, .cmd/.bat files are batch scripts that can fail with EINVAL
-    // on some nvm-for-windows setups when launched directly.
+    // On Windows, .cmd/.bat files are batch scripts; run through cmd.exe
+    // explicitly to avoid shell:true DEP0190 warnings and EINVAL edge-cases.
     if (candidate.endsWith(".cmd") || candidate.endsWith(".bat")) {
-      const shellResult = tryNpmAttempt(
-        `${candidate} (shell)`,
-        () => execFileSync(candidate, args, { ...safeOptions, shell: true }),
-        launchErrors,
-      );
-      if (shellResult.ok) return shellResult.value;
       const cmdResult = tryNpmAttempt(
         `${candidate} (cmd.exe)`,
         () => runWindowsCmd(candidate, args, safeOptions),
@@ -189,13 +183,7 @@ function runNpmCommand(args, options = {}) {
     );
     if (result.ok) return result.value;
   } else {
-    // The fallback path also needs shell:true on Windows for .cmd resolution.
-    const shellFallback = tryNpmAttempt(
-      `${fallback} (shell)`,
-      () => execFileSync(fallback, args, { ...safeOptions, shell: true }),
-      launchErrors,
-    );
-    if (shellFallback.ok) return shellFallback.value;
+    // Resolve via cmd.exe to avoid shell:true DEP0190 warnings.
     const cmdFallback = tryNpmAttempt(
       `${fallback} (cmd.exe)`,
       () => runWindowsCmd(fallback, args, safeOptions),

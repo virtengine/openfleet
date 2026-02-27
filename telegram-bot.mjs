@@ -798,6 +798,8 @@ let telegramWebAppUrl = null;
 let telegramWebAppUrlWarned = "";
 let lastMenuButtonUrl = null;
 let menuButtonRefreshTimer = null;
+let presenceInitialTimer = null;
+let presenceIntervalTimer = null;
 const UI_TOKEN_TTL_MS = 30 * 60 * 1000;
 const UI_INPUT_TTL_MS = 15 * 60 * 1000;
 const uiTokenRegistry = new Map();
@@ -9786,6 +9788,14 @@ function startPresenceLoop() {
   if (!Number.isFinite(presenceIntervalSec) || presenceIntervalSec <= 0) {
     return;
   }
+  if (presenceInitialTimer) {
+    clearTimeout(presenceInitialTimer);
+    presenceInitialTimer = null;
+  }
+  if (presenceIntervalTimer) {
+    clearInterval(presenceIntervalTimer);
+    presenceIntervalTimer = null;
+  }
   const intervalMs = presenceIntervalSec * 1000;
   let lastSentPayload = null;
 
@@ -9824,12 +9834,15 @@ function startPresenceLoop() {
       );
     }
   };
-  setTimeout(() => {
+  presenceInitialTimer = setTimeout(() => {
+    presenceInitialTimer = null;
     detachTelegramTask("presence:initial", sendPresence);
   }, intervalMs);
-  setInterval(() => {
+  if (presenceInitialTimer?.unref) presenceInitialTimer.unref();
+  presenceIntervalTimer = setInterval(() => {
     detachTelegramTask("presence:interval", sendPresence);
   }, intervalMs);
+  if (presenceIntervalTimer?.unref) presenceIntervalTimer.unref();
 }
 
 function hasPresenceChanged(prev, curr) {
@@ -10312,7 +10325,7 @@ function queueNotification(text, priority = 4, options = {}) {
     messageQueue.debug.length;
 
   if (totalSize >= batchMaxSize) {
-    flushNotificationQueue();
+    detachTelegramTask("notification-queue:flush-on-capacity", flushNotificationQueue);
   }
 }
 
@@ -10742,6 +10755,14 @@ export function stopTelegramBot(options = {}) {
   }
   detachTelegramTask("poll-lock:release", releaseTelegramPollLock);
   stopTelegramUiServer();
+  if (presenceInitialTimer) {
+    clearTimeout(presenceInitialTimer);
+    presenceInitialTimer = null;
+  }
+  if (presenceIntervalTimer) {
+    clearInterval(presenceIntervalTimer);
+    presenceIntervalTimer = null;
+  }
   if (menuButtonRefreshTimer) {
     clearInterval(menuButtonRefreshTimer);
     menuButtonRefreshTimer = null;

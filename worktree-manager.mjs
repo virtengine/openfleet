@@ -13,7 +13,7 @@
  *   - thread registry integration for agent <-> worktree linkage
  */
 
-import { spawnSync, execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -118,6 +118,29 @@ function sanitizeBranchName(branch) {
     .replace(/^\.+/, "") // no leading dots
     .replace(/\.+$/, "") // no trailing dots
     .slice(0, 60); // Windows MAX_PATH is 260, worktree base path ~60, leaves ~140 for this + git overhead
+}
+
+/**
+ * Normalize filesystem path for safe equality checks across slash/case variants.
+ * @param {string} inputPath
+ * @returns {string}
+ */
+function normalizeFsPath(inputPath) {
+  if (!inputPath) return "";
+  const resolved = resolve(String(inputPath));
+  return process.platform === "win32"
+    ? resolved.replace(/\//g, "\\").toLowerCase()
+    : resolved;
+}
+
+/**
+ * Check whether two filesystem paths resolve to the same location.
+ * @param {string} left
+ * @param {string} right
+ * @returns {boolean}
+ */
+function pathsEqual(left, right) {
+  return normalizeFsPath(left) === normalizeFsPath(right);
 }
 
 /**
@@ -253,10 +276,19 @@ function removePathWithPowerShell(targetPath, opts = {}) {
       escapedPath +
       "' -Recurse -Force | ForEach-Object { $_.Attributes = 'Normal' } -ErrorAction SilentlyContinue; "
     : "";
-  execSync(
-    `${pwsh} -NoProfile -Command "${preface}Remove-Item -LiteralPath '${escapedPath}' -Recurse -Force -ErrorAction Stop"`,
-    { timeout: timeoutMs, stdio: "pipe" },
-  );
+  const psScript =
+    `${preface}Remove-Item -LiteralPath '${escapedPath}' -Recurse -Force -ErrorAction Stop`;
+  const result = spawnSync(pwsh, ["-NoProfile", "-Command", psScript], {
+    timeout: timeoutMs,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+    shell: false,
+  });
+  if (result.status !== 0) {
+    const detail = String(result.stderr || result.stdout || "unknown error").trim();
+    throw new Error(detail || "PowerShell removal failed");
+  }
 }
 
 /**
@@ -677,7 +709,7 @@ class WorktreeManager {
           : null;
 
         const isBare = /^bare$/m.test(block);
-        const isMainWorktree = wtPath === this.repoRoot || isBare;
+        const isMainWorktree = isBare || pathsEqual(wtPath, this.repoRoot);
 
         // Look up in registry
         const registryKey = this._findKeyByPath(resolve(wtPath));
@@ -1019,6 +1051,14 @@ class WorktreeManager {
   async _removeWorktree(key, record) {
     if (!record) return { success: false, path: null };
     const wtPath = record.path;
+    if (pathsEqual(wtPath, this.repoRoot)) {
+      console.warn(
+        `${TAG} Refusing to remove main working tree path: ${wtPath}`,
+      );
+      this.registry.delete(key);
+      await this.saveRegistry();
+      return { success: false, path: wtPath };
+    }
 
     // Mark as releasing
     record.status = "releasing";
@@ -1085,6 +1125,10 @@ class WorktreeManager {
    * @returns {Promise<{ success: boolean, path: string|null }>}
    */
   async _forceRemoveWorktree(wtPath) {
+    if (pathsEqual(wtPath, this.repoRoot)) {
+      console.warn(`${TAG} Refusing to force-remove main working tree path: ${wtPath}`);
+      return { success: false, path: wtPath };
+    }
     const result = gitSync(
       ["worktree", "remove", "--force", wtPath],
       this.repoRoot,
@@ -1155,6 +1199,10 @@ class WorktreeManager {
    * @param {string} wtPath
    */
   _forceRemoveWorktreeSync(wtPath) {
+    if (pathsEqual(wtPath, this.repoRoot)) {
+      console.warn(`${TAG} Refusing to sync-remove main working tree path: ${wtPath}`);
+      return;
+    }
     try {
       gitSync(["worktree", "remove", "--force", wtPath], this.repoRoot, {
         timeout: 30_000,

@@ -165,6 +165,7 @@ function shouldFallbackForSdkError(error) {
   if (!error) return false;
   const message = String(error).toLowerCase();
   if (!message) return false;
+  if (isSdkRuntimeUnavailableError(message)) return true;
   // SDK not installed / not found
   if (message.includes("not available")) return true;
   // Missing finish_reason (incomplete response)
@@ -215,6 +216,19 @@ function shouldFallbackForSdkError(error) {
     return true;
   }
   return false;
+}
+
+function isSdkRuntimeUnavailableError(messageOrError) {
+  if (!messageOrError) return false;
+  const message = String(messageOrError).toLowerCase();
+  if (!message) return false;
+  return (
+    message.includes("spawn eperm") ||
+    message.includes("spawn enoent") ||
+    message.includes("os error 2") ||
+    message.includes("cannot find the file specified") ||
+    (message.includes("no such file") && message.includes("executable"))
+  );
 }
 
 /**
@@ -2802,6 +2816,12 @@ export async function execWithRetry(prompt, options = {}) {
     // Failed — should we retry?
     const retriesLeft = totalAttempts + continuesUsed - attempt;
     if (retriesLeft > 0) {
+      if (isSdkRuntimeUnavailableError(lastResult.error)) {
+        console.warn(
+          `${TAG} attempt ${attempt} failed with non-retryable SDK runtime error: ${lastResult.error}`,
+        );
+        return { ...lastResult, attempts: attempt, continues: continuesUsed };
+      }
       if (typeof shouldRetry === "function" && !shouldRetry(lastResult)) {
         // Custom predicate says don't retry
         console.log(`${TAG} shouldRetry returned false — not retrying`);
@@ -2950,4 +2970,3 @@ export function getActiveThreads() {
   }
   return result;
 }
-

@@ -649,10 +649,14 @@ function stopAgentWorkAnalyzer() {
 function startAgentAlertTailer() {
   if (agentAlertsTimer) return;
   agentAlertsTimer = setInterval(() => {
-    void pollAgentAlerts();
+    pollAgentAlerts().catch((err) => {
+      console.warn(`[monitor] agent alert poll failed: ${err?.message || err}`);
+    });
   }, AGENT_ALERT_POLL_MS);
   agentAlertsTimer.unref?.();
-  void pollAgentAlerts();
+  pollAgentAlerts().catch((err) => {
+    console.warn(`[monitor] initial agent alert poll failed: ${err?.message || err}`);
+  });
 }
 
 function stopAgentAlertTailer() {
@@ -2796,7 +2800,11 @@ function scheduleVibeKanbanRestart() {
   console.log(
     `[monitor] restarting vibe-kanban in ${delay}ms (attempt ${vkRestartCount}/${vkMaxRestarts})`,
   );
-  setTimeout(() => void startVibeKanbanProcess(), delay);
+  setTimeout(() => {
+    startVibeKanbanProcess().catch((err) => {
+      console.warn(`[monitor] vibe-kanban restart failed: ${err?.message || err}`);
+    });
+  }, delay);
 }
 
 async function canConnectTcp(host, port, timeoutMs = 1200) {
@@ -3109,7 +3117,9 @@ function ensureVkLogStream() {
   }
 
   // Discover any active sessions immediately and keep polling for new sessions
-  void refreshVkSessionStreams("startup");
+  refreshVkSessionStreams("startup").catch((err) => {
+    console.warn(`[monitor] vk session refresh startup failed: ${err?.message || err}`);
+  });
   ensureVkSessionDiscoveryLoop();
 }
 
@@ -3117,7 +3127,9 @@ function ensureVkSessionDiscoveryLoop() {
   if (vkSessionDiscoveryTimer) return;
   if (!Number.isFinite(vkEnsureIntervalMs) || vkEnsureIntervalMs <= 0) return;
   vkSessionDiscoveryTimer = setInterval(() => {
-    void refreshVkSessionStreams("periodic");
+    refreshVkSessionStreams("periodic").catch((err) => {
+      console.warn(`[monitor] vk session refresh periodic failed: ${err?.message || err}`);
+    });
   }, vkEnsureIntervalMs);
 }
 
