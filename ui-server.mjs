@@ -7326,7 +7326,8 @@ async function handleStatic(req, res, url) {
     return;
   }
 
-  const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
+  const rawPathname = String(url.pathname || "/").trim() || "/";
+  const pathname = rawPathname === "/" ? "/index.html" : rawPathname;
   const filePath = resolve(uiRoot, `.${pathname}`);
 
   if (!filePath.startsWith(uiRoot)) {
@@ -7335,6 +7336,28 @@ async function handleStatic(req, res, url) {
   }
 
   if (!existsSync(filePath)) {
+    // SPA fallback: deep links like /tasks/123 must load index.html so the
+    // client router can resolve the route after refresh.
+    const looksLikeFile = /\.[a-z0-9]+$/i.test(pathname);
+    const hasTemplateBraces = pathname.includes("{{") || pathname.includes("}}");
+    if (!looksLikeFile || hasTemplateBraces) {
+      const indexPath = resolve(uiRoot, "index.html");
+      if (existsSync(indexPath)) {
+        try {
+          const data = await readFile(indexPath);
+          res.writeHead(200, {
+            "Content-Type": "text/html; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-store",
+          });
+          res.end(data);
+          return;
+        } catch (err) {
+          textResponse(res, 500, `Failed to load /index.html: ${err.message}`);
+          return;
+        }
+      }
+    }
     textResponse(res, 404, "Not Found");
     return;
   }
