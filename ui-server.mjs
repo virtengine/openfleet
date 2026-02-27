@@ -1667,6 +1667,101 @@ const SETTINGS_SENSITIVE_KEYS = new Set([
 const SETTINGS_KNOWN_SET = new Set(SETTINGS_KNOWN_KEYS);
 let _settingsLastUpdateTime = 0;
 
+function hasSettingValue(value) {
+  return value !== undefined && value !== null && value !== "";
+}
+
+function getConfigValueAtPath(obj, pathParts = []) {
+  let cursor = obj;
+  for (const part of pathParts) {
+    if (!cursor || typeof cursor !== "object" || !Object.prototype.hasOwnProperty.call(cursor, part)) {
+      return undefined;
+    }
+    cursor = cursor[part];
+  }
+  return cursor;
+}
+
+function toSettingsDisplayValue(def, rawValue) {
+  if (!hasSettingValue(rawValue)) return "";
+  if (def?.type === "boolean") {
+    if (typeof rawValue === "boolean") return rawValue ? "true" : "false";
+    const normalized = String(rawValue).trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return "true";
+    if (["0", "false", "no", "off"].includes(normalized)) return "false";
+  }
+  if (Array.isArray(rawValue)) {
+    return rawValue.map((entry) => String(entry ?? "")).join(",");
+  }
+  return String(rawValue);
+}
+
+function resolveDerivedSettingsValue(key) {
+  if (key === "TELEGRAM_MINIAPP_ENABLED") {
+    const rawPort = Number(process.env.TELEGRAM_UI_PORT || "0");
+    if (Number.isFinite(rawPort) && rawPort > 0) {
+      return { value: true, source: "derived" };
+    }
+  }
+  return null;
+}
+
+function buildSettingsResponseData() {
+  const data = {};
+  const sources = {};
+  const schema = getConfigSchema();
+  const defsByKey = new Map(
+    SETTINGS_SCHEMA.map((def) => [String(def?.key || ""), def]),
+  );
+  const { configData } = readConfigDocument();
+
+  for (const key of SETTINGS_KNOWN_KEYS) {
+    const def = defsByKey.get(key);
+    let rawValue = process.env[key];
+    let source = hasSettingValue(rawValue) ? "env" : "unset";
+
+    if (source === "unset") {
+      const derived = resolveDerivedSettingsValue(key);
+      if (derived && hasSettingValue(derived.value)) {
+        rawValue = derived.value;
+        source = derived.source || "derived";
+      }
+    }
+
+    if (source === "unset" && schema) {
+      const pathInfo = mapEnvKeyToConfigPath(key, schema);
+      if (pathInfo) {
+        const configValue = getConfigValueAtPath(configData, pathInfo.pathParts);
+        if (hasSettingValue(configValue)) {
+          rawValue = configValue;
+          source = "config";
+        } else {
+          const propSchema = getSchemaProperty(schema, pathInfo.pathParts);
+          if (propSchema && Object.prototype.hasOwnProperty.call(propSchema, "default")) {
+            rawValue = propSchema.default;
+            source = "default";
+          }
+        }
+      }
+    }
+
+    if (source === "unset" && def && Object.prototype.hasOwnProperty.call(def, "defaultVal")) {
+      rawValue = def.defaultVal;
+      source = "default";
+    }
+
+    const displayValue = toSettingsDisplayValue(def, rawValue);
+    if (SETTINGS_SENSITIVE_KEYS.has(key)) {
+      data[key] = displayValue ? "••••••" : "";
+    } else {
+      data[key] = displayValue;
+    }
+    sources[key] = source;
+  }
+
+  return { data, sources };
+}
+
 function updateEnvFile(changes) {
   const envPath = resolve(resolveUiConfigDir(), '.env');
   let content = '';
@@ -6138,15 +6233,7 @@ async function handleApi(req, res, url) {
 
   if (path === "/api/settings") {
     try {
-      const data = {};
-      for (const key of SETTINGS_KNOWN_KEYS) {
-        const val = process.env[key];
-        if (SETTINGS_SENSITIVE_KEYS.has(key)) {
-          data[key] = val ? "••••••" : "";
-        } else {
-          data[key] = val || "";
-        }
-      }
+      const { data, sources } = buildSettingsResponseData();
       const envPath = resolve(resolveUiConfigDir(), ".env");
       const configPath = resolveConfigPath();
       const configExists = existsSync(configPath);
@@ -6154,6 +6241,7 @@ async function handleApi(req, res, url) {
       jsonResponse(res, 200, {
         ok: true,
         data,
+        sources,
         meta: {
           envPath,
           configPath,
