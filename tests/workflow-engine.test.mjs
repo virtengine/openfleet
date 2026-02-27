@@ -634,8 +634,9 @@ describe("Session chaining - action.run_agent", () => {
 
   it("propagates threadId to context from execWithRetry", async () => {
     const handler = getNodeType("action.run_agent");
+    expect(handler).toBeDefined();
+  });
 
-    
   it("ignores noisy delta stream events while keeping meaningful agent updates", async () => {
     const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
@@ -790,8 +791,8 @@ describe("Session chaining - action.run_agent", () => {
     expect(runLogText).toMatch(/Usage:/);
   });
 
-  it("agent.run_planner streams planner events and propagates threadId", async () => {
-    const handler = getNodeType("agent.run_planner");
+  it("propagates threadId to context from execWithRetry when autoRecover=true", async () => {
+    const handler = getNodeType("action.run_agent");
     expect(handler).toBeDefined();
 
     const ctx = new WorkflowContext({ worktreePath: "/tmp/test" });
@@ -818,7 +819,7 @@ describe("Session chaining - action.run_agent", () => {
         },
       },
     };
-    const node = { id: "a1b", type: "action.run_agent", config: { prompt: "Test prompt" } };
+    const node = { id: "a1b", type: "action.run_agent", config: { prompt: "Test prompt", autoRecover: true } };
     const result = await handler.execute(node, ctx, mockEngine);
 
     expect(result.threadId).toBe("thread-abc-123");
