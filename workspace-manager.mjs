@@ -581,7 +581,14 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
       });
       results.push({ name: repo.name, success: true });
     } catch (err) {
-      results.push({ name: repo.name, success: false, error: err.message });
+      const details = String(err?.stderr || err?.stdout || err?.message || err || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      results.push({
+        name: repo.name,
+        success: false,
+        error: details || "git pull --rebase failed",
+      });
     }
   }
   return results;
