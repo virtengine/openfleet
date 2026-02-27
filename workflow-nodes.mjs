@@ -1180,6 +1180,7 @@ registerNodeType("action.update_task_status", {
     const previousStatus = ctx.resolve(node.config?.previousStatus || "");
     const workflowDedupKey = ctx.resolve(node.config?.workflowDedupKey || "");
     const updateOptions = {};
+    updateOptions.source = "workflow";
     if (taskTitle) updateOptions.taskTitle = taskTitle;
     if (previousStatus) updateOptions.previousStatus = previousStatus;
     if (workflowEvent) updateOptions.workflowEvent = workflowEvent;

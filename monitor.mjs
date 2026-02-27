@@ -191,6 +191,7 @@ import {
   isExecutorDisabled,
   getExecutorMode,
   loadExecutorOptionsFromConfig,
+  setTaskStatusTransitionHandler,
 } from "./task-executor.mjs";
 import {
   configureFromArgs,
@@ -645,6 +646,44 @@ function queueWorkflowEvent(eventType, eventData = {}, opts = {}) {
   dispatchWorkflowEvent(eventType, eventData, opts).catch(() => {});
 }
 
+function configureExecutorTaskStatusTransitions() {
+  if (!workflowAutomationEnabled) {
+    setTaskStatusTransitionHandler(null);
+    return;
+  }
+
+  setTaskStatusTransitionHandler(async (taskId, status, options = {}) => {
+    const normalizedTaskId = String(taskId || "").trim();
+    const normalizedStatus = String(status || "").trim().toLowerCase();
+    if (!normalizedTaskId || !normalizedStatus) return false;
+    const payload =
+      options && typeof options === "object" ? { ...options } : {};
+
+    queueWorkflowEvent(
+      "task.transition.requested",
+      {
+        taskId: normalizedTaskId,
+        targetStatus: normalizedStatus,
+        status: normalizedStatus,
+        taskTitle: String(payload.taskTitle || "").trim() || null,
+        source: String(payload.source || "task-executor").trim() || "task-executor",
+        branch: payload.branch || null,
+        baseBranch: payload.baseBranch || null,
+        worktreePath: payload.worktreePath || null,
+        prNumber: payload.prNumber || null,
+        prUrl: payload.prUrl || null,
+        error: payload.error || null,
+      },
+      {
+        dedupKey:
+          payload.workflowDedupKey ||
+          `workflow-event:task.transition.requested:${normalizedTaskId}:${normalizedStatus}`,
+      },
+    );
+    return true;
+  });
+}
+
 async function pollAgentAlerts() {
   if (process.env.VITEST) return;
   const path = getAgentAlertsPath();
@@ -814,6 +853,7 @@ workflowAutomationEnabled = parseEnvBoolean(
     ? dedupMs
     : 15_000;
 }
+configureExecutorTaskStatusTransitions();
 
 // Install console interceptor with log file (after config provides logDir)
 {
@@ -5036,6 +5076,29 @@ async function updateTaskStatus(taskId, newStatus, options = {}) {
     }
   };
 
+  const transitionSource = String(options?.source || "").trim().toLowerCase();
+  const workflowBypass = options?.bypassWorkflowOwnership === true;
+  if (workflowAutomationEnabled && transitionSource !== "workflow" && !workflowBypass) {
+    const engine = await ensureWorkflowAutomationEngine().catch(() => null);
+    if (engine) {
+      queueWorkflowEvent(
+        "task.transition.requested",
+        {
+          ...baseWorkflowPayload,
+          targetStatus: normalizedStatus,
+          source: transitionSource || "legacy-monitor",
+          error: options?.error || null,
+        },
+        {
+          dedupKey:
+            options?.workflowDedupKey ||
+            `workflow-event:task.transition.requested:${normalizedTaskId}:${normalizedStatus}`,
+        },
+      );
+      return true;
+    }
+  }
+
   const backend = getActiveKanbanBackend();
   if (backend !== "vk") {
     const resolvedTaskId = resolveTaskIdForBackend(taskId, backend);
@@ -5046,7 +5109,11 @@ async function updateTaskStatus(taskId, newStatus, options = {}) {
       return false;
     }
     try {
-      await updateKanbanTaskStatus(resolvedTaskId, newStatus);
+      await updateKanbanTaskStatus(
+        resolvedTaskId,
+        newStatus,
+        options && typeof options === "object" ? options : {},
+      );
       clearRecoveryCaches(taskId);
       if (resolvedTaskId !== taskId) {
         clearRecoveryCaches(resolvedTaskId);
@@ -14482,6 +14549,7 @@ function applyConfig(nextConfig, options = {}) {
     nextConfig.triggerSystem && typeof nextConfig.triggerSystem === "object"
       ? nextConfig.triggerSystem
       : { enabled: false, templates: [], defaults: { executor: "auto", model: "auto" } };
+  configureExecutorTaskStatusTransitions();
   if (workflowAutomationEnabled) {
     ensureWorkflowAutomationEngine().catch(() => {});
   }
@@ -15445,6 +15513,10 @@ if (isExecutorDisabled()) {
       },
       onTaskCompleted: (task, result) => {
         const taskId = String(task?.id || task?.task_id || "").trim();
+        const finalizationFailed =
+          result?.finalized === false ||
+          String(result?.finalizationReason || "").trim().toLowerCase() ===
+            "no_commits";
         const branch = String(
           result?.branch ||
             task?.branchName ||
@@ -15469,11 +15541,13 @@ if (isExecutorDisabled()) {
             "",
         ).trim() || null;
         console.log(
-          `[task-executor] ✅ completed: "${task.title}" (${result.attempts} attempt(s))`,
+          finalizationFailed
+            ? `[task-executor] ⚠ completed without finalization: "${task.title}" (${result.attempts} attempt(s), reason=${result?.finalizationReason || "unknown"})`
+            : `[task-executor] ✅ completed: "${task.title}" (${result.attempts} attempt(s))`,
         );
-        if (agentEventBus) {
+        if (!finalizationFailed && agentEventBus) {
           agentEventBus.onTaskCompleted(task, result);
-        } else {
+        } else if (!finalizationFailed) {
           // Fallback: queue review directly if event bus not ready
           if (reviewAgent && result.success) {
             try {
@@ -15490,22 +15564,44 @@ if (isExecutorDisabled()) {
           }
         }
         if (taskId) {
-          queueWorkflowEvent(
-            "task.completed",
-            {
-              taskId,
-              taskTitle: task?.title || "",
-              taskStatus: "completed",
-              attempts: Number(result?.attempts || 0),
-              success: result?.success !== false,
-              branch,
-              worktreePath,
-              prNumber,
-              prUrl,
-              baseBranch,
-            },
-            { dedupKey: `workflow-event:task.completed:${taskId}:${result?.attempts || 0}` },
-          );
+          if (finalizationFailed) {
+            queueWorkflowEvent(
+              "task.finalization_failed",
+              {
+                taskId,
+                taskTitle: task?.title || "",
+                taskStatus: "todo",
+                attempts: Number(result?.attempts || 0),
+                success: false,
+                branch,
+                worktreePath,
+                prNumber,
+                prUrl,
+                baseBranch,
+                reason: result?.finalizationReason || "unknown",
+              },
+              {
+                dedupKey: `workflow-event:task.finalization_failed:${taskId}:${result?.attempts || 0}:${result?.finalizationReason || "unknown"}`,
+              },
+            );
+          } else {
+            queueWorkflowEvent(
+              "task.completed",
+              {
+                taskId,
+                taskTitle: task?.title || "",
+                taskStatus: "completed",
+                attempts: Number(result?.attempts || 0),
+                success: result?.success !== false,
+                branch,
+                worktreePath,
+                prNumber,
+                prUrl,
+                baseBranch,
+              },
+              { dedupKey: `workflow-event:task.completed:${taskId}:${result?.attempts || 0}` },
+            );
+          }
         }
       },
       onTaskFailed: (task, err) => {
