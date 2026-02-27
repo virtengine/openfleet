@@ -234,6 +234,33 @@ function ensureLoaded() {
   }
 }
 
+function buildCorruptBackupPath() {
+  const iso = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${storePath}.corrupt-${iso}.json`;
+}
+
+function backupCorruptStorePayload(raw, parseErr) {
+  const backupPath = buildCorruptBackupPath();
+  try {
+    const dir = dirname(backupPath);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    writeFileSync(backupPath, raw, "utf-8");
+    console.error(
+      TAG,
+      `Detected corrupt store JSON at ${storePath}. Backed up payload to ${backupPath}.`,
+      parseErr?.message || parseErr,
+    );
+  } catch (backupErr) {
+    console.error(
+      TAG,
+      `Detected corrupt store JSON at ${storePath}, but failed to write backup:`,
+      backupErr?.message || backupErr,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Store management
 // ---------------------------------------------------------------------------
@@ -326,6 +353,18 @@ export function saveStore() {
     .catch((err) => {
       console.error(TAG, "Write chain error:", err.message);
     });
+}
+
+/**
+ * Await all queued writes. Intended for deterministic tests and maintenance code.
+ */
+export async function waitForStoreWrites() {
+  ensureLoaded();
+  try {
+    await _writeChain;
+  } catch {
+    // saveStore already logs failures; caller just needs chain drain semantics
+  }
 }
 
 /**
