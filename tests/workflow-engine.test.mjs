@@ -982,4 +982,33 @@ describe("WorkflowEngine - timeout timer cleanup", () => {
     const output = result.getNodeOutput("fast");
     expect(output.fast).toBe(true);
   });
+
+  it("honors timeoutMs from node config", async () => {
+    registerNodeType("test.slow_node_for_timeout_ms", {
+      describe: () => "Sleeps long enough to trigger timeoutMs",
+      schema: { type: "object", properties: {} },
+      async execute() {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        return { done: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "slow",
+          type: "test.slow_node_for_timeout_ms",
+          label: "Slow",
+          config: { timeoutMs: 1000, maxRetries: 0, retryDelayMs: 0 },
+        },
+      ],
+      [{ id: "e1", source: "trigger", target: "slow" }]
+    );
+
+    engine.save(wf);
+    const result = await engine.execute(wf.id, {});
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(String(result.errors[0]?.error || "")).toContain("timed out after 1000ms");
+  });
 });

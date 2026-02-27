@@ -8,16 +8,24 @@
 .stream-toolbar {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 10px;
+  margin-bottom: 10px;
+  min-width: 0;
+}
+
+.stream-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .stream-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
-  justify-content: space-between;
+  width: 100%;
+  min-width: 0;
 }
 
 .stream-search {
@@ -27,9 +35,12 @@
   background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: var(--radius-full);
-  padding: 4px 10px;
-  min-width: 180px;
-  flex: 1;
+  padding: 6px 10px;
+  min-height: 32px;
+  min-width: 220px;
+  max-width: 100%;
+  flex: 1 1 260px;
+  box-sizing: border-box;
 }
 
 .stream-search .input {
@@ -37,6 +48,13 @@
   background: transparent;
   padding: 0;
   font-size: 12px;
+  min-width: 0;
+  width: 100%;
+  color: var(--text-primary);
+}
+
+.stream-search .input:focus {
+  outline: none;
 }
 
 .input-compact {
@@ -47,17 +65,49 @@
 .stream-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  max-height: 320px;
+  gap: 10px;
+  max-height: min(52dvh, 460px);
   overflow-y: auto;
-  padding-right: 4px;
+  padding-right: 2px;
+  padding-bottom: 4px;
+  min-width: 0;
 }
 
-.stream-item {
+.stream-item,
+.stream-final-response {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 8px 10px;
-  background: var(--bg-card);
+  background: var(--bg-card, rgba(255, 255, 255, 0.02));
+  overflow: hidden;
+  min-width: 0;
+}
+
+.stream-item.expanded,
+.stream-final-response.expanded {
+  border-color: rgba(148, 163, 184, 0.35);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
+}
+
+.stream-item-toggle {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 10px;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.stream-item-toggle:disabled {
+  cursor: default;
+}
+
+.stream-item-toggle-final {
+  background: rgba(34, 197, 94, 0.06);
 }
 
 .stream-item-header {
@@ -68,23 +118,91 @@
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
+  min-width: 0;
+  grid-column: 1 / 2;
+}
+
+.stream-item-title {
+  flex: 1 1 220px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.stream-item-preview {
+  grid-column: 1 / 2;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .stream-item-tool {
   font-size: 12px;
   text-transform: none;
+  max-width: min(44vw, 320px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stream-item-time {
   color: var(--text-hint);
   font-size: 11px;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
-.stream-item-body {
-  margin-top: 6px;
+.stream-item-chevron {
+  grid-column: 2 / 3;
+  grid-row: 1 / span 2;
+  align-self: center;
+  color: var(--text-hint);
+  font-size: 13px;
+}
+
+.stream-item-details {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 180ms ease, border-color 180ms ease;
+  border-top: 1px solid transparent;
+}
+
+.stream-item-details.expanded {
+  grid-template-rows: 1fr;
+  border-top-color: var(--border);
+}
+
+.stream-item-details-inner {
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 12px;
+}
+
+.stream-item-details.expanded .stream-item-details-inner {
+  padding: 10px 12px 12px;
+}
+
+.stream-item-details-scroll {
+  max-height: min(44dvh, 360px);
+  overflow-y: auto;
+}
+
+.stream-item-pre {
+  margin: 0;
   font-size: 12px;
+  line-height: 1.55;
   color: var(--text-secondary);
-  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-family: var(--font-mono, "JetBrains Mono", monospace);
 }
 
 .stream-tag {
@@ -95,6 +213,7 @@
   font-size: 10px;
   font-weight: 700;
   border: 1px solid transparent;
+  flex-shrink: 0;
 }
 
 .stream-tag-tool_call {
@@ -121,6 +240,12 @@
   border-color: rgba(100, 116, 139, 0.35);
 }
 
+.stream-tag-model {
+  background: rgba(34, 197, 94, 0.16);
+  color: var(--color-done);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
 .stream-empty {
   display: flex;
   flex-direction: column;
@@ -145,6 +270,25 @@
 .stream-empty-text {
   font-size: 12px;
   text-align: center;
+}
+
+@media (max-width: 768px) {
+  .stream-search {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+
+  .stream-actions {
+    align-items: stretch;
+  }
+
+  .stream-actions .btn {
+    flex: 1 1 auto;
+  }
+
+  .stream-list {
+    max-height: min(50dvh, 380px);
+  }
 }
 
 /* ─── Telemetry Tab ─── */

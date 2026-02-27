@@ -229,6 +229,31 @@ function isTraceEventMessage(msg) {
   return (msg.role || "").toLowerCase() === "system";
 }
 
+function isModelResponseMessage(msg) {
+  if (!msg) return false;
+  const role = String(msg.role || "").toLowerCase();
+  const type = String(msg.type || "").toLowerCase();
+  if (role === "assistant") return true;
+  if (
+    type === "agent_message" ||
+    type === "assistant" ||
+    type === "assistant_message"
+  ) {
+    return true;
+  }
+  if (role) return false;
+  if (!msg.content) return false;
+  return ![
+    "tool_call",
+    "tool_result",
+    "tool_output",
+    "error",
+    "stream_error",
+    "system",
+    "user",
+  ].includes(type);
+}
+
 function messageText(msg) {
   if (typeof msg?.content === "string") return msg.content;
   if (msg?.content == null) return "";
@@ -282,6 +307,16 @@ function formatMessageLine(msg) {
   return `[${timestamp}] ${String(kind).toUpperCase()}: ${content}`;
 }
 
+function messageIdentity(msg) {
+  if (!msg) return "";
+  return String(
+    msg.id ||
+      msg.messageId ||
+      msg.timestamp ||
+      `${msg.role || msg.type || "message"}:${String(msg.content || "").slice(0, 80)}`,
+  );
+}
+
 function AttachmentList({ attachments }) {
   const list = Array.isArray(attachments) ? attachments.filter(Boolean) : [];
   if (!list.length) return null;
@@ -315,7 +350,7 @@ function AttachmentList({ attachments }) {
 }
 
 /* ─── Memoized ChatBubble — only re-renders if msg identity changes ─── */
-const ChatBubble = memo(function ChatBubble({ msg }) {
+const ChatBubble = memo(function ChatBubble({ msg, isFinalModelResponse = false }) {
   const isTool = msg.type === "tool_call" || msg.type === "tool_result";
   const isError = msg.type === "error" || msg.type === "stream_error";
   const contentText = messageText(msg);
@@ -334,8 +369,10 @@ const ChatBubble = memo(function ChatBubble({ msg }) {
     isTool
       ? msg.type === "tool_call" ? "TOOL CALL" : "TOOL RESULT"
       : isError ? "ERROR" : null;
+  const showModelResponseLabel =
+    isFinalModelResponse && !isTool && !isError && role !== "user" && role !== "system";
   return html`
-    <div class="chat-bubble ${bubbleClass}">
+    <div class="chat-bubble ${bubbleClass} ${showModelResponseLabel ? "chat-bubble-final" : ""}">
       ${role === "system" && !isTool
         ? html`
             <div class="chat-system-text">
@@ -344,6 +381,9 @@ const ChatBubble = memo(function ChatBubble({ msg }) {
           `
         : html`
             ${label ? html`<div class="chat-bubble-label">${label}</div>` : null}
+            ${showModelResponseLabel
+              ? html`<div class="chat-bubble-label chat-bubble-label-final">MODEL RESPONSE</div>`
+              : null}
             <div class="chat-bubble-content">
               <${MessageContent} text=${contentText} />
               <${AttachmentList} attachments=${msg.attachments} />
@@ -354,7 +394,7 @@ const ChatBubble = memo(function ChatBubble({ msg }) {
           `}
     </div>
   `;
-}, (prev, next) => prev.msg === next.msg);
+}, (prev, next) => prev.msg === next.msg && prev.isFinalModelResponse === next.isFinalModelResponse);
 
 const TraceEvent = memo(function TraceEvent({ msg }) {
   const info = describeTraceMessage(msg);
@@ -362,19 +402,32 @@ const TraceEvent = memo(function TraceEvent({ msg }) {
   const lineCount = text ? text.split(/\r?\n/).length : 0;
   const hasBody = text.length > 0 && (lineCount > 1 || text.length > 220);
   const longBody = lineCount > 12 || text.length > 1200;
+  const [expanded, setExpanded] = useState(() => info.kind === "error");
+
+  useEffect(() => {
+    setExpanded(info.kind === "error");
+  }, [msg]);
 
   return html`
-    <div class="chat-trace-item ${info.kind}">
-      <div class="chat-trace-head">
+    <div class="chat-trace-item ${info.kind} ${expanded ? "expanded" : ""}">
+      <button
+        class="chat-trace-head chat-trace-head-toggle"
+        type="button"
+        onClick=${() => hasBody && setExpanded((prev) => !prev)}
+        disabled=${!hasBody}
+      >
         <span class="chat-trace-tag ${info.kind}">${info.tag}</span>
         <span class="chat-trace-title">${info.title}</span>
         <span class="chat-trace-time">
           ${msg.timestamp ? formatRelative(msg.timestamp) : ""}
         </span>
-      </div>
+        ${hasBody && html`<span class="chat-trace-chevron">${expanded ? "▾" : "▸"}</span>`}
+      </button>
       ${hasBody && html`
-        <div class="chat-trace-content ${longBody ? "chat-trace-content-scroll" : ""}">
-          <${MessageContent} text=${text} />
+        <div class="chat-trace-content-wrap ${expanded ? "expanded" : ""}">
+          <div class="chat-trace-content ${longBody ? "chat-trace-content-scroll" : ""}">
+            <${MessageContent} text=${text} />
+          </div>
         </div>
       `}
     </div>
@@ -472,6 +525,15 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     return messages.filter((msg) => activeFilters.includes(categorizeMessage(msg)));
   }, [messages, activeFilters]);
 
+  const latestModelMessageKey = useMemo(() => {
+    const latest =
+      filteredMessages
+        .slice()
+        .reverse()
+        .find((msg) => isModelResponseMessage(msg)) || null;
+    return messageIdentity(latest);
+  }, [filteredMessages]);
+
   const visibleMessages = useMemo(() => {
     if (filteredMessages.length <= visibleCount) return filteredMessages;
     return filteredMessages.slice(-visibleCount);
@@ -539,6 +601,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       return {
         kind: trace ? "trace" : "message",
         key: `${trace ? "trace" : "message"}-${baseKey}-${index}`,
+        messageKey: messageIdentity(msg),
         msg,
       };
     });
@@ -1041,7 +1104,11 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         `}
         ${renderItems.map((item) => item.kind === "trace"
           ? html`<${TraceEvent} key=${item.key} msg=${item.msg} />`
-          : html`<${ChatBubble} key=${item.key} msg=${item.msg} />`
+          : html`<${ChatBubble}
+              key=${item.key}
+              msg=${item.msg}
+              isFinalModelResponse=${item.messageKey === latestModelMessageKey}
+            />`
         )}
 
         ${/* Pending messages (optimistic rendering) — use .peek() to avoid

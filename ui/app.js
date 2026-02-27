@@ -594,7 +594,7 @@ function SidebarNav({ collapsed = false, onToggle }) {
   `;
 }
 
-function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onCollapse, onExpand }) {
+function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onCollapse, onExpand, sessionType = "primary" }) {
   const [showArchived, setShowArchived] = useState(false);
   const sessions = sessionsData.value || [];
   const activeCount = sessions.filter(
@@ -602,16 +602,11 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
   ).length;
 
   useEffect(() => {
-    let mounted = true;
-    loadSessions();
-    const interval = setInterval(() => {
-      if (mounted) loadSessions();
-    }, 5000);
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, []);
+    // Session polling belongs to the active tab (Chat/Agents). The rail only
+    // performs a one-time fallback load to avoid filter thrash/flicker.
+    if ((sessionsData.value || []).length > 0) return;
+    void loadSessions({ type: sessionType }).catch(() => {});
+  }, [sessionType]);
 
   useEffect(() => {
     if (selectedSessionId.value || sessions.length === 0) return;
@@ -1633,6 +1628,7 @@ function App() {
   const showSessionRail = isDesktop && isChatOrAgents;
   const showInspector = isDesktop && isChatOrAgents;
   const showBottomNav = !isDesktop;
+  const railSessionType = activeTab.value === "agents" ? "task" : "primary";
   const showDrawerToggles = isTablet;
   const showInspectorToggle = isTablet && isChatOrAgents;
 
@@ -1742,6 +1738,7 @@ function App() {
             collapsed=${railCollapsed}
             onCollapse=${collapseRail}
             onExpand=${expandRail}
+            sessionType=${railSessionType}
           />`
         : null}
       <div class="app-main">

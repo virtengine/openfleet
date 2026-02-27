@@ -103,6 +103,9 @@ function WorkspaceViewer({ agent, onClose }) {
     fileAccess: null,
     capturedAt: null,
   });
+  const [expandedEventItems, setExpandedEventItems] = useState(() => new Set());
+  const [expandedFileItems, setExpandedFileItems] = useState(() => new Set());
+  const [expandedModelResponse, setExpandedModelResponse] = useState(false);
   const logRef = useRef(null);
 
   const query = agent.branch || agent.taskId || agent.sessionId || "";
@@ -180,6 +183,9 @@ function WorkspaceViewer({ agent, onClose }) {
     setFileFilter("all");
     setFileSearch("");
     setStreamSnapshot({ events: [], fileAccess: null, capturedAt: null });
+    setExpandedEventItems(new Set());
+    setExpandedFileItems(new Set());
+    setExpandedModelResponse(false);
   }, [query]);
 
   const handleStop = async () => {
@@ -230,6 +236,67 @@ function WorkspaceViewer({ agent, onClose }) {
     setTimeout(() => URL.revokeObjectURL(url), 1500);
   };
 
+  const toggleExpandedEvent = useCallback((key) => {
+    if (!key) return;
+    setExpandedEventItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toggleExpandedFile = useCallback((key) => {
+    if (!key) return;
+    setExpandedFileItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toMultilineText = (value) => {
+    if (value == null) return "";
+    if (typeof value === "string") return value;
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  };
+
+  const toSingleLinePreview = (value, limit = 220) => {
+    const compact = String(value || "").replace(/\s+/g, " ").trim();
+    if (!compact) return "";
+    return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
+  };
+
+  const isModelResponseMessage = (msg) => {
+    if (!msg) return false;
+    const role = String(msg.role || "").toLowerCase();
+    const type = String(msg.type || "").toLowerCase();
+    if (role === "assistant") return true;
+    if (
+      type === "agent_message" ||
+      type === "assistant" ||
+      type === "assistant_message"
+    ) {
+      return true;
+    }
+    if (role) return false;
+    if (!msg.content) return false;
+    return ![
+      "tool_call",
+      "tool_result",
+      "tool_output",
+      "error",
+      "stream_error",
+      "system",
+      "user",
+    ].includes(type);
+  };
+
   const renderChanges = () => {
     const ctx = contextData?.context;
     const matches = contextData?.matches || {};
@@ -240,6 +307,14 @@ function WorkspaceViewer({ agent, onClose }) {
     const fileAccess = contextData?.fileAccessSummary || null;
     const fileAccessFiles = fileAccess?.files || [];
     const streamMessages = sessionMessages.value || [];
+    const latestModelResponse =
+      streamMessages
+        .slice()
+        .reverse()
+        .find((msg) => isModelResponseMessage(msg)) || null;
+    const latestModelResponseText = latestModelResponse
+      ? toMultilineText(latestModelResponse.content || "")
+      : "";
     const rawToolEvents = streamMessages
       .filter((msg) => msg?.type === "tool_call" || msg?.type === "tool_result" || msg?.type === "error")
       .slice(-200)
@@ -513,6 +588,34 @@ function WorkspaceViewer({ agent, onClose }) {
           </div>
           ${streamPaused && snapshotMeta &&
             html`<div class="meta-text mt-xs">Paused at ${snapshotMeta}</div>`}
+          ${latestModelResponseText &&
+            html`
+              <div class="stream-final-response ${expandedModelResponse ? "expanded" : ""}">
+                <button
+                  class="stream-item-toggle stream-item-toggle-final"
+                  type="button"
+                  onClick=${() => setExpandedModelResponse((prev) => !prev)}
+                >
+                  <div class="stream-item-header">
+                    <span class="stream-tag stream-tag-model">MODEL</span>
+                    <span class="stream-item-title">Latest model response</span>
+                    ${latestModelResponse?.timestamp &&
+                      html`<span class="stream-item-time">
+                        ${formatRelative(latestModelResponse.timestamp)}
+                      </span>`}
+                  </div>
+                  <div class="stream-item-preview">
+                    ${toSingleLinePreview(latestModelResponseText, 260)}
+                  </div>
+                  <span class="stream-item-chevron">${expandedModelResponse ? "▾" : "▸"}</span>
+                </button>
+                <div class="stream-item-details ${expandedModelResponse ? "expanded" : ""}">
+                  <div class="stream-item-details-inner">
+                    <pre class="stream-item-pre">${latestModelResponseText}</pre>
+                  </div>
+                </div>
+              </div>
+            `}
           ${filteredEvents.length === 0 &&
             html`<div class="stream-empty">
               <div class="stream-empty-icon">${resolveIcon("🛰")}</div>
@@ -522,18 +625,41 @@ function WorkspaceViewer({ agent, onClose }) {
             </div>`}
           ${filteredEvents.length > 0 &&
             html`<div class="stream-list">
-              ${filteredEvents.map((evt) => html`
-                <div class="stream-item stream-${evt.type}" key=${evt._id}>
-                  <div class="stream-item-header">
-                    <span class="stream-tag stream-tag-${evt.type}">
-                      ${toolLabel(evt.type)}
-                    </span>
-                    ${evt.tool && html`<span class="stream-item-tool mono">${evt.tool}</span>`}
-                    ${evt.timestamp && html`<span class="stream-item-time">${formatRelative(evt.timestamp)}</span>`}
+              ${filteredEvents.map((evt) => {
+                const rowKey = evt._id;
+                const bodyText = toMultilineText(evt.content || evt.detail || "");
+                const hasBody = bodyText.trim().length > 0;
+                const expanded = rowKey ? expandedEventItems.has(rowKey) : false;
+                return html`
+                  <div class="stream-item stream-${evt.type} ${expanded ? "expanded" : ""}" key=${rowKey}>
+                    <button
+                      class="stream-item-toggle"
+                      type="button"
+                      onClick=${() => hasBody && toggleExpandedEvent(rowKey)}
+                      disabled=${!hasBody}
+                    >
+                      <div class="stream-item-header">
+                        <span class="stream-tag stream-tag-${evt.type}">
+                          ${toolLabel(evt.type)}
+                        </span>
+                        ${evt.tool && html`<span class="stream-item-tool mono">${evt.tool}</span>`}
+                        <span class="stream-item-title">
+                          ${toSingleLinePreview(bodyText, 240) || "No details"}
+                        </span>
+                        ${evt.timestamp && html`<span class="stream-item-time">${formatRelative(evt.timestamp)}</span>`}
+                      </div>
+                      ${hasBody && html`<span class="stream-item-chevron">${expanded ? "▾" : "▸"}</span>`}
+                    </button>
+                    ${hasBody && html`
+                      <div class="stream-item-details ${expanded ? "expanded" : ""}">
+                        <div class="stream-item-details-inner ${bodyText.length > 1600 ? "stream-item-details-scroll" : ""}">
+                          <pre class="stream-item-pre">${bodyText}</pre>
+                        </div>
+                      </div>
+                    `}
                   </div>
-                  ${evt.content && html`<div class="stream-item-body">${truncate(evt.content, 260)}</div>`}
-                </div>
-              `)}
+                `;
+              })}
             </div>`}
         </div>
       `;
@@ -632,16 +758,36 @@ function WorkspaceViewer({ agent, onClose }) {
             </div>`}
           ${filteredFiles.length > 0 &&
             html`<div class="stream-list">
-              ${filteredFiles.map((entry) => html`
-                <div class="stream-item stream-file" key=${entry.path}>
-                  <div class="stream-item-header">
-                    <span class="stream-tag stream-tag-file">FILE</span>
-                    <span class="mono">${entry.path}</span>
+              ${filteredFiles.map((entry) => {
+                const rowKey = `${entry.path || "unknown"}::${(entry.kinds || []).join(",")}`;
+                const expanded = expandedFileItems.has(rowKey);
+                const details = [
+                  `Path: ${entry.path || "unknown"}`,
+                  entry.kinds?.length
+                    ? `Access kinds: ${entry.kinds.join(", ")}`
+                    : "Access kinds: unknown",
+                ].join("\n");
+                return html`
+                  <div class="stream-item stream-file ${expanded ? "expanded" : ""}" key=${rowKey}>
+                    <button
+                      class="stream-item-toggle"
+                      type="button"
+                      onClick=${() => toggleExpandedFile(rowKey)}
+                    >
+                      <div class="stream-item-header">
+                        <span class="stream-tag stream-tag-file">FILE</span>
+                        <span class="stream-item-title mono">${entry.path}</span>
+                      </div>
+                      <span class="stream-item-chevron">${expanded ? "▾" : "▸"}</span>
+                    </button>
+                    <div class="stream-item-details ${expanded ? "expanded" : ""}">
+                      <div class="stream-item-details-inner">
+                        <pre class="stream-item-pre">${details}</pre>
+                      </div>
+                    </div>
                   </div>
-                  ${entry.kinds?.length &&
-                    html`<div class="stream-item-body">Access: ${entry.kinds.join(", ")}</div>`}
-                </div>
-              `)}
+                `;
+              })}
             </div>`}
         </div>
       `;
