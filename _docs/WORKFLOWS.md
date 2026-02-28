@@ -3,12 +3,14 @@
 Bosun workflows are DAGs (directed acyclic graphs) of nodes that automate orchestration tasks such as PR handling, anomaly response, task planning, and health checks. Workflows are editable in the Telegram miniapp UI and stored as JSON on disk.
 
 **Where Workflows Live**
+
 - Definitions: `.bosun/workflows/*.json`
 - Run history index: `.bosun/workflow-runs/index.json`
 - Full run logs: `.bosun/workflow-runs/<runId>.json`
 - Migration state: `.bosun/workflow-migration.json`
 
 **How To Create Or Install**
+
 - UI: Telegram miniapp → Workflows tab → Create Workflow or install a template.
 - API: `POST /api/workflows/save` to create or update JSON definitions.
 - File-based: drop a workflow JSON file into `.bosun/workflows/`.
@@ -16,6 +18,7 @@ Bosun workflows are DAGs (directed acyclic graphs) of nodes that automate orches
 
 **Workflow Definition (JSON)**
 Minimum example:
+
 ```json
 {
   "name": "Hello Workflow",
@@ -23,11 +26,28 @@ Minimum example:
   "category": "custom",
   "enabled": true,
   "nodes": [
-    { "id": "trigger", "type": "trigger.manual", "label": "Manual", "config": {}, "position": { "x": 100, "y": 80 } },
-    { "id": "log", "type": "notify.log", "label": "Log", "config": { "message": "Hello from workflow" }, "position": { "x": 100, "y": 220 } }
+    {
+      "id": "trigger",
+      "type": "trigger.manual",
+      "label": "Manual",
+      "config": {},
+      "position": { "x": 100, "y": 80 }
+    },
+    {
+      "id": "log",
+      "type": "notify.log",
+      "label": "Log",
+      "config": { "message": "Hello from workflow" },
+      "position": { "x": 100, "y": 220 }
+    }
   ],
   "edges": [
-    { "id": "trigger->log", "source": "trigger", "target": "log", "sourcePort": "default" }
+    {
+      "id": "trigger->log",
+      "source": "trigger",
+      "target": "log",
+      "sourcePort": "default"
+    }
   ],
   "variables": {}
 }
@@ -67,16 +87,19 @@ Edge fields:
 | `condition` | string | Expression gate for the edge |
 
 **Templating And Expressions**
+
 - Template values inside config strings use `{{variable}}` syntax.
 - You can reference node outputs in templates with `{{nodeId.field}}`.
 - Edge conditions use JS expressions with `$output`, `$data`, `$status`, `$ctx`.
 
 Example condition:
+
 ```js
-$output?.success === true && $data?.priority === "high"
+$output?.success === true && $data?.priority === "high";
 ```
 
 **Execution Model**
+
 - Entry nodes are any nodes without incoming edges.
 - Nodes run in parallel when dependencies are satisfied.
 - Retries: `node.config.maxRetries` or `node.config.retryable = false` to disable.
@@ -84,11 +107,13 @@ $output?.success === true && $data?.priority === "high"
 - Run logs are persisted to `.bosun/workflow-runs/`.
 
 **Run Persistence & Auto-Resume**
+
 - Active run state is written to disk at `.bosun/workflow-runs/<runId>.json` after every node completion.
 - On `ui-server.mjs` restart, in-progress runs whose state is recoverable are automatically resumed from the last successful node.
 - The run index (`.bosun/workflow-runs/index.json`) is updated atomically so a crash cannot corrupt it.
 
 **Flow-Level Retry**
+
 - Any workflow can be retried from the UI or Telegram without re-running already-passing nodes.
 - Manual retry: click **Retry** on a failed run in the Workflows tab → re-enters the DAG from the first failed node.
 - Auto-retry: set `workflow.config.autoRetry = true` and `workflow.config.maxAutoRetries` (default 2). Failed runs are automatically re-queued by the engine.
@@ -107,6 +132,7 @@ Loop: `loop.for_each`
 The authoritative list is exposed by `GET /api/workflows/node-types` and registered in `workflow-nodes.mjs`.
 
 **Services And Requirements**
+
 - `notify.telegram` requires `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
 - Kanban actions require a configured kanban adapter and `VK_*` settings.
 - `action.run_agent` and `action.continue_session` use the agent pool configured in the UI server.
@@ -114,6 +140,7 @@ The authoritative list is exposed by `GET /api/workflows/node-types` and registe
 - `action.ask_user` posts a question and stores `_pendingQuestion` in context for UI polling.
 
 **Workflow API Endpoints**
+
 - `GET /api/workflows` list workflows
 - `GET /api/workflows/:id` full workflow definition
 - `POST /api/workflows/save` create or update a workflow
@@ -126,11 +153,13 @@ The authoritative list is exposed by `GET /api/workflows/node-types` and registe
 - `POST /api/workflows/install-template` install a template
 
 **Run History Files**
+
 - `index.json` contains a rolling list of recent run summaries.
 - `<runId>.json` contains node outputs, logs, and errors for a single run.
 
 **Workflow Migration Guard**
 Bosun can migrate legacy modules into workflows with a safety guard.
+
 - Config file: `.bosun/workflow-migration.json`
 - Modes: `legacy`, `shadow`, `workflow`
 - Implemented in `workflow-migration.mjs`
@@ -139,7 +168,7 @@ Bosun can migrate legacy modules into workflows with a safety guard.
 
 Templates are installed via the UI (Workflows → Templates) or `POST /api/workflows/install-template` with `{ "templateId": "<id>" }`.
 
-*GitHub Automation*
+_GitHub Automation_
 | Template | ID | Description |
 | --- | --- | --- |
 | PR Merge Strategy | `template-pr-merge-strategy` | Validates and merges PRs using configurable strategy (squash/merge/rebase). |
@@ -148,7 +177,7 @@ Templates are installed via the UI (Workflows → Templates) or `POST /api/workf
 | Stale PR Reaper | `template-stale-pr-reaper` | Closes or warns PRs that have been open beyond a stale threshold. |
 | **Bosun PR Watchdog** | `template-bosun-pr-watchdog` | **(New)** Scheduled CI poller for bosun-attached PRs. Makes a single `gh` API call per cycle to classify all open bosun PRs, labels CI failures / conflicts with `bosun-needs-fix`, sends merge candidates through a mandatory review gate (checks diff stats to prevent destructive merges), then merges. Never touches external-contributor PRs. Default interval: 5 min. Set `enabled: false` to disable. |
 
-*Reliability & Ops*
+_Reliability & Ops_
 | Template | ID | Description |
 | --- | --- | --- |
 | Error Recovery | `template-error-recovery` | Triggered on anomaly events; runs an agent to diagnose and attempt auto-fix. |
@@ -157,7 +186,7 @@ Templates are installed via the UI (Workflows → Templates) or `POST /api/workf
 | Health Check | `template-health-check` | Periodic build + test ping; alerts on failure. |
 | Task Finalization Guard | `template-task-finalization-guard` | Closes tasks that are marked done but whose PRs never merged. |
 
-*Planning & Reporting*
+_Planning & Reporting_
 | Template | ID | Description |
 | --- | --- | --- |
 | Task Planner | `template-task-planner` | Agent-driven task backlog generation from a goal prompt. |
@@ -165,7 +194,7 @@ Templates are installed via the UI (Workflows → Templates) or `POST /api/workf
 | Nightly Report | `template-nightly-report` | Generates a markdown agent-work summary and posts to Telegram. |
 | Sprint Retrospective | `template-sprint-retro` | End-of-sprint retro: summarises completed tasks, PRs, and blockers. |
 
-*CI/CD*
+_CI/CD_
 | Template | ID | Description |
 | --- | --- | --- |
 | Build & Deploy | `template-build-deploy` | Triggered on PR merge; runs build + deploy pipeline and notifies. |
@@ -175,6 +204,7 @@ Templates are installed via the UI (Workflows → Templates) or `POST /api/workf
 ---
 
 **Troubleshooting**
+
 - No nodes in UI: verify `/api/workflows/:id` returns `workflow.nodes`.
 - Runs show `0s`: durations under one second are rounded.
 - No Telegram notifications: check `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.

@@ -57,12 +57,12 @@ Requires:
 
 ### Executor quick-start
 
-| Executor | `primaryAgent` value | Key env vars |
-| --- | --- | --- |
-| Codex (OpenAI) | `codex-sdk` | `OPENAI_API_KEY` |
-| Copilot (VS Code) | `copilot-sdk` | VS Code session |
-| Claude | `claude-sdk` | `ANTHROPIC_API_KEY` |
-| OpenCode | `opencode-sdk` | `OPENCODE_MODEL` (e.g. `anthropic/claude-opus-4-5`), `OPENCODE_PORT` (default `4096`) |
+| Executor          | `primaryAgent` value | Key env vars                                                                          |
+| ----------------- | -------------------- | ------------------------------------------------------------------------------------- |
+| Codex (OpenAI)    | `codex-sdk`          | `OPENAI_API_KEY`                                                                      |
+| Copilot (VS Code) | `copilot-sdk`        | VS Code session                                                                       |
+| Claude            | `claude-sdk`         | `ANTHROPIC_API_KEY`                                                                   |
+| OpenCode          | `opencode-sdk`       | `OPENCODE_MODEL` (e.g. `anthropic/claude-opus-4-5`), `OPENCODE_PORT` (default `4096`) |
 
 Set `primaryAgent` in `.bosun/bosun.config.json` or choose an executor preset during `bosun --setup`.
 

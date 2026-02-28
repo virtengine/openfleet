@@ -282,7 +282,9 @@ import {
 const msg = buildCommitMessage("feat: add thing", "Extended description");
 // → Includes trailer automatically when running in Bosun task context
 
-const forced = buildCommitMessage("feat: add thing", "Extended description", { addBosunCredit: true });
+const forced = buildCommitMessage("feat: add thing", "Extended description", {
+  addBosunCredit: true,
+});
 // → Always includes trailer (independent of task context)
 
 const prBody = appendBosunPrCredit("My PR description");
@@ -377,9 +379,11 @@ against the issuing agent.
 
 1. **`bin/git` wrapper** — intercepts `--no-verify` before Git sees it.
    Activate by putting `./bin` first in PATH (add to shell profile):
+
    ```bash
    export PATH="$PWD/bin:$PATH"   # run from bosun/ directory
    ```
+
    Windows CMD/PowerShell: `bin\git.cmd` is auto-discovered when `bin\` is in PATH.
 
 2. **CI gate** — GitHub Actions runs the full test suite on every push regardless of
@@ -389,6 +393,7 @@ against the issuing agent.
    new task to revert its commit if it lands.
 
 **If a hook check is genuinely slow or broken, the correct fix is:**
+
 - `npm run syntax:check` fast-fails on parse errors in ~2 s
 - The diff-based hook only runs tests for changed modules
 - Fix the failing test or improve the test setup — do NOT skip the hook
