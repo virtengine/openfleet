@@ -218,6 +218,21 @@ export class SessionTracker {
         ? this.#maxMessages
         : session.maxMessages;
 
+    if (typeof event === "string" && event.trim()) {
+      const msg = {
+        type: "system",
+        content: event.trim().slice(0, MAX_MESSAGE_CHARS),
+        timestamp: new Date().toISOString(),
+      };
+      session.messages.push(msg);
+      if (Number.isFinite(maxMessages) && maxMessages > 0) {
+        while (session.messages.length > maxMessages) session.messages.shift();
+      }
+      this.#markDirty(taskId);
+      emitSessionEvent(session, msg);
+      return;
+    }
+
     // Direct message format (role/content)
     if (event && event.role && event.content !== undefined) {
       const msg = {
@@ -761,7 +776,7 @@ export class SessionTracker {
     };
 
     // ── Codex SDK events ──
-    if (event.type === "item.completed" && event.item) {
+    if ((event.type === "item.completed" || event.type === "item.updated") && event.item) {
       const item = event.item;
       const itemType = String(item.type || "").toLowerCase();
 
@@ -823,6 +838,20 @@ ${output}`
         };
       }
 
+      if (
+        itemType === "agent_message" &&
+        event.type === "item.updated" &&
+        (item.text || item.delta)
+      ) {
+        const partial = toText(item.text || item.delta);
+        if (!partial) return null;
+        return {
+          type: "agent_message",
+          content: partial.slice(0, MAX_MESSAGE_CHARS),
+          timestamp: ts,
+        };
+      }
+
       if (itemType === "file_change") {
         const changes = Array.isArray(item.changes)
           ? item.changes
@@ -874,6 +903,31 @@ ${items.join("\n")}` : "todo updated";
       }
 
       return null; // Skip other item types
+    }
+
+    if (event.type === "item.started" && event.item) {
+      const item = event.item;
+      const itemType = String(item.type || "").toLowerCase();
+
+      if (itemType === "command_execution") {
+        const command = toText(item.command || item.input || "").trim();
+        return {
+          type: "tool_call",
+          content: command || "(command)",
+          timestamp: ts,
+          meta: { toolName: "command_execution" },
+        };
+      }
+
+      if (itemType === "reasoning") {
+        const detail = toText(item.text || item.summary || "").trim();
+        if (!detail) return null;
+        return {
+          type: "system",
+          content: detail.slice(0, MAX_MESSAGE_CHARS),
+          timestamp: ts,
+        };
+      }
     }
 
     if (event.type === "assistant.message" && event.data?.content) {

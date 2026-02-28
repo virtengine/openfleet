@@ -7519,7 +7519,16 @@ async function handleApi(req, res, url) {
             const ev = event || err;
             if (!ev) return;
             try {
-              tracker.recordEvent(sessionId, ev);
+              if (typeof ev === "string") {
+                tracker.recordEvent(sessionId, {
+                  role: "system",
+                  type: "system",
+                  content: ev,
+                  timestamp: new Date().toISOString(),
+                });
+              } else {
+                tracker.recordEvent(sessionId, ev);
+              }
             } catch {
               /* best-effort — never crash the agent loop */
             }
@@ -7533,6 +7542,8 @@ async function handleApi(req, res, url) {
             sessionType: "primary",
             mode: messageMode,
             model: messageModel,
+            persistent: true,
+            sendRawEvents: true,
             attachments,
             attachmentsAppended,
             onEvent: streamOnEvent,
