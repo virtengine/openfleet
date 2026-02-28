@@ -412,13 +412,13 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
       expression: "$ctx.getNodeOutput('run-finalization')?.success === true",
     }, { x: 220, y: 470 }),
 
-    node("has-pr", "condition.expression", "PR Already Exists?", {
+    node("has-pr", "condition.expression", "Lifecycle Already Linked?", {
       expression: "Boolean($data?.prNumber || $data?.prUrl)",
     }, { x: 120, y: 620 }),
 
-    node("create-pr", "action.create_pr", "Create PR If Missing", {
+    node("create-pr", "action.create_pr", "Handoff Lifecycle If Missing", {
       title: "{{taskTitle}}",
-      body: "Automated PR from task finalization guard for task {{taskId}}.",
+      body: "Bosun-managed PR lifecycle handoff from task finalization guard for task {{taskId}}.",
       base: "{{baseBranch}}",
       branch: "{{branch}}",
       failOnError: true,
@@ -427,7 +427,7 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
       continueOnError: true,
     }, { x: 120, y: 760 }),
 
-    node("create-pr-success", "condition.expression", "PR Created?", {
+    node("create-pr-success", "condition.expression", "Lifecycle Handoff Recorded?", {
       expression: "$ctx.getNodeOutput('create-pr')?.success === true",
     }, { x: 120, y: 830, outputs: ["yes", "no"] }),
 
@@ -540,7 +540,7 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
     verificationCommand:
       "node -e \"const cp=require('node:child_process');const cmds=['npm run prepush --if-present','npm run prepush:check --if-present','npm run build','npm test','npm run lint --if-present'];for(const cmd of cmds){cp.execSync(cmd,{stdio:'inherit'});} \"",
     repairPrompt:
-      "Task {{taskId}} ({{taskTitle}}) failed. Error: {{error}}. Repair the implementation in {{worktreePath}} without bypassing tests, then leave the branch ready for PR.",
+      "Task {{taskId}} ({{taskTitle}}) failed. Error: {{error}}. Repair the implementation in {{worktreePath}} without bypassing tests, then leave the branch ready for Bosun PR lifecycle handoff.",
   },
   nodes: [
     node("trigger-failed", "trigger.event", "Task Failed", {
@@ -578,9 +578,9 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
       expression: "$ctx.getNodeOutput('verify')?.success === true",
     }, { x: 400, y: 740 }),
 
-    node("create-pr", "action.create_pr", "Create/Update PR", {
+    node("create-pr", "action.create_pr", "Handoff/Refresh Lifecycle", {
       title: "{{taskTitle}}",
-      body: "Automated repair run for task {{taskId}}.",
+      body: "Automated repair run for task {{taskId}}. Bosun lifecycle handoff context.",
       base: "{{baseBranch}}",
       branch: "{{branch}}",
       failOnError: true,
@@ -589,7 +589,7 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
       continueOnError: true,
     }, { x: 250, y: 880 }),
 
-    node("create-pr-success", "condition.expression", "PR Ready?", {
+    node("create-pr-success", "condition.expression", "Lifecycle Handoff Ready?", {
       expression: "$ctx.getNodeOutput('create-pr')?.success === true",
     }, { x: 250, y: 950, outputs: ["yes", "no"] }),
 

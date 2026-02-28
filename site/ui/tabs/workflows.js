@@ -804,7 +804,7 @@ const COMMAND_PRESETS = {
     { label: "Merge PR (squash)", cmd: "gh pr merge --auto --squash", icon: "git" },
     { label: "Close PR", cmd: 'gh pr close --comment "{{reason}}"', icon: "ban" },
     { label: "PR Diff", cmd: "gh pr diff --stat", icon: "chart" },
-    { label: "Create PR", cmd: 'gh pr create --title "{{title}}" --body "{{body}}" --base main', icon: "edit" },
+    { label: "PR Handoff Note", cmd: 'echo "Bosun manages PR lifecycle after push; direct PR commands are disabled."', icon: "edit" },
     { label: "Add Label", cmd: 'gh pr edit --add-label "{{label}}"', icon: "tag" },
     { label: "Request Review", cmd: 'gh pr edit --add-reviewer {{reviewer}}', icon: "eye" },
   ],

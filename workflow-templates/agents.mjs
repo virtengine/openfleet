@@ -509,9 +509,9 @@ Commit with message "feat: implement [feature]"`,
       expression: "$ctx.getNodeOutput('build')?.passed === true && $ctx.getNodeOutput('test-final')?.passed === true && $ctx.getNodeOutput('lint')?.passed === true",
     }, { x: 400, y: 1040, outputs: ["yes", "no"] }),
 
-    node("create-pr", "action.create_pr", "Create PR", {
+    node("create-pr", "action.create_pr", "Handoff PR Lifecycle", {
       title: "feat: {{taskTitle}}",
-      body: "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing.",
+      body: "Implements backend task with test-first methodology.\n\n**Plan:**\n{{plan}}\n\nAll tests passing. Bosun lifecycle handoff ready.",
       branch: "feat/{{taskSlug}}",
       baseBranch: "main",
       failOnError: true,
@@ -520,17 +520,17 @@ Commit with message "feat: implement [feature]"`,
       continueOnError: true,
     }, { x: 250, y: 1170 }),
 
-    node("pr-created", "condition.expression", "PR Created?", {
+    node("pr-created", "condition.expression", "Handoff Recorded?", {
       expression: "$ctx.getNodeOutput('create-pr')?.success === true",
     }, { x: 250, y: 1240, outputs: ["yes", "no"] }),
 
     node("notify-done", "notify.log", "Task Complete", {
-      message: "Backend agent completed task — PR created",
+      message: "Backend agent completed task — PR lifecycle handoff recorded",
       level: "info",
     }, { x: 180, y: 1320 }),
 
-    node("notify-pr-failed", "notify.telegram", "Escalate PR Creation Failure", {
-      message: "⚠️ Backend agent passed validation for {{taskTitle}} but failed to open PR after retries. Manual PR creation required.",
+    node("notify-pr-failed", "notify.telegram", "Escalate Lifecycle Handoff Failure", {
+      message: "⚠️ Backend agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required.",
     }, { x: 420, y: 1320 }),
 
     node("set-validation-summary", "action.set_variable", "Summarize Validation Output", {
@@ -578,9 +578,9 @@ Commit with message "fix: address backend workflow validation failures"`,
       expression: "$ctx.getNodeOutput('build-retry')?.passed === true && $ctx.getNodeOutput('test-retry')?.passed === true && $ctx.getNodeOutput('lint-retry')?.passed === true",
     }, { x: 620, y: 1690, outputs: ["yes", "no"] }),
 
-    node("create-pr-retry", "action.create_pr", "Create PR (After Retry)", {
+    node("create-pr-retry", "action.create_pr", "Handoff PR Lifecycle (After Retry)", {
       title: "feat: {{taskTitle}}",
-      body: "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation.",
+      body: "Implements backend task after auto-fix retry.\n\n**Plan:**\n{{plan}}\n\nValidation passed after remediation. Bosun lifecycle handoff ready.",
       branch: "feat/{{taskSlug}}",
       baseBranch: "main",
       failOnError: true,
@@ -589,12 +589,12 @@ Commit with message "fix: address backend workflow validation failures"`,
       continueOnError: true,
     }, { x: 450, y: 1820 }),
 
-    node("pr-created-retry", "condition.expression", "PR Created (Retry Path)?", {
+    node("pr-created-retry", "condition.expression", "Handoff Recorded (Retry Path)?", {
       expression: "$ctx.getNodeOutput('create-pr-retry')?.success === true",
     }, { x: 450, y: 1890, outputs: ["yes", "no"] }),
 
     node("notify-done-retry", "notify.log", "Task Complete (After Retry)", {
-      message: "Backend agent completed task after retry — PR created",
+      message: "Backend agent completed task after retry — PR lifecycle handoff recorded",
       level: "info",
     }, { x: 360, y: 1980 }),
 
@@ -602,8 +602,8 @@ Commit with message "fix: address backend workflow validation failures"`,
       message: "⚠️ Backend agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed.",
     }, { x: 820, y: 1820 }),
 
-    node("notify-pr-failed-retry", "notify.telegram", "Escalate PR Failure (Retry Path)", {
-      message: "⚠️ Backend agent remediation passed for {{taskTitle}} but PR creation failed after retries. Manual PR creation required.",
+    node("notify-pr-failed-retry", "notify.telegram", "Escalate Lifecycle Failure (Retry Path)", {
+      message: "⚠️ Backend agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required.",
     }, { x: 620, y: 1980 }),
   ],
   edges: [
@@ -642,7 +642,7 @@ Commit with message "fix: address backend workflow validation failures"`,
       calledFrom: ["task-executor.mjs:executeTask"],
       description:
         "Replaces generic agent task execution with a structured backend " +
-        "workflow. Test-first methodology, build/lint gates, and PR creation " +
+        "workflow. Test-first methodology, build/lint gates, and Bosun-managed PR lifecycle handoff " +
         "are enforced as distinct workflow stages.",
     },
   },

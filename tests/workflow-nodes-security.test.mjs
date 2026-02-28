@@ -3,18 +3,16 @@
  *
  * Verifies:
  *  1. `action.create_pr` schema has both `base` and `branch` properties defined
- *     (reconciling the plan-noted `branch`/`base` discrepancy).
+ *     for backward-compatible workflow payloads.
  *  2. Node type registrations are well-formed and don't expose shell injection
  *     vectors through dynamic payload interpolation.
- *  3. The `create_pr` handler resolves `base` (not `branch`) as the base branch.
- *  4. Dangerous shell meta-characters in node config are not blindly interpolated
- *     into shell strings when array-form spawn is available.
+ *  3. The `create_pr` handler resolves `base` (not `branch`) as the base branch
+ *     in Bosun lifecycle handoff payloads.
+ *  4. Dangerous shell meta-characters in node config are treated as plain data
+ *     and never routed into direct PR creation commands.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { describe, it, expect, vi } from "vitest";
 import { getNodeType } from "../workflow-nodes.mjs";
 import { WorkflowContext } from "../workflow-engine.mjs";
 
@@ -77,50 +75,37 @@ describe("action.create_pr schema integrity", () => {
 // -- create_pr Base-Branch Resolution -----------------------------------------
 
 describe("action.create_pr base-branch resolution logic", () => {
-  it("uses 'base' config field as the PR base branch", () => {
-    // The handler reads `node.config?.base || node.config?.baseBranch || "main"`.
-    // Verify 'base' takes precedence over the legacy alias.
-    const execSyncMock = vi.fn(() => "https://github.com/acme/repo/pull/42\n");
-    vi.doMock("node:child_process", () => ({
-      execSync: execSyncMock,
-      spawn: vi.fn(),
-    }));
-
-    // Build a representative node config
+  it("uses 'base' config field as the PR base branch", async () => {
     const node = makeNode("action.create_pr", {
       title: "feat: add thing",
       base: "develop",
       baseBranch: "should-not-use-this",
       branch: "feat/add-thing",
     });
-
-    // Verify the schema definition routes 'base' correctly by inspecting the
-    // registered node's execute source (static analysis approach safe under vitest)
     const nodeType = getNodeType("action.create_pr");
-    const executeSrc = nodeType.execute.toString();
-
-    // Handler must read config?.base before config?.baseBranch
-    const baseIndex = executeSrc.indexOf("config?.base");
-    const baseBranchIndex = executeSrc.indexOf("config?.baseBranch");
-    expect(baseIndex).toBeGreaterThanOrEqual(0);
-    expect(baseBranchIndex).toBeGreaterThan(baseIndex);
+    const result = await nodeType.execute(node, makeCtx());
+    expect(result.base).toBe("develop");
   });
 
-  it("falls back to 'baseBranch' when 'base' is absent", () => {
+  it("falls back to 'baseBranch' when 'base' is absent", async () => {
+    const node = makeNode("action.create_pr", {
+      title: "feat: add thing",
+      baseBranch: "release",
+      branch: "feat/add-thing",
+    });
     const nodeType = getNodeType("action.create_pr");
-    const executeSrc = nodeType.execute.toString();
-    // baseBranch fallback must appear after base
-    expect(executeSrc).toContain("baseBranch");
-    expect(executeSrc.indexOf("baseBranch")).toBeGreaterThan(
-      executeSrc.indexOf("config?.base"),
-    );
+    const result = await nodeType.execute(node, makeCtx());
+    expect(result.base).toBe("release");
   });
 
-  it("falls back to 'main' when neither base nor baseBranch is set", () => {
+  it("falls back to 'main' when neither base nor baseBranch is set", async () => {
+    const node = makeNode("action.create_pr", {
+      title: "feat: add thing",
+      branch: "feat/add-thing",
+    });
     const nodeType = getNodeType("action.create_pr");
-    const executeSrc = nodeType.execute.toString();
-    // Default value "main" must be in the fallback chain
-    expect(executeSrc).toMatch(/\|\|\s*["']main["']/);
+    const result = await nodeType.execute(node, makeCtx());
+    expect(result.base).toBe("main");
   });
 });
 
@@ -171,17 +156,10 @@ describe("dangerous shell payload containment", () => {
     "${IFS}cat${IFS}/etc/shadow",
   ];
 
-  it("action.create_pr schema does not evaluate shell metacharacters in title/body", () => {
-    // The create_pr handler passes title/body through shell string interpolation
-    // via execSync. This test documents the expected behavior: dangerous strings
-    // in title/body should be escaped via replace(/"/g, '\\"') before being
-    // passed to execSync.
+  it("action.create_pr implementation does not include a direct PR-create command", () => {
     const nodeType = getNodeType("action.create_pr");
     const executeSrc = nodeType.execute.toString();
-
-    // Verify the handler escapes double-quotes in title/body before shell usage
-    // The execute source must contain: .replace(/"/g, '\\"') or similar
-    expect(executeSrc).toContain(`replace(/"`);
+    expect(executeSrc).not.toContain("gh pr create");
   });
 
   it("action.run_command schema does not silently accept untrusted commands", () => {
@@ -197,13 +175,19 @@ describe("dangerous shell payload containment", () => {
     expect(props.command.default).toBeUndefined();
   });
 
-  it("dangerous input strings are reflected literally when used as create_pr title context", () => {
-    // Verify that the escaping logic in create_pr replaces " - \" (not strips)
-    // so that title content integrity is preserved while shell-safety is enforced.
+  it("dangerous input strings are treated as plain lifecycle-handoff payload", async () => {
+    const nodeType = getNodeType("action.create_pr");
     for (const input of dangerousInputs) {
-      const escaped = input.replace(/"/g, '\\"');
-      // The escaped form must never introduce unbalanced shell constructs
-      expect(escaped).not.toMatch(/(?<!\\)"/);
+      const node = makeNode("action.create_pr", {
+        title: input,
+        body: input,
+        branch: "feat/safety-test",
+      });
+      const result = await nodeType.execute(node, makeCtx());
+      expect(result.success).toBe(true);
+      expect(result.handedOff).toBe(true);
+      expect(result.title).toBe(input);
+      expect(result.body).toBe(input);
     }
   });
 });

@@ -19,7 +19,7 @@ export const DEPENDENCY_AUDIT_TEMPLATE = {
   name: "Dependency Audit",
   description:
     "Scheduled scan for vulnerable dependencies using npm audit. " +
-    "Classifies findings by severity, auto-creates PRs to update " +
+    "Classifies findings by severity, prepares fix branches, and hands off " +
     "fixable packages, and alerts on critical vulnerabilities that " +
     "require manual intervention.",
   category: "security",
@@ -79,9 +79,9 @@ Limit auto-generated fix PRs to {{maxAutoFixPRs}} in this run.`,
       timeoutMs: 1800000,
     }, { x: 50, y: 750 }),
 
-    node("create-fix-pr", "action.create_pr", "Create Fix PR", {
+    node("create-fix-pr", "action.create_pr", "Handoff Fix Lifecycle", {
       title: "fix(deps): resolve {{auditLevel}}+ vulnerabilities",
-      body: "Automated dependency audit fix. Resolves vulnerabilities flagged by `npm audit`.\n\nRun `npm audit` to verify.",
+      body: "Automated dependency audit fix. Resolves vulnerabilities flagged by `npm audit`.\n\nBosun PR lifecycle handoff context included.",
       branch: "fix/dep-audit-{{_runId}}",
       baseBranch: "main",
     }, { x: 50, y: 900 }),
@@ -91,7 +91,7 @@ Limit auto-generated fix PRs to {{maxAutoFixPRs}} in this run.`,
     }, { x: 350, y: 750 }),
 
     node("alert-high", "notify.telegram", "Alert: High Severity", {
-      message: "⚠️ **High severity** dependency vulnerability detected.\n\nAuto-fix PR created. Please review and merge.",
+      message: "⚠️ **High severity** dependency vulnerability detected.\n\nAuto-fix changes prepared and handed off to Bosun PR lifecycle management. Please review and merge when ready.",
       silent: true,
     }, { x: 550, y: 750 }),
 
@@ -133,7 +133,7 @@ Limit auto-generated fix PRs to {{maxAutoFixPRs}} in this run.`,
       calledFrom: ["monitor.mjs:startProcess"],
       description:
         "Replaces ad-hoc dependency health checks with a scheduled audit " +
-        "workflow. Severity classification, auto-fix, and PR creation " +
+        "workflow. Severity classification, auto-fix, and Bosun-managed lifecycle handoff " +
         "become explicit, configurable workflow steps.",
     },
   },

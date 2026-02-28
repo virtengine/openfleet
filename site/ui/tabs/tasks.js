@@ -750,7 +750,7 @@ function deriveSteps(task) {
   steps.push({ label: "Write implementation" });
   if (!/docs|readme/.test(t)) steps.push({ label: "Run tests & fix issues" });
   steps.push({ label: "Commit changes" });
-  steps.push({ label: "Open pull request" });
+  steps.push({ label: "Handoff PR lifecycle to Bosun" });
   return steps;
 }
 

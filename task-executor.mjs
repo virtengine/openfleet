@@ -1857,7 +1857,7 @@ async function commentOnIssue(task, commentBody) {
  * @property {string}   sdk             - SDK preference: "codex" | "copilot" | "claude" | "auto"
  * @property {number}   taskTimeoutMs   - Timeout per task execution (default: 90 * 60 * 1000)
  * @property {number}   maxRetries      - Retries per task via execWithRetry (default: 2)
- * @property {boolean}  autoCreatePr    - Create PR after agent completes (default: true)
+ * @property {boolean}  autoCreatePr    - Record PR lifecycle handoff after agent completes (default: true)
  * @property {boolean}  flowReviewGateRequired - Block PR merge automation until review is approved (default: true)
  * @property {string}   projectId       - VK project ID to poll (null = auto-detect first project)
  * @property {string}   repoRoot        - Repository root path
@@ -2847,7 +2847,7 @@ class TaskExecutor {
 
   /**
    * Scan worktrees from prior runs for uncommitted/unpushed work.
-   * Attempts to commit, push, and create PRs for any orphaned work.
+   * Attempts to commit, push, and hand off PR lifecycle for any orphaned work.
    * @returns {Promise<void>}
    */
   async _recoverOrphanedWorktrees() {
@@ -2986,8 +2986,8 @@ class TaskExecutor {
         }
       }
 
-      // Verify branches actually has meaningful diff vs main BEFORE creating a PR
-      // This prevents empty PRs from being created when worktrees have merge artifacts.
+      // Verify branches actually has meaningful diff vs main BEFORE lifecycle handoff
+      // This prevents empty lifecycle handoffs when worktrees have merge artifacts.
       try {
         const diffCheck = execSync(
           `git diff --name-only ${baseInfo.remoteRef}...HEAD`,
@@ -3000,7 +3000,7 @@ class TaskExecutor {
         ).trim();
         if (diffCheck.length === 0) {
           console.log(
-            `${TAG} [orphan-recovery] Skipping ${dirName} — 0 file changes vs ${baseInfo.branch} (would create empty PR)`,
+            `${TAG} [orphan-recovery] Skipping ${dirName} — 0 file changes vs ${baseInfo.branch} (would produce empty lifecycle handoff)`,
           );
           skipped++;
           continue;
@@ -3026,7 +3026,7 @@ class TaskExecutor {
         branchName: branch,
       };
 
-      // Try to create PR
+      // Try to hand off lifecycle
       try {
         const prResult = await this._createPR(taskObj, wtPath, {
           agentMadeNewCommits: true,
@@ -3038,14 +3038,14 @@ class TaskExecutor {
         });
         if (prResult) {
           console.log(
-            `${TAG} [orphan-recovery] PR created for ${dirName}: ${prResult}`,
+            `${TAG} [orphan-recovery] Lifecycle handoff recorded for ${dirName}: ${prResult.url || prResult}`,
           );
           this._prCreatedForBranch.add(taskIdPrefix);
           recovered++;
         }
       } catch (err) {
         console.warn(
-          `${TAG} [orphan-recovery] PR creation failed for ${dirName}: ${err.message}`,
+          `${TAG} [orphan-recovery] Lifecycle handoff failed for ${dirName}: ${err.message}`,
         );
       }
     }
@@ -5249,7 +5249,7 @@ class TaskExecutor {
   // ── Result Handling ───────────────────────────────────────────────────────
 
   /**
-   * Handle the result of a task execution — PR creation, status update, notifications.
+   * Handle the result of a task execution — lifecycle handoff, status update, notifications.
    * @param {Object} task
    * @param {Object} result - { success, attempts, error, output }
    * @param {string} worktreePath
@@ -5455,7 +5455,7 @@ class TaskExecutor {
           /* best-effort */
         }
 
-        // Run TaskComplete blocking validation before PR
+        // Run TaskComplete blocking validation before lifecycle handoff
         try {
           const hookResult = await executeBlockingHooks("TaskComplete", {
             taskId: task.id || task.task_id,
@@ -5467,10 +5467,10 @@ class TaskExecutor {
           });
           if (hookResult?.abort) {
             console.warn(
-              `${TAG} TaskComplete hook blocked PR: ${hookResult.reason || "unknown reason"}`,
+              `${TAG} TaskComplete hook blocked PR lifecycle handoff: ${hookResult.reason || "unknown reason"}`,
             );
             this.sendTelegram?.(
-              `⚠️ TaskComplete hook blocked PR for "${task.title}": ${hookResult.reason || "hook validation failed"}`,
+              `⚠️ TaskComplete hook blocked PR lifecycle handoff for "${task.title}": ${hookResult.reason || "hook validation failed"}`,
             );
           }
         } catch (hookErr) {
@@ -5488,7 +5488,7 @@ class TaskExecutor {
           result.prUrl = prUrl;
           result.branch = pr.branch || null;
 
-          // Mark as completed with PR — prevents re-dispatch
+          // Mark as completed with lifecycle handoff — prevents re-dispatch
           this._completedWithPR.add(task.id);
           this._prCreatedForBranch.add(task.id);
           try {
@@ -5503,7 +5503,7 @@ class TaskExecutor {
           }
           try {
             await transitionTaskStatus(task.id, "inreview", {
-              source: "task-executor-pr-created",
+              source: "task-executor-pr-lifecycle-handoff",
               taskTitle,
               branch: pr?.branch || result?.branch || task?.branchName || null,
               baseBranch: result?.baseBranch || baseBranch || null,
@@ -5515,7 +5515,7 @@ class TaskExecutor {
             /* best-effort */
           }
           this.sendTelegram?.(
-            `✅ Task completed: "${task.title}"\nPR: ${pr.url || pr}`,
+            `✅ Task completed: "${task.title}"\nLifecycle: ${pr.url || pr}`,
           );
 
           // Fire PostPR hook
@@ -5537,11 +5537,11 @@ class TaskExecutor {
           // Queue for review handoff — reviewer will identify issues, fix, push, wait for merge
           this._queueReviewHandoff(task, worktreePath, pr, execInfo);
         } else {
-          // PR creation failed but task has commits — mark as completed anyway to prevent loop
+          // Lifecycle handoff failed but task has commits — mark as completed anyway to prevent loop
           this._completedWithPR.add(task.id);
           try {
             await transitionTaskStatus(task.id, "inreview", {
-              source: "task-executor-pr-create-failed",
+              source: "task-executor-pr-lifecycle-handoff-failed",
               taskTitle,
               branch: result?.branch || task?.branchName || null,
               baseBranch: result?.baseBranch || baseBranch || null,
@@ -5551,7 +5551,7 @@ class TaskExecutor {
             /* best-effort */
           }
           this.sendTelegram?.(
-            `✅ Task completed: "${task.title}" (PR creation failed — manual review needed)`,
+            `✅ Task completed: "${task.title}" (PR lifecycle handoff failed — manual review needed)`,
           );
         }
       } else if (hasCommits) {
@@ -5884,7 +5884,7 @@ class TaskExecutor {
   // ── Review Handoff ────────────────────────────────────────────────────────
 
   /**
-   * Queue a task for review handoff after successful PR creation.
+   * Queue a task for review handoff after successful lifecycle handoff.
    * Collects diff stats + session context and passes to the review agent.
    *
    * @param {Object} task
@@ -6425,7 +6425,7 @@ class TaskExecutor {
   }
 
   /**
-   * Create a pull request for the completed task using the gh CLI.
+   * Record Bosun-managed PR lifecycle handoff for a completed task.
    * @param {Object} task
    * @param {string} worktreePath
    * @returns {Promise<{url: string, branch: string}|null>}
@@ -6450,7 +6450,9 @@ class TaskExecutor {
         }).stdout?.trim();
 
       if (!branch) {
-        console.warn(`${TAG} cannot create PR — no branch name detected`);
+        console.warn(
+          `${TAG} cannot hand off PR lifecycle — no branch name detected`,
+        );
         return null;
       }
 
@@ -6465,7 +6467,7 @@ class TaskExecutor {
         });
         if (prHookResult?.abort) {
           console.warn(
-            `${TAG} PrePR hook blocked PR creation: ${prHookResult.reason || "unknown"}`,
+            `${TAG} PrePR hook blocked PR lifecycle handoff: ${prHookResult.reason || "unknown"}`,
           );
           return null;
         }
@@ -6483,7 +6485,7 @@ class TaskExecutor {
           `${TAG} branch safety guard blocked ${branch}: ${reason}`,
         );
         this.sendTelegram?.(
-          `🚨 Branch safety guard blocked push/PR for ${branch}: ${reason}`,
+          `🚨 Branch safety guard blocked push/PR lifecycle handoff for ${branch}: ${reason}`,
         );
         const err = new Error(
           `Branch safety guard blocked ${branch}: ${reason}`,
@@ -6520,7 +6522,7 @@ class TaskExecutor {
         );
         if (prList.status === 0) {
           const prs = JSON.parse(prList.stdout || "[]");
-          // Prefer open PR, fall back to most recent merged
+          // Prefer active PR, fall back to most recent merged
           const openPr = prs.find((p) => p.state === "OPEN");
           const mergedPr = prs.find((p) => p.state === "MERGED");
           const existing = openPr || mergedPr;
@@ -6539,9 +6541,9 @@ class TaskExecutor {
                   prNumber: existingPrNumber,
                 };
               }
-              // PR was merged but agent made NEW commits — need a new PR
+              // PR was merged but agent made NEW commits — record a new lifecycle handoff
               console.log(
-                `${TAG} PR #${existingPrNumber} was merged but agent made new commits — creating new PR`,
+                `${TAG} PR #${existingPrNumber} was merged but agent made new commits — recording new lifecycle handoff`,
               );
             }
             if (openPr) {
@@ -6563,7 +6565,7 @@ class TaskExecutor {
           }
         }
       } catch {
-        /* best-effort — continue to create PR */
+        /* best-effort — continue to lifecycle handoff */
       }
 
       // ── Step 1: Push branch to origin ──────────────────────────────────
@@ -6574,14 +6576,14 @@ class TaskExecutor {
       );
       if (!pushResult.success) {
         console.warn(
-          `${TAG} cannot create PR — push failed: ${pushResult.error}`,
+          `${TAG} cannot hand off PR lifecycle — push failed: ${pushResult.error}`,
         );
-        // Still try to create PR in case agent already pushed
+        // Still try lifecycle handoff in case agent already pushed
       }
 
       // ── Step 1.5: Verify branch actually has a diff vs base ────────────
-      // If the branch is identical to base (0 file changes), skip PR creation.
-      // This prevents empty PRs from being created when merge/rebase wiped changes.
+      // If the branch is identical to base (0 file changes), skip lifecycle handoff.
+      // This prevents empty PR lifecycle events when merge/rebase wiped changes.
       try {
         const diffResult = spawnSync(
           "git",
@@ -6591,7 +6593,7 @@ class TaskExecutor {
         const changedFiles = (diffResult.stdout || "").trim();
         if (diffResult.status === 0 && changedFiles.length === 0) {
           console.warn(
-            `${TAG} branch ${branch} has 0 file changes vs ${baseInfo.branch} — skipping PR creation (would be empty)`,
+            `${TAG} branch ${branch} has 0 file changes vs ${baseInfo.branch} — skipping PR lifecycle handoff (would be empty)`,
           );
           return null;
         }
@@ -6600,10 +6602,10 @@ class TaskExecutor {
           `${TAG} branch ${branch} has ${fileCount} changed file(s) vs ${baseInfo.branch}`,
         );
       } catch {
-        // If diff check fails, continue with PR creation anyway
+        // If diff check fails, continue with lifecycle handoff anyway
       }
 
-      // ── Step 2: Create the PR ──────────────────────────────────────────
+      // ── Step 2: Record Bosun-managed PR lifecycle handoff ──────────────
       const title = task.title;
       const kanbanBackend = String(
         task.backend || task.externalBackend || getKanbanBackendName(),
@@ -6637,93 +6639,22 @@ class TaskExecutor {
         .filter(Boolean)
         .join("\n");
 
-      const result = spawnSync(
-        "gh",
-        [
-          "pr",
-          "create",
-          "--title",
-          title,
-          "--body",
-          body,
-          "--head",
-          branch,
-          "--base",
-          baseInfo.branch,
-        ],
-        {
-          cwd: worktreePath,
-          encoding: "utf8",
-          timeout: 30_000,
-          env: { ...process.env },
-        },
+      const handoffUrl = `bosun://pr-lifecycle-handoff/${encodeURIComponent(branch)}`;
+      console.log(
+        `${TAG} PR lifecycle handoff recorded for ${branch} (base=${baseInfo.branch})`,
       );
-
-      let prUrl = null;
-      let prNumber = null;
-
-      if (result.status === 0) {
-        prUrl = (result.stdout || "").trim();
-        console.log(`${TAG} PR created: ${prUrl}`);
-        // Extract PR number from URL (e.g., https://github.com/owner/repo/pull/123)
-        const prMatch = prUrl.match(/\/pull\/(\d+)/);
-        prNumber = prMatch ? prMatch[1] : null;
-      } else {
-        const stderr = (result.stderr || "").trim();
-        if (stderr.includes("already exists")) {
-          console.log(`${TAG} PR already exists for ${branch}`);
-          // Try to get the existing PR number
-          try {
-            const prList = spawnSync(
-              "gh",
-              [
-                "pr",
-                "list",
-                "--head",
-                branch,
-                "--json",
-                "number,url",
-                "--limit",
-                "1",
-              ],
-              {
-                cwd: worktreePath,
-                encoding: "utf8",
-                timeout: 10_000,
-                env: { ...process.env },
-              },
-            );
-            if (prList.status === 0) {
-              const prs = JSON.parse(prList.stdout || "[]");
-              if (prs.length > 0) {
-                prUrl = prs[0].url;
-                prNumber = String(prs[0].number);
-              }
-            }
-          } catch {
-            /* best-effort */
-          }
-          prUrl = prUrl || "(existing)";
-        } else {
-          console.warn(`${TAG} PR creation failed: ${stderr}`);
-          return null;
-        }
-      }
-
-      // ── Step 3: Enable auto-merge ──────────────────────────────────────
-      if (prNumber) {
-        if (!this.flowReviewGateRequired) {
-          this._enableAutoMerge(prNumber, worktreePath, task);
-        } else {
-          console.log(
-            `${TAG} flow review gate active — merge automation deferred for PR #${prNumber}`,
-          );
-        }
-      }
-
-      return { url: prUrl, branch, prNumber };
+      return {
+        url: handoffUrl,
+        branch,
+        prNumber: null,
+        handoff: true,
+        lifecycle: "bosun_managed",
+        title,
+        body,
+        baseBranch: baseInfo.branch,
+      };
     } catch (err) {
-      console.warn(`${TAG} PR creation error: ${err.message}`);
+      console.warn(`${TAG} PR lifecycle handoff error: ${err.message}`);
       return null;
     }
   }

@@ -7,7 +7,7 @@
     Long-running orchestration loop that:
     1. Maintains a target number of parallel task attempts
     2. Cycles agents 50/50 between Codex and Copilot to avoid rate-limiting
-    3. Monitors agent completion (PR creation) and CI status
+    3. Monitors agent completion (Bosun-managed PR lifecycle) and CI status
     4. Auto-merges PRs when CI passes
     5. Ensures previous tasks are merged before starting new ones
     6. Marks completed tasks as done
@@ -781,7 +781,7 @@ function Format-ShortId {
 
 function Invoke-GhWithTimeout {
     <#
-    .SYNOPSIS Run gh CLI with a hard timeout to avoid hung PR creation.
+    .SYNOPSIS Run gh CLI with a hard timeout to avoid hung GitHub commands.
     #>
     [CmdletBinding()]
     param(
@@ -968,67 +968,21 @@ function Get-CommitsAhead {
 
 function Create-PRForBranchSafe {
     <#
-    .SYNOPSIS Create a PR for a branch with timeout + non-interactive guardrails.
+    .SYNOPSIS Record a Bosun PR lifecycle handoff (direct PR commands disabled).
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Branch,
         [Parameter(Mandatory)][string]$Title,
-        [string]$Body = "Automated PR created by ve-orchestrator"
+        [string]$Body = "Bosun-managed PR lifecycle handoff"
     )
     $baseBranch = $script:VK_TARGET_BRANCH
     if ($baseBranch -like "origin/*") { $baseBranch = $baseBranch.Substring(7) }
-
-    $result = Invoke-GhWithTimeout -Args @(
-        "pr", "create", "--repo", "$script:GH_OWNER/$script:GH_REPO",
-        "--head", $Branch,
-        "--base", $baseBranch,
-        "--title", $Title,
-        "--body", $Body
-    ) -TimeoutSec $GitHubCommandTimeoutSec
-
-    if ($result.timed_out) {
-        if (Get-Command Set-VKLastGithubError -ErrorAction SilentlyContinue) {
-            Set-VKLastGithubError -Type "timeout" -Message "gh pr create timed out after ${GitHubCommandTimeoutSec}s"
-        }
-        Write-Log "gh pr create timed out after ${GitHubCommandTimeoutSec}s for $Branch" -Level "WARN"
-        return $false
-    }
-
-    $combined = ($result.output + "`n" + $result.error).Trim()
-    if ($result.exit_code -ne 0) {
-        if ($combined -match "rate limit|API rate limit exceeded|secondary rate limit|abuse detection") {
-            if (Get-Command Set-VKLastGithubError -ErrorAction SilentlyContinue) {
-                Set-VKLastGithubError -Type "rate_limit" -Message $combined
-            }
-        }
-        else {
-            if (Get-Command Set-VKLastGithubError -ErrorAction SilentlyContinue) {
-                Set-VKLastGithubError -Type "error" -Message $combined
-            }
-        }
-
-        if ($combined -match "pull request already exists|already exists") {
-            if (Get-Command Clear-VKLastGithubError -ErrorAction SilentlyContinue) {
-                Clear-VKLastGithubError
-            }
-            return $true
-        }
-
-        # Non-retryable: branch has no commits vs base — stop looping
-        if ($combined -match "No commits between|no difference|nothing to compare") {
-            Write-Log "gh pr create failed for ${Branch}: branch has no commits vs base — marking no_commits" -Level "WARN"
-            return "no_commits"
-        }
-
-        Write-Log "gh pr create failed for ${Branch}: $combined" -Level "WARN"
-        return $false
-    }
-
     if (Get-Command Clear-VKLastGithubError -ErrorAction SilentlyContinue) {
         Clear-VKLastGithubError
     }
-    return $true
+    Write-Log "Direct PR commands are disabled for $Branch — handing off PR lifecycle to Bosun manager (base=$baseBranch)" -Level "INFO"
+    return "handoff"
 }
 
 function Test-VKApiReachable {
@@ -4595,6 +4549,10 @@ function Process-CompletedAttempts {
         $pr = Get-PRForBranch -Branch $branch
         if (Test-GithubRateLimit) { return }
         if (-not $pr) {
+            if ($info.pr_lifecycle_handoff) {
+                Write-Log "No PR yet for $branch — Bosun lifecycle handoff already recorded; waiting." -Level "INFO"
+                continue
+            }
             if ($info.status -in @("review", "error")) {
                 if (-not (Test-RemoteBranchExists -Branch $branch)) {
                     Write-Log "No remote branch for $branch — checking if already merged" -Level "INFO"
@@ -4750,19 +4708,22 @@ function Process-CompletedAttempts {
                             }
 
                             if ($pushSuccess) {
-                                # Branch is now upstream — create PR automatically
+                                # Branch is now upstream — hand off PR lifecycle to Bosun
                                 $title = if ($info.name) { $info.name } else { "Automated task PR" }
-                                $created = Create-PRForBranchSafe -Branch $branch -Title $title -Body "Automated PR created by ve-orchestrator (CLI push)"
+                                $created = Create-PRForBranchSafe -Branch $branch -Title $title -Body "Bosun-managed PR lifecycle handoff (CLI push)"
                                 if (Test-GithubRateLimit) { return }
-                                if ($created -and $created -ne "no_commits") {
-                                    Write-Log "PR created for $branch after CLI push" -Level "OK"
-                                    $pr = Get-PRForBranch -Branch $branch
-                                    if ($pr) { $info.pr_number = $pr.number }
+                                if ($created -eq "handoff") {
+                                    Write-Log "PR lifecycle handoff recorded for $branch after CLI push" -Level "OK"
+                                    $info.pr_lifecycle_handoff = $true
+                                    $info.status = "review"
                                 }
                                 elseif ($created -eq "no_commits") {
                                     Write-Log "Branch $branch pushed but has no diff vs base — marking manual_review" -Level "WARN"
                                     $info.status = "manual_review"
                                     $info.no_commits = $true
+                                }
+                                else {
+                                    Write-Log "Unexpected PR handoff result for $branch: $created" -Level "WARN"
                                 }
                             }
                             else {
@@ -4816,11 +4777,17 @@ function Process-CompletedAttempts {
                     }
                     continue
                 }
-                Write-Log "No PR for $branch — creating PR" -Level "ACTION"
+                Write-Log "No PR for $branch — handing off PR lifecycle to Bosun manager" -Level "ACTION"
                 if (-not $DryRun) {
                     $title = if ($info.name) { $info.name } else { "Automated task PR" }
-                    $created = Create-PRForBranchSafe -Branch $branch -Title $title -Body "Automated PR created by ve-orchestrator"
+                    $created = Create-PRForBranchSafe -Branch $branch -Title $title -Body "Bosun-managed PR lifecycle handoff"
                     if (Test-GithubRateLimit) { return }
+                    if ($created -eq "handoff") {
+                        Write-Log "PR lifecycle handoff recorded for $branch; waiting for Bosun manager." -Level "INFO"
+                        $info.pr_lifecycle_handoff = $true
+                        $info.status = "review"
+                        continue
+                    }
                     if ($created -eq "no_commits") {
                         $info.no_commits_retries = ($info.no_commits_retries ?? 0) + 1
                         Write-Log "Branch $branch has no commits vs base (retry $($info.no_commits_retries)/2)" -Level "WARN"
@@ -4852,7 +4819,7 @@ function Process-CompletedAttempts {
                     if (-not $pr) { continue }
                 }
                 else {
-                    Write-Log "[DRY-RUN] Would create PR for $branch" -Level "ACTION"
+                    Write-Log "[DRY-RUN] Would hand off PR lifecycle for $branch" -Level "ACTION"
                     continue
                 }
             }
@@ -5905,7 +5872,7 @@ Please review GitHub Actions failures across the repository and resolve them.
 Scope:
 - Identify failing workflows on main.
 - Prioritize required checks and security scans.
-- Apply minimal fixes and open PRs as needed.
+- Apply minimal fixes and hand off PR lifecycle as needed.
 Trigger reason: $Reason
 Trigger info: $TriggerInfo
 "@
@@ -5951,7 +5918,7 @@ Copilot assignment: this issue will be assigned via API. If it is unassigned, us
 Scope:
 - Identify failing workflows on main.
 - Prioritize required checks and security scans.
-- Apply minimal fixes and open PRs as needed.
+- Apply minimal fixes and hand off PR lifecycle as needed.
 $reasonLine
 $infoLine
 
