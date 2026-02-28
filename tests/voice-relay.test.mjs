@@ -325,6 +325,8 @@ describe("voice-relay", () => {
       expect(fetchCall[0]).toContain("myresource.openai.azure.com");
       expect(fetchCall[0]).toContain("realtimeapi/sessions");
       expect(fetchCall[1].headers["api-key"]).toBe("az-key");
+      // Preview protocol must NOT include type: "realtime" (causes 400)
+      expect(JSON.parse(fetchCall[1].body).type).toBeUndefined();
     });
 
     it("calls Azure GA API correctly for GA model (gpt-realtime-1.5)", async () => {
@@ -348,6 +350,9 @@ describe("voice-relay", () => {
       expect(fetchCall[0]).toContain("openai/v1/realtime/client_secrets");
       expect(fetchCall[0]).not.toContain("api-version");
       expect(fetchCall[1].headers["api-key"]).toBe("az-key");
+      // GA protocol requires type: "realtime" in the session POST body
+      const body = JSON.parse(fetchCall[1].body);
+      expect(body.type).toBe("realtime");
     });
 
     it("uses per-endpoint credentials from voiceEndpoints config", async () => {
@@ -378,6 +383,8 @@ describe("voice-relay", () => {
       expect(fetchCall[0]).toContain("foundry.openai.azure.com");
       expect(fetchCall[0]).toContain("openai/v1/realtime/client_secrets");
       expect(fetchCall[1].headers["api-key"]).toBe("ep-specific-key");
+      // GA deployment — must have type: "realtime"
+      expect(JSON.parse(fetchCall[1].body).type).toBe("realtime");
     });
 
     it("injects call context into realtime session instructions", async () => {
