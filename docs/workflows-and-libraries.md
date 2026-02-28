@@ -250,12 +250,15 @@ Executes another workflow from inside the current workflow (subworkflow chaining
 | Config field        | Type           | Description |
 | ------------------- | -------------- | ----------- |
 | `workflowId`        | string         | Target workflow id to execute. Supports `{{variable}}`. |
+| `mode`              | string         | `sync` (default) waits for child result, `dispatch` queues child and continues. |
 | `input`             | object         | Input payload passed to the child workflow. |
-| `waitForCompletion` | boolean        | If `true`, parent waits for child result; if `false`, dispatches and continues. |
-| `timeoutMs`         | number / string | Timeout for synchronous execution path. |
-| `continueOnError`   | boolean        | When `true`, return failure output instead of throwing. |
+| `inheritContext`    | boolean        | Merge current context data into child input before `input` values. |
+| `includeKeys`       | array<string>  | Optional allowlist when `inheritContext=true`. |
+| `outputVariable`    | string         | Optional context key to store child run summary. |
+| `failOnChildError`  | boolean        | Throw when child run fails (`false` returns structured failure output). |
+| `allowRecursive`    | boolean        | Allow recursive workflow call chains (off by default). |
 
-**Returns:** `{ success, status, workflowId, runId?, error? }`
+**Returns:** `{ success, queued, mode, workflowId, status?, runId?, errorCount?, errors? }`
 
 **Example:**
 
@@ -264,14 +267,16 @@ Executes another workflow from inside the current workflow (subworkflow chaining
   "type": "action.execute_workflow",
   "config": {
     "workflowId": "{{childWorkflowId}}",
+    "mode": "sync",
+    "inheritContext": true,
+    "includeKeys": ["meetingSessionId", "wakePhrase"],
     "input": {
       "parentRunId": "{{_workflowRunId}}",
       "sessionTitle": "{{sessionTitle}}",
       "transcript": "{{meeting-transcript.transcript}}"
     },
-    "waitForCompletion": true,
-    "timeoutMs": "{{childWorkflowTimeoutMs}}",
-    "continueOnError": true
+    "outputVariable": "childWorkflowResult",
+    "failOnChildError": false
   }
 }
 ```
@@ -307,9 +312,26 @@ Captures transcript output for downstream conditions and chaining.
 
 | Config field          | Type   | Description |
 | --------------------- | ------ | ----------- |
-| `format`              | string | Transcript output format (for example `markdown`, `json`). |
-| `includeSpeakerTags`  | boolean | Include speaker labels in transcript output. |
-| `includeTimestamps`   | boolean | Include timestamps in transcript output. |
+| `sessionId`           | string | Session id override (defaults to context meeting session). |
+| `page`                | number | Transcript page number (default `1`). |
+| `pageSize`            | number | Messages per page (default `200`). |
+| `includeMessages`     | boolean | Include raw transcript message array in output. |
+| `failOnError`         | boolean | Throw on retrieval errors (default `true`). |
+
+#### `meeting.vision`
+
+Analyzes a vision frame for the active meeting session.
+
+| Config field          | Type   | Description |
+| --------------------- | ------ | ----------- |
+| `sessionId`           | string | Session id override (defaults to context meeting session). |
+| `frameDataUrl`        | string | Base64 image data URL (`data:image/...;base64,...`). |
+| `source`              | string | Vision source (`screen` or `camera`). |
+| `prompt`              | string | Optional vision prompt override. |
+| `visionModel`         | string | Optional vision model override. |
+| `minIntervalMs`       | number | Per-session throttling interval for analysis. |
+| `forceAnalyze`        | boolean | Bypass dedupe/throttle checks for this frame. |
+| `failOnError`         | boolean | Throw on analysis errors (default `true`). |
 
 #### `meeting.finalize`
 
@@ -317,9 +339,24 @@ Closes the session and persists final artifacts.
 
 | Config field               | Type   | Description |
 | -------------------------- | ------ | ----------- |
-| `disposition`              | string | Final state label (for example `completed`, `cancelled`). |
-| `includeTranscriptSummary` | boolean | Include summarized transcript in final output. |
-| `persistTranscript`        | boolean | Persist transcript for audit/tracing. |
+| `sessionId`                | string | Session id override (defaults to context meeting session). |
+| `status`                   | string | Final status (`completed`, `archived`, `failed`, etc.). |
+| `note`                     | string | Optional closing note written into session history. |
+| `failOnError`              | boolean | Throw on finalization errors (default `true`). |
+
+#### `trigger.meeting.wake_phrase`
+
+Matches wake phrases from meeting transcript payloads or explicit text.
+
+| Config field         | Type   | Description |
+| -------------------- | ------ | ----------- |
+| `wakePhrase`         | string | Phrase to detect (`phrase` alias also supported). |
+| `text`               | string | Optional explicit text to inspect (for DAG-only checks). |
+| `payloadField`       | string | Optional payload path (for example `content` or `payload.transcript`). |
+| `mode`               | string | Match mode: `contains`, `starts_with`, `exact`, or `regex`. |
+| `caseSensitive`      | boolean | Case-sensitive matching toggle (default `false`). |
+| `sessionId`          | string | Optional session filter. |
+| `role`               | string | Optional role filter (`user`, `assistant`, `system`). |
 
 **Example chain (meeting + subworkflow):**
 
@@ -327,7 +364,9 @@ Closes the session and persists final artifacts.
 [
   { "id": "meeting-start", "type": "meeting.start" },
   { "id": "meeting-send", "type": "meeting.send" },
+  { "id": "meeting-vision", "type": "meeting.vision" },
   { "id": "meeting-transcript", "type": "meeting.transcript" },
+  { "id": "wake-trigger", "type": "trigger.meeting.wake_phrase" },
   { "id": "chain", "type": "action.execute_workflow" },
   { "id": "meeting-finalize", "type": "meeting.finalize" }
 ]
@@ -644,13 +683,13 @@ Like Frontend Agent but for backend tasks — runs `npm test` and database migra
 
 Advanced meeting/session template that demonstrates:
 
-- `meeting.start` → `meeting.send` → `meeting.transcript` → `meeting.finalize`
-- Wake-phrase + transcript-length guard before chaining
+- `meeting.start` → `meeting.send` → `meeting.vision` → `meeting.transcript` → `meeting.finalize`
+- `trigger.meeting.wake_phrase` + transcript-length guard before chaining
 - Child workflow invocation via `action.execute_workflow`
 - Telegram notifications on guard failure, child success, and child failure
 
 **Trigger:** `trigger.manual`  
-**Key variables:** `sessionTitle`, `meetingExecutor`, `wakePhrase`, `childWorkflowId`, `childWorkflowTimeoutMs`
+**Key variables:** `sessionTitle`, `meetingExecutor`, `wakePhrase`, `childWorkflowId`, `frameDataUrl`
 
 **Subworkflow chaining pattern:** use this template when a meeting transcript should fan into a dedicated downstream workflow (for example planner, report generation, or incident follow-up) without embedding all logic in one DAG.
 

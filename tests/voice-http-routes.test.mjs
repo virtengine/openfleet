@@ -19,6 +19,9 @@ describe("ui-server voice + vision routes", () => {
     "BOSUN_UI_ALLOW_EPHEMERAL_PORT",
     "BOSUN_UI_AUTO_OPEN_BROWSER",
     "BOSUN_ENV_NO_OVERRIDE",
+    "WORKFLOW_DEFAULT_AUTOINSTALL",
+    "WORKFLOW_AUTOMATION_ENABLED",
+    "WORKFLOW_EVENT_DEDUP_WINDOW_MS",
   ];
   let envSnapshot = {};
 
@@ -30,6 +33,9 @@ describe("ui-server voice + vision routes", () => {
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "1";
     process.env.BOSUN_UI_AUTO_OPEN_BROWSER = "0";
     process.env.BOSUN_ENV_NO_OVERRIDE = "1";
+    process.env.WORKFLOW_DEFAULT_AUTOINSTALL = "false";
+    process.env.WORKFLOW_AUTOMATION_ENABLED = "true";
+    process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS = "1";
     vi.mocked(analyzeVisionFrame).mockClear();
   });
 
@@ -79,6 +85,62 @@ describe("ui-server voice + vision routes", () => {
     const latest = (session?.messages || []).at(-1);
     expect(latest?.role).toBe("user");
     expect(latest?.content).toContain("check my build logs");
+  });
+
+  it("queues workflow trigger evaluation for transcript and wake phrase events", async () => {
+    const { port } = await startServer();
+    const sessionId = `primary-workflow-transcript-${Date.now()}`;
+    const { getWorkflowEngine } = await import("../workflow-engine.mjs");
+    const engine = getWorkflowEngine();
+    const evaluateSpy = vi.spyOn(engine, "evaluateTriggers").mockResolvedValue([]);
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/voice/transcript`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          role: "user",
+          content: "Hi bosun wake, can you capture this action item?",
+          eventType: "wake_phrase",
+          provider: "mock-provider",
+        }),
+      });
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.ok).toBe(true);
+
+      await vi.waitFor(() => {
+        expect(evaluateSpy).toHaveBeenCalledWith(
+          "meeting.transcript",
+          expect.objectContaining({
+            sessionId,
+            meetingSessionId: sessionId,
+            role: "user",
+            content: "Hi bosun wake, can you capture this action item?",
+            source: "voice",
+            transcriptEventType: "wake_phrase",
+            _triggerSource: "ui-server",
+            _triggerEventType: "meeting.transcript",
+          }),
+        );
+      });
+
+      await vi.waitFor(() => {
+        expect(evaluateSpy).toHaveBeenCalledWith(
+          "meeting.wake_phrase",
+          expect.objectContaining({
+            sessionId,
+            role: "user",
+            transcriptEventType: "wake_phrase",
+            _triggerSource: "ui-server",
+            _triggerEventType: "meeting.wake_phrase",
+          }),
+        );
+      });
+    } finally {
+      evaluateSpy.mockRestore();
+    }
   });
 
   it("ingests a vision frame, analyzes once, and deduplicates repeated frames", async () => {

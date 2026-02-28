@@ -811,7 +811,8 @@ export class WorkflowEngine extends EventEmitter {
           tNode.type !== "trigger.pr_event" &&
           tNode.type !== "trigger.task_assigned" &&
           tNode.type !== "trigger.anomaly" &&
-          tNode.type !== "trigger.webhook"
+          tNode.type !== "trigger.webhook" &&
+          tNode.type !== "trigger.meeting.wake_phrase"
         ) {
           continue;
         }
@@ -832,6 +833,13 @@ export class WorkflowEngine extends EventEmitter {
         }
         if (tNode.type === "trigger.webhook" && !String(eventType || "").startsWith("webhook")) {
           continue;
+        }
+        if (tNode.type === "trigger.meeting.wake_phrase") {
+          const meetingEvent =
+            eventType === "meeting.transcript" ||
+            eventType === "voice.transcript" ||
+            eventType === "meeting.wake_phrase";
+          if (!meetingEvent) continue;
         }
 
         const handler = getNodeType(tNode.type);

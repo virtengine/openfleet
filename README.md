@@ -65,6 +65,7 @@ Useful optional settings:
 Fallback admin auth (secondary path) is available and stores only Argon2id hash + salt, never plaintext. Use:
 
 - `POST /api/auth/fallback/set` to set/rotate
+- `POST /api/auth/fallback/rotate` as explicit rotate alias
 - `POST /api/auth/fallback/reset` to clear
 - `POST /api/auth/fallback/login` to mint normal `ve_session` cookie
 

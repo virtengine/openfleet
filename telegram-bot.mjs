@@ -900,16 +900,16 @@ const uiInputRequests = new Map();
  * users connecting from outside the local network.
  */
 function getBrowserUiUrl() {
-  const base = telegramUiUrl;
-  if (!base) return null;
   const token = getSessionToken();
-
-  // 1. Prefer the cloudflare tunnel when available — it's publicly reachable
-  //    and is the only URL guaranteed to work from Telegram / mobile.
-  const tUrl = getTunnelUrl();
-  if (tUrl) {
-    return appendTokenToUrl(tUrl, token) || tUrl;
+  const tunnelUrl = getTunnelUrl();
+  if (tunnelUrl) {
+    return appendTokenToUrl(tunnelUrl, token) || tunnelUrl;
   }
+
+  const base = telegramUiUrl || getTelegramUiUrl?.() || null;
+  if (!base) return null;
+
+  // 1. Tunnel URL already checked above.
 
   // 2. Fall back to configured/explicit URL
   const explicit =
@@ -959,9 +959,9 @@ function isTelegramInlineButtonUrlAllowed(inputUrl) {
 }
 
 function getBrowserUiUrlOptions({ forTelegramButtons = true } = {}) {
-  const base = String(telegramUiUrl || "").trim();
-  if (!base) return [];
-
+  const tunnelUrl = getTunnelUrl();
+  const base = String(telegramUiUrl || getTelegramUiUrl?.() || tunnelUrl || "").trim();
+  if (!base && !tunnelUrl) return [];
   const token = getSessionToken();
   const options = [];
   const seen = new Set();
@@ -985,7 +985,6 @@ function getBrowserUiUrlOptions({ forTelegramButtons = true } = {}) {
     parsed = null;
   }
 
-  const tunnelUrl = getTunnelUrl();
   if (tunnelUrl) {
     let label = ":globe: Cloudflare";
     try {
@@ -1012,7 +1011,7 @@ function getBrowserUiUrlOptions({ forTelegramButtons = true } = {}) {
     }
   }
 
-  if (options.length === 0) {
+  if (options.length === 0 && base) {
     add(":globe: Browser URL", base);
   }
   return options;

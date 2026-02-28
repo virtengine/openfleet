@@ -115,18 +115,54 @@ function ensureExperimentalWorkflowNodeTypesRegistered() {
     },
   });
 
-  registerIfMissing("meeting.finalize", {
-    describe: () => "Finalize meeting session",
+  registerIfMissing("meeting.vision", {
+    describe: () => "Analyze meeting frame",
     schema: {
       type: "object",
       properties: {
-        disposition: { type: "string" },
+        frameDataUrl: { type: "string" },
+        source: { type: "string" },
       },
     },
     async execute(node, ctx) {
       return {
         success: true,
-        disposition: ctx.resolve(node.config?.disposition || "completed"),
+        analyzed: Boolean(ctx.resolve(node.config?.frameDataUrl || "")),
+        summary: "Vision summary mock",
+      };
+    },
+  });
+
+  registerIfMissing("meeting.finalize", {
+    describe: () => "Finalize meeting session",
+    schema: {
+      type: "object",
+      properties: {
+        status: { type: "string" },
+      },
+    },
+    async execute(node, ctx) {
+      return {
+        success: true,
+        status: ctx.resolve(node.config?.status || "completed"),
+      };
+    },
+  });
+
+  registerIfMissing("trigger.meeting.wake_phrase", {
+    describe: () => "Wake phrase trigger",
+    schema: {
+      type: "object",
+      properties: {
+        wakePhrase: { type: "string" },
+        text: { type: "string" },
+      },
+    },
+    async execute(node, ctx) {
+      const phrase = String(ctx.resolve(node.config?.wakePhrase || "")).toLowerCase();
+      const text = String(ctx.resolve(node.config?.text || "")).toLowerCase();
+      return {
+        triggered: Boolean(phrase) && text.includes(phrase),
       };
     },
   });
@@ -137,9 +173,12 @@ function ensureExperimentalWorkflowNodeTypesRegistered() {
       type: "object",
       properties: {
         workflowId: { type: "string" },
+        mode: { type: "string" },
         input: { type: "object" },
-        waitForCompletion: { type: "boolean" },
-        timeoutMs: { type: ["number", "string"] },
+        inheritContext: { type: "boolean" },
+        includeKeys: { type: "array" },
+        outputVariable: { type: "string" },
+        failOnChildError: { type: "boolean" },
       },
     },
     async execute(node, ctx) {
@@ -149,7 +188,7 @@ function ensureExperimentalWorkflowNodeTypesRegistered() {
       }
       return {
         success: true,
-        status: node.config?.waitForCompletion === false ? "dispatched" : "completed",
+        status: node.config?.mode === "dispatch" ? "dispatched" : "completed",
         workflowId,
         runId: `child-${ctx.id}`,
       };
@@ -310,18 +349,23 @@ describe("workflow-templates", () => {
     expect(template.variables?.childWorkflowId).toBe("template-task-planner");
 
     const startNode = template.nodes.find((n) => n.id === "meeting-start");
+    const visionNode = template.nodes.find((n) => n.id === "meeting-vision");
     const transcriptNode = template.nodes.find((n) => n.id === "meeting-transcript");
+    const wakeTriggerNode = template.nodes.find((n) => n.id === "wake-phrase-trigger");
     const chainNode = template.nodes.find((n) => n.id === "execute-child-workflow");
     const finalizeNode = template.nodes.find((n) => n.id === "meeting-finalize");
     const guardNode = template.nodes.find((n) => n.id === "guard-transcript");
 
     expect(startNode?.type).toBe("meeting.start");
+    expect(visionNode?.type).toBe("meeting.vision");
     expect(transcriptNode?.type).toBe("meeting.transcript");
+    expect(wakeTriggerNode?.type).toBe("trigger.meeting.wake_phrase");
     expect(chainNode?.type).toBe("action.execute_workflow");
     expect(finalizeNode?.type).toBe("meeting.finalize");
     expect(guardNode?.type).toBe("condition.expression");
     expect(chainNode?.config?.workflowId).toBe("{{childWorkflowId}}");
-    expect(chainNode?.config?.timeoutMs).toBe("{{childWorkflowTimeoutMs}}");
+    expect(chainNode?.config?.mode).toBe("sync");
+    expect(chainNode?.config?.failOnChildError).toBe(false);
 
     const guardToChain = template.edges.find(
       (e) => e.source === "guard-transcript" && e.target === "execute-child-workflow",

@@ -607,6 +607,50 @@ describe("New node types", () => {
     expect(result2.triggered).toBe(false);
   });
 
+  it("trigger.meeting.wake_phrase matches transcript payload with session and role filters", async () => {
+    const handler = getNodeType("trigger.meeting.wake_phrase");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      sessionId: "meeting-123",
+      role: "user",
+      content: "Hey team, hi Bosun Wake, can you summarize action items?",
+    });
+    const node = {
+      id: "wake-phrase",
+      type: "trigger.meeting.wake_phrase",
+      config: {
+        wakePhrase: "bosun wake",
+        sessionId: "meeting-123",
+        role: "user",
+      },
+    };
+    const result = await handler.execute(node, ctx);
+    expect(result.triggered).toBe(true);
+    expect(result.matchedField).toBe("content");
+    expect(result.wakePhrase).toBe("bosun wake");
+  });
+
+  it("trigger.meeting.wake_phrase soft-fails invalid regex mode", async () => {
+    const handler = getNodeType("trigger.meeting.wake_phrase");
+    const ctx = new WorkflowContext({
+      content: "bosun wake and continue",
+      role: "user",
+      sessionId: "meeting-123",
+    });
+    const node = {
+      id: "wake-regex",
+      type: "trigger.meeting.wake_phrase",
+      config: {
+        wakePhrase: "(",
+        mode: "regex",
+      },
+    };
+    const result = await handler.execute(node, ctx);
+    expect(result.triggered).toBe(false);
+    expect(result.reason).toBe("invalid_regex");
+  });
+
   it("trigger.scheduled_once resolves relative time expressions", async () => {
     const handler = getNodeType("trigger.scheduled_once");
     const ctx = new WorkflowContext({});
@@ -1035,6 +1079,79 @@ describe("meeting workflow nodes", () => {
     );
   });
 
+  it("meeting.vision forwards frame analysis options and stores summary in context", async () => {
+    const handler = getNodeType("meeting.vision");
+    expect(handler).toBeDefined();
+
+    const analyzeMeetingFrame = vi.fn(async (sessionId) => ({
+      ok: true,
+      sessionId,
+      analyzed: true,
+      skipped: false,
+      summary: "Presenter is showing CI failures in terminal output.",
+      provider: "mock-vision",
+      model: "mock-vision-model",
+      frameHash: "abc123",
+    }));
+    const ctx = new WorkflowContext({
+      meetingSessionId: "meeting-vision-123",
+      frameDataUrl: "data:image/png;base64,dGVzdA==",
+    });
+    const node = {
+      id: "meeting-vision",
+      type: "meeting.vision",
+      config: {
+        source: "camera",
+        prompt: "Describe what is on screen",
+        visionModel: "gpt-vision-test",
+        minIntervalMs: "1500",
+        forceAnalyze: true,
+        width: 1280,
+        height: 720,
+        executor: "codex",
+        mode: "agent",
+        model: "gpt-5",
+      },
+    };
+    const mockEngine = {
+      services: {
+        meeting: {
+          analyzeMeetingFrame,
+        },
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result).toMatchObject({
+      success: true,
+      sessionId: "meeting-vision-123",
+      analyzed: true,
+      summary: "Presenter is showing CI failures in terminal output.",
+      provider: "mock-vision",
+      model: "mock-vision-model",
+      frameHash: "abc123",
+    });
+    expect(analyzeMeetingFrame).toHaveBeenCalledWith(
+      "meeting-vision-123",
+      "data:image/png;base64,dGVzdA==",
+      expect.objectContaining({
+        source: "camera",
+        prompt: "Describe what is on screen",
+        visionModel: "gpt-vision-test",
+        minIntervalMs: 1500,
+        forceAnalyze: true,
+        width: 1280,
+        height: 720,
+        executor: "codex",
+        mode: "agent",
+        model: "gpt-5",
+      }),
+    );
+    expect(ctx.data.meetingVisionSummary).toBe(
+      "Presenter is showing CI failures in terminal output.",
+    );
+  });
+
   it("meeting.send returns soft failure when failOnError=false", async () => {
     const handler = getNodeType("meeting.send");
     expect(handler).toBeDefined();
@@ -1063,6 +1180,50 @@ describe("meeting workflow nodes", () => {
       success: false,
       error: "dispatch failed",
     });
+  });
+});
+
+describe("WorkflowEngine trigger evaluation", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("includes trigger.meeting.wake_phrase for meeting transcript events", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        {
+          id: "wake-trigger",
+          type: "trigger.meeting.wake_phrase",
+          label: "Wake Phrase Trigger",
+          config: {
+            wakePhrase: "hi bosun",
+          },
+        },
+      ],
+      [],
+      { id: "wake-trigger-workflow", name: "Wake Trigger Workflow" },
+    );
+
+    engine.save(wf);
+
+    const hits = await engine.evaluateTriggers("meeting.transcript", {
+      sessionId: "meeting-1",
+      role: "user",
+      content: "Hi bosun can you capture this task?",
+    });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      workflowId: "wake-trigger-workflow",
+      triggeredBy: "wake-trigger",
+    });
+
+    const nonMeetingHits = await engine.evaluateTriggers("task.completed", {
+      sessionId: "meeting-1",
+      role: "user",
+      content: "Hi bosun can you capture this task?",
+    });
+    expect(nonMeetingHits).toHaveLength(0);
   });
 });
 

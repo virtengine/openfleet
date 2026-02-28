@@ -57,6 +57,10 @@ describe("ui-server fallback auth", () => {
     });
     expect(setRes.status).toBe(200);
 
+    const unsafeStatus = await fetch(`http://127.0.0.1:${port}/api/auth/fallback/status`);
+    const unsafeStatusBody = await unsafeStatus.json();
+    expect(unsafeStatusBody.data?.fallbackAuth?.remediation).toContain("unsafe_mode_enabled");
+
     process.env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
 
     const unauthorized = await fetch(`http://127.0.0.1:${port}/api/status`);
@@ -127,7 +131,6 @@ describe("ui-server fallback auth", () => {
     const statusRes = await fetch(`http://127.0.0.1:${port}/api/auth/fallback/status`);
     const statusBody = await statusRes.json();
     expect(statusRes.status).toBe(200);
-    expect(statusBody.data?.locked).toBe(true);
+    expect(statusBody.data?.fallbackAuth?.locked).toBe(true);
   });
 });
-

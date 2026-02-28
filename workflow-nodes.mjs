@@ -583,6 +583,127 @@ function parseBooleanSetting(value, defaultValue = false) {
   return defaultValue;
 }
 
+function getPathValue(value, pathExpression) {
+  const path = String(pathExpression || "").trim();
+  if (!path) return undefined;
+  const parts = path
+    .split(".")
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+  if (parts.length === 0) return undefined;
+
+  let cursor = value;
+  for (const part of parts) {
+    if (cursor == null) return undefined;
+    if (Array.isArray(cursor)) {
+      const idx = Number.parseInt(part, 10);
+      if (!Number.isFinite(idx)) return undefined;
+      cursor = cursor[idx];
+      continue;
+    }
+    if (typeof cursor !== "object") return undefined;
+    cursor = cursor[part];
+  }
+  return cursor;
+}
+
+function collectWakePhraseCandidates(payload, payloadField = "") {
+  const candidates = [];
+  const seen = new Set();
+
+  const appendCandidate = (field, rawValue) => {
+    if (rawValue == null) return;
+    if (Array.isArray(rawValue)) {
+      rawValue.forEach((entry, idx) => appendCandidate(`${field}[${idx}]`, entry));
+      return;
+    }
+    if (typeof rawValue === "object") {
+      if (typeof rawValue.content === "string") {
+        appendCandidate(`${field}.content`, rawValue.content);
+      }
+      if (typeof rawValue.text === "string") {
+        appendCandidate(`${field}.text`, rawValue.text);
+      }
+      if (typeof rawValue.transcript === "string") {
+        appendCandidate(`${field}.transcript`, rawValue.transcript);
+      }
+      return;
+    }
+
+    const text = String(rawValue).trim();
+    if (!text) return;
+    const key = `${field}::${text}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({ field, text });
+  };
+
+  if (payloadField) {
+    appendCandidate(payloadField, getPathValue(payload, payloadField));
+    return candidates;
+  }
+
+  const commonFields = [
+    "content",
+    "text",
+    "transcript",
+    "message",
+    "utterance",
+    "payload.content",
+    "payload.text",
+    "payload.transcript",
+    "event.content",
+    "event.text",
+    "event.transcript",
+    "voice.content",
+    "voice.transcript",
+    "meta.transcript",
+  ];
+  for (const field of commonFields) {
+    appendCandidate(field, getPathValue(payload, field));
+  }
+
+  const messages = Array.isArray(payload?.messages) ? payload.messages : [];
+  messages.forEach((entry, idx) => appendCandidate(`messages[${idx}]`, entry));
+
+  const transcriptEvents = Array.isArray(payload?.transcriptEvents) ? payload.transcriptEvents : [];
+  transcriptEvents.forEach((entry, idx) => appendCandidate(`transcriptEvents[${idx}]`, entry));
+
+  return candidates;
+}
+
+function detectWakePhraseMatch(text, phrase, options = {}) {
+  const mode = String(options.mode || "contains").trim().toLowerCase() || "contains";
+  const caseSensitive = options.caseSensitive === true;
+  const source = String(text || "");
+  const target = String(phrase || "");
+
+  if (!source || !target) return { matched: false, mode };
+
+  const sourceNormalized = caseSensitive ? source : source.toLowerCase();
+  const targetNormalized = caseSensitive ? target : target.toLowerCase();
+
+  if (mode === "exact") {
+    return { matched: sourceNormalized.trim() === targetNormalized.trim(), mode };
+  }
+  if (mode === "starts_with") {
+    return { matched: sourceNormalized.trimStart().startsWith(targetNormalized), mode };
+  }
+  if (mode === "regex") {
+    try {
+      const regex = new RegExp(target, caseSensitive ? "" : "i");
+      return { matched: regex.test(source), mode };
+    } catch (err) {
+      return {
+        matched: false,
+        mode,
+        error: `invalid regex: ${err?.message || err}`,
+      };
+    }
+  }
+  return { matched: sourceNormalized.includes(targetNormalized), mode: "contains" };
+}
+
 function normalizeWorkflowStack(value) {
   if (!Array.isArray(value)) return [];
   return value
@@ -736,6 +857,165 @@ registerNodeType("trigger.event", {
       }
     }
     return { triggered, eventType: actual };
+  },
+});
+
+registerNodeType("trigger.meeting.wake_phrase", {
+  describe: () => "Fires when a transcript/event payload contains the configured wake phrase",
+  schema: {
+    type: "object",
+    properties: {
+      wakePhrase: { type: "string", description: "Wake phrase to match (alias: phrase)" },
+      phrase: { type: "string", description: "Alias for wakePhrase" },
+      mode: {
+        type: "string",
+        enum: ["contains", "starts_with", "exact", "regex"],
+        default: "contains",
+      },
+      caseSensitive: { type: "boolean", default: false },
+      text: {
+        type: "string",
+        description: "Optional explicit text to inspect before payload-derived fields",
+      },
+      payloadField: {
+        type: "string",
+        description: "Optional payload path to inspect (e.g. content, payload.transcript)",
+      },
+      sessionId: { type: "string", description: "Optional sessionId filter" },
+      role: { type: "string", description: "Optional role filter (user|assistant|system)" },
+      failOnInvalidRegex: {
+        type: "boolean",
+        default: false,
+        description: "Throw when regex mode is invalid instead of soft-failing",
+      },
+    },
+  },
+  async execute(node, ctx) {
+    const eventData = ctx.data && typeof ctx.data === "object" ? ctx.data : {};
+    const resolveValue = (value) => (
+      typeof ctx?.resolve === "function" ? ctx.resolve(value) : value
+    );
+
+    const wakePhrase = String(
+      resolveValue(node.config?.wakePhrase || node.config?.phrase || eventData?.wakePhrase || ""),
+    ).trim();
+    if (!wakePhrase) {
+      return { triggered: false, reason: "wake_phrase_missing" };
+    }
+
+    const expectedSessionId = String(resolveValue(node.config?.sessionId || "")).trim();
+    const actualSessionId = String(
+      eventData?.sessionId || eventData?.meetingSessionId || eventData?.session?.id || "",
+    ).trim();
+    if (expectedSessionId) {
+      if (!actualSessionId) {
+        return {
+          triggered: false,
+          reason: "session_missing",
+          expectedSessionId,
+        };
+      }
+      if (expectedSessionId !== actualSessionId) {
+        return {
+          triggered: false,
+          reason: "session_mismatch",
+          expectedSessionId,
+          sessionId: actualSessionId,
+        };
+      }
+    }
+
+    const expectedRole = String(resolveValue(node.config?.role || "")).trim().toLowerCase();
+    const actualRole = String(
+      eventData?.role || eventData?.speakerRole || eventData?.participantRole || "",
+    ).trim().toLowerCase();
+    if (expectedRole) {
+      if (!actualRole) {
+        return {
+          triggered: false,
+          reason: "role_missing",
+          expectedRole,
+          sessionId: actualSessionId || null,
+        };
+      }
+      if (expectedRole !== actualRole) {
+        return {
+          triggered: false,
+          reason: "role_mismatch",
+          expectedRole,
+          role: actualRole,
+          sessionId: actualSessionId || null,
+        };
+      }
+    }
+
+    const payloadField = String(resolveValue(node.config?.payloadField || "")).trim();
+    const configuredText = String(resolveValue(node.config?.text || "") || "").trim();
+    const candidates = configuredText
+      ? [{ field: "text", text: configuredText }]
+      : [];
+    candidates.push(...collectWakePhraseCandidates(eventData, payloadField));
+    if (!candidates.length) {
+      return {
+        triggered: false,
+        reason: "payload_missing",
+        wakePhrase,
+        sessionId: actualSessionId || null,
+        role: actualRole || null,
+      };
+    }
+
+    const mode = String(resolveValue(node.config?.mode || "contains")).trim().toLowerCase() || "contains";
+    const caseSensitive = parseBooleanSetting(
+      resolveValue(node.config?.caseSensitive ?? false),
+      false,
+    );
+    const failOnInvalidRegex = parseBooleanSetting(
+      resolveValue(node.config?.failOnInvalidRegex ?? false),
+      false,
+    );
+
+    for (const candidate of candidates) {
+      const matched = detectWakePhraseMatch(candidate.text, wakePhrase, {
+        mode,
+        caseSensitive,
+      });
+      if (matched.error) {
+        if (failOnInvalidRegex) {
+          throw new Error(`trigger.meeting.wake_phrase: ${matched.error}`);
+        }
+        return {
+          triggered: false,
+          reason: "invalid_regex",
+          error: matched.error,
+          wakePhrase,
+          mode,
+        };
+      }
+      if (matched.matched) {
+        return {
+          triggered: true,
+          wakePhrase,
+          mode: matched.mode,
+          sessionId: actualSessionId || null,
+          role: actualRole || null,
+          matchedField: candidate.field,
+          matchedText: candidate.text.length > 240
+            ? `${candidate.text.slice(0, 237)}...`
+            : candidate.text,
+        };
+      }
+    }
+
+    return {
+      triggered: false,
+      reason: "wake_phrase_not_found",
+      wakePhrase,
+      mode,
+      sessionId: actualSessionId || null,
+      role: actualRole || null,
+      inspectedFields: candidates.slice(0, 12).map((entry) => entry.field),
+    };
   },
 });
 
@@ -1697,6 +1977,103 @@ registerNodeType("meeting.transcript", {
         hasPreviousPage: transcript?.hasPreviousPage === true,
         transcript: transcriptText,
         messages: includeMessages ? messages : undefined,
+      };
+    } catch (err) {
+      if (failOnError) throw err;
+      return {
+        success: false,
+        error: String(err?.message || err),
+      };
+    }
+  },
+});
+
+registerNodeType("meeting.vision", {
+  describe: () => "Analyze a meeting video frame and persist a vision summary",
+  schema: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", description: "Meeting session ID (defaults to context session)" },
+      frameDataUrl: { type: "string", description: "Base64 data URL for the current frame" },
+      source: { type: "string", enum: ["screen", "camera"], default: "screen" },
+      prompt: { type: "string", description: "Optional per-frame vision prompt override" },
+      visionModel: { type: "string", description: "Optional vision model override" },
+      minIntervalMs: { type: "number", description: "Minimum analysis interval for this session" },
+      forceAnalyze: { type: "boolean", default: false, description: "Bypass dedupe/throttle checks" },
+      width: { type: "number", description: "Optional frame width for transcript context" },
+      height: { type: "number", description: "Optional frame height for transcript context" },
+      executor: { type: "string", description: "Optional executor hint for vision context" },
+      mode: { type: "string", description: "Optional mode hint for vision context" },
+      model: { type: "string", description: "Optional model hint for vision context" },
+      failOnError: { type: "boolean", default: true, description: "Throw when vision analysis fails" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const meeting = engine.services?.meeting;
+    if (!meeting || typeof meeting.analyzeMeetingFrame !== "function") {
+      throw new Error("Meeting service is not available");
+    }
+
+    const failOnError = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.failOnError ?? true, ctx), true);
+    try {
+      const sessionId = String(
+        ctx.resolve(node.config?.sessionId || ctx.data?.meetingSessionId || ctx.data?.sessionId || ""),
+      ).trim();
+      if (!sessionId) {
+        throw new Error("meeting.vision requires sessionId (configure node.sessionId or run meeting.start first)");
+      }
+
+      const frameDataUrl = String(
+        ctx.resolve(node.config?.frameDataUrl || ctx.data?.frameDataUrl || ctx.data?.visionFrameDataUrl || ""),
+      ).trim();
+      if (!frameDataUrl) {
+        throw new Error("meeting.vision requires frameDataUrl");
+      }
+
+      const source = String(ctx.resolve(node.config?.source || "screen") || "screen").trim() || "screen";
+      const prompt = String(ctx.resolve(node.config?.prompt || "") || "").trim() || undefined;
+      const visionModel = String(ctx.resolve(node.config?.visionModel || "") || "").trim() || undefined;
+      const minIntervalRaw = Number(resolveWorkflowNodeValue(node.config?.minIntervalMs, ctx));
+      const minIntervalMs = Number.isFinite(minIntervalRaw) && minIntervalRaw > 0
+        ? Math.trunc(minIntervalRaw)
+        : undefined;
+      const forceAnalyze = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.forceAnalyze ?? false, ctx), false);
+      const widthRaw = Number(resolveWorkflowNodeValue(node.config?.width, ctx));
+      const heightRaw = Number(resolveWorkflowNodeValue(node.config?.height, ctx));
+      const width = Number.isFinite(widthRaw) && widthRaw > 0 ? Math.trunc(widthRaw) : undefined;
+      const height = Number.isFinite(heightRaw) && heightRaw > 0 ? Math.trunc(heightRaw) : undefined;
+      const executor = String(ctx.resolve(node.config?.executor || "") || "").trim() || undefined;
+      const mode = String(ctx.resolve(node.config?.mode || "") || "").trim() || undefined;
+      const model = String(ctx.resolve(node.config?.model || "") || "").trim() || undefined;
+
+      const result = await meeting.analyzeMeetingFrame(sessionId, frameDataUrl, {
+        source,
+        prompt,
+        visionModel,
+        minIntervalMs,
+        forceAnalyze,
+        width,
+        height,
+        executor,
+        mode,
+        model,
+      });
+
+      ctx.data.meetingSessionId = sessionId;
+      if (result?.summary) {
+        ctx.data.meetingVisionSummary = String(result.summary);
+      }
+
+      return {
+        success: result?.ok !== false,
+        sessionId: String(result?.sessionId || sessionId).trim(),
+        analyzed: result?.analyzed === true,
+        skipped: result?.skipped === true,
+        reason: result?.reason || null,
+        summary: result?.summary || "",
+        provider: result?.provider || null,
+        model: result?.model || null,
+        frameHash: result?.frameHash || null,
       };
     } catch (err) {
       if (failOnError) throw err;
