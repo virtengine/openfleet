@@ -857,7 +857,7 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
     String(candidate?.azureDeployment || cfg.azureDeployment || "").trim()
     || "gpt-realtime-1.5";
   const voiceId = String(candidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
-  const url = `${endpoint}/openai/realtime/sessions?api-version=${AZURE_API_VERSION}&deployment=${deployment}`;
+  const url = `${endpoint}/openai/realtimeapi/sessions?api-version=${AZURE_API_VERSION}&deployment=${deployment}`;
 
   const headers = {
     "Content-Type": "application/json",
@@ -1191,4 +1191,3 @@ export async function buildVoiceAgentPrompt(options = {}) {
 
   return baseInstructions;
 }
-

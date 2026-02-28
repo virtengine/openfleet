@@ -323,7 +323,7 @@ describe("voice-relay", () => {
 
       const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
       expect(fetchCall[0]).toContain("myresource.openai.azure.com");
-      expect(fetchCall[0]).toContain("realtime/sessions");
+      expect(fetchCall[0]).toContain("realtimeapi/sessions");
       expect(fetchCall[1].headers["api-key"]).toBe("az-key");
     });
 

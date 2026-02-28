@@ -314,6 +314,10 @@ const SETTINGS_STYLES = `
 .setting-input-wrap select {
   appearance: auto;
 }
+.setting-input-wrap select option {
+  background: #ffffff;
+  color: #111827;
+}
 .setting-unit {
   font-size: 12px;
   color: var(--text-tertiary, #666);
@@ -683,6 +687,8 @@ function ServerConfigMode() {
   const [errors, setErrors] = useState({});
   /* Secret visibility: Set of keys currently unmasked */
   const [visibleSecrets, setVisibleSecrets] = useState({});
+  /* Custom-select open state: key -> true while editing custom value */
+  const [customSelectMode, setCustomSelectMode] = useState({});
   /* Help tooltips: key of currently shown tooltip */
   const [activeTooltip, setActiveTooltip] = useState(null);
 
@@ -851,6 +857,7 @@ function ServerConfigMode() {
     haptic("medium");
     setEdits({});
     setErrors({});
+    setCustomSelectMode({});
     showToast("Changes discarded", "info");
   }, []);
 
@@ -1025,27 +1032,55 @@ function ServerConfigMode() {
 
         case "select": {
           const opts = def.options || [];
-          if (opts.length <= 4) {
+          const allowsCustom = opts.includes("custom");
+          const presetOpts = allowsCustom ? opts.filter((o) => o !== "custom") : opts;
+          const currentValue =
+            value || (def.defaultVal != null ? String(def.defaultVal) : "");
+          const isCustomValue =
+            allowsCustom &&
+            currentValue !== "" &&
+            !presetOpts.includes(currentValue);
+          const customMode = Boolean(customSelectMode[def.key] || isCustomValue);
+
+          if (presetOpts.length <= 4 && !allowsCustom) {
             // SegmentedControl for ≤4 options
             control = html`
               <${SegmentedControl}
-                options=${opts.map((o) => ({ value: o, label: o }))}
-                value=${value || (def.defaultVal != null ? String(def.defaultVal) : "")}
+                options=${presetOpts.map((o) => ({ value: o, label: o }))}
+                value=${currentValue}
                 onChange=${(v) => handleChange(def.key, v)}
               />
             `;
           } else {
-            // Dropdown for >4 options
+            // Dropdown for >4 options, and for any custom-enabled setting.
             control = html`
               <div class="setting-input-wrap">
                 <select
-                  value=${value || (def.defaultVal != null ? String(def.defaultVal) : "")}
-                  onChange=${(e) => handleChange(def.key, e.target.value)}
+                  value=${customMode ? "__custom__" : currentValue}
+                  onChange=${(e) => {
+                    const nextValue = String(e.target.value || "");
+                    if (nextValue === "__custom__") {
+                      setCustomSelectMode((prev) => ({ ...prev, [def.key]: true }));
+                      if (!isCustomValue) handleChange(def.key, "");
+                      return;
+                    }
+                    setCustomSelectMode((prev) => ({ ...prev, [def.key]: false }));
+                    handleChange(def.key, nextValue);
+                  }}
                 >
-                  ${opts.map(
+                  ${presetOpts.map(
                     (o) => html`<option key=${o} value=${o}>${o}</option>`,
                   )}
+                  ${allowsCustom ? html`<option value="__custom__">custom...</option>` : null}
                 </select>
+                ${allowsCustom && customMode ? html`
+                  <input
+                    type="text"
+                    value=${String(isCustomValue ? currentValue : (value || ""))}
+                    placeholder="Enter custom value..."
+                    onInput=${(e) => handleChange(def.key, e.target.value)}
+                  />
+                ` : null}
               </div>
             `;
           }
@@ -1151,7 +1186,7 @@ function ServerConfigMode() {
         </div>
       `;
     },
-    [getValue, isModified, isDefault, errors, visibleSecrets, activeTooltip, handleChange, toggleSecret, showTooltipFor],
+    [getValue, isModified, isDefault, errors, visibleSecrets, activeTooltip, handleChange, toggleSecret, showTooltipFor, customSelectMode],
   );
 
   /* ═══════════════════════════════════════════════
