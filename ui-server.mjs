@@ -8011,10 +8011,13 @@ async function handleApi(req, res, url) {
     const webhookSecretSet = Boolean(process.env.BOSUN_GITHUB_WEBHOOK_SECRET);
     const appWebhookPath = getAppWebhookPath();
 
-    // Build public URLs from tunnel URL if available, else from request host
-    const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost";
-    const proto = uiServerTls || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
-    const baseUrl = `${proto}://${host}`;
+    // Build public URLs from tunnel URL if available, else from request host.
+    let baseUrl = String(getTunnelUrl() || "").replace(/\/+$/, "");
+    if (!baseUrl) {
+      const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost";
+      const proto = uiServerTls || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+      baseUrl = `${proto}://${host}`;
+    }
 
     jsonResponse(res, 200, {
       ok: true,
@@ -9383,6 +9386,14 @@ export async function startTelegramUiServer(options = {}) {
     // Vendor files (preact, htm, signals etc.) — served from node_modules, no auth needed
     if (url.pathname.startsWith("/vendor/")) {
       await handleVendor(req, res, url);
+      return;
+    }
+
+    // /demo and /ui/demo are convenience aliases for /demo.html (the self-contained mock UI demo)
+    if (url.pathname === "/demo" || url.pathname === "/ui/demo") {
+      const qs = url.search || "";
+      res.writeHead(302, { Location: `/demo.html${qs}` });
+      res.end();
       return;
     }
 
