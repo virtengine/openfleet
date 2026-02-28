@@ -750,7 +750,7 @@ function deriveSteps(task) {
   steps.push({ label: "Write implementation" });
   if (!/docs|readme/.test(t)) steps.push({ label: "Run tests & fix issues" });
   steps.push({ label: "Commit changes" });
-  steps.push({ label: "Open pull request" });
+  steps.push({ label: "Handoff PR lifecycle to Bosun" });
   return steps;
 }
 
@@ -1956,6 +1956,13 @@ export function TasksTab() {
   );
   const isKanban = viewMode.value === "kanban";
   const viewModeInitRef = useRef(false);
+
+  // Add/remove body class so kanban.css can apply height-bounded flex layout
+  // to main-content, enabling per-column vertical scroll on mobile.
+  useEffect(() => {
+    document.body.classList.toggle("tasks-board-view", isKanban);
+    return () => { document.body.classList.remove("tasks-board-view"); };
+  }, [isKanban]);
 
   useEffect(() => {
     if (filterVal && filterVal !== "done") {

@@ -2155,7 +2155,8 @@ Before finishing a task — create a commit using conventional commits and push.
 ### PR Creation
 
 After committing:
-- Run \`gh pr create\` to open the PR
+- Push your branch updates
+- Hand off PR lifecycle to Bosun management (do not run direct PR-create commands)
 - Ensure pre-push hooks pass
 - Fix any lint or test errors encountered
 
@@ -2300,13 +2301,12 @@ set -euo pipefail
 
 echo "Cleaning up workspace for ${config.projectName}..."
 
-# Create PR if branch has commits
+# Hand off PR lifecycle if branch has commits
 BRANCH=$(git branch --show-current 2>/dev/null || true)
 if [ -n "$BRANCH" ] && [ "$BRANCH" != "main" ] && [ "$BRANCH" != "master" ]; then
   COMMITS=$(git log main.."$BRANCH" --oneline 2>/dev/null | wc -l || echo 0)
   if [ "$COMMITS" -gt 0 ]; then
-    echo "Branch $BRANCH has $COMMITS commit(s) — creating PR..."
-    gh pr create --fill 2>/dev/null || echo "PR creation skipped"
+    echo "Branch $BRANCH has $COMMITS commit(s) — PR lifecycle will be managed by Bosun."
   fi
 fi
 

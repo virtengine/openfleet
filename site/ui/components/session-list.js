@@ -17,6 +17,11 @@ export const sessionsData = signal([]);
 export const selectedSessionId = signal(null);
 export const sessionMessages = signal([]);
 export const sessionsError = signal(null);
+/** Pagination metadata from the last loadSessionMessages call */
+export const sessionPagination = signal(null);
+
+const DEFAULT_SESSION_PAGE_SIZE = 20;
+const MAX_SESSION_PAGE_SIZE = 200;
 
 let _wsListenerReady = false;
 
@@ -42,20 +47,38 @@ export async function loadSessions(filter = {}) {
   }
 }
 
-export async function loadSessionMessages(id) {
+export async function loadSessionMessages(id, opts = {}) {
   try {
-    const url = sessionPath(id);
+    let url = sessionPath(id);
     if (!url) return { ok: false, error: "invalid" };
+    const requestedLimit = opts.limit != null ? Number(opts.limit) : DEFAULT_SESSION_PAGE_SIZE;
+    const limit =
+      Number.isFinite(requestedLimit) && requestedLimit > 0
+        ? Math.min(Math.floor(requestedLimit), MAX_SESSION_PAGE_SIZE)
+        : DEFAULT_SESSION_PAGE_SIZE;
+    const params = new URLSearchParams();
+    params.set("limit", String(limit));
+    if (opts.offset != null) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    if (qs) url += `?${qs}`;
     const res = await apiFetch(url, { _silent: true });
     if (res?.session) {
       const normalized = dedupeMessages(res.session.messages || []);
-      sessionMessages.value = normalized;
-      return { ok: true, messages: normalized };
+      if (opts.prepend && sessionMessages.value?.length) {
+        const merged = dedupeMessages([...normalized, ...sessionMessages.value]);
+        sessionMessages.value = merged;
+      } else {
+        sessionMessages.value = normalized;
+      }
+      sessionPagination.value = res.pagination || null;
+      return { ok: true, messages: normalized, pagination: res.pagination || null };
     }
     sessionMessages.value = [];
+    sessionPagination.value = null;
     return { ok: false, error: "empty" };
   } catch {
     sessionMessages.value = [];
+    sessionPagination.value = null;
     return { ok: false, error: "unavailable" };
   }
 }

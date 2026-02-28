@@ -25,6 +25,7 @@ export const CATEGORIES = [
   { id: "telegram",  label: "Telegram Bot",         icon: "phone", description: "Bot token, chat, polling, and notification settings" },
   { id: "miniapp",   label: "Mini App / UI",        icon: "monitor", description: "Web UI server, port, auth, and tunnel settings" },
   { id: "executor",  label: "Executor / AI",        icon: "cpu", description: "Agent execution, SDK selection, parallelism, and timeouts" },
+  { id: "voice",     label: "Voice Assistant",       icon: "headphones", description: "Real-time voice mode, provider keys, model, and voice settings" },
   { id: "kanban",    label: "Kanban / Tasks",       icon: "clipboard", description: "Task backend, sync, labels, and project mapping" },
   { id: "github",    label: "GitHub / Git",         icon: "git", description: "Repository, auth, PR, merge, and reconciliation settings" },
   { id: "network",   label: "Network / Tunnel",     icon: "globe", description: "Cloudflare tunnel, presence, and multi-instance coordination" },
@@ -105,6 +106,19 @@ export const SETTINGS_SCHEMA = [
   { key: "CLAUDE_MODEL",                   label: "Claude Model",               category: "executor", type: "string", defaultVal: "claude-opus-4-6", description: "Model for Claude SDK. E.g., claude-opus-4-6, claude-sonnet-4-5." },
   { key: "COPILOT_MODEL",                  label: "Copilot Model",              category: "executor", type: "string", defaultVal: "gpt-5", description: "Model for Copilot SDK sessions." },
   { key: "COPILOT_CLI_TOKEN",              label: "Copilot CLI Token",          category: "executor", type: "secret", sensitive: true, description: "Auth token for Copilot CLI remote mode." },
+
+  // ── Voice Assistant ──────────────────────────────────────────
+  { key: "VOICE_ENABLED",                  label: "Enable Voice Mode",          category: "voice", type: "boolean", defaultVal: true, description: "Enable the real-time voice assistant in the chat UI." },
+  { key: "VOICE_PROVIDER",                 label: "Voice Provider",             category: "voice", type: "select", defaultVal: "auto", options: ["auto", "openai", "azure", "fallback"], description: "Voice API provider. 'auto' selects based on available keys. 'fallback' uses browser speech APIs." },
+  { key: "VOICE_MODEL",                    label: "Voice Model",                category: "voice", type: "string", defaultVal: "gpt-4o-realtime-preview-2024-12-17", description: "OpenAI Realtime model to use for voice sessions." },
+  { key: "OPENAI_REALTIME_API_KEY",        label: "OpenAI Realtime Key",        category: "voice", type: "secret", sensitive: true, description: "Dedicated API key for voice. Falls back to OPENAI_API_KEY if not set." },
+  { key: "AZURE_OPENAI_REALTIME_ENDPOINT", label: "Azure Realtime Endpoint",    category: "voice", type: "string", description: "Azure OpenAI endpoint for Realtime API (e.g., https://myresource.openai.azure.com).", validate: "^$|^https?://" },
+  { key: "AZURE_OPENAI_REALTIME_API_KEY",  label: "Azure Realtime Key",         category: "voice", type: "secret", sensitive: true, description: "Azure OpenAI API key for Realtime API. Falls back to AZURE_OPENAI_API_KEY if not set." },
+  { key: "AZURE_OPENAI_REALTIME_DEPLOYMENT", label: "Azure Deployment",         category: "voice", type: "string", defaultVal: "gpt-4o-realtime-preview", description: "Azure deployment name for the Realtime model." },
+  { key: "VOICE_ID",                       label: "Voice",                      category: "voice", type: "select", defaultVal: "alloy", options: ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse"], description: "Voice personality for text-to-speech output." },
+  { key: "VOICE_TURN_DETECTION",           label: "Turn Detection",             category: "voice", type: "select", defaultVal: "server_vad", options: ["server_vad", "semantic_vad", "none"], description: "How the model detects when you stop speaking. 'semantic_vad' is more intelligent but higher latency." },
+  { key: "VOICE_DELEGATE_EXECUTOR",        label: "Delegate Executor",          category: "voice", type: "select", defaultVal: "codex-sdk", options: ["codex-sdk", "copilot-sdk", "claude-sdk", "opencode-sdk"], description: "Which agent executor voice tool calls delegate to for complex tasks." },
+  { key: "VOICE_FALLBACK_MODE",            label: "Fallback Mode",              category: "voice", type: "select", defaultVal: "browser", options: ["browser", "disabled"], description: "When Tier 1 (Realtime API) is unavailable, use browser speech APIs as fallback." },
 
   // ── Kanban / Tasks ─────────────────────────────────────────
   { key: "KANBAN_BACKEND",                 label: "Kanban Backend",             category: "kanban", type: "select", defaultVal: "internal", options: ["internal", "vk", "github", "jira"], description: "Task management backend. 'internal' uses built-in store, 'github' syncs with GitHub Issues/Projects." },

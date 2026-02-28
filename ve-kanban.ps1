@@ -495,7 +495,7 @@ function Get-PRLatestCheckTimestamp {
 
 function Get-OpenPullRequests {
     <#
-    .SYNOPSIS List open PRs with metadata.
+    .SYNOPSIS List active PRs with metadata.
     #>
     [CmdletBinding()]
     param([int]$Limit = 100)
@@ -892,24 +892,24 @@ function Merge-BranchFromPR {
 
 function Create-PRForBranch {
     <#
-    .SYNOPSIS Create a PR for a branch when the agent did not open one.
+    .SYNOPSIS Record Bosun-managed PR lifecycle handoff for a branch.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Branch,
         [Parameter(Mandatory)][string]$Title,
-        [string]$Body = "Automated PR created by ve-orchestrator"
+        [string]$Body = "Bosun-managed PR lifecycle handoff"
     )
     $baseBranch = $script:VK_TARGET_BRANCH
     if ($baseBranch -like "origin/*") { $baseBranch = $baseBranch.Substring(7) }
-    $result = Invoke-VKGithub -Args @(
-        "pr", "create", "--repo", "$script:GH_OWNER/$script:GH_REPO",
-        "--head", $Branch,
-        "--base", $baseBranch,
-        "--title", $Title,
-        "--body", $Body
-    )
-    return ($null -ne $result)
+    Write-Host "[ve-kanban] Direct PR commands disabled for $Branch — lifecycle handoff recorded (base=$baseBranch)." -ForegroundColor Yellow
+    return @{
+        status = "handoff"
+        branch = $Branch
+        baseBranch = $baseBranch
+        title = $Title
+        body = $Body
+    }
 }
 
 function Test-RemoteBranchExists {

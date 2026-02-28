@@ -288,7 +288,7 @@ export class WorkflowContext {
   /** Resolve a template string against context data */
   resolve(template) {
     if (typeof template !== "string") return template;
-    return template.replace(/\{\{(\w[\w.]*)\}\}/g, (match, path) => {
+    const resolvePathValue = (path) => {
       const parts = path.split(".");
 
       // Try context data first
@@ -297,7 +297,7 @@ export class WorkflowContext {
         if (value == null) break;
         value = value[part];
       }
-      if (value != null) return String(value);
+      if (value != null) return value;
 
       // Fall back to node outputs (e.g. {{step1.count}} → nodeOutputs["step1"].count)
       const [nodeId, ...rest] = parts;
@@ -305,12 +305,25 @@ export class WorkflowContext {
       if (nodeOut != null) {
         let val = nodeOut;
         for (const p of rest) {
-          if (val == null) return match;
+          if (val == null) return undefined;
           val = val[p];
         }
-        if (val != null) return String(val);
+        if (val != null) return val;
       }
-      return match;
+      return undefined;
+    };
+
+    // If template is exactly one placeholder, preserve raw value type.
+    // This allows numbers/booleans/objects to flow into node configs.
+    const exactMatch = template.match(/^\{\{(\w[\w.]*)\}\}$/);
+    if (exactMatch) {
+      const raw = resolvePathValue(exactMatch[1]);
+      return raw != null ? raw : template;
+    }
+
+    return template.replace(/\{\{(\w[\w.]*)\}\}/g, (match, path) => {
+      const value = resolvePathValue(path);
+      return value != null ? String(value) : match;
     });
   }
 
@@ -1241,11 +1254,17 @@ export class WorkflowEngine extends EventEmitter {
   }
 
   _resolveConfig(config, ctx) {
+    if (Array.isArray(config)) {
+      return config.map((item) => this._resolveConfig(item, ctx));
+    }
+    if (config == null || typeof config !== "object") {
+      return config;
+    }
     const resolved = {};
     for (const [key, value] of Object.entries(config)) {
       if (typeof value === "string") {
         resolved[key] = ctx.resolve(value);
-      } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      } else if (typeof value === "object" && value !== null) {
         resolved[key] = this._resolveConfig(value, ctx);
       } else {
         resolved[key] = value;
@@ -1302,10 +1321,15 @@ export class WorkflowEngine extends EventEmitter {
     const output = ctx.getNodeOutput(sourceNodeId);
     const data = ctx.data;
     const status = ctx.getNodeStatus(sourceNodeId);
+    const resolvedCondition = typeof condition === "string" ? ctx.resolve(condition) : condition;
+    if (typeof resolvedCondition === "boolean") return resolvedCondition;
+    if (resolvedCondition == null) return false;
+    const expression = String(resolvedCondition).trim();
+    if (!expression) return false;
 
     // Safe subset evaluation
     try {
-      const fn = new Function("$output", "$data", "$status", "$ctx", `return (${condition});`);
+      const fn = new Function("$output", "$data", "$status", "$ctx", `return (${expression});`);
       return fn(output, data, status, ctx);
     } catch {
       return false;

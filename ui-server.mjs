@@ -7388,12 +7388,21 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 404, { ok: false, error: "Session not found" });
           return;
         }
-        // Support ?limit=N&offset=N for message pagination
+        // Support ?limit=N&offset=N for message pagination.
+        // Default to a bounded tail window so large sessions don't crash the UI.
         const reqUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
         const limitParam = reqUrl.searchParams.get("limit");
         const offsetParam = reqUrl.searchParams.get("offset");
-        if (limitParam) {
-          const limit = Math.max(1, Math.min(Number(limitParam) || 20, 500));
+        const fullParam = String(reqUrl.searchParams.get("full") || "").toLowerCase();
+        const wantsFull =
+          fullParam === "1" || fullParam === "true" || fullParam === "yes";
+        if (wantsFull) {
+          jsonResponse(res, 200, { ok: true, session });
+        } else {
+          const parsedLimit = Number(limitParam);
+          const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
+            ? Math.max(1, Math.min(Math.floor(parsedLimit), 200))
+            : 20;
           const allMessages = session.messages || [];
           const total = allMessages.length;
           const offset = offsetParam != null
@@ -7405,8 +7414,6 @@ async function handleApi(req, res, url) {
             session: { ...session, messages: sliced },
             pagination: { total, offset, limit, hasMore: offset > 0 },
           });
-        } else {
-          jsonResponse(res, 200, { ok: true, session });
         }
       } catch (err) {
         jsonResponse(res, 500, { ok: false, error: err.message });
@@ -7695,6 +7702,65 @@ async function handleApi(req, res, url) {
       }
       return;
     }
+  }
+
+  // ── Voice API Routes ──────────────────────────────────────────────────────
+
+  // GET /api/voice/config
+  if (path === "/api/voice/config" && req.method === "GET") {
+    try {
+      const { isVoiceAvailable, getVoiceConfig, getRealtimeConnectionInfo } = await import("./voice-relay.mjs");
+      const availability = isVoiceAvailable();
+      const config = getVoiceConfig();
+      const connectionInfo = availability.tier === 1 ? getRealtimeConnectionInfo() : null;
+
+      jsonResponse(res, 200, {
+        available: availability.available,
+        tier: availability.tier,
+        provider: availability.provider,
+        voiceId: config.voiceId,
+        turnDetection: config.turnDetection,
+        model: config.model,
+        fallbackMode: config.fallbackMode,
+        connectionInfo,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/token
+  if (path === "/api/voice/token" && req.method === "POST") {
+    try {
+      const { createEphemeralToken, getVoiceToolDefinitions } = await import("./voice-relay.mjs");
+      const tools = await getVoiceToolDefinitions();
+      const tokenData = await createEphemeralToken(tools);
+
+      jsonResponse(res, 200, tokenData);
+    } catch (err) {
+      jsonResponse(res, 500, { error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/tool
+  if (path === "/api/voice/tool" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const { toolName, args, sessionId: voiceSessionId } = body || {};
+      if (!toolName) {
+        jsonResponse(res, 400, { error: "toolName required" });
+        return;
+      }
+      const { executeVoiceTool } = await import("./voice-relay.mjs");
+      const result = await executeVoiceTool(toolName, args || {}, { sessionId: voiceSessionId });
+
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      jsonResponse(res, 500, { error: err.message });
+    }
+    return;
   }
 
   jsonResponse(res, 404, { ok: false, error: "Unknown API endpoint" });
@@ -7991,6 +8057,34 @@ export async function startTelegramUiServer(options = {}) {
             startLogStream(socket, logType, query);
           } else if (message?.type === "unsubscribe-logs") {
             stopLogStream(socket);
+          } else if (message?.type === "voice-tool-call") {
+            // Voice tool call via WebSocket
+            const { toolName, args, callId, sessionId: voiceSessionId } = message;
+            import("./voice-relay.mjs").then(async (relay) => {
+              try {
+                const result = await relay.executeVoiceTool(toolName, args || {}, { sessionId: voiceSessionId });
+                sendWsMessage(socket, {
+                  type: "voice-tool-result",
+                  callId,
+                  ...result,
+                  ts: Date.now(),
+                });
+              } catch (err) {
+                sendWsMessage(socket, {
+                  type: "voice-tool-result",
+                  callId,
+                  error: err.message,
+                  ts: Date.now(),
+                });
+              }
+            }).catch(err => {
+              sendWsMessage(socket, {
+                type: "voice-tool-result",
+                callId,
+                error: err.message,
+                ts: Date.now(),
+              });
+            });
           }
         } catch {
           // Ignore malformed websocket payloads

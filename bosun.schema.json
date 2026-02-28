@@ -40,6 +40,73 @@
       "type": "string",
       "enum": ["codex-sdk", "copilot-sdk", "claude-sdk", "opencode-sdk"]
     },
+    "voice": {
+      "type": "object",
+      "description": "Voice assistant configuration for real-time voice interaction",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable voice assistant features"
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["openai", "azure", "fallback", "auto"],
+          "default": "auto",
+          "description": "Voice provider: openai (direct API), azure (Azure OpenAI), fallback (browser STT/TTS), auto (detect from env)"
+        },
+        "model": {
+          "type": "string",
+          "default": "gpt-4o-realtime-preview-2024-12-17",
+          "description": "Realtime API model name"
+        },
+        "openaiApiKey": {
+          "type": "string",
+          "description": "OpenAI API key for Realtime API (overrides OPENAI_API_KEY env)"
+        },
+        "azureApiKey": {
+          "type": "string",
+          "description": "Azure OpenAI API key for Realtime API"
+        },
+        "azureEndpoint": {
+          "type": "string",
+          "description": "Azure OpenAI endpoint URL"
+        },
+        "azureDeployment": {
+          "type": "string",
+          "default": "gpt-4o-realtime-preview",
+          "description": "Azure OpenAI deployment name"
+        },
+        "voiceId": {
+          "type": "string",
+          "enum": ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse"],
+          "default": "alloy",
+          "description": "Voice ID for TTS output"
+        },
+        "turnDetection": {
+          "type": "string",
+          "enum": ["server_vad", "semantic_vad", "none"],
+          "default": "server_vad",
+          "description": "Turn detection mode for voice activity detection"
+        },
+        "instructions": {
+          "type": "string",
+          "description": "Custom system instructions for the voice assistant"
+        },
+        "fallbackMode": {
+          "type": "string",
+          "enum": ["browser", "disabled"],
+          "default": "browser",
+          "description": "Fallback when Realtime API unavailable: browser (Web Speech API) or disabled"
+        },
+        "delegateExecutor": {
+          "type": "string",
+          "enum": ["codex-sdk", "copilot-sdk", "claude-sdk", "opencode-sdk"],
+          "description": "Which executor to use for delegate_to_agent calls. Defaults to primaryAgent."
+        }
+      }
+    },
     "vkSpawnEnabled": { "type": "boolean" },
     "kanban": {
       "type": "object",

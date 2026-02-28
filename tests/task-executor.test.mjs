@@ -1684,13 +1684,6 @@ describe("task-executor", () => {
         if (bin === "gh" && args[0] === "pr" && args[1] === "list") {
           return { status: 0, stdout: "[]", stderr: "" };
         }
-        if (bin === "gh" && args[0] === "pr" && args[1] === "create") {
-          return {
-            status: 0,
-            stdout: "https://github.com/acme/widgets/pull/77\n",
-            stderr: "",
-          };
-        }
         if (bin === "git" && args[0] === "diff" && args[1] === "--name-only") {
           return { status: 0, stdout: "src/app.ts\n", stderr: "" };
         }
@@ -1708,16 +1701,16 @@ describe("task-executor", () => {
         "/fake/worktree",
       );
 
-      expect(pr?.prNumber).toBe("77");
+      expect(pr?.handoff).toBe(true);
+      expect(pr?.prNumber).toBeNull();
+      expect(pr?.url).toContain("bosun://pr-lifecycle-handoff/");
+      expect(pr?.body).toContain("Closes #123");
+      expect(pr?.body).toContain("- GitHub Issue: #123");
       const prCreateCall = spawnSync.mock.calls.find(
         ([bin, args]) =>
           bin === "gh" && args[0] === "pr" && args[1] === "create",
       );
-      expect(prCreateCall).toBeTruthy();
-      const createArgs = prCreateCall[1];
-      const bodyArg = createArgs[createArgs.indexOf("--body") + 1];
-      expect(bodyArg).toContain("Closes #123");
-      expect(bodyArg).toContain("- GitHub Issue: #123");
+      expect(prCreateCall).toBeUndefined();
     });
   });
 
@@ -2199,13 +2192,6 @@ describe("task-executor", () => {
         if (bin === "git" && args[0] === "diff" && args[1] === "--name-only") {
           return { status: 0, stdout: "src/auth.ts\n", stderr: "" };
         }
-        if (bin === "gh" && args[0] === "pr" && args[1] === "create") {
-          return {
-            status: 0,
-            stdout: "https://github.com/acme/widgets/pull/77\n",
-            stderr: "",
-          };
-        }
         return { status: 0, stdout: "", stderr: "" };
       });
 
@@ -2220,9 +2206,9 @@ describe("task-executor", () => {
         "/fake/wt",
       );
 
-      expect(pr?.prNumber).toBe("77");
+      expect(pr?.handoff).toBe(true);
+      expect(pr?.prNumber).toBeNull();
       expect(autoMergeSpy).not.toHaveBeenCalled();
     });
   });
 });
-

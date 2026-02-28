@@ -1270,7 +1270,7 @@ ${messagesCtx}
 3. Identify why it loops (missing break/continue/return, no state change between iterations, etc.)
 4. Fix the loop by adding proper exit conditions, error handling, or state tracking
 5. Common loop-causing patterns in this codebase:
-   - \`gh pr create\` failing with "No commits between" but caller retries every cycle
+   - PR lifecycle handoff repeatedly retried with no diff between branch and base
    - API calls returning the same error repeatedly with no backoff or give-up logic
    - Status not updated after failure → next cycle tries the same thing
    - Missing \`continue\` or state change in foreach loops over tracked attempts

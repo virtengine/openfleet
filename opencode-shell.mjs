@@ -478,6 +478,7 @@ export async function execOpencodePrompt(userMessage, options = {}) {
     sessionId = null,
     sendRawEvents = false,
     abortController = null,
+    mode = null,
   } = options;
 
   // Re-read config in case it changed hot
@@ -539,9 +540,21 @@ export async function execOpencodePrompt(userMessage, options = {}) {
       };
     }
 
+    // ── Mode detection ───────────────────────────────────────────────────
+    const isAskMode =
+      mode === "ask" || /^\[MODE:\s*ask\]/i.test(userMessage);
+
     // Build enriched prompt
     let prompt = userMessage;
-    if (statusData) {
+    if (isAskMode) {
+      // Ask mode — pass through without executor framing
+      if (statusData) {
+        const statusSnippet = JSON.stringify(statusData, null, 2).slice(0, 2000);
+        prompt = `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n${userMessage}`;
+      } else {
+        prompt = userMessage;
+      }
+    } else if (statusData) {
       const statusSnippet = JSON.stringify(statusData, null, 2).slice(0, 2000);
       prompt = `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task.`;
     } else {

@@ -2201,6 +2201,9 @@ export function loadConfig(argv = process.argv, options = {}) {
     jira,
     projectRequirements,
 
+    // Voice assistant
+    voice: Object.freeze(configData.voice || {}),
+
     // Merge Strategy
     codexAnalyzeMergeStrategy:
       codexEnabled &&

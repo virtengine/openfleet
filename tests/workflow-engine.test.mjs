@@ -98,6 +98,19 @@ describe("WorkflowContext", () => {
     expect(ctx.resolve("{{missing}}")).toBe("{{missing}}");
     expect(ctx.resolve(42)).toBe(42); // Non-strings pass through
   });
+
+  it("resolve() preserves raw value types for exact placeholders", () => {
+    const ctx = new WorkflowContext({
+      maxRetries: 3,
+      dryRun: false,
+      payload: { ok: true },
+    });
+    expect(ctx.resolve("{{maxRetries}}")).toBe(3);
+    expect(ctx.resolve("{{dryRun}}")).toBe(false);
+    expect(ctx.resolve("{{payload}}")).toEqual({ ok: true });
+    // Embedded placeholders still resolve to strings
+    expect(ctx.resolve("retries={{maxRetries}}")).toBe("retries=3");
+  });
 });
 
 // ── Engine Retry Tests ──────────────────────────────────────────────────────
@@ -133,6 +146,99 @@ describe("WorkflowEngine - retry logic", () => {
     expect(callCount).toBe(3);
     // execute() returns a WorkflowContext — check errors array for failure
     expect(result.errors.length).toBeGreaterThan(0);
+  });
+
+  it("resolves templates inside array config values before node execution", async () => {
+    registerNodeType("test.capture_config", {
+      describe: () => "Capture resolved config",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        return { config: node.config };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "capture",
+          type: "test.capture_config",
+          label: "Capture",
+          config: {
+            ops: [
+              { name: "one", value: "{{v1}}" },
+              { name: "two", enabled: "{{flag}}" },
+            ],
+          },
+        },
+      ],
+      [{ id: "e1", source: "trigger", target: "capture" }],
+      { variables: { v1: 7, flag: true } },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+    const output = ctx.getNodeOutput("capture");
+    expect(output?.config?.ops).toEqual([
+      { name: "one", value: 7 },
+      { name: "two", enabled: true },
+    ]);
+  });
+
+  it("resolves edge condition templates from workflow variables", async () => {
+    const reached = [];
+    registerNodeType("test.record_branch", {
+      describe: () => "Records reached branch",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        reached.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "true-branch", type: "test.record_branch", label: "True", config: {} },
+        { id: "false-branch", type: "test.record_branch", label: "False", config: {} },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "true-branch", condition: "{{shouldRun}} === true" },
+        { id: "e2", source: "trigger", target: "false-branch", condition: "{{shouldRun}} === false" },
+      ],
+      { variables: { shouldRun: true } },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+    expect(ctx.errors).toEqual([]);
+    expect(reached).toEqual(["true-branch"]);
+  });
+
+  it("supports exact-placeholder boolean edge conditions", async () => {
+    const reached = [];
+    registerNodeType("test.record_flagged", {
+      describe: () => "Records reached node",
+      schema: { type: "object", properties: {} },
+      async execute(node) {
+        reached.push(node.id);
+        return { ok: true };
+      },
+    });
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        { id: "branch", type: "test.record_flagged", label: "Branch", config: {} },
+      ],
+      [{ id: "e1", source: "trigger", target: "branch", condition: "{{enabled}}" }],
+      { variables: { enabled: true } },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {});
+    expect(ctx.errors).toEqual([]);
+    expect(reached).toEqual(["branch"]);
   });
 
   it("retries then succeeds on second attempt", async () => {
@@ -959,6 +1065,52 @@ it("agent.run_planner streams planner events and propagates threadId", async () 
   expect(runLogText).toMatch(/Agent: Generated 3 tasks\./);
   expect(runLogText).toMatch(/Planner completed: success=true streamEvents=3/);
   });
+
+it("agent.run_planner appends output requirements to explicit prompts and honors templated taskCount", async () => {
+  const handler = getNodeType("agent.run_planner");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({
+    taskCount: 10,
+    prompt: "Analyze reliability gaps in the repo.",
+  });
+  const launchEphemeralThread = vi.fn().mockResolvedValue({
+    success: true,
+    output: '{"tasks":[]}',
+    sdk: "codex",
+    items: [],
+    threadId: "planner-thread-explicit",
+  });
+  const mockEngine = {
+    services: {
+      agentPool: {
+        launchEphemeralThread,
+      },
+      prompts: {
+        planner: "unused fallback planner prompt",
+      },
+    },
+  };
+
+  const node = {
+    id: "planner-explicit",
+    type: "agent.run_planner",
+    config: {
+      taskCount: "{{taskCount}}",
+      prompt: "{{prompt}}",
+    },
+  };
+  const result = await handler.execute(node, ctx, mockEngine);
+
+  expect(result.success).toBe(true);
+  expect(result.taskCount).toBe(10);
+  expect(launchEphemeralThread).toHaveBeenCalledTimes(1);
+
+  const sentPrompt = String(launchEphemeralThread.mock.calls[0][0] || "");
+  expect(sentPrompt).toContain("Analyze reliability gaps in the repo.");
+  expect(sentPrompt).toContain("Generate exactly 10 new tasks.");
+  expect(sentPrompt).toContain("single fenced JSON block");
+});
 
 it("action.materialize_planner_tasks parses fenced JSON and creates tasks", async () => {
   const handler = getNodeType("action.materialize_planner_tasks");

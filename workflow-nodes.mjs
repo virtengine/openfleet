@@ -1422,7 +1422,7 @@ registerNodeType("action.git_operations", {
 });
 
 registerNodeType("action.create_pr", {
-  describe: () => "Create a GitHub Pull Request using gh CLI",
+  describe: () => "Hand off pull-request lifecycle to Bosun management (direct creation disabled)",
   schema: {
     type: "object",
     properties: {
@@ -1430,10 +1430,10 @@ registerNodeType("action.create_pr", {
       body: { type: "string", description: "PR body" },
       base: { type: "string", description: "Base branch" },
       baseBranch: { type: "string", description: "Legacy alias for base branch" },
-      branch: { type: "string", description: "Head branch to open PR from" },
+      branch: { type: "string", description: "Head branch for Bosun lifecycle handoff context" },
       draft: { type: "boolean", default: false },
       cwd: { type: "string" },
-      failOnError: { type: "boolean", default: false, description: "Throw when PR creation fails (enables workflow retries)" },
+      failOnError: { type: "boolean", default: false, description: "Retained for compatibility; direct PR commands are disabled" },
     },
     required: ["title"],
   },
@@ -1443,23 +1443,22 @@ registerNodeType("action.create_pr", {
     const base = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
     const branch = ctx.resolve(node.config?.branch || "");
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
-    const draft = node.config?.draft ? "--draft" : "";
-    const head = branch ? `--head ${branch}` : "";
-
-    const cmd = `gh pr create --title "${title.replace(/"/g, '\\"')}" --body "${body.replace(/"/g, '\\"')}" --base ${base} ${head} ${draft}`.trim();
-    ctx.log(node.id, `Creating PR: ${title}`);
-    try {
-      const output = execSync(cmd, { cwd, encoding: "utf8", timeout: 60000 });
-      return { success: true, url: output?.trim(), title, base, branch: branch || null };
-    } catch (err) {
-      if (node.config?.failOnError) {
-        const stderr = err.stderr?.toString() || "";
-        const stdout = err.stdout?.toString() || "";
-        const reason = trimLogText(stderr || stdout || err.message, 400) || err.message;
-        throw new Error(reason);
-      }
-      return { success: false, error: err.message };
-    }
+    ctx.log(
+      node.id,
+      `PR lifecycle handoff recorded for "${title}" (direct PR commands are disabled)`,
+    );
+    return {
+      success: true,
+      handedOff: true,
+      lifecycle: "bosun_managed",
+      action: "pr_handoff",
+      message: "Direct PR commands are disabled; Bosun manages pull-request lifecycle.",
+      title,
+      body,
+      base,
+      branch: branch || null,
+      cwd,
+    };
   },
 });
 
@@ -2360,7 +2359,7 @@ registerNodeType("agent.run_planner", {
     },
   },
   async execute(node, ctx, engine) {
-    const count = node.config?.taskCount || 5;
+    const count = Number(ctx.resolve(node.config?.taskCount || 5)) || 5;
     const context = ctx.resolve(node.config?.context || "");
     const explicitPrompt = ctx.resolve(node.config?.prompt || "");
     const outputVariable = ctx.resolve(node.config?.outputVariable || "");
@@ -2380,10 +2379,10 @@ registerNodeType("agent.run_planner", {
       `Your response MUST be a single fenced JSON block with shape { "tasks": [...] }.\n` +
       `Do NOT include any text, commentary, or prose outside the JSON block.\n` +
       `The downstream system will parse your output as JSON — any extra text will cause task creation to fail.`;
-    const promptText = explicitPrompt ||
-      (plannerPrompt
-        ? `${plannerPrompt}${outputEnforcement}`
-        : "");
+    const basePrompt = explicitPrompt || plannerPrompt || "";
+    const promptText = basePrompt
+      ? `${basePrompt}${outputEnforcement}`
+      : "";
 
     if (agentPool?.launchEphemeralThread && promptText) {
       let streamEventCount = 0;
@@ -2660,7 +2659,7 @@ registerNodeType("action.continue_session", {
         : strategy === "refine"
         ? `Refine your previous work. Specifically:\n\n${prompt}`
         : strategy === "finish_up"
-        ? `Wrap up the current task. Commit, create PR, ensure tests pass.\n\n${prompt}`
+        ? `Wrap up the current task. Commit, push, and hand off PR lifecycle to Bosun. Ensure tests pass.\n\n${prompt}`
         : `Continue where you left off.\n\n${prompt}`;
 
       const result = await agentPool.launchEphemeralThread(continuation, ctx.data?.worktreePath || process.cwd(), timeout);

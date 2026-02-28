@@ -54,6 +54,7 @@ export const PR_MERGE_STRATEGY_TEMPLATE = {
 
     node("wait-for-ci", "action.delay", "Wait for CI", {
       ms: "{{ciTimeoutMs}}",
+      seconds: "{{cooldownSec}}",
       reason: "CI is still running",
     }, { x: 150, y: 500 }),
 
@@ -318,7 +319,7 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
   },
   nodes: [
     node("trigger", "trigger.schedule", "Check Every 30min", {
-      intervalMs: 1800000,
+      intervalMs: "{{checkIntervalMs}}",
       cron: "*/30 * * * *",
     }, { x: 400, y: 50 }),
 
@@ -327,7 +328,7 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
     node("list-prs", "action.run_command", "List Bosun-Attached Conflicting PRs", {
       command:
         "gh pr list --label bosun-attached --state open " +
-        "--json number,title,headRefName,baseRefName,mergeable,labels --limit 20",
+        "--json number,title,headRefName,baseRefName,mergeable,labels --limit {{maxConcurrentFixes}}",
     }, { x: 400, y: 180 }),
 
     node("target-pr", "action.set_variable", "Pick Conflict PR", {
@@ -492,7 +493,7 @@ export const STALE_PR_REAPER_TEMPLATE = {
     }, { x: 400, y: 350 }),
 
     node("warn-stale", "action.run_command", "Post Warning Comment", {
-      command: "echo 'Would warn stale PRs older than {{staleAfterDays}} days'",
+      command: "echo 'Would warn stale PRs {{warningBeforeDays}} days before stale threshold ({{staleAfterDays}} days)'",
       continueOnError: true,
     }, { x: 200, y: 500 }),
 
@@ -567,7 +568,7 @@ export const RELEASE_DRAFTER_TEMPLATE = {
     }, { x: 400, y: 50 }),
 
     node("get-last-tag", "action.run_command", "Get Last Tag", {
-      command: "git describe --tags --abbrev=0 2>/dev/null || echo 'v0.0.0'",
+      command: "git describe --tags --abbrev=0 2>/dev/null || echo '{{releasePrefix}}0.0.0'",
     }, { x: 400, y: 180 }),
 
     node("list-prs", "action.run_command", "List Merged PRs", {
@@ -765,12 +766,15 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "\"",
       ].join(" "),
       continueOnError: false,
+      failOnError: true,
     }, { x: 400, y: 200 }),
 
     node("has-prs", "condition.expression", "Any Bosun PRs?", {
       expression:
         "(()=>{try{" +
-        "const o=$ctx.getNodeOutput('fetch-and-classify')?.output;" +
+        "const r=$ctx.getNodeOutput('fetch-and-classify');" +
+        "if(!r||r.success===false)return false;" +
+        "const o=r.output;" +
         "return (JSON.parse(o||'{}').total||0)>0;" +
         "}catch(e){return false;}})()",
     }, { x: 400, y: 370 }),

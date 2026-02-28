@@ -16,7 +16,6 @@ const html = htm.bind(h);
 import { haptic, showConfirm } from "../modules/telegram.js";
 import { apiFetch, sendCommandToChat } from "../modules/api.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
-import { getAgentDisplay } from "../modules/agent-display.js";
 import { signal } from "@preact/signals";
 import {
   tasksData,
@@ -35,10 +34,7 @@ import {
   scheduleRefresh,
   loadTasks,
   updateTaskManualState,
-  setPendingChange,
-  clearPendingChange,
 } from "../modules/state.js";
-import { routeParams, setRouteParams } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
 import {
   cloneValue,
@@ -57,7 +53,6 @@ import {
   Modal,
   EmptyState,
   ListItem,
-  SaveDiscardBar,
 } from "../components/shared.js";
 import { SegmentedControl, SearchInput, Toggle } from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
@@ -707,6 +702,42 @@ function isReviewStatus(s) {
   return ["inreview", "review", "pr-open", "pr-review"].includes(String(s || ""));
 }
 
+async function reactivateTaskSession(taskId, options = {}) {
+  const normalizedTaskId = String(taskId || "").trim();
+  if (!normalizedTaskId) return false;
+
+  const askFirst = options?.askFirst !== false;
+  const title = String(options?.title || "this task").trim();
+
+  if (askFirst) {
+    const ok = await showConfirm(
+      `Task moved to review. Reactivate agent session for "${title}" now?`,
+    );
+    if (!ok) return false;
+  }
+
+  haptic("medium");
+  const res = await apiFetch("/api/tasks/start", {
+    method: "POST",
+    body: JSON.stringify({ taskId: normalizedTaskId }),
+  });
+  if (res?.queued) {
+    showToast("Agent reactivation queued (waiting for free slot)", "info");
+  } else if (res?.wasPaused) {
+    showToast("Agent reactivated (executor was paused)", "warning");
+  } else {
+    showToast("Agent session reactivated", "success");
+  }
+
+  tasksData.value = (tasksData.value || []).map((t) =>
+    String(t?.id || "").trim() === normalizedTaskId
+      ? { ...t, status: "inprogress" }
+      : t,
+  );
+  scheduleRefresh(150);
+  return true;
+}
+
 /* ─── Derive agent steps from task title/description ─── */
 function deriveSteps(task) {
   const t = String(task?.title || "").toLowerCase();
@@ -719,7 +750,7 @@ function deriveSteps(task) {
   steps.push({ label: "Write implementation" });
   if (!/docs|readme/.test(t)) steps.push({ label: "Run tests & fix issues" });
   steps.push({ label: "Commit changes" });
-  steps.push({ label: "Open pull request" });
+  steps.push({ label: "Handoff PR lifecycle to Bosun" });
   return steps;
 }
 
@@ -791,7 +822,7 @@ export function TaskProgressModal({ task, onClose }) {
     : "var(--color-error)";
 
   const startedRelative = liveTask?.created ? formatRelative(liveTask.created) : "—";
-  const agentDisplay = getAgentDisplay(liveTask || task);
+  const agentLabel = liveTask?.assignee || task.assignee || "Agent";
   const branchLabel = liveTask?.branch || task.branch || "—";
 
   const handleCancel = async () => {
@@ -825,6 +856,10 @@ export function TaskProgressModal({ task, onClose }) {
         t.id === task.id ? { ...t, status: "inreview" } : t,
       );
       showToast("Task moved to review", "success");
+      await reactivateTaskSession(task.id, {
+        askFirst: true,
+        title: task?.title || task?.id || "this task",
+      }).catch(() => {});
       scheduleRefresh(200);
       onClose();
     } catch { /* toast via apiFetch */ }
@@ -847,13 +882,10 @@ export function TaskProgressModal({ task, onClose }) {
 
       
       <div class="tp-meta-strip">
-          <div class="tp-meta-item">
-            <span class="tp-meta-label">Agent</span>
-            <span class="tp-meta-value">
-              <span class="agent-inline-icon">${agentDisplay.icon}</span>
-              ${agentDisplay.label}
-            </span>
-          </div>
+        <div class="tp-meta-item">
+          <span class="tp-meta-label">Agent</span>
+          <span class="tp-meta-value">${agentLabel}</span>
+        </div>
         <div class="tp-meta-item">
           <span class="tp-meta-label">Branch</span>
           <span class="tp-meta-value mono">${branchLabel}</span>
@@ -972,7 +1004,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
 
   const prNumber = liveTask?.pr || task.pr;
   const branchLabel = liveTask?.branch || task.branch || "—";
-  const agentDisplay = getAgentDisplay(liveTask || task);
+  const agentLabel = liveTask?.assignee || task.assignee || "Agent";
   const updatedRelative = liveTask?.updated ? formatRelative(liveTask.updated) : "—";
   const reviewAttachments = normalizeTaskAttachments(liveTask || task);
 
@@ -1016,6 +1048,10 @@ export function TaskReviewModal({ task, onClose, onStart }) {
         t.id === task.id ? { ...t, status: "inprogress" } : t,
       );
       showToast("Task reopened as active", "success");
+      await reactivateTaskSession(task.id, {
+        askFirst: false,
+        title: task?.title || task?.id || "this task",
+      }).catch(() => {});
       scheduleRefresh(200);
       onClose();
     } catch { /* toast via apiFetch */ }
@@ -1068,13 +1104,10 @@ export function TaskReviewModal({ task, onClose, onStart }) {
 
       
       <div class="tr-meta-grid">
-          <div class="tr-meta-item">
-            <span class="tr-meta-label">Agent</span>
-            <span class="tr-meta-value">
-              <span class="agent-inline-icon">${agentDisplay.icon}</span>
-              ${agentDisplay.label}
-            </span>
-          </div>
+        <div class="tr-meta-item">
+          <span class="tr-meta-label">Agent</span>
+          <span class="tr-meta-value">${agentLabel}</span>
+        </div>
         <div class="tr-meta-item">
           <span class="tr-meta-label">Branch</span>
           <span class="tr-meta-value mono">${branchLabel}</span>
@@ -1219,11 +1252,8 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   );
   const [repository, setRepository] = useState(task?.repository || "");
   const attachmentInputRef = useRef(null);
-  const baselineRef = useRef("");
   const activeWsId = activeWorkspaceId.value || "";
   const canDispatch = Boolean(onStart && task?.id);
-  const pendingKey = `task-detail:${task?.id || "new"}`;
-  const draftStorageKey = `ve-task-detail-draft:${task?.id || "new"}`;
 
   const workspaceOptions = managedWorkspaces.value || [];
   const selectedWorkspace = useMemo(
@@ -1246,119 +1276,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     setManualReason(getManualReason(task));
     setWorkspaceId(task?.workspace || activeWorkspaceId.value || "");
     setRepository(task?.repository || "");
-    baselineRef.current = "";
   }, [task?.id]);
-
-  const snapshotValue = useMemo(
-    () => JSON.stringify({
-      title,
-      description,
-      baseBranch,
-      status,
-      priority,
-      tagsInput,
-      draft,
-      manualReason,
-      workspaceId,
-      repository,
-    }),
-    [
-      title,
-      description,
-      baseBranch,
-      status,
-      priority,
-      tagsInput,
-      draft,
-      manualReason,
-      workspaceId,
-      repository,
-    ],
-  );
-
-  useEffect(() => {
-    if (!task?.id) return;
-    if (!baselineRef.current) {
-      baselineRef.current = snapshotValue;
-    }
-  }, [task?.id, snapshotValue]);
-
-  const isDirty = baselineRef.current && baselineRef.current !== snapshotValue;
-
-  const closeModal = useCallback(() => {
-    if (isDirty && typeof window !== "undefined" && typeof window.confirm === "function") {
-      const ok = window.confirm("Discard unsaved task changes?");
-      if (!ok) return;
-    }
-    clearPendingChange(pendingKey);
-    onClose();
-  }, [isDirty, onClose, pendingKey]);
-
-  useEffect(() => {
-    setPendingChange(pendingKey, Boolean(isDirty));
-    return () => clearPendingChange(pendingKey);
-  }, [pendingKey, isDirty]);
-
-  useEffect(() => {
-    if (!task?.id) return;
-    try {
-      const raw = localStorage.getItem(draftStorageKey);
-      if (!raw) return;
-      const draftData = JSON.parse(raw);
-      if (!draftData || typeof draftData !== "object") return;
-      if (typeof draftData.title === "string") setTitle(draftData.title);
-      if (typeof draftData.description === "string") setDescription(draftData.description);
-      if (typeof draftData.baseBranch === "string") setBaseBranch(draftData.baseBranch);
-      if (typeof draftData.status === "string") setStatus(draftData.status);
-      if (typeof draftData.priority === "string") setPriority(draftData.priority);
-      if (typeof draftData.tagsInput === "string") setTagsInput(draftData.tagsInput);
-      if (typeof draftData.manualReason === "string") setManualReason(draftData.manualReason);
-      if (typeof draftData.workspaceId === "string") setWorkspaceId(draftData.workspaceId);
-      if (typeof draftData.repository === "string") setRepository(draftData.repository);
-      if (typeof draftData.draft === "boolean") setDraft(draftData.draft);
-    } catch {
-      /* ignore malformed drafts */
-    }
-  }, [task?.id, draftStorageKey]);
-
-  useEffect(() => {
-    if (!task?.id) return;
-    const timer = setTimeout(() => {
-      try {
-        localStorage.setItem(
-          draftStorageKey,
-          JSON.stringify({
-            title,
-            description,
-            baseBranch,
-            status,
-            priority,
-            tagsInput,
-            draft,
-            manualReason,
-            workspaceId,
-            repository,
-          }),
-        );
-      } catch {
-        /* storage best effort */
-      }
-    }, 600);
-    return () => clearTimeout(timer);
-  }, [
-    task?.id,
-    draftStorageKey,
-    title,
-    description,
-    baseBranch,
-    status,
-    priority,
-    tagsInput,
-    draft,
-    manualReason,
-    workspaceId,
-    repository,
-  ]);
 
   useEffect(() => {
     if (!workspaceOptions.length) {
@@ -1382,7 +1300,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     }
   }, [workspaceId, repositoryOptions.length]);
 
-  const handleSave = async ({ closeAfterSave = false } = {}) => {
+  const handleSave = async () => {
     setSaving(true);
     haptic("medium");
     const prev = cloneValue(tasksData.value);
@@ -1436,37 +1354,11 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         },
       );
       showToast("Task saved", "success");
-      baselineRef.current = snapshotValue;
-      clearPendingChange(pendingKey);
-      try {
-        localStorage.removeItem(draftStorageKey);
-      } catch {
-        /* ignore */
-      }
-      if (closeAfterSave) closeModal();
+      onClose();
     } catch {
       /* toast via apiFetch */
     }
     setSaving(false);
-  };
-
-  const handleDiscard = () => {
-    setTitle(task?.title || "");
-    setDescription(task?.description || "");
-    setBaseBranch(getTaskBaseBranch(task));
-    setStatus(task?.status || "todo");
-    setPriority(task?.priority || "");
-    setTagsInput(getTaskTags(task).join(", "));
-    setDraft(Boolean(task?.draft || task?.status === "draft"));
-    setManualReason(getManualReason(task));
-    setWorkspaceId(task?.workspace || activeWorkspaceId.value || "");
-    setRepository(task?.repository || "");
-    clearPendingChange(pendingKey);
-    try {
-      localStorage.removeItem(draftStorageKey);
-    } catch {
-      /* ignore */
-    }
   };
 
   const handleStatusUpdate = async (newStatus) => {
@@ -1501,10 +1393,16 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           tasksData.value = prev;
         },
       );
-      if (newStatus === "done" || newStatus === "cancelled") closeModal();
+      if (newStatus === "done" || newStatus === "cancelled") onClose();
       else {
         setStatus(newStatus);
         setDraft(wantsDraft);
+      }
+      if (newStatus === "inreview") {
+        await reactivateTaskSession(task.id, {
+          askFirst: true,
+          title: task?.title || task?.id || "this task",
+        }).catch(() => {});
       }
     } catch {
       /* toast */
@@ -1565,7 +1463,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         body: JSON.stringify({ taskId: task.id }),
       });
       showToast("Task retried", "success");
-      closeModal();
+      onClose();
       scheduleRefresh(150);
     } catch {
       /* toast */
@@ -1629,7 +1527,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   };
 
   return html`
-    <${Modal} title=${task?.title || "Task Detail"} onClose=${closeModal} contentClassName="modal-content-wide">
+    <${Modal} title=${task?.title || "Task Detail"} onClose=${onClose} contentClassName="modal-content-wide">
       <div class="task-modal-summary">
         <div class="task-modal-id" style="user-select:all">ID: ${task?.id}</div>
         <div class="task-modal-badges">
@@ -1926,20 +1824,6 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           </div>
         `}
 
-        ${isDirty &&
-        html`
-          <${SaveDiscardBar}
-            dirty=${isDirty}
-            message="Task changes are not saved"
-            saveLabel="Save"
-            discardLabel="Discard"
-            saving=${saving}
-            onSave=${() => handleSave({ closeAfterSave: false })}
-            onDiscard=${handleDiscard}
-            className="modal-form-span"
-          />
-        `}
-
         <div class="btn-row modal-form-span">
           ${(task?.status === "error" || task?.status === "cancelled") &&
           html`
@@ -1949,10 +1833,10 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           `}
           <button
             class="btn btn-secondary btn-sm"
-            onClick=${() => handleSave({ closeAfterSave: true })}
+            onClick=${handleSave}
             disabled=${saving}
           >
-            ${saving ? "Saving…" : "Save and Close"}
+            ${saving ? "Saving…" : iconText("💾 Save")}
           </button>
           <button
             class="btn btn-ghost btn-sm"
@@ -2047,7 +1931,6 @@ export function TasksTab() {
   const trimmedSearch = searchVal.trim();
   const statusLabel =
     STATUS_CHIPS.find((s) => s.value === filterVal)?.label || "All";
-  const routeTaskId = String(routeParams.value?.taskId || "").trim();
   const priorityLabel =
     PRIORITY_CHIPS.find((p) => p.value === priorityVal)?.label || "Any";
   const sortLabel =
@@ -2073,6 +1956,13 @@ export function TasksTab() {
   );
   const isKanban = viewMode.value === "kanban";
   const viewModeInitRef = useRef(false);
+
+  // Add/remove body class so kanban.css can apply height-bounded flex layout
+  // to main-content, enabling per-column vertical scroll on mobile.
+  useEffect(() => {
+    document.body.classList.toggle("tasks-board-view", isKanban);
+    return () => { document.body.classList.remove("tasks-board-view"); };
+  }, [isKanban]);
 
   useEffect(() => {
     if (filterVal && filterVal !== "done") {
@@ -2394,6 +2284,13 @@ export function TasksTab() {
         tasksData.value = prev;
       },
     ).catch(() => {});
+    if (newStatus === "inreview") {
+      const task = (tasksData.value || []).find((t) => String(t?.id) === String(taskId));
+      await reactivateTaskSession(taskId, {
+        askFirst: true,
+        title: task?.title || taskId,
+      }).catch(() => {});
+    }
   };
 
   const startTask = async ({ taskId, sdk, model }) => {
@@ -2428,7 +2325,6 @@ export function TasksTab() {
   };
 
   const openDetail = async (taskId) => {
-    setRouteParams(taskId ? { taskId } : {}, { replace: false, skipGuard: true });
     haptic();
     const local = tasks.find((t) => t.id === taskId);
     const result = await apiFetch(
@@ -2437,12 +2333,6 @@ export function TasksTab() {
     ).catch(() => ({ data: local }));
     setDetailTask(result.data || local);
   };
-
-  useEffect(() => {
-    if (!routeTaskId) return;
-    if (detailTask?.id === routeTaskId) return;
-    openDetail(routeTaskId);
-  }, [routeTaskId]);
 
   /* ── Batch operations ── */
   const toggleSelect = (id) => {
@@ -2556,9 +2446,7 @@ export function TasksTab() {
               haptic();
               setShowTemplates(true);
             }}
-          >
-            ${iconText("⚡ Templates")}
-          </button>
+          >${iconText("⚡ Templates")}</button>
           <button
             class="btn btn-ghost btn-sm"
             onClick=${toggleCompletedFilter}
@@ -3058,20 +2946,14 @@ export function TasksTab() {
     html`
       <${TaskProgressModal}
         task=${detailTask}
-        onClose=${() => {
-          setDetailTask(null);
-          setRouteParams({}, { replace: true, skipGuard: true });
-        }}
+        onClose=${() => setDetailTask(null)}
       />
     `}
     ${detailTask && isReviewStatus(detailTask.status) &&
     html`
       <${TaskReviewModal}
         task=${detailTask}
-        onClose=${() => {
-          setDetailTask(null);
-          setRouteParams({}, { replace: true, skipGuard: true });
-        }}
+        onClose=${() => setDetailTask(null)}
         onStart=${(task) => openStartModal(task)}
       />
     `}
@@ -3079,10 +2961,7 @@ export function TasksTab() {
     html`
       <${TaskDetailModal}
         task=${detailTask}
-        onClose=${() => {
-          setDetailTask(null);
-          setRouteParams({}, { replace: true, skipGuard: true });
-        }}
+        onClose=${() => setDetailTask(null)}
         onStart=${(task) => openStartModal(task)}
       />
     `}
@@ -3128,7 +3007,6 @@ function CreateTaskModalInline({ onClose }) {
   const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId.value || "");
   const [repository, setRepository] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const draftStorageKey = "ve-task-create-draft";
 
   const handleRewrite = async () => {
     if (!title.trim() || rewriting) return;
@@ -3151,59 +3029,6 @@ function CreateTaskModalInline({ onClose }) {
     setRewriting(false);
   };
   const activeWsId = activeWorkspaceId.value || "";
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(draftStorageKey);
-      if (!raw) return;
-      const draftData = JSON.parse(raw);
-      if (typeof draftData.title === "string") setTitle(draftData.title);
-      if (typeof draftData.description === "string") setDescription(draftData.description);
-      if (typeof draftData.baseBranch === "string") setBaseBranch(draftData.baseBranch);
-      if (typeof draftData.priority === "string") setPriority(draftData.priority);
-      if (typeof draftData.tagsInput === "string") setTagsInput(draftData.tagsInput);
-      if (typeof draftData.workspaceId === "string") setWorkspaceId(draftData.workspaceId);
-      if (typeof draftData.repository === "string") setRepository(draftData.repository);
-      if (typeof draftData.draft === "boolean") setDraft(draftData.draft);
-      if (typeof draftData.showAdvanced === "boolean") setShowAdvanced(draftData.showAdvanced);
-    } catch {
-      /* ignore malformed drafts */
-    }
-  }, []);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      try {
-        localStorage.setItem(
-          draftStorageKey,
-          JSON.stringify({
-            title,
-            description,
-            baseBranch,
-            priority,
-            tagsInput,
-            workspaceId,
-            repository,
-            draft,
-            showAdvanced,
-          }),
-        );
-      } catch {
-        /* ignore storage errors */
-      }
-    }, 600);
-    return () => clearTimeout(timer);
-  }, [
-    title,
-    description,
-    baseBranch,
-    priority,
-    tagsInput,
-    workspaceId,
-    repository,
-    draft,
-    showAdvanced,
-  ]);
 
   const workspaceOptions = managedWorkspaces.value || [];
   const selectedWorkspace = useMemo(
@@ -3258,11 +3083,6 @@ function CreateTaskModalInline({ onClose }) {
         }),
       });
       showToast("Task created", "success");
-      try {
-        localStorage.removeItem(draftStorageKey);
-      } catch {
-        /* ignore */
-      }
       onClose();
       await loadTasks();
     } catch {

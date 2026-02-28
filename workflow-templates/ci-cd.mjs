@@ -31,7 +31,7 @@ export const BUILD_DEPLOY_TEMPLATE = {
   nodes: [
     node("trigger", "trigger.event", "On PR Merged", {
       eventType: "pr.merged",
-      filter: "$event.branch === 'main'",
+      filter: "$event.branch === '{{deployBranch}}'",
     }, { x: 400, y: 50 }),
 
     node("build", "validation.build", "Build", {
@@ -149,6 +149,10 @@ Commit the result with message "docs: update changelog for vX.Y.Z".`,
       expression: "$ctx.getNodeOutput('test')?.passed === true",
     }, { x: 400, y: 830, outputs: ["yes", "no"] }),
 
+    node("should-publish", "condition.expression", "Publish To npm?", {
+      expression: "Boolean($data?.publishToNpm)",
+    }, { x: 250, y: 1030, outputs: ["yes", "no"] }),
+
     node("commit-tag", "action.git_operations", "Commit & Tag", {
       operations: [
         { op: "add", paths: ["."] },
@@ -159,7 +163,7 @@ Commit the result with message "docs: update changelog for vX.Y.Z".`,
     }, { x: 250, y: 960 }),
 
     node("publish-npm", "action.run_command", "Publish to npm", {
-      command: "npm publish --access public",
+      command: "if [ \"{{dryRun}}\" = \"true\" ]; then echo 'Dry run: skipping npm publish'; else npm publish --access public; fi",
       continueOnError: true,
     }, { x: 250, y: 1090 }),
 
@@ -186,7 +190,9 @@ Commit the result with message "docs: update changelog for vX.Y.Z".`,
     edge("test", "test-passed"),
     edge("test-passed", "commit-tag", { condition: "$output?.result === true", port: "yes" }),
     edge("test-passed", "notify-failure", { condition: "$output?.result !== true", port: "no" }),
-    edge("commit-tag", "publish-npm"),
+    edge("commit-tag", "should-publish"),
+    edge("should-publish", "publish-npm", { condition: "$output?.result === true", port: "yes" }),
+    edge("should-publish", "create-gh-release", { condition: "$output?.result !== true", port: "no" }),
     edge("publish-npm", "create-gh-release"),
     edge("create-gh-release", "notify-success"),
   ],

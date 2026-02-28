@@ -444,7 +444,23 @@ function extractTaskHeading(msg) {
   return heading || 'Execute Task';
 }
 
-function buildPrompt(userMessage, statusData) {
+function buildPrompt(userMessage, statusData, { mode = null } = {}) {
+  // ── Mode detection ────────────────────────────────────────────────────
+  // "ask" mode should be lightweight — no heavy executor framing that
+  // instructs the agent to run commands and read files.
+  const isAskMode =
+    mode === "ask" || /^\[MODE:\s*ask\]/i.test(userMessage);
+
+  if (isAskMode) {
+    // Ask mode — pass through without executor framing.  The [MODE: ask]
+    // prefix from primary-agent already tells the model to be brief.
+    if (statusData) {
+      const statusSnippet = JSON.stringify(statusData, null, 2).slice(0, 2000);
+      return `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n${userMessage}`;
+    }
+    return userMessage;
+  }
+
   const title = extractTaskHeading(userMessage);
   if (!statusData) {
     return `# ${title}\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.`;
@@ -474,6 +490,7 @@ export async function execClaudePrompt(userMessage, options = {}) {
     timeoutMs = DEFAULT_TIMEOUT_MS,
     sendRawEvents = false,
     abortController = null,
+    mode = null,
   } = options;
 
   if (activeTurn && !options._holdActiveTurn) {
@@ -544,7 +561,7 @@ export async function execClaudePrompt(userMessage, options = {}) {
   try {
     const queue = createMessageQueue();
     activeQueue = queue;
-    queue.push(makeUserMessage(buildPrompt(userMessage, statusData)));
+    queue.push(makeUserMessage(buildPrompt(userMessage, statusData, { mode })));
 
     const optionsPayload = buildOptions();
 

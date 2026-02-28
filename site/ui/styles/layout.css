@@ -1687,3 +1687,36 @@ body.is-resizing * {
     display: none !important;
   }
 }
+
+/* ─── Reduced Motion ─── */
+/* Respect the user's OS-level preference to reduce motion. */
+@media (prefers-reduced-motion: reduce) {
+  /* Disable decorative entrance/exit animations */
+  .main-content > *,
+  .bottom-nav,
+  .drawer,
+  .nav-item.active::before {
+    animation: none !important;
+  }
+
+  /* Silence the continuous pulsing connection indicator */
+  .connection-dot,
+  .connection-pill.connected .connection-dot::after {
+    animation: none !important;
+  }
+
+  /* Make the sidebar / rail collapse transitions instant */
+  .sidebar,
+  .session-rail {
+    transition: none !important;
+  }
+
+  /* Shorten all interactive transitions (buttons, nav, cards) to near-instant */
+  .nav-item,
+  .nav-item svg,
+  .more-menu-item,
+  .sidebar-nav-item,
+  .connection-pill {
+    transition-duration: 50ms !important;
+  }
+}

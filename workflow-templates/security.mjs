@@ -19,7 +19,7 @@ export const DEPENDENCY_AUDIT_TEMPLATE = {
   name: "Dependency Audit",
   description:
     "Scheduled scan for vulnerable dependencies using npm audit. " +
-    "Classifies findings by severity, auto-creates PRs to update " +
+    "Classifies findings by severity, prepares fix branches, and hands off " +
     "fixable packages, and alerts on critical vulnerabilities that " +
     "require manual intervention.",
   category: "security",
@@ -59,6 +59,10 @@ export const DEPENDENCY_AUDIT_TEMPLATE = {
       },
     }, { x: 200, y: 590, outputs: ["critical", "high", "moderate", "default"] }),
 
+    node("auto-fix-enabled", "condition.expression", "Auto Fix Enabled?", {
+      expression: "Boolean($data?.autoFixEnabled !== false)",
+    }, { x: 50, y: 670, outputs: ["yes", "no"] }),
+
     node("auto-fix", "action.run_agent", "Auto-Fix Vulnerabilities", {
       prompt: `# Dependency Vulnerability Fix
 
@@ -69,14 +73,15 @@ If some vulnerabilities require breaking changes:
 3. Run \`npm test\` after each fix to verify nothing breaks
 4. Create one commit per fixed package group
 
-Do NOT blindly force-fix everything. Test after each change.`,
+Do NOT blindly force-fix everything. Test after each change.
+Limit auto-generated fix PRs to {{maxAutoFixPRs}} in this run.`,
       sdk: "auto",
       timeoutMs: 1800000,
     }, { x: 50, y: 750 }),
 
-    node("create-fix-pr", "action.create_pr", "Create Fix PR", {
+    node("create-fix-pr", "action.create_pr", "Handoff Fix Lifecycle", {
       title: "fix(deps): resolve {{auditLevel}}+ vulnerabilities",
-      body: "Automated dependency audit fix. Resolves vulnerabilities flagged by `npm audit`.\n\nRun `npm audit` to verify.",
+      body: "Automated dependency audit fix. Resolves vulnerabilities flagged by `npm audit`.\n\nBosun PR lifecycle handoff context included.",
       branch: "fix/dep-audit-{{_runId}}",
       baseBranch: "main",
     }, { x: 50, y: 900 }),
@@ -86,7 +91,7 @@ Do NOT blindly force-fix everything. Test after each change.`,
     }, { x: 350, y: 750 }),
 
     node("alert-high", "notify.telegram", "Alert: High Severity", {
-      message: "⚠️ **High severity** dependency vulnerability detected.\n\nAuto-fix PR created. Please review and merge.",
+      message: "⚠️ **High severity** dependency vulnerability detected.\n\nAuto-fix changes prepared and handed off to Bosun PR lifecycle management. Please review and merge when ready.",
       silent: true,
     }, { x: 550, y: 750 }),
 
@@ -107,9 +112,11 @@ Do NOT blindly force-fix everything. Test after each change.`,
     edge("has-vulns", "classify-severity", { condition: "$output?.result === true", port: "yes" }),
     edge("has-vulns", "log-clean", { condition: "$output?.result !== true", port: "no" }),
     edge("classify-severity", "alert-critical", { port: "critical" }),
-    edge("classify-severity", "auto-fix", { port: "high" }),
-    edge("classify-severity", "auto-fix", { port: "moderate" }),
-    edge("alert-critical", "auto-fix"),
+    edge("classify-severity", "auto-fix-enabled", { port: "high" }),
+    edge("classify-severity", "auto-fix-enabled", { port: "moderate" }),
+    edge("alert-critical", "auto-fix-enabled"),
+    edge("auto-fix-enabled", "auto-fix", { condition: "$output?.result === true", port: "yes" }),
+    edge("auto-fix-enabled", "log-done", { condition: "$output?.result !== true", port: "no" }),
     edge("auto-fix", "create-fix-pr"),
     edge("create-fix-pr", "alert-high"),
     edge("alert-high", "log-done"),
@@ -126,7 +133,7 @@ Do NOT blindly force-fix everything. Test after each change.`,
       calledFrom: ["monitor.mjs:startProcess"],
       description:
         "Replaces ad-hoc dependency health checks with a scheduled audit " +
-        "workflow. Severity classification, auto-fix, and PR creation " +
+        "workflow. Severity classification, auto-fix, and Bosun-managed lifecycle handoff " +
         "become explicit, configurable workflow steps.",
     },
   },
@@ -159,7 +166,7 @@ export const SECRET_SCANNER_TEMPLATE = {
     }, { x: 400, y: 50 }),
 
     node("scan-repo", "action.run_command", "Scan for Secrets", {
-      command: "git log --diff-filter=A -p HEAD~5..HEAD -- . ':!node_modules' ':!*.lock' ':!*.min.js' | grep -iE '(PRIVATE.KEY|SECRET|TOKEN|PASSWORD|API.KEY|CREDENTIAL)\\s*[:=]\\s*[\"\\x27][^\"\\x27]{8,}' || echo 'CLEAN'",
+      command: "git log --diff-filter=A -p HEAD~5..HEAD -- . ':!node_modules' ':!*.lock' ':!*.min.js' | grep -iE '({{scanPatterns}})\\s*[:=]\\s*[\"\\x27][^\"\\x27]{8,}' || echo 'CLEAN'",
       continueOnError: true,
     }, { x: 400, y: 180 }),
 
@@ -208,7 +215,7 @@ Respond as JSON: { "findings": [{ "type": "...", "severity": "critical|high|low"
     }, { x: 450, y: 650 }),
 
     node("log-clean", "notify.log", "Repository Clean", {
-      message: "Secret scanner: no secrets found in recent commits",
+      message: "Secret scanner: no secrets found in recent commits (exclude paths: {{excludePaths}})",
       level: "info",
     }, { x: 650, y: 330 }),
   ],

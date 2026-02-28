@@ -33,6 +33,21 @@ function makeTmpEngine() {
   return engine;
 }
 
+function collectStrings(value, out = []) {
+  if (typeof value === "string") {
+    out.push(value);
+    return out;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) collectStrings(entry, out);
+    return out;
+  }
+  if (value && typeof value === "object") {
+    for (const entry of Object.values(value)) collectStrings(entry, out);
+  }
+  return out;
+}
+
 // ── Template Structural Validation ──────────────────────────────────────────
 
 describe("workflow-templates", () => {
@@ -110,6 +125,25 @@ describe("workflow-templates", () => {
     }
   });
 
+  it("every template variable is referenced by node/edge config", () => {
+    for (const t of WORKFLOW_TEMPLATES) {
+      const keys = Object.keys(t.variables || {});
+      if (keys.length === 0) continue;
+      const strings = collectStrings({ nodes: t.nodes, edges: t.edges });
+      for (const key of keys) {
+        const used = strings.some((text) =>
+          text.includes(`{{${key}}}`) ||
+          text.includes(`$data?.${key}`) ||
+          text.includes(`$data.${key}`),
+        );
+        expect(
+          used,
+          `${t.id}: variable "${key}" is never referenced in node/edge config`,
+        ).toBe(true);
+      }
+    }
+  });
+
   it("no orphaned nodes (every non-trigger connects via edges)", () => {
     for (const t of WORKFLOW_TEMPLATES) {
       const connected = new Set();
@@ -129,10 +163,23 @@ describe("workflow-templates", () => {
     const planner = getTemplate("template-task-planner");
     expect(planner).toBeDefined();
 
+    expect(planner.variables?.taskCount).toBe(5);
+    expect(planner.variables?.prompt).toBe("");
+    expect(typeof planner.variables?.plannerContext).toBe("string");
+
+    const trigger = planner.nodes.find((n) => n.id === "trigger");
+    expect(trigger?.config?.threshold).toBe("{{minTodoCount}}");
+
+    const runPlanner = planner.nodes.find((n) => n.id === "run-planner");
+    expect(runPlanner?.config?.taskCount).toBe("{{taskCount}}");
+    expect(runPlanner?.config?.context).toBe("{{plannerContext}}");
+    expect(runPlanner?.config?.prompt).toBe("{{prompt}}");
+
     const materialize = planner.nodes.find((n) => n.id === "materialize-tasks");
     expect(materialize).toBeDefined();
     expect(materialize.type).toBe("action.materialize_planner_tasks");
     expect(materialize.config?.failOnZero).toBe(true);
+    expect(materialize.config?.maxTasks).toBe("{{taskCount}}");
 
     const edgeToMaterialize = planner.edges.find(
       (e) => e.source === "run-planner" && e.target === "materialize-tasks",
