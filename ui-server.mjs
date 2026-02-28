@@ -2824,7 +2824,6 @@ const RESERVED_HOSTNAME_LABELS = new Set([
 let tunnelUrl = null;
 let tunnelProcess = null;
 let tunnelPublicHostname = "";
-let tunnelRuntimeMode = TUNNEL_MODE_DISABLED;
 let tunnelRuntimeState = {
   mode: TUNNEL_MODE_DISABLED,
   tunnelName: "",
@@ -2839,7 +2838,7 @@ let quickTunnelRestartTimer = null;
 let quickTunnelRestartAttempts = 0;
 let quickTunnelRestartSuppressed = false;
 
-/** Return the tunnel URL (e.g. https://xxx.trycloudflare.com) or null. */
+/** Return the active tunnel URL (named or quick) or null. */
 export function getTunnelUrl() {
   return tunnelUrl;
 }
@@ -2849,7 +2848,7 @@ export function getTunnelStatus() {
     mode: tunnelRuntimeState.mode,
     tunnelName: tunnelRuntimeState.tunnelName || null,
     tunnelId: tunnelRuntimeState.tunnelId || null,
-    hostname: tunnelRuntimeState.hostname || null,
+    hostname: tunnelRuntimeState.hostname || tunnelPublicHostname || null,
     publicUrl: tunnelUrl || null,
     dns: {
       status: tunnelRuntimeState.dnsStatus || "unknown",
@@ -3376,7 +3375,6 @@ async function findCloudflared() {
  */
 async function startTunnel(localPort) {
   const tunnelCfg = getTunnelStartupConfig();
-  tunnelRuntimeMode = tunnelCfg.mode;
   setTunnelRuntimeState({
     mode: tunnelCfg.mode,
     tunnelName: tunnelCfg.namedTunnel || "",
@@ -9655,8 +9653,8 @@ export async function startTelegramUiServer(options = {}) {
 
   // ── SECURITY: Warn loudly when auth is disabled ──────────────────────
   if (isAllowUnsafe()) {
-    const tunnelMode = (process.env.TELEGRAM_UI_TUNNEL || "auto").toLowerCase();
-    const tunnelActive = tunnelMode !== "disabled" && tunnelMode !== "off" && tunnelMode !== "0";
+    const tunnelMode = normalizeTunnelMode(process.env.TELEGRAM_UI_TUNNEL || DEFAULT_TUNNEL_MODE);
+    const tunnelActive = tunnelMode !== TUNNEL_MODE_DISABLED;
     const border = "═".repeat(68);
     console.warn(`\n╔${border}╗`);
     console.warn(`║ :ban:  DANGER: TELEGRAM_UI_ALLOW_UNSAFE=true — ALL AUTH IS DISABLED   ║`);

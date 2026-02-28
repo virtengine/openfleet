@@ -125,11 +125,12 @@ const INTENTIONALLY_SKIPPED = new Set([
 
 // ── Session actions intentionally skipped in demo ─────────────────────
 const INTENTIONALLY_SKIPPED_ACTIONS = new Set([
-  "delete",   // Demo doesn't need session deletion
-  "rename",   // Demo doesn't need session renaming
-  "execute",  // Workflow :id/execute action (not a session action)
-  "runs",     // Workflow :id/runs action (not a session action)
-  "retry",    // Workflow :id/retry action (not a session action)
+  "delete",              // Demo doesn't need session deletion
+  "rename",              // Demo doesn't need session renaming
+  "execute",             // Workflow :id/execute action (not a session action)
+  "runs",                // Workflow :id/runs action (not a session action)
+  "retry",               // Workflow :id/retry action (not a session action)
+  "missing_credentials", // Cloudflare DNS result value, not a session sub-action
 ]);
 
 describe("demo.html :workflow: ui-server.mjs API sync", () => {

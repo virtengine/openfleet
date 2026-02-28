@@ -985,6 +985,20 @@ function getBrowserUiUrlOptions({ forTelegramButtons = true } = {}) {
     parsed = null;
   }
 
+  const tunnelUrl = getTunnelUrl();
+  if (tunnelUrl) {
+    let label = ":globe: Cloudflare";
+    try {
+      const host = String(new URL(tunnelUrl).hostname || "").toLowerCase();
+      label = host.endsWith(".trycloudflare.com")
+        ? ":globe: Cloudflare (Quick)"
+        : ":globe: Cloudflare (Permanent)";
+    } catch {
+      // keep default label
+    }
+    add(label, tunnelUrl);
+  }
+
   if (parsed) {
     const localhostUrl = `${parsed.protocol}//localhost${parsed.port ? `:${parsed.port}` : ""}`;
     add(":monitor: Localhost", localhostUrl);
@@ -996,11 +1010,6 @@ function getBrowserUiUrlOptions({ forTelegramButtons = true } = {}) {
       const lanUrl = `${parsed.protocol}//${lanIp}:${parsed.port}`;
       add(":chart: LAN", lanUrl);
     }
-  }
-
-  const tunnelUrl = getTunnelUrl();
-  if (tunnelUrl) {
-    add(":globe: Cloudflare", tunnelUrl);
   }
 
   if (options.length === 0) {
@@ -1058,7 +1067,7 @@ function getMeetingBrowserUrlOptions(callType = "voice", extra = {}) {
 }
 
 function syncUiUrlsFromServer() {
-  const currentUiUrl = getTelegramUiUrl?.() || null;
+  const currentUiUrl = getTunnelUrl() || getTelegramUiUrl?.() || null;
   telegramUiUrl = currentUiUrl;
   telegramWebAppUrl = getTelegramWebAppUrl(currentUiUrl);
   return {
@@ -3622,11 +3631,11 @@ const FAST_COMMANDS = new Set([
 
 function getTelegramWebAppUrl(url) {
   // Telegram Mini App must be HTTPS and publicly reachable.
-  // Priority: explicit env URL -> tunnel URL -> provided URL.
+  // Priority: tunnel URL (permanent hostname) -> explicit env URL -> provided URL.
+  const tUrl = getTunnelUrl();
   const explicit =
     process.env.TELEGRAM_WEBAPP_URL || process.env.TELEGRAM_UI_BASE_URL || "";
-  const tUrl = getTunnelUrl();
-  const candidates = [explicit, tUrl, url];
+  const candidates = [tUrl, explicit, url];
 
   for (const candidate of candidates) {
     const normalized = String(candidate || "")
@@ -11244,7 +11253,7 @@ export async function startTelegramBot(options = {}) {
       String(process.env.TELEGRAM_UI_ALLOW_UNSAFE || "").toLowerCase(),
     );
     if (_isUnsafe) {
-      const _tunnelMode = (process.env.TELEGRAM_UI_TUNNEL || "auto").toLowerCase();
+      const _tunnelMode = (process.env.TELEGRAM_UI_TUNNEL || "named").toLowerCase();
       const _tunnelWanted = _tunnelMode !== "disabled" && _tunnelMode !== "off" && _tunnelMode !== "0";
       const title = _tunnelWanted
         ? ":ban: *Unsafe UI Access + Cloudflare Tunnel conflict detected*"

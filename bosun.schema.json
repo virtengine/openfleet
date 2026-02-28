@@ -40,6 +40,97 @@
       "type": "string",
       "enum": ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"]
     },
+    "telegramUiTunnel": {
+      "type": "string",
+      "enum": ["named", "quick", "auto", "cloudflared", "disabled"],
+      "default": "named",
+      "description": "Mini App tunnel mode. named is the default permanent hostname mode."
+    },
+    "telegramUiAllowQuickTunnelFallback": {
+      "type": "boolean",
+      "default": false,
+      "description": "Allow quick trycloudflare fallback only when named tunnel startup fails."
+    },
+    "cloudflareTunnelName": {
+      "type": "string",
+      "description": "Named Cloudflare tunnel identifier."
+    },
+    "cloudflareTunnelCredentials": {
+      "type": "string",
+      "description": "Path to cloudflared tunnel credentials JSON."
+    },
+    "cloudflareBaseDomain": {
+      "type": "string",
+      "description": "Base domain used for deterministic per-user tunnel hostnames."
+    },
+    "cloudflareTunnelHostname": {
+      "type": "string",
+      "description": "Explicit tunnel hostname override."
+    },
+    "cloudflareUsernameHostnamePolicy": {
+      "type": "string",
+      "enum": ["per-user-fixed", "fixed"],
+      "default": "per-user-fixed",
+      "description": "Policy for deriving named tunnel hostname from workstation identity."
+    },
+    "cloudflareZoneId": {
+      "type": "string",
+      "description": "Cloudflare zone ID used for DNS orchestration."
+    },
+    "cloudflareApiToken": {
+      "type": "string",
+      "description": "Cloudflare API token scoped to Zone DNS edit."
+    },
+    "cloudflareDnsSyncEnabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable Cloudflare DNS idempotent create/verify/update during named tunnel startup."
+    },
+    "cloudflareDnsMaxRetries": {
+      "type": "number",
+      "default": 3,
+      "description": "Retry attempts for Cloudflare DNS API operations."
+    },
+    "cloudflareDnsRetryBaseMs": {
+      "type": "number",
+      "default": 750,
+      "description": "Base backoff delay for Cloudflare DNS API retries."
+    },
+    "telegramUiFallbackAuthEnabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable admin fallback PIN/password auth when Telegram/session auth is unavailable."
+    },
+    "telegramUiFallbackAuthRateLimitIpPerMin": {
+      "type": "number",
+      "default": 10,
+      "description": "Per-IP fallback auth attempt rate limit per minute."
+    },
+    "telegramUiFallbackAuthRateLimitGlobalPerMin": {
+      "type": "number",
+      "default": 60,
+      "description": "Global fallback auth attempt rate limit per minute."
+    },
+    "telegramUiFallbackAuthMaxFailures": {
+      "type": "number",
+      "default": 5,
+      "description": "Failed fallback auth attempts before temporary lockout."
+    },
+    "telegramUiFallbackAuthLockoutMs": {
+      "type": "number",
+      "default": 600000,
+      "description": "Temporary lockout duration in milliseconds after max fallback auth failures."
+    },
+    "telegramUiFallbackAuthRotateDays": {
+      "type": "number",
+      "default": 30,
+      "description": "Target credential rotation interval for fallback auth."
+    },
+    "telegramUiFallbackAuthTransientCooldownMs": {
+      "type": "number",
+      "default": 5000,
+      "description": "Cooldown when fallback auth backend has transient errors."
+    },
     "voice": {
       "type": "object",
       "description": "Voice assistant configuration for real-time voice interaction",
