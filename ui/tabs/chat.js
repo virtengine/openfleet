@@ -54,7 +54,7 @@ import { routeParams, setRouteParams } from "../modules/router.js";
 import { ChatView } from "../components/chat-view.js";
 import { apiFetch } from "../modules/api.js";
 import { showToast } from "../modules/state.js";
-import { VoiceMicButton } from "../modules/voice.js";
+import { VoiceMicButton, requestVoiceModeOpen } from "../modules/voice.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   ChatInputToolbar,
@@ -691,6 +691,20 @@ export function ChatTab() {
     await createSession({ type: "primary" });
   }
 
+  const openMeetingRoom = useCallback(
+    (call = "voice") => {
+      requestVoiceModeOpen({
+        call: call === "video" ? "video" : "voice",
+        sessionId: sessionId || undefined,
+        initialVisionSource: call === "video" ? "camera" : null,
+        executor: activeAgent.value || undefined,
+        mode: agentMode.value || undefined,
+        model: selectedModel.value || undefined,
+      });
+    },
+    [sessionId],
+  );
+
   /* ── Show/expand sessions: on mobile toggles drawer, on desktop fires rail-expand event ── */
   const handleShowSessions = useCallback(() => {
     if (isMobile) {
@@ -780,6 +794,20 @@ export function ChatTab() {
                   <div class="chat-shell-meta">${sessionMeta || "Session"}</div>
                 </div>
                 <div class="chat-shell-actions">
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    onClick=${() => openMeetingRoom("voice")}
+                    title="Start voice meeting for this session"
+                  >
+                    📞 Call
+                  </button>
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    onClick=${() => openMeetingRoom("video")}
+                    title="Start video meeting for this session"
+                  >
+                    🎥 Video
+                  </button>
                   ${isDesktop &&
                   html`
                     <button

@@ -4,6 +4,7 @@
  * Supports:
  *   - OpenAI Realtime API (WebRTC) — direct API key
  *   - Azure OpenAI Realtime API (WebRTC) — API key + endpoint
+ *   - Claude/Gemini provider mode (Tier 2 speech fallback + provider vision)
  *   - Tier 2 fallback (browser STT → executor → browser TTS)
  *
  * @module voice-relay
@@ -24,11 +25,19 @@ const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const OPENAI_DEFAULT_VISION_MODEL = "gpt-4.1-mini";
 
 const AZURE_API_VERSION = "2025-04-01-preview";
+const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_API_VERSION = "2023-06-01";
+const CLAUDE_DEFAULT_MODEL = "claude-3-7-sonnet-latest";
+const CLAUDE_DEFAULT_VISION_MODEL = "claude-3-7-sonnet-latest";
+const GEMINI_GENERATE_CONTENT_URL = "https://generativelanguage.googleapis.com/v1beta/models";
+const GEMINI_DEFAULT_MODEL = "gemini-2.5-pro";
+const GEMINI_DEFAULT_VISION_MODEL = "gemini-2.5-flash";
 
 const VALID_EXECUTORS = new Set([
   "codex-sdk",
   "copilot-sdk",
   "claude-sdk",
+  "gemini-sdk",
   "opencode-sdk",
 ]);
 
@@ -122,12 +131,242 @@ function extractModelResponseText(payload) {
   return "";
 }
 
+function parseImageDataUrl(dataUrl) {
+  const raw = String(dataUrl || "").trim();
+  const match = raw.match(
+    /^data:(image\/(?:jpeg|jpg|png|webp));base64,([A-Za-z0-9+/=]+)$/i,
+  );
+  if (!match) {
+    throw new Error("Invalid frame format (expected data:image/*;base64,...)");
+  }
+  return {
+    mimeType: String(match[1] || "").toLowerCase(),
+    base64Data: String(match[2] || ""),
+    dataUrl: raw,
+  };
+}
+
+function extractClaudeResponseText(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  const content = Array.isArray(payload.content) ? payload.content : [];
+  const text = content
+    .filter((part) => part?.type === "text")
+    .map((part) => String(part?.text || "").trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  if (text) return text;
+  return "";
+}
+
+function extractGeminiResponseText(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+  for (const candidate of candidates) {
+    const parts = Array.isArray(candidate?.content?.parts)
+      ? candidate.content.parts
+      : [];
+    const text = parts
+      .map((part) => String(part?.text || "").trim())
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+async function analyzeVisionWithOpenAI(dataUrl, model, prompt, contextText, cfg) {
+  const response = await fetch(OPENAI_RESPONSES_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${cfg.openaiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      max_output_tokens: 220,
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `${prompt}\n\n${contextText}`,
+            },
+            {
+              type: "input_image",
+              image_url: dataUrl,
+              detail: "high",
+            },
+          ],
+        },
+      ],
+    }),
+  });
+  if (!response.ok) {
+    const errText = await response.text().catch(() => "unknown");
+    throw new Error(`Vision request failed (${response.status}): ${errText}`);
+  }
+  const payload = await response.json();
+  const summary = extractModelResponseText(payload);
+  if (!summary) {
+    throw new Error("Vision model returned an empty summary");
+  }
+  return {
+    summary,
+    provider: "openai",
+    model,
+  };
+}
+
+async function analyzeVisionWithAzure(dataUrl, model, prompt, contextText, cfg) {
+  const endpoint = cfg.azureEndpoint.replace(/\/+$/, "");
+  const url = `${endpoint}/openai/responses?api-version=${AZURE_API_VERSION}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "api-key": cfg.azureKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      max_output_tokens: 220,
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `${prompt}\n\n${contextText}`,
+            },
+            {
+              type: "input_image",
+              image_url: dataUrl,
+              detail: "high",
+            },
+          ],
+        },
+      ],
+    }),
+  });
+  if (!response.ok) {
+    const errText = await response.text().catch(() => "unknown");
+    throw new Error(`Azure vision request failed (${response.status}): ${errText}`);
+  }
+  const payload = await response.json();
+  const summary = extractModelResponseText(payload);
+  if (!summary) {
+    throw new Error("Azure vision model returned an empty summary");
+  }
+  return {
+    summary,
+    provider: "azure",
+    model,
+  };
+}
+
+async function analyzeVisionWithClaude(frame, model, prompt, contextText, cfg) {
+  const response = await fetch(ANTHROPIC_MESSAGES_URL, {
+    method: "POST",
+    headers: {
+      "x-api-key": cfg.claudeKey,
+      "anthropic-version": ANTHROPIC_API_VERSION,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      max_tokens: 260,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: `${prompt}\n\n${contextText}` },
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: frame.mimeType,
+                data: frame.base64Data,
+              },
+            },
+          ],
+        },
+      ],
+    }),
+  });
+  if (!response.ok) {
+    const errText = await response.text().catch(() => "unknown");
+    throw new Error(`Claude vision request failed (${response.status}): ${errText}`);
+  }
+  const payload = await response.json();
+  const summary = extractClaudeResponseText(payload);
+  if (!summary) {
+    throw new Error("Claude vision model returned an empty summary");
+  }
+  return {
+    summary,
+    provider: "claude",
+    model,
+  };
+}
+
+async function analyzeVisionWithGemini(frame, model, prompt, contextText, cfg) {
+  const apiKey = String(cfg.geminiKey || "").trim();
+  const endpoint =
+    `${GEMINI_GENERATE_CONTENT_URL}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: `${prompt}\n\n${contextText}` },
+            {
+              inlineData: {
+                mimeType: frame.mimeType,
+                data: frame.base64Data,
+              },
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 220,
+      },
+    }),
+  });
+  if (!response.ok) {
+    const errText = await response.text().catch(() => "unknown");
+    throw new Error(`Gemini vision request failed (${response.status}): ${errText}`);
+  }
+  const payload = await response.json();
+  const summary = extractGeminiResponseText(payload);
+  if (!summary) {
+    throw new Error("Gemini vision model returned an empty summary");
+  }
+  return {
+    summary,
+    provider: "gemini",
+    model,
+  };
+}
+
 // ── Voice provider detection ────────────────────────────────────────────────
 
 /**
  * Resolve voice configuration from bosun config + env.
- * Returns { provider, model, apiKey, azureEndpoint, azureDeployment, voiceId,
- *           turnDetection, instructions, fallbackMode, delegateExecutor, enabled, visionModel }
+ * Returns { provider, model, openaiKey, azureKey, azureEndpoint, azureDeployment,
+ *           claudeKey, geminiKey, voiceId, turnDetection, instructions,
+ *           fallbackMode, delegateExecutor, enabled, visionModel }
  */
 export function getVoiceConfig(forceReload = false) {
   if (!forceReload && _voiceConfig && (Date.now() - _configLoadedAt < CONFIG_TTL_MS)) {
@@ -165,19 +404,43 @@ export function getVoiceConfig(forceReload = false) {
     || process.env.AZURE_OPENAI_REALTIME_DEPLOYMENT
     || "gpt-4o-realtime-preview";
 
+  const claudeKey = voice.claudeApiKey
+    || process.env.ANTHROPIC_API_KEY
+    || "";
+
+  const geminiKey = voice.geminiApiKey
+    || process.env.GEMINI_API_KEY
+    || process.env.GOOGLE_API_KEY
+    || "";
+
   const provider =
     rawProvider === "auto"
       ? (azureKey && azureEndpoint
           ? "azure"
-          : (openaiKey ? "openai" : "fallback"))
+          : (openaiKey
+              ? "openai"
+              : (claudeKey
+                  ? "claude"
+                  : (geminiKey ? "gemini" : "fallback"))))
       : rawProvider;
-
-  const model = voice.model || process.env.VOICE_MODEL || OPENAI_REALTIME_MODEL;
+  const defaultModel =
+    provider === "claude"
+      ? CLAUDE_DEFAULT_MODEL
+      : provider === "gemini"
+        ? GEMINI_DEFAULT_MODEL
+        : OPENAI_REALTIME_MODEL;
+  const model = voice.model || process.env.VOICE_MODEL || defaultModel;
   const voiceId = voice.voiceId || process.env.VOICE_ID || "alloy";
   const turnDetection =
     voice.turnDetection || process.env.VOICE_TURN_DETECTION || "server_vad";
+  const defaultVisionModel =
+    provider === "claude"
+      ? CLAUDE_DEFAULT_VISION_MODEL
+      : provider === "gemini"
+        ? GEMINI_DEFAULT_VISION_MODEL
+        : OPENAI_DEFAULT_VISION_MODEL;
   const visionModel =
-    voice.visionModel || process.env.VOICE_VISION_MODEL || OPENAI_DEFAULT_VISION_MODEL;
+    voice.visionModel || process.env.VOICE_VISION_MODEL || defaultVisionModel;
   const fallbackMode =
     voice.fallbackMode || process.env.VOICE_FALLBACK_MODE || "browser";
   const delegateExecutor =
@@ -206,6 +469,8 @@ For complex operations like writing code or creating PRs, delegate to the approp
     azureKey,
     azureEndpoint,
     azureDeployment,
+    claudeKey,
+    geminiKey,
     voiceId,
     turnDetection,
     visionModel,
@@ -231,11 +496,17 @@ export function isVoiceAvailable() {
   if (cfg.provider === "azure" && cfg.azureKey && cfg.azureEndpoint) {
     return { available: true, tier: 1, provider: "azure" };
   }
+  if (cfg.provider === "claude" && cfg.claudeKey) {
+    return { available: true, tier: 2, provider: "claude" };
+  }
+  if (cfg.provider === "gemini" && cfg.geminiKey) {
+    return { available: true, tier: 2, provider: "gemini" };
+  }
   if (cfg.fallbackMode === "disabled") {
     return {
       available: false,
       tier: null,
-      reason: "Realtime provider not configured and fallback disabled",
+      reason: `Voice provider "${cfg.provider}" is not configured and fallback is disabled`,
     };
   }
   // Tier 2 fallback available when enabled
@@ -250,6 +521,12 @@ export async function createEphemeralToken(toolDefinitions = [], callContext = {
   const cfg = getVoiceConfig();
   if (cfg.provider === "azure") {
     return createAzureEphemeralToken(toolDefinitions, callContext);
+  }
+  if (cfg.provider !== "openai") {
+    throw new Error(
+      `Realtime WebRTC token is unavailable for provider "${cfg.provider}". ` +
+      "Use VOICE_PROVIDER=openai|azure for Tier 1 realtime voice.",
+    );
   }
   if (!cfg.openaiKey) {
     throw new Error("OPENAI_API_KEY not configured for voice");
@@ -370,10 +647,8 @@ async function createAzureEphemeralToken(toolDefinitions = [], callContext = {})
  * @returns {Promise<{ summary: string, provider: string, model: string }>}
  */
 export async function analyzeVisionFrame(frameDataUrl, options = {}) {
-  const dataUrl = String(frameDataUrl || "").trim();
-  if (!/^data:image\/(jpeg|jpg|png|webp);base64,/i.test(dataUrl)) {
-    throw new Error("Invalid frame format (expected data:image/*;base64,...)");
-  }
+  const frame = parseImageDataUrl(frameDataUrl);
+  const dataUrl = frame.dataUrl;
 
   const cfg = getVoiceConfig();
   const source = String(options?.source || "screen").trim().toLowerCase() || "screen";
@@ -400,99 +675,69 @@ export async function analyzeVisionFrame(frameDataUrl, options = {}) {
     .filter(Boolean)
     .join("\n");
 
-  if (cfg.openaiKey) {
-    const response = await fetch(OPENAI_RESPONSES_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${cfg.openaiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.2,
-        max_output_tokens: 220,
-        input: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: `${prompt}\n\n${contextText}`,
-              },
-              {
-                type: "input_image",
-                image_url: dataUrl,
-                detail: "high",
-              },
-            ],
-          },
-        ],
-      }),
-    });
-    if (!response.ok) {
-      const errText = await response.text().catch(() => "unknown");
-      throw new Error(`Vision request failed (${response.status}): ${errText}`);
+  const preferredProviders = [];
+  const pushProvider = (value) => {
+    const provider = String(value || "").trim().toLowerCase();
+    if (!provider || preferredProviders.includes(provider)) return;
+    preferredProviders.push(provider);
+  };
+  pushProvider(cfg.provider);
+  if (cfg.openaiKey) pushProvider("openai");
+  if (cfg.azureKey && cfg.azureEndpoint) pushProvider("azure");
+  if (cfg.claudeKey) pushProvider("claude");
+  if (cfg.geminiKey) pushProvider("gemini");
+
+  let lastError = null;
+  for (const provider of preferredProviders) {
+    try {
+      if (provider === "openai" && cfg.openaiKey) {
+        return await analyzeVisionWithOpenAI(
+          dataUrl,
+          model,
+          prompt,
+          contextText,
+          cfg,
+        );
+      }
+      if (provider === "azure" && cfg.azureKey && cfg.azureEndpoint) {
+        return await analyzeVisionWithAzure(
+          dataUrl,
+          model,
+          prompt,
+          contextText,
+          cfg,
+        );
+      }
+      if (provider === "claude" && cfg.claudeKey) {
+        return await analyzeVisionWithClaude(
+          frame,
+          model,
+          prompt,
+          contextText,
+          cfg,
+        );
+      }
+      if (provider === "gemini" && cfg.geminiKey) {
+        return await analyzeVisionWithGemini(
+          frame,
+          model,
+          prompt,
+          contextText,
+          cfg,
+        );
+      }
+    } catch (err) {
+      lastError = err;
     }
-    const payload = await response.json();
-    const summary = extractModelResponseText(payload);
-    if (!summary) {
-      throw new Error("Vision model returned an empty summary");
-    }
-    return {
-      summary,
-      provider: "openai",
-      model,
-    };
   }
 
-  if (cfg.azureKey && cfg.azureEndpoint) {
-    const endpoint = cfg.azureEndpoint.replace(/\/+$/, "");
-    const url = `${endpoint}/openai/responses?api-version=${AZURE_API_VERSION}`;
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "api-key": cfg.azureKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.2,
-        max_output_tokens: 220,
-        input: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: `${prompt}\n\n${contextText}`,
-              },
-              {
-                type: "input_image",
-                image_url: dataUrl,
-                detail: "high",
-              },
-            ],
-          },
-        ],
-      }),
-    });
-    if (!response.ok) {
-      const errText = await response.text().catch(() => "unknown");
-      throw new Error(`Azure vision request failed (${response.status}): ${errText}`);
-    }
-    const payload = await response.json();
-    const summary = extractModelResponseText(payload);
-    if (!summary) {
-      throw new Error("Azure vision model returned an empty summary");
-    }
-    return {
-      summary,
-      provider: "azure",
-      model,
-    };
+  if (lastError) {
+    throw new Error(`Vision request failed: ${lastError.message}`);
   }
 
-  throw new Error("Vision unavailable: configure OPENAI_API_KEY or Azure voice credentials");
+  throw new Error(
+    "Vision unavailable: configure OPENAI, Azure, Anthropic, or Gemini voice credentials",
+  );
 }
 
 /**
@@ -537,6 +782,14 @@ export function getRealtimeConnectionInfo() {
       provider: "azure",
       url: `${endpoint}/openai/realtime?api-version=${AZURE_API_VERSION}&deployment=${cfg.azureDeployment}`,
       model: cfg.azureDeployment,
+    };
+  }
+  if (cfg.provider !== "openai") {
+    return {
+      provider: cfg.provider,
+      url: null,
+      model: cfg.model,
+      tier: 2,
     };
   }
   return {

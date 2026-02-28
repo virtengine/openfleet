@@ -22,6 +22,7 @@ const VALID_EXECUTORS = new Set([
   "codex-sdk",
   "copilot-sdk",
   "claude-sdk",
+  "gemini-sdk",
   "opencode-sdk",
 ]);
 const VALID_AGENT_MODES = new Set(["ask", "agent", "plan"]);
@@ -164,7 +165,7 @@ const TOOL_DEFS = [
   {
     type: "function",
     name: "delegate_to_agent",
-    description: "Delegate a complex task to a coding agent (codex, copilot, claude, or opencode). Use this for code changes, file creation, debugging, or any operation requiring workspace access. The agent will execute the task and return its response.",
+    description: "Delegate a complex task to a coding agent (codex, copilot, claude, gemini, or opencode). Use this for code changes, file creation, debugging, or any operation requiring workspace access. The agent will execute the task and return its response.",
     parameters: {
       type: "object",
       properties: {
@@ -174,7 +175,7 @@ const TOOL_DEFS = [
         },
         executor: {
           type: "string",
-          enum: ["codex-sdk", "copilot-sdk", "claude-sdk", "opencode-sdk"],
+          enum: ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"],
           description: "Which agent to use. Defaults to the configured primary agent.",
         },
         mode: {
@@ -205,7 +206,7 @@ const TOOL_DEFS = [
       properties: {
         executor: {
           type: "string",
-          enum: ["codex-sdk", "copilot-sdk", "claude-sdk", "opencode-sdk"],
+          enum: ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"],
           description: "The executor to switch to",
         },
       },

@@ -4577,6 +4577,22 @@ Object.assign(UI_SCREENS, {
     },
     keyboard: () => {
       syncUiUrlsFromServer();
+      const voiceMeetingWebAppUrl = getMeetingWebAppUrl("voice");
+      const videoMeetingWebAppUrl = getMeetingWebAppUrl("video");
+      const meetingRow = [
+        voiceMeetingWebAppUrl
+          ? {
+              text: "📞 Voice Meeting",
+              web_app: { url: voiceMeetingWebAppUrl },
+            }
+          : uiButton("📞 Voice Meeting", uiCmdAction("/call")),
+        videoMeetingWebAppUrl
+          ? {
+              text: "🎥 Video Meeting",
+              web_app: { url: videoMeetingWebAppUrl },
+            }
+          : uiButton("🎥 Video Meeting", uiCmdAction("/videocall")),
+      ];
       const rows = [
         // Core Operations
         [
@@ -4602,6 +4618,7 @@ Object.assign(UI_SCREENS, {
           uiButton("📖 All Commands", uiCmdAction("/helpfull")),
         ],
       ];
+      rows.unshift(meetingRow);
       if (telegramWebAppUrl) {
         rows.unshift([
           {
@@ -6478,9 +6495,25 @@ async function cmdApp(chatId) {
     return;
   }
   const browserOptions = getBrowserUiUrlOptions();
+  const voiceMeetingWebAppUrl = getMeetingWebAppUrl("voice", {
+    chat_id: String(chatId || "").trim(),
+  });
+  const videoMeetingWebAppUrl = getMeetingWebAppUrl("video", {
+    chat_id: String(chatId || "").trim(),
+  });
   const rows = [];
   if (webAppUrl) {
     rows.unshift([{ text: "📱 Open Control Center", web_app: { url: webAppUrl } }]);
+  }
+  if (voiceMeetingWebAppUrl || videoMeetingWebAppUrl) {
+    rows.push([
+      voiceMeetingWebAppUrl
+        ? { text: "📞 Voice Meeting", web_app: { url: voiceMeetingWebAppUrl } }
+        : { text: "📞 Voice Meeting", callback_data: "/call" },
+      videoMeetingWebAppUrl
+        ? { text: "🎥 Video Meeting", web_app: { url: videoMeetingWebAppUrl } }
+        : { text: "🎥 Video Meeting", callback_data: "/videocall" },
+    ]);
   }
   if (browserOptions.length > 0) {
     rows.push(...browserOptions.map((option) => [{ text: option.label, url: option.url }]));

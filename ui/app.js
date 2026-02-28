@@ -61,6 +61,62 @@ const TABLET_MIN_WIDTH = 768;
 const COMPACT_NAV_MAX_WIDTH = 520;
 const RAIL_ICON_WIDTH = 54;
 const SIDEBAR_ICON_WIDTH = 54;
+const VOICE_LAUNCH_QUERY_KEYS = [
+  "launch",
+  "call",
+  "autostart",
+  "sessionId",
+  "executor",
+  "mode",
+  "model",
+  "vision",
+  "source",
+  "chat_id",
+];
+
+function parseVoiceLaunchFromUrl() {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search || "");
+  const launch = String(params.get("launch") || "").trim().toLowerCase();
+  if (launch !== "meeting" && launch !== "voice") return null;
+
+  const callRaw = String(params.get("call") || "").trim().toLowerCase();
+  const call = callRaw === "video" ? "video" : "voice";
+  const explicitVision = String(params.get("vision") || "").trim().toLowerCase();
+  const initialVisionSource =
+    explicitVision === "camera" || explicitVision === "screen"
+      ? explicitVision
+      : call === "video"
+        ? "camera"
+        : null;
+
+  return {
+    tab: "chat",
+    detail: {
+      call,
+      initialVisionSource,
+      sessionId: String(params.get("sessionId") || "").trim() || null,
+      executor: String(params.get("executor") || "").trim() || null,
+      mode: String(params.get("mode") || "").trim() || null,
+      model: String(params.get("model") || "").trim() || null,
+    },
+  };
+}
+
+function scrubVoiceLaunchQuery() {
+  if (typeof window === "undefined" || !window.history?.replaceState) return;
+  const url = new URL(window.location.href);
+  let changed = false;
+  for (const key of VOICE_LAUNCH_QUERY_KEYS) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  const nextPath = `${url.pathname}${url.search}${url.hash}`;
+  window.history.replaceState(window.history.state, "", nextPath || "/");
+}
 
 /* ── Module imports ── */
 import { ICONS } from "./modules/icons.js";
@@ -1273,6 +1329,10 @@ function App() {
   const [voiceExecutor, setVoiceExecutor] = useState(null);
   const [voiceAgentMode, setVoiceAgentMode] = useState(null);
   const [voiceModel, setVoiceModel] = useState(null);
+  const [voiceCallType, setVoiceCallType] = useState("voice");
+  const [voiceInitialVisionSource, setVoiceInitialVisionSource] = useState(
+    null,
+  );
   const resizeRef = useRef(null);
   const [isCompactNav, setIsCompactNav] = useState(() => {
     const win = globalThis.window;
@@ -1581,6 +1641,22 @@ function App() {
   useEffect(() => {
     const handleOpenVoiceMode = async (event) => {
       try {
+        const requestedCallType =
+          String(event?.detail?.call || "").trim().toLowerCase() === "video"
+            ? "video"
+            : "voice";
+        const requestedVisionSourceRaw = String(
+          event?.detail?.initialVisionSource || "",
+        )
+          .trim()
+          .toLowerCase();
+        const requestedVisionSource =
+          requestedVisionSourceRaw === "camera" ||
+          requestedVisionSourceRaw === "screen"
+            ? requestedVisionSourceRaw
+            : requestedCallType === "video"
+              ? "camera"
+              : null;
         const currentExecutor =
           String(event?.detail?.executor || activeAgent.value || "").trim() ||
           null;
@@ -1620,6 +1696,8 @@ function App() {
         setVoiceExecutor(currentExecutor);
         setVoiceAgentMode(currentMode);
         setVoiceModel(currentModel);
+        setVoiceCallType(requestedCallType);
+        setVoiceInitialVisionSource(requestedVisionSource);
 
         const response = await fetch("/api/voice/config", { method: "GET" });
         const cfg = response.ok ? await response.json() : null;
@@ -1640,6 +1718,43 @@ function App() {
     globalThis.addEventListener?.("ve:open-voice-mode", handleOpenVoiceMode);
     return () =>
       globalThis.removeEventListener?.("ve:open-voice-mode", handleOpenVoiceMode);
+  }, []);
+
+  useEffect(() => {
+    const launch = parseVoiceLaunchFromUrl();
+    if (!launch) return;
+    let cancelled = false;
+
+    const start = async () => {
+      if (launch.tab === "chat") {
+        const launchSessionId = String(launch.detail?.sessionId || "").trim();
+        if (launchSessionId) {
+          selectedSessionId.value = launchSessionId;
+          navigateTo("chat", {
+            params: { sessionId: launchSessionId },
+            replace: true,
+            skipGuard: true,
+          });
+        } else {
+          navigateTo("chat", { replace: true, skipGuard: true });
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      if (cancelled) return;
+      globalThis.dispatchEvent?.(
+        new CustomEvent("ve:open-voice-mode", { detail: launch.detail }),
+      );
+    };
+
+    start()
+      .catch(() => {})
+      .finally(() => {
+        scrubVoiceLaunchQuery();
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -1915,6 +2030,8 @@ function App() {
       executor=${voiceExecutor}
       mode=${voiceAgentMode}
       model=${voiceModel}
+      callType=${voiceCallType}
+      initialVisionSource=${voiceInitialVisionSource}
     />
   `;
 }

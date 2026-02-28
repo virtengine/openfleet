@@ -1901,7 +1901,7 @@ function normalizeSetupConfiguration({
   env.VOICE_ENABLED = toBooleanEnvString(env.VOICE_ENABLED, true);
   env.VOICE_PROVIDER = normalizeEnum(
     env.VOICE_PROVIDER,
-    ["auto", "openai", "azure", "fallback"],
+    ["auto", "openai", "azure", "claude", "gemini", "fallback"],
     "auto",
   );
   env.VOICE_MODEL =
@@ -3221,11 +3221,13 @@ async function main() {
           "auto (recommended)",
           "openai",
           "azure",
+          "claude (fallback voice + Claude vision)",
+          "gemini (fallback voice + Gemini vision)",
           "fallback (browser speech only)",
         ],
         0,
       );
-      const providerOptions = ["auto", "openai", "azure", "fallback"];
+      const providerOptions = ["auto", "openai", "azure", "claude", "gemini", "fallback"];
       env.VOICE_PROVIDER = providerOptions[providerIdx] || "auto";
 
       env.VOICE_ID = await prompt.ask(
