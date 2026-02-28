@@ -1066,7 +1066,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           <div class="chat-loading">Loading messages…</div>
         `}
         ${!loading && messages.length === 0 && html`
-          <div class="chat-empty-state-inline">
+          <div class="chat-empty-state-inline chat-empty-state-inline--no-box">
             <div class="session-empty-icon">${resolveIcon(":server:")}</div>
             <div class="session-empty-text">
               No messages yet.

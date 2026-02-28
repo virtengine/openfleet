@@ -7665,6 +7665,44 @@ async function handleApi(req, res, url) {
       return;
     }
 
+    if (action === "message/edit" && req.method === "POST") {
+      try {
+        const tracker = getSessionTracker();
+        const session = tracker.getSessionById(sessionId);
+        if (!session) {
+          jsonResponse(res, 404, { ok: false, error: "Session not found" });
+          return;
+        }
+        const body = await readJsonBody(req);
+        const content = String(body?.content || "").trim();
+        if (!content) {
+          jsonResponse(res, 400, { ok: false, error: "content is required" });
+          return;
+        }
+
+        const edited = tracker.editUserMessage(sessionId, {
+          messageId: body?.messageId,
+          timestamp: body?.timestamp,
+          previousContent: body?.previousContent,
+          content,
+        });
+        if (!edited?.ok) {
+          const status = edited?.error === "Message not found" ? 404 : 400;
+          jsonResponse(res, status, { ok: false, error: edited?.error || "edit failed" });
+          return;
+        }
+
+        jsonResponse(res, 200, { ok: true, message: edited.message });
+        broadcastUiEvent(["sessions"], "invalidate", {
+          reason: "session-message-edited",
+          sessionId,
+        });
+      } catch (err) {
+        jsonResponse(res, 500, { ok: false, error: err.message });
+      }
+      return;
+    }
+
     if (action === "archive" && req.method === "POST") {
       try {
         const tracker = getSessionTracker();
@@ -8148,14 +8186,18 @@ export async function startTelegramUiServer(options = {}) {
     shouldReusePersistedPort
       ? persistedPort
       : configuredPort;
+  const hasExplicitEnvPort =
+    Number.isFinite(Number(process.env.TELEGRAM_UI_PORT || "")) &&
+    Number(process.env.TELEGRAM_UI_PORT || "") > 0;
   const portSource =
     shouldReusePersistedPort
       ? "cache.ui-last-port"
       : options.port != null
       ? "options.port"
-      : process.env.TELEGRAM_UI_PORT
+      : hasExplicitEnvPort
         ? "env.TELEGRAM_UI_PORT"
         : `default(${DEFAULT_TELEGRAM_UI_PORT})`;
+  const usingFallbackDefaultPort = portSource.startsWith("default(");
 
   if (!Number.isFinite(port) || port < 0) {
     console.warn(
@@ -8466,7 +8508,8 @@ export async function startTelegramUiServer(options = {}) {
     // Reuse a recent session token when possible so browser sessions survive restarts.
     ensureSessionToken();
 
-    const listenHost = options.host || DEFAULT_HOST;
+    const host = options.host || DEFAULT_HOST;
+    const maxPortFallbackAttempts = usingFallbackDefaultPort ? 20 : 0;
     const listenOnce = (targetPort) =>
       new Promise((resolveReady, rejectReady) => {
         const onError = (err) => {
@@ -8479,20 +8522,38 @@ export async function startTelegramUiServer(options = {}) {
         };
         uiServer.once("error", onError);
         uiServer.once("listening", onListening);
-        uiServer.listen(targetPort, listenHost);
+        uiServer.listen(targetPort, host);
       });
+    let listenPort = port;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await listenOnce(listenPort);
+        break;
+      } catch (err) {
+        const isAddrInUse = err?.code === "EADDRINUSE";
+        const canRetryPortIncrement =
+          isAddrInUse &&
+          attempt < maxPortFallbackAttempts &&
+          listenPort > 0;
+        if (canRetryPortIncrement) {
+          const nextPort = listenPort + 1;
+          console.warn(
+            `[telegram-ui] port ${listenPort} in use; retrying on ${nextPort} (attempt ${attempt + 1}/${maxPortFallbackAttempts})`,
+          );
+          listenPort = nextPort;
+          continue;
+        }
 
-    try {
-      await listenOnce(port);
-    } catch (err) {
-      const code = String(err?.code || "").toUpperCase();
-      const canRetryWithEphemeral =
-        allowEphemeralPort && port > 0 && (code === "EADDRINUSE" || code === "EACCES");
-      if (!canRetryWithEphemeral) throw err;
-      console.warn(
-        `[telegram-ui] failed to bind ${listenHost}:${port} (${code || "unknown"}); retrying with ephemeral port`,
-      );
-      await listenOnce(0);
+        const code = String(err?.code || "").toUpperCase();
+        const canRetryWithEphemeral =
+          allowEphemeralPort && listenPort > 0 && (code === "EADDRINUSE" || code === "EACCES");
+        if (!canRetryWithEphemeral) throw err;
+        console.warn(
+          `[telegram-ui] failed to bind ${host}:${listenPort} (${code || "unknown"}); retrying with ephemeral port`,
+        );
+        await listenOnce(0);
+        break;
+      }
     }
   } catch (err) {
     releaseUiInstanceLock();

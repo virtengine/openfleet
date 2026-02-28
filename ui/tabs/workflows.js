@@ -2339,6 +2339,10 @@ export function WorkflowsTab() {
   return html`
     <style>
       .wf-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
         padding: 6px 14px;
         border: 1px solid var(--color-border, #2a3040);
         border-radius: 8px;

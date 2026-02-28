@@ -150,11 +150,15 @@ After completing your implementation:
     }, { x: 200, y: 1200 }),
 
     node("notify-failure", "notify.telegram", "Notify Review Failed", {
-      message: ":close: Frontend task **{{taskTitle}}** failed visual verification. Review evidence in .bosun/evidence/",
+      message: "❌ Frontend task **{{taskTitle}}** failed visual verification.\n" +
+        "Evidence dir: `{{evidenceDir}}`\n" +
+        "Reason: `{{model-review.reason}}`\n" +
+        "Evidence count: `{{model-review.evidenceCount}}`\n" +
+        "Review output: {{model-review.reviewOutput}}",
     }, { x: 600, y: 1080 }),
 
     node("log-failure", "notify.log", "Log Failure", {
-      message: "Frontend verification failed for {{taskId}}: review output in evidence dir",
+      message: "Frontend verification failed for {{taskId}}: evidenceDir={{evidenceDir}} reason={{model-review.reason}} evidenceCount={{model-review.evidenceCount}}",
       level: "warn",
     }, { x: 600, y: 1200 }),
   ],
