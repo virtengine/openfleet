@@ -1,5 +1,5 @@
 import { execSync, spawn, spawnSync } from "node:child_process";
-import { createHmac, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, unlinkSync, watchFile, unwatchFile } from "node:fs";
 import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -134,6 +134,69 @@ const uiRootPreferred = resolve(__dirname, "ui");
 const uiRootFallback = resolve(__dirname, "site", "ui");
 const uiRoot = existsSync(uiRootPreferred) ? uiRootPreferred : uiRootFallback;
 let libraryInitAttempted = false;
+const MAX_VISION_FRAME_BYTES = Math.max(
+  128_000,
+  Number.parseInt(process.env.VISION_FRAME_MAX_BYTES || "", 10) || 2_000_000,
+);
+const DEFAULT_VISION_ANALYSIS_INTERVAL_MS = Math.min(
+  30_000,
+  Math.max(
+    500,
+    Number.parseInt(process.env.VISION_ANALYSIS_INTERVAL_MS || "", 10) || 1500,
+  ),
+);
+const _visionSessionState = new Map();
+
+function getVisionSessionState(sessionId) {
+  const key = String(sessionId || "").trim();
+  if (!key) return null;
+  if (!_visionSessionState.has(key)) {
+    _visionSessionState.set(key, {
+      lastFrameHash: null,
+      lastReceiptAt: 0,
+      lastAnalyzedHash: null,
+      lastAnalyzedAt: 0,
+      lastSummary: "",
+      inFlight: null,
+    });
+  }
+  return _visionSessionState.get(key);
+}
+
+function sanitizeVisionSource(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "camera") return "camera";
+  if (raw === "screen" || raw === "display") return "screen";
+  return "screen";
+}
+
+function normalizeVisionInterval(rawValue) {
+  const parsed = Number.parseInt(String(rawValue || ""), 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_VISION_ANALYSIS_INTERVAL_MS;
+  return Math.min(30_000, Math.max(300, parsed));
+}
+
+function parseVisionFrameDataUrl(dataUrl) {
+  const raw = String(dataUrl || "").trim();
+  const match = raw.match(/^data:(image\/(?:jpeg|jpg|png|webp));base64,([A-Za-z0-9+/=]+)$/i);
+  if (!match) {
+    return { ok: false, error: "frameDataUrl must be a base64 image data URL (jpeg/png/webp)" };
+  }
+  const mimeType = String(match[1] || "").toLowerCase();
+  const base64Data = String(match[2] || "");
+  const approxBytes = Math.floor((base64Data.length * 3) / 4);
+  if (approxBytes <= 0) {
+    return { ok: false, error: "frameDataUrl was empty" };
+  }
+  if (approxBytes > MAX_VISION_FRAME_BYTES) {
+    return {
+      ok: false,
+      statusCode: 413,
+      error: `frameDataUrl too large (${approxBytes} bytes > ${MAX_VISION_FRAME_BYTES} bytes limit)`,
+    };
+  }
+  return { ok: true, mimeType, base64Data, approxBytes, raw };
+}
 
 function ensureLibraryInitialized() {
   if (libraryInitAttempted) return;
@@ -1159,6 +1222,16 @@ const INTERNAL_EXECUTOR_MAP = {
   POLL_MS: ["internalExecutor", "pollIntervalMs"],
   REVIEW_AGENT_ENABLED: ["internalExecutor", "reviewAgentEnabled"],
   REPLENISH_ENABLED: ["internalExecutor", "backlogReplenishment", "enabled"],
+  STREAM_MAX_RETRIES: ["internalExecutor", "stream", "maxRetries"],
+  STREAM_RETRY_BASE_MS: ["internalExecutor", "stream", "retryBaseMs"],
+  STREAM_RETRY_MAX_MS: ["internalExecutor", "stream", "retryMaxMs"],
+  STREAM_FIRST_EVENT_TIMEOUT_MS: [
+    "internalExecutor",
+    "stream",
+    "firstEventTimeoutMs",
+  ],
+  STREAM_MAX_ITEMS_PER_TURN: ["internalExecutor", "stream", "maxItemsPerTurn"],
+  STREAM_MAX_ITEM_CHARS: ["internalExecutor", "stream", "maxItemChars"],
 };
 const CONFIG_PATH_OVERRIDES = {
   EXECUTOR_MODE: ["internalExecutor", "mode"],
@@ -1789,6 +1862,9 @@ const SETTINGS_KNOWN_KEYS = [
   "EXECUTOR_MODE", "INTERNAL_EXECUTOR_PARALLEL", "INTERNAL_EXECUTOR_SDK",
   "INTERNAL_EXECUTOR_TIMEOUT_MS", "INTERNAL_EXECUTOR_MAX_RETRIES", "INTERNAL_EXECUTOR_POLL_MS",
   "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED", "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
+  "INTERNAL_EXECUTOR_STREAM_MAX_RETRIES", "INTERNAL_EXECUTOR_STREAM_RETRY_BASE_MS",
+  "INTERNAL_EXECUTOR_STREAM_RETRY_MAX_MS", "INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS",
+  "INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN", "INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS",
   "CODEX_SDK_DISABLED", "COPILOT_SDK_DISABLED", "CLAUDE_SDK_DISABLED",
   "PRIMARY_AGENT", "EXECUTORS", "EXECUTOR_DISTRIBUTION", "FAILOVER_STRATEGY",
   "COMPLEXITY_ROUTING_ENABLED", "PROJECT_REQUIREMENTS_PROFILE",
@@ -2553,7 +2629,7 @@ async function startTunnel(localPort) {
   // ── SECURITY: Block tunnel when auth is disabled ─────────────────────
   if (isAllowUnsafe()) {
     console.error(
-      "[telegram-ui] ⛔ REFUSING to start Cloudflare tunnel — TELEGRAM_UI_ALLOW_UNSAFE=true\n" +
+      "[telegram-ui] :ban: REFUSING to start Cloudflare tunnel — TELEGRAM_UI_ALLOW_UNSAFE=true\n" +
       "  A public tunnel with no authentication lets ANYONE on the internet\n" +
       "  control your agents, read secrets, and execute commands.\n" +
       "\n" +
@@ -7577,7 +7653,7 @@ async function handleApi(req, res, url) {
           tracker.recordEvent(sessionId, {
             role: "system",
             type: "error",
-            content: "⚠️ No agent is available to process this message. The primary agent may not be initialized — try restarting bosun or check the Logs tab for details.",
+            content: ":alert: No agent is available to process this message. The primary agent may not be initialized — try restarting bosun or check the Logs tab for details.",
             timestamp: new Date().toISOString(),
           });
           jsonResponse(res, 200, { ok: true, messageId, warning: "no_agent_available" });
@@ -7721,6 +7797,12 @@ async function handleApi(req, res, url) {
         voiceId: config.voiceId,
         turnDetection: config.turnDetection,
         model: config.model,
+        visionModel: config.visionModel,
+        vision: {
+          enabled: true,
+          frameMaxBytes: MAX_VISION_FRAME_BYTES,
+          defaultIntervalMs: DEFAULT_VISION_ANALYSIS_INTERVAL_MS,
+        },
         fallbackMode: config.fallbackMode,
         connectionInfo,
       });
@@ -7733,9 +7815,19 @@ async function handleApi(req, res, url) {
   // POST /api/voice/token
   if (path === "/api/voice/token" && req.method === "POST") {
     try {
+      const body = await readJsonBody(req).catch(() => ({}));
+      const callContext = {
+        sessionId: String(body?.sessionId || "").trim() || undefined,
+        executor: String(body?.executor || "").trim() || undefined,
+        mode: String(body?.mode || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
       const { createEphemeralToken, getVoiceToolDefinitions } = await import("./voice-relay.mjs");
-      const tools = await getVoiceToolDefinitions();
-      const tokenData = await createEphemeralToken(tools);
+      const delegateOnly =
+        body?.delegateOnly === true ||
+        (body?.delegateOnly !== false && Boolean(callContext.sessionId));
+      const tools = await getVoiceToolDefinitions({ delegateOnly });
+      const tokenData = await createEphemeralToken(tools, callContext);
 
       jsonResponse(res, 200, tokenData);
     } catch (err) {
@@ -7748,17 +7840,221 @@ async function handleApi(req, res, url) {
   if (path === "/api/voice/tool" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const { toolName, args, sessionId: voiceSessionId } = body || {};
-      if (!toolName) {
+      const {
+        toolName,
+        args,
+        sessionId: voiceSessionId,
+        executor,
+        mode,
+        model,
+      } = body || {};
+      const normalizedToolName = String(toolName || "").trim();
+      if (!normalizedToolName) {
         jsonResponse(res, 400, { error: "toolName required" });
         return;
       }
       const { executeVoiceTool } = await import("./voice-relay.mjs");
-      const result = await executeVoiceTool(toolName, args || {}, { sessionId: voiceSessionId });
+      const context = {
+        sessionId: String(voiceSessionId || "").trim() || undefined,
+        executor: String(executor || "").trim() || undefined,
+        mode: String(mode || "").trim() || undefined,
+        model: String(model || "").trim() || undefined,
+      };
+      if (context.sessionId && normalizedToolName !== "delegate_to_agent") {
+        jsonResponse(res, 400, {
+          error: "Session-bound calls only allow delegate_to_agent",
+        });
+        return;
+      }
+      const result = await executeVoiceTool(normalizedToolName, args || {}, context);
 
       jsonResponse(res, 200, result);
     } catch (err) {
       jsonResponse(res, 500, { error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/transcript
+  if (path === "/api/voice/transcript" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const sessionId = String(body?.sessionId || "").trim();
+      const role = String(body?.role || "").trim().toLowerCase();
+      const content = String(body?.content || "").trim();
+      if (!sessionId) {
+        jsonResponse(res, 400, { ok: false, error: "sessionId required" });
+        return;
+      }
+      if (!["user", "assistant", "system"].includes(role)) {
+        jsonResponse(res, 400, { ok: false, error: "role must be user|assistant|system" });
+        return;
+      }
+      if (!content) {
+        jsonResponse(res, 400, { ok: false, error: "content required" });
+        return;
+      }
+
+      const tracker = getSessionTracker();
+      let session = tracker.getSessionById(sessionId);
+      if (!session) {
+        session = tracker.createSession({
+          id: sessionId,
+          type: "primary",
+          metadata: {
+            agent: String(body?.executor || getPrimaryAgentName() || ""),
+            mode: String(body?.mode || getAgentMode() || ""),
+            model: String(body?.model || "").trim() || undefined,
+          },
+        });
+      }
+
+      tracker.recordEvent(session.id || sessionId, {
+        role,
+        type: "voice_transcript",
+        content,
+        timestamp: new Date().toISOString(),
+        meta: {
+          source: "voice",
+          provider: String(body?.provider || "").trim() || undefined,
+          eventType: String(body?.eventType || "").trim() || undefined,
+        },
+      });
+
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/vision/frame
+  if (path === "/api/vision/frame" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const sessionId = String(body?.sessionId || "").trim();
+      const source = sanitizeVisionSource(body?.source);
+      const frame = parseVisionFrameDataUrl(body?.frameDataUrl);
+      const forceAnalyze = body?.forceAnalyze === true;
+      const minIntervalMs = normalizeVisionInterval(body?.minIntervalMs);
+      const width = Number.isFinite(Number(body?.width)) ? Number(body.width) : null;
+      const height = Number.isFinite(Number(body?.height)) ? Number(body.height) : null;
+
+      if (!sessionId) {
+        jsonResponse(res, 400, { ok: false, error: "sessionId required" });
+        return;
+      }
+      if (!frame.ok) {
+        jsonResponse(res, frame.statusCode || 400, { ok: false, error: frame.error });
+        return;
+      }
+
+      const state = getVisionSessionState(sessionId);
+      if (!state) {
+        jsonResponse(res, 400, { ok: false, error: "Invalid sessionId" });
+        return;
+      }
+
+      const frameHash = createHash("sha1").update(frame.base64Data).digest("hex");
+      const now = Date.now();
+
+      state.lastFrameHash = frameHash;
+      state.lastReceiptAt = now;
+
+      if (!forceAnalyze && state.inFlight) {
+        jsonResponse(res, 202, {
+          ok: true,
+          analyzed: false,
+          skipped: true,
+          reason: "analysis_in_progress",
+          summary: state.lastSummary || undefined,
+        });
+        return;
+      }
+
+      if (!forceAnalyze && frameHash === state.lastAnalyzedHash) {
+        jsonResponse(res, 200, {
+          ok: true,
+          analyzed: false,
+          skipped: true,
+          reason: "duplicate_frame",
+          summary: state.lastSummary || undefined,
+        });
+        return;
+      }
+
+      if (!forceAnalyze && now - state.lastAnalyzedAt < minIntervalMs) {
+        jsonResponse(res, 202, {
+          ok: true,
+          analyzed: false,
+          skipped: true,
+          reason: "throttled",
+          summary: state.lastSummary || undefined,
+        });
+        return;
+      }
+
+      const callContext = {
+        sessionId,
+        executor: String(body?.executor || "").trim() || undefined,
+        mode: String(body?.mode || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
+      const prompt = String(body?.prompt || "").trim() || undefined;
+      const model = String(body?.visionModel || "").trim() || undefined;
+
+      const { analyzeVisionFrame } = await import("./voice-relay.mjs");
+      const pending = analyzeVisionFrame(frame.raw, {
+        source,
+        context: callContext,
+        prompt,
+        model,
+      });
+      state.inFlight = pending;
+      let analysis;
+      try {
+        analysis = await pending;
+      } finally {
+        if (state.inFlight === pending) {
+          state.inFlight = null;
+        }
+      }
+
+      const tracker = getSessionTracker();
+      let session = tracker.getSessionById(sessionId);
+      if (!session) {
+        session = tracker.createSession({
+          id: sessionId,
+          type: "primary",
+          metadata: {
+            agent: String(body?.executor || getPrimaryAgentName() || ""),
+            mode: String(body?.mode || getAgentMode() || ""),
+            model: String(body?.model || "").trim() || undefined,
+          },
+        });
+      }
+
+      const dimension = width && height ? ` (${width}x${height})` : "";
+      tracker.recordEvent(session.id || sessionId, {
+        role: "system",
+        content: `[Vision ${source}${dimension}] ${analysis.summary}`,
+        timestamp: new Date().toISOString(),
+      });
+
+      state.lastAnalyzedHash = frameHash;
+      state.lastAnalyzedAt = Date.now();
+      state.lastSummary = String(analysis.summary || "").trim();
+
+      jsonResponse(res, 200, {
+        ok: true,
+        analyzed: true,
+        summary: state.lastSummary,
+        provider: analysis.provider || null,
+        model: analysis.model || null,
+        frameHash,
+      });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
     }
     return;
   }
@@ -7915,10 +8211,17 @@ export async function startTelegramUiServer(options = {}) {
       const provided = Buffer.from(qToken);
       const expected = Buffer.from(sessionToken);
       if (provided.length === expected.length && timingSafeEqual(provided, expected)) {
+        const cleanUrl = new URL(url.toString());
+        cleanUrl.searchParams.delete("token");
+        const redirectPath =
+          cleanUrl.pathname +
+          (cleanUrl.searchParams.toString()
+            ? `?${cleanUrl.searchParams.toString()}`
+            : "");
         const secure = uiServerTls ? "; Secure" : "";
         res.writeHead(302, {
           "Set-Cookie": `ve_session=${sessionToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400${secure}`,
-          Location: url.pathname || "/",
+          Location: redirectPath || "/",
         });
         res.end();
         return;
@@ -8059,10 +8362,43 @@ export async function startTelegramUiServer(options = {}) {
             stopLogStream(socket);
           } else if (message?.type === "voice-tool-call") {
             // Voice tool call via WebSocket
-            const { toolName, args, callId, sessionId: voiceSessionId } = message;
+            const {
+              toolName,
+              args,
+              callId,
+              sessionId: voiceSessionId,
+              executor,
+              mode,
+              model,
+            } = message;
+            const normalizedToolName = String(toolName || "").trim();
+            if (!normalizedToolName) {
+              sendWsMessage(socket, {
+                type: "voice-tool-result",
+                callId,
+                error: "toolName required",
+                ts: Date.now(),
+              });
+              return;
+            }
+            const normalizedSessionId = String(voiceSessionId || "").trim() || undefined;
+            if (normalizedSessionId && normalizedToolName !== "delegate_to_agent") {
+              sendWsMessage(socket, {
+                type: "voice-tool-result",
+                callId,
+                error: "Session-bound calls only allow delegate_to_agent",
+                ts: Date.now(),
+              });
+              return;
+            }
             import("./voice-relay.mjs").then(async (relay) => {
               try {
-                const result = await relay.executeVoiceTool(toolName, args || {}, { sessionId: voiceSessionId });
+                const result = await relay.executeVoiceTool(normalizedToolName, args || {}, {
+                  sessionId: normalizedSessionId,
+                  executor: String(executor || "").trim() || undefined,
+                  mode: String(mode || "").trim() || undefined,
+                  model: String(model || "").trim() || undefined,
+                });
                 sendWsMessage(socket, {
                   type: "voice-tool-result",
                   callId,
@@ -8202,13 +8538,13 @@ export async function startTelegramUiServer(options = {}) {
     const tunnelActive = tunnelMode !== "disabled" && tunnelMode !== "off" && tunnelMode !== "0";
     const border = "═".repeat(68);
     console.warn(`\n╔${border}╗`);
-    console.warn(`║ ⛔  DANGER: TELEGRAM_UI_ALLOW_UNSAFE=true — ALL AUTH IS DISABLED   ║`);
+    console.warn(`║ :ban:  DANGER: TELEGRAM_UI_ALLOW_UNSAFE=true — ALL AUTH IS DISABLED   ║`);
     console.warn(`║                                                                    ║`);
     console.warn(`║  Anyone with your URL can control agents, read secrets, and        ║`);
     console.warn(`║  execute arbitrary commands on this machine.                        ║`);
     if (tunnelActive) {
       console.warn(`║                                                                    ║`);
-      console.warn(`║  🔴  TUNNEL IS ACTIVE — your UI is exposed to the PUBLIC INTERNET  ║`);
+      console.warn(`║  :dot:  TUNNEL IS ACTIVE — your UI is exposed to the PUBLIC INTERNET  ║`);
       console.warn(`║  This means ANYONE can discover your URL and take control.         ║`);
       console.warn(`║  Set TELEGRAM_UI_TUNNEL=disabled or TELEGRAM_UI_ALLOW_UNSAFE=false ║`);
     }
@@ -8272,7 +8608,7 @@ export async function startTelegramUiServer(options = {}) {
   if (firewallState) {
     if (firewallState.blocked) {
       console.warn(
-        `[telegram-ui] ⚠️  Port ${actualPort}/tcp appears BLOCKED by ${firewallState.firewall} for LAN access.`,
+        `[telegram-ui] :alert:  Port ${actualPort}/tcp appears BLOCKED by ${firewallState.firewall} for LAN access.`,
       );
       console.warn(
         `[telegram-ui] To fix, run: ${firewallState.allowCmd}`,
@@ -8288,7 +8624,7 @@ export async function startTelegramUiServer(options = {}) {
       console.log(`[telegram-ui] Telegram Mini App URL: ${tUrl}`);
       if (firewallState?.blocked) {
         console.log(
-          `[telegram-ui] ℹ️  Tunnel active — Telegram Mini App works regardless of firewall. ` +
+          `[telegram-ui] :help:  Tunnel active — Telegram Mini App works regardless of firewall. ` +
           `LAN browser access still requires port ${actualPort}/tcp to be open.`,
         );
       }

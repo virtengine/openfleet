@@ -330,7 +330,7 @@ function formatAgentAlert(alert) {
   const severity = String(alert.severity || "medium").toUpperCase();
   const type = alert.type || "alert";
   const lines = [
-    `🔎 Agent Analyzer: ${severity} ${type}`,
+    `:search: Agent Analyzer: ${severity} ${type}`,
     `Attempt: ${alert.attempt_id || "unknown"}`,
   ];
   if (alert.task_id) lines.push(`Task: ${alert.task_id}`);
@@ -1122,7 +1122,7 @@ if (!isMainThread || chdirUnsupportedInRuntime) {
             if (r.success) {
               console.log(`[monitor] ✓ workspace repo ready: ${r.name}`);
             } else {
-              console.warn(`[monitor] ⚠ workspace repo failed: ${r.name} — ${r.error}`);
+              console.warn(`[monitor] :alert: workspace repo failed: ${r.name} — ${r.error}`);
             }
           }
         } catch (err) {
@@ -1436,7 +1436,7 @@ const workspaceMonitor = new WorkspaceMonitor({
   cacheDir: resolve(repoRoot, ".cache", "workspace-logs"),
   repoRoot,
   onStuckDetected: ({ attemptId, reason, recommendation }) => {
-    const msg = `⚠️ Agent ${attemptId.substring(0, 8)} stuck: ${reason}\nRecommendation: ${recommendation}`;
+    const msg = `:alert: Agent ${attemptId.substring(0, 8)} stuck: ${reason}\nRecommendation: ${recommendation}`;
     console.warn(`[workspace-monitor] ${msg}`);
     void notify?.(msg, { dedupKey: `stuck-${attemptId.substring(0, 8)}` });
   },
@@ -1779,7 +1779,7 @@ function resolveMonitorMonitorTimeoutMs() {
   if (minTimeout !== null && maxTimeout !== null && maxTimeout < minTimeout) {
     warnMonitorTimeoutConfig(
       `bounds:${minTimeout}:${maxTimeout}`,
-      `[monitor] ⚠️  Invalid monitor-monitor timeout bounds: DEVMODE_MONITOR_MONITOR_TIMEOUT_MAX_MS=${maxTimeout}ms is lower than DEVMODE_MONITOR_MONITOR_TIMEOUT_MIN_MS=${minTimeout}ms. Ignoring max bound.`,
+      `[monitor] :alert:  Invalid monitor-monitor timeout bounds: DEVMODE_MONITOR_MONITOR_TIMEOUT_MAX_MS=${maxTimeout}ms is lower than DEVMODE_MONITOR_MONITOR_TIMEOUT_MIN_MS=${minTimeout}ms. Ignoring max bound.`,
     );
     maxTimeout = null;
   }
@@ -1795,7 +1795,7 @@ function resolveMonitorMonitorTimeoutMs() {
     if (legacyTimeout < MONITOR_MONITOR_RECOMMENDED_MIN_TIMEOUT_MS) {
       warnMonitorTimeoutConfig(
         `legacy-low:${legacyTimeout}`,
-        `[monitor] ⚠️  DEVMODE_AUTO_CODE_FIX_TIMEOUT_MS=${legacyTimeout}ms is low for monitor-monitor (recommended >= ${MONITOR_MONITOR_RECOMMENDED_MIN_TIMEOUT_MS}ms). Set DEVMODE_MONITOR_MONITOR_TIMEOUT_MS to override explicitly.`,
+        `[monitor] :alert:  DEVMODE_AUTO_CODE_FIX_TIMEOUT_MS=${legacyTimeout}ms is low for monitor-monitor (recommended >= ${MONITOR_MONITOR_RECOMMENDED_MIN_TIMEOUT_MS}ms). Set DEVMODE_MONITOR_MONITOR_TIMEOUT_MS to override explicitly.`,
       );
     }
   }
@@ -1810,7 +1810,7 @@ function resolveMonitorMonitorTimeoutMs() {
   if (timeoutMs < MONITOR_MONITOR_RECOMMENDED_MIN_TIMEOUT_MS) {
     warnMonitorTimeoutConfig(
       `effective-low:${timeoutMs}`,
-      `[monitor] ⚠️  monitor-monitor timeout is ${timeoutMs}ms. Values below ${MONITOR_MONITOR_RECOMMENDED_MIN_TIMEOUT_MS}ms can cause premature failover loops.`,
+      `[monitor] :alert:  monitor-monitor timeout is ${timeoutMs}ms. Values below ${MONITOR_MONITOR_RECOMMENDED_MIN_TIMEOUT_MS}ms can cause premature failover loops.`,
     );
   }
 
@@ -2267,7 +2267,7 @@ function tripCircuitBreaker(failureCount) {
   circuitBreakerResetAt = Date.now() + CIRCUIT_BREAKER_PAUSE_MS;
   const pauseMin = Math.round(CIRCUIT_BREAKER_PAUSE_MS / 60_000);
   console.error(
-    `[monitor] 🔌 CIRCUIT BREAKER TRIPPED: ${failureCount} failures in ${Math.round(CIRCUIT_BREAKER_WINDOW_MS / 1000)}s. ` +
+    `[monitor] :plug: CIRCUIT BREAKER TRIPPED: ${failureCount} failures in ${Math.round(CIRCUIT_BREAKER_WINDOW_MS / 1000)}s. ` +
       `Killing orchestrator and pausing all restarts for ${pauseMin} minutes.`,
   );
 
@@ -2287,7 +2287,7 @@ function tripCircuitBreaker(failureCount) {
   if (!circuitBreakerNotified && telegramToken && telegramChatId) {
     circuitBreakerNotified = true;
     const msg =
-      `🔌 Circuit breaker tripped: ${failureCount} failures in ${Math.round(CIRCUIT_BREAKER_WINDOW_MS / 1000)}s.\n` +
+      `:plug: Circuit breaker tripped: ${failureCount} failures in ${Math.round(CIRCUIT_BREAKER_WINDOW_MS / 1000)}s.\n` +
       `Orchestrator killed. All restarts paused for ${pauseMin} minutes.\n` +
       `Will auto-resume at ${new Date(circuitBreakerResetAt).toLocaleTimeString()}.`;
     // Fire-and-forget with skipDedup to ensure it gets through
@@ -2664,7 +2664,7 @@ async function handleMonitorFailure(reason, err) {
     const pauseMs = Math.max(orchestratorPauseMs, 30 * 60 * 1000);
     const pauseMin = Math.max(1, Math.round(pauseMs / 60_000));
     const msg =
-      `🛑 bosun hit hard failure cap (${failureCount}). ` +
+      `:close: bosun hit hard failure cap (${failureCount}). ` +
       `Entering safe mode for ${pauseMin} minute(s); monitor process will stay alive.`;
     console.error(`[monitor] ${msg}`);
     if (telegramToken && telegramChatId) {
@@ -2713,7 +2713,7 @@ async function handleMonitorFailure(reason, err) {
       try {
         const shortMsg = message.length > 200 ? message.slice(0, 200) + "…" : message;
         await sendTelegramMessage(
-          `⚠️ bosun exception (${reason}): ${shortMsg}\n\nAttempting recovery (count=${failureCount}).`,
+          `:alert: bosun exception (${reason}): ${shortMsg}\n\nAttempting recovery (count=${failureCount}).`,
         );
       } catch {
         /* suppress Telegram errors during failure handling */
@@ -2729,7 +2729,7 @@ async function handleMonitorFailure(reason, err) {
       if (telegramToken && telegramChatId) {
         try {
           await sendTelegramMessage(
-            `🛠️ bosun auto-fix applied. Restarting monitor.\n${fixResult.outcome}`,
+            `:u1f6e0: bosun auto-fix applied. Restarting monitor.\n${fixResult.outcome}`,
           );
         } catch {
           /* best effort */
@@ -2745,7 +2745,7 @@ async function handleMonitorFailure(reason, err) {
       if (telegramToken && telegramChatId) {
         try {
           await sendTelegramMessage(
-            `🛑 bosun entering safe mode after repeated failures (${failureCount} in 10m). Pausing restarts for ${pauseMin} minutes.`,
+            `:close: bosun entering safe mode after repeated failures (${failureCount} in 10m). Pausing restarts for ${pauseMin} minutes.`,
           );
         } catch {
           /* best effort */
@@ -3039,7 +3039,7 @@ function triggerLoopFix(errorLine, repeatCount) {
     } catch (err) {
       console.warn(`[monitor] loop fix error: ${err.message || err}`);
       if (telegramFn) {
-        telegramFn(`🔁 Loop fix crashed: ${err.message || err}`);
+        telegramFn(`:repeat: Loop fix crashed: ${err.message || err}`);
       }
     } finally {
       loopFixInProgress = false;
@@ -3553,10 +3553,10 @@ function ensureAnomalyDetector() {
     onAnomaly: wrapAnomalyCallback((anomaly) => {
       const icon =
         anomaly.severity === "CRITICAL"
-          ? "🔴"
+          ? ":dot:"
           : anomaly.severity === "HIGH"
-            ? "🟠"
-            : "🟡";
+            ? ":u1f7e0:"
+            : ":dot:";
       console.warn(
         `[anomaly-detector] ${icon} ${anomaly.severity} ${anomaly.type} [${anomaly.shortId}]: ${anomaly.message}`,
       );
@@ -3742,7 +3742,7 @@ function ensureVkLogStream() {
         );
 
         // Notify via Telegram
-        const emoji = resolution.result.success ? "🤖" : "⚠️";
+        const emoji = resolution.result.success ? ":bot:" : ":alert:";
         const status = resolution.result.success ? "resolved" : "failed";
         const branch =
           resolution.context.branch || `PR #${resolution.context.prNumber}`;
@@ -4729,7 +4729,7 @@ async function startFreshSession(workspaceId, prompt, taskId) {
     }
 
     console.log(
-      `[monitor] ✅ Fresh session started: ${session.id} (retry #${freshSessionCount})`,
+      `[monitor] :check: Fresh session started: ${session.id} (retry #${freshSessionCount})`,
     );
 
     // Connect the VK log stream to this session for real-time log capture
@@ -4798,7 +4798,7 @@ async function attemptFreshSessionRetry(reason, logTail) {
       const taskLabel =
         attemptInfo.task_title || attemptInfo.branch || "unknown";
       void sendTelegramMessage(
-        `🔄 Fresh session started for "${taskLabel}" (${reason}).\nNew session: ${result.sessionId}`,
+        `:refresh: Fresh session started for "${taskLabel}" (${reason}).\nNew session: ${result.sessionId}`,
       );
     }
     return true;
@@ -4807,7 +4807,7 @@ async function attemptFreshSessionRetry(reason, logTail) {
   console.warn(`[monitor] fresh session retry failed: ${result.reason}`);
   if (telegramToken && telegramChatId) {
     void sendTelegramMessage(
-      `⚠️ Fresh session retry failed (${reason}): ${result.reason}`,
+      `:alert: Fresh session retry failed (${reason}): ${result.reason}`,
     );
   }
   return false;
@@ -5279,7 +5279,7 @@ async function safeRecoverTask(taskId, taskTitle, reason) {
       const success = await updateTaskStatus(taskId, "todo");
       if (success) {
         console.log(
-          `[monitor] ♻️ Recovered "${taskTitle}" from ${localStatus || "inprogress"} → todo (${reason}) [${activeBackend} backend - VK status re-fetch skipped]`,
+          `[monitor] :repeat: Recovered "${taskTitle}" from ${localStatus || "inprogress"} → todo (${reason}) [${activeBackend} backend - VK status re-fetch skipped]`,
         );
       } else {
         console.warn(
@@ -5348,11 +5348,11 @@ async function safeRecoverTask(taskId, taskTitle, reason) {
     if (success) {
       if (isInternal) {
         console.log(
-          `[monitor] ♻️ Recovered "${taskTitle}" from ${liveStatus} → todo (${reason}) [internal mode — VK session skipped]`,
+          `[monitor] :repeat: Recovered "${taskTitle}" from ${liveStatus} → todo (${reason}) [internal mode — VK session skipped]`,
         );
       } else {
         console.log(
-          `[monitor] ♻️ Recovered "${taskTitle}" from ${liveStatus} → todo (${reason})`,
+          `[monitor] :repeat: Recovered "${taskTitle}" from ${liveStatus} → todo (${reason})`,
         );
       }
     }
@@ -6382,11 +6382,11 @@ async function checkMergedPRsAndUpdateTasks() {
             completedTaskNames.push(task.title);
             if (success) {
               console.log(
-                `[monitor] ✅ Moved task "${task.title}" from ${taskStatus} → done`,
+                `[monitor] :check: Moved task "${task.title}" from ${taskStatus} → done`,
               );
             } else {
               console.warn(
-                `[monitor] ⚠️ VK update failed for "${task.title}" — cached anyway (PR is merged)`,
+                `[monitor] :alert: VK update failed for "${task.title}" — cached anyway (PR is merged)`,
               );
             }
             // ── Trigger downstream rebase for tasks on same upstream ──
@@ -6467,11 +6467,11 @@ async function checkMergedPRsAndUpdateTasks() {
           completedTaskNames.push(task.title);
           if (success) {
             console.log(
-              `[monitor] ✅ Moved task "${task.title}" from ${taskStatus} → done`,
+              `[monitor] :check: Moved task "${task.title}" from ${taskStatus} → done`,
             );
           } else {
             console.warn(
-              `[monitor] ⚠️ VK update failed for "${task.title}" — cached anyway (branch is merged)`,
+              `[monitor] :alert: VK update failed for "${task.title}" — cached anyway (branch is merged)`,
             );
           }
           // ── Trigger downstream rebase for tasks on same upstream ──
@@ -6559,7 +6559,7 @@ async function checkMergedPRsAndUpdateTasks() {
           const attempts = conflictResolutionAttempts.get(task.id) || 0;
           if (attempts >= CONFLICT_MAX_ATTEMPTS) {
             console.warn(
-              `[monitor] ⚠️ Task "${task.title}" PR #${conflictCandidates[0].prNumber} conflict resolution exhausted (${attempts}/${CONFLICT_MAX_ATTEMPTS} attempts) — skipping`,
+              `[monitor] :alert: Task "${task.title}" PR #${conflictCandidates[0].prNumber} conflict resolution exhausted (${attempts}/${CONFLICT_MAX_ATTEMPTS} attempts) — skipping`,
             );
           } else {
             conflictResolutionAttempts.set(task.id, attempts + 1);
@@ -6581,11 +6581,11 @@ async function checkMergedPRsAndUpdateTasks() {
 
               if (!sdkOnCooldown && !sdkExhausted) {
                 console.log(
-                  `[monitor] ⚠️ Task "${task.title}" PR #${cc.prNumber} has merge conflicts — launching SDK resolver (attempt ${shortId})`,
+                  `[monitor] :alert: Task "${task.title}" PR #${cc.prNumber} has merge conflicts — launching SDK resolver (attempt ${shortId})`,
                 );
                 if (telegramToken && telegramChatId) {
                   void sendTelegramMessage(
-                    `🔀 PR #${cc.prNumber} for "${task.title}" has merge conflicts — launching SDK resolver (attempt ${shortId})`,
+                    `:git: PR #${cc.prNumber} for "${task.title}" has merge conflicts — launching SDK resolver (attempt ${shortId})`,
                   );
                 }
 
@@ -6635,23 +6635,23 @@ async function checkMergedPRsAndUpdateTasks() {
                       });
                       if (result.success) {
                         console.log(
-                          `[monitor] ✅ SDK resolved conflicts for PR #${cc.prNumber} (${result.resolvedFiles.length} files)`,
+                          `[monitor] :check: SDK resolved conflicts for PR #${cc.prNumber} (${result.resolvedFiles.length} files)`,
                         );
                         clearDirtyTask(task.id);
                         clearSDKResolutionState(cc.branch);
                         conflictResolutionAttempts.delete(task.id); // Reset on success
                         if (telegramToken && telegramChatId) {
                           void sendTelegramMessage(
-                            `✅ SDK resolved merge conflicts for PR #${cc.prNumber} "${task.title}" (${result.resolvedFiles.length} files)`,
+                            `:check: SDK resolved merge conflicts for PR #${cc.prNumber} "${task.title}" (${result.resolvedFiles.length} files)`,
                           );
                         }
                       } else {
                         console.warn(
-                          `[monitor] ❌ SDK conflict resolution failed for PR #${cc.prNumber}: ${result.error}`,
+                          `[monitor] :close: SDK conflict resolution failed for PR #${cc.prNumber}: ${result.error}`,
                         );
                         if (telegramToken && telegramChatId) {
                           void sendTelegramMessage(
-                            `❌ SDK conflict resolution failed for PR #${cc.prNumber} "${task.title}": ${result.error}\nFalling back to orchestrator.`,
+                            `:close: SDK conflict resolution failed for PR #${cc.prNumber} "${task.title}": ${result.error}\nFalling back to orchestrator.`,
                           );
                         }
                         conflictsTriggered++;
@@ -6669,7 +6669,7 @@ async function checkMergedPRsAndUpdateTasks() {
                   );
                   if (telegramToken && telegramChatId) {
                     void sendTelegramMessage(
-                      `🔀 PR #${cc.prNumber} for "${task.title}" has merge conflicts — no worktree, orchestrator will handle (attempt ${shortId})`,
+                      `:git: PR #${cc.prNumber} for "${task.title}" has merge conflicts — no worktree, orchestrator will handle (attempt ${shortId})`,
                     );
                   }
                   conflictsTriggered++;
@@ -6680,11 +6680,11 @@ async function checkMergedPRsAndUpdateTasks() {
                   ? "SDK attempts exhausted"
                   : "SDK on cooldown";
                 console.log(
-                  `[monitor] ⚠️ Task "${task.title}" PR #${cc.prNumber} has merge conflicts — ${reason}, deferring to orchestrator (attempt ${shortId})`,
+                  `[monitor] :alert: Task "${task.title}" PR #${cc.prNumber} has merge conflicts — ${reason}, deferring to orchestrator (attempt ${shortId})`,
                 );
                 if (telegramToken && telegramChatId) {
                   void sendTelegramMessage(
-                    `🔀 PR #${cc.prNumber} for "${task.title}" has merge conflicts — ${reason}, orchestrator will handle (attempt ${shortId})`,
+                    `:git: PR #${cc.prNumber} for "${task.title}" has merge conflicts — ${reason}, orchestrator will handle (attempt ${shortId})`,
                   );
                 }
                 conflictsTriggered++;
@@ -6713,7 +6713,7 @@ async function checkMergedPRsAndUpdateTasks() {
         if (success) {
           movedReviewCount++;
           console.log(
-            `[monitor] ✅ Moved task "${task.title}" from ${taskStatus} → inreview`,
+            `[monitor] :check: Moved task "${task.title}" from ${taskStatus} → inreview`,
           );
         }
       } else if (!hasOpenPR) {
@@ -6789,7 +6789,7 @@ async function checkMergedPRsAndUpdateTasks() {
       if (movedCount <= 3) {
         // Few tasks — list them individually
         for (const name of completedTaskNames) {
-          void sendTelegramMessage(`✅ Task completed: "${name}"`);
+          void sendTelegramMessage(`:check: Task completed: "${name}"`);
         }
       } else {
         // Many tasks — send a single summary to avoid spam
@@ -6799,7 +6799,7 @@ async function checkMergedPRsAndUpdateTasks() {
           .join("\n");
         const extra = movedCount > 5 ? `\n…and ${movedCount - 5} more` : "";
         void sendTelegramMessage(
-          `✅ ${movedCount} tasks moved to done:\n${listed}${extra}`,
+          `:check: ${movedCount} tasks moved to done:\n${listed}${extra}`,
         );
       }
     }
@@ -6827,7 +6827,7 @@ async function checkMergedPRsAndUpdateTasks() {
         if (movedTodoCount <= 3) {
           for (const name of recoveredTaskNames) {
             void sendTelegramMessage(
-              `♻️ Task recovered to todo (abandoned — no branch/PR): "${name}"`,
+              `:repeat: Task recovered to todo (abandoned — no branch/PR): "${name}"`,
             );
           }
         } else {
@@ -6838,7 +6838,7 @@ async function checkMergedPRsAndUpdateTasks() {
           const extra =
             movedTodoCount > 5 ? `\n…and ${movedTodoCount - 5} more` : "";
           void sendTelegramMessage(
-            `♻️ ${movedTodoCount} abandoned tasks recovered to todo:\n${listed}${extra}`,
+            `:repeat: ${movedTodoCount} abandoned tasks recovered to todo:\n${listed}${extra}`,
           );
         }
       }
@@ -7444,7 +7444,7 @@ async function checkEpicBranches(reason = "interval") {
           null,
         );
         void sendTelegramMessage(
-          `⚠️ Epic sync conflict on ${epicBranch} → ${DEFAULT_TARGET_BRANCH} (${reason})`,
+          `:alert: Epic sync conflict on ${epicBranch} → ${DEFAULT_TARGET_BRANCH} (${reason})`,
         );
       }
       continue;
@@ -7475,7 +7475,7 @@ async function checkEpicBranches(reason = "interval") {
           prUrl: created.url,
         });
         void sendTelegramMessage(
-          `🧩 Epic PR created for ${epicBranch} → ${DEFAULT_TARGET_BRANCH}\n${created.url}`,
+          `:workflow: Epic PR created for ${epicBranch} → ${DEFAULT_TARGET_BRANCH}\n${created.url}`,
         );
       } else if (created?.skipped) {
         updateEpicMergeCache(cacheKey, {
@@ -7518,7 +7518,7 @@ async function checkEpicBranches(reason = "interval") {
         prInfo,
       );
       void sendTelegramMessage(
-        `⚠️ Epic PR conflicts for ${epicBranch} → ${DEFAULT_TARGET_BRANCH} (${prInfo.url || "no url"})`,
+        `:alert: Epic PR conflicts for ${epicBranch} → ${DEFAULT_TARGET_BRANCH} (${prInfo.url || "no url"})`,
       );
       continue;
     }
@@ -7541,7 +7541,7 @@ async function checkEpicBranches(reason = "interval") {
         prInfo,
       );
       void sendTelegramMessage(
-        `⚠️ Epic PR checks failing for ${epicBranch} → ${DEFAULT_TARGET_BRANCH} (${prInfo.url || "no url"})`,
+        `:alert: Epic PR checks failing for ${epicBranch} → ${DEFAULT_TARGET_BRANCH} (${prInfo.url || "no url"})`,
       );
       continue;
     }
@@ -7717,9 +7717,9 @@ async function checkAndMergeDependabotPRs() {
             encoding: "utf8",
             timeout: 30_000,
           });
-          console.log(`[dependabot] ✅ PR #${pr.number} merged: ${pr.title}`);
+          console.log(`[dependabot] :check: PR #${pr.number} merged: ${pr.title}`);
           void sendTelegramMessage(
-            `✅ Auto-merged bot PR #${pr.number}: ${pr.title}`,
+            `:check: Auto-merged bot PR #${pr.number}: ${pr.title}`,
           );
         } catch (mergeErr) {
           const errMsg = mergeErr.stderr || mergeErr.message || "";
@@ -7732,7 +7732,7 @@ async function checkAndMergeDependabotPRs() {
               `[dependabot] PR #${pr.number}: auto-merge enabled, will merge when protection rules are met`,
             );
             void sendTelegramMessage(
-              `🔄 Auto-merge enabled for bot PR #${pr.number}: ${pr.title}`,
+              `:refresh: Auto-merge enabled for bot PR #${pr.number}: ${pr.title}`,
             );
           }
         }
@@ -8278,7 +8278,7 @@ async function rebaseDownstreamTasks(mergedUpstreamBranch, excludeAttemptId) {
       const summary = `Downstream rebase after merge to ${mergedUpstreamBranch}: ${rebasedCount} rebased, ${failedCount} failed`;
       console.log(`[${tag}] ${summary}`);
       void sendTelegramMessage(
-        `🔄 ${summary}\n${rebaseResults.map((r) => `  ${r.status === "success" ? "✓" : "✗"} ${r.taskTitle}`).join("\n")}`,
+        `:refresh: ${summary}\n${rebaseResults.map((r) => `  ${r.status === "success" ? "✓" : "✗"} ${r.taskTitle}`).join("\n")}`,
       );
     } else {
       console.log(
@@ -8396,7 +8396,7 @@ async function actOnAssessment(ctx, decision) {
         await updateTaskStatus(ctx.taskId, "todo");
       }
       void sendTelegramMessage(
-        `🆕 Assessment: starting new attempt for "${ctx.taskTitle}" — ${decision.reason || ""}`,
+        `:star: Assessment: starting new attempt for "${ctx.taskTitle}" — ${decision.reason || ""}`,
       );
       break;
 
@@ -8415,7 +8415,7 @@ async function actOnAssessment(ctx, decision) {
     case "manual_review":
       console.log(`[${tag}] → manual review`);
       void sendTelegramMessage(
-        `👀 Assessment: manual review needed for "${ctx.taskTitle}" — ${decision.reason || ""}`,
+        `:eye: Assessment: manual review needed for "${ctx.taskTitle}" — ${decision.reason || ""}`,
       );
       break;
 
@@ -8425,7 +8425,7 @@ async function actOnAssessment(ctx, decision) {
         await updateTaskStatus(ctx.taskId, "todo");
       }
       void sendTelegramMessage(
-        `🚫 Assessment: closing and replanning "${ctx.taskTitle}" — ${decision.reason || ""}`,
+        `:ban: Assessment: closing and replanning "${ctx.taskTitle}" — ${decision.reason || ""}`,
       );
       break;
 
@@ -8866,7 +8866,7 @@ async function smartPRFlow(attemptId, shortId, status) {
                 ? ` Examples: ${verify.sampleTitles.join(", ")}`
                 : "";
               void sendTelegramMessage(
-                `✅ Task planner verified: ${verify.createdCount} new task(s) detected.${suffix}`,
+                `:check: Task planner verified: ${verify.createdCount} new task(s) detected.${suffix}`,
               );
             }
             return;
@@ -8878,7 +8878,7 @@ async function smartPRFlow(attemptId, shortId, status) {
           await archiveAttempt(attemptId);
           if (telegramToken && telegramChatId) {
             void sendTelegramMessage(
-              "⚠️ Task planner incomplete: no new backlog tasks detected. Returned to todo.",
+              ":alert: Task planner incomplete: no new backlog tasks detected. Returned to todo.",
             );
           }
           return;
@@ -8920,7 +8920,7 @@ async function smartPRFlow(attemptId, shortId, status) {
       await archiveAttempt(attemptId);
       if (telegramToken && telegramChatId) {
         void sendTelegramMessage(
-          `🗑️ Archived attempt ${shortId}: no commits, no changes (status=${status}). Task will be reattempted.`,
+          `:trash: Archived attempt ${shortId}: no commits, no changes (status=${status}). Task will be reattempted.`,
         );
       }
       return;
@@ -8985,7 +8985,7 @@ async function smartPRFlow(attemptId, shortId, status) {
             ? "Fresh session started for reattempt."
             : "Will reattempt on next cycle.";
           void sendTelegramMessage(
-            `🗑️ Archived stale attempt ${shortId} after failed rebase. ${action}`,
+            `:trash: Archived stale attempt ${shortId} after failed rebase. ${action}`,
           );
         }
         return;
@@ -9083,7 +9083,7 @@ Return a short summary of what you did and any files that needed manual resoluti
               );
               if (telegramToken && telegramChatId) {
                 void sendTelegramMessage(
-                  `✅ Codex resolved rebase conflicts for ${shortId}. Log: ${logPath}`,
+                  `:check: Codex resolved rebase conflicts for ${shortId}. Log: ${logPath}`,
                 );
               }
               return;
@@ -9093,7 +9093,7 @@ Return a short summary of what you did and any files that needed manual resoluti
             );
             if (telegramToken && telegramChatId) {
               void sendTelegramMessage(
-                `⚠️ Codex failed to resolve conflicts for ${shortId}. Log: ${logPath}`,
+                `:alert: Codex failed to resolve conflicts for ${shortId}. Log: ${logPath}`,
               );
             }
           }
@@ -9103,7 +9103,7 @@ Return a short summary of what you did and any files that needed manual resoluti
           );
           if (telegramToken && telegramChatId) {
             void sendTelegramMessage(
-              `⚠️ Attempt ${shortId} has unresolvable rebase conflicts: ${files.join(", ")}`,
+              `:alert: Attempt ${shortId} has unresolvable rebase conflicts: ${files.join(", ")}`,
             );
           }
           if (primaryAgentReady) {
@@ -9159,7 +9159,7 @@ Return a short summary of what you did and any files that needed manual resoluti
           );
           if (telegramToken && telegramChatId) {
             void sendTelegramMessage(
-              `⚠️ Auto-PR skipped for ${shortId}: existing PR #${existingPr.number} (${state}) already linked to ${branchName}.`,
+              `:alert: Auto-PR skipped for ${shortId}: existing PR #${existingPr.number} (${state}) already linked to ${branchName}.`,
             );
           }
           return;
@@ -9184,7 +9184,7 @@ Return a short summary of what you did and any files that needed manual resoluti
       );
       if (telegramToken && telegramChatId) {
         void sendTelegramMessage(
-          `✅ Auto-created PR for ${shortId}${prUrl ? ": " + prUrl : ""}`,
+          `:check: Auto-created PR for ${shortId}${prUrl ? ": " + prUrl : ""}`,
         );
       }
 
@@ -9221,7 +9221,7 @@ Return a short summary of what you did and any files that needed manual resoluti
       );
       if (telegramToken && telegramChatId) {
         void sendTelegramMessage(
-          `⚠️ Auto-PR for ${shortId} failed: repo_id missing. Check VK_BASE_URL/VK_REPO_ID.`,
+          `:alert: Auto-PR for ${shortId} failed: repo_id missing. Check VK_BASE_URL/VK_REPO_ID.`,
         );
       }
       return;
@@ -9234,7 +9234,7 @@ Return a short summary of what you did and any files that needed manual resoluti
       );
       if (telegramToken && telegramChatId) {
         void sendTelegramMessage(
-          `⚠️ Auto-PR for ${shortId} fast-failed (${elapsed}ms) — likely worktree issue. Prompting agent.`,
+          `:alert: Auto-PR for ${shortId} fast-failed (${elapsed}ms) — likely worktree issue. Prompting agent.`,
         );
       }
       if (primaryAgentReady) {
@@ -9257,7 +9257,7 @@ Return a short summary of what you did and any files that needed manual resoluti
       );
       if (telegramToken && telegramChatId) {
         void sendTelegramMessage(
-          `⚠️ Auto-PR for ${shortId} failed after ${Math.round(elapsed / 1000)}s (prepush hooks). Prompting agent to fix.`,
+          `:alert: Auto-PR for ${shortId} failed after ${Math.round(elapsed / 1000)}s (prepush hooks). Prompting agent to fix.`,
         );
       }
       if (primaryAgentReady) {
@@ -9876,7 +9876,10 @@ function buildPlannerTaskDescription({
     "   its dedicated branch and integrates upstream changes continuously.",
     "   Examples: `feat(veid):` → `origin/veid`, `fix(market):` → `origin/market`.",
     "   Do NOT set base_branch for cross-cutting tasks that modify many modules.",
-    "8. If a task should target a non-default epic/base branch for other reasons, include `base_branch` in the JSON task object.",].join("\n");
+    "8. If a task should target a non-default epic/base branch for other reasons, include `base_branch` in the JSON task object.",
+    "9. Output MUST be exactly one fenced ```json code block with shape { \"tasks\": [...] } and no surrounding prose.",
+    "10. Each task object must include title, description, implementation_steps, acceptance_criteria, verification.",
+    "11. Do not output placeholder tasks. If uncertain, reduce scope but keep tasks executable.",].join("\n");
 }
 
 function normalizePlannerTitleForComparison(title) {
@@ -10100,7 +10103,7 @@ function buildTaskPlannerStatusText(plannerState, reason = "interval") {
     ? formatElapsedMs(now - Date.parse(plannerState.last_success_at))
     : "never";
   return [
-    "📋 Codex-Task-Planner Update",
+    ":clipboard: Codex-Task-Planner Update",
     `- Reason: ${reason}`,
     `- Planner mode: ${plannerMode}`,
     `- Trigger in progress: ${plannerTriggered ? "yes" : "no"}`,
@@ -10224,7 +10227,7 @@ async function sendTelegramMessage(text, options = {}) {
   let priority = 4; // default: info
   let category = "general";
 
-  // Positive signals override negative keyword matches — a "✅ Task completed"
+  // Positive signals override negative keyword matches — a ":check: Task completed"
   // message should never be classified as an error even when the task title
   // happens to contain words like "error" or "failed".
   // Orchestrator periodic updates contain counter labels like "Failed: 0" and
@@ -10232,7 +10235,7 @@ async function sendTelegramMessage(text, options = {}) {
   // Status updates (planner, monitor-monitor) contain "Last error: none" which
   // is informational, not an actual error.
   const isPositive =
-    textLower.includes("✅") ||
+    textLower.includes(":check:") ||
     textLower.includes("task completed") ||
     textLower.includes("branch merged") ||
     textLower.includes("pr merged") ||
@@ -10245,7 +10248,7 @@ async function sendTelegramMessage(text, options = {}) {
     !isPositive &&
     (textLower.includes("fatal") ||
       textLower.includes("critical") ||
-      textLower.includes("🔥"))
+      textLower.includes(":zap:"))
   ) {
     priority = 1;
     category = "critical";
@@ -10255,7 +10258,7 @@ async function sendTelegramMessage(text, options = {}) {
     !isPositive &&
     (textLower.includes("error") ||
       textLower.includes("failed") ||
-      textLower.includes("❌") ||
+      textLower.includes(":close:") ||
       textLower.includes("auto-fix gave up"))
   ) {
     priority = 2;
@@ -10264,7 +10267,7 @@ async function sendTelegramMessage(text, options = {}) {
   // Priority 3: Warnings
   else if (
     !isPositive &&
-    (textLower.includes("warning") || textLower.includes("⚠️"))
+    (textLower.includes("warning") || textLower.includes(":alert:"))
   ) {
     priority = 3;
     category = "warning";
@@ -10346,7 +10349,7 @@ async function maybeSendWeeklyReport(nowInput = new Date()) {
   } catch (err) {
     console.warn(`[monitor] weekly report generation failed: ${err?.message || err}`);
     await sendTelegramMessage(
-      `⚠️ Weekly report failed: ${err?.message || err}`,
+      `:alert: Weekly report failed: ${err?.message || err}`,
       { dedupKey: "weekly-report:failed", exactDedup: true },
     );
   }
@@ -10357,12 +10360,12 @@ globalThis.__bosunNotifyAnomaly = (anomaly) => {
   if (!telegramToken || !telegramChatId) return;
   const icon =
     anomaly.severity === "CRITICAL"
-      ? "🔴"
+      ? ":dot:"
       : anomaly.severity === "HIGH"
-        ? "🟠"
+        ? ":u1f7e0:"
         : anomaly.severity === "MEDIUM"
-          ? "🟡"
-          : "⚪️";
+          ? ":dot:"
+          : ":dot:";
   const lines = [
     `${icon} Internal Anomaly: ${anomaly.type}`,
     `Attempt: ${anomaly.processId || anomaly.shortId || "unknown"}`,
@@ -10963,7 +10966,7 @@ async function checkStatusMilestones() {
       if (!allCompleteNotified) {
         allCompleteNotified = true;
         await sendTelegramMessage(
-          `🛰️ Fleet entering maintenance mode: ${maintenance.reason}`,
+          `:server: Fleet entering maintenance mode: ${maintenance.reason}`,
         );
       }
       return;
@@ -11319,7 +11322,7 @@ async function triggerTaskPlanner(
         );
         if (notify) {
           await sendTelegramMessage(
-            `⚠️ Task planner kanban path failed on ${backend}; using codex fallback.\nReason: ${message}`,
+            `:alert: Task planner kanban path failed on ${backend}; using codex fallback.\nReason: ${message}`,
           );
         }
         result = await triggerTaskPlannerViaCodex(reason, details, {
@@ -11355,7 +11358,7 @@ async function triggerTaskPlanner(
         );
         if (notify) {
           await sendTelegramMessage(
-            `⚠️ Task planner codex path failed; trying kanban fallback.\nReason: ${codexMessage}`,
+            `:alert: Task planner codex path failed; trying kanban fallback.\nReason: ${codexMessage}`,
           );
         }
 
@@ -11472,7 +11475,7 @@ async function triggerTaskPlannerViaKanban(
     if (notify) {
       const suffix = taskUrl ? `\n${taskUrl}` : "";
       await sendTelegramMessage(
-        `📋 Task planner skipped — existing planning task found.${suffix}`,
+        `:clipboard: Task planner skipped — existing planning task found.${suffix}`,
       );
     }
     await updatePlannerState({
@@ -11534,7 +11537,7 @@ async function triggerTaskPlannerViaKanban(
     if (notify) {
       const suffix = createdUrl ? `\n${createdUrl}` : "";
       await sendTelegramMessage(
-        `📋 Task planner: created task for next phase planning (${reason}).${suffix}`,
+        `:clipboard: Task planner: created task for next phase planning (${reason}).${suffix}`,
       );
     }
     return {
@@ -11662,6 +11665,12 @@ async function triggerTaskPlannerViaCodex(
     })),
   );
 
+  if (created.length === 0) {
+    throw new Error(
+      `Task planner parsed ${parsedTasks.length} tasks but created 0 tasks after dedup/materialization`,
+    );
+  }
+
   console.log(`[monitor] task planner output saved: ${outPath}`);
   console.log(
     `[monitor] task planner artifact saved: ${artifactPath} (parsed=${parsedTasks.length}, created=${created.length}, skipped=${skipped.length})`,
@@ -11674,7 +11683,7 @@ async function triggerTaskPlannerViaCodex(
   });
   if (notify) {
     await sendTelegramMessage(
-      `📋 Task planner run completed (${reason || "manual"}). Created ${created.length}/${parsedTasks.length} tasks.${
+      `:clipboard: Task planner run completed (${reason || "manual"}). Created ${created.length}/${parsedTasks.length} tasks.${
         skipped.length > 0
           ? ` Skipped ${skipped.length} duplicates/failed.`
           : ""
@@ -11911,7 +11920,7 @@ ${logTail}
     if (telegramToken && telegramChatId) {
       const summary = analysisText.slice(0, 500).replace(/\n{3,}/g, "\n\n");
       void sendTelegramMessage(
-        `🔍 Codex Analysis Result (${reason}):\n${summary}${analysisText.length > 500 ? "\n...(truncated)" : ""}`,
+        `:search: Codex Analysis Result (${reason}):\n${summary}${analysisText.length > 500 ? "\n...(truncated)" : ""}`,
       );
     }
   } catch (err) {
@@ -11930,7 +11939,7 @@ ${logTail}
       if (telegramToken && telegramChatId) {
         const summary = analysisText.slice(0, 500).replace(/\n{3,}/g, "\n\n");
         void sendTelegramMessage(
-          `🔍 Codex Analysis Result (${reason}):\n${summary}${analysisText.length > 500 ? "\n...(truncated)" : ""}`,
+          `:search: Codex Analysis Result (${reason}):\n${summary}${analysisText.length > 500 ? "\n...(truncated)" : ""}`,
         );
       }
     } catch (fallbackErr) {
@@ -11942,7 +11951,7 @@ ${logTail}
         "utf8",
       );
       if (telegramToken && telegramChatId) {
-        void sendTelegramMessage(`🔍 Codex Analysis Failed: ${message}`);
+        void sendTelegramMessage(`:search: Codex Analysis Failed: ${message}`);
       }
     }
   }
@@ -12069,7 +12078,7 @@ async function handleExit(code, signal, logPath) {
     );
     if (telegramToken && telegramChatId) {
       void sendTelegramMessage(
-        `⏳ Mutex held — backing off ${exitState.backoffMs / 1000}s before retry`,
+        `:clock: Mutex held — backing off ${exitState.backoffMs / 1000}s before retry`,
       );
     }
     restartCount += 1;
@@ -12257,7 +12266,7 @@ async function handleExit(code, signal, logPath) {
         }
         if (telegramToken && telegramChatId) {
           void sendTelegramMessage(
-            `🛑 Crash loop detected (${restartCountNow} exits in 5m). Pausing orchestrator restarts for ${pauseMin} minutes. Background fix running.`,
+            `:close: Crash loop detected (${restartCountNow} exits in 5m). Pausing orchestrator restarts for ${pauseMin} minutes. Background fix running.`,
           );
         }
         // ── Background crash-loop fix: runs while orchestrator is paused ──
@@ -12277,7 +12286,7 @@ async function handleExit(code, signal, logPath) {
                 );
                 if (telegramToken && telegramChatId) {
                   void sendTelegramMessage(
-                    `🛠️ Crash-loop fix applied. File watcher will restart orchestrator.\n${fixResult.outcome}`,
+                    `:u1f6e0: Crash-loop fix applied. File watcher will restart orchestrator.\n${fixResult.outcome}`,
                   );
                 }
               } else {
@@ -12291,11 +12300,11 @@ async function handleExit(code, signal, logPath) {
                 );
                 if (freshStarted && telegramToken && telegramChatId) {
                   void sendTelegramMessage(
-                    `🔄 Crash-loop fix failed but fresh session started. New agent will retry.`,
+                    `:refresh: Crash-loop fix failed but fresh session started. New agent will retry.`,
                   );
                 } else if (!freshStarted && telegramToken && telegramChatId) {
                   void sendTelegramMessage(
-                    `⚠️ Crash-loop fix failed: ${fixResult.outcome}. Orchestrator will resume after ${pauseMin}m pause.`,
+                    `:alert: Crash-loop fix failed: ${fixResult.outcome}. Orchestrator will resume after ${pauseMin}m pause.`,
                   );
                 }
               }
@@ -12606,7 +12615,7 @@ function buildMonitorMonitorStatusText(
   );
 
   const lines = [
-    "🛰️ Bosun-Monitor Update",
+    ":server: Bosun-Monitor Update",
     `- Reason: ${reason}`,
     `- Running: ${monitorMonitor.running ? "yes" : "no"}`,
     `- Current SDK: ${currentSdk}`,
@@ -13420,7 +13429,7 @@ async function runMonitorMonitorCycle({
         rotateMonitorSdk("prepare next cycle");
       }
       void notify?.(
-        `⚠️ Monitor-Monitor failed (${sdk}): ${String(errMsg).slice(0, 240)}`,
+        `:alert: Monitor-Monitor failed (${sdk}): ${String(errMsg).slice(0, 240)}`,
         3,
         { dedupKey: "monitor-monitor-failed" },
       );
@@ -13439,7 +13448,7 @@ async function runMonitorMonitorCycle({
     monitorMonitor.lastError = errMsg;
     console.error(`[monitor-monitor] uncaught exception via ${sdk}: ${errMsg}`);
     void notify?.(
-      `⚠️ Monitor-Monitor exception (${sdk}): ${errMsg.slice(0, 240)}`,
+      `:alert: Monitor-Monitor exception (${sdk}): ${errMsg.slice(0, 240)}`,
       3,
       { dedupKey: "monitor-monitor-exception" },
     );
@@ -13733,7 +13742,7 @@ async function startProcess() {
     );
     if (telegramToken && telegramChatId) {
       void sendTelegramMessage(
-        `❌ Orchestrator script not found: ${scriptPath}\nSet ORCHESTRATOR_SCRIPT to a valid path.`,
+        `:close: Orchestrator script not found: ${scriptPath}\nSet ORCHESTRATOR_SCRIPT to a valid path.`,
       );
     }
     return;
@@ -13766,7 +13775,7 @@ async function startProcess() {
       );
       if (telegramToken && telegramChatId) {
         void sendTelegramMessage(
-          `❌ .ps1 orchestrator selected, but PowerShell runtime is unavailable (${pwshLabel}).\n` +
+          `:close: .ps1 orchestrator selected, but PowerShell runtime is unavailable (${pwshLabel}).\n` +
             `Install PowerShell 7+ or set PWSH_PATH to a valid executable path. ` +
             `Pausing restarts for ${pauseMin} minute(s).`,
         );
@@ -13795,7 +13804,7 @@ async function startProcess() {
       );
       if (telegramToken && telegramChatId) {
         void sendTelegramMessage(
-          "❌ shell-mode orchestrator selected (.sh), but bash/sh is missing on PATH.",
+          ":close: shell-mode orchestrator selected (.sh), but bash/sh is missing on PATH.",
         );
       }
       return;
@@ -14710,7 +14719,7 @@ async function reloadConfig(reason) {
     if (telegramToken && telegramChatId) {
       try {
         await sendTelegramMessage(
-          `🔄 .env reloaded (${reason}). Runtime config updated.`,
+          `:refresh: .env reloaded (${reason}). Runtime config updated.`,
           { dedupKey: "env-reload" },
         );
       } catch {
@@ -15486,7 +15495,7 @@ try {
 
 if (isExecutorDisabled()) {
   console.log(
-    `[monitor] ⛔ task execution DISABLED (EXECUTOR_MODE=${executorMode}) — no tasks will be executed`,
+    `[monitor] :ban: task execution DISABLED (EXECUTOR_MODE=${executorMode}) — no tasks will be executed`,
   );
 } else if (executorMode === "internal" || executorMode === "hybrid") {
   // Start internal executor
@@ -15514,7 +15523,7 @@ if (isExecutorDisabled()) {
             : "n/a";
         const taskId = String(task?.id || task?.task_id || "").trim();
         console.log(
-          `[task-executor] 🚀 started: "${task.title}" (${slot.sdk}) agent=${agentId} branch=${slot.branch} worktree=${slot.worktreePath || "(pending)"}`,
+          `[task-executor] :rocket: started: "${task.title}" (${slot.sdk}) agent=${agentId} branch=${slot.branch} worktree=${slot.worktreePath || "(pending)"}`,
         );
         if (agentEventBus) agentEventBus.onTaskStarted(task, slot);
         if (taskId) {
@@ -15574,8 +15583,8 @@ if (isExecutorDisabled()) {
         ).trim() || null;
         console.log(
           finalizationFailed
-            ? `[task-executor] ⚠ completed without finalization: "${task.title}" (${result.attempts} attempt(s), reason=${result?.finalizationReason || "unknown"})`
-            : `[task-executor] ✅ completed: "${task.title}" (${result.attempts} attempt(s))`,
+            ? `[task-executor] :alert: completed without finalization: "${task.title}" (${result.attempts} attempt(s), reason=${result?.finalizationReason || "unknown"})`
+            : `[task-executor] :check: completed: "${task.title}" (${result.attempts} attempt(s))`,
         );
         if (!finalizationFailed && agentEventBus) {
           agentEventBus.onTaskCompleted(task, result);
@@ -15660,7 +15669,7 @@ if (isExecutorDisabled()) {
         const attempts =
           Number(err?.attempts || 0) > 0 ? Number(err.attempts) : null;
         console.warn(
-          `[task-executor] ❌ failed: "${task.title}" — ${formatMonitorError(err)}`,
+          `[task-executor] :close: failed: "${task.title}" — ${formatMonitorError(err)}`,
         );
         if (agentEventBus) agentEventBus.onTaskFailed(task, err);
         if (taskId) {
@@ -16074,7 +16083,7 @@ if (isExecutorDisabled()) {
             telegramToken && telegramChatId
               ? (event) =>
                   sendTelegramMessage(
-                    `⚠️ Project sync alert: ${event?.message || "unknown"}`,
+                    `:alert: Project sync alert: ${event?.message || "unknown"}`,
                   )
               : null,
           failureAlertThreshold:
@@ -16132,7 +16141,7 @@ startMonitorMonitorSupervisor();
 startTaskPlannerStatusLoop();
 restartGitHubReconciler();
 
-// ── Two-way Telegram ↔ primary agent ────────────────────────────────────────
+// ── Two-way Telegram :workflow: primary agent ────────────────────────────────────────
 injectMonitorFunctions({
   sendTelegramMessage,
   readStatusData,

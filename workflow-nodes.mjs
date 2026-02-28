@@ -194,6 +194,28 @@ function summarizeAssistantUsage(data = {}) {
   return `Usage: ${parts.join(" · ")}`;
 }
 
+async function createKanbanTaskWithProject(kanban, taskData = {}, projectIdValue = "") {
+  if (!kanban || typeof kanban.createTask !== "function") {
+    throw new Error("Kanban adapter not available");
+  }
+
+  const payload =
+    taskData && typeof taskData === "object" ? { ...taskData } : {};
+  const resolvedProjectId = String(projectIdValue || payload.projectId || "").trim();
+
+  if (resolvedProjectId) {
+    payload.projectId = resolvedProjectId;
+  }
+
+  if (kanban.createTask.length >= 2) {
+    const taskPayload = { ...payload };
+    delete taskPayload.projectId;
+    return kanban.createTask(resolvedProjectId, taskPayload);
+  }
+
+  return kanban.createTask(payload);
+}
+
 function summarizeAssistantMessageData(data = {}) {
   const messageText = normalizeNarrativeText(
     extractStreamText(data?.content) ||
@@ -1259,14 +1281,14 @@ registerNodeType("action.create_task", {
     ctx.log(node.id, `Creating task: ${title}`);
 
     if (kanban?.createTask) {
-      const task = await kanban.createTask({
+      const task = await createKanbanTaskWithProject(kanban, {
         title,
         description,
         status: node.config?.status || "todo",
         priority: node.config?.priority,
         tags: node.config?.tags,
         projectId: node.config?.projectId,
-      });
+      }, node.config?.projectId);
       return { success: true, taskId: task.id, title };
     }
     return { success: false, error: "Kanban adapter not available" };
@@ -2311,7 +2333,7 @@ registerNodeType("action.materialize_planner_tasks", {
         status,
       };
       if (projectId) payload.projectId = projectId;
-      const createdTask = await kanban.createTask(payload);
+      const createdTask = await createKanbanTaskWithProject(kanban, payload, projectId);
       created.push({
         id: createdTask?.id || null,
         title: task.title,
@@ -2841,7 +2863,7 @@ registerNodeType("action.ask_user", {
     // Send via Telegram if configured
     if ((channel === "telegram" || channel === "both") && engine.services?.telegram?.sendMessage) {
       const optionsText = options.length ? `\n\nOptions: ${options.join(" | ")}` : "";
-      await engine.services.telegram.sendMessage(undefined, `❓ **Workflow Question**\n\n${question}${optionsText}`);
+      await engine.services.telegram.sendMessage(undefined, `:help: **Workflow Question**\n\n${question}${optionsText}`);
     }
 
     // Store question for UI polling

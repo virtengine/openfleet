@@ -267,9 +267,9 @@ async function main() {
   // Node.js version check
   const nodeMajor = Number(process.versions.node.split(".")[0]);
   if (nodeMajor >= 18) {
-    console.log(`  ✅ Node.js ${process.versions.node}`);
+    console.log(`  :check: Node.js ${process.versions.node}`);
   } else {
-    console.log(`  ❌ Node.js ${process.versions.node} — requires ≥ 18`);
+    console.log(`  :close: Node.js ${process.versions.node} — requires ≥ 18`);
     hasErrors = true;
   }
 
@@ -277,9 +277,9 @@ async function main() {
   for (const dep of REQUIRED) {
     if (commandExists(dep.cmd)) {
       const ver = getVersion(dep.cmd);
-      console.log(`  ✅ ${dep.name}${ver ? ` (${ver})` : ""}`);
+      console.log(`  :check: ${dep.name}${ver ? ` (${ver})` : ""}`);
     } else {
-      console.log(`  ❌ ${dep.name} — REQUIRED`);
+      console.log(`  :close: ${dep.name} — REQUIRED`);
       const hint = dep.install[platform] || dep.install.linux;
       console.log(`     Install: ${hint}`);
       console.log(`     Docs:    ${dep.url}`);
@@ -301,9 +301,9 @@ async function main() {
     console.log("  ▸ Installing PowerShell (bundled)...");
     try {
       const info = await installBundledPwsh(platform, process.arch);
-      console.log(`  ✅ PowerShell bundled (${info.version})`);
+      console.log(`  :check: PowerShell bundled (${info.version})`);
     } catch (err) {
-      console.log(`  ⚠️  PowerShell bundle install failed: ${err.message}`);
+      console.log(`  :alert:  PowerShell bundle install failed: ${err.message}`);
     }
   }
 
@@ -316,12 +316,12 @@ async function main() {
     if (hasPwsh) {
       const ver = getVersion(dep.cmd);
       if (isPwsh && bundledPwshExists() && !ver) {
-        console.log(`  ✅ ${dep.name} (bundled)`);
+        console.log(`  :check: ${dep.name} (bundled)`);
       } else {
-        console.log(`  ✅ ${dep.name}${ver ? ` (${ver})` : ""}`);
+        console.log(`  :check: ${dep.name}${ver ? ` (${ver})` : ""}`);
       }
     } else {
-      console.log(`  ⚠️  ${dep.name} — not found`);
+      console.log(`  :alert:  ${dep.name} — not found`);
       console.log(`     ${dep.why}`);
       const hint = dep.install[platform] || dep.install.linux;
       console.log(`     Install: ${hint}`);
@@ -330,12 +330,12 @@ async function main() {
   }
 
   // npm-installed tools (bundled with this package)
-  console.log(`  ✅ vibe-kanban (bundled)`);
-  console.log(`  ✅ @openai/codex-sdk (bundled)`);
-  console.log(`  ✅ @github/copilot-sdk (bundled)`);
-  console.log(`  ✅ @anthropic-ai/claude-agent-sdk (bundled)`);
-  console.log(`  ✅ @github/copilot-sdk (bundled)`);
-  console.log(`  ✅ @anthropic-ai/claude-agent-sdk (bundled)`);
+  console.log(`  :check: vibe-kanban (bundled)`);
+  console.log(`  :check: @openai/codex-sdk (bundled)`);
+  console.log(`  :check: @github/copilot-sdk (bundled)`);
+  console.log(`  :check: @anthropic-ai/claude-agent-sdk (bundled)`);
+  console.log(`  :check: @github/copilot-sdk (bundled)`);
+  console.log(`  :check: @anthropic-ai/claude-agent-sdk (bundled)`);
 
   // Desktop dependencies (Electron) — optional but recommended for instant launch
   const desktopDir = resolve(__dirname, "desktop");
@@ -355,10 +355,10 @@ async function main() {
           stdio: "inherit",
           timeout: 0,
         });
-        console.log("  ✅ Desktop dependencies installed");
+        console.log("  :check: Desktop dependencies installed");
       } catch (err) {
         console.log(
-          "  ⚠️  Desktop dependency install failed — run manually:",
+          "  :alert:  Desktop dependency install failed — run manually:",
         );
         console.log("     npm -C scripts/bosun/desktop install");
       }
@@ -369,7 +369,7 @@ async function main() {
   console.log("");
   if (hasErrors) {
     console.log(
-      "  ⛔ Missing required dependencies. Install them before running bosun.",
+      "  :ban: Missing required dependencies. Install them before running bosun.",
     );
   } else if (hasWarnings) {
     console.log(
@@ -407,17 +407,17 @@ async function main() {
     const { ok, results } = await syncVendorFiles({ silent: true });
     const synced = results.filter((r) => r.source).length;
     if (ok) {
-      console.log(`  ✅ Vendor files bundled into ui/vendor/ (${synced}/${results.length} files)`);
+      console.log(`  :check: Vendor files bundled into ui/vendor/ (${synced}/${results.length} files)`);
     } else {
       const missing = results.filter((r) => !r.source).map((r) => r.name);
-      console.warn(`  ⚠️  Some vendor files could not be bundled: ${missing.join(", ")}`);
+      console.warn(`  :alert:  Some vendor files could not be bundled: ${missing.join(", ")}`);
       console.warn("     The UI server will fall back to CDN for those files.");
     }
   } catch (err) {
-    console.warn(`  ⚠️  vendor-sync skipped: ${err.message}`);
+    console.warn(`  :alert:  vendor-sync skipped: ${err.message}`);
   }
 }
 
 main().catch((err) => {
-  console.error(`  ⚠️  postinstall failed: ${err.message}`);
+  console.error(`  :alert:  postinstall failed: ${err.message}`);
 });

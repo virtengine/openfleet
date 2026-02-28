@@ -511,7 +511,7 @@ function startDaemon() {
   // deleted the old codex-monitor directory and its PID file with it).
   const ghosts = findGhostDaemonPids();
   if (ghosts.length > 0) {
-    console.log(`  ⚠️  Found ${ghosts.length} ghost bosun daemon process(es) with no PID file: ${ghosts.join(", ")}`);
+    console.log(`  :alert:  Found ${ghosts.length} ghost bosun daemon process(es) with no PID file: ${ghosts.join(", ")}`);
     console.log(`  Stopping ghost process(es) before starting fresh...`);
     for (const gpid of ghosts) {
       try { process.kill(gpid, "SIGTERM"); } catch { /* already dead */ }
@@ -526,7 +526,7 @@ function startDaemon() {
     for (const gpid of alive) {
       try { process.kill(gpid, "SIGKILL"); } catch { /* ok */ }
     }
-    console.log(`  ✅ Ghost process(es) stopped.`);
+    console.log(`  :check: Ghost process(es) stopped.`);
   }
 
   // Ensure log directory exists
@@ -673,7 +673,7 @@ function daemonStatus() {
     // Check for ghost processes (alive but no PID file)
     const ghosts = findGhostDaemonPids();
     if (ghosts.length > 0) {
-      console.log(`  ⚠️  bosun daemon is NOT tracked (no PID file), but ${ghosts.length} ghost process(es) found: ${ghosts.join(", ")}`);
+      console.log(`  :alert:  bosun daemon is NOT tracked (no PID file), but ${ghosts.length} ghost process(es) found: ${ghosts.join(", ")}`);
       console.log(`  The daemon is likely running but its PID file was lost.`);
       console.log(`  Run --stop-daemon to clean up, then --daemon to restart.`);
     } else {
@@ -793,7 +793,7 @@ function terminateBosun() {
   const killed = allPids.length - alive.length;
   console.log(`  ✓ Terminated ${killed}/${allPids.length} process(es).`);
   if (alive.length > 0) {
-    console.log(`  ⚠️  Still alive: ${alive.join(", ")}`);
+    console.log(`  :alert:  Still alive: ${alive.join(", ")}`);
     process.exit(1);
     return;
   }
@@ -828,13 +828,13 @@ async function main() {
       await import("./desktop-shortcut.mjs");
     const result = installDesktopShortcut();
     if (result.success) {
-      console.log(`  ✅ Desktop shortcut installed (${result.method})`);
+      console.log(`  :check: Desktop shortcut installed (${result.method})`);
       if (result.path) console.log(`     Path: ${result.path}`);
       if (result.name) console.log(`     Name: ${result.name}`);
     } else {
       const method = getDesktopShortcutMethodName();
       console.error(
-        `  ❌ Failed to install desktop shortcut (${method}): ${result.error}`,
+        `  :close: Failed to install desktop shortcut (${method}): ${result.error}`,
       );
     }
     process.exit(result.success ? 0 : 1);
@@ -843,10 +843,10 @@ async function main() {
     const { removeDesktopShortcut } = await import("./desktop-shortcut.mjs");
     const result = removeDesktopShortcut();
     if (result.success) {
-      console.log(`  ✅ Desktop shortcut removed`);
+      console.log(`  :check: Desktop shortcut removed`);
     } else {
       console.error(
-        `  ❌ Failed to remove desktop shortcut: ${result.error}`,
+        `  :close: Failed to remove desktop shortcut: ${result.error}`,
       );
     }
     process.exit(result.success ? 0 : 1);
@@ -907,7 +907,7 @@ async function main() {
     const { shouldRunSetup, runSetup } = await import("./setup.mjs");
     if (shouldRunSetup()) {
       console.log(
-        "\n  🚀 First run detected — setup is required before daemon mode.\n",
+        "\n  :rocket: First run detected — setup is required before daemon mode.\n",
       );
       await runSetup();
       console.log("\n  Setup complete. Starting daemon...\n");
@@ -1008,7 +1008,7 @@ async function main() {
         process.env.BOSUN_SENTINEL_STRICT,
         false,
       );
-      const prefix = strictSentinel ? "✖" : "⚠";
+      const prefix = strictSentinel ? ":close:" : ":alert:";
       const suffix = strictSentinel
         ? ""
         : " (continuing without sentinel companion)";
@@ -1235,7 +1235,7 @@ async function main() {
       if (configDirArg) {
         process.env.BOSUN_DIR = configDirArg;
       }
-      console.log("\n  🚀 First run detected — launching setup wizard...\n");
+      console.log("\n  :rocket: First run detected — launching setup wizard...\n");
       const { startSetupServer } = await import("./setup-web-server.mjs");
       await startSetupServer();
       console.log("\n  Setup complete! Starting bosun...\n");
@@ -1246,16 +1246,16 @@ async function main() {
   const legacyInfo = detectLegacySetup();
   if (legacyInfo.hasLegacy && !legacyInfo.alreadyMigrated) {
     console.log(
-      `\n  📦 Detected legacy codex-monitor config at ${legacyInfo.legacyDir}`,
+      `\n  :box: Detected legacy codex-monitor config at ${legacyInfo.legacyDir}`,
     );
     console.log(`     Auto-migrating to ${legacyInfo.newDir}...\n`);
     const result = migrateFromLegacy(legacyInfo.legacyDir, legacyInfo.newDir);
     if (result.migrated.length > 0) {
-      console.log(`  ✅  Migrated: ${result.migrated.join(", ")}`);
+      console.log(`  :check:  Migrated: ${result.migrated.join(", ")}`);
       console.log(`\n  Config is now at ${legacyInfo.newDir}\n`);
     }
     for (const err of result.errors) {
-      console.log(`  ⚠️   Migration warning: ${err}`);
+      console.log(`  :alert:   Migration warning: ${err}`);
     }
   }
 
@@ -1428,7 +1428,7 @@ async function sendCrashNotification(exitCode, signal, options = {}) {
         .join("\n")
     : "Monitor is no longer running. Manual restart required.";
   const text =
-    `🔥 *CRASH* ${tag} bosun v${VERSION} died unexpectedly\n` +
+    `:zap: *CRASH* ${tag} bosun v${VERSION} died unexpectedly\n` +
     `Host: \`${host}\`\n` +
     `Reason: \`${reason}\`\n` +
     `Time: ${new Date().toISOString()}\n\n` +
@@ -1604,7 +1604,7 @@ function runMonitor({ restartReason = "" } = {}) {
                   Math.round(crashState.instantCrashWindowMs / 1000),
                 );
                 console.error(
-                  `\n  ✖ Monitor crashed too quickly ${crashState.instantCrashCount} times in a row (each <= ${windowSec}s, latest ${durationSec}s). Auto-restart is now paused.`,
+                  `\n  :close: Monitor crashed too quickly ${crashState.instantCrashCount} times in a row (each <= ${windowSec}s, latest ${durationSec}s). Auto-restart is now paused.`,
                 );
                 sendCrashNotification(exitCode, signal).finally(() =>
                   process.exit(exitCode),
@@ -1617,7 +1617,7 @@ function runMonitor({ restartReason = "" } = {}) {
                 daemonRestartCount > DAEMON_MAX_RESTARTS
               ) {
                 console.error(
-                  `\n  ✖ Monitor crashed too many times (${daemonRestartCount - 1} restarts, max ${DAEMON_MAX_RESTARTS}).`,
+                  `\n  :close: Monitor crashed too many times (${daemonRestartCount - 1} restarts, max ${DAEMON_MAX_RESTARTS}).`,
                 );
                 sendCrashNotification(exitCode, signal).finally(() =>
                   process.exit(exitCode),
@@ -1632,7 +1632,7 @@ function runMonitor({ restartReason = "" } = {}) {
                   ? `${daemonRestartCount}/${DAEMON_MAX_RESTARTS}`
                   : `${daemonRestartCount}`;
               console.error(
-                `\n  ⚠ Monitor exited (${reasonLabel}) — auto-restarting in ${Math.max(1, Math.round(delayMs / 1000))}s${IS_DAEMON_CHILD ? ` [attempt ${attemptLabel}]` : ""}...`,
+                `\n  :alert: Monitor exited (${reasonLabel}) — auto-restarting in ${Math.max(1, Math.round(delayMs / 1000))}s${IS_DAEMON_CHILD ? ` [attempt ${attemptLabel}]` : ""}...`,
               );
               sendCrashNotification(exitCode, signal, {
                 autoRestartInMs: delayMs,
@@ -1653,7 +1653,7 @@ function runMonitor({ restartReason = "" } = {}) {
 
             if (exitCode !== 0 && !gracefulShutdown) {
               console.error(
-                `\n  ✖ Monitor crashed (${signal ? `signal ${signal}` : `exit code ${exitCode}`}) — sending crash notification...`,
+                `\n  :close: Monitor crashed (${signal ? `signal ${signal}` : `exit code ${exitCode}`}) — sending crash notification...`,
               );
               sendCrashNotification(exitCode, signal).finally(() =>
                 process.exit(exitCode),
@@ -1668,12 +1668,12 @@ function runMonitor({ restartReason = "" } = {}) {
 
         monitorChild.on("error", (err) => {
           monitorChild = null;
-          console.error(`\n  ✖ Monitor failed to start: ${err.message}`);
+          console.error(`\n  :close: Monitor failed to start: ${err.message}`);
           sendCrashNotification(1, null).finally(() => reject(err));
         });
       })
       .catch((err) => {
-        console.error(`\n  ✖ Monitor failed to start: ${err.message}`);
+        console.error(`\n  :close: Monitor failed to start: ${err.message}`);
         sendCrashNotification(1, null).finally(() => reject(err));
       });
   });

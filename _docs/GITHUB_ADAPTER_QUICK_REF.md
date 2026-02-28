@@ -190,9 +190,9 @@ const staleTasks = tasks.filter((t) => {
 
 | Backend | Supported | Notes                               |
 | ------- | --------- | ----------------------------------- |
-| GitHub  | ✅ Yes    | Full support                        |
-| VK      | ❌ No     | Methods not available, logs warning |
-| Jira    | ❌ No     | Methods not available, logs warning |
+| GitHub  | :check: Yes    | Full support                        |
+| VK      | :close: No     | Methods not available, logs warning |
+| Jira    | :close: No     | Methods not available, logs warning |
 
 ## Environment Setup
 

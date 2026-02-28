@@ -328,7 +328,7 @@ function buildDisableNotice(state) {
   const hours = Math.round(AUTO_UPDATE_DISABLE_WINDOW_MS / (60 * 60 * 1000));
   const reason = state?.lastFailureReason || "unknown";
   return [
-    `[auto-update] ⛔ Disabled for ${hours}h after ${state?.failureCount || 0} failures (last: ${reason}).`,
+    `[auto-update] :ban: Disabled for ${hours}h after ${state?.failureCount || 0} failures (last: ${reason}).`,
     "Recovery: set BOSUN_SKIP_AUTO_UPDATE=1 or delete .cache/auto-update-state.json then restart.",
   ].join(' ');
 }
@@ -426,8 +426,8 @@ export async function forceUpdate(currentVersion) {
   let latest = await fetchLatestVersion();
 
   if (!latest) {
-    console.log("  ⚠️  Could not reach npm registry.");
-    console.log("  ℹ️  This can happen if:");
+    console.log("  :alert:  Could not reach npm registry.");
+    console.log("  :help:  This can happen if:");
     console.log("     • You're offline or behind a firewall");
     console.log("     • The npm registry is temporarily unavailable");
     console.log("     • The package hasn't been published yet");
@@ -436,18 +436,18 @@ export async function forceUpdate(currentVersion) {
     await new Promise(r => setTimeout(r, 3000));
     latest = await fetchLatestVersion();
     if (!latest) {
-      console.log("  ❌ Still unable to reach registry. Try manually:");
+      console.log("  :close: Still unable to reach registry. Try manually:");
       console.log(`     npm install -g ${PKG_NAME}@latest\n`);
       return;
     }
   }
 
   if (!isNewer(latest, currentVersion)) {
-    console.log(`  ✅ Already up to date (v${currentVersion})\n`);
+    console.log(`  :check: Already up to date (v${currentVersion})\n`);
     return;
   }
 
-  console.log(`  📦 Update available: v${currentVersion} → v${latest}\n`);
+  console.log(`  :box: Update available: v${currentVersion} → v${latest}\n`);
 
   const confirmed = await promptConfirm("  Install update now? [Y/n]: ");
 
@@ -464,10 +464,10 @@ export async function forceUpdate(currentVersion) {
       timeout: 120000,
     });
     console.log(
-      `\n  ✅ Updated to v${latest}. Restart bosun to use the new version.\n`,
+      `\n  :check: Updated to v${latest}. Restart bosun to use the new version.\n`,
     );
   } catch (err) {
-    console.error(`\n  ❌ Update failed: ${err.message}`);
+    console.error(`\n  :close: Update failed: ${err.message}`);
     console.error(`  Try manually: npm install -g ${PKG_NAME}@latest\n`);
   }
 }
@@ -647,7 +647,7 @@ export function startAutoUpdateLoop(opts = {}) {
       }
 
       // ── Update detected! ──────────────────────────────────────────────
-      const msg = `[auto-update] 🔄 Update detected: v${currentVersion} → v${latest}. Installing...`;
+      const msg = `[auto-update] :refresh: Update detected: v${currentVersion} → v${latest}. Installing...`;
       console.log(msg);
       await safeNotify(msg);
 
@@ -657,7 +657,7 @@ export function startAutoUpdateLoop(opts = {}) {
           stdio: ["pipe", "pipe", "pipe"],
         });
       } catch (installErr) {
-        const errMsg = `[auto-update] ❌ Install failed: ${installErr.message || installErr}`;
+        const errMsg = `[auto-update] :close: Install failed: ${installErr.message || installErr}`;
         console.error(errMsg);
         await safeNotify(errMsg);
 
@@ -679,7 +679,7 @@ export function startAutoUpdateLoop(opts = {}) {
       // Verify the install actually changed the on-disk version
       const newVersion = getCurrentVersion();
       if (!isNewer(newVersion, currentVersion) && newVersion !== latest) {
-        const errMsg = `[auto-update] ⚠️ Install ran but version unchanged (${newVersion}). Skipping restart.`;
+        const errMsg = `[auto-update] :alert: Install ran but version unchanged (${newVersion}). Skipping restart.`;
         console.warn(errMsg);
         await safeNotify(errMsg);
         return;
@@ -688,13 +688,13 @@ export function startAutoUpdateLoop(opts = {}) {
       await writeCache({ lastCheck: Date.now(), latestVersion: latest });
       await resetAutoUpdateState();
 
-      const successMsg = `[auto-update] ✅ Updated to v${latest}. Restarting...`;
+      const successMsg = `[auto-update] :check: Updated to v${latest}. Restarting...`;
       console.log(successMsg);
       await safeNotify(successMsg);
 
       const runtimeStatus = await waitForRuntimeFilesToSettle();
       if (!runtimeStatus.ready) {
-        const errMsg = `[auto-update] ⚠️ Runtime files not ready after update; skipping restart this cycle. Missing: ${runtimeStatus.missing.join(", ")}`;
+        const errMsg = `[auto-update] :alert: Runtime files not ready after update; skipping restart this cycle. Missing: ${runtimeStatus.missing.join(", ")}`;
         console.warn(errMsg);
         await safeNotify(errMsg);
         return;

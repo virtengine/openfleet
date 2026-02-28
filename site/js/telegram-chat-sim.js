@@ -9,7 +9,7 @@
   /* ── Bot Info ─────────────────────────────────────────────────────────── */
   const BOT_NAME = 'Bosun Bot';
   const BOT_USERNAME = '@bosun_bot';
-  const BOT_AVATAR = '🤖';
+  const BOT_AVATAR = ':bot:';
 
   /* ── Fake timestamps ─────────────────────────────────────────────────── */
   function timeStr() {
@@ -20,24 +20,24 @@
   /* ── Command Responses (matching real telegram-bot.mjs COMMANDS) ──── */
   const BOT_COMMANDS = {
     '/start': {
-      text: '🤖 <b>Bosun Primary Agent</b>\n\nI\'m your autonomous AI fleet supervisor with full repo + MCP access.\n\nUse /menu for the control center, /help for commands, or just type your request.\n\n<i>⚡ Ready to ship code autonomously.</i>',
+      text: ':bot: <b>Bosun Primary Agent</b>\n\nI\'m your autonomous AI fleet supervisor with full repo + MCP access.\n\nUse /menu for the control center, /help for commands, or just type your request.\n\n<i>:zap: Ready to ship code autonomously.</i>',
       keyboard: [
-        [{ text: '🎛 Open Control Center', cmd: '/menu' }, { text: '📊 Status', cmd: '/status' }],
+        [{ text: ':sliders: Open Control Center', cmd: '/menu' }, { text: ':chart: Status', cmd: '/status' }],
       ],
     },
 
     '/menu': {
-      text: '🎛️ <b>Bosun Control Center</b>\n\nChoose an action:',
+      text: ':sliders: <b>Bosun Control Center</b>\n\nChoose an action:',
       keyboard: [
-        [{ text: '📊 Status', cmd: '/status' }, { text: '📋 Tasks', cmd: '/tasks' }, { text: '🤖 Agents', cmd: '/agents' }, { text: '📜 Logs', cmd: '/logs' }],
-        [{ text: '💚 Health', cmd: '/health' }, { text: '⚡ Executor', cmd: '/executor' }, { text: '🧵 Threads', cmd: '/threads' }, { text: '🌿 Branches', cmd: '/branches' }],
-        [{ text: '🔄 Retry', cmd: '/retry' }, { text: '🧹 Cleanup', cmd: '/cleanup' }, { text: '⏸ Pause', cmd: '/pausetasks' }, { text: '📋 Kanban', cmd: '/kanban' }],
-        [{ text: '📱 Open MiniApp', cmd: '/app' }],
+        [{ text: ':chart: Status', cmd: '/status' }, { text: ':clipboard: Tasks', cmd: '/tasks' }, { text: ':bot: Agents', cmd: '/agents' }, { text: ':file: Logs', cmd: '/logs' }],
+        [{ text: ':heart: Health', cmd: '/health' }, { text: ':zap: Executor', cmd: '/executor' }, { text: ':link: Threads', cmd: '/threads' }, { text: ':git: Branches', cmd: '/branches' }],
+        [{ text: ':refresh: Retry', cmd: '/retry' }, { text: ':trash: Cleanup', cmd: '/cleanup' }, { text: ':pause: Pause', cmd: '/pausetasks' }, { text: ':clipboard: Kanban', cmd: '/kanban' }],
+        [{ text: ':phone: Open MiniApp', cmd: '/app' }],
       ],
     },
 
     '/help': {
-      text: '📚 <b>Available Commands</b>\n\n' +
+      text: ':u1f4da: <b>Available Commands</b>\n\n' +
         '<b>Core</b>\n' +
         '/status — Fleet overview\n' +
         '/tasks — List active tasks\n' +
@@ -66,54 +66,54 @@
     },
 
     '/status': {
-      text: '📊 <b>Fleet Status</b> — <code>● RUNNING</code>\n\n' +
-        '⏱ Uptime: <code>2h 34m 12s</code>\n' +
-        '🔧 Mode: <code>internal</code>\n' +
-        '📋 Board: <code>github</code> (bidirectional)\n' +
-        '⚡ Max Parallel: <code>6</code>\n\n' +
+      text: ':chart: <b>Fleet Status</b> — <code>● RUNNING</code>\n\n' +
+        ':clock: Uptime: <code>2h 34m 12s</code>\n' +
+        ':settings: Mode: <code>internal</code>\n' +
+        ':clipboard: Board: <code>github</code> (bidirectional)\n' +
+        ':zap: Max Parallel: <code>6</code>\n\n' +
         '<b>Today\'s Stats</b>\n' +
-        '✅ Tasks completed: <b>13</b>\n' +
-        '🔀 PRs merged: <b>11</b>\n' +
-        '⏳ PRs pending: <b>2</b>\n' +
-        '❌ Failures: <b>1</b> (auto-retried)\n\n' +
+        ':check: Tasks completed: <b>13</b>\n' +
+        ':git: PRs merged: <b>11</b>\n' +
+        ':clock: PRs pending: <b>2</b>\n' +
+        ':close: Failures: <b>1</b> (auto-retried)\n\n' +
         '<b>Executors</b>\n' +
-        '├─ <code>copilot-claude</code> 🟢 load: 67% tasks: 8\n' +
-        '└─ <code>codex-default</code> 🟢 load: 42% tasks: 5',
+        '├─ <code>copilot-claude</code> :dot: load: 67% tasks: 8\n' +
+        '└─ <code>codex-default</code> :dot: load: 42% tasks: 5',
     },
 
     '/tasks': {
-      text: '📋 <b>Active Tasks</b>\n\n' +
-        '🟢 <b>#42</b> feat(market): add order expiry\n' +
+      text: ':clipboard: <b>Active Tasks</b>\n\n' +
+        ':dot: <b>#42</b> feat(market): add order expiry\n' +
         '   └─ <code>copilot-claude</code> • PR #187 merged ✓\n\n' +
-        '🟢 <b>#43</b> fix(veid): token validation\n' +
+        ':dot: <b>#43</b> fix(veid): token validation\n' +
         '   └─ <code>codex-default</code> • PR #188 merged ✓\n\n' +
-        '🔵 <b>#44</b> refactor(escrow): batch settle\n' +
+        ':dot: <b>#44</b> refactor(escrow): batch settle\n' +
         '   └─ <code>copilot-claude</code> • PR #189 in review\n\n' +
-        '🔵 <b>#45</b> feat(hpc): GPU resource metering\n' +
+        ':dot: <b>#45</b> feat(hpc): GPU resource metering\n' +
         '   └─ <code>codex-default</code> • working...\n\n' +
-        '⚪ <b>#46</b> docs: update provider guide\n' +
+        ':dot: <b>#46</b> docs: update provider guide\n' +
         '   └─ queued',
       keyboard: [
-        [{ text: '▶ Start #46', cmd: '/starttask 46' }, { text: '🔄 Refresh', cmd: '/tasks' }],
+        [{ text: ':play: Start #46', cmd: '/starttask 46' }, { text: ':refresh: Refresh', cmd: '/tasks' }],
       ],
     },
 
     '/agents': {
-      text: '🤖 <b>Agent Pool</b>\n\n' +
+      text: ':bot: <b>Agent Pool</b>\n\n' +
         '<b>copilot-claude</b> — Claude Opus 4.6\n' +
-        '├─ Status: 🟢 active\n' +
+        '├─ Status: :dot: active\n' +
         '├─ Session: <code>sk-...7f3a</code>\n' +
         '├─ Weight: 50\n' +
         '└─ Uptime: 2h 34m\n\n' +
         '<b>codex-default</b> — Codex o4-mini\n' +
-        '├─ Status: 🟢 active\n' +
+        '├─ Status: :dot: active\n' +
         '├─ Session: <code>cx-...a91b</code>\n' +
         '├─ Weight: 50\n' +
         '└─ Uptime: 2h 34m',
     },
 
     '/logs': {
-      text: '📜 <b>Recent Logs</b>\n\n' +
+      text: ':file: <b>Recent Logs</b>\n\n' +
         '<code>14:32</code> [monitor] Polling for new tasks...\n' +
         '<code>14:32</code> [kanban] Found 2 new tasks\n' +
         '<code>14:32</code> [TASK] #47 → copilot-claude\n' +
@@ -125,17 +125,17 @@
     },
 
     '/health': {
-      text: '💚 <b>System Health</b> — All Clear\n\n' +
-        '✅ GitHub API <code>142ms</code>\n' +
-        '✅ Telegram Bot <code>89ms</code>\n' +
-        '✅ Codex SDK <code>234ms</code>\n' +
-        '✅ Copilot SDK <code>178ms</code>\n' +
-        '✅ Shared State <code>12ms</code>\n' +
-        '✅ Worktree Manager <code>45ms</code>',
+      text: ':heart: <b>System Health</b> — All Clear\n\n' +
+        ':check: GitHub API <code>142ms</code>\n' +
+        ':check: Telegram Bot <code>89ms</code>\n' +
+        ':check: Codex SDK <code>234ms</code>\n' +
+        ':check: Copilot SDK <code>178ms</code>\n' +
+        ':check: Shared State <code>12ms</code>\n' +
+        ':check: Worktree Manager <code>45ms</code>',
     },
 
     '/metrics': {
-      text: '📈 <b>Fleet Metrics</b> (24h)\n\n' +
+      text: ':chart: <b>Fleet Metrics</b> (24h)\n\n' +
         '<b>Tasks</b>\n' +
         '▓▓▓▓▓▓▓▓▓▓░░ 89% — 47 completed\n' +
         '▓░░░░░░░░░░░  6% — 3 failed\n' +
@@ -149,25 +149,25 @@
     },
 
     '/branches': {
-      text: '🌿 <b>Active Branches</b>\n\n' +
+      text: ':git: <b>Active Branches</b>\n\n' +
         '├─ <code>ve/abc123-market-order-expiry</code> (merged)\n' +
         '├─ <code>ve/def456-veid-token-fix</code> (merged)\n' +
-        '├─ <code>ve/ghi789-escrow-batch</code> 🔵 active\n' +
-        '├─ <code>ve/jkl012-hpc-gpu-metering</code> 🔵 active\n' +
-        '└─ <code>ve/vwx234-mfa-tests</code> 📝 in review',
+        '├─ <code>ve/ghi789-escrow-batch</code> :dot: active\n' +
+        '├─ <code>ve/jkl012-hpc-gpu-metering</code> :dot: active\n' +
+        '└─ <code>ve/vwx234-mfa-tests</code> :edit: in review',
     },
 
     '/worktrees': {
-      text: '🌳 <b>Git Worktrees</b>\n\n' +
+      text: ':git: <b>Git Worktrees</b>\n\n' +
         '├─ /worktrees/abc123 (idle)\n' +
-        '├─ /worktrees/ghi789 🟢 active\n' +
-        '├─ /worktrees/jkl012 🟢 active\n' +
-        '└─ /worktrees/vwx234 🟢 active\n\n' +
+        '├─ /worktrees/ghi789 :dot: active\n' +
+        '├─ /worktrees/jkl012 :dot: active\n' +
+        '└─ /worktrees/vwx234 :dot: active\n\n' +
         'Total: 4 worktrees (3 active)',
     },
 
     '/executor': {
-      text: '⚡ <b>Executor Pool</b>\n\n' +
+      text: ':zap: <b>Executor Pool</b>\n\n' +
         'Mode: <code>internal</code>\n' +
         'Max parallel: <code>6</code>\n\n' +
         '1. copilot-claude (50%) — COPILOT:CLAUDE_OPUS_4_6\n' +
@@ -175,51 +175,51 @@
     },
 
     '/presence': {
-      text: '👥 <b>Agent Presence</b>\n\n' +
-        '🟢 <b>workstation-1</b> (this machine)\n' +
+      text: ':users: <b>Agent Presence</b>\n\n' +
+        ':dot: <b>workstation-1</b> (this machine)\n' +
         '   ├─ copilot-claude: busy (#44)\n' +
         '   └─ codex-default: busy (#45)\n\n' +
         'Fleet: 1 workstation, 2 agents online',
     },
 
     '/app': {
-      text: '📱 Opening MiniApp...\n\n<i>In a real Telegram chat, this opens the full Bosun Mini App with Dashboard, Tasks, Agents, Infra, Logs, and more.</i>',
+      text: ':phone: Opening MiniApp...\n\n<i>In a real Telegram chat, this opens the full Bosun Mini App with Dashboard, Tasks, Agents, Infra, Logs, and more.</i>',
     },
 
     '/starttask': {
-      text: '▶ <b>Starting task #46</b>...\n\n' +
-        '📋 docs: update provider guide\n' +
-        '🤖 Assigned to: <code>codex-default</code>\n' +
-        '🌿 Branch: <code>ve/46-docs-provider-guide</code>\n\n' +
-        '✅ Task dispatched successfully.',
+      text: ':play: <b>Starting task #46</b>...\n\n' +
+        ':clipboard: docs: update provider guide\n' +
+        ':bot: Assigned to: <code>codex-default</code>\n' +
+        ':git: Branch: <code>ve/46-docs-provider-guide</code>\n\n' +
+        ':check: Task dispatched successfully.',
     },
 
     '/restart': {
-      text: '🔄 <b>Restarting task</b>...\n\nNo failed tasks to restart. All tasks healthy.',
+      text: ':refresh: <b>Restarting task</b>...\n\nNo failed tasks to restart. All tasks healthy.',
     },
 
     '/retry': {
-      text: '🔄 <b>Retrying last failed task</b>...\n\nNo recent failures found. Fleet is running clean.',
+      text: ':refresh: <b>Retrying last failed task</b>...\n\nNo recent failures found. Fleet is running clean.',
     },
 
     '/cleanup': {
-      text: '🧹 <b>Cleanup Results</b>\n\n' +
-        '✅ 0 stale orchestrators removed\n' +
-        '✅ 0 stuck pushes cleared\n' +
-        '✅ 1 worktree pruned\n' +
-        '✅ 0 orphaned branches cleaned',
+      text: ':trash: <b>Cleanup Results</b>\n\n' +
+        ':check: 0 stale orchestrators removed\n' +
+        ':check: 0 stuck pushes cleared\n' +
+        ':check: 1 worktree pruned\n' +
+        ':check: 0 orphaned branches cleaned',
     },
 
     '/pausetasks': {
-      text: '⏸ <b>Task processing paused.</b>\n\nNo new tasks will be dispatched. Active tasks continue running.\nUse /resumetasks to resume.',
+      text: ':pause: <b>Task processing paused.</b>\n\nNo new tasks will be dispatched. Active tasks continue running.\nUse /resumetasks to resume.',
     },
 
     '/resumetasks': {
-      text: '▶ <b>Task processing resumed.</b>\n\nThe fleet will begin picking up new tasks from the backlog.',
+      text: ':play: <b>Task processing resumed.</b>\n\nThe fleet will begin picking up new tasks from the backlog.',
     },
 
     '/container': {
-      text: '📦 <b>Container Status</b>\n\n' +
+      text: ':box: <b>Container Status</b>\n\n' +
         'Container Mode: <code>disabled</code>\n' +
         'Available Runtimes: Docker, Podman\n\n' +
         '<i>Enable container isolation in .env with</i>\n' +
@@ -227,17 +227,17 @@
     },
 
     '/kanban': {
-      text: '📊 <b>Kanban Board</b>\n\n' +
-        '📝 Draft: 1\n' +
-        '📋 Todo: 2\n' +
-        '🔵 In Progress: 2\n' +
-        '📝 In Review: 1\n' +
-        '✅ Done: 2\n\n' +
+      text: ':chart: <b>Kanban Board</b>\n\n' +
+        ':edit: Draft: 1\n' +
+        ':clipboard: Todo: 2\n' +
+        ':dot: In Progress: 2\n' +
+        ':edit: In Review: 1\n' +
+        ':check: Done: 2\n\n' +
         'Total: 8 tasks',
     },
 
     '/model': {
-      text: '🧠 <b>Model Configuration</b>\n\n' +
+      text: ':cpu: <b>Model Configuration</b>\n\n' +
         'Primary: <code>claude-opus-4-6</code> (Copilot)\n' +
         'Secondary: <code>o4-mini</code> (Codex)\n' +
         'Review: <code>codex</code>\n\n' +
@@ -245,21 +245,21 @@
     },
 
     '/sdk': {
-      text: '🔧 <b>SDK Status</b>\n\n' +
-        '✅ Copilot SDK: loaded\n' +
-        '✅ Codex SDK: loaded\n' +
-        '✅ GitHub CLI: authenticated\n' +
-        '✅ Telegram API: connected',
+      text: ':settings: <b>SDK Status</b>\n\n' +
+        ':check: Copilot SDK: loaded\n' +
+        ':check: Codex SDK: loaded\n' +
+        ':check: GitHub CLI: authenticated\n' +
+        ':check: Telegram API: connected',
     },
 
     '/whatsapp': {
-      text: '📱 <b>WhatsApp Integration</b>\n\n' +
+      text: ':phone: <b>WhatsApp Integration</b>\n\n' +
         'Status: <code>not configured</code>\n\n' +
         '<i>Run</i> <code>bosun --whatsapp-auth</code> <i>to set up WhatsApp notifications.</i>',
     },
 
     '/helpfull': {
-      text: '📋 <b>All Commands</b>\n\n' +
+      text: ':clipboard: <b>All Commands</b>\n\n' +
         '/menu /help /helpfull /app /cancel\n' +
         '/ask /status /tasks /starttask /agents\n' +
         '/logs /agentlogs /branches /diff\n' +
@@ -276,11 +276,11 @@
     },
 
     '/ask': {
-      text: '🤖 <b>Primary Agent</b>\n\n<i>Send me your prompt and I\'ll dispatch it to the primary agent with full repo + MCP access.</i>\n\nExample: /ask refactor the escrow module to support batch payments',
+      text: ':bot: <b>Primary Agent</b>\n\n<i>Send me your prompt and I\'ll dispatch it to the primary agent with full repo + MCP access.</i>\n\nExample: /ask refactor the escrow module to support batch payments',
     },
 
     '/diff': {
-      text: '📝 <b>Git Diff Summary</b> (staged)\n\n' +
+      text: ':edit: <b>Git Diff Summary</b> (staged)\n\n' +
         '<code>x/market/keeper/order.go</code>  +47 -12\n' +
         '<code>x/market/types/msgs.go</code>     +23 -0\n' +
         '<code>x/market/keeper/keeper.go</code>  +8  -2\n\n' +
@@ -288,20 +288,20 @@
     },
 
     '/plan': {
-      text: '📐 <b>Task Planner</b>\n\nPlanning next 5 tasks from backlog...\n\n' +
+      text: ':ruler: <b>Task Planner</b>\n\nPlanning next 5 tasks from backlog...\n\n' +
         '1. feat(hpc): GPU resource metering\n' +
         '2. fix(provider): health check endpoint\n' +
         '3. docs: update provider guide\n' +
         '4. refactor(roles): simplify permission model\n' +
         '5. test(escrow): add settlement edge cases\n\n' +
-        '✅ 5 tasks queued for dispatch.',
+        ':check: 5 tasks queued for dispatch.',
       keyboard: [
-        [{ text: '▶ Dispatch All', cmd: '/resumetasks' }, { text: '📋 View Tasks', cmd: '/tasks' }],
+        [{ text: ':play: Dispatch All', cmd: '/resumetasks' }, { text: ':clipboard: View Tasks', cmd: '/tasks' }],
       ],
     },
 
     '/history': {
-      text: '📖 <b>Agent Session History</b>\n\n' +
+      text: ':file: <b>Agent Session History</b>\n\n' +
         '├─ Session #14: feat(market) order expiry — 23 turns\n' +
         '├─ Session #15: fix(veid) token validation — 11 turns\n' +
         '├─ Session #16: refactor(escrow) batch settle — 31 turns\n' +
@@ -310,11 +310,11 @@
     },
 
     '/clear': {
-      text: '🔄 <b>Session context cleared.</b>\n\nThe primary agent\'s conversation history has been reset.\nNext task will start with a fresh context window.',
+      text: ':refresh: <b>Session context cleared.</b>\n\nThe primary agent\'s conversation history has been reset.\nNext task will start with a fresh context window.',
     },
 
     '/git': {
-      text: '🔧 <b>Git — log --oneline -5</b>\n\n' +
+      text: ':settings: <b>Git — log --oneline -5</b>\n\n' +
         '<code>a3f8e91</code> feat(market): add order expiry (#187)\n' +
         '<code>7bc2d44</code> fix(veid): token validation (#188)\n' +
         '<code>1e9f077</code> refactor(escrow): batch settlement (#189)\n' +
@@ -323,70 +323,70 @@
     },
 
     '/shell': {
-      text: '💻 <b>Shell — ls logs/</b>\n\n' +
+      text: ':monitor: <b>Shell — ls logs/</b>\n\n' +
         '<code>daemon.log</code>  monitor.log  agent-42.log\n' +
         '<code>agent-43.log</code>  agent-44.log  telegram.log',
     },
 
     '/stop': {
-      text: '🛑 <b>Stop Agent</b>\n\nNo active agents running right now.\nUse /steer to redirect a running agent, or /restart to reset the orchestrator.',
+      text: ':close: <b>Stop Agent</b>\n\nNo active agents running right now.\nUse /steer to redirect a running agent, or /restart to reset the orchestrator.',
       keyboard: [
-        [{ text: '🔄 Restart', cmd: '/restart' }, { text: '📊 Status', cmd: '/status' }],
+        [{ text: ':refresh: Restart', cmd: '/restart' }, { text: ':chart: Status', cmd: '/status' }],
       ],
     },
 
     '/steer': {
-      text: '🧭 <b>Steer Agent</b>\n\nUse: /steer <directive>\n\nExample:\n<code>/steer focus on adding tests first</code>\n<code>/steer skip the CLI and focus on keeper only</code>\n\n<i>The directive will be injected into the active agent\'s context on the next turn.</i>',
+      text: ':compass: <b>Steer Agent</b>\n\nUse: /steer <directive>\n\nExample:\n<code>/steer focus on adding tests first</code>\n<code>/steer skip the CLI and focus on keeper only</code>\n\n<i>The directive will be injected into the active agent\'s context on the next turn.</i>',
     },
 
     '/anomalies': {
-      text: '🔍 <b>Anomaly Detector</b> — <code>All Clear</code>\n\n' +
-        '✅ No stuck agents\n' +
-        '✅ No repeated lint failures\n' +
-        '✅ No push loop detected\n' +
-        '✅ No memory pressure\n\n' +
+      text: ':search: <b>Anomaly Detector</b> — <code>All Clear</code>\n\n' +
+        ':check: No stuck agents\n' +
+        ':check: No repeated lint failures\n' +
+        ':check: No push loop detected\n' +
+        ':check: No memory pressure\n\n' +
         'Streak: <code>14</code> clean checks in a row\n' +
         'Last anomaly: <i>none today</i>',
     },
 
     '/region': {
-      text: '🌍 <b>Codex Region</b>\n\nCurrent: <code>auto</code>\n\nAvailable regions:\n├─ <code>us</code> — US East (latency: ~180ms)\n├─ <code>sweden</code> — EU North (latency: ~95ms)\n└─ <code>auto</code> ✅ — lowest latency selected dynamically\n\nChange with: /region us',
+      text: ':globe: <b>Codex Region</b>\n\nCurrent: <code>auto</code>\n\nAvailable regions:\n├─ <code>us</code> — US East (latency: ~180ms)\n├─ <code>sweden</code> — EU North (latency: ~95ms)\n└─ <code>auto</code> :check: — lowest latency selected dynamically\n\nChange with: /region us',
     },
 
     '/threads': {
-      text: '🧵 <b>Active Agent Threads</b>\n\n' +
-        '├─ Thread #1: <code>ve/44-escrow-batch</code> 🟢 working (31 turns)\n' +
-        '├─ Thread #2: <code>ve/45-hpc-gpu</code> 🟢 working (8 turns)\n' +
-        '└─ Thread #3: <code>primary-agent</code> 🟡 idle\n\n' +
+      text: ':link: <b>Active Agent Threads</b>\n\n' +
+        '├─ Thread #1: <code>ve/44-escrow-batch</code> :dot: working (31 turns)\n' +
+        '├─ Thread #2: <code>ve/45-hpc-gpu</code> :dot: working (8 turns)\n' +
+        '└─ Thread #3: <code>primary-agent</code> :dot: idle\n\n' +
         'Total: 3 threads (2 active)',
       keyboard: [
-        [{ text: '🗑 Clear Idle', cmd: '/threads clear' }, { text: '🔄 Refresh', cmd: '/threads' }],
+        [{ text: ':trash: Clear Idle', cmd: '/threads clear' }, { text: ':refresh: Refresh', cmd: '/threads' }],
       ],
     },
 
     '/maxparallel': {
-      text: '⚡ <b>Max Parallel Slots</b>\n\nCurrent: <code>6</code>\n\nRunning: <code>2</code> tasks\nQueued: <code>2</code> tasks\n\nChange with: /maxparallel 4',
+      text: ':zap: <b>Max Parallel Slots</b>\n\nCurrent: <code>6</code>\n\nRunning: <code>2</code> tasks\nQueued: <code>2</code> tasks\n\nChange with: /maxparallel 4',
     },
 
     '/repos': {
-      text: '📁 <b>Repositories</b>\n\nActive: <code>virtengine/virtengine</code>\n\n├─ <code>virtengine/virtengine</code> ✅ primary\n└─ <code>virtengine/bosun</code> 📦 package\n\nSwitch with: /repos virtengine/bosun',
+      text: ':folder: <b>Repositories</b>\n\nActive: <code>virtengine/virtengine</code>\n\n├─ <code>virtengine/virtengine</code> :check: primary\n└─ <code>virtengine/bosun</code> :box: package\n\nSwitch with: /repos virtengine/bosun',
     },
 
     '/coordinator': {
-      text: '🎯 <b>Coordinator</b>\n\nCurrent: <code>workstation-1</code> (this machine)\n\nAll task dispatch and agent management is handled by this instance.\n\n<i>Multiple coordinators require shared workspace setup.</i>',
+      text: ':target: <b>Coordinator</b>\n\nCurrent: <code>workstation-1</code> (this machine)\n\nAll task dispatch and agent management is handled by this instance.\n\n<i>Multiple coordinators require shared workspace setup.</i>',
     },
 
     '/autobacklog': {
-      text: '📥 <b>Auto-Backlog</b> — Experimental\n\nStatus: <code>enabled</code>\nReplenishment threshold: <code>2</code> tasks remaining\nSource: <code>github issues + vibe-kanban</code>\n\nNext replenishment check: <code>4m 12s</code>',
+      text: ':download: <b>Auto-Backlog</b> — Experimental\n\nStatus: <code>enabled</code>\nReplenishment threshold: <code>2</code> tasks remaining\nSource: <code>github issues + vibe-kanban</code>\n\nNext replenishment check: <code>4m 12s</code>',
     },
 
     '/requirements': {
-      text: '📋 <b>Project Requirements</b>\n\nProfile: <code>blockchain-go</code>\n\n' +
-        '✅ Go 1.22+\n' +
-        '✅ Cosmos SDK v0.53.x\n' +
-        '✅ Conventional Commits\n' +
-        '✅ Pre-push hooks (lint + build + test)\n' +
-        '✅ golangci-lint strict mode\n\n' +
+      text: ':clipboard: <b>Project Requirements</b>\n\nProfile: <code>blockchain-go</code>\n\n' +
+        ':check: Go 1.22+\n' +
+        ':check: Cosmos SDK v0.53.x\n' +
+        ':check: Conventional Commits\n' +
+        ':check: Pre-push hooks (lint + build + test)\n' +
+        ':check: golangci-lint strict mode\n\n' +
         'Edit: bosun.config.json → requirements',
     },
   };
@@ -576,7 +576,7 @@
         if (response) {
           addMessage('bot', response.text, response.keyboard);
         } else {
-          addMessage('bot', '❓ Unknown command: <code>' + escapeHtml(text) + '</code>\n\nType /help to see available commands.', null);
+          addMessage('bot', ':help: Unknown command: <code>' + escapeHtml(text) + '</code>\n\nType /help to see available commands.', null);
         }
       }, delay);
     }

@@ -217,22 +217,22 @@ function headingStep(step, label, markProgress) {
 }
 
 function check(label, ok, hint) {
-  const icon = ok ? "✅" : "❌";
+  const icon = ok ? ":check:" : ":close:";
   console.log(`  ${icon} ${label}`);
   if (!ok && hint) console.log(`     → ${hint}`);
   return ok;
 }
 
 function info(msg) {
-  console.log(`  ℹ️  ${msg}`);
+  console.log(`  :help:  ${msg}`);
 }
 
 function success(msg) {
-  console.log(`  ✅ ${msg}`);
+  console.log(`  :check: ${msg}`);
 }
 
 function warn(msg) {
-  console.log(`  ⚠️  ${msg}`);
+  console.log(`  :alert:  ${msg}`);
 }
 
 function escapeTelegramHtml(value) {
@@ -917,6 +917,7 @@ function defaultVariantForExecutor(executor) {
   if (normalized === "COPILOT" || normalized === "CLAUDE") {
     return "CLAUDE_OPUS_4_6";
   }
+  if (normalized === "GEMINI") return "DEFAULT";
   return "DEFAULT";
 }
 
@@ -1592,6 +1593,31 @@ const EXECUTOR_PRESETS = {
       role: "primary",
     },
   ],
+  "gemini-only": [
+    {
+      name: "gemini-default",
+      executor: "GEMINI",
+      variant: "DEFAULT",
+      weight: 100,
+      role: "primary",
+    },
+  ],
+  "gemini-codex": [
+    {
+      name: "gemini-default",
+      executor: "GEMINI",
+      variant: "DEFAULT",
+      weight: 60,
+      role: "primary",
+    },
+    {
+      name: "codex-backup",
+      executor: "CODEX",
+      variant: "DEFAULT",
+      weight: 40,
+      role: "backup",
+    },
+  ],
   "opencode-only": [
     {
       name: "opencode-default",
@@ -1872,6 +1898,57 @@ function normalizeSetupConfiguration({
     "internal",
   );
 
+  env.VOICE_ENABLED = toBooleanEnvString(env.VOICE_ENABLED, true);
+  env.VOICE_PROVIDER = normalizeEnum(
+    env.VOICE_PROVIDER,
+    ["auto", "openai", "azure", "claude", "gemini", "fallback"],
+    "auto",
+  );
+  env.VOICE_MODEL =
+    env.VOICE_MODEL || "gpt-4o-realtime-preview-2024-12-17";
+  env.VOICE_VISION_MODEL =
+    env.VOICE_VISION_MODEL || "gpt-4.1-mini";
+  env.VOICE_ID = normalizeEnum(
+    env.VOICE_ID,
+    [
+      "alloy",
+      "ash",
+      "ballad",
+      "coral",
+      "echo",
+      "fable",
+      "onyx",
+      "nova",
+      "sage",
+      "shimmer",
+      "verse",
+    ],
+    "alloy",
+  );
+  env.VOICE_TURN_DETECTION = normalizeEnum(
+    env.VOICE_TURN_DETECTION,
+    ["server_vad", "semantic_vad", "none"],
+    "server_vad",
+  );
+  env.VOICE_FALLBACK_MODE = normalizeEnum(
+    env.VOICE_FALLBACK_MODE,
+    ["browser", "disabled"],
+    "browser",
+  );
+  env.VOICE_DELEGATE_EXECUTOR = normalizeEnum(
+    env.VOICE_DELEGATE_EXECUTOR,
+    [
+      "codex-sdk",
+      "copilot-sdk",
+      "claude-sdk",
+      "gemini-sdk",
+      "opencode-sdk",
+    ],
+    env.PRIMARY_AGENT || "codex-sdk",
+  );
+  env.AZURE_OPENAI_REALTIME_DEPLOYMENT =
+    env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-4o-realtime-preview";
+
   env.CODEX_MODEL_PROFILE = normalizeEnum(
     env.CODEX_MODEL_PROFILE,
     ["xl", "m"],
@@ -1940,6 +2017,11 @@ function normalizeSetupConfiguration({
     ["sdk", "auto", "cli"],
     "sdk",
   );
+  env.GEMINI_TRANSPORT = normalizeEnum(
+    env.GEMINI_TRANSPORT || process.env.GEMINI_TRANSPORT,
+    ["sdk", "auto", "cli"],
+    "auto",
+  );
 
   env.WHATSAPP_ENABLED = toBooleanEnvString(env.WHATSAPP_ENABLED, false);
 
@@ -1983,7 +2065,13 @@ function normalizeSetupConfiguration({
   {
     const primaryExec = configJson.executors.find((e) => e.role === "primary");
     if (primaryExec) {
-      const sdkMap = { CODEX: "codex-sdk", COPILOT: "copilot-sdk", CLAUDE: "claude-sdk", OPENCODE: "opencode-sdk" };
+      const sdkMap = {
+        CODEX: "codex-sdk",
+        COPILOT: "copilot-sdk",
+        CLAUDE: "claude-sdk",
+        GEMINI: "gemini-sdk",
+        OPENCODE: "opencode-sdk",
+      };
       env.PRIMARY_AGENT = env.PRIMARY_AGENT ||
         sdkMap[String(primaryExec.executor).toUpperCase()] || "codex-sdk";
     }
@@ -2709,6 +2797,8 @@ async function main() {
           "Copilot + Codex (50/50 split)",
           "Copilot only (Claude Opus 4.6)",
           "Claude only (direct API)",
+          "Gemini only (direct SDK + CLI fallback)",
+          "Gemini + Codex (60/40 split)",
           "OpenCode only (local OpenCode server)",
           "OpenCode + Codex (60/40 split)",
           "Triple (Copilot Claude 40%, Codex 35%, Copilot GPT 25%)",
@@ -2719,6 +2809,8 @@ async function main() {
           "Copilot + Codex (50/50 split)",
           "Copilot only (Claude Opus 4.6)",
           "Claude only (direct API)",
+          "Gemini only (direct SDK + CLI fallback)",
+          "Gemini + Codex (60/40 split)",
           "OpenCode only (local OpenCode server)",
           "OpenCode + Codex (60/40 split)",
           "Triple (Copilot Claude 40%, Codex 35%, Copilot GPT 25%)",
@@ -2731,8 +2823,29 @@ async function main() {
     );
 
     const presetNames = isAdvancedSetup
-      ? ["codex-only", "copilot-codex", "copilot-only", "claude-only", "opencode-only", "opencode-codex", "triple", "custom"]
-      : ["codex-only", "copilot-codex", "copilot-only", "claude-only", "opencode-only", "opencode-codex", "triple"];
+      ? [
+          "codex-only",
+          "copilot-codex",
+          "copilot-only",
+          "claude-only",
+          "gemini-only",
+          "gemini-codex",
+          "opencode-only",
+          "opencode-codex",
+          "triple",
+          "custom",
+        ]
+      : [
+          "codex-only",
+          "copilot-codex",
+          "copilot-only",
+          "claude-only",
+          "gemini-only",
+          "gemini-codex",
+          "opencode-only",
+          "opencode-codex",
+          "triple",
+        ];
     const presetKey = presetNames[presetIdx] || "codex-only";
 
     if (presetKey === "custom") {
@@ -2857,6 +2970,12 @@ async function main() {
     if (!usedSdks.has("CODEX"))   { env.CODEX_SDK_DISABLED   = "true"; } else { delete env.CODEX_SDK_DISABLED;   }
     if (!usedSdks.has("COPILOT")) { env.COPILOT_SDK_DISABLED = "true"; } else { delete env.COPILOT_SDK_DISABLED; }
     if (!usedSdks.has("CLAUDE"))  { env.CLAUDE_SDK_DISABLED  = "true"; } else { delete env.CLAUDE_SDK_DISABLED;  }
+    if (!usedSdks.has("GEMINI"))  { env.GEMINI_SDK_DISABLED  = "true"; } else { delete env.GEMINI_SDK_DISABLED;  }
+    if (!usedSdks.has("OPENCODE")) {
+      env.OPENCODE_SDK_DISABLED = "true";
+    } else {
+      delete env.OPENCODE_SDK_DISABLED;
+    }
 
     if (isAdvancedSetup) {
       console.log();
@@ -2884,6 +3003,20 @@ async function main() {
       );
       if (!wantClaudeFallback) env.CLAUDE_SDK_DISABLED = "true";
       else delete env.CLAUDE_SDK_DISABLED;
+
+      const wantGeminiFallback = usedSdks.has("GEMINI") || await prompt.confirm(
+        "Enable Gemini SDK fallback? (requires GEMINI_API_KEY or GOOGLE_API_KEY)",
+        !!process.env.GEMINI_API_KEY || !!process.env.GOOGLE_API_KEY,
+      );
+      if (!wantGeminiFallback) env.GEMINI_SDK_DISABLED = "true";
+      else delete env.GEMINI_SDK_DISABLED;
+
+      const wantOpenCodeFallback = usedSdks.has("OPENCODE") || await prompt.confirm(
+        "Enable OpenCode SDK fallback? (requires opencode binary on PATH)",
+        false,
+      );
+      if (!wantOpenCodeFallback) env.OPENCODE_SDK_DISABLED = "true";
+      else delete env.OPENCODE_SDK_DISABLED;
     }
     saveSetupSnapshot(4, "Executor / Agent Configuration", env, configJson);
     } // end step 4
@@ -2906,6 +3039,8 @@ async function main() {
     const needsCodexSdk = usedSdks.has("CODEX") || env.CODEX_SDK_DISABLED !== "true";
     const needsCopilotSdk = usedSdks.has("COPILOT") || env.COPILOT_SDK_DISABLED !== "true";
     const needsClaudeSdk = usedSdks.has("CLAUDE") || env.CLAUDE_SDK_DISABLED !== "true";
+    const needsGeminiSdk = usedSdks.has("GEMINI") || env.GEMINI_SDK_DISABLED !== "true";
+    const needsOpencodeSdk = usedSdks.has("OPENCODE") || env.OPENCODE_SDK_DISABLED !== "true";
 
     // ── 5a. Copilot / GitHub Token ──────────────────────
     if (needsCopilotSdk) {
@@ -3030,6 +3165,168 @@ async function main() {
     } else {
       // Codex not needed — skip OpenAI key prompts entirely
       info("Codex SDK not in executor preset — skipping OpenAI configuration.");
+    }
+
+    // ── 5d. Gemini / Google AI Key ────────────────────────
+    if (needsGeminiSdk) {
+      console.log(chalk.bold("\n  Gemini SDK") + chalk.dim(" (uses Google AI API key)\n"));
+      const existingGeminiKey =
+        process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
+      if (existingGeminiKey) {
+        info(`Gemini API key detected (${existingGeminiKey.slice(0, 8)}…). Gemini SDK will use it.`);
+      } else {
+        const geminiKey = await prompt.ask(
+          "Gemini API Key (GEMINI_API_KEY / GOOGLE_API_KEY, blank to skip)",
+          "",
+        );
+        if (geminiKey) {
+          env.GEMINI_API_KEY = geminiKey;
+        }
+      }
+      env.GEMINI_MODEL =
+        env.GEMINI_MODEL ||
+        process.env.GEMINI_MODEL ||
+        "gemini-2.5-pro";
+      const geminiTransportIdx = await prompt.choose(
+        "Gemini transport mode:",
+        [
+          "auto (recommended: SDK first, CLI fallback)",
+          "sdk only",
+          "cli only",
+        ],
+        0,
+      );
+      env.GEMINI_TRANSPORT =
+        geminiTransportIdx === 1
+          ? "sdk"
+          : geminiTransportIdx === 2
+            ? "cli"
+            : "auto";
+      if (env.GEMINI_TRANSPORT !== "sdk") {
+        const cliPath = await prompt.ask(
+          "Gemini CLI binary path (GEMINI_CLI_PATH, leave blank for default 'gemini')",
+          process.env.GEMINI_CLI_PATH || "",
+        );
+        if (cliPath) {
+          env.GEMINI_CLI_PATH = cliPath;
+        }
+      }
+    } else {
+      info("Gemini SDK not in executor preset — skipping Gemini configuration.");
+    }
+
+    // ── 5e. OpenCode local server ─────────────────────────
+    if (needsOpencodeSdk) {
+      console.log(chalk.bold("\n  OpenCode SDK") + chalk.dim(" (uses local opencode server)\n"));
+      env.OPENCODE_PORT = String(
+        toPositiveInt(
+          env.OPENCODE_PORT || process.env.OPENCODE_PORT || "4096",
+          4096,
+        ),
+      );
+      env.OPENCODE_MODEL =
+        env.OPENCODE_MODEL ||
+        process.env.OPENCODE_MODEL ||
+        "gpt-5.2-codex";
+      env.OPENCODE_TIMEOUT_MS = String(
+        toPositiveInt(
+          env.OPENCODE_TIMEOUT_MS || process.env.OPENCODE_TIMEOUT_MS || "3600000",
+          3600000,
+        ),
+      );
+      info(
+        `OpenCode defaults: OPENCODE_PORT=${env.OPENCODE_PORT}, OPENCODE_MODEL=${env.OPENCODE_MODEL}, OPENCODE_TIMEOUT_MS=${env.OPENCODE_TIMEOUT_MS}`,
+      );
+    } else {
+      info("OpenCode SDK not in executor preset — skipping OpenCode configuration.");
+    }
+
+    // ── 5f. Voice Mode ─────────────────────────────────────
+    console.log(chalk.bold("\n  Voice Mode") + chalk.dim(" (Realtime voice assistant)\n"));
+    const enableVoice = await prompt.confirm(
+      "Enable voice mode in the UI?",
+      parseBooleanEnvValue(process.env.VOICE_ENABLED, true),
+    );
+    env.VOICE_ENABLED = enableVoice ? "true" : "false";
+    if (enableVoice) {
+      const providerIdx = await prompt.choose(
+        "Voice provider:",
+        [
+          "auto (recommended)",
+          "openai",
+          "azure",
+          "claude (fallback voice + Claude vision)",
+          "gemini (fallback voice + Gemini vision)",
+          "fallback (browser speech only)",
+        ],
+        0,
+      );
+      const providerOptions = ["auto", "openai", "azure", "claude", "gemini", "fallback"];
+      env.VOICE_PROVIDER = providerOptions[providerIdx] || "auto";
+
+      env.VOICE_ID = await prompt.ask(
+        "Voice ID",
+        process.env.VOICE_ID || "alloy",
+      );
+      env.VOICE_MODEL = await prompt.ask(
+        "Realtime voice model",
+        process.env.VOICE_MODEL || "gpt-4o-realtime-preview-2024-12-17",
+      );
+      env.VOICE_VISION_MODEL = await prompt.ask(
+        "Vision model for camera/screen analysis",
+        process.env.VOICE_VISION_MODEL || "gpt-4.1-mini",
+      );
+      env.VOICE_TURN_DETECTION = await prompt.ask(
+        "Turn detection (server_vad|semantic_vad|none)",
+        process.env.VOICE_TURN_DETECTION || "server_vad",
+      );
+      env.VOICE_FALLBACK_MODE = await prompt.ask(
+        "Fallback mode (browser|disabled)",
+        process.env.VOICE_FALLBACK_MODE || "browser",
+      );
+      env.VOICE_DELEGATE_EXECUTOR = await prompt.ask(
+        "Delegate executor (codex-sdk|copilot-sdk|claude-sdk|gemini-sdk|opencode-sdk)",
+        process.env.VOICE_DELEGATE_EXECUTOR || env.PRIMARY_AGENT || "codex-sdk",
+      );
+      if (env.VOICE_PROVIDER === "openai" || env.VOICE_PROVIDER === "auto") {
+        env.OPENAI_REALTIME_API_KEY = await prompt.ask(
+          "OpenAI Realtime key (OPENAI_REALTIME_API_KEY, blank uses OPENAI_API_KEY)",
+          process.env.OPENAI_REALTIME_API_KEY || env.OPENAI_API_KEY || "",
+        );
+      }
+      if (env.VOICE_PROVIDER === "azure" || env.VOICE_PROVIDER === "auto") {
+        env.AZURE_OPENAI_REALTIME_ENDPOINT = await prompt.ask(
+          "Azure Realtime endpoint (AZURE_OPENAI_REALTIME_ENDPOINT)",
+          process.env.AZURE_OPENAI_REALTIME_ENDPOINT || process.env.AZURE_OPENAI_ENDPOINT || "",
+        );
+        env.AZURE_OPENAI_REALTIME_API_KEY = await prompt.ask(
+          "Azure Realtime key (AZURE_OPENAI_REALTIME_API_KEY, blank uses AZURE_OPENAI_API_KEY)",
+          process.env.AZURE_OPENAI_REALTIME_API_KEY || process.env.AZURE_OPENAI_API_KEY || "",
+        );
+        env.AZURE_OPENAI_REALTIME_DEPLOYMENT = await prompt.ask(
+          "Azure Realtime deployment (AZURE_OPENAI_REALTIME_DEPLOYMENT)",
+          process.env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-4o-realtime-preview",
+        );
+      }
+      if (env.VOICE_PROVIDER === "claude" && !env.ANTHROPIC_API_KEY) {
+        env.ANTHROPIC_API_KEY = await prompt.ask(
+          "Anthropic API key for Claude voice/vision fallback (ANTHROPIC_API_KEY)",
+          process.env.ANTHROPIC_API_KEY || "",
+        );
+      }
+      if (
+        env.VOICE_PROVIDER === "gemini" &&
+        !env.GEMINI_API_KEY &&
+        !env.GOOGLE_API_KEY
+      ) {
+        const geminiVoiceKey = await prompt.ask(
+          "Gemini API key for Gemini voice/vision fallback (GEMINI_API_KEY or GOOGLE_API_KEY)",
+          process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "",
+        );
+        if (geminiVoiceKey) {
+          env.GEMINI_API_KEY = geminiVoiceKey;
+        }
+      }
     }
     saveSetupSnapshot(5, "AI Provider Keys", env, configJson);
     } // end step 5
@@ -3226,7 +3523,7 @@ async function main() {
                   env.PROJECT_NAME || configJson.projectName || "Unknown",
                 );
                 const testMsg =
-                  "🤖 <b>Telegram Bot Test</b>\n\n" +
+                  ":bot: <b>Telegram Bot Test</b>\n\n" +
                   "Your bosun Telegram bot is configured correctly!\n\n" +
                   `Project: ${projectLabel}\n` +
                   "Try: /status, /tasks, /help";
@@ -5106,6 +5403,25 @@ async function runNonInteractive({
     env.GITHUB_REPO = env.GITHUB_REPOSITORY;
   }
   env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+  env.VOICE_ENABLED = process.env.VOICE_ENABLED || "true";
+  env.VOICE_PROVIDER = process.env.VOICE_PROVIDER || "auto";
+  env.VOICE_MODEL =
+    process.env.VOICE_MODEL || "gpt-4o-realtime-preview-2024-12-17";
+  env.VOICE_VISION_MODEL = process.env.VOICE_VISION_MODEL || "gpt-4.1-mini";
+  env.OPENAI_REALTIME_API_KEY = process.env.OPENAI_REALTIME_API_KEY || "";
+  env.AZURE_OPENAI_REALTIME_ENDPOINT =
+    process.env.AZURE_OPENAI_REALTIME_ENDPOINT || "";
+  env.AZURE_OPENAI_REALTIME_API_KEY =
+    process.env.AZURE_OPENAI_REALTIME_API_KEY || "";
+  env.AZURE_OPENAI_REALTIME_DEPLOYMENT =
+    process.env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-4o-realtime-preview";
+  env.VOICE_ID = process.env.VOICE_ID || "alloy";
+  env.VOICE_TURN_DETECTION = process.env.VOICE_TURN_DETECTION || "server_vad";
+  env.VOICE_FALLBACK_MODE = process.env.VOICE_FALLBACK_MODE || "browser";
+  env.VOICE_DELEGATE_EXECUTOR =
+    process.env.VOICE_DELEGATE_EXECUTOR ||
+    process.env.PRIMARY_AGENT ||
+    "codex-sdk";
   env.CODEX_MODEL_PROFILE = process.env.CODEX_MODEL_PROFILE || "xl";
   env.CODEX_MODEL_PROFILE_SUBAGENT =
     process.env.CODEX_MODEL_PROFILE_SUBAGENT ||
@@ -5191,6 +5507,8 @@ async function runNonInteractive({
     // Smart default: pick preset based on available API keys
     const hasOpenAI = !!process.env.OPENAI_API_KEY;
     const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
+    const hasGemini =
+      !!process.env.GEMINI_API_KEY || !!process.env.GOOGLE_API_KEY;
     const hasGitHub = !!process.env.GITHUB_TOKEN || !!process.env.COPILOT_CLI_TOKEN;
     const presetEnv = (process.env.EXECUTOR_PRESET || "").toLowerCase();
     if (presetEnv && EXECUTOR_PRESETS[presetEnv]) {
@@ -5201,6 +5519,10 @@ async function runNonInteractive({
         : EXECUTOR_PRESETS["copilot-only"];
     } else if (hasAnthropic) {
       configJson.executors = EXECUTOR_PRESETS["claude-only"];
+    } else if (hasGemini) {
+      configJson.executors = hasOpenAI
+        ? EXECUTOR_PRESETS["gemini-codex"]
+        : EXECUTOR_PRESETS["gemini-only"];
     } else {
       configJson.executors = EXECUTOR_PRESETS["codex-only"];
     }
@@ -5212,7 +5534,13 @@ async function runNonInteractive({
       (e) => e.role === "primary",
     );
     if (primaryExec) {
-      const sdkMap = { CODEX: "codex-sdk", COPILOT: "copilot-sdk", CLAUDE: "claude-sdk", OPENCODE: "opencode-sdk" };
+      const sdkMap = {
+        CODEX: "codex-sdk",
+        COPILOT: "copilot-sdk",
+        CLAUDE: "claude-sdk",
+        GEMINI: "gemini-sdk",
+        OPENCODE: "opencode-sdk",
+      };
       env.PRIMARY_AGENT = sdkMap[String(primaryExec.executor).toUpperCase()] || "codex-sdk";
     }
   }
@@ -5321,7 +5649,7 @@ async function runNonInteractive({
           if (r.success) {
             info(`  ✓ Workspace repo ready: ${r.name}`);
           } else {
-            warn(`  ⚠ Workspace repo ${r.name}: ${r.error}`);
+            warn(`  :alert: Workspace repo ${r.name}: ${r.error}`);
           }
         }
         // Set BOSUN_AGENT_REPO_ROOT to workspace primary repo
@@ -5580,7 +5908,7 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
     "  ╔═══════════════════════════════════════════════════════════════╗",
   );
   console.log(
-    "  ║                    ✅ Setup Complete!                        ║",
+    "  ║                    :check: Setup Complete!                        ║",
   );
   console.log(
     "  ╚═══════════════════════════════════════════════════════════════╝",
@@ -5620,6 +5948,15 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
     !parseBooleanEnvValue(env.CODEX_SDK_DISABLED, false)
   ) {
     info("No API key set — AI analysis & autofix will be disabled.");
+  }
+  if (
+    !env.GEMINI_API_KEY &&
+    !env.GOOGLE_API_KEY &&
+    !process.env.GEMINI_API_KEY &&
+    !process.env.GOOGLE_API_KEY &&
+    !parseBooleanEnvValue(env.GEMINI_SDK_DISABLED, false)
+  ) {
+    info("No Gemini key set — Gemini SDK will be unavailable until configured.");
   }
 
   console.log("");

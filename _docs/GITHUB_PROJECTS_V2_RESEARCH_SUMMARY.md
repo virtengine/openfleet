@@ -10,11 +10,11 @@
 
 The current GitHubAdapter in `kanban-adapter.mjs` only **adds issues to projects** via `gh project item-add`. It does NOT:
 
-❌ Read tasks FROM project boards  
-❌ Sync status updates TO project fields (Status column)  
-❌ Read/write custom project fields  
-❌ Update iteration/sprint fields  
-❌ Manage project item metadata
+:close: Read tasks FROM project boards  
+:close: Sync status updates TO project fields (Status column)  
+:close: Read/write custom project fields  
+:close: Update iteration/sprint fields  
+:close: Manage project item metadata
 
 This limits bosun's ability to work with GitHub Projects v2 as a primary task board.
 
@@ -104,18 +104,18 @@ await this._gh(
 
 **Comprehensive 28KB guide covering**:
 
-- ✅ Current state analysis with code references
-- ✅ What's missing (5 major gaps)
-- ✅ API overview (GraphQL patterns, node IDs, authentication)
-- ✅ Reading project data (3 query types with examples)
-- ✅ Writing project data (3 mutation types with examples)
-- ✅ Implementation plan (3 phases with method signatures)
-- ✅ Configuration updates (env vars, config schema)
-- ✅ Helper methods with complete code examples
-- ✅ Testing plan (unit, integration, manual)
-- ✅ Migration guide (backward compatible)
-- ✅ Performance considerations (caching, rate limits)
-- ✅ Appendix with full code example
+- :check: Current state analysis with code references
+- :check: What's missing (5 major gaps)
+- :check: API overview (GraphQL patterns, node IDs, authentication)
+- :check: Reading project data (3 query types with examples)
+- :check: Writing project data (3 mutation types with examples)
+- :check: Implementation plan (3 phases with method signatures)
+- :check: Configuration updates (env vars, config schema)
+- :check: Helper methods with complete code examples
+- :check: Testing plan (unit, integration, manual)
+- :check: Migration guide (backward compatible)
+- :check: Performance considerations (caching, rate limits)
+- :check: Appendix with full code example
 
 **Target audience**: Implementers who need every detail
 
@@ -123,15 +123,15 @@ await this._gh(
 
 **TL;DR 5KB guide covering**:
 
-- ✅ Current gap summary
-- ✅ Key concepts (GraphQL, node IDs)
-- ✅ Essential commands only
-- ✅ Implementation checklist (checkbox format)
-- ✅ Configuration example
-- ✅ Code patterns (read + write)
-- ✅ Testing commands
-- ✅ Performance tips
-- ✅ Migration steps
+- :check: Current gap summary
+- :check: Key concepts (GraphQL, node IDs)
+- :check: Essential commands only
+- :check: Implementation checklist (checkbox format)
+- :check: Configuration example
+- :check: Code patterns (read + write)
+- :check: Testing commands
+- :check: Performance tips
+- :check: Migration steps
 
 **Target audience**: Quick reference during implementation
 
@@ -333,9 +333,9 @@ gh project item-list 3 --owner virtengine --format json | jq '.[] | select(.cont
 
 **Must cache** (session lifetime):
 
-- ✅ Project node ID (from project number) - Rarely changes
-- ✅ Project field metadata (IDs, options, iterations) - Static per project
-- ✅ Project item ID → Issue number mapping - Dynamic but expensive to query
+- :check: Project node ID (from project number) - Rarely changes
+- :check: Project field metadata (IDs, options, iterations) - Static per project
+- :check: Project item ID → Issue number mapping - Dynamic but expensive to query
 
 **Cache invalidation**:
 
@@ -478,27 +478,27 @@ For users wanting to enable project sync:
 
 ### Phase 1 Complete When:
 
-- ✅ Can read tasks from project board via `listTasks()`
-- ✅ Project items normalized to KanbanTask format
-- ✅ Field metadata cached and accessible
-- ✅ Unit tests pass (>80% coverage)
-- ✅ Manual testing validates real project reads
+- :check: Can read tasks from project board via `listTasks()`
+- :check: Project items normalized to KanbanTask format
+- :check: Field metadata cached and accessible
+- :check: Unit tests pass (>80% coverage)
+- :check: Manual testing validates real project reads
 
 ### Phase 2 Complete When:
 
-- ✅ Status updates sync to project Status field
-- ✅ Status mapping configurable via env vars
-- ✅ Graceful degradation when project unavailable
-- ✅ Rate limiting handled with backoff
-- ✅ Integration tests pass (end-to-end scenarios)
-- ✅ Documentation updated with examples
+- :check: Status updates sync to project Status field
+- :check: Status mapping configurable via env vars
+- :check: Graceful degradation when project unavailable
+- :check: Rate limiting handled with backoff
+- :check: Integration tests pass (end-to-end scenarios)
+- :check: Documentation updated with examples
 
 ### Phase 3 Complete When:
 
-- ✅ Custom field sync working (if implemented)
-- ✅ Iteration/sprint sync working (if implemented)
-- ✅ Batch operations functional (if implemented)
-- ✅ Webhook integration active (if implemented)
+- :check: Custom field sync working (if implemented)
+- :check: Iteration/sprint sync working (if implemented)
+- :check: Batch operations functional (if implemented)
+- :check: Webhook integration active (if implemented)
 
 ---
 

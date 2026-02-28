@@ -148,7 +148,7 @@
         await loadApp(false);
       } catch (err) {
         if (!shimReady || !window.importShim) {
-          bootErr('⚠️ Failed to load app modules.<br><small style="color:#888">Try refreshing. If this persists, run <code>npm install</code> in the bosun directory.</small>');
+          bootErr(':alert: Failed to load app modules.<br><small style="color:#888">Try refreshing. If this persists, run <code>npm install</code> in the bosun directory.</small>');
           return;
         }
         console.warn("[ui] Primary CDN failed, switching to fallback.", err);
@@ -157,7 +157,7 @@
           await loadApp(true);
         } catch (fallbackErr) {
           console.error("[ui] Fallback CDN failed.", fallbackErr);
-          bootErr('⚠️ Failed to load app modules.<br><small style="color:#888">Local vendor and CDN fallback both failed. Run <code>npm install</code> in the bosun directory or check your connection.</small>');
+          bootErr(':alert: Failed to load app modules.<br><small style="color:#888">Local vendor and CDN fallback both failed. Run <code>npm install</code> in the bosun directory or check your connection.</small>');
         }
       }
     })();
@@ -170,7 +170,7 @@
       var el = document.getElementById('boot-loader');
       if (el) {
         var s = document.getElementById('boot-status');
-        if (s) s.innerHTML = '⚠️ Failed to load app modules.<br><small style="color:#888">Try refreshing. If this persists, run <code>npm install</code> in the bosun directory.</small>';
+        if (s) s.innerHTML = ':alert: Failed to load app modules.<br><small style="color:#888">Try refreshing. If this persists, run <code>npm install</code> in the bosun directory.</small>';
       }
     }, 12000);
   </script>

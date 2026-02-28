@@ -456,7 +456,7 @@ export class ErrorDetector {
     // Block after too many consecutive errors.
     if (errorCount >= this.maxConsecutiveErrors) {
       const reason = `Task has ${errorCount} consecutive errors (max ${this.maxConsecutiveErrors}) — blocking`;
-      this._notifyTelegram(`🛑 Task ${taskId} blocked: ${reason}`);
+      this._notifyTelegram(`:close: Task ${taskId} blocked: ${reason}`);
       return { action: "block", reason, errorCount };
     }
 

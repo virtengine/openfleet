@@ -856,7 +856,7 @@ export function ControlTab() {
                     sendCmd(planFocus ? `/plan ${n} ${planFocus}` : `/plan ${n}`);
                   }}
                 >
-                  ${iconText("📋 Plan")}
+                  ${iconText(":clipboard: Plan")}
                 </button>
               </div>
             </div>
@@ -927,7 +927,7 @@ export function ControlTab() {
                 style="flex:1"
               />
               <button class="btn btn-secondary btn-sm" onClick=${handleQuickCmd}>
-                ${iconText("▶ Run")}
+                ${iconText(":play: Run")}
               </button>
             </div>
             ${quickCmdFeedback && html`

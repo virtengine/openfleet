@@ -305,9 +305,44 @@ const GH_ERROR_COOLDOWN_MS =
 const GH_NOT_FOUND_COOLDOWN_MS =
   Number(process.env.GH_NOT_FOUND_COOLDOWN_MS) || 5 * 60 * 1000; // 5 min
 
+function buildGitHubAdapterCacheNamespace(owner, repo) {
+  const normalizedOwner = String(owner || "").trim().toLowerCase();
+  const normalizedRepo = String(repo || "").trim().toLowerCase();
+  if (normalizedOwner && normalizedRepo) return `${normalizedOwner}/${normalizedRepo}`;
+  if (normalizedRepo) return normalizedRepo;
+  return normalizedOwner || "unknown";
+}
+
+const GH_ADAPTER_CACHE_BUCKETS = new Map();
+
+function createGitHubAdapterCacheBucket() {
+  return {
+    issueList: new Map(),
+    sharedState: new Map(),
+    issueLocator: new Map(),
+    missingIssue: new Map(),
+    ghRead: new Map(),
+    ghInflight: new Map(),
+    ghErrorCooldown: new Map(),
+  };
+}
+
+function getGitHubAdapterCacheBucket(owner, repo) {
+  const namespace = buildGitHubAdapterCacheNamespace(owner, repo);
+  if (!GH_ADAPTER_CACHE_BUCKETS.has(namespace)) {
+    GH_ADAPTER_CACHE_BUCKETS.set(namespace, createGitHubAdapterCacheBucket());
+  }
+  return GH_ADAPTER_CACHE_BUCKETS.get(namespace);
+}
+
+function clearGitHubAdapterCacheBuckets() {
+  GH_ADAPTER_CACHE_BUCKETS.clear();
+}
+
 /** Build a cache key for the issue-list cache (per adapter instance). */
-function _issueListCacheKey(state, limit) {
-  return `${state}:${limit}`;
+function _issueListCacheKey(repoKey, state, limit) {
+  const normalizedRepo = String(repoKey || "").trim().toLowerCase();
+  return `${normalizedRepo}:${state}:${limit}`;
 }
 
 /** Build a cache key for the shared-state cache (per adapter instance). */
@@ -315,6 +350,18 @@ function _sharedStateCacheKey(num, repoKey = "") {
   const normalizedNum = String(num || "").trim();
   const normalizedRepo = String(repoKey || "").trim().toLowerCase();
   return normalizedRepo ? `${normalizedRepo}#${normalizedNum}` : normalizedNum;
+}
+
+function _issueLocatorCacheKey(num, repoKey = "", owner = "", repo = "") {
+  const normalizedNum = String(num || "")
+    .trim()
+    .replace(/^#/, "");
+  const normalizedRepoKey =
+    String(repoKey || "")
+      .trim()
+      .toLowerCase() ||
+    buildGitHubAdapterCacheNamespace(owner, repo);
+  return _sharedStateCacheKey(normalizedNum, normalizedRepoKey);
 }
 
 function parseIssueLocator(issueNumber, defaultOwner, defaultRepo, issueUrl = "") {
@@ -1469,31 +1516,32 @@ class GitHubIssuesAdapter {
       Number(process.env.GH_TRANSIENT_RETRY_MAX) || 2,
     );
 
-    // Issue-list and shared-state caches (instance-level for test isolation)
+    // Issue-list and shared-state caches (shared per repo namespace)
+    const cacheBucket = getGitHubAdapterCacheBucket(this._owner, this._repo);
     /** @type {Map<string, {data: any, ts: number}>} state:limit → {data, ts} */
-    this._issueListCache = new Map();
+    this._issueListCache = cacheBucket.issueList;
     /** @type {Map<string, {data: object|null, ts: number}>} issueNum → {data, ts} */
-    this._sharedStateCache = new Map();
+    this._sharedStateCache = cacheBucket.sharedState;
     /** @type {Map<string, {owner:string, repo:string, repoKey:string, number:string, issueUrl:string, ts:number}>} */
-    this._issueLocatorCache = new Map();
+    this._issueLocatorCache = cacheBucket.issueLocator;
     this._issueLocatorCacheTtlMs = parseDelayMs(
       process.env.GH_ISSUE_LOCATOR_CACHE_TTL_MS,
       GH_ISSUE_LOCATOR_CACHE_TTL_MS,
       0,
     );
     /** @type {Map<string, number>} repo#issueNum → last-seen-missing timestamp */
-    this._missingIssueCache = new Map();
+    this._missingIssueCache = cacheBucket.missingIssue;
     this._missingIssueCacheTtlMs = parseDelayMs(
       process.env.GH_MISSING_ISSUE_CACHE_TTL_MS,
       10 * 60 * 1000,
       5_000,
     );
     /** @type {Map<string, {data:any, ts:number}>} gh request key → parsed payload */
-    this._ghReadCache = new Map();
+    this._ghReadCache = cacheBucket.ghRead;
     /** @type {Map<string, Promise<any>>} gh request key → in-flight promise */
-    this._ghInflight = new Map();
+    this._ghInflight = cacheBucket.ghInflight;
     /** @type {Map<string, {until:number, message:string, type:string|null}>} gh request key → cooldown metadata */
-    this._ghErrorCooldown = new Map();
+    this._ghErrorCooldown = cacheBucket.ghErrorCooldown;
     this._ghReadCacheTtlMs = parseDelayMs(
       process.env.GH_READ_CACHE_TTL_MS,
       GH_READ_CACHE_TTL_MS,
@@ -1580,7 +1628,12 @@ class GitHubIssuesAdapter {
       issueUrl,
     );
     if (!/^\d+$/.test(locator.number) || !locator.owner || !locator.repo) return;
-    const key = String(locator.number);
+    const key = _issueLocatorCacheKey(
+      locator.number,
+      locator.repoKey,
+      this._owner,
+      this._repo,
+    );
     const canonicalUrl =
       issueUrl ||
       `https://github.com/${locator.owner}/${locator.repo}/issues/${locator.number}`;
@@ -1612,7 +1665,12 @@ class GitHubIssuesAdapter {
       };
     }
 
-    const key = String(direct.number);
+    const key = _issueLocatorCacheKey(
+      direct.number,
+      direct.repoKey,
+      this._owner,
+      this._repo,
+    );
     const cached = this._issueLocatorCache.get(key);
     if (cached) {
       if (Date.now() - cached.ts <= this._issueLocatorCacheTtlMs) {
@@ -1621,9 +1679,21 @@ class GitHubIssuesAdapter {
       this._issueLocatorCache.delete(key);
     }
 
+    // Cross-repo fallback: if an issue number was previously observed with a
+    // different repo slug (e.g. project board rows), reuse that locator.
+    const suffix = `#${direct.number}`;
+    for (const [cacheKey, value] of this._issueLocatorCache.entries()) {
+      if (!cacheKey.endsWith(suffix)) continue;
+      if (Date.now() - value.ts > this._issueLocatorCacheTtlMs) {
+        this._issueLocatorCache.delete(cacheKey);
+        continue;
+      }
+      return { ...value };
+    }
+
     // Fall back to last-known tasks (e.g., project item-list rows from other repos).
     const match = this._lastKnownTasks.find(
-      (task) => String(task?.id || "") === key,
+      (task) => String(task?.id || "") === String(direct.number),
     );
     const taskUrl = String(match?.taskUrl || match?.meta?.url || "").trim();
     if (taskUrl) {
@@ -1634,12 +1704,18 @@ class GitHubIssuesAdapter {
         taskUrl,
       );
       if (/^\d+$/.test(resolved.number)) {
+        const resolvedKey = _issueLocatorCacheKey(
+          resolved.number,
+          resolved.repoKey,
+          this._owner,
+          this._repo,
+        );
         const value = {
           ...resolved,
           issueUrl: taskUrl,
           ts: Date.now(),
         };
-        this._issueLocatorCache.set(key, value);
+        this._issueLocatorCache.set(resolvedKey, value);
         return value;
       }
     }
@@ -2830,7 +2906,11 @@ class GitHubIssuesAdapter {
     }
 
     // Check instance-level issue-list cache to avoid redundant gh API calls
-    const listCacheKey = _issueListCacheKey(stateFilter, limit);
+    const listCacheKey = _issueListCacheKey(
+      `${this._owner}/${this._repo}`,
+      stateFilter,
+      limit,
+    );
     const nowMs = Date.now();
     const cachedList = this._issueListCache.get(listCacheKey);
     let rawIssues;
@@ -5713,6 +5793,10 @@ export function setKanbanBackend(name) {
     throw new Error(
       `${TAG} unknown kanban backend: "${name}". Valid: ${Object.keys(ADAPTERS).join(", ")}`,
     );
+  }
+  if (normalised === "github") {
+    // Avoid carrying stale GH cache state across explicit backend switches.
+    clearGitHubAdapterCacheBuckets();
   }
   activeBackendName = normalised;
   activeAdapter = null; // Force re-create on next getKanbanAdapter()

@@ -360,6 +360,9 @@ describe("workflow setup profiles", () => {
       expect(profile.templateIds.length).toBeGreaterThan(0);
       expect(typeof profile.workflowAutomationEnabled).toBe("boolean");
     }
+    const autonomous = profiles.find((profile) => profile.id === "autonomous");
+    expect(autonomous?.templateIds).toContain("template-bosun-pr-watchdog");
+    expect(autonomous?.templateIds).not.toContain("template-pr-conflict-resolver");
   });
 
   it("returns balanced profile as fallback", () => {

@@ -27,6 +27,7 @@ vi.mock("../kanban-adapter.mjs", () => ({
 vi.mock("../session-tracker.mjs", () => ({
   listSessions: vi.fn(() => []),
   getSession: vi.fn(() => null),
+  getSessionById: vi.fn(() => null),
 }));
 
 vi.mock("../fleet-coordinator.mjs", () => ({
@@ -44,7 +45,8 @@ const {
   VOICE_TOOLS,
 } = await import("../voice-tools.mjs");
 
-const { execPrimaryPrompt } = await import("../primary-agent.mjs");
+const { execPrimaryPrompt, setPrimaryAgent } = await import("../primary-agent.mjs");
+const sessionTracker = await import("../session-tracker.mjs");
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -73,6 +75,14 @@ describe("voice-tools", () => {
         expect(def).toHaveProperty("parameters");
         expect(def.parameters).toHaveProperty("type", "object");
       }
+    });
+
+    it("includes gemini-sdk in delegate and switch executor enums", () => {
+      const defs = getToolDefinitions();
+      const delegate = defs.find((def) => def.name === "delegate_to_agent");
+      const switchAgent = defs.find((def) => def.name === "switch_agent");
+      expect(delegate?.parameters?.properties?.executor?.enum || []).toContain("gemini-sdk");
+      expect(switchAgent?.parameters?.properties?.executor?.enum || []).toContain("gemini-sdk");
     });
   });
 
@@ -141,6 +151,73 @@ describe("voice-tools", () => {
       expect(vi.mocked(execPrimaryPrompt)).toHaveBeenCalled();
       const callArgs = vi.mocked(execPrimaryPrompt).mock.calls[0];
       expect(callArgs[0]).toBe("test instruction");
+    });
+
+    it("delegate_to_agent honors call context session/executor/mode/model", async () => {
+      const result = await executeToolCall(
+        "delegate_to_agent",
+        { message: "ship it" },
+        {
+          sessionId: "primary-abc123",
+          executor: "claude-sdk",
+          mode: "plan",
+          model: "claude-opus-4.6",
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(vi.mocked(setPrimaryAgent)).toHaveBeenCalledWith("claude-sdk");
+      const callArgs = vi.mocked(execPrimaryPrompt).mock.calls.at(-1);
+      expect(callArgs?.[0]).toBe("ship it");
+      expect(callArgs?.[1]).toMatchObject({
+        sessionId: "primary-abc123",
+        sessionType: "primary",
+        mode: "plan",
+        model: "claude-opus-4.6",
+      });
+    });
+
+    it("delegate_to_agent accepts gemini-sdk executor", async () => {
+      const result = await executeToolCall(
+        "delegate_to_agent",
+        { message: "summarize the task" },
+        {
+          sessionId: "primary-gemini-1",
+          executor: "gemini-sdk",
+          mode: "ask",
+          model: "gemini-2.5-pro",
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(vi.mocked(setPrimaryAgent)).toHaveBeenCalledWith("gemini-sdk");
+      const callArgs = vi.mocked(execPrimaryPrompt).mock.calls.at(-1);
+      expect(callArgs?.[1]).toMatchObject({
+        sessionId: "primary-gemini-1",
+        sessionType: "primary",
+        mode: "ask",
+        model: "gemini-2.5-pro",
+      });
+    });
+
+    it("delegate_to_agent appends latest vision summary when available", async () => {
+      vi.mocked(sessionTracker.getSessionById).mockReturnValue({
+        messages: [
+          {
+            role: "system",
+            content: "[Vision screen] Terminal shows vitest failures in tests/voice-relay.test.mjs.",
+          },
+        ],
+      });
+
+      const result = await executeToolCall(
+        "delegate_to_agent",
+        { message: "Please fix the failing test and explain why." },
+        { sessionId: "primary-vision-1" },
+      );
+      expect(result.error).toBeUndefined();
+      const callArgs = vi.mocked(execPrimaryPrompt).mock.calls.at(-1);
+      expect(callArgs?.[0]).toContain("Please fix the failing test");
+      expect(callArgs?.[0]).toContain("Live visual context from this call");
+      expect(callArgs?.[0]).toContain("[Vision screen]");
     });
 
     it("run_command returns acknowledgment for safe command", async () => {

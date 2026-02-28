@@ -367,14 +367,14 @@ export function buildRejectionComment(trustResult, repoOwner = "") {
   switch (trustResult.reason) {
     case "ingestion_disabled":
       return (
-        "👋 Thanks for opening this issue! " +
+        ":u1f44b: Thanks for opening this issue! " +
         "Automatic issue-to-task ingestion is not enabled for this repository right now. " +
         "A maintainer will review your issue manually."
       );
 
     case "untrusted_creator":
       return (
-        "👋 Thanks for opening this issue! " +
+        ":u1f44b: Thanks for opening this issue! " +
         "Bosun's automated agent will not pick this up automatically because your account " +
         "is not on the trusted contributors list." +
         ownerNote +
@@ -383,7 +383,7 @@ export function buildRejectionComment(trustResult, repoOwner = "") {
 
     case "injection_detected":
       return (
-        "⚠️ This issue could not be automatically ingested because its content " +
+        ":alert: This issue could not be automatically ingested because its content " +
         "matched one or more patterns associated with prompt injection attacks. " +
         "This is a security measure to protect the automated agent pipeline. " +
         "If you believe this is a false positive, please contact a maintainer."
@@ -391,7 +391,7 @@ export function buildRejectionComment(trustResult, repoOwner = "") {
 
     case "unknown_creator":
       return (
-        "⚠️ This issue was submitted without an identifiable creator and has been " +
+        ":alert: This issue was submitted without an identifiable creator and has been " +
         "quarantined as a precaution."
       );
 

@@ -1569,46 +1569,46 @@ export function ensureCodexConfig({
  */
 export function printConfigSummary(result, log = console.log) {
   if (result.noChanges) {
-    log("  ✅ Codex CLI config is already up to date");
+    log("  :check: Codex CLI config is already up to date");
     log(`     ${result.path}`);
     return;
   }
 
   if (result.created) {
-    log("  📝 Created new Codex CLI config");
+    log("  :edit: Created new Codex CLI config");
   }
 
   if (result.vkAdded) {
-    log("  ✅ Added Vibe-Kanban MCP server to Codex config");
+    log("  :check: Added Vibe-Kanban MCP server to Codex config");
   }
 
   if (result.vkRemoved) {
-    log("  🗑️  Removed Vibe-Kanban MCP server from global config (workspace-scoped only)");
+    log("  :trash:  Removed Vibe-Kanban MCP server from global config (workspace-scoped only)");
   }
 
   if (result.vkEnvUpdated) {
-    log("  ✅ Updated Vibe-Kanban MCP environment variables");
+    log("  :check: Updated Vibe-Kanban MCP environment variables");
   }
 
   if (result.agentSdkAdded) {
-    log("  ✅ Added agent SDK selection block");
+    log("  :check: Added agent SDK selection block");
   }
 
   if (result.featuresAdded && result.featuresAdded.length > 0) {
     const key = result.featuresAdded.length <= 5
       ? result.featuresAdded.join(", ")
       : `${result.featuresAdded.length} feature flags`;
-    log(`  ✅ Added feature flags: ${key}`);
+    log(`  :check: Added feature flags: ${key}`);
   }
 
   if (result.sandboxAdded) {
-    log("  ✅ Added sandbox permissions (disk-full-write-access)");
+    log("  :check: Added sandbox permissions (disk-full-write-access)");
   }
 
   if (result.sandboxWorkspaceAdded) {
-    log("  ✅ Added sandbox workspace-write defaults");
+    log("  :check: Added sandbox workspace-write defaults");
   } else if (result.sandboxWorkspaceUpdated) {
-    log("  ✅ Updated sandbox workspace-write defaults");
+    log("  :check: Updated sandbox workspace-write defaults");
   }
 
   if (result.sandboxWorkspaceRootsAdded && result.sandboxWorkspaceRootsAdded.length > 0) {
@@ -1619,7 +1619,7 @@ export function printConfigSummary(result, log = console.log) {
 
   if (result.sandboxStaleRootsRemoved && result.sandboxStaleRootsRemoved.length > 0) {
     log(
-      `  🗑️  Pruned ${result.sandboxStaleRootsRemoved.length} stale writable root(s) that no longer exist`,
+      `  :trash:  Pruned ${result.sandboxStaleRootsRemoved.length} stale writable root(s) that no longer exist`,
     );
     for (const r of result.sandboxStaleRootsRemoved) {
       log(`     - ${r}`);
@@ -1627,7 +1627,7 @@ export function printConfigSummary(result, log = console.log) {
   }
 
   if (result.shellEnvAdded) {
-    log("  ✅ Added shell environment policy (inherit=all)");
+    log("  :check: Added shell environment policy (inherit=all)");
   }
 
   if (result.agentMaxThreads) {
@@ -1637,22 +1637,22 @@ export function printConfigSummary(result, log = console.log) {
         : String(result.agentMaxThreads.from);
     const toLabel = String(result.agentMaxThreads.to);
     const note = result.agentMaxThreads.explicit ? " (env override)" : "";
-    log(`  ✅ Set agents.max_threads: ${fromLabel} → ${toLabel}${note}`);
+    log(`  :check: Set agents.max_threads: ${fromLabel} → ${toLabel}${note}`);
   } else if (result.agentMaxThreadsSkipped) {
     log(
-      `  ⚠ Skipped agents.max_threads (invalid value: ${result.agentMaxThreadsSkipped})`,
+      `  :alert: Skipped agents.max_threads (invalid value: ${result.agentMaxThreadsSkipped})`,
     );
   }
 
   if (result.commonMcpAdded) {
     log(
-      "  ✅ Added common MCP servers (context7, sequential-thinking, playwright, microsoft-docs)",
+      "  :check: Added common MCP servers (context7, sequential-thinking, playwright, microsoft-docs)",
     );
   }
 
   if (result.profileProvidersAdded && result.profileProvidersAdded.length > 0) {
     log(
-      `  ✅ Added model provider sections: ${result.profileProvidersAdded.join(", ")}`,
+      `  :check: Added model provider sections: ${result.profileProvidersAdded.join(", ")}`,
     );
   }
 
@@ -1661,12 +1661,12 @@ export function printConfigSummary(result, log = console.log) {
       t.from === null ? "not set" : `${(t.from / 1000).toFixed(0)}s`;
     const toLabel = `${(t.to / 1000 / 60).toFixed(0)} min`;
     log(
-      `  ✅ Set stream_idle_timeout_ms on [${t.provider}]: ${fromLabel} → ${toLabel}`,
+      `  :check: Set stream_idle_timeout_ms on [${t.provider}]: ${fromLabel} → ${toLabel}`,
     );
   }
 
   for (const p of result.retriesAdded) {
-    log(`  ✅ Added retry settings to [${p}]`);
+    log(`  :check: Added retry settings to [${p}]`);
   }
 
   log(`     Config: ${result.path}`);
@@ -1756,7 +1756,7 @@ function parseTomlArrayLiteralEscaped(raw) {
  *
  * Codex refuses to load a per-project .codex/config.toml unless the project
  * directory appears in this list — producing warnings like:
- *   "⚠ Project config.toml files are disabled … add <dir> as a trusted project"
+ *   ":alert: Project config.toml files are disabled … add <dir> as a trusted project"
  *
  * Paths are stored as-is (forward or back slashes preserved) with proper TOML
  * escaping so Windows paths survive round-trips through the file.

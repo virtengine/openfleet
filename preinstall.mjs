@@ -78,7 +78,7 @@ function main() {
   // We need to uninstall it so bosun can claim those bin names.
   console.log("");
   console.log("  ┌──────────────────────────────────────────────────────────┐");
-  console.log("  │  🔄 Migrating from codex-monitor → bosun                │");
+  console.log("  │  :refresh: Migrating from codex-monitor → bosun                │");
   console.log("  └──────────────────────────────────────────────────────────┘");
   console.log("");
   console.log(`  Found old "${owner}" package owning the codex-monitor binary.`);
@@ -90,13 +90,13 @@ function main() {
       stdio: "inherit",
       timeout: 30_000,
     });
-    console.log(`  ✅ Removed old "${owner}" package.`);
-    console.log("  ℹ️  All codex-monitor commands will continue to work via bosun.");
+    console.log(`  :check: Removed old "${owner}" package.`);
+    console.log("  :help:  All codex-monitor commands will continue to work via bosun.");
     console.log("");
   } catch (err) {
-    console.log(`  ⚠️  Could not auto-remove "${owner}": ${err.message}`);
-    console.log("  ℹ️  Run manually:  npm uninstall -g codex-monitor");
-    console.log("  ℹ️  Then retry:    npm install -g bosun");
+    console.log(`  :alert:  Could not auto-remove "${owner}": ${err.message}`);
+    console.log("  :help:  Run manually:  npm uninstall -g codex-monitor");
+    console.log("  :help:  Then retry:    npm install -g bosun");
     console.log("");
     // Don't block the install — npm may still succeed with --force,
     // or the user can follow the manual instructions.

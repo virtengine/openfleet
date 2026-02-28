@@ -107,7 +107,7 @@ for (const field of requiredFields) {
 }
 console.log("✓ SharedState structure is valid");
 
-console.log("\n✅ All validation tests passed!");
+console.log("\n:check: All validation tests passed!");
 console.log("\nEnhancements added:");
 console.log(
   "  • New label scheme: codex:claimed, codex:working, codex:stale, codex:ignore",

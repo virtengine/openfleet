@@ -16,6 +16,7 @@ import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveAgentSdkConfig } from "./agent-sdk.mjs";
+import { loadConfig } from "./config.mjs";
 import { resolveRepoRoot } from "./repo-root.mjs";
 import { resolveCodexProfileRuntime } from "./codex-model-profiles.mjs";
 import {
@@ -39,6 +40,113 @@ const MAX_PERSISTENT_TURNS = 50;
 // 180 KB is a safe ceiling; the API hard-errors around 200–400 KB payloads
 // that contain embedded content with unescaped characters.
 const MAX_PROMPT_BYTES = 180_000;
+const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 120_000;
+const DEFAULT_MAX_ITEMS_PER_TURN = 600;
+const DEFAULT_MAX_ITEM_CHARS = 12_000;
+const TOOL_OUTPUT_GUARDRAIL = String.raw`
+
+[Tool Output Guardrail] Keep tool outputs compact: prefer narrow searches, bounded command output (for example head/tail), and summaries for large results instead of dumping full payloads.`;
+
+function parseBoundedNumber(value, fallback, min, max) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.min(Math.max(Math.trunc(num), min), max);
+}
+
+function getInternalExecutorStreamConfig() {
+  try {
+    const cfg = loadConfig();
+    const stream = cfg?.internalExecutor?.stream;
+    return stream && typeof stream === "object" ? stream : {};
+  } catch {
+    return {};
+  }
+}
+
+function truncateText(text, maxChars) {
+  if (typeof text !== "string") return text;
+  if (!Number.isFinite(maxChars) || maxChars < 1 || text.length <= maxChars) {
+    return text;
+  }
+  const trimmed = text.slice(0, maxChars);
+  const removed = text.length - maxChars;
+  return `${trimmed}
+
+[…truncated ${removed} chars…]`;
+}
+
+function truncateItemForStorage(item, maxChars) {
+  if (!item || typeof item !== "object") return item;
+  if (!Number.isFinite(maxChars) || maxChars < 1) return item;
+
+  const next = { ...item };
+  const directStringKeys = [
+    "text",
+    "output",
+    "aggregated_output",
+    "stderr",
+    "stdout",
+    "result",
+    "message",
+  ];
+  for (const key of directStringKeys) {
+    if (typeof next[key] === "string") {
+      next[key] = truncateText(next[key], maxChars);
+    }
+  }
+
+  if (Array.isArray(next.content)) {
+    next.content = next.content.map((entry) => {
+      if (entry && typeof entry === "object" && typeof entry.text === "string") {
+        return { ...entry, text: truncateText(entry.text, maxChars) };
+      }
+      return entry;
+    });
+  }
+
+  if (next.error && typeof next.error === "object") {
+    next.error = {
+      ...next.error,
+      message: truncateText(next.error.message, maxChars),
+    };
+  }
+
+  return next;
+}
+
+function resolveCodexStreamSafety(totalTimeoutMs) {
+  const streamCfg = getInternalExecutorStreamConfig();
+  const firstEventRaw =
+    process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS ||
+    streamCfg.firstEventTimeoutMs ||
+    DEFAULT_FIRST_EVENT_TIMEOUT_MS;
+  const maxItemsRaw =
+    process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN ||
+    streamCfg.maxItemsPerTurn ||
+    DEFAULT_MAX_ITEMS_PER_TURN;
+  const maxItemCharsRaw =
+    process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS ||
+    streamCfg.maxItemChars ||
+    DEFAULT_MAX_ITEM_CHARS;
+  const configuredFirstEventMs = parseBoundedNumber(
+    firstEventRaw,
+    DEFAULT_FIRST_EVENT_TIMEOUT_MS,
+    1_000,
+    60 * 60 * 1000,
+  );
+  const budgetMs = Number(totalTimeoutMs);
+  let firstEventTimeoutMs = null;
+  if (Number.isFinite(budgetMs) && budgetMs > 2_000) {
+    const maxAllowed = Math.max(1_000, budgetMs - 1_000);
+    firstEventTimeoutMs = Math.min(configuredFirstEventMs, maxAllowed);
+  }
+
+  return {
+    firstEventTimeoutMs,
+    maxItemsPerTurn: parseBoundedNumber(maxItemsRaw, DEFAULT_MAX_ITEMS_PER_TURN, 1, 5000),
+    maxItemChars: parseBoundedNumber(maxItemCharsRaw, DEFAULT_MAX_ITEM_CHARS, 1, 250000),
+  };
+}
 
 /**
  * Strip ASCII control characters (except \n/\t) that corrupt JSON serialization,
@@ -380,25 +488,25 @@ function formatEvent(event) {
       const item = event.item;
       switch (item.type) {
         case "command_execution":
-          return `⚡ Running: \`${item.command}\``;
+          return `:zap: Running: \`${item.command}\``;
         case "file_change":
           return null; // wait for completed
         case "mcp_tool_call":
-          return `🔌 MCP [${item.server}]: ${item.tool}`;
+          return `:plug: MCP [${item.server}]: ${item.tool}`;
         case "reasoning":
-          return item.text ? `💭 ${item.text.slice(0, 300)}` : null;
+          return item.text ? `:u1f4ad: ${item.text.slice(0, 300)}` : null;
         case "agent_message":
           return null; // wait for completed for full text
         case "todo_list":
           if (item.items && item.items.length > 0) {
             const todoLines = item.items.map(
-              (t) => `  ${t.completed ? "✅" : "⬜"} ${t.text}`,
+              (t) => `  ${t.completed ? ":check:" : ":dot:"} ${t.text}`,
             );
-            return `📋 Plan:\n${todoLines.join("\n")}`;
+            return `:clipboard: Plan:\n${todoLines.join("\n")}`;
           }
           return null;
         case "web_search":
-          return `🔍 Searching: ${item.query}`;
+          return `:search: Searching: ${item.query}`;
         default:
           return null;
       }
@@ -408,7 +516,7 @@ function formatEvent(event) {
       const item = event.item;
       switch (item.type) {
         case "command_execution": {
-          const status = item.exit_code === 0 ? "✅" : "❌";
+          const status = item.exit_code === 0 ? ":check:" : ":close:";
           const output = item.aggregated_output
             ? `\n${item.aggregated_output.slice(-500)}`
             : "";
@@ -418,16 +526,16 @@ function formatEvent(event) {
           if (item.changes && item.changes.length > 0) {
             const fileLines = item.changes.map(
               (c) =>
-                `  ${c.kind === "add" ? "➕" : c.kind === "delete" ? "🗑️" : "✏️"} ${c.path}`,
+                `  ${c.kind === "add" ? ":plus:" : c.kind === "delete" ? ":trash:" : ":edit:"} ${c.path}`,
             );
-            return `📁 Files changed:\n${fileLines.join("\n")}`;
+            return `:folder: Files changed:\n${fileLines.join("\n")}`;
           }
           return null;
         }
         case "agent_message":
           return item.text || null;
         case "mcp_tool_call": {
-          const status = item.status === "completed" ? "✅" : "❌";
+          const status = item.status === "completed" ? ":check:" : ":close:";
           const resultInfo = item.error
             ? `Error: ${item.error.message}`
             : "done";
@@ -436,9 +544,9 @@ function formatEvent(event) {
         case "todo_list": {
           if (item.items && item.items.length > 0) {
             const todoLines = item.items.map(
-              (t) => `  ${t.completed ? "✅" : "⬜"} ${t.text}`,
+              (t) => `  ${t.completed ? ":check:" : ":dot:"} ${t.text}`,
             );
-            return `📋 Updated plan:\n${todoLines.join("\n")}`;
+            return `:clipboard: Updated plan:\n${todoLines.join("\n")}`;
           }
           return null;
         }
@@ -451,13 +559,13 @@ function formatEvent(event) {
       const item = event.item;
       // Stream partial reasoning and command output
       if (item.type === "reasoning" && item.text) {
-        return `💭 ${item.text.slice(0, 300)}`;
+        return `:u1f4ad: ${item.text.slice(0, 300)}`;
       }
       if (item.type === "todo_list" && item.items) {
         const todoLines = item.items.map(
-          (t) => `  ${t.completed ? "✅" : "⬜"} ${t.text}`,
+          (t) => `  ${t.completed ? ":check:" : ":dot:"} ${t.text}`,
         );
-        return `📋 Plan update:\n${todoLines.join("\n")}`;
+        return `:clipboard: Plan update:\n${todoLines.join("\n")}`;
       }
       return null;
     }
@@ -465,9 +573,9 @@ function formatEvent(event) {
     case "turn.completed":
       return null; // handled by caller
     case "turn.failed":
-      return `❌ Turn failed: ${event.error?.message || "unknown error"}`;
+      return `:close: Turn failed: ${event.error?.message || "unknown error"}`;
     case "error":
-      return `❌ Error: ${event.message}`;
+      return `:close: Error: ${event.message}`;
     default:
       return null;
   }
@@ -524,7 +632,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
   agentSdk = resolveAgentSdkConfig({ reload: true });
   if (agentSdk.primary !== "codex") {
     return {
-      finalResponse: `❌ Agent SDK set to "${agentSdk.primary}" — Codex SDK disabled.`,
+      finalResponse: `:close: Agent SDK set to "${agentSdk.primary}" — Codex SDK disabled.`,
       items: [],
       usage: null,
     };
@@ -533,7 +641,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
   if (activeTurn) {
     return {
       finalResponse:
-        "⏳ Agent is still executing a previous task. Please wait.",
+        ":clock: Agent is still executing a previous task. Please wait.",
       items: [],
       usage: null,
     };
@@ -542,6 +650,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
   activeTurn = true;
 
   try {
+    const streamSafety = resolveCodexStreamSafety(timeoutMs);
     if (!persistent) {
       // Task executor path — keep existing fresh-thread behavior
       activeThread = null;
@@ -572,13 +681,13 @@ export async function execCodexPrompt(userMessage, options = {}) {
     let prompt = userMessage;
     if (statusData && !isAskMode) {
       const statusSnippet = JSON.stringify(statusData, null, 2).slice(0, 2000);
-      prompt = `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.`;
+      prompt = `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.${TOOL_OUTPUT_GUARDRAIL}`;
     } else if (isAskMode) {
       // Ask mode — pass through without executor framing.  The mode
       // prefix from primary-agent already tells the model to be brief.
       prompt = userMessage;
     } else {
-      prompt = `${userMessage}\n\n\n# YOUR TASK — EXECUTE NOW\n\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output & complete the user's request E2E.`;
+      prompt = `${userMessage}\n\n\n# YOUR TASK — EXECUTE NOW\n\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output & complete the user's request E2E.${TOOL_OUTPUT_GUARDRAIL}`;
     }
     // Sanitize & size-guard once — prevents invalid_request_error from oversized
     // bodies (BytePositionInLine > 80 000) or unescaped control characters.
@@ -627,9 +736,27 @@ export async function execCodexPrompt(userMessage, options = {}) {
         let finalResponse = "";
         const allItems = [];
         let turnFailedErr = null;
+        let firstEventTimer = null;
+        let eventCount = 0;
+        let droppedItems = 0;
 
         // Process events from the async generator
+        if (streamSafety.firstEventTimeoutMs) {
+          firstEventTimer = setTimeout(() => {
+            if (eventCount > 0 || controller.signal.aborted) return;
+            controller.abort("first_event_timeout");
+          }, streamSafety.firstEventTimeoutMs);
+          if (typeof firstEventTimer.unref === "function") {
+            firstEventTimer.unref();
+          }
+        }
+
         for await (const event of streamedTurn.events) {
+          eventCount += 1;
+          if (firstEventTimer) {
+            clearTimeout(firstEventTimer);
+            firstEventTimer = null;
+          }
           // Capture thread ID on first turn
           if (event.type === "thread.started" && event.thread_id) {
             activeThreadId = event.thread_id;
@@ -661,7 +788,13 @@ export async function execCodexPrompt(userMessage, options = {}) {
 
           // Collect items
           if (event.type === "item.completed") {
-            allItems.push(event.item);
+            if (allItems.length < streamSafety.maxItemsPerTurn) {
+              allItems.push(
+                truncateItemForStorage(event.item, streamSafety.maxItemChars),
+              );
+            } else {
+              droppedItems += 1;
+            }
             if (event.item.type === "agent_message" && event.item.text) {
               finalResponse += event.item.text + "\n";
             }
@@ -675,6 +808,18 @@ export async function execCodexPrompt(userMessage, options = {}) {
               await saveCurrentSession();
             }
           }
+        }
+
+        if (firstEventTimer) {
+          clearTimeout(firstEventTimer);
+          firstEventTimer = null;
+        }
+
+        if (droppedItems > 0) {
+          allItems.push({
+            type: "stream_notice",
+            text: `Dropped ${droppedItems} completed items to stay within INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN=${streamSafety.maxItemsPerTurn}.`,
+          });
         }
 
         // If a turn.failed event was seen during the stream, treat it as a
@@ -694,11 +839,17 @@ export async function execCodexPrompt(userMessage, options = {}) {
 
         if (err.name === "AbortError") {
           const reason = controller.signal.reason;
-          const msg =
-            reason === "user_stop"
-              ? "🛑 Agent stopped by user."
-              : `⏱️ Agent timed out after ${timeoutMs / 1000}s`;
-          return { finalResponse: msg, items: [], usage: null };
+          if (reason === "first_event_timeout") {
+            err = new Error(
+              `stream disconnected before completion: no stream events within ${streamSafety.firstEventTimeoutMs}ms`,
+            );
+          } else {
+            const msg =
+              reason === "user_stop"
+                ? ":close: Agent stopped by user."
+                : `:clock: Agent timed out after ${timeoutMs / 1000}s`;
+            return { finalResponse: msg, items: [], usage: null };
+          }
         }
 
         // ── Thread corruption errors: reset thread & retry once ──────────────
@@ -727,7 +878,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
             `[codex-shell] stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts — giving up`,
           );
           return {
-            finalResponse: `❌ Stream disconnected after ${MAX_STREAM_RETRIES} retries: ${err.message}`,
+            finalResponse: `:close: Stream disconnected after ${MAX_STREAM_RETRIES} retries: ${err.message}`,
             items: [],
             usage: null,
           };
@@ -737,7 +888,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
       }
     }
     return {
-      finalResponse: "❌ Agent failed after all retry attempts.",
+      finalResponse: ":close: Agent failed after all retry attempts.",
       items: [],
       usage: null,
     };

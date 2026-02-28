@@ -447,7 +447,11 @@ function normalizeSdkOverride(value) {
   if (raw === "codex-sdk") return "codex";
   if (raw === "copilot-sdk") return "copilot";
   if (raw === "claude-sdk") return "claude";
-  if (["codex", "copilot", "claude"].includes(raw)) return raw;
+  if (raw === "gemini-sdk") return "gemini";
+  if (raw === "opencode-sdk") return "opencode";
+  if (["codex", "copilot", "claude", "gemini", "opencode"].includes(raw)) {
+    return raw;
+  }
   return null;
 }
 
@@ -2804,7 +2808,7 @@ class TaskExecutor {
         if (progress.idleMs >= STREAM_STALLED_KILL_MS) {
           const elapsedMin = Math.round(elapsed / 60000);
           console.warn(
-            `${TAG} ⚠️ WATCHDOG: agent "${slot.taskTitle}" stalled for ` +
+            `${TAG} :alert: WATCHDOG: agent "${slot.taskTitle}" stalled for ` +
               `${Math.round(progress.idleMs / 60000)}min after ${continueCount} continues ` +
               `(total runtime: ${elapsedMin}min, events: ${progress.totalEvents}) — force-aborting`,
           );
@@ -2813,7 +2817,7 @@ class TaskExecutor {
           }
           this._taskCooldowns.set(taskId, now);
           this.sendTelegram?.(
-            `⚠️ Watchdog killed stalled agent: "${slot.taskTitle}" ` +
+            `:alert: Watchdog killed stalled agent: "${slot.taskTitle}" ` +
               `(idle ${Math.round(progress.idleMs / 60000)}min after ${continueCount} continues, ` +
               `total ${elapsedMin}min, ${progress.totalEvents} events)`,
           );
@@ -2826,7 +2830,7 @@ class TaskExecutor {
         const elapsedMin = Math.round(elapsed / 60000);
         const deadlineMin = Math.round(absoluteDeadline / 60000);
         console.warn(
-          `${TAG} ⚠️ WATCHDOG: absolute deadline exceeded for "${slot.taskTitle}" ` +
+          `${TAG} :alert: WATCHDOG: absolute deadline exceeded for "${slot.taskTitle}" ` +
             `(${elapsedMin}min > ${deadlineMin}min, events: ${progress.totalEvents}, ` +
             `edits: ${progress.hasEdits}, commits: ${progress.hasCommits}) — force-aborting`,
         );
@@ -2839,7 +2843,7 @@ class TaskExecutor {
         }
         this._taskCooldowns.set(taskId, now);
         this.sendTelegram?.(
-          `⚠️ Watchdog hard limit: "${slot.taskTitle}" (${elapsedMin}min > ${deadlineMin}min absolute limit)`,
+          `:alert: Watchdog hard limit: "${slot.taskTitle}" (${elapsedMin}min > ${deadlineMin}min absolute limit)`,
         );
       }
     }
@@ -4235,7 +4239,7 @@ class TaskExecutor {
             commentOnIssue(
               task,
               [
-                `## ⏭️ Task Deferred`,
+                `## :play: Task Deferred`,
                 ``,
                 `This task is currently claimed by another orchestrator instance.`,
                 ``,
@@ -4298,7 +4302,7 @@ class TaskExecutor {
       commentOnIssue(
         task,
         [
-          `## 🤖 Agent Started`,
+          `## :bot: Agent Started`,
           ``,
           `| Field | Value |`,
           `|-------|-------|`,
@@ -4837,7 +4841,7 @@ class TaskExecutor {
       }
       this.onTaskFailed?.(task, err);
       this.sendTelegram?.(
-        `❌ Task executor error: "${taskTitle}" — ${(err.message || "").slice(0, 200)}`,
+        `:close: Task executor error: "${taskTitle}" — ${(err.message || "").slice(0, 200)}`,
       );
     }
   }
@@ -5387,7 +5391,7 @@ class TaskExecutor {
                 ? ` Examples: ${verify.sampleTitles.join(", ")}`
                 : "";
             this.sendTelegram?.(
-              `✅ Planner task completed: "${task.title}" (${verify.createdCount} new task(s)).${sample}`,
+              `:check: Planner task completed: "${task.title}" (${verify.createdCount} new task(s)).${sample}`,
             );
             this.onTaskCompleted?.(task, result);
             return;
@@ -5432,7 +5436,7 @@ class TaskExecutor {
           `${tag} completed with no code changes (expected for preflight/diagnostic task)`,
         );
         this.sendTelegram?.(
-          `✅ Task completed with no code changes: "${task.title}"`,
+          `:check: Task completed with no code changes: "${task.title}"`,
         );
         this.onTaskCompleted?.(task, result);
         return;
@@ -5470,7 +5474,7 @@ class TaskExecutor {
               `${TAG} TaskComplete hook blocked PR lifecycle handoff: ${hookResult.reason || "unknown reason"}`,
             );
             this.sendTelegram?.(
-              `⚠️ TaskComplete hook blocked PR lifecycle handoff for "${task.title}": ${hookResult.reason || "hook validation failed"}`,
+              `:alert: TaskComplete hook blocked PR lifecycle handoff for "${task.title}": ${hookResult.reason || "hook validation failed"}`,
             );
           }
         } catch (hookErr) {
@@ -5515,7 +5519,7 @@ class TaskExecutor {
             /* best-effort */
           }
           this.sendTelegram?.(
-            `✅ Task completed: "${task.title}"\nLifecycle: ${pr.url || pr}`,
+            `:check: Task completed: "${task.title}"\nLifecycle: ${pr.url || pr}`,
           );
 
           // Fire PostPR hook
@@ -5551,7 +5555,7 @@ class TaskExecutor {
             /* best-effort */
           }
           this.sendTelegram?.(
-            `✅ Task completed: "${task.title}" (PR lifecycle handoff failed — manual review needed)`,
+            `:check: Task completed: "${task.title}" (PR lifecycle handoff failed — manual review needed)`,
           );
         }
       } else if (hasCommits) {
@@ -5584,7 +5588,7 @@ class TaskExecutor {
           /* best-effort */
         }
         this.sendTelegram?.(
-          `✅ Task completed: "${task.title}" (auto-PR disabled)`,
+          `:check: Task completed: "${task.title}" (auto-PR disabled)`,
         );
       } else {
         // No commits — agent completed without making changes.
@@ -5663,11 +5667,11 @@ class TaskExecutor {
             `${tag} task "${task.title}" blocked — ${MAX_NO_COMMIT_ATTEMPTS} consecutive no-commit completions. Skipping until anti-thrash state is cleared.`,
           );
           this.sendTelegram?.(
-            `🚫 Task blocked (${MAX_NO_COMMIT_ATTEMPTS}x no-commit): "${task.title}" — will not retry until anti-thrash state is cleared`,
+            `:ban: Task blocked (${MAX_NO_COMMIT_ATTEMPTS}x no-commit): "${task.title}" — will not retry until anti-thrash state is cleared`,
           );
         } else {
           this.sendTelegram?.(
-            `⚠️ Task completed but no commits (${noCommitCount}/${MAX_NO_COMMIT_ATTEMPTS}): "${task.title}" — cooldown ${cooldownMin}m`,
+            `:alert: Task completed but no commits (${noCommitCount}/${MAX_NO_COMMIT_ATTEMPTS}): "${task.title}" — cooldown ${cooldownMin}m`,
           );
         }
       }
@@ -5766,7 +5770,7 @@ class TaskExecutor {
           /* best-effort */
         }
         this.sendTelegram?.(
-          `❌ Task failed: "${task.title}" — ${(result.error || "").slice(0, 200)}`,
+          `:close: Task failed: "${task.title}" — ${(result.error || "").slice(0, 200)}`,
         );
       } else {
         console.log(
@@ -5876,7 +5880,7 @@ class TaskExecutor {
     }
     if (created.length > 0) {
       this.sendTelegram?.(
-        `♻️ Backlog replenished from "${task.title}": created ${created.length} prioritized follow-up task(s).`,
+        `:repeat: Backlog replenished from "${task.title}": created ${created.length} prioritized follow-up task(s).`,
       );
     }
   }
@@ -6294,7 +6298,7 @@ class TaskExecutor {
           },
         );
         if (directResult.status === 0) {
-          console.log(`${TAG} ✅ directly merged PR #${prNumber}`);
+          console.log(`${TAG} :check: directly merged PR #${prNumber}`);
           // PR merged → close the linked GitHub issue
           if (task) {
             this._closeIssueAfterMerge(task, prNumber).catch(() => {
@@ -6345,7 +6349,7 @@ class TaskExecutor {
     );
 
     const lines = [
-      `## 📝 Agent Completed — Commits & PR`,
+      `## :edit: Agent Completed — Commits & PR`,
       ``,
       `**PR:** ${pr.url || `#${pr.prNumber}`}`,
       `**Branch:** \`${pr.branch}\``,
@@ -6394,7 +6398,7 @@ class TaskExecutor {
     await commentOnIssue(
       task,
       [
-        `## ✅ Issue Resolved`,
+        `## :check: Issue Resolved`,
         ``,
         `PR #${prNumber} has been merged. Closing this issue.`,
         ``,
@@ -6485,7 +6489,7 @@ class TaskExecutor {
           `${TAG} branch safety guard blocked ${branch}: ${reason}`,
         );
         this.sendTelegram?.(
-          `🚨 Branch safety guard blocked push/PR lifecycle handoff for ${branch}: ${reason}`,
+          `:alert: Branch safety guard blocked push/PR lifecycle handoff for ${branch}: ${reason}`,
         );
         const err = new Error(
           `Branch safety guard blocked ${branch}: ${reason}`,

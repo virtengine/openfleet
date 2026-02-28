@@ -400,7 +400,7 @@ export function getKnowledgeState() {
 
 export function formatKnowledgeSummary() {
   return [
-    `📚 Shared Knowledge: ${knowledgeState.entriesWritten} entries written this session`,
+    `:u1f4da: Shared Knowledge: ${knowledgeState.entriesWritten} entries written this session`,
     `Target: ${knowledgeState.targetFile}`,
     `Dedup cache: ${knowledgeState.entryHashes.size} hashes`,
     knowledgeState.lastWriteAt

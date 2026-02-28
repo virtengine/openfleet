@@ -142,8 +142,92 @@ function extractSlug(url) {
   return "";
 }
 
+function extractGithubSlug(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  if (!/github\.com[:/]/i.test(raw)) return "";
+  return extractSlug(raw);
+}
+
 function resolveRepoUrl(repo) {
   return repo.url || (repo.slug ? `https://github.com/${repo.slug.replace(/\.git$/i, "")}.git` : "");
+}
+
+function normalizeWorkspaceRepoEntry(repo, index = 0) {
+  const raw =
+    typeof repo === "string"
+      ? { slug: repo }
+      : (repo && typeof repo === "object" ? repo : null);
+  if (!raw) return null;
+  const slug = String(raw.slug || extractGithubSlug(raw.url) || "").trim();
+  const url = String(raw.url || resolveRepoUrl({ slug }) || "").trim();
+  const name = String(raw.name || raw.id || extractRepoName(slug || url || raw.path || ""))
+    .trim()
+    .replace(/\.git$/i, "");
+  if (!name && !slug && !url) return null;
+  return {
+    name: name || `repo-${index + 1}`,
+    slug,
+    url,
+    primary: raw.primary === true || index === 0,
+  };
+}
+
+function normalizeWorkspaceEntry(workspace, index = 0) {
+  if (!workspace || typeof workspace !== "object") return null;
+  const fallbackId = `workspace-${index + 1}`;
+  const id = normalizeId(workspace.id || workspace.name || fallbackId);
+  if (!id) return null;
+  const repos = Array.isArray(workspace.repos)
+    ? workspace.repos
+        .map((repo, repoIndex) => normalizeWorkspaceRepoEntry(repo, repoIndex))
+        .filter(Boolean)
+    : [];
+  let activeRepo = String(workspace.activeRepo || "").trim();
+  if (!activeRepo && repos[0]?.name) activeRepo = repos[0].name;
+  if (activeRepo && !repos.some((repo) => repo.name === activeRepo)) {
+    activeRepo = repos[0]?.name || "";
+  }
+  return {
+    ...workspace,
+    id,
+    name: String(workspace.name || workspace.id || id).trim() || id,
+    repos,
+    createdAt: workspace.createdAt || new Date().toISOString(),
+    activeRepo: activeRepo || null,
+  };
+}
+
+function normalizeWorkspaceList(workspaces) {
+  if (!Array.isArray(workspaces)) return [];
+  const deduped = new Map();
+  for (let i = 0; i < workspaces.length; i += 1) {
+    const normalized = normalizeWorkspaceEntry(workspaces[i], i);
+    if (!normalized) continue;
+    const existing = deduped.get(normalized.id);
+    if (!existing) {
+      deduped.set(normalized.id, normalized);
+      continue;
+    }
+    const mergedRepos = [...existing.repos];
+    const existingRepoNames = new Set(existing.repos.map((repo) => repo.name));
+    for (const repo of normalized.repos) {
+      if (existingRepoNames.has(repo.name)) continue;
+      existingRepoNames.add(repo.name);
+      mergedRepos.push(repo);
+    }
+    deduped.set(normalized.id, {
+      ...existing,
+      ...normalized,
+      repos: mergedRepos,
+      activeRepo:
+        normalized.activeRepo ||
+        existing.activeRepo ||
+        mergedRepos[0]?.name ||
+        null,
+    });
+  }
+  return [...deduped.values()];
 }
 
 function makeNonGitBackupPath(repoPath) {
@@ -224,7 +308,7 @@ function saveBosunConfig(configDir, config) {
 
 function getWorkspacesFromConfig(configDir) {
   const config = loadBosunConfig(configDir);
-  return Array.isArray(config.workspaces) ? config.workspaces : [];
+  return normalizeWorkspaceList(config.workspaces);
 }
 
 function saveWorkspacesToConfig(configDir, workspaces, activeWorkspace) {

@@ -193,7 +193,7 @@ class WorkspaceMonitor {
 
       await this.logWorkspace(
         attemptId,
-        `[${new Date().toISOString()}] ⚠️  STUCK DETECTED: ${stuckCheck.reason}\n` +
+        `[${new Date().toISOString()}] :alert:  STUCK DETECTED: ${stuckCheck.reason}\n` +
           `  Time since last progress: ${Math.round((now - state.lastProgressAt) / 60000)} minutes\n` +
           `  Recommendation: ${stuckCheck.recommendation}\n\n`,
       );
@@ -214,7 +214,7 @@ class WorkspaceMonitor {
     for (const warning of warnings) {
       await this.logWorkspace(
         attemptId,
-        `[${new Date().toISOString()}] ⚠️  ${warning}\n`,
+        `[${new Date().toISOString()}] :alert:  ${warning}\n`,
       );
     }
 

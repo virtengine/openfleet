@@ -224,11 +224,11 @@ export function formatRegistryDiagnostics(errors, warnings) {
   const parts = [];
   if (errors && errors.length > 0) {
     parts.push(
-      `❌ Registry errors:\n${errors.map((e) => `  • ${e}`).join("\n")}`,
+      `:close: Registry errors:\n${errors.map((e) => `  • ${e}`).join("\n")}`,
     );
   }
   if (warnings && warnings.length > 0) {
-    parts.push(`⚠️ ${warnings.map((w) => w).join("\n⚠️ ")}`);
+    parts.push(`:alert: ${warnings.map((w) => w).join("\n:alert: ")}`);
   }
   return parts.length > 0 ? parts.join("\n") : null;
 }

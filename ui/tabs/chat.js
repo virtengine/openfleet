@@ -54,8 +54,7 @@ import { routeParams, setRouteParams } from "../modules/router.js";
 import { ChatView } from "../components/chat-view.js";
 import { apiFetch } from "../modules/api.js";
 import { showToast } from "../modules/state.js";
-import { VoiceMicButton } from "../modules/voice.js";
-import { VoiceOverlay } from "../modules/voice-overlay.js";
+import { VoiceMicButton, requestVoiceModeOpen } from "../modules/voice.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   ChatInputToolbar,
@@ -246,8 +245,6 @@ export function ChatTab() {
   const [slashActiveIdx, setSlashActiveIdx] = useState(0);
   const [renamingSessionId, setRenamingSessionId] = useState(null);
   const [sending, setSending] = useState(false);
-  const [voiceModeOpen, setVoiceModeOpen] = useState(false);
-  const [voiceConfig, setVoiceConfig] = useState(null);
   const [isMobile, setIsMobile] = useState(() => {
     try {
       return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false;
@@ -305,14 +302,6 @@ export function ChatTab() {
       clearInterval(interval);
       clearInterval(agentInterval);
     };
-  }, []);
-
-  /* ── Fetch voice config on mount ── */
-  useEffect(() => {
-    fetch("/api/voice/config")
-      .then(r => r.ok ? r.json() : null)
-      .then(cfg => setVoiceConfig(cfg))
-      .catch(() => setVoiceConfig(null));
   }, []);
 
   /* ── Track mobile viewport to avoid auto-select loops ── */
@@ -536,7 +525,7 @@ export function ChatTab() {
             method: "POST",
             body: JSON.stringify({ command: cmdBase, args: cmdArgs }),
           });
-          const resultText = resp?.result || resp?.data || `✅ SDK command executed: ${cmdBase}`;
+          const resultText = resp?.result || resp?.data || `:check: SDK command executed: ${cmdBase}`;
           if (sessionId) {
             const { sessionMessages } = await import("../components/session-list.js");
             const now = new Date().toISOString();
@@ -560,7 +549,7 @@ export function ChatTab() {
             const msgs = sessionMessages.value || [];
             const userMsg = { id: `cmd-${Date.now()}`, role: "user", content, timestamp: now };
             const resultText = data?.content || data?.error
-              || (data?.readOnly ? `✅ ${cmdBase} — see the relevant tab for details.` : `✅ Command executed: ${cmdBase}`);
+              || (data?.readOnly ? `:check: ${cmdBase} — see the relevant tab for details.` : `:check: Command executed: ${cmdBase}`);
             const sysMsg = { id: `cmd-r-${Date.now()}`, role: "system", content: resultText, timestamp: now };
             sessionMessages.value = [...msgs, userMsg, sysMsg];
           } else {
@@ -702,6 +691,20 @@ export function ChatTab() {
     await createSession({ type: "primary" });
   }
 
+  const openMeetingRoom = useCallback(
+    (call = "voice") => {
+      requestVoiceModeOpen({
+        call: call === "video" ? "video" : "voice",
+        sessionId: sessionId || undefined,
+        initialVisionSource: call === "video" ? "camera" : null,
+        executor: activeAgent.value || undefined,
+        mode: agentMode.value || undefined,
+        model: selectedModel.value || undefined,
+      });
+    },
+    [sessionId],
+  );
+
   /* ── Show/expand sessions: on mobile toggles drawer, on desktop fires rail-expand event ── */
   const handleShowSessions = useCallback(() => {
     if (isMobile) {
@@ -784,13 +787,29 @@ export function ChatTab() {
               <div class="chat-shell-inner">
                 <!-- Sessions toggle: shown on mobile always; on desktop only when rail is collapsed (CSS-controlled) -->
                 <button class="session-drawer-btn session-drawer-btn-rail" onClick=${handleShowSessions}>
-                  ${iconText("☰ Sessions")}
+                  ${iconText(":menu: Sessions")}
                 </button>
                 <div class="chat-shell-title">
                   <div class="chat-shell-name">${sessionTitle}</div>
                   <div class="chat-shell-meta">${sessionMeta || "Session"}</div>
                 </div>
                 <div class="chat-shell-actions">
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    onClick=${() => openMeetingRoom("voice")}
+                    title="Start voice meeting for this session"
+                  >
+                    <span class="btn-icon">${resolveIcon("phone")}</span>
+                    Call
+                  </button>
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    onClick=${() => openMeetingRoom("video")}
+                    title="Start video meeting for this session"
+                  >
+                    <span class="btn-icon">${resolveIcon("camera")}</span>
+                    Video
+                  </button>
                   ${isDesktop &&
                   html`
                     <button
@@ -858,37 +877,23 @@ export function ChatTab() {
                 onKeyDown=${handleKeyDown}
               />
               <${VoiceMicButton}
-                onTranscript=${(t) => {
-                  setInputValue((prev) => (prev ? prev + " " + t : t));
-                  if (textareaRef.current) textareaRef.current.focus();
-                }}
                 disabled=${sending}
-                title="Voice input"
+                title="Live voice mode"
               />
-              ${voiceConfig?.available && html`
-                <button
-                  class="chat-send-btn"
-                  onClick=${() => { setVoiceModeOpen(true); }}
-                  title="Voice mode (${voiceConfig.tier === 1 ? 'Realtime' : 'Fallback'})"
-                  style="background: linear-gradient(135deg, rgba(99,102,241,0.2), rgba(16,185,129,0.2)); border-color: rgba(99,102,241,0.3);"
-                >
-                  ${resolveIcon("headphones") || "\uD83C\uDFA7"}
-                </button>
-              `}
               <button
                 class="chat-send-btn"
                 disabled=${!inputValue.trim() || sending}
                 onClick=${handleSend}
                 title="Send (Enter)"
               >
-                ${resolveIcon(sending ? "⏳" : "➤")}
+                ${resolveIcon(sending ? ":clock:" : "➤")}
               </button>
             </div>
             <div class="chat-input-hint">
               <span>Shift+Enter for new line</span>
               <span>Type / for commands</span>
               ${offlineQueueSize.peek() > 0 && html`
-                <span class="chat-offline-badge">${iconText(`📤 ${offlineQueueSize.peek()} queued`)}</span>
+                <span class="chat-offline-badge">${iconText(`:upload: ${offlineQueueSize.peek()} queued`)}</span>
               `}
             </div>
           </div>
@@ -907,14 +912,6 @@ export function ChatTab() {
           class="session-drawer-backdrop ${drawerOpen ? "open" : ""}"
           onClick=${() => setDrawerOpen(false)}
         ></div>
-      `}
-      ${voiceModeOpen && html`
-        <${VoiceOverlay}
-          visible=${voiceModeOpen}
-          onClose=${() => setVoiceModeOpen(false)}
-          tier=${voiceConfig?.tier || 2}
-          sessionId=${sessionId}
-        />
       `}
     </div>
   `;

@@ -1,5 +1,5 @@
 /**
- * telegram-bot.mjs — Two-way Telegram ↔ primary agent for bosun.
+ * telegram-bot.mjs — Two-way Telegram :workflow: primary agent for bosun.
  *
  * Polls Telegram Bot API for incoming messages, routes slash commands to
  * built-in handlers, and forwards free-text to the persistent primary agent.
@@ -987,26 +987,74 @@ function getBrowserUiUrlOptions({ forTelegramButtons = true } = {}) {
 
   if (parsed) {
     const localhostUrl = `${parsed.protocol}//localhost${parsed.port ? `:${parsed.port}` : ""}`;
-    add("🖥️ Localhost", localhostUrl);
+    add(":monitor: Localhost", localhostUrl);
   }
 
   if (parsed) {
     const lanIp = getLocalLanIp?.();
     if (lanIp && parsed.port) {
       const lanUrl = `${parsed.protocol}//${lanIp}:${parsed.port}`;
-      add("📶 LAN", lanUrl);
+      add(":chart: LAN", lanUrl);
     }
   }
 
   const tunnelUrl = getTunnelUrl();
   if (tunnelUrl) {
-    add("☁️ Cloudflare", tunnelUrl);
+    add(":globe: Cloudflare", tunnelUrl);
   }
 
   if (options.length === 0) {
-    add("🌐 Browser URL", base);
+    add(":globe: Browser URL", base);
   }
   return options;
+}
+
+function normalizeMeetingCallType(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  if (!value) return "voice";
+  if (value === "video" || value === "videocall") return "video";
+  if (/\bvideo\b/.test(value)) return "video";
+  return "voice";
+}
+
+function appendQueryParams(inputUrl, params = {}) {
+  const raw = String(inputUrl || "").trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    for (const [key, value] of Object.entries(params || {})) {
+      const next = String(value ?? "").trim();
+      if (!next) continue;
+      url.searchParams.set(key, next);
+    }
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
+
+function buildMeetingLaunchUrl(baseUrl, callType = "voice", extra = {}) {
+  const normalizedCall = normalizeMeetingCallType(callType);
+  return appendQueryParams(baseUrl, {
+    launch: "meeting",
+    call: normalizedCall,
+    autostart: "1",
+    source: "telegram",
+    ...extra,
+  });
+}
+
+function getMeetingWebAppUrl(callType = "voice", extra = {}) {
+  const base = telegramWebAppUrl || getTelegramWebAppUrl(telegramUiUrl);
+  if (!base) return null;
+  return buildMeetingLaunchUrl(base, callType, extra);
+}
+
+function getMeetingBrowserUrlOptions(callType = "voice", extra = {}) {
+  return getBrowserUiUrlOptions().map((option) => ({
+    label: option.label,
+    url: buildMeetingLaunchUrl(option.url, callType, extra),
+  }));
 }
 
 function syncUiUrlsFromServer() {
@@ -1382,9 +1430,10 @@ async function sendReply(chatId, text, options = {}) {
 async function sendDirect(chatId, text, options = {}) {
   if (!telegramToken) return null;
   const skipSticky = options.skipSticky;
+  const normalizedText = formatTelegramIconTokens(text, { button: false });
 
   // Split long messages
-  const chunks = splitMessage(text, MAX_MESSAGE_LEN);
+  const chunks = splitMessage(normalizedText, MAX_MESSAGE_LEN);
   let lastMessageId = null;
   for (const chunk of chunks) {
     const payload = {
@@ -1454,12 +1503,13 @@ async function sendDirect(chatId, text, options = {}) {
  */
 async function editDirect(chatId, messageId, text, options = {}) {
   if (!telegramToken || !messageId) return messageId;
+  const normalizedText = formatTelegramIconTokens(text, { button: false });
 
   // Telegram editMessageText has 4096 char limit — truncate if needed
   const truncated =
-    text.length > MAX_MESSAGE_LEN
-      ? text.slice(0, MAX_MESSAGE_LEN - 20) + "\n\n…(truncated)"
-      : text;
+    normalizedText.length > MAX_MESSAGE_LEN
+      ? normalizedText.slice(0, MAX_MESSAGE_LEN - 20) + "\n\n…(truncated)"
+      : normalizedText;
 
   const payload = {
     chat_id: chatId,
@@ -1784,31 +1834,31 @@ function summarizeAction(event) {
           const desc = summarizeCommand(item.command);
           const target = extractTarget(item.command);
           return {
-            icon: "⚡",
+            icon: ":zap:",
             text: target ? `${desc} → ${target}` : desc,
             phase: "running",
           };
         }
         case "mcp_tool_call":
           return {
-            icon: "🔌",
+            icon: ":plug:",
             text: `MCP: ${item.server}/${item.tool}`,
             phase: "running",
           };
         case "reasoning":
           return item.text
-            ? { icon: "💭", text: item.text.slice(0, 200), phase: "thinking" }
+            ? { icon: ":u1f4ad:", text: item.text.slice(0, 200), phase: "thinking" }
             : null;
         case "web_search":
           return {
-            icon: "🔍",
+            icon: ":search:",
             text: `Searching: ${item.query?.slice(0, 80)}`,
             phase: "searching",
           };
         case "todo_list":
           return item.items?.length
             ? {
-                icon: "📋",
+                icon: ":clipboard:",
                 text: `Planning ${item.items.length} steps`,
                 phase: "planning",
               }
@@ -1827,7 +1877,7 @@ function summarizeAction(event) {
           const target = extractTarget(item.command);
           const label = target ? `${desc} → ${target}` : desc;
           return {
-            icon: ok ? "✅" : "❌",
+            icon: ok ? ":check:" : ":close:",
             text: label + (ok ? "" : ` (exit ${item.exit_code})`),
             phase: "done",
           };
@@ -1837,7 +1887,7 @@ function summarizeAction(event) {
             const fileDescs = item.changes.map((c) => {
               const name = shortPath(c.path);
               const kind =
-                c.kind === "add" ? "➕" : c.kind === "delete" ? "🗑️" : "✏️";
+                c.kind === "add" ? ":plus:" : c.kind === "delete" ? ":trash:" : ":edit:";
               // Show line counts if available
               const adds = c.additions ?? c.lines_added ?? 0;
               const dels = c.deletions ?? c.lines_deleted ?? 0;
@@ -1845,7 +1895,7 @@ function summarizeAction(event) {
               return `${kind} ${name}${stats}`;
             });
             return {
-              icon: "📁",
+              icon: ":folder:",
               text: fileDescs.join(", "),
               phase: "done",
               detail: "file_change",
@@ -1862,7 +1912,7 @@ function summarizeAction(event) {
         case "mcp_tool_call": {
           const ok = item.status === "completed";
           return {
-            icon: ok ? "✅" : "❌",
+            icon: ok ? ":check:" : ":close:",
             text: `MCP ${item.server}/${item.tool}: ${ok ? "done" : "failed"}`,
             phase: "done",
           };
@@ -1878,14 +1928,14 @@ function summarizeAction(event) {
     case "assistant.reasoning_delta": {
       const text = event.data?.content || event.data?.deltaContent || "";
       return text
-        ? { icon: "💭", text: text.slice(0, 200), phase: "thinking" }
+        ? { icon: ":u1f4ad:", text: text.slice(0, 200), phase: "thinking" }
         : null;
     }
 
     case "tool.execution_start": {
       const { toolName, input } = getCopilotToolInfo(event);
       return {
-        icon: "🛠️",
+        icon: ":u1f6e0:",
         text: summarizeCopilotTool(toolName, input),
         phase: "running",
       };
@@ -1899,7 +1949,7 @@ function summarizeAction(event) {
           String(status).toLowerCase(),
         );
       return {
-        icon: ok ? "✅" : "❌",
+        icon: ok ? ":check:" : ":close:",
         text: summarizeCopilotTool(toolName, input) + (ok ? "" : " (failed)"),
         phase: "done",
       };
@@ -1907,7 +1957,7 @@ function summarizeAction(event) {
 
     case "session.error":
       return {
-        icon: "❌",
+        icon: ":close:",
         text: `Failed: ${event.data?.message || "unknown"}`,
         phase: "error",
       };
@@ -1915,12 +1965,12 @@ function summarizeAction(event) {
     case "item.updated": {
       const item = event.item;
       if (item.type === "reasoning" && item.text) {
-        return { icon: "💭", text: item.text.slice(0, 200), phase: "thinking" };
+        return { icon: ":u1f4ad:", text: item.text.slice(0, 200), phase: "thinking" };
       }
       if (item.type === "todo_list" && item.items) {
         const done = item.items.filter((t) => t.completed).length;
         return {
-          icon: "📋",
+          icon: ":clipboard:",
           text: `Progress: ${done}/${item.items.length} steps`,
           phase: "planning",
         };
@@ -1930,7 +1980,7 @@ function summarizeAction(event) {
 
     case "turn.failed":
       return {
-        icon: "❌",
+        icon: ":close:",
         text: `Failed: ${event.error?.message || "unknown"}`,
         phase: "error",
       };
@@ -2073,6 +2123,79 @@ function extractGoPackages(command) {
   return unique.slice(0, 3).join(" ") + (unique.length > 3 ? " …" : "");
 }
 
+const TELEGRAM_ICON_TOKEN_LABELS = Object.freeze({
+  check: "OK",
+  close: "Close",
+  alert: "Alert",
+  pause: "Pause",
+  play: "Run",
+  stop: "Stop",
+  refresh: "Refresh",
+  chart: "Status",
+  clipboard: "Tasks",
+  bot: "Agents",
+  git: "Workspaces",
+  settings: "Executor",
+  server: "Routing",
+  folder: "Logs",
+  file: "Commands",
+  phone: "Control Center",
+  globe: "Browser",
+  heart: "Health",
+  cpu: "Session",
+  chat: "Ask",
+  hash: "Parallel",
+  repeat: "Retry",
+  beaker: "Executors",
+  compass: "Tasks",
+  target: "Coordinator",
+  workflow: "Flow",
+  arrowRight: "Back",
+  plus: "New",
+  menu: "Menu",
+  lock: "Lock",
+  unlock: "Unlock",
+  search: "Search",
+  link: "Link",
+  upload: "Upload",
+  download: "Download",
+  box: "SDK",
+  bell: "Alerts",
+  lightbulb: "Tips",
+  rocket: "Start",
+  home: "Home",
+  pin: "Pin",
+  star: "Star",
+  help: "Help",
+  cloud: "Cloud",
+});
+
+function humanizeIconTokenName(name) {
+  const spaced = String(name || "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim();
+  if (!spaced) return "";
+  return spaced
+    .split(/\s+/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function formatTelegramIconTokens(value, { button = false } = {}) {
+  if (value == null) return value;
+  const str = String(value);
+  return str.replace(/:([a-zA-Z][a-zA-Z0-9_-]*):/g, (_match, rawName) => {
+    const tokenName = String(rawName || "");
+    const key = tokenName.toLowerCase();
+    const label = TELEGRAM_ICON_TOKEN_LABELS[tokenName]
+      || TELEGRAM_ICON_TOKEN_LABELS[key]
+      || humanizeIconTokenName(tokenName);
+    if (!label) return "";
+    return button ? label : `[${label}]`;
+  });
+}
+
 /**
  * Strip web_app buttons whose URL is not HTTPS — Telegram rejects non-HTTPS
  * web_app URLs with a 400 error.  Returns the sanitized reply_markup object.
@@ -2081,7 +2204,19 @@ function sanitizeWebAppButtons(markup) {
   if (!markup || !markup.inline_keyboard) return markup;
   const filtered = markup.inline_keyboard
     .map((row) =>
-      row.filter((btn) => {
+      row
+        .map((btn) => {
+          if (!btn || typeof btn !== "object") return btn;
+          if (typeof btn.text === "string") {
+            return {
+              ...btn,
+              text: formatTelegramIconTokens(btn.text, { button: true }),
+            };
+          }
+          return btn;
+        })
+        .filter((btn) => {
+          if (!btn || typeof btn !== "object") return false;
         if (btn.web_app && btn.web_app.url) {
           try {
             const u = new URL(btn.web_app.url);
@@ -2090,8 +2225,8 @@ function sanitizeWebAppButtons(markup) {
             return false;
           }
         }
-        return true;
-      }),
+          return true;
+        }),
     )
     .filter((row) => row.length > 0);
   return { ...markup, inline_keyboard: filtered };
@@ -2360,7 +2495,7 @@ async function handleCallbackQuery(query) {
   if (data === "cb:confirm_restart") {
     await sendReply(
       chatId,
-      "⚠️ Restart will stop the orchestrator process and let the monitor respawn it.\nProceed?",
+      ":alert: Restart will stop the orchestrator process and let the monitor respawn it.\nProceed?",
       { reply_markup: buildConfirmKeyboard("cb:do_restart", "Confirm Restart") },
     );
     return;
@@ -2403,7 +2538,7 @@ async function handleCallbackQuery(query) {
       if (query.message?.message_id) {
         await deleteDirect(chatId, query.message.message_id);
       }
-      await sendReply(chatId, "⏳ That action expired. Please try again.");
+      await sendReply(chatId, ":clock: That action expired. Please try again.");
       return;
     }
     uiTokenRegistry.delete(token);
@@ -2417,12 +2552,12 @@ async function handleCallbackQuery(query) {
   if (data === "fw:open") {
     const fwState = getFirewallState();
     if (!fwState || !fwState.blocked) {
-      await sendReply(chatId, "✅ Port is already open or no firewall detected.");
+      await sendReply(chatId, ":check: Port is already open or no firewall detected.");
       return;
     }
     await sendReply(
       chatId,
-      `🔧 Attempting to open port via \`${fwState.firewall}\`...\n` +
+      `:settings: Attempting to open port via \`${fwState.firewall}\`...\n` +
       `Please enter your admin password on the server if prompted.`,
       { parseMode: "Markdown" },
     );
@@ -2430,11 +2565,11 @@ async function handleCallbackQuery(query) {
       Number(new URL(getTelegramUiUrl() || "http://localhost:5511").port || 5511),
     );
     if (result.success) {
-      await sendReply(chatId, `✅ ${result.message}\nThe Control Center should now be reachable.`);
+      await sendReply(chatId, `:check: ${result.message}\nThe Control Center should now be reachable.`);
     } else {
       await sendReply(
         chatId,
-        `⚠️ Auto-fix failed.\n\n${result.message}`,
+        `:alert: Auto-fix failed.\n\n${result.message}`,
         { parseMode: "Markdown" },
       );
     }
@@ -2456,7 +2591,7 @@ async function transcribeAndProcessVoice(voiceFile, chatId) {
     || "";
 
   if (!apiKey) {
-    await sendReply(chatId, "⚠️ Voice messages require an OpenAI API key for transcription. Set OPENAI_API_KEY in your configuration.");
+    await sendReply(chatId, ":alert: Voice messages require an OpenAI API key for transcription. Set OPENAI_API_KEY in your configuration.");
     return;
   }
 
@@ -2505,13 +2640,13 @@ async function transcribeAndProcessVoice(voiceFile, chatId) {
 
   const { text: transcribedText } = await whisperRes.json();
   if (!transcribedText?.trim()) {
-    await sendReply(chatId, "🎙️ Could not transcribe voice message (empty result).");
+    await sendReply(chatId, ":mic: Could not transcribe voice message (empty result).");
     return;
   }
 
   // 4. Show transcription and process as free text
   console.log(`[telegram-bot] voice transcription: "${transcribedText.slice(0, 80)}"`);
-  await sendReply(chatId, `🎙️ _${transcribedText}_`, { parseMode: "Markdown" });
+  await sendReply(chatId, `:mic: _${transcribedText}_`, { parseMode: "Markdown" });
 
   // Route through the same free-text handler
   if (transcribedText.startsWith("/")) {
@@ -2576,7 +2711,7 @@ async function handleUpdate(update) {
       await transcribeAndProcessVoice(voiceFile, chatId);
     } catch (err) {
       console.error(`[telegram-bot] voice processing error:`, err.message);
-      await sendReply(chatId, `⚠️ Could not process voice message: ${err.message}`);
+      await sendReply(chatId, `:alert: Could not process voice message: ${err.message}`);
     }
     return;
   }
@@ -2592,7 +2727,7 @@ async function handleUpdate(update) {
     const cmdText = text.split(/\s+/)[0].toLowerCase().replace(/@\w+/, "");
     if (cmdText === "/cancel") {
       clearPendingUiInput(chatId);
-      await sendReply(chatId, "✅ Input cancelled.");
+      await sendReply(chatId, ":check: Input cancelled.");
       return;
     }
     if (!text.startsWith("/")) {
@@ -2637,7 +2772,7 @@ async function cmdPauseTasks(chatId) {
   if (!executor) {
     return sendDirect(
       chatId,
-      "⚠️ Internal executor not enabled — nothing to pause.",
+      ":alert: Internal executor not enabled — nothing to pause.",
     );
   }
   if (executor.isPaused()) {
@@ -2645,12 +2780,12 @@ async function cmdPauseTasks(chatId) {
     const dur = info.pauseDuration;
     return sendDirect(
       chatId,
-      `⏸ Already paused (${dur >= 60 ? Math.round(dur / 60) + "m" : dur + "s"} ago).\nUse /resumetasks to resume.`,
+      `:pause: Already paused (${dur >= 60 ? Math.round(dur / 60) + "m" : dur + "s"} ago).\nUse /resumetasks to resume.`,
     );
   }
   executor.pause();
   const status = executor.getStatus();
-  const lines = [`⏸ *Task executor paused*`];
+  const lines = [`:pause: *Task executor paused*`];
   if (status.activeSlots > 0) {
     lines.push(
       `\n${status.activeSlots} running task(s) will continue to completion.`,
@@ -2662,8 +2797,8 @@ async function cmdPauseTasks(chatId) {
   const keyboard = {
     inline_keyboard: [
       [
-        { text: "▶️ Resume Tasks", callback_data: "cb:confirm_resume" },
-        { text: "📊 Status", callback_data: "/status" },
+        { text: ":play: Resume Tasks", callback_data: "cb:confirm_resume" },
+        { text: ":chart: Status", callback_data: "/status" },
       ],
     ],
   };
@@ -2681,11 +2816,11 @@ async function cmdResumeTasks(chatId) {
   if (!executor) {
     return sendDirect(
       chatId,
-      "⚠️ Internal executor not enabled — nothing to resume.",
+      ":alert: Internal executor not enabled — nothing to resume.",
     );
   }
   if (!executor.isPaused()) {
-    return sendDirect(chatId, "▶️ Executor is already running — not paused.");
+    return sendDirect(chatId, ":play: Executor is already running — not paused.");
   }
   const info = executor.getPauseInfo();
   const dur = info.pauseDuration;
@@ -2694,14 +2829,14 @@ async function cmdResumeTasks(chatId) {
   const keyboard = {
     inline_keyboard: [
       [
-        { text: "⏸ Pause Tasks", callback_data: "cb:confirm_pause" },
-        { text: "📋 Tasks", callback_data: "/tasks" },
+        { text: ":pause: Pause Tasks", callback_data: "cb:confirm_pause" },
+        { text: ":clipboard: Tasks", callback_data: "/tasks" },
       ],
     ],
   };
   return sendDirect(
     chatId,
-    `▶️ *Task executor resumed* (was paused for ${durStr}).\nWill pick up tasks on next poll cycle.`,
+    `:play: *Task executor resumed* (was paused for ${durStr}).\nWill pick up tasks on next poll cycle.`,
     { parse_mode: "Markdown", reply_markup: keyboard },
   );
 }
@@ -2721,7 +2856,7 @@ async function cmdRepos(chatId, _text) {
       return sendDirect(
         chatId,
         [
-          "📁 *Repositories*",
+          ":folder: *Repositories*",
           "",
           `Active: \`${config.repoSlug || config.repoRoot || "current directory"}\``,
           "",
@@ -2748,7 +2883,7 @@ async function cmdRepos(chatId, _text) {
       );
     }
 
-    const lines = ["📁 *Repositories*", ""];
+    const lines = [":folder: *Repositories*", ""];
     if (activeWorkspace) {
       lines.push(`Workspace: \`${activeWorkspace}\``, "");
     }
@@ -2758,7 +2893,7 @@ async function cmdRepos(chatId, _text) {
         repo.name === selected?.name ||
         repo.slug === selected?.slug ||
         repo.primary;
-      const icon = isCurrent ? "🟢" : "⚪";
+      const icon = isCurrent ? ":dot:" : ":dot:";
       const primary = repo.primary ? " _(primary)_" : "";
       lines.push(
         `${icon} \`${repo.name}\` — ${repo.slug || repo.path || "?"}${primary}`,
@@ -2770,7 +2905,7 @@ async function cmdRepos(chatId, _text) {
 
     return sendDirect(chatId, lines.join("\n"), { parse_mode: "Markdown" });
   } catch (err) {
-    return sendDirect(chatId, `❌ Failed to read repo config: ${err.message}`);
+    return sendDirect(chatId, `:close: Failed to read repo config: ${err.message}`);
   }
 }
 
@@ -2802,7 +2937,7 @@ async function cmdWorkspace(chatId, text) {
       await sendReply(
         chatId,
         [
-          "🔎 Workspace Scan Complete",
+          ":search: Workspace Scan Complete",
           `Scanned: ${merged.scanned}`,
           `Added: ${merged.added}`,
           `Updated: ${merged.updated}`,
@@ -2823,7 +2958,7 @@ async function cmdWorkspace(chatId, text) {
       const active = getActiveLocalWorkspace(configDir);
       await sendReply(
         chatId,
-        `✅ Active workspace: ${active?.name || targetId} (\`${active?.id || targetId}\`)`,
+        `:check: Active workspace: ${active?.name || targetId} (\`${active?.id || targetId}\`)`,
       );
       return;
     }
@@ -2837,7 +2972,7 @@ async function cmdWorkspace(chatId, text) {
       const ws = createManagedWs(configDir, { name });
       await sendReply(
         chatId,
-        `✅ Created workspace: *${ws.name}* (\`${ws.id}\`)\nPath: \`${ws.path}\``,
+        `:check: Created workspace: *${ws.name}* (\`${ws.id}\`)\nPath: \`${ws.path}\``,
         { parseMode: "Markdown" },
       );
       return;
@@ -2851,14 +2986,14 @@ async function cmdWorkspace(chatId, text) {
         await sendReply(chatId, "Usage: /workspace add-repo <wsId> <gitUrl> [branch]");
         return;
       }
-      await sendReply(chatId, `⏳ Cloning ${gitUrl} into workspace ${wsId}...`);
+      await sendReply(chatId, `:clock: Cloning ${gitUrl} into workspace ${wsId}...`);
       const repo = addRepoToManagedWs(configDir, wsId, {
         url: gitUrl,
         branch,
       });
       await sendReply(
         chatId,
-        `✅ Added repo *${repo.name}* to workspace \`${wsId}\`\n${repo.cloned ? "Cloned from remote" : "Already existed on disk"}`,
+        `:check: Added repo *${repo.name}* to workspace \`${wsId}\`\n${repo.cloned ? "Cloned from remote" : "Already existed on disk"}`,
         { parseMode: "Markdown" },
       );
       return;
@@ -2875,8 +3010,8 @@ async function cmdWorkspace(chatId, text) {
       await sendReply(
         chatId,
         removed
-          ? `✅ Removed repo \`${repoName}\` from workspace \`${wsId}\``
-          : `⚠️ Repo \`${repoName}\` not found in workspace \`${wsId}\``,
+          ? `:check: Removed repo \`${repoName}\` from workspace \`${wsId}\``
+          : `:alert: Repo \`${repoName}\` not found in workspace \`${wsId}\``,
       );
       return;
     }
@@ -2889,18 +3024,18 @@ async function cmdWorkspace(chatId, text) {
           await sendReply(chatId, "Usage: /workspace pull <wsId> (no active workspace)");
           return;
         }
-        await sendReply(chatId, `⏳ Pulling repos in workspace ${active.name}...`);
+        await sendReply(chatId, `:clock: Pulling repos in workspace ${active.name}...`);
         const results = pullManagedWsRepos(configDir, active.id);
         const lines = results.map(
-          (r) => `${r.success ? "✅" : "❌"} ${r.name}${r.error ? ` — ${r.error}` : ""}`,
+          (r) => `${r.success ? ":check:" : ":close:"} ${r.name}${r.error ? ` — ${r.error}` : ""}`,
         );
         await sendReply(chatId, ["Pull results:", ...lines].join("\n"));
         return;
       }
-      await sendReply(chatId, `⏳ Pulling repos in workspace ${wsId}...`);
+      await sendReply(chatId, `:clock: Pulling repos in workspace ${wsId}...`);
       const results = pullManagedWsRepos(configDir, wsId);
       const lines = results.map(
-        (r) => `${r.success ? "✅" : "❌"} ${r.name}${r.error ? ` — ${r.error}` : ""}`,
+        (r) => `${r.success ? ":check:" : ":close:"} ${r.name}${r.error ? ` — ${r.error}` : ""}`,
       );
       await sendReply(chatId, ["Pull results:", ...lines].join("\n"));
       return;
@@ -2916,8 +3051,8 @@ async function cmdWorkspace(chatId, text) {
       await sendReply(
         chatId,
         deleted
-          ? `✅ Removed workspace \`${wsId}\` from config (files preserved on disk)`
-          : `⚠️ Workspace \`${wsId}\` not found`,
+          ? `:check: Removed workspace \`${wsId}\` from config (files preserved on disk)`
+          : `:alert: Workspace \`${wsId}\` not found`,
       );
       return;
     }
@@ -2929,7 +3064,7 @@ async function cmdWorkspace(chatId, text) {
       await sendReply(
         chatId,
         [
-          "🌳 No local workspaces configured.",
+          ":git: No local workspaces configured.",
           `Expected directory: ${resolve(configDir, "workspaces")}`,
           "",
           "Quick start:",
@@ -2941,14 +3076,14 @@ async function cmdWorkspace(chatId, text) {
       return;
     }
 
-    const lines = ["🌳 *Local Workspaces*", ""];
+    const lines = [":git: *Local Workspaces*", ""];
     for (const workspace of workspaces) {
-      const marker = workspace.id === active?.id ? "🟢" : "⚪";
+      const marker = workspace.id === active?.id ? ":dot:" : ":dot:";
       const repoCount = Array.isArray(workspace.repos) ? workspace.repos.length : 0;
       lines.push(`${marker} *${workspace.name}* (\`${workspace.id}\`) — ${repoCount} repo(s)`);
       for (const repo of (workspace.repos || []).slice(0, 4)) {
-        const primary = repo.primary ? "★ " : "";
-        const exists = repo.exists === false ? "✖" : "✔";
+        const primary = repo.primary ? ":star: " : "";
+        const exists = repo.exists === false ? ":close:" : ":check:";
         lines.push(`   ${exists} ${primary}${repo.name}${repo.slug ? ` (${repo.slug})` : ""}`);
       }
       if ((workspace.repos || []).length > 4) {
@@ -2964,7 +3099,7 @@ async function cmdWorkspace(chatId, text) {
     lines.push("• /workspace scan");
     await sendReply(chatId, lines.join("\n"), { parseMode: "Markdown" });
   } catch (err) {
-    await sendReply(chatId, `❌ Workspace command failed: ${err.message}`);
+    await sendReply(chatId, `:close: Workspace command failed: ${err.message}`);
   }
 }
 
@@ -2974,13 +3109,13 @@ async function cmdWorkspace(chatId, text) {
 async function cmdMaxParallel(chatId, text) {
   const executor = _getInternalExecutor?.();
   if (!executor) {
-    return sendDirect(chatId, "⚠️ Internal executor not enabled.");
+    return sendDirect(chatId, ":alert: Internal executor not enabled.");
   }
   const arg = (text || "").replace("/maxparallel", "").trim();
   if (arg) {
     const n = parseInt(arg, 10);
     if (isNaN(n) || n < 0 || n > 20) {
-      return sendDirect(chatId, "⚠️ Provide a number between 0 and 20.");
+      return sendDirect(chatId, ":alert: Provide a number between 0 and 20.");
     }
     const old = executor.maxParallel;
     executor.maxParallel = n;
@@ -2988,18 +3123,18 @@ async function cmdMaxParallel(chatId, text) {
       executor.pause();
       return sendDirect(
         chatId,
-        `⏸ Max parallel set to 0 — executor paused. Use /maxparallel <n> to resume.`,
+        `:pause: Max parallel set to 0 — executor paused. Use /maxparallel <n> to resume.`,
       );
     }
     if (executor.isPaused() && n > 0) {
       executor.resume();
     }
-    return sendDirect(chatId, `✅ Max parallel: ${old} → ${n}`);
+    return sendDirect(chatId, `:check: Max parallel: ${old} → ${n}`);
   }
   const status = executor.getStatus();
   return sendDirect(
     chatId,
-    `📊 Max parallel: ${status.maxParallel} (active: ${status.activeSlots})`,
+    `:chart: Max parallel: ${status.maxParallel} (active: ${status.activeSlots})`,
   );
 }
 
@@ -3013,14 +3148,14 @@ async function cmdWhatsApp(chatId) {
     if (!isWhatsAppEnabled()) {
       return sendDirect(
         chatId,
-        "⚪ WhatsApp channel is not enabled.\n\nSet WHATSAPP_ENABLED=1 in your .env to enable.",
+        ":dot: WhatsApp channel is not enabled.\n\nSet WHATSAPP_ENABLED=1 in your .env to enable.",
       );
     }
     const status = getWhatsAppStatus();
     const lines = [
-      "📱 <b>WhatsApp Channel Status</b>",
+      ":phone: <b>WhatsApp Channel Status</b>",
       "",
-      `Status: ${status.connected ? "🟢 Connected" : "🔴 Disconnected"}`,
+      `Status: ${status.connected ? ":dot: Connected" : ":dot: Disconnected"}`,
       `Chat ID: <code>${status.chatId || "not set"}</code>`,
       `Pending messages: ${status.pendingMessages || 0}`,
     ];
@@ -3030,7 +3165,7 @@ async function cmdWhatsApp(chatId) {
     }
     return sendDirect(chatId, lines.join("\n"), { parse_mode: "HTML" });
   } catch (err) {
-    return sendDirect(chatId, `❌ WhatsApp status error: ${err.message}`);
+    return sendDirect(chatId, `:close: WhatsApp status error: ${err.message}`);
   }
 }
 
@@ -3044,12 +3179,12 @@ async function cmdContainer(chatId) {
     if (!isContainerEnabled()) {
       return sendDirect(
         chatId,
-        "⚪ Container isolation is not enabled.\n\nSet CONTAINER_ENABLED=1 in your .env to enable.",
+        ":dot: Container isolation is not enabled.\n\nSet CONTAINER_ENABLED=1 in your .env to enable.",
       );
     }
     const status = getContainerStatus();
     const lines = [
-      "📦 <b>Container Runtime Status</b>",
+      ":box: <b>Container Runtime Status</b>",
       "",
       `Runtime: ${status.runtime || "detecting..."}`,
       `Active containers: ${status.activeContainers || 0}`,
@@ -3060,7 +3195,7 @@ async function cmdContainer(chatId) {
     }
     return sendDirect(chatId, lines.join("\n"), { parse_mode: "HTML" });
   } catch (err) {
-    return sendDirect(chatId, `❌ Container status error: ${err.message}`);
+    return sendDirect(chatId, `:close: Container status error: ${err.message}`);
   }
 }
 
@@ -3071,6 +3206,11 @@ const COMMANDS = {
   "/app": { handler: cmdApp, desc: "Open the Control Center Mini App" },
   "/miniapp": { handler: cmdApp, desc: "Open the Control Center Mini App" },
   "/webapp": { handler: cmdApp, desc: "Open the Control Center Mini App" },
+  "/call": { handler: cmdCall, desc: "Open one-click voice meeting room" },
+  "/videocall": {
+    handler: cmdVideoCall,
+    desc: "Open one-click video meeting room",
+  },
   "/cancel": { handler: cmdCancel, desc: "Cancel a pending input prompt" },
   "/ask": { handler: cmdAsk, desc: "Send prompt to agent: /ask <prompt>" },
   "/status": { handler: cmdStatus, desc: "Detailed orchestrator status" },
@@ -3456,6 +3596,8 @@ async function refreshMenuButton() {
 
 const FAST_COMMANDS = new Set([
   "/menu",
+  "/call",
+  "/videocall",
   "/background",
   "/status",
   "/weekly",
@@ -3534,7 +3676,7 @@ async function handleCommand(text, chatId) {
     try {
       await entry.handler(chatId, cmdArgs);
     } catch (err) {
-      await sendReply(chatId, `❌ Command error: ${err.message}`);
+      await sendReply(chatId, `:close: Command error: ${err.message}`);
     }
   } else {
     await sendReply(
@@ -3805,10 +3947,11 @@ function uiTokenAction(token) {
 }
 
 function uiButton(text, action) {
+  const normalizedText = formatTelegramIconTokens(text, { button: true });
   if (typeof action === "string" && (action.startsWith("cb:") || action.startsWith("ui:"))) {
-    return { text, callback_data: action };
+    return { text: normalizedText, callback_data: action };
   }
-  return { text, callback_data: uiCallback(action) };
+  return { text: normalizedText, callback_data: uiCallback(action) };
 }
 
 function buildKeyboard(rows) {
@@ -3819,8 +3962,8 @@ function buildConfirmKeyboard(confirmId, confirmLabel = "Confirm") {
   return {
     inline_keyboard: [
       [
-        { text: `✅ ${confirmLabel}`, callback_data: confirmId },
-        { text: "❌ Cancel", callback_data: "cb:dismiss" },
+        { text: `:check: ${confirmLabel}`, callback_data: confirmId },
+        { text: ":close: Cancel", callback_data: "cb:dismiss" },
       ],
     ],
   };
@@ -3829,12 +3972,12 @@ function buildConfirmKeyboard(confirmId, confirmLabel = "Confirm") {
 function buildActionConfirmKeyboard(confirmId, confirmLabel, backAction) {
   const rows = [
     [
-      { text: `✅ ${confirmLabel || "Confirm"}`, callback_data: confirmId },
-      { text: "❌ Cancel", callback_data: "cb:dismiss" },
+      { text: `:check: ${confirmLabel || "Confirm"}`, callback_data: confirmId },
+      { text: ":close: Cancel", callback_data: "cb:dismiss" },
     ],
   ];
   if (backAction) {
-    rows.push([uiButton("⬅️ Back", backAction)]);
+    rows.push([uiButton(":arrowRight: Back", backAction)]);
   }
   return { inline_keyboard: rows };
 }
@@ -3855,12 +3998,12 @@ function appendRefreshRow(keyboard, screenId, params = {}) {
     : uiGoAction(screenId, params.page);
   const rows = keyboard.inline_keyboard || [];
   const hasRefresh = rows.some((row) =>
-    row.some((btn) => btn?.text === "🔄 Refresh"),
+    row.some((btn) => btn?.text === ":refresh: Refresh"),
   );
   if (hasRefresh) return keyboard;
   return {
     ...keyboard,
-    inline_keyboard: [...rows, [uiButton("🔄 Refresh", action)]],
+    inline_keyboard: [...rows, [uiButton(":refresh: Refresh", action)]],
   };
 }
 
@@ -3943,7 +4086,7 @@ async function promptUiInput(chatId, key, extra = {}) {
     ...extra,
   });
   const keyboard = buildKeyboard([
-    [{ text: "❌ Cancel", callback_data: uiCallback("cancel") }],
+    [{ text: ":close: Cancel", callback_data: uiCallback("cancel") }],
   ]);
   await sendReply(chatId, `${prompt}\n\nSend /cancel to abort.`, {
     reply_markup: keyboard,
@@ -3982,7 +4125,7 @@ async function promptActionConfirm(chatId, token, payload, options = {}) {
 async function handleUiInput(chatId, request, text) {
   const trimmed = String(text || "").trim();
   if (!trimmed) {
-    await sendReply(chatId, "⚠️ Input was empty. Prompt cancelled.");
+    await sendReply(chatId, ":alert: Input was empty. Prompt cancelled.");
     return;
   }
   if (request.key === "starttask") {
@@ -4001,12 +4144,12 @@ async function handleUiInput(chatId, request, text) {
   }
   const buildCommand = request.buildCommand;
   if (typeof buildCommand !== "function") {
-    await sendReply(chatId, "⚠️ Unable to process that input.");
+    await sendReply(chatId, ":alert: Unable to process that input.");
     return;
   }
   const command = buildCommand(trimmed, request);
   if (!command) {
-    await sendReply(chatId, "⚠️ Could not build a command from that input.");
+    await sendReply(chatId, ":alert: Could not build a command from that input.");
     return;
   }
   if (request.confirm) {
@@ -4088,7 +4231,7 @@ function buildStartTaskCommand(taskId, sdk, model, executor) {
 async function promptStartTaskConfirm(chatId, details = {}) {
   const taskId = String(details.taskId || "").trim();
   if (!taskId) {
-    await sendReply(chatId, "⚠️ Task ID missing for manual start.");
+    await sendReply(chatId, ":alert: Task ID missing for manual start.");
     return;
   }
   const executor = normalizeStartTaskExecutor(details.executor);
@@ -4101,7 +4244,7 @@ async function promptStartTaskConfirm(chatId, details = {}) {
   const sdkLabel = isVk ? "n/a" : sdk || "auto";
   const modelLabel = isVk ? "n/a" : model || "default";
   const lines = [
-    "🚀 *Confirm Manual Start*",
+    ":rocket: *Confirm Manual Start*",
     "",
     "This will enqueue the task immediately.",
     "",
@@ -4115,8 +4258,8 @@ async function promptStartTaskConfirm(chatId, details = {}) {
   }
   const keyboard = buildKeyboard([
     [
-      uiButton("✅ Start", uiTokenAction(token)),
-      uiButton("❌ Cancel", "cancel"),
+      uiButton(":check: Start", uiTokenAction(token)),
+      uiButton(":close: Cancel", "cancel"),
     ],
   ]);
   await sendReply(chatId, lines.join("\n"), {
@@ -4128,7 +4271,7 @@ async function promptStartTaskConfirm(chatId, details = {}) {
 async function showStartTaskExecutorPicker(chatId, taskId) {
   const safeId = String(taskId || "").trim();
   if (!safeId) {
-    await sendReply(chatId, "⚠️ Task ID missing.");
+    await sendReply(chatId, ":alert: Task ID missing.");
     return;
   }
   const mode = resolveStartTaskExecutorMode();
@@ -4136,23 +4279,23 @@ async function showStartTaskExecutorPicker(chatId, taskId) {
   const buttons = [];
   if (availability.internal || availability.vk) {
     buttons.push({
-      label: "✨ Auto (recommended)",
+      label: ":star: Auto (recommended)",
       executor: "auto",
     });
   }
   if (availability.internal) {
     buttons.push({
-      label: availability.vk ? "🧠 Internal" : "🧠 Internal (only)",
+      label: availability.vk ? ":cpu: Internal" : ":cpu: Internal (only)",
       executor: "internal",
     });
   }
   if (availability.vk) {
-    buttons.push({ label: "☁️ VK", executor: "vk" });
+    buttons.push({ label: ":globe: VK", executor: "vk" });
   }
   if (!buttons.length) {
     await sendReply(
       chatId,
-      "⚠️ No executors available. Check EXECUTOR_MODE configuration.",
+      ":alert: No executors available. Check EXECUTOR_MODE configuration.",
     );
     return;
   }
@@ -4172,15 +4315,15 @@ async function showStartTaskExecutorPicker(chatId, taskId) {
       ),
       2,
     ),
-    [uiButton("❌ Cancel", "cancel")],
+    [uiButton(":close: Cancel", "cancel")],
   ];
   const lines = [
     "Step 1/3 • Choose executor",
     "",
     `Task: \`${safeId}\``,
     `Mode: \`${mode}\``,
-    availability.internal ? "🧠 Internal executor available" : "🧠 Internal executor unavailable",
-    availability.vk ? "☁️ VK executor available" : "☁️ VK executor unavailable",
+    availability.internal ? ":cpu: Internal executor available" : ":cpu: Internal executor unavailable",
+    availability.vk ? ":globe: VK executor available" : ":globe: VK executor unavailable",
     "",
     "Auto picks internal if available, otherwise VK.",
   ];
@@ -4193,7 +4336,7 @@ async function showStartTaskExecutorPicker(chatId, taskId) {
 async function showStartTaskSdkPicker(chatId, taskId, executor) {
   const safeId = String(taskId || "").trim();
   if (!safeId) {
-    await sendReply(chatId, "⚠️ Task ID missing.");
+    await sendReply(chatId, ":alert: Task ID missing.");
     return;
   }
   const safeExecutor = normalizeStartTaskExecutor(executor) || "internal";
@@ -4225,13 +4368,13 @@ async function showStartTaskSdkPicker(chatId, taskId, executor) {
     "Auto uses the current pool SDK.",
   ];
   const rows = [
-    [uiButton("🤖 Auto", uiTokenAction(tokenAuto))],
+    [uiButton(":bot: Auto", uiTokenAction(tokenAuto))],
     ...chunkButtons(
       tokens.map((entry) => uiButton(entry.sdk, uiTokenAction(entry.token))),
       2,
     ),
-    [uiButton("⬅️ Back", uiTokenAction(tokenBack))],
-    [uiButton("❌ Cancel", "cancel")],
+    [uiButton(":arrowRight: Back", uiTokenAction(tokenBack))],
+    [uiButton(":close: Cancel", "cancel")],
   ];
   const keyboard = buildKeyboard(rows);
   await sendReply(chatId, lines.join("\n"), {
@@ -4245,7 +4388,7 @@ async function showStartTaskModelPicker(chatId, taskId, sdk, executor) {
   const safeSdk = String(sdk || "").trim();
   const safeExecutor = normalizeStartTaskExecutor(executor) || "internal";
   if (!safeId || !safeSdk) {
-    await sendReply(chatId, "⚠️ Missing task ID or SDK.");
+    await sendReply(chatId, ":alert: Missing task ID or SDK.");
     return;
   }
   const modelOptions = getDefaultModelPriority()
@@ -4301,7 +4444,7 @@ async function showStartTaskModelPicker(chatId, taskId, sdk, executor) {
     );
   }
   rows.push([uiButton("Custom Model", uiTokenAction(tokenCustom))]);
-  rows.push([uiButton("⬅️ Back", uiTokenAction(tokenBack))]);
+  rows.push([uiButton(":arrowRight: Back", uiTokenAction(tokenBack))]);
   const keyboard = buildKeyboard(rows);
   await sendReply(chatId, lines.join("\n"), {
     parseMode: "Markdown",
@@ -4312,14 +4455,14 @@ async function showStartTaskModelPicker(chatId, taskId, sdk, executor) {
 function uiNavRow(parent) {
   if (!parent) {
     return [
-      uiButton("🏠 Home", uiGoAction("home")),
-      uiButton("❌ Close", "cb:close_menu"),
+      uiButton(":home: Home", uiGoAction("home")),
+      uiButton(":close: Close", "cb:close_menu"),
     ];
   }
   return [
-    uiButton("⬅️ Back", uiGoAction(parent)),
-    uiButton("🏠 Home", uiGoAction("home")),
-    uiButton("❌ Close", "cb:close_menu"),
+    uiButton(":arrowRight: Back", uiGoAction(parent)),
+    uiButton(":home: Home", uiGoAction("home")),
+    uiButton(":close: Close", "cb:close_menu"),
   ];
 }
 
@@ -4384,13 +4527,13 @@ function formatDurationMs(ms) {
 
 async function buildHomeStatusLine() {
   const data = await readStatusSnapshot();
-  if (!data) return "Status: ❌ unavailable";
+  if (!data) return "Status: :close: unavailable";
   const counts = data.counts || {};
   const backlog = data.backlog_remaining ?? "?";
   const running = counts.running ?? 0;
   const review = counts.review ?? 0;
   const error = counts.error ?? 0;
-  return `▶️ Running ${running} • 👁️ Review ${review} • ⚠️ Error ${error} • 📥 Backlog ${backlog}`;
+  return `:play: Running ${running} • :eye: Review ${review} • :alert: Error ${error} • :download: Backlog ${backlog}`;
 }
 
 async function listWorktreeNames() {
@@ -4508,10 +4651,10 @@ Object.assign(UI_SCREENS, {
       let executorLine = "";
       if (executor) {
         const status = executor.getStatus();
-        const paused = executor.isPaused?.() ? "⏸ paused" : "▶️ running";
-        executorLine = `⚙️ Executor: ${paused} • 🎛️ Slots ${status.activeSlots}/${status.maxParallel}`;
+        const paused = executor.isPaused?.() ? ":pause: paused" : ":play: running";
+        executorLine = `:settings: Executor: ${paused} • :sliders: Slots ${status.activeSlots}/${status.maxParallel}`;
       } else {
-        executorLine = `⚙️ Executor: ${_getExecutorMode?.() || "internal"}`;
+        executorLine = `:settings: Executor: ${_getExecutorMode?.() || "internal"}`;
       }
       return [
         "Pick a section below to manage Bosun.",
@@ -4522,49 +4665,66 @@ Object.assign(UI_SCREENS, {
     },
     keyboard: () => {
       syncUiUrlsFromServer();
+      const voiceMeetingWebAppUrl = getMeetingWebAppUrl("voice");
+      const videoMeetingWebAppUrl = getMeetingWebAppUrl("video");
+      const meetingRow = [
+        voiceMeetingWebAppUrl
+          ? {
+              text: "Voice Meeting",
+              web_app: { url: voiceMeetingWebAppUrl },
+            }
+          : uiButton("Voice Meeting", uiCmdAction("/call")),
+        videoMeetingWebAppUrl
+          ? {
+              text: "Video Meeting",
+              web_app: { url: videoMeetingWebAppUrl },
+            }
+          : uiButton("Video Meeting", uiCmdAction("/videocall")),
+      ];
       const rows = [
         // Core Operations
         [
-          uiButton("📊 Dashboard", uiGoAction("overview")),
-          uiButton("🧭 Tasks", uiGoAction("tasks")),
-          uiButton("🤖 Agents", uiGoAction("agents")),
+          uiButton(":chart: Dashboard", uiGoAction("overview")),
+          uiButton(":compass: Tasks", uiGoAction("tasks")),
+          uiButton(":bot: Agents", uiGoAction("agents")),
         ],
         // System & Config
         [
-          uiButton("🌳 Workspaces", uiGoAction("workspaces")),
-          uiButton("⚙️ Executor", uiGoAction("executor")),
-          uiButton("🛰 Routing", uiGoAction("routing")),
+          uiButton(":git: Workspaces", uiGoAction("workspaces")),
+          uiButton(":settings: Executor", uiGoAction("executor")),
+          uiButton(":server: Routing", uiGoAction("routing")),
         ],
         // Monitoring & Tools
         [
-          uiButton("📁 Logs & Git", uiGoAction("logs")),
-          uiButton("📈 Telemetry", uiGoAction("telemetry")),
-          uiButton("🧠 Session", uiGoAction("session")),
+          uiButton(":folder: Logs & Git", uiGoAction("logs")),
+          uiButton(":chart: Telemetry", uiGoAction("telemetry")),
+          uiButton(":cpu: Session", uiGoAction("session")),
         ],
         // Quick Actions
         [
-          uiButton("💬 Ask Agent", uiInputAction("ask")),
-          uiButton("📖 All Commands", uiCmdAction("/helpfull")),
+          uiButton(":chat: Ask Agent", uiInputAction("ask")),
+          uiButton(":file: All Commands", uiCmdAction("/helpfull")),
         ],
       ];
+      rows.unshift(meetingRow);
       if (telegramWebAppUrl) {
         rows.unshift([
           {
-            text: "📱 Open Control Center",
+            text: ":phone: Open Control Center",
             web_app: { url: telegramWebAppUrl },
           },
-          uiButton("❌", "cb:close_menu"),
+          uiButton(":close:", "cb:close_menu"),
         ]);
         if (getBrowserUiUrlOptions().length > 0) {
-          rows.unshift([uiButton("🌐 Open in Browser", uiGoAction("browser_urls"))]);
+          rows.unshift([uiButton(":globe: Open in Browser", uiGoAction("browser_urls"))]);
         }
       } else if (telegramUiUrl) {
         rows.unshift([
-          uiButton("🌐 Open in Browser", uiGoAction("browser_urls")),
-          uiButton("❌", "cb:close_menu"),
+          uiButton(":globe: Open in Browser", uiGoAction("browser_urls")),
+          uiButton(":close:", "cb:close_menu"),
         ]);
       } else {
-        rows.unshift([uiButton("❌ Close Menu", "cb:close_menu")]);
+        rows.unshift([uiButton(":close: Close Menu", "cb:close_menu")]);
       }
       return buildKeyboard(rows);
     },
@@ -4598,23 +4758,23 @@ Object.assign(UI_SCREENS, {
       buildKeyboard([
         // Core Status
         [
-          uiButton("📊 Status", uiCmdAction("/status")),
-          uiButton("📋 Tasks", uiCmdAction("/tasks")),
-          uiButton("🤖 Agents", uiCmdAction("/agents")),
+          uiButton(":chart: Status", uiCmdAction("/status")),
+          uiButton(":clipboard: Tasks", uiCmdAction("/tasks")),
+          uiButton(":bot: Agents", uiCmdAction("/agents")),
         ],
         // System Health
         [
-          uiButton("🏥 Health", uiCmdAction("/health")),
-          uiButton("⚠️ Anomalies", uiCmdAction("/anomalies")),
-          uiButton("👁 Presence", uiCmdAction("/presence")),
+          uiButton(":heart: Health", uiCmdAction("/health")),
+          uiButton(":alert: Anomalies", uiCmdAction("/anomalies")),
+          uiButton(":eye: Presence", uiCmdAction("/presence")),
         ],
         // Deep Dives
         [
-          uiButton("🎯 Coordinator", uiCmdAction("/coordinator")),
-          uiButton("📝 Logs", uiCmdAction("/logs 50")),
+          uiButton(":target: Coordinator", uiCmdAction("/coordinator")),
+          uiButton(":edit: Logs", uiCmdAction("/logs 50")),
         ],
         [
-          uiButton("📈 Telemetry", uiGoAction("telemetry")),
+          uiButton(":chart: Telemetry", uiGoAction("telemetry")),
         ],
         uiNavRow("home"),
       ]),
@@ -4627,12 +4787,12 @@ Object.assign(UI_SCREENS, {
     keyboard: () =>
       buildKeyboard([
         [
-          uiButton("📈 Summary", uiCmdAction("/telemetry")),
-          uiButton("🧯 Errors", uiCmdAction("/telemetry errors")),
+          uiButton(":chart: Summary", uiCmdAction("/telemetry")),
+          uiButton(":alert: Errors", uiCmdAction("/telemetry errors")),
         ],
         [
-          uiButton("🧪 Executors", uiCmdAction("/telemetry executors")),
-          uiButton("🚨 Alerts", uiCmdAction("/telemetry alerts")),
+          uiButton(":beaker: Executors", uiCmdAction("/telemetry executors")),
+          uiButton(":alert: Alerts", uiCmdAction("/telemetry alerts")),
         ],
         uiNavRow("home"),
       ]),
@@ -4646,21 +4806,21 @@ Object.assign(UI_SCREENS, {
       buildKeyboard([
         // Execution Controls
         [
-          { text: "⏸ Pause", callback_data: "cb:confirm_pause" },
-          { text: "▶️ Resume", callback_data: "cb:confirm_resume" },
-          { text: "🔄 Restart", callback_data: "cb:confirm_restart" },
+          { text: ":pause: Pause", callback_data: "cb:confirm_pause" },
+          { text: ":play: Resume", callback_data: "cb:confirm_resume" },
+          { text: ":refresh: Restart", callback_data: "cb:confirm_restart" },
         ],
         // Viewing & Starting
         [
-          uiButton("📋 Active Tasks", uiCmdAction("/tasks")),
-          uiButton("🗂 Task Lists", uiGoAction("task_lists")),
-          uiButton("▶️ Start Task", uiInputAction("starttask")),
+          uiButton(":clipboard: Active Tasks", uiCmdAction("/tasks")),
+          uiButton(":folder: Task Lists", uiGoAction("task_lists")),
+          uiButton(":play: Start Task", uiInputAction("starttask")),
         ],
         // Management
         [
-          uiButton("🗺️ Planner", uiGoAction("plan")),
-          uiButton("🔁 Retry", uiGoAction("retry")),
-          uiButton("🧹 Cleanup", uiCmdAction("/cleanup")),
+          uiButton(":grid: Planner", uiGoAction("plan")),
+          uiButton(":repeat: Retry", uiGoAction("retry")),
+          uiButton(":trash: Cleanup", uiCmdAction("/cleanup")),
         ],
         uiNavRow("home"),
       ]),
@@ -4674,7 +4834,7 @@ Object.assign(UI_SCREENS, {
       const rows = [
         [
           uiButton(
-            "📥 Backlog",
+            ":download: Backlog",
             uiTokenAction(
               issueUiToken({
                 type: "go",
@@ -4684,7 +4844,7 @@ Object.assign(UI_SCREENS, {
             ),
           ),
           uiButton(
-            "📝 Draft",
+            ":edit: Draft",
             uiTokenAction(
               issueUiToken({
                 type: "go",
@@ -4696,7 +4856,7 @@ Object.assign(UI_SCREENS, {
         ],
         [
           uiButton(
-            "✅ Todo",
+            ":check: Todo",
             uiTokenAction(
               issueUiToken({
                 type: "go",
@@ -4706,7 +4866,7 @@ Object.assign(UI_SCREENS, {
             ),
           ),
           uiButton(
-            "🚧 Active",
+            ":alert: Active",
             uiTokenAction(
               issueUiToken({
                 type: "go",
@@ -4718,7 +4878,7 @@ Object.assign(UI_SCREENS, {
         ],
         [
           uiButton(
-            "🔍 Review",
+            ":search: Review",
             uiTokenAction(
               issueUiToken({
                 type: "go",
@@ -4728,7 +4888,7 @@ Object.assign(UI_SCREENS, {
             ),
           ),
           uiButton(
-            "⛔ Blocked",
+            ":ban: Blocked",
             uiTokenAction(
               issueUiToken({
                 type: "go",
@@ -4740,7 +4900,7 @@ Object.assign(UI_SCREENS, {
         ],
         [
           uiButton(
-            "🏁 Done",
+            ":flag: Done",
             uiTokenAction(
               issueUiToken({
                 type: "go",
@@ -4813,7 +4973,7 @@ Object.assign(UI_SCREENS, {
               type: "starttask_executor",
               taskId: task.id,
             });
-            const label = `▶ ${shortenLabel(task.id || task.title || "Task", 28)}`;
+            const label = `:play: ${shortenLabel(task.id || task.title || "Task", 28)}`;
             return [uiButton(label, uiTokenAction(token))];
           }),
         );
@@ -4823,7 +4983,7 @@ Object.assign(UI_SCREENS, {
         if (safePage > 0) {
           pager.push(
             uiButton(
-              "⬅️ Prev",
+              ":arrowRight: Prev",
               uiTokenAction(
                 issueUiToken({
                   type: "go",
@@ -4837,7 +4997,7 @@ Object.assign(UI_SCREENS, {
         if (safePage < totalPages - 1) {
           pager.push(
             uiButton(
-              "Next ➡️",
+              "Next :arrowRight:",
               uiTokenAction(
                 issueUiToken({
                   type: "go",
@@ -4852,8 +5012,8 @@ Object.assign(UI_SCREENS, {
       }
       rows.push(
         [
-          uiButton("🔁 Change Status", uiGoAction("task_lists")),
-          uiButton("▶️ Start Task", uiInputAction("starttask")),
+          uiButton(":repeat: Change Status", uiGoAction("task_lists")),
+          uiButton(":play: Start Task", uiInputAction("starttask")),
         ],
       );
       rows.push(uiNavRow("task_lists"));
@@ -4901,15 +5061,15 @@ Object.assign(UI_SCREENS, {
       buildKeyboard([
         // Status
         [
-          uiButton("📊 Status", uiCmdAction("/executor")),
-          uiButton("🎛️ Slots", uiCmdAction("/executor slots")),
-          uiButton("⚙️ Mode", uiCmdAction("/executor mode")),
+          uiButton(":chart: Status", uiCmdAction("/executor")),
+          uiButton(":sliders: Slots", uiCmdAction("/executor slots")),
+          uiButton(":settings: Mode", uiCmdAction("/executor mode")),
         ],
         // Controls
         [
-          uiButton("⏸ Pause", uiCmdAction("/pausetasks")),
-          uiButton("▶️ Resume", uiCmdAction("/resumetasks")),
-          uiButton("🔢 Max Parallel", uiGoAction("maxparallel")),
+          uiButton(":pause: Pause", uiCmdAction("/pausetasks")),
+          uiButton(":play: Resume", uiCmdAction("/resumetasks")),
+          uiButton(":hash: Max Parallel", uiGoAction("maxparallel")),
         ],
         uiNavRow("home"),
       ]),
@@ -4947,20 +5107,20 @@ Object.assign(UI_SCREENS, {
       buildKeyboard([
         // Monitoring
         [
-          uiButton("🤖 Active Agents", uiCmdAction("/agents")),
-          uiButton("📂 Agent Logs", uiGoAction("agent_logs")),
-          uiButton("🧵 Threads", uiGoAction("threads")),
+          uiButton(":bot: Active Agents", uiCmdAction("/agents")),
+          uiButton(":folder: Agent Logs", uiGoAction("agent_logs")),
+          uiButton(":link: Threads", uiGoAction("threads")),
         ],
         // Control
         [
-          uiButton("🧭 Steer", uiInputAction("steer")),
-          uiButton("🛑 Stop", uiCmdAction("/stop")),
-          uiButton("🛰 Background", uiGoAction("background")),
+          uiButton(":compass: Steer", uiInputAction("steer")),
+          uiButton(":close: Stop", uiCmdAction("/stop")),
+          uiButton(":server: Background", uiGoAction("background")),
         ],
         // Context
         [
-          uiButton("🧠 History", uiCmdAction("/history")),
-          uiButton("📊 Status", uiCmdAction("/status")),
+          uiButton(":cpu: History", uiCmdAction("/history")),
+          uiButton(":chart: Status", uiCmdAction("/status")),
         ],
         uiNavRow("home"),
       ]),
@@ -4976,8 +5136,8 @@ Object.assign(UI_SCREENS, {
           uiButton("New Background Task", uiInputAction("background")),
         ],
         [
-          uiButton("🧭 Steer", uiInputAction("steer")),
-          uiButton("🛑 Stop", uiCmdAction("/stop")),
+          uiButton(":compass: Steer", uiInputAction("steer")),
+          uiButton(":close: Stop", uiCmdAction("/stop")),
         ],
         uiNavRow("agents"),
       ]),
@@ -5031,12 +5191,12 @@ Object.assign(UI_SCREENS, {
         const pager = [];
         if (safePage > 0) {
           pager.push(
-            uiButton("⬅️ Prev", uiGoAction("agent_logs", safePage - 1)),
+            uiButton(":arrowRight: Prev", uiGoAction("agent_logs", safePage - 1)),
           );
         }
         if (safePage < totalPages - 1) {
           pager.push(
-            uiButton("Next ➡️", uiGoAction("agent_logs", safePage + 1)),
+            uiButton("Next :arrowRight:", uiGoAction("agent_logs", safePage + 1)),
           );
         }
         if (pager.length) rows.push(pager);
@@ -5094,12 +5254,12 @@ Object.assign(UI_SCREENS, {
         const pager = [];
         if (safePage > 0) {
           pager.push(
-            uiButton("⬅️ Prev", uiGoAction("threads_kill", safePage - 1)),
+            uiButton(":arrowRight: Prev", uiGoAction("threads_kill", safePage - 1)),
           );
         }
         if (safePage < totalPages - 1) {
           pager.push(
-            uiButton("Next ➡️", uiGoAction("threads_kill", safePage + 1)),
+            uiButton("Next :arrowRight:", uiGoAction("threads_kill", safePage + 1)),
           );
         }
         if (pager.length) rows.push(pager);
@@ -5120,20 +5280,20 @@ Object.assign(UI_SCREENS, {
       buildKeyboard([
         // Core Routing
         [
-          uiButton("🤖 Model", uiGoAction("model")),
-          uiButton("📦 SDK", uiGoAction("sdk")),
-          uiButton("🌍 Region", uiGoAction("region")),
+          uiButton(":bot: Model", uiGoAction("model")),
+          uiButton(":box: SDK", uiGoAction("sdk")),
+          uiButton(":globe: Region", uiGoAction("region")),
         ],
         // Task Routing
         [
-          uiButton("🎯 Route Task", uiGoAction("route_task")),
-          uiButton("📋 Kanban", uiGoAction("kanban")),
-          uiButton("♻️ Auto Backlog", uiGoAction("autobacklog")),
+          uiButton(":target: Route Task", uiGoAction("route_task")),
+          uiButton(":clipboard: Kanban", uiGoAction("kanban")),
+          uiButton(":repeat: Auto Backlog", uiGoAction("autobacklog")),
         ],
         // Config
         [
-          uiButton("📐 Requirements", uiGoAction("requirements")),
-          uiButton("🏥 Health", uiCmdAction("/health")),
+          uiButton(":ruler: Requirements", uiGoAction("requirements")),
+          uiButton(":heart: Health", uiCmdAction("/health")),
         ],
         uiNavRow("home"),
       ]),
@@ -5307,12 +5467,12 @@ Object.assign(UI_SCREENS, {
         const pager = [];
         if (safePage > 0) {
           pager.push(
-            uiButton("⬅️ Prev", uiGoAction("route_workspace", safePage - 1)),
+            uiButton(":arrowRight: Prev", uiGoAction("route_workspace", safePage - 1)),
           );
         }
         if (safePage < totalPages - 1) {
           pager.push(
-            uiButton("Next ➡️", uiGoAction("route_workspace", safePage + 1)),
+            uiButton("Next :arrowRight:", uiGoAction("route_workspace", safePage + 1)),
           );
         }
         if (pager.length) rows.push(pager);
@@ -5362,12 +5522,12 @@ Object.assign(UI_SCREENS, {
         const pager = [];
         if (safePage > 0) {
           pager.push(
-            uiButton("⬅️ Prev", uiGoAction("route_role", safePage - 1)),
+            uiButton(":arrowRight: Prev", uiGoAction("route_role", safePage - 1)),
           );
         }
         if (safePage < totalPages - 1) {
           pager.push(
-            uiButton("Next ➡️", uiGoAction("route_role", safePage + 1)),
+            uiButton("Next :arrowRight:", uiGoAction("route_role", safePage + 1)),
           );
         }
         if (pager.length) rows.push(pager);
@@ -5388,27 +5548,27 @@ Object.assign(UI_SCREENS, {
       buildKeyboard([
         // Workspaces
         [
-          uiButton("📂 My Workspaces", uiGoAction("managed_workspaces")),
-          uiButton("➕ New Workspace", uiInputAction("workspace_create")),
-          uiButton("🎯 Switch Active", uiGoAction("workspace_switch")),
+          uiButton(":folder: My Workspaces", uiGoAction("managed_workspaces")),
+          uiButton(":plus: New Workspace", uiInputAction("workspace_create")),
+          uiButton(":target: Switch Active", uiGoAction("workspace_switch")),
         ],
         // Worktrees
         [
-          uiButton("🌳 Worktrees", uiCmdAction("/worktrees")),
-          uiButton("📊 Stats", uiCmdAction("/worktrees stats")),
-          uiButton("🧹 Prune", uiCmdAction("/worktrees prune")),
+          uiButton(":git: Worktrees", uiCmdAction("/worktrees")),
+          uiButton(":chart: Stats", uiCmdAction("/worktrees stats")),
+          uiButton(":trash: Prune", uiCmdAction("/worktrees prune")),
         ],
         // Repos & Shared
         [
-          uiButton("📁 Repos", uiCmdAction("/repos")),
-          uiButton("🔓 Release WT", uiGoAction("worktrees_release")),
-          uiButton("🔄 Scan Disk", uiCmdAction("/workspace scan")),
+          uiButton(":folder: Repos", uiCmdAction("/repos")),
+          uiButton(":unlock: Release WT", uiGoAction("worktrees_release")),
+          uiButton(":refresh: Scan Disk", uiCmdAction("/workspace scan")),
         ],
         // Shared
         [
-          uiButton("📋 Shared", uiCmdAction("/shared_workspaces")),
-          uiButton("✅ Claim", uiGoAction("shared_claim")),
-          uiButton("🚪 Release", uiGoAction("shared_release")),
+          uiButton(":clipboard: Shared", uiCmdAction("/shared_workspaces")),
+          uiButton(":check: Claim", uiGoAction("shared_claim")),
+          uiButton(":close: Release", uiGoAction("shared_release")),
         ],
         uiNavRow("home"),
       ]),
@@ -5424,7 +5584,7 @@ Object.assign(UI_SCREENS, {
       const active = getActiveLocalWorkspace(configDir);
       if (!workspaces.length) {
         return buildKeyboard([
-          [uiButton("🔄 Scan", uiCmdAction("/workspace scan"))],
+          [uiButton(":refresh: Scan", uiCmdAction("/workspace scan"))],
           [uiButton("Type Workspace ID", uiInputAction("workspace_switch"))],
           uiNavRow("workspaces"),
         ]);
@@ -5457,7 +5617,7 @@ Object.assign(UI_SCREENS, {
             ],
             backAction: uiGoAction("workspace_switch", safePage),
           });
-          const prefix = isActive ? "🟢" : "⚪";
+          const prefix = isActive ? ":dot:" : ":dot:";
           return uiButton(
             `${prefix} ${shortenLabel(workspace.name || workspace.id)}`,
             uiTokenAction(token),
@@ -5470,12 +5630,12 @@ Object.assign(UI_SCREENS, {
         const pager = [];
         if (safePage > 0) {
           pager.push(
-            uiButton("⬅️ Prev", uiGoAction("workspace_switch", safePage - 1)),
+            uiButton(":arrowRight: Prev", uiGoAction("workspace_switch", safePage - 1)),
           );
         }
         if (safePage < totalPages - 1) {
           pager.push(
-            uiButton("Next ➡️", uiGoAction("workspace_switch", safePage + 1)),
+            uiButton("Next :arrowRight:", uiGoAction("workspace_switch", safePage + 1)),
           );
         }
         if (pager.length) rows.push(pager);
@@ -5484,7 +5644,7 @@ Object.assign(UI_SCREENS, {
       rows.push([
         uiButton("Type Workspace ID", uiInputAction("workspace_switch")),
       ]);
-      rows.push([uiButton("🔄 Scan", uiCmdAction("/workspace scan"))]);
+      rows.push([uiButton(":refresh: Scan", uiCmdAction("/workspace scan"))]);
       rows.push(uiNavRow("workspaces"));
       return buildKeyboard(rows);
     },
@@ -5536,12 +5696,12 @@ Object.assign(UI_SCREENS, {
         const pager = [];
         if (safePage > 0) {
           pager.push(
-            uiButton("⬅️ Prev", uiGoAction("worktrees_release", safePage - 1)),
+            uiButton(":arrowRight: Prev", uiGoAction("worktrees_release", safePage - 1)),
           );
         }
         if (safePage < totalPages - 1) {
           pager.push(
-            uiButton("Next ➡️", uiGoAction("worktrees_release", safePage + 1)),
+            uiButton("Next :arrowRight:", uiGoAction("worktrees_release", safePage + 1)),
           );
         }
         if (pager.length) rows.push(pager);
@@ -5589,7 +5749,7 @@ Object.assign(UI_SCREENS, {
             detailLines,
             backAction: uiGoAction("shared_claim", safePage),
           });
-          const emoji = ws.availability === "available" ? "✅" : "🔒";
+          const emoji = ws.availability === "available" ? ":check:" : ":lock:";
           return uiButton(
             `${emoji} ${shortenLabel(ws.id)}`,
             uiTokenAction(token),
@@ -5601,12 +5761,12 @@ Object.assign(UI_SCREENS, {
         const pager = [];
         if (safePage > 0) {
           pager.push(
-            uiButton("⬅️ Prev", uiGoAction("shared_claim", safePage - 1)),
+            uiButton(":arrowRight: Prev", uiGoAction("shared_claim", safePage - 1)),
           );
         }
         if (safePage < totalPages - 1) {
           pager.push(
-            uiButton("Next ➡️", uiGoAction("shared_claim", safePage + 1)),
+            uiButton("Next :arrowRight:", uiGoAction("shared_claim", safePage + 1)),
           );
         }
         if (pager.length) rows.push(pager);
@@ -5650,7 +5810,7 @@ Object.assign(UI_SCREENS, {
             detailLines,
             backAction: uiGoAction("shared_release", safePage),
           });
-          const emoji = ws.availability === "leased" ? "🔓" : "ℹ️";
+          const emoji = ws.availability === "leased" ? ":unlock:" : ":help:";
           return uiButton(
             `${emoji} ${shortenLabel(ws.id)}`,
             uiTokenAction(token),
@@ -5662,12 +5822,12 @@ Object.assign(UI_SCREENS, {
         const pager = [];
         if (safePage > 0) {
           pager.push(
-            uiButton("⬅️ Prev", uiGoAction("shared_release", safePage - 1)),
+            uiButton(":arrowRight: Prev", uiGoAction("shared_release", safePage - 1)),
           );
         }
         if (safePage < totalPages - 1) {
           pager.push(
-            uiButton("Next ➡️", uiGoAction("shared_release", safePage + 1)),
+            uiButton("Next :arrowRight:", uiGoAction("shared_release", safePage + 1)),
           );
         }
         if (pager.length) rows.push(pager);
@@ -5688,8 +5848,8 @@ Object.assign(UI_SCREENS, {
       const active = getActiveLocalWorkspace(configDir);
       if (!workspaces.length) {
         return buildKeyboard([
-          [uiButton("➕ Create Workspace", uiInputAction("workspace_create"))],
-          [uiButton("🔄 Scan Disk", uiCmdAction("/workspace scan"))],
+          [uiButton(":plus: Create Workspace", uiInputAction("workspace_create"))],
+          [uiButton(":refresh: Scan Disk", uiCmdAction("/workspace scan"))],
           uiNavRow("workspaces"),
         ]);
       }
@@ -5707,7 +5867,7 @@ Object.assign(UI_SCREENS, {
         const repoNames = Array.isArray(ws.repos)
           ? ws.repos.map((r) => (typeof r === "string" ? r : r.name || r.url || "?")).join(", ")
           : "none";
-        const prefix = isActive ? "🟢" : "⚪";
+        const prefix = isActive ? ":dot:" : ":dot:";
         const switchToken = issueUiToken({
           type: "confirm_cmd",
           command: `/workspace switch ${ws.id}`,
@@ -5717,7 +5877,7 @@ Object.assign(UI_SCREENS, {
             `Name: \`${ws.name || ws.id}\``,
             `ID: \`${ws.id}\``,
             `Repos (${repoCount}): ${repoNames || "none"}`,
-            `Status: ${isActive ? "✅ Active" : "Inactive"}`,
+            `Status: ${isActive ? ":check: Active" : "Inactive"}`,
           ],
           backAction: uiGoAction("managed_workspaces", safePage),
         });
@@ -5726,27 +5886,27 @@ Object.assign(UI_SCREENS, {
             `${prefix} ${shortenLabel(ws.name || ws.id, 20)} (${repoCount})`,
             uiTokenAction(switchToken),
           ),
-          uiButton("⬇️ Pull", uiCmdAction(`/workspace pull ${ws.id}`)),
-          uiButton("🗑️", uiCmdAction(`/workspace delete ${ws.id}`)),
+          uiButton(":download: Pull", uiCmdAction(`/workspace pull ${ws.id}`)),
+          uiButton(":trash:", uiCmdAction(`/workspace delete ${ws.id}`)),
         ]);
       }
       if (totalPages > 1) {
         const pager = [];
         if (safePage > 0) {
           pager.push(
-            uiButton("⬅️ Prev", uiGoAction("managed_workspaces", safePage - 1)),
+            uiButton(":arrowRight: Prev", uiGoAction("managed_workspaces", safePage - 1)),
           );
         }
         if (safePage < totalPages - 1) {
           pager.push(
-            uiButton("Next ➡️", uiGoAction("managed_workspaces", safePage + 1)),
+            uiButton("Next :arrowRight:", uiGoAction("managed_workspaces", safePage + 1)),
           );
         }
         if (pager.length) rows.push(pager);
       }
       rows.push([
-        uiButton("➕ Create", uiInputAction("workspace_create")),
-        uiButton("🔄 Scan", uiCmdAction("/workspace scan")),
+        uiButton(":plus: Create", uiInputAction("workspace_create")),
+        uiButton(":refresh: Scan", uiCmdAction("/workspace scan")),
       ]);
       rows.push(uiNavRow("workspaces"));
       return buildKeyboard(rows);
@@ -5763,18 +5923,18 @@ Object.assign(UI_SCREENS, {
       buildKeyboard([
         // Logs
         [
-          uiButton("📝 System Logs", uiGoAction("logs_tail")),
-          uiButton("📂 Agent Logs", uiGoAction("agent_logs")),
+          uiButton(":edit: System Logs", uiGoAction("logs_tail")),
+          uiButton(":folder: Agent Logs", uiGoAction("agent_logs")),
         ],
         // Git
         [
-          uiButton("🌿 Branches", uiCmdAction("/branches")),
-          uiButton("💡 Diff", uiCmdAction("/diff")),
-          uiButton("🔎 Git", uiGoAction("git")),
+          uiButton(":git: Branches", uiCmdAction("/branches")),
+          uiButton(":lightbulb: Diff", uiCmdAction("/diff")),
+          uiButton(":search: Git", uiGoAction("git")),
         ],
         // Utils
         [
-          uiButton("🖥 Shell", uiGoAction("shell")),
+          uiButton(":monitor: Shell", uiGoAction("shell")),
         ],
         uiNavRow("home"),
       ]),
@@ -5843,8 +6003,8 @@ Object.assign(UI_SCREENS, {
     keyboard: () =>
       buildKeyboard([
         [
-          uiButton("📱 WhatsApp", uiCmdAction("/whatsapp")),
-          uiButton("📦 Container", uiCmdAction("/container")),
+          uiButton(":phone: WhatsApp", uiCmdAction("/whatsapp")),
+          uiButton(":box: Container", uiCmdAction("/container")),
         ],
         uiNavRow("home"),
       ]),
@@ -5857,18 +6017,18 @@ Object.assign(UI_SCREENS, {
       buildKeyboard([
         // Interaction
         [
-          uiButton("💬 Ask", uiInputAction("ask")),
-          uiButton("🧭 Steer", uiInputAction("steer")),
+          uiButton(":chat: Ask", uiInputAction("ask")),
+          uiButton(":compass: Steer", uiInputAction("steer")),
         ],
         // Context
         [
-          uiButton("🧠 History", uiCmdAction("/history")),
-          uiButton("🧹 Clear", "confirm_clear"),
+          uiButton(":cpu: History", uiCmdAction("/history")),
+          uiButton(":trash: Clear", "confirm_clear"),
         ],
         // Control
         [
-          uiButton("🛰 Background", uiGoAction("background")),
-          uiButton("🛑 Stop", uiCmdAction("/stop")),
+          uiButton(":server: Background", uiGoAction("background")),
+          uiButton(":close: Stop", uiCmdAction("/stop")),
         ],
         uiNavRow("home"),
       ]),
@@ -5965,7 +6125,7 @@ async function handleUiAction({ chatId, messageId, data }) {
     if (messageId) {
       await deleteDirect(chatId, messageId);
     }
-    await sendReply(chatId, "✅ Input cancelled.");
+    await sendReply(chatId, ":check: Input cancelled.");
     return;
   }
   if (type === "confirm_clear") {
@@ -6040,7 +6200,7 @@ async function handleUiAction({ chatId, messageId, data }) {
       }
       await sendReply(
         chatId,
-        "⏳ That option expired. Please reopen the menu.",
+        ":clock: That option expired. Please reopen the menu.",
       );
       return;
     }
@@ -6105,7 +6265,7 @@ async function handleUiAction({ chatId, messageId, data }) {
       if (!executor) {
         await sendReply(
           chatId,
-          `⚠️ Executor "${payload.executor || "auto"}" not available (mode: ${mode}).`,
+          `:alert: Executor "${payload.executor || "auto"}" not available (mode: ${mode}).`,
         );
         await showStartTaskExecutorPicker(chatId, payload.taskId);
         return;
@@ -6154,7 +6314,7 @@ async function handleWebAppData(raw, chatId) {
   }
 
   if (!payload || typeof payload !== "object") {
-    await sendReply(chatId, "⚠️ Web app sent an invalid payload.");
+    await sendReply(chatId, ":alert: Web app sent an invalid payload.");
     return;
   }
 
@@ -6175,7 +6335,7 @@ async function handleWebAppData(raw, chatId) {
     return;
   }
 
-  await sendReply(chatId, "⚠️ Web app request not recognized.");
+  await sendReply(chatId, ":alert: Web app request not recognized.");
 }
 
 // ── Built-in Command Handlers ────────────────────────────────────────────────
@@ -6418,30 +6578,110 @@ async function cmdApp(chatId) {
   if (!uiUrl) {
     await sendReply(
       chatId,
-      "⚠️ Mini App not configured. Set TELEGRAM_UI_PORT and TELEGRAM_MINIAPP_ENABLED=true in your environment.",
+      ":alert: Mini App not configured. Set TELEGRAM_UI_PORT and TELEGRAM_MINIAPP_ENABLED=true in your environment.",
     );
     return;
   }
   const browserOptions = getBrowserUiUrlOptions();
+  const voiceMeetingWebAppUrl = getMeetingWebAppUrl("voice", {
+    chat_id: String(chatId || "").trim(),
+  });
+  const videoMeetingWebAppUrl = getMeetingWebAppUrl("video", {
+    chat_id: String(chatId || "").trim(),
+  });
   const rows = [];
   if (webAppUrl) {
-    rows.unshift([{ text: "📱 Open Control Center", web_app: { url: webAppUrl } }]);
+    rows.unshift([{ text: ":phone: Open Control Center", web_app: { url: webAppUrl } }]);
+  }
+  if (voiceMeetingWebAppUrl || videoMeetingWebAppUrl) {
+    rows.push([
+      voiceMeetingWebAppUrl
+        ? { text: "Voice Meeting", web_app: { url: voiceMeetingWebAppUrl } }
+        : { text: "Voice Meeting", callback_data: "/call" },
+      videoMeetingWebAppUrl
+        ? { text: "Video Meeting", web_app: { url: videoMeetingWebAppUrl } }
+        : { text: "Video Meeting", callback_data: "/videocall" },
+    ]);
   }
   if (browserOptions.length > 0) {
     rows.push(...browserOptions.map((option) => [{ text: option.label, url: option.url }]));
   } else {
-    rows.push([{ text: "🌐 Open in Browser", url: getBrowserUiUrl() || uiUrl }]);
+    rows.push([{ text: ":globe: Open in Browser", url: getBrowserUiUrl() || uiUrl }]);
   }
   const keyboard = { inline_keyboard: rows };
 
   await sendDirect(
     chatId,
-    "🚀 *Bosun Control Center*\n\nOpen the Mini App or access via browser:",
+    ":rocket: *Bosun Control Center*\n\nOpen the Mini App or access via browser:",
     {
       parseMode: "Markdown",
       reply_markup: keyboard,
     },
   );
+}
+
+async function cmdCall(chatId, args = "") {
+  const callType = normalizeMeetingCallType(args);
+  const isVideo = callType === "video";
+  const label = isVideo ? "video" : "voice";
+  const title = isVideo ? "*Video Meeting*" : "*Voice Meeting*";
+  syncUiUrlsFromServer();
+
+  const webAppMeetingUrl = getMeetingWebAppUrl(callType, {
+    chat_id: String(chatId || "").trim(),
+  });
+  const browserOptions = getMeetingBrowserUrlOptions(callType, {
+    chat_id: String(chatId || "").trim(),
+  });
+
+  const rows = [];
+  if (webAppMeetingUrl) {
+    rows.push([
+      {
+        text: isVideo ? "Start Video Meeting" : "Start Voice Meeting",
+        web_app: { url: webAppMeetingUrl },
+      },
+    ]);
+  }
+  if (browserOptions.length > 0) {
+    rows.push(
+      ...browserOptions.map((option) => [
+        {
+          text: `${option.label} (${label})`,
+          url: option.url,
+        },
+      ]),
+    );
+  }
+
+  if (rows.length === 0) {
+    await sendReply(
+      chatId,
+      ":alert: Meeting UI is not available yet. Set TELEGRAM_WEBAPP_URL (HTTPS) or enable the UI tunnel first.",
+    );
+    return;
+  }
+
+  await sendDirect(
+    chatId,
+    [
+      title,
+      "",
+      "One tap opens the Bosun meeting room with your default agent + voice settings.",
+      isVideo
+        ? "Video mode auto-starts camera. You can switch to screen share any time."
+        : "Voice mode starts instantly. You can enable camera/screen share in-call.",
+    ].join("\n"),
+    {
+      parseMode: "Markdown",
+      reply_markup: { inline_keyboard: rows },
+    },
+  );
+}
+
+async function cmdVideoCall(chatId, args = "") {
+  const normalized = String(args || "").trim();
+  await cmdCall(chatId, normalized ? `video ${normalized}` : "video");
 }
 
 async function cmdMenu(chatId) {
@@ -6460,7 +6700,7 @@ async function cmdCancel(chatId) {
     return;
   }
   clearPendingUiInput(chatId);
-  await sendReply(chatId, "✅ Input cancelled.");
+  await sendReply(chatId, ":check: Input cancelled.");
 }
 
 async function cmdHelp(chatId) {
@@ -6468,7 +6708,7 @@ async function cmdHelp(chatId) {
 }
 
 async function cmdHelpFull(chatId) {
-  const lines = ["🤖 Bosun Primary Agent — All Commands:\n"];
+  const lines = [":bot: Bosun Primary Agent — All Commands:\n"];
   for (const [cmd, { desc }] of Object.entries(COMMANDS)) {
     lines.push(`${cmd} — ${desc}`);
   }
@@ -6564,7 +6804,7 @@ async function cmdTelemetry(chatId, args = "") {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 8);
     const lines = [
-      "🧯 Telemetry — Top Errors",
+      ":alert: Telemetry — Top Errors",
       `Window: last ${days}d`,
       "",
     ];
@@ -6579,7 +6819,7 @@ async function cmdTelemetry(chatId, args = "") {
     const summary = summarizeTelemetry(metrics, days);
     if (!summary) return sendReply(chatId, "No telemetry metrics found.");
     const lines = [
-      "🧪 Telemetry — Executor Mix",
+      ":beaker: Telemetry — Executor Mix",
       `Window: last ${days}d`,
       "",
     ];
@@ -6597,7 +6837,7 @@ async function cmdTelemetry(chatId, args = "") {
       return sendReply(chatId, "No analyzer alerts found.");
     }
     const lines = [
-      "🚨 Telemetry — Recent Alerts",
+      ":alert: Telemetry — Recent Alerts",
       `Window: last ${days}d`,
       "",
       ...alerts.slice(-10).map((a) => {
@@ -6616,7 +6856,7 @@ async function cmdTelemetry(chatId, args = "") {
     return sendReply(chatId, "No telemetry metrics found.");
   }
   const lines = [
-    "📈 Telemetry Summary",
+    ":chart: Telemetry Summary",
     `Window: last ${days}d`,
     "",
     `Sessions: ${summary.total}`,
@@ -6663,7 +6903,7 @@ async function cmdAsk(chatId, args) {
 }
 
 async function cmdStatus(chatId) {
-  await sendReply(chatId, "⏳ Reading orchestrator status...");
+  await sendReply(chatId, ":clock: Reading orchestrator status...");
 
   let statusText = "Status unavailable";
 
@@ -6703,7 +6943,7 @@ async function cmdStatus(chatId) {
       : [];
 
     const lines = [
-      "📊 Bosun Orchestrator Status",
+      ":chart: Bosun Orchestrator Status",
       "",
       `Running: ${counts.running ?? 0}`,
       `Review: ${counts.review ?? 0}`,
@@ -6719,14 +6959,14 @@ async function cmdStatus(chatId) {
     if (errors.length > 0) {
       lines.push(
         "",
-        "⚠️ Error tasks:",
+        ":alert: Error tasks:",
         ...errors.slice(0, 5).map((t) => `  - ${t}`),
       );
     }
     if (manualReviews.length > 0) {
       lines.push(
         "",
-        "👀 Manual review:",
+        ":eye: Manual review:",
         ...manualReviews.slice(0, 5).map((t) => `  - ${t}`),
       );
     }
@@ -6825,22 +7065,22 @@ async function cmdTasks(chatId) {
             : dur >= 60
               ? Math.round(dur / 60) + "m"
               : dur + "s";
-        lines.push(`⏸ PAUSED (for ${durStr}) — /resumetasks to resume`);
+        lines.push(`:pause: PAUSED (for ${durStr}) — /resumetasks to resume`);
         lines.push("");
       }
 
       if (executorStatus.slots.length > 0) {
         lines.push(
-          `📋 Active Agents (${executorStatus.activeSlots}/${executorStatus.maxParallel} slots)\n`,
+          `:clipboard: Active Agents (${executorStatus.activeSlots}/${executorStatus.maxParallel} slots)\n`,
         );
 
         for (const slot of executorStatus.slots) {
           const emoji =
             slot.status === "running"
-              ? "🟢"
+              ? ":dot:"
               : slot.status === "error"
-                ? "❌"
-                : "🔵";
+                ? ":close:"
+                : ":dot:";
           const runStr = formatRuntimeSeconds(slot.runningFor);
           const agentId =
             Number.isFinite(slot.agentInstanceId) && slot.agentInstanceId > 0
@@ -6853,7 +7093,7 @@ async function cmdTasks(chatId) {
           lines.push(`${emoji} Agent ${agentId} • ${shortBranch}`);
           lines.push(`   ${slot.taskTitle}`);
           lines.push(
-            `   SDK: ${slot.sdk} | ⏱️ ${runStr} | Attempt #${slot.attempt} | Task ${slot.taskId.substring(0, 8)}`,
+            `   SDK: ${slot.sdk} | :clock: ${runStr} | Attempt #${slot.attempt} | Task ${slot.taskId.substring(0, 8)}`,
           );
 
           // Git diff stats
@@ -6868,7 +7108,7 @@ async function cmdTasks(chatId) {
                 const delMatch = diffStat.match(/(\d+) deletion/);
                 const filesMatch = diffStat.match(/(\d+) file/);
                 lines.push(
-                  `   📊 ${filesMatch?.[1] || 0} files | +${insMatch?.[1] || 0} -${delMatch?.[1] || 0}`,
+                  `   :chart: ${filesMatch?.[1] || 0} files | +${insMatch?.[1] || 0} -${delMatch?.[1] || 0}`,
                 );
               }
             } catch {
@@ -6892,7 +7132,7 @@ async function cmdTasks(chatId) {
           reviewQueued,
         );
         if (reviewCount > 0) {
-          lines.push(`👀 In review: ${reviewCount} task(s)`);
+          lines.push(`:eye: In review: ${reviewCount} task(s)`);
           if (reviewStatus) {
             lines.push(
               `   Review agent queue: active=${reviewStatus.activeReviews || 0}, queued=${reviewStatus.queuedReviews || 0}, completed=${reviewStatus.completedReviews || 0}`,
@@ -6914,7 +7154,7 @@ async function cmdTasks(chatId) {
       } else {
         // No active slots — show status summary
         lines.push(
-          `📋 No active agents (0/${executorStatus.maxParallel} slots)`,
+          `:clipboard: No active agents (0/${executorStatus.maxParallel} slots)`,
         );
         const reviewAgent = _getReviewAgent?.();
         const reviewStatus =
@@ -6928,7 +7168,7 @@ async function cmdTasks(chatId) {
             Number(reviewStatus?.queuedReviews || 0),
         );
         if (reviewCount > 0) {
-          lines.push(`👀 In review: ${reviewCount} task(s)`);
+          lines.push(`:eye: In review: ${reviewCount} task(s)`);
           if (reviewTaskIds.length > 0) {
             for (const taskId of reviewTaskIds.slice(0, 5)) {
               lines.push(`   - ${taskId}`);
@@ -6937,7 +7177,7 @@ async function cmdTasks(chatId) {
         }
         if (executorStatus.blockedTasks?.length > 0) {
           lines.push(
-            `\n⛔ ${executorStatus.blockedTasks.length} task(s) blocked (exceeded retry limit)`,
+            `\n:ban: ${executorStatus.blockedTasks.length} task(s) blocked (exceeded retry limit)`,
           );
         }
         lines.push("");
@@ -6962,21 +7202,21 @@ async function cmdTasks(chatId) {
       return;
     }
 
-    const lines = ["📋 Active Task Attempts\n"];
+    const lines = [":clipboard: Active Task Attempts\n"];
 
     for (const [id, attempt] of Object.entries(attempts)) {
       if (!attempt) continue;
       const status = attempt.status || "unknown";
       const emoji =
         status === "running"
-          ? "🟢"
+          ? ":dot:"
           : status === "review"
-            ? "👀"
+            ? ":eye:"
             : status === "error"
-              ? "❌"
+              ? ":close:"
               : status === "completed"
-                ? "✅"
-                : "⏸️";
+                ? ":check:"
+                : ":pause:";
       const branch = attempt.branch || "";
       const pr = attempt.pr_number ? ` PR#${attempt.pr_number}` : "";
       const title = attempt.task_title || attempt.task_id || id;
@@ -6999,7 +7239,7 @@ async function cmdTasks(chatId) {
         const hrs = Math.floor(mins / 60);
         const remMin = mins % 60;
         const durStr = hrs > 0 ? `${hrs}h ${remMin}m` : `${mins}m`;
-        lines.push(`   ⏱️ Active: ${durStr}`);
+        lines.push(`   :clock: Active: ${durStr}`);
       }
 
       if (branch) {
@@ -7013,7 +7253,7 @@ async function cmdTasks(chatId) {
             const delMatch = diffStat.match(/(\d+) deletion/);
             const filesMatch = diffStat.match(/(\d+) file/);
             lines.push(
-              `   📊 ${filesMatch?.[1] || 0} files | +${insMatch?.[1] || 0} -${delMatch?.[1] || 0}`,
+              `   :chart: ${filesMatch?.[1] || 0} files | +${insMatch?.[1] || 0} -${delMatch?.[1] || 0}`,
             );
           }
         } catch {
@@ -7092,7 +7332,7 @@ async function cmdStartTask(chatId, args) {
   if (executorArg && !normalizedExecutor) {
     await sendReply(
       chatId,
-      `⚠️ Unknown executor "${executorArg}". Use internal or vk.`,
+      `:alert: Unknown executor "${executorArg}". Use internal or vk.`,
     );
     return;
   }
@@ -7110,7 +7350,7 @@ async function cmdStartTask(chatId, args) {
       .join(" | ");
     await sendReply(
       chatId,
-      `⚠️ Executor "${normalizedExecutor || "auto"}" not available (mode: ${executorMode}). Available: ${options || "none"}`,
+      `:alert: Executor "${normalizedExecutor || "auto"}" not available (mode: ${executorMode}). Available: ${options || "none"}`,
     );
     return;
   }
@@ -7125,7 +7365,7 @@ async function cmdStartTask(chatId, args) {
       if (typeof adapter.submitTaskAttempt !== "function") {
         await sendReply(
           chatId,
-          `⚠️ VK executor not available for current backend (${getKanbanBackendName()}).`,
+          `:alert: VK executor not available for current backend (${getKanbanBackendName()}).`,
         );
         return;
       }
@@ -7142,7 +7382,7 @@ async function cmdStartTask(chatId, args) {
         );
       }
       const detailLines = [
-        `✅ VK executor submitted for ${task.title || task.id}.`,
+        `:check: VK executor submitted for ${task.title || task.id}.`,
         attempt?.id ? `Attempt: ${attempt.id}` : null,
         attempt?.branch ? `Branch: ${attempt.branch}` : null,
       ].filter(Boolean);
@@ -7157,7 +7397,7 @@ async function cmdStartTask(chatId, args) {
     if (!executor) {
       await sendReply(
         chatId,
-        "⚠️ Manual start requires internal executor. Set EXECUTOR_MODE=internal or hybrid and restart the monitor.",
+        ":alert: Manual start requires internal executor. Set EXECUTOR_MODE=internal or hybrid and restart the monitor.",
       );
       return;
     }
@@ -7167,19 +7407,19 @@ async function cmdStartTask(chatId, args) {
     }));
     await sendReply(
       chatId,
-      `✅ Manual start queued for ${task.title || task.id}.` +
+      `:check: Manual start queued for ${task.title || task.id}.` +
         `\nExecutor: ${selectedExecutor}` +
         (sdk ? `\nSDK: ${sdk}` : "") +
         (model ? `\nModel: ${model}` : ""),
     );
   } catch (err) {
-    await sendReply(chatId, `❌ Manual start failed: ${err.message}`);
+    await sendReply(chatId, `:close: Manual start failed: ${err.message}`);
   }
 }
 
 async function cmdAgents(chatId) {
   try {
-    const lines = ["🤖 Agent Fleet", ""];
+    const lines = [":bot: Agent Fleet", ""];
     let statusSnapshot = null;
     if (_readStatusData) {
       try {
@@ -7307,7 +7547,7 @@ async function cmdAgents(chatId) {
   } catch (err) {
     await sendReply(
       chatId,
-      `❌ Failed to read agent fleet status: ${err.message}`,
+      `:close: Failed to read agent fleet status: ${err.message}`,
     );
   }
 }
@@ -7351,7 +7591,7 @@ async function cmdAgentLogs(chatId, args) {
 
     const wtName = matches[0]; // Best match
     const wtPath = resolve(worktreeDir, wtName);
-    const lines = [`📂 Agent: ${wtName}\n`];
+    const lines = [`:folder: Agent: ${wtName}\n`];
 
     // Git log (last 5 commits)
     try {
@@ -7361,13 +7601,13 @@ async function cmdAgentLogs(chatId, args) {
         timeout: 10000,
       }).trim();
       if (gitLog) {
-        lines.push("📝 Recent commits:");
+        lines.push(":edit: Recent commits:");
         lines.push(gitLog);
       } else {
-        lines.push("📝 No commits yet");
+        lines.push(":edit: No commits yet");
       }
     } catch {
-      lines.push("📝 Git log unavailable");
+      lines.push(":edit: Git log unavailable");
     }
 
     lines.push("");
@@ -7381,15 +7621,15 @@ async function cmdAgentLogs(chatId, args) {
       }).trim();
       if (gitStatus) {
         const statusLines = gitStatus.split("\n");
-        lines.push(`📄 Working tree: ${statusLines.length} changed files`);
+        lines.push(`:file: Working tree: ${statusLines.length} changed files`);
         lines.push(statusLines.slice(0, 15).join("\n"));
         if (statusLines.length > 15)
           lines.push(`... +${statusLines.length - 15} more`);
       } else {
-        lines.push("📄 Working tree: clean");
+        lines.push(":file: Working tree: clean");
       }
     } catch {
-      lines.push("📄 Git status unavailable");
+      lines.push(":file: Git status unavailable");
     }
 
     lines.push("");
@@ -7408,7 +7648,7 @@ async function cmdAgentLogs(chatId, args) {
       }).trim();
       if (diffStat) {
         const statLines = diffStat.split("\n");
-        lines.push("📊 Diff vs main:");
+        lines.push(":chart: Diff vs main:");
         // Show only summary line (last line)
         lines.push(statLines[statLines.length - 1] || "(none)");
       }
@@ -7434,10 +7674,10 @@ async function cmdAgentLogs(chatId, args) {
             ? `${Math.floor(runMin / 60)}h${runMin % 60}m`
             : `${runMin}m`;
         lines.push(
-          `🤖 Active agent: ${slot.sdk} | Running: ${runStr} | Attempt #${slot.attempt}`,
+          `:bot: Active agent: ${slot.sdk} | Running: ${runStr} | Attempt #${slot.attempt}`,
         );
       } else {
-        lines.push("🤖 No active agent on this branch");
+        lines.push(":bot: No active agent on this branch");
       }
     }
 
@@ -7468,7 +7708,7 @@ async function cmdLogs(chatId, _args) {
 
     await sendReply(
       chatId,
-      `📄 Last ${numLines} lines of ${logFile}:\n\n${tail || "(empty)"}`,
+      `:file: Last ${numLines} lines of ${logFile}:\n\n${tail || "(empty)"}`,
     );
   } catch (err) {
     await sendReply(chatId, `Error reading logs: ${err.message}`);
@@ -7485,7 +7725,7 @@ async function cmdBranches(chatId, _args) {
     const lines = result.split("\n").filter(Boolean).slice(0, 20);
     await sendReply(
       chatId,
-      `🌿 Recent branches (top 20):\n\n${lines.join("\n")}`,
+      `:git: Recent branches (top 20):\n\n${lines.join("\n")}`,
     );
   } catch (err) {
     await sendReply(chatId, `Error listing branches: ${err.message}`);
@@ -7505,7 +7745,7 @@ async function cmdDiff(chatId, _args) {
     }
     await sendReply(
       chatId,
-      `📝 Working tree changes:\n\n${diffStat.slice(0, 3500)}`,
+      `:edit: Working tree changes:\n\n${diffStat.slice(0, 3500)}`,
     );
   } catch (err) {
     await sendReply(chatId, `Error reading diff: ${err.message}`);
@@ -7526,7 +7766,7 @@ async function cmdDisableUnsafeAccess(chatId, _args, editMessageId) {
   if (ok) {
     await sendReply(
       chatId,
-      "✅ *Unsafe access disabled.*\n\n"
+      ":check: *Unsafe access disabled.*\n\n"
         + "`TELEGRAM_UI_ALLOW_UNSAFE=false` has been written to your .env file.\n\n"
         + "Send /restart to restart Bosun — Cloudflare tunnel will start automatically on the next boot.",
       { parse_mode: "Markdown" },
@@ -7534,7 +7774,7 @@ async function cmdDisableUnsafeAccess(chatId, _args, editMessageId) {
   } else {
     await sendReply(
       chatId,
-      "❌ Could not write to .env automatically.\n\n"
+      ":close: Could not write to .env automatically.\n\n"
         + "Please edit your .env file manually:\n"
         + "`TELEGRAM_UI_ALLOW_UNSAFE=false`\n\n"
         + "Then send /restart.",
@@ -7548,12 +7788,12 @@ async function cmdRestart(chatId, args) {
   if (!confirmFlag) {
     await sendReply(
       chatId,
-      "⚠️ Restart will stop the orchestrator process and let the monitor respawn it.\nProceed?",
+      ":alert: Restart will stop the orchestrator process and let the monitor respawn it.\nProceed?",
       { reply_markup: buildConfirmKeyboard("cb:do_restart", "Confirm Restart") },
     );
     return;
   }
-  await sendReply(chatId, "🔄 Restarting orchestrator process...");
+  await sendReply(chatId, ":refresh: Restarting orchestrator process...");
   try {
     if (_getCurrentChild) {
       const child = _getCurrentChild();
@@ -7568,10 +7808,10 @@ async function cmdRestart(chatId, args) {
     // The monitor's handleExit will auto-restart the process
     await sendReply(
       chatId,
-      "✅ Restart signal sent. Monitor will auto-restart the orchestrator.",
+      ":check: Restart signal sent. Monitor will auto-restart the orchestrator.",
     );
   } catch (err) {
-    await sendReply(chatId, `❌ Restart failed: ${err.message}`);
+    await sendReply(chatId, `:close: Restart failed: ${err.message}`);
   }
 }
 
@@ -7579,29 +7819,29 @@ async function cmdRetry(chatId, args) {
   if (!_attemptFreshSessionRetry) {
     await sendReply(
       chatId,
-      "❌ Fresh session retry not available (not injected from monitor).",
+      ":close: Fresh session retry not available (not injected from monitor).",
     );
     return;
   }
 
   const reason = args?.trim() || "manual_retry_via_telegram";
-  await sendReply(chatId, `🔄 Attempting fresh session retry (${reason})...`);
+  await sendReply(chatId, `:refresh: Attempting fresh session retry (${reason})...`);
 
   try {
     const started = await _attemptFreshSessionRetry(reason);
     if (started) {
       await sendReply(
         chatId,
-        "✅ Fresh session started. New agent will pick up the task.",
+        ":check: Fresh session started. New agent will pick up the task.",
       );
     } else {
       await sendReply(
         chatId,
-        "⚠️ Fresh session retry failed. Check logs for details (rate limit, no active attempt, or VK endpoint unavailable).",
+        ":alert: Fresh session retry failed. Check logs for details (rate limit, no active attempt, or VK endpoint unavailable).",
       );
     }
   } catch (err) {
-    await sendReply(chatId, `❌ Retry error: ${err.message || err}`);
+    await sendReply(chatId, `:close: Retry error: ${err.message || err}`);
   }
 }
 
@@ -7609,7 +7849,7 @@ async function cmdPlan(chatId, args) {
   if (!_triggerTaskPlanner) {
     await sendReply(
       chatId,
-      "❌ Task planner not available (not injected from monitor).",
+      ":close: Task planner not available (not injected from monitor).",
     );
     return;
   }
@@ -7633,7 +7873,7 @@ async function cmdPlan(chatId, args) {
   }
 
   const promptSuffix = userPrompt ? ` — "${userPrompt.slice(0, 60)}${userPrompt.length > 60 ? "…" : ""}"` : "";
-  await sendReply(chatId, `📋 Triggering task planner (${taskCount} tasks${promptSuffix})...`);
+  await sendReply(chatId, `:clipboard: Triggering task planner (${taskCount} tasks${promptSuffix})...`);
 
   try {
     const result = await _triggerTaskPlanner(
@@ -7651,19 +7891,19 @@ async function cmdPlan(chatId, args) {
       if (result.reason === "planner_disabled") {
         await sendReply(
           chatId,
-          "⚠️ Task planner disabled. Set TASK_PLANNER_MODE=kanban or codex-sdk.",
+          ":alert: Task planner disabled. Set TASK_PLANNER_MODE=kanban or codex-sdk.",
         );
         return;
       }
       if (result.reason === "planner_busy") {
         await sendReply(
           chatId,
-          "⚠️ Task planner already running. Try again in a moment.",
+          ":alert: Task planner already running. Try again in a moment.",
         );
         return;
       }
       const lines = [
-        "⚠️ Task planner skipped — a planning task already exists.",
+        ":alert: Task planner skipped — a planning task already exists.",
       ];
       if (result.taskTitle) {
         lines.push(`Title: ${result.taskTitle}`);
@@ -7679,7 +7919,7 @@ async function cmdPlan(chatId, args) {
     }
     if (result?.status === "created") {
       const lines = [
-        "✅ Task planner task created.",
+        ":check: Task planner task created.",
         result.taskTitle ? `Title: ${result.taskTitle}` : null,
         result.taskId ? `Task ID: ${result.taskId}` : null,
         result.taskUrl || null,
@@ -7698,16 +7938,16 @@ async function cmdPlan(chatId, args) {
         : "";
       await sendReply(
         chatId,
-        `✅ Task planner completed.\n${createdInfo}Output: ${result.outputPath}${artifactInfo}`,
+        `:check: Task planner completed.\n${createdInfo}Output: ${result.outputPath}${artifactInfo}`,
       );
       return;
     }
     await sendReply(
       chatId,
-      `✅ Task planner triggered for ${taskCount} tasks. Check backlog shortly.`,
+      `:check: Task planner triggered for ${taskCount} tasks. Check backlog shortly.`,
     );
   } catch (err) {
-    await sendReply(chatId, `❌ Task planner error: ${err.message || err}`);
+    await sendReply(chatId, `:close: Task planner error: ${err.message || err}`);
   }
 }
 
@@ -7716,33 +7956,33 @@ async function cmdCleanupMerged(chatId, args) {
   if (!_reconcileTaskStatuses) {
     await sendReply(
       chatId,
-      "❌ Cleanup not available (not injected from monitor).",
+      ":close: Cleanup not available (not injected from monitor).",
     );
     return;
   }
   if (!confirmFlag) {
     await sendReply(
       chatId,
-      "⚠️ Cleanup will reconcile VK task statuses with PR/branch state.\nProceed?",
+      ":alert: Cleanup will reconcile VK task statuses with PR/branch state.\nProceed?",
       { reply_markup: buildConfirmKeyboard("cb:confirm_cleanup", "Confirm Cleanup") },
     );
     return;
   }
   await sendReply(
     chatId,
-    "🧹 Reconciling VK task statuses with PR/branch state…",
+    ":trash: Reconciling VK task statuses with PR/branch state…",
   );
   try {
     const result = await _reconcileTaskStatuses("manual-telegram");
     const lines = [
-      "✅ Cleanup complete.",
+      ":check: Cleanup complete.",
       `Checked: ${result?.checked ?? 0}`,
       `Moved to done: ${result?.movedDone ?? 0}`,
       `Moved to inreview: ${result?.movedReview ?? 0}`,
     ];
     await sendReply(chatId, lines.join("\n"));
   } catch (err) {
-    await sendReply(chatId, `❌ Cleanup error: ${err.message || err}`);
+    await sendReply(chatId, `:close: Cleanup error: ${err.message || err}`);
   }
 }
 
@@ -7751,7 +7991,7 @@ async function cmdHistory(chatId) {
   const sessionLabel = info.sessionId || info.threadId || "(none)";
   const agentLabel = info.adapter || info.provider || getPrimaryAgentName();
   const lines = [
-    `🧠 Primary Agent (${agentLabel})`,
+    `:cpu: Primary Agent (${agentLabel})`,
     "",
     `Session: ${sessionLabel}`,
     `Turns: ${info.turnCount}`,
@@ -7773,7 +8013,7 @@ async function cmdClear(chatId, args) {
     const sessionLabel = info.sessionId || info.threadId || "(none)";
     const agentLabel = info.adapter || info.provider || getPrimaryAgentName();
     const lines = [
-      "⚠️ This will clear the primary agent session and reset context.",
+      ":alert: This will clear the primary agent session and reset context.",
       "",
       `Agent: ${agentLabel}`,
       `Session: ${sessionLabel}`,
@@ -7790,7 +8030,7 @@ async function cmdClear(chatId, args) {
   await resetPrimaryAgent();
   await sendReply(
     chatId,
-    "🧹 Agent session reset. Next message starts a fresh conversation.",
+    ":trash: Agent session reset. Next message starts a fresh conversation.",
   );
 }
 
@@ -7849,7 +8089,7 @@ async function cmdGit(chatId, gitArgs) {
   } catch (err) {
     await sendReply(
       chatId,
-      `$ git ${args}\n\n❌ ${err.message?.slice(0, 1500) || err}`,
+      `$ git ${args}\n\n:close: ${err.message?.slice(0, 1500) || err}`,
     );
   }
 }
@@ -7874,7 +8114,7 @@ async function cmdShell(chatId, shellArgs) {
 
   const blockedShell = [/rm\s+-rf\s+\/(\s|$)/i];
   if (matchesAnyPattern(args, blockedShell)) {
-    await sendReply(chatId, `⛔ Blocked: '${args}' is too destructive.`);
+    await sendReply(chatId, `:ban: Blocked: '${args}' is too destructive.`);
     return;
   }
 
@@ -7922,7 +8162,7 @@ async function cmdShell(chatId, shellArgs) {
     const stdout = err.stdout ? err.stdout.toString().slice(0, 1000) : "";
     await sendReply(
       chatId,
-      `$ ${args}\n\n❌ ${stderr || stdout || err.message}`,
+      `$ ${args}\n\n:close: ${stderr || stdout || err.message}`,
     );
   }
 }
@@ -8078,11 +8318,11 @@ async function cmdRegion(chatId, regionArg) {
       );
       const status = JSON.parse(result);
       const lines = [
-        "🌍 Codex Region Status",
+        ":globe: Codex Region Status",
         "",
         `Active: ${status.active_region?.toUpperCase() || "unknown"}`,
         `Override: ${status.override || "auto"}`,
-        `Sweden available: ${status.sweden_available ? "✅" : "❌"}`,
+        `Sweden available: ${status.sweden_available ? ":check:" : ":close:"}`,
         `Cooldown: ${status.cooldown_min}min`,
       ];
       if (status.switched_ago_min !== null) {
@@ -8117,13 +8357,13 @@ async function cmdRegion(chatId, regionArg) {
         : `. '${resolveVeKanbanPs1Path()}'; Set-RegionOverride -Region '${target}' | ConvertTo-Json`;
     const result = runPwsh(psCmd);
     const info = JSON.parse(result);
-    const icon = info.changed ? "✅" : "ℹ️";
+    const icon = info.changed ? ":check:" : ":help:";
     await sendReply(
       chatId,
       `${icon} Region: ${info.region?.toUpperCase()}\nReason: ${info.reason}`,
     );
   } catch (err) {
-    await sendReply(chatId, `❌ Region switch failed: ${err.message}`);
+    await sendReply(chatId, `:close: Region switch failed: ${err.message}`);
   }
 }
 
@@ -8140,23 +8380,23 @@ async function cmdHealth(chatId) {
     const arr = buildExecutorHealthEntries(executorConfig, metrics);
 
     const iconMap = {
-      healthy: "✅",
-      degraded: "⚠️",
-      cooldown: "⏸️",
-      disabled: "❌",
+      healthy: ":check:",
+      degraded: ":alert:",
+      cooldown: ":pause:",
+      disabled: ":close:",
     };
-    const lines = ["🏥 Executor Health Dashboard\n"];
+    const lines = [":heart: Executor Health Dashboard\n"];
 
     if (!arr.length) {
       lines.push("No executor data available.");
     }
 
     for (const e of arr) {
-      const icon = iconMap[e.status] || "❓";
+      const icon = iconMap[e.status] || ":help:";
       lines.push(
         `${icon} ${e.label} (${e.tier}/${e.region})\n` +
           `   Status: ${e.status} | Active: ${e.stats.active}\n` +
-          `   ✓${e.stats.successes} ✗${e.stats.failures} ⏱${e.stats.timeouts} 🚫${e.stats.rate_limits}`,
+          `   ✓${e.stats.successes} ✗${e.stats.failures} :clock:${e.stats.timeouts} :ban:${e.stats.rate_limits}`,
       );
     }
 
@@ -8171,11 +8411,11 @@ async function cmdHealth(chatId) {
       const region = JSON.parse(regionResult);
       lines.push(
         "",
-        `🌍 Region: ${region.active_region?.toUpperCase()} ${region.override ? `(override: ${region.override})` : "(auto)"}`,
+        `:globe: Region: ${region.active_region?.toUpperCase()} ${region.override ? `(override: ${region.override})` : "(auto)"}`,
         `Sweden backup: ${region.sweden_available ? "available" : "not configured"}`,
       );
     } catch {
-      lines.push("", "🌍 Region: unavailable");
+      lines.push("", ":globe: Region: unavailable");
     }
 
     await sendReply(chatId, lines.join("\n"));
@@ -8228,7 +8468,7 @@ async function cmdModel(chatId, modelArg) {
         }
       }
       const lines = [
-        "🤖 Model Routing",
+        ":bot: Model Routing",
         "",
         `Override: ${overrideText}`,
         "",
@@ -8259,10 +8499,10 @@ async function cmdModel(chatId, modelArg) {
       }
       await sendReply(
         chatId,
-        "✅ Model override cleared. Smart routing active.",
+        ":check: Model override cleared. Smart routing active.",
       );
     } catch (err) {
-      await sendReply(chatId, `❌ Error: ${err.message}`);
+      await sendReply(chatId, `:close: Error: ${err.message}`);
     }
     return;
   }
@@ -8296,10 +8536,10 @@ async function cmdModel(chatId, modelArg) {
     );
     await sendReply(
       chatId,
-      `✅ Model override set: ${target}\nApplies to next 3 tasks (or 1 hour)`,
+      `:check: Model override set: ${target}\nApplies to next 3 tasks (or 1 hour)`,
     );
   } catch (err) {
-    await sendReply(chatId, `❌ Error: ${err.message}`);
+    await sendReply(chatId, `:close: Error: ${err.message}`);
   }
 }
 
@@ -8311,7 +8551,7 @@ async function cmdKanban(chatId, backendArg) {
       process.env.KANBAN_SYNC_POLICY || "internal-primary",
     ).toLowerCase();
     const lines = [
-      "📋 Kanban Backend Status",
+      ":clipboard: Kanban Backend Status",
       "",
       `Active: ${current}`,
       `Sync Policy: ${syncPolicy}`,
@@ -8342,17 +8582,17 @@ async function cmdKanban(chatId, backendArg) {
     setKanbanBackend(target);
     await sendReply(
       chatId,
-      `✅ Kanban backend switched to: ${target}\nActive: ${getKanbanBackendName()}`,
+      `:check: Kanban backend switched to: ${target}\nActive: ${getKanbanBackendName()}`,
     );
   } catch (err) {
-    await sendReply(chatId, `❌ Error switching backend: ${err.message}`);
+    await sendReply(chatId, `:close: Error switching backend: ${err.message}`);
   }
 }
 
 async function cmdAutoBacklog(chatId, args) {
   const executor = _getInternalExecutor?.();
   if (!executor) {
-    await sendReply(chatId, "⚠️ Internal executor is not available.");
+    await sendReply(chatId, ":alert: Internal executor is not available.");
     return;
   }
 
@@ -8366,7 +8606,7 @@ async function cmdAutoBacklog(chatId, args) {
     await sendReply(
       chatId,
       [
-        "♻️ Experimental Auto-Backlog",
+        ":repeat: Experimental Auto-Backlog",
         "",
         `Enabled: ${cfg.enabled ? "yes" : "no"}`,
         `Min new tasks: ${cfg.minNewTasks ?? 1}`,
@@ -8390,7 +8630,7 @@ async function cmdAutoBacklog(chatId, args) {
     });
     await sendReply(
       chatId,
-      `✅ Auto-backlog ${op === "on" ? "enabled" : "disabled"}. Min=${cfg?.minNewTasks ?? 1}, Max=${cfg?.maxNewTasks ?? 2}`,
+      `:check: Auto-backlog ${op === "on" ? "enabled" : "disabled"}. Min=${cfg?.minNewTasks ?? 1}, Max=${cfg?.maxNewTasks ?? 2}`,
     );
     return;
   }
@@ -8398,14 +8638,14 @@ async function cmdAutoBacklog(chatId, args) {
   if ((op === "min" || op === "max") && parts[1]) {
     const value = Number(parts[1]);
     if (!Number.isFinite(value)) {
-      await sendReply(chatId, `❌ Invalid ${op} value: ${parts[1]}`);
+      await sendReply(chatId, `:close: Invalid ${op} value: ${parts[1]}`);
       return;
     }
     const patch = op === "min" ? { minNewTasks: value } : { maxNewTasks: value };
     const cfg = executor.setBacklogReplenishmentConfig?.(patch);
     await sendReply(
       chatId,
-      `✅ Auto-backlog updated. Enabled=${cfg?.enabled ? "yes" : "no"}, Min=${cfg?.minNewTasks ?? 1}, Max=${cfg?.maxNewTasks ?? 2}`,
+      `:check: Auto-backlog updated. Enabled=${cfg?.enabled ? "yes" : "no"}, Min=${cfg?.minNewTasks ?? 1}, Max=${cfg?.maxNewTasks ?? 2}`,
     );
     return;
   }
@@ -8416,7 +8656,7 @@ async function cmdAutoBacklog(chatId, args) {
 async function cmdRequirements(chatId, args) {
   const executor = _getInternalExecutor?.();
   if (!executor) {
-    await sendReply(chatId, "⚠️ Internal executor is not available.");
+    await sendReply(chatId, ":alert: Internal executor is not available.");
     return;
   }
   const profiles = [
@@ -8435,7 +8675,7 @@ async function cmdRequirements(chatId, args) {
     await sendReply(
       chatId,
       [
-        "📐 Project Requirements",
+        ":ruler: Project Requirements",
         "",
         `Profile: ${req.profile || "feature"}`,
         `Notes: ${req.notes || "(none)"}`,
@@ -8451,7 +8691,7 @@ async function cmdRequirements(chatId, args) {
   if (!profiles.includes(profile)) {
     await sendReply(
       chatId,
-      `❌ Unknown requirements profile: ${input}\nValid: ${profiles.join(", ")}`,
+      `:close: Unknown requirements profile: ${input}\nValid: ${profiles.join(", ")}`,
     );
     return;
   }
@@ -8459,7 +8699,7 @@ async function cmdRequirements(chatId, args) {
   const req = executor.setProjectRequirements?.({ profile });
   await sendReply(
     chatId,
-    `✅ Project requirements profile set to ${req?.profile || profile}`,
+    `:check: Project requirements profile set to ${req?.profile || profile}`,
   );
 }
 
@@ -8472,7 +8712,7 @@ async function cmdThreads(chatId, subArg) {
       if (!confirmed) {
         await sendReply(
           chatId,
-          "⚠️ This will clear all thread records. Proceed?",
+          ":alert: This will clear all thread records. Proceed?",
           {
             reply_markup: buildConfirmKeyboard(
               "cb:confirm_threads_clear",
@@ -8483,7 +8723,7 @@ async function cmdThreads(chatId, subArg) {
         return;
       }
       clearThreadRegistry();
-      await sendReply(chatId, "✅ Thread registry cleared.");
+      await sendReply(chatId, ":check: Thread registry cleared.");
       return;
     }
   }
@@ -8515,7 +8755,7 @@ async function cmdThreads(chatId, subArg) {
       return;
     }
     invalidateThread(taskKey);
-    await sendReply(chatId, `✅ Thread for "${taskKey}" invalidated.`);
+    await sendReply(chatId, `:check: Thread for "${taskKey}" invalidated.`);
     return;
   }
 
@@ -8523,12 +8763,12 @@ async function cmdThreads(chatId, subArg) {
   if (threads.length === 0) {
     await sendReply(
       chatId,
-      "🧵 No active agent threads.\n\nThreads are created when tasks run via the agent pool with thread persistence.",
+      ":link: No active agent threads.\n\nThreads are created when tasks run via the agent pool with thread persistence.",
     );
     return;
   }
 
-  const lines = [`🧵 Active Agent Threads (${threads.length})`, ""];
+  const lines = [`:link: Active Agent Threads (${threads.length})`, ""];
 
   for (const t of threads) {
     const ageMin = Math.round(t.age / 60_000);
@@ -8585,12 +8825,12 @@ async function cmdWorktrees(chatId, args) {
     // Prune stale worktrees
     try {
       const result = await pruneStaleWorktrees(repoRoot);
-      const lines = [`🧹 Worktree prune complete:`];
+      const lines = [`:trash: Worktree prune complete:`];
       lines.push(`  Pruned: ${result.pruned}`);
       lines.push(`  Registry evicted: ${result.evicted}`);
       await sendReply(chatId, lines.join("\n"));
     } catch (err) {
-      await sendReply(chatId, `❌ Prune failed: ${err.message}`);
+      await sendReply(chatId, `:close: Prune failed: ${err.message}`);
     }
     return;
   }
@@ -8626,16 +8866,16 @@ async function cmdWorktrees(chatId, args) {
       if (result.success) {
         await sendReply(
           chatId,
-          `✅ Released worktree for "${taskKey}": ${result.path}`,
+          `:check: Released worktree for "${taskKey}": ${result.path}`,
         );
       } else {
         await sendReply(
           chatId,
-          `⚠️ No worktree found for task key "${taskKey}"`,
+          `:alert: No worktree found for task key "${taskKey}"`,
         );
       }
     } catch (err) {
-      await sendReply(chatId, `❌ Release failed: ${err.message}`);
+      await sendReply(chatId, `:close: Release failed: ${err.message}`);
     }
     return;
   }
@@ -8643,7 +8883,7 @@ async function cmdWorktrees(chatId, args) {
   if (sub === "stats") {
     try {
       const stats = getWorktreeStats();
-      const lines = [`📊 Worktree Stats:`];
+      const lines = [`:chart: Worktree Stats:`];
       lines.push(`  Total tracked: ${stats.total}`);
       lines.push(`  Active: ${stats.active}`);
       lines.push(`  Stale: ${stats.stale}`);
@@ -8655,7 +8895,7 @@ async function cmdWorktrees(chatId, args) {
       }
       await sendReply(chatId, lines.join("\n"));
     } catch (err) {
-      await sendReply(chatId, `❌ Stats failed: ${err.message}`);
+      await sendReply(chatId, `:close: Stats failed: ${err.message}`);
     }
     return;
   }
@@ -8664,11 +8904,11 @@ async function cmdWorktrees(chatId, args) {
   try {
     const worktrees = listManagedWorktrees(repoRoot);
     if (!worktrees || worktrees.length === 0) {
-      await sendReply(chatId, "🌳 No active worktrees tracked.");
+      await sendReply(chatId, ":git: No active worktrees tracked.");
       return;
     }
 
-    const lines = [`🌳 Active Worktrees (${worktrees.length}):\n`];
+    const lines = [`:git: Active Worktrees (${worktrees.length}):\n`];
     for (const wt of worktrees) {
       const ageMin = Math.round((wt.age || 0) / 60000);
       const ageStr =
@@ -8687,7 +8927,7 @@ async function cmdWorktrees(chatId, args) {
     );
     await sendReply(chatId, lines.join("\n"));
   } catch (err) {
-    await sendReply(chatId, `❌ Worktree list failed: ${err.message}`);
+    await sendReply(chatId, `:close: Worktree list failed: ${err.message}`);
   }
 }
 
@@ -8712,7 +8952,7 @@ async function cmdExecutor(chatId, args) {
     if (!executor) {
       await sendReply(
         chatId,
-        `⚙️ Internal executor not active (mode: ${mode})`,
+        `:settings: Internal executor not active (mode: ${mode})`,
       );
       return;
     }
@@ -8720,12 +8960,12 @@ async function cmdExecutor(chatId, args) {
     if (status.slots.length === 0) {
       await sendReply(
         chatId,
-        `⚙️ No active task slots (${status.activeSlots}/${status.maxParallel} used)`,
+        `:settings: No active task slots (${status.activeSlots}/${status.maxParallel} used)`,
       );
       return;
     }
     const lines = [
-      `⚙️ Active Task Slots (${status.activeSlots}/${status.maxParallel}):\n`,
+      `:settings: Active Task Slots (${status.activeSlots}/${status.maxParallel}):\n`,
     ];
     for (const slot of status.slots) {
       const runStr = formatRuntimeSeconds(slot.runningFor);
@@ -8751,26 +8991,26 @@ async function cmdExecutor(chatId, args) {
     if (target && ["vk", "internal", "hybrid"].includes(target)) {
       await sendReply(
         chatId,
-        `⚙️ Current mode: ${mode}\n` +
-          `ℹ️ Mode can be changed via EXECUTOR_MODE env var or config.\n` +
+        `:settings: Current mode: ${mode}\n` +
+          `:help: Mode can be changed via EXECUTOR_MODE env var or config.\n` +
           `Restart the monitor after changing to apply.`,
       );
     } else {
       await sendReply(
         chatId,
-        `⚙️ Current executor mode: ${mode}\n\nValid modes: vk, internal, hybrid`,
+        `:settings: Current executor mode: ${mode}\n\nValid modes: vk, internal, hybrid`,
       );
     }
     return;
   }
 
   // Default: show status
-  const lines = [`⚙️ Executor Status\n`];
+  const lines = [`:settings: Executor Status\n`];
   lines.push(`Mode: ${mode}`);
 
   if (executor) {
     const status = executor.getStatus();
-    lines.push(`Running: ${status.running ? "✅ Yes" : "❌ No"}`);
+    lines.push(`Running: ${status.running ? ":check: Yes" : ":close: No"}`);
     lines.push(`SDK: ${status.sdk}`);
     lines.push(`Active Slots: ${status.activeSlots}/${status.maxParallel}`);
     lines.push(`Poll Interval: ${status.pollIntervalMs / 1000}s`);
@@ -8784,7 +9024,7 @@ async function cmdExecutor(chatId, args) {
     lines.push(`Internal executor: not active`);
     if (mode === "vk") {
       lines.push(
-        `\nℹ️ Using VK executor only. Set EXECUTOR_MODE=internal or hybrid to enable.`,
+        `\n:help: Using VK executor only. Set EXECUTOR_MODE=internal or hybrid to enable.`,
       );
     }
   }
@@ -8800,7 +9040,7 @@ async function cmdSdk(chatId, sdkArg) {
     const primaryAgent = getPrimaryAgentName();
     const available = getAvailableSdks();
     const lines = [
-      "🔌 Agent SDK Status",
+      ":plug: Agent SDK Status",
       "",
       `Pool SDK: ${poolSdk}`,
       `Primary Agent: ${primaryAgent}`,
@@ -8822,7 +9062,7 @@ async function cmdSdk(chatId, sdkArg) {
     resetPoolSdkCache();
     await sendReply(
       chatId,
-      "✅ Agent pool SDK reset to config default.\nCurrent: " +
+      ":check: Agent pool SDK reset to config default.\nCurrent: " +
         getPoolSdkName(),
     );
     return;
@@ -8849,10 +9089,10 @@ async function cmdSdk(chatId, sdkArg) {
 
     await sendReply(
       chatId,
-      `✅ SDK switched to: ${target}\nPool SDK: ${getPoolSdkName()}\n${primaryStatus}`,
+      `:check: SDK switched to: ${target}\nPool SDK: ${getPoolSdkName()}\n${primaryStatus}`,
     );
   } catch (err) {
-    await sendReply(chatId, `❌ Error switching SDK: ${err.message}`);
+    await sendReply(chatId, `:close: Error switching SDK: ${err.message}`);
   }
 }
 
@@ -8895,12 +9135,12 @@ async function cmdSharedWorkspaceClaim(chatId, rawArgs) {
     actor,
   });
   if (result.error) {
-    await sendReply(chatId, `❌ ${result.error}`);
+    await sendReply(chatId, `:close: ${result.error}`);
     return;
   }
   await sendReply(
     chatId,
-    `✅ Claimed ${result.workspace.id} for ${result.lease.owner} (expires ${result.lease.lease_expires_at})`,
+    `:check: Claimed ${result.workspace.id} for ${result.lease.owner} (expires ${result.lease.lease_expires_at})`,
   );
 }
 
@@ -8946,10 +9186,10 @@ async function cmdSharedWorkspaceRelease(chatId, rawArgs) {
     actor,
   });
   if (result.error) {
-    await sendReply(chatId, `❌ ${result.error}`);
+    await sendReply(chatId, `:close: ${result.error}`);
     return;
   }
-  await sendReply(chatId, `✅ Released ${result.workspace.id}`);
+  await sendReply(chatId, `:check: Released ${result.workspace.id}`);
 }
 
 // ── /agent — route to workspace registry ────────────────────────────────────
@@ -9462,7 +9702,7 @@ async function cmdAgent(chatId, rawArgs) {
   } catch (err) {
     await sendReply(
       chatId,
-      `❌ /agent failed: ${err.message || err}\n${infoLines.join("\\n")}`,
+      `:close: /agent failed: ${err.message || err}\n${infoLines.join("\\n")}`,
     );
   }
 }
@@ -9474,7 +9714,7 @@ async function cmdBackground(chatId, args) {
   if (task) {
     await sendReply(
       chatId,
-      `🛰️ Background task queued: "${task.slice(0, 80)}${task.length > 80 ? "…" : ""}"`,
+      `:server: Background task queued: "${task.slice(0, 80)}${task.length > 80 ? "…" : ""}"`,
     );
     safeDetach("background-free-text", () => handleFreeText(task, chatId, { background: true, isolated: true }));
     return;
@@ -9507,7 +9747,7 @@ async function cmdBackground(chatId, args) {
 
   await sendReply(
     chatId,
-    "🛰️ Background mode enabled for the active agent. I will post a final summary when it completes. Use /stop to cancel or /steer to adjust context.",
+    ":server: Background mode enabled for the active agent. I will post a final summary when it completes. Use /stop to cancel or /steer to adjust context.",
   );
 }
 
@@ -9518,7 +9758,7 @@ async function cmdStop(chatId, args) {
   if (!confirmFlag) {
     await sendReply(
       chatId,
-      "⚠️ Stop will halt the active agent session. Proceed?",
+      ":alert: Stop will halt the active agent session. Proceed?",
       { reply_markup: buildConfirmKeyboard("cb:confirm_stop", "Confirm Stop") },
     );
     return;
@@ -9538,14 +9778,14 @@ async function cmdStop(chatId, args) {
   }
   if (session.actionLog) {
     session.actionLog.push({
-      icon: "🛑",
+      icon: ":close:",
       text: "Stop requested by user (will halt after current step)",
     });
     if (session.scheduleEdit) {
       session.scheduleEdit();
     }
   }
-  await sendReply(chatId, "🛑 Stop signal sent. Agent will halt and wait.");
+  await sendReply(chatId, ":close: Stop signal sent. Agent will halt and wait.");
 }
 
 // ── /steer — Steering update for running agent ───────────────────────────────
@@ -9568,14 +9808,14 @@ async function cmdSteer(chatId, steerArgs) {
   if (result.ok) {
     if (session.actionLog) {
       session.actionLog.push({
-        icon: "🧭",
+        icon: ":compass:",
         text: `Steering update delivered (${result.mode})`,
       });
       if (session.scheduleEdit) {
         session.scheduleEdit();
       }
     }
-    await sendReply(chatId, `🧭 Steering sent (${result.mode}).`);
+    await sendReply(chatId, `:compass: Steering sent (${result.mode}).`);
     return;
   }
 
@@ -9587,7 +9827,7 @@ async function cmdSteer(chatId, steerArgs) {
   if (session.actionLog) {
     const steerStatus = result.reason || "failed";
     session.actionLog.push({
-      icon: "🧭",
+      icon: ":compass:",
       text: `Steering queued (#${qLen}; steer failed: ${steerStatus})`,
       kind: "followup_queued",
       steerStatus,
@@ -9596,7 +9836,7 @@ async function cmdSteer(chatId, steerArgs) {
       session.scheduleEdit();
     }
   }
-  await sendReply(chatId, `🧭 Steering queued (#${qLen}).`);
+  await sendReply(chatId, `:compass: Steering queued (#${qLen}).`);
 }
 
 // ── Free-text → Primary Agent Dispatch ───────────────────────────────────────
@@ -9628,8 +9868,8 @@ function buildStreamMessage({
   searchesDone,
   statusIcon,
 }) {
-  const header = `🔧 Agent: ${taskPreview}`;
-  const counter = `📊 Actions: ${totalActions} | ${phase}`;
+  const header = `:settings: Agent: ${taskPreview}`;
+  const counter = `:chart: Actions: ${totalActions} | ${phase}`;
   const separator = "────────────────────────────";
 
   // Show last N actions (keep message compact)
@@ -9648,37 +9888,37 @@ function buildStreamMessage({
   }
 
   if (currentThought) {
-    lines.push("", `💭 ${currentThought}`);
+    lines.push("", `:u1f4ad: ${currentThought}`);
   }
 
   if (!finalResponse) {
     if (filesWritten?.size) {
-      lines.push("", "✍️ Files modified so far:");
+      lines.push("", ":edit: Files modified so far:");
       const recent = Array.from(filesWritten.entries()).slice(-6);
       for (const [fpath, info] of recent) {
         const name = shortPath(fpath);
         if (info.adds || info.dels) {
-          lines.push(`  ✏️ ${name} (+${info.adds} -${info.dels})`);
+          lines.push(`  :edit: ${name} (+${info.adds} -${info.dels})`);
         } else {
-          lines.push(`  ✏️ ${name}`);
+          lines.push(`  :edit: ${name}`);
         }
       }
     }
     if (filesRead?.size) {
-      lines.push("", "📖 Files read so far:");
+      lines.push("", ":file: Files read so far:");
       const recent = Array.from(filesRead.values()).slice(-6);
       for (const fpath of recent) {
-        lines.push(`  📄 ${shortPath(fpath)}`);
+        lines.push(`  :file: ${shortPath(fpath)}`);
       }
     }
     if (searchesDone) {
-      lines.push("", `🔎 Searches: ${searchesDone}`);
+      lines.push("", `:search: Searches: ${searchesDone}`);
     }
   }
 
   if (finalResponse) {
     // ── Final summary block ──────────────────────────────────────
-    const icon = statusIcon || "✅";
+    const icon = statusIcon || ":check:";
     lines.push("", separator);
     lines.push(`${icon} ${phase}`);
     lines.push("");
@@ -9689,20 +9929,20 @@ function buildStreamMessage({
     if (filesWritten?.size) stats.push(`${filesWritten.size} files modified`);
     if (searchesDone) stats.push(`${searchesDone} searches`);
     if (stats.length) {
-      lines.push(`📈 ${stats.join(" · ")}`);
+      lines.push(`:chart: ${stats.join(" · ")}`);
     }
 
     // Files modified detail
     if (filesWritten?.size) {
       lines.push("");
-      lines.push("📁 Files modified:");
+      lines.push(":folder: Files modified:");
       for (const [fpath, info] of filesWritten) {
         const name = shortPath(fpath);
         if (info.adds || info.dels) {
-          lines.push(`  ✏️ ${name} (+${info.adds} -${info.dels})`);
+          lines.push(`  :edit: ${name} (+${info.adds} -${info.dels})`);
         } else {
           const kindIcon =
-            info.kind === "add" ? "➕" : info.kind === "delete" ? "🗑️" : "✏️";
+            info.kind === "add" ? ":plus:" : info.kind === "delete" ? ":trash:" : ":edit:";
           lines.push(`  ${kindIcon} ${name}`);
         }
       }
@@ -9737,13 +9977,13 @@ async function handleFreeText(text, chatId, options = {}) {
     // Acknowledge the follow-up in both the user's chat and update the agent message
     await sendDirect(
       chatId,
-      `📌 Follow-up queued (#${qLen}). Agent will process it after current action. ${steerNote}`,
+      `:pin: Follow-up queued (#${qLen}). Agent will process it after current action. ${steerNote}`,
     );
 
     // Add follow-up indicator to the streaming message
     if (chatSession.actionLog) {
       chatSession.actionLog.push({
-        icon: "📌",
+        icon: ":pin:",
         text: `Follow-up: "${text.length > 60 ? text.slice(0, 60) + "…" : text}" (${steerNote})`,
         kind: "followup_queued",
         steerStatus,
@@ -9997,7 +10237,7 @@ async function handleFreeText(text, chatId, options = {}) {
     if (followUps.length > 0 && !sessionState.aborted) {
       for (const followUp of followUps) {
         actionLog.push({
-          icon: "📌",
+          icon: ":pin:",
           text: `Processing follow-up: "${followUp.slice(0, 60)}"`,
         });
         phase = "processing follow-up…";
@@ -10015,12 +10255,12 @@ async function handleFreeText(text, chatId, options = {}) {
           if (followUpResult.finalResponse) {
             result.finalResponse =
               (result.finalResponse || "") +
-              `\n\n📌 Follow-up result:\n${followUpResult.finalResponse}`;
+              `\n\n:pin: Follow-up result:\n${followUpResult.finalResponse}`;
             suppressSteerFailedLines(actionLog);
           }
         } catch (err) {
           actionLog.push({
-            icon: "❌",
+            icon: ":close:",
             text: `Follow-up error: ${err.message}`,
           });
         }
@@ -10041,14 +10281,14 @@ async function handleFreeText(text, chatId, options = {}) {
     const hasChanges = filesWritten.size > 0;
     let statusIcon;
     if (hadError) {
-      statusIcon = "❌";
+      statusIcon = ":close:";
       phase = "Failed — needs manual review";
     } else if (hasChanges) {
-      statusIcon = "✅";
+      statusIcon = ":check:";
       phase = "Completed successfully";
     } else {
       // No files changed — might be informational or might need user input
-      statusIcon = "❓";
+      statusIcon = ":help:";
       phase = "Completed — no files changed";
     }
 
@@ -10084,7 +10324,7 @@ async function handleFreeText(text, chatId, options = {}) {
       filesRead,
       filesWritten,
       searchesDone: searchCount,
-      statusIcon: "❌",
+      statusIcon: ":close:",
     });
     if (backgroundMode || sessionState.background) {
       await sendReply(chatId, finalMsg);
@@ -10232,11 +10472,11 @@ let liveDigest = {
 };
 
 const PRIORITY_EMOJI = {
-  1: "🔴",
-  2: "❌",
-  3: "⚠️",
-  4: "ℹ️",
-  5: "🔹",
+  1: ":dot:",
+  2: ":close:",
+  3: ":alert:",
+  4: ":help:",
+  5: ":dot:",
 };
 
 /**
@@ -10254,14 +10494,14 @@ function buildLiveDigestText() {
   }
 
   const countParts = [];
-  if (counts[1] > 0) countParts.push(`🔴 ${counts[1]}`);
-  if (counts[2] > 0) countParts.push(`❌ ${counts[2]}`);
-  if (counts[3] > 0) countParts.push(`⚠️ ${counts[3]}`);
-  if (counts[4] > 0) countParts.push(`ℹ️ ${counts[4]}`);
+  if (counts[1] > 0) countParts.push(`:dot: ${counts[1]}`);
+  if (counts[2] > 0) countParts.push(`:close: ${counts[2]}`);
+  if (counts[3] > 0) countParts.push(`:alert: ${counts[3]}`);
+  if (counts[4] > 0) countParts.push(`:help: ${counts[4]}`);
 
   const statusLine = d.sealed
-    ? `📊 Digest (${startTime} → ${now}) — sealed`
-    : `📊 Live Digest (since ${startTime}) — updating...`;
+    ? `:chart: Digest (${startTime} → ${now}) — sealed`
+    : `:chart: Live Digest (since ${startTime}) — updating...`;
   const headerLine =
     countParts.length > 0
       ? `${statusLine}\n${countParts.join(" • ")}`
@@ -10434,7 +10674,7 @@ async function addToLiveDigest(text, priority, category) {
   const d = liveDigest;
   const now = Date.now();
   const timeStr = new Date(now).toISOString().slice(11, 19);
-  const emoji = PRIORITY_EMOJI[priority] || "ℹ️";
+  const emoji = PRIORITY_EMOJI[priority] || ":help:";
 
   // Check if we need a new digest window
   const windowMs = liveDigestWindowSec * 1000;
@@ -10554,7 +10794,7 @@ export async function initStatusBoard() {
         `[telegram-bot] status board restored (msg ${saved.messageId})`,
       );
       // Edit the board straight away so it shows "restarted" state
-      scheduleStatusBoardEdit("🔄 Orchestrator restarting…", {});
+      scheduleStatusBoardEdit(":refresh: Orchestrator restarting…", {});
       return;
     }
   } catch {
@@ -10564,7 +10804,7 @@ export async function initStatusBoard() {
   // Create the initial status board message
   const msgId = await sendDirect(
     telegramChatId,
-    "📡 Orchestrator starting…",
+    ":server: Orchestrator starting…",
     { silent: true },
   );
   if (!msgId) return;
@@ -10675,20 +10915,20 @@ async function flushNotificationQueue() {
 
   // Build summary header
   const timestamp = new Date().toISOString().slice(11, 19);
-  let header = `📊 Update Summary (${timestamp})`;
+  let header = `:chart: Update Summary (${timestamp})`;
   if (totalMessages > 0) {
     const parts = [];
-    if (counts.critical > 0) parts.push(`🔴 ${counts.critical}`);
-    if (counts.errors > 0) parts.push(`❌ ${counts.errors}`);
-    if (counts.warnings > 0) parts.push(`⚠️ ${counts.warnings}`);
-    if (counts.info > 0) parts.push(`ℹ️ ${counts.info}`);
+    if (counts.critical > 0) parts.push(`:dot: ${counts.critical}`);
+    if (counts.errors > 0) parts.push(`:close: ${counts.errors}`);
+    if (counts.warnings > 0) parts.push(`:alert: ${counts.warnings}`);
+    if (counts.info > 0) parts.push(`:help: ${counts.info}`);
     header += `\n${parts.join(" • ")}`;
   }
 
   // Critical messages (show all)
   if (counts.critical > 0) {
     sections.push(
-      `🔴 Critical:\n${messageQueue.critical.map((m) => `  • ${m.text}`).join("\n")}`,
+      `:dot: Critical:\n${messageQueue.critical.map((m) => `  • ${m.text}`).join("\n")}`,
     );
   }
 
@@ -10700,7 +10940,7 @@ async function flushNotificationQueue() {
     if (counts.errors > 5) {
       errorTexts.push(`  • ... and ${counts.errors - 5} more errors`);
     }
-    sections.push(`❌ Errors:\n${errorTexts.join("\n")}`);
+    sections.push(`:close: Errors:\n${errorTexts.join("\n")}`);
   }
 
   // Warnings (show up to 3, then summarize)
@@ -10711,7 +10951,7 @@ async function flushNotificationQueue() {
     if (counts.warnings > 3) {
       warnTexts.push(`  • ... and ${counts.warnings - 3} more warnings`);
     }
-    sections.push(`⚠️ Warnings:\n${warnTexts.join("\n")}`);
+    sections.push(`:alert: Warnings:\n${warnTexts.join("\n")}`);
   }
 
   // Info messages (aggregate by category)
@@ -10724,7 +10964,7 @@ async function flushNotificationQueue() {
     const summary = Object.entries(categories)
       .map(([cat, count]) => `  • ${cat}: ${count}`)
       .join("\n");
-    sections.push(`ℹ️ Info:\n${summary}`);
+    sections.push(`:help: Info:\n${summary}`);
   }
 
   // Build final message
@@ -10857,7 +11097,7 @@ export async function startTelegramBot(options = {}) {
           onProjectSyncAlert: async (alert) => {
             if (!_sendTelegramMessage) return;
             const text = String(alert?.message || "Project sync alert");
-            await _sendTelegramMessage(`⚠️ ${text}`);
+            await _sendTelegramMessage(`:alert: ${text}`);
           },
         },
       });
@@ -10908,7 +11148,7 @@ export async function startTelegramBot(options = {}) {
             const port = new URL(telegramUiUrl || "http://localhost:5511").port || "5511";
             await sendDirect(
               telegramChatId,
-              `🔥 *Firewall Alert*\n\n` +
+              `:zap: *Firewall Alert*\n\n` +
               `Port ${port}/tcp appears blocked by \`${fwState.firewall}\`.\n` +
               `The Control Center may not be reachable from your phone or LAN browser.\n\n` +
               `To fix, run on the server:\n\`\`\`\n${fwState.allowCmd}\n\`\`\``,
@@ -10916,7 +11156,7 @@ export async function startTelegramBot(options = {}) {
                 parseMode: "Markdown",
                 reply_markup: {
                   inline_keyboard: [[
-                    { text: "🔓 Open Port (requires admin password on server)", callback_data: "fw:open" },
+                    { text: ":unlock: Open Port (requires admin password on server)", callback_data: "fw:open" },
                   ]],
                 },
               },
@@ -10995,7 +11235,7 @@ export async function startTelegramBot(options = {}) {
   } else {
     await sendDirect(
       telegramChatId,
-      `🤖 Bosun primary agent online (${getPrimaryAgentName()}).\n\nType /menu for the control center or send any message to chat with the agent.\n\nRefreshing control center menu below…`,
+      `:bot: Bosun primary agent online (${getPrimaryAgentName()}).\n\nType /menu for the control center or send any message to chat with the agent.\n\nRefreshing control center menu below…`,
     );
     await refreshStickyMenu(telegramChatId, "home", {});
 
@@ -11007,8 +11247,8 @@ export async function startTelegramBot(options = {}) {
       const _tunnelMode = (process.env.TELEGRAM_UI_TUNNEL || "auto").toLowerCase();
       const _tunnelWanted = _tunnelMode !== "disabled" && _tunnelMode !== "off" && _tunnelMode !== "0";
       const title = _tunnelWanted
-        ? "⛔ *Unsafe UI Access + Cloudflare Tunnel conflict detected*"
-        : "⚠️ *Unsafe UI Access enabled*";
+        ? ":ban: *Unsafe UI Access + Cloudflare Tunnel conflict detected*"
+        : ":alert: *Unsafe UI Access enabled*";
       const body = _tunnelWanted
         ? "*Unsafe UI access was enabled alongside Cloudflare tunnel — the tunnel has been disabled* until unsafe access is turned off.\n\n"
           + "With both active, anyone on the internet could control your agents, execute code, and read your secrets.\n\n"
@@ -11024,7 +11264,7 @@ export async function startTelegramBot(options = {}) {
           reply_markup: {
             inline_keyboard: [
               [
-                { text: "🔒 Disable Unsafe Access", callback_data: "cb:do_disable_unsafe" },
+                { text: ":lock: Disable Unsafe Access", callback_data: "cb:do_disable_unsafe" },
               ],
             ],
           },

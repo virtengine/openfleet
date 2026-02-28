@@ -597,7 +597,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
   return html`
     <div class="kanban-filter-bar">
       <div class="kanban-filter-search">
-        <span class="kanban-filter-icon">${resolveIcon("🔍")}</span>
+        <span class="kanban-filter-icon">${resolveIcon(":search:")}</span>
         <input
           type="text"
           class="kanban-filter-input"
@@ -613,7 +613,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
               class="kanban-filter-chip ${filters.repo ? 'active' : ''}"
               onClick=${() => toggleDropdown("repo")}
             >
-              ${iconText(`📦 ${filters.repo || "Repository"}`)}
+              ${iconText(`:box: ${filters.repo || "Repository"}`)}
             </button>
             ${showDropdown === "repo" && html`
               <div class="kanban-filter-dropdown">
@@ -650,7 +650,7 @@ function KanbanFilter({ tasks, filters, onFilterChange }) {
               class="kanban-filter-chip ${filters.assignee ? 'active' : ''}"
               onClick=${() => toggleDropdown("assignee")}
             >
-              ${iconText(`👤 ${filters.assignee || "Assignee"}`)}
+              ${iconText(`:user: ${filters.assignee || "Assignee"}`)}
             </button>
             ${showDropdown === "assignee" && html`
               <div class="kanban-filter-dropdown">

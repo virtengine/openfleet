@@ -38,7 +38,7 @@
     "codexEnabled": { "type": "boolean" },
     "primaryAgent": {
       "type": "string",
-      "enum": ["codex-sdk", "copilot-sdk", "claude-sdk", "opencode-sdk"]
+      "enum": ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"]
     },
     "voice": {
       "type": "object",
@@ -52,14 +52,19 @@
         },
         "provider": {
           "type": "string",
-          "enum": ["openai", "azure", "fallback", "auto"],
+          "enum": ["openai", "azure", "claude", "gemini", "fallback", "auto"],
           "default": "auto",
-          "description": "Voice provider: openai (direct API), azure (Azure OpenAI), fallback (browser STT/TTS), auto (detect from env)"
+          "description": "Voice provider: openai/azure (Tier 1 realtime), claude/gemini (Tier 2 voice + provider vision), fallback (browser STT/TTS), auto (detect from env)"
         },
         "model": {
           "type": "string",
           "default": "gpt-4o-realtime-preview-2024-12-17",
           "description": "Realtime API model name"
+        },
+        "visionModel": {
+          "type": "string",
+          "default": "gpt-4.1-mini",
+          "description": "Vision model used for live screen/camera frame analysis"
         },
         "openaiApiKey": {
           "type": "string",
@@ -77,6 +82,14 @@
           "type": "string",
           "default": "gpt-4o-realtime-preview",
           "description": "Azure OpenAI deployment name"
+        },
+        "claudeApiKey": {
+          "type": "string",
+          "description": "Anthropic API key for Claude voice/vision provider mode"
+        },
+        "geminiApiKey": {
+          "type": "string",
+          "description": "Gemini API key for Gemini voice/vision provider mode"
         },
         "voiceId": {
           "type": "string",
@@ -102,7 +115,7 @@
         },
         "delegateExecutor": {
           "type": "string",
-          "enum": ["codex-sdk", "copilot-sdk", "claude-sdk", "opencode-sdk"],
+          "enum": ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"],
           "description": "Which executor to use for delegate_to_agent calls. Defaults to primaryAgent."
         }
       }
@@ -455,6 +468,58 @@
           }
         }
       ]
+    },
+    "internalExecutor": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["vk", "internal", "hybrid"]
+        },
+        "maxParallel": { "type": "number" },
+        "baseBranchParallelLimit": { "type": "number" },
+        "pollIntervalMs": { "type": "number" },
+        "sdk": {
+          "type": "string",
+          "enum": ["auto", "codex", "copilot", "claude", "gemini", "opencode"]
+        },
+        "taskTimeoutMs": { "type": "number" },
+        "maxRetries": { "type": "number" },
+        "reviewAgentEnabled": { "type": "boolean" },
+        "reviewMaxConcurrent": { "type": "number" },
+        "reviewTimeoutMs": { "type": "number" },
+        "stream": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxRetries": {
+              "type": "number",
+              "description": "Transient stream retry attempts per run"
+            },
+            "retryBaseMs": {
+              "type": "number",
+              "description": "Base stream retry delay in milliseconds"
+            },
+            "retryMaxMs": {
+              "type": "number",
+              "description": "Maximum stream retry delay in milliseconds"
+            },
+            "firstEventTimeoutMs": {
+              "type": "number",
+              "description": "Abort/retry if no stream events arrive within this timeout"
+            },
+            "maxItemsPerTurn": {
+              "type": "number",
+              "description": "Maximum completed stream items retained per turn"
+            },
+            "maxItemChars": {
+              "type": "number",
+              "description": "Maximum characters retained per string field in stored stream items"
+            }
+          }
+        }
+      }
     },
     "profiles": { "$ref": "#/$defs/profiles" },
     "envProfiles": { "$ref": "#/$defs/profiles" },

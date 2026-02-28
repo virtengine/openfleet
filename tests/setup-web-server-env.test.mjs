@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   applyNonBlockingSetupEnvDefaults,
   applyTelegramMiniAppSetupEnv,
+  normalizeRepoConfigEntry,
   normalizeTelegramUiPort,
+  normalizeWorkspaceConfigList,
+  resolveSetupWorkspaceAndRepoConfig,
 } from "../setup-web-server.mjs";
 
 describe("setup web server telegram defaults", () => {
@@ -271,5 +274,77 @@ describe("setup web server non-blocking env defaults", () => {
       VK_RECOVERY_PORT: "5500",
       ORCHESTRATOR_ARGS: "-CustomFlag true",
     });
+  });
+});
+
+describe("setup web server workspace normalization", () => {
+  it("normalizes slug-only repo input to include repo name and URL", () => {
+    expect(normalizeRepoConfigEntry("virtengine/bosun")).toMatchObject({
+      name: "bosun",
+      slug: "virtengine/bosun",
+      url: "https://github.com/virtengine/bosun.git",
+      primary: true,
+    });
+  });
+
+  it("normalizes setup workspaces and derives activeRepo from repo names", () => {
+    const normalized = normalizeWorkspaceConfigList([
+      {
+        id: "VirtEngine Main",
+        name: "VirtEngine Main",
+        repos: [
+          { slug: "virtengine/bosun" },
+          "virtengine/virtengine",
+        ],
+      },
+    ]);
+
+    expect(normalized).toHaveLength(1);
+    expect(normalized[0].id).toBe("virtengine-main");
+    expect(normalized[0].repos).toHaveLength(2);
+    expect(normalized[0].repos[0].name).toBe("bosun");
+    expect(normalized[0].repos[1].name).toBe("virtengine");
+    expect(normalized[0].activeRepo).toBe("bosun");
+  });
+
+  it("preserves existing workspaces when setup payload omits workspaces", () => {
+    const existingConfig = {
+      projectName: "virtengine",
+      activeWorkspace: "virtengine",
+      workspaces: [
+        {
+          id: "virtengine",
+          name: "VirtEngine",
+          repos: [{ slug: "virtengine/bosun" }],
+          activeRepo: "bosun",
+        },
+      ],
+    };
+
+    const merged = resolveSetupWorkspaceAndRepoConfig(existingConfig, {
+      projectName: "virtengine",
+      repos: [],
+    });
+
+    expect(merged.workspaces).toHaveLength(1);
+    expect(merged.workspaces[0].id).toBe("virtengine");
+    expect(merged.activeWorkspace).toBe("virtengine");
+    expect(merged.workspaces[0].repos[0].name).toBe("bosun");
+  });
+
+  it("creates a default workspace when repos exist but workspaces are missing", () => {
+    const merged = resolveSetupWorkspaceAndRepoConfig(
+      {},
+      {
+        projectName: "my-project",
+        repos: [{ slug: "virtengine/bosun" }],
+      },
+      { projectName: "my-project" },
+    );
+
+    expect(merged.workspaces).toHaveLength(1);
+    expect(merged.workspaces[0].id).toBe("my-project");
+    expect(merged.workspaces[0].repos[0].name).toBe("bosun");
+    expect(merged.activeWorkspace).toBe("my-project");
   });
 });

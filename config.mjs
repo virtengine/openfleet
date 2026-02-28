@@ -857,6 +857,10 @@ function normalizePrimaryAgent(value) {
     return "copilot-sdk";
   if (["claude", "claude-sdk", "claude_code", "claude-code"].includes(raw))
     return "claude-sdk";
+  if (["gemini", "gemini-sdk", "google-gemini"].includes(raw))
+    return "gemini-sdk";
+  if (["opencode", "opencode-sdk", "open-code"].includes(raw))
+    return "opencode-sdk";
   return raw;
 }
 
@@ -1266,19 +1270,28 @@ function loadWorkspaceRepoConfig(configDir, configData = {}, activeWorkspace = "
 
   return targetWorkspace.repos
     .map((repo, index) => {
-      if (!repo || typeof repo !== "object") return null;
-      const name = String(repo.name || repo.id || "").trim();
+      const rawRepo =
+        typeof repo === "string"
+          ? { slug: repo }
+          : (repo && typeof repo === "object" ? repo : null);
+      if (!rawRepo) return null;
+      const slug = String(rawRepo.slug || "").trim();
+      const name = String(rawRepo.name || rawRepo.id || slug.split("/").pop() || "")
+        .trim()
+        .replace(/\.git$/i, "");
       if (!name) return null;
       const repoPath = resolve(workspacePath, name);
       return {
         name,
         id: normalizeKey(name),
         path: repoPath,
-        slug: String(repo.slug || "").trim(),
-        url: String(repo.url || "").trim(),
+        slug,
+        url:
+          String(rawRepo.url || "").trim() ||
+          (slug ? `https://github.com/${slug}.git` : ""),
         workspace: String(targetWorkspace.id || "").trim(),
         primary:
-          repo.primary === true ||
+          rawRepo.primary === true ||
           (activeRepoName && normalizeKey(name) === activeRepoName) ||
           (!activeRepoName && index === 0),
       };
@@ -1608,14 +1621,22 @@ export function loadConfig(argv = process.argv, options = {}) {
       ? codexEnabled
       : primaryAgent === "copilot-sdk"
         ? !isEnvEnabled(process.env.COPILOT_SDK_DISABLED, false)
-        : !isEnvEnabled(process.env.CLAUDE_SDK_DISABLED, false);
+        : primaryAgent === "claude-sdk"
+          ? !isEnvEnabled(process.env.CLAUDE_SDK_DISABLED, false)
+          : primaryAgent === "gemini-sdk"
+            ? !isEnvEnabled(process.env.GEMINI_SDK_DISABLED, false)
+            : primaryAgent === "opencode-sdk"
+              ? !isEnvEnabled(process.env.OPENCODE_SDK_DISABLED, false)
+              : false;
 
   // agentPoolEnabled: true when ANY agent SDK is available for pooled operations
   // This decouples pooled prompt execution from specific SDK selection
   const agentPoolEnabled =
     !isEnvEnabled(process.env.CODEX_SDK_DISABLED, false) ||
     !isEnvEnabled(process.env.COPILOT_SDK_DISABLED, false) ||
-    !isEnvEnabled(process.env.CLAUDE_SDK_DISABLED, false);
+    !isEnvEnabled(process.env.CLAUDE_SDK_DISABLED, false) ||
+    !isEnvEnabled(process.env.GEMINI_SDK_DISABLED, false) ||
+    !isEnvEnabled(process.env.OPENCODE_SDK_DISABLED, false);
 
   // ── Internal Executor ────────────────────────────────────
   // Allows the monitor to run tasks via agent-pool directly instead of
@@ -1874,6 +1895,38 @@ export function loadConfig(argv = process.argv, options = {}) {
       requirePriority: isEnvEnabled(
         process.env.INTERNAL_EXECUTOR_REPLENISH_REQUIRE_PRIORITY,
         internalExecutorConfig.backlogReplenishment?.requirePriority !== false,
+      ),
+    },
+    stream: {
+      maxRetries: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_MAX_RETRIES ||
+          internalExecutorConfig.stream?.maxRetries ||
+          5,
+      ),
+      retryBaseMs: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_RETRY_BASE_MS ||
+          internalExecutorConfig.stream?.retryBaseMs ||
+          2000,
+      ),
+      retryMaxMs: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_RETRY_MAX_MS ||
+          internalExecutorConfig.stream?.retryMaxMs ||
+          32000,
+      ),
+      firstEventTimeoutMs: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS ||
+          internalExecutorConfig.stream?.firstEventTimeoutMs ||
+          120000,
+      ),
+      maxItemsPerTurn: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN ||
+          internalExecutorConfig.stream?.maxItemsPerTurn ||
+          600,
+      ),
+      maxItemChars: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS ||
+          internalExecutorConfig.stream?.maxItemChars ||
+          12000,
       ),
     },
     projectRequirements,

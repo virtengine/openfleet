@@ -339,7 +339,7 @@ export class GitHubReconciler {
                 : "";
             await this.addComment(
               issueNumber,
-              `## ✅ Auto-Reconciled\nThis issue was auto-closed by bosun after detecting merged PR linkage.${suffix}`,
+              `## :check: Auto-Reconciled\nThis issue was auto-closed by bosun after detecting merged PR linkage.${suffix}`,
             );
           }
           summary.closed += 1;
@@ -463,7 +463,7 @@ export class GitHubReconciler {
           if (this.sendTelegram) {
             void Promise.resolve(
               this.sendTelegram(
-                `⚠️ GitHub reconciler cycle failed: ${msg}`,
+                `:alert: GitHub reconciler cycle failed: ${msg}`,
               ),
             ).catch(() => {});
           }

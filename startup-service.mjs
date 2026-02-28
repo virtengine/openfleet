@@ -344,7 +344,7 @@ async function installWindows(options = {}) {
 
     // Strategy 2: Elevate via UAC prompt
     console.log(
-      "  ℹ️  Admin access required — requesting elevation (UAC prompt)...",
+      "  :help:  Admin access required — requesting elevation (UAC prompt)...",
     );
 
     // Delete + Create via elevated process
@@ -370,7 +370,7 @@ async function installWindows(options = {}) {
 
     // Strategy 3: Fall back to Startup folder (no admin needed)
     console.log(
-      "  ⚠️  Task Scheduler elevation failed — falling back to Startup folder.",
+      "  :alert:  Task Scheduler elevation failed — falling back to Startup folder.",
     );
     console.log(
       "     (Startup folder works without admin, but has no auto-restart on failure)",
@@ -394,7 +394,7 @@ async function removeWindows() {
 
     if (isAccessDenied) {
       console.log(
-        "  ℹ️  Admin access required — requesting elevation (UAC prompt)...",
+        "  :help:  Admin access required — requesting elevation (UAC prompt)...",
       );
       const elevated = runElevated(`/Delete /TN "${TASK_NAME}" /F`);
       results.push({
@@ -543,7 +543,7 @@ async function installMacOS(options = {}) {
     }
 
     // Try with sudo — prompts for password in terminal via osascript or direct sudo
-    console.log("  ℹ️  Permission required — requesting sudo access...");
+    console.log("  :help:  Permission required — requesting sudo access...");
     try {
       // Write plist to temp location first
       const tmpPlist = resolve(__dirname, ".cache", `${SERVICE_LABEL}.plist`);
@@ -614,7 +614,7 @@ async function removeMacOS() {
     }
 
     // Elevate via osascript
-    console.log("  ℹ️  Permission required — requesting sudo access...");
+    console.log("  :help:  Permission required — requesting sudo access...");
     try {
       const escapedPlistPath = plistPath.replace(/'/g, "'\\''");
       const script = `do shell script "launchctl unload '${escapedPlistPath}' 2>/dev/null; rm -f '${escapedPlistPath}'" with administrator privileges`;
@@ -752,7 +752,7 @@ async function installLinux(options = {}) {
       }
 
       // Try with sudo for the systemctl commands (unit file is user-space)
-      console.log("  ℹ️  Permission required — trying sudo...");
+      console.log("  :help:  Permission required — trying sudo...");
       try {
         // The unit file write doesn't need sudo (it's in ~/.config)
         // but systemctl might if the session isn't fully initialized
@@ -772,13 +772,13 @@ async function installLinux(options = {}) {
         };
       } catch (sudoErr) {
         console.log(
-          "  ⚠️  systemd with sudo failed — falling back to crontab.",
+          "  :alert:  systemd with sudo failed — falling back to crontab.",
         );
         // Fall through to crontab
       }
     }
   } else {
-    console.log("  ℹ️  systemd user session not available — using crontab.");
+    console.log("  :help:  systemd user session not available — using crontab.");
   }
 
   // Strategy 2: crontab @reboot fallback (works everywhere, no root needed)
@@ -865,7 +865,7 @@ async function removeLinux() {
         err.message?.includes("EACCES");
 
       if (isPermission) {
-        console.log("  ℹ️  Permission required — trying sudo...");
+        console.log("  :help:  Permission required — trying sudo...");
         try {
           execSync(`sudo systemctl --user stop ${SYSTEMD_UNIT}`, {
             stdio: "inherit",

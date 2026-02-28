@@ -315,13 +315,13 @@ timers).
 log spam, memory leaks, and race conditions.
 
 ```javascript
-// ❌ BAD — _engine resets to undefined on every request
+// BAD — _engine resets to undefined on every request
 export function handleApi(req, res) {
   let _engine;
   if (!_engine) _engine = await loadEngine(); // runs EVERY time
 }
 
-// ✅ GOOD — _engine persists across calls
+// GOOD — _engine persists across calls
 let _engine;
 export function handleApi(req, res) {
   if (!_engine) _engine = await loadEngine(); // runs ONCE
@@ -334,10 +334,10 @@ export function handleApi(req, res) {
 `.catch()`. Since Node.js 15+, unhandled promise rejections crash the process.
 
 ```javascript
-// ❌ BAD — if dispatchEvent throws → unhandled rejection → exit code 1
+// BAD — if dispatchEvent throws → unhandled rejection → exit code 1
 void dispatchEvent(data);
 
-// ✅ GOOD
+// GOOD
 await dispatchEvent(data); // preferred
 dispatchEvent(data).catch((err) => log.warn(err)); // fire-and-forget OK
 ```

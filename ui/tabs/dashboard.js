@@ -587,7 +587,7 @@ export function DashboardTab() {
               Your AI development fleet is ready. Create your first task to get started.
             </div>
             <button class="btn btn-primary" onClick=${() => setShowCreate(true)}>
-              ${iconText("➕ Create your first task")}
+              ${iconText(":plus: Create your first task")}
             </button>
           </div>
         <//>

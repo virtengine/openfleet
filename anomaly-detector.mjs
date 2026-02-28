@@ -526,7 +526,7 @@ export class AnomalyDetector {
     const s = this.getStats();
     const uptimeMin = Math.round(s.uptimeMs / 60_000);
     const lines = [
-      `<b>🔍 Anomaly Detector Status</b>`,
+      `<b>:search: Anomaly Detector Status</b>`,
       `Uptime: ${uptimeMin}m | Lines: ${s.totalLinesProcessed.toLocaleString()}`,
       `Active: ${s.activeProcesses} | Completed: ${s.completedProcesses}`,
     ];
@@ -573,7 +573,7 @@ export class AnomalyDetector {
       }
       if (concerns.length > 0) {
         lines.push(
-          `\n⚠️ <b>${escapeHtml(proc.shortId)}</b> (${escapeHtml(proc.taskTitle || "?")}):`,
+          `\n:alert: <b>${escapeHtml(proc.shortId)}</b> (${escapeHtml(proc.taskTitle || "?")}):`,
           `  ${concerns.join(", ")}`,
         );
       }
@@ -1202,13 +1202,13 @@ export class AnomalyDetector {
       anomaly.severity === Severity.CRITICAL ||
       anomaly.severity === Severity.HIGH
     ) {
-      const icon = anomaly.severity === Severity.CRITICAL ? "🔴" : "🟠";
+      const icon = anomaly.severity === Severity.CRITICAL ? ":dot:" : ":u1f7e0:";
       const actionLabel =
         anomaly.action === "kill"
-          ? "⛔ KILL"
+          ? ":ban: KILL"
           : anomaly.action === "restart"
-            ? "🔄 RESTART"
-            : "⚠️ ALERT";
+            ? ":refresh: RESTART"
+            : ":alert: ALERT";
 
       const msg = [
         `${icon} <b>Anomaly: ${escapeHtml(anomaly.type)}</b>`,

@@ -951,7 +951,7 @@ function ServerConfigMode() {
                 type="button"
                 title=${secretVisible ? "Hide" : "Show"}
               >
-                ${resolveIcon(secretVisible ? "🙈" : "👁")}
+                ${resolveIcon(secretVisible ? ":eyeOff:" : ":eye:")}
               </button>
             </div>
           `;
@@ -1027,7 +1027,7 @@ function ServerConfigMode() {
           </div>
           <div class="setting-row-key">${def.key}</div>
           ${control}
-          ${error && html`<div class="setting-validation-error">${iconText(`⚠ ${error}`)}</div>`}
+          ${error && html`<div class="setting-validation-error">${iconText(`:alert: ${error}`)}</div>`}
         </div>
       `;
     },
@@ -1046,7 +1046,7 @@ function ServerConfigMode() {
     ${loadError &&
     html`
       <div class="settings-banner settings-banner-error">
-        <span>${resolveIcon("⚠️")}</span>
+        <span>${resolveIcon(":alert:")}</span>
         <span class="settings-banner-text">
           <strong>Backend Unreachable</strong> — ${loadError}
         </span>
@@ -1058,7 +1058,7 @@ function ServerConfigMode() {
     !loadError &&
     html`
       <div class="settings-banner settings-banner-warn">
-        <span>${resolveIcon("🧠")}</span>
+        <span>${resolveIcon(":cpu:")}</span>
         <span class="settings-banner-text">Connection lost — reconnecting…</span>
       </div>
     `}
@@ -1066,7 +1066,7 @@ function ServerConfigMode() {
     ${configSync &&
     html`
       <div class="settings-banner ${configSync.skipped?.length ? "settings-banner-warn" : "settings-banner-info"}">
-        <span>${resolveIcon("💾")}</span>
+        <span>${resolveIcon(":save:")}</span>
         <span class="settings-banner-text">
           ${configSync.skipped?.length
             ? `Saved ${configSync.total} settings; synced ${configSync.updated} to config file.`
@@ -1087,7 +1087,7 @@ function ServerConfigMode() {
     !loadError &&
     html`
       <div class="settings-banner settings-banner-info">
-        <span>${resolveIcon("🧭")}</span>
+        <span>${resolveIcon(":compass:")}</span>
         <span class="settings-banner-text">
           Settings are saved to <code>${serverMeta.envPath}</code> and synced to <code>${serverMeta.configPath}</code> for supported keys.
         </span>
@@ -1130,7 +1130,7 @@ function ServerConfigMode() {
         if (filteredSettings.length === 0) {
           return html`
             <div class="settings-empty-search">
-              <div class="settings-empty-search-icon">${resolveIcon("🔍")}</div>
+              <div class="settings-empty-search-icon">${resolveIcon(":search:")}</div>
               <div>No settings match "<strong>${searchQuery}</strong>"</div>
               <div class="meta-text mt-sm">Try a different search term</div>
             </div>
@@ -1250,7 +1250,7 @@ function ServerConfigMode() {
           ${hasRestartSetting &&
           html`
             <div class="settings-banner settings-banner-warn" style="margin-top:8px">
-              <span>${resolveIcon("🔄")}</span>
+              <span>${resolveIcon(":refresh:")}</span>
               <span class="settings-banner-text">
                 Some changes require a restart. The server will auto-reload (~2 seconds).
               </span>
@@ -1532,7 +1532,7 @@ function AppPreferencesMode() {
 
 
     <!-- ─── Account ─── -->
-    <${Collapsible} title=${iconText("👤 Account")} defaultOpen=${true}>
+    <${Collapsible} title=${iconText(":user: Account")} defaultOpen=${true}>
       <${Card}>
         <div class="settings-row">
           ${user?.photo_url &&
@@ -1557,7 +1557,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── Appearance ─── -->
-    <${Collapsible} title=${iconText("🎨 Appearance")} defaultOpen=${false}>
+    <${Collapsible} title=${iconText(":palette: Appearance")} defaultOpen=${false}>
       <${Card}>
         <div class="card-subtitle mb-sm">Color Theme</div>
         <div class="theme-picker-grid">
@@ -1607,7 +1607,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── Notifications ─── -->
-    <${Collapsible} title=${iconText("🔔 Notifications")} defaultOpen=${false}>
+    <${Collapsible} title=${iconText(":bell: Notifications")} defaultOpen=${false}>
       <${Card}>
         <${ListItem}
           title="Real-time Updates"
@@ -1646,7 +1646,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── Data & Storage ─── -->
-    <${Collapsible} title=${iconText("💾 Data & Storage")} defaultOpen=${false}>
+    <${Collapsible} title=${iconText(":save: Data & Storage")} defaultOpen=${false}>
       <${Card}>
         <${ListItem}
           title="WebSocket"
@@ -1667,7 +1667,7 @@ function AppPreferencesMode() {
           subtitle="Remove all stored preferences"
           trailing=${html`
             <button class="btn btn-ghost btn-sm" onClick=${handleClearCache}>
-              ${iconText("🗑 Clear")}
+              ${iconText(":trash: Clear")}
             </button>
           `}
         />
@@ -1675,7 +1675,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── Executor Defaults ─── -->
-    <${Collapsible} title=${iconText("⚙️ Executor Defaults")} defaultOpen=${false}>
+    <${Collapsible} title=${iconText(":settings: Executor Defaults")} defaultOpen=${false}>
       <${Card}>
         <div class="card-subtitle mb-sm">Default Max Parallel</div>
         <div class="range-row mb-md">
@@ -1722,7 +1722,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── Advanced ─── -->
-    <${Collapsible} title=${iconText("🔧 Advanced")} defaultOpen=${false}>
+    <${Collapsible} title=${iconText(":settings: Advanced")} defaultOpen=${false}>
       <${Card}>
         <${ListItem}
           title="Debug Mode"
@@ -1773,7 +1773,7 @@ function AppPreferencesMode() {
     <//>
 
     <!-- ─── About ─── -->
-    <${Collapsible} title="ℹ️ About" defaultOpen=${false}>
+    <${Collapsible} title=":help: About" defaultOpen=${false}>
       <${Card}>
         <div style="text-align:center;padding:12px 0">
           <div style="font-size:18px;font-weight:700;margin-bottom:4px">
@@ -1937,7 +1937,7 @@ function GitHubDeviceFlowCard({ config }) {
     return html`
       <${Card}>
         <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
-          <span style="font-size:20px">${resolveIcon("🐙")}</span>
+          <span style="font-size:20px">${resolveIcon(":git:")}</span>
           <div style="flex:1;min-width:0">
             <div style="font-size:13px;font-weight:600;color:var(--text-primary)">GitHub Connected</div>
             <div style="font-size:12px;color:var(--text-secondary)">Token is configured. Re-authenticate below if needed.</div>
@@ -1955,7 +1955,7 @@ function GitHubDeviceFlowCard({ config }) {
     return html`
       <${Card}>
         <div style="text-align:center;padding:12px 0">
-          <div style="font-size:32px;margin-bottom:8px">${resolveIcon("✅")}</div>
+          <div style="font-size:32px;margin-bottom:8px">${resolveIcon(":check:")}</div>
           <div style="font-size:15px;font-weight:600;color:var(--text-primary)">Signed in as ${ghUser}</div>
           <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">GitHub token saved to .env</div>
         </div>
@@ -1995,7 +1995,7 @@ function GitHubDeviceFlowCard({ config }) {
     return html`
       <${Card}>
         <div style="text-align:center;padding:12px 0">
-          <div style="font-size:24px;margin-bottom:8px">${resolveIcon("⚠️")}</div>
+          <div style="font-size:24px;margin-bottom:8px">${resolveIcon(":alert:")}</div>
           <div style="font-size:13px;color:var(--color-error);margin-bottom:12px">${error}</div>
           <button class="btn btn-sm btn-primary" onClick=${startFlow}>Try Again</button>
         </div>
@@ -2007,7 +2007,7 @@ function GitHubDeviceFlowCard({ config }) {
   return html`
     <${Card}>
       <div style="text-align:center;padding:16px 0">
-        <div style="font-size:32px;margin-bottom:8px">${resolveIcon("🐙")}</div>
+        <div style="font-size:32px;margin-bottom:8px">${resolveIcon(":git:")}</div>
         <div style="font-size:15px;font-weight:600;margin-bottom:4px;color:var(--text-primary)">
           Sign in with GitHub
         </div>

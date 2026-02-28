@@ -53,6 +53,7 @@ import {
   CUSTOM_AGENT_TEMPLATE,
   AGENT_SESSION_MONITOR_TEMPLATE,
   BACKEND_AGENT_TEMPLATE,
+  VOICE_VIDEO_PARALLEL_ROLLOUT_TEMPLATE,
 } from "./workflow-templates/agents.mjs";
 
 // Planning
@@ -102,6 +103,7 @@ export {
   CUSTOM_AGENT_TEMPLATE,
   AGENT_SESSION_MONITOR_TEMPLATE,
   BACKEND_AGENT_TEMPLATE,
+  VOICE_VIDEO_PARALLEL_ROLLOUT_TEMPLATE,
   TASK_PLANNER_TEMPLATE,
   TASK_REPLENISH_TEMPLATE,
   NIGHTLY_REPORT_TEMPLATE,
@@ -127,13 +129,13 @@ export {
 
 /** Category metadata for UI grouping. */
 export const TEMPLATE_CATEGORIES = Object.freeze({
-  github:      { label: "GitHub",       icon: "🐙", order: 1 },
-  agents:      { label: "Agents",       icon: "🤖", order: 2 },
-  planning:    { label: "Planning",     icon: "📋", order: 3 },
-  "ci-cd":     { label: "CI / CD",      icon: "🔄", order: 4 },
-  reliability: { label: "Reliability",  icon: "🛡️", order: 5 },
-  security:    { label: "Security",     icon: "🔒", order: 6 },
-  custom:      { label: "Custom",       icon: "⚙️", order: 7 },
+  github:      { label: "GitHub",       icon: ":git:", order: 1 },
+  agents:      { label: "Agents",       icon: ":bot:", order: 2 },
+  planning:    { label: "Planning",     icon: ":clipboard:", order: 3 },
+  "ci-cd":     { label: "CI / CD",      icon: ":refresh:", order: 4 },
+  reliability: { label: "Reliability",  icon: ":shield:", order: 5 },
+  security:    { label: "Security",     icon: ":lock:", order: 6 },
+  custom:      { label: "Custom",       icon: ":settings:", order: 7 },
 });
 
 export const WORKFLOW_TEMPLATES = Object.freeze([
@@ -150,6 +152,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   CUSTOM_AGENT_TEMPLATE,
   AGENT_SESSION_MONITOR_TEMPLATE,
   BACKEND_AGENT_TEMPLATE,
+  VOICE_VIDEO_PARALLEL_ROLLOUT_TEMPLATE,
   // ── Planning ──
   TASK_PLANNER_TEMPLATE,
   TASK_REPLENISH_TEMPLATE,
@@ -442,7 +445,7 @@ export const WORKFLOW_SETUP_PROFILES = Object.freeze({
     workflowAutomationEnabled: true,
     templateIds: Object.freeze([
       "template-pr-merge-strategy",
-      "template-pr-conflict-resolver",
+      "template-bosun-pr-watchdog",
       "template-review-agent",
       "template-backend-agent",
       "template-task-planner",

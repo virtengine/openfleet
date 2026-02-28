@@ -17,7 +17,10 @@ vi.mock("../primary-agent.mjs", () => ({
 
 vi.mock("../voice-tools.mjs", () => ({
   executeToolCall: vi.fn(async (name) => ({ result: `mock result for ${name}` })),
-  getToolDefinitions: vi.fn(() => [{ type: "function", name: "list_tasks" }]),
+  getToolDefinitions: vi.fn(() => [
+    { type: "function", name: "list_tasks" },
+    { type: "function", name: "delegate_to_agent" },
+  ]),
 }));
 
 // ── Global fetch mock ────────────────────────────────────────────────────────
@@ -49,6 +52,7 @@ const {
   getVoiceToolDefinitions,
   executeVoiceTool,
   getRealtimeConnectionInfo,
+  analyzeVisionFrame,
 } = await import("../voice-relay.mjs");
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -58,8 +62,12 @@ describe("voice-relay", () => {
   const envKeys = [
     "OPENAI_API_KEY",
     "OPENAI_REALTIME_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
     "VOICE_PROVIDER",
     "VOICE_MODEL",
+    "VOICE_VISION_MODEL",
     "VOICE_ID",
     "AZURE_OPENAI_REALTIME_ENDPOINT",
     "AZURE_OPENAI_API_KEY",
@@ -102,6 +110,8 @@ describe("voice-relay", () => {
       expect(cfg.delegateExecutor).toBe("codex-sdk");
       expect(cfg.openaiKey).toBe("");
       expect(cfg.azureKey).toBe("");
+      expect(cfg.claudeKey).toBe("");
+      expect(cfg.geminiKey).toBe("");
     });
 
     it("uses config.voice properties when set", () => {
@@ -137,6 +147,20 @@ describe("voice-relay", () => {
       expect(cfg.model).toBe("env-model");
       expect(cfg.openaiKey).toBe("sk-from-env");
       expect(cfg.voiceId).toBe("echo");
+    });
+
+    it("auto provider prefers claude when Anthropic key is available and OpenAI/Azure are missing", () => {
+      process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+      const cfg = getVoiceConfig(true);
+      expect(cfg.provider).toBe("claude");
+      expect(cfg.claudeKey).toBe("sk-ant-test");
+    });
+
+    it("auto provider resolves to gemini when Gemini key is available and OpenAI/Azure/Claude are missing", () => {
+      process.env.GEMINI_API_KEY = "gemini-test-key";
+      const cfg = getVoiceConfig(true);
+      expect(cfg.provider).toBe("gemini");
+      expect(cfg.geminiKey).toBe("gemini-test-key");
     });
 
     it("caches result and returns same object within TTL", () => {
@@ -207,6 +231,30 @@ describe("voice-relay", () => {
       expect(result.provider).toBe("fallback");
     });
 
+    it("returns tier 2 Claude mode when provider is claude and key is set", () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: { provider: "claude", claudeApiKey: "sk-ant-test" },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+      const result = isVoiceAvailable();
+      expect(result.available).toBe(true);
+      expect(result.tier).toBe(2);
+      expect(result.provider).toBe("claude");
+    });
+
+    it("returns tier 2 Gemini mode when provider is gemini and key is set", () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: { provider: "gemini", geminiApiKey: "gemini-test-key" },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+      const result = isVoiceAvailable();
+      expect(result.available).toBe(true);
+      expect(result.tier).toBe(2);
+      expect(result.provider).toBe("gemini");
+    });
+
     it("returns unavailable when voice is disabled", () => {
       vi.mocked(loadConfig).mockReturnValue({
         voice: { enabled: false },
@@ -239,6 +287,8 @@ describe("voice-relay", () => {
       const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
       expect(fetchCall[0]).toContain("api.openai.com/v1/realtime/sessions");
       expect(fetchCall[1].headers.Authorization).toBe("Bearer sk-test");
+      const payload = JSON.parse(fetchCall[1].body);
+      expect(payload.tool_choice).toBe("auto");
     });
 
     it("calls Azure API correctly for azure provider", async () => {
@@ -263,6 +313,37 @@ describe("voice-relay", () => {
       expect(fetchCall[1].headers["api-key"]).toBe("az-key");
     });
 
+    it("injects call context into realtime session instructions", async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: { provider: "openai", openaiApiKey: "sk-test" },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+
+      const result = await createEphemeralToken([
+        { type: "function", name: "delegate_to_agent" },
+      ], {
+        sessionId: "primary-123",
+        executor: "claude-sdk",
+        mode: "plan",
+        model: "claude-opus-4.6",
+      });
+      expect(result.callContext).toMatchObject({
+        sessionId: "primary-123",
+        executor: "claude-sdk",
+        mode: "plan",
+        model: "claude-opus-4.6",
+      });
+
+      const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
+      const payload = JSON.parse(fetchCall[1].body);
+      expect(payload.instructions).toContain("Active chat session id: primary-123.");
+      expect(payload.instructions).toContain("Preferred executor for delegated work: claude-sdk.");
+      expect(payload.instructions).toContain("Preferred delegation mode: plan.");
+      expect(payload.instructions).toContain("Preferred model override: claude-opus-4.6.");
+      expect(payload.tool_choice).toEqual({ type: "function", name: "delegate_to_agent" });
+    });
+
     it("throws when no API key configured for openai", async () => {
       vi.mocked(loadConfig).mockReturnValue({
         voice: { provider: "openai" },
@@ -271,6 +352,15 @@ describe("voice-relay", () => {
       getVoiceConfig(true);
 
       await expect(createEphemeralToken()).rejects.toThrow(/not configured/i);
+    });
+
+    it("throws for non-realtime providers", async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: { provider: "claude", claudeApiKey: "sk-ant-test" },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+      await expect(createEphemeralToken([])).rejects.toThrow(/unavailable for provider "claude"/i);
     });
   });
 
@@ -308,6 +398,18 @@ describe("voice-relay", () => {
       expect(info.url).toContain("deployment=my-deployment");
       expect(info.model).toBe("my-deployment");
     });
+
+    it("returns tier-2 metadata for claude provider", () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: { provider: "claude", claudeApiKey: "sk-ant-test" },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+      const info = getRealtimeConnectionInfo();
+      expect(info.provider).toBe("claude");
+      expect(info.url).toBeNull();
+      expect(info.tier).toBe(2);
+    });
   });
 
   // ── executeVoiceTool ────────────────────────────────────────
@@ -327,6 +429,99 @@ describe("voice-relay", () => {
       expect(Array.isArray(defs)).toBe(true);
       expect(defs.length).toBeGreaterThan(0);
       expect(defs[0]).toHaveProperty("name");
+    });
+
+    it("can filter to delegate tool only", async () => {
+      const defs = await getVoiceToolDefinitions({ delegateOnly: true });
+      expect(Array.isArray(defs)).toBe(true);
+      expect(defs.length).toBe(1);
+      expect(defs[0]?.name).toBe("delegate_to_agent");
+    });
+  });
+
+  describe("analyzeVisionFrame", () => {
+    it("calls OpenAI responses API for valid frame input", async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: { provider: "openai", openaiApiKey: "sk-test" },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+      vi.mocked(globalThis.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          output_text: "Code editor with failing tests is visible.",
+        }),
+      });
+
+      const result = await analyzeVisionFrame(
+        "data:image/jpeg;base64,dGVzdA==",
+        { source: "screen", context: { sessionId: "primary-1" } },
+      );
+      expect(result.summary).toContain("failing tests");
+      expect(result.provider).toBe("openai");
+      const fetchCall = vi.mocked(globalThis.fetch).mock.calls.at(-1);
+      expect(fetchCall?.[0]).toContain("/v1/responses");
+    });
+
+    it("calls Anthropic Messages API when provider is claude", async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: {
+          provider: "claude",
+          claudeApiKey: "sk-ant-test",
+          visionModel: "claude-3-7-sonnet-latest",
+        },
+        primaryAgent: "claude-sdk",
+      });
+      getVoiceConfig(true);
+      vi.mocked(globalThis.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          content: [{ type: "text", text: "Terminal shows a failing lint check." }],
+        }),
+      });
+
+      const result = await analyzeVisionFrame(
+        "data:image/png;base64,dGVzdA==",
+        { source: "screen", context: { sessionId: "primary-claude-1" } },
+      );
+      expect(result.provider).toBe("claude");
+      expect(result.summary).toContain("failing lint");
+      const fetchCall = vi.mocked(globalThis.fetch).mock.calls.at(-1);
+      expect(fetchCall?.[0]).toContain("api.anthropic.com/v1/messages");
+    });
+
+    it("calls Gemini generateContent API when provider is gemini", async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: {
+          provider: "gemini",
+          geminiApiKey: "gemini-test-key",
+          visionModel: "gemini-2.5-flash",
+        },
+        primaryAgent: "gemini-sdk",
+      });
+      getVoiceConfig(true);
+      vi.mocked(globalThis.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          candidates: [
+            {
+              content: {
+                parts: [{ text: "Code editor and test runner are both visible." }],
+              },
+            },
+          ],
+        }),
+      });
+
+      const result = await analyzeVisionFrame(
+        "data:image/webp;base64,dGVzdA==",
+        { source: "camera", context: { sessionId: "primary-gemini-1" } },
+      );
+      expect(result.provider).toBe("gemini");
+      expect(result.summary).toContain("test runner");
+      const fetchCall = vi.mocked(globalThis.fetch).mock.calls.at(-1);
+      expect(fetchCall?.[0]).toContain("generativelanguage.googleapis.com/v1beta/models/");
+      expect(fetchCall?.[0]).toContain(":generateContent");
     });
   });
 });

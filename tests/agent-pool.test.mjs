@@ -188,6 +188,9 @@ const ENV_KEYS = [
   "GITHUB_TOKEN",
   "COPILOT_CLI_TOKEN",
   "AGENT_POOL_SDK_FAILURE_COOLDOWN_MS",
+  "INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS",
+  "INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN",
+  "INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS",
 ];
 
 /** @type {Record<string, string|undefined>} */
@@ -231,6 +234,9 @@ function clearSdkEnv() {
   delete process.env.GITHUB_TOKEN;
   delete process.env.COPILOT_CLI_TOKEN;
   delete process.env.AGENT_POOL_SDK_FAILURE_COOLDOWN_MS;
+  delete process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS;
+  delete process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN;
+  delete process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS;
 }
 
 // ---------------------------------------------------------------------------
@@ -894,6 +900,90 @@ describe("launchOrResumeThread", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/timeout after 25ms/i);
+  });
+
+  it("uses INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS for stalled codex streams", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS = "1000";
+    setPoolSdk("codex");
+
+    mockCodexStartThread.mockImplementationOnce(() => ({
+      id: "first-event-timeout-thread",
+      runStreamed: async (_prompt, { signal } = {}) => ({
+        events: {
+          async *[Symbol.asyncIterator]() {
+            await new Promise((_, reject) => {
+              const abortNow = () => {
+                const err = new Error("aborted");
+                err.name = "AbortError";
+                reject(err);
+              };
+              if (signal?.aborted) {
+                abortNow();
+                return;
+              }
+              signal?.addEventListener("abort", abortNow, { once: true });
+            });
+          },
+        },
+      }),
+    }));
+
+    const result = await launchOrResumeThread("first event timeout test", process.cwd(), 3500, {
+      taskKey: "stream-first-event-timeout",
+      sdk: "codex",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("no events received within 1000ms");
+  });
+
+  it("caps and truncates stored codex stream items", async () => {
+    process.env.__MOCK_CODEX_AVAILABLE = "1";
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN = "1";
+    process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS = "12";
+    setPoolSdk("codex");
+
+    mockCodexStartThread.mockImplementationOnce(() => ({
+      id: "stream-cap-thread",
+      runStreamed: async () => ({
+        events: {
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "item.completed",
+              item: {
+                type: "command_execution",
+                aggregated_output: "abcdefghijklmnopqrstuvwxyz",
+              },
+            };
+            yield {
+              type: "item.completed",
+              item: {
+                type: "command_execution",
+                aggregated_output: "second item should be dropped",
+              },
+            };
+            yield {
+              type: "item.completed",
+              item: { type: "agent_message", text: "final answer" },
+            };
+          },
+        },
+      }),
+    }));
+
+    const result = await launchOrResumeThread("stream cap test", process.cwd(), 5000, {
+      taskKey: "stream-cap-task",
+      sdk: "codex",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain("final answer");
+    expect(result.items.length).toBe(2);
+    expect(result.items[0].aggregated_output).toContain("…truncated");
+    expect(result.items[1]).toMatchObject({ type: "stream_notice" });
   });
 
   it("drops poisoned codex thread metadata when resume state is corrupted", async () => {

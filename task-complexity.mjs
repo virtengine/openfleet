@@ -2,7 +2,7 @@
  * task-complexity.mjs — Task complexity routing for bosun.
  *
  * Maps task size/complexity to appropriate AI models and reasoning effort
- * levels. Each executor type (CODEX, COPILOT/Claude) has its own model tier
+ * levels. Each executor type has its own model tier
  * ladder, so small tasks use cheaper/faster models while complex tasks get
  * the most capable models.
  *
@@ -89,6 +89,40 @@ export const DEFAULT_MODEL_PROFILES = Object.freeze({
       reasoningEffort: "high",
     },
   },
+  GEMINI: {
+    [COMPLEXITY_TIERS.LOW]: {
+      model: "gemini-2.5-flash",
+      variant: "GEMINI_2_5_FLASH",
+      reasoningEffort: "low",
+    },
+    [COMPLEXITY_TIERS.MEDIUM]: {
+      model: "gemini-2.5-pro",
+      variant: "DEFAULT",
+      reasoningEffort: "medium",
+    },
+    [COMPLEXITY_TIERS.HIGH]: {
+      model: "gemini-2.5-pro",
+      variant: "GEMINI_2_5_PRO",
+      reasoningEffort: "high",
+    },
+  },
+  OPENCODE: {
+    [COMPLEXITY_TIERS.LOW]: {
+      model: "gpt-5.1-codex-mini",
+      variant: "DEFAULT",
+      reasoningEffort: "low",
+    },
+    [COMPLEXITY_TIERS.MEDIUM]: {
+      model: "gpt-5.2-codex",
+      variant: "DEFAULT",
+      reasoningEffort: "medium",
+    },
+    [COMPLEXITY_TIERS.HIGH]: {
+      model: "gpt-5.3-codex",
+      variant: "DEFAULT",
+      reasoningEffort: "high",
+    },
+  },
 });
 
 /**
@@ -107,6 +141,12 @@ export const MODEL_ALIASES = Object.freeze({
   "sonnet-4.5": { executor: "COPILOT", variant: "CLAUDE_SONNET_4_5" },
   "haiku-4.5": { executor: "COPILOT", variant: "CLAUDE_HAIKU_4_5" },
   "claude-code": { executor: "COPILOT", variant: "CLAUDE_CODE" },
+  "gemini-2.5-flash": { executor: "GEMINI", variant: "GEMINI_2_5_FLASH" },
+  "gemini-2.5-pro": { executor: "GEMINI", variant: "DEFAULT" },
+  "gemini-2.0-flash": { executor: "GEMINI", variant: "GEMINI_2_0_FLASH" },
+  "gemini-1.5-pro": { executor: "GEMINI", variant: "GEMINI_1_5_PRO" },
+  "gemini-1.5-flash": { executor: "GEMINI", variant: "GEMINI_1_5_FLASH" },
+  "opencode-default": { executor: "OPENCODE", variant: "DEFAULT" },
 });
 
 export const EXECUTOR_MODEL_REGISTRY = Object.freeze({
@@ -134,6 +174,23 @@ export const EXECUTOR_MODEL_REGISTRY = Object.freeze({
     "claude-haiku-4.5",
     "claude-code",
   ]),
+  gemini: Object.freeze([
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash",
+  ]),
+  opencode: Object.freeze([
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-mini",
+    "claude-opus-4.6",
+    "claude-sonnet-4.6",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+  ]),
 });
 
 const EXECUTOR_KEY_ALIASES = Object.freeze({
@@ -148,9 +205,19 @@ const EXECUTOR_KEY_ALIASES = Object.freeze({
   "claude-code": "claude",
   "claudecode-sdk": "claude",
   "claudecode-cli": "claude",
+  gemini: "gemini",
+  "gemini-sdk": "gemini",
+  "gemini-cli": "gemini",
+  "google-gemini": "gemini",
+  opencode: "opencode",
+  "opencode-sdk": "opencode",
+  "opencode-cli": "opencode",
+  "open-code": "opencode",
   "CODEX": "codex",
   "COPILOT": "copilot",
   "CLAUDE": "claude",
+  "GEMINI": "gemini",
+  "OPENCODE": "opencode",
 });
 
 export function normalizeExecutorKey(executor) {
@@ -437,7 +504,7 @@ export function formatComplexityDecision(resolved) {
  */
 export function getComplexityMatrix(configOverrides) {
   const matrix = {};
-  for (const executorType of ["CODEX", "COPILOT"]) {
+  for (const executorType of Object.keys(DEFAULT_MODEL_PROFILES)) {
     matrix[executorType] = {};
     for (const tier of Object.values(COMPLEXITY_TIERS)) {
       matrix[executorType][tier] = getModelForComplexity(
@@ -658,5 +725,7 @@ export function executorToSdk(executorType) {
   const normalized = (executorType || "").toUpperCase();
   if (normalized === "CLAUDE") return "claude";
   if (normalized === "COPILOT") return "copilot";
+  if (normalized === "GEMINI") return "gemini";
+  if (normalized === "OPENCODE") return "opencode";
   return "codex";
 }

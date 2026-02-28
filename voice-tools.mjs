@@ -18,6 +18,15 @@ let _fleetCoordinator = null;
 let _agentSupervisor = null;
 let _sharedStateManager = null;
 
+const VALID_EXECUTORS = new Set([
+  "codex-sdk",
+  "copilot-sdk",
+  "claude-sdk",
+  "gemini-sdk",
+  "opencode-sdk",
+]);
+const VALID_AGENT_MODES = new Set(["ask", "agent", "plan"]);
+
 async function getKanban() {
   if (!_kanbanAdapter) {
     _kanbanAdapter = await import("./kanban-adapter.mjs");
@@ -51,6 +60,35 @@ async function getSharedState() {
     _sharedStateManager = await import("./shared-state-manager.mjs");
   }
   return _sharedStateManager;
+}
+
+async function getLatestVisionSummary(sessionId) {
+  const id = String(sessionId || "").trim();
+  if (!id) return "";
+  try {
+    const tracker = await getSessionTracker();
+    const session = tracker.getSessionById
+      ? tracker.getSessionById(id)
+      : (tracker.getSession ? tracker.getSession(id) : null);
+    const messages = Array.isArray(session?.messages) ? session.messages : [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (String(msg?.role || "").trim().toLowerCase() !== "system") continue;
+      const text = String(msg?.content || "").trim();
+      if (!text) continue;
+      if (/^\[Vision\s/i.test(text)) return text;
+    }
+  } catch {
+    // best effort: continue without visual context
+  }
+  return "";
+}
+
+function appendVisionSummary(message, visionSummary) {
+  const base = String(message || "").trim();
+  const summary = String(visionSummary || "").trim();
+  if (!base || !summary) return base;
+  return `${base}\n\nLive visual context from this call:\n${summary}`;
 }
 
 // ── Tool Definitions (OpenAI function-calling format) ────────────────────────
@@ -127,7 +165,7 @@ const TOOL_DEFS = [
   {
     type: "function",
     name: "delegate_to_agent",
-    description: "Delegate a complex task to a coding agent (codex, copilot, claude, or opencode). Use this for code changes, file creation, debugging, or any operation requiring workspace access. The agent will execute the task and return its response.",
+    description: "Delegate a complex task to a coding agent (codex, copilot, claude, gemini, or opencode). Use this for code changes, file creation, debugging, or any operation requiring workspace access. The agent will execute the task and return its response.",
     parameters: {
       type: "object",
       properties: {
@@ -137,13 +175,17 @@ const TOOL_DEFS = [
         },
         executor: {
           type: "string",
-          enum: ["codex-sdk", "copilot-sdk", "claude-sdk", "opencode-sdk"],
+          enum: ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"],
           description: "Which agent to use. Defaults to the configured primary agent.",
         },
         mode: {
           type: "string",
-          enum: ["code", "ask", "architect"],
+          enum: ["ask", "agent", "plan", "code", "architect"],
           description: "Agent mode: code (make changes), ask (read-only), architect (plan). Default: code",
+        },
+        model: {
+          type: "string",
+          description: "Optional model override for the delegated call.",
         },
       },
       required: ["message"],
@@ -164,7 +206,7 @@ const TOOL_DEFS = [
       properties: {
         executor: {
           type: "string",
-          enum: ["codex-sdk", "copilot-sdk", "claude-sdk", "opencode-sdk"],
+          enum: ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"],
           description: "The executor to switch to",
         },
       },
@@ -396,8 +438,31 @@ const TOOL_HANDLERS = {
 
   async delegate_to_agent(args, context) {
     const cfg = loadConfig();
-    const executor = args.executor || cfg.voice?.delegateExecutor || cfg.primaryAgent || "codex-sdk";
-    const mode = args.mode || "code";
+    const requestedExecutor = String(
+      args.executor || context.executor || cfg.voice?.delegateExecutor || cfg.primaryAgent || "codex-sdk",
+    )
+      .trim()
+      .toLowerCase();
+    const executor = VALID_EXECUTORS.has(requestedExecutor)
+      ? requestedExecutor
+      : (cfg.voice?.delegateExecutor || cfg.primaryAgent || "codex-sdk");
+
+    const rawMode = String(args.mode || context.mode || "agent")
+      .trim()
+      .toLowerCase();
+    const mode =
+      rawMode === "code"
+        ? "agent"
+        : rawMode === "architect"
+          ? "plan"
+          : VALID_AGENT_MODES.has(rawMode)
+            ? rawMode
+            : "agent";
+    const model = String(args.model || context.model || "").trim() || undefined;
+    const sessionId = String(context.sessionId || "").trim() || `voice-delegate-${Date.now()}`;
+    const sessionType = String(context.sessionType || "").trim() || (context.sessionId ? "primary" : "voice-delegate");
+    const visionSummary = await getLatestVisionSummary(sessionId);
+    const delegateMessage = appendVisionSummary(args.message, visionSummary);
 
     // Switch agent if different from current
     const currentAgent = getPrimaryAgentName();
@@ -406,10 +471,11 @@ const TOOL_HANDLERS = {
     }
 
     try {
-      const result = await execPrimaryPrompt(args.message, {
+      const result = await execPrimaryPrompt(delegateMessage, {
         mode,
-        sessionId: context.sessionId || `voice-delegate-${Date.now()}`,
-        sessionType: "voice-delegate",
+        model,
+        sessionId,
+        sessionType,
         timeoutMs: 5 * 60 * 1000, // 5 min timeout for voice delegations
         onEvent: () => {
           // Could broadcast progress via WebSocket here

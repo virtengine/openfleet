@@ -719,7 +719,7 @@ export async function execCopilotPrompt(userMessage, options = {}) {
   if (activeTurn && !options._holdActiveTurn) {
     return {
       finalResponse:
-        "⏳ Agent is still executing a previous task. Please wait.",
+        ":clock: Agent is still executing a previous task. Please wait.",
       items: [],
       usage: null,
     };
@@ -857,8 +857,8 @@ export async function execCopilotPrompt(userMessage, options = {}) {
       const reason = abortController?.signal?.reason || "timeout";
       const msg =
         reason === "user_stop"
-          ? "🛑 Agent stopped by user."
-          : `⏱️ Agent timed out after ${timeoutMs / 1000}s`;
+          ? ":close: Agent stopped by user."
+          : `:clock: Agent timed out after ${timeoutMs / 1000}s`;
       return { finalResponse: msg, items: [], usage: null };
     }
     // ── Transient stream retry ──────────────────────────────────────────────────
@@ -885,7 +885,7 @@ export async function execCopilotPrompt(userMessage, options = {}) {
         `[copilot-shell] stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts`,
       );
       return {
-        finalResponse: `❌ Stream disconnected after ${MAX_STREAM_RETRIES} retries: ${err.message}`,
+        finalResponse: `:close: Stream disconnected after ${MAX_STREAM_RETRIES} retries: ${err.message}`,
         items: [],
         usage: null,
       };

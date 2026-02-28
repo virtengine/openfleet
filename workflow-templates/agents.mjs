@@ -7,6 +7,7 @@
  *   - Custom Agent Profile
  *   - Agent Session Monitor (recommended)
  *   - Backend Agent (recommended)
+ *   - Voice + Video Rollout (Parallel Lanes)
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
@@ -145,11 +146,11 @@ After completing your implementation:
     }, { x: 200, y: 1080 }),
 
     node("notify-success", "notify.telegram", "Notify Success", {
-      message: "✅ Frontend task **{{taskTitle}}** passed visual verification and is complete.",
+      message: ":check: Frontend task **{{taskTitle}}** passed visual verification and is complete.",
     }, { x: 200, y: 1200 }),
 
     node("notify-failure", "notify.telegram", "Notify Review Failed", {
-      message: "❌ Frontend task **{{taskTitle}}** failed visual verification. Review evidence in .bosun/evidence/",
+      message: ":close: Frontend task **{{taskTitle}}** failed visual verification. Review evidence in .bosun/evidence/",
     }, { x: 600, y: 1080 }),
 
     node("log-failure", "notify.log", "Log Failure", {
@@ -240,7 +241,7 @@ Provide a structured review with specific file:line references.`,
     }, { x: 400, y: 500 }),
 
     node("notify", "notify.telegram", "Post Review", {
-      message: "📝 PR review complete for {{branch}}",
+      message: ":edit: PR review complete for {{branch}}",
     }, { x: 400, y: 640 }),
   ],
   edges: [
@@ -386,7 +387,7 @@ export const AGENT_SESSION_MONITOR_TEMPLATE = {
     }, { x: 100, y: 800 }),
 
     node("alert-hung", "notify.telegram", "Alert Hung Sessions", {
-      message: "🔴 Agent session appears hung — auto-continue attempted. Check status.",
+      message: ":dot: Agent session appears hung — auto-continue attempted. Check status.",
     }, { x: 100, y: 950 }),
 
     node("all-healthy", "notify.log", "Sessions Healthy", {
@@ -530,7 +531,7 @@ Commit with message "feat: implement [feature]"`,
     }, { x: 180, y: 1320 }),
 
     node("notify-pr-failed", "notify.telegram", "Escalate Lifecycle Handoff Failure", {
-      message: "⚠️ Backend agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required.",
+      message: ":alert: Backend agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required.",
     }, { x: 420, y: 1320 }),
 
     node("set-validation-summary", "action.set_variable", "Summarize Validation Output", {
@@ -599,11 +600,11 @@ Commit with message "fix: address backend workflow validation failures"`,
     }, { x: 360, y: 1980 }),
 
     node("notify-fail", "notify.telegram", "Checks Failed", {
-      message: "⚠️ Backend agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed.",
+      message: ":alert: Backend agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed.",
     }, { x: 820, y: 1820 }),
 
     node("notify-pr-failed-retry", "notify.telegram", "Escalate Lifecycle Failure (Retry Path)", {
-      message: "⚠️ Backend agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required.",
+      message: ":alert: Backend agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required.",
     }, { x: 620, y: 1980 }),
   ],
   edges: [
@@ -645,5 +646,161 @@ Commit with message "fix: address backend workflow validation failures"`,
         "workflow. Test-first methodology, build/lint gates, and Bosun-managed PR lifecycle handoff " +
         "are enforced as distinct workflow stages.",
     },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Voice + Video Rollout (Parallel Lanes)
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const VOICE_VIDEO_PARALLEL_ROLLOUT_TEMPLATE = {
+  id: "template-voice-video-parallel-rollout",
+  name: "Voice + Video Rollout (Parallel Lanes)",
+  description:
+    "Launches three agent lanes in parallel (capture pipeline, provider adapters, " +
+    "and QA/rollout hardening) to accelerate Voice + Video delivery while keeping " +
+    "workstreams isolated by worktree.",
+  category: "agents",
+  enabled: false,
+  trigger: "trigger.manual",
+  variables: {
+    lane1Worktree: "{{worktreePath}}",
+    lane2Worktree: "{{worktreePath}}",
+    lane3Worktree: "{{worktreePath}}",
+    integrationBranch: "feat/voice-video-integration",
+    definitionOfDone:
+      "Voice + vision works end-to-end, provider fallback is explicit, and tests cover config + transport + failure paths.",
+  },
+  nodes: [
+    node("trigger", "trigger.manual", "Launch Parallel Rollout", {}, { x: 500, y: 50 }),
+
+    node("check-worktrees", "condition.expression", "Worktrees Distinct?", {
+      expression:
+        "(() => { " +
+        "const a = String($data?.lane1Worktree || '').trim(); " +
+        "const b = String($data?.lane2Worktree || '').trim(); " +
+        "const c = String($data?.lane3Worktree || '').trim(); " +
+        "if (!a || !b || !c) return false; " +
+        "return new Set([a, b, c]).size === 3; " +
+        "})()",
+    }, { x: 500, y: 170 }),
+
+    node("notify-worktree-error", "notify.telegram", "Invalid Worktree Setup", {
+      message:
+        "Parallel rollout aborted. Configure three distinct worktrees in " +
+        "`lane1Worktree`, `lane2Worktree`, and `lane3Worktree` before launching.",
+    }, { x: 860, y: 170 }),
+
+    node("kickoff-log", "notify.log", "Kickoff Parallel Lanes", {
+      message:
+        "Starting parallel rollout on branch {{integrationBranch}} with 3 lanes.",
+      level: "info",
+    }, { x: 500, y: 290 }),
+
+    node("lane-capture-core", "action.run_agent", "Lane 1: Capture Core", {
+      prompt:
+        "# Lane 1 - Capture Core\n\n" +
+        "Work only in this lane's worktree. Focus on:\n" +
+        "1. Voice video config/schema/env/settings keys\n" +
+        "2. Browser capture loop (screen/camera), adaptive FPS, compression, change detection\n" +
+        "3. Overlay controls + capture state indicators\n\n" +
+        "Guardrails:\n" +
+        "- Do not touch provider dispatch code owned by Lane 2\n" +
+        "- Keep changes bounded to UI/config paths\n" +
+        "- Add/extend tests for capture throttling and config behavior\n\n" +
+        "Target branch: {{integrationBranch}}\n" +
+        "Definition of done: {{definitionOfDone}}",
+      sdk: "auto",
+      cwd: "{{lane1Worktree}}",
+      timeoutMs: 5400000,
+      includeTaskContext: false,
+      failOnError: true,
+    }, { x: 120, y: 450 }),
+
+    node("lane-provider-bridge", "action.run_agent", "Lane 2: Provider Bridge", {
+      prompt:
+        "# Lane 2 - Provider Bridge\n\n" +
+        "Work only in this lane's worktree. Focus on:\n" +
+        "1. Server-side vision frame ingress route and validation\n" +
+        "2. Provider dispatch in voice relay (OpenAI image path, Gemini live path, Claude vision path)\n" +
+        "3. Rate-limits, payload caps, and fallback semantics\n\n" +
+        "Guardrails:\n" +
+        "- Do not edit overlay/capture UI owned by Lane 1\n" +
+        "- Keep provider logic behind explicit feature flags\n" +
+        "- Add/extend tests for endpoint validation and provider routing\n\n" +
+        "Target branch: {{integrationBranch}}\n" +
+        "Definition of done: {{definitionOfDone}}",
+      sdk: "auto",
+      cwd: "{{lane2Worktree}}",
+      timeoutMs: 5400000,
+      includeTaskContext: false,
+      failOnError: true,
+    }, { x: 500, y: 450 }),
+
+    node("lane-hardening", "action.run_agent", "Lane 3: QA + Rollout", {
+      prompt:
+        "# Lane 3 - QA + Rollout Hardening\n\n" +
+        "Work only in this lane's worktree. Focus on:\n" +
+        "1. Integration tests, resilience tests, and docs updates\n" +
+        "2. Migration/rollout notes and operator controls\n" +
+        "3. Conflict-free merge guidance across Lane 1 and Lane 2 outputs\n\n" +
+        "Guardrails:\n" +
+        "- Avoid touching core capture loop and provider dispatch internals unless a test proves breakage\n" +
+        "- Keep this lane focused on verification, docs, and release safety\n" +
+        "- Produce a concise verification summary\n\n" +
+        "Target branch: {{integrationBranch}}\n" +
+        "Definition of done: {{definitionOfDone}}",
+      sdk: "auto",
+      cwd: "{{lane3Worktree}}",
+      timeoutMs: 3600000,
+      includeTaskContext: false,
+      failOnError: true,
+    }, { x: 880, y: 450 }),
+
+    node("aggregate", "transform.aggregate", "Aggregate Lane Results", {
+      sources: ["lane-capture-core", "lane-provider-bridge", "lane-hardening"],
+    }, { x: 500, y: 640 }),
+
+    node("all-passed", "condition.expression", "All Lanes Passed?", {
+      expression:
+        "$ctx.getNodeOutput('lane-capture-core')?.success === true && " +
+        "$ctx.getNodeOutput('lane-provider-bridge')?.success === true && " +
+        "$ctx.getNodeOutput('lane-hardening')?.success === true",
+    }, { x: 500, y: 770 }),
+
+    node("notify-success", "notify.telegram", "Notify Success", {
+      message:
+        "Parallel Voice + Video rollout lanes completed successfully on {{integrationBranch}}. " +
+        "Proceed to integration and final verification.",
+    }, { x: 300, y: 910 }),
+
+    node("notify-failure", "notify.telegram", "Notify Failure", {
+      message:
+        "Parallel Voice + Video rollout has lane failures on {{integrationBranch}}. " +
+        "Inspect lane outputs before integration.",
+    }, { x: 700, y: 910 }),
+  ],
+  edges: [
+    edge("trigger", "check-worktrees"),
+    edge("check-worktrees", "kickoff-log", { condition: "$output?.result === true" }),
+    edge("check-worktrees", "notify-worktree-error", { condition: "$output?.result !== true" }),
+    edge("kickoff-log", "lane-capture-core"),
+    edge("kickoff-log", "lane-provider-bridge"),
+    edge("kickoff-log", "lane-hardening"),
+    edge("lane-capture-core", "aggregate"),
+    edge("lane-provider-bridge", "aggregate"),
+    edge("lane-hardening", "aggregate"),
+    edge("aggregate", "all-passed"),
+    edge("all-passed", "notify-success", { condition: "$output?.result === true" }),
+    edge("all-passed", "notify-failure", { condition: "$output?.result !== true" }),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-02-28T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["voice", "video", "parallel", "subagents", "rollout"],
   },
 };

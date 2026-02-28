@@ -188,7 +188,7 @@ const CodeBlock = memo(function CodeBlock({ code }) {
   return html`
     <div class="chat-code-block">
       <button class="chat-code-copy" onClick=${handleCopy}>
-        ${resolveIcon(copied ? "✓" : "📋")}
+        ${resolveIcon(copied ? "✓" : ":clipboard:")}
       </button>
       <pre><code>${code}</code></pre>
     </div>
@@ -337,7 +337,7 @@ function AttachmentList({ attachments }) {
           <div class="chat-attachment-item" key=${att.id || `${name}-${index}`}>
             ${isImage && url
               ? html`<img class="chat-attachment-thumb" src=${url} alt=${name} />`
-              : html`<span class="chat-attachment-icon">${resolveIcon("📎")}</span>`}
+              : html`<span class="chat-attachment-icon">${resolveIcon(":link:")}</span>`}
             <div class="chat-attachment-meta">
               ${url
                 ? html`<a class="chat-attachment-name" href=${url} target="_blank" rel="noopener">${name}</a>`
@@ -957,7 +957,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   if (!sessionId) {
     return html`
       <div class="chat-view chat-empty-state">
-        <div class="session-empty-icon">${resolveIcon("💬")}</div>
+        <div class="session-empty-icon">${resolveIcon(":chat:")}</div>
         <div class="session-empty-text">
           Select a session to view the live stream.
           <div class="session-empty-subtext">Create a new session or pick one on the left.</div>
@@ -1033,19 +1033,19 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         </div>
         <div class="chat-toolbar-actions">
           <button class="btn btn-ghost btn-sm" onClick=${refreshMessages}>
-            ${iconText("🔄 Refresh")}
+            ${iconText(":refresh: Refresh")}
           </button>
           <button
             class="btn btn-ghost btn-sm"
             onClick=${() => setPaused((prev) => !prev)}
           >
-            ${paused ? "▶ Resume" : "⏸ Pause"}
+            ${paused ? ":play: Resume" : ":pause: Pause"}
           </button>
           <button class="btn btn-ghost btn-sm" onClick=${handleCopyStream}>
-            ${iconText("📋 Copy")}
+            ${iconText(":clipboard: Copy")}
           </button>
           <button class="btn btn-ghost btn-sm" onClick=${handleExportStream}>
-            ⬇️ Export
+            :download: Export
           </button>
         </div>
       </div>
@@ -1152,7 +1152,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         `}
         ${!loading && messages.length === 0 && html`
           <div class="chat-empty-state-inline">
-            <div class="session-empty-icon">${resolveIcon("🛰")}</div>
+            <div class="session-empty-icon">${resolveIcon(":server:")}</div>
             <div class="session-empty-text">
               No messages yet.
               <div class="session-empty-subtext">
@@ -1163,7 +1163,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         `}
         ${messages.length > 0 && filteredMessages.length === 0 && html`
           <div class="chat-empty-state-inline">
-            <div class="session-empty-icon">${resolveIcon("🧰")}</div>
+            <div class="session-empty-icon">${resolveIcon(":settings:")}</div>
             <div class="session-empty-text">
               No messages match these filters.
               <div class="session-empty-subtext">Try clearing filters or wait for new tool events.</div>
@@ -1198,7 +1198,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
                   ${pm.status === "sending"
                     ? "Sending…"
                     : pm.status === "uncertain"
-                      ? html`<span class="chat-pending-warn">${iconText("⚠ Uncertain")}</span>
+                      ? html`<span class="chat-pending-warn">${iconText(":alert: Uncertain")}</span>
                               <button class="btn btn-ghost btn-xs chat-retry-btn"
                                 onClick=${() => retryPendingMessage(pm.tempId)}>↻ Retry</button>`
                       : pm.status === "failed"
@@ -1243,7 +1243,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         ${!isActive && session?.status &&
         html`
           <button class="btn btn-primary btn-sm chat-resume-btn" onClick=${handleResume}>
-            ▶ ${resumeLabel}
+            :play: ${resumeLabel}
           </button>
         `}
         ${pendingAttachments.length > 0 && html`
@@ -1278,7 +1278,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             disabled=${uploadingAttachments}
             title="Attach file"
           >
-            ${resolveIcon("📎")}
+            ${resolveIcon(":link:")}
           </button>
           <textarea
             ref=${inputRef}

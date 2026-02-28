@@ -105,27 +105,27 @@ function formatEvent(event) {
     event.type === "item.started" &&
     event.item?.type === "command_execution"
   ) {
-    return `⚡ Running: \`${event.item.command}\``;
+    return `:zap: Running: \`${event.item.command}\``;
   }
   if (
     event.type === "item.completed" &&
     event.item?.type === "command_execution"
   ) {
-    const status = event.item.exit_code === 0 ? "✅" : "❌";
+    const status = event.item.exit_code === 0 ? ":check:" : ":close:";
     return `${status} Command done: \`${event.item.command}\``;
   }
   if (event.type === "item.started" && event.item?.type === "mcp_tool_call") {
-    return `🔌 MCP [${event.item.server}/${event.item.tool}]`;
+    return `:plug: MCP [${event.item.server}/${event.item.tool}]`;
   }
   if (event.type === "item.completed" && event.item?.type === "mcp_tool_call") {
-    const status = event.item.status === "completed" ? "✅" : "❌";
+    const status = event.item.status === "completed" ? ":check:" : ":close:";
     return `${status} MCP [${event.item.server}/${event.item.tool}]`;
   }
   if (event.type === "item.started" && event.item?.type === "web_search") {
-    return `🔍 Searching: ${event.item.query || ""}`;
+    return `:search: Searching: ${event.item.query || ""}`;
   }
   if (event.type === "item.updated" && event.item?.type === "reasoning") {
-    return event.item.text ? `💭 ${event.item.text.slice(0, 300)}` : null;
+    return event.item.text ? `:u1f4ad: ${event.item.text.slice(0, 300)}` : null;
   }
   return null;
 }
@@ -496,7 +496,7 @@ export async function execClaudePrompt(userMessage, options = {}) {
   if (activeTurn && !options._holdActiveTurn) {
     return {
       finalResponse:
-        "⏳ Agent is still executing a previous task. Please wait.",
+        ":clock: Agent is still executing a previous task. Please wait.",
       items: [],
       usage: null,
     };
@@ -505,7 +505,7 @@ export async function execClaudePrompt(userMessage, options = {}) {
   const query = await loadClaudeSdk();
   if (!query) {
     return {
-      finalResponse: "❌ Claude SDK not available.",
+      finalResponse: ":close: Claude SDK not available.",
       items: [],
       usage: null,
     };
@@ -663,8 +663,8 @@ export async function execClaudePrompt(userMessage, options = {}) {
       const reason = abortReason || controller.signal.reason;
       const msg =
         reason === "user_stop"
-          ? "🛑 Agent stopped by user."
-          : `⏱️ Agent timed out after ${timeoutMs / 1000}s`;
+          ? ":close: Agent stopped by user."
+          : `:clock: Agent timed out after ${timeoutMs / 1000}s`;
       return { finalResponse: msg, items: [], usage: null };
     }
     // ── Transient stream retry ──────────────────────────────────────────────────
@@ -696,7 +696,7 @@ export async function execClaudePrompt(userMessage, options = {}) {
     }
     const message = err?.message || String(err || "unknown error");
     return {
-      finalResponse: `❌ Claude agent failed: ${message}`,
+      finalResponse: `:close: Claude agent failed: ${message}`,
       items: [],
       usage: null,
     };

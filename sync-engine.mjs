@@ -811,7 +811,7 @@ export class SyncEngine {
         );
         void this
           .#notifyTelegram(
-            `⚠️ Sync engine: ${this.#consecutiveFailures} consecutive failures, backing off to 5 min interval`,
+            `:alert: Sync engine: ${this.#consecutiveFailures} consecutive failures, backing off to 5 min interval`,
           )
           .catch(() => {});
       }
@@ -1121,7 +1121,7 @@ export class SyncEngine {
       context,
       timestamp: new Date().toISOString(),
     };
-    void this.#notifyTelegram(`⚠️ ${message}`).catch(() => {});
+    void this.#notifyTelegram(`:alert: ${message}`).catch(() => {});
     if (typeof this.#onAlert === "function") {
       try {
         this.#onAlert(payload);

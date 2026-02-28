@@ -16,7 +16,7 @@ After VM crashes, "ghost CLI" processes kept running `npm install` commands auto
 - No cleanup on crash/signals
 - `setInterval` kept running independently
 
-### Solution ✅
+### Solution :check:
 **[update-check.mjs](update-check.mjs)**:
 - Added parent process health monitoring (checks every 30s if parent PID exists)
 - Registered cleanup handlers for SIGTERM, SIGINT, SIGHUP
@@ -25,9 +25,9 @@ After VM crashes, "ghost CLI" processes kept running `npm install` commands auto
 - Comprehensive test suite (6 tests covering all safety features)
 
 **Results:**
-- ✅ No more zombie processes after crashes
-- ✅ Proper cleanup on SIGTERM/SIGINT/SIGHUP
-- ✅ All 360 tests passing (354 existing + 6 new)
+- :check: No more zombie processes after crashes
+- :check: Proper cleanup on SIGTERM/SIGINT/SIGHUP
+- :check: All 360 tests passing (354 existing + 6 new)
 
 ---
 
@@ -41,7 +41,7 @@ Couldn't distinguish between:
 - **Fresh task** (0 commits, never started)
 - **Crashed task** (has commits, needs push)
 
-### Solution ✅
+### Solution :check:
 **[ve-orchestrator.ps1](ve-orchestrator.ps1:517-551)**:
 
 New helper function `Get-CommitsAhead()`:
@@ -68,9 +68,9 @@ function Get-CommitsAhead {
 - After 2 failed fresh restarts → archive + manual_review
 
 **Results:**
-- ✅ No more wasted retries on fresh tasks
-- ✅ Fresh tasks restart properly with full context
-- ✅ Crashed tasks get actionable push instructions
+- :check: No more wasted retries on fresh tasks
+- :check: Fresh tasks restart properly with full context
+- :check: Crashed tasks get actionable push instructions
 
 ---
 
@@ -85,7 +85,7 @@ Orchestrator rebasing **EVERY old succeeded/completed task** onto origin/main:
 ### Root Cause
 `rebaseDownstreamTasks()` VK fallback fetched ALL task-attempts without filtering by status.
 
-### Solution ✅
+### Solution :check:
 **[monitor.mjs:3477-3491](monitor.mjs#L3477-L3491)**:
 
 Filter vkAttempts to only include active tasks:
@@ -110,10 +110,10 @@ if (attempt.status === "archived" || attempt.archived_at) {
 ```
 
 **Results:**
-- ✅ Only rebases attempts for tasks with status "inprogress" or "inreview"
-- ✅ Skips ALL completed/succeeded/archived tasks
-- ✅ No more 500 errors from trying to rebase completed attempts
-- ✅ Massive reduction in API calls and log spam
+- :check: Only rebases attempts for tasks with status "inprogress" or "inreview"
+- :check: Skips ALL completed/succeeded/archived tasks
+- :check: No more 500 errors from trying to rebase completed attempts
+- :check: Massive reduction in API calls and log spam
 
 ---
 
@@ -122,7 +122,7 @@ if (attempt.status === "archived" || attempt.archived_at) {
 ### Problem
 Tasks that are 5-6 days old and completed still in VK DB, slowing down UI and queries.
 
-### Solution ✅
+### Solution :check:
 **[task-archiver.mjs](task-archiver.mjs)** (NEW):
 
 Automatically archives completed VK tasks to `.cache/completed-tasks/` after 1+ day:
@@ -163,10 +163,10 @@ export function formatSprintReport(report)
 - Ready to integrate with monitor.mjs maintenance sweep (see Integration Guide below)
 
 **Results:**
-- ✅ Old completed tasks moved to `.cache` for review
-- ✅ VK database stays clean and fast
-- ✅ Sprint review reports generated from archived data
-- ✅ No performance degradation from old tasks
+- :check: Old completed tasks moved to `.cache` for review
+- :check: VK database stays clean and fast
+- :check: Sprint review reports generated from archived data
+- :check: No performance degradation from old tasks
 
 ---
 
@@ -212,9 +212,9 @@ setInterval(async () => {
 ## Test-Driven Development (TDD) Recommendations
 
 ### Current State
-- ✅ 360 tests passing
-- ✅ Comprehensive test suite for update-check, workspace-reaper, etc.
-- ✅ Syntax checks in pre-commit
+- :check: 360 tests passing
+- :check: Comprehensive test suite for update-check, workspace-reaper, etc.
+- :check: Syntax checks in pre-commit
 
 ### Improvements Needed
 
@@ -313,15 +313,15 @@ All bug patterns documented in [MEMORY.md](C:\Users\jON\.claude\projects\c--User
 ## Impact
 
 ### Before
-- ❌ Zombie processes after crashes
-- ❌ Wasted retries on fresh tasks ("NO_CHANGES")
-- ❌ Hundreds of failed rebase attempts on completed tasks
-- ❌ 5-6 day old completed tasks slowing VK database
+- :close: Zombie processes after crashes
+- :close: Wasted retries on fresh tasks ("NO_CHANGES")
+- :close: Hundreds of failed rebase attempts on completed tasks
+- :close: 5-6 day old completed tasks slowing VK database
 
 ### After
-- ✅ Clean process lifecycle management
-- ✅ Smart retry detection (fresh vs crashed)
-- ✅ Only rebase active tasks
-- ✅ Auto-archive old tasks to .cache
-- ✅ Sprint review system ready
-- ✅ 360/360 tests passing
+- :check: Clean process lifecycle management
+- :check: Smart retry detection (fresh vs crashed)
+- :check: Only rebase active tasks
+- :check: Auto-archive old tasks to .cache
+- :check: Sprint review system ready
+- :check: 360/360 tests passing
