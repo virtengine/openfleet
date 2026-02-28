@@ -1766,10 +1766,28 @@ function applyTelegramMiniAppDefaults(env, sourceEnv = process.env) {
   );
 
   if (!env.TELEGRAM_UI_TUNNEL && !sourceEnv.TELEGRAM_UI_TUNNEL) {
-    env.TELEGRAM_UI_TUNNEL = "auto";
+    env.TELEGRAM_UI_TUNNEL = "named";
   }
   if (!env.TELEGRAM_UI_ALLOW_UNSAFE && !sourceEnv.TELEGRAM_UI_ALLOW_UNSAFE) {
     env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+  }
+  if (
+    !env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK
+    && !sourceEnv.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK
+  ) {
+    env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK = "false";
+  }
+  if (
+    !env.TELEGRAM_UI_FALLBACK_AUTH_ENABLED
+    && !sourceEnv.TELEGRAM_UI_FALLBACK_AUTH_ENABLED
+  ) {
+    env.TELEGRAM_UI_FALLBACK_AUTH_ENABLED = "true";
+  }
+  if (
+    !env.CLOUDFLARE_USERNAME_HOSTNAME_POLICY
+    && !sourceEnv.CLOUDFLARE_USERNAME_HOSTNAME_POLICY
+  ) {
+    env.CLOUDFLARE_USERNAME_HOSTNAME_POLICY = "per-user-fixed";
   }
   return true;
 }

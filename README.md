@@ -44,6 +44,33 @@ Requires:
 
 ---
 
+## Permanent Mini App Hostname + Fallback Auth
+
+Bosun defaults the Mini App tunnel to **named** mode so the Telegram URL can stay stable (`<user>.<base-domain>`), with quick tunnels only as explicit fallback.
+
+Required Cloudflare settings:
+
+- `CLOUDFLARE_TUNNEL_NAME`
+- `CLOUDFLARE_TUNNEL_CREDENTIALS`
+- `CLOUDFLARE_BASE_DOMAIN` (for example `bosun.det.io`)
+- `CLOUDFLARE_ZONE_ID`
+- `CLOUDFLARE_API_TOKEN` (Zone DNS edit scope for the target zone)
+
+Useful optional settings:
+
+- `CLOUDFLARE_TUNNEL_HOSTNAME` (explicit hostname override)
+- `CLOUDFLARE_USERNAME_HOSTNAME_POLICY=per-user-fixed`
+- `TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK=false`
+
+Fallback admin auth (secondary path) is available and stores only Argon2id hash + salt, never plaintext. Use:
+
+- `POST /api/auth/fallback/set` to set/rotate
+- `POST /api/auth/fallback/rotate` as explicit rotate alias
+- `POST /api/auth/fallback/reset` to clear
+- `POST /api/auth/fallback/login` to mint normal `ve_session` cookie
+
+---
+
 ## What Bosun does
 
 - Routes work across Codex, Copilot, Claude, and OpenCode executors

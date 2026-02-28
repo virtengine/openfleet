@@ -2550,6 +2550,18 @@
       const [route, qs] = path.split('?');
       const params = new URLSearchParams(qs || '');
 
+      // ── Auth / Fallback ──
+      if (route === '/api/auth/fallback/status')
+        return { ok: true, data: { enabled: false, hasSecret: false } };
+      if (route === '/api/auth/fallback/login')
+        return { ok: true, tokenIssued: true, auth: 'fallback' };
+      if (route === '/api/auth/fallback/set')
+        return { ok: true, data: { enabled: true, hasSecret: true } };
+      if (route === '/api/auth/fallback/rotate')
+        return { ok: true, data: { enabled: true, hasSecret: true } };
+      if (route === '/api/auth/fallback/reset')
+        return { ok: true, data: { enabled: false, hasSecret: false } };
+
       // ── Status & Executor ──
       if (route === '/api/status')
         return { data: buildStatusSnapshot() };
@@ -3229,6 +3241,9 @@
         const ses = STATE.sessions.find(s => s.id === sid);
         if (ses) ses.status = 'archived';
         return { ok: true, session: ses || null };
+      }
+      if (route.match(/^\/api\/sessions\/[^/]+\/missing_credentials$/)) {
+        return { ok: false, changed: false, action: 'missing_credentials' };
       }
       if (route === '/api/sessions/create') {
         const id = 'ses-' + Math.random().toString(36).slice(2, 6);

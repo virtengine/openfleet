@@ -1,11 +1,11 @@
 import { execSync, spawn, spawnSync } from "node:child_process";
-import { createHash, createHmac, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
+import { argon2, createHash, createHmac, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, chmodSync, createWriteStream, createReadStream, writeFileSync, unlinkSync, watchFile, unwatchFile } from "node:fs";
 import { open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { get as httpsGet } from "node:https";
 import { createServer as createHttpsServer } from "node:https";
-import { networkInterfaces, homedir } from "node:os";
+import { networkInterfaces, homedir, userInfo as getOsUserInfo } from "node:os";
 import { connect as netConnect } from "node:net";
 import { resolve, extname, dirname, basename, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -225,6 +225,12 @@ let _wfRecommendedInstalled = false;
 let _wfInitPromise = null;
 let _wfInitDone = false;
 let _wfLoadedBase = null;
+let workflowEventDedupWindowMs = (() => {
+  const parsed = Number.parseInt(process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS || "15000", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 15_000;
+  return Math.min(300_000, Math.max(250, parsed));
+})();
+const workflowEventDedup = new Map();
 
 function parseBooleanEnv(rawValue, fallback = false) {
   if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") {
@@ -410,10 +416,19 @@ async function getWorkflowEngineModule() {
           console.warn("[workflows] prompt resolver failed:", err.message);
         }
 
+        let meetingService = null;
+        try {
+          const { createMeetingWorkflowService } = await import("./meeting-workflow-service.mjs");
+          meetingService = createMeetingWorkflowService();
+        } catch (err) {
+          console.warn("[workflows] meeting service unavailable:", err.message);
+        }
+
         const services = {
           telegram: telegramService,
           agentPool: agentPoolService,
           kanban: kanbanService,
+          meeting: meetingService,
           prompts: promptBundle?.prompts || null,
         };
         _wfEngine.getWorkflowEngine({ services });
@@ -506,6 +521,113 @@ async function getWorkflowEngineModule() {
   }
 
   return _wfEngine;
+}
+
+function allowWorkflowEvent(dedupKey, windowMs = workflowEventDedupWindowMs) {
+  if (!dedupKey) return true;
+  const now = Date.now();
+  const lastSeen = workflowEventDedup.get(dedupKey) || 0;
+  if (now - lastSeen < windowMs) {
+    return false;
+  }
+  workflowEventDedup.set(dedupKey, now);
+  if (workflowEventDedup.size > 1000) {
+    const cutoff = now - windowMs * 2;
+    for (const [key, ts] of workflowEventDedup.entries()) {
+      if (ts < cutoff) workflowEventDedup.delete(key);
+    }
+  }
+  return true;
+}
+
+function buildWorkflowEventPayload(eventType, eventData = {}, triggerSource = "ui-event") {
+  const payload = eventData && typeof eventData === "object"
+    ? { ...eventData }
+    : {};
+  payload.eventType = eventType;
+  if (String(eventType || "").startsWith("pr.")) {
+    const prEvent = String(eventType).slice(3).trim();
+    if (prEvent) payload.prEvent = prEvent;
+  }
+  payload._triggerSource = triggerSource;
+  payload._triggerEventType = eventType;
+  payload._triggeredAt = new Date().toISOString();
+  return payload;
+}
+
+async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
+  try {
+    if (!parseBooleanEnv(process.env.WORKFLOW_AUTOMATION_ENABLED, true)) {
+      return false;
+    }
+
+    const dedupKey = String(opts?.dedupKey || "").trim();
+    if (dedupKey && !allowWorkflowEvent(dedupKey)) {
+      return false;
+    }
+
+    const wfMod = await getWorkflowEngineModule();
+    if (!wfMod?.getWorkflowEngine) return false;
+
+    const engine = wfMod.getWorkflowEngine();
+    if (!engine?.evaluateTriggers || !engine?.execute) return false;
+
+    const payload = buildWorkflowEventPayload(eventType, eventData, "ui-server");
+    let triggered = [];
+    try {
+      triggered = await engine.evaluateTriggers(eventType, payload);
+    } catch (err) {
+      console.warn(
+        `[workflows] trigger evaluation failed for ${eventType}: ${err?.message || err}`,
+      );
+      return false;
+    }
+
+    if (!Array.isArray(triggered) || triggered.length === 0) {
+      return false;
+    }
+
+    for (const match of triggered) {
+      const workflowId = String(match?.workflowId || "").trim();
+      if (!workflowId) continue;
+
+      const runPayload = {
+        ...payload,
+        _triggeredBy: match?.triggeredBy || null,
+      };
+
+      Promise.resolve()
+        .then(() => engine.execute(workflowId, runPayload))
+        .then((ctx) => {
+          const runStatus =
+            Array.isArray(ctx?.errors) && ctx.errors.length > 0
+              ? "failed"
+              : "completed";
+          console.log(
+            `[workflows] auto-run ${runStatus} workflow=${workflowId} runId=${ctx?.id || "unknown"} event=${eventType}`,
+          );
+        })
+        .catch((err) => {
+          console.warn(
+            `[workflows] auto-run failed workflow=${workflowId} event=${eventType}: ${err?.message || err}`,
+          );
+        });
+    }
+
+    console.log(
+      `[workflows] event "${eventType}" triggered ${triggered.length} workflow run(s)`,
+    );
+    return true;
+  } catch (err) {
+    console.warn(`[workflows] dispatchWorkflowEvent error for ${eventType}: ${err?.message || err}`);
+    return false;
+  }
+}
+
+function queueWorkflowEvent(eventType, eventData = {}, opts = {}) {
+  dispatchWorkflowEvent(eventType, eventData, opts).catch((err) => {
+    console.warn(`[workflows] queueWorkflowEvent failure for ${eventType}: ${err?.message || err}`);
+  });
 }
 
 // ── Vendor module map ─────────────────────────────────────────────────────────
@@ -1830,6 +1952,314 @@ function persistLastUiPort(port) {
   }
 }
 
+const FALLBACK_AUTH_STATE_FILE = "ui-fallback-auth.json";
+const FALLBACK_AUTH_ALGORITHM = "argon2id";
+const FALLBACK_AUTH_SALT_BYTES = 16;
+const FALLBACK_AUTH_TAG_LENGTH = 32;
+const FALLBACK_AUTH_MEMORY_KIB = 64 * 1024;
+const FALLBACK_AUTH_PASSES = 3;
+const FALLBACK_AUTH_PARALLELISM = 1;
+const FALLBACK_AUTH_MIN_PASSWORD_LENGTH = 10;
+const FALLBACK_AUTH_MIN_PIN_LENGTH = 6;
+
+let fallbackAuthRecordCache = null;
+const fallbackAuthRateLimitByIp = new Map();
+let fallbackAuthGlobalWindow = { windowStart: 0, count: 0 };
+const fallbackAuthRuntime = {
+  failedAttempts: 0,
+  lockoutUntil: 0,
+  transientCooldownUntil: 0,
+  lastFailureAt: 0,
+  lastSuccessAt: 0,
+};
+
+function getFallbackAuthConfig() {
+  const enabled = parseBooleanEnv(
+    process.env.TELEGRAM_UI_FALLBACK_AUTH_ENABLED,
+    true,
+  );
+  const perIpPerMin = Math.max(
+    1,
+    Number(process.env.TELEGRAM_UI_FALLBACK_AUTH_RATE_LIMIT_IP_PER_MIN || "10"),
+  );
+  const globalPerMin = Math.max(
+    1,
+    Number(process.env.TELEGRAM_UI_FALLBACK_AUTH_RATE_LIMIT_GLOBAL_PER_MIN || "60"),
+  );
+  const maxFailures = Math.max(
+    1,
+    Number(process.env.TELEGRAM_UI_FALLBACK_AUTH_MAX_FAILURES || "5"),
+  );
+  const lockoutMs = Math.max(
+    10_000,
+    Number(process.env.TELEGRAM_UI_FALLBACK_AUTH_LOCKOUT_MS || "600000"),
+  );
+  const transientCooldownMs = Math.max(
+    1000,
+    Number(process.env.TELEGRAM_UI_FALLBACK_AUTH_TRANSIENT_COOLDOWN_MS || "5000"),
+  );
+  const rotateDays = Math.max(
+    1,
+    Number(process.env.TELEGRAM_UI_FALLBACK_AUTH_ROTATE_DAYS || "30"),
+  );
+  return {
+    enabled,
+    perIpPerMin,
+    globalPerMin,
+    maxFailures,
+    lockoutMs,
+    transientCooldownMs,
+    rotateDays,
+  };
+}
+
+function getFallbackAuthStatePath() {
+  return resolveUiCachePath(FALLBACK_AUTH_STATE_FILE);
+}
+
+function readFallbackAuthRecord() {
+  if (fallbackAuthRecordCache && typeof fallbackAuthRecordCache === "object") {
+    return fallbackAuthRecordCache;
+  }
+  try {
+    const statePath = getFallbackAuthStatePath();
+    if (!existsSync(statePath)) return null;
+    const parsed = JSON.parse(readFileSync(statePath, "utf8"));
+    if (!parsed || typeof parsed !== "object") return null;
+    if (
+      typeof parsed.hash !== "string"
+      || typeof parsed.salt !== "string"
+      || parsed.algorithm !== FALLBACK_AUTH_ALGORITHM
+    ) {
+      return null;
+    }
+    fallbackAuthRecordCache = parsed;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeFallbackAuthRecord(record) {
+  fallbackAuthRecordCache = record;
+  try {
+    const statePath = getFallbackAuthStatePath();
+    writeFileSync(statePath, JSON.stringify(record, null, 2), "utf8");
+  } catch {
+    // best effort
+  }
+}
+
+function clearFallbackAuthRecord() {
+  fallbackAuthRecordCache = null;
+  try {
+    const statePath = getFallbackAuthStatePath();
+    if (existsSync(statePath)) unlinkSync(statePath);
+  } catch {
+    // best effort
+  }
+}
+
+function isFallbackSecretStrong(secret) {
+  const normalized = String(secret || "").trim();
+  if (!normalized) return false;
+  if (/^\d+$/.test(normalized)) {
+    return normalized.length >= FALLBACK_AUTH_MIN_PIN_LENGTH;
+  }
+  return normalized.length >= FALLBACK_AUTH_MIN_PASSWORD_LENGTH;
+}
+
+async function deriveFallbackAuthHash(secret, saltBuffer) {
+  return new Promise((resolveHash, rejectHash) => {
+    argon2(
+      FALLBACK_AUTH_ALGORITHM,
+      {
+        message: Buffer.from(String(secret || ""), "utf8"),
+        nonce: saltBuffer,
+        parallelism: FALLBACK_AUTH_PARALLELISM,
+        tagLength: FALLBACK_AUTH_TAG_LENGTH,
+        memory: FALLBACK_AUTH_MEMORY_KIB,
+        passes: FALLBACK_AUTH_PASSES,
+      },
+      (err, hash) => {
+        if (err) return rejectHash(err);
+        resolveHash(hash);
+      },
+    );
+  });
+}
+
+async function setFallbackAuthSecret(secret, { actor = "api" } = {}) {
+  if (!isFallbackSecretStrong(secret)) {
+    throw new Error(
+      `Fallback secret must be >= ${FALLBACK_AUTH_MIN_PIN_LENGTH} digits (PIN) or >= ${FALLBACK_AUTH_MIN_PASSWORD_LENGTH} chars (password)`,
+    );
+  }
+  const salt = randomBytes(FALLBACK_AUTH_SALT_BYTES);
+  const hash = await deriveFallbackAuthHash(secret, salt);
+  const existing = readFallbackAuthRecord();
+  const now = Date.now();
+  writeFallbackAuthRecord({
+    version: 1,
+    algorithm: FALLBACK_AUTH_ALGORITHM,
+    hash: hash.toString("base64"),
+    salt: salt.toString("base64"),
+    tagLength: FALLBACK_AUTH_TAG_LENGTH,
+    memoryKiB: FALLBACK_AUTH_MEMORY_KIB,
+    passes: FALLBACK_AUTH_PASSES,
+    parallelism: FALLBACK_AUTH_PARALLELISM,
+    createdAt: Number(existing?.createdAt || now),
+    updatedAt: now,
+    rotatedAt: now,
+    updatedBy: String(actor || "api"),
+  });
+  fallbackAuthRuntime.failedAttempts = 0;
+  fallbackAuthRuntime.lockoutUntil = 0;
+  fallbackAuthRuntime.transientCooldownUntil = 0;
+}
+
+function resetFallbackAuthSecret() {
+  clearFallbackAuthRecord();
+  fallbackAuthRuntime.failedAttempts = 0;
+  fallbackAuthRuntime.lockoutUntil = 0;
+  fallbackAuthRuntime.transientCooldownUntil = 0;
+}
+
+function getRequestIp(req) {
+  return String(
+    req?.headers?.["x-forwarded-for"]
+    || req?.socket?.remoteAddress
+    || "unknown",
+  ).split(",")[0].trim().toLowerCase();
+}
+
+function consumeFallbackRateLimits(req, config) {
+  const now = Date.now();
+  const windowMs = 60_000;
+  const ip = getRequestIp(req);
+
+  const globalBucket = fallbackAuthGlobalWindow;
+  if (!globalBucket.windowStart || now - globalBucket.windowStart > windowMs) {
+    fallbackAuthGlobalWindow = { windowStart: now, count: 0 };
+  }
+  fallbackAuthGlobalWindow.count += 1;
+  if (fallbackAuthGlobalWindow.count > config.globalPerMin) {
+    return { ok: false, reason: "global_rate_limited" };
+  }
+
+  let bucket = fallbackAuthRateLimitByIp.get(ip);
+  if (!bucket || now - bucket.windowStart > windowMs) {
+    bucket = { windowStart: now, count: 0 };
+    fallbackAuthRateLimitByIp.set(ip, bucket);
+  }
+  bucket.count += 1;
+  if (bucket.count > config.perIpPerMin) {
+    return { ok: false, reason: "ip_rate_limited" };
+  }
+  return { ok: true };
+}
+
+async function verifyFallbackAuthSecret(secret) {
+  const record = readFallbackAuthRecord();
+  if (!record?.hash || !record?.salt) return false;
+  const storedHash = Buffer.from(String(record.hash || ""), "base64");
+  const salt = Buffer.from(String(record.salt || ""), "base64");
+  const derived = await deriveFallbackAuthHash(secret, salt);
+  if (derived.length !== storedHash.length) return false;
+  return timingSafeEqual(derived, storedHash);
+}
+
+async function attemptFallbackAuth(req, secret) {
+  const cfg = getFallbackAuthConfig();
+  const now = Date.now();
+  if (!cfg.enabled) return { ok: false, reason: "disabled" };
+  if (isAllowUnsafe()) return { ok: false, reason: "unsafe_mode_enabled" };
+  if (!readFallbackAuthRecord()) return { ok: false, reason: "missing_credential" };
+
+  if (fallbackAuthRuntime.transientCooldownUntil > now) {
+    return { ok: false, reason: "transient_cooldown" };
+  }
+  if (fallbackAuthRuntime.lockoutUntil > now) {
+    return { ok: false, reason: "locked" };
+  }
+  const rateCheck = consumeFallbackRateLimits(req, cfg);
+  if (!rateCheck.ok) return { ok: false, reason: rateCheck.reason };
+
+  try {
+    const valid = await verifyFallbackAuthSecret(secret);
+    if (valid) {
+      fallbackAuthRuntime.failedAttempts = 0;
+      fallbackAuthRuntime.lockoutUntil = 0;
+      fallbackAuthRuntime.lastSuccessAt = now;
+      ensureSessionToken();
+      return { ok: true, reason: "success" };
+    }
+  } catch {
+    fallbackAuthRuntime.transientCooldownUntil = now + cfg.transientCooldownMs;
+    return { ok: false, reason: "transient_verify_error" };
+  }
+
+  fallbackAuthRuntime.failedAttempts += 1;
+  fallbackAuthRuntime.lastFailureAt = now;
+  if (fallbackAuthRuntime.failedAttempts >= cfg.maxFailures) {
+    fallbackAuthRuntime.lockoutUntil = now + cfg.lockoutMs;
+    fallbackAuthRuntime.failedAttempts = 0;
+  }
+  return { ok: false, reason: "invalid_secret" };
+}
+
+function getFallbackAuthStatus() {
+  const cfg = getFallbackAuthConfig();
+  const record = readFallbackAuthRecord();
+  const now = Date.now();
+  const rotationDueAt = record?.updatedAt
+    ? Number(record.updatedAt) + cfg.rotateDays * 24 * 60 * 60 * 1000
+    : 0;
+  const rotationDue = rotationDueAt > 0 && now >= rotationDueAt;
+  const locked = fallbackAuthRuntime.lockoutUntil > now;
+  const remediation = [];
+  if (!record) remediation.push("missing_credential");
+  if (!cfg.enabled) remediation.push("disabled_by_env");
+  if (isAllowUnsafe()) remediation.push("unsafe_mode_enabled");
+  if (locked) remediation.push("locked_temporarily");
+  if (rotationDue) remediation.push("rotation_due");
+  return {
+    configured: Boolean(record?.hash),
+    enabled: cfg.enabled,
+    active: cfg.enabled && Boolean(record?.hash) && !isAllowUnsafe(),
+    locked,
+    lockoutUntil: locked ? fallbackAuthRuntime.lockoutUntil : 0,
+    transientCooldownUntil:
+      fallbackAuthRuntime.transientCooldownUntil > now
+        ? fallbackAuthRuntime.transientCooldownUntil
+        : 0,
+    rotationDue,
+    rotationDueAt,
+    rotateDays: cfg.rotateDays,
+    updatedAt: Number(record?.updatedAt || 0) || 0,
+    updatedBy: String(record?.updatedBy || ""),
+    rateLimits: {
+      perIpPerMin: cfg.perIpPerMin,
+      globalPerMin: cfg.globalPerMin,
+      maxFailures: cfg.maxFailures,
+      lockoutMs: cfg.lockoutMs,
+    },
+    remediation,
+  };
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, bucket] of fallbackAuthRateLimitByIp) {
+    if (now - bucket.windowStart > 120_000) {
+      fallbackAuthRateLimitByIp.delete(ip);
+    }
+  }
+  if (now - fallbackAuthGlobalWindow.windowStart > 120_000) {
+    fallbackAuthGlobalWindow = { windowStart: 0, count: 0 };
+  }
+}, 300_000).unref();
+
 const projectSyncWebhookMetrics = {
   received: 0,
   processed: 0,
@@ -1858,7 +2288,11 @@ const SETTINGS_KNOWN_KEYS = [
   "TELEGRAM_HISTORY_RETENTION_DAYS",
   "PROJECT_NAME", "TELEGRAM_MINIAPP_ENABLED", "TELEGRAM_UI_PORT", "TELEGRAM_UI_HOST",
   "TELEGRAM_UI_PUBLIC_HOST", "TELEGRAM_UI_BASE_URL", "TELEGRAM_UI_ALLOW_UNSAFE",
-  "TELEGRAM_UI_AUTH_MAX_AGE_SEC", "TELEGRAM_UI_TUNNEL",
+  "TELEGRAM_UI_AUTH_MAX_AGE_SEC", "TELEGRAM_UI_TUNNEL", "TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK",
+  "TELEGRAM_UI_FALLBACK_AUTH_ENABLED", "TELEGRAM_UI_FALLBACK_AUTH_RATE_LIMIT_IP_PER_MIN",
+  "TELEGRAM_UI_FALLBACK_AUTH_RATE_LIMIT_GLOBAL_PER_MIN", "TELEGRAM_UI_FALLBACK_AUTH_MAX_FAILURES",
+  "TELEGRAM_UI_FALLBACK_AUTH_LOCKOUT_MS", "TELEGRAM_UI_FALLBACK_AUTH_ROTATE_DAYS",
+  "TELEGRAM_UI_FALLBACK_AUTH_TRANSIENT_COOLDOWN_MS",
   "EXECUTOR_MODE", "INTERNAL_EXECUTOR_PARALLEL", "INTERNAL_EXECUTOR_SDK",
   "INTERNAL_EXECUTOR_TIMEOUT_MS", "INTERNAL_EXECUTOR_MAX_RETRIES", "INTERNAL_EXECUTOR_POLL_MS",
   "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED", "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
@@ -1888,7 +2322,10 @@ const SETTINGS_KNOWN_KEYS = [
   "GITHUB_PROJECT_SYNC_ALERT_FAILURE_THRESHOLD", "GITHUB_PROJECT_SYNC_RATE_LIMIT_ALERT_THRESHOLD",
   "VK_TARGET_BRANCH", "CODEX_ANALYZE_MERGE_STRATEGY", "DEPENDABOT_AUTO_MERGE",
   "GH_RECONCILE_ENABLED",
-  "CLOUDFLARE_TUNNEL_NAME", "CLOUDFLARE_TUNNEL_CREDENTIALS",
+  "CLOUDFLARE_TUNNEL_NAME", "CLOUDFLARE_TUNNEL_CREDENTIALS", "CLOUDFLARE_BASE_DOMAIN",
+  "CLOUDFLARE_TUNNEL_HOSTNAME", "CLOUDFLARE_USERNAME_HOSTNAME_POLICY",
+  "CLOUDFLARE_ZONE_ID", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_DNS_SYNC_ENABLED",
+  "CLOUDFLARE_DNS_MAX_RETRIES", "CLOUDFLARE_DNS_RETRY_BASE_MS",
   "TELEGRAM_PRESENCE_INTERVAL_SEC", "TELEGRAM_PRESENCE_DISABLED",
   "VE_INSTANCE_LABEL", "VE_COORDINATOR_ELIGIBLE", "VE_COORDINATOR_PRIORITY",
   "FLEET_ENABLED", "FLEET_BUFFER_MULTIPLIER", "FLEET_SYNC_INTERVAL_MS",
@@ -1919,7 +2356,7 @@ const SETTINGS_SENSITIVE_KEYS = new Set([
   "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "CODEX_MODEL_PROFILE_XL_API_KEY", "CODEX_MODEL_PROFILE_M_API_KEY",
   "ANTHROPIC_API_KEY", "COPILOT_CLI_TOKEN", "GITHUB_PROJECT_WEBHOOK_SECRET",
   "BOSUN_GITHUB_CLIENT_SECRET", "BOSUN_GITHUB_WEBHOOK_SECRET", "BOSUN_GITHUB_USER_TOKEN",
-  "CLOUDFLARE_TUNNEL_CREDENTIALS",
+  "CLOUDFLARE_TUNNEL_CREDENTIALS", "CLOUDFLARE_API_TOKEN",
 ]);
 
 const SETTINGS_KNOWN_SET = new Set(SETTINGS_KNOWN_KEYS);
@@ -2479,27 +2916,465 @@ export async function openFirewallPort(port) {
 
 // ── Cloudflared tunnel for trusted TLS ──────────────────────────────
 
+const TUNNEL_MODE_NAMED = "named";
+const TUNNEL_MODE_QUICK = "quick";
+const TUNNEL_MODE_DISABLED = "disabled";
+const DEFAULT_TUNNEL_MODE = TUNNEL_MODE_NAMED;
+const DEFAULT_CLOUDFLARE_DNS_RETRY_MAX = 3;
+const DEFAULT_CLOUDFLARE_DNS_RETRY_BASE_MS = 750;
+const RESERVED_HOSTNAME_LABELS = new Set([
+  "www",
+  "api",
+  "admin",
+  "root",
+  "mail",
+  "ftp",
+  "smtp",
+  "autodiscover",
+  "localhost",
+]);
+
 let tunnelUrl = null;
 let tunnelProcess = null;
+let tunnelPublicHostname = "";
+let tunnelRuntimeState = {
+  mode: TUNNEL_MODE_DISABLED,
+  tunnelName: "",
+  tunnelId: "",
+  hostname: "",
+  dnsAction: "none",
+  dnsStatus: "not_configured",
+  fallbackToQuick: false,
+  lastError: "",
+};
+let quickTunnelRestartTimer = null;
+let quickTunnelRestartAttempts = 0;
+let quickTunnelRestartSuppressed = false;
 
-/** Return the tunnel URL (e.g. https://xxx.trycloudflare.com) or null. */
+/** Return the active tunnel URL (named or quick) or null. */
 export function getTunnelUrl() {
   return tunnelUrl;
+}
+
+export function getTunnelStatus() {
+  return {
+    mode: tunnelRuntimeState.mode,
+    tunnelName: tunnelRuntimeState.tunnelName || null,
+    tunnelId: tunnelRuntimeState.tunnelId || null,
+    hostname: tunnelRuntimeState.hostname || tunnelPublicHostname || null,
+    publicUrl: tunnelUrl || null,
+    dns: {
+      status: tunnelRuntimeState.dnsStatus || "unknown",
+      action: tunnelRuntimeState.dnsAction || "none",
+    },
+    fallbackToQuick: Boolean(tunnelRuntimeState.fallbackToQuick),
+    active: Boolean(tunnelProcess && tunnelUrl),
+    lastError: tunnelRuntimeState.lastError || null,
+  };
 }
 
 let _tunnelReadyCallbacks = [];
 
 /** Register a callback to be called whenever the tunnel URL changes. */
 export function onTunnelUrlChange(cb) {
-  if (typeof cb === 'function') _tunnelReadyCallbacks.push(cb);
+  if (typeof cb === "function") _tunnelReadyCallbacks.push(cb);
+}
+
+function setTunnelRuntimeState(next = {}) {
+  tunnelRuntimeState = {
+    ...tunnelRuntimeState,
+    ...next,
+  };
+}
+
+export function normalizeTunnelMode(rawValue) {
+  const value = String(rawValue || "").trim().toLowerCase();
+  if (!value) return DEFAULT_TUNNEL_MODE;
+  if (["disabled", "off", "false", "0"].includes(value)) return TUNNEL_MODE_DISABLED;
+  if (["quick", "quick-tunnel", "ephemeral", "trycloudflare"].includes(value)) {
+    return TUNNEL_MODE_QUICK;
+  }
+  if (["cloudflared", "auto", "named", "permanent"].includes(value)) {
+    return TUNNEL_MODE_NAMED;
+  }
+  return DEFAULT_TUNNEL_MODE;
+}
+
+function parseBooleanEnvValue(rawValue, fallback = false) {
+  if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") {
+    return fallback;
+  }
+  const normalized = String(rawValue).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function parseBoundedInt(rawValue, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}
+
+function normalizeDomainName(rawValue) {
+  const value = String(rawValue || "").trim().toLowerCase();
+  if (!value) return "";
+  const withoutScheme = value.replace(/^https?:\/\//, "");
+  const withoutPath = withoutScheme.split("/")[0].replace(/:\d+$/, "");
+  return withoutPath.replace(/\.+$/, "");
+}
+
+export function sanitizeHostnameLabel(rawValue, fallback = "operator") {
+  const normalized = String(rawValue || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+/, "")
+    .replace(/-+$/, "");
+  if (!normalized) return fallback;
+  return normalized.slice(0, 63).replace(/-+$/, "") || fallback;
+}
+
+function getTunnelIdentity() {
+  const candidates = [
+    process.env.CLOUDFLARE_TUNNEL_USERNAME,
+    process.env.CLOUDFLARE_HOSTNAME_USER,
+    process.env.BOSUN_OPERATOR_ID,
+    process.env.USERNAME,
+    process.env.USER,
+  ];
+  for (const value of candidates) {
+    const trimmed = String(value || "").trim();
+    if (trimmed) return trimmed;
+  }
+  try {
+    const info = getOsUserInfo();
+    if (info?.username) return info.username;
+  } catch {
+    // best effort
+  }
+  return "operator";
+}
+
+const HOSTNAME_MAP_FILE = "cloudflare-hostname-map.json";
+let _hostnameMapCache = null;
+
+function readHostnameMapStore() {
+  if (_hostnameMapCache && typeof _hostnameMapCache === "object") {
+    return _hostnameMapCache;
+  }
+  const fallback = { version: 1, domains: {} };
+  try {
+    const mapPath = resolveUiCachePath(HOSTNAME_MAP_FILE);
+    if (!existsSync(mapPath)) {
+      _hostnameMapCache = fallback;
+      return fallback;
+    }
+    const parsed = JSON.parse(readFileSync(mapPath, "utf8"));
+    if (!parsed || typeof parsed !== "object") {
+      _hostnameMapCache = fallback;
+      return fallback;
+    }
+    if (!parsed.domains || typeof parsed.domains !== "object") {
+      parsed.domains = {};
+    }
+    _hostnameMapCache = parsed;
+    return parsed;
+  } catch {
+    _hostnameMapCache = fallback;
+    return fallback;
+  }
+}
+
+function writeHostnameMapStore(data) {
+  try {
+    const mapPath = resolveUiCachePath(HOSTNAME_MAP_FILE);
+    writeFileSync(mapPath, JSON.stringify(data, null, 2), "utf8");
+  } catch {
+    // best effort
+  }
+}
+
+function getDomainMap(store, baseDomain) {
+  const normalizedBaseDomain = normalizeDomainName(baseDomain);
+  if (!normalizedBaseDomain) {
+    return { normalizedBaseDomain: "", map: { byIdentity: {}, byLabel: {} } };
+  }
+  if (!store.domains[normalizedBaseDomain] || typeof store.domains[normalizedBaseDomain] !== "object") {
+    store.domains[normalizedBaseDomain] = {
+      byIdentity: {},
+      byLabel: {},
+    };
+  }
+  const domainMap = store.domains[normalizedBaseDomain];
+  if (!domainMap.byIdentity || typeof domainMap.byIdentity !== "object") {
+    domainMap.byIdentity = {};
+  }
+  if (!domainMap.byLabel || typeof domainMap.byLabel !== "object") {
+    domainMap.byLabel = {};
+  }
+  return { normalizedBaseDomain, map: domainMap };
+}
+
+function allocateStableHostnameLabel(domainMap, identity, preferredLabel) {
+  const normalizedIdentity = String(identity || "").trim().toLowerCase();
+  const existing = String(domainMap.byIdentity?.[normalizedIdentity] || "").trim().toLowerCase();
+  if (existing && domainMap.byLabel?.[existing] === normalizedIdentity) {
+    return existing;
+  }
+
+  const safeBaseLabel = sanitizeHostnameLabel(preferredLabel, "operator");
+  let baseLabel = RESERVED_HOSTNAME_LABELS.has(safeBaseLabel)
+    ? `${safeBaseLabel}-user`
+    : safeBaseLabel;
+  baseLabel = sanitizeHostnameLabel(baseLabel, "operator");
+  let candidate = baseLabel;
+  let suffix = 1;
+
+  while (true) {
+    const owner = String(domainMap.byLabel?.[candidate] || "").trim().toLowerCase();
+    const reserved = RESERVED_HOSTNAME_LABELS.has(candidate);
+    if ((!owner || owner === normalizedIdentity) && !reserved) {
+      domainMap.byLabel[candidate] = normalizedIdentity;
+      domainMap.byIdentity[normalizedIdentity] = candidate;
+      return candidate;
+    }
+    suffix += 1;
+    candidate = sanitizeHostnameLabel(`${baseLabel}-${suffix}`, baseLabel);
+  }
+}
+
+export function resolveDeterministicTunnelHostname({
+  baseDomain,
+  explicitHostname,
+  username,
+  policy,
+} = {}) {
+  const normalizedBaseDomain = normalizeDomainName(
+    baseDomain || process.env.CLOUDFLARE_BASE_DOMAIN || process.env.CF_BASE_DOMAIN,
+  );
+  const explicit = normalizeDomainName(
+    explicitHostname || process.env.CLOUDFLARE_TUNNEL_HOSTNAME || process.env.CF_TUNNEL_HOSTNAME,
+  );
+  if (explicit) {
+    return {
+      hostname: explicit,
+      baseDomain: explicit.split(".").slice(1).join("."),
+      label: explicit.split(".")[0] || "operator",
+      identity: "",
+      policy: "explicit",
+      source: "explicit",
+    };
+  }
+  if (!normalizedBaseDomain) {
+    throw new Error(
+      "Missing CLOUDFLARE_BASE_DOMAIN (or CLOUDFLARE_TUNNEL_HOSTNAME) for named tunnel hostname resolution",
+    );
+  }
+  const resolvedPolicy = String(
+    policy || process.env.CLOUDFLARE_USERNAME_HOSTNAME_POLICY || "per-user-fixed",
+  )
+    .trim()
+    .toLowerCase();
+  const perUserFixed = resolvedPolicy !== "fixed";
+  const identityRaw = username || getTunnelIdentity();
+  const identity = sanitizeHostnameLabel(identityRaw, "operator");
+
+  if (!perUserFixed) {
+    const fixedLabel = sanitizeHostnameLabel(
+      process.env.CLOUDFLARE_FIXED_HOST_LABEL || process.env.CF_FIXED_HOST_LABEL || "bosun",
+      "bosun",
+    );
+    const label = RESERVED_HOSTNAME_LABELS.has(fixedLabel)
+      ? sanitizeHostnameLabel(`${fixedLabel}-app`, "bosun")
+      : fixedLabel;
+    return {
+      hostname: `${label}.${normalizedBaseDomain}`,
+      baseDomain: normalizedBaseDomain,
+      label,
+      identity,
+      policy: "fixed",
+      source: "fixed",
+    };
+  }
+
+  const store = readHostnameMapStore();
+  const { map } = getDomainMap(store, normalizedBaseDomain);
+  const label = allocateStableHostnameLabel(map, identity, identity);
+  writeHostnameMapStore(store);
+  return {
+    hostname: `${label}.${normalizedBaseDomain}`,
+    baseDomain: normalizedBaseDomain,
+    label,
+    identity,
+    policy: "per-user-fixed",
+    source: "map",
+  };
 }
 
 function _notifyTunnelChange(url) {
   for (const cb of _tunnelReadyCallbacks) {
-    try { cb(url); } catch (err) {
+    try {
+      cb(url);
+    } catch (err) {
       console.warn(`[telegram-ui] tunnel change callback error: ${err.message}`);
     }
   }
+}
+
+function getCloudflareApiConfig() {
+  const token = String(
+    process.env.CLOUDFLARE_API_TOKEN || process.env.CF_API_TOKEN || "",
+  ).trim();
+  const zoneId = String(
+    process.env.CLOUDFLARE_ZONE_ID || process.env.CF_ZONE_ID || "",
+  ).trim();
+  const enabled = parseBooleanEnvValue(process.env.CLOUDFLARE_DNS_SYNC_ENABLED, true);
+  return {
+    enabled,
+    token,
+    zoneId,
+    baseUrl: "https://api.cloudflare.com/client/v4",
+  };
+}
+
+function getCloudflareDnsRetryConfig() {
+  const maxRetries = parseBoundedInt(
+    process.env.CLOUDFLARE_DNS_MAX_RETRIES,
+    DEFAULT_CLOUDFLARE_DNS_RETRY_MAX,
+    { min: 1, max: 8 },
+  );
+  const retryBaseMs = parseBoundedInt(
+    process.env.CLOUDFLARE_DNS_RETRY_BASE_MS,
+    DEFAULT_CLOUDFLARE_DNS_RETRY_BASE_MS,
+    { min: 100, max: 5000 },
+  );
+  return { maxRetries, retryBaseMs };
+}
+
+async function sleep(ms) {
+  await new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+async function cloudflareApiRequest(api, path, { method = "GET", body = undefined } = {}) {
+  const { maxRetries, retryBaseMs } = getCloudflareDnsRetryConfig();
+  if (!api?.token || !api?.zoneId) {
+    throw new Error("Cloudflare API token/zone not configured");
+  }
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    try {
+      const res = await fetch(`${api.baseUrl}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${api.token}`,
+          "Content-Type": "application/json",
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok || payload?.success === false) {
+        const errMessage = Array.isArray(payload?.errors)
+          ? payload.errors.map((entry) => entry?.message).filter(Boolean).join("; ")
+          : `${res.status} ${res.statusText || ""}`.trim();
+        const err = new Error(`Cloudflare API ${method} ${path} failed: ${errMessage}`);
+        err.status = res.status;
+        throw err;
+      }
+      return payload;
+    } catch (err) {
+      lastError = err;
+      const status = Number(err?.status || 0);
+      const retryable = status === 429 || status >= 500 || status === 0;
+      if (!retryable || attempt >= maxRetries) break;
+      const backoff = retryBaseMs * 2 ** (attempt - 1);
+      const jitter = Math.floor(Math.random() * Math.min(500, Math.max(100, backoff / 3)));
+      await sleep(backoff + jitter);
+    }
+  }
+  throw lastError || new Error(`Cloudflare API ${method} ${path} failed`);
+}
+
+export async function ensureCloudflareDnsCname({
+  hostname,
+  target,
+  proxied = true,
+  api = getCloudflareApiConfig(),
+} = {}) {
+  const normalizedHostname = normalizeDomainName(hostname);
+  const normalizedTarget = normalizeDomainName(target);
+  if (!normalizedHostname || !normalizedTarget) {
+    throw new Error("Missing hostname/target for Cloudflare DNS sync");
+  }
+  if (!api?.enabled) {
+    return { ok: true, changed: false, action: "disabled" };
+  }
+  if (!api.token || !api.zoneId) {
+    return { ok: false, changed: false, action: "missing_credentials" };
+  }
+
+  const query = `/zones/${encodeURIComponent(api.zoneId)}/dns_records?type=CNAME&name=${encodeURIComponent(normalizedHostname)}&per_page=100`;
+  const listed = await cloudflareApiRequest(api, query, { method: "GET" });
+  const records = Array.isArray(listed?.result) ? listed.result : [];
+  const existing = records.find(
+    (record) => String(record?.type || "").toUpperCase() === "CNAME"
+      && String(record?.name || "").toLowerCase() === normalizedHostname,
+  );
+  const payload = {
+    type: "CNAME",
+    name: normalizedHostname,
+    content: normalizedTarget,
+    proxied: Boolean(proxied),
+    ttl: 1,
+  };
+
+  if (existing) {
+    const sameTarget = String(existing.content || "").toLowerCase() === normalizedTarget;
+    const sameProxy = Boolean(existing.proxied) === Boolean(payload.proxied);
+    if (sameTarget && sameProxy) {
+      return { ok: true, changed: false, action: "noop", id: existing.id };
+    }
+    const updated = await cloudflareApiRequest(
+      api,
+      `/zones/${encodeURIComponent(api.zoneId)}/dns_records/${encodeURIComponent(existing.id)}`,
+      { method: "PUT", body: payload },
+    );
+    return {
+      ok: true,
+      changed: true,
+      action: "updated",
+      id: updated?.result?.id || existing.id,
+    };
+  }
+
+  const created = await cloudflareApiRequest(
+    api,
+    `/zones/${encodeURIComponent(api.zoneId)}/dns_records`,
+    { method: "POST", body: payload },
+  );
+  return {
+    ok: true,
+    changed: true,
+    action: "created",
+    id: created?.result?.id || null,
+  };
+}
+
+function getTunnelStartupConfig() {
+  return {
+    mode: normalizeTunnelMode(process.env.TELEGRAM_UI_TUNNEL || DEFAULT_TUNNEL_MODE),
+    namedTunnel: String(
+      process.env.CLOUDFLARE_TUNNEL_NAME || process.env.CF_TUNNEL_NAME || "",
+    ).trim(),
+    credentialsPath: String(
+      process.env.CLOUDFLARE_TUNNEL_CREDENTIALS || process.env.CF_TUNNEL_CREDENTIALS || "",
+    ).trim(),
+    allowQuickFallback: parseBooleanEnvValue(
+      process.env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK,
+      false,
+    ),
+  };
 }
 
 // ── Cloudflared binary auto-download ─────────────────────────────────
@@ -2604,24 +3479,27 @@ async function findCloudflared() {
 /**
  * Start a cloudflared tunnel for the given local URL.
  *
- * Two modes:
- * 1. **Quick tunnel** (default): Free, no account, random *.trycloudflare.com domain.
- *    Pros: Zero setup. Cons: URL changes on each restart.
- * 2. **Named tunnel**: Persistent custom domain (e.g., myapp.example.com).
- *    Pros: Stable URL, custom domain. Cons: Requires cloudflare account + tunnel setup.
- *
- * Named tunnel setup:
- *   1. Create a tunnel: `cloudflared tunnel create <name>`
- *   2. Create DNS record: `cloudflared tunnel route dns <name> <subdomain.yourdomain.com>`
- *   3. Set env vars:
- *      - CLOUDFLARE_TUNNEL_NAME=<name>
- *      - CLOUDFLARE_TUNNEL_CREDENTIALS=/path/to/<tunnel-id>.json
+ * Modes:
+ * - named (default): persistent per-user hostname + DNS orchestration
+ * - quick: random trycloudflare hostname (explicit fallback mode)
+ * - disabled: no tunnel
  *
  * Returns the assigned public URL or null on failure.
  */
 async function startTunnel(localPort) {
-  const tunnelMode = (process.env.TELEGRAM_UI_TUNNEL || "auto").toLowerCase();
-  if (tunnelMode === "disabled" || tunnelMode === "off" || tunnelMode === "0") {
+  const tunnelCfg = getTunnelStartupConfig();
+  setTunnelRuntimeState({
+    mode: tunnelCfg.mode,
+    tunnelName: tunnelCfg.namedTunnel || "",
+    tunnelId: "",
+    hostname: "",
+    dnsAction: "none",
+    dnsStatus: "not_configured",
+    fallbackToQuick: false,
+    lastError: "",
+  });
+
+  if (tunnelCfg.mode === TUNNEL_MODE_DISABLED) {
     console.log("[telegram-ui] tunnel disabled via TELEGRAM_UI_TUNNEL=disabled");
     return null;
   }
@@ -2644,26 +3522,39 @@ async function startTunnel(localPort) {
 
   const cfBin = await findCloudflared();
   if (!cfBin) {
-    if (tunnelMode === "auto") {
-      console.log(
-        "[telegram-ui] cloudflared unavailable — Telegram Mini App will use self-signed cert (may be rejected by Telegram webview).",
-      );
-      return null;
-    }
-    console.warn("[telegram-ui] cloudflared not found but TELEGRAM_UI_TUNNEL=cloudflared requested");
+    setTunnelRuntimeState({ lastError: "cloudflared_not_found" });
+    console.warn("[telegram-ui] cloudflared unavailable; tunnel not started");
     return null;
   }
 
-  // Check for named tunnel configuration (persistent URL)
-  const namedTunnel = process.env.CLOUDFLARE_TUNNEL_NAME || process.env.CF_TUNNEL_NAME;
-  const tunnelCreds = process.env.CLOUDFLARE_TUNNEL_CREDENTIALS || process.env.CF_TUNNEL_CREDENTIALS;
-
-  if (namedTunnel && tunnelCreds) {
-    return startNamedTunnel(cfBin, namedTunnel, tunnelCreds, localPort);
+  if (tunnelCfg.mode === TUNNEL_MODE_QUICK) {
+    return startQuickTunnel(cfBin, localPort);
   }
 
-  // Fall back to quick tunnel (random URL, no persistence)
-  return startQuickTunnel(cfBin, localPort);
+  const namedTunnelResult = await startNamedTunnel(
+    cfBin,
+    {
+      tunnelName: tunnelCfg.namedTunnel,
+      credentialsPath: tunnelCfg.credentialsPath,
+    },
+    localPort,
+  );
+  if (namedTunnelResult) return namedTunnelResult;
+
+  if (tunnelCfg.allowQuickFallback) {
+    console.warn("[telegram-ui] named tunnel failed; falling back to quick tunnel (explicitly allowed)");
+    setTunnelRuntimeState({
+      fallbackToQuick: true,
+      mode: TUNNEL_MODE_QUICK,
+    });
+    return startQuickTunnel(cfBin, localPort);
+  }
+
+  setTunnelRuntimeState({
+    fallbackToQuick: false,
+    lastError: tunnelRuntimeState.lastError || "named_tunnel_failed",
+  });
+  return null;
 }
 
 /**
@@ -2671,7 +3562,7 @@ async function startTunnel(localPort) {
  * Returns the child process or throws after max retries.
  */
 function spawnCloudflared(cfBin, args, maxRetries = 3) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
     try {
       return spawn(cfBin, args, {
         stdio: ["ignore", "pipe", "pipe"],
@@ -2694,25 +3585,104 @@ function spawnCloudflared(cfBin, args, maxRetries = 3) {
 
 /**
  * Start a cloudflared **named tunnel** with persistent URL.
- * Requires: cloudflared tunnel create + DNS setup.
+ * Requires tunnel credentials + DNS hostname (explicit or deterministic per-user mapping).
  */
-async function startNamedTunnel(cfBin, tunnelName, credentialsPath, localPort) {
-  if (!existsSync(credentialsPath)) {
-    console.warn(`[telegram-ui] named tunnel credentials not found: ${credentialsPath}`);
-    console.warn("[telegram-ui] falling back to quick tunnel (random URL)");
-    return startQuickTunnel(cfBin, localPort);
+function parseNamedTunnelCredentials(credentialsPath) {
+  if (!existsSync(credentialsPath)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(credentialsPath, "utf8"));
+    const tunnelId = String(parsed?.TunnelID || parsed?.tunnel_id || "").trim();
+    if (!tunnelId) return null;
+    return {
+      tunnelId,
+      credentialsPath,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function startNamedTunnel(cfBin, { tunnelName, credentialsPath }, localPort) {
+  const normalizedTunnelName = String(tunnelName || "").trim();
+  const normalizedCredsPath = String(credentialsPath || "").trim();
+  if (!normalizedTunnelName || !normalizedCredsPath) {
+    setTunnelRuntimeState({
+      lastError: "missing_named_tunnel_config",
+      mode: TUNNEL_MODE_NAMED,
+    });
+    console.warn(
+      "[telegram-ui] named tunnel requires CLOUDFLARE_TUNNEL_NAME + CLOUDFLARE_TUNNEL_CREDENTIALS",
+    );
+    return null;
+  }
+
+  const parsedCreds = parseNamedTunnelCredentials(normalizedCredsPath);
+  if (!parsedCreds) {
+    setTunnelRuntimeState({
+      lastError: "invalid_named_tunnel_credentials",
+      mode: TUNNEL_MODE_NAMED,
+      tunnelName: normalizedTunnelName,
+    });
+    console.warn(`[telegram-ui] named tunnel credentials not found or invalid: ${normalizedCredsPath}`);
+    return null;
+  }
+
+  let hostnameInfo;
+  try {
+    hostnameInfo = resolveDeterministicTunnelHostname();
+  } catch (err) {
+    setTunnelRuntimeState({
+      lastError: "hostname_resolution_failed",
+      mode: TUNNEL_MODE_NAMED,
+      tunnelName: normalizedTunnelName,
+      tunnelId: parsedCreds.tunnelId,
+    });
+    console.warn(`[telegram-ui] named tunnel hostname resolution failed: ${err.message}`);
+    return null;
+  }
+
+  const dnsTarget = `${parsedCreds.tunnelId}.cfargotunnel.com`;
+  const cfApi = getCloudflareApiConfig();
+  let dnsSync = { ok: false, changed: false, action: "missing_credentials" };
+  try {
+    dnsSync = await ensureCloudflareDnsCname({
+      hostname: hostnameInfo.hostname,
+      target: dnsTarget,
+      proxied: true,
+      api: cfApi,
+    });
+    if (dnsSync.ok) {
+      console.log(
+        `[telegram-ui] cloudflare DNS ${dnsSync.action}: ${hostnameInfo.hostname} -> ${dnsTarget}`,
+      );
+    } else if (dnsSync.action === "missing_credentials") {
+      console.warn(
+        "[telegram-ui] Cloudflare DNS sync skipped (missing CLOUDFLARE_API_TOKEN/CLOUDFLARE_ZONE_ID)",
+      );
+    }
+  } catch (err) {
+    setTunnelRuntimeState({
+      lastError: "dns_sync_failed",
+      mode: TUNNEL_MODE_NAMED,
+      tunnelName: normalizedTunnelName,
+      tunnelId: parsedCreds.tunnelId,
+      hostname: hostnameInfo.hostname,
+      dnsAction: "error",
+      dnsStatus: "error",
+    });
+    console.warn(`[telegram-ui] Cloudflare DNS sync failed: ${err.message}`);
+    return null;
   }
 
   // Named tunnels require config file with ingress rules.
-  // We'll create a temporary config on the fly.
   const configPath = resolveUiCachePath("cloudflared-config.yml");
-
+  const credsPathYaml = normalizedCredsPath.replace(/\\/g, "/");
   const configYaml = `
-tunnel: ${tunnelName}
-credentials-file: ${credentialsPath}
+tunnel: ${normalizedTunnelName}
+credentials-file: ${credsPathYaml}
 
 ingress:
-  - hostname: "*"
+  - hostname: "${hostnameInfo.hostname}"
     service: https://localhost:${localPort}
     originRequest:
       noTLSVerify: true
@@ -2721,41 +3691,51 @@ ingress:
 
   writeFileSync(configPath, configYaml, "utf8");
 
-  // Read the tunnel ID from credentials to construct the public URL
-  let publicUrl = null;
-  try {
-    const creds = JSON.parse(readFileSync(credentialsPath, "utf8"));
-    const tunnelId = creds.TunnelID || creds.tunnel_id;
-    if (tunnelId) {
-      publicUrl = `https://${tunnelId}.cfargotunnel.com`;
-    }
-  } catch (err) {
-    console.warn(`[telegram-ui] failed to parse tunnel credentials: ${err.message}`);
-  }
-
   return new Promise((resolvePromise) => {
     const args = ["tunnel", "--config", configPath, "run"];
-    console.log(`[telegram-ui] starting named tunnel: ${tunnelName} → https://localhost:${localPort}`);
+    const publicUrl = `https://${hostnameInfo.hostname}`;
+    console.log(
+      `[telegram-ui] starting named tunnel: ${normalizedTunnelName} -> ${publicUrl} -> https://localhost:${localPort}`,
+    );
 
     let child;
     try {
       child = spawnCloudflared(cfBin, args);
     } catch (err) {
+      setTunnelRuntimeState({
+        lastError: "named_tunnel_spawn_failed",
+        mode: TUNNEL_MODE_NAMED,
+        tunnelName: normalizedTunnelName,
+        tunnelId: parsedCreds.tunnelId,
+        hostname: hostnameInfo.hostname,
+      });
       console.warn(`[telegram-ui] named tunnel spawn failed: ${err.message}`);
       return resolvePromise(null);
     }
 
     let resolved = false;
     let output = "";
-    // Named tunnels emit "Connection <UUID> registered" when ready
-    const readyPattern = /Connection [a-f0-9-]+ registered/;
+    // Named tunnels emit "Connection <UUID> registered" (or "Registered tunnel connection")
+    const readyPattern = /Connection [a-f0-9-]+ registered|Registered tunnel connection/i;
+    const namedTunnelTimeoutMs = parseBoundedInt(
+      process.env.TELEGRAM_UI_NAMED_TUNNEL_TIMEOUT_MS,
+      60_000,
+      { min: 10_000, max: 300_000 },
+    );
     const timeout = setTimeout(() => {
       if (!resolved) {
         resolved = true;
-        console.warn("[telegram-ui] named tunnel timed out after 60s");
+        setTunnelRuntimeState({
+          lastError: "named_tunnel_timeout",
+          mode: TUNNEL_MODE_NAMED,
+          tunnelName: normalizedTunnelName,
+          tunnelId: parsedCreds.tunnelId,
+          hostname: hostnameInfo.hostname,
+        });
+        console.warn(`[telegram-ui] named tunnel timed out after ${namedTunnelTimeoutMs}ms`);
         resolvePromise(null);
       }
-    }, 60_000);
+    }, namedTunnelTimeoutMs);
 
     function parseOutput(chunk) {
       output += chunk;
@@ -2763,9 +3743,21 @@ ingress:
         resolved = true;
         clearTimeout(timeout);
         tunnelUrl = publicUrl;
+        tunnelPublicHostname = hostnameInfo.hostname;
         tunnelProcess = child;
+        quickTunnelRestartAttempts = 0;
+        setTunnelRuntimeState({
+          mode: TUNNEL_MODE_NAMED,
+          tunnelName: normalizedTunnelName,
+          tunnelId: parsedCreds.tunnelId,
+          hostname: hostnameInfo.hostname,
+          dnsAction: dnsSync.action || "none",
+          dnsStatus: dnsSync.ok ? "ok" : "not_configured",
+          fallbackToQuick: false,
+          lastError: "",
+        });
         _notifyTunnelChange(publicUrl);
-        console.log(`[telegram-ui] named tunnel active: ${publicUrl || tunnelName}`);
+        console.log(`[telegram-ui] named tunnel active: ${publicUrl}`);
         resolvePromise(publicUrl);
       }
     }
@@ -2777,6 +3769,13 @@ ingress:
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
+        setTunnelRuntimeState({
+          lastError: "named_tunnel_runtime_error",
+          mode: TUNNEL_MODE_NAMED,
+          tunnelName: normalizedTunnelName,
+          tunnelId: parsedCreds.tunnelId,
+          hostname: hostnameInfo.hostname,
+        });
         console.warn(`[telegram-ui] named tunnel failed: ${err.message}`);
         resolvePromise(null);
       }
@@ -2785,12 +3784,24 @@ ingress:
     child.on("exit", (code) => {
       tunnelProcess = null;
       tunnelUrl = null;
+      tunnelPublicHostname = "";
+      _notifyTunnelChange(null);
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
+        setTunnelRuntimeState({
+          lastError: "named_tunnel_exited_early",
+          mode: TUNNEL_MODE_NAMED,
+          tunnelName: normalizedTunnelName,
+          tunnelId: parsedCreds.tunnelId,
+          hostname: hostnameInfo.hostname,
+        });
         console.warn(`[telegram-ui] named tunnel exited with code ${code}`);
         resolvePromise(null);
       } else if (code !== 0 && code !== null) {
+        setTunnelRuntimeState({
+          lastError: "named_tunnel_exited",
+        });
         console.warn(`[telegram-ui] named tunnel exited (code ${code})`);
       }
     });
@@ -2801,26 +3812,88 @@ ingress:
  * Start a cloudflared **quick tunnel** (random *.trycloudflare.com URL).
  * Quick tunnels are free, require no account, but the URL changes on each restart.
  */
+function clearQuickTunnelRestartTimer() {
+  if (quickTunnelRestartTimer) {
+    clearTimeout(quickTunnelRestartTimer);
+    quickTunnelRestartTimer = null;
+  }
+}
+
+function getQuickTunnelRestartConfig() {
+  const maxAttempts = parseBoundedInt(
+    process.env.TELEGRAM_UI_QUICK_TUNNEL_RESTART_MAX_ATTEMPTS,
+    6,
+    { min: 1, max: 50 },
+  );
+  const baseDelayMs = parseBoundedInt(
+    process.env.TELEGRAM_UI_QUICK_TUNNEL_RESTART_BASE_DELAY_MS
+      || process.env.TELEGRAM_UI_QUICK_TUNNEL_RESTART_BASE_MS,
+    5000,
+    { min: 250, max: 60_000 },
+  );
+  const maxDelayMs = parseBoundedInt(
+    process.env.TELEGRAM_UI_QUICK_TUNNEL_RESTART_MAX_DELAY_MS,
+    120_000,
+    { min: 1000, max: 900_000 },
+  );
+  return { maxAttempts, baseDelayMs, maxDelayMs };
+}
+
+function scheduleQuickTunnelRestart(cfBin, localPort) {
+  if (quickTunnelRestartSuppressed) return;
+  const cfg = getQuickTunnelRestartConfig();
+  if (quickTunnelRestartAttempts >= cfg.maxAttempts) {
+    console.warn(
+      `[telegram-ui] quick tunnel restart exhausted after ${quickTunnelRestartAttempts} attempts (max ${cfg.maxAttempts})`,
+    );
+    return;
+  }
+  quickTunnelRestartAttempts += 1;
+  const backoff = Math.min(cfg.maxDelayMs, cfg.baseDelayMs * 2 ** (quickTunnelRestartAttempts - 1));
+  const jitter = Math.floor(Math.random() * Math.max(200, Math.floor(backoff * 0.2)));
+  const restartDelayMs = Math.min(cfg.maxDelayMs, backoff + jitter);
+  clearQuickTunnelRestartTimer();
+  console.warn(
+    `[telegram-ui] quick tunnel restart scheduled (${quickTunnelRestartAttempts}/${cfg.maxAttempts}) in ${restartDelayMs}ms`,
+  );
+  quickTunnelRestartTimer = setTimeout(() => {
+    startQuickTunnel(cfBin, localPort).catch((err) => {
+      console.warn(`[telegram-ui] quick tunnel restart failed: ${err.message}`);
+    });
+  }, restartDelayMs);
+  quickTunnelRestartTimer.unref?.();
+}
+
 async function startQuickTunnel(cfBin, localPort) {
+  quickTunnelRestartSuppressed = false;
+  clearQuickTunnelRestartTimer();
   return new Promise((resolvePromise) => {
     const localUrl = `https://localhost:${localPort}`;
     const args = ["tunnel", "--url", localUrl, "--no-autoupdate", "--no-tls-verify"];
-    console.log(`[telegram-ui] starting quick tunnel → ${localUrl}`);
+    console.log(`[telegram-ui] starting quick tunnel -> ${localUrl}`);
 
     let child;
     try {
       child = spawnCloudflared(cfBin, args);
     } catch (err) {
+      setTunnelRuntimeState({
+        mode: TUNNEL_MODE_QUICK,
+        lastError: "quick_tunnel_spawn_failed",
+      });
       console.warn(`[telegram-ui] quick tunnel spawn failed: ${err.message}`);
       return resolvePromise(null);
     }
 
     let resolved = false;
     let output = "";
-    const urlPattern = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
+    const urlPattern = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
     const timeout = setTimeout(() => {
       if (!resolved) {
         resolved = true;
+        setTunnelRuntimeState({
+          mode: TUNNEL_MODE_QUICK,
+          lastError: "quick_tunnel_timeout",
+        });
         console.warn("[telegram-ui] quick tunnel timed out after 30s");
         resolvePromise(null);
       }
@@ -2832,9 +3905,21 @@ async function startQuickTunnel(cfBin, localPort) {
       if (match && !resolved) {
         resolved = true;
         clearTimeout(timeout);
-        tunnelUrl = match[0];
+        tunnelUrl = String(match[0]).toLowerCase();
+        tunnelPublicHostname = "";
         tunnelProcess = child;
-        _notifyTunnelChange(match[0]);
+        quickTunnelRestartAttempts = 0;
+        setTunnelRuntimeState({
+          mode: TUNNEL_MODE_QUICK,
+          tunnelName: "",
+          tunnelId: "",
+          hostname: "",
+          dnsAction: "none",
+          dnsStatus: "disabled",
+          fallbackToQuick: true,
+          lastError: "",
+        });
+        _notifyTunnelChange(tunnelUrl);
         console.log(`[telegram-ui] quick tunnel active: ${tunnelUrl}`);
         resolvePromise(tunnelUrl);
       }
@@ -2847,6 +3932,10 @@ async function startQuickTunnel(cfBin, localPort) {
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
+        setTunnelRuntimeState({
+          mode: TUNNEL_MODE_QUICK,
+          lastError: "quick_tunnel_runtime_error",
+        });
         console.warn(`[telegram-ui] quick tunnel failed: ${err.message}`);
         resolvePromise(null);
       }
@@ -2855,13 +3944,24 @@ async function startQuickTunnel(cfBin, localPort) {
     child.on("exit", (code) => {
       tunnelProcess = null;
       tunnelUrl = null;
+      tunnelPublicHostname = "";
+      _notifyTunnelChange(null);
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
+        setTunnelRuntimeState({
+          mode: TUNNEL_MODE_QUICK,
+          lastError: "quick_tunnel_exited_early",
+        });
         console.warn(`[telegram-ui] quick tunnel exited with code ${code}`);
         resolvePromise(null);
       } else if (code !== 0 && code !== null) {
+        setTunnelRuntimeState({
+          mode: TUNNEL_MODE_QUICK,
+          lastError: "quick_tunnel_exited",
+        });
         console.warn(`[telegram-ui] quick tunnel exited (code ${code})`);
+        scheduleQuickTunnelRestart(cfBin, localPort);
       }
     });
   });
@@ -2869,13 +3969,29 @@ async function startQuickTunnel(cfBin, localPort) {
 
 /** Stop the tunnel if running. */
 export function stopTunnel() {
+  quickTunnelRestartSuppressed = true;
+  clearQuickTunnelRestartTimer();
   if (tunnelProcess) {
     try {
       tunnelProcess.kill("SIGTERM");
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     tunnelProcess = null;
     tunnelUrl = null;
+    tunnelPublicHostname = "";
+    _notifyTunnelChange(null);
   }
+  setTunnelRuntimeState({
+    mode: TUNNEL_MODE_DISABLED,
+    tunnelName: "",
+    tunnelId: "",
+    hostname: "",
+    dnsAction: "none",
+    dnsStatus: "not_configured",
+    fallbackToQuick: false,
+    lastError: "",
+  });
 }
 
 export function injectUiDependencies(deps = {}) {
@@ -3094,21 +4210,50 @@ function checkSessionToken(req) {
   return false;
 }
 
-function requireAuth(req) {
-  if (isAllowUnsafe()) return true;
-  // Session token (browser access)
-  if (checkSessionToken(req)) return true;
-  // Telegram initData HMAC
-  const initData =
+function getTelegramInitData(req, url = null) {
+  return String(
     req.headers["x-telegram-initdata"] ||
     req.headers["x-telegram-init-data"] ||
     req.headers["x-telegram-init"] ||
     req.headers["x-telegram-webapp"] ||
     req.headers["x-telegram-webapp-data"] ||
-    "";
+    url?.searchParams?.get("initData") ||
+    "",
+  );
+}
+
+function buildSessionCookieHeader() {
+  const secure = uiServerTls ? "; Secure" : "";
+  const token = ensureSessionToken();
+  return `ve_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400${secure}`;
+}
+
+function getHeaderString(value) {
+  if (Array.isArray(value)) return String(value[0] || "");
+  return String(value || "");
+}
+
+async function requireAuth(req) {
+  if (isAllowUnsafe()) return { ok: true, source: "unsafe", issueSessionCookie: false };
+  // Session token (browser access)
+  if (checkSessionToken(req)) return { ok: true, source: "session", issueSessionCookie: false };
+  // Telegram initData HMAC
+  const initData = getTelegramInitData(req);
   const token = process.env.TELEGRAM_BOT_TOKEN || "";
-  if (!initData) return false;
-  return validateInitData(String(initData), token);
+  if (initData && validateInitData(initData, token)) {
+    return { ok: true, source: "telegram", issueSessionCookie: false };
+  }
+  // Fallback auth header is only evaluated after session + Telegram auth fails.
+  const fallbackSecret = getHeaderString(
+    req.headers["x-bosun-fallback-auth"] || req.headers["x-admin-fallback-auth"],
+  ).trim();
+  if (fallbackSecret) {
+    const result = await attemptFallbackAuth(req, fallbackSecret);
+    if (result.ok) {
+      return { ok: true, source: "fallback", issueSessionCookie: true };
+    }
+  }
+  return { ok: false, source: "unauthorized", issueSessionCookie: false };
 }
 
 function requireWsAuth(req, url) {
@@ -3124,12 +4269,7 @@ function requireWsAuth(req, url) {
     }
   }
   // Telegram initData HMAC
-  const initData =
-    req.headers["x-telegram-initdata"] ||
-    req.headers["x-telegram-init-data"] ||
-    req.headers["x-telegram-init"] ||
-    url.searchParams.get("initData") ||
-    "";
+  const initData = getTelegramInitData(req, url);
   const token = process.env.TELEGRAM_BOT_TOKEN || "";
   if (!initData) return false;
   return validateInitData(String(initData), token);
@@ -4362,30 +5502,71 @@ async function ensurePresenceLoaded() {
 }
 
 async function handleApi(req, res, url) {
+  const path = url.pathname;
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type,X-Telegram-InitData",
+      "Access-Control-Allow-Headers": "Content-Type,X-Telegram-InitData,X-Bosun-Fallback-Auth",
     });
     res.end();
     return;
   }
 
-  if (!requireAuth(req)) {
-    jsonResponse(res, 401, {
-      ok: false,
-      error: "Unauthorized. Telegram init data missing or invalid.",
+  if (path === "/api/auth/fallback/status" && req.method === "GET") {
+    jsonResponse(res, 200, {
+      ok: true,
+      data: {
+        fallbackAuth: getFallbackAuthStatus(),
+        tunnel: getTunnelStatus(),
+      },
     });
     return;
+  }
+
+  if (path === "/api/auth/fallback/login" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const secret = String(body?.secret || body?.password || body?.pin || "").trim();
+      const attempt = await attemptFallbackAuth(req, secret);
+      if (!attempt.ok) {
+        jsonResponse(res, 401, {
+          ok: false,
+          error: "Authentication failed.",
+        });
+        return;
+      }
+      res.setHeader("Set-Cookie", buildSessionCookieHeader());
+      jsonResponse(res, 200, {
+        ok: true,
+        tokenIssued: true,
+        auth: "fallback",
+      });
+    } catch {
+      jsonResponse(res, 401, {
+        ok: false,
+        error: "Authentication failed.",
+      });
+    }
+    return;
+  }
+
+  const authResult = await requireAuth(req);
+  if (!authResult?.ok) {
+    jsonResponse(res, 401, {
+      ok: false,
+      error: "Unauthorized.",
+    });
+    return;
+  }
+  if (authResult.issueSessionCookie) {
+    res.setHeader("Set-Cookie", buildSessionCookieHeader());
   }
 
   if (req.method === "POST" && !checkRateLimit(req, 30)) {
     jsonResponse(res, 429, { ok: false, error: "Rate limit exceeded. Try again later." });
     return;
   }
-
-  const path = url.pathname;
   if (path.startsWith("/api/attachments/") && req.method === "GET") {
     const rel = decodeURIComponent(path.slice("/api/attachments/".length));
     const root = ATTACHMENTS_ROOT;
@@ -4415,6 +5596,44 @@ async function handleApi(req, res, url) {
   if (path === "/api/status") {
     const data = await readStatusSnapshot();
     jsonResponse(res, 200, { ok: true, data });
+    return;
+  }
+
+  if (
+    (path === "/api/auth/fallback/set" || path === "/api/auth/fallback/rotate")
+    && req.method === "POST"
+  ) {
+    try {
+      const body = await readJsonBody(req);
+      const secret = String(body?.secret || body?.password || body?.pin || "").trim();
+      const confirm = String(body?.confirm || "").trim();
+      if (!secret || (confirm && confirm !== secret)) {
+        jsonResponse(res, 400, {
+          ok: false,
+          error: "Invalid fallback credential payload.",
+        });
+        return;
+      }
+      await setFallbackAuthSecret(secret, { actor: "api" });
+      jsonResponse(res, 200, {
+        ok: true,
+        data: getFallbackAuthStatus(),
+      });
+    } catch (err) {
+      jsonResponse(res, 400, {
+        ok: false,
+        error: err?.message || "Failed to set fallback credential.",
+      });
+    }
+    return;
+  }
+
+  if (path === "/api/auth/fallback/reset" && req.method === "POST") {
+    resetFallbackAuthSecret();
+    jsonResponse(res, 200, {
+      ok: true,
+      data: getFallbackAuthStatus(),
+    });
     return;
   }
 
@@ -6699,6 +7918,8 @@ async function handleApi(req, res, url) {
       sdk: process.env.EXECUTOR_SDK || "auto",
       kanbanBackend: runtimeKanbanBackend,
       regions,
+      tunnel: getTunnelStatus(),
+      fallbackAuth: getFallbackAuthStatus(),
     });
     return;
   }
@@ -6757,6 +7978,8 @@ async function handleApi(req, res, url) {
           configExists,
           configSchemaPath: CONFIG_SCHEMA_PATH,
           configSchemaLoaded: Boolean(configSchema),
+          tunnel: getTunnelStatus(),
+          fallbackAuth: getFallbackAuthStatus(),
         },
       });
     } catch (err) {
@@ -6844,6 +8067,8 @@ async function handleApi(req, res, url) {
         updatedConfig: configUpdate.updated || [],
         configPath: configUpdate.path || null,
         configDir,
+        tunnel: getTunnelStatus(),
+        fallbackAuth: getFallbackAuthStatus(),
       });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -6903,10 +8128,13 @@ async function handleApi(req, res, url) {
     const webhookSecretSet = Boolean(process.env.BOSUN_GITHUB_WEBHOOK_SECRET);
     const appWebhookPath = getAppWebhookPath();
 
-    // Build public URLs from tunnel URL if available, else from request host
-    const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost";
-    const proto = uiServerTls || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
-    const baseUrl = `${proto}://${host}`;
+    // Build public URLs from tunnel URL if available, else from request host.
+    let baseUrl = String(getTunnelUrl() || "").replace(/\/+$/, "");
+    if (!baseUrl) {
+      const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost";
+      const proto = uiServerTls || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+      baseUrl = `${proto}://${host}`;
+    }
 
     jsonResponse(res, 200, {
       ok: true,
@@ -7921,6 +9149,46 @@ async function handleApi(req, res, url) {
         },
       });
 
+      const provider = String(body?.provider || "").trim() || null;
+      const transcriptEventType = String(body?.eventType || "").trim().toLowerCase() || null;
+      const executor = String(body?.executor || "").trim() || null;
+      const mode = String(body?.mode || "").trim() || null;
+      const model = String(body?.model || "").trim() || null;
+      const normalizedSessionId = String(session.id || sessionId).trim();
+      const contentHash = createHash("sha1")
+        .update(`${role}:${content}`)
+        .digest("hex")
+        .slice(0, 16);
+      const workflowPayload = {
+        sessionId: normalizedSessionId,
+        meetingSessionId: normalizedSessionId,
+        role,
+        content,
+        source: "voice",
+        provider,
+        transcriptEventType,
+        executor,
+        mode,
+        model,
+      };
+
+      queueWorkflowEvent(
+        "meeting.transcript",
+        workflowPayload,
+        {
+          dedupKey: `workflow-event:meeting.transcript:${normalizedSessionId}:${role}:${contentHash}`,
+        },
+      );
+      if (transcriptEventType === "wake_phrase" || transcriptEventType === "wake-phrase") {
+        queueWorkflowEvent(
+          "meeting.wake_phrase",
+          workflowPayload,
+          {
+            dedupKey: `workflow-event:meeting.wake_phrase:${normalizedSessionId}:${role}:${contentHash}`,
+          },
+        );
+      }
+
       jsonResponse(res, 200, { ok: true });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
@@ -8063,9 +9331,13 @@ async function handleApi(req, res, url) {
 }
 
 async function handleStatic(req, res, url) {
-  if (!requireAuth(req)) {
+  const authResult = await requireAuth(req);
+  if (!authResult?.ok) {
     textResponse(res, 401, "Unauthorized");
     return;
+  }
+  if (authResult.issueSessionCookie) {
+    res.setHeader("Set-Cookie", buildSessionCookieHeader());
   }
 
   const rawPathname = String(url.pathname || "/").trim() || "/";
@@ -8218,9 +9490,8 @@ export async function startTelegramUiServer(options = {}) {
           (cleanUrl.searchParams.toString()
             ? `?${cleanUrl.searchParams.toString()}`
             : "");
-        const secure = uiServerTls ? "; Secure" : "";
         res.writeHead(302, {
-          "Set-Cookie": `ve_session=${sessionToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400${secure}`,
+          "Set-Cookie": buildSessionCookieHeader(),
           Location: redirectPath || "/",
         });
         res.end();
@@ -8275,6 +9546,14 @@ export async function startTelegramUiServer(options = {}) {
       return;
     }
 
+    // /demo and /ui/demo are convenience aliases for /demo.html (the self-contained mock UI demo)
+    if (url.pathname === "/demo" || url.pathname === "/ui/demo") {
+      const qs = url.search || "";
+      res.writeHead(302, { Location: `/demo.html${qs}` });
+      res.end();
+      return;
+    }
+
     // Telegram initData exchange: ?tgWebAppData=... or ?initData=... → set session cookie and redirect
     const initDataQuery =
       url.searchParams.get("tgWebAppData") ||
@@ -8287,14 +9566,13 @@ export async function startTelegramUiServer(options = {}) {
     ) {
       const token = process.env.TELEGRAM_BOT_TOKEN || "";
       if (validateInitData(String(initDataQuery), token)) {
-        const secure = uiServerTls ? "; Secure" : "";
         const cleanUrl = new URL(url.toString());
         cleanUrl.searchParams.delete("tgWebAppData");
         cleanUrl.searchParams.delete("initData");
         const redirectPath =
           cleanUrl.pathname + (cleanUrl.searchParams.toString() ? `?${cleanUrl.searchParams.toString()}` : "");
         res.writeHead(302, {
-          "Set-Cookie": `ve_session=${sessionToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400${secure}`,
+          "Set-Cookie": buildSessionCookieHeader(),
           Location: redirectPath || "/",
         });
         res.end();
@@ -8534,8 +9812,8 @@ export async function startTelegramUiServer(options = {}) {
 
   // ── SECURITY: Warn loudly when auth is disabled ──────────────────────
   if (isAllowUnsafe()) {
-    const tunnelMode = (process.env.TELEGRAM_UI_TUNNEL || "auto").toLowerCase();
-    const tunnelActive = tunnelMode !== "disabled" && tunnelMode !== "off" && tunnelMode !== "0";
+    const tunnelMode = normalizeTunnelMode(process.env.TELEGRAM_UI_TUNNEL || DEFAULT_TUNNEL_MODE);
+    const tunnelActive = tunnelMode !== TUNNEL_MODE_DISABLED;
     const border = "═".repeat(68);
     console.warn(`\n╔${border}╗`);
     console.warn(`║ :ban:  DANGER: TELEGRAM_UI_ALLOW_UNSAFE=true — ALL AUTH IS DISABLED   ║`);

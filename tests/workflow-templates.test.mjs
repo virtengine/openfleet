@@ -16,7 +16,11 @@ import {
   installTemplate,
   installTemplateSet,
 } from "../workflow-templates.mjs";
-import { WorkflowEngine } from "../workflow-engine.mjs";
+import {
+  WorkflowEngine,
+  getNodeType,
+  registerNodeType,
+} from "../workflow-engine.mjs";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -46,6 +50,150 @@ function collectStrings(value, out = []) {
     for (const entry of Object.values(value)) collectStrings(entry, out);
   }
   return out;
+}
+
+function ensureExperimentalWorkflowNodeTypesRegistered() {
+  const registerIfMissing = (type, handler) => {
+    if (getNodeType(type)) return;
+    registerNodeType(type, handler);
+  };
+
+  registerIfMissing("meeting.start", {
+    describe: () => "Start a meeting session",
+    schema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        executor: { type: "string" },
+        wakePhrase: { type: "string" },
+      },
+    },
+    async execute(node, ctx) {
+      return {
+        success: true,
+        sessionId: `meeting-${ctx.id}`,
+        title: ctx.resolve(node.config?.title || ""),
+        executor: ctx.resolve(node.config?.executor || ""),
+        wakePhrase: ctx.resolve(node.config?.wakePhrase || ""),
+      };
+    },
+  });
+
+  registerIfMissing("meeting.send", {
+    describe: () => "Send a meeting message",
+    schema: {
+      type: "object",
+      properties: {
+        message: { type: "string" },
+        role: { type: "string" },
+      },
+    },
+    async execute(node, ctx) {
+      return {
+        success: true,
+        message: ctx.resolve(node.config?.message || ""),
+        role: ctx.resolve(node.config?.role || "system"),
+      };
+    },
+  });
+
+  registerIfMissing("meeting.transcript", {
+    describe: () => "Capture meeting transcript",
+    schema: {
+      type: "object",
+      properties: {
+        format: { type: "string" },
+      },
+    },
+    async execute(node, ctx) {
+      const format = ctx.resolve(node.config?.format || "markdown");
+      return {
+        success: true,
+        format,
+        transcript: "bosun wake transcript summary with actionable planning outcomes",
+      };
+    },
+  });
+
+  registerIfMissing("meeting.vision", {
+    describe: () => "Analyze meeting frame",
+    schema: {
+      type: "object",
+      properties: {
+        frameDataUrl: { type: "string" },
+        source: { type: "string" },
+      },
+    },
+    async execute(node, ctx) {
+      return {
+        success: true,
+        analyzed: Boolean(ctx.resolve(node.config?.frameDataUrl || "")),
+        summary: "Vision summary mock",
+      };
+    },
+  });
+
+  registerIfMissing("meeting.finalize", {
+    describe: () => "Finalize meeting session",
+    schema: {
+      type: "object",
+      properties: {
+        status: { type: "string" },
+      },
+    },
+    async execute(node, ctx) {
+      return {
+        success: true,
+        status: ctx.resolve(node.config?.status || "completed"),
+      };
+    },
+  });
+
+  registerIfMissing("trigger.meeting.wake_phrase", {
+    describe: () => "Wake phrase trigger",
+    schema: {
+      type: "object",
+      properties: {
+        wakePhrase: { type: "string" },
+        text: { type: "string" },
+      },
+    },
+    async execute(node, ctx) {
+      const phrase = String(ctx.resolve(node.config?.wakePhrase || "")).toLowerCase();
+      const text = String(ctx.resolve(node.config?.text || "")).toLowerCase();
+      return {
+        triggered: Boolean(phrase) && text.includes(phrase),
+      };
+    },
+  });
+
+  registerIfMissing("action.execute_workflow", {
+    describe: () => "Execute a child workflow",
+    schema: {
+      type: "object",
+      properties: {
+        workflowId: { type: "string" },
+        mode: { type: "string" },
+        input: { type: "object" },
+        inheritContext: { type: "boolean" },
+        includeKeys: { type: "array" },
+        outputVariable: { type: "string" },
+        failOnChildError: { type: "boolean" },
+      },
+    },
+    async execute(node, ctx) {
+      const workflowId = String(ctx.resolve(node.config?.workflowId || "")).trim();
+      if (!workflowId) {
+        return { success: false, status: "failed", error: "workflowId is required" };
+      }
+      return {
+        success: true,
+        status: node.config?.mode === "dispatch" ? "dispatched" : "completed",
+        workflowId,
+        runId: `child-${ctx.id}`,
+      };
+    },
+  });
 }
 
 // ── Template Structural Validation ──────────────────────────────────────────
@@ -189,6 +337,44 @@ describe("workflow-templates", () => {
     );
     expect(edgeToMaterialize).toBeDefined();
     expect(edgeToCheck).toBeDefined();
+  });
+
+  it("meeting subworkflow chain template includes meeting and child workflow nodes", () => {
+    const template = getTemplate("template-meeting-subworkflow-chain");
+    expect(template).toBeDefined();
+
+    expect(template.variables?.sessionTitle).toBe("Sprint Planning Sync");
+    expect(template.variables?.meetingExecutor).toBe("codex");
+    expect(template.variables?.wakePhrase).toBe("bosun wake");
+    expect(template.variables?.childWorkflowId).toBe("template-task-planner");
+
+    const startNode = template.nodes.find((n) => n.id === "meeting-start");
+    const visionNode = template.nodes.find((n) => n.id === "meeting-vision");
+    const transcriptNode = template.nodes.find((n) => n.id === "meeting-transcript");
+    const wakeTriggerNode = template.nodes.find((n) => n.id === "wake-phrase-trigger");
+    const chainNode = template.nodes.find((n) => n.id === "execute-child-workflow");
+    const finalizeNode = template.nodes.find((n) => n.id === "meeting-finalize");
+    const guardNode = template.nodes.find((n) => n.id === "guard-transcript");
+
+    expect(startNode?.type).toBe("meeting.start");
+    expect(visionNode?.type).toBe("meeting.vision");
+    expect(transcriptNode?.type).toBe("meeting.transcript");
+    expect(wakeTriggerNode?.type).toBe("trigger.meeting.wake_phrase");
+    expect(chainNode?.type).toBe("action.execute_workflow");
+    expect(finalizeNode?.type).toBe("meeting.finalize");
+    expect(guardNode?.type).toBe("condition.expression");
+    expect(chainNode?.config?.workflowId).toBe("{{childWorkflowId}}");
+    expect(chainNode?.config?.mode).toBe("sync");
+    expect(chainNode?.config?.failOnChildError).toBe(false);
+
+    const guardToChain = template.edges.find(
+      (e) => e.source === "guard-transcript" && e.target === "execute-child-workflow",
+    );
+    const guardToNotify = template.edges.find(
+      (e) => e.source === "guard-transcript" && e.target === "notify-guard-failed",
+    );
+    expect(guardToChain).toBeDefined();
+    expect(guardToNotify).toBeDefined();
   });
 });
 
@@ -534,6 +720,7 @@ describe("template dry-run execution", () => {
   beforeEach(async () => {
     // Side-effect import registers built-in workflow node types once per test process.
     await import("../workflow-nodes.mjs");
+    ensureExperimentalWorkflowNodeTypesRegistered();
   });
 
   for (const template of WORKFLOW_TEMPLATES) {

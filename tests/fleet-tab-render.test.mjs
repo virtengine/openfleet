@@ -13,16 +13,16 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const agentFileSources = [
+const sourceFiles = [
   "ui/tabs/agents.js",
   "site/ui/tabs/agents.js",
-].map((relativePath) => ({
-  relativePath,
-  source: readFileSync(resolve(process.cwd(), relativePath), "utf8"),
+].map((relPath) => ({
+  relPath,
+  source: readFileSync(resolve(process.cwd(), relPath), "utf8"),
 }));
 
-for (const { relativePath, source } of agentFileSources) {
-  describe(`FleetSessionsPanel render stability (${relativePath})`, () => {
+for (const { relPath, source } of sourceFiles) {
+  describe(`FleetSessionsPanel render stability (${relPath})`, () => {
     it("uses useMemo for entries array to prevent infinite render loops", () => {
       // The entries array must be memoised with useMemo, not rebuilt inline
       expect(source).toContain("useMemo");

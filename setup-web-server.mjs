@@ -534,8 +534,33 @@ function applyTelegramMiniAppSetupEnv(envMap, env, sourceEnv = process.env) {
     env?.telegramUiTunnel ||
     env?.TELEGRAM_UI_TUNNEL ||
     sourceEnv.TELEGRAM_UI_TUNNEL ||
-    "auto";
-  envMap.TELEGRAM_UI_TUNNEL = String(tunnelRaw).trim() || "auto";
+    "named";
+  envMap.TELEGRAM_UI_TUNNEL = String(tunnelRaw).trim() || "named";
+
+  const quickFallbackRaw =
+    env?.telegramUiAllowQuickTunnelFallback ??
+    env?.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK ??
+    sourceEnv.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK;
+  envMap.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK = toBooleanEnvString(
+    quickFallbackRaw,
+    false,
+  );
+
+  const fallbackAuthRaw =
+    env?.telegramUiFallbackAuthEnabled ??
+    env?.TELEGRAM_UI_FALLBACK_AUTH_ENABLED ??
+    sourceEnv.TELEGRAM_UI_FALLBACK_AUTH_ENABLED;
+  envMap.TELEGRAM_UI_FALLBACK_AUTH_ENABLED = toBooleanEnvString(
+    fallbackAuthRaw,
+    true,
+  );
+
+  const hostnamePolicyRaw =
+    env?.cloudflareUsernameHostnamePolicy ||
+    env?.CLOUDFLARE_USERNAME_HOSTNAME_POLICY ||
+    sourceEnv.CLOUDFLARE_USERNAME_HOSTNAME_POLICY ||
+    "per-user-fixed";
+  envMap.CLOUDFLARE_USERNAME_HOSTNAME_POLICY = String(hostnamePolicyRaw).trim() || "per-user-fixed";
 
   const unsafeRaw =
     env?.telegramUiAllowUnsafe ??

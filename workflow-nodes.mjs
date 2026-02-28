@@ -555,6 +555,162 @@ function normalizeLegacyWorkflowCommand(command) {
   return normalized;
 }
 
+function resolveWorkflowNodeValue(value, ctx) {
+  if (typeof value === "string") return ctx.resolve(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => resolveWorkflowNodeValue(item, ctx));
+  }
+  if (value && typeof value === "object") {
+    const resolved = {};
+    for (const [key, entry] of Object.entries(value)) {
+      resolved[key] = resolveWorkflowNodeValue(entry, ctx);
+    }
+    return resolved;
+  }
+  return value;
+}
+
+function parseBooleanSetting(value, defaultValue = false) {
+  if (value == null || value === "") return defaultValue;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) return defaultValue;
+    if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
+  }
+  return defaultValue;
+}
+
+function getPathValue(value, pathExpression) {
+  const path = String(pathExpression || "").trim();
+  if (!path) return undefined;
+  const parts = path
+    .split(".")
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+  if (parts.length === 0) return undefined;
+
+  let cursor = value;
+  for (const part of parts) {
+    if (cursor == null) return undefined;
+    if (Array.isArray(cursor)) {
+      const idx = Number.parseInt(part, 10);
+      if (!Number.isFinite(idx)) return undefined;
+      cursor = cursor[idx];
+      continue;
+    }
+    if (typeof cursor !== "object") return undefined;
+    cursor = cursor[part];
+  }
+  return cursor;
+}
+
+function collectWakePhraseCandidates(payload, payloadField = "") {
+  const candidates = [];
+  const seen = new Set();
+
+  const appendCandidate = (field, rawValue) => {
+    if (rawValue == null) return;
+    if (Array.isArray(rawValue)) {
+      rawValue.forEach((entry, idx) => appendCandidate(`${field}[${idx}]`, entry));
+      return;
+    }
+    if (typeof rawValue === "object") {
+      if (typeof rawValue.content === "string") {
+        appendCandidate(`${field}.content`, rawValue.content);
+      }
+      if (typeof rawValue.text === "string") {
+        appendCandidate(`${field}.text`, rawValue.text);
+      }
+      if (typeof rawValue.transcript === "string") {
+        appendCandidate(`${field}.transcript`, rawValue.transcript);
+      }
+      return;
+    }
+
+    const text = String(rawValue).trim();
+    if (!text) return;
+    const key = `${field}::${text}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({ field, text });
+  };
+
+  if (payloadField) {
+    appendCandidate(payloadField, getPathValue(payload, payloadField));
+    return candidates;
+  }
+
+  const commonFields = [
+    "content",
+    "text",
+    "transcript",
+    "message",
+    "utterance",
+    "payload.content",
+    "payload.text",
+    "payload.transcript",
+    "event.content",
+    "event.text",
+    "event.transcript",
+    "voice.content",
+    "voice.transcript",
+    "meta.transcript",
+  ];
+  for (const field of commonFields) {
+    appendCandidate(field, getPathValue(payload, field));
+  }
+
+  const messages = Array.isArray(payload?.messages) ? payload.messages : [];
+  messages.forEach((entry, idx) => appendCandidate(`messages[${idx}]`, entry));
+
+  const transcriptEvents = Array.isArray(payload?.transcriptEvents) ? payload.transcriptEvents : [];
+  transcriptEvents.forEach((entry, idx) => appendCandidate(`transcriptEvents[${idx}]`, entry));
+
+  return candidates;
+}
+
+function detectWakePhraseMatch(text, phrase, options = {}) {
+  const mode = String(options.mode || "contains").trim().toLowerCase() || "contains";
+  const caseSensitive = options.caseSensitive === true;
+  const source = String(text || "");
+  const target = String(phrase || "");
+
+  if (!source || !target) return { matched: false, mode };
+
+  const sourceNormalized = caseSensitive ? source : source.toLowerCase();
+  const targetNormalized = caseSensitive ? target : target.toLowerCase();
+
+  if (mode === "exact") {
+    return { matched: sourceNormalized.trim() === targetNormalized.trim(), mode };
+  }
+  if (mode === "starts_with") {
+    return { matched: sourceNormalized.trimStart().startsWith(targetNormalized), mode };
+  }
+  if (mode === "regex") {
+    try {
+      const regex = new RegExp(target, caseSensitive ? "" : "i");
+      return { matched: regex.test(source), mode };
+    } catch (err) {
+      return {
+        matched: false,
+        mode,
+        error: `invalid regex: ${err?.message || err}`,
+      };
+    }
+  }
+  return { matched: sourceNormalized.includes(targetNormalized), mode: "contains" };
+}
+
+function normalizeWorkflowStack(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+}
+
 function isBosunStateComment(text) {
   const raw = String(text || "").toLowerCase();
   return raw.includes("bosun-state") || raw.includes("codex:ignore");
@@ -701,6 +857,165 @@ registerNodeType("trigger.event", {
       }
     }
     return { triggered, eventType: actual };
+  },
+});
+
+registerNodeType("trigger.meeting.wake_phrase", {
+  describe: () => "Fires when a transcript/event payload contains the configured wake phrase",
+  schema: {
+    type: "object",
+    properties: {
+      wakePhrase: { type: "string", description: "Wake phrase to match (alias: phrase)" },
+      phrase: { type: "string", description: "Alias for wakePhrase" },
+      mode: {
+        type: "string",
+        enum: ["contains", "starts_with", "exact", "regex"],
+        default: "contains",
+      },
+      caseSensitive: { type: "boolean", default: false },
+      text: {
+        type: "string",
+        description: "Optional explicit text to inspect before payload-derived fields",
+      },
+      payloadField: {
+        type: "string",
+        description: "Optional payload path to inspect (e.g. content, payload.transcript)",
+      },
+      sessionId: { type: "string", description: "Optional sessionId filter" },
+      role: { type: "string", description: "Optional role filter (user|assistant|system)" },
+      failOnInvalidRegex: {
+        type: "boolean",
+        default: false,
+        description: "Throw when regex mode is invalid instead of soft-failing",
+      },
+    },
+  },
+  async execute(node, ctx) {
+    const eventData = ctx.data && typeof ctx.data === "object" ? ctx.data : {};
+    const resolveValue = (value) => (
+      typeof ctx?.resolve === "function" ? ctx.resolve(value) : value
+    );
+
+    const wakePhrase = String(
+      resolveValue(node.config?.wakePhrase || node.config?.phrase || eventData?.wakePhrase || ""),
+    ).trim();
+    if (!wakePhrase) {
+      return { triggered: false, reason: "wake_phrase_missing" };
+    }
+
+    const expectedSessionId = String(resolveValue(node.config?.sessionId || "")).trim();
+    const actualSessionId = String(
+      eventData?.sessionId || eventData?.meetingSessionId || eventData?.session?.id || "",
+    ).trim();
+    if (expectedSessionId) {
+      if (!actualSessionId) {
+        return {
+          triggered: false,
+          reason: "session_missing",
+          expectedSessionId,
+        };
+      }
+      if (expectedSessionId !== actualSessionId) {
+        return {
+          triggered: false,
+          reason: "session_mismatch",
+          expectedSessionId,
+          sessionId: actualSessionId,
+        };
+      }
+    }
+
+    const expectedRole = String(resolveValue(node.config?.role || "")).trim().toLowerCase();
+    const actualRole = String(
+      eventData?.role || eventData?.speakerRole || eventData?.participantRole || "",
+    ).trim().toLowerCase();
+    if (expectedRole) {
+      if (!actualRole) {
+        return {
+          triggered: false,
+          reason: "role_missing",
+          expectedRole,
+          sessionId: actualSessionId || null,
+        };
+      }
+      if (expectedRole !== actualRole) {
+        return {
+          triggered: false,
+          reason: "role_mismatch",
+          expectedRole,
+          role: actualRole,
+          sessionId: actualSessionId || null,
+        };
+      }
+    }
+
+    const payloadField = String(resolveValue(node.config?.payloadField || "")).trim();
+    const configuredText = String(resolveValue(node.config?.text || "") || "").trim();
+    const candidates = configuredText
+      ? [{ field: "text", text: configuredText }]
+      : [];
+    candidates.push(...collectWakePhraseCandidates(eventData, payloadField));
+    if (!candidates.length) {
+      return {
+        triggered: false,
+        reason: "payload_missing",
+        wakePhrase,
+        sessionId: actualSessionId || null,
+        role: actualRole || null,
+      };
+    }
+
+    const mode = String(resolveValue(node.config?.mode || "contains")).trim().toLowerCase() || "contains";
+    const caseSensitive = parseBooleanSetting(
+      resolveValue(node.config?.caseSensitive ?? false),
+      false,
+    );
+    const failOnInvalidRegex = parseBooleanSetting(
+      resolveValue(node.config?.failOnInvalidRegex ?? false),
+      false,
+    );
+
+    for (const candidate of candidates) {
+      const matched = detectWakePhraseMatch(candidate.text, wakePhrase, {
+        mode,
+        caseSensitive,
+      });
+      if (matched.error) {
+        if (failOnInvalidRegex) {
+          throw new Error(`trigger.meeting.wake_phrase: ${matched.error}`);
+        }
+        return {
+          triggered: false,
+          reason: "invalid_regex",
+          error: matched.error,
+          wakePhrase,
+          mode,
+        };
+      }
+      if (matched.matched) {
+        return {
+          triggered: true,
+          wakePhrase,
+          mode: matched.mode,
+          sessionId: actualSessionId || null,
+          role: actualRole || null,
+          matchedField: candidate.field,
+          matchedText: candidate.text.length > 240
+            ? `${candidate.text.slice(0, 237)}...`
+            : candidate.text,
+        };
+      }
+    }
+
+    return {
+      triggered: false,
+      reason: "wake_phrase_not_found",
+      wakePhrase,
+      mode,
+      sessionId: actualSessionId || null,
+      role: actualRole || null,
+      inspectedFields: candidates.slice(0, 12).map((entry) => entry.field),
+    };
   },
 });
 
@@ -1255,6 +1570,569 @@ registerNodeType("action.run_command", {
         throw new Error(reason);
       }
       return result;
+    }
+  },
+});
+
+registerNodeType("action.execute_workflow", {
+  describe: () => "Execute another workflow by ID (synchronously or dispatch mode)",
+  schema: {
+    type: "object",
+    properties: {
+      workflowId: { type: "string", description: "Workflow ID to execute" },
+      mode: { type: "string", enum: ["sync", "dispatch"], default: "sync" },
+      input: {
+        type: "object",
+        description: "Input payload passed to the child workflow",
+        additionalProperties: true,
+      },
+      inheritContext: {
+        type: "boolean",
+        default: false,
+        description: "Copy parent workflow context data into child input before applying input overrides",
+      },
+      includeKeys: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional allow-list of context keys to inherit when inheritContext=true",
+      },
+      outputVariable: {
+        type: "string",
+        description: "Optional context key to store execution summary output",
+      },
+      failOnChildError: {
+        type: "boolean",
+        default: true,
+        description: "In sync mode, throw when child workflow completes with errors",
+      },
+      allowRecursive: {
+        type: "boolean",
+        default: false,
+        description: "Allow recursive workflow execution when true",
+      },
+    },
+    required: ["workflowId"],
+  },
+  async execute(node, ctx, engine) {
+    const workflowId = String(ctx.resolve(node.config?.workflowId || "") || "").trim();
+    const modeRaw = String(ctx.resolve(node.config?.mode || "sync") || "sync")
+      .trim()
+      .toLowerCase();
+    const mode = modeRaw || "sync";
+    const outputVariable = String(ctx.resolve(node.config?.outputVariable || "") || "").trim();
+    const inheritContext = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.inheritContext ?? false, ctx),
+      false,
+    );
+    const failOnChildError = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.failOnChildError ?? true, ctx),
+      true,
+    );
+    const allowRecursive = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.allowRecursive ?? false, ctx),
+      false,
+    );
+    const includeKeys = Array.isArray(node.config?.includeKeys)
+      ? node.config.includeKeys
+          .map((value) => String(resolveWorkflowNodeValue(value, ctx) || "").trim())
+          .filter(Boolean)
+      : [];
+
+    if (!workflowId) {
+      throw new Error("action.execute_workflow: 'workflowId' is required");
+    }
+    if (mode !== "sync" && mode !== "dispatch") {
+      throw new Error(`action.execute_workflow: invalid mode "${mode}". Expected "sync" or "dispatch".`);
+    }
+    if (!engine || typeof engine.execute !== "function") {
+      throw new Error("action.execute_workflow: workflow engine is not available");
+    }
+    if (typeof engine.get === "function" && !engine.get(workflowId)) {
+      throw new Error(`action.execute_workflow: workflow "${workflowId}" not found`);
+    }
+
+    const resolvedInputConfig = resolveWorkflowNodeValue(node.config?.input ?? {}, ctx);
+    if (
+      resolvedInputConfig != null &&
+      (typeof resolvedInputConfig !== "object" || Array.isArray(resolvedInputConfig))
+    ) {
+      throw new Error("action.execute_workflow: 'input' must resolve to an object");
+    }
+    const configuredInput =
+      resolvedInputConfig && typeof resolvedInputConfig === "object"
+        ? resolvedInputConfig
+        : {};
+
+    const sourceData =
+      ctx.data && typeof ctx.data === "object"
+        ? ctx.data
+        : {};
+    const inheritedInput = {};
+    if (inheritContext) {
+      if (includeKeys.length > 0) {
+        for (const key of includeKeys) {
+          if (Object.prototype.hasOwnProperty.call(sourceData, key)) {
+            inheritedInput[key] = sourceData[key];
+          }
+        }
+      } else {
+        Object.assign(inheritedInput, sourceData);
+      }
+    }
+
+    const parentWorkflowId = String(ctx.data?._workflowId || "").trim();
+    const workflowStack = normalizeWorkflowStack(ctx.data?._workflowStack);
+    if (parentWorkflowId && workflowStack[workflowStack.length - 1] !== parentWorkflowId) {
+      workflowStack.push(parentWorkflowId);
+    }
+    if (!allowRecursive && workflowStack.includes(workflowId)) {
+      const cyclePath = [...workflowStack, workflowId].join(" -> ");
+      throw new Error(
+        `action.execute_workflow: recursive workflow call blocked (${cyclePath}). ` +
+          "Set allowRecursive=true to override.",
+      );
+    }
+
+    const childInput = {
+      ...inheritedInput,
+      ...configuredInput,
+      _workflowStack: [...workflowStack, workflowId],
+    };
+
+    if (mode === "dispatch") {
+      ctx.log(node.id, `Dispatching workflow "${workflowId}"`);
+      const dispatched = engine.execute(workflowId, childInput);
+      dispatched
+        .then((childCtx) => {
+          const status = childCtx?.errors?.length ? "failed" : "completed";
+          ctx.log(node.id, `Dispatched workflow "${workflowId}" finished with status=${status}`);
+        })
+        .catch((err) => {
+          ctx.log(node.id, `Dispatched workflow "${workflowId}" failed: ${err.message}`, "error");
+        });
+
+      const output = {
+        success: true,
+        queued: true,
+        mode: "dispatch",
+        workflowId,
+        parentRunId: ctx.id,
+        stackDepth: childInput._workflowStack.length,
+      };
+      if (outputVariable) {
+        ctx.data[outputVariable] = output;
+      }
+      return output;
+    }
+
+    ctx.log(node.id, `Executing workflow "${workflowId}" (sync)`);
+    const childCtx = await engine.execute(workflowId, childInput);
+    const childErrors = Array.isArray(childCtx?.errors)
+      ? childCtx.errors.map((entry) => ({
+          nodeId: entry?.nodeId || null,
+          error: String(entry?.error || "unknown child workflow error"),
+        }))
+      : [];
+    const status = childErrors.length > 0 ? "failed" : "completed";
+    const output = {
+      success: status === "completed",
+      queued: false,
+      mode: "sync",
+      workflowId,
+      runId: childCtx?.id || null,
+      status,
+      errorCount: childErrors.length,
+      errors: childErrors,
+    };
+
+    if (outputVariable) {
+      ctx.data[outputVariable] = output;
+    }
+
+    if (status === "failed" && failOnChildError) {
+      const reason = childErrors[0]?.error || "child workflow failed";
+      const err = new Error(`action.execute_workflow: child workflow "${workflowId}" failed: ${reason}`);
+      err.childWorkflow = output;
+      throw err;
+    }
+
+    return output;
+  },
+});
+
+registerNodeType("meeting.start", {
+  describe: () => "Create or reuse a meeting session for workflow-driven voice/video orchestration",
+  schema: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", description: "Optional session ID (auto-generated when empty)" },
+      title: { type: "string", description: "Optional human-readable session title" },
+      executor: { type: "string", description: "Preferred executor for this meeting session" },
+      mode: { type: "string", description: "Preferred agent mode for this meeting session" },
+      model: { type: "string", description: "Preferred model override for this meeting session" },
+      wakePhrase: { type: "string", description: "Optional wake phrase metadata for downstream workflow logic" },
+      metadata: { type: "object", description: "Additional metadata stored with the meeting session" },
+      activate: { type: "boolean", default: true, description: "Mark meeting session active after creation/reuse" },
+      maxMessages: { type: "number", description: "Optional session max message retention override" },
+      failOnError: { type: "boolean", default: true, description: "Throw when meeting setup fails" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const meeting = engine.services?.meeting;
+    if (!meeting || typeof meeting.startMeeting !== "function") {
+      throw new Error("Meeting service is not available");
+    }
+
+    const failOnError = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.failOnError ?? true, ctx), true);
+    try {
+      const sessionId = String(
+        ctx.resolve(node.config?.sessionId || ctx.data?.meetingSessionId || ctx.data?.sessionId || ""),
+      ).trim() || undefined;
+      const title = String(ctx.resolve(node.config?.title || "") || "").trim() || undefined;
+      const executor = String(ctx.resolve(node.config?.executor || "") || "").trim() || undefined;
+      const mode = String(ctx.resolve(node.config?.mode || "") || "").trim() || undefined;
+      const model = String(ctx.resolve(node.config?.model || "") || "").trim() || undefined;
+      const wakePhrase = String(ctx.resolve(node.config?.wakePhrase || "") || "").trim() || undefined;
+      const metadataInput = resolveWorkflowNodeValue(node.config?.metadata || {}, ctx);
+      const metadata =
+        metadataInput && typeof metadataInput === "object" && !Array.isArray(metadataInput)
+          ? { ...metadataInput }
+          : {};
+      if (title) metadata.title = title;
+      if (wakePhrase) metadata.wakePhrase = wakePhrase;
+
+      const activate = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.activate ?? true, ctx), true);
+      const maxMessagesRaw = Number(resolveWorkflowNodeValue(node.config?.maxMessages, ctx));
+      const maxMessages = Number.isFinite(maxMessagesRaw) && maxMessagesRaw > 0
+        ? Math.trunc(maxMessagesRaw)
+        : undefined;
+
+      const result = await meeting.startMeeting({
+        sessionId,
+        metadata,
+        agent: executor,
+        mode,
+        model,
+        activate,
+        maxMessages,
+      });
+
+      const activeSessionId = String(result?.sessionId || sessionId || "").trim() || null;
+      if (activeSessionId) {
+        ctx.data.meetingSessionId = activeSessionId;
+        ctx.data.sessionId = ctx.data.sessionId || activeSessionId;
+      }
+
+      return {
+        success: true,
+        sessionId: activeSessionId,
+        created: result?.created === true,
+        session: result?.session || null,
+        voice: result?.voice || null,
+      };
+    } catch (err) {
+      if (failOnError) throw err;
+      return {
+        success: false,
+        error: String(err?.message || err),
+      };
+    }
+  },
+});
+
+registerNodeType("meeting.send", {
+  describe: () => "Send a meeting message through the meeting session dispatcher",
+  schema: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", description: "Meeting session ID (defaults to context session)" },
+      message: { type: "string", description: "Message to send into the meeting session" },
+      mode: { type: "string", description: "Optional per-message mode override" },
+      model: { type: "string", description: "Optional per-message model override" },
+      timeoutMs: { type: "number", description: "Optional per-message timeout in ms" },
+      createIfMissing: { type: "boolean", default: true, description: "Create session automatically when missing" },
+      allowInactive: { type: "boolean", default: false, description: "Allow sending when session is inactive" },
+      failOnError: { type: "boolean", default: true, description: "Throw when sending fails" },
+    },
+    required: ["message"],
+  },
+  async execute(node, ctx, engine) {
+    const meeting = engine.services?.meeting;
+    if (!meeting || typeof meeting.sendMeetingMessage !== "function") {
+      throw new Error("Meeting service is not available");
+    }
+
+    const failOnError = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.failOnError ?? true, ctx), true);
+    try {
+      const sessionId = String(
+        ctx.resolve(node.config?.sessionId || ctx.data?.meetingSessionId || ctx.data?.sessionId || ""),
+      ).trim();
+      if (!sessionId) {
+        throw new Error("meeting.send requires sessionId (configure node.sessionId or run meeting.start first)");
+      }
+      const message = String(ctx.resolve(node.config?.message || "") || "").trim();
+      if (!message) {
+        throw new Error("meeting.send requires message");
+      }
+
+      const mode = String(ctx.resolve(node.config?.mode || "") || "").trim() || undefined;
+      const model = String(ctx.resolve(node.config?.model || "") || "").trim() || undefined;
+      const timeoutMsRaw = Number(resolveWorkflowNodeValue(node.config?.timeoutMs, ctx));
+      const timeoutMs = Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0
+        ? Math.trunc(timeoutMsRaw)
+        : undefined;
+      const createIfMissing = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.createIfMissing ?? true, ctx), true);
+      const allowInactive = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.allowInactive ?? false, ctx), false);
+
+      const result = await meeting.sendMeetingMessage(sessionId, message, {
+        mode,
+        model,
+        timeoutMs,
+        createIfMissing,
+        allowInactive,
+      });
+
+      const nextSessionId = String(result?.sessionId || sessionId).trim();
+      if (nextSessionId) {
+        ctx.data.meetingSessionId = nextSessionId;
+        ctx.data.sessionId = ctx.data.sessionId || nextSessionId;
+      }
+
+      return {
+        success: result?.ok !== false,
+        sessionId: nextSessionId || null,
+        messageId: result?.messageId || null,
+        status: result?.status || null,
+        responseText: result?.responseText || "",
+        adapter: result?.adapter || null,
+        observedEventCount: Number(result?.observedEventCount || 0),
+      };
+    } catch (err) {
+      if (failOnError) throw err;
+      return {
+        success: false,
+        error: String(err?.message || err),
+      };
+    }
+  },
+});
+
+registerNodeType("meeting.transcript", {
+  describe: () => "Fetch meeting transcript pages and optionally project as plain text",
+  schema: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", description: "Meeting session ID (defaults to context session)" },
+      page: { type: "number", default: 1 },
+      pageSize: { type: "number", default: 200 },
+      includeMessages: { type: "boolean", default: true, description: "Include structured message array in output" },
+      failOnError: { type: "boolean", default: true, description: "Throw when transcript retrieval fails" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const meeting = engine.services?.meeting;
+    if (!meeting || typeof meeting.fetchMeetingTranscript !== "function") {
+      throw new Error("Meeting service is not available");
+    }
+
+    const failOnError = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.failOnError ?? true, ctx), true);
+    try {
+      const sessionId = String(
+        ctx.resolve(node.config?.sessionId || ctx.data?.meetingSessionId || ctx.data?.sessionId || ""),
+      ).trim();
+      if (!sessionId) {
+        throw new Error("meeting.transcript requires sessionId (configure node.sessionId or run meeting.start first)");
+      }
+
+      const pageRaw = Number(resolveWorkflowNodeValue(node.config?.page ?? 1, ctx));
+      const page = Number.isFinite(pageRaw) && pageRaw > 0 ? Math.trunc(pageRaw) : 1;
+      const pageSizeRaw = Number(resolveWorkflowNodeValue(node.config?.pageSize ?? 200, ctx));
+      const pageSize = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0 ? Math.trunc(pageSizeRaw) : 200;
+      const includeMessages = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeMessages ?? true, ctx), true);
+
+      const transcript = await meeting.fetchMeetingTranscript(sessionId, {
+        page,
+        pageSize,
+      });
+      const messages = Array.isArray(transcript?.messages) ? transcript.messages : [];
+      const transcriptText = messages
+        .map((msg) => {
+          const role = String(msg?.role || msg?.type || "system").trim().toLowerCase();
+          const content = String(msg?.content || "").trim();
+          if (!content) return "";
+          return `${role}: ${content}`;
+        })
+        .filter(Boolean)
+        .join("\n");
+
+      return {
+        success: true,
+        sessionId,
+        status: transcript?.status || null,
+        page: Number(transcript?.page || page),
+        pageSize: Number(transcript?.pageSize || pageSize),
+        totalMessages: Number(transcript?.totalMessages || messages.length),
+        totalPages: Number(transcript?.totalPages || 0),
+        hasNextPage: transcript?.hasNextPage === true,
+        hasPreviousPage: transcript?.hasPreviousPage === true,
+        transcript: transcriptText,
+        messages: includeMessages ? messages : undefined,
+      };
+    } catch (err) {
+      if (failOnError) throw err;
+      return {
+        success: false,
+        error: String(err?.message || err),
+      };
+    }
+  },
+});
+
+registerNodeType("meeting.vision", {
+  describe: () => "Analyze a meeting video frame and persist a vision summary",
+  schema: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", description: "Meeting session ID (defaults to context session)" },
+      frameDataUrl: { type: "string", description: "Base64 data URL for the current frame" },
+      source: { type: "string", enum: ["screen", "camera"], default: "screen" },
+      prompt: { type: "string", description: "Optional per-frame vision prompt override" },
+      visionModel: { type: "string", description: "Optional vision model override" },
+      minIntervalMs: { type: "number", description: "Minimum analysis interval for this session" },
+      forceAnalyze: { type: "boolean", default: false, description: "Bypass dedupe/throttle checks" },
+      width: { type: "number", description: "Optional frame width for transcript context" },
+      height: { type: "number", description: "Optional frame height for transcript context" },
+      executor: { type: "string", description: "Optional executor hint for vision context" },
+      mode: { type: "string", description: "Optional mode hint for vision context" },
+      model: { type: "string", description: "Optional model hint for vision context" },
+      failOnError: { type: "boolean", default: true, description: "Throw when vision analysis fails" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const meeting = engine.services?.meeting;
+    if (!meeting || typeof meeting.analyzeMeetingFrame !== "function") {
+      throw new Error("Meeting service is not available");
+    }
+
+    const failOnError = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.failOnError ?? true, ctx), true);
+    try {
+      const sessionId = String(
+        ctx.resolve(node.config?.sessionId || ctx.data?.meetingSessionId || ctx.data?.sessionId || ""),
+      ).trim();
+      if (!sessionId) {
+        throw new Error("meeting.vision requires sessionId (configure node.sessionId or run meeting.start first)");
+      }
+
+      const frameDataUrl = String(
+        ctx.resolve(node.config?.frameDataUrl || ctx.data?.frameDataUrl || ctx.data?.visionFrameDataUrl || ""),
+      ).trim();
+      if (!frameDataUrl) {
+        throw new Error("meeting.vision requires frameDataUrl");
+      }
+
+      const source = String(ctx.resolve(node.config?.source || "screen") || "screen").trim() || "screen";
+      const prompt = String(ctx.resolve(node.config?.prompt || "") || "").trim() || undefined;
+      const visionModel = String(ctx.resolve(node.config?.visionModel || "") || "").trim() || undefined;
+      const minIntervalRaw = Number(resolveWorkflowNodeValue(node.config?.minIntervalMs, ctx));
+      const minIntervalMs = Number.isFinite(minIntervalRaw) && minIntervalRaw > 0
+        ? Math.trunc(minIntervalRaw)
+        : undefined;
+      const forceAnalyze = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.forceAnalyze ?? false, ctx), false);
+      const widthRaw = Number(resolveWorkflowNodeValue(node.config?.width, ctx));
+      const heightRaw = Number(resolveWorkflowNodeValue(node.config?.height, ctx));
+      const width = Number.isFinite(widthRaw) && widthRaw > 0 ? Math.trunc(widthRaw) : undefined;
+      const height = Number.isFinite(heightRaw) && heightRaw > 0 ? Math.trunc(heightRaw) : undefined;
+      const executor = String(ctx.resolve(node.config?.executor || "") || "").trim() || undefined;
+      const mode = String(ctx.resolve(node.config?.mode || "") || "").trim() || undefined;
+      const model = String(ctx.resolve(node.config?.model || "") || "").trim() || undefined;
+
+      const result = await meeting.analyzeMeetingFrame(sessionId, frameDataUrl, {
+        source,
+        prompt,
+        visionModel,
+        minIntervalMs,
+        forceAnalyze,
+        width,
+        height,
+        executor,
+        mode,
+        model,
+      });
+
+      ctx.data.meetingSessionId = sessionId;
+      if (result?.summary) {
+        ctx.data.meetingVisionSummary = String(result.summary);
+      }
+
+      return {
+        success: result?.ok !== false,
+        sessionId: String(result?.sessionId || sessionId).trim(),
+        analyzed: result?.analyzed === true,
+        skipped: result?.skipped === true,
+        reason: result?.reason || null,
+        summary: result?.summary || "",
+        provider: result?.provider || null,
+        model: result?.model || null,
+        frameHash: result?.frameHash || null,
+      };
+    } catch (err) {
+      if (failOnError) throw err;
+      return {
+        success: false,
+        error: String(err?.message || err),
+      };
+    }
+  },
+});
+
+registerNodeType("meeting.finalize", {
+  describe: () => "Finalize a meeting session with status and optional note",
+  schema: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", description: "Meeting session ID (defaults to context session)" },
+      status: {
+        type: "string",
+        enum: ["active", "paused", "completed", "archived", "failed", "cancelled"],
+        default: "completed",
+      },
+      note: { type: "string", description: "Optional note recorded in session history" },
+      failOnError: { type: "boolean", default: true, description: "Throw when finalization fails" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const meeting = engine.services?.meeting;
+    if (!meeting || typeof meeting.stopMeeting !== "function") {
+      throw new Error("Meeting service is not available");
+    }
+
+    const failOnError = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.failOnError ?? true, ctx), true);
+    try {
+      const sessionId = String(
+        ctx.resolve(node.config?.sessionId || ctx.data?.meetingSessionId || ctx.data?.sessionId || ""),
+      ).trim();
+      if (!sessionId) {
+        throw new Error("meeting.finalize requires sessionId (configure node.sessionId or run meeting.start first)");
+      }
+
+      const status = String(
+        ctx.resolve(node.config?.status || "completed") || "completed",
+      ).trim().toLowerCase() || "completed";
+      const note = String(ctx.resolve(node.config?.note || "") || "").trim() || undefined;
+
+      const result = await meeting.stopMeeting(sessionId, { status, note });
+      return {
+        success: result?.ok !== false,
+        sessionId: String(result?.sessionId || sessionId).trim(),
+        status: result?.status || status,
+        session: result?.session || null,
+      };
+    } catch (err) {
+      if (failOnError) throw err;
+      return {
+        success: false,
+        error: String(err?.message || err),
+      };
     }
   },
 });

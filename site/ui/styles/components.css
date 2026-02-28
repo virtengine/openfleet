@@ -710,6 +710,53 @@ select.input {
   line-height: 1.5;
 }
 
+.repo-select-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.repo-auto-label {
+  font-size: 13px;
+  color: var(--text-secondary, #aaa);
+  padding: 4px 2px;
+}
+
+.repo-auto-label strong {
+  color: var(--text-primary, #fff);
+}
+
+.repo-checkboxes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.repo-checkboxes-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-hint, #888);
+  margin-bottom: 2px;
+}
+
+.repo-checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-primary, #fff);
+  cursor: pointer;
+  padding: 3px 2px;
+}
+
+.repo-checkbox-item input[type="checkbox"] {
+  accent-color: var(--accent, #7c6af7);
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
 .create-task-advanced-toggle {
   font-size: 12px;
   letter-spacing: 0.02em;

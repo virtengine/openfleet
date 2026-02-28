@@ -120,14 +120,39 @@ $output?.success === true && $data?.priority === "high";
 - Node-level `maxRetries` still applies independently within each run attempt.
 
 **Built-in Node Types**
-Triggers: `trigger.manual`, `trigger.task_low`, `trigger.schedule`, `trigger.event`, `trigger.webhook`, `trigger.pr_event`, `trigger.task_assigned`, `trigger.anomaly`, `trigger.scheduled_once`
+Triggers: `trigger.manual`, `trigger.task_low`, `trigger.schedule`, `trigger.event`, `trigger.webhook`, `trigger.pr_event`, `trigger.task_assigned`, `trigger.anomaly`, `trigger.scheduled_once`, `trigger.meeting.wake_phrase`
 Conditions: `condition.expression`, `condition.task_has_tag`, `condition.file_exists`, `condition.switch`
-Actions: `action.run_agent`, `action.run_command`, `action.create_task`, `action.update_task_status`, `action.git_operations`, `action.create_pr`, `action.write_file`, `action.read_file`, `action.set_variable`, `action.delay`, `action.continue_session`, `action.restart_agent`, `action.bosun_cli`, `action.handle_rate_limit`, `action.ask_user`, `action.analyze_errors`, `action.refresh_worktree`
+Actions: `action.run_agent`, `action.run_command`, `action.create_task`, `action.update_task_status`, `action.git_operations`, `action.create_pr`, `action.write_file`, `action.read_file`, `action.set_variable`, `action.delay`, `action.continue_session`, `action.restart_agent`, `action.bosun_cli`, `action.handle_rate_limit`, `action.ask_user`, `action.analyze_errors`, `action.refresh_worktree`, `action.execute_workflow`
+Meeting: `meeting.start`, `meeting.send`, `meeting.transcript`, `meeting.vision`, `meeting.finalize`
 Validations: `validation.screenshot`, `validation.model_review`, `validation.tests`, `validation.build`, `validation.lint`
 Transforms: `transform.json_parse`, `transform.template`, `transform.aggregate`
 Notify: `notify.log`, `notify.telegram`, `notify.webhook_out`
 Agent: `agent.select_profile`, `agent.run_planner`, `agent.evidence_collect`
 Loop: `loop.for_each`
+
+**Subworkflow Chaining Pattern**
+
+Use `action.execute_workflow` when one workflow should hand off to another:
+
+```json
+{
+  "type": "action.execute_workflow",
+  "config": {
+    "workflowId": "{{childWorkflowId}}",
+    "mode": "sync",
+    "inheritContext": true,
+    "includeKeys": ["meetingSessionId", "wakePhrase"],
+    "input": {
+      "sessionTitle": "{{sessionTitle}}",
+      "transcript": "{{meeting-transcript.transcript}}"
+    },
+    "outputVariable": "childWorkflowResult",
+    "failOnChildError": false
+  }
+}
+```
+
+Meeting chain example: `meeting.start` -> `meeting.send` -> `meeting.vision` -> `meeting.transcript` -> `trigger.meeting.wake_phrase`/guard (`condition.expression`) -> `action.execute_workflow` -> `meeting.finalize`.
 
 The authoritative list is exposed by `GET /api/workflows/node-types` and registered in `workflow-nodes.mjs`.
 
@@ -176,6 +201,11 @@ _GitHub Automation_
 | PR Conflict Resolver | `template-pr-conflict-resolver` | Resolves merge conflicts on open PRs. :alert: **Superseded for bosun-managed repos** — use the Bosun PR Watchdog instead. |
 | Stale PR Reaper | `template-stale-pr-reaper` | Closes or warns PRs that have been open beyond a stale threshold. |
 | **Bosun PR Watchdog** | `template-bosun-pr-watchdog` | **(New)** Scheduled CI poller for bosun-attached PRs. Makes a single `gh` API call per cycle to classify all open bosun PRs, labels CI failures / conflicts with `bosun-needs-fix`, sends merge candidates through a mandatory review gate (checks diff stats to prevent destructive merges), then merges. Never touches external-contributor PRs. Default interval: 5 min. Set `enabled: false` to disable. |
+
+_Agent Automation_
+| Template | ID | Description |
+| --- | --- | --- |
+| Meeting Orchestrator + Subworkflow Chain | `template-meeting-subworkflow-chain` | Advanced meeting/session flow with `meeting.start/send/vision/transcript/finalize`, wake-phrase trigger + transcript guard, and chained child workflow execution via `action.execute_workflow`. |
 
 _Reliability & Ops_
 | Template | ID | Description |

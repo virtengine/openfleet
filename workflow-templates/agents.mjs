@@ -8,6 +8,7 @@
  *   - Agent Session Monitor (recommended)
  *   - Backend Agent (recommended)
  *   - Voice + Video Rollout (Parallel Lanes)
+ *   - Meeting Orchestrator + Subworkflow Chain
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
@@ -802,5 +803,161 @@ export const VOICE_VIDEO_PARALLEL_ROLLOUT_TEMPLATE = {
     createdAt: "2026-02-28T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["voice", "video", "parallel", "subagents", "rollout"],
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Meeting Orchestrator + Subworkflow Chain
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const MEETING_SUBWORKFLOW_CHAIN_TEMPLATE = {
+  id: "template-meeting-subworkflow-chain",
+  name: "Meeting Orchestrator + Subworkflow Chain",
+  description:
+    "Runs a meeting session start/send/vision/transcript/finalize flow, applies " +
+    "a wake-phrase trigger + transcript quality guard, then invokes a child " +
+    "workflow via action.execute_workflow for post-meeting automation.",
+  category: "agents",
+  enabled: false,
+  trigger: "trigger.manual",
+  variables: {
+    sessionTitle: "Sprint Planning Sync",
+    meetingExecutor: "codex",
+    wakePhrase: "bosun wake",
+    openingMessage:
+      "Kick off planning review. Capture decisions, blockers, and next actions.",
+    frameDataUrl: "",
+    visionSource: "screen",
+    visionPrompt:
+      "Summarize visible meeting context, shared docs, and any blockers shown.",
+    visionModel: "",
+    visionMinIntervalMs: 1500,
+    forceVisionAnalyze: false,
+    minTranscriptChars: 140,
+    childWorkflowId: "template-task-planner",
+    finalizeDisposition: "completed",
+    notifyPrefix: ":memo:",
+  },
+  nodes: [
+    node("trigger", "trigger.manual", "Start Meeting Orchestration", {}, { x: 450, y: 50 }),
+
+    node("meeting-start", "meeting.start", "Meeting Start", {
+      title: "{{sessionTitle}}",
+      executor: "{{meetingExecutor}}",
+      wakePhrase: "{{wakePhrase}}",
+      includeTaskContext: true,
+    }, { x: 450, y: 190 }),
+
+    node("meeting-send", "meeting.send", "Send Opening Prompt", {
+      message: "{{openingMessage}}",
+      role: "system",
+    }, { x: 450, y: 320 }),
+
+    node("meeting-vision", "meeting.vision", "Analyze Meeting Frame", {
+      frameDataUrl: "{{frameDataUrl}}",
+      source: "{{visionSource}}",
+      prompt: "{{visionPrompt}}",
+      visionModel: "{{visionModel}}",
+      minIntervalMs: "{{visionMinIntervalMs}}",
+      forceAnalyze: "{{forceVisionAnalyze}}",
+      failOnError: false,
+    }, { x: 450, y: 450 }),
+
+    node("meeting-transcript", "meeting.transcript", "Capture Transcript", {
+      includeMessages: true,
+    }, { x: 450, y: 580 }),
+
+    node("wake-phrase-trigger", "trigger.meeting.wake_phrase", "Wake Phrase Trigger", {
+      wakePhrase: "{{wakePhrase}}",
+      text: "{{meeting-transcript.transcript}}",
+      mode: "contains",
+    }, { x: 450, y: 710 }),
+
+    node("guard-transcript", "condition.expression", "Wake Phrase + Transcript Guard", {
+      expression:
+        "(() => { const transcript = String($ctx.getNodeOutput('meeting-transcript')?.transcript || ''); const minChars = Number($data?.minTranscriptChars || 0); const hasWake = $ctx.getNodeOutput('wake-phrase-trigger')?.triggered === true; return transcript.length >= minChars && hasWake; })()",
+    }, { x: 450, y: 840 }),
+
+    node("notify-guard-failed", "notify.telegram", "Notify Guard Failed", {
+      message:
+        "{{notifyPrefix}} Meeting transcript guard failed for **{{sessionTitle}}**. " +
+        "Wake phrase missing or transcript shorter than {{minTranscriptChars}} chars.",
+    }, { x: 840, y: 840 }),
+
+    node("execute-child-workflow", "action.execute_workflow", "Run Child Workflow", {
+      workflowId: "{{childWorkflowId}}",
+      mode: "sync",
+      inheritContext: true,
+      includeKeys: [
+        "meetingSessionId",
+        "sessionTitle",
+        "wakePhrase",
+        "meetingVisionSummary",
+      ],
+      input: {
+        parentWorkflowId: "{{_workflowId}}",
+        parentRunId: "{{_workflowRunId}}",
+        sessionTitle: "{{sessionTitle}}",
+        wakePhrase: "{{wakePhrase}}",
+        transcript: "{{meeting-transcript.transcript}}",
+        visionSummary: "{{meeting-vision.summary}}",
+      },
+      outputVariable: "childWorkflowResult",
+      failOnChildError: false,
+    }, { x: 450, y: 980 }),
+
+    node("child-workflow-ok", "condition.expression", "Child Workflow Succeeded?", {
+      expression:
+        "$ctx.getNodeOutput('execute-child-workflow')?.success === true",
+    }, { x: 450, y: 1110 }),
+
+    node("notify-chain-success", "notify.telegram", "Notify Chain Success", {
+      message:
+        "{{notifyPrefix}} Meeting workflow chained into **{{childWorkflowId}}** " +
+        "successfully for **{{sessionTitle}}**.",
+    }, { x: 250, y: 1230 }),
+
+    node("notify-chain-failed", "notify.telegram", "Notify Chain Failure", {
+      message:
+        ":alert: Meeting flow completed but child workflow **{{childWorkflowId}}** failed " +
+        "or timed out for **{{sessionTitle}}**.",
+    }, { x: 650, y: 1230 }),
+
+    node("meeting-finalize", "meeting.finalize", "Finalize Meeting Session", {
+      status: "{{finalizeDisposition}}",
+      note: "Meeting subworkflow chain finalized.",
+    }, { x: 450, y: 1360 }),
+
+    node("final-log", "notify.log", "Record Final Outcome", {
+      message:
+        "Meeting orchestration finalized for {{sessionTitle}} with child workflow {{childWorkflowId}}",
+      level: "info",
+    }, { x: 450, y: 1490 }),
+  ],
+  edges: [
+    edge("trigger", "meeting-start"),
+    edge("meeting-start", "meeting-send"),
+    edge("meeting-send", "meeting-vision"),
+    edge("meeting-vision", "meeting-transcript"),
+    edge("meeting-transcript", "wake-phrase-trigger"),
+    edge("wake-phrase-trigger", "guard-transcript"),
+    edge("guard-transcript", "execute-child-workflow", { condition: "$output?.result === true", port: "yes" }),
+    edge("guard-transcript", "notify-guard-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("execute-child-workflow", "child-workflow-ok"),
+    edge("child-workflow-ok", "notify-chain-success", { condition: "$output?.result === true", port: "yes" }),
+    edge("child-workflow-ok", "notify-chain-failed", { condition: "$output?.result !== true", port: "no" }),
+    edge("notify-chain-success", "meeting-finalize"),
+    edge("notify-chain-failed", "meeting-finalize"),
+    edge("notify-guard-failed", "meeting-finalize"),
+    edge("meeting-finalize", "final-log"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-02-28T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["meeting", "subworkflow", "chaining", "agents"],
   },
 };

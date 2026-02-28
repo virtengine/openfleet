@@ -607,6 +607,50 @@ describe("New node types", () => {
     expect(result2.triggered).toBe(false);
   });
 
+  it("trigger.meeting.wake_phrase matches transcript payload with session and role filters", async () => {
+    const handler = getNodeType("trigger.meeting.wake_phrase");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({
+      sessionId: "meeting-123",
+      role: "user",
+      content: "Hey team, hi Bosun Wake, can you summarize action items?",
+    });
+    const node = {
+      id: "wake-phrase",
+      type: "trigger.meeting.wake_phrase",
+      config: {
+        wakePhrase: "bosun wake",
+        sessionId: "meeting-123",
+        role: "user",
+      },
+    };
+    const result = await handler.execute(node, ctx);
+    expect(result.triggered).toBe(true);
+    expect(result.matchedField).toBe("content");
+    expect(result.wakePhrase).toBe("bosun wake");
+  });
+
+  it("trigger.meeting.wake_phrase soft-fails invalid regex mode", async () => {
+    const handler = getNodeType("trigger.meeting.wake_phrase");
+    const ctx = new WorkflowContext({
+      content: "bosun wake and continue",
+      role: "user",
+      sessionId: "meeting-123",
+    });
+    const node = {
+      id: "wake-regex",
+      type: "trigger.meeting.wake_phrase",
+      config: {
+        wakePhrase: "(",
+        mode: "regex",
+      },
+    };
+    const result = await handler.execute(node, ctx);
+    expect(result.triggered).toBe(false);
+    expect(result.reason).toBe("invalid_regex");
+  });
+
   it("trigger.scheduled_once resolves relative time expressions", async () => {
     const handler = getNodeType("trigger.scheduled_once");
     const ctx = new WorkflowContext({});
@@ -683,7 +727,505 @@ describe("New node types", () => {
   });
 });
 
+describe("action.execute_workflow", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("sync mode executes child workflow with resolved input and stores summary output", async () => {
+    const childWorkflow = makeSimpleWorkflow(
+      [
+        { id: "child-trigger", type: "trigger.manual", label: "Start Child", config: {} },
+      ],
+      [],
+      { id: "child-sync-wf", name: "Child Sync Workflow" },
+    );
+    const parentWorkflow = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start Parent", config: {} },
+        {
+          id: "invoke-child",
+          type: "action.execute_workflow",
+          label: "Invoke Child",
+          config: {
+            workflowId: "{{targetWorkflowId}}",
+            input: {
+              payload: "{{payload}}",
+              nested: { value: "{{nestedValue}}" },
+            },
+            inheritContext: true,
+            includeKeys: ["sharedValue"],
+            outputVariable: "childSummary",
+          },
+        },
+      ],
+      [{ id: "e1", source: "trigger", target: "invoke-child" }],
+      { id: "parent-sync-wf", name: "Parent Sync Workflow" },
+    );
+
+    engine.save(childWorkflow);
+    engine.save(parentWorkflow);
+
+    const parentCtx = await engine.execute(parentWorkflow.id, {
+      targetWorkflowId: childWorkflow.id,
+      payload: "payload-value",
+      nestedValue: "nested-value",
+      sharedValue: "inherit-me",
+      ignoredValue: "do-not-inherit",
+    });
+
+    expect(parentCtx.errors).toEqual([]);
+    const output = parentCtx.getNodeOutput("invoke-child");
+    expect(output).toMatchObject({
+      success: true,
+      queued: false,
+      mode: "sync",
+      workflowId: childWorkflow.id,
+      status: "completed",
+      errorCount: 0,
+    });
+    expect(typeof output.runId).toBe("string");
+    expect(parentCtx.data.childSummary).toEqual(output);
+
+    const childDetail = engine.getRunDetail(output.runId);
+    expect(childDetail).toBeTruthy();
+    expect(childDetail.workflowId).toBe(childWorkflow.id);
+    expect(childDetail.detail?.data?.payload).toBe("payload-value");
+    expect(childDetail.detail?.data?.nested?.value).toBe("nested-value");
+    expect(childDetail.detail?.data?.sharedValue).toBe("inherit-me");
+    expect(childDetail.detail?.data?.ignoredValue).toBeUndefined();
+    expect(childDetail.detail?.data?._workflowStack).toEqual([parentWorkflow.id, childWorkflow.id]);
+  });
+
+  it("dispatch mode queues child workflow without waiting for completion", async () => {
+    const handler = getNodeType("action.execute_workflow");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ _workflowId: "parent-dispatch-wf" });
+    let releaseChild;
+    const childRunPromise = new Promise((resolve) => {
+      releaseChild = resolve;
+    });
+    const mockEngine = {
+      execute: vi.fn().mockReturnValue(childRunPromise),
+      get: vi.fn().mockReturnValue({ id: "child-dispatch-wf" }),
+    };
+    const node = {
+      id: "dispatch-child",
+      type: "action.execute_workflow",
+      config: {
+        workflowId: "child-dispatch-wf",
+        mode: "dispatch",
+        outputVariable: "dispatchSummary",
+      },
+    };
+
+    try {
+      const result = await handler.execute(node, ctx, mockEngine);
+      expect(result).toMatchObject({
+        success: true,
+        queued: true,
+        mode: "dispatch",
+        workflowId: "child-dispatch-wf",
+      });
+      expect(ctx.data.dispatchSummary).toEqual(result);
+      expect(mockEngine.execute).toHaveBeenCalledTimes(1);
+      expect(mockEngine.execute).toHaveBeenCalledWith(
+        "child-dispatch-wf",
+        expect.objectContaining({
+          _workflowStack: ["parent-dispatch-wf", "child-dispatch-wf"],
+        }),
+      );
+    } finally {
+      releaseChild?.(new WorkflowContext({}));
+      await childRunPromise;
+    }
+  });
+
+  it("blocks recursive workflow loops unless allowRecursive is true", async () => {
+    const handler = getNodeType("action.execute_workflow");
+    expect(handler).toBeDefined();
+
+    const recursiveCtx = new WorkflowContext({
+      _workflowId: "wf-current",
+      _workflowStack: ["wf-root", "wf-current"],
+    });
+    const blockingEngine = {
+      execute: vi.fn(),
+      get: vi.fn().mockReturnValue({ id: "wf-root" }),
+    };
+    const recursiveNode = {
+      id: "recursive-call",
+      type: "action.execute_workflow",
+      config: { workflowId: "wf-root" },
+    };
+
+    await expect(handler.execute(recursiveNode, recursiveCtx, blockingEngine))
+      .rejects
+      .toThrow(/recursive workflow call blocked/i);
+    expect(blockingEngine.execute).not.toHaveBeenCalled();
+
+    const allowEngine = {
+      execute: vi.fn().mockResolvedValue(new WorkflowContext({})),
+      get: vi.fn().mockReturnValue({ id: "wf-root" }),
+    };
+    const allowedNode = {
+      id: "recursive-allowed",
+      type: "action.execute_workflow",
+      config: { workflowId: "wf-root", allowRecursive: true, failOnChildError: false },
+    };
+
+    const allowedResult = await handler.execute(allowedNode, recursiveCtx, allowEngine);
+    expect(allowEngine.execute).toHaveBeenCalledTimes(1);
+    expect(allowedResult.success).toBe(true);
+  });
+
+  it("sync mode honors failOnChildError", async () => {
+    const handler = getNodeType("action.execute_workflow");
+    expect(handler).toBeDefined();
+
+    const failedChildCtx = new WorkflowContext({});
+    failedChildCtx.error("child-node", new Error("child exploded"));
+
+    const mockEngine = {
+      execute: vi.fn().mockResolvedValue(failedChildCtx),
+      get: vi.fn().mockReturnValue({ id: "child-failing-wf" }),
+    };
+
+    const throwingNode = {
+      id: "throw-on-child-fail",
+      type: "action.execute_workflow",
+      config: { workflowId: "child-failing-wf", mode: "sync" },
+    };
+    await expect(
+      handler.execute(throwingNode, new WorkflowContext({ _workflowId: "parent-wf" }), mockEngine),
+    ).rejects.toThrow(/child workflow "child-failing-wf" failed/i);
+
+    const softFailNode = {
+      id: "soft-child-fail",
+      type: "action.execute_workflow",
+      config: {
+        workflowId: "child-failing-wf",
+        mode: "sync",
+        failOnChildError: false,
+        outputVariable: "childResult",
+      },
+    };
+    const softCtx = new WorkflowContext({ _workflowId: "parent-wf" });
+    const softResult = await handler.execute(softFailNode, softCtx, mockEngine);
+    expect(softResult).toMatchObject({
+      success: false,
+      queued: false,
+      mode: "sync",
+      workflowId: "child-failing-wf",
+      status: WorkflowStatus.FAILED,
+      errorCount: 1,
+    });
+    expect(softResult.errors[0]).toMatchObject({
+      nodeId: "child-node",
+      error: "child exploded",
+    });
+    expect(softCtx.data.childResult).toEqual(softResult);
+  });
+});
+
 // ── Session Chaining Tests ──────────────────────────────────────────────────
+
+describe("meeting workflow nodes", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("executes meeting.start -> meeting.send -> meeting.transcript -> meeting.finalize with service wiring", async () => {
+    const meetingService = {
+      startMeeting: vi.fn(async (opts = {}) => ({
+        sessionId: opts.sessionId || "meeting-auto",
+        created: true,
+        session: { id: opts.sessionId || "meeting-auto", status: "active" },
+        voice: { available: true, provider: "openai" },
+      })),
+      sendMeetingMessage: vi.fn(async (sessionId, content) => ({
+        ok: true,
+        sessionId,
+        messageId: "msg-1",
+        status: "sent",
+        responseText: `ACK:${content}`,
+        adapter: "mock-agent",
+        observedEventCount: 1,
+      })),
+      fetchMeetingTranscript: vi.fn(async (sessionId, opts = {}) => ({
+        sessionId,
+        status: "active",
+        page: opts.page || 1,
+        pageSize: opts.pageSize || 200,
+        totalMessages: 2,
+        totalPages: 1,
+        hasNextPage: false,
+        hasPreviousPage: false,
+        messages: [
+          { role: "user", content: "hi bosun" },
+          { role: "assistant", content: "hello there" },
+        ],
+      })),
+      stopMeeting: vi.fn(async (sessionId, opts = {}) => ({
+        ok: true,
+        sessionId,
+        status: opts.status || "completed",
+        session: { id: sessionId, status: opts.status || "completed" },
+      })),
+    };
+    engine.services.meeting = meetingService;
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "start",
+          type: "meeting.start",
+          label: "Meeting Start",
+          config: {
+            sessionId: "{{meetingId}}",
+            wakePhrase: "{{wakePhrase}}",
+          },
+        },
+        {
+          id: "send",
+          type: "meeting.send",
+          label: "Meeting Send",
+          config: {
+            message: "{{openingMessage}}",
+          },
+        },
+        {
+          id: "transcript",
+          type: "meeting.transcript",
+          label: "Meeting Transcript",
+          config: {
+            includeMessages: false,
+          },
+        },
+        {
+          id: "finalize",
+          type: "meeting.finalize",
+          label: "Meeting Finalize",
+          config: {
+            status: "archived",
+            note: "{{finalNote}}",
+          },
+        },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "start" },
+        { id: "e2", source: "start", target: "send" },
+        { id: "e3", source: "send", target: "transcript" },
+        { id: "e4", source: "transcript", target: "finalize" },
+      ],
+      { id: "meeting-nodes-wf", name: "Meeting Node Flow" },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {
+      meetingId: "meeting-123",
+      wakePhrase: "hi bosun",
+      openingMessage: "Please summarize this meeting.",
+      finalNote: "Workflow archived meeting session.",
+    });
+
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeOutput("start")).toMatchObject({
+      success: true,
+      sessionId: "meeting-123",
+    });
+    expect(ctx.getNodeOutput("send")).toMatchObject({
+      success: true,
+      sessionId: "meeting-123",
+      messageId: "msg-1",
+    });
+    expect(ctx.getNodeOutput("transcript")).toMatchObject({
+      success: true,
+      sessionId: "meeting-123",
+      totalMessages: 2,
+      transcript: "user: hi bosun\nassistant: hello there",
+    });
+    expect(ctx.getNodeOutput("finalize")).toMatchObject({
+      success: true,
+      sessionId: "meeting-123",
+      status: "archived",
+    });
+
+    expect(meetingService.startMeeting).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "meeting-123",
+        metadata: expect.objectContaining({ wakePhrase: "hi bosun" }),
+      }),
+    );
+    expect(meetingService.sendMeetingMessage).toHaveBeenCalledWith(
+      "meeting-123",
+      "Please summarize this meeting.",
+      expect.any(Object),
+    );
+    expect(meetingService.fetchMeetingTranscript).toHaveBeenCalledWith(
+      "meeting-123",
+      expect.objectContaining({ page: 1, pageSize: 200 }),
+    );
+    expect(meetingService.stopMeeting).toHaveBeenCalledWith(
+      "meeting-123",
+      expect.objectContaining({
+        status: "archived",
+        note: "Workflow archived meeting session.",
+      }),
+    );
+  });
+
+  it("meeting.vision forwards frame analysis options and stores summary in context", async () => {
+    const handler = getNodeType("meeting.vision");
+    expect(handler).toBeDefined();
+
+    const analyzeMeetingFrame = vi.fn(async (sessionId) => ({
+      ok: true,
+      sessionId,
+      analyzed: true,
+      skipped: false,
+      summary: "Presenter is showing CI failures in terminal output.",
+      provider: "mock-vision",
+      model: "mock-vision-model",
+      frameHash: "abc123",
+    }));
+    const ctx = new WorkflowContext({
+      meetingSessionId: "meeting-vision-123",
+      frameDataUrl: "data:image/png;base64,dGVzdA==",
+    });
+    const node = {
+      id: "meeting-vision",
+      type: "meeting.vision",
+      config: {
+        source: "camera",
+        prompt: "Describe what is on screen",
+        visionModel: "gpt-vision-test",
+        minIntervalMs: "1500",
+        forceAnalyze: true,
+        width: 1280,
+        height: 720,
+        executor: "codex",
+        mode: "agent",
+        model: "gpt-5",
+      },
+    };
+    const mockEngine = {
+      services: {
+        meeting: {
+          analyzeMeetingFrame,
+        },
+      },
+    };
+
+    const result = await handler.execute(node, ctx, mockEngine);
+    expect(result).toMatchObject({
+      success: true,
+      sessionId: "meeting-vision-123",
+      analyzed: true,
+      summary: "Presenter is showing CI failures in terminal output.",
+      provider: "mock-vision",
+      model: "mock-vision-model",
+      frameHash: "abc123",
+    });
+    expect(analyzeMeetingFrame).toHaveBeenCalledWith(
+      "meeting-vision-123",
+      "data:image/png;base64,dGVzdA==",
+      expect.objectContaining({
+        source: "camera",
+        prompt: "Describe what is on screen",
+        visionModel: "gpt-vision-test",
+        minIntervalMs: 1500,
+        forceAnalyze: true,
+        width: 1280,
+        height: 720,
+        executor: "codex",
+        mode: "agent",
+        model: "gpt-5",
+      }),
+    );
+    expect(ctx.data.meetingVisionSummary).toBe(
+      "Presenter is showing CI failures in terminal output.",
+    );
+  });
+
+  it("meeting.send returns soft failure when failOnError=false", async () => {
+    const handler = getNodeType("meeting.send");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ meetingSessionId: "meeting-soft-fail" });
+    const engineWithFailure = {
+      services: {
+        meeting: {
+          sendMeetingMessage: vi.fn(async () => {
+            throw new Error("dispatch failed");
+          }),
+        },
+      },
+    };
+    const node = {
+      id: "meeting-send-soft",
+      type: "meeting.send",
+      config: {
+        message: "hello",
+        failOnError: false,
+      },
+    };
+
+    const result = await handler.execute(node, ctx, engineWithFailure);
+    expect(result).toMatchObject({
+      success: false,
+      error: "dispatch failed",
+    });
+  });
+});
+
+describe("WorkflowEngine trigger evaluation", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("includes trigger.meeting.wake_phrase for meeting transcript events", async () => {
+    const wf = makeSimpleWorkflow(
+      [
+        {
+          id: "wake-trigger",
+          type: "trigger.meeting.wake_phrase",
+          label: "Wake Phrase Trigger",
+          config: {
+            wakePhrase: "hi bosun",
+          },
+        },
+      ],
+      [],
+      { id: "wake-trigger-workflow", name: "Wake Trigger Workflow" },
+    );
+
+    engine.save(wf);
+
+    const hits = await engine.evaluateTriggers("meeting.transcript", {
+      sessionId: "meeting-1",
+      role: "user",
+      content: "Hi bosun can you capture this task?",
+    });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      workflowId: "wake-trigger-workflow",
+      triggeredBy: "wake-trigger",
+    });
+
+    const nonMeetingHits = await engine.evaluateTriggers("task.completed", {
+      sessionId: "meeting-1",
+      role: "user",
+      content: "Hi bosun can you capture this task?",
+    });
+    expect(nonMeetingHits).toHaveLength(0);
+  });
+});
 
 describe("Session chaining - action.run_agent", () => {
   it("propagates threadId to context and streams agent events into run logs", async () => {
