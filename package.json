@@ -222,6 +222,7 @@
     "vibe-kanban-wrapper.mjs",
     "vk-error-resolver.mjs",
     "vk-log-stream.mjs",
+    "voice-auth-manager.mjs",
     "voice-relay.mjs",
     "voice-tools.mjs",
     "workspace-manager.mjs",

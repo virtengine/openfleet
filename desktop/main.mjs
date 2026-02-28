@@ -587,6 +587,14 @@ async function buildUiUrl() {
   const daemonUrl = await resolveDaemonUiUrl();
   if (daemonUrl) {
     uiOrigin = new URL(daemonUrl).origin;
+    // Authenticate the initial WebView load against the separately-running
+    // daemon using the desktop API key (set during bootstrap).
+    const desktopKey = process.env.BOSUN_DESKTOP_API_KEY;
+    if (desktopKey) {
+      const daemonTarget = new URL(daemonUrl);
+      daemonTarget.searchParams.set("desktopKey", desktopKey);
+      return daemonTarget.toString();
+    }
     return daemonUrl;
   }
   await startUiServer();
@@ -597,9 +605,16 @@ async function buildUiUrl() {
   }
   const targetUrl = new URL(uiServerUrl);
   uiOrigin = targetUrl.origin;
-  const sessionToken = api.getSessionToken();
-  if (sessionToken) {
-    targetUrl.searchParams.set("token", sessionToken);
+  // Prefer the non-expiring desktop API key over the TTL-based session token.
+  // Both result in the server setting a ve_session cookie and redirecting to /.
+  const desktopKey = process.env.BOSUN_DESKTOP_API_KEY;
+  if (desktopKey) {
+    targetUrl.searchParams.set("desktopKey", desktopKey);
+  } else {
+    const sessionToken = api.getSessionToken();
+    if (sessionToken) {
+      targetUrl.searchParams.set("token", sessionToken);
+    }
   }
   return targetUrl.toString();
 }
@@ -1078,6 +1093,18 @@ async function bootstrap() {
     }
     process.chdir(resolveBosunRoot());
     await loadRuntimeConfig();
+
+    // Provision (or reload) the dedicated Electron desktop API key.
+    // The key is stored at {configDir}/desktop-api-key.json and is set in
+    // process.env so that the in-process UI server can validate it without
+    // importing the module directly (avoids circular dependency).
+    try {
+      const keyMod = await loadBosunModule("desktop-api-key.mjs");
+      const desktopApiKey = keyMod.ensureDesktopApiKey(resolveDesktopConfigDir());
+      process.env.BOSUN_DESKTOP_API_KEY = desktopApiKey;
+    } catch (err) {
+      console.warn("[desktop] could not load desktop-api-key module:", err?.message || err);
+    }
 
     // Bypass TLS verification for the local embedded UI server.
     // setCertificateVerifyProc works at the OpenSSL level — it fires before

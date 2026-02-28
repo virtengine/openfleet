@@ -9710,6 +9710,37 @@ export async function startTelegramUiServer(options = {}) {
       }
     }
 
+    // Desktop API key exchange: ?desktopKey=<key> → set session cookie and redirect to clean URL
+    // Used by the Electron desktop app to bootstrap authenticated WebView sessions
+    // without depending on the TTL-based session token.
+    const qDesktopKey = url.searchParams.get("desktopKey");
+    if (qDesktopKey) {
+      const expectedDesktopKey = (process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+      if (expectedDesktopKey) {
+        try {
+          const a = Buffer.from(qDesktopKey);
+          const b = Buffer.from(expectedDesktopKey);
+          if (a.length === b.length && timingSafeEqual(a, b)) {
+            const cleanUrl = new URL(url.toString());
+            cleanUrl.searchParams.delete("desktopKey");
+            const redirectPath =
+              cleanUrl.pathname +
+              (cleanUrl.searchParams.toString()
+                ? `?${cleanUrl.searchParams.toString()}`
+                : "");
+            res.writeHead(302, {
+              "Set-Cookie": buildSessionCookieHeader(),
+              Location: redirectPath || "/",
+            });
+            res.end();
+            return;
+          }
+        } catch {
+          /* malformed key — fall through to normal auth */
+        }
+      }
+    }
+
     if (url.pathname === webhookPath) {
       await handleGitHubProjectWebhook(req, res);
       return;
