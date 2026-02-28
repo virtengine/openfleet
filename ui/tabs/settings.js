@@ -905,8 +905,10 @@ function ServerConfigMode() {
 
         case "select": {
           const opts = def.options || [];
-          if (opts.length <= 4) {
-            // SegmentedControl for ≤4 options
+          const hasCustom = opts.includes("custom");
+          const isCustomValue = hasCustom && value && !opts.includes(value);
+          if (opts.length <= 4 && !hasCustom) {
+            // SegmentedControl for ≤4 options (never for custom-capable selects)
             control = html`
               <${SegmentedControl}
                 options=${opts.map((o) => ({ value: o, label: o }))}
@@ -915,17 +917,32 @@ function ServerConfigMode() {
               />
             `;
           } else {
-            // Dropdown for >4 options
+            // Dropdown for >4 options or custom-capable selects
             control = html`
               <div class="setting-input-wrap">
                 <select
-                  value=${value || (def.defaultVal != null ? String(def.defaultVal) : "")}
-                  onChange=${(e) => handleChange(def.key, e.target.value)}
+                  value=${isCustomValue ? "custom" : (value || (def.defaultVal != null ? String(def.defaultVal) : ""))}
+                  onChange=${(e) => {
+                    if (e.target.value === "custom") {
+                      handleChange(def.key, "");
+                    } else {
+                      handleChange(def.key, e.target.value);
+                    }
+                  }}
                 >
                   ${opts.map(
-                    (o) => html`<option key=${o} value=${o}>${o}</option>`,
+                    (o) => html`<option key=${o} value=${o}>${o === "custom" ? "custom..." : o}</option>`,
                   )}
                 </select>
+                ${(isCustomValue || (hasCustom && value === "")) && html`
+                  <input
+                    type="text"
+                    value=${value || ""}
+                    placeholder="Enter custom value…"
+                    onInput=${(e) => handleChange(def.key, e.target.value)}
+                    style="margin-top:4px"
+                  />
+                `}
               </div>
             `;
           }
