@@ -119,17 +119,13 @@
 }
 
 .header-status {
-  display: inline-flex;
+  display: flex;
   flex-direction: row;
   align-items: center;
   gap: 8px;
-  flex-wrap: nowrap;
-  white-space: nowrap;
 }
 
 .header-freshness {
-  display: inline-flex;
-  align-items: center;
   font-size: 11px;
   opacity: 0.6;
   white-space: nowrap;
@@ -776,8 +772,8 @@
   }
 
   .main-content {
-    padding: 20px 24px 0;
-    padding-bottom: 0;
+    padding: 20px 24px 32px;
+    padding-bottom: 32px;
     max-width: var(--content-max);
     margin: 0 auto;
     overflow-y: auto;
@@ -856,7 +852,7 @@
   top: 0;
   bottom: 0;
   z-index: 910;
-  width: min(420px, 88vw);
+  width: min(320px, 85vw);
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   box-shadow: var(--shadow-lg, 0 10px 40px rgba(0, 0, 0, 0.3));
@@ -1689,5 +1685,38 @@ body.is-resizing * {
   /* ── Collapsed full-rail: hide normal list ── */
   .session-rail.session-rail--collapsed > :not(.rail-header):not(.rail-dots):not(.rail-icon-footer) {
     display: none !important;
+  }
+}
+
+/* ─── Reduced Motion ─── */
+/* Respect the user's OS-level preference to reduce motion. */
+@media (prefers-reduced-motion: reduce) {
+  /* Disable decorative entrance/exit animations */
+  .main-content > *,
+  .bottom-nav,
+  .drawer,
+  .nav-item.active::before {
+    animation: none !important;
+  }
+
+  /* Silence the continuous pulsing connection indicator */
+  .connection-dot,
+  .connection-pill.connected .connection-dot::after {
+    animation: none !important;
+  }
+
+  /* Make the sidebar / rail collapse transitions instant */
+  .sidebar,
+  .session-rail {
+    transition: none !important;
+  }
+
+  /* Shorten all interactive transitions (buttons, nav, cards) to near-instant */
+  .nav-item,
+  .nav-item svg,
+  .more-menu-item,
+  .sidebar-nav-item,
+  .connection-pill {
+    transition-duration: 50ms !important;
   }
 }
