@@ -61,6 +61,62 @@ const TABLET_MIN_WIDTH = 768;
 const COMPACT_NAV_MAX_WIDTH = 520;
 const RAIL_ICON_WIDTH = 54;
 const SIDEBAR_ICON_WIDTH = 54;
+const VOICE_LAUNCH_QUERY_KEYS = [
+  "launch",
+  "call",
+  "autostart",
+  "sessionId",
+  "executor",
+  "mode",
+  "model",
+  "vision",
+  "source",
+  "chat_id",
+];
+
+function parseVoiceLaunchFromUrl() {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search || "");
+  const launch = String(params.get("launch") || "").trim().toLowerCase();
+  if (launch !== "meeting" && launch !== "voice") return null;
+
+  const callRaw = String(params.get("call") || "").trim().toLowerCase();
+  const call = callRaw === "video" ? "video" : "voice";
+  const explicitVision = String(params.get("vision") || "").trim().toLowerCase();
+  const initialVisionSource =
+    explicitVision === "camera" || explicitVision === "screen"
+      ? explicitVision
+      : call === "video"
+        ? "camera"
+        : null;
+
+  return {
+    tab: "chat",
+    detail: {
+      call,
+      initialVisionSource,
+      sessionId: String(params.get("sessionId") || "").trim() || null,
+      executor: String(params.get("executor") || "").trim() || null,
+      mode: String(params.get("mode") || "").trim() || null,
+      model: String(params.get("model") || "").trim() || null,
+    },
+  };
+}
+
+function scrubVoiceLaunchQuery() {
+  if (typeof window === "undefined" || !window.history?.replaceState) return;
+  const url = new URL(window.location.href);
+  let changed = false;
+  for (const key of VOICE_LAUNCH_QUERY_KEYS) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  const nextPath = `${url.pathname}${url.search}${url.hash}`;
+  window.history.replaceState(window.history.state, "", nextPath || "/");
+}
 
 /* ── Module imports ── */
 import { ICONS } from "./modules/icons.js";
@@ -90,8 +146,14 @@ import {
   initWsInvalidationListener,
   loadNotificationPrefs,
   applyStoredDefaults,
+  hasPendingChanges,
 } from "./modules/state.js";
-import { activeTab, navigateTo, shouldBlockTabSwipe, TAB_CONFIG } from "./modules/router.js";
+import {
+  activeTab,
+  navigateTo,
+  shouldBlockTabSwipe,
+  TAB_CONFIG,
+} from "./modules/router.js";
 import { formatRelative } from "./modules/utils.js";
 
 /* ── Component imports ── */
@@ -122,7 +184,7 @@ import { VoiceOverlay } from "./modules/voice-overlay.js";
 import { DashboardTab } from "./tabs/dashboard.js";
 import { TasksTab } from "./tabs/tasks.js";
 import { ChatTab } from "./tabs/chat.js";
-import { AgentsTab } from "./tabs/agents.js";
+import { AgentsTab, FleetSessionsTab } from "./tabs/agents.js";
 import { InfraTab } from "./tabs/infra.js";
 import { ControlTab } from "./tabs/control.js";
 import { LogsTab } from "./tabs/logs.js";
@@ -431,6 +493,7 @@ const TAB_COMPONENTS = {
   tasks: TasksTab,
   chat: ChatTab,
   agents: AgentsTab,
+  "fleet-sessions": FleetSessionsTab,
   infra: InfraTab,
   control: ControlTab,
   logs: LogsTab,
@@ -560,6 +623,7 @@ function SidebarNav({ collapsed = false, onToggle }) {
         ${TAB_CONFIG.map((tab) => {
           const isActive = activeTab.value === tab.id;
           const isHome = tab.id === "dashboard";
+          const isChild = !!tab.parent;
           let badge = 0;
           if (tab.id === "tasks") {
             badge = getActiveTaskCount();
@@ -569,8 +633,8 @@ function SidebarNav({ collapsed = false, onToggle }) {
           return html`
             <button
               key=${tab.id}
-              class="sidebar-nav-item ${isActive ? "active" : ""}"
-              style="position:relative"
+              class="sidebar-nav-item ${isActive ? "active" : ""} ${isChild ? "sidebar-nav-child" : ""}"
+              style=${`position:relative${isChild ? ";padding-left:28px;font-size:0.85em" : ""}`}
               aria-label=${tab.label}
               aria-current=${isActive ? "page" : null}
               title=${collapsed ? tab.label : undefined}
@@ -600,7 +664,7 @@ function SidebarNav({ collapsed = false, onToggle }) {
   `;
 }
 
-function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onCollapse, onExpand }) {
+function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onCollapse, onExpand, sessionType = "primary" }) {
   const [showArchived, setShowArchived] = useState(false);
   const sessions = sessionsData.value || [];
   const activeCount = sessions.filter(
@@ -608,16 +672,11 @@ function SessionRail({ onResizeStart, onResizeReset, showResizer, collapsed, onC
   ).length;
 
   useEffect(() => {
-    let mounted = true;
-    loadSessions();
-    const interval = setInterval(() => {
-      if (mounted) loadSessions();
-    }, 5000);
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, []);
+    // Session polling belongs to the active tab (Chat/Agents). The rail only
+    // performs a one-time fallback load to avoid filter thrash/flicker.
+    if ((sessionsData.value || []).length > 0) return;
+    void loadSessions({ type: sessionType }).catch(() => {});
+  }, [sessionType]);
 
   useEffect(() => {
     if (selectedSessionId.value || sessions.length === 0) return;
@@ -872,7 +931,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
  *  Bottom Navigation
  * ═══════════════════════════════════════════════ */
 const PRIMARY_NAV_TABS = ["dashboard", "chat", "tasks", "agents"];
-const MORE_NAV_TABS = ["control", "infra", "logs", "telemetry", "library", "workflows", "settings"];
+const MORE_NAV_TABS = ["control", "infra", "logs", "library", "workflows", "settings"];
 
 function getTabsById(ids) {
   return ids
@@ -886,23 +945,22 @@ function getActiveTaskCount() {
     Number(sCounts.running || sCounts.inprogress || 0) +
     Number(sCounts.inreview || sCounts.review || 0);
   const list = Array.isArray(tasksData.value) ? tasksData.value : [];
-  if (list.length > 0) {
-    return list.filter((task) => {
-      const status = String(task?.status || "").toLowerCase();
-      return status === "inprogress" || status === "inreview" || status === "running";
-    }).length;
-  }
-  return fromSummary;
+  const fromList = list.filter((task) => {
+    const status = String(task?.status || "").toLowerCase();
+    return status === "inprogress" || status === "inreview" || status === "running";
+  }).length;
+  return Math.max(fromSummary, fromList);
 }
 
 function getActiveAgentCount() {
   const slots = Number(executorData.value?.data?.activeSlots || 0);
-  if (Number.isFinite(slots) && slots > 0) return slots;
   const agents = Array.isArray(agentsData.value) ? agentsData.value : [];
-  return agents.filter((agent) => {
+  const fromAgents = agents.filter((agent) => {
     const status = String(agent?.status || "").toLowerCase();
     return status === "running" || status === "busy" || status === "active";
   }).length;
+  const safeSlots = Number.isFinite(slots) ? Math.max(0, slots) : 0;
+  return Math.max(safeSlots, fromAgents);
 }
 
 function BottomNav({ compact, moreOpen, onToggleMore, onNavigate }) {
@@ -1238,18 +1296,31 @@ function App() {
   const loadingTimerRef = useRef(null);
   const isLoading = loadingCount.value > 0;
   useEffect(() => {
+    if (loadingTimerRef.current) {
+      clearTimeout(loadingTimerRef.current);
+      loadingTimerRef.current = null;
+    }
     if (isLoading) {
-      if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
-      setLoadingVisible(true);
-      setLoadingPct(70);
+      // Avoid flashing the top bar for short background activity.
+      loadingTimerRef.current = setTimeout(() => {
+        setLoadingVisible(true);
+        setLoadingPct(70);
+        loadingTimerRef.current = null;
+      }, 180);
     } else {
       setLoadingPct(100);
       loadingTimerRef.current = setTimeout(() => {
         setLoadingVisible(false);
         setLoadingPct(0);
-      }, 500);
+        loadingTimerRef.current = null;
+      }, 220);
     }
-    return () => {};
+    return () => {
+      if (loadingTimerRef.current) {
+        clearTimeout(loadingTimerRef.current);
+        loadingTimerRef.current = null;
+      }
+    };
   }, [isLoading]);
   const [isMoreOpen, setIsMoreOpen] = useState(false);
   const [voiceOverlayOpen, setVoiceOverlayOpen] = useState(false);
@@ -1258,6 +1329,10 @@ function App() {
   const [voiceExecutor, setVoiceExecutor] = useState(null);
   const [voiceAgentMode, setVoiceAgentMode] = useState(null);
   const [voiceModel, setVoiceModel] = useState(null);
+  const [voiceCallType, setVoiceCallType] = useState("voice");
+  const [voiceInitialVisionSource, setVoiceInitialVisionSource] = useState(
+    null,
+  );
   const resizeRef = useRef(null);
   const [isCompactNav, setIsCompactNav] = useState(() => {
     const win = globalThis.window;
@@ -1501,8 +1576,11 @@ function App() {
     // Load notification preferences early (non-blocking)
     loadNotificationPrefs();
 
-    // Load initial data for the default tab, then apply stored executor defaults
-    refreshTab("dashboard", { background: true, manual: false }).then(() => applyStoredDefaults());
+    // Load initial data for the route-selected tab, then apply stored defaults.
+    refreshTab(activeTab.value || "dashboard", {
+      background: true,
+      manual: false,
+    }).then(() => applyStoredDefaults());
 
     // Global keyboard shortcuts (1-7 for tabs, Escape for modals)
     function handleGlobalKeys(e) {
@@ -1551,8 +1629,34 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const onBeforeUnload = (event) => {
+      if (!hasPendingChanges.value) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    globalThis.addEventListener?.("beforeunload", onBeforeUnload);
+    return () => globalThis.removeEventListener?.("beforeunload", onBeforeUnload);
+  }, []);
+
+  useEffect(() => {
     const handleOpenVoiceMode = async (event) => {
       try {
+        const requestedCallType =
+          String(event?.detail?.call || "").trim().toLowerCase() === "video"
+            ? "video"
+            : "voice";
+        const requestedVisionSourceRaw = String(
+          event?.detail?.initialVisionSource || "",
+        )
+          .trim()
+          .toLowerCase();
+        const requestedVisionSource =
+          requestedVisionSourceRaw === "camera" ||
+          requestedVisionSourceRaw === "screen"
+            ? requestedVisionSourceRaw
+            : requestedCallType === "video"
+              ? "camera"
+              : null;
         const currentExecutor =
           String(event?.detail?.executor || activeAgent.value || "").trim() ||
           null;
@@ -1592,6 +1696,8 @@ function App() {
         setVoiceExecutor(currentExecutor);
         setVoiceAgentMode(currentMode);
         setVoiceModel(currentModel);
+        setVoiceCallType(requestedCallType);
+        setVoiceInitialVisionSource(requestedVisionSource);
 
         const response = await fetch("/api/voice/config", { method: "GET" });
         const cfg = response.ok ? await response.json() : null;
@@ -1615,6 +1721,43 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const launch = parseVoiceLaunchFromUrl();
+    if (!launch) return;
+    let cancelled = false;
+
+    const start = async () => {
+      if (launch.tab === "chat") {
+        const launchSessionId = String(launch.detail?.sessionId || "").trim();
+        if (launchSessionId) {
+          selectedSessionId.value = launchSessionId;
+          navigateTo("chat", {
+            params: { sessionId: launchSessionId },
+            replace: true,
+            skipGuard: true,
+          });
+        } else {
+          navigateTo("chat", { replace: true, skipGuard: true });
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      if (cancelled) return;
+      globalThis.dispatchEvent?.(
+        new CustomEvent("ve:open-voice-mode", { detail: launch.detail }),
+      );
+    };
+
+    start()
+      .catch(() => {})
+      .finally(() => {
+        scrubVoiceLaunchQuery();
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const el = mainRef.current;
     if (!el) return;
     const handleScroll = () => {
@@ -1632,7 +1775,7 @@ function App() {
   useEffect(() => {
     const el = mainRef.current;
     if (!el) return;
-    const swipeTabs = TAB_CONFIG.filter((t) => t.id !== "settings");
+    const swipeTabs = TAB_CONFIG.filter((t) => t.id !== "settings" && !t.parent);
     let startX = 0;
     let startY = 0;
     let startTime = 0;
@@ -1693,10 +1836,12 @@ function App() {
   }, []);
 
   const CurrentTab = TAB_COMPONENTS[activeTab.value] || DashboardTab;
-  const isChatOrAgents = activeTab.value === "chat" || activeTab.value === "agents";
-  const showSessionRail = isDesktop && isChatOrAgents;
+  const isChatOrAgents = activeTab.value === "chat" || activeTab.value === "agents" || activeTab.value === "fleet-sessions";
+  const isChat = activeTab.value === "chat";
+  const showSessionRail = isDesktop && isChat;
   const showInspector = isDesktop && isChatOrAgents;
   const showBottomNav = !isDesktop;
+  const railSessionType = "primary";
   const showDrawerToggles = isTablet;
   const showInspectorToggle = isTablet && isChatOrAgents;
 
@@ -1744,7 +1889,8 @@ function App() {
           onClick=${toggleInspector}
           aria-label=${inspectorToggleLabel}
         >
-          ${iconText(":clipboard: Inspector")}
+          <span class="btn-icon">${resolveIcon("clipboard")}</span>
+          Inspector
         </button>
       `
     : null;
@@ -1805,6 +1951,7 @@ function App() {
             collapsed=${railCollapsed}
             onCollapse=${collapseRail}
             onExpand=${expandRail}
+            sessionType=${railSessionType}
           />`
         : null}
       <div class="app-main">
@@ -1883,6 +2030,8 @@ function App() {
       executor=${voiceExecutor}
       mode=${voiceAgentMode}
       model=${voiceModel}
+      callType=${voiceCallType}
+      initialVisionSource=${voiceInitialVisionSource}
     />
   `;
 }
