@@ -39,6 +39,18 @@ import {
   resetClaudeSession,
   initClaudeShell,
 } from "./claude-shell.mjs";
+import {
+  execOpencodePrompt,
+  steerOpencodePrompt,
+  isOpencodeBusy,
+  getSessionInfo as getOpencodeSessionInfo,
+  resetSession as resetOpencodeSession,
+  initOpencodeShell,
+  getActiveSessionId as getOpencodeSessionId,
+  listSessions as listOpencodeSessions,
+  switchSession as switchOpencodeSession,
+  createSession as createOpencodeSession,
+} from "./opencode-shell.mjs";
 import { getModelsForExecutor, normalizeExecutorKey } from "./task-complexity.mjs";
 
 /** Valid agent interaction modes */
@@ -179,6 +191,34 @@ const ADAPTERS = {
       return execClaudePrompt(fullCmd, {});
     },
   },
+  "opencode-sdk": {
+    name: "opencode-sdk",
+    provider: "OPENCODE",
+    displayName: "OpenCode",
+    exec: (msg, opts) => execOpencodePrompt(msg, { persistent: true, ...opts }),
+    steer: steerOpencodePrompt,
+    isBusy: isOpencodeBusy,
+    getInfo: () => getOpencodeSessionInfo(),
+    reset: resetOpencodeSession,
+    init: async () => {
+      await initOpencodeShell();
+      return true;
+    },
+    getSessionId: getOpencodeSessionId,
+    listSessions: listOpencodeSessions,
+    switchSession: switchOpencodeSession,
+    createSession: createOpencodeSession,
+    sdkCommands: ["/status", "/model", "/sessions", "/clear"],
+    execSdkCommand: async (command, args) => {
+      const cmd = command.startsWith("/") ? command : `/${command}`;
+      if (cmd === "/clear") {
+        await resetOpencodeSession();
+        return "Session cleared.";
+      }
+      const fullCmd = args ? `${cmd} ${args}` : cmd;
+      return execOpencodePrompt(fullCmd, { persistent: true });
+    },
+  },
 };
 
 function envFlagEnabled(value) {
@@ -296,6 +336,8 @@ function normalizePrimaryAgent(value) {
     return "copilot-sdk";
   if (["claude", "claude-sdk", "claude_code", "claude-code"].includes(raw))
     return "claude-sdk";
+  if (["opencode", "opencode-sdk", "open-code"].includes(raw))
+    return "opencode-sdk";
   return raw;
 }
 
@@ -312,6 +354,7 @@ function executorToAdapter(executor) {
   const key = normalizeExecutorKey(executor);
   if (key === "copilot") return "copilot-sdk";
   if (key === "claude") return "claude-sdk";
+  if (key === "opencode") return "opencode-sdk";
   return "codex-sdk";
 }
 

@@ -68,7 +68,8 @@
     "./compat": "./compat.mjs",
     "./task-cli": "./task-cli.mjs",
     "./github-auth-manager": "./github-auth-manager.mjs",
-    "./git-commit-helpers": "./git-commit-helpers.mjs"
+    "./git-commit-helpers": "./git-commit-helpers.mjs",
+    "./opencode-shell": "./opencode-shell.mjs"
   },
   "bin": {
     "bosun": "cli.mjs",
@@ -160,6 +161,7 @@
     "maintenance.mjs",
     "merge-strategy.mjs",
     "monitor.mjs",
+    "opencode-shell.mjs",
     "postinstall.mjs",
     "pr-cleanup-daemon.mjs",
     "preflight.mjs",
@@ -240,6 +242,7 @@
     "@anthropic-ai/claude-agent-sdk": "latest",
     "@github/copilot-sdk": "latest",
     "@openai/codex-sdk": "latest",
+    "@opencode-ai/sdk": "latest",
     "@preact/signals": "1.3.1",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "ajv": "^8.18.0",

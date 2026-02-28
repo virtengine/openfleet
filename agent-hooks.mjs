@@ -144,7 +144,7 @@ export const HOOK_EVENTS = Object.freeze([
  * Canonical SDK names.
  * @type {readonly string[]}
  */
-const VALID_SDKS = Object.freeze(["codex", "copilot", "claude"]);
+const VALID_SDKS = Object.freeze(["codex", "copilot", "claude", "opencode"]);
 
 /**
  * Wildcard indicating a hook applies to all SDKs.

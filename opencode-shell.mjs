@@ -603,10 +603,30 @@ export async function execOpencodePrompt(userMessage, options = {}) {
       })();
 
       try {
-        const result = await _client.session.prompt({
-          path: { id: serverSessionId },
-          body: promptBody,
+        // Race the blocking prompt call against the abort signal so the turn
+        // is promptly cancelled even if the SDK doesn't natively accept AbortSignal.
+        const abortRace = new Promise((_, reject) => {
+          if (controller.signal.aborted) {
+            const e = new Error("AbortError");
+            e.name = "AbortError";
+            reject(e);
+            return;
+          }
+          const onAbort = () => {
+            const e = new Error("AbortError");
+            e.name = "AbortError";
+            reject(e);
+          };
+          controller.signal.addEventListener("abort", onAbort, { once: true });
         });
+
+        const result = await Promise.race([
+          _client.session.prompt({
+            path: { id: serverSessionId },
+            body: promptBody,
+          }),
+          abortRace,
+        ]);
 
         clearTimeout(timer);
 

@@ -38,7 +38,7 @@
     "codexEnabled": { "type": "boolean" },
     "primaryAgent": {
       "type": "string",
-      "enum": ["codex-sdk", "copilot-sdk", "claude-sdk"]
+      "enum": ["codex-sdk", "copilot-sdk", "claude-sdk", "opencode-sdk"]
     },
     "vkSpawnEnabled": { "type": "boolean" },
     "kanban": {
