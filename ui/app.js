@@ -2068,6 +2068,21 @@ function App() {
 }
 
 /* ─── Mount ─── */
-const mountApp = () => preactRender(html`<${App} />`, document.getElementById("app"));
-globalThis.__veRemountApp = mountApp;
+const mountRoot = () => document.getElementById("app");
+const mountApp = () => {
+  const root = mountRoot();
+  if (!root) return;
+  preactRender(html`<${App} />`, root);
+};
+const remountApp = () => {
+  const root = mountRoot();
+  if (!root) return;
+  try {
+    preactRender(null, root);
+  } catch {
+    root.replaceChildren();
+  }
+  preactRender(html`<${App} />`, root);
+};
+globalThis.__veRemountApp = remountApp;
 mountApp();
