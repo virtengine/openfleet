@@ -19,6 +19,12 @@ import {
   startVoiceSession, stopVoiceSession, interruptResponse,
 } from "./voice-client.js";
 import {
+  sdkVoiceState, sdkVoiceTranscript, sdkVoiceResponse, sdkVoiceError,
+  sdkVoiceToolCalls, sdkVoiceDuration, sdkVoiceSdkActive,
+  startSdkVoiceSession, stopSdkVoiceSession, interruptSdkResponse,
+  sendSdkTextMessage, onSdkVoiceEvent,
+} from "./voice-client-sdk.js";
+import {
   fallbackState, fallbackTranscript, fallbackResponse,
   fallbackError,
   startFallbackSession, stopFallbackSession, interruptFallback,
@@ -521,16 +527,33 @@ export function VoiceOverlay({
   const [meetingChatError, setMeetingChatError] = useState(null);
   const autoVisionAppliedRef = useRef(false);
   const meetingScrollRef = useRef(null);
+  const [usingSdk, setUsingSdk] = useState(false);
+  const sdkFallbackCleanupRef = useRef(null);
 
   useEffect(() => { injectOverlayStyles(); }, []);
 
-  // Use computed signals based on tier
-  const state = tier === 1 ? voiceState.value : fallbackState.value;
-  const transcript = tier === 1 ? voiceTranscript.value : fallbackTranscript.value;
-  const response = tier === 1 ? voiceResponse.value : fallbackResponse.value;
-  const error = tier === 1 ? voiceError.value : fallbackError.value;
-  const toolCalls = tier === 1 ? voiceToolCalls.value : [];
-  const duration = tier === 1 ? voiceDuration.value : 0;
+  // Determine effective tier: SDK takes over tier 1 when active
+  const effectiveSdk = usingSdk && sdkVoiceSdkActive.value;
+
+  // Use computed signals based on tier — SDK overrides tier 1 when active
+  const state = effectiveSdk
+    ? sdkVoiceState.value
+    : tier === 1 ? voiceState.value : fallbackState.value;
+  const transcript = effectiveSdk
+    ? sdkVoiceTranscript.value
+    : tier === 1 ? voiceTranscript.value : fallbackTranscript.value;
+  const response = effectiveSdk
+    ? sdkVoiceResponse.value
+    : tier === 1 ? voiceResponse.value : fallbackResponse.value;
+  const error = effectiveSdk
+    ? sdkVoiceError.value
+    : tier === 1 ? voiceError.value : fallbackError.value;
+  const toolCalls = effectiveSdk
+    ? sdkVoiceToolCalls.value
+    : tier === 1 ? voiceToolCalls.value : [];
+  const duration = effectiveSdk
+    ? sdkVoiceDuration.value
+    : tier === 1 ? voiceDuration.value : 0;
   const visionState = visionShareState.value;
   const visionSource = visionShareSource.value;
   const visionErr = visionShareError.value;
@@ -546,12 +569,35 @@ export function VoiceOverlay({
     return normalizedCallType === "video" ? "camera" : null;
   })();
 
-  // Start session on mount
+  // Start session on mount — try Agents SDK first, fallback to legacy
   useEffect(() => {
     if (!visible || started) return;
     setStarted(true);
+
     if (tier === 1) {
-      startVoiceSession({ sessionId, executor, mode, model });
+      // Try SDK-first for tier 1
+      startSdkVoiceSession({ sessionId, executor, mode, model })
+        .then((result) => {
+          if (result.sdk) {
+            setUsingSdk(true);
+          } else {
+            // SDK not available — fallback to legacy WebRTC
+            setUsingSdk(false);
+            startVoiceSession({ sessionId, executor, mode, model });
+          }
+        })
+        .catch(() => {
+          // SDK threw unexpectedly — fallback to legacy
+          setUsingSdk(false);
+          startVoiceSession({ sessionId, executor, mode, model });
+        });
+
+      // Listen for SDK runtime failures to auto-fallback
+      const cleanup = onSdkVoiceEvent("sdk-unavailable", () => {
+        setUsingSdk(false);
+        startVoiceSession({ sessionId, executor, mode, model });
+      });
+      sdkFallbackCleanupRef.current = cleanup;
     } else if (sessionId) {
       startFallbackSession(sessionId, { executor, mode, model });
     }
@@ -651,14 +697,22 @@ export function VoiceOverlay({
   const handleClose = useCallback(() => {
     haptic("medium");
     stopVisionShare().catch(() => {});
-    if (tier === 1) {
+    // Clean up SDK fallback listener
+    if (typeof sdkFallbackCleanupRef.current === "function") {
+      sdkFallbackCleanupRef.current();
+      sdkFallbackCleanupRef.current = null;
+    }
+    if (usingSdk) {
+      stopSdkVoiceSession();
+    } else if (tier === 1) {
       stopVoiceSession();
     } else {
       stopFallbackSession();
     }
+    setUsingSdk(false);
     setStarted(false);
     onClose();
-  }, [tier, onClose]);
+  }, [tier, onClose, usingSdk]);
 
   const handleDismiss = useCallback(() => {
     haptic("light");
@@ -668,12 +722,14 @@ export function VoiceOverlay({
 
   const handleInterrupt = useCallback(() => {
     haptic("light");
-    if (tier === 1) {
+    if (usingSdk) {
+      interruptSdkResponse();
+    } else if (tier === 1) {
       interruptResponse();
     } else {
       interruptFallback();
     }
-  }, [tier]);
+  }, [tier, usingSdk]);
 
   const handleToggleScreenShare = useCallback(() => {
     haptic("light");

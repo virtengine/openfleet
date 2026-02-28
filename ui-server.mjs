@@ -9213,6 +9213,25 @@ async function handleApi(req, res, url) {
 
   // ── Voice API Routes ──────────────────────────────────────────────────────
 
+  // GET /api/voice/sdk-config — SDK-first configuration for client
+  if (path === "/api/voice/sdk-config" && req.method === "GET") {
+    try {
+      const { getVoiceConfig } = await import("./voice-relay.mjs");
+      const { getClientSdkConfig } = await import("./voice-agents-sdk.mjs");
+      const voiceConfig = getVoiceConfig();
+      const sdkConfig = await getClientSdkConfig(voiceConfig);
+      jsonResponse(res, 200, sdkConfig);
+    } catch (err) {
+      jsonResponse(res, 200, {
+        useSdk: false,
+        provider: "fallback",
+        fallbackReason: err.message,
+        tier: 2,
+      });
+    }
+    return;
+  }
+
   // GET /api/voice/config
   if (path === "/api/voice/config" && req.method === "GET") {
     try {
@@ -9257,12 +9276,23 @@ async function handleApi(req, res, url) {
         mode: String(body?.mode || "").trim() || undefined,
         model: String(body?.model || "").trim() || undefined,
       };
-      const { createEphemeralToken, getVoiceToolDefinitions } = await import("./voice-relay.mjs");
+      const { createEphemeralToken, getVoiceToolDefinitions, getVoiceConfig } = await import("./voice-relay.mjs");
       const delegateOnly =
         body?.delegateOnly === true ||
         (body?.delegateOnly !== false && Boolean(callContext.sessionId));
       const tools = await getVoiceToolDefinitions({ delegateOnly });
       const tokenData = await createEphemeralToken(tools, callContext);
+
+      // When client requests sdkMode, include extra fields for @openai/agents SDK
+      if (body?.sdkMode === true) {
+        const voiceCfg = getVoiceConfig();
+        tokenData.instructions = voiceCfg.instructions || undefined;
+        tokenData.tools = tools;
+        if (tokenData.provider === "azure") {
+          tokenData.azureEndpoint = voiceCfg.azureEndpoint || undefined;
+          tokenData.azureDeployment = voiceCfg.azureDeployment || undefined;
+        }
+      }
 
       jsonResponse(res, 200, tokenData);
     } catch (err) {

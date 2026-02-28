@@ -117,6 +117,7 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/github/device/poll",  // Device Flow polling — server-only (calls GitHub API)
   "/api/workspace-health",     // Workspace health diagnostics — server-only
   "/api/voice/config",         // Voice config — server-only (reads real API keys + config)
+  "/api/voice/sdk-config",     // Voice SDK config — server-only (checks SDK availability)
   "/api/voice/token",          // Ephemeral token creation — server-only (calls OpenAI/Azure API)
   "/api/voice/tool",           // Voice tool execution — server-only (runs real tools)
   "/api/voice/transcript",     // Voice transcript persistence into session history
