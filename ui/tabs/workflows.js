@@ -12,7 +12,7 @@ const html = htm.bind(h);
 import { haptic } from "../modules/telegram.js";
 import { apiFetch } from "../modules/api.js";
 import { showToast, refreshTab } from "../modules/state.js";
-import { navigateTo } from "../modules/router.js";
+import { navigateTo, routeParams, setRouteParams } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
 import { resolveIcon } from "../modules/icon-utils.js";
 import { formatDate, formatDuration, formatRelative } from "../modules/utils.js";
@@ -36,13 +36,18 @@ const selectedEdgeId = signal(null);
 const draggingNode = signal(null);
 const connectingFrom = signal(null);
 const viewMode = signal("list"); // "list" | "canvas" | "runs"
+const WORKFLOW_RUN_PAGE_SIZE = 20;
+const WORKFLOW_RUN_MAX_FETCH = 200;
+const workflowRunsLimit = signal(WORKFLOW_RUN_PAGE_SIZE);
 
 function returnToWorkflowList() {
   selectedNodeId.value = null;
   selectedEdgeId.value = null;
   selectedRunId.value = null;
   selectedRunDetail.value = null;
+  workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE;
   viewMode.value = "list";
+  setRouteParams({}, { replace: true, skipGuard: true });
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -87,6 +92,7 @@ async function saveWorkflow(def) {
       activeWorkflow.value = data.workflow;
       showToast("Workflow saved", "success");
       loadWorkflows();
+      setRouteParams({ workflowId: data.workflow.id }, { replace: true, skipGuard: true });
     }
     return data?.workflow;
   } catch (err) {
@@ -101,6 +107,7 @@ async function deleteWorkflow(id) {
     if (activeWorkflow.value?.id === id) {
       activeWorkflow.value = null;
       viewMode.value = "list";
+      setRouteParams({}, { replace: true, skipGuard: true });
     }
     loadWorkflows();
   } catch (err) {
@@ -174,20 +181,51 @@ async function installTemplate(templateId) {
       viewMode.value = "canvas";
       showToast("Template installed", "success");
       loadWorkflows();
+      setRouteParams({ workflowId: data.workflow.id }, { replace: false, skipGuard: true });
     }
   } catch (err) {
     showToast("Failed to install template", "error");
   }
 }
 
-async function loadRuns(workflowId) {
+async function applyTemplateUpdate(workflowId, mode = "replace", force = false) {
   try {
-    const url = workflowId
+    const data = await apiFetch(`/api/workflows/${encodeURIComponent(workflowId)}/template-update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, force }),
+    });
+    if (data?.workflow) {
+      showToast(
+        mode === "copy"
+          ? "Updated template copy created"
+          : "Workflow updated to latest template",
+        "success",
+      );
+      loadWorkflows();
+      return data.workflow;
+    }
+  } catch (err) {
+    showToast(`Template update failed: ${err.message}`, "error");
+  }
+  return null;
+}
+
+async function loadRuns(workflowId, opts = {}) {
+  try {
+    const rawLimit =
+      opts.limit != null ? Number(opts.limit) : Number(workflowRunsLimit.value);
+    const limit =
+      Number.isFinite(rawLimit) && rawLimit > 0
+        ? Math.min(Math.floor(rawLimit), WORKFLOW_RUN_MAX_FETCH)
+        : WORKFLOW_RUN_PAGE_SIZE;
+    const baseUrl = workflowId
       ? `/api/workflows/${workflowId}/runs`
       : "/api/workflows/runs";
-    const data = await apiFetch(url);
+    const data = await apiFetch(`${baseUrl}?limit=${limit}`);
     if (data?.runs) {
       workflowRuns.value = data.runs;
+      workflowRunsLimit.value = limit;
       if (selectedRunId.value && !data.runs.find((run) => run.runId === selectedRunId.value)) {
         selectedRunId.value = null;
         selectedRunDetail.value = null;
@@ -205,6 +243,8 @@ async function loadRunDetail(runId) {
     if (data?.run) {
       selectedRunId.value = runId;
       selectedRunDetail.value = data.run;
+      viewMode.value = "runs";
+      setRouteParams({ runsView: true, runId }, { replace: false, skipGuard: true });
     }
   } catch (err) {
     showToast("Failed to load run details", "error");
@@ -598,7 +638,11 @@ function WorkflowCanvas({ workflow, onSave }) {
   // ── Render ────────────────────────────────────────────────
 
   return html`
-    <div class="wf-canvas-container" style="position: relative; width: 100%; overflow: hidden; background: var(--color-bg-secondary, #0f1117);">
+    <div
+      class="wf-canvas-container"
+      data-ptr-ignore="true"
+      style="position: relative; width: 100%; overflow: hidden; overscroll-behavior: contain; background: var(--color-bg-secondary, #0f1117);"
+    >
 
       <!-- Toolbar -->
       <div class="wf-toolbar" style="position: absolute; top: 12px; left: 12px; right: 12px; z-index: 20; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
@@ -985,7 +1029,7 @@ const COMMAND_PRESETS = {
     { label: "Merge PR (squash)", cmd: "gh pr merge --auto --squash", icon: "git" },
     { label: "Close PR", cmd: 'gh pr close --comment "{{reason}}"', icon: "ban" },
     { label: "PR Diff", cmd: "gh pr diff --stat", icon: "chart" },
-    { label: "Create PR", cmd: 'gh pr create --title "{{title}}" --body "{{body}}" --base main', icon: "edit" },
+    { label: "PR Handoff Note", cmd: 'echo "Bosun manages PR lifecycle after push; direct PR commands are disabled."', icon: "edit" },
     { label: "Add Label", cmd: 'gh pr edit --add-label "{{label}}"', icon: "tag" },
     { label: "Request Review", cmd: 'gh pr edit --add-reviewer {{reviewer}}', icon: "eye" },
   ],
@@ -1546,7 +1590,7 @@ function WorkflowListView() {
           <span class="btn-icon">${resolveIcon("plus")}</span>
           Create Workflow
         </button>
-        <button type="button" class="wf-btn" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; viewMode.value = "runs"; loadRuns(); }}>
+        <button type="button" class="wf-btn" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE; viewMode.value = "runs"; loadRuns(); }}>
           <span class="btn-icon">${resolveIcon("chart")}</span>
           Run History
         </button>
@@ -1560,6 +1604,11 @@ function WorkflowListView() {
           </h3>
           <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
             ${wfs.map(wf => html`
+              ${(() => {
+                const templateState = wf.metadata?.templateState || null;
+                const hasTemplateUpdate = templateState?.updateAvailable === true;
+                const isCustomizedTemplate = templateState?.isCustomized === true;
+                return html`
               <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
                    onClick=${() => {
                      apiFetch("/api/workflows/" + wf.id).then(d => {
@@ -1573,10 +1622,33 @@ function WorkflowListView() {
                   <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
                     ${wf.enabled ? "Active" : "Paused"}
                   </span>
+                  ${templateState?.templateId && html`
+                    <span class="wf-badge" style="background: #3b82f620; color: #60a5fa; font-size: 10px;">
+                      Template
+                    </span>
+                  `}
+                  ${isCustomizedTemplate && html`
+                    <span class="wf-badge" style="background: #f59e0b20; color: #f59e0b; font-size: 10px;">
+                      Customized
+                    </span>
+                  `}
+                  ${hasTemplateUpdate && html`
+                    <span class="wf-badge" style="background: #ef444420; color: #f87171; font-size: 10px;">
+                      Update Available
+                    </span>
+                  `}
                 </div>
                 ${wf.description && html`
                   <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 8px; line-height: 1.4;">
                     ${wf.description.slice(0, 120)}${wf.description.length > 120 ? "…" : ""}
+                  </div>
+                `}
+                ${templateState?.templateId && html`
+                  <div style="font-size: 11px; color: var(--color-text-secondary, #7f8aa0); margin-bottom: 8px;">
+                    ${templateState.templateName || templateState.templateId}
+                    ${templateState.installedTemplateVersion && templateState.templateVersion && templateState.installedTemplateVersion !== templateState.templateVersion && html`
+                      <span> · v${templateState.installedTemplateVersion} → v${templateState.templateVersion}</span>
+                    `}
                   </div>
                 `}
                 <div style="display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
@@ -1584,6 +1656,36 @@ function WorkflowListView() {
                   <span>·</span>
                   <span>${wf.category || "custom"}</span>
                   <div style="flex: 1;"></div>
+                  ${hasTemplateUpdate && html`
+                    <button
+                      class="wf-btn wf-btn-sm"
+                      style="font-size: 11px; border-color: #f59e0b80; color: #f59e0b;"
+                      onClick=${async (e) => {
+                        e.stopPropagation();
+                        if (!isCustomizedTemplate) {
+                          await applyTemplateUpdate(wf.id, "replace", true);
+                          return;
+                        }
+                        const choice = window.prompt(
+                          "Template update available for customized workflow.\nType 'copy' to create an updated copy, or 'replace' to overwrite this workflow.",
+                          "copy",
+                        );
+                        const normalized = String(choice || "").trim().toLowerCase();
+                        if (normalized === "copy") {
+                          await applyTemplateUpdate(wf.id, "copy", false);
+                          return;
+                        }
+                        if (normalized === "replace") {
+                          const ok = window.confirm("Replace this customized workflow with latest template? This cannot be undone.");
+                          if (!ok) return;
+                          await applyTemplateUpdate(wf.id, "replace", true);
+                        }
+                      }}
+                    >
+                      <span class="icon-inline">${resolveIcon("refresh")}</span>
+                      Update
+                    </button>
+                  `}
                   <button
                     class="wf-btn wf-btn-sm"
                     style="font-size: 11px;"
@@ -1614,6 +1716,8 @@ function WorkflowListView() {
                   </button>
                 </div>
               </div>
+            `;
+              })()}
             `)}
           </div>
         </div>
@@ -1650,8 +1754,9 @@ function WorkflowListView() {
           Available Templates (${availableTemplates.length})${tmpls.length !== availableTemplates.length ? html` <span style="font-size: 11px; font-weight: 400; opacity: 0.6;">· ${tmpls.length - availableTemplates.length} installed</span>` : ""}
         </h3>
         ${availableTemplates.length === 0 && html`
-          <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px;">
-            All templates are installed! 🎉
+          <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px;">
+            <span class="icon-inline">${resolveIcon("star")}</span>
+            <span>All templates are installed!</span>
           </div>
         `}
         ${(() => {
@@ -1741,6 +1846,36 @@ function getRunActivityAt(run) {
   return candidates.length > 0 ? Math.max(...candidates) : null;
 }
 
+function buildNodeStatusesFromRunDetail(run) {
+  const detail = run?.detail || {};
+  const statuses = { ...(detail?.nodeStatuses || {}) };
+  const statusEvents = Array.isArray(detail?.nodeStatusEvents) ? detail.nodeStatusEvents : [];
+  const logs = Array.isArray(detail?.logs) ? detail.logs : [];
+
+  for (const event of statusEvents) {
+    const nodeId = String(event?.nodeId || "").trim();
+    const status = String(event?.status || "").trim();
+    if (!nodeId || !status) continue;
+    statuses[nodeId] = status;
+  }
+
+  // Backfill older runs that only recorded nodeId in logs.
+  if (Object.keys(statuses).length === 0) {
+    const fallbackStatus = run?.status === "failed"
+      ? "failed"
+      : run?.status === "completed"
+        ? "completed"
+        : "running";
+    for (const entry of logs) {
+      const nodeId = String(entry?.nodeId || "").trim();
+      if (!nodeId || statuses[nodeId]) continue;
+      statuses[nodeId] = fallbackStatus;
+    }
+  }
+
+  return statuses;
+}
+
 function getNodeCardBorder(status) {
   if (status === "running") return "#3b82f680";
   if (status === "failed") return "#ef444480";
@@ -1750,7 +1885,11 @@ function getNodeCardBorder(status) {
 
 function safePrettyJson(value) {
   try {
-    return JSON.stringify(value, null, 2);
+    const json = JSON.stringify(value, null, 2);
+    const maxChars = 120000;
+    if (json.length <= maxChars) return json;
+    const omitted = json.length - maxChars;
+    return `${json.slice(0, maxChars)}\n\n… [truncated ${omitted} chars]`;
   } catch {
     return String(value ?? "");
   }
@@ -1758,6 +1897,7 @@ function safePrettyJson(value) {
 
 function RunHistoryView() {
   const runs = workflowRuns.value || [];
+  const runsLimit = Number(workflowRunsLimit.value || WORKFLOW_RUN_PAGE_SIZE);
   const selectedRun = selectedRunDetail.value;
   const workflowNameMap = new Map((workflows.value || []).map((wf) => [wf.id, wf.name]));
   const [nowTick, setNowTick] = useState(Date.now());
@@ -1846,12 +1986,15 @@ function RunHistoryView() {
     return counts;
   }, [runs]);
 
+  const canLoadMoreRuns =
+    runs.length >= runsLimit && runsLimit < WORKFLOW_RUN_MAX_FETCH;
+
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
-    const nodeStatuses = selectedRun?.detail?.nodeStatuses || {};
-    const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
     const logs = Array.isArray(selectedRun?.detail?.logs) ? selectedRun.detail.logs : [];
     const errors = Array.isArray(selectedRun?.detail?.errors) ? selectedRun.detail.errors : [];
+    const nodeStatuses = buildNodeStatusesFromRunDetail(selectedRun);
+    const nodeOutputs = selectedRun?.detail?.nodeOutputs || {};
     const nodeIds = Object.keys(nodeStatuses).sort((a, b) => {
       const rankDiff = getNodeStatusRank(nodeStatuses[a]) - getNodeStatusRank(nodeStatuses[b]);
       if (rankDiff !== 0) return rankDiff;
@@ -1911,6 +2054,8 @@ function RunHistoryView() {
             const nodeStatus = nodeStatuses[nodeId];
             const nodeStatusStyles = getRunStatusBadgeStyles(nodeStatus);
             const nodeOutput = nodeOutputs[nodeId];
+            const nodeSummary = typeof nodeOutput?.summary === "string" ? nodeOutput.summary.trim() : "";
+            const nodeNarrative = typeof nodeOutput?.narrative === "string" ? nodeOutput.narrative.trim() : "";
             return html`
               <details key=${nodeId} style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid ${getNodeCardBorder(nodeStatus)}; border-radius: 8px; padding: 8px 10px;">
                 <summary style="cursor: pointer; display: flex; align-items: center; gap: 8px;">
@@ -1919,6 +2064,12 @@ function RunHistoryView() {
                     ${nodeStatus || "unknown"}
                   </span>
                 </summary>
+                ${(nodeSummary || nodeNarrative) && html`
+                  <div style="margin-top: 8px; font-size: 12px; color: #d1d5db; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px; white-space: pre-wrap; word-break: break-word;">
+                    ${nodeSummary ? html`<div><b>Summary:</b> ${nodeSummary}</div>` : ""}
+                    ${nodeNarrative ? html`<div style="margin-top: ${nodeSummary ? "6px" : "0"};"><b>Narrative:</b> ${nodeNarrative}</div>` : ""}
+                  </div>
+                `}
                 <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(nodeOutput)}</pre>
               </details>
             `;
@@ -1949,6 +2100,20 @@ function RunHistoryView() {
         <button class="wf-btn wf-btn-sm" onClick=${returnToWorkflowList}>← Back to Workflows</button>
         <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run History</h2>
         <button class="wf-btn wf-btn-sm" onClick=${() => loadRuns()}>Refresh</button>
+        ${canLoadMoreRuns && html`
+          <button
+            class="wf-btn wf-btn-sm"
+            onClick=${() => {
+              const nextLimit = Math.min(
+                runsLimit + WORKFLOW_RUN_PAGE_SIZE,
+                WORKFLOW_RUN_MAX_FETCH,
+              );
+              loadRuns(null, { limit: nextLimit }).catch(() => {});
+            }}
+          >
+            Load older
+          </button>
+        `}
         ${hasRunningRuns && html`<span class="wf-badge" style="background: #3b82f630; color: #60a5fa;">Live</span>`}
       </div>
 
@@ -2007,6 +2172,7 @@ function RunHistoryView() {
           Completed ${runCounts.completed}
         </button>
         <span class="wf-runs-count">${filteredRuns.length} shown</span>
+        <span class="wf-runs-count">${runs.length} loaded</span>
       </div>
 
       ${runs.length === 0 && html`
@@ -2085,6 +2251,74 @@ export function WorkflowsTab() {
     loadTemplates();
     loadNodeTypes();
   }, []);
+
+  useEffect(() => {
+    const route = routeParams.value || {};
+    const workflowId = String(route.workflowId || "").trim();
+    const runId = String(route.runId || "").trim();
+    const wantsRuns = Boolean(route.runsView) || Boolean(runId);
+
+    if (wantsRuns) {
+      workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE;
+      viewMode.value = "runs";
+      loadRuns();
+      if (runId) {
+        loadRunDetail(runId);
+      } else {
+        selectedRunId.value = null;
+        selectedRunDetail.value = null;
+      }
+      return;
+    }
+
+    if (workflowId) {
+      apiFetch(`/api/workflows/${encodeURIComponent(workflowId)}`)
+        .then((d) => {
+          activeWorkflow.value = d?.workflow || activeWorkflow.value;
+          if (activeWorkflow.value?.id === workflowId || d?.workflow?.id === workflowId) {
+            viewMode.value = "canvas";
+          }
+        })
+        .catch(() => {
+          const existing = (workflows.value || []).find((wf) => wf.id === workflowId);
+          if (existing) {
+            activeWorkflow.value = existing;
+            viewMode.value = "canvas";
+          }
+        });
+      return;
+    }
+
+    if (viewMode.value !== "list") {
+      selectedRunId.value = null;
+      selectedRunDetail.value = null;
+      activeWorkflow.value = null;
+      viewMode.value = "list";
+    }
+  }, [routeParams.value]);
+
+  useEffect(() => {
+    const mode = viewMode.value;
+    if (mode === "canvas" && activeWorkflow.value?.id) {
+      setRouteParams(
+        { workflowId: activeWorkflow.value.id },
+        { replace: true, skipGuard: true },
+      );
+      return;
+    }
+    if (mode === "runs") {
+      if (selectedRunId.value) {
+        setRouteParams(
+          { runsView: true, runId: selectedRunId.value },
+          { replace: true, skipGuard: true },
+        );
+      } else {
+        setRouteParams({ runsView: true }, { replace: true, skipGuard: true });
+      }
+      return;
+    }
+    setRouteParams({}, { replace: true, skipGuard: true });
+  }, [viewMode.value, activeWorkflow.value?.id, selectedRunId.value]);
 
   useEffect(() => {
     const handler = (e) => {

@@ -1592,6 +1592,31 @@ const EXECUTOR_PRESETS = {
       role: "primary",
     },
   ],
+  "opencode-only": [
+    {
+      name: "opencode-default",
+      executor: "OPENCODE",
+      variant: "DEFAULT",
+      weight: 100,
+      role: "primary",
+    },
+  ],
+  "opencode-codex": [
+    {
+      name: "opencode-default",
+      executor: "OPENCODE",
+      variant: "DEFAULT",
+      weight: 60,
+      role: "primary",
+    },
+    {
+      name: "codex-backup",
+      executor: "CODEX",
+      variant: "DEFAULT",
+      weight: 40,
+      role: "backup",
+    },
+  ],
   triple: [
     {
       name: "copilot-claude",
@@ -1683,6 +1708,46 @@ function toBooleanEnvString(value, fallback = false) {
   return parseBooleanEnvValue(value, fallback) ? "true" : "false";
 }
 
+const DEFAULT_TELEGRAM_UI_PORT = 3080;
+
+function normalizeTelegramUiPort(rawValue, fallback = DEFAULT_TELEGRAM_UI_PORT) {
+  const parsed = Number(String(rawValue || "").trim());
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return String(Math.round(parsed));
+  }
+  return String(fallback);
+}
+
+function applyTelegramMiniAppDefaults(env, sourceEnv = process.env) {
+  const telegramToken = String(
+    env.TELEGRAM_BOT_TOKEN || sourceEnv.TELEGRAM_BOT_TOKEN || "",
+  ).trim();
+  if (!telegramToken) return false;
+
+  const miniAppRaw = env.TELEGRAM_MINIAPP_ENABLED;
+  if (
+    miniAppRaw === undefined ||
+    miniAppRaw === null ||
+    String(miniAppRaw).trim() === ""
+  ) {
+    env.TELEGRAM_MINIAPP_ENABLED = "true";
+  } else {
+    env.TELEGRAM_MINIAPP_ENABLED = toBooleanEnvString(miniAppRaw, true);
+  }
+
+  env.TELEGRAM_UI_PORT = normalizeTelegramUiPort(
+    env.TELEGRAM_UI_PORT || sourceEnv.TELEGRAM_UI_PORT,
+  );
+
+  if (!env.TELEGRAM_UI_TUNNEL && !sourceEnv.TELEGRAM_UI_TUNNEL) {
+    env.TELEGRAM_UI_TUNNEL = "auto";
+  }
+  if (!env.TELEGRAM_UI_ALLOW_UNSAFE && !sourceEnv.TELEGRAM_UI_ALLOW_UNSAFE) {
+    env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+  }
+  return true;
+}
+
 function readProcValue(path) {
   try {
     return readFileSync(path, "utf8").trim();
@@ -1745,17 +1810,7 @@ function normalizeSetupConfiguration({
   env.TELEGRAM_INTERVAL_MIN = String(
     toPositiveInt(env.TELEGRAM_INTERVAL_MIN || "10", 10),
   );
-  const telegramToken = String(
-    env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || "",
-  ).trim();
-  if (telegramToken) {
-    if (!env.TELEGRAM_UI_TUNNEL && !process.env.TELEGRAM_UI_TUNNEL) {
-      env.TELEGRAM_UI_TUNNEL = "auto";
-    }
-    if (!env.TELEGRAM_UI_ALLOW_UNSAFE && !process.env.TELEGRAM_UI_ALLOW_UNSAFE) {
-      env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
-    }
-  }
+  applyTelegramMiniAppDefaults(env, process.env);
 
   env.KANBAN_BACKEND = normalizeEnum(
     env.KANBAN_BACKEND,
@@ -1928,7 +1983,7 @@ function normalizeSetupConfiguration({
   {
     const primaryExec = configJson.executors.find((e) => e.role === "primary");
     if (primaryExec) {
-      const sdkMap = { CODEX: "codex-sdk", COPILOT: "copilot-sdk", CLAUDE: "claude-sdk" };
+      const sdkMap = { CODEX: "codex-sdk", COPILOT: "copilot-sdk", CLAUDE: "claude-sdk", OPENCODE: "opencode-sdk" };
       env.PRIMARY_AGENT = env.PRIMARY_AGENT ||
         sdkMap[String(primaryExec.executor).toUpperCase()] || "codex-sdk";
     }
@@ -2100,7 +2155,8 @@ Before finishing a task — create a commit using conventional commits and push.
 ### PR Creation
 
 After committing:
-- Run \`gh pr create\` to open the PR
+- Push your branch updates
+- Hand off PR lifecycle to Bosun management (do not run direct PR-create commands)
 - Ensure pre-push hooks pass
 - Fix any lint or test errors encountered
 
@@ -2245,13 +2301,12 @@ set -euo pipefail
 
 echo "Cleaning up workspace for ${config.projectName}..."
 
-# Create PR if branch has commits
+# Hand off PR lifecycle if branch has commits
 BRANCH=$(git branch --show-current 2>/dev/null || true)
 if [ -n "$BRANCH" ] && [ "$BRANCH" != "main" ] && [ "$BRANCH" != "master" ]; then
   COMMITS=$(git log main.."$BRANCH" --oneline 2>/dev/null | wc -l || echo 0)
   if [ "$COMMITS" -gt 0 ]; then
-    echo "Branch $BRANCH has $COMMITS commit(s) — creating PR..."
-    gh pr create --fill 2>/dev/null || echo "PR creation skipped"
+    echo "Branch $BRANCH has $COMMITS commit(s) — PR lifecycle will be managed by Bosun."
   fi
 fi
 
@@ -2654,6 +2709,8 @@ async function main() {
           "Copilot + Codex (50/50 split)",
           "Copilot only (Claude Opus 4.6)",
           "Claude only (direct API)",
+          "OpenCode only (local OpenCode server)",
+          "OpenCode + Codex (60/40 split)",
           "Triple (Copilot Claude 40%, Codex 35%, Copilot GPT 25%)",
           "Custom — I'll define my own executors",
         ]
@@ -2662,6 +2719,8 @@ async function main() {
           "Copilot + Codex (50/50 split)",
           "Copilot only (Claude Opus 4.6)",
           "Claude only (direct API)",
+          "OpenCode only (local OpenCode server)",
+          "OpenCode + Codex (60/40 split)",
           "Triple (Copilot Claude 40%, Codex 35%, Copilot GPT 25%)",
         ];
 
@@ -2672,8 +2731,8 @@ async function main() {
     );
 
     const presetNames = isAdvancedSetup
-      ? ["codex-only", "copilot-codex", "copilot-only", "claude-only", "triple", "custom"]
-      : ["codex-only", "copilot-codex", "copilot-only", "claude-only", "triple"];
+      ? ["codex-only", "copilot-codex", "copilot-only", "claude-only", "opencode-only", "opencode-codex", "triple", "custom"]
+      : ["codex-only", "copilot-codex", "copilot-only", "claude-only", "opencode-only", "opencode-codex", "triple"];
     const presetKey = presetNames[presetIdx] || "codex-only";
 
     if (presetKey === "custom") {
@@ -5018,6 +5077,7 @@ async function runNonInteractive({
   env.GITHUB_REPO = process.env.GITHUB_REPO || slug || "";
   env.TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
   env.TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+  applyTelegramMiniAppDefaults(env, process.env);
   env.KANBAN_BACKEND = process.env.KANBAN_BACKEND || "internal";
   env.KANBAN_SYNC_POLICY =
     process.env.KANBAN_SYNC_POLICY || "internal-primary";
@@ -5152,7 +5212,7 @@ async function runNonInteractive({
       (e) => e.role === "primary",
     );
     if (primaryExec) {
-      const sdkMap = { CODEX: "codex-sdk", COPILOT: "copilot-sdk", CLAUDE: "claude-sdk" };
+      const sdkMap = { CODEX: "codex-sdk", COPILOT: "copilot-sdk", CLAUDE: "claude-sdk", OPENCODE: "opencode-sdk" };
       env.PRIMARY_AGENT = sdkMap[String(primaryExec.executor).toUpperCase()] || "codex-sdk";
     }
   }
@@ -5608,10 +5668,16 @@ export async function runSetup() {
 }
 
 export {
+  applyTelegramMiniAppDefaults,
+  normalizeTelegramUiPort,
   extractProjectNumber,
   resolveOrCreateGitHubProjectNumber,
   resolveOrCreateGitHubProject,
   runGhCommand,
+  readSetupProgress,
+  writeSetupSnapshot,
+  buildWorkspaceChoices,
+  getGitHubAuthScopes,
   buildRecommendedVsCodeSettings,
   writeWorkspaceVsCodeSettings,
 };

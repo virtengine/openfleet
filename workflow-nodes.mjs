@@ -31,6 +31,11 @@ const WORKFLOW_AGENT_HEARTBEAT_MS = (() => {
   if (!Number.isFinite(raw)) return 30000;
   return Math.max(5000, Math.min(120000, Math.trunc(raw)));
 })();
+const WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT = (() => {
+  const raw = Number(process.env.WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT || 80);
+  if (!Number.isFinite(raw)) return 80;
+  return Math.max(20, Math.min(500, Math.trunc(raw)));
+})();
 
 function trimLogText(value, max = 180) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
@@ -38,15 +43,234 @@ function trimLogText(value, max = 180) {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+function normalizeLineEndings(value) {
+  if (value == null) return "";
+  return String(value)
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+}
+
+function simplifyPathLabel(filePath) {
+  const normalized = String(filePath || "").replace(/\\/g, "/");
+  if (!normalized) return "";
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length >= 2) return parts.slice(-2).join("/");
+  return parts[0] || normalized;
+}
+
+function parsePathListingLine(line) {
+  const raw = String(line || "").trim();
+  if (!raw) return null;
+  const windowsMatch = raw.match(/^([A-Za-z]:\\[^:]+):(\d+):\s*(.+)?$/);
+  if (windowsMatch) {
+    return {
+      path: windowsMatch[1],
+      line: Number(windowsMatch[2]),
+      detail: String(windowsMatch[3] || "").trim(),
+    };
+  }
+  const unixMatch = raw.match(/^(\/[^:]+):(\d+):\s*(.+)?$/);
+  if (unixMatch) {
+    return {
+      path: unixMatch[1],
+      line: Number(unixMatch[2]),
+      detail: String(unixMatch[3] || "").trim(),
+    };
+  }
+  return null;
+}
+
+function extractSymbolHint(detail) {
+  const text = String(detail || "");
+  if (!text) return "";
+  const patterns = [
+    /\b(?:async\s+)?function\s+([A-Za-z0-9_$]+)/i,
+    /\bclass\s+([A-Za-z0-9_$]+)/i,
+    /\b(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?\(/i,
+    /\b([A-Za-z0-9_$]+)\s*:\s*function\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return "";
+}
+
+function summarizePathListingBlock(value) {
+  const lines = normalizeLineEndings(value)
+    .split("\n")
+    .map((line) => String(line || "").trim())
+    .filter(Boolean);
+  if (!lines.length) return "";
+
+  const entries = [];
+  for (const line of lines) {
+    const parsed = parsePathListingLine(line);
+    if (parsed) entries.push(parsed);
+  }
+
+  if (entries.length < 3) return "";
+  const fileStats = new Map();
+  const symbols = new Set();
+  for (const entry of entries) {
+    const label = simplifyPathLabel(entry.path) || entry.path;
+    const current = fileStats.get(label) || { count: 0 };
+    current.count += 1;
+    fileStats.set(label, current);
+    const symbol = extractSymbolHint(entry.detail);
+    if (symbol) symbols.add(symbol);
+  }
+
+  const fileList = Array.from(fileStats.entries())
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, 4)
+    .map(([label, stat]) => `${label} (${stat.count})`)
+    .join(", ");
+  const symbolList = Array.from(symbols).slice(0, 6).join(", ");
+
+  const summaryParts = [
+    `Indexed ${entries.length} code references across ${fileStats.size} file${fileStats.size === 1 ? "" : "s"}`,
+  ];
+  if (fileList) summaryParts.push(`Top files: ${fileList}`);
+  if (symbolList) summaryParts.push(`Symbols: ${symbolList}`);
+
+  return trimLogText(summaryParts.join(". "), 320);
+}
+
+function normalizeNarrativeText(value, options = {}) {
+  const maxParagraphs = Number.isFinite(options.maxParagraphs) ? options.maxParagraphs : 4;
+  const maxChars = Number.isFinite(options.maxChars) ? options.maxChars : 2200;
+  const raw = normalizeLineEndings(value);
+  if (!raw) return "";
+
+  const pathSummary = summarizePathListingBlock(raw);
+  if (pathSummary) return pathSummary;
+
+  const paragraphs = raw
+    .split(/\n{2,}/)
+    .map((paragraph) =>
+      paragraph
+        .split("\n")
+        .map((line) => String(line || "").trim())
+        .filter(Boolean)
+        .join(" "),
+    )
+    .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, Math.max(1, maxParagraphs));
+
+  const text = paragraphs.join("\n\n").trim();
+  if (!text) return "";
+  return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text;
+}
+
+function summarizeAssistantUsage(data = {}) {
+  const usage = data?.usage && typeof data.usage === "object" ? data.usage : data;
+  if (!usage || typeof usage !== "object") return "";
+
+  const pickNumber = (...keys) => {
+    for (const key of keys) {
+      const candidate = Number(usage?.[key]);
+      if (Number.isFinite(candidate) && candidate >= 0) return candidate;
+    }
+    return null;
+  };
+
+  const model = trimLogText(usage?.model || data?.model || "", 60);
+  const prompt = pickNumber("prompt_tokens", "inputTokens", "promptTokens");
+  const completion = pickNumber("completion_tokens", "outputTokens", "completionTokens");
+  const total = pickNumber("total_tokens", "totalTokens");
+  const durationMs = pickNumber("duration", "durationMs");
+  const parts = [];
+
+  if (model) parts.push(`model=${model}`);
+  if (prompt != null) parts.push(`prompt=${prompt}`);
+  if (completion != null) parts.push(`completion=${completion}`);
+  if (total != null) parts.push(`total=${total}`);
+  if (durationMs != null) parts.push(`duration=${Math.round(durationMs)}ms`);
+  if (!parts.length) return "";
+  return `Usage: ${parts.join(" · ")}`;
+}
+
+function summarizeAssistantMessageData(data = {}) {
+  const messageText = normalizeNarrativeText(
+    extractStreamText(data?.content) ||
+      extractStreamText(data?.text) ||
+      extractStreamText(data?.deltaContent),
+    { maxParagraphs: 1, maxChars: 260 },
+  );
+  if (messageText) return `Agent: ${trimLogText(messageText, 220)}`;
+
+  const detailText = normalizeNarrativeText(data?.detailedContent, {
+    maxParagraphs: 1,
+    maxChars: 260,
+  });
+  if (detailText) return `Agent detail: ${trimLogText(detailText, 220)}`;
+
+  const toolRequests = Array.isArray(data?.toolRequests)
+    ? data.toolRequests
+        .map((req) => String(req?.name || "").trim())
+        .filter(Boolean)
+    : [];
+  if (toolRequests.length) {
+    const unique = Array.from(new Set(toolRequests)).slice(0, 4).join(", ");
+    return `Agent requested tools: ${unique}`;
+  }
+
+  const reasoningText = normalizeNarrativeText(data?.reasoningOpaque, {
+    maxParagraphs: 1,
+    maxChars: 220,
+  });
+  if (reasoningText) return `Thinking: ${trimLogText(reasoningText, 220)}`;
+
+  return "";
+}
+
+function extractStreamText(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((entry) => {
+        if (entry == null) return "";
+        if (typeof entry === "string") return entry;
+        if (typeof entry?.text === "string") return entry.text;
+        if (typeof entry?.content === "string") return entry.content;
+        if (typeof entry?.deltaContent === "string") return entry.deltaContent;
+        return "";
+      })
+      .filter(Boolean);
+    return parts.join(" ");
+  }
+  if (typeof value === "object") {
+    if (typeof value?.text === "string") return value.text;
+    if (typeof value?.content === "string") return value.content;
+    if (typeof value?.deltaContent === "string") return value.deltaContent;
+    if (typeof value?.detailedContent === "string") return value.detailedContent;
+    if (typeof value?.summary === "string") return value.summary;
+    if (typeof value?.reasoning === "string") return value.reasoning;
+    if (typeof value?.reasoningOpaque === "string") return value.reasoningOpaque;
+  }
+  return "";
+}
+
 function summarizeAgentStreamEvent(event) {
   const type = String(event?.type || "").trim();
   if (!type) return "";
 
+  // Ignore token-level deltas that create noisy duplicate run logs.
   if (
-    type === "response.output_text.delta" ||
-    type === "response.output_text.done" ||
-    type === "item.updated"
+    /reasoning(?:_|[.])delta/i.test(type) ||
+    /(?:^|[.])delta$/i.test(type) ||
+    /(?:_|[.])delta(?:_|[.])/i.test(type)
   ) {
+    return "";
+  }
+
+  if (type === "item.updated") {
     return "";
   }
 
@@ -54,8 +278,17 @@ function summarizeAgentStreamEvent(event) {
     return `Tool call: ${event?.tool_name || event?.data?.tool_name || "unknown"}`;
   }
 
+  if (type === "function_call") {
+    return `Tool call: ${event?.name || event?.tool_name || "unknown"}`;
+  }
+
   if (type === "tool_result") {
     const name = event?.tool_name || event?.data?.tool_name || "unknown";
+    return `Tool result: ${name}`;
+  }
+
+  if (type === "function_call_output" || type === "tool_output") {
+    const name = event?.name || event?.tool_name || event?.data?.tool_name || "unknown";
     return `Tool result: ${name}`;
   }
 
@@ -63,13 +296,81 @@ function summarizeAgentStreamEvent(event) {
     return `Agent error: ${trimLogText(event?.error || event?.message || "unknown error", 220)}`;
   }
 
+  if (type === "assistant.usage") {
+    const usageLine = summarizeAssistantUsage(event?.data || {});
+    return usageLine || "Usage update";
+  }
+
+  if (type === "assistant.message") {
+    return summarizeAssistantMessageData(event?.data || {});
+  }
+
+  const item = event?.item;
+  if (item && (type === "item.completed" || type === "item.started")) {
+    const itemType = String(item?.type || "").trim().toLowerCase();
+    const toolName =
+      item?.tool_name ||
+      item?.toolName ||
+      item?.name ||
+      item?.call?.tool_name ||
+      item?.call?.name ||
+      item?.function?.name ||
+      null;
+
+    if (
+      itemType === "tool_call" ||
+      itemType === "mcp_tool_call" ||
+      itemType === "function_call" ||
+      itemType === "tool_use"
+    ) {
+      return `Tool call: ${toolName || "unknown"}`;
+    }
+    if (
+      itemType === "tool_result" ||
+      itemType === "mcp_tool_result" ||
+      itemType === "tool_output"
+    ) {
+      return `Tool result: ${toolName || "unknown"}`;
+    }
+
+    const itemText = trimLogText(
+      extractStreamText(item?.text) ||
+        extractStreamText(item?.summary) ||
+        extractStreamText(item?.content) ||
+        extractStreamText(item?.message?.content) ||
+        extractStreamText(item?.message?.text),
+      220,
+    );
+
+    if (itemType.includes("reason") || itemType.includes("thinking")) {
+      return itemText ? `Thinking: ${itemText}` : "Thinking...";
+    }
+
+    if (
+      itemType === "agent_message" ||
+      itemType === "assistant_message" ||
+      itemType === "message"
+    ) {
+      return itemText ? `Agent: ${itemText}` : "";
+    }
+
+    if (itemText) {
+      return `${itemType || "item"}: ${itemText}`;
+    }
+  }
+
   const messageText = trimLogText(
-    event?.message?.content ||
-      event?.message?.text ||
-      event?.content ||
-      event?.text ||
-      event?.data?.content ||
-      event?.data?.text ||
+    extractStreamText(event?.message?.content) ||
+      extractStreamText(event?.message?.text) ||
+      extractStreamText(event?.content) ||
+      extractStreamText(event?.text) ||
+      extractStreamText(event?.data?.content) ||
+      extractStreamText(event?.data?.text) ||
+      extractStreamText(event?.data?.deltaContent) ||
+      normalizeNarrativeText(event?.data?.detailedContent, {
+        maxParagraphs: 1,
+        maxChars: 220,
+      }) ||
       "",
     220,
   );
@@ -95,6 +396,127 @@ function summarizeAgentStreamEvent(event) {
   }
 
   return "";
+}
+
+function buildAgentEventPreview(items = [], streamLines = [], maxEvents = WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT) {
+  const lines = [];
+  if (Array.isArray(streamLines) && streamLines.length) {
+    lines.push(...streamLines);
+  }
+
+  if (Array.isArray(items) && items.length) {
+    for (const entry of items) {
+      const line = summarizeAgentStreamEvent(entry);
+      if (line) lines.push(line);
+    }
+  }
+
+  const deduped = [];
+  const seen = new Set();
+  for (const line of lines) {
+    const normalized = trimLogText(line, 260);
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(normalized);
+  }
+
+  const limit = Number.isFinite(maxEvents)
+    ? Math.max(10, Math.min(500, Math.trunc(maxEvents)))
+    : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
+  return deduped.slice(-limit);
+}
+
+function condenseAgentItems(items = [], maxEvents = WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const limit = Number.isFinite(maxEvents)
+    ? Math.max(10, Math.min(500, Math.trunc(maxEvents)))
+    : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
+  const slice = items.slice(-limit);
+  return slice.map((entry) => ({
+    type: String(entry?.type || entry?.item?.type || "event"),
+    summary:
+      summarizeAgentStreamEvent(entry) ||
+      trimLogText(
+        normalizeNarrativeText(
+          extractStreamText(entry?.message?.content) ||
+            extractStreamText(entry?.content) ||
+            extractStreamText(entry?.text) ||
+            extractStreamText(entry?.data?.content) ||
+            extractStreamText(entry?.item?.text) ||
+            extractStreamText(entry?.item?.content),
+          { maxParagraphs: 1, maxChars: 220 },
+        ),
+        220,
+      ) ||
+      "event",
+    timestamp: entry?.timestamp || entry?.data?.timestamp || null,
+  }));
+}
+
+function buildAgentExecutionDigest(result = {}, streamLines = [], maxEvents = WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT) {
+  const eventPreview = buildAgentEventPreview(result?.items || [], streamLines, maxEvents);
+  const thoughts = eventPreview
+    .filter((line) => line.startsWith("Thinking:"))
+    .map((line) => line.replace(/^Thinking:\s*/i, "").trim())
+    .filter(Boolean);
+  const actionLines = eventPreview
+    .filter(
+      (line) =>
+        line.startsWith("Tool call:") ||
+        line.startsWith("Tool result:") ||
+        line.startsWith("Agent requested tools:"),
+    )
+    .map((line) =>
+      line
+        .replace(/^Tool call:\s*/i, "called ")
+        .replace(/^Tool result:\s*/i, "received result from ")
+        .replace(/^Agent requested tools:\s*/i, "requested tools ")
+        .trim(),
+    )
+    .filter(Boolean);
+  const agentMessages = eventPreview
+    .filter((line) => line.startsWith("Agent:"))
+    .map((line) => line.replace(/^Agent:\s*/i, "").trim())
+    .filter(Boolean);
+
+  let summary = normalizeNarrativeText(result?.output || "", { maxParagraphs: 2, maxChars: 900 });
+  if (!summary || summary === "(Agent completed with no text output)") {
+    summary = agentMessages[agentMessages.length - 1] || "";
+  }
+  if (!summary && eventPreview.length > 0) {
+    summary = eventPreview[eventPreview.length - 1];
+  }
+  summary = trimLogText(summary, 900);
+
+  const narrativeParts = [];
+  if (summary && summary !== "(Agent completed with no text output)") {
+    narrativeParts.push(summary);
+  }
+  if (thoughts.length) {
+    narrativeParts.push(`Thought process: ${thoughts.slice(0, 4).join(" ")}`);
+  }
+  if (actionLines.length) {
+    narrativeParts.push(`Actions: ${actionLines.slice(0, 8).join("; ")}`);
+  }
+  if (!narrativeParts.length && eventPreview.length) {
+    narrativeParts.push(eventPreview.slice(-3).join(" "));
+  }
+
+  const itemCount = Array.isArray(result?.items) ? result.items.length : 0;
+  const retainedItems = condenseAgentItems(result?.items || [], maxEvents);
+  const omittedItemCount = Math.max(0, itemCount - retainedItems.length);
+
+  return {
+    summary,
+    narrative: narrativeParts.join("\n\n").trim(),
+    thoughts: thoughts.slice(0, 8),
+    stream: eventPreview,
+    items: retainedItems,
+    itemCount,
+    omittedItemCount,
+  };
 }
 
 function normalizeLegacyWorkflowCommand(command) {
@@ -520,10 +942,20 @@ registerNodeType("action.run_agent", {
     properties: {
       prompt: { type: "string", description: "Agent prompt (supports {{variables}})" },
       sdk: { type: "string", enum: ["codex", "copilot", "claude", "auto"], default: "auto" },
+      model: { type: "string", description: "Optional model override for the selected SDK" },
       cwd: { type: "string", description: "Working directory for the agent" },
       timeoutMs: { type: "number", default: 3600000, description: "Agent timeout in ms" },
       agentProfile: { type: "string", description: "Agent profile name (e.g., 'frontend', 'backend')" },
       includeTaskContext: { type: "boolean", default: true, description: "Append task comments/attachments if available" },
+      failOnError: { type: "boolean", default: false, description: "Throw when agent returns success=false (enables workflow retries)" },
+      sessionId: { type: "string", description: "Existing session/thread ID to continue if available" },
+      taskKey: { type: "string", description: "Stable key used for session-aware retries/resume" },
+      autoRecover: { type: "boolean", default: true, description: "Enable continue/retry/fallback recovery ladder when agent fails" },
+      continueOnSession: { type: "boolean", default: true, description: "Try continuing existing session before starting fresh" },
+      continuePrompt: { type: "string", description: "Prompt used when continuing an existing session" },
+      sessionRetries: { type: "number", default: 2, description: "Additional session-aware retries for execWithRetry" },
+      maxContinues: { type: "number", default: 2, description: "Max idle-continue attempts for execWithRetry" },
+      maxRetainedEvents: { type: "number", default: WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT, description: "Maximum agent events retained in run output" },
     },
     required: ["prompt"],
   },
@@ -551,16 +983,55 @@ registerNodeType("action.run_agent", {
     if (agentPool?.launchEphemeralThread) {
       let streamEventCount = 0;
       let lastStreamLog = "";
+      const streamLines = [];
       const startedAt = Date.now();
-      const launchExtra = {};
-      if (sdk && sdk !== "auto") launchExtra.sdk = sdk;
+      const resolvedSessionId = String(
+        ctx.resolve(
+          node.config?.sessionId || ctx.data?.sessionId || ctx.data?.threadId || "",
+        ) || "",
+      ).trim();
+      const sessionId = resolvedSessionId || null;
+      const explicitTaskKey = String(ctx.resolve(node.config?.taskKey || "") || "").trim();
+      const recoveryTaskKey =
+        explicitTaskKey ||
+        sessionId ||
+        `${ctx.data?._workflowId || "workflow"}:${ctx.id}:${node.id}`;
+      const autoRecover = node.config?.autoRecover !== false;
+      const continueOnSession = node.config?.continueOnSession !== false;
+      const continuePrompt = ctx.resolve(
+        node.config?.continuePrompt ||
+        "Continue exactly where you left off. Resume execution from the last incomplete step, avoid redoing completed work, and finish the task end-to-end.",
+      );
+      const parsedSessionRetries = Number(node.config?.sessionRetries);
+      const parsedMaxContinues = Number(node.config?.maxContinues);
+      const sessionRetries = Number.isFinite(parsedSessionRetries)
+        ? Math.max(0, Math.min(10, Math.floor(parsedSessionRetries)))
+        : 2;
+      const maxContinues = Number.isFinite(parsedMaxContinues)
+        ? Math.max(0, Math.min(10, Math.floor(parsedMaxContinues)))
+        : 2;
+      const sdkOverride = sdk === "auto" ? undefined : sdk;
+      const modelOverride = node.config?.model
+        ? String(ctx.resolve(node.config.model) || "").trim() || undefined
+        : undefined;
+      const maxRetainedEvents = Number.isFinite(Number(node.config?.maxRetainedEvents))
+        ? Math.max(10, Math.min(500, Math.trunc(Number(node.config.maxRetainedEvents))))
+        : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
 
+      const launchExtra = {};
+      if (sessionId) launchExtra.resumeThreadId = sessionId;
+      if (sdkOverride) launchExtra.sdk = sdkOverride;
+      if (modelOverride) launchExtra.model = modelOverride;
       launchExtra.onEvent = (event) => {
         try {
           const line = summarizeAgentStreamEvent(event);
           if (!line || line === lastStreamLog) return;
           lastStreamLog = line;
           streamEventCount += 1;
+          if (streamLines.length >= maxRetainedEvents) {
+            streamLines.shift();
+          }
+          streamLines.push(line);
           ctx.log(node.id, line);
         } catch {
           // Stream callbacks must never crash workflow execution.
@@ -572,37 +1043,125 @@ registerNodeType("action.run_agent", {
         ctx.log(node.id, `Agent still running (${elapsedSec}s elapsed)`);
       }, WORKFLOW_AGENT_HEARTBEAT_MS);
 
-      let result;
+      let result = null;
+      let success = false;
+
       try {
-        result = await agentPool.launchEphemeralThread(
-          finalPrompt,
-          cwd,
-          timeoutMs,
-          launchExtra,
-        );
+        // Recovery step 1: continue the existing session when available.
+        if (
+          autoRecover &&
+          continueOnSession &&
+          sessionId &&
+          typeof agentPool.continueSession === "function"
+        ) {
+          ctx.log(node.id, `Recovery: continuing existing session ${sessionId}`);
+          try {
+            result = await agentPool.continueSession(sessionId, continuePrompt, {
+              timeout: timeoutMs,
+              cwd,
+              sdk: sdkOverride,
+              model: modelOverride,
+            });
+            if (result?.success) {
+              ctx.log(node.id, "Recovery: continue-session succeeded");
+            } else {
+              ctx.log(
+                node.id,
+                `Recovery: continue-session failed (${result?.error || "unknown error"})`,
+                "warn",
+              );
+              result = null;
+            }
+          } catch (err) {
+            ctx.log(
+              node.id,
+              `Recovery: continue-session threw (${err?.message || err})`,
+              "warn",
+            );
+            result = null;
+          }
+        }
+
+        // Recovery step 2: session-aware retry chain (resume -> fresh -> fallback SDKs).
+        if (!result && autoRecover && typeof agentPool.execWithRetry === "function") {
+          ctx.log(
+            node.id,
+            `Recovery: execWithRetry taskKey=${recoveryTaskKey} retries=${sessionRetries} continues=${maxContinues}`,
+          );
+          result = await agentPool.execWithRetry(finalPrompt, {
+            taskKey: recoveryTaskKey,
+            cwd,
+            timeoutMs,
+            maxRetries: sessionRetries,
+            maxContinues,
+            sdk: sdkOverride,
+            model: modelOverride,
+          });
+        }
+
+        // Recovery step 3: best-effort launch/resume if execWithRetry is unavailable.
+        if (!result && autoRecover && typeof agentPool.launchOrResumeThread === "function") {
+          ctx.log(node.id, `Recovery: launchOrResumeThread taskKey=${recoveryTaskKey}`);
+          result = await agentPool.launchOrResumeThread(finalPrompt, cwd, timeoutMs, {
+            taskKey: recoveryTaskKey,
+            sdk: sdkOverride,
+            model: modelOverride,
+          });
+        }
+
+        // Fallback: single launch (optionally resumes when session ID exists).
+        if (!result) {
+          result = await agentPool.launchEphemeralThread(finalPrompt, cwd, timeoutMs, launchExtra);
+        }
+        success = result?.success === true;
       } finally {
         clearInterval(heartbeat);
       }
-
-      ctx.log(
-        node.id,
-        `Agent completed: success=${result.success} streamEvents=${streamEventCount}`,
-      );
+      ctx.log(node.id, `Agent completed: success=${success} streamEvents=${streamEventCount}`);
 
       // Propagate session/thread IDs for downstream chaining
-      const threadId = result.threadId || result.sessionId || null;
+      const threadId = result?.threadId || result?.sessionId || sessionId || null;
       if (threadId) {
         ctx.data.sessionId = threadId;
         ctx.data.threadId = threadId;
+      }
+      const digest = buildAgentExecutionDigest(result, streamLines, maxRetainedEvents);
+
+      if (!success) {
+        const errorMessage =
+          result?.error ||
+          `Agent execution failed in node "${node.label || node.id}"`;
+        if (node.config?.failOnError) throw new Error(errorMessage);
+        return {
+          success: false,
+          error: errorMessage,
+          output: result?.output,
+          sdk: result?.sdk,
+          items: result?.items,
+          threadId,
+          sessionId: threadId,
+          attempts: result?.attempts,
+          continues: result?.continues,
+          resumed: result?.resumed,
+        };
       }
 
       return {
         success: result.success,
         output: result.output,
+        summary: digest.summary,
+        narrative: digest.narrative,
+        thoughts: digest.thoughts,
+        stream: digest.stream,
         sdk: result.sdk,
-        items: result.items,
+        items: digest.items,
+        itemCount: digest.itemCount,
+        omittedItemCount: digest.omittedItemCount,
         threadId,
         sessionId: threadId,
+        attempts: result?.attempts,
+        continues: result?.continues,
+        resumed: result?.resumed,
       };
     }
 
@@ -613,8 +1172,13 @@ registerNodeType("action.run_agent", {
         `node -e "import('./agent-pool.mjs').then(m => m.launchEphemeralThread(process.argv[1], process.argv[2], ${timeoutMs}).then(r => console.log(JSON.stringify(r))))" "${finalPrompt.replace(/"/g, '\\"')}" "${cwd}"`,
         { cwd: resolve(dirname(new URL(import.meta.url).pathname)), timeout: timeoutMs + 30000, encoding: "utf8" }
       );
-      return JSON.parse(output);
+      const parsed = JSON.parse(output);
+      if (node.config?.failOnError && parsed?.success === false) {
+        throw new Error(trimLogText(parsed?.error || parsed?.output || "Agent reported failure", 400));
+      }
+      return parsed;
     } catch (err) {
+      if (node.config?.failOnError) throw err;
       return { success: false, error: err.message };
     }
   },
@@ -630,6 +1194,7 @@ registerNodeType("action.run_command", {
       timeoutMs: { type: "number", default: 300000 },
       shell: { type: "string", default: "auto", enum: ["auto", "bash", "pwsh", "cmd"] },
       captureOutput: { type: "boolean", default: true },
+      failOnError: { type: "boolean", default: false, description: "Throw on non-zero exit status (enables workflow retries)" },
     },
     required: ["command"],
   },
@@ -656,13 +1221,18 @@ registerNodeType("action.run_command", {
     } catch (err) {
       const output = err.stdout?.toString() || "";
       const stderr = err.stderr?.toString() || "";
-      return {
+      const result = {
         success: false,
         output,
         stderr,
         exitCode: err.status,
         error: err.message,
       };
+      if (node.config?.failOnError) {
+        const reason = trimLogText(stderr || output || err.message, 400) || err.message;
+        throw new Error(reason);
+      }
+      return result;
     }
   },
 });
@@ -731,6 +1301,7 @@ registerNodeType("action.update_task_status", {
     const previousStatus = ctx.resolve(node.config?.previousStatus || "");
     const workflowDedupKey = ctx.resolve(node.config?.workflowDedupKey || "");
     const updateOptions = {};
+    updateOptions.source = "workflow";
     if (taskTitle) updateOptions.taskTitle = taskTitle;
     if (previousStatus) updateOptions.previousStatus = previousStatus;
     if (workflowEvent) updateOptions.workflowEvent = workflowEvent;
@@ -851,7 +1422,7 @@ registerNodeType("action.git_operations", {
 });
 
 registerNodeType("action.create_pr", {
-  describe: () => "Create a GitHub Pull Request using gh CLI",
+  describe: () => "Hand off pull-request lifecycle to Bosun management (direct creation disabled)",
   schema: {
     type: "object",
     properties: {
@@ -859,9 +1430,10 @@ registerNodeType("action.create_pr", {
       body: { type: "string", description: "PR body" },
       base: { type: "string", description: "Base branch" },
       baseBranch: { type: "string", description: "Legacy alias for base branch" },
-      branch: { type: "string", description: "Head branch to open PR from" },
+      branch: { type: "string", description: "Head branch for Bosun lifecycle handoff context" },
       draft: { type: "boolean", default: false },
       cwd: { type: "string" },
+      failOnError: { type: "boolean", default: false, description: "Retained for compatibility; direct PR commands are disabled" },
     },
     required: ["title"],
   },
@@ -871,17 +1443,22 @@ registerNodeType("action.create_pr", {
     const base = ctx.resolve(node.config?.base || node.config?.baseBranch || "main");
     const branch = ctx.resolve(node.config?.branch || "");
     const cwd = ctx.resolve(node.config?.cwd || ctx.data?.worktreePath || process.cwd());
-    const draft = node.config?.draft ? "--draft" : "";
-    const head = branch ? `--head ${branch}` : "";
-
-    const cmd = `gh pr create --title "${title.replace(/"/g, '\\"')}" --body "${body.replace(/"/g, '\\"')}" --base ${base} ${head} ${draft}`.trim();
-    ctx.log(node.id, `Creating PR: ${title}`);
-    try {
-      const output = execSync(cmd, { cwd, encoding: "utf8", timeout: 60000 });
-      return { success: true, url: output?.trim(), title, base, branch: branch || null };
-    } catch (err) {
-      return { success: false, error: err.message };
-    }
+    ctx.log(
+      node.id,
+      `PR lifecycle handoff recorded for "${title}" (direct PR commands are disabled)`,
+    );
+    return {
+      success: true,
+      handedOff: true,
+      lifecycle: "bosun_managed",
+      action: "pr_handoff",
+      message: "Direct PR commands are disabled; Bosun manages pull-request lifecycle.",
+      title,
+      body,
+      base,
+      branch: branch || null,
+      cwd,
+    };
   },
 });
 
@@ -1528,6 +2105,245 @@ registerNodeType("agent.select_profile", {
   },
 });
 
+function parsePlannerJsonFromText(value) {
+  const text = normalizeLineEndings(String(value || ""))
+    .replace(/\u001b\[[0-9;]*m/g, "")
+    // Strip common agent prefixes: "Agent: ", "Assistant: ", etc.
+    .replace(/^\s*(?:Agent|Assistant|Planner|Output)\s*:\s*/i, "")
+    .trim();
+  if (!text) return null;
+
+  const candidates = [];
+  // Match fenced blocks (```json ... ``` or ``` ... ```)
+  const fenceRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let match;
+  while ((match = fenceRegex.exec(text)) !== null) {
+    const body = String(match[1] || "").trim();
+    if (body) candidates.push(body);
+  }
+  // Also try stripped text without fences as raw JSON
+  const strippedText = text.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim();
+  if (strippedText && !candidates.includes(strippedText)) {
+    candidates.push(strippedText);
+  }
+  candidates.push(text);
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {
+      // Try extracting a balanced object from prose-wrapped output.
+    }
+
+    const start = candidate.indexOf("{");
+    if (start < 0) continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < candidate.length; i += 1) {
+      const ch = candidate[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === "\\") {
+          escaped = true;
+        } else if (ch === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === "\"") {
+        inString = true;
+        continue;
+      }
+      if (ch === "{") depth += 1;
+      if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          const jsonSlice = candidate.slice(start, i + 1);
+          try {
+            const parsed = JSON.parse(jsonSlice);
+            if (parsed && typeof parsed === "object") return parsed;
+          } catch {
+            // Keep scanning.
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function normalizePlannerTaskForCreation(task, index) {
+  if (!task || typeof task !== "object") return null;
+  const title = String(task.title || "").trim();
+  if (!title) return null;
+
+  const lines = [];
+  const description = String(task.description || "").trim();
+  if (description) lines.push(description);
+
+  const appendList = (heading, values) => {
+    if (!Array.isArray(values) || values.length === 0) return;
+    const items = values
+      .map((item) => String(item || "").trim())
+      .filter(Boolean);
+    if (!items.length) return;
+    lines.push("", `## ${heading}`);
+    for (const item of items) lines.push(`- ${item}`);
+  };
+
+  appendList("Implementation Steps", task.implementation_steps);
+  appendList("Acceptance Criteria", task.acceptance_criteria);
+  appendList("Verification", task.verification);
+
+  const baseBranch = String(task.base_branch || "").trim();
+  if (baseBranch) {
+    lines.push("", `Base branch: \`${baseBranch}\``);
+  }
+
+  return {
+    title,
+    description: lines.join("\n").trim(),
+    index,
+    baseBranch: baseBranch || null,
+  };
+}
+
+function extractPlannerTasksFromWorkflowOutput(output, maxTasks = 5) {
+  const parsed = parsePlannerJsonFromText(output);
+  if (!parsed || !Array.isArray(parsed.tasks)) return [];
+
+  const max = Number.isFinite(Number(maxTasks))
+    ? Math.max(1, Math.min(100, Math.trunc(Number(maxTasks))))
+    : 5;
+  const dedup = new Set();
+  const tasks = [];
+  for (let i = 0; i < parsed.tasks.length && tasks.length < max; i += 1) {
+    const normalized = normalizePlannerTaskForCreation(parsed.tasks[i], i);
+    if (!normalized) continue;
+    const key = normalized.title.toLowerCase();
+    if (dedup.has(key)) continue;
+    dedup.add(key);
+    tasks.push(normalized);
+  }
+  return tasks;
+}
+
+registerNodeType("action.materialize_planner_tasks", {
+  describe: () => "Parse planner JSON output and create backlog tasks in Kanban",
+  schema: {
+    type: "object",
+    properties: {
+      plannerNodeId: { type: "string", default: "run-planner", description: "Node ID that produced planner output" },
+      maxTasks: { type: "number", default: 5, description: "Maximum number of tasks to materialize" },
+      status: { type: "string", default: "todo", description: "Status for created tasks" },
+      dedup: { type: "boolean", default: true, description: "Skip titles already in backlog" },
+      failOnZero: { type: "boolean", default: true, description: "Fail node when zero tasks are created" },
+      minCreated: { type: "number", default: 1, description: "Minimum created tasks required for success" },
+      projectId: { type: "string", description: "Optional explicit project ID for list/create operations" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const plannerNodeId = String(ctx.resolve(node.config?.plannerNodeId || "run-planner")).trim() || "run-planner";
+    const plannerOutput = ctx.getNodeOutput(plannerNodeId) || {};
+    const outputText = String(plannerOutput?.output || "").trim();
+    const maxTasks = Number(ctx.resolve(node.config?.maxTasks || ctx.data?.taskCount || 5)) || 5;
+    const failOnZero = node.config?.failOnZero !== false;
+    const minCreated = Number(ctx.resolve(node.config?.minCreated || 1)) || 1;
+    const dedupEnabled = node.config?.dedup !== false;
+    const status = String(ctx.resolve(node.config?.status || "todo")).trim() || "todo";
+    const projectId = String(ctx.resolve(node.config?.projectId || "")).trim();
+
+    const parsedTasks = extractPlannerTasksFromWorkflowOutput(outputText, maxTasks);
+    if (!parsedTasks.length) {
+      // Log diagnostic info to help debug planner output format issues
+      const outputPreview = outputText.length > 200
+        ? `${outputText.slice(0, 200)}…`
+        : outputText || "(empty)";
+      const message = `Planner output from "${plannerNodeId}" did not include parseable tasks. ` +
+        `Output length: ${outputText.length} chars. Preview: ${outputPreview}`;
+      ctx.log(node.id, message, failOnZero ? "error" : "warn");
+      if (failOnZero) throw new Error(message);
+      return {
+        success: false,
+        parsedCount: 0,
+        createdCount: 0,
+        skippedCount: 0,
+        reason: "no_parseable_tasks",
+        outputPreview,
+      };
+    }
+
+    const kanban = engine.services?.kanban;
+    if (!kanban?.createTask) {
+      throw new Error("Kanban adapter not available for planner materialization");
+    }
+
+    const existingTitleSet = new Set();
+    if (dedupEnabled && kanban?.listTasks && projectId) {
+      try {
+        const existing = await kanban.listTasks(projectId, {});
+        const rows = Array.isArray(existing) ? existing : [];
+        for (const row of rows) {
+          const title = String(row?.title || "").trim().toLowerCase();
+          if (title) existingTitleSet.add(title);
+        }
+      } catch (err) {
+        ctx.log(node.id, `Could not prefetch tasks for dedup: ${err.message}`, "warn");
+      }
+    }
+
+    const created = [];
+    const skipped = [];
+    for (const task of parsedTasks) {
+      const key = task.title.toLowerCase();
+      if (dedupEnabled && existingTitleSet.has(key)) {
+        skipped.push({ title: task.title, reason: "duplicate_title" });
+        continue;
+      }
+
+      const payload = {
+        title: task.title,
+        description: task.description,
+        status,
+      };
+      if (projectId) payload.projectId = projectId;
+      const createdTask = await kanban.createTask(payload);
+      created.push({
+        id: createdTask?.id || null,
+        title: task.title,
+      });
+      existingTitleSet.add(key);
+    }
+
+    const createdCount = created.length;
+    const skippedCount = skipped.length;
+    ctx.log(
+      node.id,
+      `Planner materialization parsed=${parsedTasks.length} created=${createdCount} skipped=${skippedCount}`,
+    );
+
+    if (failOnZero && createdCount < Math.max(1, minCreated)) {
+      throw new Error(
+        `Planner materialization created ${createdCount} tasks (required: ${Math.max(1, minCreated)})`,
+      );
+    }
+
+    return {
+      success: createdCount >= Math.max(1, minCreated),
+      parsedCount: parsedTasks.length,
+      createdCount,
+      skippedCount,
+      created,
+      skipped,
+      tasks: parsedTasks,
+    };
+  },
+});
+
 registerNodeType("agent.run_planner", {
   describe: () => "Run the task planner agent to generate new backlog tasks",
   schema: {
@@ -1539,10 +2355,11 @@ registerNodeType("agent.run_planner", {
       outputVariable: { type: "string", description: "Optional context key to store planner output text" },
       projectId: { type: "string" },
       dedup: { type: "boolean", default: true },
+      maxRetainedEvents: { type: "number", default: WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT, description: "Maximum planner events retained in run output" },
     },
   },
   async execute(node, ctx, engine) {
-    const count = node.config?.taskCount || 5;
+    const count = Number(ctx.resolve(node.config?.taskCount || 5)) || 5;
     const context = ctx.resolve(node.config?.context || "");
     const explicitPrompt = ctx.resolve(node.config?.prompt || "");
     const outputVariable = ctx.resolve(node.config?.outputVariable || "");
@@ -1552,20 +2369,96 @@ registerNodeType("agent.run_planner", {
     // This delegates to the existing planner prompt flow
     const agentPool = engine.services?.agentPool;
     const plannerPrompt = engine.services?.prompts?.planner;
-    const promptText = explicitPrompt ||
-      (plannerPrompt
-        ? `${plannerPrompt}\n\nGenerate exactly ${count} new tasks.\n${context}`
-        : "");
+    // Enforce strict output instructions to ensure the downstream materialize node
+    // can parse the planner output. The planner prompt already defines the contract,
+    // but we reinforce it here to prevent agents from wrapping output in prose.
+    const outputEnforcement =
+      `\n\n## CRITICAL OUTPUT REQUIREMENT\n` +
+      `Generate exactly ${count} new tasks.\n` +
+      (context ? `${context}\n\n` : "\n") +
+      `Your response MUST be a single fenced JSON block with shape { "tasks": [...] }.\n` +
+      `Do NOT include any text, commentary, or prose outside the JSON block.\n` +
+      `The downstream system will parse your output as JSON — any extra text will cause task creation to fail.`;
+    const basePrompt = explicitPrompt || plannerPrompt || "";
+    const promptText = basePrompt
+      ? `${basePrompt}${outputEnforcement}`
+      : "";
 
     if (agentPool?.launchEphemeralThread && promptText) {
-      const result = await agentPool.launchEphemeralThread(promptText, process.cwd(), 15 * 60 * 1000);
+      let streamEventCount = 0;
+      let lastStreamLog = "";
+      const streamLines = [];
+      const startedAt = Date.now();
+      const maxRetainedEvents = Number.isFinite(Number(node.config?.maxRetainedEvents))
+        ? Math.max(10, Math.min(500, Math.trunc(Number(node.config.maxRetainedEvents))))
+        : WORKFLOW_AGENT_EVENT_PREVIEW_LIMIT;
+      const launchExtra = {
+        onEvent: (event) => {
+          try {
+            const line = summarizeAgentStreamEvent(event);
+            if (!line || line === lastStreamLog) return;
+            lastStreamLog = line;
+            streamEventCount += 1;
+            if (streamLines.length >= maxRetainedEvents) {
+              streamLines.shift();
+            }
+            streamLines.push(line);
+            ctx.log(node.id, line);
+          } catch {
+            // Stream callbacks must never crash workflow execution.
+          }
+        },
+      };
+
+      const heartbeat = setInterval(() => {
+        const elapsedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+        ctx.log(
+          node.id,
+          `Planner still running (${elapsedSec}s elapsed, streamEvents=${streamEventCount})`,
+        );
+      }, WORKFLOW_AGENT_HEARTBEAT_MS);
+
+      let result;
+      try {
+        result = await agentPool.launchEphemeralThread(
+          promptText,
+          process.cwd(),
+          15 * 60 * 1000,
+          launchExtra,
+        );
+      } finally {
+        clearInterval(heartbeat);
+      }
+
+      ctx.log(
+        node.id,
+        `Planner completed: success=${result.success} streamEvents=${streamEventCount}`,
+      );
+
+      const threadId = result.threadId || result.sessionId || null;
+      if (threadId) {
+        ctx.data.sessionId = threadId;
+        ctx.data.threadId = threadId;
+      }
+
       if (outputVariable) {
         ctx.data[outputVariable] = String(result.output || "").trim();
       }
+      const digest = buildAgentExecutionDigest(result, streamLines, maxRetainedEvents);
       return {
         success: result.success,
         output: result.output,
+        summary: digest.summary,
+        narrative: digest.narrative,
+        thoughts: digest.thoughts,
+        stream: digest.stream,
         taskCount: count,
+        sdk: result.sdk,
+        items: digest.items,
+        itemCount: digest.itemCount,
+        omittedItemCount: digest.omittedItemCount,
+        threadId,
+        sessionId: threadId,
       };
     }
 
@@ -1766,7 +2659,7 @@ registerNodeType("action.continue_session", {
         : strategy === "refine"
         ? `Refine your previous work. Specifically:\n\n${prompt}`
         : strategy === "finish_up"
-        ? `Wrap up the current task. Commit, create PR, ensure tests pass.\n\n${prompt}`
+        ? `Wrap up the current task. Commit, push, and hand off PR lifecycle to Bosun. Ensure tests pass.\n\n${prompt}`
         : `Continue where you left off.\n\n${prompt}`;
 
       const result = await agentPool.launchEphemeralThread(continuation, ctx.data?.worktreePath || process.cwd(), timeout);

@@ -36,12 +36,16 @@ const selectedEdgeId = signal(null);
 const draggingNode = signal(null);
 const connectingFrom = signal(null);
 const viewMode = signal("list"); // "list" | "canvas" | "runs"
+const WORKFLOW_RUN_PAGE_SIZE = 20;
+const WORKFLOW_RUN_MAX_FETCH = 200;
+const workflowRunsLimit = signal(WORKFLOW_RUN_PAGE_SIZE);
 
 function returnToWorkflowList() {
   selectedNodeId.value = null;
   selectedEdgeId.value = null;
   selectedRunId.value = null;
   selectedRunDetail.value = null;
+  workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE;
   viewMode.value = "list";
 }
 
@@ -143,14 +147,21 @@ async function installTemplate(templateId) {
   }
 }
 
-async function loadRuns(workflowId) {
+async function loadRuns(workflowId, opts = {}) {
   try {
-    const url = workflowId
+    const rawLimit =
+      opts.limit != null ? Number(opts.limit) : Number(workflowRunsLimit.value);
+    const limit =
+      Number.isFinite(rawLimit) && rawLimit > 0
+        ? Math.min(Math.floor(rawLimit), WORKFLOW_RUN_MAX_FETCH)
+        : WORKFLOW_RUN_PAGE_SIZE;
+    const baseUrl = workflowId
       ? `/api/workflows/${workflowId}/runs`
       : "/api/workflows/runs";
-    const data = await apiFetch(url);
+    const data = await apiFetch(`${baseUrl}?limit=${limit}`);
     if (data?.runs) {
       workflowRuns.value = data.runs;
+      workflowRunsLimit.value = limit;
       if (selectedRunId.value && !data.runs.find((run) => run.runId === selectedRunId.value)) {
         selectedRunId.value = null;
         selectedRunDetail.value = null;
@@ -793,7 +804,7 @@ const COMMAND_PRESETS = {
     { label: "Merge PR (squash)", cmd: "gh pr merge --auto --squash", icon: "git" },
     { label: "Close PR", cmd: 'gh pr close --comment "{{reason}}"', icon: "ban" },
     { label: "PR Diff", cmd: "gh pr diff --stat", icon: "chart" },
-    { label: "Create PR", cmd: 'gh pr create --title "{{title}}" --body "{{body}}" --base main', icon: "edit" },
+    { label: "PR Handoff Note", cmd: 'echo "Bosun manages PR lifecycle after push; direct PR commands are disabled."', icon: "edit" },
     { label: "Add Label", cmd: 'gh pr edit --add-label "{{label}}"', icon: "tag" },
     { label: "Request Review", cmd: 'gh pr edit --add-reviewer {{reviewer}}', icon: "eye" },
   ],
@@ -1354,7 +1365,7 @@ function WorkflowListView() {
           <span class="btn-icon">${resolveIcon("plus")}</span>
           Create Workflow
         </button>
-        <button type="button" class="wf-btn" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; viewMode.value = "runs"; loadRuns(); }}>
+        <button type="button" class="wf-btn" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE; viewMode.value = "runs"; loadRuns(); }}>
           <span class="btn-icon">${resolveIcon("chart")}</span>
           Run History
         </button>
@@ -1436,8 +1447,9 @@ function WorkflowListView() {
           Available Templates (${availableTemplates.length})${tmpls.length !== availableTemplates.length ? html` <span style="font-size: 11px; font-weight: 400; opacity: 0.6;">· ${tmpls.length - availableTemplates.length} installed</span>` : ""}
         </h3>
         ${availableTemplates.length === 0 && html`
-          <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px;">
-            All templates are installed! 🎉
+          <div style="text-align: center; padding: 24px; opacity: 0.5; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 6px;">
+            <span class="icon-inline">${resolveIcon("star")}</span>
+            <span>All templates are installed!</span>
           </div>
         `}
         ${(() => {
@@ -1536,7 +1548,11 @@ function getNodeCardBorder(status) {
 
 function safePrettyJson(value) {
   try {
-    return JSON.stringify(value, null, 2);
+    const json = JSON.stringify(value, null, 2);
+    const maxChars = 120000;
+    if (json.length <= maxChars) return json;
+    const omitted = json.length - maxChars;
+    return `${json.slice(0, maxChars)}\n\n… [truncated ${omitted} chars]`;
   } catch {
     return String(value ?? "");
   }
@@ -1544,6 +1560,7 @@ function safePrettyJson(value) {
 
 function RunHistoryView() {
   const runs = workflowRuns.value || [];
+  const runsLimit = Number(workflowRunsLimit.value || WORKFLOW_RUN_PAGE_SIZE);
   const selectedRun = selectedRunDetail.value;
   const workflowNameMap = new Map((workflows.value || []).map((wf) => [wf.id, wf.name]));
   const [nowTick, setNowTick] = useState(Date.now());
@@ -1632,6 +1649,9 @@ function RunHistoryView() {
     return counts;
   }, [runs]);
 
+  const canLoadMoreRuns =
+    runs.length >= runsLimit && runsLimit < WORKFLOW_RUN_MAX_FETCH;
+
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
     const nodeStatuses = selectedRun?.detail?.nodeStatuses || {};
@@ -1697,6 +1717,8 @@ function RunHistoryView() {
             const nodeStatus = nodeStatuses[nodeId];
             const nodeStatusStyles = getRunStatusBadgeStyles(nodeStatus);
             const nodeOutput = nodeOutputs[nodeId];
+            const nodeSummary = typeof nodeOutput?.summary === "string" ? nodeOutput.summary.trim() : "";
+            const nodeNarrative = typeof nodeOutput?.narrative === "string" ? nodeOutput.narrative.trim() : "";
             return html`
               <details key=${nodeId} style="background: var(--color-bg-secondary, #1a1f2e); border: 1px solid ${getNodeCardBorder(nodeStatus)}; border-radius: 8px; padding: 8px 10px;">
                 <summary style="cursor: pointer; display: flex; align-items: center; gap: 8px;">
@@ -1705,6 +1727,12 @@ function RunHistoryView() {
                     ${nodeStatus || "unknown"}
                   </span>
                 </summary>
+                ${(nodeSummary || nodeNarrative) && html`
+                  <div style="margin-top: 8px; font-size: 12px; color: #d1d5db; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px; white-space: pre-wrap; word-break: break-word;">
+                    ${nodeSummary ? html`<div><b>Summary:</b> ${nodeSummary}</div>` : ""}
+                    ${nodeNarrative ? html`<div style="margin-top: ${nodeSummary ? "6px" : "0"};"><b>Narrative:</b> ${nodeNarrative}</div>` : ""}
+                  </div>
+                `}
                 <pre style="margin-top: 8px; white-space: pre-wrap; word-break: break-word; font-size: 11px; color: #c9d1d9; background: #111827; border-radius: 6px; padding: 8px;">${safePrettyJson(nodeOutput)}</pre>
               </details>
             `;
@@ -1735,6 +1763,20 @@ function RunHistoryView() {
         <button class="wf-btn wf-btn-sm" onClick=${returnToWorkflowList}>← Back to Workflows</button>
         <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run History</h2>
         <button class="wf-btn wf-btn-sm" onClick=${() => loadRuns()}>Refresh</button>
+        ${canLoadMoreRuns && html`
+          <button
+            class="wf-btn wf-btn-sm"
+            onClick=${() => {
+              const nextLimit = Math.min(
+                runsLimit + WORKFLOW_RUN_PAGE_SIZE,
+                WORKFLOW_RUN_MAX_FETCH,
+              );
+              loadRuns(null, { limit: nextLimit }).catch(() => {});
+            }}
+          >
+            Load older
+          </button>
+        `}
         ${hasRunningRuns && html`<span class="wf-badge" style="background: #3b82f630; color: #60a5fa;">Live</span>`}
       </div>
 
@@ -1793,6 +1835,7 @@ function RunHistoryView() {
           Completed ${runCounts.completed}
         </button>
         <span class="wf-runs-count">${filteredRuns.length} shown</span>
+        <span class="wf-runs-count">${runs.length} loaded</span>
       </div>
 
       ${runs.length === 0 && html`

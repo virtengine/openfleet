@@ -702,6 +702,42 @@ function isReviewStatus(s) {
   return ["inreview", "review", "pr-open", "pr-review"].includes(String(s || ""));
 }
 
+async function reactivateTaskSession(taskId, options = {}) {
+  const normalizedTaskId = String(taskId || "").trim();
+  if (!normalizedTaskId) return false;
+
+  const askFirst = options?.askFirst !== false;
+  const title = String(options?.title || "this task").trim();
+
+  if (askFirst) {
+    const ok = await showConfirm(
+      `Task moved to review. Reactivate agent session for "${title}" now?`,
+    );
+    if (!ok) return false;
+  }
+
+  haptic("medium");
+  const res = await apiFetch("/api/tasks/start", {
+    method: "POST",
+    body: JSON.stringify({ taskId: normalizedTaskId }),
+  });
+  if (res?.queued) {
+    showToast("Agent reactivation queued (waiting for free slot)", "info");
+  } else if (res?.wasPaused) {
+    showToast("Agent reactivated (executor was paused)", "warning");
+  } else {
+    showToast("Agent session reactivated", "success");
+  }
+
+  tasksData.value = (tasksData.value || []).map((t) =>
+    String(t?.id || "").trim() === normalizedTaskId
+      ? { ...t, status: "inprogress" }
+      : t,
+  );
+  scheduleRefresh(150);
+  return true;
+}
+
 /* ─── Derive agent steps from task title/description ─── */
 function deriveSteps(task) {
   const t = String(task?.title || "").toLowerCase();
@@ -714,7 +750,7 @@ function deriveSteps(task) {
   steps.push({ label: "Write implementation" });
   if (!/docs|readme/.test(t)) steps.push({ label: "Run tests & fix issues" });
   steps.push({ label: "Commit changes" });
-  steps.push({ label: "Open pull request" });
+  steps.push({ label: "Handoff PR lifecycle to Bosun" });
   return steps;
 }
 
@@ -820,6 +856,10 @@ export function TaskProgressModal({ task, onClose }) {
         t.id === task.id ? { ...t, status: "inreview" } : t,
       );
       showToast("Task moved to review", "success");
+      await reactivateTaskSession(task.id, {
+        askFirst: true,
+        title: task?.title || task?.id || "this task",
+      }).catch(() => {});
       scheduleRefresh(200);
       onClose();
     } catch { /* toast via apiFetch */ }
@@ -835,7 +875,7 @@ export function TaskProgressModal({ task, onClose }) {
       <div class="tp-hero">
         <div class="tp-pulse-dot"></div>
         <div class="tp-hero-title">
-          <div class="tp-hero-status-label">⚡ Active — Agent Working</div>
+          <div class="tp-hero-status-label">${iconText("⚡ Active — Agent Working")}</div>
         </div>
         <${Badge} status="inprogress" text="running" />
       </div>
@@ -1008,6 +1048,10 @@ export function TaskReviewModal({ task, onClose, onStart }) {
         t.id === task.id ? { ...t, status: "inprogress" } : t,
       );
       showToast("Task reopened as active", "success");
+      await reactivateTaskSession(task.id, {
+        askFirst: false,
+        title: task?.title || task?.id || "this task",
+      }).catch(() => {});
       scheduleRefresh(200);
       onClose();
     } catch { /* toast via apiFetch */ }
@@ -1354,6 +1398,12 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         setStatus(newStatus);
         setDraft(wantsDraft);
       }
+      if (newStatus === "inreview") {
+        await reactivateTaskSession(task.id, {
+          askFirst: true,
+          title: task?.title || task?.id || "this task",
+        }).catch(() => {});
+      }
     } catch {
       /* toast */
     }
@@ -1655,7 +1705,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
             </option>
             ${repositoryOptions.map(
               (repo) =>
-                html`<option value=${repo.slug}>${repo.name}${repo.primary ? " ★" : ""}</option>`,
+                html`<option value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</option>`,
             )}
           </select>
         </div>
@@ -1906,6 +1956,13 @@ export function TasksTab() {
   );
   const isKanban = viewMode.value === "kanban";
   const viewModeInitRef = useRef(false);
+
+  // Add/remove body class so kanban.css can apply height-bounded flex layout
+  // to main-content, enabling per-column vertical scroll on mobile.
+  useEffect(() => {
+    document.body.classList.toggle("tasks-board-view", isKanban);
+    return () => { document.body.classList.remove("tasks-board-view"); };
+  }, [isKanban]);
 
   useEffect(() => {
     if (filterVal && filterVal !== "done") {
@@ -2227,6 +2284,13 @@ export function TasksTab() {
         tasksData.value = prev;
       },
     ).catch(() => {});
+    if (newStatus === "inreview") {
+      const task = (tasksData.value || []).find((t) => String(t?.id) === String(taskId));
+      await reactivateTaskSession(taskId, {
+        askFirst: true,
+        title: task?.title || taskId,
+      }).catch(() => {});
+    }
   };
 
   const startTask = async ({ taskId, sdk, model }) => {
@@ -2372,7 +2436,7 @@ export function TasksTab() {
     return html`
       <div class="flex-between mb-sm" style="padding:0 4px">
         <div class="view-toggle">
-          <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
+          <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText("☰ List")}</button>
           <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
         </div>
         <div style="display:flex;gap:8px;align-items:center;">
@@ -2382,9 +2446,7 @@ export function TasksTab() {
               haptic();
               setShowTemplates(true);
             }}
-          >
-            ⚡ Templates
-          </button>
+          >${iconText("⚡ Templates")}</button>
           <button
             class="btn btn-ghost btn-sm"
             onClick=${toggleCompletedFilter}
@@ -2418,7 +2480,7 @@ export function TasksTab() {
         <${EmptyState}
           message="No tasks yet"
           description="Create a task to start orchestrating agents."
-          icon="\u{1F4CB}"
+          icon="clipboard"
           action=${{
             label: "Create Task",
             onClick: () => {
@@ -2448,7 +2510,7 @@ export function TasksTab() {
 
   const viewToggle = html`
     <div class="view-toggle">
-      <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>☰ List</button>
+      <button class="view-toggle-btn ${!isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'list'; haptic(); }}>${iconText("☰ List")}</button>
       <button class="view-toggle-btn ${isKanban ? 'active' : ''}" onClick=${() => { viewMode.value = 'kanban'; haptic(); }}>▦ Board</button>
     </div>
   `;
@@ -2802,7 +2864,7 @@ export function TasksTab() {
                 >
                   <td class="task-td task-td-status">
                     <${Badge} status=${task.status} text=${task.status} />
-                    ${isManual && html`<${Badge} status="warning" text="⚑" />`}
+                    ${isManual && html`<${Badge} status="warning" text="manual" />`}
                   </td>
                   <td class="task-td task-td-pri">
                     ${task.priority
@@ -3164,7 +3226,7 @@ function CreateTaskModalInline({ onClose }) {
               </option>
               ${repositoryOptions.map(
                 (repo) =>
-                  html`<option value=${repo.slug}>${repo.name}${repo.primary ? " ★" : ""}</option>`,
+                  html`<option value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</option>`,
               )}
             </select>
           </div>

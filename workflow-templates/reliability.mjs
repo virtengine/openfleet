@@ -49,17 +49,33 @@ export const ERROR_RECOVERY_TEMPLATE = {
     node("retry-task", "action.run_agent", "Retry Task", {
       prompt: "{{taskExecutorRetryPrompt}}",
       timeoutMs: 3600000,
+      failOnError: true,
+      maxRetries: "{{maxRetries}}",
+      retryDelayMs: 15000,
+      continueOnError: true,
     }, { x: 200, y: 480 }),
+
+    node("retry-succeeded", "condition.expression", "Retry Succeeded?", {
+      expression: "$ctx.getNodeOutput('retry-task')?.success === true",
+    }, { x: 200, y: 620, outputs: ["yes", "no"] }),
+
+    node("notify-recovered", "notify.log", "Log Recovery Success", {
+      message: "Task {{taskId}} recovered automatically by error-recovery workflow",
+      level: "info",
+    }, { x: 90, y: 760 }),
 
     node("escalate", "notify.telegram", "Escalate to Human", {
       message: "🚨 Task **{{taskTitle}}** failed after {{maxRetries}} attempts. Manual intervention needed.\n\nLast error: {{lastError}}",
-    }, { x: 600, y: 180 }),
+    }, { x: 600, y: 620 }),
   ],
   edges: [
     edge("trigger", "check-retries"),
     edge("check-retries", "analyze-error", { condition: "$output?.result === true" }),
     edge("check-retries", "escalate", { condition: "$output?.result !== true" }),
     edge("analyze-error", "retry-task"),
+    edge("retry-task", "retry-succeeded"),
+    edge("retry-succeeded", "notify-recovered", { condition: "$output?.result === true", port: "yes" }),
+    edge("retry-succeeded", "escalate", { condition: "$output?.result !== true", port: "no" }),
   ],
   metadata: {
     author: "bosun",
@@ -151,7 +167,7 @@ export const ANOMALY_WATCHDOG_TEMPLATE = {
     }, { x: 400, y: 550 }),
 
     node("alert-telegram", "notify.telegram", "Alert Human", {
-      message: "⚠️ Agent anomaly detected: **{{anomalyType}}**\nSession: {{sessionId}}\nTask: {{taskTitle}}\nIntervention: auto-applied",
+      message: "⚠️ Agent anomaly detected: **{{anomalyType}}**\nSession: {{sessionId}}\nTask: {{taskTitle}}\nIntervention: auto-applied\nThresholds: stall={{stallThresholdMs}}ms token={{maxTokenUsage}} maxErrors={{maxConsecutiveErrors}}",
     }, { x: 400, y: 700 }),
   ],
   edges: [
@@ -228,7 +244,7 @@ export const WORKSPACE_HYGIENE_TEMPLATE = {
     }, { x: 650, y: 200 }),
 
     node("clean-evidence", "action.run_command", "Clean Old Evidence", {
-      command: "find .bosun/evidence -type f -mtime +14 -delete 2>/dev/null; echo 'Cleaned'",
+      command: "find .bosun/evidence -type f -mtime +{{logRetentionDays}} -delete 2>/dev/null; echo 'Cleaned'",
       continueOnError: true,
     }, { x: 150, y: 380 }),
 
@@ -242,7 +258,7 @@ export const WORKSPACE_HYGIENE_TEMPLATE = {
     }, { x: 650, y: 380 }),
 
     node("summary", "notify.log", "Log Summary", {
-      message: "Workspace hygiene sweep completed",
+      message: "Workspace hygiene sweep completed (max worktree age target: {{worktreeMaxAge}})",
       level: "info",
     }, { x: 400, y: 540 }),
   ],
@@ -294,7 +310,7 @@ export const HEALTH_CHECK_TEMPLATE = {
   },
   nodes: [
     node("trigger", "trigger.schedule", "Hourly Health Check", {
-      intervalMs: 3600000,
+      intervalMs: "{{intervalMs}}",
       cron: "0 * * * *",
     }, { x: 400, y: 50 }),
 
@@ -396,17 +412,24 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
       expression: "$ctx.getNodeOutput('run-finalization')?.success === true",
     }, { x: 220, y: 470 }),
 
-    node("has-pr", "condition.expression", "PR Already Exists?", {
+    node("has-pr", "condition.expression", "Lifecycle Already Linked?", {
       expression: "Boolean($data?.prNumber || $data?.prUrl)",
     }, { x: 120, y: 620 }),
 
-    node("create-pr", "action.create_pr", "Create PR If Missing", {
+    node("create-pr", "action.create_pr", "Handoff Lifecycle If Missing", {
       title: "{{taskTitle}}",
-      body: "Automated PR from task finalization guard for task {{taskId}}.",
+      body: "Bosun-managed PR lifecycle handoff from task finalization guard for task {{taskId}}.",
       base: "{{baseBranch}}",
       branch: "{{branch}}",
+      failOnError: true,
+      maxRetries: 3,
+      retryDelayMs: 15000,
       continueOnError: true,
     }, { x: 120, y: 760 }),
+
+    node("create-pr-success", "condition.expression", "Lifecycle Handoff Recorded?", {
+      expression: "$ctx.getNodeOutput('create-pr')?.success === true",
+    }, { x: 120, y: 830, outputs: ["yes", "no"] }),
 
     node("mark-inreview", "action.update_task_status", "Set In Review", {
       taskId: "{{taskId}}",
@@ -469,7 +492,9 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
     edge("checks-passed", "mark-todo-failed", { condition: "$output?.result !== true" }),
     edge("has-pr", "mark-inreview", { condition: "$output?.result === true" }),
     edge("has-pr", "create-pr", { condition: "$output?.result !== true" }),
-    edge("create-pr", "mark-inreview"),
+    edge("create-pr", "create-pr-success"),
+    edge("create-pr-success", "mark-inreview", { condition: "$output?.result === true", port: "yes" }),
+    edge("create-pr-success", "mark-todo-failed", { condition: "$output?.result !== true", port: "no" }),
     edge("mark-inreview", "notify-pass"),
     edge("mark-todo-failed", "notify-fail"),
     edge("mark-todo-missing", "notify-fail"),
@@ -515,7 +540,7 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
     verificationCommand:
       "node -e \"const cp=require('node:child_process');const cmds=['npm run prepush --if-present','npm run prepush:check --if-present','npm run build','npm test','npm run lint --if-present'];for(const cmd of cmds){cp.execSync(cmd,{stdio:'inherit'});} \"",
     repairPrompt:
-      "Task {{taskId}} ({{taskTitle}}) failed. Error: {{error}}. Repair the implementation in {{worktreePath}} without bypassing tests, then leave the branch ready for PR.",
+      "Task {{taskId}} ({{taskTitle}}) failed. Error: {{error}}. Repair the implementation in {{worktreePath}} without bypassing tests, then leave the branch ready for Bosun PR lifecycle handoff.",
   },
   nodes: [
     node("trigger-failed", "trigger.event", "Task Failed", {
@@ -553,13 +578,20 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
       expression: "$ctx.getNodeOutput('verify')?.success === true",
     }, { x: 400, y: 740 }),
 
-    node("create-pr", "action.create_pr", "Create/Update PR", {
+    node("create-pr", "action.create_pr", "Handoff/Refresh Lifecycle", {
       title: "{{taskTitle}}",
-      body: "Automated repair run for task {{taskId}}.",
+      body: "Automated repair run for task {{taskId}}. Bosun lifecycle handoff context.",
       base: "{{baseBranch}}",
       branch: "{{branch}}",
+      failOnError: true,
+      maxRetries: 3,
+      retryDelayMs: 15000,
       continueOnError: true,
     }, { x: 250, y: 880 }),
+
+    node("create-pr-success", "condition.expression", "Lifecycle Handoff Ready?", {
+      expression: "$ctx.getNodeOutput('create-pr')?.success === true",
+    }, { x: 250, y: 950, outputs: ["yes", "no"] }),
 
     node("mark-inreview", "action.update_task_status", "Set In Review", {
       taskId: "{{taskId}}",
@@ -612,7 +644,9 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
     edge("verify", "verify-passed"),
     edge("verify-passed", "create-pr", { condition: "$output?.result === true" }),
     edge("verify-passed", "mark-todo", { condition: "$output?.result !== true" }),
-    edge("create-pr", "mark-inreview"),
+    edge("create-pr", "create-pr-success"),
+    edge("create-pr-success", "mark-inreview", { condition: "$output?.result === true", port: "yes" }),
+    edge("create-pr-success", "mark-todo", { condition: "$output?.result !== true", port: "no" }),
     edge("mark-inreview", "notify-success"),
     edge("mark-todo", "notify-escalate"),
     edge("no-worktree", "notify-escalate"),
@@ -630,6 +664,100 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
       description:
         "Introduces a dedicated automated repair workflow that takes over " +
         "when task execution or finalization fails.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Task Status Transition Manager
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const TASK_STATUS_TRANSITION_MANAGER_TEMPLATE = {
+  id: "template-task-status-transition-manager",
+  name: "Task Status Transition Manager",
+  description:
+    "Central workflow-owned task status transitions. Consumes task lifecycle " +
+    "transition requests from executors/monitor and applies canonical status updates.",
+  category: "reliability",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.event",
+  variables: {},
+  nodes: [
+    node("trigger", "trigger.event", "Transition Requested", {
+      eventType: "task.transition.requested",
+    }, { x: 420, y: 60 }),
+
+    node("route-status", "condition.switch", "Route Target Status", {
+      value: "$data?.targetStatus || $data?.status || ''",
+      cases: {
+        inprogress: "inprogress",
+        inreview: "inreview",
+        done: "done",
+        todo: "todo",
+      },
+    }, {
+      x: 420,
+      y: 220,
+      outputs: ["inprogress", "inreview", "done", "todo", "default"],
+    }),
+
+    node("set-inprogress", "action.update_task_status", "Set In Progress", {
+      taskId: "{{taskId}}",
+      status: "inprogress",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 120, y: 390 }),
+
+    node("set-inreview", "action.update_task_status", "Set In Review", {
+      taskId: "{{taskId}}",
+      status: "inreview",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 320, y: 390 }),
+
+    node("set-done", "action.update_task_status", "Set Done", {
+      taskId: "{{taskId}}",
+      status: "done",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 520, y: 390 }),
+
+    node("set-todo", "action.update_task_status", "Set Todo", {
+      taskId: "{{taskId}}",
+      status: "todo",
+      taskTitle: "{{taskTitle}}",
+    }, { x: 720, y: 390 }),
+
+    node("unknown-status", "notify.log", "Unknown Status Requested", {
+      message: "Task {{taskId}} transition ignored: unsupported target status '{{targetStatus}}'",
+      level: "warn",
+    }, { x: 420, y: 520 }),
+  ],
+  edges: [
+    edge("trigger", "route-status"),
+    edge("route-status", "set-inprogress", { port: "inprogress" }),
+    edge("route-status", "set-inreview", { port: "inreview" }),
+    edge("route-status", "set-done", { port: "done" }),
+    edge("route-status", "set-todo", { port: "todo" }),
+    edge("route-status", "unknown-status", { port: "default" }),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2026-02-27T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["task", "status", "lifecycle", "workflow-owned"],
+    replaces: {
+      module: "task-executor.mjs",
+      functions: ["direct status transition writes"],
+      calledFrom: [
+        "task-executor.mjs:executeTask",
+        "task-executor.mjs:_recoverInterruptedInProgressTasks",
+        "task-executor.mjs:_handleTaskResult",
+      ],
+      description:
+        "Moves task state mutations from executor code into a dedicated " +
+        "workflow so all status changes are auditable and event-driven.",
     },
   },
 };
@@ -661,6 +789,15 @@ export const INCIDENT_RESPONSE_TEMPLATE = {
       anomalyTypes: ["error-spike", "death-loop", "agent-stall"],
       threshold: "{{errorThreshold}}",
     }, { x: 400, y: 50 }),
+
+    node("should-assign", "condition.expression", "Auto Assign Agent?", {
+      expression: "Boolean($data?.autoAssignAgent !== false)",
+    }, { x: 250, y: 690, outputs: ["yes", "no"] }),
+
+    node("delay-escalation", "action.delay", "Escalation Delay", {
+      ms: "{{escalationDelayMs}}",
+      reason: "Allowing automatic mitigation window before escalation",
+    }, { x: 150, y: 620 }),
 
     node("collect-evidence", "agent.evidence_collect", "Collect Evidence", {
       sources: ["logs", "git-status", "process-list", "recent-errors"],
@@ -734,11 +871,14 @@ Be conservative — prefer safe mitigations over aggressive fixes.`,
     edge("trigger", "collect-evidence"),
     edge("collect-evidence", "classify-incident"),
     edge("classify-incident", "is-critical"),
-    edge("is-critical", "alert-critical", { condition: "$output?.result === true", port: "yes" }),
+    edge("is-critical", "delay-escalation", { condition: "$output?.result === true", port: "yes" }),
     edge("is-critical", "create-incident-task", { condition: "$output?.result !== true", port: "no" }),
+    edge("delay-escalation", "alert-critical"),
     edge("alert-critical", "create-incident-task"),
     edge("create-incident-task", "alert-standard"),
-    edge("create-incident-task", "assign-agent"),
+    edge("create-incident-task", "should-assign"),
+    edge("should-assign", "assign-agent", { condition: "$output?.result === true", port: "yes" }),
+    edge("should-assign", "resolution-log", { condition: "$output?.result !== true", port: "no" }),
     edge("assign-agent", "resolution-log"),
   ],
   metadata: {

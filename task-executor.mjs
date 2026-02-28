@@ -24,7 +24,7 @@ import {
   listTasks,
   listProjects,
   getTask,
-  updateTaskStatus,
+  updateTaskStatus as updateKanbanTaskStatus,
   addComment,
 } from "./kanban-adapter.mjs";
 import {
@@ -141,6 +141,31 @@ const EXPECTED_NO_COMMIT_TAGS = new Set([
   "diagnostic",
   "preflight",
 ]);
+
+/** @type {null|((taskId: string, status: string, options?: object) => Promise<boolean>|boolean)} */
+let taskStatusTransitionHandler = null;
+
+export function setTaskStatusTransitionHandler(handler) {
+  taskStatusTransitionHandler = typeof handler === "function" ? handler : null;
+}
+
+function hasExternalTaskStatusTransitionHandler() {
+  return typeof taskStatusTransitionHandler === "function";
+}
+
+async function transitionTaskStatus(taskId, status, options = {}) {
+  if (hasExternalTaskStatusTransitionHandler()) {
+    const result = await taskStatusTransitionHandler(taskId, status, options);
+    return result !== false;
+  }
+  await updateKanbanTaskStatus(taskId, status, options);
+  return true;
+}
+
+function transitionInternalTaskStatus(taskId, status, source) {
+  if (hasExternalTaskStatusTransitionHandler()) return null;
+  return setInternalStatus(taskId, status, source);
+}
 
 function parseNumberEnv(name, fallback) {
   const value = Number(process.env[name]);
@@ -1832,7 +1857,7 @@ async function commentOnIssue(task, commentBody) {
  * @property {string}   sdk             - SDK preference: "codex" | "copilot" | "claude" | "auto"
  * @property {number}   taskTimeoutMs   - Timeout per task execution (default: 90 * 60 * 1000)
  * @property {number}   maxRetries      - Retries per task via execWithRetry (default: 2)
- * @property {boolean}  autoCreatePr    - Create PR after agent completes (default: true)
+ * @property {boolean}  autoCreatePr    - Record PR lifecycle handoff after agent completes (default: true)
  * @property {boolean}  flowReviewGateRequired - Block PR merge automation until review is approved (default: true)
  * @property {string}   projectId       - VK project ID to poll (null = auto-detect first project)
  * @property {string}   repoRoot        - Repository root path
@@ -1844,6 +1869,7 @@ async function commentOnIssue(task, commentBody) {
  * @property {Function} onTaskFailed    - callback(task, error)
  * @property {Function} sendTelegram    - optional telegram notifier function
  * @property {Object}   agentPrompts    - optional prompt templates loaded from config
+ * @property {boolean}  workflowOwnsTaskLifecycle - Delegate finalization/recovery to workflow automation
  */
 
 /**
@@ -1894,6 +1920,7 @@ class TaskExecutor {
       onTaskFailed: null,
       sendTelegram: null,
       agentPrompts: {},
+      workflowOwnsTaskLifecycle: false,
     };
 
     const merged = { ...defaults, ...options };
@@ -1929,6 +1956,7 @@ class TaskExecutor {
     this.onTaskCompleted = merged.onTaskCompleted;
     this.onTaskFailed = merged.onTaskFailed;
     this.sendTelegram = merged.sendTelegram;
+    this.workflowOwnsTaskLifecycle = merged.workflowOwnsTaskLifecycle === true;
     this._agentPrompts =
       merged.agentPrompts && typeof merged.agentPrompts === "object"
         ? merged.agentPrompts
@@ -2060,6 +2088,8 @@ class TaskExecutor {
     this._listTasksFailureCount = 0;
     this._listTasksBackoffUntil = 0;
     this._listTasksBackoffReason = "";
+    // Throttle draft-task filtering log messages (every 5 min max)
+    this._lastDraftFilterLogAt = 0;
     this._projectResolveFailureWindowStart = 0;
     this._projectResolveFailureCount = 0;
     this._projectResolveBackoffUntil = 0;
@@ -2461,31 +2491,44 @@ class TaskExecutor {
     this._running = true;
     // Start watchdog to detect and kill stalled agent slots
     this._startWatchdog();
-    // Resume interrupted in-progress tasks first, then poll todo backlog.
-    void ensureThreadRegistryLoaded()
-      .catch((err) => {
+
+    const startRecovery = async () => {
+      try {
+        await ensureThreadRegistryLoaded();
+      } catch (err) {
         console.warn(
-          `${TAG} thread registry load warning: ${err.message || err}`,
+          `${TAG} thread registry load warning: ${err?.message || err}`,
         );
-      })
-      .then(() => {
-        const pruned = pruneAllExhaustedThreads();
-        if (pruned > 0) {
-          console.log(
-            `${TAG} cleaned up ${pruned} stale agent threads on startup`,
-          );
-        }
-      })
-      .then(() => this._recoverInterruptedInProgressTasks())
-      .catch((err) => {
+      }
+
+      const pruned = pruneAllExhaustedThreads();
+      if (pruned > 0) {
+        console.log(
+          `${TAG} cleaned up ${pruned} stale agent threads on startup`,
+        );
+      }
+
+      try {
+        await this._recoverInterruptedInProgressTasks();
+      } catch (err) {
         console.warn(
-          `${TAG} in-progress recovery warning: ${err.message || err}`,
+          `${TAG} in-progress recovery warning: ${err?.message || err}`,
         );
+      }
+    };
+
+    startRecovery()
+      .catch((err) => {
+        console.warn(`${TAG} thread recovery error: ${err?.message || err}`);
       })
       .finally(() => {
-        void this._pollLoop();
+        this._runPollLoopSafely();
       });
-    this._pollTimer = setInterval(() => this._pollLoop(), this.pollIntervalMs);
+
+    this._pollTimer = setInterval(
+      () => this._runPollLoopSafely(),
+      this.pollIntervalMs,
+    );
     console.log(
       `${TAG} started — polling every ${this.pollIntervalMs / 1000}s for up to ${this.maxParallel} parallel tasks`,
     );
@@ -2804,7 +2847,7 @@ class TaskExecutor {
 
   /**
    * Scan worktrees from prior runs for uncommitted/unpushed work.
-   * Attempts to commit, push, and create PRs for any orphaned work.
+   * Attempts to commit, push, and hand off PR lifecycle for any orphaned work.
    * @returns {Promise<void>}
    */
   async _recoverOrphanedWorktrees() {
@@ -2943,8 +2986,8 @@ class TaskExecutor {
         }
       }
 
-      // Verify branches actually has meaningful diff vs main BEFORE creating a PR
-      // This prevents empty PRs from being created when worktrees have merge artifacts.
+      // Verify branches actually has meaningful diff vs main BEFORE lifecycle handoff
+      // This prevents empty lifecycle handoffs when worktrees have merge artifacts.
       try {
         const diffCheck = execSync(
           `git diff --name-only ${baseInfo.remoteRef}...HEAD`,
@@ -2957,7 +3000,7 @@ class TaskExecutor {
         ).trim();
         if (diffCheck.length === 0) {
           console.log(
-            `${TAG} [orphan-recovery] Skipping ${dirName} — 0 file changes vs ${baseInfo.branch} (would create empty PR)`,
+            `${TAG} [orphan-recovery] Skipping ${dirName} — 0 file changes vs ${baseInfo.branch} (would produce empty lifecycle handoff)`,
           );
           skipped++;
           continue;
@@ -2983,7 +3026,7 @@ class TaskExecutor {
         branchName: branch,
       };
 
-      // Try to create PR
+      // Try to hand off lifecycle
       try {
         const prResult = await this._createPR(taskObj, wtPath, {
           agentMadeNewCommits: true,
@@ -2995,14 +3038,14 @@ class TaskExecutor {
         });
         if (prResult) {
           console.log(
-            `${TAG} [orphan-recovery] PR created for ${dirName}: ${prResult}`,
+            `${TAG} [orphan-recovery] Lifecycle handoff recorded for ${dirName}: ${prResult.url || prResult}`,
           );
           this._prCreatedForBranch.add(taskIdPrefix);
           recovered++;
         }
       } catch (err) {
         console.warn(
-          `${TAG} [orphan-recovery] PR creation failed for ${dirName}: ${err.message}`,
+          `${TAG} [orphan-recovery] Lifecycle handoff failed for ${dirName}: ${err.message}`,
         );
       }
     }
@@ -3154,7 +3197,9 @@ class TaskExecutor {
       const internalStatus = internalTask?.status || null;
       if (internalTask && internalStatus && internalStatus !== "inprogress") {
         try {
-          await updateTaskStatus(id, internalStatus);
+          await transitionTaskStatus(id, internalStatus, {
+            source: "task-executor-recovery-drift",
+          });
         } catch {
           /* best effort */
         }
@@ -3185,12 +3230,18 @@ class TaskExecutor {
       const noCommitCount = this._noCommitCounts.get(id) || 0;
       if (noCommitCount >= MAX_NO_COMMIT_ATTEMPTS) {
         try {
-          await updateTaskStatus(id, "todo");
+          await transitionTaskStatus(id, "todo", {
+            source: "task-executor-recovery-no-commit-block",
+          });
         } catch {
           /* best effort */
         }
         try {
-          setInternalStatus(id, "todo", "task-executor-recovery-no-commit-block");
+          transitionInternalTaskStatus(
+            id,
+            "todo",
+            "task-executor-recovery-no-commit-block",
+          );
         } catch {
           /* best effort */
         }
@@ -3231,12 +3282,14 @@ class TaskExecutor {
       }
 
       try {
-        await updateTaskStatus(id, "todo");
+        await transitionTaskStatus(id, "todo", {
+          source: "task-executor-recovery",
+        });
       } catch {
         /* best effort */
       }
       try {
-        setInternalStatus(id, "todo", "task-executor-recovery");
+        transitionInternalTaskStatus(id, "todo", "task-executor-recovery");
       } catch {
         /* best effort */
       }
@@ -3480,49 +3533,65 @@ class TaskExecutor {
     return Math.min(Math.max(minutes, 60), 24 * 60);
   }
 
+  async _renewTaskClaim(taskId, claimToken, taskTitle = "") {
+    if (!taskId || !claimToken) return null;
+    try {
+      const renewed = await renewClaim({
+        taskId,
+        claimToken,
+        instanceId: this._instanceId,
+        ttlMinutes: this._getTaskClaimTtlMinutes(),
+      });
+      if (!renewed?.success) {
+        const reason = String(renewed?.error || "unknown");
+        const err = new Error(reason);
+        err.fatalClaimRenew = FATAL_CLAIM_RENEW_ERRORS.has(reason);
+        throw err;
+      }
+      return renewed;
+    } catch (err) {
+      const reason = String(err?.message || err || "unknown");
+      const wrapped = new Error(reason);
+      wrapped.fatalClaimRenew =
+        Boolean(err?.fatalClaimRenew) ||
+        FATAL_CLAIM_RENEW_ERRORS.has(reason);
+      throw wrapped;
+    }
+  }
+
+  _handleTaskClaimRenewalFailure(
+    taskId,
+    taskTitle,
+    reason,
+    { fatal = false } = {},
+  ) {
+    if (!taskId) return;
+    this._stopTaskClaimRenewal(taskId);
+    const slot = this._activeSlots.get(taskId);
+    const taskLabel = taskTitle || slot?.taskTitle || taskId;
+    const normalizedReason = String(reason || "unknown");
+    const message = fatal
+      ? `${TAG} claim ownership lost for "${taskLabel}" (${normalizedReason}) — aborting task to avoid duplicate execution`
+      : `${TAG} claim renewal failure for "${taskLabel}" (${normalizedReason}) — aborting task to trigger cleanup`;
+    console.warn(message);
+    const ac = this._slotAbortControllers.get(taskId);
+    if (ac && !ac.signal.aborted) {
+      ac.abort(`claim_renewal:${normalizedReason}`);
+    }
+  }
+
   _startTaskClaimRenewal(taskId, claimToken, taskTitle = "") {
     if (!taskId || !claimToken) return;
     this._stopTaskClaimRenewal(taskId);
     const intervalMs = this.taskClaimRenewIntervalMs;
-    const renew = async () => {
-      try {
-        const renewed = await renewClaim({
-          taskId,
-          claimToken,
-          instanceId: this._instanceId,
-          ttlMinutes: this._getTaskClaimTtlMinutes(),
-        });
-        if (!renewed?.success) {
-          const renewError = String(renewed?.error || "unknown");
-          if (FATAL_CLAIM_RENEW_ERRORS.has(renewError)) {
-            this._stopTaskClaimRenewal(taskId);
-            const slot = this._activeSlots.get(taskId);
-            const taskLabel = taskTitle || slot?.taskTitle || taskId;
-            const ac = this._slotAbortControllers.get(taskId);
-            if (slot?.status === "running" && ac && !ac.signal.aborted) {
-              console.warn(
-                `${TAG} claim ownership lost for "${taskLabel}" (${renewError}) — aborting task to avoid duplicate execution`,
-              );
-              ac.abort(`claim_lost:${renewError}`);
-            } else {
-              console.warn(
-                `${TAG} claim ownership lost for "${taskLabel}" (${renewError}); stopping renewals`,
-              );
-            }
-            return;
-          }
-          console.warn(
-            `${TAG} claim renewal failed for "${taskTitle || taskId}": ${renewError}`,
-          );
-        }
-      } catch (err) {
-        console.warn(
-          `${TAG} claim renewal warning for "${taskTitle || taskId}": ${err?.message || err}`,
-        );
-      }
+    const handleError = (err) => {
+      const reason = String(err?.message || err || "unknown");
+      this._handleTaskClaimRenewalFailure(taskId, taskTitle, reason, {
+        fatal: Boolean(err?.fatalClaimRenew),
+      });
     };
     const timer = setInterval(() => {
-      void renew();
+      this._renewTaskClaim(taskId, claimToken, taskTitle).catch(handleError);
     }, intervalMs);
     if (timer?.unref) timer.unref();
     this._taskClaimRenewTimers.set(taskId, timer);
@@ -3673,6 +3742,14 @@ class TaskExecutor {
 
   // ── Poll Loop ─────────────────────────────────────────────────────────────
 
+  _runPollLoopSafely() {
+    return this._pollLoop().catch((err) => {
+      console.error(
+        `${TAG} poll loop unexpected rejection: ${err?.message || err}`,
+      );
+    });
+  }
+
   /**
    * Check kanban for todo tasks and dispatch execution.
    * Guarded against overlapping polls and slot saturation.
@@ -3742,9 +3819,14 @@ class TaskExecutor {
         const before = tasks.length;
         tasks = tasks.filter((task) => !isDraftTask(task));
         if (tasks.length !== before) {
-          console.debug(
-            `${TAG} filtered ${before - tasks.length} draft task(s)`,
-          );
+          const draftCount = before - tasks.length;
+          const now = Date.now();
+          if (!this._lastDraftFilterLogAt || now - this._lastDraftFilterLogAt > 300_000) {
+            console.debug(
+              `${TAG} filtered ${draftCount} draft task(s)`,
+            );
+            this._lastDraftFilterLogAt = now;
+          }
         }
       }
 
@@ -3930,6 +4012,7 @@ class TaskExecutor {
     const executionRepoSlug = taskRepoContext.repoSlug || this.repoSlug;
     const worktreeManager = this._getWorktreeManager(executionRepoRoot);
     let taskClaimToken = null;
+    let attemptId = null;
 
     const releaseTaskClaimLock = async () => {
       this._stopTaskClaimRenewal(taskId);
@@ -3946,6 +4029,18 @@ class TaskExecutor {
         );
       } finally {
         taskClaimToken = null;
+      }
+    };
+
+    const clearAttemptTracking = () => {
+      if (!attemptId) return;
+      anomalyAbortTargets.delete(attemptId);
+      if (anomalyDetector) {
+        try {
+          anomalyDetector.resetProcess(attemptId);
+        } catch {
+          /* best-effort */
+        }
       }
     };
 
@@ -4179,13 +4274,17 @@ class TaskExecutor {
 
       // 2. Update task status → "inprogress"
       try {
-        await updateTaskStatus(taskId, "inprogress");
+        await transitionTaskStatus(taskId, "inprogress", {
+          source: "task-executor",
+          taskTitle,
+          branch,
+        });
       } catch (err) {
         console.warn(`${TAG} failed to set task to inprogress: ${err.message}`);
       }
       // Mirror to internal store
       try {
-        setInternalStatus(taskId, "inprogress", "task-executor");
+        transitionInternalTaskStatus(taskId, "inprogress", "task-executor");
       } catch {
         /* best-effort */
       }
@@ -4244,7 +4343,11 @@ class TaskExecutor {
         );
         this._taskCooldowns.set(taskId, Date.now());
         try {
-          await updateTaskStatus(taskId, "todo");
+          await transitionTaskStatus(taskId, "todo", {
+            source: "task-executor-worktree-acquire-failed",
+            taskTitle,
+            branch,
+          });
         } catch {
           /* best-effort */
         }
@@ -4273,7 +4376,11 @@ class TaskExecutor {
           /* best-effort */
         }
         try {
-          await updateTaskStatus(taskId, "todo");
+          await transitionTaskStatus(taskId, "todo", {
+            source: "task-executor-worktree-invalid",
+            taskTitle,
+            branch,
+          });
         } catch {
           /* best-effort */
         }
@@ -4402,7 +4509,7 @@ class TaskExecutor {
       // workspace-scoped executionRepoRoot, NOT the developer's personal repo.
       process.env.BOSUN_AGENT_REPO_ROOT = executionRepoRoot;
 
-      const attemptId = `${taskId}-${randomUUID()}`;
+      attemptId = `${taskId}-${randomUUID()}`;
       const taskMeta = {
         task_id: taskId,
         task_title: taskTitle,
@@ -4654,7 +4761,7 @@ class TaskExecutor {
           diff_lines_deleted: diffStats?.totalDeletions ?? null,
         },
       });
-      anomalyAbortTargets.delete(attemptId);
+      clearAttemptTracking();
 
       // 7. Handle result
       slot.status = validatedResult.success ? "completing" : "failed";
@@ -4685,12 +4792,17 @@ class TaskExecutor {
       console.error(
         `${TAG} fatal error executing task "${taskTitle}": ${err.message}`,
       );
+      clearAttemptTracking();
       slot.status = "failed";
       this._taskCooldowns.set(taskId, Date.now());
       this._slotAbortControllers.delete(taskId);
 
       try {
-        await updateTaskStatus(taskId, "todo");
+        await transitionTaskStatus(taskId, "todo", {
+          source: "task-executor-session-failed",
+          taskTitle,
+          branch,
+        });
       } catch {
         /* best-effort */
       }
@@ -5137,7 +5249,7 @@ class TaskExecutor {
   // ── Result Handling ───────────────────────────────────────────────────────
 
   /**
-   * Handle the result of a task execution — PR creation, status update, notifications.
+   * Handle the result of a task execution — lifecycle handoff, status update, notifications.
    * @param {Object} task
    * @param {Object} result - { success, attempts, error, output }
    * @param {string} worktreePath
@@ -5179,6 +5291,26 @@ class TaskExecutor {
       output: (result.output || "").slice(0, 500),
     }).catch(() => {});
 
+    if (result.success && this.workflowOwnsTaskLifecycle) {
+      result.finalized = true;
+      result.finalizationReason = null;
+      if (!result.worktreePath) result.worktreePath = worktreePath || null;
+      if (!result.branch) {
+        result.branch =
+          task.branchName ||
+          task.meta?.branch_name ||
+          null;
+      }
+      if (!result.baseBranch) {
+        result.baseBranch = baseBranch || null;
+      }
+      console.log(
+        `${tag} workflow-owned lifecycle active — delegating finalization/review handoff to workflows`,
+      );
+      this.onTaskCompleted?.(task, result);
+      return;
+    }
+
     if (result.success) {
       console.log(
         `${tag} completed successfully (${result.attempts} attempt(s))`,
@@ -5196,7 +5328,13 @@ class TaskExecutor {
           `${tag} already completed with PR — skipping re-processing`,
         );
         try {
-          await updateTaskStatus(task.id, "inreview");
+          await transitionTaskStatus(task.id, "inreview", {
+            source: "task-executor-completed-with-pr-cache",
+            taskTitle,
+            branch: result?.branch || task?.branchName || null,
+            baseBranch: result?.baseBranch || baseBranch || null,
+            worktreePath,
+          });
         } catch {
           /* best-effort */
         }
@@ -5210,6 +5348,9 @@ class TaskExecutor {
         (hasAnyCommits &&
           !this._completedWithPR.has(task.id) &&
           !this._prCreatedForBranch.has(task.id));
+      result.hasCommits = hasCommits;
+      result.finalized = true;
+      result.finalizationReason = null;
 
       if (!hasCommits && isPlannerTaskData(task)) {
         try {
@@ -5223,14 +5364,20 @@ class TaskExecutor {
                 output: result.output,
                 hasCommits: false,
               });
-              setInternalStatus(task.id, "done", "task-executor");
+              transitionInternalTaskStatus(task.id, "done", "task-executor");
               updateInternalTask(task.id, { externalStatus: "done" });
               this._errorDetector.resetTask(task.id);
             } catch {
               /* best-effort */
             }
             try {
-              await updateTaskStatus(task.id, "done");
+              await transitionTaskStatus(task.id, "done", {
+                source: "task-executor-planner-complete",
+                taskTitle,
+                branch: result?.branch || task?.branchName || null,
+                baseBranch: result?.baseBranch || baseBranch || null,
+                worktreePath,
+              });
             } catch {
               /* best-effort */
             }
@@ -5264,14 +5411,20 @@ class TaskExecutor {
             output: result.output,
             hasCommits: false,
           });
-          setInternalStatus(task.id, "done", "task-executor");
+          transitionInternalTaskStatus(task.id, "done", "task-executor");
           updateInternalTask(task.id, { externalStatus: "done" });
           this._errorDetector.resetTask(task.id);
         } catch {
           /* best-effort */
         }
         try {
-          await updateTaskStatus(task.id, "done");
+          await transitionTaskStatus(task.id, "done", {
+            source: "task-executor-no-code-change-expected",
+            taskTitle,
+            branch: result?.branch || task?.branchName || null,
+            baseBranch: result?.baseBranch || baseBranch || null,
+            worktreePath,
+          });
         } catch {
           /* best-effort */
         }
@@ -5296,13 +5449,13 @@ class TaskExecutor {
             output: result.output,
             hasCommits: true,
           });
-          setInternalStatus(task.id, "inreview", "task-executor");
+          transitionInternalTaskStatus(task.id, "inreview", "task-executor");
           this._errorDetector.resetTask(task.id);
         } catch {
           /* best-effort */
         }
 
-        // Run TaskComplete blocking validation before PR
+        // Run TaskComplete blocking validation before lifecycle handoff
         try {
           const hookResult = await executeBlockingHooks("TaskComplete", {
             taskId: task.id || task.task_id,
@@ -5314,10 +5467,10 @@ class TaskExecutor {
           });
           if (hookResult?.abort) {
             console.warn(
-              `${TAG} TaskComplete hook blocked PR: ${hookResult.reason || "unknown reason"}`,
+              `${TAG} TaskComplete hook blocked PR lifecycle handoff: ${hookResult.reason || "unknown reason"}`,
             );
             this.sendTelegram?.(
-              `⚠️ TaskComplete hook blocked PR for "${task.title}": ${hookResult.reason || "hook validation failed"}`,
+              `⚠️ TaskComplete hook blocked PR lifecycle handoff for "${task.title}": ${hookResult.reason || "hook validation failed"}`,
             );
           }
         } catch (hookErr) {
@@ -5335,7 +5488,7 @@ class TaskExecutor {
           result.prUrl = prUrl;
           result.branch = pr.branch || null;
 
-          // Mark as completed with PR — prevents re-dispatch
+          // Mark as completed with lifecycle handoff — prevents re-dispatch
           this._completedWithPR.add(task.id);
           this._prCreatedForBranch.add(task.id);
           try {
@@ -5349,12 +5502,20 @@ class TaskExecutor {
             /* best-effort */
           }
           try {
-            await updateTaskStatus(task.id, "inreview");
+            await transitionTaskStatus(task.id, "inreview", {
+              source: "task-executor-pr-lifecycle-handoff",
+              taskTitle,
+              branch: pr?.branch || result?.branch || task?.branchName || null,
+              baseBranch: result?.baseBranch || baseBranch || null,
+              worktreePath,
+              prNumber,
+              prUrl,
+            });
           } catch {
             /* best-effort */
           }
           this.sendTelegram?.(
-            `✅ Task completed: "${task.title}"\nPR: ${pr.url || pr}`,
+            `✅ Task completed: "${task.title}"\nLifecycle: ${pr.url || pr}`,
           );
 
           // Fire PostPR hook
@@ -5376,15 +5537,21 @@ class TaskExecutor {
           // Queue for review handoff — reviewer will identify issues, fix, push, wait for merge
           this._queueReviewHandoff(task, worktreePath, pr, execInfo);
         } else {
-          // PR creation failed but task has commits — mark as completed anyway to prevent loop
+          // Lifecycle handoff failed but task has commits — mark as completed anyway to prevent loop
           this._completedWithPR.add(task.id);
           try {
-            await updateTaskStatus(task.id, "inreview");
+            await transitionTaskStatus(task.id, "inreview", {
+              source: "task-executor-pr-lifecycle-handoff-failed",
+              taskTitle,
+              branch: result?.branch || task?.branchName || null,
+              baseBranch: result?.baseBranch || baseBranch || null,
+              worktreePath,
+            });
           } catch {
             /* best-effort */
           }
           this.sendTelegram?.(
-            `✅ Task completed: "${task.title}" (PR creation failed — manual review needed)`,
+            `✅ Task completed: "${task.title}" (PR lifecycle handoff failed — manual review needed)`,
           );
         }
       } else if (hasCommits) {
@@ -5399,14 +5566,20 @@ class TaskExecutor {
             output: result.output,
             hasCommits: true,
           });
-          setInternalStatus(task.id, "inreview", "task-executor");
+          transitionInternalTaskStatus(task.id, "inreview", "task-executor");
           this._errorDetector.resetTask(task.id);
         } catch {
           /* best-effort */
         }
 
         try {
-          await updateTaskStatus(task.id, "inreview");
+          await transitionTaskStatus(task.id, "inreview", {
+            source: "task-executor-auto-pr-disabled",
+            taskTitle,
+            branch: result?.branch || task?.branchName || null,
+            baseBranch: result?.baseBranch || baseBranch || null,
+            worktreePath,
+          });
         } catch {
           /* best-effort */
         }
@@ -5416,6 +5589,8 @@ class TaskExecutor {
       } else {
         // No commits — agent completed without making changes.
         // This is NOT a real completion. Apply anti-thrash protection.
+        result.finalized = false;
+        result.finalizationReason = "no_commits";
         const prevCount = this._noCommitCounts.get(taskKey || normalizeTaskIdKey(task.id)) || 0;
         const noCommitCount = prevCount + 1;
         this._noCommitCounts.set(taskKey || normalizeTaskIdKey(task.id), noCommitCount);
@@ -5472,7 +5647,13 @@ class TaskExecutor {
 
         // Set back to todo — NOT inreview (nothing to review)
         try {
-          await updateTaskStatus(task.id, "todo");
+          await transitionTaskStatus(task.id, "todo", {
+            source: "task-executor-no-commit",
+            taskTitle,
+            branch: result?.branch || task?.branchName || null,
+            baseBranch: result?.baseBranch || baseBranch || null,
+            worktreePath,
+          });
         } catch {
           /* best-effort */
         }
@@ -5571,14 +5752,27 @@ class TaskExecutor {
         this.pauseFor(5 * 60 * 1000, "rate-limit");
       }
 
-      try {
-        await updateTaskStatus(task.id, "todo");
-      } catch {
-        /* best-effort */
+      if (!this.workflowOwnsTaskLifecycle) {
+        try {
+          await transitionTaskStatus(task.id, "todo", {
+            source: "task-executor-failed",
+            taskTitle,
+            branch: result?.branch || task?.branchName || null,
+            baseBranch: result?.baseBranch || baseBranch || null,
+            worktreePath,
+            error: result?.error || null,
+          });
+        } catch {
+          /* best-effort */
+        }
+        this.sendTelegram?.(
+          `❌ Task failed: "${task.title}" — ${(result.error || "").slice(0, 200)}`,
+        );
+      } else {
+        console.log(
+          `${tag} workflow-owned lifecycle active — delegating failure recovery to workflows`,
+        );
       }
-      this.sendTelegram?.(
-        `❌ Task failed: "${task.title}" — ${(result.error || "").slice(0, 200)}`,
-      );
       this.onTaskFailed?.(task, result);
     }
   }
@@ -5690,7 +5884,7 @@ class TaskExecutor {
   // ── Review Handoff ────────────────────────────────────────────────────────
 
   /**
-   * Queue a task for review handoff after successful PR creation.
+   * Queue a task for review handoff after successful lifecycle handoff.
    * Collects diff stats + session context and passes to the review agent.
    *
    * @param {Object} task
@@ -6213,10 +6407,13 @@ class TaskExecutor {
 
     try {
       if (task?.id) {
-        setInternalStatus(task.id, "done", "task-executor");
+        transitionInternalTaskStatus(task.id, "done", "task-executor");
         updateInternalTask(task.id, { externalStatus: "done" });
       }
-      await updateTaskStatus(issueNumber, "done");
+      await transitionTaskStatus(issueNumber, "done", {
+        source: "task-executor-issue-finalize",
+        taskTitle: task?.title || "",
+      });
       console.log(
         `${TAG} closed issue #${issueNumber} after PR #${prNumber} merge`,
       );
@@ -6228,7 +6425,7 @@ class TaskExecutor {
   }
 
   /**
-   * Create a pull request for the completed task using the gh CLI.
+   * Record Bosun-managed PR lifecycle handoff for a completed task.
    * @param {Object} task
    * @param {string} worktreePath
    * @returns {Promise<{url: string, branch: string}|null>}
@@ -6253,7 +6450,9 @@ class TaskExecutor {
         }).stdout?.trim();
 
       if (!branch) {
-        console.warn(`${TAG} cannot create PR — no branch name detected`);
+        console.warn(
+          `${TAG} cannot hand off PR lifecycle — no branch name detected`,
+        );
         return null;
       }
 
@@ -6268,7 +6467,7 @@ class TaskExecutor {
         });
         if (prHookResult?.abort) {
           console.warn(
-            `${TAG} PrePR hook blocked PR creation: ${prHookResult.reason || "unknown"}`,
+            `${TAG} PrePR hook blocked PR lifecycle handoff: ${prHookResult.reason || "unknown"}`,
           );
           return null;
         }
@@ -6286,7 +6485,7 @@ class TaskExecutor {
           `${TAG} branch safety guard blocked ${branch}: ${reason}`,
         );
         this.sendTelegram?.(
-          `🚨 Branch safety guard blocked push/PR for ${branch}: ${reason}`,
+          `🚨 Branch safety guard blocked push/PR lifecycle handoff for ${branch}: ${reason}`,
         );
         const err = new Error(
           `Branch safety guard blocked ${branch}: ${reason}`,
@@ -6323,7 +6522,7 @@ class TaskExecutor {
         );
         if (prList.status === 0) {
           const prs = JSON.parse(prList.stdout || "[]");
-          // Prefer open PR, fall back to most recent merged
+          // Prefer active PR, fall back to most recent merged
           const openPr = prs.find((p) => p.state === "OPEN");
           const mergedPr = prs.find((p) => p.state === "MERGED");
           const existing = openPr || mergedPr;
@@ -6342,9 +6541,9 @@ class TaskExecutor {
                   prNumber: existingPrNumber,
                 };
               }
-              // PR was merged but agent made NEW commits — need a new PR
+              // PR was merged but agent made NEW commits — record a new lifecycle handoff
               console.log(
-                `${TAG} PR #${existingPrNumber} was merged but agent made new commits — creating new PR`,
+                `${TAG} PR #${existingPrNumber} was merged but agent made new commits — recording new lifecycle handoff`,
               );
             }
             if (openPr) {
@@ -6366,7 +6565,7 @@ class TaskExecutor {
           }
         }
       } catch {
-        /* best-effort — continue to create PR */
+        /* best-effort — continue to lifecycle handoff */
       }
 
       // ── Step 1: Push branch to origin ──────────────────────────────────
@@ -6377,14 +6576,14 @@ class TaskExecutor {
       );
       if (!pushResult.success) {
         console.warn(
-          `${TAG} cannot create PR — push failed: ${pushResult.error}`,
+          `${TAG} cannot hand off PR lifecycle — push failed: ${pushResult.error}`,
         );
-        // Still try to create PR in case agent already pushed
+        // Still try lifecycle handoff in case agent already pushed
       }
 
       // ── Step 1.5: Verify branch actually has a diff vs base ────────────
-      // If the branch is identical to base (0 file changes), skip PR creation.
-      // This prevents empty PRs from being created when merge/rebase wiped changes.
+      // If the branch is identical to base (0 file changes), skip lifecycle handoff.
+      // This prevents empty PR lifecycle events when merge/rebase wiped changes.
       try {
         const diffResult = spawnSync(
           "git",
@@ -6394,7 +6593,7 @@ class TaskExecutor {
         const changedFiles = (diffResult.stdout || "").trim();
         if (diffResult.status === 0 && changedFiles.length === 0) {
           console.warn(
-            `${TAG} branch ${branch} has 0 file changes vs ${baseInfo.branch} — skipping PR creation (would be empty)`,
+            `${TAG} branch ${branch} has 0 file changes vs ${baseInfo.branch} — skipping PR lifecycle handoff (would be empty)`,
           );
           return null;
         }
@@ -6403,10 +6602,10 @@ class TaskExecutor {
           `${TAG} branch ${branch} has ${fileCount} changed file(s) vs ${baseInfo.branch}`,
         );
       } catch {
-        // If diff check fails, continue with PR creation anyway
+        // If diff check fails, continue with lifecycle handoff anyway
       }
 
-      // ── Step 2: Create the PR ──────────────────────────────────────────
+      // ── Step 2: Record Bosun-managed PR lifecycle handoff ──────────────
       const title = task.title;
       const kanbanBackend = String(
         task.backend || task.externalBackend || getKanbanBackendName(),
@@ -6440,93 +6639,22 @@ class TaskExecutor {
         .filter(Boolean)
         .join("\n");
 
-      const result = spawnSync(
-        "gh",
-        [
-          "pr",
-          "create",
-          "--title",
-          title,
-          "--body",
-          body,
-          "--head",
-          branch,
-          "--base",
-          baseInfo.branch,
-        ],
-        {
-          cwd: worktreePath,
-          encoding: "utf8",
-          timeout: 30_000,
-          env: { ...process.env },
-        },
+      const handoffUrl = `bosun://pr-lifecycle-handoff/${encodeURIComponent(branch)}`;
+      console.log(
+        `${TAG} PR lifecycle handoff recorded for ${branch} (base=${baseInfo.branch})`,
       );
-
-      let prUrl = null;
-      let prNumber = null;
-
-      if (result.status === 0) {
-        prUrl = (result.stdout || "").trim();
-        console.log(`${TAG} PR created: ${prUrl}`);
-        // Extract PR number from URL (e.g., https://github.com/owner/repo/pull/123)
-        const prMatch = prUrl.match(/\/pull\/(\d+)/);
-        prNumber = prMatch ? prMatch[1] : null;
-      } else {
-        const stderr = (result.stderr || "").trim();
-        if (stderr.includes("already exists")) {
-          console.log(`${TAG} PR already exists for ${branch}`);
-          // Try to get the existing PR number
-          try {
-            const prList = spawnSync(
-              "gh",
-              [
-                "pr",
-                "list",
-                "--head",
-                branch,
-                "--json",
-                "number,url",
-                "--limit",
-                "1",
-              ],
-              {
-                cwd: worktreePath,
-                encoding: "utf8",
-                timeout: 10_000,
-                env: { ...process.env },
-              },
-            );
-            if (prList.status === 0) {
-              const prs = JSON.parse(prList.stdout || "[]");
-              if (prs.length > 0) {
-                prUrl = prs[0].url;
-                prNumber = String(prs[0].number);
-              }
-            }
-          } catch {
-            /* best-effort */
-          }
-          prUrl = prUrl || "(existing)";
-        } else {
-          console.warn(`${TAG} PR creation failed: ${stderr}`);
-          return null;
-        }
-      }
-
-      // ── Step 3: Enable auto-merge ──────────────────────────────────────
-      if (prNumber) {
-        if (!this.flowReviewGateRequired) {
-          this._enableAutoMerge(prNumber, worktreePath, task);
-        } else {
-          console.log(
-            `${TAG} flow review gate active — merge automation deferred for PR #${prNumber}`,
-          );
-        }
-      }
-
-      return { url: prUrl, branch, prNumber };
+      return {
+        url: handoffUrl,
+        branch,
+        prNumber: null,
+        handoff: true,
+        lifecycle: "bosun_managed",
+        title,
+        body,
+        baseBranch: baseInfo.branch,
+      };
     } catch (err) {
-      console.warn(`${TAG} PR creation error: ${err.message}`);
+      console.warn(`${TAG} PR lifecycle handoff error: ${err.message}`);
       return null;
     }
   }

@@ -114,7 +114,7 @@ Your worktree path is provided via \`BOSUN_WORKTREE_PATH\`. Stay inside it.
     scope: "global",
     content: `# Skill: Pull Request Workflow
 
-## Standard PR Flow
+## Standard Bosun Lifecycle Flow
 
 After committing all changes on your task branch:
 
@@ -127,11 +127,11 @@ git merge origin/main --no-edit 2>/dev/null || true
 # Resolve any conflicts, commit, then push
 git push --set-upstream origin <branch-name>
 
-# Open the PR
-gh pr create --title "<task-title>" --body "Closes task <task-id>\\n\\n## Summary\\n<one-paragraph summary>"
+# Hand off PR lifecycle to Bosun manager (no direct PR-create command)
+echo "PR lifecycle handoff ready for <branch-name>"
 \`\`\`
 
-**Do NOT** run \`gh pr merge\` — the orchestrator handles CI monitoring and merging.
+Bosun manages PR lifecycle (create/update/merge) after handoff.
 
 ## PR Description Template
 
@@ -158,16 +158,8 @@ Bosun installs pre-push hooks that run build + test validation.
 If the hook runs \`npm test\` or \`dotnet test\` and fails:
 1. Read the test output carefully.
 2. Fix the root cause (not just suppress the error).
-3. If the failure is in an unrelated existing test, note it in the PR description
+3. If the failure is in an unrelated existing test, note it in the lifecycle handoff context
    and run a targeted test to confirm your changes don't regress it.
-
-## Draft PRs
-
-Use \`--draft\` when the implementation is complete but CI is long-running:
-\`\`\`bash
-gh pr create --draft --title "..." --body "..."
-\`\`\`
-Convert to ready when CI passes: \`gh pr ready <number>\`
 
 ## Reviewing CI Status
 
@@ -427,7 +419,7 @@ Your branch was created from that base — not from \`main\` directly.
 Merge order on completion:
 1. Merge upstream base branch changes into your branch (keeps drift low).
 2. Merge main (catches global changes like dep bumps).
-3. Push and open PR targeting the base branch.
+3. Push and hand off lifecycle targeting the base branch.
 
 The orchestrator then merges the base branch into main after CI.
 

@@ -192,9 +192,9 @@ const RECOVERY_PROMPTS = {
     `If push fails due to pre-push hooks, fix the issues and push again.`,
 
   [SITUATION.PR_NOT_CREATED]: (ctx) =>
-    `You pushed commits for "${ctx.taskTitle}" but no PR was created. Run:\n` +
-    `gh pr create --title "${ctx.taskTitle}" --body "Automated PR" --head ${ctx.branch || "$(git branch --show-current)"}\n` +
-    `If gh is not available, the system will create the PR automatically.`,
+    `You pushed commits for "${ctx.taskTitle}" but no PR is visible yet.\n` +
+    `Direct PR commands are disabled. Confirm the branch is pushed, then mark this run as ready for Bosun-managed PR lifecycle handoff.\n` +
+    `Do not run direct PR-create commands.`,
 
   [SITUATION.TOOL_LOOP]: (ctx) =>
     `You've been repeating the same tools (${ctx.loopedTools || "unknown"}) without progress. ` +

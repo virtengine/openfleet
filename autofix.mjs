@@ -555,12 +555,14 @@ export function runCodexExec(
         env: codexEnv,
       };
       if (process.platform === "win32") {
-        // On Windows, avoid spawning via a shell with a concatenated command
-        // string. Instead, invoke the binary directly with an argument array
-        // just like on POSIX platforms to prevent command injection.
+        // On Windows, spawn with shell: true so cmd.exe can resolve .cmd/.ps1
+        // shims (e.g. codex.cmd installed by npm). Without shell: true, Node's
+        // spawn() looks for a literal "codex" executable which doesn't exist
+        // on Windows — only codex.cmd does — causing ENOENT (os error 2).
+        // Arguments are passed as an array so shell word-splitting is safe.
         child = spawn("codex", args, {
           ...spawnOptions,
-          shell: false,
+          shell: true,
         });
       } else {
         child = spawn("codex", args, {
@@ -620,14 +622,13 @@ export function runCodexExec(
     });
 
     const timer = setTimeout(() => {
-      stream.write(`\n\n## TIMEOUT after ${timeoutMs}ms\n`);
+      try { stream.write(`\n\n## TIMEOUT after ${timeoutMs}ms\n`); } catch { /* best effort */ }
       try {
         child.kill("SIGTERM");
       } catch {
         /* best effort */
       }
-      stream.end();
-      promiseResolve({
+      resolveOnce({
         success: false,
         output: stdout,
         error: "timeout after " + timeoutMs + "ms",
@@ -635,27 +636,40 @@ export function runCodexExec(
       });
     }, timeoutMs);
 
-    child.on("error", (err) => {
+    // Guard against double-resolution: on Windows ENOENT spawns fire
+    // both "error" and "exit" events — the second promiseResolve is harmless
+    // but stream.end() must only be called once.
+    let resolved = false;
+    function resolveOnce(result) {
+      if (resolved) return;
+      resolved = true;
       clearTimeout(timer);
-      stream.write(`\n\n## ERROR: ${err.message}\n`);
-      stream.end();
-      promiseResolve({
+      try { stream.end(); } catch { /* best effort */ }
+      promiseResolve(result);
+    }
+
+    child.on("error", (err) => {
+      try { stream.write(`\n\n## ERROR: ${err.message}\n`); } catch { /* best effort */ }
+      const errorMsg = err.code === "ENOENT"
+        ? `Codex Exec exited with code 1: Error: The system cannot find the file specified. (os error 2) — is the 'codex' CLI installed and on PATH?`
+        : err.message;
+      resolveOnce({
         success: false,
         output: stdout,
-        error: err.message,
+        error: errorMsg,
         logPath,
       });
     });
 
     child.on("exit", (code) => {
-      clearTimeout(timer);
-      stream.write(`\n\n## Exit code: ${code}\n`);
-      stream.write(`\n## stderr:\n${stderr}\n`);
-      stream.end();
-      promiseResolve({
+      try {
+        stream.write(`\n\n## Exit code: ${code}\n`);
+        stream.write(`\n## stderr:\n${stderr}\n`);
+      } catch { /* best effort */ }
+      resolveOnce({
         success: code === 0,
         output: stdout + (stderr ? "\n" + stderr : ""),
-        error: code !== 0 ? `exit code ${code}` : null,
+        error: code !== 0 ? `Codex Exec exited with code ${code}${stderr ? ": " + stderr.trim().slice(0, 200) : ""}` : null,
         logPath,
       });
     });
@@ -1256,7 +1270,7 @@ ${messagesCtx}
 3. Identify why it loops (missing break/continue/return, no state change between iterations, etc.)
 4. Fix the loop by adding proper exit conditions, error handling, or state tracking
 5. Common loop-causing patterns in this codebase:
-   - \`gh pr create\` failing with "No commits between" but caller retries every cycle
+   - PR lifecycle handoff repeatedly retried with no diff between branch and base
    - API calls returning the same error repeatedly with no backoff or give-up logic
    - Status not updated after failure → next cycle tries the same thing
    - Missing \`continue\` or state change in foreach loops over tracked attempts

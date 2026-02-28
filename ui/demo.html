@@ -1453,12 +1453,12 @@
             addAll: { type: 'boolean', default: true, description: 'Stage all changes' },
             push: { type: 'boolean', default: true, description: 'Push after commit' },
           }}},
-        { type: 'action.create_pr', category: 'action', description: 'Create a pull request',
+        { type: 'action.create_pr', category: 'action', description: 'Record Bosun PR lifecycle handoff',
           schema: { type: 'object', properties: {
             title: { type: 'string', description: 'PR title' },
-            body: { type: 'string', description: 'PR body / description' },
+            body: { type: 'string', description: 'Lifecycle handoff summary / description' },
             base: { type: 'string', default: 'main', description: 'Base branch' },
-            draft: { type: 'boolean', default: false, description: 'Create as draft' },
+            draft: { type: 'boolean', default: false, description: 'Retained for compatibility' },
           }}},
         { type: 'action.update_task_status', category: 'action', description: 'Update task status',
           schema: { type: 'object', properties: {
@@ -2087,12 +2087,12 @@
         { type: 'tool_result', content: '✓ Created bosun/tests/anomaly-detector.test.mjs (+48 lines)\n  Tests: correlateErrors groups by pattern, buildCorrelationReport output shape, empty input returns empty report' },
         { type: 'tool_call', content: 'npx vitest run tests/anomaly-detector.test.mjs' },
         { type: 'tool_result', content: '✓ tests/anomaly-detector.test.mjs (3 tests) 142ms\n  ✓ correlateErrors groups by pattern\n  ✓ buildCorrelationReport output shape\n  ✓ empty input returns empty report\n\n Test Files  1 passed (1)\n      Tests  3 passed (3)' },
-        { role: 'assistant', content: 'All tests passing. Creating PR.' },
+        { role: 'assistant', content: 'All tests passing. Handing off PR lifecycle to Bosun.' },
         { type: 'tool_call', content: 'git add -A && git commit -m "feat(analytics): error-cluster correlation report for planning insights"' },
         { type: 'tool_result', content: '[bs/12-error-correlation 8a3f2c1] feat(analytics): error-cluster correlation report for planning insights\n 2 files changed, 115 insertions(+)' },
-        { type: 'tool_call', content: 'gh pr create --title "feat(analytics): error-cluster correlation report" --body "Closes #12" --base main' },
-        { type: 'tool_result', content: 'https://github.com/virtengine/bosun/pull/19\nCreated pull request #19' },
-        { role: 'assistant', content: 'PR #19 created. CI checks queued. Moving to review.' },
+        { type: 'tool_call', content: 'echo "Bosun PR lifecycle handoff: feat(analytics): error-cluster correlation report (branch bs/12-error-correlation)"' },
+        { type: 'tool_result', content: 'Lifecycle handoff recorded for bs/12-error-correlation. Bosun manager will open and maintain the PR.' },
+        { role: 'assistant', content: 'Lifecycle handoff recorded. Moving to review.' },
       ],
       'bosun-11': [
         { type: 'tool_call', content: 'rg "session.*metadata|VK.*API|enrichSession" bosun/ -n --type js' },
@@ -2105,12 +2105,12 @@
         { type: 'tool_result', content: '✓ Applied patch to bosun/session-tracker.mjs (+42 lines)\n  Added: async enrichSessionFromAPI(), LRU cache for user lookups\n  Modified: enrichSession() to call API when fields missing' },
         { type: 'tool_call', content: 'npx vitest run tests/session-tracker.test.mjs' },
         { type: 'tool_result', content: '✓ tests/session-tracker.test.mjs (6 tests) 89ms\n  ✓ enriches session with VK API data\n  ✓ caches user lookups\n  ✓ handles API failure gracefully\n\n Test Files  1 passed (1)\n      Tests  6 passed (6)' },
-        { role: 'assistant', content: 'All tests pass. Committing and creating PR.' },
+        { role: 'assistant', content: 'All tests pass. Committing and handing off PR lifecycle.' },
         { type: 'tool_call', content: 'git add -A && git commit -m "feat(session): enrich metadata from VK API when missing"' },
         { type: 'tool_result', content: '[bs/11-agent-logging-enrich c7d4e91] feat(session): enrich metadata from VK API when missing\n 2 files changed, 58 insertions(+), 3 deletions(-)' },
-        { type: 'tool_call', content: 'gh pr create --title "feat(session): enrich metadata from VK API" --body "Closes #11"' },
-        { type: 'tool_result', content: 'https://github.com/virtengine/bosun/pull/20\nCreated pull request #20' },
-        { role: 'assistant', content: 'PR #20 created for issue #11. Moving to review.' },
+        { type: 'tool_call', content: 'echo "Bosun PR lifecycle handoff: feat(session): enrich metadata from VK API (branch bs/11-agent-logging-enrich)"' },
+        { type: 'tool_result', content: 'Lifecycle handoff recorded for bs/11-agent-logging-enrich. Bosun manager will open and maintain the PR.' },
+        { role: 'assistant', content: 'Lifecycle handoff recorded for issue #11. Moving to review.' },
       ],
       've-760': [
         { type: 'tool_call', content: 'rg "ProcessOrder|OrderExpir" x/market/keeper -n' },
@@ -2125,9 +2125,9 @@
         { role: 'assistant', content: 'All market keeper tests pass. Committing.' },
         { type: 'tool_call', content: 'git add -A && git commit -m "feat(market): order expiry and auto-settlement"' },
         { type: 'tool_result', content: '[ve/760-market-order-expiry d2e8f3a] feat(market): order expiry and auto-settlement\n 2 files changed, 130 insertions(+), 2 deletions(-)' },
-        { type: 'tool_call', content: 'gh pr create --title "feat(market): order expiry and auto-settlement" --body "Closes #760"' },
-        { type: 'tool_result', content: 'https://github.com/virtengine/virtengine/pull/765\nCreated pull request #765' },
-        { role: 'assistant', content: 'PR #765 created on virtengine/virtengine. CI running.' },
+        { type: 'tool_call', content: 'echo "Bosun PR lifecycle handoff: feat(market): order expiry and auto-settlement (branch ve/760-market-order-expiry)"' },
+        { type: 'tool_result', content: 'Lifecycle handoff recorded for ve/760-market-order-expiry. Bosun manager will open and maintain the PR.' },
+        { role: 'assistant', content: 'Lifecycle handoff recorded on virtengine/virtengine. CI monitoring active.' },
       ],
       've-761': [
         { type: 'tool_call', content: 'rg "BatchSettle|settlement.*batch" x/escrow -n' },
@@ -2139,12 +2139,12 @@
         { type: 'tool_result', content: '✓ Applied patch to x/escrow/keeper/msg_server.go (+12 lines)\n  Modified: TriggerSettlement to call BatchSettle with context' },
         { type: 'tool_call', content: 'go test ./x/escrow/... -v -count=1' },
         { type: 'tool_result', content: '=== RUN   TestBatchSettle\n--- PASS: TestBatchSettle (0.03s)\n=== RUN   TestBatchSettleRetry\n--- PASS: TestBatchSettleRetry (0.02s)\n=== RUN   TestTriggerSettlement\n--- PASS: TestTriggerSettlement (0.01s)\nPASS\nok  \tvirtengine/x/escrow/keeper\t0.198s' },
-        { role: 'assistant', content: 'Escrow batch pipeline complete. All tests green. Creating PR.' },
+        { role: 'assistant', content: 'Escrow batch pipeline complete. All tests green. Handing off PR lifecycle.' },
         { type: 'tool_call', content: 'git add -A && git commit -m "refactor(escrow): batch settlement pipeline with retry guard"' },
         { type: 'tool_result', content: '[ve/761-escrow-batch a4b9c12] refactor(escrow): batch settlement pipeline with retry guard\n 3 files changed, 98 insertions(+), 8 deletions(-)' },
-        { type: 'tool_call', content: 'gh pr create --title "refactor(escrow): batch settlement pipeline" --body "Closes #761"' },
-        { type: 'tool_result', content: 'https://github.com/virtengine/virtengine/pull/766\nCreated pull request #766' },
-        { role: 'assistant', content: 'PR #766 created. Moving to review.' },
+        { type: 'tool_call', content: 'echo "Bosun PR lifecycle handoff: refactor(escrow): batch settlement pipeline (branch ve/761-escrow-batch)"' },
+        { type: 'tool_result', content: 'Lifecycle handoff recorded for ve/761-escrow-batch. Bosun manager will open and maintain the PR.' },
+        { role: 'assistant', content: 'Lifecycle handoff recorded. Moving to review.' },
       ],
       've-763': [
         { type: 'tool_call', content: 'rg "GPUMeter|TrackGPU|gpu.*resource" x/hpc -n' },
@@ -2154,12 +2154,12 @@
         { type: 'tool_result', content: '✓ Created x/hpc/keeper/metering_test.go (+78 lines)\n  Tests: TestTrackGPU, TestGPUMeteringDisabled, TestMeteringOverflow, TestMeteringMultiplePods' },
         { type: 'tool_call', content: 'go test ./x/hpc/... -v -count=1' },
         { type: 'tool_result', content: '=== RUN   TestTrackGPU\n--- PASS: TestTrackGPU (0.01s)\n=== RUN   TestGPUMeteringDisabled\n--- PASS: TestGPUMeteringDisabled (0.00s)\n=== RUN   TestMeteringOverflow\n--- PASS: TestMeteringOverflow (0.01s)\n=== RUN   TestMeteringMultiplePods\n--- PASS: TestMeteringMultiplePods (0.02s)\nPASS\nok  \tvirtengine/x/hpc/keeper\t0.089s' },
-        { role: 'assistant', content: 'All 4 GPU metering tests pass. Committing and creating PR.' },
+        { role: 'assistant', content: 'All 4 GPU metering tests pass. Committing and handing off PR lifecycle.' },
         { type: 'tool_call', content: 'git add -A && git commit -m "test(hpc): GPU resource metering unit tests"' },
         { type: 'tool_result', content: '[ve/763-gpu-metering-tests e5f1d23] test(hpc): GPU resource metering unit tests\n 1 file changed, 78 insertions(+)' },
-        { type: 'tool_call', content: 'gh pr create --title "test(hpc): GPU resource metering unit tests" --body "Closes #763"' },
-        { type: 'tool_result', content: 'https://github.com/virtengine/virtengine/pull/767\nCreated pull request #767' },
-        { role: 'assistant', content: 'PR #767 created. Tests only — should be a quick review.' },
+        { type: 'tool_call', content: 'echo "Bosun PR lifecycle handoff: test(hpc): GPU resource metering unit tests (branch ve/763-gpu-metering-tests)"' },
+        { type: 'tool_result', content: 'Lifecycle handoff recorded for ve/763-gpu-metering-tests. Bosun manager will open and maintain the PR.' },
+        { role: 'assistant', content: 'Lifecycle handoff recorded. Tests-only change should review quickly.' },
       ],
     };
 
@@ -2956,6 +2956,19 @@
       // ── Health ──
       if (route === '/api/health')
         return STATE.health;
+      if (route === '/api/health-stats') {
+        const done = STATE.tasks.filter((t) => t.status === 'done').length;
+        const failed = STATE.tasks.filter((t) => t.status === 'error').length;
+        const total = done + failed;
+        return {
+          ok: true,
+          successRuns: done,
+          failedRuns: failed,
+          total,
+          failRate: total > 0 ? failed / total : 0,
+          windowHours: 6,
+        };
+      }
 
       // ── Infrastructure ──
       if (route === '/api/infra')
@@ -3060,6 +3073,25 @@
           }),
         };
       }
+      if (route === '/api/workflows/template-updates') {
+        const updates = (STATE.workflows || [])
+          .map((wf) => {
+            const state = wf?.metadata?.templateState || null;
+            if (!state?.templateId) return null;
+            return {
+              workflowId: wf.id,
+              workflowName: wf.name,
+              templateId: state.templateId,
+              templateName: state.templateName || state.templateId,
+              updateAvailable: state.updateAvailable === true,
+              isCustomized: state.isCustomized === true,
+              templateVersion: state.templateVersion || null,
+              installedTemplateVersion: state.installedTemplateVersion || null,
+            };
+          })
+          .filter(Boolean);
+        return { ok: true, updates };
+      }
       if (route.startsWith('/api/workflows/runs/')) {
         const runId = decodeURIComponent(route.replace('/api/workflows/runs/', '')).trim();
         const run = STATE.workflowRuns.find((item) => item.runId === runId);
@@ -3111,6 +3143,36 @@
         const segs = route.replace('/api/workflows/', '').split('/');
         const wfId = segs[0];
         const action = segs[1] || '';
+        if (action === 'template-update') {
+          const wf = STATE.workflows.find(w => w.id === wfId);
+          if (!wf) return { ok: false, error: 'Workflow not found' };
+          if ((body?.mode || 'replace') === 'copy') {
+            const copy = JSON.parse(JSON.stringify(wf));
+            copy.id = 'wf-' + Math.random().toString(36).slice(2, 9);
+            copy.name = `${wf.name} (Updated)`;
+            copy.metadata = {
+              ...(copy.metadata || {}),
+              updatedAt: new Date().toISOString(),
+              templateState: {
+                ...(copy.metadata?.templateState || {}),
+                updateAvailable: false,
+                isCustomized: false,
+              },
+            };
+            STATE.workflows.push(copy);
+            return { ok: true, workflow: copy };
+          }
+          wf.metadata = {
+            ...(wf.metadata || {}),
+            updatedAt: new Date().toISOString(),
+            templateState: {
+              ...(wf.metadata?.templateState || {}),
+              updateAvailable: false,
+              isCustomized: false,
+            },
+          };
+          return { ok: true, workflow: wf };
+        }
         if (action === 'execute') {
           const run = { runId: 'run-' + Math.random().toString(36).slice(2, 6), workflowId: wfId, status: 'completed', nodeCount: 6, duration: 30000 + Math.floor(Math.random() * 30000), errorCount: 0, startedAt: new Date().toISOString() };
           STATE.workflowRuns.unshift(run);

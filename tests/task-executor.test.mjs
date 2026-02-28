@@ -453,7 +453,11 @@ describe("task-executor", () => {
 
       await ex._recoverInterruptedInProgressTasks();
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("stale-1", "todo");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "stale-1",
+        "todo",
+        expect.any(Object),
+      );
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
@@ -477,7 +481,11 @@ describe("task-executor", () => {
 
       await ex._recoverInterruptedInProgressTasks();
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("blocked-1", "todo");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "blocked-1",
+        "todo",
+        expect.any(Object),
+      );
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
@@ -505,7 +513,11 @@ describe("task-executor", () => {
         expect.objectContaining({ id: "resume-2" }),
         expect.objectContaining({ recoveredFromInProgress: true }),
       );
-      expect(updateTaskStatus).not.toHaveBeenCalledWith("resume-2", "todo");
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "resume-2",
+        "todo",
+        expect.any(Object),
+      );
     });
 
     it("keeps no-commit block precedence even when a resumable thread exists", async () => {
@@ -530,7 +542,11 @@ describe("task-executor", () => {
 
       await ex._recoverInterruptedInProgressTasks();
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("blocked-thread-1", "todo");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "blocked-thread-1",
+        "todo",
+        expect.any(Object),
+      );
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
@@ -564,7 +580,11 @@ describe("task-executor", () => {
 
       await expect(ex._recoverInterruptedInProgressTasks()).resolves.toBeUndefined();
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("blocked-err-1", "todo");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "blocked-err-1",
+        "todo",
+        expect.any(Object),
+      );
       expect(ex._slotRuntimeState.has("blocked-err-1")).toBe(false);
       expect(executeSpy).not.toHaveBeenCalled();
     });
@@ -631,6 +651,68 @@ describe("task-executor", () => {
 
       await ex._pollLoop();
       expect(ex._pollInProgress).toBe(false);
+    });
+
+    it("catches unexpected poll loop rejections", async () => {
+      const ex = new TaskExecutor();
+      const err = new Error("boom");
+      const pollSpy = vi
+        .spyOn(ex, "_pollLoop")
+        .mockRejectedValueOnce(err);
+      const errorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+
+      await ex._runPollLoopSafely();
+
+      expect(pollSpy).toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalled();
+      expect(errorSpy.mock.calls[0][0]).toContain(
+        "poll loop unexpected rejection: boom",
+      );
+    });
+  });
+
+  describe("claim renewal helpers", () => {
+    it("rejects renewal when shared state reports an ownership loss", async () => {
+      const ex = new TaskExecutor();
+      renewClaim.mockResolvedValueOnce({
+        success: false,
+        error: "claim_token_mismatch",
+      });
+
+      await expect(
+        ex._renewTaskClaim("task-A", "token-A"),
+      ).rejects.toMatchObject({
+        message: "claim_token_mismatch",
+        fatalClaimRenew: true,
+      });
+    });
+
+    it("aborts the slot and clears the timer after a renewal failure", () => {
+      const ex = new TaskExecutor();
+      const ac = new AbortController();
+      const abortSpy = vi.spyOn(ac, "abort");
+      const clearSpy = vi
+        .spyOn(global, "clearInterval")
+        .mockImplementation(() => {});
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      ex._slotAbortControllers.set("task-B", ac);
+      ex._activeSlots.set("task-B", {
+        taskId: "task-B",
+        taskTitle: "Renewal Fail",
+      });
+      const timerId = Symbol("renewal-timer");
+      ex._taskClaimRenewTimers.set("task-B", timerId);
+
+      ex._handleTaskClaimRenewalFailure("task-B", "Renewal Fail", "network err", {
+        fatal: false,
+      });
+
+      expect(clearSpy).toHaveBeenCalledWith(timerId);
+      expect(abortSpy).toHaveBeenCalledWith("claim_renewal:network err");
+      expect(ex._taskClaimRenewTimers.has("task-B")).toBe(false);
     });
   });
 
@@ -711,6 +793,7 @@ describe("task-executor", () => {
       expect(updateTaskStatus).toHaveBeenCalledWith(
         "task-123-uuid",
         "inprogress",
+        expect.any(Object),
       );
     });
 
@@ -987,7 +1070,7 @@ describe("task-executor", () => {
         expect(renewClaim).toHaveBeenCalled();
         expect(ac.signal.aborted).toBe(true);
         expect(String(ac.signal.reason)).toContain(
-          "claim_lost:claim_token_mismatch",
+          "claim_renewal:claim_token_mismatch",
         );
         expect(ex._taskClaimRenewTimers.has("task-claim-loss")).toBe(false);
       } finally {
@@ -1165,8 +1248,16 @@ describe("task-executor", () => {
         { agentMadeNewCommits: false },
       );
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("planner-1", "done");
-      expect(updateTaskStatus).not.toHaveBeenCalledWith("planner-1", "todo");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "planner-1",
+        "done",
+        expect.any(Object),
+      );
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "planner-1",
+        "todo",
+        expect.any(Object),
+      );
       expect(ex._noCommitCounts.has("planner-1")).toBe(false);
       expect(ex._skipUntil.has("planner-1")).toBe(false);
       expect(onTaskCompleted).toHaveBeenCalledWith(
@@ -1198,8 +1289,16 @@ describe("task-executor", () => {
         { agentMadeNewCommits: false },
       );
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("planner-2", "todo");
-      expect(updateTaskStatus).not.toHaveBeenCalledWith("planner-2", "done");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "planner-2",
+        "todo",
+        expect.any(Object),
+      );
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "planner-2",
+        "done",
+        expect.any(Object),
+      );
       expect(ex._noCommitCounts.get("planner-2")).toBe(1);
       expect(ex._skipUntil.has("planner-2")).toBe(true);
     });
@@ -1229,8 +1328,16 @@ describe("task-executor", () => {
         { agentMadeNewCommits: false },
       );
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("preflight-1", "done");
-      expect(updateTaskStatus).not.toHaveBeenCalledWith("preflight-1", "todo");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "preflight-1",
+        "done",
+        expect.any(Object),
+      );
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "preflight-1",
+        "todo",
+        expect.any(Object),
+      );
       expect(ex._noCommitCounts.has("preflight-1")).toBe(false);
       expect(ex._skipUntil.has("preflight-1")).toBe(false);
       expect(
@@ -1269,8 +1376,16 @@ describe("task-executor", () => {
         { agentMadeNewCommits: false },
       );
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("preflight-1b", "done");
-      expect(updateTaskStatus).not.toHaveBeenCalledWith("preflight-1b", "todo");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "preflight-1b",
+        "done",
+        expect.any(Object),
+      );
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "preflight-1b",
+        "todo",
+        expect.any(Object),
+      );
       expect(ex._noCommitCounts.has("preflight-1b")).toBe(false);
       expect(ex._skipUntil.has("preflight-1b")).toBe(false);
       expect(
@@ -1301,8 +1416,16 @@ describe("task-executor", () => {
         { agentMadeNewCommits: false },
       );
 
-      expect(updateTaskStatus).toHaveBeenCalledWith("preflight-2", "todo");
-      expect(updateTaskStatus).not.toHaveBeenCalledWith("preflight-2", "done");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "preflight-2",
+        "todo",
+        expect.any(Object),
+      );
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "preflight-2",
+        "done",
+        expect.any(Object),
+      );
       expect(ex._noCommitCounts.get("preflight-2")).toBe(1);
       expect(ex._skipUntil.has("preflight-2")).toBe(true);
       expect(
@@ -1561,13 +1684,6 @@ describe("task-executor", () => {
         if (bin === "gh" && args[0] === "pr" && args[1] === "list") {
           return { status: 0, stdout: "[]", stderr: "" };
         }
-        if (bin === "gh" && args[0] === "pr" && args[1] === "create") {
-          return {
-            status: 0,
-            stdout: "https://github.com/acme/widgets/pull/77\n",
-            stderr: "",
-          };
-        }
         if (bin === "git" && args[0] === "diff" && args[1] === "--name-only") {
           return { status: 0, stdout: "src/app.ts\n", stderr: "" };
         }
@@ -1585,16 +1701,16 @@ describe("task-executor", () => {
         "/fake/worktree",
       );
 
-      expect(pr?.prNumber).toBe("77");
+      expect(pr?.handoff).toBe(true);
+      expect(pr?.prNumber).toBeNull();
+      expect(pr?.url).toContain("bosun://pr-lifecycle-handoff/");
+      expect(pr?.body).toContain("Closes #123");
+      expect(pr?.body).toContain("- GitHub Issue: #123");
       const prCreateCall = spawnSync.mock.calls.find(
         ([bin, args]) =>
           bin === "gh" && args[0] === "pr" && args[1] === "create",
       );
-      expect(prCreateCall).toBeTruthy();
-      const createArgs = prCreateCall[1];
-      const bodyArg = createArgs[createArgs.indexOf("--body") + 1];
-      expect(bodyArg).toContain("Closes #123");
-      expect(bodyArg).toContain("- GitHub Issue: #123");
+      expect(prCreateCall).toBeUndefined();
     });
   });
 
@@ -1729,8 +1845,16 @@ describe("task-executor", () => {
       // Should dispatch at most maxParallel (2) tasks
       // Wait a tick for the fire-and-forget executeTask promises
       await new Promise((r) => setTimeout(r, 50));
-      expect(updateTaskStatus).toHaveBeenCalledWith("t1", "inprogress");
-      expect(updateTaskStatus).toHaveBeenCalledWith("t2", "inprogress");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "t1",
+        "inprogress",
+        expect.any(Object),
+      );
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "t2",
+        "inprogress",
+        expect.any(Object),
+      );
     });
 
     it("skips tasks already in active slots", async () => {
@@ -1760,8 +1884,16 @@ describe("task-executor", () => {
       await new Promise((r) => setTimeout(r, 50));
 
       // t1 was already in slots, should not be dispatched again
-      expect(updateTaskStatus).not.toHaveBeenCalledWith("t1", "inprogress");
-      expect(updateTaskStatus).toHaveBeenCalledWith("t2", "inprogress");
+      expect(updateTaskStatus).not.toHaveBeenCalledWith(
+        "t1",
+        "inprogress",
+        expect.any(Object),
+      );
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "t2",
+        "inprogress",
+        expect.any(Object),
+      );
     });
 
     it("skips tasks in cooldown", async () => {
@@ -1965,7 +2097,11 @@ describe("task-executor", () => {
       );
 
       // Should close the issue
-      expect(updateTaskStatus).toHaveBeenCalledWith("42", "done");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "42",
+        "done",
+        expect.any(Object),
+      );
     });
 
     it("_closeIssueAfterMerge uses externalId when task id is non-numeric", async () => {
@@ -1985,7 +2121,11 @@ describe("task-executor", () => {
         "151",
         expect.stringContaining("Issue Resolved"),
       );
-      expect(updateTaskStatus).toHaveBeenCalledWith("151", "done");
+      expect(updateTaskStatus).toHaveBeenCalledWith(
+        "151",
+        "done",
+        expect.any(Object),
+      );
     });
 
     it("_closeIssueAfterMerge skips for non-github backend", async () => {
@@ -2052,13 +2192,6 @@ describe("task-executor", () => {
         if (bin === "git" && args[0] === "diff" && args[1] === "--name-only") {
           return { status: 0, stdout: "src/auth.ts\n", stderr: "" };
         }
-        if (bin === "gh" && args[0] === "pr" && args[1] === "create") {
-          return {
-            status: 0,
-            stdout: "https://github.com/acme/widgets/pull/77\n",
-            stderr: "",
-          };
-        }
         return { status: 0, stdout: "", stderr: "" };
       });
 
@@ -2073,11 +2206,9 @@ describe("task-executor", () => {
         "/fake/wt",
       );
 
-      expect(pr?.prNumber).toBe("77");
+      expect(pr?.handoff).toBe(true);
+      expect(pr?.prNumber).toBeNull();
       expect(autoMergeSpy).not.toHaveBeenCalled();
     });
   });
 });
-
-
-
