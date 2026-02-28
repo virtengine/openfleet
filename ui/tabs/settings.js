@@ -1350,6 +1350,9 @@ function ServerConfigMode() {
         <!-- Voice Endpoints card-based editor (synced with /setup) -->
         ${activeCategory === "voice" && html`<${VoiceEndpointsEditor} />`}
 
+        <!-- OpenAI Codex OAuth login card (voice category) -->
+        ${activeCategory === "voice" && html`<${OpenAICodexLoginCard} />`}
+
         <!-- Settings list for active category -->
         ${catDefs.length === 0
           ? html`
@@ -2184,6 +2187,194 @@ function VoiceEndpointsEditor() {
           No endpoints configured. Add one above, or use the legacy env vars below as fallback.
         </div>
       `}
+    <//>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  OpenAICodexLoginCard — "Sign in with OpenAI" (ChatGPT/Codex accounts)
+ *  Uses OAuth 2.0 PKCE flow via auth.openai.com — same flow as the
+ *  official Codex CLI and the ChatGPT desktop app.
+ *
+ *  Allows ChatGPT Plus/Pro/Team subscribers to authenticate without
+ *  needing to create an API key.
+ * ═══════════════════════════════════════════════════════════════ */
+function OpenAICodexLoginCard() {
+  // phase: idle | connected | pending | complete | error
+  const [phase, setPhase] = useState("idle");
+  const [authUrl, setAuthUrl] = useState("");
+  const [error, setError] = useState("");
+  const pollRef = useRef(null);
+
+  // Load initial status on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch("/api/voice/auth/openai/status");
+        if (res.ok) {
+          setPhase(res.status === "connected" ? "connected" : "idle");
+        }
+      } catch {
+        // non-fatal — default to idle
+      }
+    })();
+    return () => {
+      if (pollRef.current) clearTimeout(pollRef.current);
+    };
+  }, []);
+
+  async function startLogin() {
+    setPhase("pending");
+    setError("");
+    try {
+      const res = await apiFetch("/api/voice/auth/openai/login", { method: "POST" });
+      if (!res.ok) throw new Error(res.error || "Failed to start login");
+      setAuthUrl(res.authUrl || "");
+      beginPolling();
+    } catch (err) {
+      setError(err.message);
+      setPhase("error");
+    }
+  }
+
+  function beginPolling() {
+    if (pollRef.current) clearTimeout(pollRef.current);
+
+    async function tick() {
+      try {
+        const res = await apiFetch("/api/voice/auth/openai/status");
+        if (!res.ok) {
+          pollRef.current = setTimeout(tick, 2000);
+          return;
+        }
+        if (res.status === "complete" || res.status === "connected") {
+          pollRef.current = null;
+          setPhase("complete");
+          haptic("success");
+          showToast("Signed in with OpenAI!", "success");
+          return;
+        }
+        if (res.status === "error") {
+          pollRef.current = null;
+          setError(res.result?.error || "Login failed");
+          setPhase("error");
+          return;
+        }
+        // still pending
+        pollRef.current = setTimeout(tick, 2000);
+      } catch {
+        pollRef.current = setTimeout(tick, 3000);
+      }
+    }
+
+    pollRef.current = setTimeout(tick, 2000);
+  }
+
+  async function handleLogout() {
+    try {
+      await apiFetch("/api/voice/auth/openai/logout", { method: "POST" });
+      setPhase("idle");
+      setAuthUrl("");
+      haptic("medium");
+      showToast("Signed out from OpenAI", "info");
+    } catch (err) {
+      showToast(`Logout failed: ${err.message}`, "error");
+    }
+  }
+
+  async function handleCancel() {
+    if (pollRef.current) {
+      clearTimeout(pollRef.current);
+      pollRef.current = null;
+    }
+    try {
+      await apiFetch("/api/voice/auth/openai/cancel", { method: "POST" });
+    } catch {
+      // ignore
+    }
+    setPhase("idle");
+    setAuthUrl("");
+  }
+
+  function openAuthUrl() {
+    try { window.open(authUrl, "_blank"); } catch { /* swallow */ }
+  }
+
+  // ── Already signed in ────────────────────────────────────────
+  if (phase === "connected" || phase === "complete") {
+    return html`
+      <${Card}>
+        <div style="display:flex;align-items:center;gap:10px;padding:4px 0">
+          <span style="font-size:22px">🤖</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:600;color:var(--text-primary)">OpenAI Connected</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">
+              Signed in with ChatGPT/Codex OAuth. Bearer token used for Realtime API.
+            </div>
+          </div>
+          <button class="btn btn-sm btn-secondary" onClick=${handleLogout}>Sign out</button>
+        </div>
+      <//>
+    `;
+  }
+
+  // ── Waiting for browser to complete login ────────────────────
+  if (phase === "pending") {
+    return html`
+      <${Card}>
+        <div style="text-align:center;padding:12px 0">
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">
+            A browser window should have opened. If not, open the link below:
+          </div>
+          ${authUrl && html`
+            <button
+              onClick=${openAuthUrl}
+              style="font-size:12px;word-break:break-all;cursor:pointer;
+                background:var(--surface-1);border:1px solid var(--border-color,rgba(255,255,255,0.1));
+                border-radius:6px;padding:8px 12px;color:var(--accent);text-decoration:underline;
+                max-width:100%;text-align:left"
+            >${authUrl}</button>
+          `}
+          <div style="font-size:12px;color:var(--text-hint);margin-top:12px;display:flex;align-items:center;justify-content:center;gap:6px">
+            <span class="spinner" style="width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%"></span>
+            Waiting for you to sign in…
+          </div>
+          <button class="btn btn-sm" style="margin-top:12px;opacity:0.7" onClick=${handleCancel}>
+            Cancel
+          </button>
+        </div>
+      <//>
+    `;
+  }
+
+  // ── Error ────────────────────────────────────────────────────
+  if (phase === "error") {
+    return html`
+      <${Card}>
+        <div style="text-align:center;padding:10px 0">
+          <div style="font-size:13px;color:var(--color-error,#f87171);margin-bottom:10px">${error}</div>
+          <button class="btn btn-sm btn-primary" onClick=${startLogin}>Try again</button>
+        </div>
+      <//>
+    `;
+  }
+
+  // ── Idle — sign-in prompt ────────────────────────────────────
+  return html`
+    <${Card}>
+      <div style="text-align:center;padding:16px 0">
+        <div style="font-size:32px;margin-bottom:8px">🤖</div>
+        <div style="font-size:15px;font-weight:600;margin-bottom:4px;color:var(--text-primary)">
+          Sign in with OpenAI
+        </div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:16px;max-width:300px;margin-inline:auto;line-height:1.6">
+          Use your ChatGPT Plus, Pro, or Team subscription to access OpenAI Realtime Audio
+          without managing API keys. Uses the same OAuth flow as the Codex CLI.
+        </div>
+        <button class="btn btn-primary" onClick=${startLogin} style="min-width:220px">
+          Sign in with OpenAI
+        </button>
+      </div>
     <//>
   `;
 }

@@ -128,6 +128,12 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/voice/actions",        // Voice action catalog — server-only (reads server config)
   "/api/voice/prompt",         // Voice system prompt assembly — server-only (reads config + context)
   "/api/voice/action-manifest",// Voice action manifest — server-only (dynamic capability listing)
+  // OpenAI Codex OAuth flow — server-only (manages tokens, starts local callback server)
+  "/api/voice/auth/openai/status",
+  "/api/voice/auth/openai/login",
+  "/api/voice/auth/openai/cancel",
+  "/api/voice/auth/openai/logout",
+  "/api/voice/auth/openai/refresh",
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────

@@ -9264,6 +9264,70 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // ── OpenAI Codex OAuth routes ─────────────────────────────────────────────
+
+  // GET /api/voice/auth/openai/status — token presence + pending login state
+  if (path === "/api/voice/auth/openai/status" && req.method === "GET") {
+    try {
+      const { getOpenAILoginStatus } = await import("./voice-auth-manager.mjs");
+      jsonResponse(res, 200, { ok: true, ...getOpenAILoginStatus() });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/auth/openai/login — start PKCE login, open browser
+  if (path === "/api/voice/auth/openai/login" && req.method === "POST") {
+    try {
+      const { startOpenAICodexLogin } = await import("./voice-auth-manager.mjs");
+      const { authUrl } = startOpenAICodexLogin();
+      jsonResponse(res, 200, { ok: true, authUrl });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/auth/openai/cancel — cancel pending login
+  if (path === "/api/voice/auth/openai/cancel" && req.method === "POST") {
+    try {
+      const { cancelOpenAILogin } = await import("./voice-auth-manager.mjs");
+      cancelOpenAILogin();
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/auth/openai/logout — remove stored token
+  if (path === "/api/voice/auth/openai/logout" && req.method === "POST") {
+    try {
+      const { logoutOpenAI } = await import("./voice-auth-manager.mjs");
+      const result = logoutOpenAI();
+      broadcastUiEvent(["settings", "voice"], "invalidate", {
+        reason: "openai-oauth-logout",
+      });
+      jsonResponse(res, 200, { ok: true, ...result });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/auth/openai/refresh — exchange refresh_token for new access_token
+  if (path === "/api/voice/auth/openai/refresh" && req.method === "POST") {
+    try {
+      const { refreshOpenAICodexToken } = await import("./voice-auth-manager.mjs");
+      await refreshOpenAICodexToken();
+      jsonResponse(res, 200, { ok: true });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   // GET /api/voice/sdk-config — SDK-first configuration for client
   if (path === "/api/voice/sdk-config" && req.method === "GET") {
     try {
