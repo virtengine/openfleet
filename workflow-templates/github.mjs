@@ -747,7 +747,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "    } else if(hasPend){",
         "      pending.push(pr.number);",
         "    } else if(checks.length>0&&!hasFixLabel){",
-        "      // CI all-passing, no conflicts, not draft — a review candidate",
+        "      /* CI all-passing, no conflicts, not draft — a review candidate */",
         "      readyCandidates.push({n:pr.number,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title});",
         "    }",
         "  }",
