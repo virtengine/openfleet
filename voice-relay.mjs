@@ -35,6 +35,13 @@ const GEMINI_GENERATE_CONTENT_URL = "https://generativelanguage.googleapis.com/v
 const GEMINI_DEFAULT_MODEL = "gemini-2.5-pro";
 const GEMINI_DEFAULT_VISION_MODEL = "gemini-2.5-flash";
 
+// GA models (gpt-realtime, gpt-realtime-1.5, gpt-realtime-mini, etc.) use /openai/v1/ paths.
+// Preview models (gpt-4o-realtime-preview, gpt-audio-1.5, etc.) use legacy /openai/realtimeapi/ paths.
+function isAzureGaProtocol(deployment) {
+  const d = String(deployment || "").toLowerCase().trim();
+  return d.startsWith("gpt-realtime") && !d.startsWith("gpt-4o-realtime");
+}
+
 const VALID_EXECUTORS = new Set([
   "codex-sdk",
   "copilot-sdk",
@@ -80,6 +87,12 @@ function normalizeVoiceProviderEntry(entry) {
       visionModel: null,
       voiceId: null,
       azureDeployment: null,
+      endpoint: null,
+      apiKey: null,
+      role: "primary",
+      weight: 100,
+      name: null,
+      enabled: true,
     };
   }
 
@@ -91,6 +104,12 @@ function normalizeVoiceProviderEntry(entry) {
   const visionModel = String(entry.visionModel || "").trim() || null;
   const voiceId = String(entry.voiceId || "").trim() || null;
   const azureDeployment = String(entry.azureDeployment || "").trim() || null;
+  const endpoint = String(entry.endpoint || "").trim() || null;
+  const apiKey = String(entry.apiKey || "").trim() || null;
+  const role = String(entry.role || "primary").trim() || "primary";
+  const weight = typeof entry.weight === "number" ? entry.weight : 100;
+  const name = String(entry.name || "").trim() || null;
+  const enabled = entry.enabled !== false;
 
   return {
     provider,
@@ -98,6 +117,12 @@ function normalizeVoiceProviderEntry(entry) {
     visionModel,
     voiceId,
     azureDeployment,
+    endpoint,
+    apiKey,
+    role,
+    weight,
+    name,
+    enabled,
   };
 }
 
@@ -601,9 +626,34 @@ export function getVoiceConfig(forceReload = false) {
     geminiAvailable,
   });
 
-  const realtimeCandidates = providerChain
-    .filter((entry) => entry.provider === "openai" || entry.provider === "azure")
-    .map((entry) => ({ ...entry }));
+  // voiceEndpoints: named per-endpoint configs each with their own credentials.
+  const rawVoiceEndpoints = Array.isArray(voice.voiceEndpoints) ? voice.voiceEndpoints : [];
+  const voiceEndpointCandidates = rawVoiceEndpoints
+    .filter((ep) => ep && ep.enabled !== false && (ep.provider === "openai" || ep.provider === "azure"))
+    .map((ep) => ({
+      provider: String(ep.provider || "").toLowerCase(),
+      endpoint: String(ep.endpoint || "").trim() || null,
+      apiKey: String(ep.apiKey || "").trim() || null,
+      model: String(ep.model || "").trim() || null,
+      azureDeployment: String(ep.deployment || ep.azureDeployment || "").trim() || null,
+      voiceId: String(ep.voiceId || "").trim() || null,
+      visionModel: String(ep.visionModel || "").trim() || null,
+      role: String(ep.role || "primary").trim() || "primary",
+      weight: typeof ep.weight === "number" ? ep.weight : 100,
+      name: String(ep.name || "").trim() || null,
+      enabled: true,
+    }))
+    .sort((a, b) => {
+      if (a.role === "primary" && b.role !== "primary") return -1;
+      if (a.role !== "primary" && b.role === "primary") return 1;
+      return (b.weight || 0) - (a.weight || 0);
+    });
+
+  const realtimeCandidates = voiceEndpointCandidates.length > 0
+    ? voiceEndpointCandidates
+    : providerChain
+        .filter((entry) => entry.provider === "openai" || entry.provider === "azure")
+        .map((entry) => ({ ...entry, endpoint: null, apiKey: null, role: "primary", weight: 100, name: null }));
   if (!realtimeCandidates.length && (provider === "openai" || provider === "azure")) {
     realtimeCandidates.push({
       provider,
@@ -611,6 +661,12 @@ export function getVoiceConfig(forceReload = false) {
       visionModel: null,
       voiceId: null,
       azureDeployment: null,
+      endpoint: null,
+      apiKey: null,
+      role: "primary",
+      weight: 100,
+      name: null,
+      enabled: true,
     });
   }
 
@@ -723,10 +779,12 @@ export function isVoiceAvailable() {
 
   const realtimeProvider = cfg.realtimeCandidates.find((candidate) => {
     if (candidate.provider === "openai") {
-      return Boolean(cfg.openaiOAuthToken || cfg.openaiKey);
+      return Boolean(candidate.apiKey || cfg.openaiOAuthToken || cfg.openaiKey);
     }
     if (candidate.provider === "azure") {
-      return Boolean((cfg.azureOAuthToken || cfg.azureKey) && cfg.azureEndpoint);
+      const hasKey = Boolean(candidate.apiKey || cfg.azureOAuthToken || cfg.azureKey);
+      const hasEndpoint = Boolean(candidate.endpoint || cfg.azureEndpoint);
+      return hasKey && hasEndpoint;
     }
     return false;
   });
@@ -758,8 +816,12 @@ export function isVoiceAvailable() {
 export async function createEphemeralToken(toolDefinitions = [], callContext = {}) {
   const cfg = getVoiceConfig();
   const candidates = cfg.realtimeCandidates.filter((entry) => {
-    if (entry.provider === "openai") return Boolean(cfg.openaiOAuthToken || cfg.openaiKey);
-    if (entry.provider === "azure") return Boolean((cfg.azureOAuthToken || cfg.azureKey) && cfg.azureEndpoint);
+    if (entry.provider === "openai") return Boolean(entry.apiKey || cfg.openaiOAuthToken || cfg.openaiKey);
+    if (entry.provider === "azure") {
+      const hasKey = Boolean(entry.apiKey || cfg.azureOAuthToken || cfg.azureKey);
+      const hasEndpoint = Boolean(entry.endpoint || cfg.azureEndpoint);
+      return hasKey && hasEndpoint;
+    }
     return false;
   });
 
@@ -853,26 +915,37 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
  * Create an ephemeral token for Azure OpenAI Realtime API.
  */
 async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext = {}, candidate = {}) {
-  if ((!cfg.azureKey && !cfg.azureOAuthToken) || !cfg.azureEndpoint) {
+  // Per-endpoint credentials (from voiceEndpoints) take priority over global config.
+  const resolvedEndpoint = String(candidate?.endpoint || cfg.azureEndpoint || "").trim().replace(/\/+$/, "");
+  const resolvedApiKey = String(candidate?.apiKey || cfg.azureKey || "").trim();
+  const resolvedOAuthToken = String(cfg.azureOAuthToken || "").trim();
+
+  if (!resolvedEndpoint) {
+    throw new Error("Azure OpenAI Realtime not configured (need endpoint + key)");
+  }
+  if (!resolvedApiKey && !resolvedOAuthToken) {
     throw new Error("Azure OpenAI Realtime not configured (need endpoint + key)");
   }
 
   const context = sanitizeVoiceCallContext(callContext);
   const instructions = buildSessionScopedInstructions(cfg.instructions, context);
-  const endpoint = cfg.azureEndpoint.replace(/\/+$/, "");
   const deployment =
-    String(candidate?.azureDeployment || cfg.azureDeployment || "").trim()
-    || "gpt-realtime-1.5";
+    String(candidate?.azureDeployment || candidate?.model || cfg.azureDeployment || "").trim()
+    || "gpt-audio-1.5";
   const voiceId = String(candidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
-  const url = `${endpoint}/openai/realtime/sessions?api-version=${AZURE_API_VERSION}&deployment=${deployment}`;
+  // GA protocol (gpt-realtime-1.5, gpt-realtime, etc.) uses /openai/v1/realtime/client_secrets.
+  // Preview protocol uses /openai/realtimeapi/sessions?api-version=...
+  const url = isAzureGaProtocol(deployment)
+    ? `${resolvedEndpoint}/openai/v1/realtime/client_secrets`
+    : `${resolvedEndpoint}/openai/realtimeapi/sessions?api-version=${AZURE_API_VERSION}`;
 
   const headers = {
     "Content-Type": "application/json",
   };
-  if (cfg.azureOAuthToken) {
-    headers.Authorization = `Bearer ${cfg.azureOAuthToken}`;
+  if (resolvedOAuthToken) {
+    headers.Authorization = `Bearer ${resolvedOAuthToken}`;
   } else {
-    headers["api-key"] = cfg.azureKey;
+    headers["api-key"] = resolvedApiKey;
   }
 
   const sessionConfig = {
@@ -911,7 +984,7 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
     voiceId,
     provider: "azure",
     sessionConfig,
-    azureEndpoint: endpoint,
+    azureEndpoint: resolvedEndpoint,
     azureDeployment: deployment,
     callContext: context,
   };
@@ -1054,8 +1127,12 @@ export async function getVoiceToolDefinitions(options = {}) {
 export function getRealtimeConnectionInfo() {
   const cfg = getVoiceConfig();
   const candidate = cfg.realtimeCandidates.find((entry) => {
-    if (entry.provider === "openai") return Boolean(cfg.openaiOAuthToken || cfg.openaiKey);
-    if (entry.provider === "azure") return Boolean((cfg.azureOAuthToken || cfg.azureKey) && cfg.azureEndpoint);
+    if (entry.provider === "openai") return Boolean(entry.apiKey || cfg.openaiOAuthToken || cfg.openaiKey);
+    if (entry.provider === "azure") {
+      const hasKey = Boolean(entry.apiKey || cfg.azureOAuthToken || cfg.azureKey);
+      const hasEndpoint = Boolean(entry.endpoint || cfg.azureEndpoint);
+      return hasKey && hasEndpoint;
+    }
     return false;
   });
   if (!candidate) {
@@ -1068,13 +1145,18 @@ export function getRealtimeConnectionInfo() {
   }
 
   if (candidate.provider === "azure") {
-    const endpoint = cfg.azureEndpoint.replace(/\/+$/, "");
+    const endpoint = String(candidate?.endpoint || cfg.azureEndpoint || "").trim().replace(/\/+$/, "");
     const deployment =
-      String(candidate?.azureDeployment || cfg.azureDeployment || "").trim()
-      || "gpt-realtime-1.5";
+      String(candidate?.azureDeployment || candidate?.model || cfg.azureDeployment || "").trim()
+      || "gpt-audio-1.5";
+    // GA protocol: no api-version, no deployment query param.
+    // Preview protocol: include api-version and deployment.
+    const url = isAzureGaProtocol(deployment)
+      ? `${endpoint}/openai/v1/realtime`
+      : `${endpoint}/openai/realtime?api-version=${AZURE_API_VERSION}&deployment=${deployment}`;
     return {
       provider: "azure",
-      url: `${endpoint}/openai/realtime?api-version=${AZURE_API_VERSION}&deployment=${deployment}`,
+      url,
       model: deployment,
     };
   }

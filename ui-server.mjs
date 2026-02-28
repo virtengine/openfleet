@@ -9223,6 +9223,57 @@ async function handleApi(req, res, url) {
 
   // ── Voice API Routes ──────────────────────────────────────────────────────
 
+  // GET /api/voice/endpoints — read voice.voiceEndpoints from bosun.config.json
+  if (path === "/api/voice/endpoints" && req.method === "GET") {
+    try {
+      const { configData } = readConfigDocument();
+      const voiceEndpoints = Array.isArray(configData?.voice?.voiceEndpoints)
+        ? configData.voice.voiceEndpoints
+        : [];
+      jsonResponse(res, 200, { ok: true, voiceEndpoints });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/endpoints — save voice.voiceEndpoints to bosun.config.json
+  if (path === "/api/voice/endpoints" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const { voiceEndpoints } = body || {};
+      if (!Array.isArray(voiceEndpoints)) {
+        jsonResponse(res, 400, { ok: false, error: "voiceEndpoints array required" });
+        return;
+      }
+      // Strip client-only _id fields and sanitize
+      const cleaned = voiceEndpoints.map(({ _id, ...ep }) => {
+        const out = {};
+        if (ep.name) out.name = String(ep.name);
+        if (ep.provider) out.provider = String(ep.provider);
+        if (ep.endpoint) out.endpoint = String(ep.endpoint);
+        if (ep.deployment) out.deployment = String(ep.deployment);
+        if (ep.model) out.model = String(ep.model);
+        if (ep.apiKey) out.apiKey = String(ep.apiKey);
+        if (ep.voiceId) out.voiceId = String(ep.voiceId);
+        if (ep.role) out.role = String(ep.role);
+        if (ep.weight != null) out.weight = Number(ep.weight) || 1;
+        if (ep.enabled != null) out.enabled = ep.enabled !== false;
+        return out;
+      });
+      const { configPath, configData } = readConfigDocument();
+      configData.voice = { ...(configData.voice || {}), voiceEndpoints: cleaned };
+      writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
+      broadcastUiEvent(["settings", "overview"], "invalidate", {
+        reason: "voice-endpoints-updated",
+      });
+      jsonResponse(res, 200, { ok: true, configPath, count: cleaned.length });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   // GET /api/voice/sdk-config — SDK-first configuration for client
   if (path === "/api/voice/sdk-config" && req.method === "GET") {
     try {

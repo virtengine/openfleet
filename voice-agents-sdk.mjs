@@ -51,6 +51,13 @@ async function getGoogleGenAI() {
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const OPENAI_REALTIME_MODEL = "gpt-audio-1.5";
+
+// GA models (gpt-realtime, gpt-realtime-1.5, gpt-realtime-mini, etc.) use /openai/v1/ WebSocket path.
+// Preview models use /openai/realtime?api-version=...&deployment=...
+function isAzureGaProtocol(deployment) {
+  const d = String(deployment || "").toLowerCase().trim();
+  return d.startsWith("gpt-realtime") && !d.startsWith("gpt-4o-realtime");
+}
 const GEMINI_LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025";
 
 const SDK_PROVIDERS = Object.freeze({
@@ -319,7 +326,9 @@ export async function connectRealtimeSession(sessionHandle, config = {}) {
       config.azureDeployment || "gpt-audio-1.5",
     ).trim();
     connectOpts.apiKey = credential;
-    connectOpts.url = `${endpoint}/openai/realtime?api-version=2025-04-01-preview&deployment=${deployment}`;
+    connectOpts.url = isAzureGaProtocol(deployment)
+      ? `${endpoint}/openai/v1/realtime`
+      : `${endpoint}/openai/realtime?api-version=2025-04-01-preview&deployment=${deployment}`;
   } else {
     // OpenAI
     const credential = String(

@@ -204,7 +204,10 @@
       background-position: right 12px center;
       padding-right: 36px;
     }
-    select option { background: var(--bg-secondary); color: var(--text-primary); }
+    select option { background: #ffffff; color: #111827; }
+    /* Force dark color-scheme on select so native OS dropdown overlay renders
+       dark text on dark background (fixes white-on-white on Windows/Chrome). */
+    select { color-scheme: dark; }
     textarea { resize: vertical; min-height: 80px; }
     .hint { font-size: 0.73rem; color: var(--text-dim); margin-top: 4px; }
     .field-error { font-size: 0.73rem; color: var(--error); margin-top: 4px; }
@@ -738,6 +741,8 @@ function App() {
   const [azureOpenaiRealtimeEndpoint, setAzureOpenaiRealtimeEndpoint] = useState("");
   const [azureOpenaiRealtimeApiKey, setAzureOpenaiRealtimeApiKey] = useState("");
   const [azureOpenaiRealtimeDeployment, setAzureOpenaiRealtimeDeployment] = useState("gpt-audio-1.5");
+  // Multi-endpoint voice config — each entry has its own credentials for failover
+  const [voiceEndpoints, setVoiceEndpoints] = useState([]);
   const [voiceProviders, setVoiceProviders] = useState([
     {
       id: Date.now(),
@@ -753,7 +758,7 @@ function App() {
     openai: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
     azure: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
     claude: { model: "claude-3-7-sonnet-latest", visionModel: "claude-3-7-sonnet-latest", models: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"], visionModels: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"] },
-    gemini: { model: "gemini-2.5-pro", visionModel: "gemini-2.5-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro"] },
+    gemini: { model: "gemini-2.5-pro", visionModel: "gemini-2.5-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"] },
     fallback: { model: "", visionModel: "", models: [], visionModels: [] },
   };
 
@@ -839,6 +844,30 @@ function App() {
       return next.length > 0 ? next : list;
     });
   };
+
+  const normalizeVoiceEndpoint = (ep = {}) => ({
+    id: ep.id || Date.now() + Math.random(),
+    name: String(ep.name || "").trim(),
+    provider: ["azure", "openai"].includes(String(ep.provider || "").toLowerCase()) ? String(ep.provider).toLowerCase() : "azure",
+    endpoint: String(ep.endpoint || "").trim(),
+    deployment: String(ep.deployment || ep.azureDeployment || "").trim(),
+    apiKey: String(ep.apiKey || "").trim(),
+    model: String(ep.model || "gpt-audio-1.5").trim(),
+    role: ["primary", "backup"].includes(String(ep.role || "")) ? String(ep.role) : "primary",
+    weight: typeof ep.weight === "number" ? ep.weight : 100,
+    enabled: ep.enabled !== false,
+  });
+
+  const addVoiceEndpoint = () => setVoiceEndpoints((prev) => [
+    ...prev,
+    normalizeVoiceEndpoint({ name: `endpoint-${prev.length + 1}`, provider: "azure", role: "backup", weight: 50, enabled: true }),
+  ]);
+
+  const removeVoiceEndpoint = (idx) => setVoiceEndpoints((prev) => prev.filter((_, i) => i !== idx));
+
+  const updateVoiceEndpoint = (idx, field, value) => setVoiceEndpoints((prev) =>
+    prev.map((ep, i) => i === idx ? normalizeVoiceEndpoint({ ...ep, [field]: value }) : ep),
+  );
 
   const getWorkflowProfileById = (profileId, profileList = workflowProfiles) =>
     (profileList || []).find((profile_) => profile_.id === profileId) || null;
@@ -1083,6 +1112,21 @@ function App() {
       if (existingVoice.azureEndpoint) { setAzureOpenaiRealtimeEndpoint(String(existingVoice.azureEndpoint)); envLoaded = true; }
       if (existingVoice.azureApiKey) { setAzureOpenaiRealtimeApiKey(String(existingVoice.azureApiKey)); envLoaded = true; }
       if (existingVoice.azureDeployment) { setAzureOpenaiRealtimeDeployment(String(existingVoice.azureDeployment)); envLoaded = true; }
+      // Load per-endpoint voice credentials
+      if (Array.isArray(existingVoice.voiceEndpoints) && existingVoice.voiceEndpoints.length > 0) {
+        setVoiceEndpoints(existingVoice.voiceEndpoints.map((ep, i) => normalizeVoiceEndpoint({ ...ep, id: Date.now() + i })));
+        envLoaded = true;
+      } else {
+        // Auto-convert legacy flat fields to endpoint cards
+        const legacyEndpoints = [];
+        if (existingVoice.azureEndpoint || existingVoice.azureApiKey) {
+          legacyEndpoints.push(normalizeVoiceEndpoint({ name: "azure-primary", provider: "azure", endpoint: existingVoice.azureEndpoint || "", deployment: existingVoice.azureDeployment || "gpt-realtime-1.5", apiKey: existingVoice.azureApiKey || "", role: "primary", weight: 100 }));
+        }
+        if (existingVoice.openaiApiKey) {
+          legacyEndpoints.push(normalizeVoiceEndpoint({ name: "openai-primary", provider: "openai", apiKey: existingVoice.openaiApiKey || "", model: existingVoice.model || "gpt-audio-1.5", role: legacyEndpoints.length === 0 ? "primary" : "backup", weight: legacyEndpoints.length === 0 ? 100 : 50 }));
+        }
+        if (legacyEndpoints.length > 0) setVoiceEndpoints(legacyEndpoints);
+      }
       if (env.BOSUN_HOME) { setBosunHome(env.BOSUN_HOME); envLoaded = true; }
       if (env.BOSUN_WORKSPACES_DIR) { setWorkspacesDir(env.BOSUN_WORKSPACES_DIR); setWorkspacesDirCustomized(true); envLoaded = true; }
       if (env.PROJECT_NAME) { setProjectName(env.PROJECT_NAME); envLoaded = true; }
@@ -1200,6 +1244,15 @@ function App() {
       if (env.AZURE_OPENAI_REALTIME_ENDPOINT) { setAzureOpenaiRealtimeEndpoint(env.AZURE_OPENAI_REALTIME_ENDPOINT); envLoaded = true; }
       if (env.AZURE_OPENAI_REALTIME_API_KEY) { setAzureOpenaiRealtimeApiKey(env.AZURE_OPENAI_REALTIME_API_KEY); envLoaded = true; }
       if (env.AZURE_OPENAI_REALTIME_DEPLOYMENT) { setAzureOpenaiRealtimeDeployment(env.AZURE_OPENAI_REALTIME_DEPLOYMENT); envLoaded = true; }
+      // Build voiceEndpoints from env vars if not already populated from config
+      const envEps = [];
+      if (env.AZURE_OPENAI_REALTIME_ENDPOINT || env.AZURE_OPENAI_REALTIME_API_KEY) {
+        envEps.push(normalizeVoiceEndpoint({ name: "azure-primary", provider: "azure", endpoint: env.AZURE_OPENAI_REALTIME_ENDPOINT || "", deployment: env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-realtime-1.5", apiKey: env.AZURE_OPENAI_REALTIME_API_KEY || "", role: "primary", weight: 100 }));
+      }
+      if (env.OPENAI_REALTIME_API_KEY) {
+        envEps.push(normalizeVoiceEndpoint({ name: "openai-primary", provider: "openai", apiKey: env.OPENAI_REALTIME_API_KEY, model: env.VOICE_MODEL || "gpt-audio-1.5", role: envEps.length === 0 ? "primary" : "backup", weight: envEps.length === 0 ? 100 : 50 }));
+      }
+      if (envEps.length > 0) { setVoiceEndpoints((prev) => (prev.length > 0 ? prev : envEps)); envLoaded = true; }
       const resolvedVoiceProvider = String(env.VOICE_PROVIDER || existingVoice.provider || d.voiceProvider || voiceProvider || "openai").trim().toLowerCase();
       const resolvedVoiceModel = String(env.VOICE_MODEL || existingVoice.model || d.voiceModel || voiceModel || "gpt-audio-1.5").trim();
       const resolvedVoiceVisionModel = String(env.VOICE_VISION_MODEL || existingVoice.visionModel || d.voiceVisionModel || voiceVisionModel || "gpt-4.1-nano").trim();
@@ -1447,7 +1500,10 @@ function App() {
         voiceId,
         azureDeployment: azureOpenaiRealtimeDeployment,
       });
-      const voiceFailoverMaxAttempts = Math.max(1, Math.min(normalizedVoiceProviders.length, 5));
+      const voiceFailoverMaxAttempts = Math.max(1, Math.min(Math.max(normalizedVoiceProviders.length, voiceEndpoints.filter((ep) => ep.enabled !== false).length), 5));
+      // Derive legacy credential fields from primary endpoints for backward compat.
+      const primaryAzureEp = voiceEndpoints.find((ep) => ep.provider === "azure" && ep.enabled !== false);
+      const primaryOpenAIEp = voiceEndpoints.find((ep) => ep.provider === "openai" && ep.enabled !== false);
       const result = await apiPost("apply", {
         env: {
           bosunHome,
@@ -1577,11 +1633,12 @@ function App() {
             turnDetection: voiceTurnDetection,
             fallbackMode: voiceFallbackMode,
             delegateExecutor: voiceDelegateExecutor,
-            azureDeployment: primaryVoiceProvider.azureDeployment || azureOpenaiRealtimeDeployment,
-            openaiApiKey: openaiRealtimeApiKey,
-            azureEndpoint: azureOpenaiRealtimeEndpoint,
-            azureApiKey: azureOpenaiRealtimeApiKey,
+            azureDeployment: primaryAzureEp?.deployment || primaryVoiceProvider.azureDeployment || azureOpenaiRealtimeDeployment,
+            openaiApiKey: primaryOpenAIEp?.apiKey || openaiRealtimeApiKey,
+            azureEndpoint: primaryAzureEp?.endpoint || azureOpenaiRealtimeEndpoint,
+            azureApiKey: primaryAzureEp?.apiKey || azureOpenaiRealtimeApiKey,
             providers: normalizedVoiceProviders.slice(0, 5),
+            voiceEndpoints: voiceEndpoints.filter((ep) => ep.endpoint || ep.apiKey || ep.deployment || ep.model).map(({ id, ...ep }) => ep),
             failover: {
               enabled: true,
               maxAttempts: voiceFailoverMaxAttempts,
@@ -2920,12 +2977,17 @@ function App() {
                   ${(() => {
                     const defaults_ = getVoiceProviderModelDefaults(providerRow.provider);
                     const knownModels = defaults_.models || [];
-                    const isCustom = knownModels.length > 0 && !knownModels.includes(providerRow.model) && providerRow.model !== "";
+                    // isCustom is true whenever model is not in the known list (including
+                    // empty string after the user selects "custom..."). This ensures the
+                    // select stays on "custom..." and the text input remains visible.
+                    const isCustom = knownModels.length > 0 && !knownModels.includes(providerRow.model);
                     return html`
                       <select value=${isCustom ? "custom" : providerRow.model}
                         onchange=${(e) => {
                           if (e.target.value === "custom") {
-                            updateVoiceProviderRow(idx, "model", "");
+                            // Keep model as-is (or empty) — the text input will appear
+                            // immediately for the user to type into.
+                            updateVoiceProviderRow(idx, "model", providerRow.model && !knownModels.includes(providerRow.model) ? providerRow.model : "");
                           } else {
                             updateVoiceProviderRow(idx, "model", e.target.value);
                           }
@@ -2933,11 +2995,12 @@ function App() {
                         ${knownModels.map((m) => html`<option value=${m}>${m}</option>`)}
                         <option value="custom">custom...</option>
                       </select>
-                      ${(isCustom || (knownModels.length > 0 && !knownModels.includes(providerRow.model))) && html`
+                      ${isCustom && html`
                         <input type="text" value=${providerRow.model}
                           oninput=${(e) => updateVoiceProviderRow(idx, "model", e.target.value)}
                           placeholder="Enter custom model slug..."
                           style="margin-top:4px"
+                          autofocus
                         />
                       `}
                       ${knownModels.length === 0 && html`
@@ -2955,12 +3018,14 @@ function App() {
                   ${(() => {
                     const defaults_ = getVoiceProviderModelDefaults(providerRow.provider);
                     const knownVisionModels = defaults_.visionModels || [];
-                    const isCustomVision = knownVisionModels.length > 0 && !knownVisionModels.includes(providerRow.visionModel) && providerRow.visionModel !== "";
+                    // isCustomVision is true whenever visionModel is not in the known list
+                    // (including empty string after selecting "custom...").
+                    const isCustomVision = knownVisionModels.length > 0 && !knownVisionModels.includes(providerRow.visionModel);
                     return html`
                       <select value=${isCustomVision ? "custom" : providerRow.visionModel}
                         onchange=${(e) => {
                           if (e.target.value === "custom") {
-                            updateVoiceProviderRow(idx, "visionModel", "");
+                            updateVoiceProviderRow(idx, "visionModel", providerRow.visionModel && !knownVisionModels.includes(providerRow.visionModel) ? providerRow.visionModel : "");
                           } else {
                             updateVoiceProviderRow(idx, "visionModel", e.target.value);
                           }
@@ -2968,11 +3033,12 @@ function App() {
                         ${knownVisionModels.map((m) => html`<option value=${m}>${m}</option>`)}
                         <option value="custom">custom...</option>
                       </select>
-                      ${(isCustomVision || (knownVisionModels.length > 0 && !knownVisionModels.includes(providerRow.visionModel))) && html`
+                      ${isCustomVision && html`
                         <input type="text" value=${providerRow.visionModel}
                           oninput=${(e) => updateVoiceProviderRow(idx, "visionModel", e.target.value)}
                           placeholder="Enter custom vision model slug..."
                           style="margin-top:4px"
+                          autofocus
                         />
                       `}
                       ${knownVisionModels.length === 0 && html`
@@ -3061,34 +3127,68 @@ function App() {
             </div>
           </div>
           <div class="form-group">
-            <label>OpenAI Realtime API Key</label>
-            <input
-              type="password"
-              value=${openaiRealtimeApiKey}
-              oninput=${(e) => setOpenaiRealtimeApiKey(e.target.value)}
-              placeholder="Optional - defaults to OPENAI_API_KEY"
-            />
-            <div class="hint">Leave blank to use OPENAI_API_KEY.</div>
-          </div>
-          <div class="executor-grid">
-            <div class="form-group">
-              <label>Azure Realtime Endpoint</label>
-              <input
-                type="text"
-                value=${azureOpenaiRealtimeEndpoint}
-                oninput=${(e) => setAzureOpenaiRealtimeEndpoint(e.target.value)}
-                placeholder="https://<resource>.openai.azure.com"
-              />
-            </div>
-            <div class="form-group">
-              <label>Azure Realtime API Key</label>
-              <input
-                type="password"
-                value=${azureOpenaiRealtimeApiKey}
-                oninput=${(e) => setAzureOpenaiRealtimeApiKey(e.target.value)}
-                placeholder="Optional - defaults to AZURE_OPENAI_API_KEY"
-              />
-            </div>
+            <label style="font-weight:600;display:block;margin-bottom:4px">Voice Endpoints</label>
+            <div class="hint" style="margin-bottom:8px">Each endpoint has its own credentials. Multiple endpoints enable automatic failover with context preservation. Primary endpoints are tried first; backup endpoints are used if the primary fails.</div>
+            ${(voiceEndpoints || []).map((ep, i) => html`
+              <div key=${ep.id} style="border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:8px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                  <strong style="font-size:0.9em">${ep.name || `Endpoint ${i + 1}`} · ${ep.provider}</strong>
+                  <button class="btn btn-sm btn-danger" onclick=${() => removeVoiceEndpoint(i)}>Remove</button>
+                </div>
+                <div class="executor-grid">
+                  <div class="form-group">
+                    <label>Name</label>
+                    <input type="text" value=${ep.name} oninput=${(e) => updateVoiceEndpoint(i, "name", e.target.value)} placeholder="endpoint-name" />
+                  </div>
+                  <div class="form-group">
+                    <label>Provider</label>
+                    <select value=${ep.provider} onchange=${(e) => updateVoiceEndpoint(i, "provider", e.target.value)}>
+                      <option value="azure">Azure OpenAI</option>
+                      <option value="openai">OpenAI</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label>Role</label>
+                    <select value=${ep.role} onchange=${(e) => updateVoiceEndpoint(i, "role", e.target.value)}>
+                      <option value="primary">Primary</option>
+                      <option value="backup">Backup</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label>Weight</label>
+                    <input type="number" value=${ep.weight} min="1" max="1000" oninput=${(e) => updateVoiceEndpoint(i, "weight", Number(e.target.value) || 100)} />
+                  </div>
+                  <div class="form-group">
+                    <label>API Key</label>
+                    <input type="password" value=${ep.apiKey} oninput=${(e) => updateVoiceEndpoint(i, "apiKey", e.target.value)} placeholder="API key for this endpoint" />
+                  </div>
+                  <div class="form-group">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+                      <input type="checkbox" checked=${ep.enabled} onchange=${(e) => updateVoiceEndpoint(i, "enabled", e.target.checked)} style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+                      Enabled
+                    </label>
+                  </div>
+                  ${ep.provider === "azure" && html`
+                    <div class="form-group">
+                      <label>Endpoint URL</label>
+                      <input type="text" value=${ep.endpoint} oninput=${(e) => updateVoiceEndpoint(i, "endpoint", e.target.value)} placeholder="https://&lt;resource&gt;.openai.azure.com" />
+                    </div>
+                    <div class="form-group">
+                      <label>Deployment</label>
+                      <input type="text" value=${ep.deployment} oninput=${(e) => updateVoiceEndpoint(i, "deployment", e.target.value)} placeholder="gpt-realtime-1.5" />
+                      <div class="hint">GA models (gpt-realtime-1.5, gpt-realtime) use /openai/v1/ endpoints automatically.</div>
+                    </div>
+                  `}
+                  ${ep.provider === "openai" && html`
+                    <div class="form-group">
+                      <label>Model</label>
+                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="gpt-audio-1.5" />
+                    </div>
+                  `}
+                </div>
+              </div>
+            `)}
+            <button class="btn btn-sm" onclick=${addVoiceEndpoint} style="margin-top:2px">+ Add Endpoint</button>
           </div>
         `}
       <//>
