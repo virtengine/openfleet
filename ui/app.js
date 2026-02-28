@@ -665,7 +665,7 @@ function SidebarNav({ collapsed = false, onToggle }) {
             <button
               key=${tab.id}
               class="sidebar-nav-item ${isActive ? "active" : ""} ${isChild ? "sidebar-nav-child" : ""}"
-              style=${`position:relative${isChild ? ";padding-left:28px;font-size:0.85em" : ""}`}
+              style="position:relative"
               aria-label=${tab.label}
               aria-current=${isActive ? "page" : null}
               title=${collapsed ? tab.label : undefined}
@@ -962,7 +962,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
  *  Bottom Navigation
  * ═══════════════════════════════════════════════ */
 const PRIMARY_NAV_TABS = ["dashboard", "chat", "tasks", "agents"];
-const MORE_NAV_TABS = ["control", "infra", "logs", "library", "workflows", "settings"];
+const MORE_NAV_TABS = ["control", "infra", "logs", "telemetry", "library", "workflows", "settings"];
 
 function getTabsById(ids) {
   return ids
@@ -2068,6 +2068,21 @@ function App() {
 }
 
 /* ─── Mount ─── */
-const mountApp = () => preactRender(html`<${App} />`, document.getElementById("app"));
-globalThis.__veRemountApp = mountApp;
+const mountRoot = () => document.getElementById("app");
+const mountApp = () => {
+  const root = mountRoot();
+  if (!root) return;
+  preactRender(html`<${App} />`, root);
+};
+const remountApp = () => {
+  const root = mountRoot();
+  if (!root) return;
+  try {
+    preactRender(null, root);
+  } catch {
+    root.replaceChildren();
+  }
+  preactRender(html`<${App} />`, root);
+};
+globalThis.__veRemountApp = remountApp;
 mountApp();
