@@ -20,7 +20,7 @@ export const sessionsError = signal(null);
 /** Pagination metadata from the last loadSessionMessages call */
 export const sessionPagination = signal(null);
 
-const DEFAULT_SESSION_PAGE_SIZE = 20;
+const DEFAULT_SESSION_PAGE_SIZE = 50;
 const MAX_SESSION_PAGE_SIZE = 200;
 
 let _wsListenerReady = false;

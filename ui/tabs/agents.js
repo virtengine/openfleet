@@ -188,7 +188,7 @@ function WorkspaceViewer({ agent, onClose }) {
     let active = true;
     const fetchSession = () => {
       if (!active) return;
-      loadSessionMessages(sessionId, { limit: 20 });
+      loadSessionMessages(sessionId, { limit: 50 });
     };
     fetchSession();
     const interval = setInterval(fetchSession, 4000);

@@ -1337,12 +1337,48 @@
   color: var(--text-hint);
 }
 
+/* ─── Animated body wrap — uses grid-template-rows for smooth open/close ─── */
+.thinking-group-body-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 220ms ease;
+  border-top: 1px solid transparent;
+}
+
+.thinking-group-body-wrap.expanded {
+  grid-template-rows: 1fr;
+  border-top-color: var(--border);
+}
+
 .thinking-group-body {
-  border-top: 1px solid var(--border);
-  padding: 6px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 6px;
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.thinking-group-body-wrap.expanded .thinking-group-body {
+  padding: 6px;
+}
+
+/* ─── Active (processing) thinking group ─── */
+.thinking-group-active {
+  border-color: rgba(59, 130, 246, 0.35);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.10);
+}
+
+.thinking-group-active .thinking-group-badge {
+  border-color: rgba(59, 130, 246, 0.5);
+  background: rgba(59, 130, 246, 0.14);
+  color: #93c5fd;
+  animation: thinkingPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes thinkingPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
 }
 
 /* Subtle entrance for bubbles — only the last few get the animation
