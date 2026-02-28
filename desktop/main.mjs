@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   Menu,
+  shell,
   Tray,
   globalShortcut,
   ipcMain,
@@ -177,6 +178,186 @@ function setWindowVisible(win) {
   if (win.isMinimized()) win.restore();
   if (!win.isVisible()) win.show();
   win.focus();
+}
+
+/**
+ * Navigate the main window's SPA to the given path.
+ * Falls back to a no-op if the window is not ready.
+ */
+function navigateMainWindow(path) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  setWindowVisible(mainWindow);
+  if (uiOrigin) {
+    const safePath = JSON.stringify(path);
+    mainWindow.webContents
+      .executeJavaScript(
+        `(function(){
+          if (window.history && window.history.pushState) {
+            window.history.pushState(null, '', ${safePath});
+            window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+          }
+        })()`,
+      )
+      .catch(() => {});
+  }
+}
+
+/**
+ * Build and return the application menu template.
+ * This is called once during bootstrap and can be refreshed when
+ * pack status or update state changes.
+ */
+function buildAppMenu() {
+  const isMac = process.platform === "darwin";
+  const isDev = !app.isPackaged;
+
+  const openUrl = (url) => shell.openExternal(url).catch(() => {});
+
+  /** @type {Electron.MenuItemConstructorOptions[]} */
+  const template = [
+    // ── macOS app menu ──────────────────────────────────────────────────────
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { role: /** @type {const} */ ("about") },
+              { type: /** @type {const} */ ("separator") },
+              { role: /** @type {const} */ ("services") },
+              { type: /** @type {const} */ ("separator") },
+              { role: /** @type {const} */ ("hide") },
+              { role: /** @type {const} */ ("hideOthers") },
+              { role: /** @type {const} */ ("unhide") },
+              { type: /** @type {const} */ ("separator") },
+              { role: /** @type {const} */ ("quit") },
+            ],
+          },
+        ]
+      : []),
+
+    // ── File ────────────────────────────────────────────────────────────────
+    {
+      label: "File",
+      submenu: [
+        {
+          label: "New Chat",
+          accelerator: "CmdOrCtrl+N",
+          click: () => navigateMainWindow("/"),
+        },
+        { type: /** @type {const} */ ("separator") },
+        {
+          label: "Settings",
+          accelerator: "CmdOrCtrl+,",
+          click: () => navigateMainWindow("/settings"),
+        },
+        { type: /** @type {const} */ ("separator") },
+        isMac
+          ? { role: /** @type {const} */ ("close") }
+          : { role: /** @type {const} */ ("quit") },
+      ],
+    },
+
+    // ── Edit ────────────────────────────────────────────────────────────────
+    { role: /** @type {const} */ ("editMenu") },
+
+    // ── View ────────────────────────────────────────────────────────────────
+    {
+      label: "View",
+      submenu: [
+        { role: /** @type {const} */ ("reload") },
+        { role: /** @type {const} */ ("forceReload") },
+        { type: /** @type {const} */ ("separator") },
+        { role: /** @type {const} */ ("resetZoom") },
+        { role: /** @type {const} */ ("zoomIn") },
+        { role: /** @type {const} */ ("zoomOut") },
+        { type: /** @type {const} */ ("separator") },
+        { role: /** @type {const} */ ("togglefullscreen") },
+        ...(isDev
+          ? [
+              { type: /** @type {const} */ ("separator") },
+              { role: /** @type {const} */ ("toggleDevTools") },
+            ]
+          : []),
+      ],
+    },
+
+    // ── Bosun ───────────────────────────────────────────────────────────────
+    {
+      label: "Bosun",
+      submenu: [
+        {
+          label: "Show Main Window",
+          accelerator: "CmdOrCtrl+Shift+B",
+          click: () => setWindowVisible(mainWindow),
+        },
+        {
+          label: "Voice Companion",
+          accelerator: FOLLOW_RESTORE_SHORTCUT,
+          click: () => {
+            if (!restoreFollowWindow()) setWindowVisible(mainWindow);
+          },
+        },
+        { type: /** @type {const} */ ("separator") },
+        {
+          label: "Dashboard",
+          accelerator: "CmdOrCtrl+H",
+          click: () => navigateMainWindow("/"),
+        },
+        {
+          label: "Agents",
+          accelerator: "CmdOrCtrl+Shift+A",
+          click: () => navigateMainWindow("/agents"),
+        },
+        {
+          label: "Tasks",
+          accelerator: "CmdOrCtrl+Shift+T",
+          click: () => navigateMainWindow("/tasks"),
+        },
+        {
+          label: "Logs",
+          accelerator: "CmdOrCtrl+Shift+L",
+          click: () => navigateMainWindow("/logs"),
+        },
+        { type: /** @type {const} */ ("separator") },
+        {
+          label: "Check for Updates",
+          enabled: app.isPackaged,
+          click: () => maybeAutoUpdate().catch(() => {}),
+        },
+      ],
+    },
+
+    // ── Window ──────────────────────────────────────────────────────────────
+    { role: /** @type {const} */ ("windowMenu") },
+
+    // ── Help ────────────────────────────────────────────────────────────────
+    {
+      role: /** @type {const} */ ("help"),
+      submenu: [
+        {
+          label: "Bosun Documentation",
+          click: () => openUrl("https://github.com/virtengine/bosun#readme"),
+        },
+        {
+          label: "GitHub Repository",
+          click: () => openUrl("https://github.com/virtengine/bosun"),
+        },
+        {
+          label: "Report an Issue",
+          click: () =>
+            openUrl("https://github.com/virtengine/bosun/issues/new"),
+        },
+        { type: /** @type {const} */ ("separator") },
+        {
+          label: "Toggle Developer Tools",
+          accelerator: isMac ? "Alt+Cmd+I" : "Ctrl+Shift+I",
+          click: () => mainWindow?.webContents?.toggleDevTools(),
+        },
+      ],
+    },
+  ];
+
+  return Menu.buildFromTemplate(template);
 }
 
 async function loadBosunModule(file) {
@@ -527,6 +708,7 @@ async function bootstrap() {
     });
 
     await ensureDaemonRunning();
+    Menu.setApplicationMenu(buildAppMenu());
     ensureTray();
     registerShortcuts();
     registerDesktopIpc();
