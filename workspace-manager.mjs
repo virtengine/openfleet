@@ -20,7 +20,16 @@
  *   "activeWorkspace": "virtengine"
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+  readdirSync,
+  statSync,
+  renameSync,
+} from "node:fs";
 import { resolve, basename, join } from "node:path";
 import { createRequire } from "node:module";
 
@@ -131,6 +140,66 @@ function extractSlug(url) {
   const httpsMatch = url.match(/([^/]+\/[^/]+?)(?:\.git)?$/);
   if (httpsMatch) return httpsMatch[1];
   return "";
+}
+
+function resolveRepoUrl(repo) {
+  return repo.url || (repo.slug ? `https://github.com/${repo.slug.replace(/\.git$/i, "")}.git` : "");
+}
+
+function makeNonGitBackupPath(repoPath) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  let candidate = `${repoPath}.non-git-backup-${stamp}`;
+  let idx = 1;
+  while (existsSync(candidate)) {
+    candidate = `${repoPath}.non-git-backup-${stamp}-${idx}`;
+    idx += 1;
+  }
+  return candidate;
+}
+
+function cloneIntoExistingRepoPath(childProcess, repoUrl, repoPath) {
+  return childProcess.spawnSync("git", ["clone", repoUrl, "."], {
+    encoding: "utf8",
+    timeout: 300000,
+    stdio: ["pipe", "pipe", "pipe"],
+    cwd: repoPath,
+  });
+}
+
+function recoverNonGitWorkspaceRepo(childProcess, repoPath, repoUrl, repoName) {
+  const backupPath = makeNonGitBackupPath(repoPath);
+  console.log(
+    TAG,
+    `Recovering non-git workspace directory for ${repoName}: moving ${repoPath} to ${backupPath}`,
+  );
+  renameSync(repoPath, backupPath);
+  mkdirSync(repoPath, { recursive: true });
+
+  const clone = cloneIntoExistingRepoPath(childProcess, repoUrl, repoPath);
+  if (clone.status === 0) {
+    console.log(TAG, `Recovered ${repoName} by recloning into ${repoPath}`);
+    return { success: true, backupPath };
+  }
+
+  try {
+    rmSync(repoPath, { recursive: true, force: true });
+    renameSync(backupPath, repoPath);
+  } catch (restoreErr) {
+    const restoreDetails = String(restoreErr?.message || restoreErr || "unknown restore error");
+    return {
+      success: false,
+      error: `git clone failed (${repoUrl}): ${
+        String(clone.stderr || clone.stdout || clone.error?.message || "unknown error")
+      } (restore failed: ${restoreDetails})`,
+    };
+  }
+
+  return {
+    success: false,
+    error: `git clone failed (${repoUrl}): ${
+      String(clone.stderr || clone.stdout || clone.error?.message || "unknown error")
+    } (original directory restored)`,
+  };
 }
 
 // ── Config Management ────────────────────────────────────────────────────────
@@ -479,9 +548,7 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
   for (const repo of ws.repos || []) {
     const repoPath = resolve(ws.path, repo.name);
     if (!existsSync(repoPath)) {
-      const repoUrl =
-        repo.url ||
-        (repo.slug ? `https://github.com/${repo.slug.replace(/\.git$/i, "")}.git` : "");
+      const repoUrl = resolveRepoUrl(repo);
       if (!repoUrl) {
         results.push({
           name: repo.name,
@@ -535,23 +602,31 @@ export function pullWorkspaceRepos(configDir, workspaceId) {
       try {
         const contents = existsSync(repoPath) ? readdirSync(repoPath) : [];
         const isEmpty = contents.length === 0;
-        const repoUrl =
-          repo.url ||
-          (repo.slug ? `https://github.com/${repo.slug.replace(/\.git$/i, "")}.git` : "");
+        const repoUrl = resolveRepoUrl(repo);
         if (isEmpty && repoUrl) {
           console.log(TAG, `Cloning ${repoUrl} into existing empty directory ${repoPath}...`);
-          const clone = childProcess.spawnSync("git", ["clone", repoUrl, "."], {
-            encoding: "utf8",
-            timeout: 300000,
-            stdio: ["pipe", "pipe", "pipe"],
-            cwd: repoPath,
-          });
+          const clone = cloneIntoExistingRepoPath(childProcess, repoUrl, repoPath);
           if (clone.status !== 0) {
             const stderr = String(clone.stderr || clone.stdout || "");
             results.push({
               name: repo.name,
               success: false,
               error: `git clone failed (${repoUrl}): ${stderr || clone.error?.message || "unknown error"}`,
+            });
+            continue;
+          }
+        } else if (repoUrl) {
+          const recovered = recoverNonGitWorkspaceRepo(
+            childProcess,
+            repoPath,
+            repoUrl,
+            repo.name,
+          );
+          if (!recovered.success) {
+            results.push({
+              name: repo.name,
+              success: false,
+              error: recovered.error || "Failed to recover non-git workspace repository",
             });
             continue;
           }

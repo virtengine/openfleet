@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -7,6 +15,7 @@ import {
   detectWorkspaces,
   listWorkspaces,
   mergeDetectedWorkspaces,
+  pullWorkspaceRepos,
 } from "../workspace-manager.mjs";
 
 const cleanupDirs = [];
@@ -49,6 +58,26 @@ function createGitRepo(repoPath, remoteUrl) {
 
 function readConfig(configDir) {
   return JSON.parse(readFileSync(join(configDir, "bosun.config.json"), "utf8"));
+}
+
+function createSeededBareRemote(baseDir, name = "remote-repo") {
+  const barePath = join(baseDir, `${name}.git`);
+  const seedPath = join(baseDir, `${name}-seed`);
+  execSync(`git init --bare "${barePath}"`, { stdio: ["ignore", "ignore", "ignore"] });
+  execSync(`git clone "${barePath}" "${seedPath}"`, { stdio: ["ignore", "ignore", "ignore"] });
+  execSync('git config user.email "bosun-tests@example.com"', {
+    cwd: seedPath,
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  execSync('git config user.name "Bosun Tests"', {
+    cwd: seedPath,
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  writeFileSync(join(seedPath, "README.md"), "# seed\n", "utf8");
+  execSync("git add README.md", { cwd: seedPath, stdio: ["ignore", "ignore", "ignore"] });
+  execSync('git commit -m "seed"', { cwd: seedPath, stdio: ["ignore", "ignore", "ignore"] });
+  execSync("git push origin HEAD", { cwd: seedPath, stdio: ["ignore", "ignore", "ignore"] });
+  return barePath;
 }
 
 describe("detectWorkspaces", () => {
@@ -145,5 +174,44 @@ describe("listWorkspaces", () => {
     expect(workspace.exists).toBe(true);
     expect(repo.exists).toBe(true);
     expect(repo.path).toBe(missingRepoPath);
+  });
+});
+
+describe("pullWorkspaceRepos", () => {
+  it("recovers non-git repo directory by backing it up and recloning", () => {
+    const configDir = createConfigDir();
+    const remoteUrl = createSeededBareRemote(configDir, "recover-test");
+
+    writeBosunConfig(configDir, {
+      workspaces: [
+        {
+          id: "alpha",
+          name: "Alpha",
+          repos: [
+            {
+              name: "bosun",
+              url: remoteUrl,
+            },
+          ],
+          activeRepo: "bosun",
+        },
+      ],
+      activeWorkspace: "alpha",
+    });
+
+    const repoPath = join(configDir, "workspaces", "alpha", "bosun");
+    mkdirSync(repoPath, { recursive: true });
+    writeFileSync(join(repoPath, "stale.txt"), "old local content\n", "utf8");
+
+    const results = pullWorkspaceRepos(configDir, "alpha");
+    expect(results).toHaveLength(1);
+    expect(results[0].success).toBe(true);
+    expect(existsSync(join(repoPath, ".git"))).toBe(true);
+    expect(existsSync(join(repoPath, "README.md"))).toBe(true);
+
+    const wsEntries = readdirSync(join(configDir, "workspaces", "alpha"));
+    const backupDir = wsEntries.find((entry) => entry.startsWith("bosun.non-git-backup-"));
+    expect(backupDir).toBeTruthy();
+    expect(existsSync(join(configDir, "workspaces", "alpha", backupDir, "stale.txt"))).toBe(true);
   });
 });
