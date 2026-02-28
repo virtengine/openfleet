@@ -855,9 +855,11 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
   const endpoint = cfg.azureEndpoint.replace(/\/+$/, "");
   const deployment =
     String(candidate?.azureDeployment || cfg.azureDeployment || "").trim()
-    || "gpt-realtime-1.5";
+    || "gpt-audio-1.5";
   const voiceId = String(candidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
-  const url = `${endpoint}/openai/realtimeapi/sessions?api-version=${AZURE_API_VERSION}&deployment=${deployment}`;
+  // deployment/model is specified in the request body (sessionConfig.model) — do NOT
+  // add it as a URL query param; that causes a 404 on the realtimeapi/sessions endpoint.
+  const url = `${endpoint}/openai/realtimeapi/sessions?api-version=${AZURE_API_VERSION}`;
 
   const headers = {
     "Content-Type": "application/json",
