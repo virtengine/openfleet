@@ -3,10 +3,12 @@
  *
  * Templates:
  *   - PR Merge Strategy (recommended)
- *   - PR Triage & Labels
- *   - PR Conflict Resolver (recommended)
- *   - Stale PR Reaper
+ *   - PR Triage & Labels (recommended)
+ *   - PR Conflict Resolver (superseded by Watchdog)
+ *   - Stale PR Reaper (recommended)
  *   - Release Drafter
+ *   - Bosun PR Watchdog (recommended — replaces pr-cleanup-daemon.mjs)
+ *   - GitHub ↔ Kanban Sync (recommended — replaces github-reconciler.mjs)
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
@@ -208,6 +210,7 @@ export const PR_TRIAGE_TEMPLATE = {
     "changes, add labels, and assign reviewers based on CODEOWNERS.",
   category: "github",
   enabled: true,
+  recommended: true,
   trigger: "trigger.pr_event",
   variables: {
     smallThreshold: 50,
@@ -472,7 +475,8 @@ export const STALE_PR_REAPER_TEMPLATE = {
     "Close stale PRs that have been inactive for too long. Posts a " +
     "warning comment before closing and cleans up associated branches.",
   category: "github",
-  enabled: false,
+  enabled: true,
+  recommended: true,
   trigger: "trigger.schedule",
   variables: {
     staleAfterDays: 14,
@@ -493,12 +497,12 @@ export const STALE_PR_REAPER_TEMPLATE = {
     }, { x: 400, y: 350 }),
 
     node("warn-stale", "action.run_command", "Post Warning Comment", {
-      command: "echo 'Would warn stale PRs {{warningBeforeDays}} days before stale threshold ({{staleAfterDays}} days)'",
+      command: "node -e \"const {execFileSync}=require('child_process');const stale=Number('{{staleAfterDays}}')||14;const warn=Number('{{warningBeforeDays}}')||3;const now=Date.now();const prs=JSON.parse(execFileSync('gh',['pr','list','--state','open','--json','number,updatedAt,labels','--limit','100'],{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim()||'[]');let n=0;for(const pr of prs){const age=(now-new Date(pr.updatedAt))/864e5;if(age>=(stale-warn)&&age<stale){const lbl=(pr.labels||[]).some(l=>(typeof l==='string'?l:l?.name)==='stale-warning');if(!lbl){try{execFileSync('gh',['pr','comment',String(pr.number),'--body','\\u26a0\\ufe0f This PR has been inactive for '+Math.floor(age)+' day(s) and will be closed in '+Math.ceil(stale-age)+' day(s). Please update or close it if no longer needed.'],{encoding:'utf8',stdio:['pipe','pipe','pipe']});execFileSync('gh',['pr','edit',String(pr.number),'--add-label','stale-warning'],{encoding:'utf8',stdio:['pipe','pipe','pipe']});n++;}catch(e){}}}}console.log('Warned '+n+' PR(s).');\"",
       continueOnError: true,
     }, { x: 200, y: 500 }),
 
     node("close-stale", "action.run_command", "Close Expired PRs", {
-      command: "echo 'Would close PRs inactive > {{staleAfterDays}} days'",
+      command: "node -e \"const {execFileSync}=require('child_process');const stale=Number('{{staleAfterDays}}')||14;const now=Date.now();const prs=JSON.parse(execFileSync('gh',['pr','list','--state','open','--json','number,title,updatedAt,headRefName','--limit','100'],{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim()||'[]');let n=0;for(const pr of prs){const age=(now-new Date(pr.updatedAt))/864e5;if(age>=stale){try{execFileSync('gh',['pr','close',String(pr.number),'--comment','Automatically closed: inactive for '+Math.floor(age)+' days (threshold: '+stale+' days).','--delete-branch'],{encoding:'utf8',stdio:['pipe','pipe','pipe']});n++;}catch(e){process.stderr.write('close #'+pr.number+': '+(e?.message||e)+'\\n');}}}console.log('Closed '+n+' stale PR(s).');\"",
       continueOnError: true,
     }, { x: 200, y: 650 }),
 
@@ -506,10 +510,15 @@ export const STALE_PR_REAPER_TEMPLATE = {
       command: "git fetch --prune origin",
     }, { x: 200, y: 800 }),
 
+    node("prune-worktrees", "action.run_command", "Prune Git Worktrees", {
+      command: "git worktree prune --expire 7.days.ago 2>/dev/null && echo 'Worktree prune complete.' || echo 'Worktree prune skipped (not a git repo).'",
+      continueOnError: true,
+    }, { x: 200, y: 950 }),
+
     node("summary", "notify.telegram", "Summary", {
       message: ":trash: Stale PR cleanup complete",
       silent: true,
-    }, { x: 200, y: 950 }),
+    }, { x: 200, y: 1100 }),
 
     node("skip", "notify.log", "No Stale PRs", {
       message: "No stale PRs found",
@@ -523,7 +532,8 @@ export const STALE_PR_REAPER_TEMPLATE = {
     edge("has-stale", "skip", { condition: "$output?.result !== true" }),
     edge("warn-stale", "close-stale"),
     edge("close-stale", "cleanup-branches"),
-    edge("cleanup-branches", "summary"),
+    edge("cleanup-branches", "prune-worktrees"),
+    edge("prune-worktrees", "summary"),
   ],
   metadata: {
     author: "bosun",
@@ -535,9 +545,11 @@ export const STALE_PR_REAPER_TEMPLATE = {
       module: "workspace-reaper.mjs",
       functions: ["runReaperSweep", "cleanOrphanedWorktrees"],
       calledFrom: ["monitor.mjs:runMaintenanceSweep"],
-      description: "Replaces scattered stale PR and branch cleanup logic with " +
-        "a structured workflow. Warning, closing, and branch deletion are " +
-        "explicit, auditable steps.",
+      description:
+        "Replaces workspace-reaper.mjs stale PR / orphaned worktree cleanup and " +
+        "the pr-cleanup-daemon.mjs temporary worktree remnants. Warning, closing, " +
+        "branch deletion, and worktree pruning are explicit, auditable steps.",
+      also: ["pr-cleanup-daemon.mjs (temp worktree cleanup)"],
     },
   },
 };
@@ -676,7 +688,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     "merge — preventing destructive PRs (e.g. -183k lines) from being silently " +
     "auto-merged. External-contributor PRs without bosun-attached are never touched.",
   category: "github",
-  enabled: false,
+  enabled: true,
+  recommended: true,
   trigger: "trigger.schedule",
   variables: {
     mergeMethod:        "squash",                   // squash | merge | rebase
@@ -1002,6 +1015,133 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "being auto-merged. Adds conflict detection via the 'mergeable' field. " +
         "Single fix agent handles both conflict resolution and CI failures. " +
         "All external PRs (no bosun-attached label) are never touched.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  GitHub ↔ Kanban Sync
+//  Replaces github-reconciler.mjs — reconciles PR state with kanban board.
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const GITHUB_KANBAN_SYNC_TEMPLATE = {
+  id: "template-github-kanban-sync",
+  name: "GitHub ↔ Kanban Sync",
+  description:
+    "Reconciles GitHub PR state with the bosun kanban board every 5 minutes. " +
+    "Marks tasks as in-review when bosun-attached PRs open, moves them to done " +
+    "when PRs are merged, and posts completion comments via the kanban API. " +
+    "Replaces the legacy github-reconciler.mjs module.",
+  category: "github",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.schedule",
+  variables: {
+    lookbackHours: 24,
+    repoScope: "auto",
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Sync Every 5 min", {
+      intervalMs: 300_000,
+      cron: "*/5 * * * *",
+    }, { x: 400, y: 50 }),
+
+    node("fetch-pr-state", "action.run_command", "Fetch Bosun PR State", {
+      command: [
+        "node -e \"",
+        "const {execFileSync}=require('child_process');",
+        "const hours=Number('{{lookbackHours}}')||24;",
+        "const since=new Date(Date.now()-hours*3600000).toISOString();",
+        "function ghJson(args){",
+        "  try{const o=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return o?JSON.parse(o):[];}",
+        "  catch{return [];}",
+        "}",
+        "const merged=ghJson(['pr','list','--state','merged','--label','bosun-attached','--json','number,title,body,headRefName,mergedAt','--limit','50']);",
+        "const open=ghJson(['pr','list','--state','open','--label','bosun-attached','--json','number,title,body,headRefName,isDraft','--limit','50']);",
+        "function extractTaskId(pr){",
+        "  const src=String((pr.body||'')+'\\n'+(pr.title||''));",
+        "  const m=src.match(/(?:Bosun-Task|VE-Task|Task-ID|task[_-]?id)[:\\s]+([a-zA-Z0-9_-]{4,64})/i);",
+        "  return m?m[1].trim():null;",
+        "}",
+        "const recentMerged=merged.filter(p=>!p.mergedAt||new Date(p.mergedAt)>=new Date(since));",
+        "console.log(JSON.stringify({",
+        "  merged:recentMerged.map(p=>({n:p.number,title:p.title,branch:p.headRefName,taskId:extractTaskId(p)})),",
+        "  open:open.filter(p=>!p.isDraft).map(p=>({n:p.number,title:p.title,branch:p.headRefName,taskId:extractTaskId(p)})),",
+        "}));",
+        "\"",
+      ].join(" "),
+      continueOnError: true,
+    }, { x: 400, y: 200 }),
+
+    node("has-updates", "condition.expression", "Any Updates?", {
+      expression:
+        "(()=>{try{" +
+        "const o=$ctx.getNodeOutput('fetch-pr-state')?.output;" +
+        "const d=JSON.parse(o||'{}');" +
+        "return (d.merged||[]).length>0||(d.open||[]).length>0;" +
+        "}catch{return false;}})()",
+    }, { x: 400, y: 370 }),
+
+    node("sync-agent", "action.run_agent", "Sync PR State → Kanban", {
+      prompt:
+        "You are the Bosun GitHub-Kanban sync agent. Sync the kanban board " +
+        "to match the GitHub PR state shown below.\n\n" +
+        "PR state (JSON from fetch-pr-state node output):\n" +
+        "{{$ctx.getNodeOutput('fetch-pr-state')?.output}}\n\n" +
+        "RULES:\n" +
+        "1. For each MERGED PR entry with a taskId: update the kanban task to done.\n" +
+        "   Use the available bosun/vk CLI, for example:\n" +
+        "     node task-cli.mjs update <taskId> --status done\n" +
+        "   Or check available commands: ls *.mjs | grep -i task\n" +
+        "2. For each OPEN (non-draft) PR entry with a taskId: if the task is not\n" +
+        "   already in inreview or done status, update it to inreview.\n" +
+        "3. Only act on entries that have a non-null taskId.\n" +
+        "4. Log each update and whether it succeeded.\n" +
+        "5. Do NOT close, merge, or modify any PR.\n" +
+        "6. Do NOT create new tasks — only update existing ones.",
+      sdk: "auto",
+      timeoutMs: 300_000,
+      continueOnError: true,
+    }, { x: 400, y: 530 }),
+
+    node("done", "notify.log", "Sync Complete", {
+      message: "GitHub ↔ Kanban sync cycle complete",
+      level: "info",
+    }, { x: 400, y: 700 }),
+
+    node("skip", "notify.log", "No PR Updates", {
+      message: "No bosun PR changes to sync this cycle",
+      level: "debug",
+    }, { x: 650, y: 450 }),
+  ],
+  edges: [
+    edge("trigger", "fetch-pr-state"),
+    edge("fetch-pr-state", "has-updates"),
+    edge("has-updates", "sync-agent", { condition: "$output?.result === true" }),
+    edge("has-updates", "skip", { condition: "$output?.result !== true" }),
+    edge("sync-agent", "done"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-07-10T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "kanban", "sync", "reconcile", "pr", "automation"],
+    replaces: {
+      module: "github-reconciler.mjs",
+      functions: [
+        "startGitHubReconciler",
+        "stopGitHubReconciler",
+        "GitHubReconciler (setInReview, syncMergedPRs, reconcileTaskStatuses)",
+      ],
+      calledFrom: ["monitor.mjs:restartGitHubReconciler"],
+      description:
+        "Replaces the legacy github-reconciler.mjs module that polled GitHub PRs " +
+        "and updated kanban task statuses (inreview/done) every N minutes. " +
+        "This template runs the same reconciliation as an auditable, configurable " +
+        "workflow with an agent-driven sync step.",
     },
   },
 };

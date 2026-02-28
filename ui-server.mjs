@@ -1253,6 +1253,85 @@ async function applySharedStateToTasks(tasks) {
   });
 }
 
+function normalizeCandidatePath(input) {
+  if (!input) return "";
+  const raw = String(input).trim();
+  if (!raw) return "";
+  try {
+    return resolve(raw);
+  } catch {
+    return "";
+  }
+}
+
+function pickWorkspaceRepoDir(workspace) {
+  if (!workspace || typeof workspace !== "object") return "";
+  const repos = Array.isArray(workspace.repos) ? workspace.repos : [];
+  const activeRepoName = String(workspace.activeRepo || "").trim();
+  const selectedRepo =
+    (activeRepoName
+      ? repos.find((repo) => String(repo?.name || "").trim() === activeRepoName)
+      : null) ||
+    repos.find((repo) => repo?.primary) ||
+    repos[0] ||
+    null;
+
+  const candidates = [];
+  const selectedRepoPath = normalizeCandidatePath(selectedRepo?.path);
+  if (selectedRepoPath) candidates.push(selectedRepoPath);
+  const workspacePath = normalizeCandidatePath(workspace.path);
+  if (workspacePath && selectedRepo?.name) {
+    const joined = normalizeCandidatePath(resolve(workspacePath, String(selectedRepo.name)));
+    if (joined) candidates.push(joined);
+  }
+  if (workspacePath) candidates.push(workspacePath);
+
+  for (const candidate of candidates) {
+    if (!candidate || !existsSync(candidate)) continue;
+    if (existsSync(resolve(candidate, ".git"))) return candidate;
+  }
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+  return "";
+}
+
+function resolveActiveWorkspaceExecutionContext() {
+  const fallback = { workspaceId: "", workspaceDir: repoRoot };
+  const configDir = resolveUiConfigDir();
+  if (!configDir) return fallback;
+
+  const listed = listManagedWorkspaces(configDir, { repoRoot });
+  const active = getActiveManagedWorkspace(configDir);
+  const activeId = String(active?.id || "").trim();
+  const workspace =
+    (activeId
+      ? listed.find((entry) => String(entry?.id || "") === activeId)
+      : null) ||
+    active ||
+    listed[0] ||
+    null;
+  if (!workspace) return fallback;
+
+  const workspaceId = String(workspace.id || "").trim();
+  const workspaceDir = pickWorkspaceRepoDir(workspace) || fallback.workspaceDir;
+  return {
+    workspaceId,
+    workspaceDir,
+  };
+}
+
+function resolveSessionWorkspaceDir(session = null) {
+  const metadata =
+    session && typeof session.metadata === "object" && session.metadata
+      ? session.metadata
+      : null;
+  const explicit = normalizeCandidatePath(metadata?.workspaceDir);
+  if (explicit && existsSync(explicit)) return explicit;
+  const context = resolveActiveWorkspaceExecutionContext();
+  return context.workspaceDir || repoRoot;
+}
+
 function normalizeWorktreePath(input) {
   if (!input) return "";
   try {
@@ -8490,9 +8569,28 @@ async function handleApi(req, res, url) {
       }
       const args = (body?.args || "").trim();
       const adapter = (body?.adapter || "").trim() || undefined;
-      const result = await execSdkCommand(command, args, adapter);
+      const requestedSessionId = String(body?.sessionId || "").trim();
+      const tracker = getSessionTracker();
+      const commandSession = requestedSessionId
+        ? tracker.getSessionById(requestedSessionId)
+        : null;
+      const commandCwd = resolveSessionWorkspaceDir(commandSession);
+      const runSdkCommand =
+        typeof uiDeps.execSdkCommand === "function"
+          ? uiDeps.execSdkCommand
+          : execSdkCommand;
+      const result = await runSdkCommand(command, args, adapter, {
+        cwd: commandCwd,
+        sessionId: requestedSessionId || undefined,
+      });
       const parsed = typeof result === "string" ? result : JSON.stringify(result);
-      jsonResponse(res, 200, { ok: true, result: parsed, command, adapter: adapter || getPrimaryAgentName() });
+      jsonResponse(res, 200, {
+        ok: true,
+        result: parsed,
+        command,
+        adapter: adapter || getPrimaryAgentName(),
+        sessionId: requestedSessionId || null,
+      });
       broadcastUiEvent(["agents", "sessions"], "invalidate", {
         reason: "sdk-command-executed",
         command,
@@ -8659,6 +8757,13 @@ async function handleApi(req, res, url) {
       const body = await readJsonBody(req);
       const type = body?.type || "manual";
       const id = `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const workspaceContext = resolveActiveWorkspaceExecutionContext();
+      const requestedWorkspaceId = String(body?.workspaceId || "").trim();
+      const requestedWorkspaceDir = normalizeCandidatePath(body?.workspaceDir);
+      const resolvedWorkspaceId =
+        requestedWorkspaceId || workspaceContext.workspaceId;
+      const resolvedWorkspaceDir =
+        requestedWorkspaceDir || workspaceContext.workspaceDir || repoRoot;
       const tracker = getSessionTracker();
       const session = tracker.createSession({
         id,
@@ -8668,6 +8773,8 @@ async function handleApi(req, res, url) {
           agent: body?.agent || getPrimaryAgentName(),
           mode: body?.mode || getAgentMode(),
           model: body?.model || undefined,
+          ...(resolvedWorkspaceId ? { workspaceId: resolvedWorkspaceId } : {}),
+          ...(resolvedWorkspaceDir ? { workspaceDir: resolvedWorkspaceDir } : {}),
         },
       });
       jsonResponse(res, 200, { ok: true, session: { id: session.id, type: session.type, status: session.status, metadata: session.metadata } });
@@ -8813,6 +8920,7 @@ async function handleApi(req, res, url) {
           exec = await resolveExecPrimaryPrompt();
         }
         if (exec) {
+          const sessionWorkspaceDir = resolveSessionWorkspaceDir(session);
           // Don't record user event here — execPrimaryPrompt records it
           // Respond immediately so the UI doesn't block on agent execution
           jsonResponse(res, 200, { ok: true, messageId });
@@ -8853,6 +8961,7 @@ async function handleApi(req, res, url) {
             sessionType: "primary",
             mode: messageMode,
             model: messageModel,
+            cwd: sessionWorkspaceDir,
             persistent: true,
             sendRawEvents: true,
             attachments,

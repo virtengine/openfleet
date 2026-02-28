@@ -523,7 +523,11 @@ export function ChatTab() {
           // Forward to agent SDK
           const resp = await apiFetch("/api/agents/sdk-command", {
             method: "POST",
-            body: JSON.stringify({ command: cmdBase, args: cmdArgs }),
+            body: JSON.stringify({
+              command: cmdBase,
+              args: cmdArgs,
+              sessionId: sessionId || undefined,
+            }),
           });
           const resultText = resp?.result || resp?.data || `:check: SDK command executed: ${cmdBase}`;
           if (sessionId) {

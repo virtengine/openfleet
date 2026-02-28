@@ -148,14 +148,18 @@ const ADAPTERS = {
      * Forward an SDK-native command to the Codex shell.
      * /clear is handled specially as a reset; others are sent as user input.
      */
-    execSdkCommand: async (command, args) => {
+    execSdkCommand: async (command, args, options = {}) => {
       const cmd = command.startsWith("/") ? command : `/${command}`;
       if (cmd === "/clear") {
         await resetThread();
         return "Session cleared.";
       }
       const fullCmd = args ? `${cmd} ${args}` : cmd;
-      return execCodexPrompt(fullCmd, { persistent: true });
+      return execCodexPrompt(fullCmd, {
+        persistent: true,
+        cwd: options.cwd,
+        sessionId: options.sessionId || null,
+      });
     },
   },
   "copilot-sdk": {
@@ -169,14 +173,18 @@ const ADAPTERS = {
     reset: resetCopilotSession,
     init: async () => initCopilotShell(),
     sdkCommands: ["/status", "/model", "/clear"],
-    execSdkCommand: async (command, args) => {
+    execSdkCommand: async (command, args, options = {}) => {
       const cmd = command.startsWith("/") ? command : `/${command}`;
       if (cmd === "/clear") {
         await resetCopilotSession();
         return "Session cleared.";
       }
       const fullCmd = args ? `${cmd} ${args}` : cmd;
-      return execCopilotPrompt(fullCmd, { persistent: true });
+      return execCopilotPrompt(fullCmd, {
+        persistent: true,
+        cwd: options.cwd,
+        sessionId: options.sessionId || null,
+      });
     },
   },
   "claude-sdk": {
@@ -193,14 +201,17 @@ const ADAPTERS = {
       return true;
     },
     sdkCommands: ["/compact", "/status", "/model", "/clear"],
-    execSdkCommand: async (command, args) => {
+    execSdkCommand: async (command, args, options = {}) => {
       const cmd = command.startsWith("/") ? command : `/${command}`;
       if (cmd === "/clear") {
         await resetClaudeSession();
         return "Session cleared.";
       }
       const fullCmd = args ? `${cmd} ${args}` : cmd;
-      return execClaudePrompt(fullCmd, {});
+      return execClaudePrompt(fullCmd, {
+        cwd: options.cwd,
+        sessionId: options.sessionId || null,
+      });
     },
   },
   "gemini-sdk": {
@@ -218,14 +229,18 @@ const ADAPTERS = {
     switchSession: switchGeminiSession,
     createSession: createGeminiSession,
     sdkCommands: ["/status", "/model", "/clear"],
-    execSdkCommand: async (command, args) => {
+    execSdkCommand: async (command, args, options = {}) => {
       const cmd = command.startsWith("/") ? command : `/${command}`;
       if (cmd === "/clear") {
         await resetGeminiSession();
         return "Session cleared.";
       }
       const fullCmd = args ? `${cmd} ${args}` : cmd;
-      return execGeminiPrompt(fullCmd, { persistent: true });
+      return execGeminiPrompt(fullCmd, {
+        persistent: true,
+        cwd: options.cwd,
+        sessionId: options.sessionId || null,
+      });
     },
   },
   "opencode-sdk": {
@@ -246,14 +261,18 @@ const ADAPTERS = {
     switchSession: switchOpencodeSession,
     createSession: createOpencodeSession,
     sdkCommands: ["/status", "/model", "/sessions", "/clear"],
-    execSdkCommand: async (command, args) => {
+    execSdkCommand: async (command, args, options = {}) => {
       const cmd = command.startsWith("/") ? command : `/${command}`;
       if (cmd === "/clear") {
         await resetOpencodeSession();
         return "Session cleared.";
       }
       const fullCmd = args ? `${cmd} ${args}` : cmd;
-      return execOpencodePrompt(fullCmd, { persistent: true });
+      return execOpencodePrompt(fullCmd, {
+        persistent: true,
+        cwd: options.cwd,
+        sessionId: options.sessionId || null,
+      });
     },
   },
 };
@@ -959,9 +978,10 @@ export function getSdkCommands(adapterName) {
  * @param {string} command  — e.g. "/compact", "/model"
  * @param {string} [args]   — optional arguments string
  * @param {string} [adapterName] — target adapter (defaults to active)
+ * @param {object} [options] — execution overrides (e.g. cwd/sessionId)
  * @returns {Promise<string|object>}
  */
-export async function execSdkCommand(command, args = "", adapterName) {
+export async function execSdkCommand(command, args = "", adapterName, options = {}) {
   const adapter = adapterName ? ADAPTERS[adapterName] : activeAdapter;
   if (!adapter) {
     throw new Error(`Unknown adapter: ${adapterName || "(none)"}`);
@@ -973,5 +993,5 @@ export async function execSdkCommand(command, args = "", adapterName) {
   if (typeof adapter.execSdkCommand !== "function") {
     throw new Error(`Adapter ${adapter.name} does not support SDK commands.`);
   }
-  return adapter.execSdkCommand(cmd, args);
+  return adapter.execSdkCommand(cmd, args, options);
 }

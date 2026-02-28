@@ -177,6 +177,7 @@ function sanitizeAndTruncatePrompt(text) {
   return truncated + `\n\n[...prompt truncated — ${removedBytes} bytes removed to stay within API limits]`;
 }
 const REPO_ROOT = resolveRepoRoot();
+const DEFAULT_WORKING_DIRECTORY = REPO_ROOT;
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -187,6 +188,7 @@ let activeThreadId = null; // Thread ID for resume
 let activeTurn = null; // Whether a turn is in-flight
 let turnCount = 0; // Number of turns in this thread
 let currentSessionId = null; // Active session identifier
+let activeWorkingDirectory = DEFAULT_WORKING_DIRECTORY; // Session/thread cwd
 let threadNeedsPriming = false; // True when a fresh thread needs the system prompt on next turn
 let codexRuntimeCaps = {
   hasSteeringApi: false,
@@ -198,6 +200,20 @@ let agentSdk = resolveAgentSdkConfig();
 
 function timestamp() {
   return new Date().toISOString();
+}
+
+function normalizeWorkingDirectory(input) {
+  const raw = String(input || "").trim();
+  if (!raw) return null;
+  try {
+    return resolve(raw);
+  } catch {
+    return null;
+  }
+}
+
+function getWorkingDirectory() {
+  return normalizeWorkingDirectory(activeWorkingDirectory) || DEFAULT_WORKING_DIRECTORY;
 }
 
 function resolveCodexTransport() {
@@ -250,13 +266,17 @@ async function loadState() {
     activeThreadId = data.threadId || null;
     turnCount = data.turnCount || 0;
     currentSessionId = data.currentSessionId || null;
+    activeWorkingDirectory =
+      normalizeWorkingDirectory(data.workingDirectory) ||
+      DEFAULT_WORKING_DIRECTORY;
     console.log(
-      `[codex-shell] loaded state: threadId=${activeThreadId}, turns=${turnCount}, session=${currentSessionId}`,
+      `[codex-shell] loaded state: threadId=${activeThreadId}, turns=${turnCount}, session=${currentSessionId}, cwd=${getWorkingDirectory()}`,
     );
   } catch {
     activeThreadId = null;
     turnCount = 0;
     currentSessionId = null;
+    activeWorkingDirectory = DEFAULT_WORKING_DIRECTORY;
   }
 }
 
@@ -270,6 +290,7 @@ async function saveState() {
           threadId: activeThreadId,
           turnCount,
           currentSessionId,
+          workingDirectory: getWorkingDirectory(),
           updatedAt: timestamp(),
         },
         null,
@@ -311,6 +332,7 @@ async function saveCurrentSession() {
   await saveSessionData(currentSessionId, {
     threadId: activeThreadId,
     turnCount,
+    workingDirectory: getWorkingDirectory(),
     createdAt: (await loadSessionData(currentSessionId))?.createdAt || timestamp(),
     lastActiveAt: timestamp(),
   });
@@ -325,12 +347,16 @@ async function loadSession(sessionId) {
     turnCount = data.turnCount || 0;
     activeThread = null; // will be re-created/resumed via getThread()
     currentSessionId = sessionId;
-    console.log(`[codex-shell] loaded session ${sessionId}: threadId=${activeThreadId}, turns=${turnCount}`);
+    activeWorkingDirectory =
+      normalizeWorkingDirectory(data.workingDirectory) ||
+      DEFAULT_WORKING_DIRECTORY;
+    console.log(`[codex-shell] loaded session ${sessionId}: threadId=${activeThreadId}, turns=${turnCount}, cwd=${getWorkingDirectory()}`);
   } else {
     activeThread = null;
     activeThreadId = null;
     turnCount = 0;
     currentSessionId = sessionId;
+    activeWorkingDirectory = DEFAULT_WORKING_DIRECTORY;
     console.log(`[codex-shell] created new session ${sessionId}`);
   }
   await saveState();
@@ -366,9 +392,8 @@ Key files:
   AGENTS.md — Repo guide for agents
 `;
 
-const THREAD_OPTIONS = {
+const THREAD_BASE_OPTIONS = {
   sandboxMode: process.env.CODEX_SANDBOX || "workspace-write",
-  workingDirectory: REPO_ROOT,
   skipGitRepoCheck: true,
   webSearchMode: "live",
   approvalPolicy: "never",
@@ -377,6 +402,13 @@ const THREAD_OPTIONS = {
   // codex-config.mjs ensureFeatureFlags() handles this during setup.
 };
 
+function buildThreadOptions() {
+  return {
+    ...THREAD_BASE_OPTIONS,
+    workingDirectory: getWorkingDirectory(),
+  };
+}
+
 /**
  * Get or create a thread.
  * Uses fresh-thread mode by default to avoid context bloat.
@@ -384,6 +416,7 @@ const THREAD_OPTIONS = {
  */
 async function getThread() {
   if (activeThread) return activeThread;
+  const threadOptions = buildThreadOptions();
 
   const { env: resolvedEnv } = resolveCodexProfileRuntime(process.env);
   Object.assign(process.env, resolvedEnv);
@@ -414,7 +447,7 @@ async function getThread() {
       try {
         activeThread = codexInstance.resumeThread(
           activeThreadId,
-          THREAD_OPTIONS,
+          threadOptions,
         );
         if (activeThread) {
           detectThreadCapabilities(activeThread);
@@ -446,16 +479,16 @@ async function getThread() {
   // the priming turn is STREAMED (runStreamed) instead of blocking (run).
   // This eliminates the 2-5 minute silent delay the chat UI suffered because
   // the old `thread.run(SYSTEM_PROMPT)` call produced zero streaming events.
-  activeThread = codexInstance.startThread(THREAD_OPTIONS);
+  activeThread = codexInstance.startThread(threadOptions);
   detectThreadCapabilities(activeThread);
   threadNeedsPriming = true;
 
   if (activeThread.id) {
     activeThreadId = activeThread.id;
     await saveState();
-    console.log(`[codex-shell] new thread started: ${activeThreadId} (priming deferred to first user turn)`);
+    console.log(`[codex-shell] new thread started: ${activeThreadId} (priming deferred to first user turn, cwd=${threadOptions.workingDirectory})`);
   } else {
-    console.log("[codex-shell] new thread started (priming deferred to first user turn)");
+    console.log(`[codex-shell] new thread started (priming deferred to first user turn, cwd=${threadOptions.workingDirectory})`);
   }
 
   return activeThread;
@@ -627,6 +660,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
     persistent = false,
     sessionId = null,
     mode = null,
+    cwd = null,
   } = options;
 
   agentSdk = resolveAgentSdkConfig({ reload: true });
@@ -651,9 +685,13 @@ export async function execCodexPrompt(userMessage, options = {}) {
 
   try {
     const streamSafety = resolveCodexStreamSafety(timeoutMs);
+    const requestedWorkingDirectory = normalizeWorkingDirectory(cwd);
+
     if (!persistent) {
       // Task executor path — keep existing fresh-thread behavior
       activeThread = null;
+      activeWorkingDirectory =
+        requestedWorkingDirectory || DEFAULT_WORKING_DIRECTORY;
     } else if (sessionId && sessionId !== currentSessionId) {
       // Switching to a different persistent session
       await loadSession(sessionId);
@@ -668,6 +706,24 @@ export async function execCodexPrompt(userMessage, options = {}) {
       turnCount = 0;
     }
     // else: persistent && same session && under limit → reuse activeThread
+
+    if (
+      requestedWorkingDirectory &&
+      requestedWorkingDirectory !== getWorkingDirectory()
+    ) {
+      activeWorkingDirectory = requestedWorkingDirectory;
+      activeThread = null;
+      activeThreadId = null;
+      turnCount = 0;
+      threadNeedsPriming = false;
+      await saveState();
+      if (persistent && currentSessionId) {
+        await saveCurrentSession();
+      }
+      console.log(
+        `[codex-shell] switched working directory to ${requestedWorkingDirectory} for session ${currentSessionId || "(ephemeral)"}`,
+      );
+    }
 
     // ── Mode detection ───────────────────────────────────────────────────
     // "ask" mode should be lightweight — no heavy executor framing that
@@ -960,6 +1016,7 @@ export async function resetThread() {
   turnCount = 0;
   activeTurn = null;
   currentSessionId = null;
+  activeWorkingDirectory = DEFAULT_WORKING_DIRECTORY;
   threadNeedsPriming = false;
   await saveState();
   console.log("[codex-shell] thread reset");
