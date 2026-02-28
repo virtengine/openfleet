@@ -568,13 +568,13 @@ export function LogsTab() {
           class="btn btn-ghost btn-sm"
           onClick=${() => copyToClipboard(filteredLogText, "Logs")}
         >
-          ${iconText("📋 Copy")}
+          ${iconText(":clipboard: Copy")}
         </button>
         <button
           class="btn btn-ghost btn-sm"
           onClick=${downloadLogs}
         >
-          ${iconText("💾 Download")}
+          ${iconText(":save: Download")}
         </button>
       </div>
     <//>
@@ -591,7 +591,7 @@ export function LogsTab() {
           }}
         />
         <button class="btn btn-secondary btn-sm" onClick=${handleAgentSearch}>
-          ${iconText("🔍 Search")}
+          ${iconText(":search: Search")}
         </button>
       </div>
       <div class="range-row mb-md">
@@ -647,7 +647,7 @@ export function LogsTab() {
           class="btn btn-ghost btn-sm"
           onClick=${() => copyToClipboard(rawTailText, "Log tail")}
         >
-          ${iconText("📋 Copy")}
+          ${iconText(":clipboard: Copy")}
         </button>
       </div>
     <//>
@@ -665,7 +665,7 @@ export function LogsTab() {
           }}
         />
         <button class="btn btn-secondary btn-sm" onClick=${handleContextLoad}>
-          ${iconText("📂 Load")}
+          ${iconText(":folder: Load")}
         </button>
       </div>
       <div class="log-box">
@@ -698,7 +698,7 @@ export function LogsTab() {
                 "Context",
               )}
           >
-            ${iconText("📋 Copy")}
+            ${iconText(":clipboard: Copy")}
           </button>
         </div>
       `}
@@ -720,7 +720,7 @@ export function LogsTab() {
           class="btn btn-ghost btn-sm"
           onClick=${() => copyToClipboard(gitDiff?.value || "", "Diff")}
         >
-          ${iconText("📋 Copy")}
+          ${iconText(":clipboard: Copy")}
         </button>
       </div>
       <div class="log-box mb-md">
@@ -766,19 +766,19 @@ export function LogsTab() {
           <div class="btn-row mb-sm">
             ${(branchDetail.workspaceTarget || branchDetail.activeSlot || branchDetail.worktree) &&
             html`<button class="btn btn-primary btn-sm" onClick=${() => openWorkspace(branchDetail)}>
-              ${iconText("🔍 Open Workspace Viewer")}
+              ${iconText(":search: Open Workspace Viewer")}
             </button>`}
             ${branchDetail.workspaceLink?.url &&
             html`<button
               class="btn btn-secondary btn-sm"
               onClick=${() => openLink(branchDetail.workspaceLink.url)}
             >
-              ${iconText("🔗 Open Workspace Link")}
+              ${iconText(":link: Open Workspace Link")}
             </button>`}
             <button
               class="btn btn-ghost btn-sm"
               onClick=${() => copyToClipboard(branchDetail.diffStat || "", "Diff")}
-            >${iconText("📋 Copy Diff")}</button>
+            >${iconText(":clipboard: Copy Diff")}</button>
           </div>
           ${workspaceLink &&
           html`

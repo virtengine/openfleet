@@ -90,36 +90,153 @@ function normalizePreview(content) {
   return text.slice(0, 100);
 }
 
+function canonicalMessageKind(msg) {
+  const role = String(msg?.role || "").trim().toLowerCase();
+  const type = String(msg?.type || "").trim().toLowerCase();
+  if (
+    role === "assistant" ||
+    type === "agent_message" ||
+    type === "assistant" ||
+    type === "assistant_message"
+  ) {
+    return "assistant";
+  }
+  if (role === "user" || type === "user") return "user";
+  if (type === "tool_call") return "tool_call";
+  if (type === "tool_result" || type === "tool_output") return "tool_result";
+  if (type === "error" || type === "stream_error") return "error";
+  if (role === "system" || type === "system") return "system";
+  return `${role || "unknown"}:${type || "message"}`;
+}
+
+function messageBody(msg) {
+  const value = msg?.content ?? msg?.text ?? "";
+  return String(value || "").trim();
+}
+
+function isLifecycleSystemMessage(msg) {
+  if (canonicalMessageKind(msg) !== "system") return false;
+  const lifecycle = String(msg?.meta?.lifecycle || "").trim().toLowerCase();
+  if (lifecycle) return true;
+  const content = messageBody(msg).toLowerCase();
+  if (!content) return true;
+  return (
+    content === "turn completed" ||
+    content === "session completed" ||
+    content === "agent is composing a response..." ||
+    content === "agent is composing a response…" ||
+    content.startsWith("message_stop") ||
+    content.startsWith("message_delta")
+  );
+}
+
+function reconnectFingerprint(content) {
+  const text = String(content || "").trim();
+  if (!text) return "";
+  const lower = text.toLowerCase();
+  if (!lower.includes("stream disconnected")) return "";
+  return lower
+    .replace(/reconnecting\.\.\.\s*\d+\s*\/\s*\d+/g, "reconnecting... n/n")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isDecorativeLine(text) {
+  const compact = String(text || "").replace(/\s+/g, "");
+  if (!compact) return true;
+  if (/^[\-=_*`~.·•]+$/.test(compact)) return true;
+  if (/^[\u2500-\u257f]+$/u.test(compact)) return true;
+  return false;
+}
+
 function dedupeMessages(messages) {
   const list = Array.isArray(messages) ? messages : [];
   const out = [];
   const seenExact = new Set();
+  const recentAssistantContentTs = new Map();
+  const reconnectIndexByFingerprint = new Map();
   for (const msg of list) {
     if (!msg) continue;
-    const role = String(msg.role || "");
-    const type = String(msg.type || "");
-    const content = String(msg.content || msg.text || "").trim();
+    const kind = canonicalMessageKind(msg);
+    const content = messageBody(msg);
+    if (!content && kind !== "user") continue;
+    if (isLifecycleSystemMessage(msg)) continue;
+    if (kind === "system" && isDecorativeLine(content)) continue;
+    if (
+      kind === "assistant" &&
+      content.length <= 2 &&
+      !/[a-z0-9]/i.test(content)
+    ) {
+      continue;
+    }
     const ts = Date.parse(msg.timestamp || 0) || 0;
-    const exactKey = `${role}|${type}|${content}|${ts}`;
+    const exactKey = `${kind}|${content}|${ts}`;
     if (seenExact.has(exactKey)) continue;
+    const reconnectKey = kind === "error" ? reconnectFingerprint(content) : "";
+    const normalizedMsg =
+      reconnectKey && !msg.id ? { ...msg, id: `reconnect:${reconnectKey}` } : msg;
+    if (reconnectKey) {
+      const existingIndex = reconnectIndexByFingerprint.get(reconnectKey);
+      if (Number.isInteger(existingIndex) && existingIndex >= 0 && existingIndex < out.length) {
+        const existing = out[existingIndex];
+        out[existingIndex] = existing?.id
+          ? { ...normalizedMsg, id: existing.id }
+          : normalizedMsg;
+        seenExact.add(exactKey);
+        continue;
+      }
+    }
+    if (kind === "assistant" && content) {
+      while (out.length > 0 && isLifecycleSystemMessage(out[out.length - 1])) {
+        out.pop();
+      }
+      const lastAssistant = out[out.length - 1];
+      if (lastAssistant && canonicalMessageKind(lastAssistant) === "assistant") {
+        const lastTs = Date.parse(lastAssistant.timestamp || 0) || 0;
+        const withinStreamingWindow =
+          ts > 0 && lastTs > 0 ? Math.abs(ts - lastTs) <= 120000 : true;
+        if (withinStreamingWindow) {
+          out[out.length - 1] = lastAssistant?.id
+            ? { ...normalizedMsg, id: lastAssistant.id }
+            : normalizedMsg;
+          recentAssistantContentTs.set(content, ts);
+          seenExact.add(exactKey);
+          continue;
+        }
+      }
+      const prevAssistantTs = recentAssistantContentTs.get(content);
+      if (prevAssistantTs !== undefined) {
+        const withinAssistantWindow =
+          ts > 0 && prevAssistantTs > 0
+            ? Math.abs(ts - prevAssistantTs) <= 5000
+            : true;
+        if (withinAssistantWindow) continue;
+      }
+    }
     const last = out[out.length - 1];
     if (last) {
-      const lastRole = String(last.role || "");
-      const lastType = String(last.type || "");
+      const lastKind = canonicalMessageKind(last);
       const lastContent = String(last.content || last.text || "").trim();
       const lastTs = Date.parse(last.timestamp || 0) || 0;
+      const withinDuplicateWindow =
+        ts > 0 && lastTs > 0 ? Math.abs(ts - lastTs) <= 5000 : true;
       if (
         content &&
-        lastRole === role &&
-        lastType === type &&
+        lastKind === kind &&
         lastContent === content &&
-        Math.abs(ts - lastTs) <= 5000
+        withinDuplicateWindow
       ) {
         continue;
       }
     }
     seenExact.add(exactKey);
-    out.push(msg);
+    out.push(normalizedMsg);
+    if (reconnectKey) {
+      reconnectIndexByFingerprint.set(reconnectKey, out.length - 1);
+    }
+    if (kind === "assistant" && content) {
+      recentAssistantContentTs.set(content, ts);
+    }
   }
   return out;
 }
@@ -405,7 +522,7 @@ function SwipeableSessionItem({
                 onClick=${handleResume}
                 title="Unarchive"
               >
-                <span class="session-action-icon">↩</span>
+                <span class="session-action-icon">:workflow:</span>
                 <span class="session-action-label">Restore</span>
               </button>
             `
@@ -415,7 +532,7 @@ function SwipeableSessionItem({
                 onClick=${handleArchive}
                 title="Archive session"
               >
-                <span class="session-action-icon">${resolveIcon("📦")}</span>
+                <span class="session-action-icon">${resolveIcon(":box:")}</span>
                 <span class="session-action-label">Archive</span>
               </button>
             `}
@@ -424,7 +541,7 @@ function SwipeableSessionItem({
           onClick=${handleDelete}
           title=${confirmDelete ? "Confirm delete" : "Delete session"}
         >
-          <span class="session-action-icon">${resolveIcon(confirmDelete ? "⚠️" : "🗑")}</span>
+          <span class="session-action-icon">${resolveIcon(confirmDelete ? ":alert:" : ":trash:")}</span>
           <span class="session-action-label">${confirmDelete ? "Sure?" : "Delete"}</span>
         </button>
       </div>
@@ -636,7 +753,7 @@ export function SessionList({
           <span class="session-list-title">Sessions</span>
         </div>
         <div class="session-empty">
-          <div class="session-empty-icon">${resolveIcon("📡")}</div>
+          <div class="session-empty-icon">${resolveIcon(":server:")}</div>
           <div class="session-empty-text">Sessions not available</div>
           <button class="btn btn-primary btn-sm" onClick=${handleRetry}>
             Retry
@@ -701,7 +818,7 @@ export function SessionList({
         ${filtered.length === 0 &&
         html`
           <div class="session-empty">
-            <div class="session-empty-icon">${resolveIcon("💬")}</div>
+            <div class="session-empty-icon">${resolveIcon(":chat:")}</div>
             <div class="session-empty-text">
               ${hasSearch ? "No matching sessions" : "No sessions yet"}
               <div class="session-empty-subtext">

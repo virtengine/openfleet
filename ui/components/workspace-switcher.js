@@ -312,12 +312,12 @@ function WorkspaceCard({ ws }) {
             onClick=${handlePull}
             disabled=${pulling}
             title="Pull all repos"
-          >${pulling ? html`<${Spinner} /> Pulling` : iconText("🔄 Pull")}</button>
+          >${pulling ? html`<${Spinner} /> Pulling` : iconText(":refresh: Pull")}</button>
           <button
             class="ws-manager-btn ghost sm danger-text"
             onClick=${() => { haptic("light"); setDelConfirm(true); }}
             title="Delete workspace"
-          >${resolveIcon("🗑")}</button>
+          >${resolveIcon(":trash:")}</button>
         </div>
       </div>
 
@@ -425,7 +425,7 @@ export function WorkspaceManager({ open, onClose }) {
           onClick=${handleScan}
           disabled=${scanning}
           title="Scan disk for workspaces"
-        >${scanning ? "Scanning…" : iconText("🔍 Scan Disk")}</button>
+        >${scanning ? "Scanning…" : iconText(":search: Scan Disk")}</button>
       </div>
 
       ${loading && !wsList.length

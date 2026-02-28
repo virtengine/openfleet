@@ -105,12 +105,18 @@ import {
   sessionsData,
   initSessionWsListener,
 } from "./components/session-list.js";
+import {
+  activeAgent,
+  agentMode,
+  selectedModel,
+} from "./components/agent-selector.js";
 import { WorkspaceSwitcher } from "./components/workspace-switcher.js";
 import { DiffViewer } from "./components/diff-viewer.js";
 import {
   CommandPalette,
   useCommandPalette,
 } from "./components/command-palette.js";
+import { VoiceOverlay } from "./modules/voice-overlay.js";
 
 /* ── Tab imports ── */
 import { DashboardTab } from "./tabs/dashboard.js";
@@ -387,7 +393,7 @@ class TabErrorBoundary extends Component {
       return html`
         <div class="tab-error-boundary">
           <div class="tab-error-pulse">
-            <span style="font-size:20px;color:#ef4444;">${resolveIcon("⚠")}</span>
+            <span style="font-size:20px;color:#ef4444;">${resolveIcon(":alert:")}</span>
           </div>
           <div>
             <div style="font-size:14px;font-weight:600;margin-bottom:4px;color:var(--text-primary);">
@@ -533,10 +539,10 @@ function SidebarNav({ collapsed = false, onToggle }) {
       ${!collapsed && html`
         <div class="sidebar-actions">
           <button class="btn btn-primary btn-block" onClick=${() => createSession({ type: "primary" })}>
-            <span class="btn-icon">${resolveIcon("➕")}</span> New Session
+            <span class="btn-icon">${resolveIcon(":plus:")}</span> New Session
           </button>
           <button class="btn btn-ghost btn-block" onClick=${() => navigateTo("tasks")}>
-            <span class="btn-icon">${resolveIcon("📋")}</span> View Tasks
+            <span class="btn-icon">${resolveIcon(":clipboard:")}</span> View Tasks
           </button>
         </div>
       `}
@@ -547,7 +553,7 @@ function SidebarNav({ collapsed = false, onToggle }) {
             onClick=${() => createSession({ type: "primary" })}
             title="New Session"
             aria-label="New Session"
-          >${resolveIcon("➕")}</button>
+          >${resolveIcon(":plus:")}</button>
         </div>
       `}
       <nav class="sidebar-nav" aria-label="Main navigation">
@@ -1025,25 +1031,25 @@ function MoreSheet({ open, onClose, onNavigate, onOpenBot }) {
  * ═══════════════════════════════════════════════ */
 const BOT_SCREENS = {
   home: {
-    title: "🎛️ Bosun Control Center",
+    title: ":sliders: Bosun Control Center",
     body: "Manage your automation fleet.",
     keyboard: [
-      [{ text: "📊 Status", cmd: "/status" }, { text: "📋 Tasks", cmd: "/tasks" }, { text: "🤖 Agents", cmd: "/agents" }],
-      [{ text: "⚙️ Executor", go: "executor" }, { text: "🛰 Routing", go: "routing" }, { text: "🌳 Workspaces", go: "workspaces" }],
-      [{ text: "📁 Logs", cmd: "/logs" }, { text: "🏥 Health", cmd: "/health" }, { text: "🔄 Refresh", cmd: "/status" }],
+      [{ text: ":chart: Status", cmd: "/status" }, { text: ":clipboard: Tasks", cmd: "/tasks" }, { text: ":bot: Agents", cmd: "/agents" }],
+      [{ text: ":settings: Executor", go: "executor" }, { text: ":server: Routing", go: "routing" }, { text: ":git: Workspaces", go: "workspaces" }],
+      [{ text: ":folder: Logs", cmd: "/logs" }, { text: ":heart: Health", cmd: "/health" }, { text: ":refresh: Refresh", cmd: "/status" }],
     ],
   },
   executor: {
-    title: "⚙️ Executor",
+    title: ":settings: Executor",
     parent: "home",
     body: "Task execution slots, pause, resume, and parallelism.",
     keyboard: [
-      [{ text: "📊 Status", cmd: "/executor" }, { text: "⏸ Pause", cmd: "/pause" }, { text: "▶️ Resume", cmd: "/resume" }],
-      [{ text: "🔢 Max Parallel", go: "maxparallel" }, { text: "🔁 Retry Active", cmd: "/retrytask" }],
+      [{ text: ":chart: Status", cmd: "/executor" }, { text: ":pause: Pause", cmd: "/pause" }, { text: ":play: Resume", cmd: "/resume" }],
+      [{ text: ":hash: Max Parallel", go: "maxparallel" }, { text: ":repeat: Retry Active", cmd: "/retrytask" }],
     ],
   },
   maxparallel: {
-    title: "🔢 Max Parallel Slots",
+    title: ":hash: Max Parallel Slots",
     parent: "executor",
     body: "Set the maximum number of concurrent task slots.",
     keyboard: [
@@ -1053,25 +1059,25 @@ const BOT_SCREENS = {
     ],
   },
   routing: {
-    title: "🛰 Routing & SDKs",
+    title: ":server: Routing & SDKs",
     parent: "home",
     body: "SDK routing, kanban binding, and version info.",
     keyboard: [
-      [{ text: "🤖 SDK Status", cmd: "/sdk" }, { text: "📋 Kanban", cmd: "/kanban" }],
-      [{ text: "🌐 Version", cmd: "/version" }, { text: "❓ Help", cmd: "/help" }],
+      [{ text: ":bot: SDK Status", cmd: "/sdk" }, { text: ":clipboard: Kanban", cmd: "/kanban" }],
+      [{ text: ":globe: Version", cmd: "/version" }, { text: ":help: Help", cmd: "/help" }],
     ],
   },
   workspaces: {
-    title: "🌳 Workspaces",
+    title: ":git: Workspaces",
     parent: "home",
     body: "Git worktrees, logs, and task planning.",
     keyboard: [
-      [{ text: "📊 Fleet Status", cmd: "/status" }, { text: "📁 Logs", cmd: "/logs" }],
-      [{ text: "🗺️ Planner", go: "planner" }, { text: "✅ Start Task", cmd: "/starttask" }],
+      [{ text: ":chart: Fleet Status", cmd: "/status" }, { text: ":folder: Logs", cmd: "/logs" }],
+      [{ text: ":grid: Planner", go: "planner" }, { text: ":check: Start Task", cmd: "/starttask" }],
     ],
   },
   planner: {
-    title: "🗺️ Task Planner",
+    title: ":grid: Task Planner",
     parent: "workspaces",
     body: "Seed new tasks from the backlog into the active queue.",
     keyboard: [
@@ -1143,7 +1149,7 @@ function BotControlsSheet({ open, onClose }) {
         } else if (d?.executed === false && d?.error) {
           setCmdError(d.error);
         } else {
-          setCmdOutput(`✅ ${cmd} sent.`);
+          setCmdOutput(`:check: ${cmd} sent.`);
         }
       } else {
         setCmdError(result?.error || "Command failed");
@@ -1170,7 +1176,7 @@ function BotControlsSheet({ open, onClose }) {
             </button>
             ${navStack.length > 1 ? html`
               <button class="btn btn-ghost btn-sm" type="button" onClick=${botGoHome} aria-label="Go to home">
-                ${iconText("🏠 Home")}
+                ${iconText(":home: Home")}
               </button>
             ` : null}
           </div>
@@ -1186,7 +1192,7 @@ function BotControlsSheet({ open, onClose }) {
         ` : null}
 
         ${cmdError && !cmdLoading ? html`
-          <div class="bot-controls-result bot-controls-result-error">${iconText(`❌ ${cmdError}`)}</div>
+          <div class="bot-controls-result bot-controls-result-error">${iconText(`:close: ${cmdError}`)}</div>
         ` : null}
 
         ${cmdOutput && !cmdLoading && !cmdError ? html`
@@ -1246,6 +1252,12 @@ function App() {
     return () => {};
   }, [isLoading]);
   const [isMoreOpen, setIsMoreOpen] = useState(false);
+  const [voiceOverlayOpen, setVoiceOverlayOpen] = useState(false);
+  const [voiceTier, setVoiceTier] = useState(2);
+  const [voiceSessionId, setVoiceSessionId] = useState(null);
+  const [voiceExecutor, setVoiceExecutor] = useState(null);
+  const [voiceAgentMode, setVoiceAgentMode] = useState(null);
+  const [voiceModel, setVoiceModel] = useState(null);
   const resizeRef = useRef(null);
   const [isCompactNav, setIsCompactNav] = useState(() => {
     const win = globalThis.window;
@@ -1539,6 +1551,70 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const handleOpenVoiceMode = async (event) => {
+      try {
+        const currentExecutor =
+          String(event?.detail?.executor || activeAgent.value || "").trim() ||
+          null;
+        const currentMode =
+          String(event?.detail?.mode || agentMode.value || "").trim() || null;
+        const currentModel =
+          String(event?.detail?.model || selectedModel.value || "").trim() ||
+          null;
+        const explicitSessionId =
+          String(event?.detail?.sessionId || "").trim() || null;
+        let currentSessionId =
+          explicitSessionId ||
+          (selectedSessionId.value ? String(selectedSessionId.value) : null);
+
+        // Ensure voice calls always bind to a real chat session so transcript +
+        // delegated agent output are persisted in shared history.
+        if (!currentSessionId) {
+          const created = await createSession({
+            type: "primary",
+            agent: currentExecutor || undefined,
+            mode: currentMode || undefined,
+            model: currentModel || undefined,
+          });
+          const createdId = String(created?.session?.id || "").trim();
+          currentSessionId = createdId || null;
+          if (currentSessionId) {
+            selectedSessionId.value = currentSessionId;
+          }
+        }
+
+        if (!currentSessionId) {
+          showToast("Could not create a chat session for voice mode.", "error");
+          return;
+        }
+
+        setVoiceSessionId(currentSessionId);
+        setVoiceExecutor(currentExecutor);
+        setVoiceAgentMode(currentMode);
+        setVoiceModel(currentModel);
+
+        const response = await fetch("/api/voice/config", { method: "GET" });
+        const cfg = response.ok ? await response.json() : null;
+        if (!cfg?.available) {
+          showToast(cfg?.reason || "Voice mode is not available.", "error");
+          return;
+        }
+        setVoiceTier(Number(cfg?.tier) === 1 ? 1 : 2);
+        setVoiceOverlayOpen(true);
+      } catch (err) {
+        showToast(
+          `Could not open voice mode: ${err?.message || "unknown error"}`,
+          "error",
+        );
+      }
+    };
+
+    globalThis.addEventListener?.("ve:open-voice-mode", handleOpenVoiceMode);
+    return () =>
+      globalThis.removeEventListener?.("ve:open-voice-mode", handleOpenVoiceMode);
+  }, []);
+
+  useEffect(() => {
     const el = mainRef.current;
     if (!el) return;
     const handleScroll = () => {
@@ -1668,7 +1744,7 @@ function App() {
           onClick=${toggleInspector}
           aria-label=${inspectorToggleLabel}
         >
-          ${iconText("📋 Inspector")}
+          ${iconText(":clipboard: Inspector")}
         </button>
       `
     : null;
@@ -1798,6 +1874,15 @@ function App() {
     <${BotControlsSheet}
       open=${isBotOpen}
       onClose=${closeBot}
+    />
+    <${VoiceOverlay}
+      visible=${voiceOverlayOpen}
+      onClose=${() => setVoiceOverlayOpen(false)}
+      tier=${voiceTier}
+      sessionId=${voiceSessionId}
+      executor=${voiceExecutor}
+      mode=${voiceAgentMode}
+      model=${voiceModel}
     />
   `;
 }

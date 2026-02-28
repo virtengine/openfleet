@@ -83,11 +83,11 @@
     // ── CI results ──
     { log: `${C.dim('[14:44:02]')} ${C.dim('[  ✓ ]')}  ${C.bold('#43')} PR #188 — ${C.green('all checks passed')} ${C.dim('(lint ✓  build ✓  test ✓)')}`, delay: 600 },
     { log: `${C.dim('[14:44:05]')} ${C.dim('[MERGE]')} ${C.bold('#43')} PR #188 merged to main ${C.green('✓')}`, delay: 300 },
-    { log: `${C.dim('[14:44:06]')} ${C.dim('[telegram]')} notified: ✅ PR #188 merged`, delay: 200 },
+    { log: `${C.dim('[14:44:06]')} ${C.dim('[telegram]')} notified: :check: PR #188 merged`, delay: 200 },
     { log: '', delay: 200 },
     { log: `${C.dim('[14:45:11]')} ${C.dim('[  ✓ ]')}  ${C.bold('#42')} PR #187 — ${C.green('all checks passed')} ${C.dim('(lint ✓  build ✓  test ✓)')}`, delay: 500 },
     { log: `${C.dim('[14:45:14]')} ${C.dim('[MERGE]')} ${C.bold('#42')} PR #187 merged to main ${C.green('✓')}`, delay: 300 },
-    { log: `${C.dim('[14:45:15]')} ${C.dim('[telegram]')} notified: ✅ PR #187 merged`, delay: 200 },
+    { log: `${C.dim('[14:45:15]')} ${C.dim('[telegram]')} notified: :check: PR #187 merged`, delay: 200 },
     { log: '', delay: 400 },
     // ── Polling cycle 2 ──
     { log: `${C.dim('[14:46:00]')} ${C.dim('[monitor]')} polling github board — checking for new work...`, delay: 500 },
@@ -454,7 +454,7 @@
         // Check for exact match first
         let handler = COMMANDS[command] || COMMANDS[command.toLowerCase()];
 
-        // Try normalized matching: "bosun --flag" ↔ "--flag"
+        // Try normalized matching: "bosun --flag" :workflow: "--flag"
         if (!handler) {
           const lower = command.toLowerCase().trim();
           // If user typed "bosun --something", try as-is and stripped
@@ -504,7 +504,7 @@
     if (greeting) {
       term.echo('');
       term.echo(`  ${C.dim('┌──────────────────────────────────────────────────┐')}`);
-      term.echo(`  ${C.dim('│')}  ${C.cyan('⚡')} ${C.bold('Bosun Interactive Demo')}                    ${C.dim('│')}`);
+      term.echo(`  ${C.dim('│')}  ${C.cyan(':zap:')} ${C.bold('Bosun Interactive Demo')}                    ${C.dim('│')}`);
       term.echo(`  ${C.dim('│')}  ${C.dim('Type')} ${C.cyan('help')} ${C.dim('for commands, or watch the auto-demo')}  ${C.dim('│')}`);
       term.echo(`  ${C.dim('└──────────────────────────────────────────────────┘')}`);
       term.echo('');

@@ -223,41 +223,39 @@ export function useVoiceInput(onTranscript, opts = {}) {
   return { listening, supported, start, stop, toggle, error };
 }
 
+export function requestVoiceModeOpen(detail = {}) {
+  try {
+    globalThis.dispatchEvent?.(new CustomEvent("ve:open-voice-mode", { detail }));
+  } catch {
+    // no-op
+  }
+}
+
 /* ─── VoiceMicButton component ─────────────────────────────────
  *
- * @param {{ onTranscript: (text: string) => void,
- *            disabled?: boolean,
- *            title?: string,
- *            className?: string,
- *            size?: 'sm' | 'md' }} props
+ * In v0.36+, all in-app mic actions open the real voice mode overlay.
  */
 export function VoiceMicButton({ onTranscript, disabled = false, title, className = "", size = "md" }) {
-  const { listening, supported, toggle, error } = useVoiceInput(
-    (text) => {
-      haptic("light");
-      onTranscript(text);
-    },
-    {},
-  );
-
-  // Inject styles on first render
+  // Legacy callback kept for backward compatibility; real voice mode owns transcript flow.
+  void onTranscript;
   useEffect(() => { injectVoiceStyles(); }, []);
-
-  if (!supported) return null;
 
   const sizeClass = size === "sm" ? "mic-btn-sm" : "";
 
   return html`
     <button
       type="button"
-      class="mic-btn ${sizeClass} ${listening ? "listening" : ""} ${className}"
+      class="mic-btn ${sizeClass} ${className}"
       disabled=${disabled}
-      onClick=${() => { haptic("light"); toggle(); }}
-      title=${title || (listening ? "Stop recording" : "Voice input")}
-      aria-label=${listening ? "Stop voice recording" : "Start voice input"}
-      aria-pressed=${listening}
+      onClick=${() => {
+        haptic("light");
+        requestVoiceModeOpen();
+      }}
+      title=${title || "Live voice mode"}
+      aria-label="Open live voice mode"
+      aria-pressed="false"
     >
-      ${resolveIcon(listening ? "⏹" : "🎤")}
+      ${resolveIcon(":mic:")}
     </button>
   `;
 }
@@ -266,29 +264,24 @@ export function VoiceMicButton({ onTranscript, disabled = false, title, classNam
  *  Positioned absolutely inside a .input-with-mic or .textarea-with-mic wrapper.
  */
 export function VoiceMicButtonInline({ onTranscript, disabled = false }) {
-  const { listening, supported, toggle } = useVoiceInput(
-    (text) => {
-      haptic("light");
-      onTranscript(text);
-    },
-    {},
-  );
-
+  void onTranscript;
   useEffect(() => { injectVoiceStyles(); }, []);
-
-  if (!supported) return null;
 
   return html`
     <button
       type="button"
-      class="mic-btn mic-btn-sm mic-btn-inline ${listening ? "listening" : ""}"
+      class="mic-btn mic-btn-sm mic-btn-inline"
       disabled=${disabled}
-      onClick=${(e) => { e.stopPropagation(); haptic("light"); toggle(); }}
-      title=${listening ? "Stop recording" : "Voice input"}
-      aria-label=${listening ? "Stop" : "Voice"}
-      aria-pressed=${listening}
+      onClick=${(e) => {
+        e.stopPropagation();
+        haptic("light");
+        requestVoiceModeOpen();
+      }}
+      title="Live voice mode"
+      aria-label="Open live voice mode"
+      aria-pressed="false"
     >
-      ${resolveIcon(listening ? "⏹" : "🎤")}
+      ${resolveIcon(":mic:")}
     </button>
   `;
 }
