@@ -22,18 +22,18 @@
  */
 
 export const CATEGORIES = [
-  { id: "telegram",  label: "Telegram Bot",        icon: ":phone:", description: "Bot token, chat, polling, and notification settings" },
-  { id: "miniapp",   label: "Mini App / UI",        icon: ":monitor:", description: "Web UI server, port, auth, and tunnel settings" },
-  { id: "executor",  label: "Executor / AI",        icon: ":cpu:", description: "Agent execution, SDK selection, parallelism, and timeouts" },
-  { id: "voice",     label: "Voice Assistant",      icon: ":mic:", description: "Real-time voice mode, provider keys, model, and voice settings" },
-  { id: "kanban",    label: "Kanban / Tasks",        icon: ":clipboard:", description: "Task backend, sync, labels, and project mapping" },
-  { id: "github",    label: "GitHub / Git",          icon: ":git:", description: "Repository, auth, PR, merge, and reconciliation settings" },
-  { id: "network",   label: "Network / Tunnel",      icon: ":globe:", description: "Cloudflare tunnel, presence, and multi-instance coordination" },
-  { id: "security",  label: "Security / Sandbox",    icon: ":shield:", description: "Sandbox mode, container isolation, and permissions" },
-  { id: "sentinel",  label: "Sentinel / Reliability", icon: ":link:", description: "Auto-restart, crash recovery, and repair agent settings" },
-  { id: "hooks",     label: "Agent Hooks",           icon: ":link:", description: "Pre-push, pre-commit, and lifecycle hook configuration" },
-  { id: "logging",   label: "Logging / Monitoring",  icon: ":chart:", description: "Work logs, error thresholds, cost tracking, and retention" },
-  { id: "advanced",  label: "Advanced",              icon: ":settings:", description: "Daemon, dev mode, paths, and low-level tuning" },
+  { id: "telegram",  label: "Telegram Bot",         icon: "phone", description: "Bot token, chat, polling, and notification settings" },
+  { id: "miniapp",   label: "Mini App / UI",        icon: "monitor", description: "Web UI server, port, auth, and tunnel settings" },
+  { id: "executor",  label: "Executor / AI",        icon: "cpu", description: "Agent execution, SDK selection, parallelism, and timeouts" },
+  { id: "voice",     label: "Voice Assistant",       icon: "headphones", description: "Real-time voice mode, provider keys, model, and voice settings" },
+  { id: "kanban",    label: "Kanban / Tasks",       icon: "clipboard", description: "Task backend, sync, labels, and project mapping" },
+  { id: "github",    label: "GitHub / Git",         icon: "git", description: "Repository, auth, PR, merge, and reconciliation settings" },
+  { id: "network",   label: "Network / Tunnel",     icon: "globe", description: "Cloudflare tunnel, presence, and multi-instance coordination" },
+  { id: "security",  label: "Security / Sandbox",   icon: "shield", description: "Sandbox mode, container isolation, and permissions" },
+  { id: "sentinel",  label: "Sentinel / Reliability", icon: "link", description: "Auto-restart, crash recovery, and repair agent settings" },
+  { id: "hooks",     label: "Agent Hooks",          icon: "link", description: "Pre-push, pre-commit, and lifecycle hook configuration" },
+  { id: "logging",   label: "Logging / Monitoring", icon: "chart", description: "Work logs, error thresholds, cost tracking, and retention" },
+  { id: "advanced",  label: "Advanced",             icon: "settings", description: "Daemon, dev mode, paths, and low-level tuning" },
 ];
 
 /** @type {SettingDef[]} */
@@ -63,8 +63,8 @@ export const SETTINGS_SCHEMA = [
   { key: "TELEGRAM_UI_HOST",               label: "Bind Host",                  category: "miniapp", type: "string",  defaultVal: "0.0.0.0", description: "Network interface to bind. Use 127.0.0.1 for local-only access.", restart: true },
   { key: "TELEGRAM_UI_PUBLIC_HOST",        label: "Public Host",                category: "miniapp", type: "string",  description: "Public hostname if behind a reverse proxy. Auto-detected if not set." },
   { key: "TELEGRAM_UI_BASE_URL",           label: "Base URL Override",          category: "miniapp", type: "string",  description: "Full public URL (e.g., https://my-domain.com). Takes precedence over auto-detection.", validate: "^https?://" },
-  { key: "TELEGRAM_UI_ALLOW_UNSAFE",       label: ":ban: Allow Unsafe (No Auth)",  category: "miniapp", type: "boolean", defaultVal: false, description: ":ban: DANGER: Disables ALL authentication. Anyone with your URL can control agents, read secrets, and execute code on your machine. Combined with a tunnel, this exposes your machine to the ENTIRE INTERNET. Only enable for localhost-only debugging with tunnel DISABLED.", restart: true, danger: true },
-  { key: "_UNSAFE_TUNNEL_WARNING",          label: "",                            category: "miniapp", type: "info",    description: ":dot: WARNING: If 'Allow Unsafe' is ON and 'Tunnel Mode' is not disabled, your UI is publicly accessible with ZERO authentication. This is a critical security risk." },
+  { key: "TELEGRAM_UI_ALLOW_UNSAFE",       label: "Allow Unsafe (No Auth)",      category: "miniapp", type: "boolean", defaultVal: false, description: "DANGER: Disables ALL authentication. Anyone with your URL can control agents, read secrets, and execute code on your machine. Combined with a tunnel, this exposes your machine to the ENTIRE INTERNET. Only enable for localhost-only debugging with tunnel DISABLED.", restart: true, danger: true },
+  { key: "_UNSAFE_TUNNEL_WARNING",          label: "",                            category: "miniapp", type: "info",    description: "WARNING: If 'Allow Unsafe' is ON and 'Tunnel Mode' is not disabled, your UI is publicly accessible with ZERO authentication. This is a critical security risk." },
   { key: "TELEGRAM_UI_AUTH_MAX_AGE_SEC",   label: "Auth Token Max Age",         category: "miniapp", type: "number",  defaultVal: 86400, min: 300, max: 604800, unit: "sec", description: "Maximum age for Telegram initData tokens before they expire." },
   { key: "TELEGRAM_UI_TUNNEL",             label: "Tunnel Mode",                category: "miniapp", type: "select",  defaultVal: "auto", options: ["auto", "cloudflared", "disabled"], description: "Cloudflare tunnel mode. 'auto' starts tunnel if cloudflared is available.", restart: true },
 
@@ -78,6 +78,11 @@ export const SETTINGS_SCHEMA = [
   { key: "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED", label: "PR Review Agent",    category: "executor", type: "boolean", defaultVal: true, description: "Enable automatic PR review handoff after task completion." },
   { key: "INTERNAL_EXECUTOR_REPLENISH_ENABLED", label: "Auto Replenish Backlog", category: "executor", type: "boolean", defaultVal: false, description: "Automatically generate new tasks when backlog is low." },
   { key: "PRIMARY_AGENT",                  label: "Primary Agent SDK",          category: "executor", type: "select", defaultVal: "codex-sdk", options: ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"], description: "Which AI SDK handles primary agent sessions and chat commands." },
+  { key: "CODEX_SDK_DISABLED",             label: "Disable Codex SDK",          category: "executor", type: "boolean", defaultVal: false, description: "When true, Codex SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
+  { key: "COPILOT_SDK_DISABLED",           label: "Disable Copilot SDK",        category: "executor", type: "boolean", defaultVal: false, description: "When true, Copilot SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
+  { key: "CLAUDE_SDK_DISABLED",            label: "Disable Claude SDK",         category: "executor", type: "boolean", defaultVal: false, description: "When true, Claude SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
+  { key: "GEMINI_SDK_DISABLED",            label: "Disable Gemini SDK",         category: "executor", type: "boolean", defaultVal: false, description: "When true, Gemini SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
+  { key: "OPENCODE_SDK_DISABLED",          label: "Disable OpenCode SDK",       category: "executor", type: "boolean", defaultVal: false, description: "When true, OpenCode SDK is unavailable for chat and will not appear in the executor picker.", restart: true },
   { key: "EXECUTORS",                      label: "Executor Distribution",      category: "executor", type: "string", defaultVal: "CODEX:DEFAULT:100", description: "Weighted executor configuration. Format: TYPE:VARIANT:WEIGHT[:MODEL|MODEL],... (e.g., CODEX:DEFAULT:70:gpt-5.2-codex|gpt-5.1-codex-mini,COPILOT:CLAUDE_OPUS_4_6:30:claude-opus-4.6)", validate: "^[A-Z_]+:[A-Z_]+:\\d+" },
   { key: "EXECUTOR_DISTRIBUTION",          label: "Distribution Strategy",      category: "executor", type: "select", defaultVal: "weighted", options: ["weighted", "round-robin", "primary-only"], description: "How tasks are distributed across configured executors.", advanced: true },
   { key: "FAILOVER_STRATEGY",              label: "Failover Strategy",          category: "executor", type: "select", defaultVal: "next-in-line", options: ["next-in-line", "weighted-random", "round-robin"], description: "Strategy for selecting next executor when the primary fails.", advanced: true },
@@ -151,6 +156,12 @@ export const SETTINGS_SCHEMA = [
 
   // ── GitHub / Git ─────────────────────────────────────────
   { key: "GITHUB_TOKEN",                   label: "GitHub Token",               category: "github", type: "secret", sensitive: true, description: "Personal access token or fine-grained token for GitHub API. Required for GitHub kanban backend." },
+  { key: "BOSUN_GITHUB_CLIENT_ID",         label: "GitHub OAuth Client ID",     category: "github", type: "string", description: "OAuth client ID used for GitHub device flow sign-in in the Bosun portal." },
+  { key: "BOSUN_GITHUB_CLIENT_SECRET",     label: "GitHub OAuth Client Secret", category: "github", type: "secret", sensitive: true, description: "OAuth client secret used for GitHub web callback exchange.", advanced: true },
+  { key: "BOSUN_GITHUB_APP_ID",            label: "GitHub App ID",              category: "github", type: "string", description: "Numeric Bosun GitHub App ID used for installation token auth.", advanced: true },
+  { key: "BOSUN_GITHUB_PRIVATE_KEY_PATH",  label: "GitHub App Private Key",     category: "github", type: "string", description: "Absolute path to the Bosun GitHub App .pem private key.", advanced: true },
+  { key: "BOSUN_GITHUB_WEBHOOK_SECRET",    label: "GitHub App Webhook Secret",  category: "github", type: "secret", sensitive: true, description: "Webhook HMAC secret for validating GitHub App webhook deliveries.", advanced: true },
+  { key: "BOSUN_GITHUB_USER_TOKEN",        label: "GitHub User Token Override", category: "github", type: "secret", sensitive: true, description: "Optional direct OAuth user token override (skips auth-state lookup).", advanced: true },
   { key: "GITHUB_REPOSITORY",              label: "Repository",                 category: "github", type: "string", description: "GitHub repository in owner/repo format. Auto-detected from git remote if not set.", validate: "^[\\w.-]+/[\\w.-]+$" },
   { key: "GITHUB_PROJECT_MODE",            label: "Project Mode",               category: "github", type: "select", defaultVal: "issues", options: ["issues", "kanban"], description: "Use GitHub Issues directly, or GitHub Projects v2 kanban board." },
   { key: "GITHUB_PROJECT_NUMBER",          label: "Project Number",             category: "github", type: "number", min: 1, description: "GitHub Projects v2 number. Required when project mode is 'kanban'." },
