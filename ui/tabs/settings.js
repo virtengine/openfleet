@@ -1347,6 +1347,9 @@ function ServerConfigMode() {
         <!-- GitHub Device Flow login card -->
         ${activeCategory === "github" && html`<${GitHubDeviceFlowCard} config=${serverData} />`}
 
+        <!-- Voice Endpoints card-based editor (synced with /setup) -->
+        ${activeCategory === "voice" && html`<${VoiceEndpointsEditor} />`}
+
         <!-- Settings list for active category -->
         ${catDefs.length === 0
           ? html`
@@ -1987,6 +1990,200 @@ function AppPreferencesMode() {
           </div>
         </div>
       <//>
+    <//>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  VoiceEndpointsEditor — card-based multi-endpoint voice config
+ *  Mirrors the setup.html voice endpoints UI exactly.
+ * ═══════════════════════════════════════════════════════════════ */
+function VoiceEndpointsEditor() {
+  const [endpoints, setEndpoints] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+
+  const normalizeEp = useCallback((ep = {}, idx = 0) => ({
+    _id: ep._id ?? `ep-${idx}-${Date.now()}`,
+    name: String(ep.name || `endpoint-${idx + 1}`),
+    provider: ["azure", "openai"].includes(ep.provider) ? ep.provider : "azure",
+    endpoint: String(ep.endpoint || ""),
+    deployment: String(ep.deployment || ""),
+    model: String(ep.model || ""),
+    apiKey: String(ep.apiKey || ""),
+    voiceId: String(ep.voiceId || ""),
+    role: ["primary", "backup"].includes(ep.role) ? ep.role : "primary",
+    weight: Number(ep.weight) > 0 ? Number(ep.weight) : 1,
+    enabled: ep.enabled !== false,
+  }), []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch("/api/voice/endpoints");
+        const eps = Array.isArray(res?.voiceEndpoints) ? res.voiceEndpoints : [];
+        setEndpoints(eps.map((ep, i) => normalizeEp(ep, i)));
+      } catch (err) {
+        setLoadError(err.message || "Failed to load voice endpoints");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [normalizeEp]);
+
+  const addEndpoint = useCallback(() => {
+    setEndpoints((prev) => {
+      const next = [
+        ...prev,
+        normalizeEp(
+          { provider: "azure", role: prev.length === 0 ? "primary" : "backup" },
+          prev.length,
+        ),
+      ];
+      setDirty(true);
+      return next;
+    });
+  }, [normalizeEp]);
+
+  const removeEndpoint = useCallback((id) => {
+    setEndpoints((prev) => {
+      setDirty(true);
+      return prev.filter((ep) => ep._id !== id);
+    });
+  }, []);
+
+  const updateEndpoint = useCallback((id, field, value) => {
+    setEndpoints((prev) => {
+      setDirty(true);
+      return prev.map((ep) =>
+        ep._id === id
+          ? { ...ep, [field]: field === "weight" ? (Number(value) || 1) : value }
+          : ep,
+      );
+    });
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    try {
+      const payload = endpoints.map(({ _id, ...ep }) => ep);
+      await apiFetch("/api/voice/endpoints", {
+        method: "POST",
+        body: JSON.stringify({ voiceEndpoints: payload }),
+      });
+      setDirty(false);
+      showToast("Voice endpoints saved", "success");
+      haptic("medium");
+    } catch (err) {
+      showToast(`Save failed: ${err.message}`, "error");
+      haptic("heavy");
+    } finally {
+      setSaving(false);
+    }
+  }, [endpoints]);
+
+  if (loading) return html`<${SkeletonCard} height="80px" />`;
+
+  return html`
+    <${Card}>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div>
+          <strong>Voice Endpoints</strong>
+          <div class="meta-text" style="margin-top:2px">
+            Named endpoints with per-credential failover. Primary is tried first; backups on failure.
+          </div>
+        </div>
+        ${dirty && html`
+          <button
+            class=${`btn btn-primary btn-sm ${saving ? "btn-loading" : ""}`}
+            onClick=${handleSave}
+            disabled=${saving}
+          >
+            ${saving ? html`<${Spinner} size=${14} /> Saving…` : "Save"}
+          </button>
+        `}
+      </div>
+      ${loadError && html`
+        <div class="settings-banner settings-banner-warn" style="margin-bottom:10px">${loadError}</div>
+      `}
+      ${endpoints.map((ep) => html`
+        <div key=${ep._id} style="border:1px solid var(--border-color,rgba(255,255,255,0.1));border-radius:8px;padding:12px;margin-bottom:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+            <input
+              type="text"
+              value=${ep.name}
+              placeholder="Endpoint name"
+              style="font-weight:600;background:transparent;border:none;border-bottom:1px solid var(--border-color,rgba(255,255,255,0.15));color:inherit;width:100%;font-size:14px;padding:2px 0;outline:none"
+              onInput=${(e) => updateEndpoint(ep._id, "name", e.target.value)}
+            />
+            <button
+              class="btn btn-sm"
+              style="margin-left:8px;white-space:nowrap;opacity:0.7;flex-shrink:0"
+              onClick=${() => removeEndpoint(ep._id)}
+            >Remove</button>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div>
+              <div class="setting-row-label">Provider</div>
+              <select value=${ep.provider} onChange=${(e) => updateEndpoint(ep._id, "provider", e.target.value)}>
+                <option value="azure">Azure OpenAI</option>
+                <option value="openai">OpenAI</option>
+              </select>
+            </div>
+            <div>
+              <div class="setting-row-label">Role</div>
+              <select value=${ep.role} onChange=${(e) => updateEndpoint(ep._id, "role", e.target.value)}>
+                <option value="primary">Primary</option>
+                <option value="backup">Backup</option>
+              </select>
+            </div>
+            <div>
+              <div class="setting-row-label">Weight</div>
+              <input type="number" value=${ep.weight} min="1" max="10" style="width:70px"
+                onInput=${(e) => updateEndpoint(ep._id, "weight", e.target.value)} />
+            </div>
+            <div style="display:flex;align-items:center;padding-top:16px">
+              <${Toggle} checked=${ep.enabled} onChange=${(v) => updateEndpoint(ep._id, "enabled", v)} label="Enabled" />
+            </div>
+            <div style="grid-column:1/-1">
+              <div class="setting-row-label">API Key</div>
+              <input type="password" value=${ep.apiKey} placeholder="API key for this endpoint"
+                onInput=${(e) => updateEndpoint(ep._id, "apiKey", e.target.value)} />
+            </div>
+            ${ep.provider === "azure" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Azure Endpoint URL</div>
+                <input type="text" value=${ep.endpoint} placeholder="https://your-resource.openai.azure.com"
+                  onInput=${(e) => updateEndpoint(ep._id, "endpoint", e.target.value)} />
+              </div>
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Deployment Name</div>
+                <input type="text" value=${ep.deployment} placeholder="gpt-realtime-1.5"
+                  onInput=${(e) => updateEndpoint(ep._id, "deployment", e.target.value)} />
+                <div class="meta-text" style="margin-top:3px">
+                  GA models (gpt-realtime-1.5, gpt-realtime) use /openai/v1/ paths automatically.
+                  Preview models (gpt-4o-realtime-preview) use legacy paths.
+                </div>
+              </div>
+            `}
+            ${ep.provider === "openai" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Model</div>
+                <input type="text" value=${ep.model} placeholder="gpt-4o-realtime-preview"
+                  onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)} />
+              </div>
+            `}
+          </div>
+        </div>
+      `)}
+      <button class="btn btn-sm" onClick=${addEndpoint} style="margin-top:2px">+ Add Endpoint</button>
+      ${endpoints.length === 0 && !loadError && html`
+        <div class="meta-text" style="margin-top:8px">
+          No endpoints configured. Add one above, or use the legacy env vars below as fallback.
+        </div>
+      `}
     <//>
   `;
 }
