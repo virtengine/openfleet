@@ -149,6 +149,16 @@ describe("voice-relay", () => {
       expect(cfg.voiceId).toBe("echo");
     });
 
+    it("prefers dedicated realtime env keys over generic API keys", () => {
+      process.env.OPENAI_API_KEY = "sk-generic";
+      process.env.OPENAI_REALTIME_API_KEY = "sk-realtime";
+      process.env.AZURE_OPENAI_API_KEY = "az-generic";
+      process.env.AZURE_OPENAI_REALTIME_API_KEY = "az-realtime";
+      const cfg = getVoiceConfig(true);
+      expect(cfg.openaiKey).toBe("sk-realtime");
+      expect(cfg.azureKey).toBe("az-realtime");
+    });
+
     it("auto provider prefers claude when Anthropic key is available and OpenAI/Azure are missing", () => {
       process.env.ANTHROPIC_API_KEY = "sk-ant-test";
       const cfg = getVoiceConfig(true);
@@ -362,6 +372,28 @@ describe("voice-relay", () => {
       getVoiceConfig(true);
       await expect(createEphemeralToken([])).rejects.toThrow(/unavailable for provider "claude"/i);
     });
+
+    it("redacts credentials from realtime error payloads", async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: { provider: "openai", openaiApiKey: "sk-test" },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+      vi.mocked(globalThis.fetch).mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        text: async () => '{"error":{"message":"Incorrect API key provided: sk-super-secret","authorization":"Bearer sk-super-secret","api_key":"sk-super-secret"}}',
+      });
+
+      let message = "";
+      try {
+        await createEphemeralToken([]);
+      } catch (err) {
+        message = String(err?.message || "");
+      }
+      expect(message).toMatch(/REDACTED/);
+      expect(message).not.toMatch(/sk-super-secret/);
+    });
   });
 
   // ── getRealtimeConnectionInfo ───────────────────────────────
@@ -522,6 +554,31 @@ describe("voice-relay", () => {
       const fetchCall = vi.mocked(globalThis.fetch).mock.calls.at(-1);
       expect(fetchCall?.[0]).toContain("generativelanguage.googleapis.com/v1beta/models/");
       expect(fetchCall?.[0]).toContain(":generateContent");
+    });
+
+    it("redacts credentials from vision provider errors", async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: { provider: "openai", openaiApiKey: "sk-test" },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+      vi.mocked(globalThis.fetch).mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        text: async () => '{"message":"Incorrect API key provided: sk-top-secret","api_key":"sk-top-secret"}',
+      });
+
+      let message = "";
+      try {
+        await analyzeVisionFrame("data:image/jpeg;base64,dGVzdA==", {
+          source: "screen",
+          context: { sessionId: "primary-1" },
+        });
+      } catch (err) {
+        message = String(err?.message || "");
+      }
+      expect(message).toMatch(/REDACTED/);
+      expect(message).not.toMatch(/sk-top-secret/);
     });
   });
 });

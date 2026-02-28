@@ -354,7 +354,17 @@ function AttachmentList({ attachments }) {
 }
 
 /* ─── Memoized ChatBubble — only re-renders if msg identity changes ─── */
-const ChatBubble = memo(function ChatBubble({ msg, isFinalModelResponse = false }) {
+const ChatBubble = memo(function ChatBubble({
+  msg,
+  isFinalModelResponse = false,
+  canEdit = false,
+  isEditing = false,
+  editingText = "",
+  onEditStart = null,
+  onEditInput = null,
+  onEditSave = null,
+  onEditCancel = null,
+}) {
   const isTool = msg.type === "tool_call" || msg.type === "tool_result";
   const isError = msg.type === "error" || msg.type === "stream_error";
   const contentText = messageText(msg);
@@ -389,16 +399,53 @@ const ChatBubble = memo(function ChatBubble({ msg, isFinalModelResponse = false 
               ? html`<div class="chat-bubble-label chat-bubble-label-final">MODEL RESPONSE</div>`
               : null}
             <div class="chat-bubble-content">
-              <${MessageContent} text=${contentText} />
-              <${AttachmentList} attachments=${msg.attachments} />
+              ${isEditing
+                ? html`
+                    <div class="chat-edit-block">
+                      <textarea
+                        class="chat-edit-textarea"
+                        value=${editingText}
+                        onInput=${(e) => onEditInput?.(e.target.value)}
+                        rows="3"
+                      />
+                      <div class="chat-edit-actions">
+                        <button class="btn btn-ghost btn-xs" onClick=${onEditCancel}>Cancel</button>
+                        <button
+                          class="btn btn-primary btn-xs"
+                          disabled=${!String(editingText || "").trim()}
+                          onClick=${onEditSave}
+                        >
+                          Save
+                        </button>
+                      </div>
+                    </div>
+                  `
+                : html`
+                    <${MessageContent} text=${contentText} />
+                    <${AttachmentList} attachments=${msg.attachments} />
+                  `}
             </div>
             <div class="chat-bubble-time">
               ${msg.timestamp ? formatRelative(msg.timestamp) : ""}
+              ${msg.edited ? " · edited" : ""}
+              ${role === "user" && canEdit && !isEditing
+                ? html`
+                    <button class="chat-edit-btn" onClick=${() => onEditStart?.(msg)}>
+                      Edit
+                    </button>
+                  `
+                : null}
             </div>
           `}
     </div>
   `;
-}, (prev, next) => prev.msg === next.msg && prev.isFinalModelResponse === next.isFinalModelResponse);
+}, (prev, next) =>
+  prev.msg === next.msg &&
+  prev.isFinalModelResponse === next.isFinalModelResponse &&
+  prev.canEdit === next.canEdit &&
+  prev.isEditing === next.isEditing &&
+  prev.editingText === next.editingText,
+);
 
 const TraceEvent = memo(function TraceEvent({ msg }) {
   const info = describeTraceMessage(msg);
@@ -495,6 +542,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     result: false,
     error: false,
   });
+  const [editingMsgRef, setEditingMsgRef] = useState(null);
+  const [editingText, setEditingText] = useState("");
   const messagesRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -795,6 +844,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   useEffect(() => {
     setPendingAttachments([]);
     setUploadingAttachments(false);
+    setEditingMsgRef(null);
+    setEditingText("");
   }, [sessionId]);
 
   /* Track scroll position to decide auto-scroll + unread */
@@ -902,6 +953,58 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const removeAttachment = useCallback((index) => {
     setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
   }, []);
+
+  const handleStartEdit = useCallback((msg) => {
+    setEditingMsgRef(msg || null);
+    setEditingText(messageText(msg));
+  }, []);
+
+  const handleCancelEdit = useCallback(() => {
+    setEditingMsgRef(null);
+    setEditingText("");
+  }, []);
+
+  const handleSaveEdit = useCallback(async () => {
+    if (!sessionId || !editingMsgRef) return;
+    const next = String(editingText || "").trim();
+    if (!next) return;
+
+    const previousContent = messageText(editingMsgRef);
+    if (next === previousContent) {
+      setEditingMsgRef(null);
+      setEditingText("");
+      return;
+    }
+
+    const editedAt = new Date().toISOString();
+    sessionMessages.value = (sessionMessages.value || []).map((msg) =>
+      msg === editingMsgRef
+        ? { ...msg, content: next, edited: true, editedAt }
+        : msg,
+    );
+
+    setEditingMsgRef(null);
+    setEditingText("");
+
+    try {
+      await apiFetch(`/api/sessions/${safeSessionId}/message/edit`, {
+        method: "POST",
+        body: JSON.stringify({
+          messageId: editingMsgRef?.id,
+          timestamp: editingMsgRef?.timestamp,
+          previousContent,
+          content: next,
+        }),
+      });
+      const res = await loadSessionMessages(sessionId);
+      setLoadError(res?.ok ? null : res?.error || "unavailable");
+      showToast("Message updated", "success");
+    } catch {
+      const res = await loadSessionMessages(sessionId);
+      setLoadError(res?.ok ? null : res?.error || "unavailable");
+      showToast("Failed to update message", "error");
+    }
+  }, [sessionId, editingMsgRef, editingText]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
@@ -1224,7 +1327,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           <div class="chat-loading">Loading messages…</div>
         `}
         ${!loading && messages.length === 0 && html`
-          <div class="chat-empty-state-inline">
+          <div class="chat-empty-state-inline chat-empty-state-inline--no-box">
             <div class="session-empty-icon">${resolveIcon(":server:")}</div>
             <div class="session-empty-text">
               No messages yet.

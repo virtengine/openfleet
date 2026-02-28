@@ -54,6 +54,7 @@ const CONFIG = {
   maxConflictSize: 500, // Max lines of conflict to auto-resolve (escalate if larger)
   postConflictRecheckAttempts: 6, // GitHub mergeability can lag after force-push
   postConflictRecheckDelayMs: 10_000,
+  escalationThrottleMs: 6 * 60 * 60 * 1000, // Suppress duplicate PR+reason escalations for 6h
 };
 
 // ── PR Cleanup Daemon ────────────────────────────────────────────────────────
@@ -67,6 +68,7 @@ class PRCleanupDaemon {
     this.repoRoot = this.config.repoRoot || process.cwd();
     this.cleanupQueue = [];
     this.activeCleanups = new Map(); // pr# → cleanup state
+    this.escalationHistory = new Map(); // `${pr#}:${reason}` → timestamp
     this.lastRunStartedAt = 0;
     this.lastRunFinishedAt = 0;
     this.stats = {
@@ -76,8 +78,39 @@ class PRCleanupDaemon {
       ciRetriggers: 0,
       autoMerges: 0,
       escalations: 0,
+      escalationsSuppressed: 0,
       errors: 0,
     };
+  }
+
+  /**
+   * Decide whether an escalation should be emitted, suppressing duplicates for a
+   * bounded time window to avoid noisy alert storms on repeated monitor cycles.
+   * @param {number|string} prNumber
+   * @param {string} reason
+   * @returns {boolean}
+   */
+  shouldEmitEscalation(prNumber, reason) {
+    const now = Date.now();
+    const throttleMs = Math.max(0, Number(this.config.escalationThrottleMs || 0));
+    const key = `${prNumber}:${reason}`;
+
+    if (throttleMs > 0) {
+      for (const [seenKey, seenAt] of this.escalationHistory.entries()) {
+        if (now - Number(seenAt || 0) >= throttleMs) {
+          this.escalationHistory.delete(seenKey);
+        }
+      }
+    } else {
+      this.escalationHistory.clear();
+    }
+
+    const last = Number(this.escalationHistory.get(key) || 0);
+    if (throttleMs > 0 && last > 0 && now - last < throttleMs) {
+      return false;
+    }
+    this.escalationHistory.set(key, now);
+    return true;
   }
 
   /**
@@ -122,7 +155,13 @@ class PRCleanupDaemon {
         this.activeCleanups.size < this.config.maxConcurrentCleanups
       ) {
         const pr = this.cleanupQueue.shift();
-        void this.processPR(pr); // Don't await — run in parallel
+        this.processPR(pr).catch((err) => {
+          this.stats.errors++;
+          console.error(
+            `[pr-cleanup-daemon] Unhandled processPR error for PR #${pr?.number ?? "unknown"}:`,
+            err?.message ?? String(err),
+          );
+        }); // Don't await — run in parallel
       }
 
       // 4. Also scan for green PRs ready to merge (not just problematic ones)
@@ -267,8 +306,9 @@ class PRCleanupDaemon {
       console.warn(
         `[pr-cleanup-daemon] PR #${pr.number} has ${conflictSize} lines of conflicts — escalating to human`,
       );
-      await this.escalate(pr, "large_conflict", { lines: conflictSize });
-      this.stats.escalations++;
+      if (await this.escalate(pr, "large_conflict", { lines: conflictSize })) {
+        this.stats.escalations++;
+      }
       return false;
     }
 
@@ -307,10 +347,10 @@ class PRCleanupDaemon {
           `[pr-cleanup-daemon] Failed to resolve conflicts on PR #${pr.number}:`,
           localErr.message,
         );
-        await this.escalate(pr, "conflict_resolution_failed", {
+        const emitted = await this.escalate(pr, "conflict_resolution_failed", {
           error: localErr.message,
         });
-        this.stats.escalations++;
+        if (emitted) this.stats.escalations++;
         return false;
       }
     }
@@ -361,12 +401,12 @@ class PRCleanupDaemon {
       }
     }
 
-    await this.escalate(pr, "conflict_still_present_after_resolution", {
+    const emitted = await this.escalate(pr, "conflict_still_present_after_resolution", {
       mergeable: verified.mergeable || "UNKNOWN",
       strategy: this.config.conflictStrategy,
       resolvedVia,
     });
-    this.stats.escalations++;
+    if (emitted) this.stats.escalations++;
     return false;
   }
 
@@ -404,7 +444,9 @@ class PRCleanupDaemon {
 
       // Attempt merge with main
       try {
-        await exec(`git merge origin/main --no-edit`, { cwd: tmpDir });
+        await exec(`git -c commit.gpgsign=false merge origin/main --no-edit`, {
+          cwd: tmpDir,
+        });
       } catch {
         // Merge has conflicts — try auto-resolving known file types
         const { stdout: conflictFiles } = await exec(
@@ -452,7 +494,9 @@ class PRCleanupDaemon {
         }
 
         // Commit the resolved merge
-        await exec(`git commit --no-edit`, { cwd: tmpDir });
+        await exec(`git -c commit.gpgsign=false commit --no-edit`, {
+          cwd: tmpDir,
+        });
       }
 
       // Push the merged branch
@@ -528,7 +572,7 @@ class PRCleanupDaemon {
       );
 
       // Push empty commit to re-trigger CI
-      await exec(`git commit --allow-empty -m "chore: re-trigger CI"`, {
+      await exec(this.buildCiRetriggerCommitCommand(), {
         cwd: tmpDir,
       });
       await exec(`git push origin "${pr.headRefName}"`, { cwd: tmpDir });
@@ -556,6 +600,15 @@ class PRCleanupDaemon {
         }
       }
     }
+  }
+
+  /**
+   * Build the empty-commit command used to re-trigger CI.
+   * Explicitly disables commit signing to avoid non-interactive GPG pinentry failures.
+   * @returns {string}
+   */
+  buildCiRetriggerCommitCommand() {
+    return `git -c commit.gpgsign=false commit --allow-empty --no-verify -m "chore: re-trigger CI"`;
   }
 
   /**
@@ -835,6 +888,14 @@ class PRCleanupDaemon {
    * @param {object} context - Additional context
    */
   async escalate(pr, reason, context = {}) {
+    if (!this.shouldEmitEscalation(pr?.number, reason)) {
+      this.stats.escalationsSuppressed++;
+      console.log(
+        `[pr-cleanup-daemon] Escalation suppressed for PR #${pr?.number ?? "unknown"} (${reason})`,
+      );
+      return false;
+    }
+
     const message =
       `:alert: PR #${pr.number} escalated: ${reason}\n\n` +
       `Title: ${pr.title}\n` +
@@ -856,6 +917,7 @@ class PRCleanupDaemon {
         );
       }
     }
+    return true;
   }
 
   /**
@@ -938,11 +1000,23 @@ class PRCleanupDaemon {
     );
 
     // Run immediately on start
-    void this.run();
+    this.run().catch((err) => {
+      this.stats.errors++;
+      console.error(
+        `[pr-cleanup-daemon] Immediate run failed:`,
+        err?.message ?? String(err),
+      );
+    });
 
     // Then run on interval
     this.interval = setInterval(() => {
-      void this.run();
+      this.run().catch((err) => {
+        this.stats.errors++;
+        console.error(
+          `[pr-cleanup-daemon] Interval run failed:`,
+          err?.message ?? String(err),
+        );
+      });
     }, this.config.intervalMs);
 
     this.interval.unref?.(); // Allow process to exit if this is the only thing running

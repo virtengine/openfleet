@@ -549,7 +549,7 @@ function SwipeableSessionItem({
                 onClick=${handleResume}
                 title="Unarchive"
               >
-                <span class="session-action-icon">:workflow:</span>
+                <span class="session-action-icon">${resolveIcon(":workflow:")}</span>
                 <span class="session-action-label">Restore</span>
               </button>
             `
