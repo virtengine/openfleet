@@ -2521,23 +2521,25 @@ function App() {
 
   // ── Step 7: Advanced Settings ──────────────────────────────────────────────
 
-  const StepAdvanced = () => {
-    // Section is rendered as a real Preact component (`<${Section}/>`) so its
-    // useState call is properly isolated to its own fiber — safe to use here.
-    function Section({ id, title, defaultOpen, children }) {
-      const [open, setOpen] = useState(!!defaultOpen);
-      return html`
-        <div style="border:1px solid var(--border-primary);border-radius:var(--radius-sm);margin-bottom:10px;overflow:hidden">
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;background:var(--bg-input);user-select:none"
-            onclick=${() => setOpen((v) => !v)}>
-            <span style="font-weight:600;font-size:0.88rem">${iconText(title)}</span>
-            <span style="color:var(--text-dim);font-size:0.8rem">${open ? "▲" : "▼"}</span>
-          </div>
-          ${open && html`<div style="padding:16px">${children}</div>`}
+  // Section is defined at module scope so its identity is stable across
+  // re-renders. Defining it inside StepAdvanced would create a new function
+  // reference on every state update, causing Preact to unmount/remount the
+  // component (losing open state + input focus).
+  function Section({ id, title, defaultOpen, children }) {
+    const [open, setOpen] = useState(!!defaultOpen);
+    return html`
+      <div style="border:1px solid var(--border-primary);border-radius:var(--radius-sm);margin-bottom:10px;overflow:hidden">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;background:var(--bg-input);user-select:none"
+          onclick=${() => setOpen((v) => !v)}>
+          <span style="font-weight:600;font-size:0.88rem">${iconText(title)}</span>
+          <span style="color:var(--text-dim);font-size:0.8rem">${open ? "▲" : "▼"}</span>
         </div>
-      `;
-    }
+        ${open && html`<div style="padding:16px">${children}</div>`}
+      </div>
+    `;
+  }
 
+  const StepAdvanced = () => {
     return html`
       <h2>Advanced Settings</h2>
       <p class="step-desc">Fine-tune execution, model profiles, and infrastructure. Defaults are sensible — only change what you need.</p>
