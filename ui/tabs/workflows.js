@@ -36,12 +36,16 @@ const selectedEdgeId = signal(null);
 const draggingNode = signal(null);
 const connectingFrom = signal(null);
 const viewMode = signal("list"); // "list" | "canvas" | "runs"
+const WORKFLOW_RUN_PAGE_SIZE = 20;
+const WORKFLOW_RUN_MAX_FETCH = 200;
+const workflowRunsLimit = signal(WORKFLOW_RUN_PAGE_SIZE);
 
 function returnToWorkflowList() {
   selectedNodeId.value = null;
   selectedEdgeId.value = null;
   selectedRunId.value = null;
   selectedRunDetail.value = null;
+  workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE;
   viewMode.value = "list";
   setRouteParams({}, { replace: true, skipGuard: true });
 }
@@ -207,14 +211,21 @@ async function applyTemplateUpdate(workflowId, mode = "replace", force = false) 
   return null;
 }
 
-async function loadRuns(workflowId) {
+async function loadRuns(workflowId, opts = {}) {
   try {
-    const url = workflowId
+    const rawLimit =
+      opts.limit != null ? Number(opts.limit) : Number(workflowRunsLimit.value);
+    const limit =
+      Number.isFinite(rawLimit) && rawLimit > 0
+        ? Math.min(Math.floor(rawLimit), WORKFLOW_RUN_MAX_FETCH)
+        : WORKFLOW_RUN_PAGE_SIZE;
+    const baseUrl = workflowId
       ? `/api/workflows/${workflowId}/runs`
       : "/api/workflows/runs";
-    const data = await apiFetch(url);
+    const data = await apiFetch(`${baseUrl}?limit=${limit}`);
     if (data?.runs) {
       workflowRuns.value = data.runs;
+      workflowRunsLimit.value = limit;
       if (selectedRunId.value && !data.runs.find((run) => run.runId === selectedRunId.value)) {
         selectedRunId.value = null;
         selectedRunDetail.value = null;
@@ -1579,7 +1590,7 @@ function WorkflowListView() {
           <span class="btn-icon">${resolveIcon("plus")}</span>
           Create Workflow
         </button>
-        <button type="button" class="wf-btn" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; viewMode.value = "runs"; loadRuns(); }}>
+        <button type="button" class="wf-btn" onClick=${() => { selectedRunId.value = null; selectedRunDetail.value = null; workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE; viewMode.value = "runs"; loadRuns(); }}>
           <span class="btn-icon">${resolveIcon("chart")}</span>
           Run History
         </button>
@@ -1886,6 +1897,7 @@ function safePrettyJson(value) {
 
 function RunHistoryView() {
   const runs = workflowRuns.value || [];
+  const runsLimit = Number(workflowRunsLimit.value || WORKFLOW_RUN_PAGE_SIZE);
   const selectedRun = selectedRunDetail.value;
   const workflowNameMap = new Map((workflows.value || []).map((wf) => [wf.id, wf.name]));
   const [nowTick, setNowTick] = useState(Date.now());
@@ -1973,6 +1985,9 @@ function RunHistoryView() {
     }
     return counts;
   }, [runs]);
+
+  const canLoadMoreRuns =
+    runs.length >= runsLimit && runsLimit < WORKFLOW_RUN_MAX_FETCH;
 
   if (selectedRun) {
     const statusStyles = getRunStatusBadgeStyles(selectedRun.status);
@@ -2085,6 +2100,20 @@ function RunHistoryView() {
         <button class="wf-btn wf-btn-sm" onClick=${returnToWorkflowList}>← Back to Workflows</button>
         <h2 style="margin: 0; font-size: 18px; font-weight: 700;">Run History</h2>
         <button class="wf-btn wf-btn-sm" onClick=${() => loadRuns()}>Refresh</button>
+        ${canLoadMoreRuns && html`
+          <button
+            class="wf-btn wf-btn-sm"
+            onClick=${() => {
+              const nextLimit = Math.min(
+                runsLimit + WORKFLOW_RUN_PAGE_SIZE,
+                WORKFLOW_RUN_MAX_FETCH,
+              );
+              loadRuns(null, { limit: nextLimit }).catch(() => {});
+            }}
+          >
+            Load older
+          </button>
+        `}
         ${hasRunningRuns && html`<span class="wf-badge" style="background: #3b82f630; color: #60a5fa;">Live</span>`}
       </div>
 
@@ -2143,6 +2172,7 @@ function RunHistoryView() {
           Completed ${runCounts.completed}
         </button>
         <span class="wf-runs-count">${filteredRuns.length} shown</span>
+        <span class="wf-runs-count">${runs.length} loaded</span>
       </div>
 
       ${runs.length === 0 && html`
@@ -2229,6 +2259,7 @@ export function WorkflowsTab() {
     const wantsRuns = Boolean(route.runsView) || Boolean(runId);
 
     if (wantsRuns) {
+      workflowRunsLimit.value = WORKFLOW_RUN_PAGE_SIZE;
       viewMode.value = "runs";
       loadRuns();
       if (runId) {

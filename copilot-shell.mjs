@@ -713,6 +713,7 @@ export async function execCopilotPrompt(userMessage, options = {}) {
     sendRawEvents = false,
     abortController = null,
     persistent = false,
+    mode = null,
   } = options;
 
   if (activeTurn && !options._holdActiveTurn) {
@@ -790,13 +791,25 @@ export async function execCopilotPrompt(userMessage, options = {}) {
       controller.signal.addEventListener("abort", onAbort, { once: true });
     }
 
+    // ── Mode detection ───────────────────────────────────────────────────
+    const isAskMode =
+      mode === "ask" || /^\[MODE:\s*ask\]/i.test(userMessage);
+
     // Build prompt with optional orchestrator status
     let prompt = userMessage;
-    if (statusData) {
+    if (isAskMode) {
+      // Ask mode — pass through without executor framing
+      if (statusData) {
+        const statusSnippet = JSON.stringify(statusData, null, 2).slice(0, 2000);
+        prompt = `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n${userMessage}`;
+      } else {
+        prompt = userMessage;
+      }
+    } else if (statusData) {
       const statusSnippet = JSON.stringify(statusData, null, 2).slice(0, 2000);
-      prompt = `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output & complete the user's request E2E  .`;
+      prompt = `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output & complete the user's request E2E.`;
     } else {
-        prompt = `${userMessage}\n\n\n# YOUR TASK — EXECUTE NOW\n\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output & complete the user's request E2E.`;
+      prompt = `${userMessage}\n\n\n# YOUR TASK — EXECUTE NOW\n\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output & complete the user's request E2E.`;
     }
 
     const sendFn = session.sendAndWait || session.send;

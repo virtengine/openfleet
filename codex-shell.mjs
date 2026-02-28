@@ -584,28 +584,31 @@ export async function execCodexPrompt(userMessage, options = {}) {
     // bodies (BytePositionInLine > 80 000) or unescaped control characters.
     let safePrompt = sanitizeAndTruncatePrompt(prompt);
 
-    // If the thread is freshly created, prepend the system prompt so the agent
-    // gets its identity/context on the FIRST streamed turn.  Previously this
-    // was done via a blocking `thread.run(SYSTEM_PROMPT)` call inside
-    // `getThread()`, which produced zero streaming events and caused the chat
-    // UI to appear frozen for 2-5+ minutes.
-    if (threadNeedsPriming) {
-      // Ask mode gets a lightweight primer — no heavy executor directives
-      // that contradict the "don't use tools" instruction.
-      const primer = isAskMode
-        ? "You are a helpful AI assistant deployed inside the bosun orchestrator. " +
-          "Answer the user's questions concisely. Only use tools when explicitly asked to."
-        : SYSTEM_PROMPT;
-      safePrompt = sanitizeAndTruncatePrompt(
-        primer + "\n\n---\n\n" + prompt,
-      );
-      threadNeedsPriming = false;
-    }
-
     let threadResetDone = false;
 
     for (let attempt = 0; attempt < MAX_STREAM_RETRIES; attempt += 1) {
       const thread = await getThread();
+
+      // If the thread is freshly created (or was just reset in a recovery path),
+      // prepend the system prompt so the agent gets its identity/context on the
+      // FIRST streamed turn.  Previously this was done via a blocking
+      // `thread.run(SYSTEM_PROMPT)` call inside `getThread()`, which produced
+      // zero streaming events and caused the chat UI to appear frozen for
+      // 2-5+ minutes.  Checking threadNeedsPriming INSIDE the retry loop
+      // ensures a freshly-reset thread still receives the primer.
+      let attemptPrompt = safePrompt;
+      if (threadNeedsPriming) {
+        // Ask mode gets a lightweight primer — no heavy executor directives
+        // that contradict the "don't use tools" instruction.
+        const primer = isAskMode
+          ? "You are a helpful AI assistant deployed inside the bosun orchestrator. " +
+            "Answer the user's questions concisely. Only use tools when explicitly asked to."
+          : SYSTEM_PROMPT;
+        attemptPrompt = sanitizeAndTruncatePrompt(
+          primer + "\n\n---\n\n" + prompt,
+        );
+        threadNeedsPriming = false;
+      }
 
       // Each attempt gets a fresh AbortController tied to the same timeout budget.
       // We intentionally do NOT share the same controller across retries: if the
@@ -617,7 +620,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
 
       try {
         // Use runStreamed for real-time event streaming
-        const streamedTurn = await thread.runStreamed(safePrompt, {
+        const streamedTurn = await thread.runStreamed(attemptPrompt, {
           signal: controller.signal,
         });
 
