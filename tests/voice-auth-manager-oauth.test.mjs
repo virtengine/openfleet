@@ -1,5 +1,6 @@
 /**
- * Tests for the OpenAI Codex OAuth PKCE flow in voice-auth-manager.mjs.
+ * Tests for the OAuth PKCE flow in voice-auth-manager.mjs.
+ * Covers OpenAI, Claude, and Google Gemini providers.
  *
  * We mock:
  *  - node:http  so we never bind a real port
@@ -92,8 +93,10 @@ describe("voice-auth-manager OAuth", () => {
   });
 
   afterEach(() => {
-    // Clean up any pending login so tests stay isolated
+    // Clean up any pending logins so tests stay isolated
     mod.cancelOpenAILogin();
+    mod.cancelClaudeLogin?.();
+    mod.cancelGeminiLogin?.();
   });
 
   // ── startOpenAICodexLogin ──────────────────────────────────────────────────
@@ -354,5 +357,199 @@ describe("voice-auth-manager OAuth", () => {
     };
     _mockServer._handler(fakeReq, fakeRes);
     expect(fakeRes.writeHead).toHaveBeenCalledWith(404);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// Claude OAuth
+// ════════════════════════════════════════════════════════════════
+describe("voice-auth-manager Claude OAuth", () => {
+  let mod;
+
+  beforeEach(async () => {
+    _fsStore = {};
+    _mockServer.listen.mockClear();
+    _mockServer.close.mockClear();
+    _mockServer.on.mockClear();
+    _fetchMock.mockReset();
+    vi.resetModules();
+    mod = await import("../voice-auth-manager.mjs");
+  });
+
+  afterEach(() => {
+    mod.cancelClaudeLogin?.();
+  });
+
+  it("startClaudeLogin returns an authUrl pointing to claude.ai", () => {
+    const { authUrl } = mod.startClaudeLogin();
+    expect(authUrl).toMatch(/^https:\/\/claude\.ai\/oauth\/authorize\?/);
+  });
+
+  it("authUrl contains the correct Claude client_id", () => {
+    const { authUrl } = mod.startClaudeLogin();
+    const params = new URLSearchParams(new URL(authUrl).search);
+    expect(params.get("client_id")).toBe("9d1c250a-e61b-44d9-88ed-5944d1962f5e");
+  });
+
+  it("authUrl contains PKCE code_challenge and S256 method", () => {
+    const { authUrl } = mod.startClaudeLogin();
+    const params = new URLSearchParams(new URL(authUrl).search);
+    expect(params.get("code_challenge")).toBeTruthy();
+    expect(params.get("code_challenge_method")).toBe("S256");
+  });
+
+  it("authUrl contains correct redirect_uri for Claude (port 10001)", () => {
+    const { authUrl } = mod.startClaudeLogin();
+    const params = new URLSearchParams(new URL(authUrl).search);
+    expect(params.get("redirect_uri")).toBe("http://localhost:10001/auth/callback");
+  });
+
+  it("starts the callback HTTP server on port 10001", () => {
+    mod.startClaudeLogin();
+    expect(_mockServer.listen).toHaveBeenCalledWith(10001, "localhost");
+  });
+
+  it("getClaudeLoginStatus returns idle initially", () => {
+    const { status } = mod.getClaudeLoginStatus();
+    expect(status).toBe("idle");
+    expect(mod.getClaudeLoginStatus().hasToken).toBe(false);
+  });
+
+  it("getClaudeLoginStatus returns pending after startClaudeLogin", () => {
+    mod.startClaudeLogin();
+    expect(mod.getClaudeLoginStatus().status).toBe("pending");
+  });
+
+  it("cancelClaudeLogin resets status to idle and closes server", () => {
+    mod.startClaudeLogin();
+    _mockServer.close.mockClear();
+    mod.cancelClaudeLogin();
+    expect(mod.getClaudeLoginStatus().status).toBe("idle");
+    expect(_mockServer.close).toHaveBeenCalled();
+  });
+
+  it("logoutClaude returns wasLoggedIn:false when no token", () => {
+    const result = mod.logoutClaude();
+    expect(result.ok).toBe(true);
+    expect(result.wasLoggedIn).toBe(false);
+  });
+
+  it("refreshClaudeToken calls console.anthropic.com/v1/oauth/token", async () => {
+    mod.saveVoiceOAuthToken("claude", {
+      accessToken: "old",
+      refreshToken: "rt_claude_abc",
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+    _fetchMock.mockReturnValueOnce(makeFetchOk({
+      access_token: "new_claude",
+      expires_in: 3600,
+    }));
+    await mod.refreshClaudeToken();
+    const [url] = _fetchMock.mock.calls[0];
+    expect(url).toBe("https://console.anthropic.com/v1/oauth/token");
+    expect(mod.resolveVoiceOAuthToken("claude", true)?.token).toBe("new_claude");
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+// Google Gemini OAuth
+// ════════════════════════════════════════════════════════════════
+describe("voice-auth-manager Gemini OAuth", () => {
+  let mod;
+
+  beforeEach(async () => {
+    _fsStore = {};
+    _mockServer.listen.mockClear();
+    _mockServer.close.mockClear();
+    _mockServer.on.mockClear();
+    _fetchMock.mockReset();
+    vi.resetModules();
+    mod = await import("../voice-auth-manager.mjs");
+  });
+
+  afterEach(() => {
+    mod.cancelGeminiLogin?.();
+  });
+
+  it("startGeminiLogin returns an authUrl pointing to accounts.google.com", () => {
+    const { authUrl } = mod.startGeminiLogin();
+    expect(authUrl).toMatch(/^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?/);
+  });
+
+  it("authUrl contains the correct Gemini client_id", () => {
+    const { authUrl } = mod.startGeminiLogin();
+    const params = new URLSearchParams(new URL(authUrl).search);
+    expect(params.get("client_id")).toBe("681255809395-ets0jcnv5ak5mca0r35k1ofb3aqrdh28.apps.googleusercontent.com");
+  });
+
+  it("authUrl contains access_type=offline and prompt=consent for refresh tokens", () => {
+    const { authUrl } = mod.startGeminiLogin();
+    const params = new URLSearchParams(new URL(authUrl).search);
+    expect(params.get("access_type")).toBe("offline");
+    expect(params.get("prompt")).toBe("consent");
+  });
+
+  it("authUrl contains PKCE code_challenge and S256 method", () => {
+    const { authUrl } = mod.startGeminiLogin();
+    const params = new URLSearchParams(new URL(authUrl).search);
+    expect(params.get("code_challenge")).toBeTruthy();
+    expect(params.get("code_challenge_method")).toBe("S256");
+  });
+
+  it("authUrl contains correct redirect_uri for Gemini (port 10002)", () => {
+    const { authUrl } = mod.startGeminiLogin();
+    const params = new URLSearchParams(new URL(authUrl).search);
+    expect(params.get("redirect_uri")).toBe("http://localhost:10002/auth/callback");
+  });
+
+  it("starts the callback HTTP server on port 10002", () => {
+    mod.startGeminiLogin();
+    expect(_mockServer.listen).toHaveBeenCalledWith(10002, "localhost");
+  });
+
+  it("getGeminiLoginStatus returns idle initially", () => {
+    expect(mod.getGeminiLoginStatus().status).toBe("idle");
+  });
+
+  it("getGeminiLoginStatus returns pending after startGeminiLogin", () => {
+    mod.startGeminiLogin();
+    expect(mod.getGeminiLoginStatus().status).toBe("pending");
+  });
+
+  it("cancelGeminiLogin resets status and closes server", () => {
+    mod.startGeminiLogin();
+    _mockServer.close.mockClear();
+    mod.cancelGeminiLogin();
+    expect(mod.getGeminiLoginStatus().status).toBe("idle");
+    expect(_mockServer.close).toHaveBeenCalled();
+  });
+
+  it("logoutGemini returns wasLoggedIn:false when no token", () => {
+    const r = mod.logoutGemini();
+    expect(r.ok).toBe(true);
+    expect(r.wasLoggedIn).toBe(false);
+  });
+
+  it("refreshGeminiToken calls oauth2.googleapis.com/token", async () => {
+    mod.saveVoiceOAuthToken("gemini", {
+      accessToken: "old",
+      refreshToken: "rt_gemini_xyz",
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+    });
+    _fetchMock.mockReturnValueOnce(makeFetchOk({
+      access_token: "new_gemini",
+      expires_in: 3600,
+    }));
+    await mod.refreshGeminiToken();
+    const [url] = _fetchMock.mock.calls[0];
+    expect(url).toBe("https://oauth2.googleapis.com/token");
+    expect(mod.resolveVoiceOAuthToken("gemini", true)?.token).toBe("new_gemini");
+  });
+
+  it("Gemini scope includes generative-language and cloud-platform", () => {
+    const { authUrl } = mod.startGeminiLogin();
+    const scope = new URL(authUrl).searchParams.get("scope");
+    expect(scope).toContain("generative-language");
+    expect(scope).toContain("cloud-platform");
   });
 });

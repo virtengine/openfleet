@@ -166,50 +166,91 @@ export function getVoiceAuthStatePath() {
   return VOICE_AUTH_STATE_PATH;
 }
 
-// ── OpenAI Codex OAuth PKCE flow ──────────────────────────────────────────────
-// Reverse-engineered from: https://github.com/openai/codex and
-// https://github.com/anomalyco/opencode/issues/3281 (OpenCode implementation).
+// ── Generic OAuth PKCE provider registry ─────────────────────────────────────
 //
-// Public PKCE client — same one used by the official Codex CLI and the
-// ChatGPT desktop app. No client secret is required.
-const OPENAI_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-const OPENAI_OAUTH_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize";
-const OPENAI_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token";
-const OPENAI_OAUTH_REDIRECT_URI = "http://localhost:1455/auth/callback";
-const OPENAI_OAUTH_SCOPES = "openid profile email offline_access";
-const OPENAI_OAUTH_CALLBACK_PORT = 1455;
+// Provider configs reverse-engineered from official CLI tools:
+// • openai  — https://github.com/openai/codex + opencode/issues/3281
+// • claude  — github.com/XiaoConstantine/dspy-go/pkg/llms (Claude Code client)
+// • gemini  — google-gemini/gemini-cli (Google Gemini CLI public client)
+//
+// All use OAuth 2.0 Authorization Code + PKCE (RFC 7636) with no client secret
+// (public clients per RFC 8252 §8.4).
+const OAUTH_PROVIDERS = {
+  openai: {
+    clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
+    authorizeUrl: "https://auth.openai.com/oauth/authorize",
+    tokenUrl: "https://auth.openai.com/oauth/token",
+    redirectUri: "http://localhost:1455/auth/callback",
+    port: 1455,
+    scopes: "openid profile email offline_access",
+    extraParams: {
+      id_token_add_organizations: "true",
+      codex_cli_simplified_flow: "true",
+    },
+    accentColor: "#10a37f",
+  },
+  claude: {
+    // Claude Code public client — same one used by `claude auth login`
+    clientId: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+    authorizeUrl: "https://claude.ai/oauth/authorize",
+    tokenUrl: "https://console.anthropic.com/v1/oauth/token",
+    redirectUri: "http://localhost:10001/auth/callback",
+    port: 10001,
+    scopes: "openid profile email offline_access",
+    extraParams: {},
+    accentColor: "#d97706",
+  },
+  gemini: {
+    // Gemini CLI public client (google-gemini/gemini-cli open-source)
+    clientId: "681255809395-ets0jcnv5ak5mca0r35k1ofb3aqrdh28.apps.googleusercontent.com",
+    authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenUrl: "https://oauth2.googleapis.com/token",
+    redirectUri: "http://localhost:10002/auth/callback",
+    port: 10002,
+    scopes: [
+      "https://www.googleapis.com/auth/generative-language",
+      "https://www.googleapis.com/auth/cloud-platform",
+      "openid",
+      "email",
+      "profile",
+    ].join(" "),
+    extraParams: {
+      // Offline access (refresh token) + force consent screen to re-issue refresh_token
+      access_type: "offline",
+      prompt: "consent",
+    },
+    accentColor: "#1a73e8",
+  },
+};
 
-/** Module-level pending login state — kept at module scope per hard rules. */
-let _pendingLogin = null; // { state, codeVerifier, server, status, result, startedAt }
+// Module-scope per-provider pending login state (never inside a function — hard rule).
+const _providerPendingLogin = new Map();
 
 // ── PKCE helpers ──────────────────────────────────────────────────────────────
 
-/** Generate a cryptographically secure code_verifier (RFC 7636 §4.1). */
-function generateCodeVerifier() {
+function _generateCodeVerifier() {
   return randomBytes(32).toString("base64url");
 }
 
-/** Derive the S256 code_challenge from a verifier (RFC 7636 §4.2). */
-function computeCodeChallenge(verifier) {
+function _computeCodeChallenge(verifier) {
   return createHash("sha256").update(verifier).digest("base64url");
 }
 
-/** Random opaque state value — guards against CSRF. */
-function generateState() {
+function _generateState() {
   return randomBytes(16).toString("hex");
 }
 
-// ── Token exchange ────────────────────────────────────────────────────────────
+// ── Generic token exchange ────────────────────────────────────────────────────
 
-async function exchangeCodeForToken(code, codeVerifier) {
+async function _exchangeCode(code, codeVerifier, cfg) {
   const params = new URLSearchParams({
     grant_type: "authorization_code",
     code,
-    client_id: OPENAI_OAUTH_CLIENT_ID,
-    redirect_uri: OPENAI_OAUTH_REDIRECT_URI,
+    client_id: cfg.clientId,
+    redirect_uri: cfg.redirectUri,
     code_verifier: codeVerifier,
   });
-  const res = await fetch(OPENAI_OAUTH_TOKEN_URL, {
+  const res = await fetch(cfg.tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: params.toString(),
@@ -221,14 +262,14 @@ async function exchangeCodeForToken(code, codeVerifier) {
   return res.json();
 }
 
-// ── Callback HTTP server ──────────────────────────────────────────────────────
+// ── Generic one-shot callback server ─────────────────────────────────────────
 
-/** Spin up a one-shot HTTP server on port 1455 to catch the OAuth redirect. */
-function createCallbackServer(expectedState, codeVerifier) {
+function _createCallbackServer(provider, cfg, expectedState, codeVerifier) {
+  const port = cfg.port;
   const server = createServer((req, res) => {
     let url;
     try {
-      url = new URL(req.url, `http://localhost:${OPENAI_OAUTH_CALLBACK_PORT}`);
+      url = new URL(req.url, `http://localhost:${port}`);
     } catch {
       res.writeHead(400).end("Bad request");
       return;
@@ -243,37 +284,31 @@ function createCallbackServer(expectedState, codeVerifier) {
     const state = url.searchParams.get("state");
     const error = url.searchParams.get("error");
     const errorDescription = url.searchParams.get("error_description") || error || "Unknown error";
+    const pending = _providerPendingLogin.get(provider);
 
     if (error) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(`<!DOCTYPE html><html><body style="font-family:system-ui;padding:40px">
         <h2>Sign-in failed</h2><p>${errorDescription}</p><p>You can close this window.</p>
       </body></html>`);
-      if (_pendingLogin) {
-        _pendingLogin.status = "error";
-        _pendingLogin.result = { error: errorDescription };
-      }
+      if (pending) { pending.status = "error"; pending.result = { error: errorDescription }; }
       setTimeout(() => server.close(), 500);
       return;
     }
 
     if (!code || state !== expectedState) {
       res.writeHead(400).end("Invalid callback");
-      if (_pendingLogin) {
-        _pendingLogin.status = "error";
-        _pendingLogin.result = { error: "state_mismatch" };
-      }
+      if (pending) { pending.status = "error"; pending.result = { error: "state_mismatch" }; }
       setTimeout(() => server.close(), 500);
       return;
     }
 
-    // Exchange code for token (async — we must not throw synchronously)
-    exchangeCodeForToken(code, codeVerifier)
+    _exchangeCode(code, codeVerifier, cfg)
       .then((tokenData) => {
         const expiresAt = tokenData.expires_in
           ? new Date(Date.now() + Number(tokenData.expires_in) * 1000).toISOString()
           : null;
-        saveVoiceOAuthToken("openai", {
+        saveVoiceOAuthToken(provider, {
           accessToken: tokenData.access_token,
           refreshToken: tokenData.refresh_token || null,
           expiresAt,
@@ -281,161 +316,115 @@ function createCallbackServer(expectedState, codeVerifier) {
         });
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(`<!DOCTYPE html><html><body style="font-family:system-ui;padding:40px;text-align:center">
-          <h2 style="color:#10a37f">✓ Signed in successfully</h2>
+          <h2 style="color:${cfg.accentColor}">✓ Signed in successfully</h2>
           <p>You can close this window and return to Bosun.</p>
         </body></html>`);
-        if (_pendingLogin) {
-          _pendingLogin.status = "complete";
-          _pendingLogin.result = { ok: true };
-        }
+        const p = _providerPendingLogin.get(provider);
+        if (p) { p.status = "complete"; p.result = { ok: true }; }
       })
       .catch((err) => {
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(`<!DOCTYPE html><html><body style="font-family:system-ui;padding:40px">
           <h2>Token exchange failed</h2><p>${err.message}</p><p>You can close this window.</p>
         </body></html>`);
-        if (_pendingLogin) {
-          _pendingLogin.status = "error";
-          _pendingLogin.result = { error: err.message };
-        }
+        const p = _providerPendingLogin.get(provider);
+        if (p) { p.status = "error"; p.result = { error: err.message }; }
       })
-      .finally(() => {
-        setTimeout(() => server.close(), 1000);
-      });
+      .finally(() => { setTimeout(() => server.close(), 1000); });
   });
 
   server.on("error", (err) => {
-    if (_pendingLogin && _pendingLogin.status === "pending") {
-      _pendingLogin.status = "error";
-      _pendingLogin.result = { error: err.message };
-    }
+    const p = _providerPendingLogin.get(provider);
+    if (p?.status === "pending") { p.status = "error"; p.result = { error: err.message }; }
   });
 
-  server.listen(OPENAI_OAUTH_CALLBACK_PORT, "localhost");
+  server.listen(port, "localhost");
   return server;
 }
 
 // ── Open browser cross-platform ───────────────────────────────────────────────
 
-function openBrowser(url) {
+function _openBrowser(url) {
   const cmd =
     process.platform === "win32"
       ? `start "" "${url}"`
       : process.platform === "darwin"
         ? `open "${url}"`
         : `xdg-open "${url}"`;
-  childExec(cmd, (err) => {
-    if (err) {
-      // Non-fatal: the URL was already returned to the caller so the user can
-      // paste it manually.
-    }
-  });
+  childExec(cmd, () => { /* non-fatal: URL already returned to caller */ });
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// ── Generic provider login functions ────────────────────────────────────────
 
-/**
- * Initiate the OpenAI Codex OAuth PKCE login flow.
- *
- * Starts a temporary local HTTP server on port 1455, generates PKCE
- * credentials, opens the browser, and returns the auth URL.  Call
- * `getOpenAILoginStatus()` to poll for completion.
- *
- * Returns `{ authUrl }`.
- */
-export function startOpenAICodexLogin() {
-  // Cancel any pre-existing pending login
-  cancelOpenAILogin();
+function _startProviderLogin(provider) {
+  const cfg = OAUTH_PROVIDERS[provider];
+  if (!cfg) throw new Error(`Unknown OAuth provider: ${provider}`);
 
-  const codeVerifier = generateCodeVerifier();
-  const codeChallenge = computeCodeChallenge(codeVerifier);
-  const state = generateState();
+  // Cancel any existing login for this provider
+  _cancelProviderLogin(provider);
+
+  const codeVerifier = _generateCodeVerifier();
+  const codeChallenge = _computeCodeChallenge(codeVerifier);
+  const state = _generateState();
 
   const params = new URLSearchParams({
     response_type: "code",
-    client_id: OPENAI_OAUTH_CLIENT_ID,
-    redirect_uri: OPENAI_OAUTH_REDIRECT_URI,
-    scope: OPENAI_OAUTH_SCOPES,
+    client_id: cfg.clientId,
+    redirect_uri: cfg.redirectUri,
+    scope: cfg.scopes,
     state,
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
-    // Extra params observed in Codex CLI / OpenCode
-    id_token_add_organizations: "true",
-    codex_cli_simplified_flow: "true",
+    ...cfg.extraParams,
   });
 
-  const authUrl = `${OPENAI_OAUTH_AUTHORIZE_URL}?${params.toString()}`;
+  const authUrl = `${cfg.authorizeUrl}?${params.toString()}`;
+  const server = _createCallbackServer(provider, cfg, state, codeVerifier);
 
-  const server = createCallbackServer(state, codeVerifier);
-
-  _pendingLogin = {
+  _providerPendingLogin.set(provider, {
     state,
     codeVerifier,
     server,
     status: "pending",
     result: null,
     startedAt: Date.now(),
-  };
+  });
 
-  // Open browser — non-fatal if it fails
-  try {
-    openBrowser(authUrl);
-  } catch {
-    // ignore
-  }
+  try { _openBrowser(authUrl); } catch { /* ignore */ }
 
   return { authUrl };
 }
 
-/**
- * Poll the status of an in-progress login.
- *
- * Returns `{ status: "idle" | "pending" | "complete" | "error", result }`.
- */
-export function getOpenAILoginStatus() {
-  const hasToken = Boolean(resolveVoiceOAuthToken("openai", false));
-  if (!_pendingLogin) {
+function _getProviderLoginStatus(provider) {
+  const hasToken = Boolean(resolveVoiceOAuthToken(provider, false));
+  const pending = _providerPendingLogin.get(provider);
+  if (!pending) {
     return { status: hasToken ? "connected" : "idle", hasToken };
   }
-  const { status, result } = _pendingLogin;
-  const elapsed = Date.now() - _pendingLogin.startedAt;
-  // Auto-clean up stale logins after 5 minutes
-  if (elapsed > 5 * 60 * 1000 && status === "pending") {
-    cancelOpenAILogin();
+  const elapsed = Date.now() - pending.startedAt;
+  if (elapsed > 5 * 60 * 1000 && pending.status === "pending") {
+    _cancelProviderLogin(provider);
     return { status: "idle", hasToken };
   }
-  return { status, result: result || null, hasToken };
+  return { status: pending.status, result: pending.result || null, hasToken };
 }
 
-/**
- * Cancel an in-progress login and close the callback server.
- */
-export function cancelOpenAILogin() {
-  if (_pendingLogin?.server) {
-    try {
-      _pendingLogin.server.close();
-    } catch {
-      // ignore
-    }
+function _cancelProviderLogin(provider) {
+  const pending = _providerPendingLogin.get(provider);
+  if (pending?.server) {
+    try { pending.server.close(); } catch { /* ignore */ }
   }
-  _pendingLogin = null;
+  _providerPendingLogin.delete(provider);
 }
 
-/**
- * Remove the stored OpenAI OAuth token.
- */
-export function logoutOpenAI() {
+function _logoutProvider(provider) {
   const curr = getCachedState(true);
-  if (!curr?.providers?.openai) return { ok: true, wasLoggedIn: false };
+  if (!curr?.providers?.[provider]) return { ok: true, wasLoggedIn: false };
   const next = {
     ...curr,
-    providers: {
-      ...(curr.providers || {}),
-      openai: undefined,
-    },
+    providers: { ...(curr.providers || {}) },
   };
-  // Strip undefined keys
-  if (next.providers.openai === undefined) delete next.providers.openai;
+  delete next.providers[provider];
   mkdirSync(dirname(VOICE_AUTH_STATE_PATH), { recursive: true });
   writeFileSync(VOICE_AUTH_STATE_PATH, JSON.stringify(next, null, 2));
   _cachedState = next;
@@ -443,24 +432,23 @@ export function logoutOpenAI() {
   return { ok: true, wasLoggedIn: true };
 }
 
-/**
- * Refresh an expired OpenAI OAuth token using the stored refresh_token.
- * Updates the state file and returns the new token data.
- */
-export async function refreshOpenAICodexToken() {
+async function _refreshProviderToken(provider) {
+  const cfg = OAUTH_PROVIDERS[provider];
+  if (!cfg) throw new Error(`Unknown OAuth provider: ${provider}`);
+
   const state = getCachedState(true);
-  const providerData = state?.providers?.openai || {};
-  const refreshToken =
-    providerData.refreshToken || providerData.refresh_token;
-  if (!refreshToken) throw new Error("No refresh token stored for openai");
+  const providerData = state?.providers?.[provider] || {};
+  const refreshToken = providerData.refreshToken || providerData.refresh_token;
+  if (!refreshToken) throw new Error(`No refresh token stored for ${provider}`);
 
   const params = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: refreshToken,
-    client_id: OPENAI_OAUTH_CLIENT_ID,
+    client_id: cfg.clientId,
+    ...(cfg.extraParams?.access_type ? { access_type: cfg.extraParams.access_type } : {}),
   });
 
-  const res = await fetch(OPENAI_OAUTH_TOKEN_URL, {
+  const res = await fetch(cfg.tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: params.toString(),
@@ -476,7 +464,7 @@ export async function refreshOpenAICodexToken() {
     ? new Date(Date.now() + Number(tokenData.expires_in) * 1000).toISOString()
     : null;
 
-  saveVoiceOAuthToken("openai", {
+  saveVoiceOAuthToken(provider, {
     accessToken: tokenData.access_token,
     refreshToken: tokenData.refresh_token || refreshToken,
     expiresAt,
@@ -485,3 +473,42 @@ export async function refreshOpenAICodexToken() {
 
   return tokenData;
 }
+
+// ── Public API — OpenAI ──────────────────────────────────────────────────────
+
+/** Start the OpenAI Codex OAuth PKCE flow (same as Codex CLI / ChatGPT app). */
+export function startOpenAICodexLogin()    { return _startProviderLogin("openai"); }
+/** Poll the status of an in-progress OpenAI login. */
+export function getOpenAILoginStatus()     { return _getProviderLoginStatus("openai"); }
+/** Cancel an in-progress OpenAI login. */
+export function cancelOpenAILogin()        { return _cancelProviderLogin("openai"); }
+/** Remove the stored OpenAI OAuth token. */
+export function logoutOpenAI()             { return _logoutProvider("openai"); }
+/** Refresh an expired OpenAI access token using the stored refresh_token. */
+export async function refreshOpenAICodexToken() { return _refreshProviderToken("openai"); }
+
+// ── Public API — Claude ──────────────────────────────────────────────────────
+
+/** Start the Anthropic Claude OAuth PKCE flow (same as `claude auth login`). */
+export function startClaudeLogin()         { return _startProviderLogin("claude"); }
+/** Poll the status of an in-progress Claude login. */
+export function getClaudeLoginStatus()     { return _getProviderLoginStatus("claude"); }
+/** Cancel an in-progress Claude login. */
+export function cancelClaudeLogin()        { return _cancelProviderLogin("claude"); }
+/** Remove the stored Claude OAuth token. */
+export function logoutClaude()             { return _logoutProvider("claude"); }
+/** Refresh an expired Claude access token. */
+export async function refreshClaudeToken() { return _refreshProviderToken("claude"); }
+
+// ── Public API — Google Gemini ───────────────────────────────────────────────
+
+/** Start the Google Gemini OAuth PKCE flow (same as gemini-cli `gemini auth login`). */
+export function startGeminiLogin()         { return _startProviderLogin("gemini"); }
+/** Poll the status of an in-progress Gemini login. */
+export function getGeminiLoginStatus()     { return _getProviderLoginStatus("gemini"); }
+/** Cancel an in-progress Gemini login. */
+export function cancelGeminiLogin()        { return _cancelProviderLogin("gemini"); }
+/** Remove the stored Gemini OAuth token. */
+export function logoutGemini()             { return _logoutProvider("gemini"); }
+/** Refresh an expired Gemini access token. */
+export async function refreshGeminiToken() { return _refreshProviderToken("gemini"); }
