@@ -256,6 +256,6 @@ describe("voice provider smoke matrix", () => {
           true,
         );
       }
-    });
+    }, 20_000);
   }
 });

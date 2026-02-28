@@ -3561,6 +3561,31 @@ select.input {
   color: #fff;
 }
 
+/* ─── Shared Save/Discard Bar ─── */
+.ve-save-discard-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+}
+
+.ve-save-discard-message {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.ve-save-discard-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 /* ─── Toggle disabled ─── */
 .toggle-wrap.disabled {
   opacity: 0.4;

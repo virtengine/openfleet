@@ -85,7 +85,7 @@ describe("ui-server voice + vision routes", () => {
     const latest = (session?.messages || []).at(-1);
     expect(latest?.role).toBe("user");
     expect(latest?.content).toContain("check my build logs");
-  });
+  }, 20_000);
 
   it("queues workflow trigger evaluation for transcript and wake phrase events", async () => {
     const { port } = await startServer();

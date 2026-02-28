@@ -1399,8 +1399,48 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   );
   const [repository, setRepository] = useState(task?.repository || "");
   const attachmentInputRef = useRef(null);
+  const initialSnapshotRef = useRef({
+    title: task?.title || "",
+    description: task?.description || "",
+    baseBranch: getTaskBaseBranch(task),
+    status: task?.status || "todo",
+    priority: task?.priority || "",
+    tagsInput: getTaskTags(task).join(", "),
+    draft: Boolean(task?.draft || task?.status === "draft"),
+  });
+  const pendingKey = useMemo(
+    () => `modal:task-detail:${task?.id || "unknown"}`,
+    [task?.id],
+  );
   const activeWsId = activeWorkspaceId.value || "";
   const canDispatch = Boolean(onStart && task?.id);
+
+  const editableSnapshot = useMemo(
+    () => ({
+      title: title || "",
+      description: description || "",
+      baseBranch: baseBranch || "",
+      status: status || "todo",
+      priority: priority || "",
+      tagsInput: tagsInput || "",
+      draft: Boolean(draft),
+    }),
+    [baseBranch, description, draft, priority, status, tagsInput, title],
+  );
+  const changeCount = useMemo(
+    () => countChangedFields(initialSnapshotRef.current, editableSnapshot),
+    [editableSnapshot],
+  );
+  const hasUnsaved = changeCount > 0;
+  const activeOperationLabel = saving
+    ? "Task save is in progress"
+    : rewriting
+      ? "Improve with AI is still running"
+      : uploadingAttachment
+        ? "Attachment upload is still running"
+        : manualBusy
+          ? "Manual takeover update is in progress"
+          : "";
 
   const workspaceOptions = managedWorkspaces.value || [];
   const selectedWorkspace = useMemo(
@@ -1410,19 +1450,35 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   const repositoryOptions = selectedWorkspace?.repos || [];
 
   useEffect(() => {
-    setTitle(task?.title || "");
-    setDescription(task?.description || "");
-    setBaseBranch(getTaskBaseBranch(task));
-    setStatus(task?.status || "todo");
-    setPriority(task?.priority || "");
-    setTagsInput(getTaskTags(task).join(", "));
+    const nextTitle = task?.title || "";
+    const nextDescription = task?.description || "";
+    const nextBaseBranch = getTaskBaseBranch(task);
+    const nextStatus = task?.status || "todo";
+    const nextPriority = task?.priority || "";
+    const nextTags = getTaskTags(task).join(", ");
+    const nextDraft = Boolean(task?.draft || task?.status === "draft");
+    setTitle(nextTitle);
+    setDescription(nextDescription);
+    setBaseBranch(nextBaseBranch);
+    setStatus(nextStatus);
+    setPriority(nextPriority);
+    setTagsInput(nextTags);
     setAttachments(normalizeTaskAttachments(task));
     setComments(normalizeTaskComments(task));
-    setDraft(Boolean(task?.draft || task?.status === "draft"));
+    setDraft(nextDraft);
     setManualOverride(isTaskManual(task));
     setManualReason(getManualReason(task));
     setWorkspaceId(task?.workspace || activeWorkspaceId.value || "");
     setRepository(task?.repository || "");
+    initialSnapshotRef.current = {
+      title: nextTitle,
+      description: nextDescription,
+      baseBranch: nextBaseBranch,
+      status: nextStatus,
+      priority: nextPriority,
+      tagsInput: nextTags,
+      draft: nextDraft,
+    };
   }, [task?.id]);
 
   useEffect(() => {
@@ -1447,7 +1503,24 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     }
   }, [workspaceId, repositoryOptions.length]);
 
-  const handleSave = async () => {
+  useEffect(() => {
+    setPendingChange(pendingKey, hasUnsaved);
+    return () => clearPendingChange(pendingKey);
+  }, [hasUnsaved, pendingKey]);
+
+  const handleDiscardChanges = useCallback(() => {
+    const base = initialSnapshotRef.current || {};
+    setTitle(base.title || "");
+    setDescription(base.description || "");
+    setBaseBranch(base.baseBranch || "");
+    setStatus(base.status || "todo");
+    setPriority(base.priority || "");
+    setTagsInput(base.tagsInput || "");
+    setDraft(Boolean(base.draft));
+    showToast("Changes discarded", "info");
+  }, []);
+
+  const handleSave = async ({ closeAfterSave = true } = {}) => {
     setSaving(true);
     haptic("medium");
     const prev = cloneValue(tasksData.value);
@@ -1501,11 +1574,26 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         },
       );
       showToast("Task saved", "success");
-      onClose();
+      initialSnapshotRef.current = {
+        title,
+        description,
+        baseBranch,
+        status: nextStatus,
+        priority: priority || "",
+        tagsInput,
+        draft: wantsDraft,
+      };
+      if (closeAfterSave) {
+        onClose?.();
+        return { closed: true };
+      }
+      return true;
     } catch {
       /* toast via apiFetch */
+      return false;
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const handleStatusUpdate = async (newStatus) => {
@@ -1674,7 +1762,18 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   };
 
   return html`
-    <${Modal} title=${task?.title || "Task Detail"} onClose=${onClose} contentClassName="modal-content-wide">
+    <${Modal}
+      title=${task?.title || "Task Detail"}
+      onClose=${onClose}
+      contentClassName="modal-content-wide"
+      unsavedChanges=${changeCount}
+      onSaveBeforeClose=${() => handleSave({ closeAfterSave: true })}
+      onDiscardBeforeClose=${() => {
+        handleDiscardChanges();
+        return true;
+      }}
+      activeOperationLabel=${activeOperationLabel}
+    >
       <div class="task-modal-summary">
         <div class="task-modal-id" style="user-select:all">ID: ${task?.id}</div>
         <div class="task-modal-badges">
@@ -1971,6 +2070,19 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           </div>
         `}
 
+        <${SaveDiscardBar}
+          dirty=${hasUnsaved}
+          message=${unsavedChangesMessage(changeCount)}
+          saveLabel="Save Changes"
+          discardLabel="Discard"
+          onSave=${() => {
+            void handleSave({ closeAfterSave: false });
+          }}
+          onDiscard=${handleDiscardChanges}
+          saving=${saving}
+          disabled=${Boolean(activeOperationLabel && !saving)}
+        />
+
         <div class="btn-row modal-form-span">
           ${(task?.status === "error" || task?.status === "cancelled") &&
           html`
@@ -1980,7 +2092,9 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           `}
           <button
             class="btn btn-secondary btn-sm"
-            onClick=${handleSave}
+            onClick=${() => {
+              void handleSave({ closeAfterSave: true });
+            }}
             disabled=${saving}
           >
             ${saving ? "Saving…" : iconText(":save: Save")}
@@ -3155,6 +3269,15 @@ function CreateTaskModalInline({ onClose }) {
   const [repository, setRepository] = useState("");
   const [repositories, setRepositories] = useState([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const initialSnapshotRef = useRef({
+    title: "",
+    description: "",
+    baseBranch: "",
+    priority: "medium",
+    tagsInput: "",
+    draft: false,
+  });
+  const pendingKey = "modal:create-task-inline";
 
   const handleRewrite = async () => {
     if (!title.trim() || rewriting) return;
@@ -3210,6 +3333,39 @@ function CreateTaskModalInline({ onClose }) {
     }
   }, [workspaceId, repositoryOptions.length]);
 
+  const unsavedSnapshot = useMemo(
+    () => ({
+      title: title || "",
+      description: description || "",
+      baseBranch: baseBranch || "",
+      priority: priority || "medium",
+      tagsInput: tagsInput || "",
+      draft: Boolean(draft),
+    }),
+    [baseBranch, description, draft, priority, tagsInput, title],
+  );
+  const changeCount = useMemo(
+    () => countChangedFields(initialSnapshotRef.current, unsavedSnapshot),
+    [unsavedSnapshot],
+  );
+  const hasUnsaved = changeCount > 0;
+
+  useEffect(() => {
+    setPendingChange(pendingKey, hasUnsaved);
+    return () => clearPendingChange(pendingKey);
+  }, [hasUnsaved]);
+
+  const resetToInitial = useCallback(() => {
+    const base = initialSnapshotRef.current || {};
+    setTitle(base.title || "");
+    setDescription(base.description || "");
+    setBaseBranch(base.baseBranch || "");
+    setPriority(base.priority || "medium");
+    setTagsInput(base.tagsInput || "");
+    setDraft(Boolean(base.draft));
+    showToast("Changes discarded", "info");
+  }, []);
+
   const toggleRepo = (slug) => {
     setRepositories((prev) =>
       prev.includes(slug) ? prev.filter((s) => s !== slug) : [...prev, slug],
@@ -3224,10 +3380,14 @@ function CreateTaskModalInline({ onClose }) {
     });
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = async ({ closeAfterSave = true } = {}) => {
+    if (rewriting) {
+      showToast("Wait for AI improvement to finish before saving.", "warning");
+      return false;
+    }
     if (!title.trim()) {
       showToast("Title is required", "error");
-      return;
+      return false;
     }
     setSubmitting(true);
     haptic("medium");
@@ -3250,12 +3410,25 @@ function CreateTaskModalInline({ onClose }) {
         }),
       });
       showToast("Task created", "success");
-      onClose();
+      initialSnapshotRef.current = {
+        title: title.trim(),
+        description: description.trim(),
+        baseBranch: baseBranch.trim(),
+        priority,
+        tagsInput,
+        draft: Boolean(draft),
+      };
+      if (closeAfterSave) {
+        onClose?.();
+      }
       await loadTasks();
+      return closeAfterSave ? { closed: true } : true;
     } catch {
       /* toast */
+      return false;
+    } finally {
+      setSubmitting(false);
     }
-    setSubmitting(false);
   };
 
   useEffect(() => {
@@ -3276,8 +3449,10 @@ function CreateTaskModalInline({ onClose }) {
     priority,
     tagsInput,
     draft,
+    rewriting,
     workspaceId,
     repository,
+    repositories,
   ]);
 
   const parsedTags = normalizeTagInput(tagsInput);
@@ -3287,8 +3462,10 @@ function CreateTaskModalInline({ onClose }) {
     <button
       class="btn btn-primary"
       style="width:100%"
-      onClick=${handleSubmit}
-      disabled=${submitting}
+      onClick=${() => {
+        void handleSubmit({ closeAfterSave: true });
+      }}
+      disabled=${submitting || rewriting}
     >
       ${submitting ? "Creating…" : iconText("✓ Create Task")}
     </button>
@@ -3300,6 +3477,13 @@ function CreateTaskModalInline({ onClose }) {
       onClose=${onClose}
       contentClassName="modal-content-wide"
       footer=${footerContent}
+      unsavedChanges=${changeCount}
+      onSaveBeforeClose=${() => handleSubmit({ closeAfterSave: true })}
+      onDiscardBeforeClose=${() => {
+        resetToInitial();
+        return true;
+      }}
+      activeOperationLabel=${rewriting ? "Improve with AI is still running" : ""}
     >
       <div class="flex-col create-task-form">
 
@@ -3311,7 +3495,12 @@ function CreateTaskModalInline({ onClose }) {
             value=${title}
             autoFocus=${true}
             onInput=${(e) => setTitle(e.target.value)}
-            onKeyDown=${(e) => e.key === "Enter" && !e.shiftKey && handleSubmit()}
+            onKeyDown=${(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void handleSubmit({ closeAfterSave: true });
+              }
+            }}
           />
           <${VoiceMicButtonInline}
             onTranscript=${(t) => setTitle((prev) => (prev ? prev + " " + t : t))}
@@ -3446,6 +3635,19 @@ function CreateTaskModalInline({ onClose }) {
             onChange=${(next) => setDraft(next)}
           />
         `}
+
+        <${SaveDiscardBar}
+          dirty=${hasUnsaved}
+          message=${unsavedChangesMessage(changeCount)}
+          saveLabel="Create Task"
+          discardLabel="Discard"
+          onSave=${() => {
+            void handleSubmit({ closeAfterSave: false });
+          }}
+          onDiscard=${resetToInitial}
+          saving=${submitting}
+          disabled=${rewriting}
+        />
 
       </div>
     <//>

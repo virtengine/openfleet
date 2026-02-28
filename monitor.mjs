@@ -2433,9 +2433,6 @@ function restartSelf(reason) {
     vkLogStream.stop();
     vkLogStream = null;
   }
-  if (prCleanupDaemon) {
-    prCleanupDaemon.stop();
-  }
   const shutdownPromises = [];
   if (agentEndpoint) {
     shutdownPromises.push(
@@ -3531,9 +3528,6 @@ function restartVibeKanbanProcess() {
   if (vkLogStream) {
     vkLogStream.stop();
     vkLogStream = null;
-  }
-  if (prCleanupDaemon) {
-    prCleanupDaemon.stop();
   }
   // Just kill the process — the exit handler will auto-restart it
   if (vibeKanbanProcess && !vibeKanbanProcess.killed) {
@@ -14121,9 +14115,6 @@ function selfRestartForSourceChange(
     vkLogStream.stop();
     vkLogStream = null;
   }
-  if (prCleanupDaemon) {
-    prCleanupDaemon.stop();
-  }
   // ── Agent isolation: by default, do NOT stop internal executor on self-restart ──
   // Task agents run as in-process SDK async iterators. Stopping the executor
   // during a normal restart is unnecessary because process.exit(75) kills them.
@@ -15405,8 +15396,6 @@ let agentEndpoint = null;
 let agentEventBus = null;
 /** @type {import("./review-agent.mjs").ReviewAgent|null} */
 let reviewAgent = null;
-/** @type {Map<string, import("./merge-strategy.mjs").MergeContext>} */
-const pendingMergeStrategyByTask = new Map();
 /** @type {Map<string, { approved: boolean, reviewedAt: string }>} */
 const reviewGateResults = new Map();
 /** @type {import("./sync-engine.mjs").SyncEngine|null} */
@@ -15415,53 +15404,6 @@ let syncEngine = null;
 let errorDetector = null;
 /** @type {import("./agent-supervisor.mjs").AgentSupervisor|null} */
 let agentSupervisor = null;
-/** @type {import("./pr-cleanup-daemon.mjs").PRCleanupDaemon|null} */
-let prCleanupDaemon = null;
-/** @type {import("./github-reconciler.mjs").GitHubReconciler|null} */
-let ghReconciler = null;
-
-function restartGitHubReconciler() {
-  if (isWorkflowReplacingModule("github-reconciler.mjs")) {
-    console.log("[monitor] skipping legacy GitHub reconciler — handled by workflow");
-    return;
-  }
-  try {
-    stopGitHubReconciler();
-    ghReconciler = null;
-  } catch {
-    /* best effort */
-  }
-
-  const activeKanbanBackend = getActiveKanbanBackend();
-  if (activeKanbanBackend !== "github") {
-    return;
-  }
-  if (!githubReconcile?.enabled) {
-    return;
-  }
-  const repo =
-    process.env.GITHUB_REPOSITORY ||
-    (process.env.GITHUB_REPO_OWNER && process.env.GITHUB_REPO_NAME
-      ? `${process.env.GITHUB_REPO_OWNER}/${process.env.GITHUB_REPO_NAME}`
-      : "") ||
-    repoSlug ||
-    "unknown/unknown";
-  if (!repo || repo === "unknown/unknown") {
-    console.warn("[gh-reconciler] disabled — missing repo slug");
-    return;
-  }
-
-  ghReconciler = startGitHubReconciler({
-    repoSlug: repo,
-    intervalMs: githubReconcile.intervalMs,
-    mergedLookbackHours: githubReconcile.mergedLookbackHours,
-    trackingLabels: githubReconcile.trackingLabels,
-    sendTelegram:
-      telegramToken && telegramChatId
-        ? (msg) => void sendTelegramMessage(msg)
-        : null,
-  });
-}
 
 if (!isMonitorTestRuntime) {
 if (workflowAutomationEnabled) {
@@ -16144,7 +16086,6 @@ startAgentWorkAnalyzer();
 startAgentAlertTailer();
 startMonitorMonitorSupervisor();
 startTaskPlannerStatusLoop();
-restartGitHubReconciler();
 
 // ── Two-way Telegram :workflow: primary agent ────────────────────────────────────────
 injectMonitorFunctions({
@@ -16173,7 +16114,7 @@ injectMonitorFunctions({
   getReviewAgentEnabled: () => isReviewAgentEnabled(),
   getSyncEngine: () => syncEngine,
   getErrorDetector: () => errorDetector,
-  getPrCleanupDaemon: () => prCleanupDaemon,
+  getPrCleanupDaemon: () => null,
   getWorkspaceMonitor: () => workspaceMonitor,
   getMonitorMonitorStatus: () => getMonitorMonitorStatusSnapshot(),
   getTaskStoreStats: () => {
@@ -16275,31 +16216,9 @@ if (isContainerEnabled()) {
   }
 }
 
-// ── Start PR Cleanup Daemon ──────────────────────────────────────────────────
-// Automatically resolves PR conflicts and CI failures every 30 minutes
-if (config.prCleanupEnabled !== false) {
-  if (isWorkflowReplacingModule("pr-cleanup-daemon.mjs")) {
-    console.log("[monitor] skipping legacy PR cleanup daemon — handled by workflow");
-  } else {
-    const prRepoRoot = effectiveRepoRoot || repoRoot || process.cwd();
-    const flowGateControlsMerges =
-      isFlowPrimaryEnabled() && isFlowReviewGateEnabled();
-    console.log(`[monitor] Starting PR cleanup daemon (repoRoot: ${prRepoRoot})...`);
-    if (flowGateControlsMerges) {
-      console.log(
-        "[monitor] Flow review gate is active — PR cleanup daemon auto-merge is disabled",
-      );
-    }
-    prCleanupDaemon = new PRCleanupDaemon({
-      intervalMs: 30 * 60 * 1000, // 30 minutes
-      maxConcurrentCleanups: 3,
-      dryRun: false,
-      autoMerge: !flowGateControlsMerges,
-      repoRoot: prRepoRoot,
-    });
-    prCleanupDaemon.start();
-  }
-}
+// ── Start PR Watchdog & Kanban Sync handled by workflow templates ────────────
+// PR conflict resolution, CI repair, and GitHub↔kanban sync are now managed
+// by the BOSUN_PR_WATCHDOG_TEMPLATE and GITHUB_KANBAN_SYNC_TEMPLATE workflows.
 } else {
   console.log(
     "[monitor] test runtime detected (VITEST/NODE_ENV=test) — runtime services disabled",

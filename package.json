@@ -1,6 +1,6 @@
 {
   "name": "bosun",
-  "version": "0.36.2",
+  "version": "0.36.3",
   "description": "AI-powered orchestrator supervisor — manages AI agent executors with failover, auto-restarts on failure, analyzes crashes with Codex SDK, creates PRs via Vibe-Kanban API, and sends Telegram notifications. Supports N executors with weighted distribution, multi-repo projects, and auto-setup.",
   "type": "module",
   "license": "Apache 2.0",
@@ -95,7 +95,7 @@
     "build": "node vendor-sync.mjs",
     "build:docs": "node build-docs.mjs",
     "shared-workspaces": "node shared-workspace-cli.mjs",
-    "syntax:check": "node -e \"const fs=require('fs'),path=require('path');const files=fs.readdirSync('.').filter(f=>f.endsWith('.mjs'));let fail=0;for(const f of files){try{require('child_process').execSync('node --check '+f,{stdio:'pipe'});}catch(e){console.error('Syntax error: '+f);console.error(e.stderr.toString());fail=1;}}if(fail)process.exit(1);console.log('Syntax OK: '+files.length+' files checked');\"",
+    "syntax:check": "node --experimental-vm-modules --no-warnings=ExperimentalWarning syntax-check.mjs",
     "pretest": "npm run syntax:check",
     "test": "vitest run --config vitest.config.mjs",
     "test:vitest": "vitest run --config vitest.config.mjs",

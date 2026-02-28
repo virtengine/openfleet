@@ -11,11 +11,25 @@ const html = htm.bind(h);
 
 import { haptic } from "../modules/telegram.js";
 import { apiFetch } from "../modules/api.js";
-import { showToast, refreshTab } from "../modules/state.js";
+import {
+  showToast,
+  refreshTab,
+  setPendingChange,
+  clearPendingChange,
+} from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
-import { formatRelative } from "../modules/utils.js";
-import { Card, Badge, EmptyState, Modal, ConfirmDialog, Spinner, ListItem } from "../components/shared.js";
+import { formatRelative, countChangedFields } from "../modules/utils.js";
+import {
+  Card,
+  Badge,
+  EmptyState,
+  Modal,
+  ConfirmDialog,
+  Spinner,
+  ListItem,
+  SaveDiscardBar,
+} from "../components/shared.js";
 import { SearchInput, SegmentedControl, Toggle } from "../components/forms.js";
 
 /* ═══════════════════════════════════════════════════════════════
@@ -310,7 +324,7 @@ function LibraryCard({ entry, onSelect }) {
 
 function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
   const isNew = !entry?.id;
-  const [form, setForm] = useState({
+  const initialFormSnapshot = {
     id: entry?.id || "",
     type: entry?.type || "prompt",
     name: entry?.name || "",
@@ -318,10 +332,31 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
     tags: (entry?.tags || []).join(", "),
     scope: entry?.scope || "global",
     content: "",
-  });
+  };
+  const [form, setForm] = useState(initialFormSnapshot);
+  const [baseline, setBaseline] = useState(initialFormSnapshot);
   const [loading, setLoading] = useState(false);
   const [loadingContent, setLoadingContent] = useState(!isNew && !!entry?.id);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const pendingKey = useMemo(
+    () => `modal:library-entry:${entry?.id || "new"}`,
+    [entry?.id],
+  );
+
+  useEffect(() => {
+    const next = {
+      id: entry?.id || "",
+      type: entry?.type || "prompt",
+      name: entry?.name || "",
+      description: entry?.description || "",
+      tags: (entry?.tags || []).join(", "),
+      scope: entry?.scope || "global",
+      content: "",
+    };
+    setForm(next);
+    setBaseline(next);
+    setLoadingContent(!isNew && !!entry?.id);
+  }, [entry?.id]);
 
   // Load content for existing entries
   useEffect(() => {
@@ -333,7 +368,11 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
         if (cancelled) return;
         let contentStr = detail?.content ?? "";
         if (typeof contentStr === "object") contentStr = JSON.stringify(contentStr, null, 2);
-        setForm((f) => ({ ...f, content: contentStr }));
+        setForm((f) => {
+          const next = { ...f, content: contentStr };
+          setBaseline(next);
+          return next;
+        });
       } catch { /* ignore */ }
       setLoadingContent(false);
     })();
@@ -341,9 +380,27 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
   }, [entry?.id]);
 
   const updateField = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+  const changeCount = useMemo(
+    () => countChangedFields(baseline, form),
+    [baseline, form],
+  );
+  const hasUnsaved = changeCount > 0;
 
-  const handleSave = useCallback(async () => {
-    if (!form.name.trim()) { showToast("Name is required", "error"); return; }
+  useEffect(() => {
+    setPendingChange(pendingKey, hasUnsaved);
+    return () => clearPendingChange(pendingKey);
+  }, [hasUnsaved, pendingKey]);
+
+  const resetToBaseline = useCallback(() => {
+    setForm(baseline);
+    showToast("Changes discarded", "info");
+  }, [baseline]);
+
+  const handleSave = useCallback(async ({ closeAfterSave = true } = {}) => {
+    if (!form.name.trim()) {
+      showToast("Name is required", "error");
+      return false;
+    }
     setLoading(true);
     try {
       const tags = form.tags.split(/[,\s]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
@@ -362,14 +419,23 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
       });
       if (res?.ok) {
         showToast(`${TYPE_LABELS[form.type] || "Entry"} saved`, "success");
-        onSaved?.();
+        const nextBaseline = { ...form };
+        setBaseline(nextBaseline);
+        if (closeAfterSave) {
+          onSaved?.();
+          return { closed: true };
+        }
+        return true;
       } else {
         showToast(res?.error || "Save failed", "error");
+        return false;
       }
     } catch (err) {
       showToast(err.message, "error");
+      return false;
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, [form, onSaved]);
 
   const handleDelete = useCallback(async () => {
@@ -405,7 +471,17 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
       : "# Skill Title\n\n## Purpose\nDescribe what this skill teaches agents.\n\n## Instructions\n...";
 
   return html`
-    <${Modal} title=${isNew ? "New Resource" : `Edit: ${entry.name}`} onClose=${onClose}>
+    <${Modal}
+      title=${isNew ? "New Resource" : `Edit: ${entry.name}`}
+      onClose=${onClose}
+      unsavedChanges=${changeCount}
+      onSaveBeforeClose=${() => handleSave({ closeAfterSave: true })}
+      onDiscardBeforeClose=${() => {
+        resetToBaseline();
+        return true;
+      }}
+      activeOperationLabel=${loading ? "Save/Delete request is still running" : ""}
+    >
       <div class="library-editor">
         ${isNew && html`
           <label>
@@ -462,10 +538,27 @@ function EntryEditor({ entry, onClose, onSaved, onDeleted }) {
           `}
           <div style="flex:1" />
           <button class="btn-ghost" onClick=${onClose}>Cancel</button>
-          <button class="btn-primary" onClick=${handleSave} disabled=${loading}>
+          <button
+            class="btn-primary"
+            onClick=${() => {
+              void handleSave({ closeAfterSave: true });
+            }}
+            disabled=${loading}
+          >
             ${loading ? html`<${Spinner} size=${14} />` : (isNew ? "Create" : "Save")}
           </button>
         </div>
+        <${SaveDiscardBar}
+          dirty=${hasUnsaved}
+          message=${`You have unsaved changes (${changeCount})`}
+          saveLabel=${isNew ? "Create" : "Save Changes"}
+          discardLabel="Discard"
+          onSave=${() => {
+            void handleSave({ closeAfterSave: false });
+          }}
+          onDiscard=${resetToBaseline}
+          saving=${loading}
+        />
       </div>
       ${confirmDelete && html`
         <${ConfirmDialog}

@@ -20,7 +20,6 @@ import {
   toasts,
   showToast,
   shouldShowToast,
-  hasPendingChanges,
 } from "../modules/state.js";
 import {
   haptic,
@@ -169,8 +168,7 @@ export function Modal({
     ? Math.max(0, Number(unsavedChanges))
     : 0;
   const hasScopedUnsaved = scopedUnsavedCount > 0;
-  const hasGlobalUnsaved = !hasScopedUnsaved && hasPendingChanges.value;
-  const hasUnsaved = hasScopedUnsaved || hasGlobalUnsaved;
+  const hasUnsaved = hasScopedUnsaved;
   const operationLabel = String(activeOperationLabel || "").trim();
 
   const requestClose = useCallback(() => {
