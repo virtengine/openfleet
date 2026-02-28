@@ -10158,6 +10158,10 @@ function startTaskPlannerStatusLoop() {
   }, 25_000);
 }
 
+// GitHub reconciler hooks are currently optional; keep shutdown/reload calls safe.
+function restartGitHubReconciler() {}
+function stopGitHubReconciler() {}
+
 async function maybeTriggerTaskPlanner(reason, details, options = {}) {
   if (internalTaskExecutor?.isPaused?.()) {
     console.log("[monitor] task planner skipped: executor paused");
@@ -13056,6 +13060,61 @@ function formatOrchestratorTailForMonitorPrompt({
   }
 }
 
+const MONITOR_MONITOR_ACTIONABLE_DIGEST_MAX_AGE_MS = (() => {
+  const raw = Number(
+    process.env.DEVMODE_MONITOR_MONITOR_ACTIONABLE_DIGEST_MAX_AGE_MS ||
+      15 * 60 * 1000,
+  );
+  if (!Number.isFinite(raw) || raw <= 0) return 15 * 60 * 1000;
+  return Math.max(60 * 1000, Math.min(24 * 60 * 60 * 1000, Math.trunc(raw)));
+})();
+
+function parseDigestEntryTimestampMs(entry, { nowMs = Date.now(), digestStartedAt = 0 } = {}) {
+  const explicitTs = Number(entry?.timestamp ?? entry?.timeMs ?? entry?.ts);
+  if (Number.isFinite(explicitTs) && explicitTs > 0) return explicitTs;
+
+  const timeText = String(entry?.time || "").trim();
+  const match = timeText.match(/^(\d{2}):(\d{2}):(\d{2})$/);
+  if (!match) return null;
+
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const second = Number(match[3]);
+  if (![hour, minute, second].every(Number.isFinite)) return null;
+
+  const nowDate = new Date(nowMs);
+  let candidate = Date.UTC(
+    nowDate.getUTCFullYear(),
+    nowDate.getUTCMonth(),
+    nowDate.getUTCDate(),
+    hour,
+    minute,
+    second,
+    0,
+  );
+
+  // Digest times are rendered as UTC HH:MM:SS.
+  if (candidate > nowMs + 60_000) {
+    candidate -= 24 * 60 * 60 * 1000;
+  }
+  // If digest started before midnight and entry time is after midnight.
+  if (
+    digestStartedAt > 0 &&
+    candidate < digestStartedAt - 60_000 &&
+    candidate + 24 * 60 * 60 * 1000 <= nowMs + 60_000
+  ) {
+    candidate += 24 * 60 * 60 * 1000;
+  }
+  return candidate;
+}
+
+function isDigestEntryActionable(entry, { nowMs = Date.now(), digestStartedAt = 0 } = {}) {
+  if (Number(entry?.priority || 99) > 3) return false;
+  const timestampMs = parseDigestEntryTimestampMs(entry, { nowMs, digestStartedAt });
+  if (!Number.isFinite(timestampMs)) return true;
+  return nowMs - timestampMs <= MONITOR_MONITOR_ACTIONABLE_DIGEST_MAX_AGE_MS;
+}
+
 async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
   const digestSnapshot = getDigestSnapshot();
   const digestEntries =
@@ -13063,8 +13122,10 @@ async function buildMonitorMonitorPrompt({ trigger, entries, text }) {
       ? entries
       : digestSnapshot?.entries || [];
   const latestDigestText = String(text || monitorMonitor.lastDigestText || "");
-  const actionableEntries = digestEntries.filter(
-    (entry) => Number(entry?.priority || 99) <= 3,
+  const nowMs = Date.now();
+  const digestStartedAt = Number(digestSnapshot?.startedAt || 0);
+  const actionableEntries = digestEntries.filter((entry) =>
+    isDigestEntryActionable(entry, { nowMs, digestStartedAt }),
   );
   const modeHint =
     actionableEntries.length > 0 ? "reliability-fix" : "code-analysis";

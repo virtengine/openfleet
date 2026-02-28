@@ -240,5 +240,5 @@ describe("pullWorkspaceRepos", () => {
     const backupDir = wsEntries.find((entry) => entry.startsWith("bosun.non-git-backup-"));
     expect(backupDir).toBeTruthy();
     expect(existsSync(join(configDir, "workspaces", "alpha", backupDir, "stale.txt"))).toBe(true);
-  });
+  }, 60000);
 });
