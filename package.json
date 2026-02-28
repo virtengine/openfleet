@@ -153,6 +153,7 @@
     "desktop/main.mjs",
     "desktop/launch.mjs",
     "desktop/desktop-shortcuts.mjs",
+    "desktop-api-key.mjs",
     "desktop/preload.mjs",
     "desktop/package.json",
     "desktop-shortcut.mjs",
