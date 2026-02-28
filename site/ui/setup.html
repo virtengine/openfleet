@@ -670,6 +670,19 @@ function App() {
   const [whatsappEnabled, setWhatsappEnabled] = useState(false);
   const [telegramIntervalMin, setTelegramIntervalMin] = useState(10);
   const [orchestratorScript, setOrchestratorScript] = useState("");
+  // Voice assistant
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [voiceProvider, setVoiceProvider] = useState("auto");
+  const [voiceModel, setVoiceModel] = useState("gpt-4o-realtime-preview-2024-12-17");
+  const [voiceVisionModel, setVoiceVisionModel] = useState("gpt-4.1-mini");
+  const [voiceId, setVoiceId] = useState("alloy");
+  const [voiceTurnDetection, setVoiceTurnDetection] = useState("server_vad");
+  const [voiceFallbackMode, setVoiceFallbackMode] = useState("browser");
+  const [voiceDelegateExecutor, setVoiceDelegateExecutor] = useState("codex-sdk");
+  const [openaiRealtimeApiKey, setOpenaiRealtimeApiKey] = useState("");
+  const [azureOpenaiRealtimeEndpoint, setAzureOpenaiRealtimeEndpoint] = useState("");
+  const [azureOpenaiRealtimeApiKey, setAzureOpenaiRealtimeApiKey] = useState("");
+  const [azureOpenaiRealtimeDeployment, setAzureOpenaiRealtimeDeployment] = useState("gpt-4o-realtime-preview");
 
   const getWorkflowProfileById = (profileId, profileList = workflowProfiles) =>
     (profileList || []).find((profile_) => profile_.id === profileId) || null;
@@ -857,6 +870,18 @@ function App() {
       }
       if (d.bosunHome)       setBosunHome(d.bosunHome);
       if (d.workspacesDir)   setWorkspacesDir(d.workspacesDir);
+      if (d.voiceEnabled !== undefined) { setVoiceEnabled(d.voiceEnabled !== false); }
+      if (d.voiceProvider) { setVoiceProvider(d.voiceProvider); }
+      if (d.voiceModel) { setVoiceModel(d.voiceModel); }
+      if (d.voiceVisionModel) { setVoiceVisionModel(d.voiceVisionModel); }
+      if (d.voiceId) { setVoiceId(d.voiceId); }
+      if (d.voiceTurnDetection) { setVoiceTurnDetection(d.voiceTurnDetection); }
+      if (d.voiceFallbackMode) { setVoiceFallbackMode(d.voiceFallbackMode); }
+      if (d.voiceDelegateExecutor) { setVoiceDelegateExecutor(d.voiceDelegateExecutor); }
+      if (d.openaiRealtimeApiKey) { setOpenaiRealtimeApiKey(d.openaiRealtimeApiKey); }
+      if (d.azureOpenaiRealtimeEndpoint) { setAzureOpenaiRealtimeEndpoint(d.azureOpenaiRealtimeEndpoint); }
+      if (d.azureOpenaiRealtimeApiKey) { setAzureOpenaiRealtimeApiKey(d.azureOpenaiRealtimeApiKey); }
+      if (d.azureOpenaiRealtimeDeployment) { setAzureOpenaiRealtimeDeployment(d.azureOpenaiRealtimeDeployment); }
 
       // Pre-fill repos from existing config (slugs preferred)
       if (statusData.existingConfig?.repos?.length) {
@@ -868,6 +893,19 @@ function App() {
       // ── Pre-fill from existing .env ──────────────────────────────────────
       const env = statusData.existingEnv || {};
       let envLoaded = false;
+      const existingVoice = statusData.existingConfig?.voice || {};
+      if (existingVoice.enabled != null) { setVoiceEnabled(existingVoice.enabled !== false); envLoaded = true; }
+      if (existingVoice.provider) { setVoiceProvider(String(existingVoice.provider)); envLoaded = true; }
+      if (existingVoice.model) { setVoiceModel(String(existingVoice.model)); envLoaded = true; }
+      if (existingVoice.visionModel) { setVoiceVisionModel(String(existingVoice.visionModel)); envLoaded = true; }
+      if (existingVoice.voiceId) { setVoiceId(String(existingVoice.voiceId)); envLoaded = true; }
+      if (existingVoice.turnDetection) { setVoiceTurnDetection(String(existingVoice.turnDetection)); envLoaded = true; }
+      if (existingVoice.fallbackMode) { setVoiceFallbackMode(String(existingVoice.fallbackMode)); envLoaded = true; }
+      if (existingVoice.delegateExecutor) { setVoiceDelegateExecutor(String(existingVoice.delegateExecutor)); envLoaded = true; }
+      if (existingVoice.openaiApiKey) { setOpenaiRealtimeApiKey(String(existingVoice.openaiApiKey)); envLoaded = true; }
+      if (existingVoice.azureEndpoint) { setAzureOpenaiRealtimeEndpoint(String(existingVoice.azureEndpoint)); envLoaded = true; }
+      if (existingVoice.azureApiKey) { setAzureOpenaiRealtimeApiKey(String(existingVoice.azureApiKey)); envLoaded = true; }
+      if (existingVoice.azureDeployment) { setAzureOpenaiRealtimeDeployment(String(existingVoice.azureDeployment)); envLoaded = true; }
       if (env.BOSUN_HOME) { setBosunHome(env.BOSUN_HOME); envLoaded = true; }
       if (env.BOSUN_WORKSPACES_DIR) { setWorkspacesDir(env.BOSUN_WORKSPACES_DIR); setWorkspacesDirCustomized(true); envLoaded = true; }
       if (env.PROJECT_NAME) { setProjectName(env.PROJECT_NAME); envLoaded = true; }

@@ -2178,6 +2178,83 @@ const TELEGRAM_ICON_TOKEN_LABELS = Object.freeze({
   cloud: "Cloud",
 });
 
+const TELEGRAM_ICON_TOKEN_EMOJI = Object.freeze({
+  check: "✅",
+  close: "❌",
+  alert: "⚠️",
+  pause: "⏸️",
+  play: "▶️",
+  stop: "⏹️",
+  refresh: "🔄",
+  chart: "📊",
+  clipboard: "📋",
+  bot: "🤖",
+  git: "🌿",
+  settings: "⚙️",
+  server: "🖧",
+  folder: "📁",
+  file: "📄",
+  phone: "📱",
+  globe: "🌐",
+  heart: "❤️",
+  cpu: "🧠",
+  chat: "💬",
+  hash: "#️⃣",
+  repeat: "🔁",
+  beaker: "🧪",
+  compass: "🧭",
+  target: "🎯",
+  workflow: "🧩",
+  arrowright: "➡️",
+  plus: "➕",
+  menu: "☰",
+  lock: "🔒",
+  unlock: "🔓",
+  search: "🔍",
+  link: "🔗",
+  upload: "📤",
+  download: "📥",
+  box: "📦",
+  bell: "🔔",
+  lightbulb: "💡",
+  rocket: "🚀",
+  home: "🏠",
+  pin: "📌",
+  star: "⭐",
+  help: "❓",
+  cloud: "☁️",
+  monitor: "🖥️",
+  eye: "👁️",
+  edit: "✏️",
+  trash: "🗑️",
+  dot: "•",
+});
+
+function decodeUnicodeIconToken(name) {
+  const raw = String(name || "").trim();
+  const match = raw.match(/^u([0-9a-f]{4,6})$/i);
+  if (!match) return "";
+  const codePoint = Number.parseInt(match[1], 16);
+  if (!Number.isFinite(codePoint)) return "";
+  try {
+    return String.fromCodePoint(codePoint);
+  } catch {
+    return "";
+  }
+}
+
+function resolveTelegramIconTokenGlyph(name) {
+  const raw = String(name || "").trim();
+  if (!raw) return "";
+  const lowered = raw.toLowerCase();
+  const squashed = lowered.replace(/[_-]+/g, "");
+  const glyph = TELEGRAM_ICON_TOKEN_EMOJI[lowered]
+    || TELEGRAM_ICON_TOKEN_EMOJI[squashed]
+    || decodeUnicodeIconToken(lowered)
+    || decodeUnicodeIconToken(squashed);
+  return glyph || "";
+}
+
 function humanizeIconTokenName(name) {
   const spaced = String(name || "")
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -2195,6 +2272,8 @@ function formatTelegramIconTokens(value, { button = false } = {}) {
   const str = String(value);
   return str.replace(/:([a-zA-Z][a-zA-Z0-9_-]*):/g, (_match, rawName) => {
     const tokenName = String(rawName || "");
+    const glyph = resolveTelegramIconTokenGlyph(tokenName);
+    if (glyph) return glyph;
     const key = tokenName.toLowerCase();
     const label = TELEGRAM_ICON_TOKEN_LABELS[tokenName]
       || TELEGRAM_ICON_TOKEN_LABELS[key]
@@ -4005,8 +4084,12 @@ function appendRefreshRow(keyboard, screenId, params = {}) {
       )
     : uiGoAction(screenId, params.page);
   const rows = keyboard.inline_keyboard || [];
+  const refreshLabel = formatTelegramIconTokens(":refresh: Refresh", { button: true });
   const hasRefresh = rows.some((row) =>
-    row.some((btn) => btn?.text === ":refresh: Refresh"),
+    row.some((btn) =>
+      btn?.text === ":refresh: Refresh"
+      || btn?.text === refreshLabel
+      || btn?.callback_data === action),
   );
   if (hasRefresh) return keyboard;
   return {

@@ -344,6 +344,28 @@
     .success-banner h2 { color: var(--success); margin-bottom: 8px; }
     .success-banner p { color: var(--text-secondary); font-size: 0.9rem; }
 
+    /* ── Inline icon helpers (shared with iconText output) ───────────── */
+    .icon-text {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35em;
+      flex-wrap: wrap;
+    }
+    .icon-inline {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1em;
+      height: 1em;
+      line-height: 1;
+      vertical-align: middle;
+    }
+    .icon-inline svg {
+      width: 1em;
+      height: 1em;
+      display: block;
+    }
+
     /* ── Profile Cards ───────────────────────────────────────────────── */
     .profile-cards {
       display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
@@ -489,6 +511,7 @@
 import { h, render } from "preact";
 import { useState, useEffect, useRef } from "preact/hooks";
 import htm from "htm";
+import { iconText } from "./modules/icon-utils.js";
 
 const html = htm.bind(h);
 
@@ -679,6 +702,19 @@ function App() {
   const [whatsappEnabled, setWhatsappEnabled] = useState(false);
   const [telegramIntervalMin, setTelegramIntervalMin] = useState(10);
   const [orchestratorScript, setOrchestratorScript] = useState("");
+  // Voice assistant
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [voiceProvider, setVoiceProvider] = useState("auto");
+  const [voiceModel, setVoiceModel] = useState("gpt-4o-realtime-preview-2024-12-17");
+  const [voiceVisionModel, setVoiceVisionModel] = useState("gpt-4.1-mini");
+  const [voiceId, setVoiceId] = useState("alloy");
+  const [voiceTurnDetection, setVoiceTurnDetection] = useState("server_vad");
+  const [voiceFallbackMode, setVoiceFallbackMode] = useState("browser");
+  const [voiceDelegateExecutor, setVoiceDelegateExecutor] = useState("codex-sdk");
+  const [openaiRealtimeApiKey, setOpenaiRealtimeApiKey] = useState("");
+  const [azureOpenaiRealtimeEndpoint, setAzureOpenaiRealtimeEndpoint] = useState("");
+  const [azureOpenaiRealtimeApiKey, setAzureOpenaiRealtimeApiKey] = useState("");
+  const [azureOpenaiRealtimeDeployment, setAzureOpenaiRealtimeDeployment] = useState("gpt-4o-realtime-preview");
 
   const getWorkflowProfileById = (profileId, profileList = workflowProfiles) =>
     (profileList || []).find((profile_) => profile_.id === profileId) || null;
@@ -866,6 +902,18 @@ function App() {
       }
       if (d.bosunHome)       setBosunHome(d.bosunHome);
       if (d.workspacesDir)   setWorkspacesDir(d.workspacesDir);
+      if (d.voiceEnabled !== undefined) { setVoiceEnabled(d.voiceEnabled !== false); }
+      if (d.voiceProvider) { setVoiceProvider(d.voiceProvider); }
+      if (d.voiceModel) { setVoiceModel(d.voiceModel); }
+      if (d.voiceVisionModel) { setVoiceVisionModel(d.voiceVisionModel); }
+      if (d.voiceId) { setVoiceId(d.voiceId); }
+      if (d.voiceTurnDetection) { setVoiceTurnDetection(d.voiceTurnDetection); }
+      if (d.voiceFallbackMode) { setVoiceFallbackMode(d.voiceFallbackMode); }
+      if (d.voiceDelegateExecutor) { setVoiceDelegateExecutor(d.voiceDelegateExecutor); }
+      if (d.openaiRealtimeApiKey) { setOpenaiRealtimeApiKey(d.openaiRealtimeApiKey); }
+      if (d.azureOpenaiRealtimeEndpoint) { setAzureOpenaiRealtimeEndpoint(d.azureOpenaiRealtimeEndpoint); }
+      if (d.azureOpenaiRealtimeApiKey) { setAzureOpenaiRealtimeApiKey(d.azureOpenaiRealtimeApiKey); }
+      if (d.azureOpenaiRealtimeDeployment) { setAzureOpenaiRealtimeDeployment(d.azureOpenaiRealtimeDeployment); }
 
       // Pre-fill repos from existing config (slugs preferred)
       if (statusData.existingConfig?.repos?.length) {
@@ -877,6 +925,19 @@ function App() {
       // ── Pre-fill from existing .env ──────────────────────────────────────
       const env = statusData.existingEnv || {};
       let envLoaded = false;
+      const existingVoice = statusData.existingConfig?.voice || {};
+      if (existingVoice.enabled != null) { setVoiceEnabled(existingVoice.enabled !== false); envLoaded = true; }
+      if (existingVoice.provider) { setVoiceProvider(String(existingVoice.provider)); envLoaded = true; }
+      if (existingVoice.model) { setVoiceModel(String(existingVoice.model)); envLoaded = true; }
+      if (existingVoice.visionModel) { setVoiceVisionModel(String(existingVoice.visionModel)); envLoaded = true; }
+      if (existingVoice.voiceId) { setVoiceId(String(existingVoice.voiceId)); envLoaded = true; }
+      if (existingVoice.turnDetection) { setVoiceTurnDetection(String(existingVoice.turnDetection)); envLoaded = true; }
+      if (existingVoice.fallbackMode) { setVoiceFallbackMode(String(existingVoice.fallbackMode)); envLoaded = true; }
+      if (existingVoice.delegateExecutor) { setVoiceDelegateExecutor(String(existingVoice.delegateExecutor)); envLoaded = true; }
+      if (existingVoice.openaiApiKey) { setOpenaiRealtimeApiKey(String(existingVoice.openaiApiKey)); envLoaded = true; }
+      if (existingVoice.azureEndpoint) { setAzureOpenaiRealtimeEndpoint(String(existingVoice.azureEndpoint)); envLoaded = true; }
+      if (existingVoice.azureApiKey) { setAzureOpenaiRealtimeApiKey(String(existingVoice.azureApiKey)); envLoaded = true; }
+      if (existingVoice.azureDeployment) { setAzureOpenaiRealtimeDeployment(String(existingVoice.azureDeployment)); envLoaded = true; }
       if (env.BOSUN_HOME) { setBosunHome(env.BOSUN_HOME); envLoaded = true; }
       if (env.BOSUN_WORKSPACES_DIR) { setWorkspacesDir(env.BOSUN_WORKSPACES_DIR); setWorkspacesDirCustomized(true); envLoaded = true; }
       if (env.PROJECT_NAME) { setProjectName(env.PROJECT_NAME); envLoaded = true; }
@@ -981,6 +1042,19 @@ function App() {
       if (env.WHATSAPP_ENABLED) { setWhatsappEnabled(env.WHATSAPP_ENABLED === "true"); envLoaded = true; }
       if (env.TELEGRAM_INTERVAL_MIN) { setTelegramIntervalMin(Number(env.TELEGRAM_INTERVAL_MIN) || 10); envLoaded = true; }
       if (env.ORCHESTRATOR_SCRIPT) { setOrchestratorScript(env.ORCHESTRATOR_SCRIPT); envLoaded = true; }
+      // Voice settings
+      if (env.VOICE_ENABLED !== undefined) { setVoiceEnabled(env.VOICE_ENABLED !== "false"); envLoaded = true; }
+      if (env.VOICE_PROVIDER) { setVoiceProvider(env.VOICE_PROVIDER); envLoaded = true; }
+      if (env.VOICE_MODEL) { setVoiceModel(env.VOICE_MODEL); envLoaded = true; }
+      if (env.VOICE_VISION_MODEL) { setVoiceVisionModel(env.VOICE_VISION_MODEL); envLoaded = true; }
+      if (env.VOICE_ID) { setVoiceId(env.VOICE_ID); envLoaded = true; }
+      if (env.VOICE_TURN_DETECTION) { setVoiceTurnDetection(env.VOICE_TURN_DETECTION); envLoaded = true; }
+      if (env.VOICE_FALLBACK_MODE) { setVoiceFallbackMode(env.VOICE_FALLBACK_MODE); envLoaded = true; }
+      if (env.VOICE_DELEGATE_EXECUTOR) { setVoiceDelegateExecutor(env.VOICE_DELEGATE_EXECUTOR); envLoaded = true; }
+      if (env.OPENAI_REALTIME_API_KEY) { setOpenaiRealtimeApiKey(env.OPENAI_REALTIME_API_KEY); envLoaded = true; }
+      if (env.AZURE_OPENAI_REALTIME_ENDPOINT) { setAzureOpenaiRealtimeEndpoint(env.AZURE_OPENAI_REALTIME_ENDPOINT); envLoaded = true; }
+      if (env.AZURE_OPENAI_REALTIME_API_KEY) { setAzureOpenaiRealtimeApiKey(env.AZURE_OPENAI_REALTIME_API_KEY); envLoaded = true; }
+      if (env.AZURE_OPENAI_REALTIME_DEPLOYMENT) { setAzureOpenaiRealtimeDeployment(env.AZURE_OPENAI_REALTIME_DEPLOYMENT); envLoaded = true; }
       // Multi-workspace: load workspaces[] from existing config
       if (statusData.existingConfig?.workspaces?.length > 0) {
         setMultiWorkspaceEnabled(true);
@@ -1235,6 +1309,19 @@ function App() {
           copilotEnableAskUser,
           copilotEnableAllMcpTools,
           copilotMcpConfig,
+          // Voice assistant
+          voiceEnabled,
+          voiceProvider,
+          voiceModel,
+          voiceVisionModel,
+          voiceId,
+          voiceTurnDetection,
+          voiceFallbackMode,
+          voiceDelegateExecutor,
+          openaiRealtimeApiKey,
+          azureOpenaiRealtimeEndpoint,
+          azureOpenaiRealtimeApiKey,
+          azureOpenaiRealtimeDeployment,
           // Infrastructure
           containerEnabled,
           containerRuntime,
@@ -1531,7 +1618,7 @@ function App() {
       <div class="setup-container">
         <div class="step-panel">
           <div class="success-banner">
-            <div class="icon">:star:</div>
+            <div class="icon">${iconText(":star:")}</div>
             <h2>Setup Complete!</h2>
             <p>Bosun is configured and ready to go.</p>
             <p style="margin-top:12px;font-size:0.8rem;color:var(--text-dim)">
@@ -1596,7 +1683,7 @@ function App() {
           const icon = item.installed ? ":check:" : item.required ? ":close:" : ":alert:";
           return html`
             <li class="prereq-item ${statusClass}">
-              <span class="icon">${icon}</span>
+              <span class="icon">${iconText(icon)}</span>
               <span class="name">${item.label}${!item.required ? " (optional)" : ""}</span>
               <span class="version">${item.version || (item.installed ? "found" : "not found")}</span>
             </li>
@@ -1604,7 +1691,7 @@ function App() {
         })}
         ${prereqs.gh && !prereqs.gh.authenticated && prereqs.gh.installed ? html`
           <li class="prereq-item warn">
-            <span class="icon">:alert:</span>
+            <span class="icon">${iconText(":alert:")}</span>
             <span class="name">GitHub CLI not authenticated</span>
             <span class="version">Run: gh auth login</span>
           </li>
@@ -1655,12 +1742,12 @@ function App() {
 
     <div class="profile-cards">
       <div class="profile-card ${profile === "standard" ? "selected" : ""}" onclick=${() => setProfile("standard")}>
-        <div class="icon">:zap:</div>
+        <div class="icon">${iconText(":zap:")}</div>
         <h4>Standard</h4>
         <p>Sensible defaults with primary & backup executors. Best for most users.</p>
       </div>
       <div class="profile-card ${profile === "advanced" ? "selected" : ""}" onclick=${() => setProfile("advanced")}>
-        <div class="icon">:settings:</div>
+        <div class="icon">${iconText(":settings:")}</div>
         <h4>Advanced</h4>
         <p>Full control over executors, failover, distribution weights, and all settings.</p>
       </div>
@@ -1690,7 +1777,7 @@ function App() {
     <p class="step-desc">Configure which AI coding agents bosun will use. You can add multiple executors with weighted distribution.</p>
 
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;font-size:0.8rem;line-height:1.6">
-      <strong>:lock: No API key required in most cases.</strong>
+      <strong>${iconText(":lock: No API key required in most cases.")}</strong>
       GitHub Copilot, Codex CLI, and Claude Code all support OAuth — just run
       <code style="font-family:var(--font-mono);color:var(--accent-light)">gh auth login</code>,
       <code style="font-family:var(--font-mono);color:var(--accent-light)">codex auth login</code>, or
@@ -1710,10 +1797,11 @@ function App() {
           ? configuredModelOptions
           : getModelsForExecutor(ex.executor);
       const authMode = ex.authMode || "oauth";
+      const executorHeading = `${ex.enabled === false ? ":dot:" : ex.role === "primary" ? ":dot:" : ":dot:"} Executor ${i + 1}: ${ex.name}`;
       return html`
       <div class="executor-card">
         <div class="executor-card-header">
-          <h4>${ex.enabled === false ? ":dot:" : ex.role === "primary" ? ":dot:" : ":dot:"} Executor ${i + 1}: ${ex.name}</h4>
+          <h4>${iconText(executorHeading)}</h4>
           ${executors.length > 1 && html`
             <button class="btn btn-sm btn-danger" onclick=${() => removeExecutor(i)}>Remove</button>
           `}
@@ -1798,7 +1886,7 @@ function App() {
                     return html`
                       <div class="connection-card">
                         <div class="connection-card-header">
-                          <span class="connection-label">${isPrimary ? ":star: Primary" : `:globe: Profile ${ci + 1}`}: ${conn.name || (isPrimary ? "default" : "(unnamed)")}</span>
+                          <span class="connection-label">${iconText(`${isPrimary ? ":star: Primary" : `:globe: Profile ${ci + 1}`}: ${conn.name || (isPrimary ? "default" : "(unnamed)")}`)}</span>
                           <button class="btn btn-sm btn-danger"
                             onclick=${() => removeConnection(i, ci)}>✕ Remove</button>
                         </div>
@@ -1945,7 +2033,7 @@ function App() {
 
       ${!multiWorkspaceEnabled && html`
         <div style="background:var(--bg-input);border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.78rem;color:var(--text-secondary)">
-          :folder: Repos will be cloned into:
+          ${iconText(":folder: Repos will be cloned into:")}
           <code style="font-family:var(--font-mono);color:var(--accent-light);margin-left:4px">${cloneRoot}/${"<repo-name>"}</code>
         </div>
       `}
@@ -2211,12 +2299,12 @@ function App() {
     ${/* ── GitHub App installation callout ── */ ""}
     <div style="background:rgba(56,139,253,.07);border:1px solid rgba(56,139,253,.25);border-radius:var(--radius-sm);padding:14px 16px;margin-bottom:20px">
       <div style="display:flex;align-items:flex-start;gap:10px">
-        <span style="font-size:1.3em;line-height:1.2;flex-shrink:0">:box:</span>
+        <span style="font-size:1.3em;line-height:1.2;flex-shrink:0">${iconText(":box:")}</span>
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:0.9rem;color:var(--accent-light);margin-bottom:4px">GitHub App — Bosun[VE]</div>
           ${oauthStatus === "received"
             ? html`<div style="color:#4ade80;font-size:0.82rem">
-                :check: GitHub App authorized!
+                ${iconText(":check: GitHub App authorized!")}
                 ${oauthInstallationId ? html` (Installation <code style="font-family:var(--font-mono)">${oauthInstallationId}</code>)` : null}
               </div>`
             : html`<div style="font-size:0.82rem;color:var(--text-secondary);line-height:1.5">
@@ -2226,7 +2314,7 @@ function App() {
                 <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                   <a href="https://github.com/apps/bosun-ve" target="_blank" rel="noopener"
                      style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:var(--accent);color:#fff;border-radius:5px;font-size:0.8rem;font-weight:600;text-decoration:none">
-                    :link: Install from GitHub Marketplace
+                    ${iconText(":link: Install from GitHub Marketplace")}
                   </a>
                   <span style="font-size:0.75rem;color:var(--text-dim)">
                     <span class="spinner" style="width:10px;height:10px;border-width:2px;vertical-align:middle;margin-right:4px"></span>
@@ -2278,7 +2366,7 @@ function App() {
         <div style="border:1px solid var(--border-primary);border-radius:var(--radius-sm);margin-bottom:10px;overflow:hidden">
           <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;background:var(--bg-input);user-select:none"
             onclick=${() => setOpen((v) => !v)}>
-            <span style="font-weight:600;font-size:0.88rem">${title}</span>
+            <span style="font-weight:600;font-size:0.88rem">${iconText(title)}</span>
             <span style="color:var(--text-dim);font-size:0.8rem">${open ? "▲" : "▼"}</span>
           </div>
           ${open && html`<div style="padding:16px">${children}</div>`}
@@ -2594,6 +2682,135 @@ function App() {
         </div>
       <//>
 
+      <${Section} title=":mic: Voice Assistant">
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${voiceEnabled}
+              onchange=${(e) => setVoiceEnabled(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enable Voice Mode in the UI
+          </label>
+          <div class="hint">Allows live voice/video calls from chat. Tier 2 browser fallback works without cloud keys.</div>
+        </div>
+        ${voiceEnabled && html`
+          <div class="executor-grid">
+            <div class="form-group">
+              <label>Voice Provider</label>
+              <select value=${voiceProvider} onchange=${(e) => setVoiceProvider(e.target.value)}>
+                <option value="auto">Auto Detect</option>
+                <option value="openai">OpenAI Realtime</option>
+                <option value="azure">Azure OpenAI Realtime</option>
+                <option value="claude">Claude (fallback + Claude vision)</option>
+                <option value="gemini">Gemini (fallback + Gemini vision)</option>
+                <option value="fallback">Browser Fallback Only</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Voice Persona</label>
+              <select value=${voiceId} onchange=${(e) => setVoiceId(e.target.value)}>
+                <option value="alloy">alloy</option>
+                <option value="ash">ash</option>
+                <option value="ballad">ballad</option>
+                <option value="coral">coral</option>
+                <option value="echo">echo</option>
+                <option value="fable">fable</option>
+                <option value="nova">nova</option>
+                <option value="onyx">onyx</option>
+                <option value="sage">sage</option>
+                <option value="shimmer">shimmer</option>
+                <option value="verse">verse</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Realtime Voice Model</label>
+              <input
+                type="text"
+                value=${voiceModel}
+                oninput=${(e) => setVoiceModel(e.target.value)}
+                placeholder="gpt-4o-realtime-preview-2024-12-17"
+              />
+            </div>
+            <div class="form-group">
+              <label>Vision Model</label>
+              <input
+                type="text"
+                value=${voiceVisionModel}
+                oninput=${(e) => setVoiceVisionModel(e.target.value)}
+                placeholder="gpt-4.1-mini"
+              />
+            </div>
+            <div class="form-group">
+              <label>Turn Detection</label>
+              <select value=${voiceTurnDetection} onchange=${(e) => setVoiceTurnDetection(e.target.value)}>
+                <option value="server_vad">server_vad</option>
+                <option value="semantic_vad">semantic_vad</option>
+                <option value="none">none</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Fallback Mode</label>
+              <select value=${voiceFallbackMode} onchange=${(e) => setVoiceFallbackMode(e.target.value)}>
+                <option value="browser">browser</option>
+                <option value="disabled">disabled</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Delegate Executor</label>
+              <select value=${voiceDelegateExecutor} onchange=${(e) => setVoiceDelegateExecutor(e.target.value)}>
+                <option value="codex-sdk">codex-sdk</option>
+                <option value="copilot-sdk">copilot-sdk</option>
+                <option value="claude-sdk">claude-sdk</option>
+                <option value="gemini-sdk">gemini-sdk</option>
+                <option value="opencode-sdk">opencode-sdk</option>
+              </select>
+            </div>
+          </div>
+          ${(voiceProvider === "auto" || voiceProvider === "openai") && html`
+            <div class="form-group">
+              <label>OpenAI Realtime API Key</label>
+              <input
+                type="password"
+                value=${openaiRealtimeApiKey}
+                oninput=${(e) => setOpenaiRealtimeApiKey(e.target.value)}
+                placeholder="Optional - defaults to OPENAI_API_KEY"
+              />
+              <div class="hint">Leave blank to use OPENAI_API_KEY.</div>
+            </div>
+          `}
+          ${(voiceProvider === "auto" || voiceProvider === "azure") && html`
+            <div class="executor-grid">
+              <div class="form-group">
+                <label>Azure Realtime Endpoint</label>
+                <input
+                  type="text"
+                  value=${azureOpenaiRealtimeEndpoint}
+                  oninput=${(e) => setAzureOpenaiRealtimeEndpoint(e.target.value)}
+                  placeholder="https://<resource>.openai.azure.com"
+                />
+              </div>
+              <div class="form-group">
+                <label>Azure Realtime Deployment</label>
+                <input
+                  type="text"
+                  value=${azureOpenaiRealtimeDeployment}
+                  oninput=${(e) => setAzureOpenaiRealtimeDeployment(e.target.value)}
+                  placeholder="gpt-4o-realtime-preview"
+                />
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Azure Realtime API Key</label>
+              <input
+                type="password"
+                value=${azureOpenaiRealtimeApiKey}
+                oninput=${(e) => setAzureOpenaiRealtimeApiKey(e.target.value)}
+                placeholder="Optional - defaults to AZURE_OPENAI_API_KEY"
+              />
+            </div>
+          `}
+        `}
+      <//>
+
       <${Section} title=":hammer: Infrastructure">
         <div class="form-group">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
@@ -2698,6 +2915,14 @@ function App() {
           </tr>
           <tr><th>Workflow Auto-Install</th><td>${workflowAutoInstall ? "Enabled" : "Disabled"}</td></tr>
           <tr><th>Telegram</th><td>${telegramEnabled && telegramToken ? "Configured" : "Skipped"}</td></tr>
+          <tr>
+            <th>Voice</th>
+            <td>
+              ${voiceEnabled
+                ? `${voiceProvider} (${voiceFallbackMode} fallback)`
+                : "Disabled"}
+            </td>
+          </tr>
           ${profile === "advanced" ? html`
             <tr><th>Max Parallel</th><td>${maxParallel}</td></tr>
             <tr><th>Max Retries</th><td>${maxRetries}</td></tr>
@@ -2765,7 +2990,7 @@ function App() {
       `}
       ${oauthStatus === "received" && html`
         <div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.35);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;font-size:0.85rem;color:#4ade80;display:flex;align-items:flex-start;gap:10px">
-          <span style="font-size:1.2em;line-height:1">:check:</span>
+          <span style="font-size:1.2em;line-height:1">${iconText(":check:")}</span>
           <div>
             <strong>GitHub App authorized!</strong>
             ${oauthInstallationId && html` Installation ID: <code style="font-family:var(--font-mono);font-size:0.8em;color:#86efac">${oauthInstallationId}</code>.`}
