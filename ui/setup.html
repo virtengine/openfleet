@@ -705,8 +705,8 @@ function App() {
   // Voice assistant
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [voiceProvider, setVoiceProvider] = useState("auto");
-  const [voiceModel, setVoiceModel] = useState("gpt-4o-realtime-preview-2024-12-17");
-  const [voiceVisionModel, setVoiceVisionModel] = useState("gpt-4.1-mini");
+  const [voiceModel, setVoiceModel] = useState("gpt-audio-1.5");
+  const [voiceVisionModel, setVoiceVisionModel] = useState("gpt-4.1-nano");
   const [voiceId, setVoiceId] = useState("alloy");
   const [voiceTurnDetection, setVoiceTurnDetection] = useState("server_vad");
   const [voiceFallbackMode, setVoiceFallbackMode] = useState("browser");
@@ -714,7 +714,7 @@ function App() {
   const [openaiRealtimeApiKey, setOpenaiRealtimeApiKey] = useState("");
   const [azureOpenaiRealtimeEndpoint, setAzureOpenaiRealtimeEndpoint] = useState("");
   const [azureOpenaiRealtimeApiKey, setAzureOpenaiRealtimeApiKey] = useState("");
-  const [azureOpenaiRealtimeDeployment, setAzureOpenaiRealtimeDeployment] = useState("gpt-4o-realtime-preview");
+  const [azureOpenaiRealtimeDeployment, setAzureOpenaiRealtimeDeployment] = useState("gpt-audio-1.5");
   const [voiceProviders, setVoiceProviders] = useState([
     {
       id: Date.now(),
@@ -727,11 +727,11 @@ function App() {
   ]);
 
   const VOICE_PROVIDER_MODEL_DEFAULTS = {
-    openai: { model: "gpt-4o-realtime-preview-2024-12-17", visionModel: "gpt-4.1-mini" },
-    azure: { model: "gpt-4o-realtime-preview-2024-12-17", visionModel: "gpt-4.1-mini" },
-    claude: { model: "claude-3-7-sonnet-latest", visionModel: "claude-3-7-sonnet-latest" },
-    gemini: { model: "gemini-2.5-pro", visionModel: "gemini-2.5-flash" },
-    fallback: { model: "", visionModel: "" },
+    openai: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+    azure: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+    claude: { model: "claude-3-7-sonnet-latest", visionModel: "claude-3-7-sonnet-latest", models: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"], visionModels: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"] },
+    gemini: { model: "gemini-2.5-pro", visionModel: "gemini-2.5-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro"] },
+    fallback: { model: "", visionModel: "", models: [], visionModels: [] },
   };
 
   const getVoiceProviderModelDefaults = (provider) =>
@@ -748,7 +748,7 @@ function App() {
     const normalizedAzureDeployment = String(
       entry.azureDeployment ??
       fallback.azureDeployment ??
-      (normalizedProvider === "azure" ? "gpt-4o-realtime-preview" : ""),
+      (normalizedProvider === "azure" ? "gpt-audio-1.5" : ""),
     ).trim();
     return {
       id: entry.id || Date.now() + Math.random(),
@@ -783,7 +783,7 @@ function App() {
           visionModel: defaults_.visionModel,
           azureDeployment:
             nextProvider === "azure"
-              ? String(target.azureDeployment || "gpt-4o-realtime-preview")
+              ? String(target.azureDeployment || "gpt-audio-1.5")
               : "",
         });
         return list;
@@ -1157,10 +1157,10 @@ function App() {
       if (env.AZURE_OPENAI_REALTIME_API_KEY) { setAzureOpenaiRealtimeApiKey(env.AZURE_OPENAI_REALTIME_API_KEY); envLoaded = true; }
       if (env.AZURE_OPENAI_REALTIME_DEPLOYMENT) { setAzureOpenaiRealtimeDeployment(env.AZURE_OPENAI_REALTIME_DEPLOYMENT); envLoaded = true; }
       const resolvedVoiceProvider = String(env.VOICE_PROVIDER || existingVoice.provider || d.voiceProvider || voiceProvider || "openai").trim().toLowerCase();
-      const resolvedVoiceModel = String(env.VOICE_MODEL || existingVoice.model || d.voiceModel || voiceModel || "gpt-4o-realtime-preview-2024-12-17").trim();
-      const resolvedVoiceVisionModel = String(env.VOICE_VISION_MODEL || existingVoice.visionModel || d.voiceVisionModel || voiceVisionModel || "gpt-4.1-mini").trim();
+      const resolvedVoiceModel = String(env.VOICE_MODEL || existingVoice.model || d.voiceModel || voiceModel || "gpt-audio-1.5").trim();
+      const resolvedVoiceVisionModel = String(env.VOICE_VISION_MODEL || existingVoice.visionModel || d.voiceVisionModel || voiceVisionModel || "gpt-4.1-nano").trim();
       const resolvedVoiceId = String(env.VOICE_ID || existingVoice.voiceId || d.voiceId || voiceId || "alloy").trim();
-      const resolvedAzureDeployment = String(env.AZURE_OPENAI_REALTIME_DEPLOYMENT || existingVoice.azureDeployment || d.azureOpenaiRealtimeDeployment || azureOpenaiRealtimeDeployment || "gpt-4o-realtime-preview").trim();
+      const resolvedAzureDeployment = String(env.AZURE_OPENAI_REALTIME_DEPLOYMENT || existingVoice.azureDeployment || d.azureOpenaiRealtimeDeployment || azureOpenaiRealtimeDeployment || "gpt-audio-1.5").trim();
       if (Array.isArray(existingVoice.providers) && existingVoice.providers.length > 0) {
         setVoiceProviders(
           normalizeVoiceProviders(existingVoice.providers, {
@@ -2878,21 +2878,73 @@ function App() {
                 </div>
                 <div class="form-group">
                   <label>Model</label>
-                  <input
-                    type="text"
-                    value=${providerRow.model}
-                    oninput=${(e) => updateVoiceProviderRow(idx, "model", e.target.value)}
-                    placeholder="Provider model"
-                  />
+                  ${(() => {
+                    const defaults_ = getVoiceProviderModelDefaults(providerRow.provider);
+                    const knownModels = defaults_.models || [];
+                    const isCustom = knownModels.length > 0 && !knownModels.includes(providerRow.model) && providerRow.model !== "";
+                    return html`
+                      <select value=${isCustom ? "custom" : providerRow.model}
+                        onchange=${(e) => {
+                          if (e.target.value === "custom") {
+                            updateVoiceProviderRow(idx, "model", "");
+                          } else {
+                            updateVoiceProviderRow(idx, "model", e.target.value);
+                          }
+                        }}>
+                        ${knownModels.map((m) => html`<option value=${m}>${m}</option>`)}
+                        <option value="custom">custom...</option>
+                      </select>
+                      ${(isCustom || (knownModels.length > 0 && !knownModels.includes(providerRow.model))) && html`
+                        <input type="text" value=${providerRow.model}
+                          oninput=${(e) => updateVoiceProviderRow(idx, "model", e.target.value)}
+                          placeholder="Enter custom model slug..."
+                          style="margin-top:4px"
+                        />
+                      `}
+                      ${knownModels.length === 0 && html`
+                        <input type="text" value=${providerRow.model}
+                          oninput=${(e) => updateVoiceProviderRow(idx, "model", e.target.value)}
+                          placeholder="Provider model"
+                          style="margin-top:4px"
+                        />
+                      `}
+                    `;
+                  })()}
                 </div>
                 <div class="form-group">
                   <label>Vision Model</label>
-                  <input
-                    type="text"
-                    value=${providerRow.visionModel}
-                    oninput=${(e) => updateVoiceProviderRow(idx, "visionModel", e.target.value)}
-                    placeholder="Provider vision model"
-                  />
+                  ${(() => {
+                    const defaults_ = getVoiceProviderModelDefaults(providerRow.provider);
+                    const knownVisionModels = defaults_.visionModels || [];
+                    const isCustomVision = knownVisionModels.length > 0 && !knownVisionModels.includes(providerRow.visionModel) && providerRow.visionModel !== "";
+                    return html`
+                      <select value=${isCustomVision ? "custom" : providerRow.visionModel}
+                        onchange=${(e) => {
+                          if (e.target.value === "custom") {
+                            updateVoiceProviderRow(idx, "visionModel", "");
+                          } else {
+                            updateVoiceProviderRow(idx, "visionModel", e.target.value);
+                          }
+                        }}>
+                        ${knownVisionModels.map((m) => html`<option value=${m}>${m}</option>`)}
+                        <option value="custom">custom...</option>
+                      </select>
+                      ${(isCustomVision || (knownVisionModels.length > 0 && !knownVisionModels.includes(providerRow.visionModel))) && html`
+                        <input type="text" value=${providerRow.visionModel}
+                          oninput=${(e) => updateVoiceProviderRow(idx, "visionModel", e.target.value)}
+                          placeholder="Enter custom vision model slug..."
+                          style="margin-top:4px"
+                        />
+                      `}
+                      ${knownVisionModels.length === 0 && html`
+                        <input type="text" value=${providerRow.visionModel}
+                          oninput=${(e) => updateVoiceProviderRow(idx, "visionModel", e.target.value)}
+                          placeholder="Provider vision model"
+                          style="margin-top:4px"
+                        />
+                      `}
+                    `;
+                  })()}
                 </div>
                 <div class="form-group">
                   <label>Voice Persona</label>
@@ -2917,7 +2969,7 @@ function App() {
                       type="text"
                       value=${providerRow.azureDeployment || ""}
                       oninput=${(e) => updateVoiceProviderRow(idx, "azureDeployment", e.target.value)}
-                      placeholder="gpt-4o-realtime-preview"
+                      placeholder="gpt-audio-1.5"
                     />
                   </div>
                 `}

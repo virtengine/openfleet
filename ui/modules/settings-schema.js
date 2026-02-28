@@ -125,12 +125,12 @@ export const SETTINGS_SCHEMA = [
   // ── Voice Assistant ──────────────────────────────────────────
   { key: "VOICE_ENABLED",                  label: "Enable Voice Mode",          category: "voice", type: "boolean", defaultVal: true, description: "Enable the real-time voice assistant in the chat UI." },
   { key: "VOICE_PROVIDER",                 label: "Voice Provider",             category: "voice", type: "select", defaultVal: "auto", options: ["auto", "openai", "azure", "claude", "gemini", "fallback"], description: "Voice API provider. 'auto' selects based on available keys. 'fallback' uses browser speech APIs." },
-  { key: "VOICE_MODEL",                    label: "Voice Model",                category: "voice", type: "string", defaultVal: "gpt-4o-realtime-preview-2024-12-17", description: "OpenAI Realtime model to use for voice sessions." },
-  { key: "VOICE_VISION_MODEL",             label: "Vision Model",               category: "voice", type: "string", defaultVal: "gpt-4.1-mini", description: "Vision model used for live screen/camera understanding in voice mode." },
+  { key: "VOICE_MODEL",                    label: "Voice Model",                category: "voice", type: "select", defaultVal: "gpt-audio-1.5", options: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview-2024-12-17", "gemini-2.5-pro", "gemini-2.5-flash", "claude-3-7-sonnet-latest", "custom"], description: "Audio model for voice sessions. Select 'custom' to enter a model slug manually." },
+  { key: "VOICE_VISION_MODEL",             label: "Vision Model",               category: "voice", type: "select", defaultVal: "gpt-4.1-nano", options: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1", "gemini-2.5-flash", "gemini-2.5-pro", "claude-3-7-sonnet-latest", "custom"], description: "Vision model for live screen/camera understanding. Select 'custom' to enter a model slug manually." },
   { key: "OPENAI_REALTIME_API_KEY",        label: "OpenAI Realtime Key",        category: "voice", type: "secret", sensitive: true, description: "Dedicated API key for voice. Falls back to OPENAI_API_KEY if not set." },
   { key: "AZURE_OPENAI_REALTIME_ENDPOINT", label: "Azure Realtime Endpoint",    category: "voice", type: "string", description: "Azure OpenAI endpoint for Realtime API (e.g., https://myresource.openai.azure.com).", validate: "^$|^https?://" },
   { key: "AZURE_OPENAI_REALTIME_API_KEY",  label: "Azure Realtime Key",         category: "voice", type: "secret", sensitive: true, description: "Azure OpenAI API key for Realtime API. Falls back to AZURE_OPENAI_API_KEY if not set." },
-  { key: "AZURE_OPENAI_REALTIME_DEPLOYMENT", label: "Azure Deployment",         category: "voice", type: "string", defaultVal: "gpt-4o-realtime-preview", description: "Azure deployment name for the Realtime model." },
+  { key: "AZURE_OPENAI_REALTIME_DEPLOYMENT", label: "Azure Deployment",         category: "voice", type: "select", defaultVal: "gpt-audio-1.5", options: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview", "custom"], description: "Azure deployment name for the Realtime model. Select 'custom' to enter manually." },
   { key: "VOICE_ID",                       label: "Voice",                      category: "voice", type: "select", defaultVal: "alloy", options: ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse"], description: "Voice personality for text-to-speech output." },
   { key: "VOICE_TURN_DETECTION",           label: "Turn Detection",             category: "voice", type: "select", defaultVal: "server_vad", options: ["server_vad", "semantic_vad", "none"], description: "How the model detects when you stop speaking. 'semantic_vad' is more intelligent but higher latency." },
   { key: "VOICE_DELEGATE_EXECUTOR",        label: "Delegate Executor",          category: "voice", type: "select", defaultVal: "codex-sdk", options: ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"], description: "Which agent executor voice tool calls delegate to for complex tasks." },
@@ -307,8 +307,11 @@ export function validateSetting(def, value) {
         return { valid: false, error: "Must be true or false" };
       return { valid: true };
     case "select":
-      if (def.options && !def.options.includes(String(value)))
+      if (def.options && !def.options.includes(String(value))) {
+        // Allow arbitrary values when the schema includes "custom" as an option
+        if (def.options.includes("custom")) return { valid: true };
         return { valid: false, error: `Must be one of: ${def.options.join(", ")}` };
+      }
       return { valid: true };
     default:
       if (def.validate) {
