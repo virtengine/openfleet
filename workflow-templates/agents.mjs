@@ -75,6 +75,7 @@ After completing your implementation:
 3. Save each screenshot to \`.bosun/evidence/\` directory
 4. Include screenshots of: main view, mobile view, any interactive states
 5. Name files descriptively: \`homepage-desktop.png\`, \`modal-open.png\`, etc.
+6. Capture at least {{screenshotCount}} key screenshots across target states/viewports.
 
 ## Workflow
 1. Read task requirements carefully
@@ -356,7 +357,7 @@ export const AGENT_SESSION_MONITOR_TEMPLATE = {
   },
   nodes: [
     node("trigger", "trigger.schedule", "Check Every 5min", {
-      intervalMs: 300000,
+      intervalMs: "{{checkIntervalMs}}",
       cron: "*/5 * * * *",
     }, { x: 400, y: 50 }),
 
@@ -375,7 +376,7 @@ export const AGENT_SESSION_MONITOR_TEMPLATE = {
     }, { x: 200, y: 490 }),
 
     node("has-issues", "condition.expression", "Any Unhealthy?", {
-      expression: "($ctx.getNodeOutput('check-health')?.output || '').includes('stalled') || ($ctx.getNodeOutput('check-health')?.output || '').includes('timeout')",
+      expression: "(() => { const out = String($ctx.getNodeOutput('check-health')?.output || ''); const maxIdleMs = Number($data?.maxIdleMs || 600000); const maxTokenPercent = Number($data?.maxTokenPercent || 85); const idleMatch = out.match(/idle(?:_ms)?\\s*[:=]\\s*(\\d+)/i); const tokenMatch = out.match(/token(?:_usage|_percent)?\\s*[:=]\\s*(\\d+(?:\\.\\d+)?)/i); const idleExceeded = idleMatch ? Number(idleMatch[1]) > maxIdleMs : false; const tokenExceeded = tokenMatch ? Number(tokenMatch[1]) >= maxTokenPercent : false; return out.includes('stalled') || out.includes('timeout') || idleExceeded || tokenExceeded; })()",
     }, { x: 200, y: 640 }),
 
     node("auto-continue", "action.continue_session", "Auto-Continue Stalled", {
@@ -473,7 +474,7 @@ Write comprehensive tests FIRST before any implementation:
 Use the project's existing test framework: {{testFramework}}
 Commit with message "test: add tests for [feature]"`,
       sdk: "{{agentSdk}}",
-      timeoutMs: 1200000,
+      timeoutMs: "{{timeoutMs}}",
     }, { x: 400, y: 330 }),
 
     node("implement", "action.run_agent", "Implement Feature", {
@@ -488,7 +489,7 @@ The tests have been written. Now implement the feature to make them pass:
 Run \`{{testFramework}}\` after implementation.
 Commit with message "feat: implement [feature]"`,
       sdk: "{{agentSdk}}",
-      timeoutMs: 1800000,
+      timeoutMs: "{{timeoutMs}}",
     }, { x: 400, y: 490 }),
 
     node("build", "validation.build", "Build Check", {

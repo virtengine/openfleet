@@ -31,10 +31,13 @@ export const TASK_PLANNER_TEMPLATE = {
     minTodoCount: 3,
     taskCount: 5,
     dedupHours: 24,
+    prompt: "",
+    plannerContext:
+      "Focus on high-value implementation work. Avoid duplicating existing tasks.",
   },
   nodes: [
     node("trigger", "trigger.task_low", "Backlog Low?", {
-      threshold: 3,
+      threshold: "{{minTodoCount}}",
       status: "todo",
     }, { x: 400, y: 50 }),
 
@@ -48,14 +51,15 @@ export const TASK_PLANNER_TEMPLATE = {
     }, { x: 400, y: 310 }),
 
     node("run-planner", "agent.run_planner", "Generate Tasks", {
-      taskCount: 5,
-      context: "Focus on high-value implementation work. Avoid duplicating existing tasks.",
+      taskCount: "{{taskCount}}",
+      context: "{{plannerContext}}",
+      prompt: "{{prompt}}",
       dedup: true,
     }, { x: 400, y: 440 }),
 
     node("materialize-tasks", "action.materialize_planner_tasks", "Create Tasks", {
       plannerNodeId: "run-planner",
-      maxTasks: 5,
+      maxTasks: "{{taskCount}}",
       status: "todo",
       dedup: true,
       failOnZero: true,
@@ -134,14 +138,17 @@ export const TASK_REPLENISH_TEMPLATE = {
     intervalMs: 3600000,
     minTodoCount: 5,
     taskCount: 8,
+    prompt: "",
+    plannerContext:
+      "Scheduled replenishment run. Prioritize implementation tasks that build on recent PRs.",
   },
   nodes: [
     node("trigger", "trigger.schedule", "Hourly Check", {
-      intervalMs: 3600000,
+      intervalMs: "{{intervalMs}}",
     }, { x: 400, y: 50 }),
 
     node("check-backlog", "trigger.task_low", "Check Backlog Level", {
-      threshold: 5,
+      threshold: "{{minTodoCount}}",
     }, { x: 400, y: 180 }),
 
     node("needs-tasks", "condition.expression", "Needs Replenishment?", {
@@ -149,13 +156,14 @@ export const TASK_REPLENISH_TEMPLATE = {
     }, { x: 400, y: 310 }),
 
     node("run-planner", "agent.run_planner", "Generate Tasks", {
-      taskCount: 8,
-      context: "Scheduled replenishment run. Prioritize implementation tasks that build on recent PRs.",
+      taskCount: "{{taskCount}}",
+      context: "{{plannerContext}}",
+      prompt: "{{prompt}}",
     }, { x: 400, y: 440 }),
 
     node("materialize-tasks", "action.materialize_planner_tasks", "Create Tasks", {
       plannerNodeId: "run-planner",
-      maxTasks: 8,
+      maxTasks: "{{taskCount}}",
       status: "todo",
       dedup: true,
       failOnZero: true,
@@ -217,7 +225,7 @@ export const NIGHTLY_REPORT_TEMPLATE = {
   nodes: [
     node("trigger", "trigger.schedule", "Nightly at 11pm", {
       intervalMs: 86400000,
-      cron: "0 23 * * *",
+      cron: "0 {{reportHour}} * * *",
     }, { x: 400, y: 50 }),
 
     node("get-task-stats", "action.run_command", "Get Task Stats", {
@@ -257,7 +265,7 @@ Format as a Telegram-friendly message with emoji headers. Include:
     }, { x: 400, y: 380 }),
 
     node("send-report", "notify.telegram", "Send Report", {
-      message: "📊 **Daily Bosun Report**\n\n{{reportOutput}}",
+      message: "📊 **Daily Bosun Report** ({{reportTimezone}})\n\n{{reportOutput}}",
     }, { x: 400, y: 540 }),
   ],
   edges: [
@@ -304,6 +312,7 @@ export const SPRINT_RETROSPECTIVE_TEMPLATE = {
   trigger: "trigger.schedule",
   variables: {
     lookbackDays: 7,
+    lookbackWindowMs: 604800000,
     createImprovementTasks: true,
   },
   nodes: [
@@ -323,7 +332,7 @@ export const SPRINT_RETROSPECTIVE_TEMPLATE = {
     }, { x: 600, y: 200 }),
 
     node("error-analysis", "action.analyze_errors", "Analyze Error Patterns", {
-      lookbackHours: "{{ lookbackDays * 24 }}",
+      timeWindowMs: "{{lookbackWindowMs}}",
       groupBy: "category",
     }, { x: 200, y: 350 }),
 

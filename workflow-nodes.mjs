@@ -2360,7 +2360,7 @@ registerNodeType("agent.run_planner", {
     },
   },
   async execute(node, ctx, engine) {
-    const count = node.config?.taskCount || 5;
+    const count = Number(ctx.resolve(node.config?.taskCount || 5)) || 5;
     const context = ctx.resolve(node.config?.context || "");
     const explicitPrompt = ctx.resolve(node.config?.prompt || "");
     const outputVariable = ctx.resolve(node.config?.outputVariable || "");
@@ -2380,10 +2380,10 @@ registerNodeType("agent.run_planner", {
       `Your response MUST be a single fenced JSON block with shape { "tasks": [...] }.\n` +
       `Do NOT include any text, commentary, or prose outside the JSON block.\n` +
       `The downstream system will parse your output as JSON — any extra text will cause task creation to fail.`;
-    const promptText = explicitPrompt ||
-      (plannerPrompt
-        ? `${plannerPrompt}${outputEnforcement}`
-        : "");
+    const basePrompt = explicitPrompt || plannerPrompt || "";
+    const promptText = basePrompt
+      ? `${basePrompt}${outputEnforcement}`
+      : "";
 
     if (agentPool?.launchEphemeralThread && promptText) {
       let streamEventCount = 0;

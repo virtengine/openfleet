@@ -167,7 +167,7 @@ export const ANOMALY_WATCHDOG_TEMPLATE = {
     }, { x: 400, y: 550 }),
 
     node("alert-telegram", "notify.telegram", "Alert Human", {
-      message: "⚠️ Agent anomaly detected: **{{anomalyType}}**\nSession: {{sessionId}}\nTask: {{taskTitle}}\nIntervention: auto-applied",
+      message: "⚠️ Agent anomaly detected: **{{anomalyType}}**\nSession: {{sessionId}}\nTask: {{taskTitle}}\nIntervention: auto-applied\nThresholds: stall={{stallThresholdMs}}ms token={{maxTokenUsage}} maxErrors={{maxConsecutiveErrors}}",
     }, { x: 400, y: 700 }),
   ],
   edges: [
@@ -244,7 +244,7 @@ export const WORKSPACE_HYGIENE_TEMPLATE = {
     }, { x: 650, y: 200 }),
 
     node("clean-evidence", "action.run_command", "Clean Old Evidence", {
-      command: "find .bosun/evidence -type f -mtime +14 -delete 2>/dev/null; echo 'Cleaned'",
+      command: "find .bosun/evidence -type f -mtime +{{logRetentionDays}} -delete 2>/dev/null; echo 'Cleaned'",
       continueOnError: true,
     }, { x: 150, y: 380 }),
 
@@ -258,7 +258,7 @@ export const WORKSPACE_HYGIENE_TEMPLATE = {
     }, { x: 650, y: 380 }),
 
     node("summary", "notify.log", "Log Summary", {
-      message: "Workspace hygiene sweep completed",
+      message: "Workspace hygiene sweep completed (max worktree age target: {{worktreeMaxAge}})",
       level: "info",
     }, { x: 400, y: 540 }),
   ],
@@ -310,7 +310,7 @@ export const HEALTH_CHECK_TEMPLATE = {
   },
   nodes: [
     node("trigger", "trigger.schedule", "Hourly Health Check", {
-      intervalMs: 3600000,
+      intervalMs: "{{intervalMs}}",
       cron: "0 * * * *",
     }, { x: 400, y: 50 }),
 
@@ -790,6 +790,15 @@ export const INCIDENT_RESPONSE_TEMPLATE = {
       threshold: "{{errorThreshold}}",
     }, { x: 400, y: 50 }),
 
+    node("should-assign", "condition.expression", "Auto Assign Agent?", {
+      expression: "Boolean($data?.autoAssignAgent !== false)",
+    }, { x: 250, y: 690, outputs: ["yes", "no"] }),
+
+    node("delay-escalation", "action.delay", "Escalation Delay", {
+      ms: "{{escalationDelayMs}}",
+      reason: "Allowing automatic mitigation window before escalation",
+    }, { x: 150, y: 620 }),
+
     node("collect-evidence", "agent.evidence_collect", "Collect Evidence", {
       sources: ["logs", "git-status", "process-list", "recent-errors"],
       lookbackMinutes: 30,
@@ -862,11 +871,14 @@ Be conservative — prefer safe mitigations over aggressive fixes.`,
     edge("trigger", "collect-evidence"),
     edge("collect-evidence", "classify-incident"),
     edge("classify-incident", "is-critical"),
-    edge("is-critical", "alert-critical", { condition: "$output?.result === true", port: "yes" }),
+    edge("is-critical", "delay-escalation", { condition: "$output?.result === true", port: "yes" }),
     edge("is-critical", "create-incident-task", { condition: "$output?.result !== true", port: "no" }),
+    edge("delay-escalation", "alert-critical"),
     edge("alert-critical", "create-incident-task"),
     edge("create-incident-task", "alert-standard"),
-    edge("create-incident-task", "assign-agent"),
+    edge("create-incident-task", "should-assign"),
+    edge("should-assign", "assign-agent", { condition: "$output?.result === true", port: "yes" }),
+    edge("should-assign", "resolution-log", { condition: "$output?.result !== true", port: "no" }),
     edge("assign-agent", "resolution-log"),
   ],
   metadata: {
