@@ -1,6 +1,22 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// Prevent disk-cached OAuth tokens in ~/.bosun/voice-auth-state.json from
+// leaking in and making azureAvailable=true regardless of what env vars the
+// test sets.
+vi.mock("../voice-auth-manager.mjs", () => ({
+  resolveVoiceOAuthToken: vi.fn(() => null),
+  hasVoiceOAuthToken: vi.fn(() => false),
+  saveVoiceOAuthToken: vi.fn(),
+}));
+
+// Non-existent temp dir — prevents loadDotEnv + loadConfigFile from reading
+// the developer's real .env / bosun.config.json which may have Azure creds.
+const ISOLATED_BOSUN_DIR = join(tmpdir(), `bosun-voice-smoke-${process.pid}`);
+
 const ENV_KEYS = [
+  "BOSUN_DIR",
   "TELEGRAM_UI_TLS_DISABLE",
   "TELEGRAM_UI_ALLOW_UNSAFE",
   "TELEGRAM_UI_TUNNEL",
@@ -161,16 +177,23 @@ beforeEach(() => {
   process.env.BOSUN_ENV_NO_OVERRIDE = "1";
   process.env.VOICE_ENABLED = "true";
   process.env.VOICE_FALLBACK_MODE = "browser";
+  // Isolate from the developer's ~/.bosun config dir and .env file so that
+  // real Azure credentials don't leak into provider-selection logic.
+  process.env.BOSUN_DIR = ISOLATED_BOSUN_DIR;
 
-  delete process.env.OPENAI_API_KEY;
-  delete process.env.OPENAI_REALTIME_API_KEY;
-  delete process.env.AZURE_OPENAI_API_KEY;
-  delete process.env.AZURE_OPENAI_REALTIME_API_KEY;
-  delete process.env.AZURE_OPENAI_ENDPOINT;
-  delete process.env.AZURE_OPENAI_REALTIME_ENDPOINT;
-  delete process.env.ANTHROPIC_API_KEY;
-  delete process.env.GEMINI_API_KEY;
-  delete process.env.GOOGLE_API_KEY;
+  // Set credential keys to empty strings instead of deleting them so that
+  // loadDotEnv ({ override: false }) in loadConfig() won't re-populate them
+  // from the developer's .env file.  Deleting a key makes it absent, which
+  // loadDotEnv treats as "not set" and happily loads the .env value.
+  process.env.OPENAI_API_KEY = "";
+  process.env.OPENAI_REALTIME_API_KEY = "";
+  process.env.AZURE_OPENAI_API_KEY = "";
+  process.env.AZURE_OPENAI_REALTIME_API_KEY = "";
+  process.env.AZURE_OPENAI_ENDPOINT = "";
+  process.env.AZURE_OPENAI_REALTIME_ENDPOINT = "";
+  process.env.ANTHROPIC_API_KEY = "";
+  process.env.GEMINI_API_KEY = "";
+  process.env.GOOGLE_API_KEY = "";
 
   globalThis.fetch = _realFetch;
 });
