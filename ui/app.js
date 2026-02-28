@@ -75,6 +75,8 @@ const VOICE_LAUNCH_QUERY_KEYS = [
   "chat_id",
 ];
 const FLOATING_CALL_STATE_KEY = "ve-floating-call-state";
+const FLOATING_CALL_HEARTBEAT_INTERVAL_MS = 15000;
+const FLOATING_CALL_STALE_THRESHOLD_MS = FLOATING_CALL_HEARTBEAT_INTERVAL_MS * 3;
 
 function getAppLogoSource(index = 0) {
   const safeIndex = Number.isFinite(index) ? Math.trunc(index) : 0;
@@ -161,11 +163,18 @@ function readFloatingCallState() {
       call: String(parsed?.call || "").trim().toLowerCase() === "video"
         ? "video"
         : "voice",
-      updatedAt: Number(parsed?.updatedAt || 0) || Date.now(),
+      updatedAt: Number(parsed?.updatedAt || 0) || 0,
     };
   } catch {
     return { active: false };
   }
+}
+
+function isFloatingCallStateFresh(state, now = Date.now()) {
+  if (state?.active !== true) return false;
+  const updatedAt = Number(state?.updatedAt || 0);
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) return false;
+  return now - updatedAt <= FLOATING_CALL_STALE_THRESHOLD_MS;
 }
 
 function writeFloatingCallState(nextState) {
@@ -1822,6 +1831,38 @@ function App() {
   }, [followWindowMode, voiceOverlayOpen, voiceCallType]);
 
   useEffect(() => {
+    if (!followWindowMode || !voiceOverlayOpen) return;
+    const heartbeat = globalThis.setInterval(() => {
+      const nextFloatingState = {
+        active: true,
+        call: voiceCallType,
+      };
+      setFloatingCallState(nextFloatingState);
+      writeFloatingCallState(nextFloatingState);
+    }, FLOATING_CALL_HEARTBEAT_INTERVAL_MS);
+    return () => globalThis.clearInterval(heartbeat);
+  }, [followWindowMode, voiceOverlayOpen, voiceCallType]);
+
+  useEffect(() => {
+    if (followWindowMode || floatingCallState?.active !== true) return;
+    if (!isFloatingCallStateFresh(floatingCallState)) {
+      const cleared = { active: false, call: floatingCallState?.call };
+      setFloatingCallState(cleared);
+      writeFloatingCallState(cleared);
+      return;
+    }
+    const staleSweep = globalThis.setInterval(() => {
+      setFloatingCallState((previous) => {
+        if (!previous?.active || isFloatingCallStateFresh(previous)) return previous;
+        const cleared = { active: false, call: previous?.call };
+        writeFloatingCallState(cleared);
+        return cleared;
+      });
+    }, FLOATING_CALL_HEARTBEAT_INTERVAL_MS);
+    return () => globalThis.clearInterval(staleSweep);
+  }, [followWindowMode, floatingCallState]);
+
+  useEffect(() => {
     if (!followWindowMode) return;
     if (voiceOverlayOpen) {
       followOverlayOpenedRef.current = true;
@@ -1956,8 +1997,9 @@ function App() {
   const showDrawerToggles = isTablet;
   const showInspectorToggle = isTablet && isChatOrAgents;
   const showRestoreFloatingCall =
+    isChat &&
     !followWindowMode &&
-    floatingCallState?.active === true &&
+    isFloatingCallStateFresh(floatingCallState) &&
     typeof globalThis?.veDesktop?.follow?.restore === "function";
   const floatingCallLabel =
     String(floatingCallState?.call || "").trim().toLowerCase() === "video"
