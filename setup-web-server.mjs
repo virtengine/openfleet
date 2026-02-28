@@ -1222,7 +1222,7 @@ function handlePrerequisites() {
   };
 }
 
-function handleStatus() {
+async function handleStatus() {
   const configDir = resolveConfigDir();
   const configured = hasSetupMarkers(configDir);
   const repoRoot = detectRepoRoot();
@@ -1256,6 +1256,36 @@ function handleStatus() {
     }
   }
 
+  // ── Detect existing GitHub OAuth ──────────────────────────────────────────
+  let githubOAuth = null;
+  try {
+    const { loadOAuthState, getUserToken } = await import("./github-app-auth.mjs");
+    const state = loadOAuthState();
+    const token = getUserToken();
+    if (token && state) {
+      githubOAuth = {
+        connected: true,
+        user: state.user?.login || state.user?.name || null,
+        savedAt: state.savedAt || null,
+        installationIds: Array.isArray(state.installationIds) ? state.installationIds : [],
+      };
+    }
+  } catch { /* github-app-auth not available — ignore */ }
+
+  // ── Detect startup service + desktop shortcut status ──────────────────────
+  let startupStatus = null;
+  let desktopShortcutStatus = null;
+  try {
+    const { getStartupStatus, getStartupMethodName } = await import("./startup-service.mjs");
+    const status_ = getStartupStatus();
+    startupStatus = { ...status_, methodName: getStartupMethodName() };
+  } catch { /* ignore */ }
+  try {
+    const { getDesktopShortcutStatus, getDesktopShortcutMethodName } = await import("./desktop-shortcut.mjs");
+    const status_ = getDesktopShortcutStatus();
+    desktopShortcutStatus = { ...status_, methodName: getDesktopShortcutMethodName() };
+  } catch { /* ignore */ }
+
   return {
     ok: true,
     configured,
@@ -1267,6 +1297,9 @@ function handleStatus() {
     projectName,
     existingConfig,
     existingEnv,
+    githubOAuth,
+    startupStatus,
+    desktopShortcutStatus,
     version: getVersion(),
   };
 }
@@ -1887,7 +1920,7 @@ async function handleRequest(req, res) {
     try {
       switch (route) {
         case "status":
-          jsonResponse(res, 200, handleStatus());
+          jsonResponse(res, 200, await handleStatus());
           return;
         case "vendor-status":
           jsonResponse(res, 200, checkVendorFiles());
@@ -1928,6 +1961,63 @@ async function handleRequest(req, res) {
           }
           jsonResponse(res, 200, handleApply(await readBody(req)));
           return;
+        case "install-startup": {
+          if (req.method !== "POST") {
+            jsonResponse(res, 405, { ok: false, error: "POST required" });
+            return;
+          }
+          try {
+            const body_ = await readBody(req);
+            const { installStartupService } = await import("./startup-service.mjs");
+            const result = await installStartupService({ daemon: body_?.daemon !== false });
+            jsonResponse(res, 200, { ok: true, ...result });
+          } catch (err) {
+            jsonResponse(res, 500, { ok: false, error: err.message });
+          }
+          return;
+        }
+        case "remove-startup": {
+          if (req.method !== "POST") {
+            jsonResponse(res, 405, { ok: false, error: "POST required" });
+            return;
+          }
+          try {
+            const { removeStartupService } = await import("./startup-service.mjs");
+            const result = await removeStartupService();
+            jsonResponse(res, 200, { ok: true, ...result });
+          } catch (err) {
+            jsonResponse(res, 500, { ok: false, error: err.message });
+          }
+          return;
+        }
+        case "install-desktop-shortcut": {
+          if (req.method !== "POST") {
+            jsonResponse(res, 405, { ok: false, error: "POST required" });
+            return;
+          }
+          try {
+            const { installDesktopShortcut } = await import("./desktop-shortcut.mjs");
+            const result = installDesktopShortcut();
+            jsonResponse(res, 200, { ok: true, ...result });
+          } catch (err) {
+            jsonResponse(res, 500, { ok: false, error: err.message });
+          }
+          return;
+        }
+        case "remove-desktop-shortcut": {
+          if (req.method !== "POST") {
+            jsonResponse(res, 405, { ok: false, error: "POST required" });
+            return;
+          }
+          try {
+            const { removeDesktopShortcut } = await import("./desktop-shortcut.mjs");
+            const result = removeDesktopShortcut();
+            jsonResponse(res, 200, { ok: true, ...result });
+          } catch (err) {
+            jsonResponse(res, 500, { ok: false, error: err.message });
+          }
+          return;
+        }
         case "complete":
           if (req.method !== "POST") {
             jsonResponse(res, 405, { ok: false, error: "POST required" });
