@@ -4352,6 +4352,8 @@ function getHeaderString(value) {
 
 async function requireAuth(req) {
   if (isAllowUnsafe()) return { ok: true, source: "unsafe", issueSessionCookie: false };
+  // Desktop Electron API key — non-expiring, set via BOSUN_DESKTOP_API_KEY env
+  if (checkDesktopApiKey(req)) return { ok: true, source: "desktop-api-key", issueSessionCookie: false };
   // Session token (browser access)
   if (checkSessionToken(req)) return { ok: true, source: "session", issueSessionCookie: false };
   // Telegram initData HMAC
@@ -4375,6 +4377,22 @@ async function requireAuth(req) {
 
 function requireWsAuth(req, url) {
   if (isAllowUnsafe()) return true;
+  // Desktop Electron API key (query param: desktopKey=...)
+  const desktopKey = (process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  if (desktopKey) {
+    const qDesktopKey = url.searchParams.get("desktopKey") || "";
+    if (qDesktopKey) {
+      try {
+        const a = Buffer.from(qDesktopKey);
+        const b = Buffer.from(desktopKey);
+        if (a.length === b.length && timingSafeEqual(a, b)) return true;
+      } catch {
+        /* ignore */
+      }
+    }
+    // Also accept via Authorization header (for WS upgrade requests that support it)
+    if (checkDesktopApiKey(req)) return true;
+  }
   // Session token (query param or cookie)
   if (checkSessionToken(req)) return true;
   if (sessionToken) {
