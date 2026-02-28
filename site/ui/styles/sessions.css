@@ -2037,7 +2037,7 @@ ul.md-list li::before {
   padding: 8px 8px 8px 16px;
   transition: border-color 0.15s, box-shadow 0.15s;
   max-width: min(760px, 100%);
-  margin: 0 auto;
+  margin: 8px auto 0;
 }
 
 .chat-input-wrapper:focus-within {
@@ -2574,6 +2574,10 @@ ul.md-list li::before {
 }
 
 /* ─── Blend chat input seamlessly with bottom navbar ─── */
+.app-shell[data-tab="chat"] .main-content {
+  background: var(--glass-bg);
+}
+
 .app-shell[data-tab="chat"] .chat-input-area {
   border-top: none;
   background: var(--glass-bg);
