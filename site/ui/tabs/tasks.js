@@ -366,7 +366,7 @@ export function StartTaskModal({
             onClick=${handleStart}
             disabled=${starting || !resolvedTaskId}
           >
-            ${starting ? "Starting…" : ":play: Start Task"}
+            ${starting ? "Starting…" : iconText(":play: Start Task")}
           </button>
         </div>
       </div>
@@ -1094,7 +1094,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
               href="#"
               onClick=${(e) => { e.preventDefault(); haptic(); sendCommandToChat("/diff " + branchLabel); onClose(); }}
             >
-              PR #${prNumber} · View diff :arrowRight:
+              ${iconText(`PR #${prNumber} · View diff :arrowRight:`)}
             </a>
           `}
           ${!prNumber && html`<span style="font-size:12px;color:var(--text-hint);">No PR yet</span>`}
@@ -1200,7 +1200,7 @@ export function TaskReviewModal({ task, onClose, onStart }) {
           title="Mark as merged / done"
         >${iconText("✓ Mark Done")}</button>
         <button class="btn btn-secondary btn-sm" onClick=${handleReopen}>
-          :workflow: Reopen as Active
+          ${iconText(":workflow: Reopen as Active")}
         </button>
         <button
           class="btn btn-ghost btn-sm"
@@ -1540,7 +1540,7 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         html`
           <div class="task-modal-actions">
             <button class="btn btn-primary btn-sm" onClick=${handleStart}>
-              :play: Dispatch Task
+              ${iconText(":play: Dispatch Task")}
             </button>
           </div>
         `}
@@ -2601,7 +2601,7 @@ export function TasksTab() {
                       setStartAnyOpen(true);
                     }}
                   >
-                    :play: Start Task
+                    ${iconText(":play: Start Task")}
                   </button>
                   ${actionsMenu}
                 `}
@@ -3280,7 +3280,7 @@ function CreateTaskModalInline({ onClose }) {
           onClick=${() => setShowAdvanced(!showAdvanced)}
           type="button"
         >
-          <span style="display:inline-block;transition:transform 0.15s;transform:rotate(${showAdvanced ? 90 : 0}deg)">:play:</span>
+          <span style="display:inline-block;transition:transform 0.15s;transform:rotate(${showAdvanced ? 90 : 0}deg)">${resolveIcon(":play:")}</span>
           Advanced${hasAdvanced && !showAdvanced ? " •" : ""}
         </button>
 

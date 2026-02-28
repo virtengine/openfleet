@@ -587,7 +587,7 @@ function WorkspaceViewer({ agent, onClose }) {
                   setStreamSnapshot({ events: [], fileAccess: null, capturedAt: null });
                 }
               }}>
-                ${streamPaused ? ":play: Resume" : ":pause: Pause"}
+                ${iconText(streamPaused ? ":play: Resume" : ":pause: Pause")}
               </button>
               <button
                 class="btn btn-ghost btn-sm"
