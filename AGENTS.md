@@ -364,6 +364,18 @@ Any function called from a hot path (HTTP handler, event loop, timer, setInterva
 - Respect feature flags — never force-enable or inline-override config values.
 - Guard optional subsystem calls with null/undefined checks.
 
+### UI Form / Modal Save Guard (Portal + Mini App)
+
+For any editable UI form, especially inside modals, use the same save UX pattern as Settings:
+
+- Show explicit dirty state with count text: `You have unsaved changes (X)`.
+- Provide explicit save/discard actions via shared save controls (for example `SaveDiscardBar`).
+- Register pending form state with `setPendingChange(...)` and clear on unmount.
+- Modal close (X button, backdrop click, Escape, swipe dismiss, Back button) must be guarded when dirty.
+- Guarded close must offer: `Save & Close`, `Discard & Close`, and `Cancel`.
+- If an async operation is active (for example AI rewrite/improve), surface that context in the close warning (`activeOperationLabel`) so users know close may drop in-flight results.
+- Never silently close a dirty modal due to outside click or shortcut keys.
+
 ### Git Hook Safety — HARD BLOCK
 
 **`git push --no-verify` and `git commit --no-verify` are permanently prohibited.**

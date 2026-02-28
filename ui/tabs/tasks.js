@@ -34,6 +34,8 @@ import {
   scheduleRefresh,
   loadTasks,
   updateTaskManualState,
+  setPendingChange,
+  clearPendingChange,
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
 import {
@@ -44,6 +46,7 @@ import {
   debounce,
   exportAsCSV,
   exportAsJSON,
+  countChangedFields,
 } from "../modules/utils.js";
 import {
   Card,
@@ -53,6 +56,7 @@ import {
   Modal,
   EmptyState,
   ListItem,
+  SaveDiscardBar,
 } from "../components/shared.js";
 import { SegmentedControl, SearchInput, Toggle } from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
@@ -255,6 +259,11 @@ function isImageAttachment(att) {
   return /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name);
 }
 
+function unsavedChangesMessage(changeCount) {
+  const count = Math.max(0, Number(changeCount || 0));
+  return `You have unsaved changes (${count})`;
+}
+
 export function StartTaskModal({
   task,
   defaultSdk = "auto",
@@ -266,14 +275,27 @@ export function StartTaskModal({
   const [model, setModel] = useState("");
   const [taskIdInput, setTaskIdInput] = useState(task?.id || "");
   const [starting, setStarting] = useState(false);
+  const initialSnapshotRef = useRef({
+    sdk: defaultSdk || "auto",
+    model: "",
+    taskIdInput: task?.id || "",
+  });
+  const pendingKey = useMemo(
+    () => `modal:start-task:${task?.id || "manual"}`,
+    [task?.id],
+  );
 
   useEffect(() => {
-    setSdk(defaultSdk || "auto");
-  }, [defaultSdk]);
-
-  useEffect(() => {
-    setTaskIdInput(task?.id || "");
-  }, [task?.id, task?.meta?.codex?.isIgnored, task?.meta?.labels]);
+    const next = {
+      sdk: defaultSdk || "auto",
+      model: "",
+      taskIdInput: task?.id || "",
+    };
+    initialSnapshotRef.current = next;
+    setSdk(next.sdk);
+    setModel(next.model);
+    setTaskIdInput(next.taskIdInput);
+  }, [defaultSdk, task?.id, task?.meta?.codex?.isIgnored, task?.meta?.labels]);
 
   const canModel = sdk && sdk !== "auto";
 
@@ -298,12 +320,38 @@ export function StartTaskModal({
   };
 
   const resolvedTaskId = (task?.id || taskIdInput || "").trim();
+  const currentSnapshot = useMemo(
+    () => ({
+      sdk: sdk || "auto",
+      model: model || "",
+      taskIdInput: taskIdInput || "",
+    }),
+    [model, sdk, taskIdInput],
+  );
+  const changeCount = useMemo(
+    () => countChangedFields(initialSnapshotRef.current, currentSnapshot),
+    [currentSnapshot],
+  );
+  const hasUnsaved = changeCount > 0;
 
-  const handleStart = async () => {
+  useEffect(() => {
+    setPendingChange(pendingKey, hasUnsaved);
+    return () => clearPendingChange(pendingKey);
+  }, [hasUnsaved, pendingKey]);
+
+  const resetToInitial = useCallback(() => {
+    const base = initialSnapshotRef.current || {};
+    setSdk(base.sdk || "auto");
+    setModel(base.model || "");
+    setTaskIdInput(base.taskIdInput || "");
+    showToast("Changes discarded", "info");
+  }, []);
+
+  const handleStart = async ({ closeAfterStart = true } = {}) => {
     if (starting) return;
     if (!resolvedTaskId) {
       showToast("Task ID is required", "error");
-      return;
+      return false;
     }
     setStarting(true);
     try {
@@ -312,15 +360,37 @@ export function StartTaskModal({
         sdk: sdk && sdk !== "auto" ? sdk : undefined,
         model: model.trim() ? model.trim() : undefined,
       });
-      onClose();
+      initialSnapshotRef.current = {
+        sdk: sdk || "auto",
+        model: model || "",
+        taskIdInput: taskIdInput || "",
+      };
+      if (closeAfterStart) {
+        onClose?.();
+        return { closed: true };
+      }
+      return true;
     } catch {
       /* toast via apiFetch */
+      return false;
+    } finally {
+      setStarting(false);
     }
-    setStarting(false);
   };
 
   return html`
-    <${Modal} title="Start Task" onClose=${onClose} contentClassName="modal-content-wide">
+    <${Modal}
+      title="Start Task"
+      onClose=${onClose}
+      contentClassName="modal-content-wide"
+      unsavedChanges=${changeCount}
+      onSaveBeforeClose=${() => handleStart({ closeAfterStart: true })}
+      onDiscardBeforeClose=${() => {
+        resetToInitial();
+        return true;
+      }}
+      activeOperationLabel=${starting ? "Task dispatch is still running" : ""}
+    >
       ${task?.id || task?.title
         ? html`
             <div class="meta-text mb-sm">
@@ -363,13 +433,26 @@ export function StartTaskModal({
         <div class="modal-form-field modal-form-span">
           <button
             class="btn btn-primary"
-            onClick=${handleStart}
+            onClick=${() => {
+              void handleStart({ closeAfterStart: true });
+            }}
             disabled=${starting || !resolvedTaskId}
           >
             ${starting ? "Starting…" : ":play: Start Task"}
           </button>
         </div>
       </div>
+      <${SaveDiscardBar}
+        dirty=${hasUnsaved}
+        message=${unsavedChangesMessage(changeCount)}
+        saveLabel="Start Task"
+        discardLabel="Discard"
+        onSave=${() => {
+          void handleStart({ closeAfterStart: false });
+        }}
+        onDiscard=${resetToInitial}
+        saving=${starting}
+      />
     <//>
   `;
 }
@@ -538,6 +621,21 @@ function TriggerTemplatesModal({ onClose }) {
   const [defaults, setDefaults] = useState({ executor: "auto", model: "auto" });
   const [templates, setTemplates] = useState([]);
   const [planner, setPlanner] = useState({});
+  const defaultsBaselineRef = useRef({ executor: "auto", model: "auto" });
+  const pendingKey = "modal:trigger-templates";
+
+  const defaultsSnapshot = useMemo(
+    () => ({
+      executor: String(defaults?.executor || "auto"),
+      model: String(defaults?.model || "auto"),
+    }),
+    [defaults],
+  );
+  const defaultsDirtyCount = useMemo(
+    () => countChangedFields(defaultsBaselineRef.current, defaultsSnapshot),
+    [defaultsSnapshot],
+  );
+  const hasUnsavedDefaults = defaultsDirtyCount > 0;
 
   const loadTemplates = useCallback(async () => {
     setLoading(true);
@@ -546,11 +644,15 @@ function TriggerTemplatesModal({ onClose }) {
       const res = await apiFetch("/api/triggers/templates", { _silent: true });
       const data = res?.data || {};
       setEnabled(data.enabled === true);
-      setDefaults(
+      const normalizedDefaults =
         data.defaults && typeof data.defaults === "object"
           ? data.defaults
-          : { executor: "auto", model: "auto" },
-      );
+          : { executor: "auto", model: "auto" };
+      defaultsBaselineRef.current = {
+        executor: String(normalizedDefaults.executor || "auto"),
+        model: String(normalizedDefaults.model || "auto"),
+      };
+      setDefaults(normalizedDefaults);
       setTemplates(Array.isArray(data.templates) ? data.templates : []);
       setPlanner(data.planner || {});
     } catch (err) {
@@ -563,6 +665,11 @@ function TriggerTemplatesModal({ onClose }) {
     loadTemplates();
   }, []);
 
+  useEffect(() => {
+    setPendingChange(pendingKey, hasUnsavedDefaults);
+    return () => clearPendingChange(pendingKey);
+  }, [hasUnsavedDefaults]);
+
   const persistUpdate = async (payload) => {
     setSaving(true);
     setError("");
@@ -573,11 +680,15 @@ function TriggerTemplatesModal({ onClose }) {
       });
       const data = res?.data || {};
       setEnabled(data.enabled === true);
-      setDefaults(
+      const normalizedDefaults =
         data.defaults && typeof data.defaults === "object"
           ? data.defaults
-          : { executor: "auto", model: "auto" },
-      );
+          : { executor: "auto", model: "auto" };
+      defaultsBaselineRef.current = {
+        executor: String(normalizedDefaults.executor || "auto"),
+        model: String(normalizedDefaults.model || "auto"),
+      };
+      setDefaults(normalizedDefaults);
       setTemplates(Array.isArray(data.templates) ? data.templates : []);
       setPlanner(data.planner || {});
       showToast("Template settings updated", "success");
@@ -599,9 +710,27 @@ function TriggerTemplatesModal({ onClose }) {
     }
   };
 
-  const handleSaveDefaults = async () => {
-    await persistUpdate({ defaults });
+  const handleSaveDefaults = async ({ closeAfterSave = false } = {}) => {
+    try {
+      await persistUpdate({ defaults });
+      if (closeAfterSave) {
+        onClose?.();
+        return { closed: true };
+      }
+      return true;
+    } catch {
+      return false;
+    }
   };
+
+  const handleDiscardDefaults = useCallback(() => {
+    const base = defaultsBaselineRef.current || { executor: "auto", model: "auto" };
+    setDefaults({
+      executor: base.executor || "auto",
+      model: base.model || "auto",
+    });
+    showToast("Changes discarded", "info");
+  }, []);
 
   const handleToggleTemplate = async (template, nextEnabled) => {
     await persistUpdate({ template: { ...template, enabled: nextEnabled } });
@@ -616,6 +745,13 @@ function TriggerTemplatesModal({ onClose }) {
       title="Trigger Templates"
       onClose=${onClose}
       contentClassName="modal-content-wide"
+      unsavedChanges=${defaultsDirtyCount}
+      onSaveBeforeClose=${() => handleSaveDefaults({ closeAfterSave: true })}
+      onDiscardBeforeClose=${() => {
+        handleDiscardDefaults();
+        return true;
+      }}
+      activeOperationLabel=${saving ? "Template update request is still running" : ""}
     >
       <div class="flex-col" style="gap:10px;">
         <div class="card" style="padding:10px 12px;">
@@ -689,6 +825,17 @@ function TriggerTemplatesModal({ onClose }) {
             onSaveTemplate=${handleSaveTemplate}
           />
         `)}
+        <${SaveDiscardBar}
+          dirty=${hasUnsavedDefaults}
+          message=${unsavedChangesMessage(defaultsDirtyCount)}
+          saveLabel="Save Defaults"
+          discardLabel="Discard"
+          onSave=${() => {
+            void handleSaveDefaults({ closeAfterSave: false });
+          }}
+          onDiscard=${handleDiscardDefaults}
+          saving=${saving}
+        />
       </div>
     <//>
   `;
@@ -1252,8 +1399,48 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   );
   const [repository, setRepository] = useState(task?.repository || "");
   const attachmentInputRef = useRef(null);
+  const initialSnapshotRef = useRef({
+    title: task?.title || "",
+    description: task?.description || "",
+    baseBranch: getTaskBaseBranch(task),
+    status: task?.status || "todo",
+    priority: task?.priority || "",
+    tagsInput: getTaskTags(task).join(", "),
+    draft: Boolean(task?.draft || task?.status === "draft"),
+  });
+  const pendingKey = useMemo(
+    () => `modal:task-detail:${task?.id || "unknown"}`,
+    [task?.id],
+  );
   const activeWsId = activeWorkspaceId.value || "";
   const canDispatch = Boolean(onStart && task?.id);
+
+  const editableSnapshot = useMemo(
+    () => ({
+      title: title || "",
+      description: description || "",
+      baseBranch: baseBranch || "",
+      status: status || "todo",
+      priority: priority || "",
+      tagsInput: tagsInput || "",
+      draft: Boolean(draft),
+    }),
+    [baseBranch, description, draft, priority, status, tagsInput, title],
+  );
+  const changeCount = useMemo(
+    () => countChangedFields(initialSnapshotRef.current, editableSnapshot),
+    [editableSnapshot],
+  );
+  const hasUnsaved = changeCount > 0;
+  const activeOperationLabel = saving
+    ? "Task save is in progress"
+    : rewriting
+      ? "Improve with AI is still running"
+      : uploadingAttachment
+        ? "Attachment upload is still running"
+        : manualBusy
+          ? "Manual takeover update is in progress"
+          : "";
 
   const workspaceOptions = managedWorkspaces.value || [];
   const selectedWorkspace = useMemo(
@@ -1263,19 +1450,35 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   const repositoryOptions = selectedWorkspace?.repos || [];
 
   useEffect(() => {
-    setTitle(task?.title || "");
-    setDescription(task?.description || "");
-    setBaseBranch(getTaskBaseBranch(task));
-    setStatus(task?.status || "todo");
-    setPriority(task?.priority || "");
-    setTagsInput(getTaskTags(task).join(", "));
+    const nextTitle = task?.title || "";
+    const nextDescription = task?.description || "";
+    const nextBaseBranch = getTaskBaseBranch(task);
+    const nextStatus = task?.status || "todo";
+    const nextPriority = task?.priority || "";
+    const nextTags = getTaskTags(task).join(", ");
+    const nextDraft = Boolean(task?.draft || task?.status === "draft");
+    setTitle(nextTitle);
+    setDescription(nextDescription);
+    setBaseBranch(nextBaseBranch);
+    setStatus(nextStatus);
+    setPriority(nextPriority);
+    setTagsInput(nextTags);
     setAttachments(normalizeTaskAttachments(task));
     setComments(normalizeTaskComments(task));
-    setDraft(Boolean(task?.draft || task?.status === "draft"));
+    setDraft(nextDraft);
     setManualOverride(isTaskManual(task));
     setManualReason(getManualReason(task));
     setWorkspaceId(task?.workspace || activeWorkspaceId.value || "");
     setRepository(task?.repository || "");
+    initialSnapshotRef.current = {
+      title: nextTitle,
+      description: nextDescription,
+      baseBranch: nextBaseBranch,
+      status: nextStatus,
+      priority: nextPriority,
+      tagsInput: nextTags,
+      draft: nextDraft,
+    };
   }, [task?.id]);
 
   useEffect(() => {
@@ -1300,7 +1503,24 @@ export function TaskDetailModal({ task, onClose, onStart }) {
     }
   }, [workspaceId, repositoryOptions.length]);
 
-  const handleSave = async () => {
+  useEffect(() => {
+    setPendingChange(pendingKey, hasUnsaved);
+    return () => clearPendingChange(pendingKey);
+  }, [hasUnsaved, pendingKey]);
+
+  const handleDiscardChanges = useCallback(() => {
+    const base = initialSnapshotRef.current || {};
+    setTitle(base.title || "");
+    setDescription(base.description || "");
+    setBaseBranch(base.baseBranch || "");
+    setStatus(base.status || "todo");
+    setPriority(base.priority || "");
+    setTagsInput(base.tagsInput || "");
+    setDraft(Boolean(base.draft));
+    showToast("Changes discarded", "info");
+  }, []);
+
+  const handleSave = async ({ closeAfterSave = true } = {}) => {
     setSaving(true);
     haptic("medium");
     const prev = cloneValue(tasksData.value);
@@ -1354,11 +1574,26 @@ export function TaskDetailModal({ task, onClose, onStart }) {
         },
       );
       showToast("Task saved", "success");
-      onClose();
+      initialSnapshotRef.current = {
+        title,
+        description,
+        baseBranch,
+        status: nextStatus,
+        priority: priority || "",
+        tagsInput,
+        draft: wantsDraft,
+      };
+      if (closeAfterSave) {
+        onClose?.();
+        return { closed: true };
+      }
+      return true;
     } catch {
       /* toast via apiFetch */
+      return false;
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const handleStatusUpdate = async (newStatus) => {
@@ -1527,7 +1762,18 @@ export function TaskDetailModal({ task, onClose, onStart }) {
   };
 
   return html`
-    <${Modal} title=${task?.title || "Task Detail"} onClose=${onClose} contentClassName="modal-content-wide">
+    <${Modal}
+      title=${task?.title || "Task Detail"}
+      onClose=${onClose}
+      contentClassName="modal-content-wide"
+      unsavedChanges=${changeCount}
+      onSaveBeforeClose=${() => handleSave({ closeAfterSave: true })}
+      onDiscardBeforeClose=${() => {
+        handleDiscardChanges();
+        return true;
+      }}
+      activeOperationLabel=${activeOperationLabel}
+    >
       <div class="task-modal-summary">
         <div class="task-modal-id" style="user-select:all">ID: ${task?.id}</div>
         <div class="task-modal-badges">
@@ -1824,6 +2070,19 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           </div>
         `}
 
+        <${SaveDiscardBar}
+          dirty=${hasUnsaved}
+          message=${unsavedChangesMessage(changeCount)}
+          saveLabel="Save Changes"
+          discardLabel="Discard"
+          onSave=${() => {
+            void handleSave({ closeAfterSave: false });
+          }}
+          onDiscard=${handleDiscardChanges}
+          saving=${saving}
+          disabled=${Boolean(activeOperationLabel && !saving)}
+        />
+
         <div class="btn-row modal-form-span">
           ${(task?.status === "error" || task?.status === "cancelled") &&
           html`
@@ -1833,7 +2092,9 @@ export function TaskDetailModal({ task, onClose, onStart }) {
           `}
           <button
             class="btn btn-secondary btn-sm"
-            onClick=${handleSave}
+            onClick=${() => {
+              void handleSave({ closeAfterSave: true });
+            }}
             disabled=${saving}
           >
             ${saving ? "Saving…" : iconText(":save: Save")}
@@ -3008,6 +3269,15 @@ function CreateTaskModalInline({ onClose }) {
   const [repository, setRepository] = useState("");
   const [repositories, setRepositories] = useState([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const initialSnapshotRef = useRef({
+    title: "",
+    description: "",
+    baseBranch: "",
+    priority: "medium",
+    tagsInput: "",
+    draft: false,
+  });
+  const pendingKey = "modal:create-task-inline";
 
   const handleRewrite = async () => {
     if (!title.trim() || rewriting) return;
@@ -3063,6 +3333,39 @@ function CreateTaskModalInline({ onClose }) {
     }
   }, [workspaceId, repositoryOptions.length]);
 
+  const unsavedSnapshot = useMemo(
+    () => ({
+      title: title || "",
+      description: description || "",
+      baseBranch: baseBranch || "",
+      priority: priority || "medium",
+      tagsInput: tagsInput || "",
+      draft: Boolean(draft),
+    }),
+    [baseBranch, description, draft, priority, tagsInput, title],
+  );
+  const changeCount = useMemo(
+    () => countChangedFields(initialSnapshotRef.current, unsavedSnapshot),
+    [unsavedSnapshot],
+  );
+  const hasUnsaved = changeCount > 0;
+
+  useEffect(() => {
+    setPendingChange(pendingKey, hasUnsaved);
+    return () => clearPendingChange(pendingKey);
+  }, [hasUnsaved]);
+
+  const resetToInitial = useCallback(() => {
+    const base = initialSnapshotRef.current || {};
+    setTitle(base.title || "");
+    setDescription(base.description || "");
+    setBaseBranch(base.baseBranch || "");
+    setPriority(base.priority || "medium");
+    setTagsInput(base.tagsInput || "");
+    setDraft(Boolean(base.draft));
+    showToast("Changes discarded", "info");
+  }, []);
+
   const toggleRepo = (slug) => {
     setRepositories((prev) =>
       prev.includes(slug) ? prev.filter((s) => s !== slug) : [...prev, slug],
@@ -3077,10 +3380,14 @@ function CreateTaskModalInline({ onClose }) {
     });
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = async ({ closeAfterSave = true } = {}) => {
+    if (rewriting) {
+      showToast("Wait for AI improvement to finish before saving.", "warning");
+      return false;
+    }
     if (!title.trim()) {
       showToast("Title is required", "error");
-      return;
+      return false;
     }
     setSubmitting(true);
     haptic("medium");
@@ -3103,12 +3410,25 @@ function CreateTaskModalInline({ onClose }) {
         }),
       });
       showToast("Task created", "success");
-      onClose();
+      initialSnapshotRef.current = {
+        title: title.trim(),
+        description: description.trim(),
+        baseBranch: baseBranch.trim(),
+        priority,
+        tagsInput,
+        draft: Boolean(draft),
+      };
+      if (closeAfterSave) {
+        onClose?.();
+      }
       await loadTasks();
+      return closeAfterSave ? { closed: true } : true;
     } catch {
       /* toast */
+      return false;
+    } finally {
+      setSubmitting(false);
     }
-    setSubmitting(false);
   };
 
   useEffect(() => {
@@ -3129,8 +3449,10 @@ function CreateTaskModalInline({ onClose }) {
     priority,
     tagsInput,
     draft,
+    rewriting,
     workspaceId,
     repository,
+    repositories,
   ]);
 
   const parsedTags = normalizeTagInput(tagsInput);
@@ -3140,8 +3462,10 @@ function CreateTaskModalInline({ onClose }) {
     <button
       class="btn btn-primary"
       style="width:100%"
-      onClick=${handleSubmit}
-      disabled=${submitting}
+      onClick=${() => {
+        void handleSubmit({ closeAfterSave: true });
+      }}
+      disabled=${submitting || rewriting}
     >
       ${submitting ? "Creating…" : iconText("✓ Create Task")}
     </button>
@@ -3153,6 +3477,13 @@ function CreateTaskModalInline({ onClose }) {
       onClose=${onClose}
       contentClassName="modal-content-wide"
       footer=${footerContent}
+      unsavedChanges=${changeCount}
+      onSaveBeforeClose=${() => handleSubmit({ closeAfterSave: true })}
+      onDiscardBeforeClose=${() => {
+        resetToInitial();
+        return true;
+      }}
+      activeOperationLabel=${rewriting ? "Improve with AI is still running" : ""}
     >
       <div class="flex-col create-task-form">
 
@@ -3164,7 +3495,12 @@ function CreateTaskModalInline({ onClose }) {
             value=${title}
             autoFocus=${true}
             onInput=${(e) => setTitle(e.target.value)}
-            onKeyDown=${(e) => e.key === "Enter" && !e.shiftKey && handleSubmit()}
+            onKeyDown=${(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void handleSubmit({ closeAfterSave: true });
+              }
+            }}
           />
           <${VoiceMicButtonInline}
             onTranscript=${(t) => setTitle((prev) => (prev ? prev + " " + t : t))}
@@ -3299,6 +3635,19 @@ function CreateTaskModalInline({ onClose }) {
             onChange=${(next) => setDraft(next)}
           />
         `}
+
+        <${SaveDiscardBar}
+          dirty=${hasUnsaved}
+          message=${unsavedChangesMessage(changeCount)}
+          saveLabel="Create Task"
+          discardLabel="Discard"
+          onSave=${() => {
+            void handleSubmit({ closeAfterSave: false });
+          }}
+          onDiscard=${resetToInitial}
+          saving=${submitting}
+          disabled=${rewriting}
+        />
 
       </div>
     <//>

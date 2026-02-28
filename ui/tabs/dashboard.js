@@ -7,6 +7,7 @@ import {
   useEffect,
   useCallback,
   useRef,
+  useMemo,
 } from "preact/hooks";
 import htm from "htm";
 
@@ -27,10 +28,17 @@ import {
   scheduleRefresh,
   getTrend,
   getDashboardHistory,
+  setPendingChange,
+  clearPendingChange,
 } from "../modules/state.js";
 import { navigateTo } from "../modules/router.js";
 import { ICONS } from "../modules/icons.js";
-import { cloneValue, formatRelative, truncate } from "../modules/utils.js";
+import {
+  cloneValue,
+  formatRelative,
+  truncate,
+  countChangedFields,
+} from "../modules/utils.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   Card,
@@ -38,6 +46,7 @@ import {
   SkeletonCard,
   Modal,
   EmptyState,
+  SaveDiscardBar,
 } from "../components/shared.js";
 import { DonutChart, ProgressBar, MiniSparkline } from "../components/charts.js";
 import {
@@ -139,11 +148,44 @@ export function CreateTaskModal({ onClose }) {
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState("medium");
   const [submitting, setSubmitting] = useState(false);
+  const initialSnapshotRef = useRef({
+    title: "",
+    description: "",
+    priority: "medium",
+  });
+  const pendingKey = "modal:create-task-dashboard";
 
-  const handleSubmit = useCallback(async () => {
+  const currentSnapshot = useMemo(
+    () => ({
+      title: title || "",
+      description: description || "",
+      priority: priority || "medium",
+    }),
+    [description, priority, title],
+  );
+  const changeCount = useMemo(
+    () => countChangedFields(initialSnapshotRef.current, currentSnapshot),
+    [currentSnapshot],
+  );
+  const hasUnsaved = changeCount > 0;
+
+  useEffect(() => {
+    setPendingChange(pendingKey, hasUnsaved);
+    return () => clearPendingChange(pendingKey);
+  }, [hasUnsaved]);
+
+  const resetToInitial = useCallback(() => {
+    const base = initialSnapshotRef.current || {};
+    setTitle(base.title || "");
+    setDescription(base.description || "");
+    setPriority(base.priority || "medium");
+    showToast("Changes discarded", "info");
+  }, []);
+
+  const handleSubmit = useCallback(async ({ closeAfterSave = true } = {}) => {
     if (!title.trim()) {
       showToast("Title is required", "error");
-      return;
+      return false;
     }
     setSubmitting(true);
     haptic("medium");
@@ -157,12 +199,22 @@ export function CreateTaskModal({ onClose }) {
         }),
       });
       showToast("Task created", "success");
-      onClose();
+      initialSnapshotRef.current = {
+        title: title.trim(),
+        description: description.trim(),
+        priority,
+      };
+      if (closeAfterSave) {
+        onClose?.();
+      }
       await refreshTab("dashboard");
+      return closeAfterSave ? { closed: true } : true;
     } catch {
       /* toast shown by apiFetch */
+      return false;
+    } finally {
+      setSubmitting(false);
     }
-    setSubmitting(false);
   }, [title, description, priority, onClose]);
 
   /* Telegram MainButton integration */
@@ -171,7 +223,9 @@ export function CreateTaskModal({ onClose }) {
     if (tg?.MainButton) {
       tg.MainButton.setText("Create Task");
       tg.MainButton.show();
-      const handler = () => handleSubmit();
+      const handler = () => {
+        void handleSubmit({ closeAfterSave: true });
+      };
       tg.MainButton.onClick(handler);
       return () => {
         tg.MainButton.hide();
@@ -181,7 +235,17 @@ export function CreateTaskModal({ onClose }) {
   }, [handleSubmit]);
 
   return html`
-    <${Modal} title="Create Task" onClose=${onClose}>
+    <${Modal}
+      title="Create Task"
+      onClose=${onClose}
+      unsavedChanges=${changeCount}
+      onSaveBeforeClose=${() => handleSubmit({ closeAfterSave: true })}
+      onDiscardBeforeClose=${() => {
+        resetToInitial();
+        return true;
+      }}
+      activeOperationLabel=${submitting ? "Task creation is in progress" : ""}
+    >
       <div class="flex-col gap-md">
         <input
           class="input"
@@ -212,11 +276,24 @@ export function CreateTaskModal({ onClose }) {
         />
         <button
           class="btn btn-primary"
-          onClick=${handleSubmit}
+          onClick=${() => {
+            void handleSubmit({ closeAfterSave: true });
+          }}
           disabled=${submitting}
         >
           ${submitting ? "Creating…" : "Create Task"}
         </button>
+        <${SaveDiscardBar}
+          dirty=${hasUnsaved}
+          message=${`You have unsaved changes (${changeCount})`}
+          saveLabel="Create Task"
+          discardLabel="Discard"
+          onSave=${() => {
+            void handleSubmit({ closeAfterSave: false });
+          }}
+          onDiscard=${resetToInitial}
+          saving=${submitting}
+        />
       </div>
     <//>
   `;

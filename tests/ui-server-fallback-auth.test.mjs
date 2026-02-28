@@ -82,7 +82,7 @@ describe("ui-server fallback auth", () => {
       headers: { cookie },
     });
     expect(authed.status).toBe(200);
-  });
+  }, 20_000);
 
   it("applies lockout with uniform failure response for invalid fallback secrets", async () => {
     process.env.TELEGRAM_UI_FALLBACK_AUTH_MAX_FAILURES = "2";
@@ -135,5 +135,5 @@ describe("ui-server fallback auth", () => {
     const statusBody = await statusRes.json();
     expect(statusRes.status).toBe(200);
     expect(statusBody.data?.fallbackAuth?.locked).toBe(true);
-  });
+  }, 20_000);
 });

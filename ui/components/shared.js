@@ -16,7 +16,11 @@ import htm from "htm";
 const html = htm.bind(h);
 
 import { ICONS } from "../modules/icons.js";
-import { toasts, showToast, shouldShowToast } from "../modules/state.js";
+import {
+  toasts,
+  showToast,
+  shouldShowToast,
+} from "../modules/state.js";
 import {
   haptic,
   showBackButton,
@@ -127,16 +131,63 @@ export function SkeletonCard({ height = "80px", className = "" }) {
 
 /**
  * Bottom-sheet modal with drag handle, title, swipe-to-dismiss, and TG BackButton integration.
- * @param {{title?: string, open?: boolean, onClose: () => void, children?: any, contentClassName?: string}} props
+ * @param {{
+ * title?: string,
+ * open?: boolean,
+ * onClose: () => void,
+ * children?: any,
+ * contentClassName?: string,
+ * footer?: any,
+ * unsavedChanges?: number,
+ * onSaveBeforeClose?: (() => Promise<boolean|{closed?: boolean}|void>)|null,
+ * onDiscardBeforeClose?: (() => Promise<boolean|{closed?: boolean}|void>)|null,
+ * activeOperationLabel?: string,
+ * closeGuard?: boolean
+ * }} props
  */
-export function Modal({ title, open = true, onClose, children, contentClassName = "", footer }) {
+export function Modal({
+  title,
+  open = true,
+  onClose,
+  children,
+  contentClassName = "",
+  footer,
+  unsavedChanges = 0,
+  onSaveBeforeClose = null,
+  onDiscardBeforeClose = null,
+  activeOperationLabel = "",
+  closeGuard = true,
+}) {
   const [visible, setVisible] = useState(false);
   const contentRef = useRef(null);
   const dragState = useRef({ startY: 0, startRect: 0, dragging: false });
   const [dragY, setDragY] = useState(0);
+  const [closePromptOpen, setClosePromptOpen] = useState(false);
+  const [closePromptSaving, setClosePromptSaving] = useState(false);
+  const scopedUnsavedCount = Number.isFinite(Number(unsavedChanges))
+    ? Math.max(0, Number(unsavedChanges))
+    : 0;
+  const hasScopedUnsaved = scopedUnsavedCount > 0;
+  const hasUnsaved = hasScopedUnsaved;
+  const operationLabel = String(activeOperationLabel || "").trim();
+
+  const requestClose = useCallback(() => {
+    if (!onClose) return;
+    if (!closeGuard || (!hasUnsaved && !operationLabel)) {
+      onClose();
+      return;
+    }
+    setClosePromptOpen(true);
+  }, [closeGuard, hasUnsaved, onClose, operationLabel]);
 
   useEffect(() => {
     requestAnimationFrame(() => setVisible(open));
+  }, [open]);
+
+  useEffect(() => {
+    if (open) return;
+    setClosePromptOpen(false);
+    setClosePromptSaving(false);
   }, [open]);
 
   useEffect(() => {
@@ -148,23 +199,33 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
   // Escape key to close (desktop support)
   useEffect(() => {
     if (!open) return;
-    const handler = (e) => { if (e.key === 'Escape' && onClose) onClose(); };
+    const handler = (e) => {
+      if (e.key !== "Escape") return;
+      if (closePromptOpen) {
+        setClosePromptOpen(false);
+        return;
+      }
+      requestClose();
+    };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [open, onClose]);
+  }, [closePromptOpen, open, requestClose]);
 
   // BackButton integration
   useEffect(() => {
     const handler = () => {
-      onClose();
-      hideBackButton();
+      if (closePromptOpen) {
+        setClosePromptOpen(false);
+        return;
+      }
+      requestClose();
     };
     showBackButton(handler);
 
     return () => {
       hideBackButton();
     };
-  }, [onClose]);
+  }, [closePromptOpen, requestClose]);
 
   // Prevent body scroll while dragging
   useEffect(() => {
@@ -234,10 +295,10 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
     if (el) el.style.transition = "";
     if (dragY > 150) {
       haptic("light");
-      onClose();
+      requestClose();
     }
     setDragY(0);
-  }, [dragY, onClose]);
+  }, [dragY, requestClose]);
 
   const handlePointerDown = useCallback((e) => {
     if (e.pointerType === "touch") return;
@@ -282,10 +343,10 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
     }
     if (dragY > 150) {
       haptic("light");
-      onClose();
+      requestClose();
     }
     setDragY(0);
-  }, [dragY, onClose]);
+  }, [dragY, requestClose]);
 
   const handlePointerCancel = useCallback((e) => {
     if (!dragState.current.dragging) return;
@@ -310,6 +371,71 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
 
   if (!open) return null;
 
+  const guardTitle = hasUnsaved
+    ? "You have unsaved changes"
+    : "Action in progress";
+  const guardUnsavedLine = hasUnsaved
+    ? hasScopedUnsaved
+      ? `You have unsaved changes (${scopedUnsavedCount}).`
+      : "You have unsaved changes."
+    : "";
+  const guardActivityLine = operationLabel
+    ? `Active operation: ${operationLabel}.`
+    : "";
+  const guardHintLine = operationLabel
+    ? "Closing now may ignore pending updates."
+    : "Choose whether to save before closing.";
+
+  const handleDiscardAndClose = async () => {
+    if (closePromptSaving) return;
+    try {
+      if (typeof onDiscardBeforeClose === "function") {
+        const result = await onDiscardBeforeClose();
+        if (result === false) return;
+        if (result && typeof result === "object" && result.closed) {
+          setClosePromptOpen(false);
+          return;
+        }
+      }
+      setClosePromptOpen(false);
+      onClose?.();
+    } catch (err) {
+      showToast(
+        err?.message || "Could not discard changes before closing.",
+        "error",
+      );
+    }
+  };
+
+  const handleSaveAndClose = async () => {
+    if (closePromptSaving) return;
+    if (typeof onSaveBeforeClose !== "function") {
+      showToast(
+        "Save before close is not available for this form.",
+        "warning",
+      );
+      return;
+    }
+    setClosePromptSaving(true);
+    try {
+      const result = await onSaveBeforeClose();
+      if (result === false) return;
+      if (result && typeof result === "object" && result.closed) {
+        setClosePromptOpen(false);
+        return;
+      }
+      setClosePromptOpen(false);
+      onClose?.();
+    } catch (err) {
+      showToast(
+        err?.message || "Save failed. Resolve errors before closing.",
+        "error",
+      );
+    } finally {
+      setClosePromptSaving(false);
+    }
+  };
+
   const dragStyle = dragY > 0
     ? `transform: translateY(${dragY}px); opacity: ${Math.max(0.2, 1 - dragY / 400)}`
     : "";
@@ -318,7 +444,7 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
     <div
       class="modal-overlay ${visible ? "modal-overlay-visible" : ""}"
       onClick=${(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) requestClose();
       }}
     >
       <div
@@ -338,7 +464,7 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
         <div class="modal-header">
           <div class="modal-handle"></div>
           ${title ? html`<div class="modal-title">${title}</div>` : null}
-          <button class="modal-close-btn" onClick=${onClose} aria-label="Close">
+          <button class="modal-close-btn" onClick=${requestClose} aria-label="Close">
             ${ICONS.close}
           </button>
         </div>
@@ -349,7 +475,54 @@ export function Modal({ title, open = true, onClose, children, contentClassName 
       </div>
     </div>
   `;
-  return createPortal(content, document.body);
+  const guard = closePromptOpen
+    ? html`
+        <div
+          class="modal-overlay modal-overlay-visible"
+          onClick=${() => {
+            if (closePromptSaving) return;
+            setClosePromptOpen(false);
+          }}
+        >
+          <div class="confirm-dialog" onClick=${(e) => e.stopPropagation()}>
+            <div class="confirm-dialog-title">${guardTitle}</div>
+            <div class="confirm-dialog-message">
+              ${guardUnsavedLine ? html`<div>${guardUnsavedLine}</div>` : null}
+              ${guardActivityLine ? html`<div>${guardActivityLine}</div>` : null}
+              <div>${guardHintLine}</div>
+            </div>
+            <div class="confirm-dialog-actions">
+              <button
+                class="btn btn-secondary"
+                onClick=${() => setClosePromptOpen(false)}
+                disabled=${closePromptSaving}
+              >
+                Cancel
+              </button>
+              <button
+                class="btn btn-secondary"
+                onClick=${handleDiscardAndClose}
+                disabled=${closePromptSaving}
+              >
+                ${hasUnsaved ? "Discard & Close" : "Close Anyway"}
+              </button>
+              ${hasUnsaved
+                ? html`
+                    <button
+                      class="btn btn-primary"
+                      onClick=${handleSaveAndClose}
+                      disabled=${closePromptSaving || typeof onSaveBeforeClose !== "function"}
+                    >
+                      ${closePromptSaving ? "Saving…" : "Save & Close"}
+                    </button>
+                  `
+                : null}
+            </div>
+          </div>
+        </div>
+      `
+    : null;
+  return createPortal(html`${content}${guard}`, document.body);
 }
 
 /* ═══════════════════════════════════════════════

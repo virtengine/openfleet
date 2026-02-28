@@ -46,9 +46,9 @@ const streamConfig = readInternalExecutorStreamConfig();
 export const MAX_STREAM_RETRIES = parseNumericSetting({
   envKey: "INTERNAL_EXECUTOR_STREAM_MAX_RETRIES",
   configValue: streamConfig.maxRetries,
-  fallback: 5,
+  fallback: 8,
   min: 1,
-  max: 12,
+  max: 20,
 });
 
 /** Base backoff in ms.  Doubles per attempt: 2 s → 4 s → 8 s → 16 s → 32 s. */
@@ -62,7 +62,7 @@ const STREAM_RETRY_BASE_MS = parseNumericSetting({
 const STREAM_RETRY_MAX_MS = parseNumericSetting({
   envKey: "INTERNAL_EXECUTOR_STREAM_RETRY_MAX_MS",
   configValue: streamConfig.retryMaxMs,
-  fallback: 32_000,
+  fallback: 60_000,
   min: STREAM_RETRY_BASE_MS,
   max: 300_000,
 });
@@ -111,23 +111,33 @@ export function isTransientStreamError(err) {
     msg.includes("service_unavailable") ||
     msg.includes("529") || // Azure overloaded
     msg.includes("rate_limit_exceeded") ||
-    msg.includes("overloaded_error") // Anthropic overloaded
+    msg.includes("overloaded_error") || // Anthropic overloaded
+    // ── Azure / Foundry specific ────────────────────────────────────────────
+    msg.includes("reconnecting") ||
+    msg.includes("upstream connect error") ||
+    msg.includes("no healthy upstream") ||
+    msg.includes("gateway timeout") ||
+    msg.includes("model is currently overloaded") ||
+    msg.includes("the server had an error") ||
+    msg.includes("an error occurred during streaming")
   );
 }
 
 /**
- * Exponential backoff delay for stream retries, with ±1 s jitter.
+ * Exponential backoff delay for stream retries, with ±25% jitter.
  *
  * attempt 0 → ~2 s
  * attempt 1 → ~4 s
  * attempt 2 → ~8 s
  * attempt 3 → ~16 s
- * attempt 4 → ~32 s (capped)
+ * attempt 4 → ~32 s
+ * attempt 5+ → ~60 s (capped)
  *
  * @param {number} attempt  zero-based retry index
  * @returns {number}  delay in milliseconds
  */
 export function streamRetryDelay(attempt) {
   const base = Math.min(STREAM_RETRY_BASE_MS * 2 ** attempt, STREAM_RETRY_MAX_MS);
-  return base + Math.random() * 1_000;
+  // ±25% jitter to avoid thundering herd on Azure reconnect
+  return base + (Math.random() - 0.5) * 0.5 * base;
 }

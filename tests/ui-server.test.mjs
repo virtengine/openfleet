@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -718,5 +718,145 @@ describe("ui-server mini app", () => {
 
     resolveCommand({ executed: true });
     await pendingCommand;
+  });
+
+  it("binds chat session execution cwd to the active workspace repo", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-chat-workspace-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const workspaceRepo = join(tmpDir, "workspaces", "chatws", "virtengine");
+    mkdirSync(workspaceRepo, { recursive: true });
+    mkdirSync(join(workspaceRepo, ".git"), { recursive: true });
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          activeWorkspace: "chatws",
+          workspaces: [
+            {
+              id: "chatws",
+              name: "Chat Workspace",
+              activeRepo: "virtengine",
+              repos: [{ name: "virtengine", primary: true }],
+            },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    const execPrimaryPrompt = vi.fn().mockResolvedValue({
+      finalResponse: "ok",
+      items: [],
+    });
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      dependencies: { execPrimaryPrompt },
+    });
+    const port = server.address().port;
+
+    const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "primary", prompt: "hello" }),
+    });
+    const createJson = await createResponse.json();
+    expect(createResponse.status).toBe(200);
+    expect(createJson.ok).toBe(true);
+    expect(createJson.session.metadata.workspaceId).toBe("chatws");
+    expect(createJson.session.metadata.workspaceDir).toBe(workspaceRepo);
+    const sessionId = createJson.session.id;
+
+    const messageResponse = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(sessionId)}/message`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: "run task", mode: "agent" }),
+      },
+    );
+    const messageJson = await messageResponse.json();
+    expect(messageResponse.status).toBe(200);
+    expect(messageJson.ok).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(execPrimaryPrompt).toHaveBeenCalledTimes(1);
+    const [, opts] = execPrimaryPrompt.mock.calls[0];
+    expect(opts.sessionId).toBe(sessionId);
+    expect(opts.cwd).toBe(workspaceRepo);
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("routes sdk commands with the session workspace cwd", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "bosun-sdk-workspace-"));
+    const configPath = join(tmpDir, "bosun.config.json");
+    const workspaceRepo = join(tmpDir, "workspaces", "sdkws", "app");
+    mkdirSync(workspaceRepo, { recursive: true });
+    mkdirSync(join(workspaceRepo, ".git"), { recursive: true });
+    process.env.BOSUN_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          $schema: "./bosun.schema.json",
+          activeWorkspace: "sdkws",
+          workspaces: [
+            {
+              id: "sdkws",
+              name: "SDK Workspace",
+              activeRepo: "app",
+              repos: [{ name: "app", primary: true }],
+            },
+          ],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    );
+
+    const execSdkCommand = vi.fn().mockResolvedValue("sdk-ok");
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      dependencies: { execSdkCommand },
+    });
+    const port = server.address().port;
+
+    const createResponse = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "primary", prompt: "hello" }),
+    });
+    const createJson = await createResponse.json();
+    const sessionId = createJson.session.id;
+
+    const sdkResponse = await fetch(`http://127.0.0.1:${port}/api/agents/sdk-command`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: "/status", sessionId }),
+    });
+    const sdkJson = await sdkResponse.json();
+    expect(sdkResponse.status).toBe(200);
+    expect(sdkJson.ok).toBe(true);
+    expect(sdkJson.result).toBe("sdk-ok");
+    expect(execSdkCommand).toHaveBeenCalledWith(
+      "/status",
+      "",
+      undefined,
+      expect.objectContaining({
+        cwd: workspaceRepo,
+        sessionId,
+      }),
+    );
+
+    rmSync(tmpDir, { recursive: true, force: true });
   });
 });

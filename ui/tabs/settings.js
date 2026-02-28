@@ -59,6 +59,17 @@ import {
 
 /* ─── Scoped Styles ─── */
 const SETTINGS_STYLES = `
+/* Category navigation */
+.settings-category-mobile {
+  display: none;
+  margin-bottom: 10px;
+}
+.settings-category-mobile-label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-tertiary, #8a8a8a);
+  margin: 0 0 6px 2px;
+}
 /* Category pill tabs — horizontal scrollable row */
 .settings-category-tabs {
   display: flex;
@@ -111,9 +122,9 @@ const SETTINGS_STYLES = `
   flex-wrap: wrap;
   row-gap: 8px;
   padding: 10px 16px;
-  min-width: 240px;
+  min-width: min(240px, calc(100vw - 24px));
   max-width: 480px;
-  width: auto;
+  width: min(480px, calc(100vw - 24px));
   background: var(--glass-bg, rgba(30,30,46,0.95));
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -340,6 +351,10 @@ const SETTINGS_STYLES = `
   color: var(--accent, #5a7cff);
 }
 .settings-banner-text { flex: 1; }
+.settings-banner code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 /* Diff display for confirm dialog */
 .settings-diff {
   max-height: 300px;
@@ -388,6 +403,18 @@ const SETTINGS_STYLES = `
   width: 100%;
   box-sizing: border-box;
   padding-bottom: 80px;
+  overflow-x: clip;
+}
+
+.setting-row .segmented-control {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  margin-bottom: 0;
+}
+.setting-row .segmented-btn {
+  flex: 1 1 96px;
+  min-width: 0;
 }
 
 body.settings-save-open .main-content {
@@ -454,6 +481,78 @@ body.settings-save-open .main-content {
   font-size: 11px;
   color: var(--text-tertiary, #666);
   text-align: center;
+}
+
+@media (max-width: 900px) {
+  .settings-category-mobile {
+    display: block;
+  }
+  .settings-category-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    overflow-x: visible;
+    padding: 4px 0 8px;
+  }
+  .settings-category-tab {
+    width: 100%;
+    border-radius: 12px;
+    min-height: 42px;
+    padding: 10px 12px;
+    justify-content: flex-start;
+    white-space: normal;
+    line-height: 1.25;
+  }
+}
+
+@media (max-width: 700px) {
+  .settings-save-bar {
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-width: none;
+    transform: none;
+    padding: 10px 12px;
+  }
+  @keyframes slideUp {
+    from { transform: translateY(20px); opacity: 0; }
+    to   { transform: translateY(0);    opacity: 1; }
+  }
+  .settings-save-bar .save-bar-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .setting-input-wrap {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+  .setting-input-wrap input[type="text"],
+  .setting-input-wrap input[type="number"],
+  .setting-input-wrap input[type="password"],
+  .setting-input-wrap textarea,
+  .setting-input-wrap select {
+    width: 100%;
+    flex: 1 1 auto;
+  }
+  .setting-unit {
+    align-self: flex-end;
+  }
+  .setting-help-tooltip {
+    left: 0;
+    transform: none;
+    min-width: 0;
+    max-width: min(92vw, 360px);
+  }
+}
+
+@media (max-width: 640px) {
+  .settings-category-tabs {
+    display: none;
+  }
+  .setting-row .segmented-btn {
+    flex: 1 1 calc(50% - 4px);
+  }
 }
 `;
 
@@ -1172,6 +1271,21 @@ function ServerConfigMode() {
       const activeCat = CATEGORIES.find((c) => c.id === activeCategory);
 
       return html`
+        <div class="settings-category-mobile">
+          <label class="settings-category-mobile-label">Category</label>
+          <div class="setting-input-wrap">
+            <select
+              value=${activeCategory}
+              onChange=${(e) => {
+                setActiveCategory(e.target.value);
+                haptic("light");
+              }}
+            >
+              ${CATEGORIES.map((cat) => html`<option key=${cat.id} value=${cat.id}>${cat.label}</option>`)}
+            </select>
+          </div>
+        </div>
+
         <!-- Category tabs -->
         <div class="settings-category-tabs">
           ${CATEGORIES.map(

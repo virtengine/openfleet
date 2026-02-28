@@ -688,6 +688,7 @@ function detectChangedFiles(repoRoot) {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 10_000,
+      stdio: ["pipe", "pipe", "pipe"],
     });
     return output
       .split(/\r?\n/)
@@ -708,6 +709,7 @@ function getChangeSummary(repoRoot, files) {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 10_000,
+      stdio: ["pipe", "pipe", "pipe"],
     });
     return diff.trim() || files.join(", ");
   } catch {
