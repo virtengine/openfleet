@@ -13460,6 +13460,9 @@ async function runMonitorMonitorCycle({
   }
 }
 
+function restartGitHubReconciler() {}
+function stopGitHubReconciler() {}
+
 function startMonitorMonitorSupervisor() {
   refreshMonitorMonitorRuntime();
   if (!monitorMonitor.enabled) return;
