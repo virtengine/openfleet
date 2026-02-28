@@ -406,6 +406,27 @@ async function getWorkflowEngineModule() {
         if (result.errors.length) {
           console.warn("[workflows] Default template install errors:", result.errors);
         }
+        if (typeof _wfTemplates.reconcileInstalledTemplates === "function") {
+          const reconcile = _wfTemplates.reconcileInstalledTemplates(engine, {
+            autoUpdateUnmodified: true,
+          });
+          if (reconcile.autoUpdated > 0) {
+            console.log(
+              `[workflows] Auto-updated ${reconcile.autoUpdated} unmodified template workflow(s) to latest`,
+            );
+          }
+          if (reconcile.customized.length > 0) {
+            const pending = reconcile.customized.filter((entry) => entry.updateAvailable).length;
+            if (pending > 0) {
+              console.log(
+                `[workflows] ${pending} customized template workflow(s) have updates available`,
+              );
+            }
+          }
+          if (reconcile.errors.length > 0) {
+            console.warn("[workflows] Template reconcile errors:", reconcile.errors);
+          }
+        }
       } catch (err) {
         console.warn("[workflows] Default template install failed:", err.message);
       } finally {
@@ -6258,6 +6279,9 @@ async function handleApi(req, res, url) {
       const wfMod = await getWorkflowEngine();
       if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
       const engine = wfMod.getWorkflowEngine();
+      if (typeof _wfTemplates?.applyWorkflowTemplateState === "function") {
+        _wfTemplates.applyWorkflowTemplateState(body);
+      }
       const saved = await engine.save(body);
       jsonResponse(res, 200, { ok: true, workflow: saved });
     } catch (err) {
@@ -6288,6 +6312,65 @@ async function handleApi(req, res, url) {
       const engine = wfMod.getWorkflowEngine();
       const wf = await tplMod.installTemplate(body.templateId, engine, body.overrides);
       jsonResponse(res, 200, { ok: true, workflow: wf });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path === "/api/workflows/template-updates") {
+    try {
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const engine = wfMod.getWorkflowEngine();
+      if (typeof _wfTemplates?.reconcileInstalledTemplates === "function") {
+        _wfTemplates.reconcileInstalledTemplates(engine, {
+          autoUpdateUnmodified: true,
+        });
+      }
+      const updates = engine
+        .list()
+        .map((wf) => {
+          const state = wf.metadata?.templateState || null;
+          if (!state?.templateId) return null;
+          return {
+            workflowId: wf.id,
+            workflowName: wf.name,
+            templateId: state.templateId,
+            templateName: state.templateName || state.templateId,
+            updateAvailable: state.updateAvailable === true,
+            isCustomized: state.isCustomized === true,
+            templateVersion: state.templateVersion || null,
+            installedTemplateVersion: state.installedTemplateVersion || null,
+          };
+        })
+        .filter(Boolean);
+      jsonResponse(res, 200, { ok: true, updates });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  if (path.startsWith("/api/workflows/") && path.endsWith("/template-update")) {
+    try {
+      const wfMod = await getWorkflowEngine();
+      if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
+      const engine = wfMod.getWorkflowEngine();
+      const workflowId = decodeURIComponent(path.split("/")[3] || "");
+      if (!workflowId) {
+        jsonResponse(res, 400, { ok: false, error: "Missing workflow id" });
+        return;
+      }
+      const body = await readJsonBody(req).catch(() => ({}));
+      const mode = String(body?.mode || "replace").toLowerCase();
+      const force = body?.force === true;
+      if (typeof _wfTemplates?.updateWorkflowFromTemplate !== "function") {
+        jsonResponse(res, 503, { ok: false, error: "Template update service unavailable" });
+        return;
+      }
+      const workflow = _wfTemplates.updateWorkflowFromTemplate(engine, workflowId, { mode, force });
+      jsonResponse(res, 200, { ok: true, workflow });
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

@@ -3073,6 +3073,25 @@
           }),
         };
       }
+      if (route === '/api/workflows/template-updates') {
+        const updates = (STATE.workflows || [])
+          .map((wf) => {
+            const state = wf?.metadata?.templateState || null;
+            if (!state?.templateId) return null;
+            return {
+              workflowId: wf.id,
+              workflowName: wf.name,
+              templateId: state.templateId,
+              templateName: state.templateName || state.templateId,
+              updateAvailable: state.updateAvailable === true,
+              isCustomized: state.isCustomized === true,
+              templateVersion: state.templateVersion || null,
+              installedTemplateVersion: state.installedTemplateVersion || null,
+            };
+          })
+          .filter(Boolean);
+        return { ok: true, updates };
+      }
       if (route.startsWith('/api/workflows/runs/')) {
         const runId = decodeURIComponent(route.replace('/api/workflows/runs/', '')).trim();
         const run = STATE.workflowRuns.find((item) => item.runId === runId);
@@ -3124,6 +3143,36 @@
         const segs = route.replace('/api/workflows/', '').split('/');
         const wfId = segs[0];
         const action = segs[1] || '';
+        if (action === 'template-update') {
+          const wf = STATE.workflows.find(w => w.id === wfId);
+          if (!wf) return { ok: false, error: 'Workflow not found' };
+          if ((body?.mode || 'replace') === 'copy') {
+            const copy = JSON.parse(JSON.stringify(wf));
+            copy.id = 'wf-' + Math.random().toString(36).slice(2, 9);
+            copy.name = `${wf.name} (Updated)`;
+            copy.metadata = {
+              ...(copy.metadata || {}),
+              updatedAt: new Date().toISOString(),
+              templateState: {
+                ...(copy.metadata?.templateState || {}),
+                updateAvailable: false,
+                isCustomized: false,
+              },
+            };
+            STATE.workflows.push(copy);
+            return { ok: true, workflow: copy };
+          }
+          wf.metadata = {
+            ...(wf.metadata || {}),
+            updatedAt: new Date().toISOString(),
+            templateState: {
+              ...(wf.metadata?.templateState || {}),
+              updateAvailable: false,
+              isCustomized: false,
+            },
+          };
+          return { ok: true, workflow: wf };
+        }
         if (action === 'execute') {
           const run = { runId: 'run-' + Math.random().toString(36).slice(2, 6), workflowId: wfId, status: 'completed', nodeCount: 6, duration: 30000 + Math.floor(Math.random() * 30000), errorCount: 0, startedAt: new Date().toISOString() };
           STATE.workflowRuns.unshift(run);
