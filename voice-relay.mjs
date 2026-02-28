@@ -22,9 +22,9 @@ let _configLoadedAt = 0;   // timestamp of last config load
 const CONFIG_TTL_MS = 30_000; // re-read config every 30s
 
 const OPENAI_REALTIME_URL = "https://api.openai.com/v1/realtime";
-const OPENAI_REALTIME_MODEL = "gpt-realtime-1.5"; // Released 2026-02-23; replaces gpt-4o-realtime-preview
+const OPENAI_REALTIME_MODEL = "gpt-audio-1.5";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
-const OPENAI_DEFAULT_VISION_MODEL = "gpt-4.1-mini";
+const OPENAI_DEFAULT_VISION_MODEL = "gpt-4.1-nano";
 
 const AZURE_API_VERSION = "2025-04-01-preview";
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
