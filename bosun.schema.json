@@ -38,7 +38,13 @@
     "codexEnabled": { "type": "boolean" },
     "primaryAgent": {
       "type": "string",
-      "enum": ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"]
+      "enum": [
+        "codex-sdk",
+        "copilot-sdk",
+        "claude-sdk",
+        "gemini-sdk",
+        "opencode-sdk"
+      ]
     },
     "telegramUiTunnel": {
       "type": "string",
@@ -147,6 +153,48 @@
           "default": "auto",
           "description": "Voice provider: openai/azure (Tier 1 realtime), claude/gemini (Tier 2 voice + provider vision), fallback (browser STT/TTS), auto (detect from env)"
         },
+        "providers": {
+          "type": "array",
+          "description": "Ordered provider candidates for voice routing/failover. First match with credentials is used.",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["openai", "azure", "claude", "gemini", "fallback"]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": ["openai", "azure", "claude", "gemini", "fallback"]
+                  },
+                  "model": { "type": "string" },
+                  "visionModel": { "type": "string" },
+                  "voiceId": {
+                    "type": "string",
+                    "enum": [
+                      "alloy",
+                      "ash",
+                      "ballad",
+                      "coral",
+                      "echo",
+                      "fable",
+                      "onyx",
+                      "nova",
+                      "sage",
+                      "shimmer",
+                      "verse"
+                    ]
+                  },
+                  "azureDeployment": { "type": "string" }
+                },
+                "required": ["provider"]
+              }
+            ]
+          }
+        },
         "model": {
           "type": "string",
           "default": "gpt-4o-realtime-preview-2024-12-17",
@@ -161,9 +209,17 @@
           "type": "string",
           "description": "OpenAI API key for Realtime API (overrides OPENAI_API_KEY env)"
         },
+        "openaiAccessToken": {
+          "type": "string",
+          "description": "OpenAI OAuth access token for voice (OAuth preferred over API key when present)"
+        },
         "azureApiKey": {
           "type": "string",
           "description": "Azure OpenAI API key for Realtime API"
+        },
+        "azureAccessToken": {
+          "type": "string",
+          "description": "Azure OAuth/AAD access token for voice realtime"
         },
         "azureEndpoint": {
           "type": "string",
@@ -178,13 +234,33 @@
           "type": "string",
           "description": "Anthropic API key for Claude voice/vision provider mode"
         },
+        "claudeAccessToken": {
+          "type": "string",
+          "description": "Claude OAuth access token for voice provider mode"
+        },
         "geminiApiKey": {
           "type": "string",
           "description": "Gemini API key for Gemini voice/vision provider mode"
         },
+        "geminiAccessToken": {
+          "type": "string",
+          "description": "Gemini OAuth access token for voice provider mode"
+        },
         "voiceId": {
           "type": "string",
-          "enum": ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse"],
+          "enum": [
+            "alloy",
+            "ash",
+            "ballad",
+            "coral",
+            "echo",
+            "fable",
+            "onyx",
+            "nova",
+            "sage",
+            "shimmer",
+            "verse"
+          ],
           "default": "alloy",
           "description": "Voice ID for TTS output"
         },
@@ -204,9 +280,31 @@
           "default": "browser",
           "description": "Fallback when Realtime API unavailable: browser (Web Speech API) or disabled"
         },
+        "failover": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Enable automatic realtime failover across configured voice providers"
+            },
+            "maxAttempts": {
+              "type": "number",
+              "default": 2,
+              "description": "Maximum realtime provider attempts per voice session token request"
+            }
+          }
+        },
         "delegateExecutor": {
           "type": "string",
-          "enum": ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"],
+          "enum": [
+            "codex-sdk",
+            "copilot-sdk",
+            "claude-sdk",
+            "gemini-sdk",
+            "opencode-sdk"
+          ],
           "description": "Which executor to use for delegate_to_agent calls. Defaults to primaryAgent."
         }
       }

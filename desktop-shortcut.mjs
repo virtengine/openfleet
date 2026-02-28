@@ -47,8 +47,89 @@ function getCliPath() {
   return resolve(__dirname, "cli.mjs");
 }
 
+function getDesktopMainPath() {
+  return resolve(__dirname, "desktop", "main.mjs");
+}
+
 function getWorkingDirectory() {
   return __dirname;
+}
+
+/**
+ * Attempt to locate the Electron binary that should be used to launch the
+ * Bosun desktop app.
+ *
+ * Search order:
+ *  1. BOSUN_ELECTRON_PATH env var — explicit override
+ *  2. <bosun-dir>/node_modules/.bin/electron(.cmd)
+ *  3. <bosun-dir>/../node_modules/.bin/electron(.cmd)  (repo root)
+ *  4. electron(.cmd) anywhere on $PATH
+ *
+ * Returns the resolved absolute path to the electron binary, or null when
+ * none could be located (falls back to node + cli.mjs --desktop).
+ */
+function findElectronBinary() {
+  // 1. Explicit env override
+  const envPath = process.env.BOSUN_ELECTRON_PATH;
+  if (envPath) {
+    const resolved = resolve(envPath);
+    if (existsSync(resolved)) return resolved;
+  }
+
+  const isWin = process.platform === "win32";
+  const candidates = isWin
+    ? [
+        resolve(__dirname, "node_modules", ".bin", "electron.cmd"),
+        resolve(__dirname, "..", "node_modules", ".bin", "electron.cmd"),
+        resolve(__dirname, "node_modules", ".bin", "electron.exe"),
+        resolve(__dirname, "..", "node_modules", ".bin", "electron.exe"),
+      ]
+    : [
+        resolve(__dirname, "node_modules", ".bin", "electron"),
+        resolve(__dirname, "..", "node_modules", ".bin", "electron"),
+      ];
+
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+
+  // 4. Search $PATH
+  try {
+    const cmd = isWin ? "where electron.cmd 2>nul" : "which electron 2>/dev/null";
+    const found = execSync(cmd, { encoding: "utf8", stdio: "pipe", timeout: 2000 })
+      .trim()
+      .split("\n")[0]
+      .trim();
+    if (found && existsSync(found)) return found;
+  } catch {
+    /* not found on PATH */
+  }
+
+  return null;
+}
+
+/**
+ * Return `{ executable, args }` for launching the Bosun desktop app.
+ *
+ * - If an Electron binary is found: launches `electron desktop/main.mjs`
+ * - Otherwise: falls back to `node cli.mjs --desktop`
+ */
+export function resolveElectronLauncher() {
+  const electronPath = findElectronBinary();
+  if (electronPath) {
+    return { executable: electronPath, args: [getDesktopMainPath()] };
+  }
+  return { executable: getNodePath(), args: [getCliPath(), "--desktop"] };
+}
+
+/**
+ * Build a quoted shell command string for the launcher.
+ * Used by macOS .command fallback and Linux .desktop Exec= field.
+ */
+function buildShellCommand() {
+  const { executable, args } = resolveElectronLauncher();
+  const quotedArgs = args.map((a) => `"${a}"`).join(" ");
+  return `"${executable}" ${quotedArgs}`;
 }
 
 function parseLinuxDesktopDir() {
@@ -93,12 +174,6 @@ function ensureDesktopDir(dir) {
   }
 }
 
-function buildShellCommand() {
-  const nodePath = getNodePath();
-  const cliPath = getCliPath();
-  return `"${nodePath}" "${cliPath}" --desktop`;
-}
-
 function escapePowerShell(value) {
   return String(value).replace(/'/g, "''");
 }
@@ -109,17 +184,21 @@ function escapeAppleScript(value) {
 
 function installWindowsShortcut(desktopDir) {
   const shortcutPath = resolve(desktopDir, `${APP_NAME}.lnk`);
-  const nodePath = getNodePath();
-  const cliPath = getCliPath();
-  const args = `"${cliPath}" --desktop`;
+  const { executable, args } = resolveElectronLauncher();
+  const quotedArgs = args.map((a) => `"${a}"`).join(" ");
   const workingDir = getWorkingDirectory();
+  const iconPath = resolve(__dirname, "logo.png");
+  const iconLine = existsSync(iconPath)
+    ? `$Shortcut.IconLocation = '${escapePowerShell(iconPath)}'`
+    : "";
   const psScript = `
 $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut('${escapePowerShell(shortcutPath)}')
-$Shortcut.TargetPath = '${escapePowerShell(nodePath)}'
-$Shortcut.Arguments = '${escapePowerShell(args)}'
+$Shortcut.TargetPath = '${escapePowerShell(executable)}'
+$Shortcut.Arguments = '${escapePowerShell(quotedArgs)}'
 $Shortcut.WorkingDirectory = '${escapePowerShell(workingDir)}'
 $Shortcut.Description = 'Bosun Desktop Portal'
+${iconLine}
 $Shortcut.Save()
 `.trim();
 

@@ -47,7 +47,7 @@ const AUTO_ACTION_LABELS = {
 
 const SCROLL_BOTTOM_TOLERANCE_PX = 6;
 const SCROLL_BOTTOM_RATIO = 0.995;
-const CHAT_PAGE_SIZE = 20;
+const CHAT_PAGE_SIZE = 50;
 const SCROLL_TOP_TRIGGER_PX = 24;
 const SCROLL_TOP_REARM_PX = 80;
 
@@ -486,13 +486,36 @@ const TraceEvent = memo(function TraceEvent({ msg }) {
 }, (prev, next) => prev.msg === next.msg);
 
 /* ─── ThinkingGroup — collapses consecutive trace events into one row ─── */
-const ThinkingGroup = memo(function ThinkingGroup({ msgs }) {
+const ThinkingGroup = memo(function ThinkingGroup({ msgs, isLatest = false, isAgentActive = false }) {
   const hasErrors = msgs.some((m) => m.type === "error" || m.type === "stream_error");
-  const [expanded, setExpanded] = useState(hasErrors);
+  // Track whether user has manually toggled this group
+  const userToggledRef = useRef(false);
+  const [expanded, setExpanded] = useState(() => hasErrors || (isLatest && isAgentActive));
 
+  // Auto-close when this group is no longer the latest active group
+  useEffect(() => {
+    if (userToggledRef.current) return;
+    if (isLatest && isAgentActive) {
+      setExpanded(true);
+    } else if (!isLatest) {
+      setExpanded(false);
+    }
+  }, [isLatest, isAgentActive]);
+
+  // Always expand on errors
   useEffect(() => {
     if (hasErrors) setExpanded(true);
   }, [msgs.length, hasErrors]);
+
+  // Reset user-toggle when group identity changes
+  useEffect(() => {
+    userToggledRef.current = false;
+  }, [msgs]);
+
+  const handleToggle = useCallback(() => {
+    userToggledRef.current = true;
+    setExpanded((p) => !p);
+  }, []);
 
   const toolCount = msgs.filter((m) => m.type === "tool_call").length;
   const stepCount = msgs.filter((m) => {
@@ -506,20 +529,28 @@ const ThinkingGroup = memo(function ThinkingGroup({ msgs }) {
   const label = parts.join(", ") || `${msgs.length} step${msgs.length !== 1 ? "s" : ""}`;
 
   return html`
-    <div class="thinking-group ${expanded ? "expanded" : ""} ${hasErrors ? "has-errors" : ""}">
-      <button class="thinking-group-head" type="button" onClick=${() => setExpanded((p) => !p)}>
-        <span class="thinking-group-badge">${iconText(":cpu: Thinking")}</span>
+    <div class="thinking-group ${expanded ? "expanded" : ""} ${hasErrors ? "has-errors" : ""} ${isLatest && isAgentActive ? "thinking-group-active" : ""}">
+      <button class="thinking-group-head" type="button" onClick=${handleToggle}>
+        <span class="thinking-group-badge">
+          ${isLatest && isAgentActive
+            ? iconText(":cpu: Working…")
+            : iconText(":cpu: Thinking")}
+        </span>
         <span class="thinking-group-label">${label}</span>
         <span class="thinking-group-chevron">${expanded ? "▾" : "▸"}</span>
       </button>
-      ${expanded && html`
+      <div class="thinking-group-body-wrap ${expanded ? "expanded" : ""}">
         <div class="thinking-group-body">
           ${msgs.map((m, idx) => html`<${TraceEvent} key=${m.id || m.timestamp || idx} msg=${m} />`)}
         </div>
-      `}
+      </div>
     </div>
   `;
-}, (prev, next) => prev.msgs === next.msgs);
+}, (prev, next) =>
+  prev.msgs === next.msgs &&
+  prev.isLatest === next.isLatest &&
+  prev.isAgentActive === next.isAgentActive,
+);
 
 /* ─── Chat View component ─── */
 
@@ -731,6 +762,13 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           msg,
         });
         i++;
+      }
+    }
+    // Mark the last thinking-group as "latest" for auto-expand/collapse
+    for (let j = items.length - 1; j >= 0; j--) {
+      if (items[j].kind === "thinking-group") {
+        items[j].isLatest = true;
+        break;
       }
     }
     return items;
@@ -1350,7 +1388,12 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           </div>
         `}
         ${renderItems.map((item) => item.kind === "thinking-group"
-          ? html`<${ThinkingGroup} key=${item.key} msgs=${item.msgs} />`
+          ? html`<${ThinkingGroup}
+              key=${item.key}
+              msgs=${item.msgs}
+              isLatest=${!!item.isLatest}
+              isAgentActive=${statusState !== "idle" && statusState !== "paused"}
+            />`
           : html`<${ChatBubble}
               key=${item.key}
               msg=${item.msg}

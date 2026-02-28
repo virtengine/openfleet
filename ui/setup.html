@@ -715,6 +715,107 @@ function App() {
   const [azureOpenaiRealtimeEndpoint, setAzureOpenaiRealtimeEndpoint] = useState("");
   const [azureOpenaiRealtimeApiKey, setAzureOpenaiRealtimeApiKey] = useState("");
   const [azureOpenaiRealtimeDeployment, setAzureOpenaiRealtimeDeployment] = useState("gpt-4o-realtime-preview");
+  const [voiceProviders, setVoiceProviders] = useState([
+    {
+      id: Date.now(),
+      provider: voiceProvider,
+      model: voiceModel,
+      visionModel: voiceVisionModel,
+      voiceId,
+      azureDeployment: azureOpenaiRealtimeDeployment,
+    },
+  ]);
+
+  const VOICE_PROVIDER_MODEL_DEFAULTS = {
+    openai: { model: "gpt-4o-realtime-preview-2024-12-17", visionModel: "gpt-4.1-mini" },
+    azure: { model: "gpt-4o-realtime-preview-2024-12-17", visionModel: "gpt-4.1-mini" },
+    claude: { model: "claude-3-7-sonnet-latest", visionModel: "claude-3-7-sonnet-latest" },
+    gemini: { model: "gemini-2.5-pro", visionModel: "gemini-2.5-flash" },
+    fallback: { model: "", visionModel: "" },
+  };
+
+  const getVoiceProviderModelDefaults = (provider) =>
+    VOICE_PROVIDER_MODEL_DEFAULTS[String(provider || "fallback").toLowerCase()] || VOICE_PROVIDER_MODEL_DEFAULTS.fallback;
+
+  const normalizeVoiceProviderEntry = (entry = {}, fallback = {}) => {
+    const allowedProviders = ["openai", "azure", "claude", "gemini", "fallback"];
+    const provider = String(entry.provider || fallback.provider || "fallback").trim().toLowerCase();
+    const normalizedProvider = allowedProviders.includes(provider) ? provider : "fallback";
+    const defaults_ = getVoiceProviderModelDefaults(normalizedProvider);
+    const model = String(entry.model ?? fallback.model ?? defaults_.model ?? "").trim();
+    const visionModel = String(entry.visionModel ?? fallback.visionModel ?? defaults_.visionModel ?? "").trim();
+    const normalizedVoiceId = String(entry.voiceId ?? fallback.voiceId ?? "alloy").trim() || "alloy";
+    const normalizedAzureDeployment = String(
+      entry.azureDeployment ??
+      fallback.azureDeployment ??
+      (normalizedProvider === "azure" ? "gpt-4o-realtime-preview" : ""),
+    ).trim();
+    return {
+      id: entry.id || Date.now() + Math.random(),
+      provider: normalizedProvider,
+      model,
+      visionModel,
+      voiceId: normalizedVoiceId,
+      azureDeployment: normalizedAzureDeployment,
+    };
+  };
+
+  const normalizeVoiceProviders = (providers, fallback = {}) => {
+    const normalized = (Array.isArray(providers) ? providers : [])
+      .slice(0, 5)
+      .map((provider_) => normalizeVoiceProviderEntry(provider_, fallback));
+    if (normalized.length > 0) return normalized;
+    return [normalizeVoiceProviderEntry({}, fallback)];
+  };
+
+  const updateVoiceProviderRow = (idx, field, value) => {
+    setVoiceProviders((prev) => {
+      const list = normalizeVoiceProviders(prev);
+      const target = list[idx];
+      if (!target) return list;
+      if (field === "provider") {
+        const nextProvider = String(value || "fallback").trim().toLowerCase();
+        const defaults_ = getVoiceProviderModelDefaults(nextProvider);
+        list[idx] = normalizeVoiceProviderEntry({
+          ...target,
+          provider: nextProvider,
+          model: defaults_.model,
+          visionModel: defaults_.visionModel,
+          azureDeployment:
+            nextProvider === "azure"
+              ? String(target.azureDeployment || "gpt-4o-realtime-preview")
+              : "",
+        });
+        return list;
+      }
+      list[idx] = normalizeVoiceProviderEntry({ ...target, [field]: value });
+      return list;
+    });
+  };
+
+  const addVoiceProviderRow = () => {
+    setVoiceProviders((prev) => {
+      const list = normalizeVoiceProviders(prev);
+      if (list.length >= 5) return list;
+      const first = list[0] || normalizeVoiceProviderEntry();
+      return [
+        ...list,
+        normalizeVoiceProviderEntry({
+          provider: "fallback",
+          voiceId: first.voiceId || "alloy",
+        }),
+      ];
+    });
+  };
+
+  const removeVoiceProviderRow = (idx) => {
+    setVoiceProviders((prev) => {
+      const list = normalizeVoiceProviders(prev);
+      if (list.length <= 1) return list;
+      const next = list.filter((_, i) => i !== idx);
+      return next.length > 0 ? next : list;
+    });
+  };
 
   const getWorkflowProfileById = (profileId, profileList = workflowProfiles) =>
     (profileList || []).find((profile_) => profile_.id === profileId) || null;
@@ -1055,6 +1156,32 @@ function App() {
       if (env.AZURE_OPENAI_REALTIME_ENDPOINT) { setAzureOpenaiRealtimeEndpoint(env.AZURE_OPENAI_REALTIME_ENDPOINT); envLoaded = true; }
       if (env.AZURE_OPENAI_REALTIME_API_KEY) { setAzureOpenaiRealtimeApiKey(env.AZURE_OPENAI_REALTIME_API_KEY); envLoaded = true; }
       if (env.AZURE_OPENAI_REALTIME_DEPLOYMENT) { setAzureOpenaiRealtimeDeployment(env.AZURE_OPENAI_REALTIME_DEPLOYMENT); envLoaded = true; }
+      const resolvedVoiceProvider = String(env.VOICE_PROVIDER || existingVoice.provider || d.voiceProvider || voiceProvider || "openai").trim().toLowerCase();
+      const resolvedVoiceModel = String(env.VOICE_MODEL || existingVoice.model || d.voiceModel || voiceModel || "gpt-4o-realtime-preview-2024-12-17").trim();
+      const resolvedVoiceVisionModel = String(env.VOICE_VISION_MODEL || existingVoice.visionModel || d.voiceVisionModel || voiceVisionModel || "gpt-4.1-mini").trim();
+      const resolvedVoiceId = String(env.VOICE_ID || existingVoice.voiceId || d.voiceId || voiceId || "alloy").trim();
+      const resolvedAzureDeployment = String(env.AZURE_OPENAI_REALTIME_DEPLOYMENT || existingVoice.azureDeployment || d.azureOpenaiRealtimeDeployment || azureOpenaiRealtimeDeployment || "gpt-4o-realtime-preview").trim();
+      if (Array.isArray(existingVoice.providers) && existingVoice.providers.length > 0) {
+        setVoiceProviders(
+          normalizeVoiceProviders(existingVoice.providers, {
+            provider: resolvedVoiceProvider,
+            model: resolvedVoiceModel,
+            visionModel: resolvedVoiceVisionModel,
+            voiceId: resolvedVoiceId,
+            azureDeployment: resolvedAzureDeployment,
+          }),
+        );
+      } else {
+        setVoiceProviders(
+          normalizeVoiceProviders([], {
+            provider: resolvedVoiceProvider,
+            model: resolvedVoiceModel,
+            visionModel: resolvedVoiceVisionModel,
+            voiceId: resolvedVoiceId,
+            azureDeployment: resolvedAzureDeployment,
+          }),
+        );
+      }
       // Multi-workspace: load workspaces[] from existing config
       if (statusData.existingConfig?.workspaces?.length > 0) {
         setMultiWorkspaceEnabled(true);
@@ -1250,6 +1377,21 @@ function App() {
     setError(null);
     try {
       const filteredRepos = repos.filter((r) => r.trim());
+      const normalizedVoiceProviders = normalizeVoiceProviders(voiceProviders, {
+        provider: voiceProvider,
+        model: voiceModel,
+        visionModel: voiceVisionModel,
+        voiceId,
+        azureDeployment: azureOpenaiRealtimeDeployment,
+      });
+      const primaryVoiceProvider = normalizedVoiceProviders[0] || normalizeVoiceProviderEntry({
+        provider: voiceProvider,
+        model: voiceModel,
+        visionModel: voiceVisionModel,
+        voiceId,
+        azureDeployment: azureOpenaiRealtimeDeployment,
+      });
+      const voiceFailoverMaxAttempts = Math.max(1, Math.min(normalizedVoiceProviders.length, 5));
       const result = await apiPost("apply", {
         env: {
           bosunHome,
@@ -1311,17 +1453,20 @@ function App() {
           copilotMcpConfig,
           // Voice assistant
           voiceEnabled,
-          voiceProvider,
-          voiceModel,
-          voiceVisionModel,
-          voiceId,
+          voiceProvider: primaryVoiceProvider.provider || voiceProvider,
+          voiceModel: primaryVoiceProvider.model || voiceModel,
+          voiceVisionModel: primaryVoiceProvider.visionModel || voiceVisionModel,
+          voiceId: primaryVoiceProvider.voiceId || voiceId,
           voiceTurnDetection,
           voiceFallbackMode,
           voiceDelegateExecutor,
           openaiRealtimeApiKey,
           azureOpenaiRealtimeEndpoint,
           azureOpenaiRealtimeApiKey,
-          azureOpenaiRealtimeDeployment,
+          azureOpenaiRealtimeDeployment: primaryVoiceProvider.azureDeployment || azureOpenaiRealtimeDeployment,
+          voiceProviders: normalizedVoiceProviders,
+          voiceFailoverEnabled: true,
+          voiceFailoverMaxAttempts,
           // Infrastructure
           containerEnabled,
           containerRuntime,
@@ -1366,6 +1511,25 @@ function App() {
             runStuckThresholdMs: Number(workflowRunStuckThresholdMs) || 300000,
             maxPersistedRuns: Number(workflowMaxPersistedRuns) || 200,
             maxConcurrentBranches: Number(workflowMaxConcurrentBranches) || 8,
+          },
+          voice: {
+            enabled: voiceEnabled !== false,
+            provider: primaryVoiceProvider.provider || voiceProvider,
+            model: primaryVoiceProvider.model || voiceModel,
+            visionModel: primaryVoiceProvider.visionModel || voiceVisionModel,
+            voiceId: primaryVoiceProvider.voiceId || voiceId,
+            turnDetection: voiceTurnDetection,
+            fallbackMode: voiceFallbackMode,
+            delegateExecutor: voiceDelegateExecutor,
+            azureDeployment: primaryVoiceProvider.azureDeployment || azureOpenaiRealtimeDeployment,
+            openaiApiKey: openaiRealtimeApiKey,
+            azureEndpoint: azureOpenaiRealtimeEndpoint,
+            azureApiKey: azureOpenaiRealtimeApiKey,
+            providers: normalizedVoiceProviders.slice(0, 5),
+            failover: {
+              enabled: true,
+              maxAttempts: voiceFailoverMaxAttempts,
+            },
           },
           workspaces: multiWorkspaceEnabled
             ? workspaces.filter((ws) => ws.name.trim()).map((ws) => ({
@@ -2693,52 +2857,90 @@ function App() {
           <div class="hint">Allows live voice/video calls from chat. Tier 2 browser fallback works without cloud keys.</div>
         </div>
         ${voiceEnabled && html`
+          <div class="form-group">
+            <label>Voice Providers (priority order)</label>
+            <div class="hint">Configure up to 5 providers. Bosun will try them in order.</div>
+          </div>
+          ${(voiceProviders || []).slice(0, 5).map((providerRow, idx) => html`
+            <div style="border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:12px;margin-bottom:10px">
+              <div class="executor-grid">
+                <div class="form-group">
+                  <label>Provider ${idx + 1}</label>
+                  <select value=${providerRow.provider} onchange=${(e) => updateVoiceProviderRow(idx, "provider", e.target.value)}>
+                    <option value="openai">OpenAI Realtime</option>
+                    <option value="azure">Azure OpenAI Realtime</option>
+                    <option value="claude">Claude</option>
+                    <option value="gemini">Gemini</option>
+                    <option value="fallback">Browser Fallback</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Model</label>
+                  <input
+                    type="text"
+                    value=${providerRow.model}
+                    oninput=${(e) => updateVoiceProviderRow(idx, "model", e.target.value)}
+                    placeholder="Provider model"
+                  />
+                </div>
+                <div class="form-group">
+                  <label>Vision Model</label>
+                  <input
+                    type="text"
+                    value=${providerRow.visionModel}
+                    oninput=${(e) => updateVoiceProviderRow(idx, "visionModel", e.target.value)}
+                    placeholder="Provider vision model"
+                  />
+                </div>
+                <div class="form-group">
+                  <label>Voice Persona</label>
+                  <select value=${providerRow.voiceId} onchange=${(e) => updateVoiceProviderRow(idx, "voiceId", e.target.value)}>
+                    <option value="alloy">alloy</option>
+                    <option value="ash">ash</option>
+                    <option value="ballad">ballad</option>
+                    <option value="coral">coral</option>
+                    <option value="echo">echo</option>
+                    <option value="fable">fable</option>
+                    <option value="nova">nova</option>
+                    <option value="onyx">onyx</option>
+                    <option value="sage">sage</option>
+                    <option value="shimmer">shimmer</option>
+                    <option value="verse">verse</option>
+                  </select>
+                </div>
+                ${providerRow.provider === "azure" && html`
+                  <div class="form-group">
+                    <label>Azure Deployment</label>
+                    <input
+                      type="text"
+                      value=${providerRow.azureDeployment || ""}
+                      oninput=${(e) => updateVoiceProviderRow(idx, "azureDeployment", e.target.value)}
+                      placeholder="gpt-4o-realtime-preview"
+                    />
+                  </div>
+                `}
+              </div>
+              <div style="display:flex;justify-content:flex-end">
+                <button
+                  class="btn btn-sm btn-danger"
+                  onclick=${() => removeVoiceProviderRow(idx)}
+                  disabled=${(voiceProviders || []).length <= 1}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          `)}
+          <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+            <button
+              class="btn btn-sm"
+              onclick=${addVoiceProviderRow}
+              disabled=${(voiceProviders || []).length >= 5}
+            >
+              Add Provider
+            </button>
+          </div>
           <div class="executor-grid">
-            <div class="form-group">
-              <label>Voice Provider</label>
-              <select value=${voiceProvider} onchange=${(e) => setVoiceProvider(e.target.value)}>
-                <option value="auto">Auto Detect</option>
-                <option value="openai">OpenAI Realtime</option>
-                <option value="azure">Azure OpenAI Realtime</option>
-                <option value="claude">Claude (fallback + Claude vision)</option>
-                <option value="gemini">Gemini (fallback + Gemini vision)</option>
-                <option value="fallback">Browser Fallback Only</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Voice Persona</label>
-              <select value=${voiceId} onchange=${(e) => setVoiceId(e.target.value)}>
-                <option value="alloy">alloy</option>
-                <option value="ash">ash</option>
-                <option value="ballad">ballad</option>
-                <option value="coral">coral</option>
-                <option value="echo">echo</option>
-                <option value="fable">fable</option>
-                <option value="nova">nova</option>
-                <option value="onyx">onyx</option>
-                <option value="sage">sage</option>
-                <option value="shimmer">shimmer</option>
-                <option value="verse">verse</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Realtime Voice Model</label>
-              <input
-                type="text"
-                value=${voiceModel}
-                oninput=${(e) => setVoiceModel(e.target.value)}
-                placeholder="gpt-4o-realtime-preview-2024-12-17"
-              />
-            </div>
-            <div class="form-group">
-              <label>Vision Model</label>
-              <input
-                type="text"
-                value=${voiceVisionModel}
-                oninput=${(e) => setVoiceVisionModel(e.target.value)}
-                placeholder="gpt-4.1-mini"
-              />
-            </div>
             <div class="form-group">
               <label>Turn Detection</label>
               <select value=${voiceTurnDetection} onchange=${(e) => setVoiceTurnDetection(e.target.value)}>
@@ -2765,38 +2967,25 @@ function App() {
               </select>
             </div>
           </div>
-          ${(voiceProvider === "auto" || voiceProvider === "openai") && html`
+          <div class="form-group">
+            <label>OpenAI Realtime API Key</label>
+            <input
+              type="password"
+              value=${openaiRealtimeApiKey}
+              oninput=${(e) => setOpenaiRealtimeApiKey(e.target.value)}
+              placeholder="Optional - defaults to OPENAI_API_KEY"
+            />
+            <div class="hint">Leave blank to use OPENAI_API_KEY.</div>
+          </div>
+          <div class="executor-grid">
             <div class="form-group">
-              <label>OpenAI Realtime API Key</label>
+              <label>Azure Realtime Endpoint</label>
               <input
-                type="password"
-                value=${openaiRealtimeApiKey}
-                oninput=${(e) => setOpenaiRealtimeApiKey(e.target.value)}
-                placeholder="Optional - defaults to OPENAI_API_KEY"
+                type="text"
+                value=${azureOpenaiRealtimeEndpoint}
+                oninput=${(e) => setAzureOpenaiRealtimeEndpoint(e.target.value)}
+                placeholder="https://<resource>.openai.azure.com"
               />
-              <div class="hint">Leave blank to use OPENAI_API_KEY.</div>
-            </div>
-          `}
-          ${(voiceProvider === "auto" || voiceProvider === "azure") && html`
-            <div class="executor-grid">
-              <div class="form-group">
-                <label>Azure Realtime Endpoint</label>
-                <input
-                  type="text"
-                  value=${azureOpenaiRealtimeEndpoint}
-                  oninput=${(e) => setAzureOpenaiRealtimeEndpoint(e.target.value)}
-                  placeholder="https://<resource>.openai.azure.com"
-                />
-              </div>
-              <div class="form-group">
-                <label>Azure Realtime Deployment</label>
-                <input
-                  type="text"
-                  value=${azureOpenaiRealtimeDeployment}
-                  oninput=${(e) => setAzureOpenaiRealtimeDeployment(e.target.value)}
-                  placeholder="gpt-4o-realtime-preview"
-                />
-              </div>
             </div>
             <div class="form-group">
               <label>Azure Realtime API Key</label>
@@ -2807,7 +2996,7 @@ function App() {
                 placeholder="Optional - defaults to AZURE_OPENAI_API_KEY"
               />
             </div>
-          `}
+          </div>
         `}
       <//>
 
@@ -2879,6 +3068,17 @@ function App() {
 
   const StepReview = () => {
     const filteredRepos = repos.filter((r) => r.trim());
+    const reviewVoiceProviders = normalizeVoiceProviders(voiceProviders, {
+      provider: voiceProvider,
+      model: voiceModel,
+      visionModel: voiceVisionModel,
+      voiceId,
+      azureDeployment: azureOpenaiRealtimeDeployment,
+    });
+    const voiceProviderChainSummary = reviewVoiceProviders
+      .map((provider_) => provider_.provider)
+      .filter(Boolean)
+      .join(" -> ");
 
     return html`
       <h2>Review & Apply</h2>
@@ -2919,7 +3119,7 @@ function App() {
             <th>Voice</th>
             <td>
               ${voiceEnabled
-                ? `${voiceProvider} (${voiceFallbackMode} fallback)`
+                ? `${voiceProviderChainSummary || voiceProvider} (${voiceFallbackMode} fallback)`
                 : "Disabled"}
             </td>
           </tr>

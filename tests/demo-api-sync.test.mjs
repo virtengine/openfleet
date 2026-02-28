@@ -117,10 +117,16 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/github/device/poll",  // Device Flow polling — server-only (calls GitHub API)
   "/api/workspace-health",     // Workspace health diagnostics — server-only
   "/api/voice/config",         // Voice config — server-only (reads real API keys + config)
+  "/api/voice/sdk-config",     // Voice SDK config — server-only (checks SDK availability)
   "/api/voice/token",          // Ephemeral token creation — server-only (calls OpenAI/Azure API)
   "/api/voice/tool",           // Voice tool execution — server-only (runs real tools)
   "/api/voice/transcript",     // Voice transcript persistence into session history
   "/api/vision/frame",         // Live vision frame ingestion + analysis
+  "/api/voice/dispatch",       // Voice action dispatch — server-only (executes real tools/workflows)
+  "/api/voice/dispatch-batch", // Batched voice action dispatch — server-only
+  "/api/voice/actions",        // Voice action catalog — server-only (reads server config)
+  "/api/voice/prompt",         // Voice system prompt assembly — server-only (reads config + context)
+  "/api/voice/action-manifest",// Voice action manifest — server-only (dynamic capability listing)
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────

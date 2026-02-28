@@ -3694,7 +3694,9 @@ async function startNamedTunnel(cfBin, { tunnelName, credentialsPath }, localPor
       mode: TUNNEL_MODE_NAMED,
     });
     console.warn(
-      "[telegram-ui] named tunnel requires CLOUDFLARE_TUNNEL_NAME + CLOUDFLARE_TUNNEL_CREDENTIALS",
+      "[telegram-ui] named tunnel requires CLOUDFLARE_TUNNEL_NAME + CLOUDFLARE_TUNNEL_CREDENTIALS.\n" +
+      "[telegram-ui] Run \"bosun --setup\" and choose \"Named tunnel\" to configure Cloudflare credentials,\n" +
+      "[telegram-ui] or set TELEGRAM_UI_TUNNEL=quick for an ephemeral trycloudflare.com URL.",
     );
     return null;
   }
@@ -3706,7 +3708,11 @@ async function startNamedTunnel(cfBin, { tunnelName, credentialsPath }, localPor
       mode: TUNNEL_MODE_NAMED,
       tunnelName: normalizedTunnelName,
     });
-    console.warn(`[telegram-ui] named tunnel credentials not found or invalid: ${normalizedCredsPath}`);
+    console.warn(
+      `[telegram-ui] named tunnel credentials not found or invalid: ${normalizedCredsPath}\n` +
+      `[telegram-ui] Ensure the path is correct and the file exists.\n` +
+      `[telegram-ui] Re-run "bosun --setup" to reconfigure Cloudflare tunnel credentials.`,
+    );
     return null;
   }
 
@@ -4293,6 +4299,34 @@ function checkSessionToken(req) {
   return false;
 }
 
+/**
+ * Check whether the request carries a valid desktop API key.
+ *
+ * The Electron main process sets BOSUN_DESKTOP_API_KEY in process.env before
+ * starting (or connecting to) the UI server. When that env var is present any
+ * request bearing the matching Bearer token is treated as fully authenticated —
+ * no session cookie or Telegram initData required.
+ *
+ * This allows the desktop app to connect to a separately-running daemon server
+ * without needing to share the TTL-based session token.
+ */
+function checkDesktopApiKey(req) {
+  const expected = (process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  if (!expected) return false;
+  const authHeader = req.headers.authorization || "";
+  if (!authHeader.startsWith("Bearer ")) return false;
+  const provided = authHeader.slice(7).trim();
+  if (!provided) return false;
+  try {
+    const a = Buffer.from(provided);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
 function getTelegramInitData(req, url = null) {
   return String(
     req.headers["x-telegram-initdata"] ||
@@ -4318,6 +4352,8 @@ function getHeaderString(value) {
 
 async function requireAuth(req) {
   if (isAllowUnsafe()) return { ok: true, source: "unsafe", issueSessionCookie: false };
+  // Desktop Electron API key — non-expiring, set via BOSUN_DESKTOP_API_KEY env
+  if (checkDesktopApiKey(req)) return { ok: true, source: "desktop-api-key", issueSessionCookie: false };
   // Session token (browser access)
   if (checkSessionToken(req)) return { ok: true, source: "session", issueSessionCookie: false };
   // Telegram initData HMAC
@@ -4341,6 +4377,22 @@ async function requireAuth(req) {
 
 function requireWsAuth(req, url) {
   if (isAllowUnsafe()) return true;
+  // Desktop Electron API key (query param: desktopKey=...)
+  const desktopKey = (process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  if (desktopKey) {
+    const qDesktopKey = url.searchParams.get("desktopKey") || "";
+    if (qDesktopKey) {
+      try {
+        const a = Buffer.from(qDesktopKey);
+        const b = Buffer.from(desktopKey);
+        if (a.length === b.length && timingSafeEqual(a, b)) return true;
+      } catch {
+        /* ignore */
+      }
+    }
+    // Also accept via Authorization header (for WS upgrade requests that support it)
+    if (checkDesktopApiKey(req)) return true;
+  }
   // Session token (query param or cookie)
   if (checkSessionToken(req)) return true;
   if (sessionToken) {
@@ -9161,6 +9213,25 @@ async function handleApi(req, res, url) {
 
   // ── Voice API Routes ──────────────────────────────────────────────────────
 
+  // GET /api/voice/sdk-config — SDK-first configuration for client
+  if (path === "/api/voice/sdk-config" && req.method === "GET") {
+    try {
+      const { getVoiceConfig } = await import("./voice-relay.mjs");
+      const { getClientSdkConfig } = await import("./voice-agents-sdk.mjs");
+      const voiceConfig = getVoiceConfig();
+      const sdkConfig = await getClientSdkConfig(voiceConfig);
+      jsonResponse(res, 200, sdkConfig);
+    } catch (err) {
+      jsonResponse(res, 200, {
+        useSdk: false,
+        provider: "fallback",
+        fallbackReason: err.message,
+        tier: 2,
+      });
+    }
+    return;
+  }
+
   // GET /api/voice/config
   if (path === "/api/voice/config" && req.method === "GET") {
     try {
@@ -9173,6 +9244,7 @@ async function handleApi(req, res, url) {
         available: availability.available,
         tier: availability.tier,
         provider: availability.provider,
+        providerChain: config.providerChainWithFallbacks || [config.provider],
         reason: availability.reason || "",
         voiceId: config.voiceId,
         turnDetection: config.turnDetection,
@@ -9184,6 +9256,8 @@ async function handleApi(req, res, url) {
           defaultIntervalMs: DEFAULT_VISION_ANALYSIS_INTERVAL_MS,
         },
         fallbackMode: config.fallbackMode,
+        failover: config.failover || null,
+        diagnostics: Array.isArray(config.diagnostics) ? config.diagnostics : [],
         connectionInfo,
       });
     } catch (err) {
@@ -9202,12 +9276,23 @@ async function handleApi(req, res, url) {
         mode: String(body?.mode || "").trim() || undefined,
         model: String(body?.model || "").trim() || undefined,
       };
-      const { createEphemeralToken, getVoiceToolDefinitions } = await import("./voice-relay.mjs");
+      const { createEphemeralToken, getVoiceToolDefinitions, getVoiceConfig } = await import("./voice-relay.mjs");
       const delegateOnly =
         body?.delegateOnly === true ||
         (body?.delegateOnly !== false && Boolean(callContext.sessionId));
       const tools = await getVoiceToolDefinitions({ delegateOnly });
       const tokenData = await createEphemeralToken(tools, callContext);
+
+      // When client requests sdkMode, include extra fields for @openai/agents SDK
+      if (body?.sdkMode === true) {
+        const voiceCfg = getVoiceConfig();
+        tokenData.instructions = voiceCfg.instructions || undefined;
+        tokenData.tools = tools;
+        if (tokenData.provider === "azure") {
+          tokenData.azureEndpoint = voiceCfg.azureEndpoint || undefined;
+          tokenData.azureDeployment = voiceCfg.azureDeployment || undefined;
+        }
+      }
 
       jsonResponse(res, 200, tokenData);
     } catch (err) {
@@ -9479,6 +9564,94 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // POST /api/voice/dispatch — Execute a voice action intent (direct JavaScript, no MCP)
+  if (path === "/api/voice/dispatch" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const action = String(body?.action || "").trim();
+      if (!action) {
+        jsonResponse(res, 400, { ok: false, error: "action is required" });
+        return;
+      }
+      const context = {
+        sessionId: String(body?.sessionId || "").trim() || undefined,
+        executor: String(body?.executor || "").trim() || undefined,
+        mode: String(body?.mode || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
+      const { dispatchVoiceActionIntent } = await import("./voice-relay.mjs");
+      const result = await dispatchVoiceActionIntent(
+        { action, params: body?.params || {}, id: body?.id || undefined },
+        context,
+      );
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/dispatch-batch — Execute multiple voice action intents
+  if (path === "/api/voice/dispatch-batch" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const intents = Array.isArray(body?.actions) ? body.actions : [];
+      if (!intents.length) {
+        jsonResponse(res, 400, { ok: false, error: "actions array is required" });
+        return;
+      }
+      const context = {
+        sessionId: String(body?.sessionId || "").trim() || undefined,
+        executor: String(body?.executor || "").trim() || undefined,
+        mode: String(body?.mode || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
+      const { dispatchVoiceActionIntents } = await import("./voice-relay.mjs");
+      const results = await dispatchVoiceActionIntents(intents, context);
+      jsonResponse(res, 200, { ok: true, results });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // GET /api/voice/actions — List all available voice actions
+  if (path === "/api/voice/actions" && req.method === "GET") {
+    try {
+      const { listVoiceActions } = await import("./voice-relay.mjs");
+      const actions = await listVoiceActions();
+      jsonResponse(res, 200, { ok: true, actions });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // GET /api/voice/prompt — Get the full voice agent prompt with action manifest
+  if (path === "/api/voice/prompt" && req.method === "GET") {
+    try {
+      const compact = url.searchParams?.get("compact") === "true";
+      const { buildVoiceAgentPrompt } = await import("./voice-relay.mjs");
+      const prompt = await buildVoiceAgentPrompt({ compact });
+      jsonResponse(res, 200, { ok: true, prompt });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // GET /api/voice/action-manifest — Get the action manifest for prompt injection
+  if (path === "/api/voice/action-manifest" && req.method === "GET") {
+    try {
+      const { getVoiceActionManifest } = await import("./voice-relay.mjs");
+      const manifest = await getVoiceActionManifest();
+      jsonResponse(res, 200, { ok: true, manifest });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   jsonResponse(res, 404, { ok: false, error: "Unknown API endpoint" });
 }
 
@@ -9652,6 +9825,37 @@ export async function startTelegramUiServer(options = {}) {
         });
         res.end();
         return;
+      }
+    }
+
+    // Desktop API key exchange: ?desktopKey=<key> → set session cookie and redirect to clean URL
+    // Used by the Electron desktop app to bootstrap authenticated WebView sessions
+    // without depending on the TTL-based session token.
+    const qDesktopKey = url.searchParams.get("desktopKey");
+    if (qDesktopKey) {
+      const expectedDesktopKey = (process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+      if (expectedDesktopKey) {
+        try {
+          const a = Buffer.from(qDesktopKey);
+          const b = Buffer.from(expectedDesktopKey);
+          if (a.length === b.length && timingSafeEqual(a, b)) {
+            const cleanUrl = new URL(url.toString());
+            cleanUrl.searchParams.delete("desktopKey");
+            const redirectPath =
+              cleanUrl.pathname +
+              (cleanUrl.searchParams.toString()
+                ? `?${cleanUrl.searchParams.toString()}`
+                : "");
+            res.writeHead(302, {
+              "Set-Cookie": buildSessionCookieHeader(),
+              Location: redirectPath || "/",
+            });
+            res.end();
+            return;
+          }
+        } catch {
+          /* malformed key — fall through to normal auth */
+        }
       }
     }
 

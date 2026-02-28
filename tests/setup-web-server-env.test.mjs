@@ -29,8 +29,9 @@ describe("setup web server telegram defaults", () => {
     expect(envMap.TELEGRAM_BOT_TOKEN).toBe("123456:abc-token");
     expect(envMap.TELEGRAM_MINIAPP_ENABLED).toBe("true");
     expect(envMap.TELEGRAM_UI_PORT).toBe("3080");
-    expect(envMap.TELEGRAM_UI_TUNNEL).toBe("named");
-    expect(envMap.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK).toBe("false");
+    // No named-tunnel credentials → default is "quick" (safe out-of-the-box)
+    expect(envMap.TELEGRAM_UI_TUNNEL).toBe("quick");
+    expect(envMap.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK).toBe("true");
     expect(envMap.TELEGRAM_UI_FALLBACK_AUTH_ENABLED).toBe("true");
     expect(envMap.CLOUDFLARE_USERNAME_HOSTNAME_POLICY).toBe("per-user-fixed");
     expect(envMap.TELEGRAM_UI_ALLOW_UNSAFE).toBe("false");
@@ -62,6 +63,35 @@ describe("setup web server telegram defaults", () => {
 
     expect(applied).toBe(false);
     expect(envMap).toEqual({});
+  });
+
+  it("defaults to named tunnel when CLOUDFLARE_TUNNEL_NAME + CREDENTIALS are present in sourceEnv", () => {
+    const envMap = {};
+    applyTelegramMiniAppSetupEnv(
+      envMap,
+      { telegramToken: "123456:abc-token" },
+      {
+        CLOUDFLARE_TUNNEL_NAME: "my-tunnel",
+        CLOUDFLARE_TUNNEL_CREDENTIALS: "/home/user/.cloudflared/abc.json",
+      },
+    );
+
+    expect(envMap.TELEGRAM_UI_TUNNEL).toBe("named");
+  });
+
+  it("defaults to named tunnel when CLOUDFLARE credentials are in the env input", () => {
+    const envMap = {};
+    applyTelegramMiniAppSetupEnv(
+      envMap,
+      {
+        telegramToken: "123456:abc-token",
+        CLOUDFLARE_TUNNEL_NAME: "prod-tunnel",
+        CLOUDFLARE_TUNNEL_CREDENTIALS: "~/.cloudflared/prod.json",
+      },
+      {},
+    );
+
+    expect(envMap.TELEGRAM_UI_TUNNEL).toBe("named");
   });
 });
 
@@ -101,13 +131,13 @@ describe("setup web server non-blocking env defaults", () => {
       CODEX_SANDBOX: "workspace-write",
       VOICE_ENABLED: "true",
       VOICE_PROVIDER: "auto",
-      VOICE_MODEL: "gpt-4o-realtime-preview-2024-12-17",
+      VOICE_MODEL: "gpt-realtime-1.5",
       VOICE_VISION_MODEL: "gpt-4.1-mini",
       VOICE_ID: "alloy",
       VOICE_TURN_DETECTION: "server_vad",
       VOICE_FALLBACK_MODE: "browser",
       VOICE_DELEGATE_EXECUTOR: "codex-sdk",
-      AZURE_OPENAI_REALTIME_DEPLOYMENT: "gpt-4o-realtime-preview",
+      AZURE_OPENAI_REALTIME_DEPLOYMENT: "gpt-realtime-1.5",
       CONTAINER_ENABLED: "false",
       CONTAINER_RUNTIME: "auto",
       WHATSAPP_ENABLED: "false",
@@ -202,13 +232,13 @@ describe("setup web server non-blocking env defaults", () => {
       CODEX_SANDBOX: "workspace-write",
       VOICE_ENABLED: "true",
       VOICE_PROVIDER: "auto",
-      VOICE_MODEL: "gpt-4o-realtime-preview-2024-12-17",
+      VOICE_MODEL: "gpt-realtime-1.5",
       VOICE_VISION_MODEL: "gpt-4.1-mini",
       VOICE_ID: "alloy",
       VOICE_TURN_DETECTION: "server_vad",
       VOICE_FALLBACK_MODE: "browser",
       VOICE_DELEGATE_EXECUTOR: "codex-sdk",
-      AZURE_OPENAI_REALTIME_DEPLOYMENT: "gpt-4o-realtime-preview",
+      AZURE_OPENAI_REALTIME_DEPLOYMENT: "gpt-realtime-1.5",
       CONTAINER_ENABLED: "false",
       CONTAINER_RUNTIME: "auto",
       WHATSAPP_ENABLED: "false",

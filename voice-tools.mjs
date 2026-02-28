@@ -8,7 +8,7 @@
  */
 
 import { loadConfig } from "./config.mjs";
-import { execPrimaryPrompt, getPrimaryAgentName, setPrimaryAgent } from "./primary-agent.mjs";
+import { execPrimaryPrompt, getPrimaryAgentName, setPrimaryAgent, getAgentMode, setAgentMode } from "./primary-agent.mjs";
 
 // ── Module-scope lazy imports ───────────────────────────────────────────────
 
@@ -353,6 +353,104 @@ const TOOL_DEFS = [
       },
     },
   },
+  // ── Task Management (extended) ──
+  {
+    type: "function",
+    name: "search_tasks",
+    description: "Search tasks by text query across titles, descriptions, and labels.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search text" },
+        limit: { type: "number", description: "Max results. Default: 20" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    type: "function",
+    name: "get_task_stats",
+    description: "Get task board statistics (counts by status, backlog size, etc.).",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function",
+    name: "delete_task",
+    description: "Delete a task from the kanban board.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", description: "Task ID or issue number" },
+      },
+      required: ["taskId"],
+    },
+  },
+  {
+    type: "function",
+    name: "comment_on_task",
+    description: "Add a comment to a task.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", description: "Task ID" },
+        body: { type: "string", description: "Comment text" },
+      },
+      required: ["taskId", "body"],
+    },
+  },
+  // ── Agent Mode ──
+  {
+    type: "function",
+    name: "set_agent_mode",
+    description: "Set the agent interaction mode (ask for questions, agent for code changes, plan for architecture).",
+    parameters: {
+      type: "object",
+      properties: {
+        mode: {
+          type: "string",
+          enum: ["ask", "agent", "plan"],
+          description: "The interaction mode to set",
+        },
+      },
+      required: ["mode"],
+    },
+  },
+  // ── Workflow & Skills ──
+  {
+    type: "function",
+    name: "list_workflows",
+    description: "List available workflow templates.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function",
+    name: "list_skills",
+    description: "List available agent skills from the knowledge base.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function",
+    name: "list_prompts",
+    description: "List available agent prompt definitions.",
+    parameters: { type: "object", properties: {} },
+  },
+  // ── Batch Action ──
+  {
+    type: "function",
+    name: "dispatch_action",
+    description: "Execute a Bosun action by name. Use for any action not covered by dedicated tools. Actions: task.list, task.create, agent.delegate, system.status, workflow.list, skill.list, prompt.list, etc.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", description: "Action name (e.g. task.stats, agent.status)" },
+        params: {
+          type: "object",
+          description: "Action parameters",
+        },
+      },
+      required: ["action"],
+    },
+  },
 ];
 
 // ── Tool Execution ──────────────────────────────────────────────────────────
@@ -672,6 +770,143 @@ const TOOL_HANDLERS = {
       return logLines.slice(-lines).join("\n");
     } catch {
       return "Could not read logs.";
+    }
+  },
+
+  async search_tasks(args) {
+    const kanban = await getKanban();
+    const query = String(args.query || "").trim().toLowerCase();
+    if (!query) return "Search query is required.";
+    const limit = args.limit || 20;
+    const tasks = await kanban.listTasks({ status: undefined });
+    const matches = (Array.isArray(tasks) ? tasks : []).filter((t) => {
+      const text = `${t.title || ""} ${t.body || t.description || ""} ${(t.labels || []).join(" ")}`.toLowerCase();
+      return text.includes(query);
+    });
+    return {
+      query: args.query,
+      count: Math.min(matches.length, limit),
+      total: matches.length,
+      tasks: matches.slice(0, limit).map((t) => ({
+        id: t.id || t.number,
+        title: t.title,
+        status: t.status,
+        labels: t.labels || [],
+      })),
+    };
+  },
+
+  async get_task_stats() {
+    const kanban = await getKanban();
+    const tasks = await kanban.listTasks({ status: undefined });
+    const all = Array.isArray(tasks) ? tasks : [];
+    const byStatus = {};
+    for (const t of all) {
+      const s = t.status || "unknown";
+      byStatus[s] = (byStatus[s] || 0) + 1;
+    }
+    return {
+      total: all.length,
+      byStatus,
+      backlog: byStatus.todo || 0,
+      inProgress: byStatus.inprogress || 0,
+      inReview: byStatus.inreview || 0,
+      done: byStatus.done || 0,
+    };
+  },
+
+  async delete_task(args) {
+    const kanban = await getKanban();
+    const taskId = String(args.taskId || "").trim();
+    if (!taskId) return "taskId is required.";
+    await kanban.deleteTask(taskId);
+    return `Task ${taskId} deleted.`;
+  },
+
+  async comment_on_task(args) {
+    const kanban = await getKanban();
+    const taskId = String(args.taskId || "").trim();
+    const body = String(args.body || "").trim();
+    if (!taskId) return "taskId is required.";
+    if (!body) return "comment body is required.";
+    await kanban.addComment(taskId, body);
+    return `Comment added to task ${taskId}.`;
+  },
+
+  async set_agent_mode(args) {
+    const rawMode = String(args.mode || "").trim().toLowerCase();
+    const VALID = new Set(["ask", "agent", "plan"]);
+    if (!VALID.has(rawMode)) return `Invalid mode: ${rawMode}. Use: ask, agent, plan`;
+    const previous = getAgentMode();
+    setAgentMode(rawMode);
+    return `Agent mode changed from ${previous} to ${rawMode}.`;
+  },
+
+  async list_workflows() {
+    try {
+      const wf = await import("./workflow-templates.mjs");
+      const templates = wf.listTemplates ? wf.listTemplates() : [];
+      return {
+        count: templates.length,
+        templates: templates.map((t) => ({
+          id: t.id,
+          name: t.name || t.id,
+          description: (t.description || "").slice(0, 100),
+        })),
+      };
+    } catch {
+      return { count: 0, templates: [], error: "Workflow templates not available." };
+    }
+  },
+
+  async list_skills() {
+    try {
+      const skills = await import("./bosun-skills.mjs");
+      const builtins = skills.BUILTIN_SKILLS || [];
+      return {
+        count: builtins.length,
+        skills: builtins.map((s) => ({
+          filename: s.filename,
+          title: s.title,
+          tags: s.tags || [],
+        })),
+      };
+    } catch {
+      return { count: 0, skills: [] };
+    }
+  },
+
+  async list_prompts() {
+    try {
+      const prompts = await import("./agent-prompts.mjs");
+      const defs = prompts.getAgentPromptDefinitions
+        ? prompts.getAgentPromptDefinitions()
+        : prompts.AGENT_PROMPT_DEFINITIONS || [];
+      return {
+        count: defs.length,
+        prompts: defs.map((d) => ({
+          key: d.key,
+          filename: d.filename,
+          description: (d.description || "").slice(0, 80),
+        })),
+      };
+    } catch {
+      return { count: 0, prompts: [] };
+    }
+  },
+
+  async dispatch_action(args, context) {
+    const action = String(args.action || "").trim();
+    if (!action) return { error: "action name is required" };
+    try {
+      const { dispatchVoiceAction } = await import("./voice-action-dispatcher.mjs");
+      const result = await dispatchVoiceAction(
+        { action, params: args.params || {} },
+        context,
+      );
+      return result;
+    } catch (err) {
+      return { ok: false, error: err.message };
     }
   },
 };

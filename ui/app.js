@@ -74,6 +74,7 @@ const VOICE_LAUNCH_QUERY_KEYS = [
   "source",
   "chat_id",
 ];
+const FLOATING_CALL_STATE_KEY = "ve-floating-call-state";
 
 function getAppLogoSource(index = 0) {
   const safeIndex = Number.isFinite(index) ? Math.trunc(index) : 0;
@@ -141,6 +142,49 @@ function scrubVoiceLaunchQuery() {
   if (!changed) return;
   const nextPath = `${url.pathname}${url.search}${url.hash}`;
   window.history.replaceState(window.history.state, "", nextPath || "/");
+}
+
+function isFollowWindowFromUrl() {
+  if (typeof window === "undefined") return false;
+  const params = new URLSearchParams(window.location.search || "");
+  return params.get("follow") === "1";
+}
+
+function readFloatingCallState() {
+  if (typeof window === "undefined") return { active: false };
+  try {
+    const raw = localStorage.getItem(FLOATING_CALL_STATE_KEY);
+    if (!raw) return { active: false };
+    const parsed = JSON.parse(raw);
+    return {
+      active: parsed?.active === true,
+      call: String(parsed?.call || "").trim().toLowerCase() === "video"
+        ? "video"
+        : "voice",
+      updatedAt: Number(parsed?.updatedAt || 0) || Date.now(),
+    };
+  } catch {
+    return { active: false };
+  }
+}
+
+function writeFloatingCallState(nextState) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(
+      FLOATING_CALL_STATE_KEY,
+      JSON.stringify({
+        active: nextState?.active === true,
+        call:
+          String(nextState?.call || "").trim().toLowerCase() === "video"
+            ? "video"
+            : "voice",
+        updatedAt: Date.now(),
+      }),
+    );
+  } catch {
+    // best effort
+  }
 }
 
 /* ── Module imports ── */
@@ -1364,6 +1408,11 @@ function App() {
   const [voiceInitialVisionSource, setVoiceInitialVisionSource] = useState(
     null,
   );
+  const followWindowMode = isFollowWindowFromUrl();
+  const followOverlayOpenedRef = useRef(false);
+  const [floatingCallState, setFloatingCallState] = useState(() =>
+    readFloatingCallState(),
+  );
   const resizeRef = useRef(null);
   const [isCompactNav, setIsCompactNav] = useState(() => {
     const win = globalThis.window;
@@ -1723,6 +1772,29 @@ function App() {
           return;
         }
 
+        const desktopFollowApi = globalThis?.veDesktop?.follow;
+        if (!followWindowMode && desktopFollowApi?.open) {
+          try {
+            await desktopFollowApi.open({
+              call: requestedCallType,
+              initialVisionSource: requestedVisionSource,
+              sessionId: currentSessionId,
+              executor: currentExecutor,
+              mode: currentMode,
+              model: currentModel,
+            });
+            const nextFloatingState = {
+              active: true,
+              call: requestedCallType,
+            };
+            setFloatingCallState(nextFloatingState);
+            writeFloatingCallState(nextFloatingState);
+            return;
+          } catch {
+            // Fall through to in-window overlay if desktop companion fails.
+          }
+        }
+
         setVoiceSessionId(currentSessionId);
         setVoiceExecutor(currentExecutor);
         setVoiceAgentMode(currentMode);
@@ -1749,7 +1821,38 @@ function App() {
     globalThis.addEventListener?.("ve:open-voice-mode", handleOpenVoiceMode);
     return () =>
       globalThis.removeEventListener?.("ve:open-voice-mode", handleOpenVoiceMode);
+  }, [followWindowMode]);
+
+  useEffect(() => {
+    const onStorage = (event) => {
+      if (event?.key && event.key !== FLOATING_CALL_STATE_KEY) return;
+      setFloatingCallState(readFloatingCallState());
+    };
+    globalThis.addEventListener?.("storage", onStorage);
+    return () => {
+      globalThis.removeEventListener?.("storage", onStorage);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!followWindowMode) return;
+    const nextFloatingState = {
+      active: Boolean(voiceOverlayOpen),
+      call: voiceCallType,
+    };
+    setFloatingCallState(nextFloatingState);
+    writeFloatingCallState(nextFloatingState);
+  }, [followWindowMode, voiceOverlayOpen, voiceCallType]);
+
+  useEffect(() => {
+    if (!followWindowMode) return;
+    if (voiceOverlayOpen) {
+      followOverlayOpenedRef.current = true;
+      return;
+    }
+    if (!followOverlayOpenedRef.current) return;
+    globalThis?.veDesktop?.follow?.hide?.().catch?.(() => {});
+  }, [followWindowMode, voiceOverlayOpen]);
 
   useEffect(() => {
     const launch = parseVoiceLaunchFromUrl();
@@ -1875,6 +1978,14 @@ function App() {
   const railSessionType = "primary";
   const showDrawerToggles = isTablet;
   const showInspectorToggle = isTablet && isChatOrAgents;
+  const showRestoreFloatingCall =
+    !followWindowMode &&
+    floatingCallState?.active === true &&
+    typeof globalThis?.veDesktop?.follow?.restore === "function";
+  const floatingCallLabel =
+    String(floatingCallState?.call || "").trim().toLowerCase() === "video"
+      ? "Restore floating video call"
+      : "Restore floating voice call";
 
   const shellStyle = isDesktop
     ? {
@@ -2053,9 +2164,42 @@ function App() {
       open=${isBotOpen}
       onClose=${closeBot}
     />
+    ${showRestoreFloatingCall
+      ? html`
+          <button
+            class="btn btn-primary floating-call-restore"
+            title=${floatingCallLabel}
+            onClick=${async () => {
+              try {
+                const result = await globalThis.veDesktop.follow.restore();
+                if (!result?.ok) {
+                  const nextFloatingState = { active: false, call: floatingCallState?.call };
+                  setFloatingCallState(nextFloatingState);
+                  writeFloatingCallState(nextFloatingState);
+                  showToast("No floating call window is active.", "info");
+                }
+              } catch {
+                showToast("Could not restore floating call window.", "error");
+              }
+            }}
+          >
+            ${resolveIcon("phone")}
+            ${String(floatingCallState?.call || "").trim().toLowerCase() === "video"
+              ? " Restore Video Call"
+              : " Restore Voice Call"}
+          </button>
+        `
+      : null}
     <${VoiceOverlay}
       visible=${voiceOverlayOpen}
       onClose=${() => setVoiceOverlayOpen(false)}
+      onDismiss=${() => {
+        if (followWindowMode && globalThis?.veDesktop?.follow?.hide) {
+          globalThis.veDesktop.follow.hide().catch(() => {});
+          return;
+        }
+        setVoiceOverlayOpen(false);
+      }}
       tier=${voiceTier}
       sessionId=${voiceSessionId}
       executor=${voiceExecutor}
@@ -2063,6 +2207,7 @@ function App() {
       model=${voiceModel}
       callType=${voiceCallType}
       initialVisionSource=${voiceInitialVisionSource}
+      compact=${followWindowMode}
     />
   `;
 }

@@ -474,6 +474,18 @@ function generateLaunchdPlist({ daemon = true } = {}) {
 
   const argsXml = args.map((a) => `        <string>${a}</string>`).join("\n");
 
+  // Include Homebrew paths for both Apple Silicon (/opt/homebrew) and Intel (/usr/local)
+  const pathValue = [
+    `${home}/.local/bin`,
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+  ].join(":");
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -495,12 +507,16 @@ ${argsXml}
     </dict>
     <key>ThrottleInterval</key>
     <integer>30</integer>
+    <key>AbandonProcessGroup</key>
+    <true/>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>${home}/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>${pathValue}</string>
         <key>HOME</key>
         <string>${home}</string>
+        <key>NODE_ENV</key>
+        <string>production</string>
     </dict>
     <key>StandardOutPath</key>
     <string>${logDir}/startup.log</string>
@@ -515,16 +531,36 @@ async function installMacOS(options = {}) {
   const plistContent = generateLaunchdPlist(options);
 
   try {
-    // Unload existing agent if present
+    // Unload/bootout existing agent if present
     try {
-      execSync(`launchctl unload "${plistPath}"`, { stdio: "ignore" });
+      // Try modern bootout first (macOS 10.11+), fall back to legacy unload
+      const uid = process.getuid?.() ?? "";
+      if (uid !== "") {
+        execSync(`launchctl bootout gui/${uid} "${plistPath}" 2>/dev/null || launchctl unload "${plistPath}" 2>/dev/null`, { stdio: "ignore", shell: true });
+      } else {
+        execSync(`launchctl unload "${plistPath}"`, { stdio: "ignore" });
+      }
     } catch {
-      /* ok */
+      /* ok — agent may not be loaded */
     }
 
     mkdirSync(dirname(plistPath), { recursive: true });
     writeFileSync(plistPath, plistContent, "utf8");
-    execSync(`launchctl load "${plistPath}"`, { stdio: "pipe" });
+
+    // Prefer modern bootstrap domain (macOS 10.11+); fall back to legacy load
+    let loaded = false;
+    try {
+      const uid = process.getuid?.() ?? "";
+      if (uid !== "") {
+        execSync(`launchctl bootstrap gui/${uid} "${plistPath}"`, { stdio: "pipe" });
+        loaded = true;
+      }
+    } catch {
+      /* fall through to legacy load */
+    }
+    if (!loaded) {
+      execSync(`launchctl load "${plistPath}"`, { stdio: "pipe" });
+    }
 
     return {
       success: true,
@@ -595,7 +631,16 @@ async function removeMacOS() {
   const plistPath = getLaunchdPlistPath();
   try {
     try {
-      execSync(`launchctl unload "${plistPath}"`, { stdio: "ignore" });
+      // Prefer modern bootout; fall back to legacy unload
+      const uid = process.getuid?.() ?? "";
+      if (uid !== "") {
+        execSync(
+          `launchctl bootout gui/${uid} "${plistPath}" 2>/dev/null || launchctl unload "${plistPath}" 2>/dev/null`,
+          { stdio: "ignore", shell: true },
+        );
+      } else {
+        execSync(`launchctl unload "${plistPath}"`, { stdio: "ignore" });
+      }
     } catch {
       /* ok */
     }
