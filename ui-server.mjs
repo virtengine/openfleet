@@ -225,6 +225,12 @@ let _wfRecommendedInstalled = false;
 let _wfInitPromise = null;
 let _wfInitDone = false;
 let _wfLoadedBase = null;
+let workflowEventDedupWindowMs = (() => {
+  const parsed = Number.parseInt(process.env.WORKFLOW_EVENT_DEDUP_WINDOW_MS || "15000", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 15_000;
+  return Math.min(300_000, Math.max(250, parsed));
+})();
+const workflowEventDedup = new Map();
 
 function parseBooleanEnv(rawValue, fallback = false) {
   if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") {
@@ -515,6 +521,113 @@ async function getWorkflowEngineModule() {
   }
 
   return _wfEngine;
+}
+
+function allowWorkflowEvent(dedupKey, windowMs = workflowEventDedupWindowMs) {
+  if (!dedupKey) return true;
+  const now = Date.now();
+  const lastSeen = workflowEventDedup.get(dedupKey) || 0;
+  if (now - lastSeen < windowMs) {
+    return false;
+  }
+  workflowEventDedup.set(dedupKey, now);
+  if (workflowEventDedup.size > 1000) {
+    const cutoff = now - windowMs * 2;
+    for (const [key, ts] of workflowEventDedup.entries()) {
+      if (ts < cutoff) workflowEventDedup.delete(key);
+    }
+  }
+  return true;
+}
+
+function buildWorkflowEventPayload(eventType, eventData = {}, triggerSource = "ui-event") {
+  const payload = eventData && typeof eventData === "object"
+    ? { ...eventData }
+    : {};
+  payload.eventType = eventType;
+  if (String(eventType || "").startsWith("pr.")) {
+    const prEvent = String(eventType).slice(3).trim();
+    if (prEvent) payload.prEvent = prEvent;
+  }
+  payload._triggerSource = triggerSource;
+  payload._triggerEventType = eventType;
+  payload._triggeredAt = new Date().toISOString();
+  return payload;
+}
+
+async function dispatchWorkflowEvent(eventType, eventData = {}, opts = {}) {
+  try {
+    if (!parseBooleanEnv(process.env.WORKFLOW_AUTOMATION_ENABLED, true)) {
+      return false;
+    }
+
+    const dedupKey = String(opts?.dedupKey || "").trim();
+    if (dedupKey && !allowWorkflowEvent(dedupKey)) {
+      return false;
+    }
+
+    const wfMod = await getWorkflowEngineModule();
+    if (!wfMod?.getWorkflowEngine) return false;
+
+    const engine = wfMod.getWorkflowEngine();
+    if (!engine?.evaluateTriggers || !engine?.execute) return false;
+
+    const payload = buildWorkflowEventPayload(eventType, eventData, "ui-server");
+    let triggered = [];
+    try {
+      triggered = await engine.evaluateTriggers(eventType, payload);
+    } catch (err) {
+      console.warn(
+        `[workflows] trigger evaluation failed for ${eventType}: ${err?.message || err}`,
+      );
+      return false;
+    }
+
+    if (!Array.isArray(triggered) || triggered.length === 0) {
+      return false;
+    }
+
+    for (const match of triggered) {
+      const workflowId = String(match?.workflowId || "").trim();
+      if (!workflowId) continue;
+
+      const runPayload = {
+        ...payload,
+        _triggeredBy: match?.triggeredBy || null,
+      };
+
+      Promise.resolve()
+        .then(() => engine.execute(workflowId, runPayload))
+        .then((ctx) => {
+          const runStatus =
+            Array.isArray(ctx?.errors) && ctx.errors.length > 0
+              ? "failed"
+              : "completed";
+          console.log(
+            `[workflows] auto-run ${runStatus} workflow=${workflowId} runId=${ctx?.id || "unknown"} event=${eventType}`,
+          );
+        })
+        .catch((err) => {
+          console.warn(
+            `[workflows] auto-run failed workflow=${workflowId} event=${eventType}: ${err?.message || err}`,
+          );
+        });
+    }
+
+    console.log(
+      `[workflows] event "${eventType}" triggered ${triggered.length} workflow run(s)`,
+    );
+    return true;
+  } catch (err) {
+    console.warn(`[workflows] dispatchWorkflowEvent error for ${eventType}: ${err?.message || err}`);
+    return false;
+  }
+}
+
+function queueWorkflowEvent(eventType, eventData = {}, opts = {}) {
+  dispatchWorkflowEvent(eventType, eventData, opts).catch((err) => {
+    console.warn(`[workflows] queueWorkflowEvent failure for ${eventType}: ${err?.message || err}`);
+  });
 }
 
 // ── Vendor module map ─────────────────────────────────────────────────────────
@@ -5403,7 +5516,10 @@ async function handleApi(req, res, url) {
   if (path === "/api/auth/fallback/status" && req.method === "GET") {
     jsonResponse(res, 200, {
       ok: true,
-      data: getFallbackAuthStatus(),
+      data: {
+        fallbackAuth: getFallbackAuthStatus(),
+        tunnel: getTunnelStatus(),
+      },
     });
     return;
   }
@@ -5483,7 +5599,10 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (path === "/api/auth/fallback/set" && req.method === "POST") {
+  if (
+    (path === "/api/auth/fallback/set" || path === "/api/auth/fallback/rotate")
+    && req.method === "POST"
+  ) {
     try {
       const body = await readJsonBody(req);
       const secret = String(body?.secret || body?.password || body?.pin || "").trim();
@@ -9029,6 +9148,46 @@ async function handleApi(req, res, url) {
           eventType: String(body?.eventType || "").trim() || undefined,
         },
       });
+
+      const provider = String(body?.provider || "").trim() || null;
+      const transcriptEventType = String(body?.eventType || "").trim().toLowerCase() || null;
+      const executor = String(body?.executor || "").trim() || null;
+      const mode = String(body?.mode || "").trim() || null;
+      const model = String(body?.model || "").trim() || null;
+      const normalizedSessionId = String(session.id || sessionId).trim();
+      const contentHash = createHash("sha1")
+        .update(`${role}:${content}`)
+        .digest("hex")
+        .slice(0, 16);
+      const workflowPayload = {
+        sessionId: normalizedSessionId,
+        meetingSessionId: normalizedSessionId,
+        role,
+        content,
+        source: "voice",
+        provider,
+        transcriptEventType,
+        executor,
+        mode,
+        model,
+      };
+
+      queueWorkflowEvent(
+        "meeting.transcript",
+        workflowPayload,
+        {
+          dedupKey: `workflow-event:meeting.transcript:${normalizedSessionId}:${role}:${contentHash}`,
+        },
+      );
+      if (transcriptEventType === "wake_phrase" || transcriptEventType === "wake-phrase") {
+        queueWorkflowEvent(
+          "meeting.wake_phrase",
+          workflowPayload,
+          {
+            dedupKey: `workflow-event:meeting.wake_phrase:${normalizedSessionId}:${role}:${contentHash}`,
+          },
+        );
+      }
 
       jsonResponse(res, 200, { ok: true });
     } catch (err) {

@@ -2557,6 +2557,8 @@
         return { ok: true, tokenIssued: true, auth: 'fallback' };
       if (route === '/api/auth/fallback/set')
         return { ok: true, data: { enabled: true, hasSecret: true } };
+      if (route === '/api/auth/fallback/rotate')
+        return { ok: true, data: { enabled: true, hasSecret: true } };
       if (route === '/api/auth/fallback/reset')
         return { ok: true, data: { enabled: false, hasSecret: false } };
 

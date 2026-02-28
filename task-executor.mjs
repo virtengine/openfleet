@@ -3922,6 +3922,10 @@ class TaskExecutor {
         task?.meta?.repo ||
         "",
     );
+    // Multi-repo: task.repositories is an array of repo slugs/ids
+    const taskRepositories = Array.isArray(task?.repositories) && task.repositories.length > 0
+      ? task.repositories.map((r) => normalizeSelector(r)).filter(Boolean)
+      : taskRepository ? [taskRepository] : [];
 
     const repoCandidates = Array.isArray(this.repositories)
       ? this.repositories
@@ -3932,19 +3936,33 @@ class TaskExecutor {
         )
       : repoCandidates;
 
-    const selectedRepo =
-      scopedCandidates.find((repo) => normalizeSelector(repo.id) === taskRepository) ||
-      scopedCandidates.find((repo) => normalizeSelector(repo.name) === taskRepository) ||
-      scopedCandidates.find((repo) => normalizeSelector(repo.slug) === taskRepository) ||
-      scopedCandidates.find((repo) => Array.isArray(repo.aliases) && repo.aliases.includes(taskRepository)) ||
+    const resolveOne = (slug) =>
+      scopedCandidates.find((r) => normalizeSelector(r.id) === slug) ||
+      scopedCandidates.find((r) => normalizeSelector(r.name) === slug) ||
+      scopedCandidates.find((r) => normalizeSelector(r.slug) === slug) ||
+      scopedCandidates.find((r) => Array.isArray(r.aliases) && r.aliases.includes(slug)) ||
       null;
 
-    const fallbackRepo =
-      scopedCandidates.find((repo) => repo.primary) || scopedCandidates[0] || null;
-    const effectiveRepo = selectedRepo || fallbackRepo;
+    let resolvedRepos = taskRepositories.map(resolveOne).filter(Boolean);
+
+    // Fallback: if no explicit repos, use primary/first in workspace
+    if (resolvedRepos.length === 0) {
+      const fallbackRepo =
+        scopedCandidates.find((repo) => repo.primary) || scopedCandidates[0] || null;
+      if (fallbackRepo) resolvedRepos = [fallbackRepo];
+    }
+
+    const effectiveRepo = resolvedRepos[0] || null;
+    const isMultiRepo = resolvedRepos.length > 1;
+
+    // For multi-repo: spawn in workspace root (parent of repos) — not a git dir
+    // For single repo: spawn inside that repo directory (git commands work)
+    const repoRoot = isMultiRepo
+      ? (effectiveRepo?.path ? dirname(effectiveRepo.path) : this.repoRoot)
+      : (effectiveRepo?.path || this.repoRoot);
 
     return {
-      repoRoot: effectiveRepo?.path || this.repoRoot,
+      repoRoot,
       repoSlug: effectiveRepo?.slug || this.repoSlug || "",
       workspace:
         taskWorkspace ||
@@ -3954,6 +3972,8 @@ class TaskExecutor {
         taskRepository ||
         normalizeSelector(effectiveRepo?.id || effectiveRepo?.name || "") ||
         "",
+      resolvedRepos,
+      isMultiRepo,
     };
   }
 
@@ -4014,6 +4034,9 @@ class TaskExecutor {
     const taskRepoContext = this._resolveTaskRepoContext(task);
     const executionRepoRoot = taskRepoContext.repoRoot || this.repoRoot;
     const executionRepoSlug = taskRepoContext.repoSlug || this.repoSlug;
+    // Workspaces are plain folders; repos live inside them. Only run git/worktree
+    // operations when executionRepoRoot is actually a git repository.
+    const executionRepoIsGit = existsSync(resolve(executionRepoRoot, ".git"));
     const worktreeManager = this._getWorktreeManager(executionRepoRoot);
     let taskClaimToken = null;
     let attemptId = null;
@@ -4324,8 +4347,14 @@ class TaskExecutor {
         /* best-effort */
       });
 
-      // 3. Acquire worktree
+      // 3. Acquire worktree (only when executionRepoRoot is a git repository;
+      //    plain workspace folders with repos inside skip worktree creation and
+      //    spawn the agent directly in the resolved directory).
       let wt;
+      if (!executionRepoIsGit) {
+        // Non-git workspace root — agent spawns directly here
+        wt = { path: executionRepoRoot, created: false, noGit: true };
+      } else {
       try {
         const taskBaseBranch = resolveTaskBaseBranch(
           task,
@@ -4397,6 +4426,7 @@ class TaskExecutor {
         this.onTaskFailed?.(task, wrappedError);
         return;
       }
+      } // end executionRepoIsGit
 
       slot.worktreePath = wt.path;
       this._upsertRuntimeSlot(slot);
@@ -4453,6 +4483,8 @@ class TaskExecutor {
         repoSlug: executionRepoSlug,
         workspace: taskRepoContext.workspace,
         repository: taskRepoContext.repository,
+        resolvedRepos: taskRepoContext.resolvedRepos,
+        isMultiRepo: taskRepoContext.isMultiRepo,
       });
 
       // 6b. Create per-task AbortController for watchdog integration
@@ -4479,7 +4511,7 @@ class TaskExecutor {
         "BOSUN_TASK_ID", "BOSUN_TASK_TITLE", "BOSUN_TASK_DESCRIPTION",
         "BOSUN_BRANCH_NAME", "BOSUN_WORKTREE_PATH", "BOSUN_SDK", "BOSUN_MANAGED",
         "BOSUN_REPO_ROOT", "BOSUN_REPO_SLUG", "BOSUN_WORKSPACE", "BOSUN_REPOSITORY",
-        "BOSUN_AGENT_REPO_ROOT",
+        "BOSUN_AGENT_REPO_ROOT", "BOSUN_REPOS",
       ];
       const _savedEnv = {};
       for (const k of _savedEnvKeys) _savedEnv[k] = process.env[k];
@@ -4512,6 +4544,16 @@ class TaskExecutor {
       // Enforce workspace isolation: agents must resolve repo root from the
       // workspace-scoped executionRepoRoot, NOT the developer's personal repo.
       process.env.BOSUN_AGENT_REPO_ROOT = executionRepoRoot;
+      // All resolved repos for this task (JSON array of {slug,name,path} objects)
+      process.env.BOSUN_REPOS = taskRepoContext.resolvedRepos?.length
+        ? JSON.stringify(
+            taskRepoContext.resolvedRepos.map((r) => ({
+              slug: r.slug || r.id || "",
+              name: r.name || "",
+              path: r.path || "",
+            })),
+          )
+        : "";
 
       attemptId = `${taskId}-${randomUUID()}`;
       const taskMeta = {
@@ -4783,10 +4825,12 @@ class TaskExecutor {
 
       // 8. Cleanup
       this._slotAbortControllers.delete(taskId);
-      try {
-        await worktreeManager.releaseWorktree(taskId);
-      } catch (err) {
-        console.warn(`${TAG} worktree release warning: ${err.message}`);
+      if (executionRepoIsGit) {
+        try {
+          await worktreeManager.releaseWorktree(taskId);
+        } catch (err) {
+          console.warn(`${TAG} worktree release warning: ${err.message}`);
+        }
       }
       await releaseTaskClaimLock();
       this._activeSlots.delete(taskId);
@@ -4810,10 +4854,12 @@ class TaskExecutor {
       } catch {
         /* best-effort */
       }
-      try {
-        await worktreeManager.releaseWorktree(taskId);
-      } catch {
-        /* best-effort */
+      if (executionRepoIsGit) {
+        try {
+          await worktreeManager.releaseWorktree(taskId);
+        } catch {
+          /* best-effort */
+        }
       }
       await releaseTaskClaimLock();
 
@@ -4903,6 +4949,19 @@ class TaskExecutor {
       promptRepository ? `- Repository Name: ${promptRepository}` : "",
       `- Repo Root: ${promptRepoRoot}`,
       ``,
+    );
+
+    // For multi-repo tasks: tell the agent exactly where each repo lives
+    if (opts?.isMultiRepo && Array.isArray(opts?.resolvedRepos) && opts.resolvedRepos.length > 1) {
+      lines.push(
+        `## Workspace Repositories`,
+        `This task spans multiple repositories. Resolve all file paths relative to the repo roots below:`,
+        ...opts.resolvedRepos.map((r) => `- **${r.name || r.slug}**: \`${r.path}\``),
+        ``,
+      );
+    }
+
+    lines.push(
       `## Instructions`,
       `You are working autonomously on a software engineering task for this repository.`,
       `Autonomous mode is mandatory for this run — do not pause for approvals, confirmations, or user prompts.`,

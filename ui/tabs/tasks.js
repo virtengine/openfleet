@@ -3006,6 +3006,7 @@ function CreateTaskModalInline({ onClose }) {
   const [rewriting, setRewriting] = useState(false);
   const [workspaceId, setWorkspaceId] = useState(activeWorkspaceId.value || "");
   const [repository, setRepository] = useState("");
+  const [repositories, setRepositories] = useState([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const handleRewrite = async () => {
@@ -3051,13 +3052,30 @@ function CreateTaskModalInline({ onClose }) {
   useEffect(() => {
     if (!repositoryOptions.length) {
       if (repository) setRepository("");
+      if (repositories.length) setRepositories([]);
       return;
     }
     if (!repositoryOptions.some((repo) => repo?.slug === repository)) {
       const primary = repositoryOptions.find((repo) => repo?.primary);
-      setRepository(primary?.slug || repositoryOptions[0]?.slug || "");
+      const defaultSlug = primary?.slug || repositoryOptions[0]?.slug || "";
+      setRepository(defaultSlug);
+      setRepositories(defaultSlug ? [defaultSlug] : []);
     }
   }, [workspaceId, repositoryOptions.length]);
+
+  const toggleRepo = (slug) => {
+    setRepositories((prev) =>
+      prev.includes(slug) ? prev.filter((s) => s !== slug) : [...prev, slug],
+    );
+    // Keep single-repo compat: repository = first selected
+    setRepository((prev) => {
+      if (repositories.includes(slug)) {
+        const next = repositories.filter((s) => s !== slug);
+        return next[0] || "";
+      }
+      return prev || slug;
+    });
+  };
 
   const handleSubmit = async () => {
     if (!title.trim()) {
@@ -3067,6 +3085,7 @@ function CreateTaskModalInline({ onClose }) {
     setSubmitting(true);
     haptic("medium");
     const tags = normalizeTagInput(tagsInput);
+    const effectiveRepos = repositories.length > 0 ? repositories : (repository ? [repository] : []);
     try {
       await apiFetch("/api/tasks/create", {
         method: "POST",
@@ -3079,7 +3098,8 @@ function CreateTaskModalInline({ onClose }) {
           draft,
           status: draft ? "draft" : "todo",
           workspace: workspaceId || undefined,
-          repository: repository || undefined,
+          repository: effectiveRepos[0] || undefined,
+          repositories: effectiveRepos.length > 1 ? effectiveRepos : undefined,
         }),
       });
       showToast("Task created", "success");
@@ -3215,21 +3235,30 @@ function CreateTaskModalInline({ onClose }) {
                 (ws) => html`<option value=${ws.id}>${ws.name || ws.id}</option>`,
               )}
             </select>
-            <select
-              class="input"
-              value=${repository}
-              onChange=${(e) => setRepository(e.target.value)}
-              disabled=${!repositoryOptions.length}
-            >
-              <option value="">
-                ${repositoryOptions.length ? "Auto repo" : "No repos"}
-              </option>
-              ${repositoryOptions.map(
-                (repo) =>
-                  html`<option value=${repo.slug}>${repo.name}${repo.primary ? " (Primary)" : ""}</option>`,
-              )}
-            </select>
           </div>
+          ${repositoryOptions.length > 0 && html`
+            <div class="repo-select-group">
+              ${repositoryOptions.length === 1
+                ? html`<div class="repo-auto-label">
+                    Repo: <strong>${repositoryOptions[0].name}</strong>
+                    ${repositoryOptions[0].primary ? " (Primary)" : ""}
+                  </div>`
+                : html`<div class="repo-checkboxes">
+                    <span class="repo-checkboxes-label">Repositories</span>
+                    ${repositoryOptions.map((repo) => html`
+                      <label class="repo-checkbox-item">
+                        <input
+                          type="checkbox"
+                          checked=${repositories.includes(repo.slug)}
+                          onChange=${() => toggleRepo(repo.slug)}
+                        />
+                        ${repo.name}${repo.primary ? " (Primary)" : ""}
+                      </label>
+                    `)}
+                  </div>`
+              }
+            </div>
+          `}
         `}
 
         <!-- Tags -->
