@@ -269,6 +269,10 @@ export function ChatTab() {
     }
   });
   const textareaRef = useRef(null);
+  const sendMenuRef = useRef(null);
+  const messageQueueRef = useRef([]);
+  const [showSendMenu, setShowSendMenu] = useState(false);
+  const [queueCount, setQueueCount] = useState(0);
 
   /* ── Load sessions + agents on mount ── */
   useEffect(() => {
@@ -491,8 +495,8 @@ export function ChatTab() {
   }
 
   /* ── Send message or command ── */
-  async function handleSend() {
-    const content = inputValue.trim();
+  async function handleSend(explicitContent) {
+    const content = (typeof explicitContent === "string" ? explicitContent : inputValue).trim();
     if (!content || sending) return;
 
     setShowSlashMenu(false);
@@ -593,13 +597,71 @@ export function ChatTab() {
     } catch (err) {
       showToast("Failed to send: " + (err.message || "Unknown error"), "error");
     } finally {
-      setInputValue("");
+      if (typeof explicitContent !== "string") setInputValue("");
       setSending(false);
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
       }
     }
   }
+
+  /* ── Stop agent ── */
+  async function handleStop() {
+    try {
+      await apiFetch("/api/command", {
+        method: "POST",
+        body: JSON.stringify({ command: "/stop" }),
+      });
+      showToast("Agent stopped", "info");
+    } catch (err) {
+      showToast("Stop failed: " + (err.message || "Unknown error"), "error");
+    }
+  }
+
+  /* ── Stop then send ── */
+  async function handleStopAndSend() {
+    setShowSendMenu(false);
+    await handleStop();
+    await handleSend();
+  }
+
+  /* ── Add message to queue for delivery after current task ── */
+  function handleAddToQueue() {
+    const content = inputValue.trim();
+    if (!content) return;
+    setShowSendMenu(false);
+    messageQueueRef.current.push(content);
+    setQueueCount(messageQueueRef.current.length);
+    setInputValue("");
+    showToast(`Message queued (${messageQueueRef.current.length} pending)`, "success");
+  }
+
+  /* ── Steer with message (send to running session) ── */
+  async function handleSteerWithMessage() {
+    setShowSendMenu(false);
+    await handleSend();
+  }
+
+  /* ── Auto-send queued messages when agent becomes free ── */
+  useEffect(() => {
+    if (!sending && messageQueueRef.current.length > 0) {
+      const next = messageQueueRef.current.shift();
+      setQueueCount(messageQueueRef.current.length);
+      handleSend(next);
+    }
+  }, [sending]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── Close send menu when clicking outside ── */
+  useEffect(() => {
+    if (!showSendMenu) return;
+    function handleOutside(e) {
+      if (sendMenuRef.current && !sendMenuRef.current.contains(e.target)) {
+        setShowSendMenu(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [showSendMenu]);
 
   /* ── Keyboard handling ── */
   function handleKeyDown(e) {
@@ -628,6 +690,13 @@ export function ChatTab() {
         setShowSlashMenu(false);
         return;
       }
+    }
+
+    // Alt+Enter = Add to Queue
+    if (e.key === "Enter" && e.altKey) {
+      e.preventDefault();
+      handleAddToQueue();
+      return;
     }
 
     // Send on Enter (shift+enter = newline)
@@ -838,20 +907,56 @@ export function ChatTab() {
                 disabled=${sending}
                 title="Voice input"
               />
-              <button
-                class="chat-send-btn"
-                disabled=${!inputValue.trim() || sending}
-                onClick=${handleSend}
-                title="Send (Enter)"
-              >
-                ${resolveIcon(sending ? ":clock:" : "➤")}
-              </button>
+              ${activeAgentInfo.value?.busy && html`
+                <button
+                  class="chat-stop-btn"
+                  onClick=${handleStop}
+                  title="Stop agent"
+                  aria-label="Stop agent"
+                >⏹</button>
+              `}
+              <div class="chat-send-group" ref=${sendMenuRef}>
+                <button
+                  class="chat-send-main"
+                  disabled=${!inputValue.trim()}
+                  onClick=${activeAgentInfo.value?.busy ? handleSteerWithMessage : handleSend}
+                  title=${activeAgentInfo.value?.busy ? "Steer with Message (Enter)" : "Send (Enter)"}
+                >➤</button>
+                <button
+                  class="chat-send-chevron"
+                  disabled=${!inputValue.trim()}
+                  onClick=${(e) => { e.stopPropagation(); setShowSendMenu(v => !v); }}
+                  aria-label="Send options"
+                  title="Send options"
+                >▾</button>
+                ${showSendMenu && html`
+                  <div class="chat-send-menu">
+                    <button class="chat-send-menu-item" onClick=${handleStopAndSend}>
+                      <span class="chat-send-menu-item-icon">⊳</span>
+                      <span class="chat-send-menu-item-label">Stop and Send</span>
+                    </button>
+                    <button class="chat-send-menu-item" onClick=${handleAddToQueue}>
+                      <span class="chat-send-menu-item-icon">+</span>
+                      <span class="chat-send-menu-item-label">Add to Queue</span>
+                      <span class="chat-send-menu-item-kbd">Alt+Enter</span>
+                    </button>
+                    <button class="chat-send-menu-item active" onClick=${handleSteerWithMessage}>
+                      <span class="chat-send-menu-item-icon">→</span>
+                      <span class="chat-send-menu-item-label">Steer with Message</span>
+                      <span class="chat-send-menu-item-kbd">Enter</span>
+                    </button>
+                  </div>
+                `}
+              </div>
             </div>
             <div class="chat-input-hint">
               <span>Shift+Enter for new line</span>
               <span>Type / for commands</span>
               ${offlineQueueSize.peek() > 0 && html`
                 <span class="chat-offline-badge">${iconText(`:upload: ${offlineQueueSize.peek()} queued`)}</span>
+              `}
+              ${queueCount > 0 && html`
+                <span class="chat-offline-badge">⏳ ${queueCount} pending</span>
               `}
             </div>
           </div>
