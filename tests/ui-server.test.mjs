@@ -89,6 +89,28 @@ describe("ui-server mini app", () => {
     expect(ip.length).toBeGreaterThan(0);
   });
 
+  it("preserves launch query params when exchanging session token", async () => {
+    process.env.TELEGRAM_UI_TUNNEL = "disabled";
+    const mod = await import("../ui-server.mjs");
+    const server = await mod.startTelegramUiServer({
+      port: await getFreePort(),
+      host: "127.0.0.1",
+      skipInstanceLock: true,
+      skipAutoOpen: true,
+    });
+    const port = server.address().port;
+    const token = mod.getSessionToken();
+    expect(token).toBeTruthy();
+
+    const response = await fetch(
+      `http://127.0.0.1:${port}/chat?launch=meeting&call=video&token=${encodeURIComponent(token)}`,
+      { redirect: "manual" },
+    );
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/chat?launch=meeting&call=video");
+    expect(response.headers.get("set-cookie") || "").toContain("ve_session=");
+  });
+
   it("starts with TELEGRAM_UI_PORT=0 by falling back to non-ephemeral default", async () => {
     process.env.TELEGRAM_UI_PORT = "0";
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "0";

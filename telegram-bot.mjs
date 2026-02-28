@@ -4582,16 +4582,16 @@ Object.assign(UI_SCREENS, {
       const meetingRow = [
         voiceMeetingWebAppUrl
           ? {
-              text: "📞 Voice Meeting",
+              text: "Voice Meeting",
               web_app: { url: voiceMeetingWebAppUrl },
             }
-          : uiButton("📞 Voice Meeting", uiCmdAction("/call")),
+          : uiButton("Voice Meeting", uiCmdAction("/call")),
         videoMeetingWebAppUrl
           ? {
-              text: "🎥 Video Meeting",
+              text: "Video Meeting",
               web_app: { url: videoMeetingWebAppUrl },
             }
-          : uiButton("🎥 Video Meeting", uiCmdAction("/videocall")),
+          : uiButton("Video Meeting", uiCmdAction("/videocall")),
       ];
       const rows = [
         // Core Operations
@@ -6508,11 +6508,11 @@ async function cmdApp(chatId) {
   if (voiceMeetingWebAppUrl || videoMeetingWebAppUrl) {
     rows.push([
       voiceMeetingWebAppUrl
-        ? { text: "📞 Voice Meeting", web_app: { url: voiceMeetingWebAppUrl } }
-        : { text: "📞 Voice Meeting", callback_data: "/call" },
+        ? { text: "Voice Meeting", web_app: { url: voiceMeetingWebAppUrl } }
+        : { text: "Voice Meeting", callback_data: "/call" },
       videoMeetingWebAppUrl
-        ? { text: "🎥 Video Meeting", web_app: { url: videoMeetingWebAppUrl } }
-        : { text: "🎥 Video Meeting", callback_data: "/videocall" },
+        ? { text: "Video Meeting", web_app: { url: videoMeetingWebAppUrl } }
+        : { text: "Video Meeting", callback_data: "/videocall" },
     ]);
   }
   if (browserOptions.length > 0) {
@@ -6536,7 +6536,7 @@ async function cmdCall(chatId, args = "") {
   const callType = normalizeMeetingCallType(args);
   const isVideo = callType === "video";
   const label = isVideo ? "video" : "voice";
-  const title = isVideo ? "🎥 *Video Meeting*" : "📞 *Voice Meeting*";
+  const title = isVideo ? "*Video Meeting*" : "*Voice Meeting*";
   syncUiUrlsFromServer();
 
   const webAppMeetingUrl = getMeetingWebAppUrl(callType, {
@@ -6550,7 +6550,7 @@ async function cmdCall(chatId, args = "") {
   if (webAppMeetingUrl) {
     rows.push([
       {
-        text: isVideo ? "🎥 Start Video Meeting" : "📞 Start Voice Meeting",
+        text: isVideo ? "Start Video Meeting" : "Start Voice Meeting",
         web_app: { url: webAppMeetingUrl },
       },
     ]);

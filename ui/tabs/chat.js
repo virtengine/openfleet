@@ -799,14 +799,16 @@ export function ChatTab() {
                     onClick=${() => openMeetingRoom("voice")}
                     title="Start voice meeting for this session"
                   >
-                    📞 Call
+                    <span class="btn-icon">${resolveIcon("phone")}</span>
+                    Call
                   </button>
                   <button
                     class="btn btn-ghost btn-sm"
                     onClick=${() => openMeetingRoom("video")}
                     title="Start video meeting for this session"
                   >
-                    🎥 Video
+                    <span class="btn-icon">${resolveIcon("camera")}</span>
+                    Video
                   </button>
                   ${isDesktop &&
                   html`

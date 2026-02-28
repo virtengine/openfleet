@@ -76,6 +76,14 @@ describe("voice-tools", () => {
         expect(def.parameters).toHaveProperty("type", "object");
       }
     });
+
+    it("includes gemini-sdk in delegate and switch executor enums", () => {
+      const defs = getToolDefinitions();
+      const delegate = defs.find((def) => def.name === "delegate_to_agent");
+      const switchAgent = defs.find((def) => def.name === "switch_agent");
+      expect(delegate?.parameters?.properties?.executor?.enum || []).toContain("gemini-sdk");
+      expect(switchAgent?.parameters?.properties?.executor?.enum || []).toContain("gemini-sdk");
+    });
   });
 
   // ── VOICE_TOOLS export ──────────────────────────────────────
@@ -165,6 +173,28 @@ describe("voice-tools", () => {
         sessionType: "primary",
         mode: "plan",
         model: "claude-opus-4.6",
+      });
+    });
+
+    it("delegate_to_agent accepts gemini-sdk executor", async () => {
+      const result = await executeToolCall(
+        "delegate_to_agent",
+        { message: "summarize the task" },
+        {
+          sessionId: "primary-gemini-1",
+          executor: "gemini-sdk",
+          mode: "ask",
+          model: "gemini-2.5-pro",
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(vi.mocked(setPrimaryAgent)).toHaveBeenCalledWith("gemini-sdk");
+      const callArgs = vi.mocked(execPrimaryPrompt).mock.calls.at(-1);
+      expect(callArgs?.[1]).toMatchObject({
+        sessionId: "primary-gemini-1",
+        sessionType: "primary",
+        mode: "ask",
+        model: "gemini-2.5-pro",
       });
     });
 

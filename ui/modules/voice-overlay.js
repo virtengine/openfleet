@@ -52,13 +52,14 @@ function injectOverlayStyles() {
   background: rgba(0, 0, 0, 0.95);
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  align-items: stretch;
+  justify-content: flex-start;
   color: #fff;
   font-family: var(--tg-theme-font, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
   animation: voiceOverlayFadeIn 0.3s ease;
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
+  overflow: hidden;
 }
 @keyframes voiceOverlayFadeIn {
   from { opacity: 0; }
@@ -74,6 +75,32 @@ function injectOverlayStyles() {
   align-items: center;
   padding: 16px 20px;
   z-index: 2;
+}
+.voice-overlay-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.voice-overlay-chat-toggle {
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.24);
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.95);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 12px;
+}
+.voice-overlay-chat-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.voice-overlay-call-pill {
+  font-size: 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.2);
+  padding: 3px 9px;
+  color: rgba(255,255,255,0.86);
 }
 .voice-overlay-close {
   width: 40px;
@@ -118,6 +145,132 @@ function injectOverlayStyles() {
   align-items: center;
   gap: 32px;
   z-index: 1;
+}
+.voice-overlay-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  padding: 76px 16px 18px;
+}
+.voice-overlay-stage {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+}
+.voice-overlay-chat {
+  width: min(420px, 42vw);
+  min-width: 300px;
+  max-width: 460px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(10, 10, 12, 0.78);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.voice-overlay-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.voice-overlay-chat-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.voice-overlay-chat-status {
+  font-size: 11px;
+  color: rgba(255,255,255,0.6);
+}
+.voice-overlay-chat-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.voice-overlay-chat-empty {
+  color: rgba(255,255,255,0.6);
+  text-align: center;
+  font-size: 12px;
+  padding: 16px 8px;
+}
+.voice-overlay-chat-msg {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.voice-overlay-chat-msg.user {
+  align-self: flex-end;
+  background: rgba(59,130,246,0.24);
+  border-color: rgba(59,130,246,0.38);
+}
+.voice-overlay-chat-msg.assistant {
+  align-self: flex-start;
+  background: rgba(34,197,94,0.2);
+  border-color: rgba(34,197,94,0.34);
+}
+.voice-overlay-chat-msg.system {
+  align-self: stretch;
+}
+.voice-overlay-chat-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  color: rgba(255,255,255,0.56);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.voice-overlay-chat-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.voice-overlay-chat-input-wrap {
+  border-top: 1px solid rgba(255,255,255,0.1);
+  padding: 10px;
+  display: flex;
+  gap: 8px;
+}
+.voice-overlay-chat-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.voice-overlay-chat-send {
+  border: none;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 12px;
+  padding: 0 12px;
+  cursor: pointer;
+}
+.voice-overlay-chat-send:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
 }
 .voice-orb-container {
   width: 200px;
@@ -171,14 +324,10 @@ function injectOverlayStyles() {
   color: #f87171;
 }
 .voice-overlay-footer {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
   display: flex;
   justify-content: center;
-  padding: 24px;
-  z-index: 2;
+  padding: 0;
+  z-index: 1;
 }
 .voice-end-btn {
   width: 64px;
@@ -254,6 +403,26 @@ function injectOverlayStyles() {
   0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
   40% { opacity: 1; transform: scale(1.2); }
 }
+@media (max-width: 980px) {
+  .voice-overlay-main {
+    padding: 74px 12px 14px;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .voice-overlay-chat {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    max-height: 44vh;
+  }
+  .voice-overlay-center {
+    gap: 18px;
+  }
+  .voice-orb-container {
+    width: 162px;
+    height: 162px;
+  }
+}
   `;
   document.head.appendChild(style);
 }
@@ -269,7 +438,17 @@ function formatDuration(seconds) {
 // ── Voice Overlay Component ─────────────────────────────────────────────────
 
 /**
- * @param {{ visible: boolean, onClose: () => void, tier: number, sessionId?: string, executor?: string, mode?: string, model?: string }} props
+ * @param {{
+ * visible: boolean,
+ * onClose: () => void,
+ * tier: number,
+ * sessionId?: string,
+ * executor?: string,
+ * mode?: string,
+ * model?: string,
+ * callType?: "voice" | "video",
+ * initialVisionSource?: "camera" | "screen" | null
+ * }} props
  */
 export function VoiceOverlay({
   visible,
@@ -279,8 +458,18 @@ export function VoiceOverlay({
   executor,
   mode,
   model,
+  callType = "voice",
+  initialVisionSource = null,
 }) {
   const [started, setStarted] = useState(false);
+  const [chatOpen, setChatOpen] = useState(true);
+  const [meetingMessages, setMeetingMessages] = useState([]);
+  const [meetingChatInput, setMeetingChatInput] = useState("");
+  const [meetingChatSending, setMeetingChatSending] = useState(false);
+  const [meetingChatLoading, setMeetingChatLoading] = useState(false);
+  const [meetingChatError, setMeetingChatError] = useState(null);
+  const autoVisionAppliedRef = useRef(false);
+  const meetingScrollRef = useRef(null);
 
   useEffect(() => { injectOverlayStyles(); }, []);
 
@@ -296,6 +485,15 @@ export function VoiceOverlay({
   const visionErr = visionShareError.value;
   const latestVisionSummary = visionLastSummary.value;
   const canShareVision = Boolean(sessionId);
+  const normalizedCallType =
+    String(callType || "").trim().toLowerCase() === "video"
+      ? "video"
+      : "voice";
+  const normalizedInitialVisionSource = (() => {
+    const source = String(initialVisionSource || "").trim().toLowerCase();
+    if (source === "camera" || source === "screen") return source;
+    return normalizedCallType === "video" ? "camera" : null;
+  })();
 
   // Start session on mount
   useEffect(() => {
@@ -312,6 +510,92 @@ export function VoiceOverlay({
     if (visible) return;
     stopVisionShare().catch(() => {});
   }, [visible]);
+
+  useEffect(() => {
+    if (visible) return;
+    autoVisionAppliedRef.current = false;
+  }, [visible]);
+
+  const loadMeetingMessages = useCallback(async () => {
+    const activeSessionId = String(sessionId || "").trim();
+    if (!activeSessionId) {
+      setMeetingMessages([]);
+      setMeetingChatError(null);
+      return;
+    }
+    const safeSessionId = encodeURIComponent(activeSessionId);
+    const response = await apiFetch(`/api/sessions/${safeSessionId}?limit=80`, {
+      _silent: true,
+      _trackLoading: false,
+    });
+    const nextMessages = Array.isArray(response?.session?.messages)
+      ? response.session.messages
+      : [];
+    setMeetingMessages(nextMessages);
+    setMeetingChatError(null);
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!visible || !chatOpen || !sessionId) return;
+    let cancelled = false;
+
+    const refresh = async (isInitial = false) => {
+      if (isInitial) setMeetingChatLoading(true);
+      try {
+        await loadMeetingMessages();
+      } catch (err) {
+        if (!cancelled) {
+          setMeetingChatError(
+            String(err?.message || "Could not refresh meeting chat"),
+          );
+        }
+      } finally {
+        if (isInitial && !cancelled) setMeetingChatLoading(false);
+      }
+    };
+
+    refresh(true).catch(() => {});
+    const timer = setInterval(() => {
+      refresh(false).catch(() => {});
+    }, 1600);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [visible, chatOpen, sessionId, loadMeetingMessages]);
+
+  useEffect(() => {
+    if (!chatOpen) return;
+    const el = meetingScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [chatOpen, meetingMessages.length]);
+
+  useEffect(() => {
+    if (!visible || !started || !sessionId) return;
+    if (!normalizedInitialVisionSource) return;
+    if (autoVisionAppliedRef.current) return;
+    autoVisionAppliedRef.current = true;
+    toggleVisionShare(normalizedInitialVisionSource, {
+      sessionId,
+      executor,
+      mode,
+      model,
+      intervalMs: 1000,
+      maxWidth: normalizedInitialVisionSource === "screen" ? 1280 : 960,
+      jpegQuality: normalizedInitialVisionSource === "screen" ? 0.65 : 0.62,
+    }).catch(() => {
+      // Keep the session running even if camera/screen permissions fail.
+    });
+  }, [
+    visible,
+    started,
+    sessionId,
+    normalizedInitialVisionSource,
+    executor,
+    mode,
+    model,
+  ]);
 
   const handleClose = useCallback(() => {
     haptic("medium");
@@ -360,6 +644,31 @@ export function VoiceOverlay({
     }).catch(() => {});
   }, [sessionId, executor, mode, model]);
 
+  const handleSendMeetingChat = useCallback(async () => {
+    const activeSessionId = String(sessionId || "").trim();
+    const content = String(meetingChatInput || "").trim();
+    if (!activeSessionId || !content || meetingChatSending) return;
+    setMeetingChatSending(true);
+    const safeSessionId = encodeURIComponent(activeSessionId);
+    try {
+      await apiFetch(`/api/sessions/${safeSessionId}/message`, {
+        method: "POST",
+        body: JSON.stringify({ content }),
+      });
+      setMeetingChatInput("");
+      await loadMeetingMessages();
+    } catch (err) {
+      setMeetingChatError(String(err?.message || "Could not send chat message"));
+    } finally {
+      setMeetingChatSending(false);
+    }
+  }, [
+    meetingChatInput,
+    meetingChatSending,
+    sessionId,
+    loadMeetingMessages,
+  ]);
+
   if (!visible) return null;
 
   const statusLabel = state === "connected" ? "ready" : state;
@@ -371,9 +680,16 @@ export function VoiceOverlay({
   ]
     .filter(Boolean)
     .join(" · ");
+  const chatStatusLabel = meetingChatLoading
+    ? "syncing"
+    : meetingChatSending
+      ? "sending"
+      : meetingChatError
+        ? "error"
+        : "live";
 
   return html`
-    <div class="voice-overlay" onClick=${state === "speaking" ? handleInterrupt : undefined}>
+    <div class="voice-overlay">
       <!-- Header -->
       <div class="voice-overlay-header">
         <button class="voice-overlay-close" onClick=${handleClose} title="End voice session">
@@ -386,84 +702,174 @@ export function VoiceOverlay({
             <div class="voice-overlay-duration">${formatDuration(duration)}</div>
           `}
         </div>
-        <div style="width: 40px" />
-      </div>
-
-      <!-- Center content -->
-      <div class="voice-overlay-center">
-        <!-- Orb visualization -->
-        <div class="voice-orb-container">
-          <${AudioVisualizer} state=${state} />
-        </div>
-
-        ${state === "connecting" || state === "reconnecting"
-          ? html`
-              <div class="voice-connecting-dots">
-                <span /><span /><span />
-              </div>
-              <div class="voice-overlay-status" style="font-size: 16px">
-                ${state === "reconnecting" ? "Reconnecting..." : "Connecting..."}
-              </div>
-            `
-          : null}
-
-        ${error && html`
-          <div class="voice-error-msg">${error}</div>
-        `}
-
-        <!-- Transcript area -->
-        <div class="voice-transcript-area">
-          ${transcript && html`
-            <div class="voice-transcript-user">"${transcript}"</div>
-          `}
-          ${response && html`
-            <div class="voice-transcript-assistant">${response}</div>
-          `}
-        </div>
-
-        <div class="voice-overlay-vision-controls">
+        <div class="voice-overlay-header-actions">
+          <span class="voice-overlay-call-pill">
+            ${normalizedCallType === "video" ? "video call" : "voice call"}
+          </span>
           <button
-            class="voice-vision-btn ${visionState === "streaming" && visionSource === "screen" ? "active" : ""}"
-            onClick=${handleToggleScreenShare}
-            disabled=${!canShareVision}
-            title=${canShareVision ? "Share your screen with the active agent call" : "Open a session-bound call first"}
+            class="voice-overlay-chat-toggle"
+            onClick=${() => setChatOpen((prev) => !prev)}
+            disabled=${!sessionId}
+            title=${sessionId ? "Toggle meeting chat" : "Open a session-bound call first"}
           >
-            ${visionState === "streaming" && visionSource === "screen" ? "Stop Screen" : "Share Screen"}
-          </button>
-          <button
-            class="voice-vision-btn ${visionState === "streaming" && visionSource === "camera" ? "active" : ""}"
-            onClick=${handleToggleCameraShare}
-            disabled=${!canShareVision}
-            title=${canShareVision ? "Share your camera with the active agent call" : "Open a session-bound call first"}
-          >
-            ${visionState === "streaming" && visionSource === "camera" ? "Stop Camera" : "Share Camera"}
+            ${chatOpen ? "Hide Chat" : "Show Chat"}
           </button>
         </div>
-
-        ${(visionErr || latestVisionSummary) && html`
-          <div class="voice-vision-status">
-            ${visionErr || latestVisionSummary}
-          </div>
-        `}
-
-        <!-- Tool call cards -->
-        ${toolCalls.length > 0 && html`
-          <div class="voice-tool-cards">
-            ${toolCalls.slice(-5).map(tc => html`
-              <div class="voice-tool-card ${tc.status}" key=${tc.callId}>
-                <span>${tc.status === "running" ? resolveIcon("loading") : tc.status === "complete" ? resolveIcon("check") : resolveIcon("alert")}</span>
-                <span>${tc.name}</span>
-              </div>
-            `)}
-          </div>
-        `}
       </div>
 
-      <!-- Footer -->
-      <div class="voice-overlay-footer">
-        <button class="voice-end-btn" onClick=${handleClose} title="End call">
-          ${resolveIcon("close")}
-        </button>
+      <div class="voice-overlay-main">
+        <div class="voice-overlay-stage">
+          <!-- Center content -->
+          <div class="voice-overlay-center">
+            <!-- Orb visualization -->
+            <div
+              class="voice-orb-container"
+              onClick=${state === "speaking" ? handleInterrupt : undefined}
+            >
+              <${AudioVisualizer} state=${state} />
+            </div>
+
+            ${state === "connecting" || state === "reconnecting"
+              ? html`
+                  <div class="voice-connecting-dots">
+                    <span /><span /><span />
+                  </div>
+                  <div class="voice-overlay-status" style="font-size: 16px">
+                    ${state === "reconnecting" ? "Reconnecting..." : "Connecting..."}
+                  </div>
+                `
+              : null}
+
+            ${error && html`
+              <div class="voice-error-msg">${error}</div>
+            `}
+
+            <!-- Transcript area -->
+            <div class="voice-transcript-area">
+              ${transcript && html`
+                <div class="voice-transcript-user">"${transcript}"</div>
+              `}
+              ${response && html`
+                <div class="voice-transcript-assistant">${response}</div>
+              `}
+            </div>
+
+            <div class="voice-overlay-vision-controls">
+              <button
+                class="voice-vision-btn ${visionState === "streaming" && visionSource === "screen" ? "active" : ""}"
+                onClick=${handleToggleScreenShare}
+                disabled=${!canShareVision}
+                title=${canShareVision ? "Share your screen with the active agent call" : "Open a session-bound call first"}
+              >
+                ${visionState === "streaming" && visionSource === "screen" ? "Stop Screen" : "Share Screen"}
+              </button>
+              <button
+                class="voice-vision-btn ${visionState === "streaming" && visionSource === "camera" ? "active" : ""}"
+                onClick=${handleToggleCameraShare}
+                disabled=${!canShareVision}
+                title=${canShareVision ? "Share your camera with the active agent call" : "Open a session-bound call first"}
+              >
+                ${visionState === "streaming" && visionSource === "camera" ? "Stop Camera" : "Share Camera"}
+              </button>
+            </div>
+
+            ${(visionErr || latestVisionSummary) && html`
+              <div class="voice-vision-status">
+                ${visionErr || latestVisionSummary}
+              </div>
+            `}
+
+            <!-- Tool call cards -->
+            ${toolCalls.length > 0 && html`
+              <div class="voice-tool-cards">
+                ${toolCalls.slice(-5).map(tc => html`
+                  <div class="voice-tool-card ${tc.status}" key=${tc.callId}>
+                    <span>${tc.status === "running" ? resolveIcon("loading") : tc.status === "complete" ? resolveIcon("check") : resolveIcon("alert")}</span>
+                    <span>${tc.name}</span>
+                  </div>
+                `)}
+              </div>
+            `}
+          </div>
+
+          <!-- Footer -->
+          <div class="voice-overlay-footer">
+            <button class="voice-end-btn" onClick=${handleClose} title="End call">
+              ${resolveIcon("close")}
+            </button>
+          </div>
+        </div>
+
+        ${chatOpen && sessionId && html`
+          <aside class="voice-overlay-chat">
+            <div class="voice-overlay-chat-head">
+              <div class="voice-overlay-chat-title">Meeting Chat + Transcript</div>
+              <div class="voice-overlay-chat-status">${chatStatusLabel}</div>
+            </div>
+            <div class="voice-overlay-chat-body" ref=${meetingScrollRef}>
+              ${meetingMessages.length === 0 && !meetingChatLoading
+                ? html`<div class="voice-overlay-chat-empty">Conversation will appear here once the call starts.</div>`
+                : null}
+              ${meetingMessages.map((msg, idx) => {
+                const roleRaw = String(
+                  msg?.role ||
+                    (msg?.type === "tool_call" || msg?.type === "tool_result"
+                      ? "system"
+                      : "assistant"),
+                )
+                  .trim()
+                  .toLowerCase();
+                const role =
+                  roleRaw === "user" || roleRaw === "assistant" ? roleRaw : "system";
+                const timeRaw = String(msg?.timestamp || "").trim();
+                const date = timeRaw ? new Date(timeRaw) : null;
+                const timeLabel =
+                  date && Number.isFinite(date.getTime())
+                    ? date.toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })
+                    : "";
+                const text =
+                  typeof msg?.content === "string"
+                    ? msg.content
+                    : msg?.content == null
+                      ? ""
+                      : JSON.stringify(msg.content);
+                return html`
+                  <div class="voice-overlay-chat-msg ${role}" key=${msg?.id || `${role}-${idx}`}>
+                    <div class="voice-overlay-chat-meta">
+                      <span>${role}</span>
+                      <span>${timeLabel}</span>
+                    </div>
+                    <div class="voice-overlay-chat-content">${text}</div>
+                  </div>
+                `;
+              })}
+            </div>
+            <div class="voice-overlay-chat-input-wrap">
+              <input
+                class="voice-overlay-chat-input"
+                placeholder="Message the agent during the call…"
+                value=${meetingChatInput}
+                onInput=${(e) => setMeetingChatInput(e.target.value)}
+                onKeyDown=${(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSendMeetingChat().catch(() => {});
+                  }
+                }}
+              />
+              <button
+                class="voice-overlay-chat-send"
+                onClick=${() => handleSendMeetingChat().catch(() => {})}
+                disabled=${!meetingChatInput.trim() || meetingChatSending}
+              >
+                Send
+              </button>
+            </div>
+          </aside>
+        `}
       </div>
     </div>
   `;
