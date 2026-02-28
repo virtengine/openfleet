@@ -928,6 +928,90 @@ ${items.join("\n")}` : "todo updated";
           timestamp: ts,
         };
       }
+
+      // ── Additional item.started subtypes ──────────────────────────────
+      // Emit lifecycle events so the streaming module keeps the
+      // "thinking / executing" indicator alive and the chat UI shows
+      // real-time progress instead of going silent for minutes.
+      if (itemType === "agent_message") {
+        return {
+          type: "system",
+          content: "Agent is composing a response…",
+          timestamp: ts,
+          meta: { lifecycle: "started", itemType },
+        };
+      }
+
+      if (itemType === "function_call") {
+        const name = toText(item.name || "").trim();
+        return {
+          type: "tool_call",
+          content: name ? `${name}(…)` : "(tool call starting)",
+          timestamp: ts,
+          meta: { toolName: name || "function_call", lifecycle: "started" },
+        };
+      }
+
+      if (itemType === "mcp_tool_call") {
+        const server = toText(item.server || "").trim();
+        const tool = toText(item.tool || "").trim();
+        return {
+          type: "tool_call",
+          content: `MCP [${server || "?"}]: ${tool || "(starting)"}`,
+          timestamp: ts,
+          meta: { toolName: tool || "mcp_tool_call", lifecycle: "started" },
+        };
+      }
+
+      if (itemType === "web_search") {
+        const query = toText(item.query || "").trim();
+        return {
+          type: "system",
+          content: query ? `Searching: ${query}` : "Web search…",
+          timestamp: ts,
+          meta: { lifecycle: "started", itemType },
+        };
+      }
+
+      if (itemType === "file_change") {
+        return {
+          type: "system",
+          content: "Editing files…",
+          timestamp: ts,
+          meta: { lifecycle: "started", itemType },
+        };
+      }
+
+      if (itemType === "todo_list") {
+        return {
+          type: "system",
+          content: "Updating plan…",
+          timestamp: ts,
+          meta: { lifecycle: "started", itemType },
+        };
+      }
+    }
+
+    // ── Turn lifecycle events ──────────────────────────────────────────
+    // Without these, the streaming module sees no events between the last
+    // item.completed and the response finishing, causing the indicator
+    // to flip between "thinking" and "idle".
+    if (event.type === "turn.completed") {
+      return {
+        type: "system",
+        content: "Turn completed",
+        timestamp: ts,
+        meta: { lifecycle: "turn_completed" },
+      };
+    }
+
+    if (event.type === "turn.failed") {
+      const detail = toText(event.error?.message || "unknown error");
+      return {
+        type: "error",
+        content: `Turn failed: ${detail}`.slice(0, MAX_MESSAGE_CHARS),
+        timestamp: ts,
+      };
     }
 
     if (event.type === "assistant.message" && event.data?.content) {

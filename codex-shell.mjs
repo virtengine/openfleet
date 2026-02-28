@@ -79,6 +79,7 @@ let activeThreadId = null; // Thread ID for resume
 let activeTurn = null; // Whether a turn is in-flight
 let turnCount = 0; // Number of turns in this thread
 let currentSessionId = null; // Active session identifier
+let threadNeedsPriming = false; // True when a fresh thread needs the system prompt on next turn
 let codexRuntimeCaps = {
   hasSteeringApi: false,
   steeringMethod: null,
@@ -333,22 +334,20 @@ async function getThread() {
     activeThreadId = null;
   }
 
-  // Start a new thread with the system prompt as the first turn
+  // Start a new thread — defer the system prompt to the first user message so
+  // the priming turn is STREAMED (runStreamed) instead of blocking (run).
+  // This eliminates the 2-5 minute silent delay the chat UI suffered because
+  // the old `thread.run(SYSTEM_PROMPT)` call produced zero streaming events.
   activeThread = codexInstance.startThread(THREAD_OPTIONS);
   detectThreadCapabilities(activeThread);
+  threadNeedsPriming = true;
 
-  // Prime the thread with the system prompt so subsequent turns have context
-  try {
-    await activeThread.run(SYSTEM_PROMPT);
-    // Capture the thread ID from the prime turn
-    if (activeThread.id) {
-      activeThreadId = activeThread.id;
-      await saveState();
-      console.log(`[codex-shell] new thread started: ${activeThreadId}`);
-    }
-  } catch (err) {
-    console.warn(`[codex-shell] prime turn failed: ${err.message}`);
-    // Thread is still usable even if prime fails
+  if (activeThread.id) {
+    activeThreadId = activeThread.id;
+    await saveState();
+    console.log(`[codex-shell] new thread started: ${activeThreadId} (priming deferred to first user turn)`);
+  } else {
+    console.log("[codex-shell] new thread started (priming deferred to first user turn)");
   }
 
   return activeThread;
@@ -519,6 +518,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
     abortController = null,
     persistent = false,
     sessionId = null,
+    mode = null,
   } = options;
 
   agentSdk = resolveAgentSdkConfig({ reload: true });
@@ -560,17 +560,47 @@ export async function execCodexPrompt(userMessage, options = {}) {
     }
     // else: persistent && same session && under limit → reuse activeThread
 
+    // ── Mode detection ───────────────────────────────────────────────────
+    // "ask" mode should be lightweight — no heavy executor framing that
+    // instructs the agent to run commands and read files.  The mode is
+    // either passed explicitly or detected from the MODE prefix that
+    // primary-agent.mjs prepends.
+    const isAskMode =
+      mode === "ask" || /^\[MODE:\s*ask\]/i.test(userMessage);
+
     // Build the user prompt with optional status context (built once, reused across retries)
     let prompt = userMessage;
-    if (statusData) {
+    if (statusData && !isAskMode) {
       const statusSnippet = JSON.stringify(statusData, null, 2).slice(0, 2000);
       prompt = `[Orchestrator Status]\n\`\`\`json\n${statusSnippet}\n\`\`\`\n\n# YOUR TASK — EXECUTE NOW\n\n${userMessage}\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output.`;
+    } else if (isAskMode) {
+      // Ask mode — pass through without executor framing.  The mode
+      // prefix from primary-agent already tells the model to be brief.
+      prompt = userMessage;
     } else {
       prompt = `${userMessage}\n\n\n# YOUR TASK — EXECUTE NOW\n\n\n---\nDo NOT respond with "Ready" or ask what to do. EXECUTE this task. Read files, run commands, produce detailed output & complete the user's request E2E.`;
     }
     // Sanitize & size-guard once — prevents invalid_request_error from oversized
     // bodies (BytePositionInLine > 80 000) or unescaped control characters.
-    const safePrompt = sanitizeAndTruncatePrompt(prompt);
+    let safePrompt = sanitizeAndTruncatePrompt(prompt);
+
+    // If the thread is freshly created, prepend the system prompt so the agent
+    // gets its identity/context on the FIRST streamed turn.  Previously this
+    // was done via a blocking `thread.run(SYSTEM_PROMPT)` call inside
+    // `getThread()`, which produced zero streaming events and caused the chat
+    // UI to appear frozen for 2-5+ minutes.
+    if (threadNeedsPriming) {
+      // Ask mode gets a lightweight primer — no heavy executor directives
+      // that contradict the "don't use tools" instruction.
+      const primer = isAskMode
+        ? "You are a helpful AI assistant deployed inside the bosun orchestrator. " +
+          "Answer the user's questions concisely. Only use tools when explicitly asked to."
+        : SYSTEM_PROMPT;
+      safePrompt = sanitizeAndTruncatePrompt(
+        primer + "\n\n---\n\n" + prompt,
+      );
+      threadNeedsPriming = false;
+    }
 
     let threadResetDone = false;
 
@@ -776,6 +806,7 @@ export async function resetThread() {
   turnCount = 0;
   activeTurn = null;
   currentSessionId = null;
+  threadNeedsPriming = false;
   await saveState();
   console.log("[codex-shell] thread reset");
 }
