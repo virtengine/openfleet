@@ -1592,6 +1592,31 @@ const EXECUTOR_PRESETS = {
       role: "primary",
     },
   ],
+  "opencode-only": [
+    {
+      name: "opencode-default",
+      executor: "OPENCODE",
+      variant: "DEFAULT",
+      weight: 100,
+      role: "primary",
+    },
+  ],
+  "opencode-codex": [
+    {
+      name: "opencode-default",
+      executor: "OPENCODE",
+      variant: "DEFAULT",
+      weight: 60,
+      role: "primary",
+    },
+    {
+      name: "codex-backup",
+      executor: "CODEX",
+      variant: "DEFAULT",
+      weight: 40,
+      role: "backup",
+    },
+  ],
   triple: [
     {
       name: "copilot-claude",
@@ -1958,7 +1983,7 @@ function normalizeSetupConfiguration({
   {
     const primaryExec = configJson.executors.find((e) => e.role === "primary");
     if (primaryExec) {
-      const sdkMap = { CODEX: "codex-sdk", COPILOT: "copilot-sdk", CLAUDE: "claude-sdk" };
+      const sdkMap = { CODEX: "codex-sdk", COPILOT: "copilot-sdk", CLAUDE: "claude-sdk", OPENCODE: "opencode-sdk" };
       env.PRIMARY_AGENT = env.PRIMARY_AGENT ||
         sdkMap[String(primaryExec.executor).toUpperCase()] || "codex-sdk";
     }
@@ -2684,6 +2709,8 @@ async function main() {
           "Copilot + Codex (50/50 split)",
           "Copilot only (Claude Opus 4.6)",
           "Claude only (direct API)",
+          "OpenCode only (local OpenCode server)",
+          "OpenCode + Codex (60/40 split)",
           "Triple (Copilot Claude 40%, Codex 35%, Copilot GPT 25%)",
           "Custom — I'll define my own executors",
         ]
@@ -2692,6 +2719,8 @@ async function main() {
           "Copilot + Codex (50/50 split)",
           "Copilot only (Claude Opus 4.6)",
           "Claude only (direct API)",
+          "OpenCode only (local OpenCode server)",
+          "OpenCode + Codex (60/40 split)",
           "Triple (Copilot Claude 40%, Codex 35%, Copilot GPT 25%)",
         ];
 
@@ -2702,8 +2731,8 @@ async function main() {
     );
 
     const presetNames = isAdvancedSetup
-      ? ["codex-only", "copilot-codex", "copilot-only", "claude-only", "triple", "custom"]
-      : ["codex-only", "copilot-codex", "copilot-only", "claude-only", "triple"];
+      ? ["codex-only", "copilot-codex", "copilot-only", "claude-only", "opencode-only", "opencode-codex", "triple", "custom"]
+      : ["codex-only", "copilot-codex", "copilot-only", "claude-only", "opencode-only", "opencode-codex", "triple"];
     const presetKey = presetNames[presetIdx] || "codex-only";
 
     if (presetKey === "custom") {
@@ -5183,7 +5212,7 @@ async function runNonInteractive({
       (e) => e.role === "primary",
     );
     if (primaryExec) {
-      const sdkMap = { CODEX: "codex-sdk", COPILOT: "copilot-sdk", CLAUDE: "claude-sdk" };
+      const sdkMap = { CODEX: "codex-sdk", COPILOT: "copilot-sdk", CLAUDE: "claude-sdk", OPENCODE: "opencode-sdk" };
       env.PRIMARY_AGENT = sdkMap[String(primaryExec.executor).toUpperCase()] || "codex-sdk";
     }
   }

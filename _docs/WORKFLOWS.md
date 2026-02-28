@@ -83,6 +83,17 @@ $output?.success === true && $data?.priority === "high"
 - Error handling: `node.config.continueOnError = true` allows workflow to keep running.
 - Run logs are persisted to `.bosun/workflow-runs/`.
 
+**Run Persistence & Auto-Resume**
+- Active run state is written to disk at `.bosun/workflow-runs/<runId>.json` after every node completion.
+- On `ui-server.mjs` restart, in-progress runs whose state is recoverable are automatically resumed from the last successful node.
+- The run index (`.bosun/workflow-runs/index.json`) is updated atomically so a crash cannot corrupt it.
+
+**Flow-Level Retry**
+- Any workflow can be retried from the UI or Telegram without re-running already-passing nodes.
+- Manual retry: click **Retry** on a failed run in the Workflows tab → re-enters the DAG from the first failed node.
+- Auto-retry: set `workflow.config.autoRetry = true` and `workflow.config.maxAutoRetries` (default 2). Failed runs are automatically re-queued by the engine.
+- Node-level `maxRetries` still applies independently within each run attempt.
+
 **Built-in Node Types**
 Triggers: `trigger.manual`, `trigger.task_low`, `trigger.schedule`, `trigger.event`, `trigger.webhook`, `trigger.pr_event`, `trigger.task_assigned`, `trigger.anomaly`, `trigger.scheduled_once`
 Conditions: `condition.expression`, `condition.task_has_tag`, `condition.file_exists`, `condition.switch`
@@ -124,7 +135,48 @@ Bosun can migrate legacy modules into workflows with a safety guard.
 - Modes: `legacy`, `shadow`, `workflow`
 - Implemented in `workflow-migration.mjs`
 
+**Built-in Templates**
+
+Templates are installed via the UI (Workflows → Templates) or `POST /api/workflows/install-template` with `{ "templateId": "<id>" }`.
+
+*GitHub Automation*
+| Template | ID | Description |
+| --- | --- | --- |
+| PR Merge Strategy | `template-pr-merge-strategy` | Validates and merges PRs using configurable strategy (squash/merge/rebase). |
+| PR Triage & Labels | `template-pr-triage` | Auto-labels new PRs by type, size, and touched paths. |
+| PR Conflict Resolver | `template-pr-conflict-resolver` | Resolves merge conflicts on open PRs. ⚠️ **Superseded for bosun-managed repos** — use the Bosun PR Watchdog instead. |
+| Stale PR Reaper | `template-stale-pr-reaper` | Closes or warns PRs that have been open beyond a stale threshold. |
+| **Bosun PR Watchdog** | `template-bosun-pr-watchdog` | **(New)** Scheduled CI poller for bosun-attached PRs. Makes a single `gh` API call per cycle to classify all open bosun PRs, labels CI failures / conflicts with `bosun-needs-fix`, sends merge candidates through a mandatory review gate (checks diff stats to prevent destructive merges), then merges. Never touches external-contributor PRs. Default interval: 5 min. Set `enabled: false` to disable. |
+
+*Reliability & Ops*
+| Template | ID | Description |
+| --- | --- | --- |
+| Error Recovery | `template-error-recovery` | Triggered on anomaly events; runs an agent to diagnose and attempt auto-fix. |
+| Anomaly Watchdog | `template-anomaly-watchdog` | Scheduled monitor; summarises anomalies and pages Telegram. |
+| Workspace Hygiene | `template-workspace-hygiene` | Cleans stale branches, expired worktrees, and log files on a schedule. |
+| Health Check | `template-health-check` | Periodic build + test ping; alerts on failure. |
+| Task Finalization Guard | `template-task-finalization-guard` | Closes tasks that are marked done but whose PRs never merged. |
+
+*Planning & Reporting*
+| Template | ID | Description |
+| --- | --- | --- |
+| Task Planner | `template-task-planner` | Agent-driven task backlog generation from a goal prompt. |
+| Task Replenish (Scheduled) | `template-task-replenish` | Keeps the backlog above a minimum count; runs on a cron. |
+| Nightly Report | `template-nightly-report` | Generates a markdown agent-work summary and posts to Telegram. |
+| Sprint Retrospective | `template-sprint-retro` | End-of-sprint retro: summarises completed tasks, PRs, and blockers. |
+
+*CI/CD*
+| Template | ID | Description |
+| --- | --- | --- |
+| Build & Deploy | `template-build-deploy` | Triggered on PR merge; runs build + deploy pipeline and notifies. |
+| Release Pipeline | `template-release-pipeline` | Full semver release: changelog, version bump, tag, and publish. |
+| Canary Deploy | `template-canary-deploy` | Deploys to canary environment, runs smoke tests, and promotes or rolls back. |
+
+---
+
 **Troubleshooting**
 - No nodes in UI: verify `/api/workflows/:id` returns `workflow.nodes`.
 - Runs show `0s`: durations under one second are rounded.
 - No Telegram notifications: check `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+- Run stuck after restart: check `.bosun/workflow-runs/index.json` — if a run entry shows `status: "running"` but the server is idle, use the UI Retry button to re-enter from the last known node.
+- PR Conflict Resolver not triggering on bosun PRs: this template is deprecated for bosun-managed repos. Install the Bosun PR Watchdog (`template-bosun-pr-watchdog`) instead.
