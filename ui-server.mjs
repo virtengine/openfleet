@@ -8130,12 +8130,34 @@ export async function startTelegramUiServer(options = {}) {
     // Reuse a recent session token when possible so browser sessions survive restarts.
     ensureSessionToken();
 
-    await new Promise((resolveReady, rejectReady) => {
-      uiServer.once("error", rejectReady);
-      uiServer.listen(port, options.host || DEFAULT_HOST, () => {
-        resolveReady();
+    const listenHost = options.host || DEFAULT_HOST;
+    const listenOnce = (targetPort) =>
+      new Promise((resolveReady, rejectReady) => {
+        const onError = (err) => {
+          uiServer.off("listening", onListening);
+          rejectReady(err);
+        };
+        const onListening = () => {
+          uiServer.off("error", onError);
+          resolveReady();
+        };
+        uiServer.once("error", onError);
+        uiServer.once("listening", onListening);
+        uiServer.listen(targetPort, listenHost);
       });
-    });
+
+    try {
+      await listenOnce(port);
+    } catch (err) {
+      const code = String(err?.code || "").toUpperCase();
+      const canRetryWithEphemeral =
+        allowEphemeralPort && port > 0 && (code === "EADDRINUSE" || code === "EACCES");
+      if (!canRetryWithEphemeral) throw err;
+      console.warn(
+        `[telegram-ui] failed to bind ${listenHost}:${port} (${code || "unknown"}); retrying with ephemeral port`,
+      );
+      await listenOnce(0);
+    }
   } catch (err) {
     releaseUiInstanceLock();
     throw err;

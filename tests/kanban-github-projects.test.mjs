@@ -1141,6 +1141,53 @@ describe("GitHub Projects v2 integration", () => {
       expect(apiCall).toBeTruthy();
     });
 
+    it("uses cached cross-repo locator for later getTask issue-view fetches", async () => {
+      mockGh([
+        {
+          id: "PVTI_cross_repo",
+          status: "Todo",
+          content: {
+            number: 759,
+            title: "Cross-repo item",
+            body: "",
+            url: "https://github.com/virtengine/virtengine/issues/759",
+            state: "open",
+            labels: [{ name: "bosun" }],
+            assignees: [],
+          },
+        },
+      ]);
+      mockGh([]);
+      mockGh({
+        number: 759,
+        title: "Cross-repo item",
+        body: "",
+        state: "open",
+        url: "https://github.com/virtengine/virtengine/issues/759",
+        labels: [{ name: "bosun" }],
+        assignees: [],
+        comments: [],
+      });
+
+      const adapter = getKanbanAdapter();
+      await adapter.listTasks("ignored");
+      const task = await adapter.getTask("759");
+
+      expect(task).toMatchObject({
+        id: "759",
+        projectId: "virtengine/virtengine",
+      });
+      const issueViewCall = execFileMock.mock.calls.find(
+        (call) =>
+          Array.isArray(call[1]) &&
+          call[1][0] === "issue" &&
+          call[1][1] === "view" &&
+          call[1].includes("759"),
+      );
+      expect(issueViewCall?.[1]).toContain("--repo");
+      expect(issueViewCall?.[1]).toContain("virtengine/virtengine");
+    });
+
     it("returns empty array for null projectNumber", async () => {
       const adapter = getKanbanAdapter();
       const tasks = await adapter.listTasksFromProject(null);
