@@ -799,7 +799,7 @@ function refreshTrayMenu() {
         { type: /** @type {const} */ ("separator") },
         {
           label: "Voice Companion",
-          accelerator: FOLLOW_RESTORE_SHORTCUT,
+          accelerator: acc("bosun.voice.toggle"),
           click: () => {
             if (!restoreFollowWindow()) setWindowVisible(mainWindow);
           },
