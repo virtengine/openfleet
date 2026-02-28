@@ -982,12 +982,15 @@ function App() {
       if (env.TELEGRAM_INTERVAL_MIN) { setTelegramIntervalMin(Number(env.TELEGRAM_INTERVAL_MIN) || 10); envLoaded = true; }
       if (env.ORCHESTRATOR_SCRIPT) { setOrchestratorScript(env.ORCHESTRATOR_SCRIPT); envLoaded = true; }
       // Multi-workspace: load workspaces[] from existing config
-      if (statusData.existingConfig?.workspaces?.length > 1) {
+      if (statusData.existingConfig?.workspaces?.length > 0) {
         setMultiWorkspaceEnabled(true);
         setWorkspaces(statusData.existingConfig.workspaces.map((ws) => ({
           id: ws.id || Date.now() + Math.random(),
           name: ws.name || "",
-          repos: (ws.repos || []).map((r) => r.slug || r.path || r || ""),
+          repos: (ws.repos || []).map((r) => {
+            if (typeof r === "string") return r;
+            return r.slug || r.url || r.name || r.path || "";
+          }),
         })));
         envLoaded = true;
       }
@@ -1148,6 +1151,24 @@ function App() {
       };
     });
 
+  const buildRepoConfigEntry = (rawRepo, index = 0) => {
+    const value = String(rawRepo || "").trim();
+    if (!value) return null;
+    const slugMatch = value.match(/^([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)$/);
+    const slug = slugMatch ? slugMatch[1] : "";
+    const urlMatch = value.match(/^https?:\/\/github\.com\/([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+)(?:\.git)?$/i);
+    const resolvedSlug = slug || (urlMatch ? urlMatch[1] : "");
+    const name = (resolvedSlug.split("/").pop() || value.split("/").pop() || `repo-${index + 1}`)
+      .replace(/\.git$/i, "")
+      .trim();
+    return {
+      name,
+      slug: resolvedSlug,
+      url: resolvedSlug ? `https://github.com/${resolvedSlug}.git` : value,
+      primary: index === 0,
+    };
+  };
+
   // ── Apply config ───────────────────────────────────────────────────────────
 
   const handleApply = async () => {
@@ -1228,7 +1249,9 @@ function App() {
           bosunHome,
           workspacesDir,
           executors: buildExecutorsConfig(),
-          repos: filteredRepos.map((r) => ({ slug: r })),
+          repos: filteredRepos
+            .map((r, idx) => buildRepoConfigEntry(r, idx))
+            .filter(Boolean),
           kanban: { backend: kanbanBackend, syncPolicy: kanbanSyncPolicy },
           failover: {
             strategy: failoverStrategy,
@@ -1261,7 +1284,9 @@ function App() {
             ? workspaces.filter((ws) => ws.name.trim()).map((ws) => ({
                 id: ws.id,
                 name: ws.name,
-                repos: (ws.repos || []).filter((r) => r.trim()).map((r) => ({ slug: r })),
+                repos: (ws.repos || [])
+                  .map((r, idx) => buildRepoConfigEntry(r, idx))
+                  .filter(Boolean),
               }))
             : undefined,
         },

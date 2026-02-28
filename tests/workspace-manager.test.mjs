@@ -175,6 +175,33 @@ describe("listWorkspaces", () => {
     expect(repo.exists).toBe(true);
     expect(repo.path).toBe(missingRepoPath);
   });
+
+  it("normalizes slug-only workspace repos so listing never crashes", () => {
+    const configDir = createConfigDir();
+
+    writeBosunConfig(configDir, {
+      workspaces: [
+        {
+          id: "virtengine",
+          name: "VirtEngine",
+          repos: [
+            { slug: "virtengine/bosun" },
+            "virtengine/virtengine",
+          ],
+        },
+      ],
+      activeWorkspace: "virtengine",
+    });
+
+    const [workspace] = listWorkspaces(configDir);
+    expect(workspace).toBeDefined();
+    expect(workspace.repos).toHaveLength(2);
+    expect(workspace.repos[0].name).toBe("bosun");
+    expect(workspace.repos[1].name).toBe("virtengine");
+    expect(
+      workspace.repos[0].path.replace(/\\/g, "/").endsWith("/workspaces/virtengine/bosun"),
+    ).toBe(true);
+  });
 });
 
 describe("pullWorkspaceRepos", () => {

@@ -1266,19 +1266,28 @@ function loadWorkspaceRepoConfig(configDir, configData = {}, activeWorkspace = "
 
   return targetWorkspace.repos
     .map((repo, index) => {
-      if (!repo || typeof repo !== "object") return null;
-      const name = String(repo.name || repo.id || "").trim();
+      const rawRepo =
+        typeof repo === "string"
+          ? { slug: repo }
+          : (repo && typeof repo === "object" ? repo : null);
+      if (!rawRepo) return null;
+      const slug = String(rawRepo.slug || "").trim();
+      const name = String(rawRepo.name || rawRepo.id || slug.split("/").pop() || "")
+        .trim()
+        .replace(/\.git$/i, "");
       if (!name) return null;
       const repoPath = resolve(workspacePath, name);
       return {
         name,
         id: normalizeKey(name),
         path: repoPath,
-        slug: String(repo.slug || "").trim(),
-        url: String(repo.url || "").trim(),
+        slug,
+        url:
+          String(rawRepo.url || "").trim() ||
+          (slug ? `https://github.com/${slug}.git` : ""),
         workspace: String(targetWorkspace.id || "").trim(),
         primary:
-          repo.primary === true ||
+          rawRepo.primary === true ||
           (activeRepoName && normalizeKey(name) === activeRepoName) ||
           (!activeRepoName && index === 0),
       };

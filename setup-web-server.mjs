@@ -178,6 +178,195 @@ function normalizeWorkflowTemplateIds(rawValue, fallback = []) {
   return Array.isArray(fallback) ? [...fallback] : [];
 }
 
+function normalizeWorkspaceId(value, fallback = "workspace") {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return normalized || fallback;
+}
+
+function extractRepoNameFromText(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+  if (/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(raw)) {
+    return raw.split("/").pop() || "";
+  }
+  try {
+    const parsed = new URL(raw);
+    const pathname = String(parsed.pathname || "")
+      .replace(/\.git$/i, "")
+      .replace(/^\/+|\/+$/g, "");
+    return pathname.split("/").pop() || "";
+  } catch {
+    const cleaned = raw
+      .replace(/\\/g, "/")
+      .replace(/\.git$/i, "")
+      .replace(/^\/+|\/+$/g, "");
+    return cleaned.split("/").pop() || "";
+  }
+}
+
+function normalizeRepoSlug(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+  if (/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(raw)) return raw;
+  const fromUrl = raw.match(/github\.com[:/]([a-z0-9_.-]+\/[a-z0-9_.-]+)(?:\.git)?/i);
+  if (fromUrl?.[1]) return fromUrl[1];
+  return "";
+}
+
+function normalizeRepoConfigEntry(repo, index = 0) {
+  const raw = typeof repo === "string" ? { slug: repo } : (repo && typeof repo === "object" ? repo : null);
+  if (!raw) return null;
+  const slug = normalizeRepoSlug(raw.slug || raw.url || raw.path || raw.name || "");
+  const url =
+    String(raw.url || "").trim() ||
+    (slug ? `https://github.com/${slug}.git` : "");
+  const name = String(raw.name || raw.id || "").trim() || extractRepoNameFromText(slug || url || raw.path || "");
+  if (!name && !slug && !url) return null;
+  return {
+    name: name || extractRepoNameFromText(url || slug) || `repo-${index + 1}`,
+    slug,
+    url,
+    primary: Boolean(raw.primary) || index === 0,
+  };
+}
+
+function normalizeWorkspaceConfigEntry(workspace, index = 0) {
+  if (!workspace || typeof workspace !== "object") return null;
+  const fallbackId = `workspace-${index + 1}`;
+  const id = normalizeWorkspaceId(
+    workspace.id || workspace.name || fallbackId,
+    fallbackId,
+  );
+  const name = String(workspace.name || workspace.id || id).trim() || id;
+  const repos = Array.isArray(workspace.repos)
+    ? workspace.repos
+        .map((repo, repoIndex) => normalizeRepoConfigEntry(repo, repoIndex))
+        .filter(Boolean)
+    : [];
+  let activeRepo = String(workspace.activeRepo || "").trim();
+  if (!activeRepo && repos[0]?.name) activeRepo = repos[0].name;
+  if (activeRepo && !repos.some((repo) => repo.name === activeRepo)) {
+    activeRepo = repos[0]?.name || "";
+  }
+  return {
+    id,
+    name,
+    repos,
+    createdAt: workspace.createdAt || new Date().toISOString(),
+    activeRepo: activeRepo || null,
+  };
+}
+
+function normalizeWorkspaceConfigList(workspaces) {
+  if (!Array.isArray(workspaces)) return [];
+  const byId = new Map();
+  for (let i = 0; i < workspaces.length; i += 1) {
+    const normalized = normalizeWorkspaceConfigEntry(workspaces[i], i);
+    if (!normalized) continue;
+    const existing = byId.get(normalized.id);
+    if (!existing) {
+      byId.set(normalized.id, normalized);
+      continue;
+    }
+    // Merge with precedence to latest entry while preserving earlier repo order.
+    const repoMap = new Map();
+    for (const repo of existing.repos || []) repoMap.set(repo.name, repo);
+    for (const repo of normalized.repos || []) repoMap.set(repo.name, repo);
+    byId.set(normalized.id, {
+      ...existing,
+      ...normalized,
+      repos: [...repoMap.values()],
+      activeRepo:
+        normalized.activeRepo ||
+        existing.activeRepo ||
+        [...repoMap.values()][0]?.name ||
+        null,
+    });
+  }
+  return [...byId.values()];
+}
+
+function readExistingBosunConfig(bosunHome) {
+  const configPath = resolve(bosunHome, "bosun.config.json");
+  if (!existsSync(configPath)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function resolveSetupWorkspaceAndRepoConfig(existingConfig = {}, configJson = {}, env = {}) {
+  const normalizedIncomingRepos = Array.isArray(configJson.repos)
+    ? configJson.repos
+        .map((repo, idx) => normalizeRepoConfigEntry(repo, idx))
+        .filter(Boolean)
+    : [];
+  const normalizedExistingRepos = Array.isArray(existingConfig.repos)
+    ? existingConfig.repos
+        .map((repo, idx) => normalizeRepoConfigEntry(repo, idx))
+        .filter(Boolean)
+    : [];
+  const repos =
+    normalizedIncomingRepos.length > 0
+      ? normalizedIncomingRepos
+      : normalizedExistingRepos;
+
+  const normalizedIncomingWorkspaces = normalizeWorkspaceConfigList(configJson.workspaces);
+  const normalizedExistingWorkspaces = normalizeWorkspaceConfigList(existingConfig.workspaces);
+  let workspaces = normalizedIncomingWorkspaces.length > 0
+    ? normalizedIncomingWorkspaces
+    : normalizedExistingWorkspaces;
+
+  // Bootstrap a single default workspace when repos exist but no workspace
+  // layout was provided, so the UI and workspace APIs stay consistent.
+  if (workspaces.length === 0 && repos.length > 0) {
+    const defaultWorkspaceId = normalizeWorkspaceId(
+      configJson.projectName || env.projectName || existingConfig.projectName || "default",
+      "default",
+    );
+    workspaces = [
+      {
+        id: defaultWorkspaceId,
+        name:
+          configJson.projectName ||
+          env.projectName ||
+          existingConfig.projectName ||
+          "Default Workspace",
+        repos: repos.map((repo, idx) => ({
+          ...repo,
+          primary: repo.primary === true || idx === 0,
+        })),
+        createdAt: new Date().toISOString(),
+        activeRepo: repos[0]?.name || null,
+      },
+    ];
+  }
+
+  let activeWorkspace = "";
+  if (workspaces.length > 0) {
+    const requestedActiveWorkspace = normalizeWorkspaceId(
+      configJson.activeWorkspace || existingConfig.activeWorkspace || workspaces[0]?.id,
+      workspaces[0]?.id || "default",
+    );
+    activeWorkspace = workspaces.some((ws) => ws.id === requestedActiveWorkspace)
+      ? requestedActiveWorkspace
+      : workspaces[0].id;
+  }
+
+  return {
+    repos,
+    workspaces,
+    activeWorkspace,
+  };
+}
+
 function buildStableSetupDefaults({
   projectName,
   slug,
@@ -1073,6 +1262,7 @@ function handleApply(body) {
     // Resolve home + workspaces dirs — prefer what the user chose in the wizard
     const bosunHome    = env.bosunHome    ? resolve(env.bosunHome)    : resolveConfigDir();
     const workspacesDir = env.workspacesDir ? resolve(env.workspacesDir) : resolveWorkspacesDir(bosunHome);
+    const existingConfig = readExistingBosunConfig(bosunHome);
 
     // ── Create directory scaffold ───────────────────────────────────────────
     mkdirSync(bosunHome, { recursive: true });
@@ -1280,17 +1470,28 @@ function handleApply(body) {
 
     // ── Build bosun.config.json ─────────────────────────────────────────────
     const config = {
+      ...existingConfig,
       projectName: configJson.projectName || env.projectName || "my-project",
       bosunHome,
       workspacesDir,
-      executors: configJson.executors || [],
+      executors:
+        Array.isArray(configJson.executors)
+          ? configJson.executors
+          : Array.isArray(existingConfig.executors)
+            ? existingConfig.executors
+            : [],
       failover: configJson.failover || {
+        ...(existingConfig.failover || {}),
         strategy: env.failoverStrategy || "next-in-line",
         maxRetries: Number(env.maxRetries) || 3,
         cooldownMinutes: Number(env.failoverCooldownMinutes) || 5,
         disableOnConsecutiveFailures: Number(env.failoverDisableOnConsecutive) || 3,
       },
-      distribution: configJson.distribution || env.executorDistribution || "primary-only",
+      distribution:
+        configJson.distribution ||
+        existingConfig.distribution ||
+        env.executorDistribution ||
+        "primary-only",
     };
 
     const workflowProfile = normalizeWorkflowProfile(
@@ -1345,9 +1546,26 @@ function handleApply(body) {
     if (configJson.primaryAgent)               config.primaryAgent               = configJson.primaryAgent;
     if (configJson.projectRequirementsProfile) config.projectRequirementsProfile = configJson.projectRequirementsProfile;
     if (configJson.internalReplenish)          config.internalReplenish          = configJson.internalReplenish;
-    if (configJson.repos?.length)              config.repos                      = configJson.repos;
     if (configJson.kanban)                     config.kanban                     = configJson.kanban;
-    if (configJson.workspaces?.length)         config.workspaces                 = configJson.workspaces;
+
+    const workspaceConfig = resolveSetupWorkspaceAndRepoConfig(
+      existingConfig,
+      configJson,
+      env,
+    );
+    if (workspaceConfig.repos.length > 0) {
+      config.repos = workspaceConfig.repos;
+    } else {
+      delete config.repos;
+    }
+
+    if (workspaceConfig.workspaces.length > 0) {
+      config.workspaces = workspaceConfig.workspaces;
+      config.activeWorkspace = workspaceConfig.activeWorkspace;
+    } else {
+      delete config.workspaces;
+      delete config.activeWorkspace;
+    }
 
     const configPath = resolve(bosunHome, "bosun.config.json");
     writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
@@ -1855,6 +2073,9 @@ export {
   applyTelegramMiniAppSetupEnv,
   applyNonBlockingSetupEnvDefaults,
   normalizeTelegramUiPort,
+  normalizeRepoConfigEntry,
+  normalizeWorkspaceConfigList,
+  resolveSetupWorkspaceAndRepoConfig,
 };
 
 // Entry point when run directly

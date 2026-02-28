@@ -442,7 +442,7 @@ export const WORKFLOW_SETUP_PROFILES = Object.freeze({
     workflowAutomationEnabled: true,
     templateIds: Object.freeze([
       "template-pr-merge-strategy",
-      "template-pr-conflict-resolver",
+      "template-bosun-pr-watchdog",
       "template-review-agent",
       "template-backend-agent",
       "template-task-planner",

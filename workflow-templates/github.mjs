@@ -669,8 +669,8 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
   id: "template-bosun-pr-watchdog",
   name: "Bosun PR Watchdog",
   description:
-    "Scans open bosun-attached PRs on a schedule. Makes ONE gh API call to " +
-    "fetch and classify all PRs, then: labels conflicting or failing-CI PRs " +
+    "Scans open bosun-attached PRs on a schedule. Makes one gh pr list call " +
+    "per target repo to fetch and classify PRs, then: labels conflicting or failing-CI PRs " +
     "with bosun-needs-fix and dispatches a repair agent; sends merge candidates " +
     "through a MANDATORY agent review gate that checks diff stats before any " +
     "merge — preventing destructive PRs (e.g. -183k lines) from being silently " +
@@ -682,6 +682,9 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     mergeMethod:        "squash",                   // squash | merge | rebase
     labelNeedsFix:      "bosun-needs-fix",           // applied to CI failures and conflicts
     labelNeedsReview:   "bosun-needs-human-review",  // applied when review agent flags a suspicious diff
+    // auto: active workspace repos from bosun.config.json (fallback current repo)
+    // all/current/<owner/repo>/comma,list also supported.
+    repoScope:          "auto",
     maxPrs:             25,
     intervalMs:         300_000,                    // 5 minutes
     // Merge-safety thresholds checked by the review agent:
@@ -696,73 +699,141 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
     }, { x: 400, y: 50 }),
 
     // ─────────────────────────────────────────────────────────────────────────
-    // STEP 1: ONE gh API call — fetch all fields we need in a single request.
-    // classify-and-label does all subsequent classification + labeling inline
-    // from this one response, so no repeated gh pr list calls later.
+    // STEP 1: One gh pr list per target repo, then classify+label in-memory.
+    // This avoids duplicate fetches and keeps per-cycle gh traffic bounded.
     // ─────────────────────────────────────────────────────────────────────────
     node("fetch-and-classify", "action.run_command", "Fetch, Classify & Label PRs", {
       // Fetches all open bosun-attached PRs with every field needed for
-      // classification. Pipes into an inline Node script that:
+      // classification. Runs one list call per target repo (auto-discovered
+      // from bosun.config.json workspaces by default), then:
       //   • Classifies each PR into: ready | conflict | ci_failure | pending | draft
       //   • Labels conflict/ci_failure PRs with bosun-needs-fix (skips if already present)
       //   • Outputs a JSON summary used by all downstream nodes/agents
-      // Total gh API calls this node makes: 1 list + N edits (only for newly-broken PRs)
+      // Total gh API calls this node makes: R list calls + N edits
+      // (R = target repos, N = newly-broken PRs needing fix label).
       command: [
-        "gh pr list --label bosun-attached --state open",
-        "--json number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url",
-        "--limit {{maxPrs}}",
-        "| node -e \"",
+        "node -e \"",
+        "const fs=require('fs');",
+        "const path=require('path');",
+        "const {execFileSync}=require('child_process');",
         "const LABEL_FIX='{{labelNeedsFix}}';",
-        "const {execSync}=require('child_process');",
-        "let raw='';",
-        "process.stdin.on('data',c=>raw+=c);",
-        "process.stdin.on('end',()=>{",
-        "  let prs=[];",
-        "  try{prs=JSON.parse(raw);}catch(e){console.log(JSON.stringify({error:e.message,total:0}));return;}",
-        "  const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']);",
-        "  const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']);",
-        "  const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']);",
-        "  const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[];",
-        "  let newlyLabeled=0;",
-        "  for(const pr of prs){",
-        "    const labels=(pr.labels||[]).map(l=>l.name);",
-        "    const hasFixLabel=labels.includes(LABEL_FIX);",
-        "    const checks=pr.statusCheckRollup||[];",
-        "    const hasFail=checks.some(c=>FAIL_STATES.has(c.conclusion||c.state||''));",
-        "    const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));",
-        "    const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());",
-        "    const isDraft=pr.isDraft===true;",
-        "    if(isDraft){drafted.push(pr.number);continue;}",
-        "    if(isConflict){",
-        "      conflicts.push({n:pr.number,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});",
-        "      if(!hasFixLabel){",
-        "        try{execSync('gh pr edit '+pr.number+' --add-label '+LABEL_FIX,{stdio:'pipe'});newlyLabeled++;}",
-        "        catch(e){process.stderr.write('label err #'+pr.number+': '+e.message+'\\n');}",
+        "const MAX_PRS=Math.max(1,Number('{{maxPrs}}')||25);",
+        "const REPO_SCOPE=String('{{repoScope}}'||'auto').trim();",
+        "const FIELDS='number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url';",
+        "const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']);",
+        "const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']);",
+        "const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']);",
+        "function ghJson(args){const out=execFileSync('gh',args,{encoding:'utf8',stdio:['pipe','pipe','pipe']}).trim();return out?JSON.parse(out):[];}",
+        "function configPath(){",
+        "  const home=String(process.env.BOSUN_HOME||process.env.VK_PROJECT_DIR||'').trim();",
+        "  return home?path.join(home,'bosun.config.json'):path.join(process.cwd(),'bosun.config.json');",
+        "}",
+        "function collectReposFromConfig(){",
+        "  const repos=[];",
+        "  try{",
+        "    const cfg=JSON.parse(fs.readFileSync(configPath(),'utf8'));",
+        "    const workspaces=Array.isArray(cfg?.workspaces)?cfg.workspaces:[];",
+        "    if(workspaces.length>0){",
+        "      const active=String(cfg?.activeWorkspace||'').trim().toLowerCase();",
+        "      const activeWs=active?workspaces.find(w=>String(w?.id||'').trim().toLowerCase()===active):null;",
+        "      const wsList=activeWs?[activeWs]:workspaces;",
+        "      for(const ws of wsList){",
+        "        for(const repo of (Array.isArray(ws?.repos)?ws.repos:[])){",
+        "          const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();",
+        "          if(slug) repos.push(slug);",
+        "        }",
         "      }",
-        "    } else if(hasFail){",
-        "      ciFailures.push({n:pr.number,branch:pr.headRefName,url:pr.url});",
-        "      if(!hasFixLabel){",
-        "        try{execSync('gh pr edit '+pr.number+' --add-label '+LABEL_FIX,{stdio:'pipe'});newlyLabeled++;}",
-        "        catch(e){process.stderr.write('label err #'+pr.number+': '+e.message+'\\n');}",
-        "      }",
-        "    } else if(hasPend){",
-        "      pending.push(pr.number);",
-        "    } else if(checks.length>0&&!hasFixLabel){",
-        "      /* CI all-passing, no conflicts, not draft — a review candidate */",
-        "      readyCandidates.push({n:pr.number,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title});",
         "    }",
+        "    if(repos.length===0){",
+        "      for(const repo of (Array.isArray(cfg?.repos)?cfg.repos:[])){",
+        "        const slug=typeof repo==='string'?String(repo).trim():String(repo?.slug||'').trim();",
+        "        if(slug) repos.push(slug);",
+        "      }",
+        "    }",
+        "  }catch{}",
+        "  return repos;",
+        "}",
+        "function resolveRepoTargets(){",
+        "  if(REPO_SCOPE&&REPO_SCOPE!=='auto'&&REPO_SCOPE!=='all'&&REPO_SCOPE!=='current'){",
+        "    return [...new Set(REPO_SCOPE.split(',').map(v=>v.trim()).filter(Boolean))];",
         "  }",
-        "  console.log(JSON.stringify({",
-        "    total:prs.length,",
-        "    readyCandidates,",
-        "    conflicts,",
-        "    ciFailures,",
-        "    pending:pending.length,",
-        "    drafted:drafted.length,",
-        "    newlyLabeled,",
-        "    fixNeeded:conflicts.length+ciFailures.length",
-        "  }));",
-        "});",
+        "  if(REPO_SCOPE==='current') return [''];",
+        "  const fromConfig=collectReposFromConfig();",
+        "  if(fromConfig.length>0) return [...new Set(fromConfig)];",
+        "  const envRepo=String(process.env.GITHUB_REPOSITORY||'').trim();",
+        "  if(envRepo) return [envRepo];",
+        "  return [''];",
+        "}",
+        "function parseRepoFromUrl(url){",
+        "  const raw=String(url||'');",
+        "  const marker='github.com/';",
+        "  const idx=raw.toLowerCase().indexOf(marker);",
+        "  if(idx<0) return '';",
+        "  const tail=raw.slice(idx+marker.length).split('/');",
+        "  if(tail.length<2) return '';",
+        "  const owner=String(tail[0]||'').trim();",
+        "  const repo=String(tail[1]||'').trim();",
+        "  return owner&&repo?(owner+'/'+repo):'';",
+        "}",
+        "const repoTargets=resolveRepoTargets();",
+        "const prs=[];",
+        "const repoErrors=[];",
+        "for(const target of repoTargets){",
+        "  const repo=String(target||'').trim();",
+        "  const args=['pr','list','--label','bosun-attached','--state','open','--json',FIELDS,'--limit',String(MAX_PRS)];",
+        "  if(repo) args.push('--repo',repo);",
+        "  try{",
+        "    const list=ghJson(args);",
+        "    for(const pr of (Array.isArray(list)?list:[])){",
+        "      const prRepo=repo||parseRepoFromUrl(pr?.url)||String(process.env.GITHUB_REPOSITORY||'').trim();",
+        "      prs.push({...pr,__repo:prRepo});",
+        "    }",
+        "  }catch(e){",
+        "    repoErrors.push({repo:repo||'current',error:String(e?.message||e)});",
+        "  }",
+        "}",
+        "const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[];",
+        "let newlyLabeled=0;",
+        "for(const pr of prs){",
+        "  const labels=(pr.labels||[]).map(l=>typeof l==='string'?l:l?.name).filter(Boolean);",
+        "  const hasFixLabel=labels.includes(LABEL_FIX);",
+        "  const checks=pr.statusCheckRollup||[];",
+        "  const hasFail=checks.some(c=>FAIL_STATES.has(c.conclusion||c.state||''));",
+        "  const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));",
+        "  const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());",
+        "  const isDraft=pr.isDraft===true;",
+        "  const repo=String(pr.__repo||'').trim();",
+        "  if(isDraft){drafted.push({n:pr.number,repo});continue;}",
+        "  if(isConflict){",
+        "    conflicts.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});",
+        "    if(!hasFixLabel){",
+        "      try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}",
+        "      catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}",
+        "    }",
+        "  } else if(hasFail){",
+        "    ciFailures.push({n:pr.number,repo,branch:pr.headRefName,url:pr.url});",
+        "    if(!hasFixLabel){",
+        "      try{const editArgs=['pr','edit',String(pr.number),'--add-label',LABEL_FIX];if(repo)editArgs.push('--repo',repo);execFileSync('gh',editArgs,{encoding:'utf8',stdio:['pipe','pipe','pipe']});newlyLabeled++;}",
+        "      catch(e){process.stderr.write('label err '+(repo?repo+' ':'')+'#'+pr.number+': '+(e?.message||e)+'\\\\n');}",
+        "    }",
+        "  } else if(hasPend){",
+        "    pending.push({n:pr.number,repo});",
+        "  } else if(checks.length>0&&!hasFixLabel){",
+        "    readyCandidates.push({n:pr.number,repo,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title});",
+        "  }",
+        "}",
+        "console.log(JSON.stringify({",
+        "  total:prs.length,",
+        "  reposScanned:repoTargets.length,",
+        "  repoErrors,",
+        "  readyCandidates,",
+        "  conflicts,",
+        "  ciFailures,",
+        "  pending:pending.length,",
+        "  drafted:drafted.length,",
+        "  newlyLabeled,",
+        "  fixNeeded:conflicts.length+ciFailures.length",
+        "}));",
         "\"",
       ].join(" "),
       continueOnError: false,
@@ -795,8 +866,9 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
       prompt:
         "You are a Bosun PR repair agent. A watchdog workflow has identified " +
         "bosun-attached PRs that need fixing.\n\n" +
-        "Run this single command to get the current list of PRs needing work:\n" +
-        "  gh pr list --label bosun-needs-fix --label bosun-attached --state open \\\n" +
+        "For EACH target repo, list PRs needing work. Always include --repo <owner/repo>.\n" +
+        "Example:\n" +
+        "  gh pr list --repo <owner/repo> --label bosun-needs-fix --label bosun-attached --state open \\\n" +
         "    --json number,title,headRefName,baseRefName,mergeable,statusCheckRollup,labels,url \\\n" +
         "    --limit 10\n\n" +
         "For each PR returned, follow the appropriate path:\n\n" +
@@ -809,13 +881,13 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "6. git push --force-with-lease origin <headRefName>\n\n" +
         "CI FAILURE (statusCheckRollup has FAILURE/ERROR/TIMED_OUT entries):\n" +
         "1. git checkout <headRefName>\n" +
-        "2. Inspect CI logs: gh run list --branch <headRefName> --limit 3\n" +
-        "   Then: gh run view <run-id> --log-failed\n" +
+        "2. Inspect CI logs: gh run list --repo <owner/repo> --branch <headRefName> --limit 3\n" +
+        "   Then: gh run view <run-id> --repo <owner/repo> --log-failed\n" +
         "3. Fix the root cause (lint, type error, failing test, build error).\n" +
         "4. Commit: fix(<scope>): <description>  (conventional commit format)\n" +
         "5. Push the branch — CI will re-trigger automatically.\n\n" +
         "AFTER fixing either type:\n" +
-        "- Remove the bosun-needs-fix label: gh pr edit <number> --remove-label bosun-needs-fix\n\n" +
+        "- Remove the bosun-needs-fix label: gh pr edit <number> --repo <owner/repo> --remove-label bosun-needs-fix\n\n" +
         "STRICT RULES:\n" +
         "- Fix only what breaks CI or causes the conflict. No scope creep.\n" +
         "- Do NOT merge, close, or approve any PR.\n" +
@@ -847,32 +919,32 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "any PR is merged. Your job is to inspect each merge candidate and decide " +
         "whether it is safe to merge.\n\n" +
         "MERGE CANDIDATES (CI passing, no conflicts, bosun-attached):\n" +
-        "  Run: gh pr list --label bosun-attached --state open \\\n" +
+        "  Run per target repo: gh pr list --repo <owner/repo> --label bosun-attached --state open \\\n" +
         "    --json number,title,headRefName,isDraft,statusCheckRollup,labels,url \\\n" +
         "    --limit {{maxPrs}}\n" +
         "  Filter to PRs where: not isDraft, CI all-passing, no bosun-needs-fix label.\n\n" +
         "FOR EACH CANDIDATE — before merging, run:\n" +
-        "  gh pr view <number> --json number,title,additions,deletions,changedFiles,body,baseRefName\n\n" +
+        "  gh pr view <number> --repo <owner/repo> --json number,title,additions,deletions,changedFiles,body,baseRefName\n\n" +
         "SAFETY CHECKS (ALL must pass before merging):\n\n" +
         "1. DESTRUCTIVE DIFF CHECK:\n" +
         "   If (deletions > additions × {{suspiciousDeletionRatio}}) AND (deletions > {{minDestructiveDeletions}}):\n" +
         "   → This PR deletes far more than it adds — HOLD IT.\n" +
-        "   → Run: gh pr edit <number> --add-label {{labelNeedsReview}}\n" +
-        "   → Run: gh pr comment <number> --body '⚠️ **Bosun Review Agent: merge held** — " +
+        "   → Run: gh pr edit <number> --repo <owner/repo> --add-label {{labelNeedsReview}}\n" +
+        "   → Run: gh pr comment <number> --repo <owner/repo> --body '⚠️ **Bosun Review Agent: merge held** — " +
         "This PR deletes significantly more lines than it adds (deletions: <X>, additions: <Y>). " +
         "A human should verify this is intentional before merging.'\n" +
         "   → Do NOT merge this PR. Move to next candidate.\n\n" +
         "2. DIFF SANITY CHECK (for PRs that pass the ratio check):\n" +
-        "   Run: gh pr diff <number> | head -200\n" +
+        "   Run: gh pr diff <number> --repo <owner/repo> | head -200\n" +
         "   Look for: mass file deletions, removal of entire modules/directories, " +
         "   files changed that are unrelated to the PR description.\n" +
         "   If something looks wrong → HOLD with bosun-needs-human-review label + comment.\n\n" +
         "3. CI STATUS RECONFIRM:\n" +
-        "   Run: gh pr checks <number> --json name,state,conclusion\n" +
+        "   Run: gh pr checks <number> --repo <owner/repo> --json name,state,conclusion\n" +
         "   Ensure ALL checks have conclusion SUCCESS/SKIPPED/NEUTRAL. " +
         "   If any are pending or failing → do NOT merge (CI may still be running).\n\n" +
         "MERGE (only if ALL checks pass):\n" +
-        "   gh pr merge <number> --{{mergeMethod}} --delete-branch\n" +
+        "   gh pr merge <number> --repo <owner/repo> --{{mergeMethod}} --delete-branch\n" +
         "   Log: ✅ Merged PR #<number> — <title>\n\n" +
         "STRICT RULES:\n" +
         "- NEVER merge if ANY safety check fails. When in doubt, HOLD.\n" +
@@ -915,16 +987,16 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
   ],
   metadata: {
     author: "bosun",
-    version: 2,
+    version: 3,
     createdAt: "2025-07-01T00:00:00Z",
-    templateVersion: "2.0.0",
+    templateVersion: "2.1.0",
     tags: ["github", "pr", "ci", "merge", "watchdog", "bosun-attached", "safety"],
     replaces: {
       module: "agent-hooks.mjs",
       functions: ["registerBuiltinHooks (PostPR block)"],
       calledFrom: [],
       description:
-        "v2: Consolidates all gh API calls into ONE gh pr list fetch per cycle. " +
+        "v2: Consolidates PR polling into one gh pr list fetch per target repo per cycle. " +
         "Adds mandatory review gate agent that checks diff stats (additions/deletions " +
         "ratio) and diff content before any merge — preventing destructive PRs from " +
         "being auto-merged. Adds conflict detection via the 'mergeable' field. " +
