@@ -2438,7 +2438,11 @@ const SETTINGS_SENSITIVE_KEYS = new Set([
   "CLOUDFLARE_TUNNEL_CREDENTIALS", "CLOUDFLARE_API_TOKEN",
 ]);
 
-const SETTINGS_KNOWN_SET = new Set(SETTINGS_KNOWN_KEYS);
+const SETTINGS_SCHEMA_KEYS = SETTINGS_SCHEMA
+  .map((def) => String(def?.key || "").trim())
+  .filter((key) => key && !key.startsWith("_"));
+const SETTINGS_KNOWN_SET = new Set([...SETTINGS_KNOWN_KEYS, ...SETTINGS_SCHEMA_KEYS]);
+const SETTINGS_EFFECTIVE_KEYS = Array.from(SETTINGS_KNOWN_SET);
 let _settingsLastUpdateTime = 0;
 const ASYNC_UI_COMMAND_BASES = new Set(["/plan"]);
 
@@ -2490,7 +2494,7 @@ function buildSettingsResponseData() {
   );
   const { configData } = readConfigDocument();
 
-  for (const key of SETTINGS_KNOWN_KEYS) {
+  for (const key of SETTINGS_EFFECTIVE_KEYS) {
     const def = defsByKey.get(key);
     let rawValue = process.env[key];
     let source = hasSettingValue(rawValue) ? "env" : "unset";
@@ -2526,7 +2530,7 @@ function buildSettingsResponseData() {
     }
 
     const displayValue = toSettingsDisplayValue(def, rawValue);
-    if (SETTINGS_SENSITIVE_KEYS.has(key)) {
+    if (SETTINGS_SENSITIVE_KEYS.has(key) || def?.sensitive) {
       data[key] = displayValue ? "••••••" : "";
     } else {
       data[key] = displayValue;

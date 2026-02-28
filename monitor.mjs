@@ -59,7 +59,7 @@ import {
   generateWeeklyAgentWorkReport,
   shouldSendWeeklyReport,
 } from "./agent-work-report.mjs";
-import { PRCleanupDaemon } from "./pr-cleanup-daemon.mjs";
+
 import {
   execPrimaryPrompt,
   initPrimaryAgent,
@@ -96,11 +96,7 @@ import {
 } from "./container-runner.mjs";
 import { ensureCodexConfig, printConfigSummary } from "./codex-config.mjs";
 import { RestartController } from "./restart-controller.mjs";
-import {
-  analyzeMergeStrategy,
-  executeDecision,
-  resetMergeStrategyDedup,
-} from "./merge-strategy.mjs";
+
 import { assessTask, quickAssess } from "./task-assessment.mjs";
 import {
   getBosunCoAuthorTrailer,
@@ -227,10 +223,7 @@ import { createErrorDetector } from "./error-detector.mjs";
 import { createAgentSupervisor } from "./agent-supervisor.mjs";
 import { getSessionTracker } from "./session-tracker.mjs";
 import { pullWorkspaceRepos } from "./workspace-manager.mjs";
-import {
-  startGitHubReconciler,
-  stopGitHubReconciler,
-} from "./github-reconciler.mjs";
+
 import {
   getKanbanBackendName,
   setKanbanBackend,
@@ -1976,11 +1969,7 @@ if (primaryAgentReady) {
   void initPrimaryAgent(primaryAgentName);
 }
 
-// Merge strategy: Codex-powered merge decision analysis
-// Enabled by default unless CODEX_ANALYZE_MERGE_STRATEGY=false
-const codexAnalyzeMergeStrategy =
-  agentPoolEnabled &&
-  (process.env.CODEX_ANALYZE_MERGE_STRATEGY || "").toLowerCase() !== "false";
+// Merge strategy: now handled by PR_MERGE_STRATEGY workflow template
 const mergeStrategyMode = String(
   process.env.MERGE_STRATEGY_MODE || "smart",
 ).toLowerCase();

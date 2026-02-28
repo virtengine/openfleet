@@ -865,29 +865,11 @@ export function ControlTab() {
 
         <${Card} className="routing-card">
           <${Collapsible} title="Routing" defaultOpen=${!isCompact}>
-            <div class="meta-text mb-sm">Quick runtime overrides for executor routing and region. Persistent defaults live in Settings.</div>
+            <div class="meta-text mb-sm">Runtime region override only. SDK and kanban backend changes now live in Settings to avoid accidental disruptive switches.</div>
             <div class="card-subtitle">SDK</div>
-            <${SegmentedControl}
-              options=${[
-                { value: "codex", label: "Codex" },
-                { value: "copilot", label: "Copilot" },
-                { value: "claude", label: "Claude" },
-                { value: "auto", label: "Auto" },
-              ]}
-              value=${config?.sdk || "auto"}
-              onChange=${(v) => updateConfig("sdk", v)}
-            />
-            <div class="card-subtitle mt-sm">Kanban</div>
-            <${SegmentedControl}
-              options=${[
-                { value: "internal", label: "Internal" },
-                { value: "vk", label: "VK" },
-                { value: "github", label: "GitHub" },
-                { value: "jira", label: "Jira" },
-              ]}
-              value=${config?.kanbanBackend || "internal"}
-              onChange=${(v) => updateConfig("kanban", v)}
-            />
+            <div class="meta-text mb-sm">Current: ${String(config?.sdk || "auto").toUpperCase()}</div>
+            <div class="card-subtitle">Kanban</div>
+            <div class="meta-text mb-sm">Current: ${config?.kanbanBackend || "internal"}</div>
             ${regions.length > 1 && html`
               <div class="card-subtitle mt-sm">Region</div>
               <${SegmentedControl}
@@ -896,6 +878,18 @@ export function ControlTab() {
                 onChange=${(v) => updateConfig("region", v)}
               />
             `}
+            ${regions.length <= 1 && html`
+              <div class="card-subtitle mt-sm">Region</div>
+              <div class="meta-text mb-sm">Current: ${regions[0] || "auto"}</div>
+            `}
+            <button
+              class="btn btn-ghost btn-sm mt-sm"
+              onClick=${() => {
+                import("../modules/router.js").then(({ navigateTo }) => navigateTo("settings"));
+              }}
+            >
+              Open Settings
+            </button>
           <//>
         <//>
 

@@ -424,8 +424,21 @@ async function getThread() {
   if (!codexInstance) {
     const Cls = await loadCodexSdk();
     if (!Cls) throw new Error("Codex SDK not available");
-    // Pass feature overrides via --config so they apply even if config.toml
-    // hasn't been patched by codex-config.mjs yet.
+
+    // Inject stream resilience settings via --config overrides so they apply
+    // even if config.toml hasn't been patched by codex-config.mjs yet.
+    // This is the most reliable path for Azure/Foundry deployments where
+    // dropped SSE streams ("response.failed") are the dominant failure mode.
+    const providerName = resolvedEnv.OPENAI_BASE_URL?.toLowerCase().includes(".openai.azure.com")
+      ? "azure"
+      : "openai";
+    const STREAM_IDLE_TIMEOUT_MS = 3_600_000; // 60 min — matches Azure max stream lifetime
+    const streamProviderOverrides = {
+      stream_idle_timeout_ms: STREAM_IDLE_TIMEOUT_MS,
+      stream_max_retries: 15,
+      request_max_retries: 6,
+    };
+
     codexInstance = new Cls({
       config: {
         features: {
@@ -435,8 +448,13 @@ async function getThread() {
           undo: true,
           steer: true,
         },
+        model_providers: {
+          [providerName]: streamProviderOverrides,
+        },
       },
     });
+
+    console.log(`[codex-shell] created Codex instance (provider=${providerName}, stream_idle_timeout=${STREAM_IDLE_TIMEOUT_MS}ms, stream_max_retries=${streamProviderOverrides.stream_max_retries})`);
   }
 
   const transport = resolveCodexTransport();
