@@ -274,6 +274,12 @@
     "vibe-kanban": "latest",
     "ws": "^8.19.0"
   },
+  "optionalDependencies": {
+    "@modelcontextprotocol/sdk": "1.27.1",
+    "express": "5.2.1",
+    "express-rate-limit": "^8.0.0",
+    "hono": "4.12.3"
+  },
   "devDependencies": {
     "vitest": "^4.0.18"
   },
