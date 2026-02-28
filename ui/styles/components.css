@@ -5187,3 +5187,36 @@ select.input {
   height: 16px;
   stroke-width: 1.7;
 }
+
+/* ─── Reduced Motion ─── */
+@media (prefers-reduced-motion: reduce) {
+  /* Filter panel: skip max-height slide, just appear/disappear */
+  .tasks-filter-panel {
+    transition: opacity 0.1s ease !important;
+  }
+
+  /* Modal / sheet animations */
+  .modal,
+  .sheet,
+  .more-sheet,
+  .drawer {
+    animation: none !important;
+  }
+
+  /* Skeleton pulse */
+  .skeleton {
+    animation: none !important;
+    opacity: 0.4;
+  }
+
+  /* Toast animations */
+  .toast {
+    animation: none !important;
+  }
+
+  /* Button press scale */
+  .btn:active,
+  button:active {
+    transform: none !important;
+  }
+}

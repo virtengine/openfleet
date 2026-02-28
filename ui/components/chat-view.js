@@ -16,6 +16,7 @@ import {
   loadSessionMessages,
   loadSessions,
   sessionsData,
+  sessionPagination,
 } from "./session-list.js";
 import {
   pendingMessages,
@@ -46,6 +47,9 @@ const AUTO_ACTION_LABELS = {
 
 const SCROLL_BOTTOM_TOLERANCE_PX = 6;
 const SCROLL_BOTTOM_RATIO = 0.995;
+const CHAT_PAGE_SIZE = 20;
+const SCROLL_TOP_TRIGGER_PX = 24;
+const SCROLL_TOP_REARM_PX = 80;
 
 function formatAutoAction(event) {
   if (!event) return null;
@@ -391,10 +395,11 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const [paused, setPaused] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [unreadCount, setUnreadCount] = useState(0);
-  const [visibleCount, setVisibleCount] = useState(200);
+  const [visibleCount, setVisibleCount] = useState(CHAT_PAGE_SIZE);
   const [showStreamMeta, setShowStreamMeta] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [filters, setFilters] = useState({
     tool: false,
     result: false,
@@ -404,6 +409,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
   const lastMessageCount = useRef(0);
+  const topLoadArmedRef = useRef(true);
   const filterKey = `${filters.tool}-${filters.result}-${filters.error}`;
 
   const isScrollPinnedToBottom = useCallback((el) => {
@@ -546,9 +552,43 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const refreshMessages = useCallback(async () => {
     if (!sessionId) return;
     setLoading(true);
-    const res = await loadSessionMessages(sessionId).finally(() => setLoading(false));
+    const res = await loadSessionMessages(sessionId, { limit: CHAT_PAGE_SIZE }).finally(() => setLoading(false));
     setLoadError(res?.ok ? null : res?.error || "unavailable");
   }, [sessionId]);
+
+  /** Reveal older messages from local cache, or fetch another page if needed. */
+  const revealOlderMessages = useCallback(async ({ preserveScroll = false } = {}) => {
+    if (hasMoreMessages) {
+      setVisibleCount((prev) => prev + CHAT_PAGE_SIZE);
+      return;
+    }
+    if (!sessionId || loadingOlder) return;
+    const pag = sessionPagination.value;
+    if (!pag || !pag.hasMore) return;
+    const el = messagesRef.current;
+    const prevScrollHeight = preserveScroll && el ? el.scrollHeight : 0;
+    const prevScrollTop = preserveScroll && el ? el.scrollTop : 0;
+    setLoadingOlder(true);
+    const newOffset = Math.max(0, pag.offset - CHAT_PAGE_SIZE);
+    const limit = pag.offset - newOffset;
+    if (limit <= 0) { setLoadingOlder(false); return; }
+    const res = await loadSessionMessages(sessionId, {
+      limit,
+      offset: newOffset,
+      prepend: true,
+    }).finally(() => setLoadingOlder(false));
+    if (res?.ok) {
+      setVisibleCount((prev) => prev + limit);
+      if (preserveScroll && el) {
+        requestAnimationFrame(() => {
+          const delta = Math.max(0, el.scrollHeight - prevScrollHeight);
+          el.scrollTop = prevScrollTop + delta;
+        });
+      }
+    } else {
+      setLoadError(res?.error || "unavailable");
+    }
+  }, [sessionId, loadingOlder, hasMoreMessages]);
 
   /* Load messages on mount; WS push via initSessionWsListener handles real-time */
   useEffect(() => {
@@ -559,7 +599,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       if (!active) return;
       if (!paused) {
         setLoading(true);
-        loadSessionMessages(sessionId).then((res) => {
+        loadSessionMessages(sessionId, { limit: CHAT_PAGE_SIZE }).then((res) => {
           if (active) setLoadError(res?.ok ? null : res?.error || "unavailable");
         }).finally(() => {
           if (active) setLoading(false);
@@ -572,7 +612,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     // Fallback: poll slowly as safety net (30s) - WS does the heavy lifting
     const interval = setInterval(() => {
       if (active && !paused) {
-        loadSessionMessages(sessionId).then((res) => {
+        loadSessionMessages(sessionId, { limit: CHAT_PAGE_SIZE }).then((res) => {
           if (active && res?.ok === false) setLoadError(res?.error || "unavailable");
         });
       }
@@ -608,9 +648,10 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
   /* Reset visible window when session or filters change */
   useEffect(() => {
-    setVisibleCount(200);
+    setVisibleCount(CHAT_PAGE_SIZE);
     setUnreadCount(0);
     setAutoScroll(true);
+    topLoadArmedRef.current = true;
   }, [sessionId, filterKey]);
 
   useEffect(() => {
@@ -626,10 +667,18 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       const pinnedToBottom = isScrollPinnedToBottom(el);
       setAutoScroll(pinnedToBottom);
       if (pinnedToBottom) setUnreadCount(0);
+      if (el.scrollTop <= SCROLL_TOP_TRIGGER_PX) {
+        if (topLoadArmedRef.current) {
+          topLoadArmedRef.current = false;
+          revealOlderMessages({ preserveScroll: true }).catch(() => {});
+        }
+      } else if (el.scrollTop >= SCROLL_TOP_REARM_PX) {
+        topLoadArmedRef.current = true;
+      }
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
-  }, [sessionId, isScrollPinnedToBottom]);
+  }, [sessionId, isScrollPinnedToBottom, revealOlderMessages]);
 
   /* Auto-scroll to bottom when new messages arrive */
   useEffect(() => {
@@ -721,7 +770,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           attachments: pendingAttachments,
         }),
       });
-      const res = await loadSessionMessages(sessionId);
+      const res = await loadSessionMessages(sessionId, { limit: CHAT_PAGE_SIZE });
       setLoadError(res?.ok ? null : res?.error || "unavailable");
     } catch {
       showToast("Failed to send message", "error");
@@ -738,7 +787,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         "success",
       );
       await loadSessions();
-      const res = await loadSessionMessages(sessionId);
+      const res = await loadSessionMessages(sessionId, { limit: CHAT_PAGE_SIZE });
       setLoadError(res?.ok ? null : res?.error || "unavailable");
     } catch {
       showToast("Failed to resume session", "error");
@@ -750,7 +799,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       await apiFetch(`/api/sessions/${sessionId}/archive`, { method: "POST" });
       showToast("Session archived", "success");
       await loadSessions();
-      const res = await loadSessionMessages(sessionId);
+      const res = await loadSessionMessages(sessionId, { limit: CHAT_PAGE_SIZE });
       setLoadError(res?.ok ? null : res?.error || "unavailable");
     } catch {
       showToast("Failed to archive session", "error");
@@ -991,16 +1040,17 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       `}
 
       <div class="chat-messages" ref=${messagesRef}>
-        ${hasMoreMessages && html`
+        ${(hasMoreMessages || sessionPagination.value?.hasMore) && html`
           <div class="chat-load-earlier">
             <button
               class="btn btn-ghost btn-sm"
-              onClick=${() => setVisibleCount((prev) => prev + 200)}
+              disabled=${loadingOlder}
+              onClick=${() => revealOlderMessages()}
             >
-              Load earlier messages
+              ${loadingOlder ? "Loading…" : "Load older messages"}
             </button>
             <span class="chat-load-count">
-              Showing ${visibleMessages.length} of ${filteredMessages.length}
+              Showing ${visibleMessages.length} of ${sessionPagination.value?.total || filteredMessages.length}
             </span>
           </div>
         `}
