@@ -508,6 +508,9 @@ async function probeUiServer(url) {
   });
 }
 
+/** Set to true if the daemon UI was not reachable at startup (offline mode). */
+let bosunDaemonWasOffline = false;
+
 async function resolveDaemonUiUrl() {
   const useDaemon = parseBoolEnv(
     process.env.BOSUN_DESKTOP_USE_DAEMON_UI,
@@ -520,49 +523,19 @@ async function resolveDaemonUiUrl() {
   return ok ? base : null;
 }
 
+/**
+ * Previously attempted to auto-start the bosun daemon from the Electron process.
+ * This behaviour has been intentionally removed: the desktop MUST NOT launch bosun.
+ *
+ * If the daemon is offline, buildUiUrl() sets bosunDaemonWasOffline=true and
+ * createMainWindow() injects an in-page banner with instructions on how to
+ * start bosun manually or configure auto-start via `bosun --setup`.
+ *
+ * Kept as a no-op so bootstrap() need not change its call site.
+ */
 async function ensureDaemonRunning() {
-  const autoStart = parseBoolEnv(
-    process.env.BOSUN_DESKTOP_AUTO_START_DAEMON,
-    false,
-  );
-  if (!autoStart) return;
-
-  const existing = getDaemonPid();
-  if (existing) return;
-
-  const ghosts = findGhostDaemonPids();
-  if (ghosts.length > 0) return;
-
-  const cliPath = resolveBosunRuntimePath("cli.mjs");
-  if (!existsSync(cliPath)) {
-    console.warn("[desktop] bosun CLI not found; daemon auto-start skipped");
-    return;
-  }
-
-  try {
-    const setupModule = await loadBosunModule("setup.mjs");
-    if (setupModule?.shouldRunSetup?.()) {
-      console.warn(
-        "[desktop] setup required before daemon start; run: bosun --setup",
-      );
-      return;
-    }
-  } catch (err) {
-    console.warn(
-      "[desktop] unable to verify setup state; starting daemon anyway",
-    );
-  }
-
-  const child = spawn(process.execPath, ["--run-as-node", cliPath, "--daemon"], {
-    detached: true,
-    stdio: "ignore",
-    env: { ...process.env, BOSUN_DESKTOP: "1" },
-    cwd: resolveBosunRoot(),
-    windowsHide: true,
-  });
-  child.unref();
-
-  await waitForDaemon(4000);
+  // Intentional no-op. Daemon auto-start from the desktop is permanently disabled.
+  // Detection happens in buildUiUrl(); the offline banner is shown in createMainWindow().
 }
 
 async function startUiServer() {
@@ -597,6 +570,8 @@ async function buildUiUrl() {
     }
     return daemonUrl;
   }
+  // Daemon is not reachable — flag it so the window can show an offline banner.
+  bosunDaemonWasOffline = true;
   await startUiServer();
   const api = await loadUiServerModule();
   const uiServerUrl = api.getTelegramUiUrl();
@@ -676,6 +651,42 @@ async function createMainWindow() {
 
   const uiUrl = await buildUiUrl();
   await mainWindow.loadURL(uiUrl);
+
+  // If the bosun daemon was not running when the desktop started, inject a
+  // non-blocking banner so the user knows and has clear instructions.
+  // The desktop NEVER auto-starts bosun — it is always a separate process.
+  if (bosunDaemonWasOffline) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      mainWindow?.webContents
+        .executeJavaScript(
+          `(function() {
+            if (document.getElementById('bosun-offline-banner')) return;
+            const b = document.createElement('div');
+            b.id = 'bosun-offline-banner';
+            b.style.cssText = [
+              'position:fixed','top:0','left:0','right:0','z-index:99999',
+              'background:#7f1d1d','color:#fff','padding:10px 16px',
+              'font:13px/1.5 monospace','display:flex','gap:12px',
+              'align-items:center','justify-content:space-between',
+            ].join(';');
+            b.innerHTML = [
+              '<span>',
+              '\u26a0\ufe0f <strong>Bosun daemon is not running.</strong>',
+              ' This portal is in local mode — agents & tasks from your background service are unavailable.',
+              ' Start it: ',
+              '<code style="background:rgba(255,255,255,.15);padding:2px 6px;border-radius:3px">bosun --daemon</code>',
+              ' &bull; Configure auto-start: ',
+              '<code style="background:rgba(255,255,255,.15);padding:2px 6px;border-radius:3px">bosun --setup</code>',
+              '</span>',
+              '<button onclick="document.getElementById(\'bosun-offline-banner\').remove()"',
+              ' style="background:none;border:none;color:#fff;cursor:pointer;font-size:20px;line-height:1;padding:0 4px">&times;</button>',
+            ].join(' ');
+            document.body.prepend(b);
+          })()`
+        )
+        .catch(() => {});
+    });
+  }
 }
 
 async function createFollowWindow() {

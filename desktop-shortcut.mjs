@@ -114,7 +114,7 @@ function findElectronBinary() {
  * - If an Electron binary is found: launches `electron desktop/main.mjs`
  * - Otherwise: falls back to `node cli.mjs --desktop`
  */
-function resolveElectronLauncher() {
+export function resolveElectronLauncher() {
   const electronPath = findElectronBinary();
   if (electronPath) {
     return { executable: electronPath, args: [getDesktopMainPath()] };

@@ -436,7 +436,7 @@ function buildStableSetupDefaults({
     workflowMaxConcurrentBranches: 8,
     voiceEnabled: true,
     voiceProvider: "auto",
-    voiceModel: "gpt-4o-realtime-preview-2024-12-17",
+    voiceModel: "gpt-realtime-1.5",
     voiceVisionModel: "gpt-4.1-mini",
     voiceId: "alloy",
     voiceTurnDetection: "server_vad",
@@ -445,7 +445,7 @@ function buildStableSetupDefaults({
     openaiRealtimeApiKey: "",
     azureOpenaiRealtimeEndpoint: "",
     azureOpenaiRealtimeApiKey: "",
-    azureOpenaiRealtimeDeployment: "gpt-4o-realtime-preview",
+    azureOpenaiRealtimeDeployment: "gpt-realtime-1.5",
     copilotEnableAllMcpTools: false,
     // Backward-compatible fields consumed by older setup UI revisions.
     distribution: "primary-only",
@@ -864,8 +864,8 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
       env.VOICE_MODEL,
       envMap.VOICE_MODEL,
       sourceEnv.VOICE_MODEL,
-    ) || "gpt-4o-realtime-preview-2024-12-17",
-  ).trim() || "gpt-4o-realtime-preview-2024-12-17";
+    ) || "gpt-realtime-1.5",
+  ).trim() || "gpt-realtime-1.5";
   envMap.VOICE_VISION_MODEL = String(
     pickNonEmptyValue(
       env.voiceVisionModel,
@@ -953,8 +953,8 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
       env.AZURE_OPENAI_REALTIME_DEPLOYMENT,
       envMap.AZURE_OPENAI_REALTIME_DEPLOYMENT,
       sourceEnv.AZURE_OPENAI_REALTIME_DEPLOYMENT,
-    ) || "gpt-4o-realtime-preview",
-  ).trim() || "gpt-4o-realtime-preview";
+    ) || "gpt-realtime-1.5",
+  ).trim() || "gpt-realtime-1.5";
 
   envMap.CONTAINER_ENABLED = toBooleanEnvString(
     pickNonEmptyValue(env.containerEnabled, envMap.CONTAINER_ENABLED, sourceEnv.CONTAINER_ENABLED),

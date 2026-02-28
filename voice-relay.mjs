@@ -21,7 +21,7 @@ let _configLoadedAt = 0;   // timestamp of last config load
 const CONFIG_TTL_MS = 30_000; // re-read config every 30s
 
 const OPENAI_REALTIME_URL = "https://api.openai.com/v1/realtime";
-const OPENAI_REALTIME_MODEL = "gpt-4o-realtime-preview-2024-12-17";
+const OPENAI_REALTIME_MODEL = "gpt-realtime-1.5"; // Released 2026-02-23; replaces gpt-4o-realtime-preview
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const OPENAI_DEFAULT_VISION_MODEL = "gpt-4.1-mini";
 
@@ -547,7 +547,7 @@ export function getVoiceConfig(forceReload = false) {
 
   const azureDeployment = voice.azureDeployment
     || process.env.AZURE_OPENAI_REALTIME_DEPLOYMENT
-    || "gpt-4o-realtime-preview";
+    || "gpt-realtime-1.5";
 
   const claudeOAuthToken =
     String(voice.claudeAccessToken || "").trim()
@@ -854,7 +854,7 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
   const endpoint = cfg.azureEndpoint.replace(/\/+$/, "");
   const deployment =
     String(candidate?.azureDeployment || cfg.azureDeployment || "").trim()
-    || "gpt-4o-realtime-preview";
+    || "gpt-realtime-1.5";
   const voiceId = String(candidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
   const url = `${endpoint}/openai/realtime/sessions?api-version=${AZURE_API_VERSION}&deployment=${deployment}`;
 
@@ -1063,7 +1063,7 @@ export function getRealtimeConnectionInfo() {
     const endpoint = cfg.azureEndpoint.replace(/\/+$/, "");
     const deployment =
       String(candidate?.azureDeployment || cfg.azureDeployment || "").trim()
-      || "gpt-4o-realtime-preview";
+      || "gpt-realtime-1.5";
     return {
       provider: "azure",
       url: `${endpoint}/openai/realtime?api-version=${AZURE_API_VERSION}&deployment=${deployment}`,

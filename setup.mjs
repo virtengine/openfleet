@@ -53,7 +53,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const isNonInteractive =
   process.argv.includes("--non-interactive") || process.argv.includes("-y");
-const SETUP_TOTAL_STEPS = 10;
+const SETUP_TOTAL_STEPS = 9;
 
 // ── Zero-dependency terminal styling (replaces chalk) ────────────────────────
 const isTTY = process.stdout.isTTY;
@@ -1932,7 +1932,7 @@ function normalizeSetupConfiguration({
     "auto",
   );
   env.VOICE_MODEL =
-    env.VOICE_MODEL || "gpt-4o-realtime-preview-2024-12-17";
+    env.VOICE_MODEL || "gpt-realtime-1.5";
   env.VOICE_VISION_MODEL =
     env.VOICE_VISION_MODEL || "gpt-4.1-mini";
   env.VOICE_ID = normalizeEnum(
@@ -1974,7 +1974,7 @@ function normalizeSetupConfiguration({
     env.PRIMARY_AGENT || "codex-sdk",
   );
   env.AZURE_OPENAI_REALTIME_DEPLOYMENT =
-    env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-4o-realtime-preview";
+    env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-realtime-1.5";
 
   env.CODEX_MODEL_PROFILE = normalizeEnum(
     env.CODEX_MODEL_PROFILE,
@@ -3297,7 +3297,7 @@ async function main() {
       );
       env.VOICE_MODEL = await prompt.ask(
         "Realtime voice model",
-        process.env.VOICE_MODEL || "gpt-4o-realtime-preview-2024-12-17",
+        process.env.VOICE_MODEL || "gpt-realtime-1.5",
       );
       env.VOICE_VISION_MODEL = await prompt.ask(
         "Vision model for camera/screen analysis",
@@ -3332,7 +3332,7 @@ async function main() {
         );
         env.AZURE_OPENAI_REALTIME_DEPLOYMENT = await prompt.ask(
           "Azure Realtime deployment (AZURE_OPENAI_REALTIME_DEPLOYMENT)",
-          process.env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-4o-realtime-preview",
+          process.env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-realtime-1.5",
         );
       }
       if (env.VOICE_PROVIDER === "claude" && !env.ANTHROPIC_API_KEY) {
@@ -5434,74 +5434,142 @@ async function main() {
     saveSetupSnapshot(8, "Optional Channels", env, configJson);
     } // end step 8
 
-    // ── Step 9: Desktop Shortcut ──────────────────────────
+    // ── Step 9: Running Mode ──────────────────────────────
     if (resumeFromStep > 9) {
       info(`Skipping step 9 (restored from previous run).`);
     } else {
-    headingStepWithSnapshot(9, "Desktop Shortcut");
+    headingStepWithSnapshot(9, "Running Mode");
 
+    const {
+      getStartupStatus,
+      getStartupMethodName,
+    } = await import("./startup-service.mjs");
     const {
       getDesktopShortcutStatus,
       getDesktopShortcutMethodName,
+      resolveElectronLauncher,
     } = await import("./desktop-shortcut.mjs");
-    const currentDesktopShortcut = getDesktopShortcutStatus();
-    const desktopMethod = getDesktopShortcutMethodName();
 
-    if (desktopMethod === "unsupported") {
-      info("Desktop shortcut not supported on this OS.");
-      env._DESKTOP_SHORTCUT = "0";
-    } else if (currentDesktopShortcut.installed) {
-      info(`Desktop shortcut already installed (${currentDesktopShortcut.method}).`);
-      const reinstall = await prompt.confirm(
-        "Re-install desktop shortcut?",
-        false,
-      );
-      env._DESKTOP_SHORTCUT = reinstall ? "1" : "skip";
-    } else {
-      console.log(
-        chalk.dim(`  Add a desktop shortcut using ${desktopMethod}.`),
-      );
-      const enableDesktopShortcut = await prompt.confirm(
-        "Create desktop shortcut for Bosun Portal?",
-        true,
-      );
-      env._DESKTOP_SHORTCUT = enableDesktopShortcut ? "1" : "0";
-    }
-    saveSetupSnapshot(9, "Desktop Shortcut", env, configJson);
-    } // end step 9
-
-    // ── Step 10: Startup Service ───────────────────────────
-    headingStepWithSnapshot(10, "Startup Service");
-
-    const { getStartupStatus, getStartupMethodName } =
-      await import("./startup-service.mjs");
     const currentStartup = getStartupStatus();
     const methodName = getStartupMethodName();
+    const desktopMethod = getDesktopShortcutMethodName();
+    const shortcutSupported = desktopMethod !== "unsupported";
+    const currentShortcut = getDesktopShortcutStatus();
+    const electronLauncher = resolveElectronLauncher();
+    const hasElectron = Boolean(electronLauncher?.executable);
 
-    if (currentStartup.installed) {
-      info(`Startup service already installed via ${currentStartup.method}.`);
-      const reinstall = await prompt.confirm(
-        "Re-install startup service?",
-        false,
-      );
-      env._STARTUP_SERVICE = reinstall ? "1" : "skip";
-    } else {
-      console.log(
-        chalk.dim(
-          `  Auto-start bosun when you log in using ${methodName}.`,
-        ),
-      );
-      console.log(
-        chalk.dim(
-          "  It will run in daemon mode (background) with auto-restart on failure.",
-        ),
-      );
-      const enableStartup = await prompt.confirm(
-        "Enable auto-start on login?",
-        true,
-      );
-      env._STARTUP_SERVICE = enableStartup ? "1" : "0";
+    let skipRunningModeConfig = false;
+    const alreadyConfigured = currentStartup.installed || currentShortcut.installed;
+    if (alreadyConfigured) {
+      if (currentStartup.installed) {
+        info(`Background service already registered (${currentStartup.method}).`);
+      }
+      if (currentShortcut.installed) {
+        info(`Desktop shortcut already installed (${currentShortcut.method}).`);
+      }
+      const change = await prompt.confirm("Change the running mode?", false);
+      if (!change) {
+        env._DESKTOP_SHORTCUT = "skip";
+        env._STARTUP_SERVICE = "skip";
+        env.BOSUN_SENTINEL_AUTO_START = env.BOSUN_SENTINEL_AUTO_START || "false";
+        env._RUNNING_MODE = "skip";
+        env._START_AFTER_SETUP = "0";
+        env._OPEN_PORTAL_AFTER_SETUP = "0";
+        skipRunningModeConfig = true;
+      }
     }
+
+    if (!skipRunningModeConfig) {
+      console.log();
+      console.log(chalk.bold("  How should Bosun run on this machine?"));
+      console.log();
+      console.log(chalk.cyan("  0  ·  Manual"));
+      console.log(chalk.dim("       Start bosun yourself from a terminal whenever you need it."));
+      console.log(chalk.dim("       Best for: CI servers, development, occasional use, SSH hosts."));
+      console.log();
+      console.log(
+        chalk.cyan("  1  ·  Quick Launch") +
+        (shortcutSupported
+          ? chalk.dim(`  (${desktopMethod})`)
+          : chalk.dim("  — shortcut unavailable on this OS")),
+      );
+      console.log(chalk.dim("       Adds a desktop shortcut for one-click launch of the Bosun portal."));
+      console.log(chalk.dim("       Bosun does not start automatically — you open it when you need it."));
+      console.log();
+      console.log(chalk.cyan("  2  ·  Background Service") + chalk.dim("  ← recommended"));
+      console.log(chalk.dim(`       Registers with ${methodName} to auto-start at login.`));
+      console.log(chalk.dim("       Starts silently in the background. If it crashes, the OS restarts it."));
+      console.log(chalk.dim("       Creates a desktop shortcut to open the portal UI anytime."));
+      console.log();
+      console.log(chalk.cyan("  3  ·  Sentinel Mode") + chalk.dim("  (maximum uptime)"));
+      console.log(chalk.dim("       Like Background Service, plus a Node-level watchdog that"));
+      console.log(chalk.dim("       continuously monitors Bosun and revives it if it becomes unresponsive."));
+      console.log(chalk.dim("       Ideal for always-on teams who depend on zero downtime."));
+      console.log();
+
+      const defaultModeIdx = 2;
+      const modeIdx = await prompt.choose(
+        "Select running mode:",
+        [
+          "Manual           — run from terminal when needed",
+          "Quick Launch     — desktop shortcut, no auto-start",
+          "Background       — auto-start at login via OS service (auto-restart on crash)",
+          "Sentinel         — background + Node watchdog for maximum uptime",
+        ],
+        defaultModeIdx,
+      );
+
+      if (modeIdx === 0) {
+        // Manual: no shortcut, no service
+        env._DESKTOP_SHORTCUT = "0";
+        env._STARTUP_SERVICE = "0";
+        env.BOSUN_SENTINEL_AUTO_START = "false";
+      } else if (modeIdx === 1) {
+        // Quick Launch: shortcut only
+        env._DESKTOP_SHORTCUT = shortcutSupported ? "1" : "0";
+        env._STARTUP_SERVICE = "0";
+        env.BOSUN_SENTINEL_AUTO_START = "false";
+      } else if (modeIdx === 2) {
+        // Background Service: OS-managed auto-start + shortcut
+        env._DESKTOP_SHORTCUT = shortcutSupported ? "1" : "0";
+        env._STARTUP_SERVICE = "1";
+        env.BOSUN_SENTINEL_AUTO_START = "false";
+      } else {
+        // Sentinel Mode: background + sentinel watchdog + shortcut
+        env._DESKTOP_SHORTCUT = shortcutSupported ? "1" : "0";
+        env._STARTUP_SERVICE = "1";
+        env.BOSUN_SENTINEL_AUTO_START = "true";
+      }
+
+      env._RUNNING_MODE = String(modeIdx);
+
+      // ── Post-setup launch options (background/sentinel modes only) ────
+      if (modeIdx >= 2) {
+        console.log();
+        console.log(chalk.dim("  Bosun will auto-start on your next login."));
+        const startNow = await prompt.confirm(
+          "Start Bosun in the background right after setup completes?",
+          true,
+        );
+        env._START_AFTER_SETUP = startNow ? "1" : "0";
+        if (startNow && hasElectron) {
+          const openPortal = await prompt.confirm(
+            "Also open the Bosun desktop portal once Bosun has started?",
+            false,
+          );
+          env._OPEN_PORTAL_AFTER_SETUP = openPortal ? "1" : "0";
+        } else {
+          env._OPEN_PORTAL_AFTER_SETUP = "0";
+        }
+      } else {
+        env._START_AFTER_SETUP = "0";
+        env._OPEN_PORTAL_AFTER_SETUP = "0";
+      }
+    }
+
+    saveSetupSnapshot(9, "Running Mode", env, configJson);
+    } // end step 9
+
   } finally {
     prompt.close();
   }
@@ -5581,7 +5649,7 @@ async function runNonInteractive({
   env.VOICE_ENABLED = process.env.VOICE_ENABLED || "true";
   env.VOICE_PROVIDER = process.env.VOICE_PROVIDER || "auto";
   env.VOICE_MODEL =
-    process.env.VOICE_MODEL || "gpt-4o-realtime-preview-2024-12-17";
+    process.env.VOICE_MODEL || "gpt-realtime-1.5";
   env.VOICE_VISION_MODEL = process.env.VOICE_VISION_MODEL || "gpt-4.1-mini";
   env.OPENAI_REALTIME_API_KEY = process.env.OPENAI_REALTIME_API_KEY || "";
   env.AZURE_OPENAI_REALTIME_ENDPOINT =
@@ -5589,7 +5657,7 @@ async function runNonInteractive({
   env.AZURE_OPENAI_REALTIME_API_KEY =
     process.env.AZURE_OPENAI_REALTIME_API_KEY || "";
   env.AZURE_OPENAI_REALTIME_DEPLOYMENT =
-    process.env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-4o-realtime-preview";
+    process.env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-realtime-1.5";
   env.VOICE_ID = process.env.VOICE_ID || "alloy";
   env.VOICE_TURN_DETECTION = process.env.VOICE_TURN_DETECTION || "server_vad";
   env.VOICE_FALLBACK_MODE = process.env.VOICE_FALLBACK_MODE || "browser";
@@ -5781,27 +5849,52 @@ async function runNonInteractive({
   };
   printHookScaffoldSummary(hookResult);
 
-  // Startup service: respect STARTUP_SERVICE env in non-interactive mode
-  if (parseBooleanEnvValue(process.env.STARTUP_SERVICE, false)) {
-    env._STARTUP_SERVICE = "1";
-  } else if (
-    process.env.STARTUP_SERVICE !== undefined &&
-    !parseBooleanEnvValue(process.env.STARTUP_SERVICE, true)
-  ) {
-    env._STARTUP_SERVICE = "0";
-  }
-  // else: don't set — writeConfigFiles will skip silently
+  // Running mode: RUNNING_MODE=0|1|2|3 sets startup+shortcut+sentinel together.
+  // 0=Manual  1=Quick Launch (shortcut only)  2=Background Service  3=Sentinel
+  // Individual STARTUP_SERVICE / DESKTOP_SHORTCUT env vars still work as legacy overrides.
+  const runningModeRaw = process.env.RUNNING_MODE ?? process.env.BOSUN_RUNNING_MODE;
+  if (runningModeRaw !== undefined) {
+    const modeIdx = parseInt(runningModeRaw, 10);
+    if (modeIdx === 0) {
+      env._DESKTOP_SHORTCUT = "0";
+      env._STARTUP_SERVICE = "0";
+      env.BOSUN_SENTINEL_AUTO_START = env.BOSUN_SENTINEL_AUTO_START || "false";
+    } else if (modeIdx === 1) {
+      env._DESKTOP_SHORTCUT = "1";
+      env._STARTUP_SERVICE = "0";
+      env.BOSUN_SENTINEL_AUTO_START = env.BOSUN_SENTINEL_AUTO_START || "false";
+    } else if (modeIdx === 2) {
+      env._DESKTOP_SHORTCUT = "1";
+      env._STARTUP_SERVICE = "1";
+      env.BOSUN_SENTINEL_AUTO_START = env.BOSUN_SENTINEL_AUTO_START || "false";
+    } else if (modeIdx === 3) {
+      env._DESKTOP_SHORTCUT = "1";
+      env._STARTUP_SERVICE = "1";
+      env.BOSUN_SENTINEL_AUTO_START = "true";
+    }
+  } else {
+    // Legacy: individual env vars still supported
+    if (parseBooleanEnvValue(process.env.STARTUP_SERVICE, false)) {
+      env._STARTUP_SERVICE = "1";
+    } else if (
+      process.env.STARTUP_SERVICE !== undefined &&
+      !parseBooleanEnvValue(process.env.STARTUP_SERVICE, true)
+    ) {
+      env._STARTUP_SERVICE = "0";
+    }
+    // else: don't set — writeConfigFiles will skip silently
 
-  // Desktop shortcut: respect DESKTOP_SHORTCUT env in non-interactive mode
-  const desktopShortcutEnv =
-    process.env.DESKTOP_SHORTCUT ?? process.env.BOSUN_DESKTOP_SHORTCUT;
-  if (parseBooleanEnvValue(desktopShortcutEnv, false)) {
-    env._DESKTOP_SHORTCUT = "1";
-  } else if (
-    desktopShortcutEnv !== undefined &&
-    !parseBooleanEnvValue(desktopShortcutEnv, true)
-  ) {
-    env._DESKTOP_SHORTCUT = "0";
+    // Desktop shortcut: respect DESKTOP_SHORTCUT env in non-interactive mode
+    const desktopShortcutEnv =
+      process.env.DESKTOP_SHORTCUT ?? process.env.BOSUN_DESKTOP_SHORTCUT;
+    if (parseBooleanEnvValue(desktopShortcutEnv, false)) {
+      env._DESKTOP_SHORTCUT = "1";
+    } else if (
+      desktopShortcutEnv !== undefined &&
+      !parseBooleanEnvValue(desktopShortcutEnv, true)
+    ) {
+      env._DESKTOP_SHORTCUT = "0";
+    }
   }
 
   if (
@@ -6073,8 +6166,51 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
     }
   } else if (env._STARTUP_SERVICE === "0") {
     info(
-      "Startup service skipped — enable anytime: bosun --enable-startup",
+      "Startup service skipped — enable anytime: bosun --setup",
     );
+  }
+
+  // ── Start Bosun Now ────────────────────────────────────
+  if (env._START_AFTER_SETUP === "1") {
+    heading("Starting Bosun");
+    try {
+      const { spawn: _spawn } = await import("child_process");
+      const cliPath = resolve(__dirname, "cli.mjs");
+      const daemonChild = _spawn(
+        process.execPath,
+        [cliPath, "--daemon"],
+        {
+          detached: true,
+          stdio: "ignore",
+          cwd: __dirname,
+          windowsHide: true,
+        },
+      );
+      daemonChild.unref();
+      success("Bosun started in background (daemon mode)");
+      info("Check status:  bosun --daemon-status");
+      info("View logs:     bosun --logs");
+      if (env._OPEN_PORTAL_AFTER_SETUP === "1") {
+        const { resolveElectronLauncher: _getLauncher } =
+          await import("./desktop-shortcut.mjs");
+        const launcher = _getLauncher();
+        if (launcher?.executable) {
+          const portalChild = _spawn(
+            launcher.executable,
+            launcher.args || [],
+            { detached: true, stdio: "ignore", windowsHide: false },
+          );
+          portalChild.unref();
+          success("Bosun portal is opening...");
+        } else {
+          warn("Electron not found — portal launch skipped.");
+          info("Open the portal manually: bosun --desktop");
+        }
+      }
+    } catch (err) {
+      warn(`Could not start Bosun: ${err.message}`);
+      info("Start manually: bosun --daemon");
+    }
   }
 
   // ── Summary ────────────────────────────────────────────
@@ -6142,7 +6278,7 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
   console.log(chalk.green("    bosun --setup"));
   console.log(chalk.dim("    Re-run this wizard anytime\n"));
   console.log(chalk.green("    bosun --enable-startup"));
-  console.log(chalk.dim("    Register auto-start on login\n"));
+  console.log(chalk.dim("    Register auto-start on login (or use bosun --setup for the full wizard)\n"));
   console.log(chalk.green("    bosun --help"));
   console.log(chalk.dim("    See all options & env vars\n"));
 }
