@@ -55,6 +55,7 @@ import { ChatView } from "../components/chat-view.js";
 import { apiFetch } from "../modules/api.js";
 import { showToast } from "../modules/state.js";
 import { VoiceMicButton } from "../modules/voice.js";
+import { VoiceOverlay } from "../modules/voice-overlay.js";
 import { iconText, resolveIcon } from "../modules/icon-utils.js";
 import {
   ChatInputToolbar,
@@ -245,6 +246,8 @@ export function ChatTab() {
   const [slashActiveIdx, setSlashActiveIdx] = useState(0);
   const [renamingSessionId, setRenamingSessionId] = useState(null);
   const [sending, setSending] = useState(false);
+  const [voiceModeOpen, setVoiceModeOpen] = useState(false);
+  const [voiceConfig, setVoiceConfig] = useState(null);
   const [isMobile, setIsMobile] = useState(() => {
     try {
       return globalThis.matchMedia?.("(max-width: 768px)")?.matches ?? false;
@@ -302,6 +305,14 @@ export function ChatTab() {
       clearInterval(interval);
       clearInterval(agentInterval);
     };
+  }, []);
+
+  /* ── Fetch voice config on mount ── */
+  useEffect(() => {
+    fetch("/api/voice/config")
+      .then(r => r.ok ? r.json() : null)
+      .then(cfg => setVoiceConfig(cfg))
+      .catch(() => setVoiceConfig(null));
   }, []);
 
   /* ── Track mobile viewport to avoid auto-select loops ── */
@@ -854,6 +865,16 @@ export function ChatTab() {
                 disabled=${sending}
                 title="Voice input"
               />
+              ${voiceConfig?.available && html`
+                <button
+                  class="chat-send-btn"
+                  onClick=${() => { setVoiceModeOpen(true); }}
+                  title="Voice mode (${voiceConfig.tier === 1 ? 'Realtime' : 'Fallback'})"
+                  style="background: linear-gradient(135deg, rgba(99,102,241,0.2), rgba(16,185,129,0.2)); border-color: rgba(99,102,241,0.3);"
+                >
+                  ${resolveIcon("headphones") || "\uD83C\uDFA7"}
+                </button>
+              `}
               <button
                 class="chat-send-btn"
                 disabled=${!inputValue.trim() || sending}
@@ -886,6 +907,14 @@ export function ChatTab() {
           class="session-drawer-backdrop ${drawerOpen ? "open" : ""}"
           onClick=${() => setDrawerOpen(false)}
         ></div>
+      `}
+      ${voiceModeOpen && html`
+        <${VoiceOverlay}
+          visible=${voiceModeOpen}
+          onClose=${() => setVoiceModeOpen(false)}
+          tier=${voiceConfig?.tier || 2}
+          sessionId=${sessionId}
+        />
       `}
     </div>
   `;

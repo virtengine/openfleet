@@ -1083,6 +1083,56 @@ ${items.join("\n")}` : "todo updated";
       };
     }
 
+    // ── Voice events ──
+    if (event.type === "voice.start") {
+      return {
+        type: "system",
+        content: `Voice session started (provider: ${event.provider || "unknown"}, tier: ${event.tier || "?"})`,
+        timestamp: ts,
+        meta: { voiceEvent: "start", provider: event.provider, tier: event.tier },
+      };
+    }
+    if (event.type === "voice.end") {
+      return {
+        type: "system",
+        content: `Voice session ended (duration: ${event.duration || 0}s)`,
+        timestamp: ts,
+        meta: { voiceEvent: "end", duration: event.duration },
+      };
+    }
+    if (event.type === "voice.transcript") {
+      return {
+        type: "user",
+        content: (event.text || event.transcript || "").slice(0, MAX_MESSAGE_CHARS),
+        timestamp: ts,
+        meta: { voiceEvent: "transcript" },
+      };
+    }
+    if (event.type === "voice.response") {
+      return {
+        type: "agent_message",
+        content: (event.text || event.response || "").slice(0, MAX_MESSAGE_CHARS),
+        timestamp: ts,
+        meta: { voiceEvent: "response" },
+      };
+    }
+    if (event.type === "voice.tool_call") {
+      return {
+        type: "tool_call",
+        content: `voice:${event.name || "tool"}(${(event.arguments || "").slice(0, 500)})`,
+        timestamp: ts,
+        meta: { voiceEvent: "tool_call", toolName: event.name },
+      };
+    }
+    if (event.type === "voice.delegate") {
+      return {
+        type: "system",
+        content: `Voice delegated to ${event.executor || "agent"}: ${(event.message || "").slice(0, 500)}`,
+        timestamp: ts,
+        meta: { voiceEvent: "delegate", executor: event.executor },
+      };
+    }
+
     return null;
   }
 
@@ -1101,6 +1151,7 @@ ${items.join("\n")}` : "todo updated";
       case "system":        return "SYS";
       case "user":          return "USER";
       case "assistant":     return "ASSISTANT";
+      case "voice":         return "VOICE";
       default:              return type.toUpperCase();
     }
   }

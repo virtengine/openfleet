@@ -116,6 +116,9 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/github/device/start", // Device Flow initiation — server-only (calls GitHub API)
   "/api/github/device/poll",  // Device Flow polling — server-only (calls GitHub API)
   "/api/workspace-health",     // Workspace health diagnostics — server-only
+  "/api/voice/config",         // Voice config — server-only (reads real API keys + config)
+  "/api/voice/token",          // Ephemeral token creation — server-only (calls OpenAI/Azure API)
+  "/api/voice/tool",           // Voice tool execution — server-only (runs real tools)
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────
