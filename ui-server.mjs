@@ -8211,10 +8211,17 @@ export async function startTelegramUiServer(options = {}) {
       const provided = Buffer.from(qToken);
       const expected = Buffer.from(sessionToken);
       if (provided.length === expected.length && timingSafeEqual(provided, expected)) {
+        const cleanUrl = new URL(url.toString());
+        cleanUrl.searchParams.delete("token");
+        const redirectPath =
+          cleanUrl.pathname +
+          (cleanUrl.searchParams.toString()
+            ? `?${cleanUrl.searchParams.toString()}`
+            : "");
         const secure = uiServerTls ? "; Secure" : "";
         res.writeHead(302, {
           "Set-Cookie": `ve_session=${sessionToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400${secure}`,
-          Location: url.pathname || "/",
+          Location: redirectPath || "/",
         });
         res.end();
         return;

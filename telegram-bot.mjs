@@ -1009,6 +1009,54 @@ function getBrowserUiUrlOptions({ forTelegramButtons = true } = {}) {
   return options;
 }
 
+function normalizeMeetingCallType(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  if (!value) return "voice";
+  if (value === "video" || value === "videocall") return "video";
+  if (/\bvideo\b/.test(value)) return "video";
+  return "voice";
+}
+
+function appendQueryParams(inputUrl, params = {}) {
+  const raw = String(inputUrl || "").trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    for (const [key, value] of Object.entries(params || {})) {
+      const next = String(value ?? "").trim();
+      if (!next) continue;
+      url.searchParams.set(key, next);
+    }
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
+
+function buildMeetingLaunchUrl(baseUrl, callType = "voice", extra = {}) {
+  const normalizedCall = normalizeMeetingCallType(callType);
+  return appendQueryParams(baseUrl, {
+    launch: "meeting",
+    call: normalizedCall,
+    autostart: "1",
+    source: "telegram",
+    ...extra,
+  });
+}
+
+function getMeetingWebAppUrl(callType = "voice", extra = {}) {
+  const base = telegramWebAppUrl || getTelegramWebAppUrl(telegramUiUrl);
+  if (!base) return null;
+  return buildMeetingLaunchUrl(base, callType, extra);
+}
+
+function getMeetingBrowserUrlOptions(callType = "voice", extra = {}) {
+  return getBrowserUiUrlOptions().map((option) => ({
+    label: option.label,
+    url: buildMeetingLaunchUrl(option.url, callType, extra),
+  }));
+}
+
 function syncUiUrlsFromServer() {
   const currentUiUrl = getTelegramUiUrl?.() || null;
   telegramUiUrl = currentUiUrl;
@@ -3071,6 +3119,11 @@ const COMMANDS = {
   "/app": { handler: cmdApp, desc: "Open the Control Center Mini App" },
   "/miniapp": { handler: cmdApp, desc: "Open the Control Center Mini App" },
   "/webapp": { handler: cmdApp, desc: "Open the Control Center Mini App" },
+  "/call": { handler: cmdCall, desc: "Open one-click voice meeting room" },
+  "/videocall": {
+    handler: cmdVideoCall,
+    desc: "Open one-click video meeting room",
+  },
   "/cancel": { handler: cmdCancel, desc: "Cancel a pending input prompt" },
   "/ask": { handler: cmdAsk, desc: "Send prompt to agent: /ask <prompt>" },
   "/status": { handler: cmdStatus, desc: "Detailed orchestrator status" },
@@ -3456,6 +3509,8 @@ async function refreshMenuButton() {
 
 const FAST_COMMANDS = new Set([
   "/menu",
+  "/call",
+  "/videocall",
   "/background",
   "/status",
   "/weekly",
@@ -6442,6 +6497,70 @@ async function cmdApp(chatId) {
       reply_markup: keyboard,
     },
   );
+}
+
+async function cmdCall(chatId, args = "") {
+  const callType = normalizeMeetingCallType(args);
+  const isVideo = callType === "video";
+  const label = isVideo ? "video" : "voice";
+  const title = isVideo ? "🎥 *Video Meeting*" : "📞 *Voice Meeting*";
+  syncUiUrlsFromServer();
+
+  const webAppMeetingUrl = getMeetingWebAppUrl(callType, {
+    chat_id: String(chatId || "").trim(),
+  });
+  const browserOptions = getMeetingBrowserUrlOptions(callType, {
+    chat_id: String(chatId || "").trim(),
+  });
+
+  const rows = [];
+  if (webAppMeetingUrl) {
+    rows.push([
+      {
+        text: isVideo ? "🎥 Start Video Meeting" : "📞 Start Voice Meeting",
+        web_app: { url: webAppMeetingUrl },
+      },
+    ]);
+  }
+  if (browserOptions.length > 0) {
+    rows.push(
+      ...browserOptions.map((option) => [
+        {
+          text: `${option.label} (${label})`,
+          url: option.url,
+        },
+      ]),
+    );
+  }
+
+  if (rows.length === 0) {
+    await sendReply(
+      chatId,
+      "⚠️ Meeting UI is not available yet. Set TELEGRAM_WEBAPP_URL (HTTPS) or enable the UI tunnel first.",
+    );
+    return;
+  }
+
+  await sendDirect(
+    chatId,
+    [
+      title,
+      "",
+      "One tap opens the Bosun meeting room with your default agent + voice settings.",
+      isVideo
+        ? "Video mode auto-starts camera. You can switch to screen share any time."
+        : "Voice mode starts instantly. You can enable camera/screen share in-call.",
+    ].join("\n"),
+    {
+      parseMode: "Markdown",
+      reply_markup: { inline_keyboard: rows },
+    },
+  );
+}
+
+async function cmdVideoCall(chatId, args = "") {
+  const normalized = String(args || "").trim();
+  await cmdCall(chatId, normalized ? `video ${normalized}` : "video");
 }
 
 async function cmdMenu(chatId) {
