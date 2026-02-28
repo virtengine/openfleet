@@ -2445,6 +2445,84 @@ async function handleCallbackQuery(query) {
   await sendReply(chatId, `Unknown button action: ${data}`);
 }
 
+/**
+ * Transcribe a Telegram voice message using OpenAI Whisper and process as free text.
+ * @param {{ file_id: string, duration?: number }} voiceFile
+ * @param {string} chatId
+ */
+async function transcribeAndProcessVoice(voiceFile, chatId) {
+  const apiKey = process.env.OPENAI_API_KEY
+    || process.env.OPENAI_REALTIME_API_KEY
+    || "";
+
+  if (!apiKey) {
+    await sendReply(chatId, "⚠️ Voice messages require an OpenAI API key for transcription. Set OPENAI_API_KEY in your configuration.");
+    return;
+  }
+
+  // 1. Get file path from Telegram
+  const token = telegramToken;
+  const fileInfoRes = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${voiceFile.file_id}`);
+  if (!fileInfoRes.ok) throw new Error("Failed to get file info from Telegram");
+  const fileInfo = await fileInfoRes.json();
+  const filePath = fileInfo.result?.file_path;
+  if (!filePath) throw new Error("No file path in Telegram response");
+
+  // 2. Download the voice file
+  const fileUrl = `https://api.telegram.org/file/bot${token}/${filePath}`;
+  const audioRes = await fetch(fileUrl);
+  if (!audioRes.ok) throw new Error("Failed to download voice file");
+  const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
+
+  // 3. Transcribe using OpenAI Whisper API
+  const boundary = `----FormBoundary${Date.now()}`;
+  const ext = filePath.split(".").pop() || "ogg";
+  const formParts = [
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="voice.${ext}"\r\nContent-Type: audio/${ext === "oga" ? "ogg" : ext}\r\n\r\n`,
+    audioBuffer,
+    `\r\n--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n--${boundary}--\r\n`,
+  ];
+
+  const bodyBuffer = Buffer.concat([
+    Buffer.from(formParts[0], "utf8"),
+    formParts[1],
+    Buffer.from(formParts[2], "utf8"),
+  ]);
+
+  const whisperRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+    },
+    body: bodyBuffer,
+  });
+
+  if (!whisperRes.ok) {
+    const errText = await whisperRes.text().catch(() => "unknown");
+    throw new Error(`Whisper transcription failed (${whisperRes.status}): ${errText}`);
+  }
+
+  const { text: transcribedText } = await whisperRes.json();
+  if (!transcribedText?.trim()) {
+    await sendReply(chatId, "🎙️ Could not transcribe voice message (empty result).");
+    return;
+  }
+
+  // 4. Show transcription and process as free text
+  console.log(`[telegram-bot] voice transcription: "${transcribedText.slice(0, 80)}"`);
+  await sendReply(chatId, `🎙️ _${transcribedText}_`, { parseMode: "Markdown" });
+
+  // Route through the same free-text handler
+  if (transcribedText.startsWith("/")) {
+    enqueueCommand(() => handleCommand(transcribedText, chatId));
+  } else if (isPrimaryBusy() && getActiveAgentSession(chatId)) {
+    safeDetach("voice-text", () => handleFreeText(transcribedText, chatId));
+  } else {
+    enqueueAgentTask(() => handleFreeText(transcribedText, chatId), chatId);
+  }
+}
+
 async function handleUpdate(update) {
   // Handle inline keyboard button presses
   if (update.callback_query) {
@@ -2488,6 +2566,18 @@ async function handleUpdate(update) {
 
   if (msg.web_app_data?.data) {
     await handleWebAppData(msg.web_app_data.data, chatId);
+    return;
+  }
+
+  // ── Voice message handling: transcribe and process as free text ──
+  if (msg.voice || msg.audio) {
+    const voiceFile = msg.voice || msg.audio;
+    try {
+      await transcribeAndProcessVoice(voiceFile, chatId);
+    } catch (err) {
+      console.error(`[telegram-bot] voice processing error:`, err.message);
+      await sendReply(chatId, `⚠️ Could not process voice message: ${err.message}`);
+    }
     return;
   }
 
