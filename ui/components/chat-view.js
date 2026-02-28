@@ -233,6 +233,31 @@ function isTraceEventMessage(msg) {
   return (msg.role || "").toLowerCase() === "system";
 }
 
+function isModelResponseMessage(msg) {
+  if (!msg) return false;
+  const role = String(msg.role || "").toLowerCase();
+  const type = String(msg.type || "").toLowerCase();
+  if (role === "assistant") return true;
+  if (
+    type === "agent_message" ||
+    type === "assistant" ||
+    type === "assistant_message"
+  ) {
+    return true;
+  }
+  if (role) return false;
+  if (!msg.content) return false;
+  return ![
+    "tool_call",
+    "tool_result",
+    "tool_output",
+    "error",
+    "stream_error",
+    "system",
+    "user",
+  ].includes(type);
+}
+
 function messageText(msg) {
   if (typeof msg?.content === "string") return msg.content;
   if (msg?.content == null) return "";
@@ -286,6 +311,16 @@ function formatMessageLine(msg) {
   return `[${timestamp}] ${String(kind).toUpperCase()}: ${content}`;
 }
 
+function messageIdentity(msg) {
+  if (!msg) return "";
+  return String(
+    msg.id ||
+      msg.messageId ||
+      msg.timestamp ||
+      `${msg.role || msg.type || "message"}:${String(msg.content || "").slice(0, 80)}`,
+  );
+}
+
 function AttachmentList({ attachments }) {
   const list = Array.isArray(attachments) ? attachments.filter(Boolean) : [];
   if (!list.length) return null;
@@ -319,7 +354,7 @@ function AttachmentList({ attachments }) {
 }
 
 /* ─── Memoized ChatBubble — only re-renders if msg identity changes ─── */
-const ChatBubble = memo(function ChatBubble({ msg }) {
+const ChatBubble = memo(function ChatBubble({ msg, isFinalModelResponse = false }) {
   const isTool = msg.type === "tool_call" || msg.type === "tool_result";
   const isError = msg.type === "error" || msg.type === "stream_error";
   const contentText = messageText(msg);
@@ -338,8 +373,10 @@ const ChatBubble = memo(function ChatBubble({ msg }) {
     isTool
       ? msg.type === "tool_call" ? "TOOL CALL" : "TOOL RESULT"
       : isError ? "ERROR" : null;
+  const showModelResponseLabel =
+    isFinalModelResponse && !isTool && !isError && role !== "user" && role !== "system";
   return html`
-    <div class="chat-bubble ${bubbleClass}">
+    <div class="chat-bubble ${bubbleClass} ${showModelResponseLabel ? "chat-bubble-final" : ""}">
       ${role === "system" && !isTool
         ? html`
             <div class="chat-system-text">
@@ -348,6 +385,9 @@ const ChatBubble = memo(function ChatBubble({ msg }) {
           `
         : html`
             ${label ? html`<div class="chat-bubble-label">${label}</div>` : null}
+            ${showModelResponseLabel
+              ? html`<div class="chat-bubble-label chat-bubble-label-final">MODEL RESPONSE</div>`
+              : null}
             <div class="chat-bubble-content">
               <${MessageContent} text=${contentText} />
               <${AttachmentList} attachments=${msg.attachments} />
@@ -358,7 +398,7 @@ const ChatBubble = memo(function ChatBubble({ msg }) {
           `}
     </div>
   `;
-}, (prev, next) => prev.msg === next.msg);
+}, (prev, next) => prev.msg === next.msg && prev.isFinalModelResponse === next.isFinalModelResponse);
 
 const TraceEvent = memo(function TraceEvent({ msg }) {
   const info = describeTraceMessage(msg);
@@ -366,24 +406,73 @@ const TraceEvent = memo(function TraceEvent({ msg }) {
   const lineCount = text ? text.split(/\r?\n/).length : 0;
   const hasBody = text.length > 0 && (lineCount > 1 || text.length > 220);
   const longBody = lineCount > 12 || text.length > 1200;
+  const [expanded, setExpanded] = useState(() => info.kind === "error");
+
+  useEffect(() => {
+    setExpanded(info.kind === "error");
+  }, [msg]);
 
   return html`
-    <div class="chat-trace-item ${info.kind}">
-      <div class="chat-trace-head">
+    <div class="chat-trace-item ${info.kind} ${expanded ? "expanded" : ""}">
+      <button
+        class="chat-trace-head chat-trace-head-toggle"
+        type="button"
+        onClick=${() => hasBody && setExpanded((prev) => !prev)}
+        disabled=${!hasBody}
+      >
         <span class="chat-trace-tag ${info.kind}">${info.tag}</span>
         <span class="chat-trace-title">${info.title}</span>
         <span class="chat-trace-time">
           ${msg.timestamp ? formatRelative(msg.timestamp) : ""}
         </span>
-      </div>
+        ${hasBody && html`<span class="chat-trace-chevron">${expanded ? "▾" : "▸"}</span>`}
+      </button>
       ${hasBody && html`
-        <div class="chat-trace-content ${longBody ? "chat-trace-content-scroll" : ""}">
-          <${MessageContent} text=${text} />
+        <div class="chat-trace-content-wrap ${expanded ? "expanded" : ""}">
+          <div class="chat-trace-content ${longBody ? "chat-trace-content-scroll" : ""}">
+            <${MessageContent} text=${text} />
+          </div>
         </div>
       `}
     </div>
   `;
 }, (prev, next) => prev.msg === next.msg);
+
+/* ─── ThinkingGroup — collapses consecutive trace events into one row ─── */
+const ThinkingGroup = memo(function ThinkingGroup({ msgs }) {
+  const hasErrors = msgs.some((m) => m.type === "error" || m.type === "stream_error");
+  const [expanded, setExpanded] = useState(hasErrors);
+
+  useEffect(() => {
+    if (hasErrors) setExpanded(true);
+  }, [msgs.length, hasErrors]);
+
+  const toolCount = msgs.filter((m) => m.type === "tool_call").length;
+  const stepCount = msgs.filter((m) => {
+    const t = (m.type || "").toLowerCase();
+    return !["tool_call", "tool_result", "tool_output", "error", "stream_error"].includes(t);
+  }).length;
+
+  const parts = [];
+  if (toolCount) parts.push(`${toolCount} tool call${toolCount !== 1 ? "s" : ""}`);
+  if (stepCount) parts.push(`${stepCount} step${stepCount !== 1 ? "s" : ""}`);
+  const label = parts.join(", ") || `${msgs.length} step${msgs.length !== 1 ? "s" : ""}`;
+
+  return html`
+    <div class="thinking-group ${expanded ? "expanded" : ""} ${hasErrors ? "has-errors" : ""}">
+      <button class="thinking-group-head" type="button" onClick=${() => setExpanded((p) => !p)}>
+        <span class="thinking-group-badge">${iconText(":cpu: Thinking")}</span>
+        <span class="thinking-group-label">${label}</span>
+        <span class="thinking-group-chevron">${expanded ? "▾" : "▸"}</span>
+      </button>
+      ${expanded && html`
+        <div class="thinking-group-body">
+          ${msgs.map((m, idx) => html`<${TraceEvent} key=${m.id || m.timestamp || idx} msg=${m} />`)}
+        </div>
+      `}
+    </div>
+  `;
+}, (prev, next) => prev.msgs === next.msgs);
 
 /* ─── Chat View component ─── */
 
@@ -399,6 +488,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   const [showStreamMeta, setShowStreamMeta] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [filters, setFilters] = useState({
     tool: false,
@@ -449,6 +539,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     session?.status === "active" || session?.status === "running";
   const resumeLabel =
     session?.status === "archived" ? "Unarchive" : "Resume Session";
+  const safeSessionId = sessionId ? encodeURIComponent(sessionId) : "";
 
   /* Memoize the filter key list so filteredMessages memoization works properly.
      Previously a new array was created every render, breaking useMemo deps. */
@@ -477,12 +568,37 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     return messages.filter((msg) => activeFilters.includes(categorizeMessage(msg)));
   }, [messages, activeFilters]);
 
-  const visibleMessages = useMemo(() => {
-    if (filteredMessages.length <= visibleCount) return filteredMessages;
-    return filteredMessages.slice(-visibleCount);
-  }, [filteredMessages, visibleCount]);
+  const latestModelMessageKey = useMemo(() => {
+    const latest =
+      filteredMessages
+        .slice()
+        .reverse()
+        .find((msg) => isModelResponseMessage(msg)) || null;
+    return messageIdentity(latest);
+  }, [filteredMessages]);
 
-  const hasMoreMessages = filteredMessages.length > visibleCount;
+  // Count only real (non-trace) messages toward the visible limit so trace
+  // events don't consume the page budget.
+  const realMessageCount = useMemo(
+    () => filteredMessages.filter((msg) => !isTraceEventMessage(msg)).length,
+    [filteredMessages],
+  );
+
+  const visibleMessages = useMemo(() => {
+    if (realMessageCount <= visibleCount) return filteredMessages;
+    // Walk backwards counting only real messages; include all trace events
+    // that fall between them so groups stay intact.
+    let realCount = 0;
+    for (let i = filteredMessages.length - 1; i >= 0; i--) {
+      if (!isTraceEventMessage(filteredMessages[i])) {
+        realCount++;
+        if (realCount >= visibleCount) return filteredMessages.slice(i);
+      }
+    }
+    return filteredMessages;
+  }, [filteredMessages, visibleCount, realMessageCount]);
+
+  const hasMoreMessages = realMessageCount > visibleCount;
 
   const streamActivityKey = useMemo(() => {
     if (filteredMessages.length === 0) return "empty";
@@ -538,15 +654,37 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   }
 
   const renderItems = useMemo(() => {
-    return visibleMessages.map((msg, index) => {
-      const baseKey = msg.id || msg.timestamp || `msg-${index}`;
-      const trace = isTraceEventMessage(msg);
-      return {
-        kind: trace ? "trace" : "message",
-        key: `${trace ? "trace" : "message"}-${baseKey}-${index}`,
-        msg,
-      };
-    });
+    const items = [];
+    let i = 0;
+    while (i < visibleMessages.length) {
+      const msg = visibleMessages[i];
+      if (isTraceEventMessage(msg)) {
+        // Collect consecutive trace events; discard completely empty ones.
+        const group = [];
+        let groupKey = null;
+        while (i < visibleMessages.length && isTraceEventMessage(visibleMessages[i])) {
+          const m = visibleMessages[i];
+          if (messageText(m).trim()) {
+            group.push(m);
+            if (!groupKey) groupKey = m.id || m.timestamp || `trace-${i}`;
+          }
+          i++;
+        }
+        if (group.length > 0) {
+          items.push({ kind: "thinking-group", key: `thinking-group-${groupKey}`, msgs: group });
+        }
+      } else {
+        const baseKey = msg.id || msg.timestamp || `msg-${i}`;
+        items.push({
+          kind: "message",
+          key: `message-${baseKey}-${i}`,
+          messageKey: messageIdentity(msg),
+          msg,
+        });
+        i++;
+      }
+    }
+    return items;
   }, [visibleMessages]);
 
   const refreshMessages = useCallback(async () => {
@@ -709,7 +847,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
       for (const file of list) {
         form.append("file", file, file.name || "attachment");
       }
-      const res = await apiFetch(`/api/sessions/${sessionId}/attachments`, {
+      const res = await apiFetch(`/api/sessions/${safeSessionId}/attachments`, {
         method: "POST",
         body: form,
       });
@@ -741,6 +879,26 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     }
   }, [uploadAttachments]);
 
+  const handleDragOver = useCallback((e) => {
+    if (readOnly) return;
+    e.preventDefault();
+    if (!dragActive) setDragActive(true);
+  }, [readOnly, dragActive]);
+
+  const handleDragLeave = useCallback(() => {
+    if (dragActive) setDragActive(false);
+  }, [dragActive]);
+
+  const handleDrop = useCallback((e) => {
+    if (readOnly) return;
+    e.preventDefault();
+    setDragActive(false);
+    const files = e.dataTransfer?.files;
+    if (files && files.length) {
+      uploadAttachments(files);
+    }
+  }, [readOnly, uploadAttachments]);
+
   const removeAttachment = useCallback((index) => {
     setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
   }, []);
@@ -763,7 +921,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     setSending(true);
 
     try {
-      await apiFetch(`/api/sessions/${sessionId}/message`, {
+      await apiFetch(`/api/sessions/${safeSessionId}/message`, {
         method: "POST",
         body: JSON.stringify({
           content: text,
@@ -781,7 +939,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
   const handleResume = useCallback(async () => {
     try {
-      await apiFetch(`/api/sessions/${sessionId}/resume`, { method: "POST" });
+      await apiFetch(`/api/sessions/${safeSessionId}/resume`, { method: "POST" });
       showToast(
         session?.status === "archived" ? "Session unarchived" : "Session resumed",
         "success",
@@ -796,7 +954,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
 
   const handleArchive = useCallback(async () => {
     try {
-      await apiFetch(`/api/sessions/${sessionId}/archive`, { method: "POST" });
+      await apiFetch(`/api/sessions/${safeSessionId}/archive`, { method: "POST" });
       showToast("Session archived", "success");
       await loadSessions();
       const res = await loadSessionMessages(sessionId, { limit: CHAT_PAGE_SIZE });
@@ -1088,9 +1246,13 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             </button>
           </div>
         `}
-        ${renderItems.map((item) => item.kind === "trace"
-          ? html`<${TraceEvent} key=${item.key} msg=${item.msg} />`
-          : html`<${ChatBubble} key=${item.key} msg=${item.msg} />`
+        ${renderItems.map((item) => item.kind === "thinking-group"
+          ? html`<${ThinkingGroup} key=${item.key} msgs=${item.msgs} />`
+          : html`<${ChatBubble}
+              key=${item.key}
+              msg=${item.msg}
+              isFinalModelResponse=${item.messageKey === latestModelMessageKey}
+            />`
         )}
 
         ${/* Pending messages (optimistic rendering) — use .peek() to avoid
@@ -1193,13 +1355,16 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
           </button>
           <textarea
             ref=${inputRef}
-            class="input chat-input"
+            class="input chat-input ${dragActive ? "chat-input-drag" : ""}"
             placeholder="Send a message…"
             rows="1"
             value=${input}
             onInput=${handleInput}
             onKeyDown=${handleKeyDown}
             onPaste=${handlePaste}
+            onDragOver=${handleDragOver}
+            onDragLeave=${handleDragLeave}
+            onDrop=${handleDrop}
           />
           <button
             class="btn btn-primary chat-send-btn"
