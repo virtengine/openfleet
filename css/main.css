@@ -1052,7 +1052,7 @@ section {
   inset: 2rem;
   width: auto;
   height: auto;
-  z-index: 60;
+  z-index: 1200;
   border-radius: 32px;
   padding: 16px;
   box-shadow:
@@ -1095,7 +1095,7 @@ section {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease;
-  z-index: 50;
+  z-index: 1100;
 }
 
 .miniapp-demo-window__overlay.is-visible {
@@ -1220,7 +1220,7 @@ body.is-miniapp-fullscreen {
 .desktop-demo-window.is-fullscreen {
   position: fixed;
   inset: 2rem;
-  z-index: 60;
+  z-index: 1200;
   width: auto;
   height: auto;
   border-radius: 20px;
