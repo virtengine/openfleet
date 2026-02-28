@@ -1185,10 +1185,10 @@ async function bootstrap() {
 
     // Determine tray / background mode before creating any windows.
     trayMode = isTrayModeEnabled();
-    // In tray mode the window starts hidden by default (background resident).
-    // Set BOSUN_DESKTOP_START_HIDDEN=0 to open the window on every launch.
+    // In tray mode we still open the main window by default on startup.
+    // Set BOSUN_DESKTOP_START_HIDDEN=1 to force background-only launch.
     startHidden = trayMode
-      ? parseBoolEnv(process.env.BOSUN_DESKTOP_START_HIDDEN, true)
+      ? parseBoolEnv(process.env.BOSUN_DESKTOP_START_HIDDEN, false)
       : false;
 
     if (trayMode) {

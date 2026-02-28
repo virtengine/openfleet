@@ -1772,29 +1772,6 @@ function App() {
           return;
         }
 
-        const desktopFollowApi = globalThis?.veDesktop?.follow;
-        if (!followWindowMode && desktopFollowApi?.open) {
-          try {
-            await desktopFollowApi.open({
-              call: requestedCallType,
-              initialVisionSource: requestedVisionSource,
-              sessionId: currentSessionId,
-              executor: currentExecutor,
-              mode: currentMode,
-              model: currentModel,
-            });
-            const nextFloatingState = {
-              active: true,
-              call: requestedCallType,
-            };
-            setFloatingCallState(nextFloatingState);
-            writeFloatingCallState(nextFloatingState);
-            return;
-          } catch {
-            // Fall through to in-window overlay if desktop companion fails.
-          }
-        }
-
         setVoiceSessionId(currentSessionId);
         setVoiceExecutor(currentExecutor);
         setVoiceAgentMode(currentMode);
