@@ -461,6 +461,58 @@
         }
       ]
     },
+    "internalExecutor": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["vk", "internal", "hybrid"]
+        },
+        "maxParallel": { "type": "number" },
+        "baseBranchParallelLimit": { "type": "number" },
+        "pollIntervalMs": { "type": "number" },
+        "sdk": {
+          "type": "string",
+          "enum": ["auto", "codex", "copilot", "claude", "gemini", "opencode"]
+        },
+        "taskTimeoutMs": { "type": "number" },
+        "maxRetries": { "type": "number" },
+        "reviewAgentEnabled": { "type": "boolean" },
+        "reviewMaxConcurrent": { "type": "number" },
+        "reviewTimeoutMs": { "type": "number" },
+        "stream": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxRetries": {
+              "type": "number",
+              "description": "Transient stream retry attempts per run"
+            },
+            "retryBaseMs": {
+              "type": "number",
+              "description": "Base stream retry delay in milliseconds"
+            },
+            "retryMaxMs": {
+              "type": "number",
+              "description": "Maximum stream retry delay in milliseconds"
+            },
+            "firstEventTimeoutMs": {
+              "type": "number",
+              "description": "Abort/retry if no stream events arrive within this timeout"
+            },
+            "maxItemsPerTurn": {
+              "type": "number",
+              "description": "Maximum completed stream items retained per turn"
+            },
+            "maxItemChars": {
+              "type": "number",
+              "description": "Maximum characters retained per string field in stored stream items"
+            }
+          }
+        }
+      }
+    },
     "profiles": { "$ref": "#/$defs/profiles" },
     "envProfiles": { "$ref": "#/$defs/profiles" },
     "executors": {

@@ -276,7 +276,9 @@ describe("voice-relay", () => {
       });
       getVoiceConfig(true);
 
-      const result = await createEphemeralToken([], {
+      const result = await createEphemeralToken([
+        { type: "function", name: "delegate_to_agent" },
+      ], {
         sessionId: "primary-123",
         executor: "claude-sdk",
         mode: "plan",
@@ -378,6 +380,7 @@ describe("voice-relay", () => {
         voice: { provider: "openai", openaiApiKey: "sk-test" },
         primaryAgent: "codex-sdk",
       });
+      getVoiceConfig(true);
       vi.mocked(globalThis.fetch).mockResolvedValueOnce({
         ok: true,
         json: async () => ({

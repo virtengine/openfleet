@@ -12,12 +12,60 @@
  *   • MAX_STREAM_RETRIES           — shared retry ceiling
  */
 
+import { loadConfig } from "./config.mjs";
+
+function readInternalExecutorStreamConfig() {
+  try {
+    const cfg = loadConfig();
+    const streamCfg = cfg?.internalExecutor?.stream;
+    return streamCfg && typeof streamCfg === "object" ? streamCfg : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseNumericSetting({
+  envKey,
+  configValue,
+  fallback,
+  min,
+  max,
+  integer = true,
+}) {
+  const raw = process.env[envKey];
+  const candidate =
+    raw !== undefined && String(raw).trim() !== "" ? Number(raw) : Number(configValue);
+  const normalized = Number.isFinite(candidate) ? candidate : fallback;
+  const bounded = Math.min(Math.max(normalized, min), max);
+  return integer ? Math.trunc(bounded) : bounded;
+}
+
+const streamConfig = readInternalExecutorStreamConfig();
+
 /** Maximum number of stream-level retry attempts (not counting the first attempt). */
-export const MAX_STREAM_RETRIES = 5;
+export const MAX_STREAM_RETRIES = parseNumericSetting({
+  envKey: "INTERNAL_EXECUTOR_STREAM_MAX_RETRIES",
+  configValue: streamConfig.maxRetries,
+  fallback: 5,
+  min: 1,
+  max: 12,
+});
 
 /** Base backoff in ms.  Doubles per attempt: 2 s → 4 s → 8 s → 16 s → 32 s. */
-const STREAM_RETRY_BASE_MS = 2_000;
-const STREAM_RETRY_MAX_MS = 32_000;
+const STREAM_RETRY_BASE_MS = parseNumericSetting({
+  envKey: "INTERNAL_EXECUTOR_STREAM_RETRY_BASE_MS",
+  configValue: streamConfig.retryBaseMs,
+  fallback: 2_000,
+  min: 250,
+  max: 120_000,
+});
+const STREAM_RETRY_MAX_MS = parseNumericSetting({
+  envKey: "INTERNAL_EXECUTOR_STREAM_RETRY_MAX_MS",
+  configValue: streamConfig.retryMaxMs,
+  fallback: 32_000,
+  min: STREAM_RETRY_BASE_MS,
+  max: 300_000,
+});
 
 /**
  * Returns true for transient stream / network errors that are safe to retry

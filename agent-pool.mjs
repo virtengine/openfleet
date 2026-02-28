@@ -95,6 +95,114 @@ const MAX_PROMPT_BYTES = 180_000;
 const MAX_SET_TIMEOUT_MS = 2_147_483_647; // Node.js setTimeout 32-bit signed max
 let timeoutClampWarningKey = "";
 const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 120_000;
+const DEFAULT_MAX_ITEMS_PER_TURN = 600;
+const DEFAULT_MAX_ITEM_CHARS = 12_000;
+const TOOL_OUTPUT_GUARDRAIL =
+  "\\n\\n[Tool Output Guardrail] Keep tool outputs compact: prefer narrow searches, bounded command output (for example head/tail), and summaries for large results instead of dumping full payloads.";
+
+function parseBoundedNumber(value, fallback, min, max) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.min(Math.max(Math.trunc(num), min), max);
+}
+
+function getInternalExecutorStreamConfig() {
+  try {
+    const cfg = loadConfig();
+    const stream = cfg?.internalExecutor?.stream;
+    return stream && typeof stream === "object" ? stream : {};
+  } catch {
+    return {};
+  }
+}
+
+function truncateText(text, maxChars) {
+  if (typeof text !== "string") return text;
+  if (!Number.isFinite(maxChars) || maxChars < 1 || text.length <= maxChars) {
+    return text;
+  }
+  const trimmed = text.slice(0, maxChars);
+  const removed = text.length - maxChars;
+  return `${trimmed}\\n\\n[…truncated ${removed} chars…]`;
+}
+
+function truncateItemForStorage(item, maxChars) {
+  if (!item || typeof item !== "object") return item;
+  if (!Number.isFinite(maxChars) || maxChars < 1) return item;
+
+  const next = { ...item };
+  const directStringKeys = [
+    "text",
+    "output",
+    "aggregated_output",
+    "stderr",
+    "stdout",
+    "result",
+    "message",
+  ];
+  for (const key of directStringKeys) {
+    if (typeof next[key] === "string") {
+      next[key] = truncateText(next[key], maxChars);
+    }
+  }
+
+  if (Array.isArray(next.content)) {
+    next.content = next.content.map((entry) => {
+      if (entry && typeof entry === "object" && typeof entry.text === "string") {
+        return { ...entry, text: truncateText(entry.text, maxChars) };
+      }
+      return entry;
+    });
+  }
+
+  if (next.error && typeof next.error === "object") {
+    next.error = {
+      ...next.error,
+      message: truncateText(next.error.message, maxChars),
+    };
+  }
+
+  return next;
+}
+
+function resolveCodexStreamSafety(totalTimeoutMs) {
+  const streamCfg = getInternalExecutorStreamConfig();
+  const firstEventRaw =
+    process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS ||
+    process.env.AGENT_POOL_FIRST_EVENT_TIMEOUT_MS ||
+    streamCfg.firstEventTimeoutMs ||
+    DEFAULT_FIRST_EVENT_TIMEOUT_MS;
+  const maxItemsRaw =
+    process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN ||
+    streamCfg.maxItemsPerTurn ||
+    DEFAULT_MAX_ITEMS_PER_TURN;
+  const maxItemCharsRaw =
+    process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS ||
+    streamCfg.maxItemChars ||
+    DEFAULT_MAX_ITEM_CHARS;
+
+  const configuredFirstEventMs = parseBoundedNumber(
+    firstEventRaw,
+    DEFAULT_FIRST_EVENT_TIMEOUT_MS,
+    1_000,
+    60 * 60 * 1000,
+  );
+  const budgetMs = Number(totalTimeoutMs);
+  let firstEventTimeoutMs = null;
+  if (Number.isFinite(budgetMs) && budgetMs > 2_000) {
+    const maxAllowed = Math.max(1_000, budgetMs - 1_000);
+    firstEventTimeoutMs = clampTimerDelayMs(
+      Math.min(configuredFirstEventMs, maxAllowed),
+      "first-event-timeout",
+    );
+  }
+
+  return {
+    firstEventTimeoutMs,
+    maxItemsPerTurn: parseBoundedNumber(maxItemsRaw, DEFAULT_MAX_ITEMS_PER_TURN, 25, 5000),
+    maxItemChars: parseBoundedNumber(maxItemCharsRaw, DEFAULT_MAX_ITEM_CHARS, 500, 250000),
+  };
+}
 
 function clampTimerDelayMs(delayMs, label = "timer") {
   const parsed = Number(delayMs);
@@ -113,14 +221,7 @@ function clampTimerDelayMs(delayMs, label = "timer") {
 }
 
 function getFirstEventTimeoutMs(totalTimeoutMs) {
-  const configured = Number(
-    process.env.AGENT_POOL_FIRST_EVENT_TIMEOUT_MS || DEFAULT_FIRST_EVENT_TIMEOUT_MS,
-  );
-  if (!Number.isFinite(configured) || configured <= 0) return null;
-  const budgetMs = Number(totalTimeoutMs);
-  if (!Number.isFinite(budgetMs) || budgetMs <= 2_000) return null;
-  const maxAllowed = Math.max(5_000, budgetMs - 1_000);
-  return clampTimerDelayMs(Math.min(Math.trunc(configured), maxAllowed), "first-event-timeout");
+  return resolveCodexStreamSafety(totalTimeoutMs).firstEventTimeoutMs;
 }
 
 function sanitizeAndBoundPrompt(text) {
@@ -982,13 +1083,15 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
 
   // ── 4. Stream the turn ───────────────────────────────────────────────────
   try {
-    const safePrompt = sanitizeAndBoundPrompt(prompt);
+    const streamSafety = resolveCodexStreamSafety(timeoutMs);
+    const safePrompt = sanitizeAndBoundPrompt(`${prompt}${TOOL_OUTPUT_GUARDRAIL}`);
     const turn = await thread.runStreamed(safePrompt, {
       signal: controller.signal,
     });
 
     let finalResponse = "";
     const allItems = [];
+    let droppedItems = 0;
     // Race the event iterator against a hard timeout.
     // The soft timeout fires controller.abort() which the SDK should honor.
     // The hard timeout is a safety net in case the SDK iterator ignores the abort.
@@ -1018,7 +1121,11 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
           }
         }
         if (event.type === "item.completed") {
-          allItems.push(event.item);
+          if (allItems.length < streamSafety.maxItemsPerTurn) {
+            allItems.push(truncateItemForStorage(event.item, streamSafety.maxItemChars));
+          } else {
+            droppedItems += 1;
+          }
           if (event.item.type === "agent_message" && event.item.text) {
             finalResponse += event.item.text + "\n";
           }
@@ -1026,7 +1133,7 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
       }
     };
 
-    const firstEventTimeoutMs = getFirstEventTimeoutMs(timeoutMs);
+    const firstEventTimeoutMs = streamSafety.firstEventTimeoutMs;
     if (firstEventTimeoutMs) {
       firstEventTimer = setTimeout(() => {
         if (eventCount > 0 || controller.signal.aborted) return;
@@ -1040,6 +1147,13 @@ async function launchCodexThread(prompt, cwd, timeoutMs, extra = {}) {
     clearTimeout(hardTimer);
     if (firstEventTimer) clearTimeout(firstEventTimer);
     clearAbortScope();
+
+    if (droppedItems > 0) {
+      allItems.push({
+        type: "stream_notice",
+        text: `Dropped ${droppedItems} completed items to stay within INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN=${streamSafety.maxItemsPerTurn}.`,
+      });
+    }
 
     const output =
       finalResponse.trim() || "(Agent completed with no text output)";

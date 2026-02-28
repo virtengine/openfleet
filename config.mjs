@@ -1897,6 +1897,38 @@ export function loadConfig(argv = process.argv, options = {}) {
         internalExecutorConfig.backlogReplenishment?.requirePriority !== false,
       ),
     },
+    stream: {
+      maxRetries: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_MAX_RETRIES ||
+          internalExecutorConfig.stream?.maxRetries ||
+          5,
+      ),
+      retryBaseMs: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_RETRY_BASE_MS ||
+          internalExecutorConfig.stream?.retryBaseMs ||
+          2000,
+      ),
+      retryMaxMs: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_RETRY_MAX_MS ||
+          internalExecutorConfig.stream?.retryMaxMs ||
+          32000,
+      ),
+      firstEventTimeoutMs: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_FIRST_EVENT_TIMEOUT_MS ||
+          internalExecutorConfig.stream?.firstEventTimeoutMs ||
+          120000,
+      ),
+      maxItemsPerTurn: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEMS_PER_TURN ||
+          internalExecutorConfig.stream?.maxItemsPerTurn ||
+          600,
+      ),
+      maxItemChars: Number(
+        process.env.INTERNAL_EXECUTOR_STREAM_MAX_ITEM_CHARS ||
+          internalExecutorConfig.stream?.maxItemChars ||
+          12000,
+      ),
+    },
     projectRequirements,
   };
 

@@ -109,19 +109,78 @@ function canonicalMessageKind(msg) {
   return `${role || "unknown"}:${type || "message"}`;
 }
 
+function messageBody(msg) {
+  const value = msg?.content ?? msg?.text ?? "";
+  return String(value || "").trim();
+}
+
+function isLifecycleSystemMessage(msg) {
+  if (canonicalMessageKind(msg) !== "system") return false;
+  const lifecycle = String(msg?.meta?.lifecycle || "").trim().toLowerCase();
+  if (lifecycle) return true;
+  const content = messageBody(msg).toLowerCase();
+  if (!content) return true;
+  return (
+    content === "turn completed" ||
+    content === "session completed" ||
+    content === "agent is composing a response..." ||
+    content === "agent is composing a response…" ||
+    content.startsWith("message_stop") ||
+    content.startsWith("message_delta")
+  );
+}
+
+function reconnectFingerprint(content) {
+  const text = String(content || "").trim();
+  if (!text) return "";
+  const lower = text.toLowerCase();
+  if (!lower.includes("stream disconnected")) return "";
+  return lower
+    .replace(/reconnecting\.\.\.\s*\d+\s*\/\s*\d+/g, "reconnecting... n/n")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function dedupeMessages(messages) {
   const list = Array.isArray(messages) ? messages : [];
   const out = [];
   const seenExact = new Set();
   const recentAssistantContentTs = new Map();
+  const reconnectIndexByFingerprint = new Map();
   for (const msg of list) {
     if (!msg) continue;
     const kind = canonicalMessageKind(msg);
-    const content = String(msg.content || msg.text || "").trim();
+    const content = messageBody(msg);
+    if (!content && kind !== "user") continue;
+    if (isLifecycleSystemMessage(msg)) continue;
     const ts = Date.parse(msg.timestamp || 0) || 0;
     const exactKey = `${kind}|${content}|${ts}`;
     if (seenExact.has(exactKey)) continue;
+    const reconnectKey = kind === "error" ? reconnectFingerprint(content) : "";
+    if (reconnectKey) {
+      const existingIndex = reconnectIndexByFingerprint.get(reconnectKey);
+      if (Number.isInteger(existingIndex) && existingIndex >= 0 && existingIndex < out.length) {
+        out[existingIndex] = msg;
+        seenExact.add(exactKey);
+        continue;
+      }
+    }
     if (kind === "assistant" && content) {
+      while (out.length > 0 && isLifecycleSystemMessage(out[out.length - 1])) {
+        out.pop();
+      }
+      const lastAssistant = out[out.length - 1];
+      if (lastAssistant && canonicalMessageKind(lastAssistant) === "assistant") {
+        const lastTs = Date.parse(lastAssistant.timestamp || 0) || 0;
+        const withinStreamingWindow =
+          ts > 0 && lastTs > 0 ? Math.abs(ts - lastTs) <= 120000 : true;
+        if (withinStreamingWindow) {
+          out[out.length - 1] = msg;
+          recentAssistantContentTs.set(content, ts);
+          seenExact.add(exactKey);
+          continue;
+        }
+      }
       const prevAssistantTs = recentAssistantContentTs.get(content);
       if (prevAssistantTs !== undefined) {
         const withinAssistantWindow =
@@ -149,6 +208,9 @@ function dedupeMessages(messages) {
     }
     seenExact.add(exactKey);
     out.push(msg);
+    if (reconnectKey) {
+      reconnectIndexByFingerprint.set(reconnectKey, out.length - 1);
+    }
     if (kind === "assistant" && content) {
       recentAssistantContentTs.set(content, ts);
     }

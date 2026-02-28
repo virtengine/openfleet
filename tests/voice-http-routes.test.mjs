@@ -18,6 +18,7 @@ describe("ui-server voice + vision routes", () => {
     "TELEGRAM_UI_PORT",
     "BOSUN_UI_ALLOW_EPHEMERAL_PORT",
     "BOSUN_UI_AUTO_OPEN_BROWSER",
+    "BOSUN_ENV_NO_OVERRIDE",
   ];
   let envSnapshot = {};
 
@@ -28,6 +29,7 @@ describe("ui-server voice + vision routes", () => {
     process.env.TELEGRAM_UI_TUNNEL = "disabled";
     process.env.BOSUN_UI_ALLOW_EPHEMERAL_PORT = "1";
     process.env.BOSUN_UI_AUTO_OPEN_BROWSER = "0";
+    process.env.BOSUN_ENV_NO_OVERRIDE = "1";
     vi.mocked(analyzeVisionFrame).mockClear();
   });
 

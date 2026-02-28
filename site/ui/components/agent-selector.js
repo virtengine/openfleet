@@ -914,9 +914,8 @@ export function AgentPicker() {
       ${loading && html`<option disabled value="">Loading…</option>`}
       ${enabledAgents.map((agent) => {
         const name = EXECUTOR_DISPLAY_NAMES[agent.id] || agent.name;
-        const busy = agent.busy ? " (busy)" : "";
         return html`
-          <option key=${agent.id} value=${agent.id}>${name}${busy}</option>
+          <option key=${agent.id} value=${agent.id}>${name}</option>
         `;
       })}
     </select>
