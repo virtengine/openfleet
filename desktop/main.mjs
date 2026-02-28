@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  dialog,
   Menu,
   shell,
   Tray,
@@ -15,6 +16,17 @@ import { execFileSync, spawn } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
+import {
+  initShortcuts,
+  onShortcut,
+  getAllShortcuts,
+  getEffectiveAccelerator,
+  registerGlobalShortcuts,
+  unregisterGlobalShortcuts,
+  setShortcut,
+  resetShortcut,
+  resetAllShortcuts,
+} from "./desktop-shortcuts.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -34,7 +46,16 @@ let trayMode = false;
 /** True when the main window should start hidden (background mode). */
 let startHidden = false;
 const DEFAULT_TELEGRAM_UI_PORT = 3080;
-const FOLLOW_RESTORE_SHORTCUT = "CommandOrControl+Shift+V";
+
+/**
+ * Shorthand: returns the effective accelerator for a shortcut ID.
+ * Used throughout buildAppMenu() and refreshTrayMenu() so the menu
+ * always reflects the user's current shortcut customizations.
+ *
+ * @param {string} id  Shortcut ID from DEFAULT_SHORTCUTS catalog.
+ * @returns {string|undefined}  Accelerator string, or undefined if disabled.
+ */
+const acc = (id) => getEffectiveAccelerator(id) ?? undefined;
 
 const DAEMON_PID_FILE = resolve(homedir(), ".cache", "bosun", "daemon.pid");
 
@@ -275,13 +296,13 @@ function buildAppMenu() {
       submenu: [
         {
           label: "New Chat",
-          accelerator: "CmdOrCtrl+N",
+          accelerator: acc("app.newchat"),
           click: () => navigateMainWindow("/"),
         },
         { type: /** @type {const} */ ("separator") },
         {
           label: "Settings",
-          accelerator: "CmdOrCtrl+,",
+          accelerator: acc("app.settings"),
           click: () => navigateMainWindow("/settings"),
         },
         { type: /** @type {const} */ ("separator") },
@@ -321,12 +342,22 @@ function buildAppMenu() {
       submenu: [
         {
           label: "Show Main Window",
-          accelerator: "CmdOrCtrl+Shift+B",
+          accelerator: acc("bosun.focus"),
           click: () => setWindowVisible(mainWindow),
         },
         {
-          label: "Voice Companion",
-          accelerator: FOLLOW_RESTORE_SHORTCUT,
+          label: "Voice Call",
+          accelerator: acc("bosun.voice.call"),
+          click: () => openFollowWindow({ call: "voice" }).catch(() => {}),
+        },
+        {
+          label: "Video Call",
+          accelerator: acc("bosun.voice.video"),
+          click: () => openFollowWindow({ call: "video" }).catch(() => {}),
+        },
+        {
+          label: "Toggle Voice Companion",
+          accelerator: acc("bosun.voice.toggle"),
           click: () => {
             if (!restoreFollowWindow()) setWindowVisible(mainWindow);
           },
@@ -334,23 +365,34 @@ function buildAppMenu() {
         { type: /** @type {const} */ ("separator") },
         {
           label: "Dashboard",
-          accelerator: "CmdOrCtrl+H",
+          accelerator: acc("bosun.navigate.home"),
           click: () => navigateMainWindow("/"),
         },
         {
           label: "Agents",
-          accelerator: "CmdOrCtrl+Shift+A",
+          accelerator: acc("bosun.navigate.agents"),
           click: () => navigateMainWindow("/agents"),
         },
         {
           label: "Tasks",
-          accelerator: "CmdOrCtrl+Shift+T",
+          accelerator: acc("bosun.navigate.tasks"),
           click: () => navigateMainWindow("/tasks"),
         },
         {
           label: "Logs",
-          accelerator: "CmdOrCtrl+Shift+L",
+          accelerator: acc("bosun.navigate.logs"),
           click: () => navigateMainWindow("/logs"),
+        },
+        {
+          label: "Settings",
+          accelerator: acc("bosun.navigate.settings"),
+          click: () => navigateMainWindow("/settings"),
+        },
+        { type: /** @type {const} */ ("separator") },
+        {
+          label: "Quick New Chat",
+          accelerator: acc("bosun.quickchat"),
+          click: () => navigateMainWindow("/"),
         },
         { type: /** @type {const} */ ("separator") },
         {
@@ -380,6 +422,12 @@ function buildAppMenu() {
           label: "Report an Issue",
           click: () =>
             openUrl("https://github.com/virtengine/bosun/issues/new"),
+        },
+        { type: /** @type {const} */ ("separator") },
+        {
+          label: "Keyboard Shortcuts",
+          accelerator: acc("bosun.show.shortcuts"),
+          click: () => showShortcutsDialog(),
         },
         { type: /** @type {const} */ ("separator") },
         {
@@ -848,14 +896,106 @@ function ensureTray() {
   });
 }
 
-function registerShortcuts() {
-  try {
-    globalShortcut.register(FOLLOW_RESTORE_SHORTCUT, () => {
-      if (!restoreFollowWindow()) setWindowVisible(mainWindow);
-    });
-  } catch (error) {
-    console.warn("[desktop] failed to register shortcut", error?.message || error);
+/**
+ * Display a native shortcuts reference dialog.
+ * Groups shortcuts by their group property so the list is easy to scan.
+ */
+function showShortcutsDialog() {
+  const shortcuts = getAllShortcuts();
+
+  // Group entries
+  /** @type {Map<string, typeof shortcuts>} */
+  const groups = new Map();
+  for (const s of shortcuts) {
+    const g = s.group || "Other";
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(s);
   }
+
+  const isMac = process.platform === "darwin";
+  const modSymbol = isMac ? "⌘" : "Ctrl";
+  const shiftSym = isMac ? "⇧" : "+Shift";
+
+  const lines = [];
+  for (const [group, items] of groups) {
+    lines.push(`── ${group} ──`);
+    for (const s of items) {
+      const display = s.isDisabled
+        ? "(disabled)"
+        : (s.accelerator ?? "(none)")
+            .replace(/CmdOrCtrl/g, modSymbol)
+            .replace(/CommandOrControl/g, modSymbol)
+            .replace(/Shift\+/g, `${shiftSym}+`);
+      const custom = s.isCustomized ? " ★" : "";
+      lines.push(`  ${s.label.padEnd(30)} ${display}${custom}`);
+    }
+    lines.push("");
+  }
+  lines.push("★ = customized from default");
+  lines.push("");
+  lines.push("To customize shortcuts, edit:");
+  lines.push(`  ${resolveDesktopConfigDir()}/desktop-shortcuts.json`);
+
+  dialog
+    .showMessageBox(mainWindow ?? undefined, {
+      type: "info",
+      title: "Bosun — Keyboard Shortcuts",
+      message: "Keyboard Shortcuts Reference",
+      detail: lines.join("\n"),
+      buttons: ["OK"],
+    })
+    .catch(() => {});
+}
+
+/**
+ * Wire all shortcut action handlers and register global shortcuts.
+ * Called once during bootstrap, after the config dir is known.
+ *
+ * @param {string} configDir
+ */
+function initAndRegisterShortcuts(configDir) {
+  // Initialise the shortcuts manager (loads user customizations).
+  initShortcuts(configDir);
+
+  // ── Register action handlers ───────────────────────────────────────────
+  // Global: fire from anywhere on the desktop
+  onShortcut("bosun.focus", () => {
+    setWindowVisible(mainWindow);
+  });
+
+  onShortcut("bosun.quickchat", () => {
+    setWindowVisible(mainWindow);
+    navigateMainWindow("/");
+  });
+
+  onShortcut("bosun.voice.call", () => {
+    openFollowWindow({ call: "voice" }).catch((err) =>
+      console.warn("[shortcuts] voice.call failed:", err?.message || err),
+    );
+  });
+
+  onShortcut("bosun.voice.video", () => {
+    openFollowWindow({ call: "video" }).catch((err) =>
+      console.warn("[shortcuts] voice.video failed:", err?.message || err),
+    );
+  });
+
+  onShortcut("bosun.voice.toggle", () => {
+    if (!restoreFollowWindow()) setWindowVisible(mainWindow);
+  });
+
+  // Local: navigation (also in menu, but registered here for completeness)
+  onShortcut("bosun.navigate.home", () => navigateMainWindow("/"));
+  onShortcut("bosun.navigate.agents", () => navigateMainWindow("/agents"));
+  onShortcut("bosun.navigate.tasks", () => navigateMainWindow("/tasks"));
+  onShortcut("bosun.navigate.logs", () => navigateMainWindow("/logs"));
+  onShortcut("bosun.navigate.settings", () => navigateMainWindow("/settings"));
+  onShortcut("app.newchat", () => navigateMainWindow("/"));
+  onShortcut("app.settings", () => navigateMainWindow("/settings"));
+  onShortcut("bosun.show.shortcuts", () => showShortcutsDialog());
+
+  // ── Register global shortcuts with the OS ────────────────────────────
+  registerGlobalShortcuts();
 }
 
 function registerDesktopIpc() {
@@ -868,6 +1008,56 @@ function registerDesktopIpc() {
   });
   ipcMain.handle("bosun:desktop:follow:restore", async () => {
     return { ok: restoreFollowWindow() };
+  });
+
+  // ── Shortcuts IPC ───────────────────────────────────────────────────
+  /** Returns the full shortcuts catalog with effective accelerators. */
+  ipcMain.handle("bosun:shortcuts:list", () => getAllShortcuts());
+
+  /**
+   * Set a custom accelerator for a shortcut.
+   * Payload: { id: string, accelerator: string | null }
+   * Pass null to disable the shortcut.
+   * Returns: { ok: boolean, error?: string }
+   * Side-effects: re-registers global shortcuts + rebuilds the app menu.
+   */
+  ipcMain.handle("bosun:shortcuts:set", (_event, { id, accelerator }) => {
+    const result = setShortcut(id, accelerator);
+    if (result.ok) {
+      // Rebuild the menu so the new accelerator is reflected immediately.
+      Menu.setApplicationMenu(buildAppMenu());
+      refreshTrayMenu();
+    }
+    return result;
+  });
+
+  /**
+   * Reset a single shortcut to its default.
+   * Payload: { id: string }
+   */
+  ipcMain.handle("bosun:shortcuts:reset", (_event, { id }) => {
+    const result = resetShortcut(id);
+    if (result.ok) {
+      Menu.setApplicationMenu(buildAppMenu());
+      refreshTrayMenu();
+    }
+    return result;
+  });
+
+  /** Reset ALL shortcuts to defaults. */
+  ipcMain.handle("bosun:shortcuts:resetAll", () => {
+    const result = resetAllShortcuts();
+    if (result.ok) {
+      Menu.setApplicationMenu(buildAppMenu());
+      refreshTrayMenu();
+    }
+    return result;
+  });
+
+  /** Show the native keyboard shortcuts reference dialog. */
+  ipcMain.handle("bosun:shortcuts:showDialog", () => {
+    showShortcutsDialog();
+    return { ok: true };
   });
 }
 
@@ -902,6 +1092,11 @@ async function bootstrap() {
     });
 
     await ensureDaemonRunning();
+
+    // Initialise shortcuts (loads user config) and register globals.
+    // Must happen before buildAppMenu() so acc() returns correct values.
+    initAndRegisterShortcuts(resolveDesktopConfigDir());
+
     Menu.setApplicationMenu(buildAppMenu());
 
     // Determine tray / background mode before creating any windows.
@@ -926,7 +1121,6 @@ async function bootstrap() {
       }
     }
 
-    registerShortcuts();
     registerDesktopIpc();
     await createMainWindow();
 
@@ -981,6 +1175,8 @@ async function shutdown(reason) {
 
 app.on("before-quit", () => {
   shuttingDown = true;
+  // Unregister all custom global shortcuts before Electron's own cleanup.
+  try { unregisterGlobalShortcuts(); } catch { /* ignore */ }
   globalShortcut.unregisterAll();
   if (tray) {
     tray.destroy();
