@@ -205,6 +205,9 @@
       padding-right: 36px;
     }
     select option { background: var(--bg-secondary); color: var(--text-primary); }
+    /* Force dark color-scheme on select so native OS dropdown overlay renders
+       dark text on dark background (fixes white-on-white on Windows/Chrome). */
+    select { color-scheme: dark; }
     textarea { resize: vertical; min-height: 80px; }
     .hint { font-size: 0.73rem; color: var(--text-dim); margin-top: 4px; }
     .field-error { font-size: 0.73rem; color: var(--error); margin-top: 4px; }
@@ -753,7 +756,7 @@ function App() {
     openai: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
     azure: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
     claude: { model: "claude-3-7-sonnet-latest", visionModel: "claude-3-7-sonnet-latest", models: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"], visionModels: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"] },
-    gemini: { model: "gemini-2.5-pro", visionModel: "gemini-2.5-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro"] },
+    gemini: { model: "gemini-2.5-pro", visionModel: "gemini-2.5-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"] },
     fallback: { model: "", visionModel: "", models: [], visionModels: [] },
   };
 
@@ -2920,12 +2923,17 @@ function App() {
                   ${(() => {
                     const defaults_ = getVoiceProviderModelDefaults(providerRow.provider);
                     const knownModels = defaults_.models || [];
-                    const isCustom = knownModels.length > 0 && !knownModels.includes(providerRow.model) && providerRow.model !== "";
+                    // isCustom is true whenever model is not in the known list (including
+                    // empty string after the user selects "custom..."). This ensures the
+                    // select stays on "custom..." and the text input remains visible.
+                    const isCustom = knownModels.length > 0 && !knownModels.includes(providerRow.model);
                     return html`
                       <select value=${isCustom ? "custom" : providerRow.model}
                         onchange=${(e) => {
                           if (e.target.value === "custom") {
-                            updateVoiceProviderRow(idx, "model", "");
+                            // Keep model as-is (or empty) — the text input will appear
+                            // immediately for the user to type into.
+                            updateVoiceProviderRow(idx, "model", providerRow.model && !knownModels.includes(providerRow.model) ? providerRow.model : "");
                           } else {
                             updateVoiceProviderRow(idx, "model", e.target.value);
                           }
@@ -2933,11 +2941,12 @@ function App() {
                         ${knownModels.map((m) => html`<option value=${m}>${m}</option>`)}
                         <option value="custom">custom...</option>
                       </select>
-                      ${(isCustom || (knownModels.length > 0 && !knownModels.includes(providerRow.model))) && html`
+                      ${isCustom && html`
                         <input type="text" value=${providerRow.model}
                           oninput=${(e) => updateVoiceProviderRow(idx, "model", e.target.value)}
                           placeholder="Enter custom model slug..."
                           style="margin-top:4px"
+                          autofocus
                         />
                       `}
                       ${knownModels.length === 0 && html`
@@ -2955,12 +2964,14 @@ function App() {
                   ${(() => {
                     const defaults_ = getVoiceProviderModelDefaults(providerRow.provider);
                     const knownVisionModels = defaults_.visionModels || [];
-                    const isCustomVision = knownVisionModels.length > 0 && !knownVisionModels.includes(providerRow.visionModel) && providerRow.visionModel !== "";
+                    // isCustomVision is true whenever visionModel is not in the known list
+                    // (including empty string after selecting "custom...").
+                    const isCustomVision = knownVisionModels.length > 0 && !knownVisionModels.includes(providerRow.visionModel);
                     return html`
                       <select value=${isCustomVision ? "custom" : providerRow.visionModel}
                         onchange=${(e) => {
                           if (e.target.value === "custom") {
-                            updateVoiceProviderRow(idx, "visionModel", "");
+                            updateVoiceProviderRow(idx, "visionModel", providerRow.visionModel && !knownVisionModels.includes(providerRow.visionModel) ? providerRow.visionModel : "");
                           } else {
                             updateVoiceProviderRow(idx, "visionModel", e.target.value);
                           }
@@ -2968,11 +2979,12 @@ function App() {
                         ${knownVisionModels.map((m) => html`<option value=${m}>${m}</option>`)}
                         <option value="custom">custom...</option>
                       </select>
-                      ${(isCustomVision || (knownVisionModels.length > 0 && !knownVisionModels.includes(providerRow.visionModel))) && html`
+                      ${isCustomVision && html`
                         <input type="text" value=${providerRow.visionModel}
                           oninput=${(e) => updateVoiceProviderRow(idx, "visionModel", e.target.value)}
                           placeholder="Enter custom vision model slug..."
                           style="margin-top:4px"
+                          autofocus
                         />
                       `}
                       ${knownVisionModels.length === 0 && html`
