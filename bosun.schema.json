@@ -296,6 +296,55 @@
             }
           }
         },
+        "voiceEndpoints": {
+          "type": "array",
+          "description": "Named realtime voice endpoints, each with its own credentials. Multiple endpoints enable automatic failover with context preservation.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["provider"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Friendly label for this endpoint"
+              },
+              "provider": {
+                "type": "string",
+                "enum": ["azure", "openai"],
+                "description": "Provider type"
+              },
+              "endpoint": {
+                "type": "string",
+                "description": "Azure OpenAI endpoint URL (required for azure)"
+              },
+              "deployment": {
+                "type": "string",
+                "description": "Azure deployment name (required for azure)"
+              },
+              "apiKey": {
+                "type": "string",
+                "description": "API key for this endpoint"
+              },
+              "model": {
+                "type": "string",
+                "description": "Model name (for openai provider)"
+              },
+              "voiceId": { "type": "string" },
+              "visionModel": { "type": "string" },
+              "role": {
+                "type": "string",
+                "enum": ["primary", "backup"],
+                "default": "primary"
+              },
+              "weight": {
+                "type": "number",
+                "default": 100,
+                "description": "Priority weight — higher = tried first"
+              },
+              "enabled": { "type": "boolean", "default": true }
+            }
+          }
+        },
         "delegateExecutor": {
           "type": "string",
           "enum": [

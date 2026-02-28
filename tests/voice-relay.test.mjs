@@ -305,7 +305,7 @@ describe("voice-relay", () => {
       expect(payload.tool_choice).toBe("auto");
     });
 
-    it("calls Azure API correctly for azure provider", async () => {
+    it("calls Azure API correctly for azure provider (preview deployment)", async () => {
       vi.mocked(loadConfig).mockReturnValue({
         voice: {
           provider: "azure",
@@ -325,6 +325,59 @@ describe("voice-relay", () => {
       expect(fetchCall[0]).toContain("myresource.openai.azure.com");
       expect(fetchCall[0]).toContain("realtimeapi/sessions");
       expect(fetchCall[1].headers["api-key"]).toBe("az-key");
+    });
+
+    it("calls Azure GA API correctly for GA model (gpt-realtime-1.5)", async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: {
+          provider: "azure",
+          azureApiKey: "az-key",
+          azureEndpoint: "https://myresource.openai.azure.com",
+          azureDeployment: "gpt-realtime-1.5",
+        },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+
+      const result = await createEphemeralToken([]);
+      expect(result.token).toBe("test-token");
+      expect(result.provider).toBe("azure");
+
+      const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
+      expect(fetchCall[0]).toContain("myresource.openai.azure.com");
+      expect(fetchCall[0]).toContain("openai/v1/realtime/client_secrets");
+      expect(fetchCall[0]).not.toContain("api-version");
+      expect(fetchCall[1].headers["api-key"]).toBe("az-key");
+    });
+
+    it("uses per-endpoint credentials from voiceEndpoints config", async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: {
+          provider: "azure",
+          voiceEndpoints: [
+            {
+              name: "foundry-us",
+              provider: "azure",
+              endpoint: "https://foundry.openai.azure.com",
+              deployment: "gpt-realtime-1.5",
+              apiKey: "ep-specific-key",
+              role: "primary",
+              enabled: true,
+            },
+          ],
+        },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+
+      const result = await createEphemeralToken([]);
+      expect(result.token).toBe("test-token");
+      expect(result.provider).toBe("azure");
+
+      const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
+      expect(fetchCall[0]).toContain("foundry.openai.azure.com");
+      expect(fetchCall[0]).toContain("openai/v1/realtime/client_secrets");
+      expect(fetchCall[1].headers["api-key"]).toBe("ep-specific-key");
     });
 
     it("injects call context into realtime session instructions", async () => {
@@ -467,13 +520,13 @@ describe("voice-relay", () => {
       expect(info.model).toBe("gpt-audio-1.5");
     });
 
-    it("returns Azure URL for azure provider", () => {
+    it("returns Azure preview URL for preview deployment", () => {
       vi.mocked(loadConfig).mockReturnValue({
         voice: {
           provider: "azure",
           azureApiKey: "az-key",
           azureEndpoint: "https://myresource.openai.azure.com",
-          azureDeployment: "my-deployment",
+          azureDeployment: "gpt-4o-realtime-preview",
         },
         primaryAgent: "codex-sdk",
       });
@@ -482,8 +535,26 @@ describe("voice-relay", () => {
       const info = getRealtimeConnectionInfo();
       expect(info.provider).toBe("azure");
       expect(info.url).toContain("myresource.openai.azure.com");
-      expect(info.url).toContain("deployment=my-deployment");
-      expect(info.model).toBe("my-deployment");
+      expect(info.url).toContain("deployment=gpt-4o-realtime-preview");
+      expect(info.model).toBe("gpt-4o-realtime-preview");
+    });
+
+    it("returns Azure GA URL for GA deployment (gpt-realtime-1.5)", () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: {
+          provider: "azure",
+          azureApiKey: "az-key",
+          azureEndpoint: "https://myresource.openai.azure.com",
+          azureDeployment: "gpt-realtime-1.5",
+        },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+
+      const info = getRealtimeConnectionInfo();
+      expect(info.provider).toBe("azure");
+      expect(info.url).toBe("https://myresource.openai.azure.com/openai/v1/realtime");
+      expect(info.model).toBe("gpt-realtime-1.5");
     });
 
     it("returns tier-2 metadata for claude provider", () => {
