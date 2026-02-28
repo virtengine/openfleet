@@ -87,6 +87,28 @@ function formatTaskOptionLabel(task) {
   return `#${numberToken} ${task?.title || "(untitled task)"}`;
 }
 
+function normalizeDispatchTaskChoices(tasks) {
+  if (!Array.isArray(tasks)) return [];
+  const deduped = [];
+  const seenTaskIds = new Set();
+  for (const task of tasks) {
+    if (!task || typeof task !== "object") continue;
+    const status = String(task?.status || "").toLowerCase();
+    const dispatchable =
+      task?.draft === true || status === "draft" || status === "todo";
+    if (!dispatchable) continue;
+    const taskId = String(task?.id ?? task?.taskId ?? "").trim();
+    if (!taskId || seenTaskIds.has(taskId)) continue;
+    seenTaskIds.add(taskId);
+    deduped.push({ ...task, id: taskId });
+  }
+  return deduped.sort((a, b) => taskSortScore(b) - taskSortScore(a));
+}
+
+function fleetSlotKey(index) {
+  return `slot-${index}`;
+}
+
 /* ─── Workspace Viewer Modal ─── */
 function WorkspaceViewer({ agent, onClose }) {
   const [logText, setLogText] = useState("Loading…");
@@ -958,26 +980,34 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
   const [dispatching, setDispatching] = useState(false);
   const [taskChoices, setTaskChoices] = useState([]);
   const [tasksLoading, setTasksLoading] = useState(false);
+  const latestTaskRequestRef = useRef(0);
+  const mountedRef = useRef(true);
 
   const canDispatch = Boolean(taskId.trim() || prompt.trim());
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const loadDispatchTasks = useCallback(() => {
+    const requestId = latestTaskRequestRef.current + 1;
+    latestTaskRequestRef.current = requestId;
     setTasksLoading(true);
     apiFetch("/api/tasks?limit=1000", { _silent: true })
       .then((res) => {
-        const tasks = Array.isArray(res?.data) ? res.data : [];
-        const choices = tasks
-          .filter((task) => {
-            const status = String(task?.status || "").toLowerCase();
-            return task?.draft === true || status === "draft" || status === "todo";
-          })
-          .sort((a, b) => taskSortScore(b) - taskSortScore(a));
+        if (!mountedRef.current || latestTaskRequestRef.current !== requestId) return;
+        const choices = normalizeDispatchTaskChoices(res?.data);
         setTaskChoices(choices);
       })
       .catch(() => {
+        if (!mountedRef.current || latestTaskRequestRef.current !== requestId) return;
         setTaskChoices([]);
       })
       .finally(() => {
+        if (!mountedRef.current || latestTaskRequestRef.current !== requestId) return;
         setTasksLoading(false);
       });
   }, []);
@@ -1045,8 +1075,8 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
             <option value="">
               ${tasksLoading ? "Loading tasks…" : "Select backlog or draft task"}
             </option>
-            ${taskChoices.map((task) => html`
-              <option key=${task.id} value=${task.id}>
+            ${taskChoices.map((task, i) => html`
+              <option key=${`${task.id}-${i}`} value=${task.id}>
                 ${formatTaskOptionLabel(task)}
               </option>
             `)}
@@ -1355,7 +1385,7 @@ export function AgentsTab() {
                   const st = slot ? slot.status || "busy" : "idle";
                   return html`
                     <div
-                      key=${i}
+                      key=${fleetSlotKey(i)}
                       class="slot-cell slot-${st}"
                       title=${slot
                         ? `${slot.taskTitle || slot.taskId} (${st})`
@@ -1387,8 +1417,8 @@ export function AgentsTab() {
                 : "No active slots"}
             </div>
             ${slots.length
-              ? slots.map(
-                  (slot, i) => html`
+                ? slots.map(
+                    (slot, i) => html`
                     <div
                       key=${slot?.taskId || slot?.sessionId || `slot-${i}`}
                       class="task-card fleet-agent-card ${expandedSlot === i
