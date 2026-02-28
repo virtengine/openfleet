@@ -287,6 +287,24 @@ const GH_ISSUE_LIST_CACHE_TTL_MS =
 const GH_SHARED_STATE_CACHE_TTL_MS =
   Number(process.env.GITHUB_SHARED_STATE_CACHE_TTL_MS) || 5 * 60 * 1000; // 5 min
 
+const GH_ISSUE_VIEW_CACHE_TTL_MS =
+  Number(process.env.GH_ISSUE_VIEW_CACHE_TTL_MS) || 60 * 1000; // 1 min
+
+const GH_ISSUE_VIEW_NEGATIVE_CACHE_TTL_MS =
+  Number(process.env.GH_ISSUE_VIEW_NEGATIVE_CACHE_TTL_MS) || 5 * 60 * 1000; // 5 min
+
+const GH_ISSUE_LOCATOR_CACHE_TTL_MS =
+  Number(process.env.GH_ISSUE_LOCATOR_CACHE_TTL_MS) || 30 * 60 * 1000; // 30 min
+
+const GH_READ_CACHE_TTL_MS =
+  Number(process.env.GH_READ_CACHE_TTL_MS) || 30 * 1000; // 30 sec
+
+const GH_ERROR_COOLDOWN_MS =
+  Number(process.env.GH_ERROR_COOLDOWN_MS) || 60 * 1000; // 1 min
+
+const GH_NOT_FOUND_COOLDOWN_MS =
+  Number(process.env.GH_NOT_FOUND_COOLDOWN_MS) || 5 * 60 * 1000; // 5 min
+
 /** Build a cache key for the issue-list cache (per adapter instance). */
 function _issueListCacheKey(state, limit) {
   return `${state}:${limit}`;
@@ -330,6 +348,25 @@ function parseIssueLocator(issueNumber, defaultOwner, defaultRepo, issueUrl = ""
   };
 }
 
+function parseIssueRefLocator(issueRef, defaultOwner, defaultRepo, issueUrl = "") {
+  const raw = String(issueRef || "").trim();
+  const explicit = raw.match(/^([^/\s]+)\/([^#\s]+)#(\d+)$/);
+  if (explicit) {
+    const owner = String(explicit[1] || "").trim();
+    const repo = String(explicit[2] || "")
+      .trim()
+      .replace(/\.git$/i, "");
+    const number = String(explicit[3] || "").trim();
+    return {
+      owner,
+      repo,
+      number,
+      repoKey: `${owner}/${repo}`.toLowerCase(),
+    };
+  }
+  return parseIssueLocator(issueRef, defaultOwner, defaultRepo, issueUrl);
+}
+
 function isGhRateLimitError(text) {
   const errText = String(text || "").toLowerCase();
   if (!errText) return false;
@@ -345,6 +382,95 @@ function isGhTransientError(text) {
   if (!errText) return false;
   if (isGhRateLimitError(errText)) return false;
   return GH_TRANSIENT_ERROR_PATTERNS.some((pattern) => pattern.test(errText));
+}
+
+const GH_NOT_FOUND_ERROR_PATTERNS = [
+  /could not resolve to an issue or pull request with the number/i,
+  /repository\.issue/i,
+  /\bnot found\b/i,
+  /http\s*404/i,
+];
+
+const GH_AUTH_ERROR_PATTERNS = [
+  /bad credentials/i,
+  /requires authentication/i,
+  /must authenticate/i,
+  /authentication failed/i,
+  /resource not accessible by integration/i,
+  /http\s*401/i,
+];
+
+function buildGhRequestKey(args, parseJson = true) {
+  const parts = Array.isArray(args) ? args : [args];
+  return `${parseJson ? "json" : "text"}:${parts
+    .map((entry) => String(entry ?? ""))
+    .join("\u001f")}`;
+}
+
+function isGhGraphqlMutation(args) {
+  if (!Array.isArray(args)) return false;
+  if (String(args[0] || "").toLowerCase() !== "api") return false;
+  const queryArg = args.find(
+    (entry) =>
+      typeof entry === "string" &&
+      (entry.startsWith("query=") || entry.startsWith("-fquery=")),
+  );
+  if (!queryArg) return false;
+  return /\bmutation\b/i.test(queryArg);
+}
+
+function isGhReadOnlyCommand(args) {
+  if (!Array.isArray(args) || args.length === 0) return false;
+  const cmd = String(args[0] || "").toLowerCase();
+  const sub = String(args[1] || "").toLowerCase();
+
+  if (cmd === "issue") {
+    return sub === "view" || sub === "list";
+  }
+
+  if (cmd === "project") {
+    return ["list", "view", "field-list", "item-list"].includes(sub);
+  }
+
+  if (cmd === "api") {
+    const methodFlagIndex = args.findIndex(
+      (entry) => String(entry || "").toLowerCase() === "-x",
+    );
+    if (methodFlagIndex >= 0) {
+      const method = String(args[methodFlagIndex + 1] || "GET")
+        .trim()
+        .toUpperCase();
+      if (method && method !== "GET") return false;
+    }
+    if (isGhGraphqlMutation(args)) return false;
+    return true;
+  }
+
+  return false;
+}
+
+function classifyGhDeterministicError(text) {
+  const raw = String(text || "");
+  if (!raw) return null;
+  if (isGhRateLimitError(raw) || isGhTransientError(raw)) return null;
+  if (GH_NOT_FOUND_ERROR_PATTERNS.some((pattern) => pattern.test(raw))) {
+    return "not_found";
+  }
+  if (GH_AUTH_ERROR_PATTERNS.some((pattern) => pattern.test(raw))) {
+    return "auth";
+  }
+  return null;
+}
+
+function isGhNotFoundError(text) {
+  const errText = String(text || "").toLowerCase();
+  if (!errText) return false;
+  return (
+    errText.includes("http 404") ||
+    errText.includes("not found (http 404)") ||
+    errText.includes("could not resolve to an issue or pull request with the number") ||
+    errText.includes("(repository.issue)")
+  );
 }
 
 function parseRepoSlug(raw) {
@@ -1348,6 +1474,51 @@ class GitHubIssuesAdapter {
     this._issueListCache = new Map();
     /** @type {Map<string, {data: object|null, ts: number}>} issueNum → {data, ts} */
     this._sharedStateCache = new Map();
+    /** @type {Map<string, {owner:string, repo:string, repoKey:string, number:string, issueUrl:string, ts:number}>} */
+    this._issueLocatorCache = new Map();
+    this._issueLocatorCacheTtlMs = parseDelayMs(
+      process.env.GH_ISSUE_LOCATOR_CACHE_TTL_MS,
+      GH_ISSUE_LOCATOR_CACHE_TTL_MS,
+      0,
+    );
+    /** @type {Map<string, number>} repo#issueNum → last-seen-missing timestamp */
+    this._missingIssueCache = new Map();
+    this._missingIssueCacheTtlMs = parseDelayMs(
+      process.env.GH_MISSING_ISSUE_CACHE_TTL_MS,
+      10 * 60 * 1000,
+      5_000,
+    );
+    /** @type {Map<string, {data:any, ts:number}>} gh request key → parsed payload */
+    this._ghReadCache = new Map();
+    /** @type {Map<string, Promise<any>>} gh request key → in-flight promise */
+    this._ghInflight = new Map();
+    /** @type {Map<string, {until:number, message:string, type:string|null}>} gh request key → cooldown metadata */
+    this._ghErrorCooldown = new Map();
+    this._ghReadCacheTtlMs = parseDelayMs(
+      process.env.GH_READ_CACHE_TTL_MS,
+      GH_READ_CACHE_TTL_MS,
+      0,
+    );
+    this._ghErrorCooldownMs = parseDelayMs(
+      process.env.GH_ERROR_COOLDOWN_MS,
+      GH_ERROR_COOLDOWN_MS,
+      0,
+    );
+    this._ghNotFoundCooldownMs = parseDelayMs(
+      process.env.GH_NOT_FOUND_COOLDOWN_MS,
+      GH_NOT_FOUND_COOLDOWN_MS,
+      0,
+    );
+    this._issueViewCacheTtlMs = parseDelayMs(
+      process.env.GH_ISSUE_VIEW_CACHE_TTL_MS,
+      GH_ISSUE_VIEW_CACHE_TTL_MS,
+      0,
+    );
+    this._issueViewNegativeCacheTtlMs = parseDelayMs(
+      process.env.GH_ISSUE_VIEW_NEGATIVE_CACHE_TTL_MS,
+      GH_ISSUE_VIEW_NEGATIVE_CACHE_TTL_MS,
+      5_000,
+    );
     this._lastKnownTasks = [];
     this._taskListBackoffUntil = 0;
     this._taskListBackoffMs = parseDelayMs(
@@ -1364,6 +1535,11 @@ class GitHubIssuesAdapter {
       ...task,
       meta: task?.meta ? { ...task.meta } : {},
     }));
+    for (const task of this._lastKnownTasks) {
+      const issueUrl = String(task?.taskUrl || task?.meta?.url || "").trim();
+      if (!issueUrl) continue;
+      this._rememberIssueLocator(task.id, issueUrl);
+    }
     this._taskListBackoffUntil = 0;
     this._taskListBackoffWarnAt = 0;
   }
@@ -1388,6 +1564,114 @@ class GitHubIssuesAdapter {
     }
 
     return fallback;
+  }
+
+  _clearGhReadCaches() {
+    this._ghReadCache.clear();
+    this._ghErrorCooldown.clear();
+    this._ghInflight.clear();
+  }
+
+  _rememberIssueLocator(issueNumber, issueUrl = "") {
+    const locator = parseIssueRefLocator(
+      issueNumber,
+      this._owner,
+      this._repo,
+      issueUrl,
+    );
+    if (!/^\d+$/.test(locator.number) || !locator.owner || !locator.repo) return;
+    const key = String(locator.number);
+    const canonicalUrl =
+      issueUrl ||
+      `https://github.com/${locator.owner}/${locator.repo}/issues/${locator.number}`;
+    this._issueLocatorCache.set(key, {
+      ...locator,
+      issueUrl: canonicalUrl,
+      ts: Date.now(),
+    });
+  }
+
+  _resolveIssueLocator(issueNumber, options = {}) {
+    const issueUrl = String(options?.issueUrl || "").trim();
+    const direct = parseIssueRefLocator(
+      issueNumber,
+      this._owner,
+      this._repo,
+      issueUrl,
+    );
+    if (!/^\d+$/.test(direct.number)) return direct;
+
+    // Explicit URL/ref always wins and refreshes cache.
+    if (issueUrl || String(issueNumber || "").includes("/")) {
+      this._rememberIssueLocator(direct.number, issueUrl || String(issueNumber || ""));
+      return {
+        ...direct,
+        issueUrl:
+          issueUrl ||
+          `https://github.com/${direct.owner}/${direct.repo}/issues/${direct.number}`,
+      };
+    }
+
+    const key = String(direct.number);
+    const cached = this._issueLocatorCache.get(key);
+    if (cached) {
+      if (Date.now() - cached.ts <= this._issueLocatorCacheTtlMs) {
+        return { ...cached };
+      }
+      this._issueLocatorCache.delete(key);
+    }
+
+    // Fall back to last-known tasks (e.g., project item-list rows from other repos).
+    const match = this._lastKnownTasks.find(
+      (task) => String(task?.id || "") === key,
+    );
+    const taskUrl = String(match?.taskUrl || match?.meta?.url || "").trim();
+    if (taskUrl) {
+      const resolved = parseIssueRefLocator(
+        key,
+        this._owner,
+        this._repo,
+        taskUrl,
+      );
+      if (/^\d+$/.test(resolved.number)) {
+        const value = {
+          ...resolved,
+          issueUrl: taskUrl,
+          ts: Date.now(),
+        };
+        this._issueLocatorCache.set(key, value);
+        return value;
+      }
+    }
+
+    return {
+      ...direct,
+      issueUrl: `https://github.com/${direct.owner}/${direct.repo}/issues/${direct.number}`,
+    };
+  }
+
+  _isIssueKnownMissing(issueNumber, options = {}) {
+    const locator = this._resolveIssueLocator(issueNumber, options);
+    const key = _sharedStateCacheKey(locator.number, locator.repoKey);
+    const seenAt = this._missingIssueCache.get(key);
+    if (!seenAt) return false;
+    if (Date.now() - seenAt > this._missingIssueCacheTtlMs) {
+      this._missingIssueCache.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  _markIssueMissing(issueNumber, options = {}) {
+    const locator = this._resolveIssueLocator(issueNumber, options);
+    const key = _sharedStateCacheKey(locator.number, locator.repoKey);
+    this._missingIssueCache.set(key, Date.now());
+  }
+
+  _clearIssueMissing(issueNumber, options = {}) {
+    const locator = this._resolveIssueLocator(issueNumber, options);
+    const key = _sharedStateCacheKey(locator.number, locator.repoKey);
+    this._missingIssueCache.delete(key);
   }
 
   /**
@@ -1674,9 +1958,20 @@ class GitHubIssuesAdapter {
     const issueUrl =
       content.url ||
       `https://github.com/${this._owner}/${this._repo}/issues/${num}`;
+    const locator = parseIssueRefLocator(
+      num,
+      this._owner,
+      this._repo,
+      issueUrl,
+    );
+    const normalizedNum = /^\d+$/.test(locator.number)
+      ? locator.number
+      : String(num);
+    const projectId = `${locator.owner}/${locator.repo}`;
+    this._rememberIssueLocator(normalizedNum, issueUrl);
 
     return {
-      id: String(num),
+      id: String(normalizedNum),
       title: content.title || projectItem.title || "",
       description: body,
       status,
@@ -1688,12 +1983,12 @@ class GitHubIssuesAdapter {
           : null,
       tags,
       draft: labelSet.has("draft") || status === "draft",
-      projectId: `${this._owner}/${this._repo}`,
+      projectId,
       baseBranch,
       branchName: branchMatch?.[1] || null,
       prNumber: prMatch?.[1] || null,
       meta: {
-        number: Number(num),
+        number: Number(normalizedNum),
         title: content.title || projectItem.title || "",
         body,
         state: content.state || null,
@@ -2182,120 +2477,221 @@ class GitHubIssuesAdapter {
   /** Execute a gh CLI command and return parsed JSON (with rate limit retry) */
   async _gh(args, options = {}) {
     const { parseJson = true } = options;
+    const normalizedArgs = Array.isArray(args)
+      ? args.map((entry) => String(entry ?? ""))
+      : [String(args ?? "")];
+    const readOnly = isGhReadOnlyCommand(normalizedArgs);
+    const isIssueViewRead =
+      readOnly &&
+      String(normalizedArgs[0] || "").toLowerCase() === "issue" &&
+      String(normalizedArgs[1] || "").toLowerCase() === "view";
+    const readCacheTtlMs = isIssueViewRead
+      ? this._issueViewCacheTtlMs
+      : this._ghReadCacheTtlMs;
+    const requestKey = buildGhRequestKey(normalizedArgs, parseJson);
+    const now = Date.now();
+
+    if (readOnly && readCacheTtlMs > 0) {
+      const cached = this._ghReadCache.get(requestKey);
+      if (cached && now - cached.ts < readCacheTtlMs) {
+        return cached.data;
+      }
+      if (cached) this._ghReadCache.delete(requestKey);
+    }
+
+    if (readOnly && this._ghErrorCooldownMs > 0) {
+      const cooldown = this._ghErrorCooldown.get(requestKey);
+      if (cooldown && cooldown.until > now) {
+        const cooldownError = new Error(
+          `gh CLI request skipped during cooldown: ${cooldown.message}`,
+        );
+        cooldownError.isCooldown = true;
+        cooldownError.isNotFound = cooldown.type === "not_found";
+        throw cooldownError;
+      }
+      if (cooldown) this._ghErrorCooldown.delete(requestKey);
+    }
+
+    if (readOnly && this._ghInflight.has(requestKey)) {
+      return this._ghInflight.get(requestKey);
+    }
+
     const { execFile } = await import("node:child_process");
 
-    const attempt = async () => {
-      try {
-        const result = await new Promise((resolve, reject) => {
-          execFile(
-            "gh",
-            args,
-            {
-              maxBuffer: 10 * 1024 * 1024,
-              timeout: 30_000,
-            },
-            (err, stdout, stderr) => {
-              const normalizeOutput = (value, fallback = "") => {
-                if (value == null) return String(fallback || "");
-                if (typeof value === "string") return value;
-                return String(value);
-              };
+    const run = async () => {
+      const attempt = async () => {
+        try {
+          const result = await new Promise((resolve, reject) => {
+            execFile(
+              "gh",
+              normalizedArgs,
+              {
+                maxBuffer: 10 * 1024 * 1024,
+                timeout: 30_000,
+              },
+              (err, stdout, stderr) => {
+                const normalizeOutput = (value, fallback = "") => {
+                  if (value == null) return String(fallback || "");
+                  if (typeof value === "string") return value;
+                  return String(value);
+                };
 
-              const outputFromStdoutObject =
-                stdout && typeof stdout === "object"
-                  ? {
-                      stdout: normalizeOutput(stdout.stdout),
-                      stderr: normalizeOutput(stdout.stderr, stderr),
-                    }
-                  : null;
+                const outputFromStdoutObject =
+                  stdout && typeof stdout === "object"
+                    ? {
+                        stdout: normalizeOutput(stdout.stdout),
+                        stderr: normalizeOutput(stdout.stderr, stderr),
+                      }
+                    : null;
 
-              const normalized = outputFromStdoutObject || {
-                stdout: normalizeOutput(stdout),
-                stderr: normalizeOutput(stderr),
-              };
+                const normalized = outputFromStdoutObject || {
+                  stdout: normalizeOutput(stdout),
+                  stderr: normalizeOutput(stderr),
+                };
 
-              if (err) {
-                err.stdout = normalizeOutput(err.stdout, normalized.stdout);
-                err.stderr = normalizeOutput(err.stderr, normalized.stderr);
-                reject(err);
-                return;
-              }
+                if (err) {
+                  err.stdout = normalizeOutput(err.stdout, normalized.stdout);
+                  err.stderr = normalizeOutput(err.stderr, normalized.stderr);
+                  reject(err);
+                  return;
+                }
 
-              resolve(normalized);
-            },
+                resolve(normalized);
+              },
+            );
+          });
+          return result;
+        } catch (err) {
+          const message = String(err?.message || err);
+          const stdout = String(err?.stdout || "");
+          const stderr = String(err?.stderr || "");
+          const ghError = new Error(message);
+          ghError.stdout = stdout;
+          ghError.stderr = stderr;
+          ghError.fullText = [message, stderr, stdout].filter(Boolean).join("\n");
+          ghError.isRateLimit = isGhRateLimitError([message, stderr].join("\n"));
+          ghError.isTransient = isGhTransientError([message, stderr, stdout].join("\n"));
+          ghError.isNotFound = isGhNotFoundError([message, stderr, stdout].join("\n"));
+          throw ghError;
+        }
+      };
+
+      let usedRateLimitRetry = false;
+      let transientRetries = 0;
+      const maxTransientRetries = Math.max(0, Number(this._transientRetryMax) || 0);
+
+      while (true) {
+        let result;
+        try {
+          result = await attempt();
+        } catch (err) {
+          const message = String(err?.message || err);
+          if (err?.isRateLimit && !usedRateLimitRetry) {
+            usedRateLimitRetry = true;
+            console.warn(
+              `${TAG} rate limit detected, waiting ${this._rateLimitRetryDelayMs}ms before retry...`,
+            );
+            await sleepMs(this._rateLimitRetryDelayMs);
+            continue;
+          }
+          if (err?.isTransient && transientRetries < maxTransientRetries) {
+            transientRetries += 1;
+            console.warn(
+              `${TAG} transient gh failure (attempt ${transientRetries}/${maxTransientRetries}), retrying in ${this._transientRetryDelayMs}ms...`,
+            );
+            await sleepMs(this._transientRetryDelayMs);
+            continue;
+          }
+
+          const fullText = String(err?.fullText || message);
+          const deterministicClass = classifyGhDeterministicError(fullText);
+          if (readOnly && deterministicClass) {
+            const cooldownMs =
+              deterministicClass === "not_found"
+                ? isIssueViewRead
+                  ? this._issueViewNegativeCacheTtlMs
+                  : this._ghNotFoundCooldownMs
+                : this._ghErrorCooldownMs;
+            if (cooldownMs > 0) {
+              this._ghErrorCooldown.set(requestKey, {
+                until: Date.now() + cooldownMs,
+                message,
+                type: deterministicClass,
+              });
+            }
+          }
+
+          if (err?.isRateLimit && usedRateLimitRetry) {
+            const wrapped = new Error(
+              `gh CLI failed (after rate limit retry): ${message}`,
+            );
+            wrapped.cause = err;
+            wrapped.isRateLimit = Boolean(err?.isRateLimit);
+            wrapped.isTransient = Boolean(err?.isTransient);
+            wrapped.isNotFound = Boolean(
+              err?.isNotFound || deterministicClass === "not_found",
+            );
+            wrapped.isDeterministic = Boolean(deterministicClass);
+            wrapped.deterministicClass = deterministicClass;
+            throw wrapped;
+          }
+          const wrapped = new Error(`gh CLI failed: ${message}`);
+          wrapped.cause = err;
+          wrapped.isRateLimit = Boolean(err?.isRateLimit);
+          wrapped.isTransient = Boolean(err?.isTransient);
+          wrapped.isNotFound = Boolean(
+            err?.isNotFound || deterministicClass === "not_found",
           );
-        });
-        return result;
-      } catch (err) {
-        const message = String(err?.message || err);
-        const stdout = String(err?.stdout || "");
-        const stderr = String(err?.stderr || "");
-        const ghError = new Error(message);
-        ghError.stdout = stdout;
-        ghError.stderr = stderr;
-        ghError.fullText = [message, stderr, stdout].filter(Boolean).join("\n");
-        ghError.isRateLimit = isGhRateLimitError([message, stderr].join("\n"));
-        ghError.isTransient = isGhTransientError([message, stderr, stdout].join("\n"));
-        throw ghError;
+          wrapped.isDeterministic = Boolean(deterministicClass);
+          wrapped.deterministicClass = deterministicClass;
+          throw wrapped;
+        }
+
+        const text = String(result?.stdout || "").trim();
+        let parsed;
+        if (!parseJson) {
+          parsed = text;
+        } else if (!text) {
+          parsed = null;
+        } else {
+          try {
+            parsed = JSON.parse(text);
+          } catch (err) {
+            const parseMessage = String(err?.message || err);
+            const parseContext = [parseMessage, result?.stderr || "", text.slice(0, 512)]
+              .filter(Boolean)
+              .join("\n");
+            if (
+              isGhTransientError(parseContext) &&
+              transientRetries < maxTransientRetries
+            ) {
+              transientRetries += 1;
+              console.warn(
+                `${TAG} transient gh JSON parse failure (attempt ${transientRetries}/${maxTransientRetries}), retrying in ${this._transientRetryDelayMs}ms...`,
+              );
+              await sleepMs(this._transientRetryDelayMs);
+              continue;
+            }
+            throw new Error(`gh CLI returned invalid JSON: ${parseMessage}`);
+          }
+        }
+
+        if (readOnly && readCacheTtlMs > 0) {
+          this._ghReadCache.set(requestKey, { data: parsed, ts: Date.now() });
+        } else if (!readOnly) {
+          // A successful mutation invalidates all request-level read caches.
+          this._clearGhReadCaches();
+        }
+        return parsed;
       }
     };
 
-    let usedRateLimitRetry = false;
-    let transientRetries = 0;
-    const maxTransientRetries = Math.max(0, Number(this._transientRetryMax) || 0);
-
-    while (true) {
-      let result;
-      try {
-        result = await attempt();
-      } catch (err) {
-        const message = String(err?.message || err);
-        if (err?.isRateLimit && !usedRateLimitRetry) {
-          usedRateLimitRetry = true;
-          console.warn(
-            `${TAG} rate limit detected, waiting ${this._rateLimitRetryDelayMs}ms before retry...`,
-          );
-          await sleepMs(this._rateLimitRetryDelayMs);
-          continue;
-        }
-        if (err?.isTransient && transientRetries < maxTransientRetries) {
-          transientRetries += 1;
-          console.warn(
-            `${TAG} transient gh failure (attempt ${transientRetries}/${maxTransientRetries}), retrying in ${this._transientRetryDelayMs}ms...`,
-          );
-          await sleepMs(this._transientRetryDelayMs);
-          continue;
-        }
-        if (err?.isRateLimit && usedRateLimitRetry) {
-          throw new Error(`gh CLI failed (after rate limit retry): ${message}`);
-        }
-        throw new Error(`gh CLI failed: ${message}`);
-      }
-
-      const text = String(result?.stdout || "").trim();
-      if (!parseJson) return text;
-      if (!text) return null;
-
-      try {
-        return JSON.parse(text);
-      } catch (err) {
-        const parseMessage = String(err?.message || err);
-        const parseContext = [parseMessage, result?.stderr || "", text.slice(0, 512)]
-          .filter(Boolean)
-          .join("\n");
-        if (
-          isGhTransientError(parseContext) &&
-          transientRetries < maxTransientRetries
-        ) {
-          transientRetries += 1;
-          console.warn(
-            `${TAG} transient gh JSON parse failure (attempt ${transientRetries}/${maxTransientRetries}), retrying in ${this._transientRetryDelayMs}ms...`,
-          );
-          await sleepMs(this._transientRetryDelayMs);
-          continue;
-        }
-        throw new Error(`gh CLI returned invalid JSON: ${parseMessage}`);
-      }
+    const promise = run();
+    if (readOnly) this._ghInflight.set(requestKey, promise);
+    try {
+      return await promise;
+    } finally {
+      if (readOnly) this._ghInflight.delete(requestKey);
     }
   }
   async _ensureLabelExists(label) {
@@ -2520,12 +2916,32 @@ class GitHubIssuesAdapter {
     return normalized;
   }
 
-  async getTask(issueNumber) {
-    const num = String(issueNumber).replace(/^#/, "");
+  async getTask(issueNumber, options = {}) {
+    const locator = this._resolveIssueLocator(issueNumber, options);
+    const num = String(locator.number || "").replace(/^#/, "");
     if (!/^\d+$/.test(num)) {
       throw new Error(
         `GitHub Issues: invalid issue number "${issueNumber}" — expected a numeric ID, got a UUID or non-numeric string`,
       );
+    }
+    const repoRef = `${locator.owner}/${locator.repo}`;
+    const issueUrl =
+      locator.issueUrl || `https://github.com/${repoRef}/issues/${num}`;
+    if (this._isIssueKnownMissing(num, { issueUrl })) {
+      return {
+        id: String(num),
+        title: "",
+        description: "",
+        status: "todo",
+        assignee: null,
+        priority: null,
+        projectId: repoRef,
+        branchName: null,
+        prNumber: null,
+        meta: { externalMissing: true, externalMissingReason: "issue_not_found" },
+        taskUrl: issueUrl,
+        backend: "github",
+      };
     }
     let issue = null;
     try {
@@ -2534,14 +2950,20 @@ class GitHubIssuesAdapter {
         "view",
         num,
         "--repo",
-        `${this._owner}/${this._repo}`,
+        repoRef,
         "--json",
         "number,title,body,state,url,assignees,labels,milestone,comments",
       ]);
+      this._rememberIssueLocator(num, issue?.url || issueUrl);
+      this._clearIssueMissing(num, { issueUrl: issue?.url || issueUrl });
     } catch (err) {
-      console.warn(
-        `${TAG} failed to fetch issue #${num}: ${err.message || err}`,
-      );
+      if (err?.isNotFound) {
+        this._markIssueMissing(num, { issueUrl });
+      } else if (!err?.isCooldown) {
+        console.warn(
+          `${TAG} failed to fetch issue #${num}: ${err.message || err}`,
+        );
+      }
     }
     const task = issue
       ? this._normaliseIssue(issue)
@@ -2552,13 +2974,19 @@ class GitHubIssuesAdapter {
           status: "todo",
           assignee: null,
           priority: null,
-          projectId: `${this._owner}/${this._repo}`,
+          projectId: repoRef,
           branchName: null,
           prNumber: null,
           meta: {},
-          taskUrl: null,
+          taskUrl: issueUrl,
           backend: "github",
         };
+    if (!issue) {
+      task.meta.externalMissing = this._isIssueKnownMissing(num, { issueUrl });
+      if (task.meta.externalMissing) {
+        task.meta.externalMissingReason = "issue_not_found";
+      }
+    }
 
     if (issue && (!task.branchName || !task.prNumber)) {
       const comments = Array.isArray(issue?.comments) ? issue.comments : [];
@@ -2577,31 +3005,40 @@ class GitHubIssuesAdapter {
     }
 
     // Enrich with shared state from comments
-    try {
-      const sharedState = normalizeSharedStatePayload(
-        await this.readSharedStateFromIssue(num),
-      );
-      if (sharedState) {
-        task.meta.sharedState = sharedState;
-        task.sharedState = sharedState;
+    if (issue) {
+      try {
+        const embeddedComments = Array.isArray(issue?.comments)
+          ? issue.comments
+          : null;
+        const sharedState = normalizeSharedStatePayload(
+          await this.readSharedStateFromIssue(num, embeddedComments, {
+            issueUrl: issue?.url || issueUrl,
+          }),
+        );
+        if (sharedState) {
+          task.meta.sharedState = sharedState;
+          task.sharedState = sharedState;
+        }
+      } catch (err) {
+        // Non-critical - continue without shared state
+        console.warn(
+          `[kanban] failed to read shared state for #${num}: ${err.message}`,
+        );
       }
-    } catch (err) {
-      // Non-critical - continue without shared state
-      console.warn(
-        `[kanban] failed to read shared state for #${num}: ${err.message}`,
-      );
     }
 
     return task;
   }
 
   async updateTaskStatus(issueNumber, status, options = {}) {
-    const num = String(issueNumber).replace(/^#/, "");
+    const locator = this._resolveIssueLocator(issueNumber, options);
+    const num = String(locator.number || "").replace(/^#/, "");
     if (!/^\d+$/.test(num)) {
       throw new Error(
         `GitHub Issues: invalid issue number "${issueNumber}" — expected a numeric ID, got a UUID or non-numeric string`,
       );
     }
+    const repoRef = `${locator.owner}/${locator.repo}`;
 
     // Invalidate the instance issue-list cache so the next listTasks() poll
     // sees fresh data rather than stale cache.
@@ -2613,7 +3050,7 @@ class GitHubIssuesAdapter {
         "close",
         num,
         "--repo",
-        `${this._owner}/${this._repo}`,
+        repoRef,
       ];
       if (normalised === "cancelled") {
         closeArgs.push("--reason", "not planned");
@@ -2621,7 +3058,7 @@ class GitHubIssuesAdapter {
       await this._gh(closeArgs, { parseJson: false });
     } else {
       await this._gh(
-        ["issue", "reopen", num, "--repo", `${this._owner}/${this._repo}`],
+        ["issue", "reopen", num, "--repo", repoRef],
         { parseJson: false },
       );
 
@@ -2647,7 +3084,7 @@ class GitHubIssuesAdapter {
         "edit",
         num,
         "--repo",
-        `${this._owner}/${this._repo}`,
+        repoRef,
       ];
       if (nextLabel) {
         editArgs.push("--add-label", nextLabel);
@@ -2690,7 +3127,7 @@ class GitHubIssuesAdapter {
     ) {
       const projectNumber = await this._resolveProjectNumber();
       if (projectNumber) {
-        const task = await this.getTask(num);
+        const task = await this.getTask(num, { issueUrl: locator.issueUrl });
         if (task?.taskUrl) {
           try {
             await this._syncStatusToProject(
@@ -2710,7 +3147,7 @@ class GitHubIssuesAdapter {
     }
 
     try {
-      return await this.getTask(issueNumber);
+      return await this.getTask(issueNumber, { issueUrl: locator.issueUrl });
     } catch (err) {
       console.warn(
         `${TAG} failed to fetch updated issue #${num} after status change: ${err.message}`,
@@ -2722,29 +3159,31 @@ class GitHubIssuesAdapter {
         status: normalised,
         assignee: null,
         priority: null,
-        projectId: `${this._owner}/${this._repo}`,
+        projectId: repoRef,
         branchName: null,
         prNumber: null,
         meta: {},
-        taskUrl: null,
+        taskUrl: locator.issueUrl || `https://github.com/${repoRef}/issues/${num}`,
         backend: "github",
       };
     }
   }
 
   async updateTask(issueNumber, patch = {}) {
-    const num = String(issueNumber).replace(/^#/, "");
+    const locator = this._resolveIssueLocator(issueNumber);
+    const num = String(locator.number || "").replace(/^#/, "");
     if (!/^\d+$/.test(num)) {
       throw new Error(
         `GitHub Issues: invalid issue number "${issueNumber}" — expected a numeric ID, got a UUID or non-numeric string`,
       );
     }
+    const repoRef = `${locator.owner}/${locator.repo}`;
     const editArgs = [
       "issue",
       "edit",
       num,
       "--repo",
-      `${this._owner}/${this._repo}`,
+      repoRef,
     ];
     let hasEditArgs = false;
     if (typeof patch.title === "string") {
@@ -2769,7 +3208,7 @@ class GitHubIssuesAdapter {
         "view",
         num,
         "--repo",
-        `${this._owner}/${this._repo}`,
+        repoRef,
         "--json",
         "labels",
       ]);
@@ -2811,7 +3250,7 @@ class GitHubIssuesAdapter {
           "edit",
           num,
           "--repo",
-          `${this._owner}/${this._repo}`,
+          repoRef,
         ];
         for (const label of toAdd) {
           labelArgs.push("--add-label", label);
@@ -3059,18 +3498,20 @@ class GitHubIssuesAdapter {
 
   async deleteTask(issueNumber) {
     // GitHub issues can't be deleted — close with "not planned"
-    const num = String(issueNumber).replace(/^#/, "");
+    const locator = this._resolveIssueLocator(issueNumber);
+    const num = String(locator.number || "").replace(/^#/, "");
     if (!/^\d+$/.test(num)) {
       throw new Error(
         `GitHub Issues: invalid issue number "${issueNumber}" — expected a numeric ID`,
       );
     }
+    const repoRef = `${locator.owner}/${locator.repo}`;
     await this._gh([
       "issue",
       "close",
       num,
       "--repo",
-      `${this._owner}/${this._repo}`,
+      repoRef,
       "--reason",
       "not planned",
     ]);
@@ -3078,8 +3519,10 @@ class GitHubIssuesAdapter {
   }
 
   async addComment(issueNumber, body) {
-    const num = String(issueNumber).replace(/^#/, "");
+    const locator = this._resolveIssueLocator(issueNumber);
+    const num = String(locator.number || "").replace(/^#/, "");
     if (!/^\d+$/.test(num) || !body) return false;
+    const repoRef = `${locator.owner}/${locator.repo}`;
     try {
       await this._gh(
         [
@@ -3087,7 +3530,7 @@ class GitHubIssuesAdapter {
           "comment",
           num,
           "--repo",
-          `${this._owner}/${this._repo}`,
+          repoRef,
           "--body",
           String(body).slice(0, 65536),
         ],
@@ -3125,10 +3568,14 @@ class GitHubIssuesAdapter {
    * });
    */
   async persistSharedStateToIssue(issueNumber, sharedState) {
-    const num = String(issueNumber).replace(/^#/, "");
+    const locator = this._resolveIssueLocator(issueNumber);
+    const num = String(locator.number || "").replace(/^#/, "");
     if (!/^\d+$/.test(num)) {
       throw new Error(`Invalid issue number: ${issueNumber}`);
     }
+    const repoRef = `${locator.owner}/${locator.repo}`;
+    const issueUrl =
+      locator.issueUrl || `https://github.com/${repoRef}/issues/${num}`;
     const normalizedState = normalizeSharedStatePayload(sharedState);
     if (!normalizedState) {
       throw new Error(`Invalid shared state payload for issue #${num}`);
@@ -3183,7 +3630,7 @@ class GitHubIssuesAdapter {
         "edit",
         num,
         "--repo",
-        `${this._owner}/${this._repo}`,
+        repoRef,
       ];
 
       // Remove old codex labels
@@ -3210,7 +3657,7 @@ class GitHubIssuesAdapter {
 
     // 2. Create/update structured comment
     const commentSuccess = await attemptWithRetry(async () => {
-      const comments = await this._getIssueComments(num);
+      const comments = await this._getIssueComments(num, { issueUrl });
       const stateCommentIndex = comments.findIndex((c) =>
         c.body?.includes("<!-- bosun-state"),
       );
@@ -3231,7 +3678,7 @@ ${stateJson}
         await this._gh(
           [
             "api",
-            `/repos/${this._owner}/${this._repo}/issues/comments/${commentId}`,
+            `/repos/${locator.owner}/${locator.repo}/issues/comments/${commentId}`,
             "-X",
             "PATCH",
             "-f",
@@ -3248,7 +3695,7 @@ ${stateJson}
 
     // Invalidate the shared-state cache so the next read fetches fresh data
     if (commentSuccess) {
-      this._sharedStateCache.delete(_sharedStateCacheKey(num));
+      this._sharedStateCache.delete(_sharedStateCacheKey(num, locator.repoKey));
     }
 
     return commentSuccess;
@@ -3271,7 +3718,7 @@ ${stateJson}
    */
   async readSharedStateFromIssue(issueNumber, cachedComments = null, options = {}) {
     const issueUrl = String(options?.issueUrl || "").trim();
-    const locator = parseIssueLocator(
+    const locator = parseIssueRefLocator(
       issueNumber,
       this._owner,
       this._repo,
@@ -3280,6 +3727,9 @@ ${stateJson}
     const num = locator.number;
     if (!/^\d+$/.test(num)) {
       throw new Error(`Invalid issue number: ${issueNumber}`);
+    }
+    if (issueUrl) {
+      this._rememberIssueLocator(num, issueUrl);
     }
 
     // If no pre-fetched comments, check the instance-level shared-state cache
@@ -3370,10 +3820,12 @@ ${stateJson}
    * await adapter.markTaskIgnored(123, "Task requires manual security review");
    */
   async markTaskIgnored(issueNumber, reason) {
-    const num = String(issueNumber).replace(/^#/, "");
+    const locator = this._resolveIssueLocator(issueNumber);
+    const num = String(locator.number || "").replace(/^#/, "");
     if (!/^\d+$/.test(num)) {
       throw new Error(`Invalid issue number: ${issueNumber}`);
     }
+    const repoRef = `${locator.owner}/${locator.repo}`;
 
     try {
       // Add codex:ignore label
@@ -3383,7 +3835,7 @@ ${stateJson}
           "edit",
           num,
           "--repo",
-          `${this._owner}/${this._repo}`,
+          repoRef,
           "--add-label",
           this._codexLabels.ignore,
         ],
@@ -3417,10 +3869,12 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
    * @returns {Promise<boolean>} Success status
    */
   async unmarkTaskIgnored(issueNumber) {
-    const num = String(issueNumber).replace(/^#/, "");
+    const locator = this._resolveIssueLocator(issueNumber);
+    const num = String(locator.number || "").replace(/^#/, "");
     if (!/^\d+$/.test(num)) {
       throw new Error(`Invalid issue number: ${issueNumber}`);
     }
+    const repoRef = `${locator.owner}/${locator.repo}`;
 
     try {
       await this._gh(
@@ -3429,7 +3883,7 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
           "edit",
           num,
           "--repo",
-          `${this._owner}/${this._repo}`,
+          repoRef,
           "--remove-label",
           this._codexLabels.ignore,
         ],
@@ -3449,12 +3903,15 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
    * @private
    */
   async _getIssueLabels(issueNumber) {
+    const locator = this._resolveIssueLocator(issueNumber);
+    const num = String(locator.number || "").replace(/^#/, "");
+    const repoRef = `${locator.owner}/${locator.repo}`;
     const issue = await this._gh([
       "issue",
       "view",
-      issueNumber,
+      num,
       "--repo",
-      `${this._owner}/${this._repo}`,
+      repoRef,
       "--json",
       "labels",
     ]);
@@ -3469,12 +3926,21 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
    */
   async _getIssueComments(issueNumber, options = {}) {
     const issueUrl = String(options?.issueUrl || "").trim();
-    const locator = parseIssueLocator(
+    const locator = parseIssueRefLocator(
       issueNumber,
       this._owner,
       this._repo,
       issueUrl,
     );
+    const resolvedIssueUrl =
+      issueUrl ||
+      `https://github.com/${locator.owner}/${locator.repo}/issues/${locator.number}`;
+    if (/^\d+$/.test(locator.number)) {
+      this._rememberIssueLocator(locator.number, resolvedIssueUrl);
+    }
+    if (this._isIssueKnownMissing(locator.number, { issueUrl: resolvedIssueUrl })) {
+      return [];
+    }
     try {
       const result = await this._gh([
         "api",
@@ -3482,11 +3948,16 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
         "--jq",
         ".",
       ]);
+      this._clearIssueMissing(locator.number, { issueUrl: resolvedIssueUrl });
       return Array.isArray(result) ? result : [];
     } catch (err) {
-      console.warn(
-        `[kanban] failed to fetch comments for ${locator.owner}/${locator.repo}#${locator.number}: ${err.message}`,
-      );
+      if (err?.isNotFound) {
+        this._markIssueMissing(locator.number, { issueUrl: resolvedIssueUrl });
+      } else {
+        console.warn(
+          `[kanban] failed to fetch comments for ${locator.owner}/${locator.repo}#${locator.number}: ${err.message}`,
+        );
+      }
       return [];
     }
   }
@@ -3643,6 +4114,24 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
 
   _normaliseIssue(issue) {
     if (!issue) return null;
+    const fallbackNum = String(issue.number || "").trim();
+    const fallbackUrl = fallbackNum
+      ? `https://github.com/${this._owner}/${this._repo}/issues/${fallbackNum}`
+      : null;
+    const locator = parseIssueRefLocator(
+      fallbackNum,
+      this._owner,
+      this._repo,
+      issue.url || fallbackUrl || "",
+    );
+    const issueNum = /^\d+$/.test(locator.number)
+      ? locator.number
+      : fallbackNum;
+    const issueUrl = issue.url || fallbackUrl || null;
+    const projectId = `${locator.owner}/${locator.repo}`;
+    if (issueNum && issueUrl) {
+      this._rememberIssueLocator(issueNum, issueUrl);
+    }
     const labels = (issue.labels || []).map((l) =>
       typeof l === "string" ? l : l.name,
     );
@@ -3695,14 +4184,14 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
         createdAt: comment.createdAt,
       }),
     );
-    const localAttachments = listTaskAttachments(issue.number, "github");
+    const localAttachments = listTaskAttachments(issueNum, "github");
     const mergedAttachments = mergeTaskAttachments(
       mergeTaskAttachments(descriptionAttachments, commentAttachments),
       localAttachments,
     );
 
     return {
-      id: String(issue.number || ""),
+      id: String(issueNum || ""),
       title: issue.title || "",
       description: issue.body || "",
       status,
@@ -3714,7 +4203,7 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
           : null,
       tags,
       draft: labelSet.has("draft") || status === "draft",
-      projectId: `${this._owner}/${this._repo}`,
+      projectId,
       baseBranch,
       branchName: branchMatch?.[1] || null,
       prNumber: prMatch?.[1] || null,
@@ -3722,14 +4211,14 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
       comments,
       meta: {
         ...issue,
-        task_url: issue.url || null,
+        task_url: issueUrl,
         tags,
         comments,
         attachments: mergedAttachments,
         ...(baseBranch ? { base_branch: baseBranch, baseBranch } : {}),
         codex: codexMeta,
       },
-      taskUrl: issue.url || null,
+      taskUrl: issueUrl,
       backend: "github",
     };
   }
