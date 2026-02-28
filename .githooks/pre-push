@@ -1,15 +1,93 @@
 #!/usr/bin/env bash
+# Diff-based pre-push hook: only runs tests for files modified in the push.
+# Falls back to the full suite when the remote branch is new.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -z "$ROOT" ]; then
-  exit 0
-fi
-
-if [ ! -f "$ROOT/package.json" ]; then
-  exit 0
-fi
-
+[ -z "$ROOT" ] && exit 0
+[ ! -f "$ROOT/package.json" ] && exit 0
 cd "$ROOT"
-echo "[hooks] bosun pre-push checks"
-npm run prepush:check
+
+echo "[hooks] bosun pre-push: scanning changes…"
+
+# ── Read stdin (push refs) BEFORE anything else consumes it ──────────────────
+PUSH_INPUT="$(cat)"
+
+# ── Always run the fast syntax check (~2 s) ──────────────────────────────────
+npm run syntax:check
+
+# ── Collect changed .mjs files across all pushed refs ────────────────────────
+CHANGED=""
+RUN_ALL=false
+
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  LOCAL_SHA=$(printf '%s' "$line" | awk '{print $2}')
+  REMOTE_SHA=$(printf '%s' "$line" | awk '{print $4}')
+
+  # Deletion push — nothing to test
+  [ "$LOCAL_SHA" = "0000000000000000000000000000000000000000" ] && continue
+
+  if [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
+    # New remote branch: find common ancestor with main/master
+    BASE=$(git merge-base "$LOCAL_SHA" origin/main 2>/dev/null \
+        || git merge-base "$LOCAL_SHA" origin/master 2>/dev/null \
+        || true)
+    if [ -z "$BASE" ]; then
+      RUN_ALL=true
+      break
+    fi
+    RANGE="${BASE}..${LOCAL_SHA}"
+  else
+    RANGE="${REMOTE_SHA}..${LOCAL_SHA}"
+  fi
+
+  DIFF=$(git diff --name-only "$RANGE" -- '*.mjs' 2>/dev/null || true)
+  [ -n "$DIFF" ] && CHANGED="${CHANGED}${DIFF}"$'\n'
+done <<< "$PUSH_INPUT"
+
+# ── Full suite fallback ───────────────────────────────────────────────────────
+if $RUN_ALL; then
+  echo "[hooks] new branch with no known base — running full test suite"
+  npm test
+  exit 0
+fi
+
+# ── Map changed source files → test file prefixes ────────────────────────────
+# Strategy: for a changed file `foo/bar.mjs`, find tests/foo*.test.mjs
+#           for a changed file `foo.mjs`,     find tests/foo*.test.mjs
+# Special: config.mjs → config*.test.mjs (covers config-validation etc.)
+TEST_ARGS=""
+
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  BASE="$(basename "$f" .mjs)"
+  DIR="$(dirname "$f")"
+
+  if [ "$DIR" != "." ] && [ -n "$DIR" ]; then
+    PREFIX="${DIR%%/*}"   # top-level directory name
+  else
+    PREFIX="$BASE"
+  fi
+
+  while IFS= read -r tf; do
+    REL="tests/$(basename "$tf")"
+    # Dedup
+    if ! echo " $TEST_ARGS " | grep -qF " $REL "; then
+      TEST_ARGS="${TEST_ARGS} ${REL}"
+    fi
+  done < <(find "$ROOT/tests" -maxdepth 1 -name "${PREFIX}*.test.mjs" 2>/dev/null | sort)
+done <<< "$CHANGED"
+
+TEST_ARGS="$(printf '%s' "$TEST_ARGS" | xargs)"
+
+if [ -z "$TEST_ARGS" ]; then
+  echo "[hooks] no tests matched changed files — pre-push passed ✓"
+  exit 0
+fi
+
+echo "[hooks] running targeted tests:"
+printf '%s\n' $TEST_ARGS | sed 's/^/  • /'
+
+# shellcheck disable=SC2086
+npx vitest run $TEST_ARGS
