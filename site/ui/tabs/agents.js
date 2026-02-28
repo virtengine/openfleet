@@ -2,7 +2,7 @@
  *  Tab: Agents — thread/slot cards, capacity, detail expansion
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
-import { useState, useCallback, useEffect, useRef } from "preact/hooks";
+import { useState, useCallback, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
 
 const html = htm.bind(h);
@@ -1209,7 +1209,7 @@ export function AgentsTab() {
                   const st = slot ? slot.status || "busy" : "idle";
                   return html`
                     <div
-                      key=${i}
+                      key=${slot?.taskId || slot?.sessionId || `slot-${i}`}
                       class="slot-cell slot-${st}"
                       title=${slot
                         ? `${slot.taskTitle || slot.taskId} (${st})`
@@ -1241,10 +1241,10 @@ export function AgentsTab() {
                 : "No active slots"}
             </div>
             ${slots.length
-              ? slots.map(
-                  (slot, i) => html`
+                ? slots.map(
+                    (slot, i) => html`
                     <div
-                      key=${i}
+                      key=${slot?.taskId || slot?.sessionId || `slot-${i}`}
                       class="task-card fleet-agent-card ${expandedSlot === i
                         ? "task-card-expanded"
                         : ""}"
@@ -1373,7 +1373,7 @@ export function AgentsTab() {
                 ${agents.map(
                   (t, i) => html`
                     <${StatCard}
-                      key=${i}
+                      key=${t.taskKey || t.id || `thread-${i}`}
                       value=${t.turnCount || 0}
                       label="${truncate(t.taskKey || `Thread ${i}`, 20)} (${t.sdk ||
                       "?"})"
@@ -1628,23 +1628,28 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
   const logRef = useRef(null);
   const allSessions = sessionsData.value || [];
 
-  const entries = slots
-    .map((slot, index) => {
-      const session =
-        allSessions.find((s) => s?.id && slot?.sessionId && s.id === slot.sessionId) ||
-        allSessions.find((s) => {
-          if (!slot?.taskId) return false;
-          return s?.taskId === slot.taskId || s?.id === slot.taskId;
-        }) ||
-        null;
-      const key = String(slot?.taskId || slot?.sessionId || `slot-${index}`);
-      return { key, slot, index, session };
-    })
-    .sort((a, b) => {
-      const aScore = new Date(a.slot?.startedAt || 0).getTime() || 0;
-      const bScore = new Date(b.slot?.startedAt || 0).getTime() || 0;
-      return bScore - aScore;
-    });
+  /* Stabilise entries so useEffect deps do not retrigger on every render. */
+  const entries = useMemo(() => {
+    return (slots || [])
+      .map((slot, index) => {
+        const session =
+          allSessions.find((s) => s?.id && slot?.sessionId && s.id === slot.sessionId) ||
+          allSessions.find((s) => {
+            if (!slot?.taskId) return false;
+            return s?.taskId === slot.taskId || s?.id === slot.taskId;
+          }) ||
+          null;
+        const key = String(slot?.taskId || slot?.sessionId || `slot-${index}`);
+        return { key, slot, index, session };
+      })
+      .sort((a, b) => {
+        const aScore = new Date(a.slot?.startedAt || 0).getTime() || 0;
+        const bScore = new Date(b.slot?.startedAt || 0).getTime() || 0;
+        return bScore - aScore;
+      });
+  }, [slots, allSessions]);
+
+  const entriesFingerprint = entries.map((e) => e.key).join(",");
 
   useEffect(() => {
     if (!entries.length) {
@@ -1653,7 +1658,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
     }
     const existing = entries.some((entry) => entry.key === selectedSlotKey);
     if (!existing) setSelectedSlotKey(entries[0].key);
-  }, [entries, selectedSlotKey]);
+  }, [entriesFingerprint]);
 
   const selectedEntry =
     entries.find((entry) => entry.key === selectedSlotKey) || entries[0] || null;
@@ -1772,34 +1777,36 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                   >${iconText("📄 Logs")}</button>
                 </div>
                 <div class="fleet-session-body">
-                  ${detailTab === "stream" &&
-                  (sessionId
-                    ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
-                    : html`
-                        <div class="chat-view chat-empty-state">
-                          <div class="session-empty-icon">${resolveIcon("💬")}</div>
-                          <div class="session-empty-text">No linked chat session found for this slot</div>
-                        </div>
-                      `)}
-                  ${detailTab === "context" &&
-                  (contextId
-                    ? html`<${ContextViewer} sessionId=${contextId} />`
-                    : html`
-                        <div class="chat-view chat-empty-state">
-                          <div class="session-empty-icon">${resolveIcon("📋")}</div>
-                          <div class="session-empty-text">No context source available</div>
-                        </div>
-                      `)}
-                  ${detailTab === "diff" &&
-                  (sessionId
-                    ? html`<${DiffViewer} sessionId=${sessionId} />`
-                    : html`
-                        <div class="chat-view chat-empty-state">
-                          <div class="session-empty-icon">${resolveIcon("📝")}</div>
-                          <div class="session-empty-text">Diff requires a linked session</div>
-                        </div>
-                      `)}
-                  ${detailTab === "logs" && html`<div class="workspace-log fleet-session-log" ref=${logRef}>${logText}</div>`}
+                  ${detailTab === "stream"
+                    ? sessionId
+                      ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
+                      : html`
+                          <div class="chat-view chat-empty-state">
+                            <div class="session-empty-icon">${resolveIcon("💬")}</div>
+                            <div class="session-empty-text">No linked chat session found for this slot</div>
+                          </div>
+                        `
+                    : detailTab === "context"
+                      ? contextId
+                        ? html`<${ContextViewer} sessionId=${contextId} />`
+                        : html`
+                            <div class="chat-view chat-empty-state">
+                              <div class="session-empty-icon">${resolveIcon("📋")}</div>
+                              <div class="session-empty-text">No context source available</div>
+                            </div>
+                          `
+                      : detailTab === "diff"
+                        ? sessionId
+                          ? html`<${DiffViewer} sessionId=${sessionId} />`
+                          : html`
+                              <div class="chat-view chat-empty-state">
+                                <div class="session-empty-icon">${resolveIcon("📝")}</div>
+                                <div class="session-empty-text">Diff requires a linked session</div>
+                              </div>
+                            `
+                        : detailTab === "logs"
+                          ? html`<div class="workspace-log fleet-session-log" ref=${logRef}>${logText}</div>`
+                          : null}
                 </div>
               `
             : html`

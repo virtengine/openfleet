@@ -36,8 +36,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 //   2. Node module resolution via createRequire — handles global install hoisting
 //   3. CDN redirect — last resort
 const _require = createRequire(import.meta.url);
-const uiRootPreferred = resolve(__dirname, "site", "ui");
-const uiRootFallback = resolve(__dirname, "ui");
+const uiRootPreferred = resolve(__dirname, "ui");
+const uiRootFallback = resolve(__dirname, "site", "ui");
 const uiRoot = existsSync(uiRootPreferred) ? uiRootPreferred : uiRootFallback;
 const BUNDLED_VENDOR_DIR = resolve(uiRoot, "vendor");
 
