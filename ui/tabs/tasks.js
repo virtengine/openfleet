@@ -34,6 +34,8 @@ import {
   scheduleRefresh,
   loadTasks,
   updateTaskManualState,
+  setPendingChange,
+  clearPendingChange,
 } from "../modules/state.js";
 import { ICONS } from "../modules/icons.js";
 import {
@@ -44,6 +46,7 @@ import {
   debounce,
   exportAsCSV,
   exportAsJSON,
+  countChangedFields,
 } from "../modules/utils.js";
 import {
   Card,
@@ -53,6 +56,7 @@ import {
   Modal,
   EmptyState,
   ListItem,
+  SaveDiscardBar,
 } from "../components/shared.js";
 import { SegmentedControl, SearchInput, Toggle } from "../components/forms.js";
 import { KanbanBoard } from "../components/kanban-board.js";
@@ -255,6 +259,11 @@ function isImageAttachment(att) {
   return /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name);
 }
 
+function unsavedChangesMessage(changeCount) {
+  const count = Math.max(0, Number(changeCount || 0));
+  return `You have unsaved changes (${count})`;
+}
+
 export function StartTaskModal({
   task,
   defaultSdk = "auto",
@@ -266,14 +275,27 @@ export function StartTaskModal({
   const [model, setModel] = useState("");
   const [taskIdInput, setTaskIdInput] = useState(task?.id || "");
   const [starting, setStarting] = useState(false);
+  const initialSnapshotRef = useRef({
+    sdk: defaultSdk || "auto",
+    model: "",
+    taskIdInput: task?.id || "",
+  });
+  const pendingKey = useMemo(
+    () => `modal:start-task:${task?.id || "manual"}`,
+    [task?.id],
+  );
 
   useEffect(() => {
-    setSdk(defaultSdk || "auto");
-  }, [defaultSdk]);
-
-  useEffect(() => {
-    setTaskIdInput(task?.id || "");
-  }, [task?.id, task?.meta?.codex?.isIgnored, task?.meta?.labels]);
+    const next = {
+      sdk: defaultSdk || "auto",
+      model: "",
+      taskIdInput: task?.id || "",
+    };
+    initialSnapshotRef.current = next;
+    setSdk(next.sdk);
+    setModel(next.model);
+    setTaskIdInput(next.taskIdInput);
+  }, [defaultSdk, task?.id, task?.meta?.codex?.isIgnored, task?.meta?.labels]);
 
   const canModel = sdk && sdk !== "auto";
 
@@ -298,12 +320,38 @@ export function StartTaskModal({
   };
 
   const resolvedTaskId = (task?.id || taskIdInput || "").trim();
+  const currentSnapshot = useMemo(
+    () => ({
+      sdk: sdk || "auto",
+      model: model || "",
+      taskIdInput: taskIdInput || "",
+    }),
+    [model, sdk, taskIdInput],
+  );
+  const changeCount = useMemo(
+    () => countChangedFields(initialSnapshotRef.current, currentSnapshot),
+    [currentSnapshot],
+  );
+  const hasUnsaved = changeCount > 0;
 
-  const handleStart = async () => {
+  useEffect(() => {
+    setPendingChange(pendingKey, hasUnsaved);
+    return () => clearPendingChange(pendingKey);
+  }, [hasUnsaved, pendingKey]);
+
+  const resetToInitial = useCallback(() => {
+    const base = initialSnapshotRef.current || {};
+    setSdk(base.sdk || "auto");
+    setModel(base.model || "");
+    setTaskIdInput(base.taskIdInput || "");
+    showToast("Changes discarded", "info");
+  }, []);
+
+  const handleStart = async ({ closeAfterStart = true } = {}) => {
     if (starting) return;
     if (!resolvedTaskId) {
       showToast("Task ID is required", "error");
-      return;
+      return false;
     }
     setStarting(true);
     try {
@@ -312,15 +360,37 @@ export function StartTaskModal({
         sdk: sdk && sdk !== "auto" ? sdk : undefined,
         model: model.trim() ? model.trim() : undefined,
       });
-      onClose();
+      initialSnapshotRef.current = {
+        sdk: sdk || "auto",
+        model: model || "",
+        taskIdInput: taskIdInput || "",
+      };
+      if (closeAfterStart) {
+        onClose?.();
+        return { closed: true };
+      }
+      return true;
     } catch {
       /* toast via apiFetch */
+      return false;
+    } finally {
+      setStarting(false);
     }
-    setStarting(false);
   };
 
   return html`
-    <${Modal} title="Start Task" onClose=${onClose} contentClassName="modal-content-wide">
+    <${Modal}
+      title="Start Task"
+      onClose=${onClose}
+      contentClassName="modal-content-wide"
+      unsavedChanges=${changeCount}
+      onSaveBeforeClose=${() => handleStart({ closeAfterStart: true })}
+      onDiscardBeforeClose=${() => {
+        resetToInitial();
+        return true;
+      }}
+      activeOperationLabel=${starting ? "Task dispatch is still running" : ""}
+    >
       ${task?.id || task?.title
         ? html`
             <div class="meta-text mb-sm">
@@ -363,13 +433,26 @@ export function StartTaskModal({
         <div class="modal-form-field modal-form-span">
           <button
             class="btn btn-primary"
-            onClick=${handleStart}
+            onClick=${() => {
+              void handleStart({ closeAfterStart: true });
+            }}
             disabled=${starting || !resolvedTaskId}
           >
             ${starting ? "Starting…" : ":play: Start Task"}
           </button>
         </div>
       </div>
+      <${SaveDiscardBar}
+        dirty=${hasUnsaved}
+        message=${unsavedChangesMessage(changeCount)}
+        saveLabel="Start Task"
+        discardLabel="Discard"
+        onSave=${() => {
+          void handleStart({ closeAfterStart: false });
+        }}
+        onDiscard=${resetToInitial}
+        saving=${starting}
+      />
     <//>
   `;
 }
@@ -538,6 +621,21 @@ function TriggerTemplatesModal({ onClose }) {
   const [defaults, setDefaults] = useState({ executor: "auto", model: "auto" });
   const [templates, setTemplates] = useState([]);
   const [planner, setPlanner] = useState({});
+  const defaultsBaselineRef = useRef({ executor: "auto", model: "auto" });
+  const pendingKey = "modal:trigger-templates";
+
+  const defaultsSnapshot = useMemo(
+    () => ({
+      executor: String(defaults?.executor || "auto"),
+      model: String(defaults?.model || "auto"),
+    }),
+    [defaults],
+  );
+  const defaultsDirtyCount = useMemo(
+    () => countChangedFields(defaultsBaselineRef.current, defaultsSnapshot),
+    [defaultsSnapshot],
+  );
+  const hasUnsavedDefaults = defaultsDirtyCount > 0;
 
   const loadTemplates = useCallback(async () => {
     setLoading(true);
@@ -546,11 +644,15 @@ function TriggerTemplatesModal({ onClose }) {
       const res = await apiFetch("/api/triggers/templates", { _silent: true });
       const data = res?.data || {};
       setEnabled(data.enabled === true);
-      setDefaults(
+      const normalizedDefaults =
         data.defaults && typeof data.defaults === "object"
           ? data.defaults
-          : { executor: "auto", model: "auto" },
-      );
+          : { executor: "auto", model: "auto" };
+      defaultsBaselineRef.current = {
+        executor: String(normalizedDefaults.executor || "auto"),
+        model: String(normalizedDefaults.model || "auto"),
+      };
+      setDefaults(normalizedDefaults);
       setTemplates(Array.isArray(data.templates) ? data.templates : []);
       setPlanner(data.planner || {});
     } catch (err) {
@@ -563,6 +665,11 @@ function TriggerTemplatesModal({ onClose }) {
     loadTemplates();
   }, []);
 
+  useEffect(() => {
+    setPendingChange(pendingKey, hasUnsavedDefaults);
+    return () => clearPendingChange(pendingKey);
+  }, [hasUnsavedDefaults]);
+
   const persistUpdate = async (payload) => {
     setSaving(true);
     setError("");
@@ -573,11 +680,15 @@ function TriggerTemplatesModal({ onClose }) {
       });
       const data = res?.data || {};
       setEnabled(data.enabled === true);
-      setDefaults(
+      const normalizedDefaults =
         data.defaults && typeof data.defaults === "object"
           ? data.defaults
-          : { executor: "auto", model: "auto" },
-      );
+          : { executor: "auto", model: "auto" };
+      defaultsBaselineRef.current = {
+        executor: String(normalizedDefaults.executor || "auto"),
+        model: String(normalizedDefaults.model || "auto"),
+      };
+      setDefaults(normalizedDefaults);
       setTemplates(Array.isArray(data.templates) ? data.templates : []);
       setPlanner(data.planner || {});
       showToast("Template settings updated", "success");
@@ -599,9 +710,27 @@ function TriggerTemplatesModal({ onClose }) {
     }
   };
 
-  const handleSaveDefaults = async () => {
-    await persistUpdate({ defaults });
+  const handleSaveDefaults = async ({ closeAfterSave = false } = {}) => {
+    try {
+      await persistUpdate({ defaults });
+      if (closeAfterSave) {
+        onClose?.();
+        return { closed: true };
+      }
+      return true;
+    } catch {
+      return false;
+    }
   };
+
+  const handleDiscardDefaults = useCallback(() => {
+    const base = defaultsBaselineRef.current || { executor: "auto", model: "auto" };
+    setDefaults({
+      executor: base.executor || "auto",
+      model: base.model || "auto",
+    });
+    showToast("Changes discarded", "info");
+  }, []);
 
   const handleToggleTemplate = async (template, nextEnabled) => {
     await persistUpdate({ template: { ...template, enabled: nextEnabled } });
@@ -616,6 +745,13 @@ function TriggerTemplatesModal({ onClose }) {
       title="Trigger Templates"
       onClose=${onClose}
       contentClassName="modal-content-wide"
+      unsavedChanges=${defaultsDirtyCount}
+      onSaveBeforeClose=${() => handleSaveDefaults({ closeAfterSave: true })}
+      onDiscardBeforeClose=${() => {
+        handleDiscardDefaults();
+        return true;
+      }}
+      activeOperationLabel=${saving ? "Template update request is still running" : ""}
     >
       <div class="flex-col" style="gap:10px;">
         <div class="card" style="padding:10px 12px;">
@@ -689,6 +825,17 @@ function TriggerTemplatesModal({ onClose }) {
             onSaveTemplate=${handleSaveTemplate}
           />
         `)}
+        <${SaveDiscardBar}
+          dirty=${hasUnsavedDefaults}
+          message=${unsavedChangesMessage(defaultsDirtyCount)}
+          saveLabel="Save Defaults"
+          discardLabel="Discard"
+          onSave=${() => {
+            void handleSaveDefaults({ closeAfterSave: false });
+          }}
+          onDiscard=${handleDiscardDefaults}
+          saving=${saving}
+        />
       </div>
     <//>
   `;

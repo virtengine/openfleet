@@ -42,10 +42,14 @@ test("workspace sync warnings include sample context and benign downgrade path",
   assert.match(src, /clearWorkspaceSyncWarnForWorkspace\(wsId\);/);
   assert.match(src, /workspace sync failed for \$\{wsId\} \(duplicate warning suppressed\)/);
   assert.match(src, /let workspaceExceptionCount = 0/);
+  assert.match(src, /let nonBenignFailedRepoCount = 0/);
+  assert.match(src, /let benignFailedRepoCount = 0/);
+  assert.match(src, /benignFailedRepoCount \+= benignFailed\.length/);
+  assert.match(src, /nonBenignFailedRepoCount \+= nonBenignFailed\.length/);
   assert.match(src, /workspaceExceptionCount \+= 1/);
   assert.match(src, /workspace sync: cycle complete \(/);
-  assert.match(src, /exception\(s\), \$\{Math\.round\(durationMs \/ 1000\)\}s\)/);
-  assert.match(src, /workspace sync: all repos failed this cycle \(\$\{failedRepoCount\}\/\$\{repoCount\}\)/);
+  assert.match(src, /non-benign, \$\{benignFailedRepoCount\} benign, \$\{workspaceExceptionCount\} exception\(s\), \$\{Math\.round\(durationMs \/ 1000\)\}s\)/);
+  assert.match(src, /workspace sync: all repos failed this cycle \(\$\{nonBenignFailedRepoCount\}\/\$\{repoCount\}\)/);
   assert.match(src, /workspace sync: \$\{workspaceExceptionCount\} workspace exception\(s\) this cycle/);
   assert.match(src, /workspace sync: all workspaces raised exceptions this cycle \(\$\{workspaceExceptionCount\}\/\$\{workspaceCount\}\)/);
   assert.match(src, /workspace sync: no repos processed across \$\{workspaceCount\} workspace\(s\) this cycle/);

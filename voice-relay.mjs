@@ -49,6 +49,22 @@ const VALID_AGENT_MODES = new Set([
   "architect",
 ]);
 
+function redactSecretLikeText(value) {
+  let sanitized = String(value || "");
+  sanitized = sanitized.replace(/\b(sk|rk|pk)-[A-Za-z0-9_-]{10,}\b/g, "$1-***REDACTED***");
+  sanitized = sanitized.replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/gi, "Bearer ***REDACTED***");
+  sanitized = sanitized.replace(
+    /("?(?:api[_-]?key|access[_-]?token|client[_-]?secret|authorization)"?\s*[:=]\s*"?)([^",\s}{\]]+)/gi,
+    "$1***REDACTED***",
+  );
+  return sanitized;
+}
+
+async function buildProviderErrorDetails(response, fallback = "unknown") {
+  const raw = await response.text().catch(() => fallback);
+  return redactSecretLikeText(raw || fallback);
+}
+
 function sanitizeVoiceCallContext(context = {}) {
   const rawSessionId = String(context?.sessionId || "").trim();
   const rawExecutor = String(context?.executor || "").trim().toLowerCase();
@@ -206,7 +222,7 @@ async function analyzeVisionWithOpenAI(dataUrl, model, prompt, contextText, cfg)
     }),
   });
   if (!response.ok) {
-    const errText = await response.text().catch(() => "unknown");
+    const errText = await buildProviderErrorDetails(response, "unknown");
     throw new Error(`Vision request failed (${response.status}): ${errText}`);
   }
   const payload = await response.json();
@@ -253,7 +269,7 @@ async function analyzeVisionWithAzure(dataUrl, model, prompt, contextText, cfg) 
     }),
   });
   if (!response.ok) {
-    const errText = await response.text().catch(() => "unknown");
+    const errText = await buildProviderErrorDetails(response, "unknown");
     throw new Error(`Azure vision request failed (${response.status}): ${errText}`);
   }
   const payload = await response.json();
@@ -299,7 +315,7 @@ async function analyzeVisionWithClaude(frame, model, prompt, contextText, cfg) {
     }),
   });
   if (!response.ok) {
-    const errText = await response.text().catch(() => "unknown");
+    const errText = await buildProviderErrorDetails(response, "unknown");
     throw new Error(`Claude vision request failed (${response.status}): ${errText}`);
   }
   const payload = await response.json();
@@ -345,7 +361,7 @@ async function analyzeVisionWithGemini(frame, model, prompt, contextText, cfg) {
     }),
   });
   if (!response.ok) {
-    const errText = await response.text().catch(() => "unknown");
+    const errText = await buildProviderErrorDetails(response, "unknown");
     throw new Error(`Gemini vision request failed (${response.status}): ${errText}`);
   }
   const payload = await response.json();
@@ -386,13 +402,13 @@ export function getVoiceConfig(forceReload = false) {
 
   // API keys
   const openaiKey = voice.openaiApiKey
-    || process.env.OPENAI_API_KEY
     || process.env.OPENAI_REALTIME_API_KEY
+    || process.env.OPENAI_API_KEY
     || "";
 
   const azureKey = voice.azureApiKey
-    || process.env.AZURE_OPENAI_API_KEY
     || process.env.AZURE_OPENAI_REALTIME_API_KEY
+    || process.env.AZURE_OPENAI_API_KEY
     || "";
 
   const azureEndpoint = voice.azureEndpoint
@@ -565,7 +581,7 @@ export async function createEphemeralToken(toolDefinitions = [], callContext = {
   });
 
   if (!response.ok) {
-    const errorText = await response.text().catch(() => "unknown");
+    const errorText = await buildProviderErrorDetails(response, "unknown");
     throw new Error(`OpenAI Realtime session failed (${response.status}): ${errorText}`);
   }
 
@@ -622,7 +638,7 @@ async function createAzureEphemeralToken(toolDefinitions = [], callContext = {})
   });
 
   if (!response.ok) {
-    const errorText = await response.text().catch(() => "unknown");
+    const errorText = await buildProviderErrorDetails(response, "unknown");
     throw new Error(`Azure Realtime session failed (${response.status}): ${errorText}`);
   }
 

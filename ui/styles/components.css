@@ -1,5 +1,70 @@
 /* ─── Component Styles — iOS-style Clean Design ─── */
 
+/* ─── Telemetry Tab ─── */
+.telemetry-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+
+.telemetry-grid > .card {
+  margin-bottom: 0;
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+}
+
+.telemetry-grid > .card .empty-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.telemetry-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.telemetry-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.telemetry-list li:last-child {
+  border-bottom: 0;
+}
+
+.telemetry-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.telemetry-count {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+@media (max-width: 960px) {
+  .telemetry-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ─── Cards ─── */
 .card {
   background: var(--bg-card);
@@ -3262,9 +3327,9 @@ select.input {
 
 /* ─── Control Unit (sticky) ─── */
 .control-unit-card {
-  position: sticky;
-  top: 0;
-  z-index: 18;
+  position: relative;
+  top: auto;
+  z-index: auto;
   background: var(--bg-card);
 }
 
@@ -3690,6 +3755,12 @@ select.input {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-height: 0;
+}
+
+.control-main .card,
+.control-side .card {
+  overflow: visible;
 }
 
 .control-hero {

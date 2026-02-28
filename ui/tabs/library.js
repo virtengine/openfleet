@@ -41,14 +41,17 @@ const LIBRARY_STYLES = `
 
 .library-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; }
 .library-card { background: var(--bg-card, #1a1a2e); border: 1px solid var(--border, #333);
-  border-radius: 12px; padding: 16px; cursor: pointer; transition: all 0.15s; position: relative; }
+  border-radius: 12px; padding: 16px; padding-right: 96px; cursor: pointer; transition: all 0.15s; position: relative; }
 .library-card:hover { border-color: var(--accent, #58a6ff); transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
 
 .library-card-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
 .library-card-icon { font-size: 1.4em; flex-shrink: 0; width: 32px; text-align: center; }
 .library-card-icon svg { width: 20px; height: 20px; vertical-align: middle; }
-.library-card-title { font-weight: 600; font-size: 0.95em; color: var(--text-primary, #eee); }
+.library-card-header > div { min-width: 0; flex: 1; }
+.library-card-title { font-weight: 600; font-size: 0.95em; color: var(--text-primary, #eee);
+  overflow-wrap: anywhere; word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .library-card-desc { font-size: 0.82em; color: var(--text-secondary, #aaa); margin-bottom: 8px;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .library-card-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
@@ -123,7 +126,7 @@ const LIBRARY_STYLES = `
   .library-toolbar { gap: 6px; }
   .library-toolbar .search-wrap { flex: 1 1 100%; min-width: 0; }
   .library-grid { grid-template-columns: 1fr; }
-  .library-card { padding: 12px; }
+  .library-card { padding: 12px; padding-right: 84px; }
   .library-card-scope { margin-left: 0; }
   .library-actions { flex-wrap: wrap; justify-content: stretch; }
   .library-actions button { flex: 1 1 140px; padding: 10px 12px; }
@@ -664,7 +667,7 @@ export function LibraryTab() {
           ${iconText(":refresh: Rebuild")}
         </button>
         <button class="library-type-pill active" onClick=${() => setEditing({})}>
-          ＋ New
+          ${iconText("➕ New")}
         </button>
       </div>
 
@@ -704,7 +707,7 @@ export function LibraryTab() {
             : "Create your first prompt, agent profile, or skill."}
           action=${searchQuery.value
             ? { label: "Clear search", onClick: () => { searchQuery.value = ""; loadEntries(); } }
-            : { label: "＋ New Resource", onClick: () => setEditing({}) }} />
+            : { label: "➕ New Resource", onClick: () => setEditing({}) }} />
       `}
 
       ${!loading && displayed.length > 0 && html`

@@ -236,6 +236,7 @@ export class SessionTracker {
     // Direct message format (role/content)
     if (event && event.role && event.content !== undefined) {
       const msg = {
+        id: event.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         role: event.role,
         content: String(event.content).slice(0, MAX_MESSAGE_CHARS),
         timestamp: event.timestamp || new Date().toISOString(),
@@ -575,6 +576,73 @@ export class SessionTracker {
     session.taskTitle = newTitle;
     session.title = newTitle;
     this.#markDirty(sessionId);
+  }
+
+  /**
+   * Edit a previously recorded user message in-place.
+   * @param {string} sessionId
+   * @param {Object} payload
+   * @param {string} [payload.messageId]
+   * @param {string} [payload.timestamp]
+   * @param {string} [payload.previousContent]
+   * @param {string} payload.content
+   * @returns {{ok:boolean,error?:string,message?:object,index?:number}}
+   */
+  editUserMessage(sessionId, payload = {}) {
+    const session = this.#sessions.get(sessionId);
+    if (!session) return { ok: false, error: "Session not found" };
+
+    const nextContent = String(payload?.content || "").trim();
+    if (!nextContent) return { ok: false, error: "content is required" };
+
+    const messageId = String(payload?.messageId || "").trim();
+    const timestamp = String(payload?.timestamp || "").trim();
+    const previousContent = payload?.previousContent != null
+      ? String(payload.previousContent)
+      : "";
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+
+    let idx = -1;
+    if (messageId) {
+      idx = messages.findIndex((msg) => String(msg?.id || "") === messageId);
+    }
+
+    if (idx < 0 && timestamp) {
+      idx = messages.findIndex((msg) => {
+        if (String(msg?.role || "").toLowerCase() !== "user") return false;
+        if (String(msg?.timestamp || "") !== timestamp) return false;
+        if (!previousContent) return true;
+        return String(msg?.content || "") === previousContent;
+      });
+    }
+
+    if (idx < 0 && previousContent) {
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        const msg = messages[i];
+        if (String(msg?.role || "").toLowerCase() !== "user") continue;
+        if (String(msg?.content || "") === previousContent) {
+          idx = i;
+          break;
+        }
+      }
+    }
+
+    if (idx < 0) return { ok: false, error: "Message not found" };
+
+    const target = messages[idx];
+    if (String(target?.role || "").toLowerCase() !== "user") {
+      return { ok: false, error: "Only user messages can be edited" };
+    }
+
+    target.id = target.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    target.content = nextContent.slice(0, MAX_MESSAGE_CHARS);
+    target.edited = true;
+    target.editedAt = new Date().toISOString();
+    session.lastActivityAt = Date.now();
+    session.lastActiveAt = new Date().toISOString();
+    this.#markDirty(sessionId);
+
+    return { ok: true, message: { ...target }, index: idx };
   }
 
   /**

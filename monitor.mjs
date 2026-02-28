@@ -1242,6 +1242,8 @@ function isBenignWorkspaceSyncFailure(errorText) {
       let workspaceCount = 0;
       let repoCount = 0;
       let failedRepoCount = 0;
+      let nonBenignFailedRepoCount = 0;
+      let benignFailedRepoCount = 0;
       let workspaceExceptionCount = 0;
       try {
         for (const wsId of workspaceIds) {
@@ -1255,6 +1257,8 @@ function isBenignWorkspaceSyncFailure(errorText) {
             if (failed.length > 0) {
               const benignFailed = failed.filter((r) => isBenignWorkspaceSyncFailure(r?.error));
               const nonBenignFailed = failed.filter((r) => !isBenignWorkspaceSyncFailure(r?.error));
+              benignFailedRepoCount += benignFailed.length;
+              nonBenignFailedRepoCount += nonBenignFailed.length;
               if (nonBenignFailed.length === 0) {
                 clearWorkspaceSyncWarnForWorkspace(wsId);
                 console.log(
@@ -1297,6 +1301,7 @@ function isBenignWorkspaceSyncFailure(errorText) {
             }
           } catch (err) {
             failedRepoCount += 1;
+            nonBenignFailedRepoCount += 1;
             workspaceExceptionCount += 1;
             const errText = formatMonitorError(err).replace(/\s+/g, " ").trim();
             const errSnippet = (errText || "unknown error").slice(0, 180);
@@ -1311,10 +1316,10 @@ function isBenignWorkspaceSyncFailure(errorText) {
         }
       } finally {
         const durationMs = Date.now() - runStartedAt;
-        const summary = `[monitor] workspace sync: cycle complete (${workspaceCount} workspace(s), ${repoCount} repo(s), ${failedRepoCount} failure(s), ${workspaceExceptionCount} exception(s), ${Math.round(durationMs / 1000)}s)`;
-        if (repoCount > 0 && failedRepoCount >= repoCount) {
+        const summary = `[monitor] workspace sync: cycle complete (${workspaceCount} workspace(s), ${repoCount} repo(s), ${failedRepoCount} failure(s), ${nonBenignFailedRepoCount} non-benign, ${benignFailedRepoCount} benign, ${workspaceExceptionCount} exception(s), ${Math.round(durationMs / 1000)}s)`;
+        if (repoCount > 0 && nonBenignFailedRepoCount >= repoCount) {
           console.warn(
-            `[monitor] workspace sync: all repos failed this cycle (${failedRepoCount}/${repoCount})`,
+            `[monitor] workspace sync: all repos failed this cycle (${nonBenignFailedRepoCount}/${repoCount})`,
           );
         }
         if (workspaceExceptionCount > 0) {

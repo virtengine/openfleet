@@ -529,6 +529,12 @@ let parentPid = null;
 let parentCheckInterval = null;
 let cleanupHandlersRegistered = false;
 
+function isSuppressedStreamNoiseError(err) {
+  const msg = String(err?.message || err || "");
+  if (!msg) return false;
+  return msg.includes("setRawMode EIO") || msg.includes("read EIO");
+}
+
 /**
  * Start a background polling loop that checks for updates every `intervalMs`
  * (default 10 min). When a newer version is found, it:
@@ -800,17 +806,17 @@ function registerCleanupHandlers() {
     stopAutoUpdateLoop();
   });
 
-  // Handle uncaught exceptions (last resort)
-  const originalUncaughtException = process.listeners("uncaughtException");
+  // Handle uncaught exceptions (last resort). Do not manually re-emit previous
+  // listeners: Node invokes all uncaughtException handlers automatically.
   process.on("uncaughtException", (err) => {
+    if (isSuppressedStreamNoiseError(err)) {
+      console.log(
+        `[auto-update] suppressed stream noise (uncaughtException): ${err?.message || err}`,
+      );
+      return;
+    }
     console.error(`[auto-update] Uncaught exception, cleaning up:`, err);
     stopAutoUpdateLoop();
-    // Re-emit for other handlers
-    if (originalUncaughtException.length > 0) {
-      for (const handler of originalUncaughtException) {
-        handler(err);
-      }
-    }
   });
 }
 
@@ -829,22 +835,44 @@ function printUpdateNotice(current, latest) {
 
 function promptConfirm(question) {
   return new Promise((res) => {
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      res(Boolean(value));
+    };
     const rl = createInterface({
       input: process.stdin,
       output: process.stdout,
-      terminal: process.stdin.isTTY && process.stdout.isTTY,
+      // Keep readline out of raw-mode transitions; they can throw EIO during
+      // terminal teardown in daemonized/non-interactive contexts.
+      terminal: false,
+    });
+    rl.on("error", (err) => {
+      if (isSuppressedStreamNoiseError(err)) {
+        console.log(
+          `[auto-update] suppressed stream noise (readline): ${err?.message || err}`,
+        );
+        settle(false);
+        return;
+      }
+      console.warn(`[auto-update] prompt failed: ${err?.message || err}`);
+      settle(false);
     });
     rl.question(question, (answer) => {
       try {
         rl.close();
       } catch (err) {
-        const msg = err?.message || String(err || "");
-        if (!msg.includes("setRawMode EIO")) {
-          throw err;
+        if (isSuppressedStreamNoiseError(err)) {
+          console.log(
+            `[auto-update] suppressed stream noise (readline close): ${err?.message || err}`,
+          );
+        } else {
+          console.warn(`[auto-update] prompt close failed: ${err?.message || err}`);
         }
       }
       const a = answer.trim().toLowerCase();
-      res(!a || a === "y" || a === "yes");
+      settle(!a || a === "y" || a === "yes");
     });
   });
 }
