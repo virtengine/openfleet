@@ -106,7 +106,7 @@ describe("voice-relay", () => {
     it("returns correct defaults when no config or env set", () => {
       const cfg = getVoiceConfig(true);
       expect(cfg.provider).toBe("fallback");
-      expect(cfg.model).toBe("gpt-realtime-1.5");
+      expect(cfg.model).toBe("gpt-audio-1.5");
       expect(cfg.voiceId).toBe("alloy");
       expect(cfg.turnDetection).toBe("server_vad");
       expect(cfg.fallbackMode).toBe("browser");
@@ -464,7 +464,7 @@ describe("voice-relay", () => {
       const info = getRealtimeConnectionInfo();
       expect(info.provider).toBe("openai");
       expect(info.url).toContain("api.openai.com/v1/realtime");
-      expect(info.model).toBe("gpt-realtime-1.5");
+      expect(info.model).toBe("gpt-audio-1.5");
     });
 
     it("returns Azure URL for azure provider", () => {

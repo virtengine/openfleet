@@ -436,8 +436,8 @@ function buildStableSetupDefaults({
     workflowMaxConcurrentBranches: 8,
     voiceEnabled: true,
     voiceProvider: "auto",
-    voiceModel: "gpt-realtime-1.5",
-    voiceVisionModel: "gpt-4.1-mini",
+    voiceModel: "gpt-audio-1.5",
+    voiceVisionModel: "gpt-4.1-nano",
     voiceId: "alloy",
     voiceTurnDetection: "server_vad",
     voiceFallbackMode: "browser",
@@ -445,7 +445,7 @@ function buildStableSetupDefaults({
     openaiRealtimeApiKey: "",
     azureOpenaiRealtimeEndpoint: "",
     azureOpenaiRealtimeApiKey: "",
-    azureOpenaiRealtimeDeployment: "gpt-realtime-1.5",
+    azureOpenaiRealtimeDeployment: "gpt-audio-1.5",
     copilotEnableAllMcpTools: false,
     // Backward-compatible fields consumed by older setup UI revisions.
     distribution: "primary-only",
@@ -864,16 +864,16 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
       env.VOICE_MODEL,
       envMap.VOICE_MODEL,
       sourceEnv.VOICE_MODEL,
-    ) || "gpt-realtime-1.5",
-  ).trim() || "gpt-realtime-1.5";
+    ) || "gpt-audio-1.5",
+  ).trim() || "gpt-audio-1.5";
   envMap.VOICE_VISION_MODEL = String(
     pickNonEmptyValue(
       env.voiceVisionModel,
       env.VOICE_VISION_MODEL,
       envMap.VOICE_VISION_MODEL,
       sourceEnv.VOICE_VISION_MODEL,
-    ) || "gpt-4.1-mini",
-  ).trim() || "gpt-4.1-mini";
+    ) || "gpt-4.1-nano",
+  ).trim() || "gpt-4.1-nano";
   envMap.VOICE_ID = normalizeEnumValue(
     pickNonEmptyValue(
       env.voiceId,
@@ -953,8 +953,8 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
       env.AZURE_OPENAI_REALTIME_DEPLOYMENT,
       envMap.AZURE_OPENAI_REALTIME_DEPLOYMENT,
       sourceEnv.AZURE_OPENAI_REALTIME_DEPLOYMENT,
-    ) || "gpt-realtime-1.5",
-  ).trim() || "gpt-realtime-1.5";
+    ) || "gpt-audio-1.5",
+  ).trim() || "gpt-audio-1.5";
 
   envMap.CONTAINER_ENABLED = toBooleanEnvString(
     pickNonEmptyValue(env.containerEnabled, envMap.CONTAINER_ENABLED, sourceEnv.CONTAINER_ENABLED),
