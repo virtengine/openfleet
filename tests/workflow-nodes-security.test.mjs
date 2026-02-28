@@ -144,6 +144,42 @@ describe("critical node types are registered", () => {
   }
 });
 
+describe("action.create_task adapter contract", () => {
+  it("passes projectId separately for two-argument kanban adapters", async () => {
+    const nodeType = getNodeType("action.create_task");
+    const createTask = vi.fn(async function createTaskAdapter(projectId, taskData) {
+      if (projectId && taskData) {
+        return { id: "task-42" };
+      }
+      return { id: "task-fallback" };
+    });
+    const node = makeNode("action.create_task", {
+      title: "[m] fix(workflow): create task contract",
+      description: "Ensure compatibility",
+      status: "todo",
+      projectId: "proj-42",
+    });
+
+    const result = await nodeType.execute(node, makeCtx(), {
+      services: {
+        kanban: {
+          createTask,
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.taskId).toBe("task-42");
+    expect(createTask).toHaveBeenCalledWith("proj-42", {
+      title: "[m] fix(workflow): create task contract",
+      description: "Ensure compatibility",
+      status: "todo",
+      priority: undefined,
+      tags: undefined,
+    });
+  });
+});
+
 // -- Dangerous Payload Containment ---------------------------------------------
 
 describe("dangerous shell payload containment", () => {

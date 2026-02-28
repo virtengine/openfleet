@@ -142,6 +142,14 @@ function reconnectFingerprint(content) {
     .trim();
 }
 
+function isDecorativeLine(text) {
+  const compact = String(text || "").replace(/\s+/g, "");
+  if (!compact) return true;
+  if (/^[\-=_*`~.·•]+$/.test(compact)) return true;
+  if (/^[\u2500-\u257f]+$/u.test(compact)) return true;
+  return false;
+}
+
 function dedupeMessages(messages) {
   const list = Array.isArray(messages) ? messages : [];
   const out = [];
@@ -154,6 +162,14 @@ function dedupeMessages(messages) {
     const content = messageBody(msg);
     if (!content && kind !== "user") continue;
     if (isLifecycleSystemMessage(msg)) continue;
+    if (kind === "system" && isDecorativeLine(content)) continue;
+    if (
+      kind === "assistant" &&
+      content.length <= 2 &&
+      !/[a-z0-9]/i.test(content)
+    ) {
+      continue;
+    }
     const ts = Date.parse(msg.timestamp || 0) || 0;
     const exactKey = `${kind}|${content}|${ts}`;
     if (seenExact.has(exactKey)) continue;

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Diff-based pre-push hook: only runs tests for files modified in the push.
-# Falls back to the full suite when the remote branch is new.
+# Diff-aware pre-push hook with high-accuracy targeted testing.
+# Fast path: run vitest "related" for changed runtime files.
+# Safe fallback: escalate to full suite for high-risk changes.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -8,33 +9,61 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ ! -f "$ROOT/package.json" ] && exit 0
 cd "$ROOT"
 
-echo "[hooks] bosun pre-push: scanning changes…"
+echo "[hooks] bosun pre-push: analyzing changed files…"
 
-# ── Read stdin (push refs) BEFORE anything else consumes it ──────────────────
 PUSH_INPUT="$(cat)"
 
-# ── Always run the fast syntax check (~2 s) ──────────────────────────────────
+# Always keep fast syntax validation first.
 npm run syntax:check
 
-# ── Collect changed .mjs files across all pushed refs ────────────────────────
-CHANGED=""
+declare -A CHANGED_MAP=()
 RUN_ALL=false
+RUN_ALL_REASON=""
+
+is_zero_sha() {
+  [ "$1" = "0000000000000000000000000000000000000000" ]
+}
+
+should_force_full_suite() {
+  local path="$1"
+  case "$path" in
+    package.json|package-lock.json|pnpm-lock.yaml|yarn.lock|npm-shrinkwrap.json)
+      return 0
+      ;;
+    vitest.config.*|.githooks/pre-push|.githooks/pre-commit)
+      return 0
+      ;;
+    preflight.mjs|setup.mjs|workflow-engine.mjs)
+      return 0
+      ;;
+    tests/**)
+      # Changed tests can alter global setup/mocks; keep full-suite confidence.
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+merge_base_for_new_branch() {
+  local local_sha="$1"
+  git merge-base "$local_sha" origin/main 2>/dev/null \
+    || git merge-base "$local_sha" origin/master 2>/dev/null \
+    || true
+}
 
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   LOCAL_SHA=$(printf '%s' "$line" | awk '{print $2}')
   REMOTE_SHA=$(printf '%s' "$line" | awk '{print $4}')
 
-  # Deletion push — nothing to test
-  [ "$LOCAL_SHA" = "0000000000000000000000000000000000000000" ] && continue
+  # Branch deletion push: nothing local to validate.
+  is_zero_sha "$LOCAL_SHA" && continue
 
-  if [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
-    # New remote branch: find common ancestor with main/master
-    BASE=$(git merge-base "$LOCAL_SHA" origin/main 2>/dev/null \
-        || git merge-base "$LOCAL_SHA" origin/master 2>/dev/null \
-        || true)
+  if is_zero_sha "$REMOTE_SHA"; then
+    BASE="$(merge_base_for_new_branch "$LOCAL_SHA")"
     if [ -z "$BASE" ]; then
       RUN_ALL=true
+      RUN_ALL_REASON="new branch with unknown merge-base"
       break
     fi
     RANGE="${BASE}..${LOCAL_SHA}"
@@ -42,52 +71,62 @@ while IFS= read -r line; do
     RANGE="${REMOTE_SHA}..${LOCAL_SHA}"
   fi
 
-  DIFF=$(git diff --name-only "$RANGE" -- '*.mjs' 2>/dev/null || true)
-  [ -n "$DIFF" ] && CHANGED="${CHANGED}${DIFF}"$'\n'
+  while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    CHANGED_MAP["$path"]=1
+    if should_force_full_suite "$path"; then
+      RUN_ALL=true
+      RUN_ALL_REASON="high-risk file changed: $path"
+      break
+    fi
+  done < <(git diff --name-only "$RANGE" 2>/dev/null || true)
+
+  $RUN_ALL && break
 done <<< "$PUSH_INPUT"
 
-# ── Full suite fallback ───────────────────────────────────────────────────────
 if $RUN_ALL; then
-  echo "[hooks] new branch with no known base — running full test suite"
+  echo "[hooks] running full suite (${RUN_ALL_REASON})"
   npm test
   exit 0
 fi
 
-# ── Map changed source files → test file prefixes ────────────────────────────
-# Strategy: for a changed file `foo/bar.mjs`, find tests/foo*.test.mjs
-#           for a changed file `foo.mjs`,     find tests/foo*.test.mjs
-# Special: config.mjs → config*.test.mjs (covers config-validation etc.)
-TEST_ARGS=""
+declare -a CHANGED_FILES=()
+declare -a CHANGED_RUNTIME=()
+declare -a CHANGED_TESTS=()
 
-while IFS= read -r f; do
-  [ -z "$f" ] && continue
-  BASE="$(basename "$f" .mjs)"
-  DIR="$(dirname "$f")"
+for file in "${!CHANGED_MAP[@]}"; do
+  CHANGED_FILES+=("$file")
+  case "$file" in
+    *.mjs|*.js|*.cjs|*.ts|*.tsx)
+      CHANGED_RUNTIME+=("$file")
+      ;;
+  esac
+  case "$file" in
+    tests/*.test.mjs)
+      CHANGED_TESTS+=("$file")
+      ;;
+  esac
+done
 
-  if [ "$DIR" != "." ] && [ -n "$DIR" ]; then
-    PREFIX="${DIR%%/*}"   # top-level directory name
-  else
-    PREFIX="$BASE"
-  fi
-
-  while IFS= read -r tf; do
-    REL="tests/$(basename "$tf")"
-    # Dedup
-    if ! echo " $TEST_ARGS " | grep -qF " $REL "; then
-      TEST_ARGS="${TEST_ARGS} ${REL}"
-    fi
-  done < <(find "$ROOT/tests" -maxdepth 1 -name "${PREFIX}*.test.mjs" 2>/dev/null | sort)
-done <<< "$CHANGED"
-
-TEST_ARGS="$(printf '%s' "$TEST_ARGS" | xargs)"
-
-if [ -z "$TEST_ARGS" ]; then
-  echo "[hooks] no tests matched changed files — pre-push passed ✓"
+if [ "${#CHANGED_FILES[@]}" -gt 120 ]; then
+  echo "[hooks] running full suite (large push: ${#CHANGED_FILES[@]} files)"
+  npm test
   exit 0
 fi
 
-echo "[hooks] running targeted tests:"
-printf '%s\n' $TEST_ARGS | sed 's/^/  • /'
+if [ "${#CHANGED_RUNTIME[@]}" -eq 0 ] && [ "${#CHANGED_TESTS[@]}" -eq 0 ]; then
+  echo "[hooks] no runtime/test files changed — pre-push passed ✓"
+  exit 0
+fi
 
-# shellcheck disable=SC2086
-npx vitest run $TEST_ARGS
+if [ "${#CHANGED_RUNTIME[@]}" -gt 0 ]; then
+  echo "[hooks] running vitest related for ${#CHANGED_RUNTIME[@]} changed runtime file(s)…"
+  npx vitest related --run --config vitest.config.mjs "${CHANGED_RUNTIME[@]}"
+fi
+
+if [ "${#CHANGED_TESTS[@]}" -gt 0 ]; then
+  echo "[hooks] running changed test files explicitly…"
+  npx vitest run --config vitest.config.mjs "${CHANGED_TESTS[@]}"
+fi
+
+echo "[hooks] pre-push checks passed ✓"

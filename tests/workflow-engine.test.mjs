@@ -1132,9 +1132,12 @@ it("action.materialize_planner_tasks parses fenced JSON and creates tasks", asyn
   });
 
   const createTask = vi
-    .fn()
-    .mockResolvedValueOnce({ id: "task-1001" })
-    .mockResolvedValueOnce({ id: "task-1002" });
+    .fn(async function createTaskAdapter(projectId, taskData) {
+      if (projectId && taskData) {
+        return { id: "task-1001" };
+      }
+      return { id: "task-1002" };
+    });
   const listTasks = vi.fn().mockResolvedValue([
     { id: "existing-1", title: "[m] fix(workflow): duplicate title" },
   ]);
@@ -1171,6 +1174,60 @@ it("action.materialize_planner_tasks parses fenced JSON and creates tasks", asyn
   });
   expect(listTasks).toHaveBeenCalledTimes(1);
   expect(createTask).toHaveBeenCalledTimes(1);
+  expect(createTask).toHaveBeenCalledWith("proj-123", {
+    title: "[m] fix(workflow): create tasks",
+    description: "A\n\n## Verification\n- v1",
+    status: "todo",
+  });
+});
+
+it("action.materialize_planner_tasks fails when all parsed tasks are skipped and minCreated is not met", async () => {
+  const handler = getNodeType("action.materialize_planner_tasks");
+  expect(handler).toBeDefined();
+
+  const ctx = new WorkflowContext({});
+  ctx.setNodeOutput("run-planner", {
+    output: [
+      "```json",
+      "{",
+      '  "tasks": [',
+      '    { "title": "[m] fix(workflow): duplicate only", "description": "A" }',
+      "  ]",
+      "}",
+      "```",
+    ].join("\n"),
+  });
+
+  const createTask = vi.fn();
+  const listTasks = vi.fn().mockResolvedValue([
+    { id: "existing-1", title: "[m] fix(workflow): duplicate only" },
+  ]);
+  const mockEngine = {
+    services: {
+      kanban: {
+        createTask,
+        listTasks,
+      },
+    },
+  };
+
+  const node = {
+    id: "materialize",
+    type: "action.materialize_planner_tasks",
+    config: {
+      plannerNodeId: "run-planner",
+      projectId: "proj-123",
+      failOnZero: true,
+      dedup: true,
+      minCreated: 1,
+    },
+  };
+
+  await expect(handler.execute(node, ctx, mockEngine)).rejects.toThrow(
+    /created 0 tasks/i,
+  );
+  expect(listTasks).toHaveBeenCalledTimes(1);
+  expect(createTask).not.toHaveBeenCalled();
 });
 
 it("action.materialize_planner_tasks fails loudly when planner output has no parseable tasks", async () => {

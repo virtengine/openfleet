@@ -9876,7 +9876,10 @@ function buildPlannerTaskDescription({
     "   its dedicated branch and integrates upstream changes continuously.",
     "   Examples: `feat(veid):` → `origin/veid`, `fix(market):` → `origin/market`.",
     "   Do NOT set base_branch for cross-cutting tasks that modify many modules.",
-    "8. If a task should target a non-default epic/base branch for other reasons, include `base_branch` in the JSON task object.",].join("\n");
+    "8. If a task should target a non-default epic/base branch for other reasons, include `base_branch` in the JSON task object.",
+    "9. Output MUST be exactly one fenced ```json code block with shape { \"tasks\": [...] } and no surrounding prose.",
+    "10. Each task object must include title, description, implementation_steps, acceptance_criteria, verification.",
+    "11. Do not output placeholder tasks. If uncertain, reduce scope but keep tasks executable.",].join("\n");
 }
 
 function normalizePlannerTitleForComparison(title) {
@@ -11661,6 +11664,12 @@ async function triggerTaskPlannerViaCodex(
       },
     })),
   );
+
+  if (created.length === 0) {
+    throw new Error(
+      `Task planner parsed ${parsedTasks.length} tasks but created 0 tasks after dedup/materialization`,
+    );
+  }
 
   console.log(`[monitor] task planner output saved: ${outPath}`);
   console.log(
