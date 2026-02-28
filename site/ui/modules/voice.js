@@ -255,7 +255,7 @@ export function VoiceMicButton({ onTranscript, disabled = false, title, classNam
       aria-label="Open live voice mode"
       aria-pressed="false"
     >
-      ${resolveIcon("🎤")}
+      ${resolveIcon(":mic:")}
     </button>
   `;
 }
@@ -281,7 +281,7 @@ export function VoiceMicButtonInline({ onTranscript, disabled = false }) {
       aria-label="Open live voice mode"
       aria-pressed="false"
     >
-      ${resolveIcon("🎤")}
+      ${resolveIcon(":mic:")}
     </button>
   `;
 }

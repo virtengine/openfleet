@@ -217,7 +217,7 @@ async function testProfileMatch(title) {
  *  Icons per type
  * ═══════════════════════════════════════════════════════════════ */
 
-const TYPE_ICONS = { prompt: "📝", agent: "🤖", skill: "🧠" };
+const TYPE_ICONS = { prompt: ":edit:", agent: ":bot:", skill: ":cpu:" };
 const TYPE_LABELS = { prompt: "Prompt", agent: "Agent Profile", skill: "Skill" };
 const TYPE_COLORS = { prompt: "#58a6ff", agent: "#af7bff", skill: "#3fb950" };
 
@@ -272,7 +272,7 @@ function TypePills() {
 }
 
 function LibraryCard({ entry, onSelect }) {
-  const icon = TYPE_ICONS[entry.type] || "📄";
+  const icon = TYPE_ICONS[entry.type] || ":file:";
   const typeLabel = TYPE_LABELS[entry.type] || entry.type;
   const typeColor = TYPE_COLORS[entry.type] || "#aaa";
   return html`
@@ -296,7 +296,7 @@ function LibraryCard({ entry, onSelect }) {
           <span class="library-card-tag" key=${tag}>${tag}</span>
         `)}
         ${entry.scope && entry.scope !== "global" && html`
-          <span class="library-card-scope">${iconText(`📌 ${entry.scope}`)}</span>
+          <span class="library-card-scope">${iconText(`:pin: ${entry.scope}`)}</span>
         `}
       </div>
     </div>
@@ -497,7 +497,7 @@ function ScopeDetector() {
   return html`
     <div>
       <button class="btn-ghost library-type-pill" onClick=${loadScopes} style="font-size:0.82em;">
-        ${loading ? html`<${Spinner} size=${12} />` : iconText("🔍 Detect Scopes")}
+        ${loading ? html`<${Spinner} size=${12} />` : iconText(":search: Detect Scopes")}
       </button>
       ${showing && scopes.value.length > 0 && html`
         <div class="library-scopes">
@@ -547,7 +547,7 @@ function ProfileMatcher() {
           style="flex:1;padding:6px 10px;border-radius:8px;border:1px solid var(--border,#333);
             background:var(--bg-input,#0d1117);color:var(--text-primary,#eee);font-size:0.85em;" />
         <button class="library-type-pill active" onClick=${doMatch} style="font-size:0.82em;" disabled=${loading}>
-          ${loading ? html`<${Spinner} size=${12} />` : iconText("🎯 Match")}
+          ${loading ? html`<${Spinner} size=${12} />` : iconText(":target: Match")}
         </button>
       </div>
       ${match && html`
@@ -658,10 +658,10 @@ export function LibraryTab() {
   return html`
     <div class="library-root">
       <div class="library-header">
-        <h2>${iconText("📚 Library")}</h2>
+        <h2>${iconText(":u1f4da: Library")}</h2>
         <button class="library-type-pill" onClick=${handleRebuild}
           title="Rescan directories and rebuild manifest">
-          ${iconText("🔄 Rebuild")}
+          ${iconText(":refresh: Rebuild")}
         </button>
         <button class="library-type-pill active" onClick=${() => setEditing({})}>
           ＋ New
@@ -672,7 +672,7 @@ export function LibraryTab() {
         <div class="library-init-banner">
           <p><b>Welcome to the Library!</b></p>
           <p>Initialize to scaffold built-in agent profiles and index existing prompts and skills.</p>
-          <button onClick=${handleInit}>${iconText("🚀 Initialize Library")}</button>
+          <button onClick=${handleInit}>${iconText(":rocket: Initialize Library")}</button>
         </div>
       `}
 

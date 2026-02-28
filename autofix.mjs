@@ -776,7 +776,7 @@ export async function attemptAutoFix(opts) {
       );
       if (onTelegram) {
         onTelegram(
-          `🔧 Auto-fix gave up on raw crash (${reason}) after ${MAX_FIX_ATTEMPTS} attempts.\nManual intervention required.`,
+          `:settings: Auto-fix gave up on raw crash (${reason}) after ${MAX_FIX_ATTEMPTS} attempts.\nManual intervention required.`,
         );
       }
       return {
@@ -794,7 +794,7 @@ export async function attemptAutoFix(opts) {
 
     if (onTelegram) {
       onTelegram(
-        `🔧 Auto-fix starting [${modeLabel}] (raw fallback, attempt #${attemptNum}):\nCrash: ${reason}\nError indicators: ${fallback.errorLines.length} suspicious lines`,
+        `:settings: Auto-fix starting [${modeLabel}] (raw fallback, attempt #${attemptNum}):\nCrash: ${reason}\nError indicators: ${fallback.errorLines.length} suspicious lines`,
       );
     }
 
@@ -830,7 +830,7 @@ export async function attemptAutoFix(opts) {
       console.log("[autofix] npm mode — skipping execution, sending analysis");
 
       const suggestion =
-        `📋 *Auto-fix analysis* (raw fallback, attempt #${attemptNum}):\n` +
+        `:clipboard: *Auto-fix analysis* (raw fallback, attempt #${attemptNum}):\n` +
         `Crash: ${reason}\n\n` +
         `**Error indicators found:**\n` +
         (fallback.errorLines.length > 0
@@ -889,7 +889,7 @@ export async function attemptAutoFix(opts) {
 
     if (result.success && newChanges.length > 0) {
       const outcomeMsg =
-        `🔧 Auto-fix applied (raw fallback, attempt #${attemptNum}):\n` +
+        `:settings: Auto-fix applied (raw fallback, attempt #${attemptNum}):\n` +
         `Crash: ${reason}\n` +
         `Changes:\n${changeSummary}\n` +
         `Codex SDK log: ${result.logPath}`;
@@ -904,7 +904,7 @@ export async function attemptAutoFix(opts) {
       };
     } else {
       const outcomeMsg =
-        `🔧 Auto-fix fallback failed (attempt #${attemptNum}):\n` +
+        `:settings: Auto-fix fallback failed (attempt #${attemptNum}):\n` +
         `Crash: ${reason}\n` +
         `Codex: ${result.error || "no changes written"}\n` +
         `Codex SDK log: ${result.logPath}`;
@@ -931,7 +931,7 @@ export async function attemptAutoFix(opts) {
       .map((e) => `• ${e.errorType}: ${e.file}:${e.line}`)
       .join("\n");
     onTelegram(
-      `🔧 Auto-fix starting [${modeLabel}]:\nFound ${errors.length} error(s):\n${errorSummary}`,
+      `:settings: Auto-fix starting [${modeLabel}]:\nFound ${errors.length} error(s):\n${errorSummary}`,
     );
   }
 
@@ -950,7 +950,7 @@ export async function attemptAutoFix(opts) {
 
       if (count >= MAX_FIX_ATTEMPTS && onTelegram) {
         onTelegram(
-          `🔧 Auto-fix gave up on ${error.file}:${error.line} after ${MAX_FIX_ATTEMPTS} attempts.\n` +
+          `:settings: Auto-fix gave up on ${error.file}:${error.line} after ${MAX_FIX_ATTEMPTS} attempts.\n` +
             `Error: ${error.message}\nManual intervention required.`,
         );
       }
@@ -1004,7 +1004,7 @@ export async function attemptAutoFix(opts) {
     // ── NPM mode: analyze only, suggest fix to user ──────────────────
     if (!devMode) {
       const suggestion =
-        `📋 *Auto-fix analysis* (attempt #${attemptNum}):\n` +
+        `:clipboard: *Auto-fix analysis* (attempt #${attemptNum}):\n` +
         `**${error.errorType}** at \`${error.file}:${error.line}\`\n` +
         `Message: ${error.message}\n` +
         (error.codeLine ? `Failing code: \`${error.codeLine}\`\n` : "") +
@@ -1058,7 +1058,7 @@ export async function attemptAutoFix(opts) {
 
     if (result.success) {
       const outcomeMsg =
-        `🔧 Auto-fix applied (attempt #${attemptNum}):\n` +
+        `:settings: Auto-fix applied (attempt #${attemptNum}):\n` +
         `${error.errorType} at ${error.file}:${error.line}\n` +
         `"${error.message}"\n` +
         `Changes:\n${changeSummary}`;
@@ -1072,7 +1072,7 @@ export async function attemptAutoFix(opts) {
       if (onTelegram) onTelegram(outcomeMsg);
     } else {
       const outcomeMsg =
-        `🔧 Auto-fix failed (attempt #${attemptNum}):\n` +
+        `:settings: Auto-fix failed (attempt #${attemptNum}):\n` +
         `${error.errorType} at ${error.file}:${error.line}\n` +
         `Codex: ${result.error || "no changes written"}`;
 
@@ -1235,7 +1235,7 @@ export async function fixLoopingError(opts) {
 
   if (!canAttemptFix(signature)) {
     const count = getFixAttemptCount(signature);
-    const outcome = `🔁 Loop fix gave up on repeating error after ${count} attempts.\n"${errorLine.slice(0, 200)}"\nManual intervention required.`;
+    const outcome = `:repeat: Loop fix gave up on repeating error after ${count} attempts.\n"${errorLine.slice(0, 200)}"\nManual intervention required.`;
     console.warn(`[autofix] loop fix exhausted for: ${errorLine.slice(0, 80)}`);
     if (onTelegram) onTelegram(outcome);
     return { fixed: false, outcome };
@@ -1248,7 +1248,7 @@ export async function fixLoopingError(opts) {
 
   if (onTelegram) {
     onTelegram(
-      `🔁 Repeating error detected [${modeLabel}] (${repeatCount}x, fix attempt #${attemptNum}):\n"${errorLine.slice(0, 200)}"`,
+      `:repeat: Repeating error detected [${modeLabel}] (${repeatCount}x, fix attempt #${attemptNum}):\n"${errorLine.slice(0, 200)}"`,
     );
   }
 
@@ -1312,7 +1312,7 @@ ${messagesCtx}
     console.log("[autofix] npm mode — loop fix: analysis only");
 
     const suggestion =
-      `📋 *Loop fix analysis* (attempt #${attemptNum}):\n` +
+      `:clipboard: *Loop fix analysis* (attempt #${attemptNum}):\n` +
       `**Repeating error** (${repeatCount}x):\n` +
       `\`${errorLine.slice(0, 300)}\`\n\n` +
       `**Likely cause:** This error is repeating in a loop, likely because:\n` +
@@ -1359,7 +1359,7 @@ ${messagesCtx}
 
   if (result.success && newChanges.length > 0) {
     const outcome =
-      `🔁 Loop fix applied (attempt #${attemptNum}):\n` +
+      `:repeat: Loop fix applied (attempt #${attemptNum}):\n` +
       `Error: "${errorLine.slice(0, 150)}"\n` +
       `Changes:\n${changeSummary}`;
     console.log(`[autofix] loop fix applied: ${newChanges.join(", ")}`);
@@ -1367,7 +1367,7 @@ ${messagesCtx}
     return { fixed: true, outcome };
   } else {
     const outcome =
-      `🔁 Loop fix failed (attempt #${attemptNum}):\n` +
+      `:repeat: Loop fix failed (attempt #${attemptNum}):\n` +
       `Error: "${errorLine.slice(0, 150)}"\n` +
       `Codex: ${result.error || "no changes written"}`;
     console.warn(`[autofix] loop fix codex exec failed: ${result.error}`);

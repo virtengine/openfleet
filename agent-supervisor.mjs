@@ -516,7 +516,7 @@ export class AgentSupervisor {
           const state = this._ensureTaskState(taskId);
           if (this._sendTelegram) {
             this._sendTelegram(
-              `🛑 Supervisor blocked "${title}": ${reason}\n` +
+              `:close: Supervisor blocked "${title}": ${reason}\n` +
               `Situation: ${situation}, Interventions attempted: ${state.interventionCount}`,
             );
           }
@@ -535,7 +535,7 @@ export class AgentSupervisor {
             this._pauseExecutor(5 * 60_000, reason);
           }
           if (this._sendTelegram) {
-            this._sendTelegram(`⏸️ Executor paused by supervisor: ${reason}`);
+            this._sendTelegram(`:pause: Executor paused by supervisor: ${reason}`);
           }
           break;
 

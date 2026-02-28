@@ -340,7 +340,7 @@ async function connectInternal(onFirstOpen) {
         } catch (err) {
           await setWhatsAppTyping(rawJid, false);
           console.error(`[whatsapp] agent error: ${err.message}`);
-          await sendWhatsAppMessage(rawJid, `❌ Error: ${err.message}`);
+          await sendWhatsAppMessage(rawJid, `:close: Error: ${err.message}`);
         }
       }
 
@@ -477,7 +477,7 @@ export async function runWhatsAppAuth(mode = "qr") {
           const code = await authSock.requestPairingCode(
             phoneNumber.replace(/[^0-9]/g, ""),
           );
-          console.log(`\n📱 Pairing code: ${code}\n`);
+          console.log(`\n:phone: Pairing code: ${code}\n`);
           console.log(
             "Enter this code in WhatsApp:\n" +
               "Settings → Linked Devices → Link a Device → Link with phone number\n",
@@ -486,18 +486,18 @@ export async function runWhatsAppAuth(mode = "qr") {
           console.error(`Pairing code request failed: ${err.message}`);
         }
       } else if (qrTerminal) {
-        console.log("\n📱 Scan this QR code with WhatsApp:\n");
+        console.log("\n:phone: Scan this QR code with WhatsApp:\n");
         qrTerminal.generate?.(qr, { small: true });
       } else {
         console.log(
-          `\n📱 QR code saved to: ${resolve(storeDir, "qr-data.txt")}`,
+          `\n:phone: QR code saved to: ${resolve(storeDir, "qr-data.txt")}`,
         );
         console.log("   Use a QR reader to scan it with WhatsApp.\n");
       }
     }
 
     if (connection === "open") {
-      console.log("\n✅ WhatsApp authenticated successfully!");
+      console.log("\n:check: WhatsApp authenticated successfully!");
       console.log(`   Auth data saved to: ${authDir}`);
       writeFileSync(resolve(storeDir, "auth-status.txt"), "connected");
       process.exit(0);

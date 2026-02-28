@@ -116,8 +116,9 @@ export const SETTINGS_SCHEMA = [
 
   // ── Voice Assistant ──────────────────────────────────────────
   { key: "VOICE_ENABLED",                  label: "Enable Voice Mode",          category: "voice", type: "boolean", defaultVal: true, description: "Enable the real-time voice assistant in the chat UI." },
-  { key: "VOICE_PROVIDER",                 label: "Voice Provider",             category: "voice", type: "select", defaultVal: "auto", options: ["auto", "openai", "azure", "fallback"], description: "Voice API provider. 'auto' selects based on available keys. 'fallback' uses browser speech APIs." },
+  { key: "VOICE_PROVIDER",                 label: "Voice Provider",             category: "voice", type: "select", defaultVal: "auto", options: ["auto", "openai", "azure", "claude", "gemini", "fallback"], description: "Voice API provider. 'auto' selects based on available keys. 'fallback' uses browser speech APIs." },
   { key: "VOICE_MODEL",                    label: "Voice Model",                category: "voice", type: "string", defaultVal: "gpt-4o-realtime-preview-2024-12-17", description: "OpenAI Realtime model to use for voice sessions." },
+  { key: "VOICE_VISION_MODEL",             label: "Vision Model",               category: "voice", type: "string", defaultVal: "gpt-4.1-mini", description: "Vision model used for live screen/camera understanding in voice mode." },
   { key: "OPENAI_REALTIME_API_KEY",        label: "OpenAI Realtime Key",        category: "voice", type: "secret", sensitive: true, description: "Dedicated API key for voice. Falls back to OPENAI_API_KEY if not set." },
   { key: "AZURE_OPENAI_REALTIME_ENDPOINT", label: "Azure Realtime Endpoint",    category: "voice", type: "string", description: "Azure OpenAI endpoint for Realtime API (e.g., https://myresource.openai.azure.com).", validate: "^$|^https?://" },
   { key: "AZURE_OPENAI_REALTIME_API_KEY",  label: "Azure Realtime Key",         category: "voice", type: "secret", sensitive: true, description: "Azure OpenAI API key for Realtime API. Falls back to AZURE_OPENAI_API_KEY if not set." },

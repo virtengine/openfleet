@@ -499,7 +499,7 @@ async function handleAgentAlert(alert) {
   }
 
   // Send Telegram notification
-  await notify(`⚠️ Alert: ${alert.type} detected on ${alert.attempt_id}`, {
+  await notify(`:alert: Alert: ${alert.type} detected on ${alert.attempt_id}`, {
     priority: 2, // Error priority
     category: 'agent_health'
   });
@@ -635,7 +635,7 @@ async function analyzePlanning(options) {
     }
 
     if (planningIssues.length > 0) {
-      console.log(`\n💡 Planning Improvements:`);
+      console.log(`\n:lightbulb: Planning Improvements:`);
       for (const issue of planningIssues) {
         console.log(`  - ${issue}`);
       }

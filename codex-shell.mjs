@@ -488,25 +488,25 @@ function formatEvent(event) {
       const item = event.item;
       switch (item.type) {
         case "command_execution":
-          return `⚡ Running: \`${item.command}\``;
+          return `:zap: Running: \`${item.command}\``;
         case "file_change":
           return null; // wait for completed
         case "mcp_tool_call":
-          return `🔌 MCP [${item.server}]: ${item.tool}`;
+          return `:plug: MCP [${item.server}]: ${item.tool}`;
         case "reasoning":
-          return item.text ? `💭 ${item.text.slice(0, 300)}` : null;
+          return item.text ? `:u1f4ad: ${item.text.slice(0, 300)}` : null;
         case "agent_message":
           return null; // wait for completed for full text
         case "todo_list":
           if (item.items && item.items.length > 0) {
             const todoLines = item.items.map(
-              (t) => `  ${t.completed ? "✅" : "⬜"} ${t.text}`,
+              (t) => `  ${t.completed ? ":check:" : ":dot:"} ${t.text}`,
             );
-            return `📋 Plan:\n${todoLines.join("\n")}`;
+            return `:clipboard: Plan:\n${todoLines.join("\n")}`;
           }
           return null;
         case "web_search":
-          return `🔍 Searching: ${item.query}`;
+          return `:search: Searching: ${item.query}`;
         default:
           return null;
       }
@@ -516,7 +516,7 @@ function formatEvent(event) {
       const item = event.item;
       switch (item.type) {
         case "command_execution": {
-          const status = item.exit_code === 0 ? "✅" : "❌";
+          const status = item.exit_code === 0 ? ":check:" : ":close:";
           const output = item.aggregated_output
             ? `\n${item.aggregated_output.slice(-500)}`
             : "";
@@ -526,16 +526,16 @@ function formatEvent(event) {
           if (item.changes && item.changes.length > 0) {
             const fileLines = item.changes.map(
               (c) =>
-                `  ${c.kind === "add" ? "➕" : c.kind === "delete" ? "🗑️" : "✏️"} ${c.path}`,
+                `  ${c.kind === "add" ? ":plus:" : c.kind === "delete" ? ":trash:" : ":edit:"} ${c.path}`,
             );
-            return `📁 Files changed:\n${fileLines.join("\n")}`;
+            return `:folder: Files changed:\n${fileLines.join("\n")}`;
           }
           return null;
         }
         case "agent_message":
           return item.text || null;
         case "mcp_tool_call": {
-          const status = item.status === "completed" ? "✅" : "❌";
+          const status = item.status === "completed" ? ":check:" : ":close:";
           const resultInfo = item.error
             ? `Error: ${item.error.message}`
             : "done";
@@ -544,9 +544,9 @@ function formatEvent(event) {
         case "todo_list": {
           if (item.items && item.items.length > 0) {
             const todoLines = item.items.map(
-              (t) => `  ${t.completed ? "✅" : "⬜"} ${t.text}`,
+              (t) => `  ${t.completed ? ":check:" : ":dot:"} ${t.text}`,
             );
-            return `📋 Updated plan:\n${todoLines.join("\n")}`;
+            return `:clipboard: Updated plan:\n${todoLines.join("\n")}`;
           }
           return null;
         }
@@ -559,13 +559,13 @@ function formatEvent(event) {
       const item = event.item;
       // Stream partial reasoning and command output
       if (item.type === "reasoning" && item.text) {
-        return `💭 ${item.text.slice(0, 300)}`;
+        return `:u1f4ad: ${item.text.slice(0, 300)}`;
       }
       if (item.type === "todo_list" && item.items) {
         const todoLines = item.items.map(
-          (t) => `  ${t.completed ? "✅" : "⬜"} ${t.text}`,
+          (t) => `  ${t.completed ? ":check:" : ":dot:"} ${t.text}`,
         );
-        return `📋 Plan update:\n${todoLines.join("\n")}`;
+        return `:clipboard: Plan update:\n${todoLines.join("\n")}`;
       }
       return null;
     }
@@ -573,9 +573,9 @@ function formatEvent(event) {
     case "turn.completed":
       return null; // handled by caller
     case "turn.failed":
-      return `❌ Turn failed: ${event.error?.message || "unknown error"}`;
+      return `:close: Turn failed: ${event.error?.message || "unknown error"}`;
     case "error":
-      return `❌ Error: ${event.message}`;
+      return `:close: Error: ${event.message}`;
     default:
       return null;
   }
@@ -632,7 +632,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
   agentSdk = resolveAgentSdkConfig({ reload: true });
   if (agentSdk.primary !== "codex") {
     return {
-      finalResponse: `❌ Agent SDK set to "${agentSdk.primary}" — Codex SDK disabled.`,
+      finalResponse: `:close: Agent SDK set to "${agentSdk.primary}" — Codex SDK disabled.`,
       items: [],
       usage: null,
     };
@@ -641,7 +641,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
   if (activeTurn) {
     return {
       finalResponse:
-        "⏳ Agent is still executing a previous task. Please wait.",
+        ":clock: Agent is still executing a previous task. Please wait.",
       items: [],
       usage: null,
     };
@@ -846,8 +846,8 @@ export async function execCodexPrompt(userMessage, options = {}) {
           } else {
             const msg =
               reason === "user_stop"
-                ? "🛑 Agent stopped by user."
-                : `⏱️ Agent timed out after ${timeoutMs / 1000}s`;
+                ? ":close: Agent stopped by user."
+                : `:clock: Agent timed out after ${timeoutMs / 1000}s`;
             return { finalResponse: msg, items: [], usage: null };
           }
         }
@@ -878,7 +878,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
             `[codex-shell] stream disconnection not resolved after ${MAX_STREAM_RETRIES} attempts — giving up`,
           );
           return {
-            finalResponse: `❌ Stream disconnected after ${MAX_STREAM_RETRIES} retries: ${err.message}`,
+            finalResponse: `:close: Stream disconnected after ${MAX_STREAM_RETRIES} retries: ${err.message}`,
             items: [],
             usage: null,
           };
@@ -888,7 +888,7 @@ export async function execCodexPrompt(userMessage, options = {}) {
       }
     }
     return {
-      finalResponse: "❌ Agent failed after all retry attempts.",
+      finalResponse: ":close: Agent failed after all retry attempts.",
       items: [],
       usage: null,
     };

@@ -460,7 +460,7 @@ async function execGeminiCliPrompt(promptText, options = {}) {
     const args = attempts[i];
     if (typeof options.onEvent === "function") {
       options.onEvent(
-        `⚡ Gemini CLI (${i + 1}/${attempts.length}): ${cliPath} ${args.join(" ")}`,
+        `:zap: Gemini CLI (${i + 1}/${attempts.length}): ${cliPath} ${args.join(" ")}`,
       );
     }
     const result = await runCliCommand(
@@ -488,7 +488,7 @@ async function execGeminiCliPrompt(promptText, options = {}) {
   }
 
   return {
-    finalResponse: `❌ Gemini CLI failed: ${lastError}`,
+    finalResponse: `:close: Gemini CLI failed: ${lastError}`,
     items: [],
     usage: null,
   };
@@ -499,7 +499,7 @@ export async function execGeminiPrompt(userMessage, options = {}) {
 
   if (envFlagEnabled(process.env.GEMINI_SDK_DISABLED)) {
     return {
-      finalResponse: "❌ Gemini adapter disabled via GEMINI_SDK_DISABLED.",
+      finalResponse: ":close: Gemini adapter disabled via GEMINI_SDK_DISABLED.",
       items: [],
       usage: null,
     };
@@ -508,7 +508,7 @@ export async function execGeminiPrompt(userMessage, options = {}) {
   if (activeTurn) {
     return {
       finalResponse:
-        "⏳ Gemini agent is still executing a previous task. Please wait.",
+        ":clock: Gemini agent is still executing a previous task. Please wait.",
       items: [],
       usage: null,
     };
@@ -543,7 +543,7 @@ export async function execGeminiPrompt(userMessage, options = {}) {
       }
 
       if (typeof options.onEvent === "function") {
-        options.onEvent("🧠 Gemini SDK: generating response…");
+        options.onEvent(":cpu: Gemini SDK: generating response…");
       }
 
       const sdkReady = await ensureGeminiClient();
@@ -551,7 +551,7 @@ export async function execGeminiPrompt(userMessage, options = {}) {
         if (transport === "sdk") {
           return {
             finalResponse:
-              "❌ Gemini SDK unavailable. Install @google/genai and set GEMINI_API_KEY (or GOOGLE_API_KEY), or set GEMINI_TRANSPORT=cli.",
+              ":close: Gemini SDK unavailable. Install @google/genai and set GEMINI_API_KEY (or GOOGLE_API_KEY), or set GEMINI_TRANSPORT=cli.",
             items: [],
             usage: null,
           };
@@ -593,7 +593,7 @@ export async function execGeminiPrompt(userMessage, options = {}) {
         continue;
       }
       return {
-        finalResponse: `❌ Gemini agent failed: ${err.message || String(err)}`,
+        finalResponse: `:close: Gemini agent failed: ${err.message || String(err)}`,
         items: [],
         usage: null,
       };
@@ -604,7 +604,7 @@ export async function execGeminiPrompt(userMessage, options = {}) {
 
   activeTurn = false;
   return {
-    finalResponse: "❌ Gemini agent failed after all retry attempts.",
+    finalResponse: ":close: Gemini agent failed after all retry attempts.",
     items: [],
     usage: null,
   };

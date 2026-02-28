@@ -371,15 +371,15 @@ export async function assessTask(ctx, opts) {
     if (opts.onTelegram) {
       const emoji =
         {
-          merge: "✅",
-          reprompt_same: "💬",
-          reprompt_new_session: "🔄",
-          new_attempt: "🆕",
-          wait: "⏳",
-          manual_review: "👀",
-          close_and_replan: "🚫",
-          noop: "⚪",
-        }[decision.action] || "❓";
+          merge: ":check:",
+          reprompt_same: ":chat:",
+          reprompt_new_session: ":refresh:",
+          new_attempt: ":star:",
+          wait: ":clock:",
+          manual_review: ":eye:",
+          close_and_replan: ":ban:",
+          noop: ":dot:",
+        }[decision.action] || ":help:";
       opts.onTelegram(
         `${emoji} Assessment [${ctx.shortId}] ${ctx.trigger}: **${decision.action}**\n${decision.reason || ""}`.slice(
           0,

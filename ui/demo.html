@@ -874,7 +874,7 @@
             { id: 'do-prompt',        type: 'action.run_agent',       label: 'Prompt Agent',          config: { prompt: 'Continue working. Instructions: {{decision.message}}' }, position: { x: 300, y: 680 } },
             { id: 'do-close',         type: 'action.run_command',     label: 'Close PR',              config: { command: 'gh pr close --comment "{{decision.reason}}"' },   position: { x: 500, y: 680 } },
             { id: 'do-retry',         type: 'action.run_agent',       label: 'Re-attempt Task',       config: { prompt: 'Start over: {{decision.reason}}' },               position: { x: 700, y: 680 } },
-            { id: 'do-escalate',      type: 'notify.telegram',        label: 'Escalate to Human',     config: { message: '👀 PR needs manual review: {{decision.reason}}' }, position: { x: 900, y: 680 } },
+            { id: 'do-escalate',      type: 'notify.telegram',        label: 'Escalate to Human',     config: { message: ':eye: PR needs manual review: {{decision.reason}}' }, position: { x: 900, y: 680 } },
             { id: 'notify-complete',  type: 'notify.log',             label: 'Log Result',            config: { message: 'PR merge strategy: {{decision.action}}', level: 'info' }, position: { x: 400, y: 850 } },
           ],
           edges: [
@@ -916,7 +916,7 @@
             { id: 'run-tests', type: 'validation.tests',    label: 'Run Tests',         config: { command: 'npm test' },                            position: { x: 600, y: 200 } },
             { id: 'run-review',type: 'action.run_agent',    label: 'Agent Review',      config: { prompt: 'Review changes for quality, bugs, test coverage, and docs.', timeoutMs: 900000 }, position: { x: 400, y: 350 } },
             { id: 'aggregate', type: 'transform.aggregate', label: 'Collect Results',   config: { sources: ['run-build', 'run-tests', 'run-review'] }, position: { x: 400, y: 500 } },
-            { id: 'notify',    type: 'notify.telegram',     label: 'Post Review',       config: { message: '📝 PR review complete for {{branch}}' }, position: { x: 400, y: 640 } },
+            { id: 'notify',    type: 'notify.telegram',     label: 'Post Review',       config: { message: ':edit: PR review complete for {{branch}}' }, position: { x: 400, y: 640 } },
           ],
           edges: [
             { id: 'e1', source: 'trigger',    target: 'run-build' },
@@ -943,7 +943,7 @@
             { id: 'check-retries', type: 'condition.expression',   label: 'Retries Left?',     config: { expression: '($data?.retryCount || 0) < ($data?.maxRetries || 3)' }, position: { x: 400, y: 180 } },
             { id: 'analyze-error', type: 'action.run_agent',       label: 'Analyze Failure',   config: { prompt: 'Analyze this error and suggest a fix:\n{{lastError}}\nTask: {{taskTitle}}', timeoutMs: 300000 }, position: { x: 200, y: 330 } },
             { id: 'retry-task',    type: 'action.run_agent',       label: 'Retry Task',        config: { prompt: '{{taskExecutorRetryPrompt}}', timeoutMs: 3600000 }, position: { x: 200, y: 480 } },
-            { id: 'escalate',      type: 'notify.telegram',        label: 'Escalate to Human', config: { message: '🚨 Task {{taskTitle}} failed after {{maxRetries}} attempts. Manual intervention needed.' }, position: { x: 600, y: 180 } },
+            { id: 'escalate',      type: 'notify.telegram',        label: 'Escalate to Human', config: { message: ':alert: Task {{taskTitle}} failed after {{maxRetries}} attempts. Manual intervention needed.' }, position: { x: 600, y: 180 } },
           ],
           edges: [
             { id: 'e1', source: 'trigger',       target: 'check-retries' },
@@ -969,7 +969,7 @@
             { id: 'test',    type: 'validation.tests',    label: 'Tests',             config: { command: 'npm test' },                                        position: { x: 400, y: 310 } },
             { id: 'lint',    type: 'validation.lint',     label: 'Lint',              config: { command: 'npm run lint' },                                     position: { x: 400, y: 440 } },
             { id: 'deploy',  type: 'action.run_command',  label: 'Deploy',            config: { command: 'npm run deploy' },                                   position: { x: 400, y: 570 } },
-            { id: 'notify',  type: 'notify.telegram',     label: 'Notify Deploy',     config: { message: '🚀 Deployment to production completed for {{branch}}' }, position: { x: 400, y: 700 } },
+            { id: 'notify',  type: 'notify.telegram',     label: 'Notify Deploy',     config: { message: ':rocket: Deployment to production completed for {{branch}}' }, position: { x: 400, y: 700 } },
           ],
           edges: [
             { id: 'e1', source: 'trigger', target: 'build' },
@@ -996,7 +996,7 @@
             { id: 'check-low',   type: 'condition.expression',   label: 'Tasks Low?',         config: { expression: '$data?.count < 3' },                           position: { x: 400, y: 310 } },
             { id: 'plan-tasks',  type: 'action.run_agent',       label: 'Plan New Tasks',     config: { prompt: 'Review the codebase and create 3-5 actionable improvement tasks.', timeoutMs: 600000 }, position: { x: 200, y: 460 } },
             { id: 'create-tasks',type: 'action.run_command',     label: 'Create Tasks',       config: { command: 'bosun task create --from-plan' },                 position: { x: 200, y: 610 } },
-            { id: 'notify',      type: 'notify.telegram',        label: 'Notify Planner Done',config: { message: '📋 Task planner added new tasks to backlog' },    position: { x: 200, y: 760 } },
+            { id: 'notify',      type: 'notify.telegram',        label: 'Notify Planner Done',config: { message: ':clipboard: Task planner added new tasks to backlog' },    position: { x: 200, y: 760 } },
             { id: 'skip',        type: 'notify.log',             label: 'Backlog OK',         config: { message: 'Backlog has enough tasks, skipping', level: 'debug' }, position: { x: 600, y: 460 } },
           ],
           edges: [
@@ -1027,7 +1027,7 @@
             { id: 'screenshot',      type: 'action.run_command',    label: 'Take Screenshots',   config: { command: 'bosun screenshot --viewport desktop,mobile' },       position: { x: 400, y: 500 } },
             { id: 'model-review',    type: 'action.run_agent',      label: 'Model Verification', config: { prompt: 'Verify screenshots match task requirements. Pass/fail.', timeoutMs: 300000 }, position: { x: 400, y: 650 } },
             { id: 'mark-done',       type: 'action.update_task_status', label: 'Mark Done',      config: { status: 'done' },                                              position: { x: 200, y: 800 } },
-            { id: 'notify-fail',     type: 'notify.telegram',       label: 'Notify Failed',      config: { message: '❌ Frontend verification failed for {{taskTitle}}' }, position: { x: 600, y: 800 } },
+            { id: 'notify-fail',     type: 'notify.telegram',       label: 'Notify Failed',      config: { message: ':close: Frontend verification failed for {{taskTitle}}' }, position: { x: 600, y: 800 } },
           ],
           edges: [
             { id: 'e1', source: 'trigger',      target: 'run-agent' },
@@ -1045,7 +1045,7 @@
       ],
       workflowTemplates: [
         {
-          id: 'template-pr-merge-strategy', name: 'PR Merge Strategy', description: 'Automated PR merge decision workflow with 7 outcome paths.', category: 'github', categoryLabel: 'GitHub', categoryIcon: '🐙', categoryOrder: 1, tags: ['github', 'pr', 'merge', 'strategy'], nodeCount: 14, edgeCount: 16, recommended: true,
+          id: 'template-pr-merge-strategy', name: 'PR Merge Strategy', description: 'Automated PR merge decision workflow with 7 outcome paths.', category: 'github', categoryLabel: 'GitHub', categoryIcon: ':git:', categoryOrder: 1, tags: ['github', 'pr', 'merge', 'strategy'], nodeCount: 14, edgeCount: 16, recommended: true,
           nodes: [
             { id: 'trigger', type: 'trigger.pr_event', label: 'PR Ready for Review', config: { event: 'review_requested' }, position: { x: 400, y: 50 } },
             { id: 'check-ci', type: 'validation.build', label: 'Check CI Status', config: { command: 'gh pr checks' }, position: { x: 150, y: 200 } },
@@ -1058,7 +1058,7 @@
             { id: 'do-prompt', type: 'action.run_agent', label: 'Prompt Agent', config: { prompt: 'Address the reviewer feedback on this PR. Fix the issues identified and push updated commits.', sdk: 'auto' }, position: { x: 300, y: 680 } },
             { id: 'do-close', type: 'action.run_command', label: 'Close PR', config: { command: 'gh pr close' }, position: { x: 500, y: 680 } },
             { id: 'do-retry', type: 'action.run_agent', label: 'Re-attempt', config: { prompt: 'Re-attempt the implementation from scratch. The previous approach had issues. Start fresh on a new branch.', sdk: 'auto' }, position: { x: 700, y: 680 } },
-            { id: 'do-escalate', type: 'notify.telegram', label: 'Escalate', config: { message: '🚨 PR needs manual review — auto-merge could not decide. Please review and merge manually.' }, position: { x: 900, y: 680 } },
+            { id: 'do-escalate', type: 'notify.telegram', label: 'Escalate', config: { message: ':alert: PR needs manual review — auto-merge could not decide. Please review and merge manually.' }, position: { x: 900, y: 680 } },
             { id: 'notify-complete', type: 'notify.log', label: 'Log Result', config: { message: 'PR merge decision workflow completed', level: 'info' }, position: { x: 400, y: 850 } },
           ],
           edges: [
@@ -1075,7 +1075,7 @@
           ],
         },
         {
-          id: 'template-pr-triage', name: 'PR Triage & Labels', description: 'Auto-classify PRs by size, detect breaking changes, assign labels.', category: 'github', categoryLabel: 'GitHub', categoryIcon: '🐙', categoryOrder: 1, tags: ['github', 'pr', 'triage', 'labels'], nodeCount: 11, edgeCount: 12,
+          id: 'template-pr-triage', name: 'PR Triage & Labels', description: 'Auto-classify PRs by size, detect breaking changes, assign labels.', category: 'github', categoryLabel: 'GitHub', categoryIcon: ':git:', categoryOrder: 1, tags: ['github', 'pr', 'triage', 'labels'], nodeCount: 11, edgeCount: 12,
           nodes: [
             { id: 'trigger', type: 'trigger.pr_event', label: 'PR Opened', config: { event: 'opened' }, position: { x: 400, y: 50 } },
             { id: 'get-stats', type: 'action.run_command', label: 'Get PR Stats', config: { command: 'gh pr view --json additions,deletions' }, position: { x: 400, y: 180 } },
@@ -1099,14 +1099,14 @@
           ],
         },
         {
-          id: 'template-review-agent', name: 'Review Agent', description: 'Automated PR code review: build, test, agent analysis.', category: 'github', categoryLabel: 'GitHub', categoryIcon: '🐙', categoryOrder: 1, tags: ['github', 'review', 'pr'], nodeCount: 6, edgeCount: 6, recommended: true,
+          id: 'template-review-agent', name: 'Review Agent', description: 'Automated PR code review: build, test, agent analysis.', category: 'github', categoryLabel: 'GitHub', categoryIcon: ':git:', categoryOrder: 1, tags: ['github', 'review', 'pr'], nodeCount: 6, edgeCount: 6, recommended: true,
           nodes: [
             { id: 'trigger', type: 'trigger.pr_event', label: 'PR Opened', config: { event: 'opened' }, position: { x: 400, y: 50 } },
             { id: 'run-build', type: 'validation.build', label: 'Run Build', config: { command: 'npm run build' }, position: { x: 200, y: 200 } },
             { id: 'run-tests', type: 'validation.tests', label: 'Run Tests', config: { command: 'npm test' }, position: { x: 600, y: 200 } },
             { id: 'run-review', type: 'action.run_agent', label: 'Agent Review', config: { prompt: 'Review for quality, bugs, coverage, docs.' }, position: { x: 400, y: 350 } },
             { id: 'aggregate', type: 'transform.aggregate', label: 'Collect Results', config: { sourceNodes: 'run-build,run-tests,run-review', outputField: 'reviewResults' }, position: { x: 400, y: 500 } },
-            { id: 'notify', type: 'notify.telegram', label: 'Post Review', config: { message: '📝 PR review complete' }, position: { x: 400, y: 640 } },
+            { id: 'notify', type: 'notify.telegram', label: 'Post Review', config: { message: ':edit: PR review complete' }, position: { x: 400, y: 640 } },
           ],
           edges: [
             { id: 'e1', source: 'trigger', target: 'run-build' }, { id: 'e2', source: 'trigger', target: 'run-tests' },
@@ -1115,7 +1115,7 @@
           ],
         },
         {
-          id: 'template-frontend-agent', name: 'Frontend Agent', description: 'Front-end dev agent with screenshot validation.', category: 'agents', categoryLabel: 'Agents', categoryIcon: '🤖', categoryOrder: 2, tags: ['agent', 'frontend', 'screenshot'], nodeCount: 8, edgeCount: 9,
+          id: 'template-frontend-agent', name: 'Frontend Agent', description: 'Front-end dev agent with screenshot validation.', category: 'agents', categoryLabel: 'Agents', categoryIcon: ':bot:', categoryOrder: 2, tags: ['agent', 'frontend', 'screenshot'], nodeCount: 8, edgeCount: 9,
           nodes: [
             { id: 'trigger', type: 'trigger.task_assigned', label: 'Task Assigned', config: { agentType: 'frontend' }, position: { x: 400, y: 50 } },
             { id: 'run-agent', type: 'action.run_agent', label: 'Run Frontend Agent', config: { prompt: 'Implement: {{taskTitle}}' }, position: { x: 400, y: 200 } },
@@ -1124,7 +1124,7 @@
             { id: 'screenshot', type: 'action.run_command', label: 'Screenshots', config: { command: 'bosun screenshot' }, position: { x: 400, y: 500 } },
             { id: 'model-review', type: 'action.run_agent', label: 'Model Review', config: { prompt: 'Verify screenshots match requirements' }, position: { x: 400, y: 650 } },
             { id: 'mark-done', type: 'action.update_task_status', label: 'Mark Done', config: { status: 'done' }, position: { x: 200, y: 800 } },
-            { id: 'notify-fail', type: 'notify.telegram', label: 'Notify Failed', config: { message: '❌ Verification failed' }, position: { x: 600, y: 800 } },
+            { id: 'notify-fail', type: 'notify.telegram', label: 'Notify Failed', config: { message: ':close: Verification failed' }, position: { x: 600, y: 800 } },
           ],
           edges: [
             { id: 'e1', source: 'trigger', target: 'run-agent' }, { id: 'e2', source: 'run-agent', target: 'verify-build' },
@@ -1135,14 +1135,14 @@
           ],
         },
         {
-          id: 'template-task-planner', name: 'Task Planner', description: 'Auto-replenish backlog when tasks run low.', category: 'planning', categoryLabel: 'Planning', categoryIcon: '📋', categoryOrder: 3, tags: ['planning', 'backlog'], nodeCount: 7, edgeCount: 7, recommended: true,
+          id: 'template-task-planner', name: 'Task Planner', description: 'Auto-replenish backlog when tasks run low.', category: 'planning', categoryLabel: 'Planning', categoryIcon: ':clipboard:', categoryOrder: 3, tags: ['planning', 'backlog'], nodeCount: 7, edgeCount: 7, recommended: true,
           nodes: [
             { id: 'trigger', type: 'trigger.cron', label: 'Every 30 min', config: { cron: '*/30 * * * *' }, position: { x: 400, y: 50 } },
             { id: 'count-tasks', type: 'action.run_command', label: 'Count Tasks', config: { command: 'bosun task list --status todo --count' }, position: { x: 400, y: 180 } },
             { id: 'check-low', type: 'condition.expression', label: 'Tasks Low?', config: { expression: '$data?.count < 3' }, position: { x: 400, y: 310 } },
             { id: 'plan-tasks', type: 'action.run_agent', label: 'Plan New Tasks', config: { prompt: 'Create 3-5 improvement tasks' }, position: { x: 200, y: 460 } },
             { id: 'create-tasks', type: 'action.run_command', label: 'Create Tasks', config: { command: 'bosun task import --from-plan', timeoutMs: 60000 }, position: { x: 200, y: 610 } },
-            { id: 'notify', type: 'notify.telegram', label: 'Notify Done', config: { message: '📋 Tasks replenished' }, position: { x: 200, y: 760 } },
+            { id: 'notify', type: 'notify.telegram', label: 'Notify Done', config: { message: ':clipboard: Tasks replenished' }, position: { x: 200, y: 760 } },
             { id: 'skip', type: 'notify.log', label: 'Backlog OK', config: { message: 'Backlog has enough tasks — skipping replenishment', level: 'info' }, position: { x: 600, y: 460 } },
           ],
           edges: [
@@ -1152,14 +1152,14 @@
           ],
         },
         {
-          id: 'template-task-replenish', name: 'Task Replenish', description: 'Periodic task replenishment on cron schedule.', category: 'planning', categoryLabel: 'Planning', categoryIcon: '📋', categoryOrder: 3, tags: ['planning', 'cron'], nodeCount: 7, edgeCount: 6,
+          id: 'template-task-replenish', name: 'Task Replenish', description: 'Periodic task replenishment on cron schedule.', category: 'planning', categoryLabel: 'Planning', categoryIcon: ':clipboard:', categoryOrder: 3, tags: ['planning', 'cron'], nodeCount: 7, edgeCount: 6,
           nodes: [
             { id: 'trigger', type: 'trigger.cron', label: 'Cron Schedule', config: { cron: '0 */6 * * *' }, position: { x: 400, y: 50 } },
             { id: 'scan', type: 'action.run_command', label: 'Scan Backlog', config: { command: 'bosun task list --status todo --json', timeoutMs: 30000 }, position: { x: 400, y: 180 } },
             { id: 'analyze', type: 'action.run_agent', label: 'Analyze Gaps', config: { prompt: 'Find missing tasks' }, position: { x: 400, y: 310 } },
             { id: 'create', type: 'action.run_command', label: 'Create Tasks', config: { command: 'bosun task import --from-plan', timeoutMs: 60000 }, position: { x: 400, y: 440 } },
             { id: 'prioritize', type: 'action.run_agent', label: 'Prioritize', config: { prompt: 'Prioritize the newly created tasks by impact and effort. Assign priorities 1-10.', sdk: 'auto' }, position: { x: 400, y: 570 } },
-            { id: 'notify', type: 'notify.telegram', label: 'Notify', config: { message: '📋 Backlog replenished with new tasks' }, position: { x: 400, y: 700 } },
+            { id: 'notify', type: 'notify.telegram', label: 'Notify', config: { message: ':clipboard: Backlog replenished with new tasks' }, position: { x: 400, y: 700 } },
           ],
           edges: [
             { id: 'e1', source: 'trigger', target: 'scan' }, { id: 'e2', source: 'scan', target: 'analyze' },
@@ -1168,14 +1168,14 @@
           ],
         },
         {
-          id: 'template-build-deploy', name: 'Build & Deploy', description: 'CI/CD pipeline: build → test → lint → deploy.', category: 'ci-cd', categoryLabel: 'CI / CD', categoryIcon: '🔄', categoryOrder: 4, tags: ['ci', 'cd', 'deploy'], nodeCount: 6, edgeCount: 5,
+          id: 'template-build-deploy', name: 'Build & Deploy', description: 'CI/CD pipeline: build → test → lint → deploy.', category: 'ci-cd', categoryLabel: 'CI / CD', categoryIcon: ':refresh:', categoryOrder: 4, tags: ['ci', 'cd', 'deploy'], nodeCount: 6, edgeCount: 5,
           nodes: [
             { id: 'trigger', type: 'trigger.event', label: 'PR Merged', config: { eventType: 'pr.merged' }, position: { x: 400, y: 50 } },
             { id: 'build', type: 'validation.build', label: 'Build', config: { command: 'npm run build' }, position: { x: 400, y: 180 } },
             { id: 'test', type: 'validation.tests', label: 'Tests', config: { command: 'npm test' }, position: { x: 400, y: 310 } },
             { id: 'lint', type: 'validation.lint', label: 'Lint', config: { command: 'npm run lint' }, position: { x: 400, y: 440 } },
             { id: 'deploy', type: 'action.run_command', label: 'Deploy', config: { command: 'npm run deploy' }, position: { x: 400, y: 570 } },
-            { id: 'notify', type: 'notify.telegram', label: 'Notify', config: { message: '🚀 Deployed' }, position: { x: 400, y: 700 } },
+            { id: 'notify', type: 'notify.telegram', label: 'Notify', config: { message: ':rocket: Deployed' }, position: { x: 400, y: 700 } },
           ],
           edges: [
             { id: 'e1', source: 'trigger', target: 'build' }, { id: 'e2', source: 'build', target: 'test' },
@@ -1184,13 +1184,13 @@
           ],
         },
         {
-          id: 'template-error-recovery', name: 'Error Recovery', description: 'Auto-fix after agent crash or failure.', category: 'reliability', categoryLabel: 'Reliability', categoryIcon: '🛡️', categoryOrder: 5, tags: ['error', 'recovery', 'autofix'], nodeCount: 5, edgeCount: 4, recommended: true,
+          id: 'template-error-recovery', name: 'Error Recovery', description: 'Auto-fix after agent crash or failure.', category: 'reliability', categoryLabel: 'Reliability', categoryIcon: ':shield:', categoryOrder: 5, tags: ['error', 'recovery', 'autofix'], nodeCount: 5, edgeCount: 4, recommended: true,
           nodes: [
             { id: 'trigger', type: 'trigger.event', label: 'Agent Failed', config: { eventType: 'task.failed' }, position: { x: 400, y: 50 } },
             { id: 'check-retries', type: 'condition.expression', label: 'Retries Left?', config: { expression: '($data?.retryCount || 0) < 3', trueLabel: 'retries > 0', falseLabel: 'exhausted' }, position: { x: 400, y: 180 } },
             { id: 'analyze-error', type: 'action.run_agent', label: 'Analyze Failure', config: { prompt: 'Analyze the failure: {{lastError}}\nDetermine root cause and suggest a targeted fix.', sdk: 'auto' }, position: { x: 200, y: 330 } },
             { id: 'retry-task', type: 'action.run_agent', label: 'Retry Task', config: { prompt: 'Retry the failed task. Previous error: {{lastError}}\nApply the fix from analysis and complete the task.', sdk: 'auto' }, position: { x: 200, y: 480 } },
-            { id: 'escalate', type: 'notify.telegram', label: 'Escalate', config: { message: '🚨 Agent failed after max retries — manual intervention needed. Task: {{taskTitle}}' }, position: { x: 600, y: 180 } },
+            { id: 'escalate', type: 'notify.telegram', label: 'Escalate', config: { message: ':alert: Agent failed after max retries — manual intervention needed. Task: {{taskTitle}}' }, position: { x: 600, y: 180 } },
           ],
           edges: [
             { id: 'e1', source: 'trigger', target: 'check-retries' },
@@ -1200,7 +1200,7 @@
           ],
         },
         {
-          id: 'template-custom-agent', name: 'Custom Agent', description: 'Starter template for creating custom agent profiles.', category: 'agents', categoryLabel: 'Agents', categoryIcon: '🤖', categoryOrder: 2, tags: ['custom', 'agent', 'starter'], nodeCount: 6, edgeCount: 6,
+          id: 'template-custom-agent', name: 'Custom Agent', description: 'Starter template for creating custom agent profiles.', category: 'agents', categoryLabel: 'Agents', categoryIcon: ':bot:', categoryOrder: 2, tags: ['custom', 'agent', 'starter'], nodeCount: 6, edgeCount: 6,
           nodes: [
             { id: 'trigger', type: 'trigger.manual', label: 'Start', config: { inputFields: 'taskId,prompt' }, position: { x: 400, y: 50 } },
             { id: 'set-context', type: 'action.run_command', label: 'Set Context', config: { command: 'git status --porcelain && bosun task get {{taskId}} --json', timeoutMs: 30000 }, position: { x: 400, y: 180 } },
@@ -1219,7 +1219,7 @@
         },
         // ── New Templates ──────────────────────────────────────────
         {
-          id: 'template-anomaly-watchdog', name: 'Anomaly Watchdog', description: 'Real-time anomaly detection — catches death loops, stalls, token overflows, rebase spirals.', category: 'reliability', categoryLabel: 'Reliability', categoryIcon: '🛡️', categoryOrder: 5, tags: ['anomaly', 'watchdog', 'death-loop', 'reliability'], nodeCount: 9, edgeCount: 12, recommended: true,
+          id: 'template-anomaly-watchdog', name: 'Anomaly Watchdog', description: 'Real-time anomaly detection — catches death loops, stalls, token overflows, rebase spirals.', category: 'reliability', categoryLabel: 'Reliability', categoryIcon: ':shield:', categoryOrder: 5, tags: ['anomaly', 'watchdog', 'death-loop', 'reliability'], nodeCount: 9, edgeCount: 12, recommended: true,
           nodes: [
             { id: 'trigger', type: 'trigger.event', label: 'Anomaly Detected', config: { eventType: 'agent.anomaly' }, position: { x: 400, y: 50 } },
             { id: 'classify', type: 'condition.switch', label: 'Classify Anomaly', config: { field: 'anomalyType' }, position: { x: 400, y: 200 } },
@@ -1229,7 +1229,7 @@
             { id: 'fix-rebase', type: 'action.run_command', label: 'Fix Rebase', config: { command: 'git rebase --abort' }, position: { x: 700, y: 380 } },
             { id: 'break-spin', type: 'action.continue_session', label: 'Break Spin', config: { strategy: 'continue' }, position: { x: 900, y: 380 } },
             { id: 'log-intervention', type: 'notify.log', label: 'Log Intervention', config: { level: 'warn' }, position: { x: 400, y: 550 } },
-            { id: 'alert-telegram', type: 'notify.telegram', label: 'Alert Human', config: { message: '⚠️ Agent anomaly auto-resolved' }, position: { x: 400, y: 700 } },
+            { id: 'alert-telegram', type: 'notify.telegram', label: 'Alert Human', config: { message: ':alert: Agent anomaly auto-resolved' }, position: { x: 400, y: 700 } },
           ],
           edges: [
             { id: 'e1', source: 'trigger', target: 'classify' },
@@ -1247,7 +1247,7 @@
           ],
         },
         {
-          id: 'template-workspace-hygiene', name: 'Workspace Hygiene', description: 'Scheduled maintenance: prune worktrees, kill stale processes, rotate logs.', category: 'reliability', categoryLabel: 'Reliability', categoryIcon: '🛡️', categoryOrder: 5, tags: ['maintenance', 'cleanup', 'worktree', 'hygiene'], nodeCount: 8, edgeCount: 9, recommended: true,
+          id: 'template-workspace-hygiene', name: 'Workspace Hygiene', description: 'Scheduled maintenance: prune worktrees, kill stale processes, rotate logs.', category: 'reliability', categoryLabel: 'Reliability', categoryIcon: ':shield:', categoryOrder: 5, tags: ['maintenance', 'cleanup', 'worktree', 'hygiene'], nodeCount: 8, edgeCount: 9, recommended: true,
           nodes: [
             { id: 'trigger', type: 'trigger.schedule', label: 'Daily Cleanup', config: { cron: '0 3 * * *' }, position: { x: 400, y: 50 } },
             { id: 'prune-worktrees', type: 'action.run_command', label: 'Prune Worktrees', config: { command: 'git worktree prune' }, position: { x: 150, y: 200 } },
@@ -1267,7 +1267,7 @@
           ],
         },
         {
-          id: 'template-pr-conflict-resolver', name: 'PR Conflict Resolver', description: 'Auto-detect conflicted PRs, rebase, fix conflicts, re-run CI, merge.', category: 'github', categoryLabel: 'GitHub', categoryIcon: '🐙', categoryOrder: 1, tags: ['github', 'pr', 'conflict', 'rebase'], nodeCount: 10, edgeCount: 9, recommended: true,
+          id: 'template-pr-conflict-resolver', name: 'PR Conflict Resolver', description: 'Auto-detect conflicted PRs, rebase, fix conflicts, re-run CI, merge.', category: 'github', categoryLabel: 'GitHub', categoryIcon: ':git:', categoryOrder: 1, tags: ['github', 'pr', 'conflict', 'rebase'], nodeCount: 10, edgeCount: 9, recommended: true,
           nodes: [
             { id: 'trigger', type: 'trigger.schedule', label: 'Check Every 30min', config: { cron: '*/30 * * * *' }, position: { x: 400, y: 50 } },
             { id: 'list-prs', type: 'action.run_command', label: 'List Open PRs', config: { command: 'gh pr list --json number,mergeable --limit 20' }, position: { x: 400, y: 180 } },
@@ -1276,7 +1276,7 @@
             { id: 'verify-ci', type: 'action.run_command', label: 'Verify CI', config: { command: 'gh pr checks' }, position: { x: 200, y: 660 } },
             { id: 'auto-merge', type: 'condition.expression', label: 'CI Passed?', config: { expression: 'success === true' }, position: { x: 200, y: 810 } },
             { id: 'do-merge', type: 'action.run_command', label: 'Auto-Merge', config: { command: 'gh pr merge --auto --squash' }, position: { x: 100, y: 960 } },
-            { id: 'notify-fixed', type: 'notify.telegram', label: 'Notify Fixed', config: { message: '🔧 PR conflicts resolved and merged' }, position: { x: 100, y: 1100 } },
+            { id: 'notify-fixed', type: 'notify.telegram', label: 'Notify Fixed', config: { message: ':settings: PR conflicts resolved and merged' }, position: { x: 100, y: 1100 } },
             { id: 'notify-failed', type: 'notify.log', label: 'CI Failed', config: { level: 'warn' }, position: { x: 400, y: 960 } },
             { id: 'skip', type: 'notify.log', label: 'No Conflicts', config: { level: 'info' }, position: { x: 600, y: 500 } },
           ],
@@ -1291,14 +1291,14 @@
           ],
         },
         {
-          id: 'template-health-check', name: 'Health Check', description: 'Periodic system health check: config, git state, agent status.', category: 'reliability', categoryLabel: 'Reliability', categoryIcon: '🛡️', categoryOrder: 5, tags: ['health', 'config', 'doctor', 'monitoring'], nodeCount: 7, edgeCount: 8,
+          id: 'template-health-check', name: 'Health Check', description: 'Periodic system health check: config, git state, agent status.', category: 'reliability', categoryLabel: 'Reliability', categoryIcon: ':shield:', categoryOrder: 5, tags: ['health', 'config', 'doctor', 'monitoring'], nodeCount: 7, edgeCount: 8,
           nodes: [
             { id: 'trigger', type: 'trigger.schedule', label: 'Hourly Check', config: { cron: '0 * * * *' }, position: { x: 400, y: 50 } },
             { id: 'check-config', type: 'action.bosun_cli', label: 'Check Config', config: { subcommand: 'doctor' }, position: { x: 150, y: 200 } },
             { id: 'check-git', type: 'action.run_command', label: 'Check Git', config: { command: 'git status --porcelain' }, position: { x: 400, y: 200 } },
             { id: 'check-agents', type: 'action.run_command', label: 'Check Agents', config: { command: 'bosun --daemon-status' }, position: { x: 650, y: 200 } },
             { id: 'has-issues', type: 'condition.expression', label: 'Issues Found?', config: { expression: 'output.includes("ERROR")' }, position: { x: 400, y: 380 } },
-            { id: 'alert', type: 'notify.telegram', label: 'Alert Issues', config: { message: '🏥 Health check found issues' }, position: { x: 200, y: 540 } },
+            { id: 'alert', type: 'notify.telegram', label: 'Alert Issues', config: { message: ':heart: Health check found issues' }, position: { x: 200, y: 540 } },
             { id: 'all-ok', type: 'notify.log', label: 'All Healthy', config: { level: 'info' }, position: { x: 600, y: 540 } },
           ],
           edges: [
@@ -1310,7 +1310,7 @@
           ],
         },
         {
-          id: 'template-stale-pr-reaper', name: 'Stale PR Reaper', description: 'Close stale PRs inactive for too long, clean up branches.', category: 'github', categoryLabel: 'GitHub', categoryIcon: '🐙', categoryOrder: 1, tags: ['github', 'pr', 'stale', 'cleanup'], nodeCount: 8, edgeCount: 7,
+          id: 'template-stale-pr-reaper', name: 'Stale PR Reaper', description: 'Close stale PRs inactive for too long, clean up branches.', category: 'github', categoryLabel: 'GitHub', categoryIcon: ':git:', categoryOrder: 1, tags: ['github', 'pr', 'stale', 'cleanup'], nodeCount: 8, edgeCount: 7,
           nodes: [
             { id: 'trigger', type: 'trigger.schedule', label: 'Daily Check', config: { cron: '0 8 * * *' }, position: { x: 400, y: 50 } },
             { id: 'find-stale', type: 'action.run_command', label: 'Find Stale PRs', config: { command: 'gh pr list --json number,updatedAt --limit 50' }, position: { x: 400, y: 200 } },
@@ -1318,7 +1318,7 @@
             { id: 'warn-stale', type: 'action.run_command', label: 'Post Warning', config: { command: 'echo "Would warn stale PRs"' }, position: { x: 200, y: 500 } },
             { id: 'close-stale', type: 'action.run_command', label: 'Close Expired', config: { command: 'echo "Would close stale PRs"' }, position: { x: 200, y: 650 } },
             { id: 'cleanup-branches', type: 'action.run_command', label: 'Prune Branches', config: { command: 'git fetch --prune origin' }, position: { x: 200, y: 800 } },
-            { id: 'summary', type: 'notify.telegram', label: 'Summary', config: { message: '🧹 Stale PR cleanup complete' }, position: { x: 200, y: 950 } },
+            { id: 'summary', type: 'notify.telegram', label: 'Summary', config: { message: ':trash: Stale PR cleanup complete' }, position: { x: 200, y: 950 } },
             { id: 'skip', type: 'notify.log', label: 'No Stale PRs', config: { level: 'info' }, position: { x: 600, y: 500 } },
           ],
           edges: [
@@ -1330,7 +1330,7 @@
           ],
         },
         {
-          id: 'template-agent-session-monitor', name: 'Agent Session Monitor', description: 'Monitors active sessions for timeouts, inactivity, auto-continues stalled agents.', category: 'agents', categoryLabel: 'Agents', categoryIcon: '🤖', categoryOrder: 2, tags: ['agent', 'monitor', 'session', 'health'], nodeCount: 9, edgeCount: 8, recommended: true,
+          id: 'template-agent-session-monitor', name: 'Agent Session Monitor', description: 'Monitors active sessions for timeouts, inactivity, auto-continues stalled agents.', category: 'agents', categoryLabel: 'Agents', categoryIcon: ':bot:', categoryOrder: 2, tags: ['agent', 'monitor', 'session', 'health'], nodeCount: 9, edgeCount: 8, recommended: true,
           nodes: [
             { id: 'trigger', type: 'trigger.schedule', label: 'Check Every 5min', config: { cron: '*/5 * * * *' }, position: { x: 400, y: 50 } },
             { id: 'list-sessions', type: 'action.run_command', label: 'List Sessions', config: { command: 'bosun agent list --json --active' }, position: { x: 400, y: 200 } },
@@ -1338,7 +1338,7 @@
             { id: 'check-health', type: 'action.run_command', label: 'Check Health', config: { command: 'bosun agent health --json' }, position: { x: 200, y: 490 } },
             { id: 'has-issues', type: 'condition.expression', label: 'Any Unhealthy?', config: { expression: 'output.includes("stalled")' }, position: { x: 200, y: 640 } },
             { id: 'auto-continue', type: 'action.continue_session', label: 'Auto-Continue', config: { strategy: 'continue' }, position: { x: 100, y: 800 } },
-            { id: 'alert-hung', type: 'notify.telegram', label: 'Alert Hung', config: { message: '🔴 Agent session hung — auto-continue attempted' }, position: { x: 100, y: 950 } },
+            { id: 'alert-hung', type: 'notify.telegram', label: 'Alert Hung', config: { message: ':dot: Agent session hung — auto-continue attempted' }, position: { x: 100, y: 950 } },
             { id: 'all-healthy', type: 'notify.log', label: 'All Healthy', config: { level: 'info' }, position: { x: 450, y: 640 } },
             { id: 'no-sessions', type: 'notify.log', label: 'No Sessions', config: { level: 'info' }, position: { x: 600, y: 490 } },
           ],
@@ -1353,14 +1353,14 @@
           ],
         },
         {
-          id: 'template-nightly-report', name: 'Nightly Report', description: 'Daily summary: tasks completed, PRs merged, errors, token usage.', category: 'planning', categoryLabel: 'Planning', categoryIcon: '📋', categoryOrder: 3, tags: ['report', 'daily', 'telegram', 'analytics'], nodeCount: 6, edgeCount: 7,
+          id: 'template-nightly-report', name: 'Nightly Report', description: 'Daily summary: tasks completed, PRs merged, errors, token usage.', category: 'planning', categoryLabel: 'Planning', categoryIcon: ':clipboard:', categoryOrder: 3, tags: ['report', 'daily', 'telegram', 'analytics'], nodeCount: 6, edgeCount: 7,
           nodes: [
             { id: 'trigger', type: 'trigger.schedule', label: 'Nightly 11pm', config: { cron: '0 23 * * *' }, position: { x: 400, y: 50 } },
             { id: 'get-task-stats', type: 'action.run_command', label: 'Task Stats', config: { command: 'bosun task stats --json' }, position: { x: 150, y: 200 } },
             { id: 'get-pr-stats', type: 'action.run_command', label: 'PR Stats', config: { command: 'gh pr list --state all --json number,state --limit 50' }, position: { x: 400, y: 200 } },
             { id: 'get-agent-stats', type: 'action.run_command', label: 'Agent Stats', config: { command: 'bosun agent stats --json' }, position: { x: 650, y: 200 } },
             { id: 'generate-report', type: 'action.run_agent', label: 'Generate Report', config: { prompt: 'Generate daily activity summary' }, position: { x: 400, y: 380 } },
-            { id: 'send-report', type: 'notify.telegram', label: 'Send Report', config: { message: '📊 Daily Bosun Report' }, position: { x: 400, y: 540 } },
+            { id: 'send-report', type: 'notify.telegram', label: 'Send Report', config: { message: ':chart: Daily Bosun Report' }, position: { x: 400, y: 540 } },
           ],
           edges: [
             { id: 'e1', source: 'trigger', target: 'get-task-stats' }, { id: 'e2', source: 'trigger', target: 'get-pr-stats' },
@@ -3480,7 +3480,7 @@
 </head>
 <body>
   <!-- Demo mode banner -->
-  <div class="demo-banner">⚡ Bosun Demo Mode — Seed Data</div>
+  <div class="demo-banner">:zap: Bosun Demo Mode — Seed Data</div>
 
   <!-- ═══ Telegram MiniApp (single view — loads immediately) ═══════════ -->
   <div class="demo-container">
@@ -3626,53 +3626,53 @@
     const SCREENS = {
       // ─── HOME ───
       home: {
-        title: '🎛️ Bosun Control Center',
+        title: ':sliders: Bosun Control Center',
         body: 'Choose a section to manage your automation fleet.',
         keyboard: [
-          [{ text: '📊 Overview', go: 'overview' }, { text: '🧭 Tasks', go: 'tasks' }, { text: '🤖 Agents', go: 'agents' }],
-          [{ text: '⚙️ Executor', go: 'executor' }, { text: '🛰 Routing', go: 'routing' }, { text: '🌳 Workspaces', go: 'workspaces' }],
-          [{ text: '📁 Logs & Git', go: 'logs_menu' }, { text: '🔌 Integrations', go: 'integrations' }],
-          [{ text: '🔄 Refresh', cmd: 'status' }, { text: '✖ Close', action: 'close' }],
+          [{ text: ':chart: Overview', go: 'overview' }, { text: ':compass: Tasks', go: 'tasks' }, { text: ':bot: Agents', go: 'agents' }],
+          [{ text: ':settings: Executor', go: 'executor' }, { text: ':server: Routing', go: 'routing' }, { text: ':git: Workspaces', go: 'workspaces' }],
+          [{ text: ':folder: Logs & Git', go: 'logs_menu' }, { text: ':plug: Integrations', go: 'integrations' }],
+          [{ text: ':refresh: Refresh', cmd: 'status' }, { text: ':close: Close', action: 'close' }],
         ],
       },
 
       // ─── OVERVIEW (sub-menu) ───
       overview: {
-        title: '📊 Overview',
+        title: ':chart: Overview',
         parent: 'home',
         body: 'Live status, health, and presence dashboards.',
         keyboard: [
-          [{ text: '📊 Status', cmd: 'status' }, { text: '📋 Tasks', cmd: 'tasks' }, { text: '🤖 Agents', cmd: 'agents' }],
-          [{ text: '🏥 Health', cmd: 'health' }, { text: '⚠️ Anomalies', cmd: 'anomalies' }, { text: '👁 Presence', cmd: 'presence' }],
-          [{ text: '📝 Logs', cmd: 'logs' }, { text: '📈 Metrics', cmd: 'metrics' }],
+          [{ text: ':chart: Status', cmd: 'status' }, { text: ':clipboard: Tasks', cmd: 'tasks' }, { text: ':bot: Agents', cmd: 'agents' }],
+          [{ text: ':heart: Health', cmd: 'health' }, { text: ':alert: Anomalies', cmd: 'anomalies' }, { text: ':eye: Presence', cmd: 'presence' }],
+          [{ text: ':edit: Logs', cmd: 'logs' }, { text: ':chart: Metrics', cmd: 'metrics' }],
         ],
       },
 
       // ─── TASKS (sub-menu with deeper levels) ───
       tasks: {
-        title: '🧭 Task Operations',
+        title: ':compass: Task Operations',
         parent: 'home',
         body: 'Pause/resume, plan, retry, cleanup, and guided starts.',
         keyboard: [
-          [{ text: '⏸ Pause', cmd: 'pause' }, { text: '▶️ Resume', cmd: 'resume' }, { text: '🔄 Restart', cmd: 'restart' }],
-          [{ text: '📋 List Tasks', cmd: 'tasks' }, { text: '🧹 Cleanup', cmd: 'cleanup' }, { text: '📊 Status', cmd: 'status' }],
-          [{ text: '🗺️ Planner', go: 'planner' }, { text: '🔁 Retry', go: 'retry' }, { text: '⚙️ Executor', go: 'executor' }],
-          [{ text: '🗂 Task Lists', go: 'task_lists' }, { text: '▶️ Start Task', cmd: 'starttask' }],
+          [{ text: ':pause: Pause', cmd: 'pause' }, { text: ':play: Resume', cmd: 'resume' }, { text: ':refresh: Restart', cmd: 'restart' }],
+          [{ text: ':clipboard: List Tasks', cmd: 'tasks' }, { text: ':trash: Cleanup', cmd: 'cleanup' }, { text: ':chart: Status', cmd: 'status' }],
+          [{ text: ':grid: Planner', go: 'planner' }, { text: ':repeat: Retry', go: 'retry' }, { text: ':settings: Executor', go: 'executor' }],
+          [{ text: ':folder: Task Lists', go: 'task_lists' }, { text: ':play: Start Task', cmd: 'starttask' }],
         ],
       },
       task_lists: {
-        title: '🗂 Task Lists',
+        title: ':folder: Task Lists',
         parent: 'tasks',
         body: 'Browse tasks by kanban status.',
         keyboard: [
-          [{ text: '📥 Backlog', cmd: 'tasks_backlog' }, { text: '📝 Draft', cmd: 'tasks_draft' }],
-          [{ text: '✅ Todo', cmd: 'tasks_todo' }, { text: '🚧 Active', cmd: 'tasks_active' }],
-          [{ text: '🔍 Review', cmd: 'tasks_review' }, { text: '⛔ Blocked', cmd: 'tasks_blocked' }],
-          [{ text: '🏁 Done', cmd: 'tasks_done' }],
+          [{ text: ':download: Backlog', cmd: 'tasks_backlog' }, { text: ':edit: Draft', cmd: 'tasks_draft' }],
+          [{ text: ':check: Todo', cmd: 'tasks_todo' }, { text: ':alert: Active', cmd: 'tasks_active' }],
+          [{ text: ':search: Review', cmd: 'tasks_review' }, { text: ':ban: Blocked', cmd: 'tasks_blocked' }],
+          [{ text: ':flag: Done', cmd: 'tasks_done' }],
         ],
       },
       planner: {
-        title: '🗺️ Task Planner',
+        title: ':grid: Task Planner',
         parent: 'tasks',
         body: 'Trigger the planner to seed new tasks from the backlog.',
         keyboard: [
@@ -3680,7 +3680,7 @@
         ],
       },
       retry: {
-        title: '🔁 Fresh Retry',
+        title: ':repeat: Fresh Retry',
         parent: 'tasks',
         body: 'Start a fresh session retry for the active task.',
         keyboard: [
@@ -3690,17 +3690,17 @@
 
       // ─── AGENTS (sub-menu with deeper levels) ───
       agents: {
-        title: '🤖 Agents',
+        title: ':bot: Agents',
         parent: 'home',
         body: 'Monitor and steer running agents.',
         keyboard: [
-          [{ text: '🤖 Agents', cmd: 'agents' }, { text: '📋 Tasks', cmd: 'tasks' }, { text: '📊 Status', cmd: 'status' }],
-          [{ text: '📂 Agent Logs', go: 'agent_logs' }, { text: '🧵 Threads', go: 'threads' }, { text: '🧠 History', cmd: 'history' }],
-          [{ text: '🧭 Steer', cmd: 'steer' }, { text: '🛑 Stop', cmd: 'stop' }, { text: '🛰 Background', go: 'background' }],
+          [{ text: ':bot: Agents', cmd: 'agents' }, { text: ':clipboard: Tasks', cmd: 'tasks' }, { text: ':chart: Status', cmd: 'status' }],
+          [{ text: ':folder: Agent Logs', go: 'agent_logs' }, { text: ':link: Threads', go: 'threads' }, { text: ':cpu: History', cmd: 'history' }],
+          [{ text: ':compass: Steer', cmd: 'steer' }, { text: ':close: Stop', cmd: 'stop' }, { text: ':server: Background', go: 'background' }],
         ],
       },
       agent_logs: {
-        title: '📂 Agent Logs',
+        title: ':folder: Agent Logs',
         parent: 'agents',
         body: 'View logs from specific worktree agent sessions.',
         keyboard: [
@@ -3709,7 +3709,7 @@
         ],
       },
       threads: {
-        title: '🧵 Threads',
+        title: ':link: Threads',
         parent: 'agents',
         body: 'Manage persistent agent threads.',
         keyboard: [
@@ -3718,7 +3718,7 @@
         ],
       },
       threads_kill: {
-        title: '🗑 Kill Thread',
+        title: ':trash: Kill Thread',
         parent: 'threads',
         body: 'Select a thread to invalidate.',
         keyboard: [
@@ -3726,27 +3726,27 @@
         ],
       },
       background: {
-        title: '🛰 Background Mode',
+        title: ':server: Background Mode',
         parent: 'agents',
         body: 'Run tasks silently or background the active agent.',
         keyboard: [
           [{ text: 'Background Active', cmd: 'background_active' }, { text: 'New Background Task', cmd: 'background_new' }],
-          [{ text: '🧭 Steer', cmd: 'steer' }, { text: '🛑 Stop', cmd: 'stop' }],
+          [{ text: ':compass: Steer', cmd: 'steer' }, { text: ':close: Stop', cmd: 'stop' }],
         ],
       },
 
       // ─── EXECUTOR (sub-menu) ───
       executor: {
-        title: '⚙️ Executor',
+        title: ':settings: Executor',
         parent: 'home',
         body: 'Executor status, slots, and tuning.',
         keyboard: [
           [{ text: 'Status', cmd: 'executor' }, { text: 'Slots', cmd: 'executor_slots' }, { text: 'Mode', cmd: 'executor_mode' }],
-          [{ text: '📊 Max Parallel', go: 'maxparallel' }, { text: '⏸ Pause', cmd: 'pause' }, { text: '▶️ Resume', cmd: 'resume' }],
+          [{ text: ':chart: Max Parallel', go: 'maxparallel' }, { text: ':pause: Pause', cmd: 'pause' }, { text: ':play: Resume', cmd: 'resume' }],
         ],
       },
       maxparallel: {
-        title: '📊 Max Parallel',
+        title: ':chart: Max Parallel',
         parent: 'executor',
         body: 'Set the max concurrent task slots.',
         keyboard: [
@@ -3758,17 +3758,17 @@
 
       // ─── ROUTING (sub-menu with deeper levels) ───
       routing: {
-        title: '🛰 Routing & Models',
+        title: ':server: Routing & Models',
         parent: 'home',
         body: 'Control model routing, SDKs, and workspace routing.',
         keyboard: [
-          [{ text: '🤖 Model', go: 'model' }, { text: '📦 SDK', go: 'sdk' }, { text: '📋 Kanban', cmd: 'kanban' }],
-          [{ text: '🌍 Region', go: 'region' }, { text: '♻️ Auto Backlog', cmd: 'autobacklog' }, { text: '📐 Requirements', cmd: 'requirements' }],
-          [{ text: '🎯 Route Task', cmd: 'route_task' }, { text: '🏥 Health', cmd: 'health' }],
+          [{ text: ':bot: Model', go: 'model' }, { text: ':box: SDK', go: 'sdk' }, { text: ':clipboard: Kanban', cmd: 'kanban' }],
+          [{ text: ':globe: Region', go: 'region' }, { text: ':repeat: Auto Backlog', cmd: 'autobacklog' }, { text: ':ruler: Requirements', cmd: 'requirements' }],
+          [{ text: ':target: Route Task', cmd: 'route_task' }, { text: ':heart: Health', cmd: 'health' }],
         ],
       },
       model: {
-        title: '🤖 Model Override',
+        title: ':bot: Model Override',
         parent: 'routing',
         body: 'Override the executor model for the next run.',
         keyboard: [
@@ -3777,7 +3777,7 @@
         ],
       },
       sdk: {
-        title: '📦 SDK Selection',
+        title: ':box: SDK Selection',
         parent: 'routing',
         body: 'Choose which SDK backend to use.',
         keyboard: [
@@ -3786,48 +3786,48 @@
         ],
       },
       region: {
-        title: '🌍 Region',
+        title: ':globe: Region',
         parent: 'routing',
         body: 'Set the execution region for Codex.',
         keyboard: [
           [{ text: '🇺🇸 US East', cmd: 'region_us' }, { text: '🇸🇪 EU North', cmd: 'region_eu' }],
-          [{ text: '🌐 Auto (default)', cmd: 'region_auto' }],
+          [{ text: ':globe: Auto (default)', cmd: 'region_auto' }],
         ],
       },
 
       // ─── WORKSPACES ───
       workspaces: {
-        title: '🌳 Workspaces',
+        title: ':git: Workspaces',
         parent: 'home',
         body: 'Manage git worktrees and workspaces.',
         keyboard: [
-          [{ text: '🌳 Worktrees', cmd: 'worktrees' }, { text: '🌿 Branches', cmd: 'branches' }],
-          [{ text: '📝 Git Diff', cmd: 'diff' }, { text: '📖 Git Log', cmd: 'git_log' }],
-          [{ text: '🧹 Cleanup', cmd: 'cleanup' }],
+          [{ text: ':git: Worktrees', cmd: 'worktrees' }, { text: ':git: Branches', cmd: 'branches' }],
+          [{ text: ':edit: Git Diff', cmd: 'diff' }, { text: ':file: Git Log', cmd: 'git_log' }],
+          [{ text: ':trash: Cleanup', cmd: 'cleanup' }],
         ],
       },
 
       // ─── LOGS & GIT ───
       logs_menu: {
-        title: '📁 Logs & Git',
+        title: ':folder: Logs & Git',
         parent: 'home',
         body: 'System logs, agent logs, and git operations.',
         keyboard: [
-          [{ text: '📜 Recent Logs', cmd: 'logs' }, { text: '📂 Agent Logs', go: 'agent_logs' }],
-          [{ text: '📝 Git Diff', cmd: 'diff' }, { text: '📖 Git Log', cmd: 'git_log' }],
-          [{ text: '💻 Shell', cmd: 'shell' }],
+          [{ text: ':file: Recent Logs', cmd: 'logs' }, { text: ':folder: Agent Logs', go: 'agent_logs' }],
+          [{ text: ':edit: Git Diff', cmd: 'diff' }, { text: ':file: Git Log', cmd: 'git_log' }],
+          [{ text: ':monitor: Shell', cmd: 'shell' }],
         ],
       },
 
       // ─── INTEGRATIONS ───
       integrations: {
-        title: '🔌 Integrations',
+        title: ':plug: Integrations',
         parent: 'home',
         body: 'Connected services and configuration.',
         keyboard: [
-          [{ text: '🐙 GitHub', cmd: 'integration_github' }, { text: '📱 Telegram', cmd: 'integration_telegram' }],
-          [{ text: '💻 VS Code', cmd: 'integration_vscode' }, { text: '📱 WhatsApp', cmd: 'integration_whatsapp' }],
-          [{ text: '📦 Container', cmd: 'container' }, { text: '🔧 SDK Status', cmd: 'sdk_status' }],
+          [{ text: ':git: GitHub', cmd: 'integration_github' }, { text: ':phone: Telegram', cmd: 'integration_telegram' }],
+          [{ text: ':monitor: VS Code', cmd: 'integration_vscode' }, { text: ':phone: WhatsApp', cmd: 'integration_whatsapp' }],
+          [{ text: ':box: Container', cmd: 'container' }, { text: ':settings: SDK Status', cmd: 'sdk_status' }],
         ],
       },
     };
@@ -3837,194 +3837,194 @@
     // ══════════════════════════════════════════════════════════════════
 
     const CMDS = {
-      status: () => `<strong>📊 Fleet Status</strong> — <code>● RUNNING</code><br/><br/>`+
-        `⏱ Uptime: <code>6d 14h 22m</code><br/>`+
-        `🔧 Mode: <code>internal</code><br/>`+
-        `⚡ Max Parallel: <code>6</code><br/>`+
-        `📂 Repos: <code>bosun</code> + <code>virtengine</code><br/><br/>`+
+      status: () => `<strong>:chart: Fleet Status</strong> — <code>● RUNNING</code><br/><br/>`+
+        `:clock: Uptime: <code>6d 14h 22m</code><br/>`+
+        `:settings: Mode: <code>internal</code><br/>`+
+        `:zap: Max Parallel: <code>6</code><br/>`+
+        `:folder: Repos: <code>bosun</code> + <code>virtengine</code><br/><br/>`+
         `<strong>This Week</strong><br/>`+
-        `✅ Completed: <strong>27</strong> · 🔀 PRs merged: <strong>22</strong> · ❌ Failures: <strong>2</strong> (auto-retried)<br/><br/>`+
+        `:check: Completed: <strong>27</strong> · :git: PRs merged: <strong>22</strong> · :close: Failures: <strong>2</strong> (auto-retried)<br/><br/>`+
         `<strong>Executors</strong><br/>`+
-        `├─ <code>copilot-claude</code> 🟢 load: 67% tasks: 16<br/>`+
-        `└─ <code>codex-default</code> 🟢 load: 42% tasks: 11`,
+        `├─ <code>copilot-claude</code> :dot: load: 67% tasks: 16<br/>`+
+        `└─ <code>codex-default</code> :dot: load: 42% tasks: 11`,
 
       tasks: () => {
-        if (!TASKS.length) return '<strong>📋 Tasks</strong><br/>No tasks found.';
-        const icons = { running: '🔵', queued: '⏳', done: '✅', failed: '❌', cancelled: '⚪' };
-        return '<strong>📋 Active Tasks</strong><br/><br/>' +
+        if (!TASKS.length) return '<strong>:clipboard: Tasks</strong><br/>No tasks found.';
+        const icons = { running: ':dot:', queued: ':clock:', done: ':check:', failed: ':close:', cancelled: ':dot:' };
+        return '<strong>:clipboard: Active Tasks</strong><br/><br/>' +
           TASKS.map(t => `${icons[t.status]||'·'} <strong>${t.title}</strong> — <code>${t.status}</code>`).join('<br/>');
       },
 
       agents: () => {
-        if (!AGENTS.length) return '<strong>🤖 Agents</strong><br/>No agents configured.';
-        return '<strong>🤖 Agent Pool</strong><br/><br/>' +
+        if (!AGENTS.length) return '<strong>:bot: Agents</strong><br/>No agents configured.';
+        return '<strong>:bot: Agent Pool</strong><br/><br/>' +
           AGENTS.map(a => {
-            const s = a.healthy === false ? '🔴' : '🟢';
+            const s = a.healthy === false ? ':dot:' : ':dot:';
             return `${s} <strong>${a.name}</strong> — ${a.provider||'?'} · <code>${a.model||'?'}</code>`;
           }).join('<br/>');
       },
 
-      health: () => `<strong>💚 System Health</strong> — All Clear<br/><br/>`+
-        `✅ GitHub API <code>142ms</code><br/>`+
-        `✅ Telegram Bot <code>89ms</code><br/>`+
-        `✅ Codex SDK <code>234ms</code><br/>`+
-        `✅ Copilot SDK <code>178ms</code><br/>`+
-        `✅ Shared State <code>12ms</code><br/>`+
-        `✅ Worktree Manager <code>45ms</code>`,
+      health: () => `<strong>:heart: System Health</strong> — All Clear<br/><br/>`+
+        `:check: GitHub API <code>142ms</code><br/>`+
+        `:check: Telegram Bot <code>89ms</code><br/>`+
+        `:check: Codex SDK <code>234ms</code><br/>`+
+        `:check: Copilot SDK <code>178ms</code><br/>`+
+        `:check: Shared State <code>12ms</code><br/>`+
+        `:check: Worktree Manager <code>45ms</code>`,
 
-      anomalies: () => `<strong>🔍 Anomaly Detector</strong> — <code>All Clear</code><br/><br/>`+
-        `✅ No stuck agents<br/>✅ No repeated lint failures<br/>✅ No push loop detected<br/>✅ No memory pressure<br/><br/>`+
+      anomalies: () => `<strong>:search: Anomaly Detector</strong> — <code>All Clear</code><br/><br/>`+
+        `:check: No stuck agents<br/>:check: No repeated lint failures<br/>:check: No push loop detected<br/>:check: No memory pressure<br/><br/>`+
         `Streak: <code>14</code> clean checks<br/>Last anomaly: <em>none today</em>`,
 
-      presence: () => `<strong>👥 Agent Presence</strong><br/><br/>`+
-        `🟢 <strong>workstation-1</strong> (this machine)<br/>`+
+      presence: () => `<strong>:users: Agent Presence</strong><br/><br/>`+
+        `:dot: <strong>workstation-1</strong> (this machine)<br/>`+
         `   ├─ copilot-claude: busy (#44)<br/>`+
         `   └─ codex-default: busy (#45)<br/><br/>`+
         `Fleet: 1 workstation, 2 agents online`,
 
-      metrics: () => `<strong>📈 Fleet Metrics</strong> (24h)<br/><br/>`+
+      metrics: () => `<strong>:chart: Fleet Metrics</strong> (24h)<br/><br/>`+
         `<strong>Tasks</strong><br/>▓▓▓▓▓▓▓▓▓▓░░ 89% — 47 completed<br/>▓░░░░░░░░░░░  6% — 3 failed<br/><br/>`+
         `<strong>PRs</strong><br/>Created: 52 | Merged: 44 | CI failures: 8 (auto-fixed: 6)`,
 
       logs: () => {
-        if (!LOGS.length) return '<strong>📜 Logs</strong><br/>No recent logs.';
-        let html = '<strong>📜 Recent Logs</strong><br/><br/><pre>';
+        if (!LOGS.length) return '<strong>:file: Logs</strong><br/>No recent logs.';
+        let html = '<strong>:file: Recent Logs</strong><br/><br/><pre>';
         LOGS.slice(-8).forEach(l => {
           html += `[${(l.level||'info').toUpperCase().padEnd(5)}] ${(l.source||'?').padEnd(10)} ${l.msg}\n`;
         });
         return html + '</pre>';
       },
 
-      executor: () => `<strong>⚙️ Executor Pool</strong><br/><br/>`+
+      executor: () => `<strong>:settings: Executor Pool</strong><br/><br/>`+
         `Mode: <code>internal</code><br/>Max parallel: <code>6</code><br/><br/>`+
         `1. copilot-claude (50%) — COPILOT:CLAUDE_OPUS_4_6<br/>`+
         `2. codex-default (50%) — CODEX:DEFAULT`,
 
-      executor_slots: () => `<strong>⚙️ Executor Slots</strong><br/><br/>Active: <strong>2</strong> / 6<br/>Queued: <strong>3</strong><br/>Free: <strong>4</strong>`,
-      executor_mode: () => `<strong>⚙️ Mode:</strong> <code>internal</code><br/><br/>Available: internal, container, remote`,
+      executor_slots: () => `<strong>:settings: Executor Slots</strong><br/><br/>Active: <strong>2</strong> / 6<br/>Queued: <strong>3</strong><br/>Free: <strong>4</strong>`,
+      executor_mode: () => `<strong>:settings: Mode:</strong> <code>internal</code><br/><br/>Available: internal, container, remote`,
 
       worktrees: () => {
         const wt = INFRA.worktrees || [];
-        if (!wt.length) return '<strong>🌳 Worktrees</strong><br/>No worktrees found.';
-        return '<strong>🌳 Git Worktrees</strong><br/><br/>' +
-          wt.map(w => `📁 <strong>${w.branch||w.path}</strong> — ${w.path}`).join('<br/>') +
+        if (!wt.length) return '<strong>:git: Worktrees</strong><br/>No worktrees found.';
+        return '<strong>:git: Git Worktrees</strong><br/><br/>' +
+          wt.map(w => `:folder: <strong>${w.branch||w.path}</strong> — ${w.path}`).join('<br/>') +
           `<br/><br/>Total: ${wt.length} worktrees`;
       },
 
-      branches: () => `<strong>🌿 Active Branches</strong><br/><br/>`+
+      branches: () => `<strong>:git: Active Branches</strong><br/><br/>`+
         `<strong>virtengine/bosun</strong><br/>`+
-        `├─ <code>docs/bosun-improvement-plan</code> 🔵 active (PR #17)<br/>`+
-        `├─ <code>bs/12-error-correlation</code> 🔵 active<br/>`+
-        `├─ <code>bs/11-agent-logging-enrich</code> 🔵 active<br/>`+
-        `├─ <code>fix/kanban-repo-filters</code> 🔵 active<br/>`+
-        `└─ <code>bs/13-weekly-report</code> ⏳ draft<br/><br/>`+
+        `├─ <code>docs/bosun-improvement-plan</code> :dot: active (PR #17)<br/>`+
+        `├─ <code>bs/12-error-correlation</code> :dot: active<br/>`+
+        `├─ <code>bs/11-agent-logging-enrich</code> :dot: active<br/>`+
+        `├─ <code>fix/kanban-repo-filters</code> :dot: active<br/>`+
+        `└─ <code>bs/13-weekly-report</code> :clock: draft<br/><br/>`+
         `<strong>virtengine/virtengine</strong><br/>`+
-        `├─ <code>ve/760-market-order-expiry</code> 🔵 active<br/>`+
-        `├─ <code>ve/761-escrow-batch</code> 🔵 active<br/>`+
-        `├─ <code>ve/762-veid-token-fix</code> 📝 in review<br/>`+
+        `├─ <code>ve/760-market-order-expiry</code> :dot: active<br/>`+
+        `├─ <code>ve/761-escrow-batch</code> :dot: active<br/>`+
+        `├─ <code>ve/762-veid-token-fix</code> :edit: in review<br/>`+
         `└─ <code>ve/751-security-bulk-remediation</code> (merged, PR #751)`,
 
-      diff: () => `<strong>📝 Git Diff Summary</strong> (staged)<br/><br/>`+
+      diff: () => `<strong>:edit: Git Diff Summary</strong> (staged)<br/><br/>`+
         `<code>bosun/ui/components/kanban-board.js</code>  +124 -18<br/>`+
         `<code>bosun/ui/styles/kanban.css</code>          +156 -3<br/>`+
         `<code>bosun/ui/demo.html</code>                 +312 -89<br/><br/>`+
         `3 files changed, 592 insertions(+), 110 deletions(-)`,
 
-      git_log: () => `<strong>📖 Git Log</strong><br/><br/>`+
+      git_log: () => `<strong>:file: Git Log</strong><br/><br/>`+
         `<code>a1b2c3d</code> feat(kanban): add repo badge and filter bar (PR #17)<br/>`+
         `<code>4e5f6a7</code> fix(ui): health card text contrast<br/>`+
         `<code>8b9c0d1</code> feat(site): landing page redesign<br/>`+
         `<code>e2f3a4b</code> fix(security): bulk remediation 287/300 alerts (PR #751)<br/>`+
         `<code>f5a6b7c</code> feat(oauth): GitHub App auth setup (PR #10)`,
 
-      shell: () => `<strong>💻 Shell</strong> — <code>ls logs/</code><br/><br/>`+
+      shell: () => `<strong>:monitor: Shell</strong> — <code>ls logs/</code><br/><br/>`+
         `<code>daemon.log  monitor.log  agent-42.log  agent-43.log  agent-44.log  telegram.log</code>`,
 
-      history: () => `<strong>🧠 Session History</strong><br/><br/>`+
+      history: () => `<strong>:cpu: Session History</strong><br/><br/>`+
         `├─ Session #1: Landing page redesign (bosun PR #17) — <em>in progress</em><br/>`+
         `├─ Session #2: Market order expiry (virtengine) — <em>in progress</em><br/>`+
-        `├─ Session #6: Security bulk remediation (PR #751) — ✅ done<br/>`+
+        `├─ Session #6: Security bulk remediation (PR #751) — :check: done<br/>`+
         `├─ Session #7: Kanban filters + repo badge — <em>in progress</em><br/>`+
-        `└─ Session #8: MiniApp redesign (PR #754) — ✅ done<br/><br/>`+
+        `└─ Session #8: MiniApp redesign (PR #754) — :check: done<br/><br/>`+
         `Total: 8 sessions this week, 142 turns`,
 
-      threads: () => `<strong>🧵 Active Threads</strong><br/><br/>`+
-        `├─ Thread #1: <code>docs/bosun-improvement-plan</code> 🟢 (18 turns)<br/>`+
-        `├─ Thread #2: <code>ve/760-market-order-expiry</code> 🟢 (12 turns)<br/>`+
-        `├─ Thread #3: <code>bs/12-error-correlation</code> 🟢 (6 turns)<br/>`+
-        `└─ Thread #4: <code>primary-agent</code> 🟡 idle<br/><br/>`+
+      threads: () => `<strong>:link: Active Threads</strong><br/><br/>`+
+        `├─ Thread #1: <code>docs/bosun-improvement-plan</code> :dot: (18 turns)<br/>`+
+        `├─ Thread #2: <code>ve/760-market-order-expiry</code> :dot: (12 turns)<br/>`+
+        `├─ Thread #3: <code>bs/12-error-correlation</code> :dot: (6 turns)<br/>`+
+        `└─ Thread #4: <code>primary-agent</code> :dot: idle<br/><br/>`+
         `Total: 4 threads (3 active)`,
-      threads_clear: () => `<strong>🧵 Registry cleared.</strong> All idle threads removed.`,
+      threads_clear: () => `<strong>:link: Registry cleared.</strong> All idle threads removed.`,
 
-      steer: () => `<strong>🧭 Steer Agent</strong><br/><br/>Use: <code>/steer &lt;directive&gt;</code><br/><br/>Example:<br/><code>/steer focus on adding tests first</code><br/><code>/steer skip the CLI and focus on keeper only</code>`,
-      stop: () => `<strong>🛑 Stop Agent</strong><br/><br/>No active agents running right now.`,
+      steer: () => `<strong>:compass: Steer Agent</strong><br/><br/>Use: <code>/steer &lt;directive&gt;</code><br/><br/>Example:<br/><code>/steer focus on adding tests first</code><br/><code>/steer skip the CLI and focus on keeper only</code>`,
+      stop: () => `<strong>:close: Stop Agent</strong><br/><br/>No active agents running right now.`,
 
-      kanban: () => `<strong>📊 Kanban Board</strong><br/><br/>📝 Draft: 2<br/>📋 Todo: 3<br/>🔵 In Progress: 4<br/>📝 In Review: 2<br/>✅ Done: 8<br/>❌ Error: 1<br/><br/>Total: 20 tasks across 2 repos`,
+      kanban: () => `<strong>:chart: Kanban Board</strong><br/><br/>:edit: Draft: 2<br/>:clipboard: Todo: 3<br/>:dot: In Progress: 4<br/>:edit: In Review: 2<br/>:check: Done: 8<br/>:close: Error: 1<br/><br/>Total: 20 tasks across 2 repos`,
 
-      pause: () => `<strong>⏸ Task processing paused.</strong><br/><br/>No new tasks will be dispatched. Active tasks continue.<br/>Use Resume to restart.`,
-      resume: () => `<strong>▶️ Task processing resumed.</strong><br/><br/>Fleet is picking up tasks from the backlog.`,
-      restart: () => `<strong>🔄 Restarting...</strong><br/><br/>No failed tasks to restart. All tasks healthy.`,
-      cleanup: () => `<strong>🧹 Cleanup Results</strong><br/><br/>✅ 0 stale orchestrators removed<br/>✅ 0 stuck pushes cleared<br/>✅ 1 worktree pruned<br/>✅ 0 orphaned branches cleaned`,
-      starttask: () => `<strong>▶️ Starting task #46</strong>...<br/><br/>📋 docs: update provider guide<br/>🤖 Assigned to: <code>codex-default</code><br/>🌿 Branch: <code>ve/46-docs-provider-guide</code><br/><br/>✅ Task dispatched.`,
+      pause: () => `<strong>:pause: Task processing paused.</strong><br/><br/>No new tasks will be dispatched. Active tasks continue.<br/>Use Resume to restart.`,
+      resume: () => `<strong>:play: Task processing resumed.</strong><br/><br/>Fleet is picking up tasks from the backlog.`,
+      restart: () => `<strong>:refresh: Restarting...</strong><br/><br/>No failed tasks to restart. All tasks healthy.`,
+      cleanup: () => `<strong>:trash: Cleanup Results</strong><br/><br/>:check: 0 stale orchestrators removed<br/>:check: 0 stuck pushes cleared<br/>:check: 1 worktree pruned<br/>:check: 0 orphaned branches cleaned`,
+      starttask: () => `<strong>:play: Starting task #46</strong>...<br/><br/>:clipboard: docs: update provider guide<br/>:bot: Assigned to: <code>codex-default</code><br/>:git: Branch: <code>ve/46-docs-provider-guide</code><br/><br/>:check: Task dispatched.`,
 
-      plan3: () => `<strong>🗺️ Planning 3 tasks...</strong><br/><br/>1. feat(hpc): GPU resource metering<br/>2. fix(provider): health check endpoint<br/>3. docs: update provider guide<br/><br/>✅ 3 tasks queued.`,
-      plan5: () => `<strong>🗺️ Planning 5 tasks...</strong><br/><br/>1. feat(hpc): GPU resource metering<br/>2. fix(provider): health check<br/>3. docs: update provider guide<br/>4. refactor(roles): simplify permissions<br/>5. test(escrow): settlement edge cases<br/><br/>✅ 5 tasks queued.`,
-      plan10: () => `<strong>🗺️ Planning 10 tasks...</strong><br/><br/>✅ 10 tasks seeded from backlog and queued.`,
+      plan3: () => `<strong>:grid: Planning 3 tasks...</strong><br/><br/>1. feat(hpc): GPU resource metering<br/>2. fix(provider): health check endpoint<br/>3. docs: update provider guide<br/><br/>:check: 3 tasks queued.`,
+      plan5: () => `<strong>:grid: Planning 5 tasks...</strong><br/><br/>1. feat(hpc): GPU resource metering<br/>2. fix(provider): health check<br/>3. docs: update provider guide<br/>4. refactor(roles): simplify permissions<br/>5. test(escrow): settlement edge cases<br/><br/>:check: 5 tasks queued.`,
+      plan10: () => `<strong>:grid: Planning 10 tasks...</strong><br/><br/>:check: 10 tasks seeded from backlog and queued.`,
 
-      retry_manual: () => `<strong>🔁 Manual Retry</strong><br/><br/>Retrying active task with clean context... ✅ retry dispatched.`,
-      retry_stuck: () => `<strong>🔁 Stuck Retry</strong><br/><br/>Detecting stuck state... No stuck agents found.`,
-      retry_ratelimit: () => `<strong>🔁 Rate Limit Retry</strong><br/><br/>Waiting for rate limit cooldown... ✅ Retrying in 30s.`,
+      retry_manual: () => `<strong>:repeat: Manual Retry</strong><br/><br/>Retrying active task with clean context... :check: retry dispatched.`,
+      retry_stuck: () => `<strong>:repeat: Stuck Retry</strong><br/><br/>Detecting stuck state... No stuck agents found.`,
+      retry_ratelimit: () => `<strong>:repeat: Rate Limit Retry</strong><br/><br/>Waiting for rate limit cooldown... :check: Retrying in 30s.`,
 
       // Task list statuses
       tasks_backlog: () => tasksByStatus('Backlog', ['queued']),
-      tasks_draft: () => '<strong>📝 Draft Tasks</strong><br/><br/>No draft tasks.',
+      tasks_draft: () => '<strong>:edit: Draft Tasks</strong><br/><br/>No draft tasks.',
       tasks_todo: () => tasksByStatus('Todo', ['queued']),
       tasks_active: () => tasksByStatus('Active', ['running']),
-      tasks_review: () => '<strong>🔍 Review</strong><br/><br/>No tasks in review.',
-      tasks_blocked: () => '<strong>⛔ Blocked</strong><br/><br/>No blocked tasks.',
+      tasks_review: () => '<strong>:search: Review</strong><br/><br/>No tasks in review.',
+      tasks_blocked: () => '<strong>:ban: Blocked</strong><br/><br/>No blocked tasks.',
       tasks_done: () => tasksByStatus('Done', ['done']),
 
-      agentlogs_escrow: () => `<strong>📂 Agent Logs — docs/bosun-improvement-plan</strong><br/><br/><pre>[09:12] Starting session for bosun PR #17\n[09:14] Reading site/indexv2.html\n[09:18] Refactoring demo tabs for mobile\n[09:24] Added helm SVG hero\n[09:30] CI queued on PR #17</pre>`,
-      agentlogs_hpc: () => `<strong>📂 Agent Logs — ve/760-market-order-expiry</strong><br/><br/><pre>[10:05] Starting session...\n[10:06] Reading x/market/keeper/order.go\n[10:10] Implementing auto-expiry TTL\n[10:15] Writing order_test.go...</pre>`,
-      agentlogs_docs: () => `<strong>📂 Agent Logs — bs/12-error-correlation</strong><br/><br/><pre>[Queued — not yet started]</pre>`,
+      agentlogs_escrow: () => `<strong>:folder: Agent Logs — docs/bosun-improvement-plan</strong><br/><br/><pre>[09:12] Starting session for bosun PR #17\n[09:14] Reading site/indexv2.html\n[09:18] Refactoring demo tabs for mobile\n[09:24] Added helm SVG hero\n[09:30] CI queued on PR #17</pre>`,
+      agentlogs_hpc: () => `<strong>:folder: Agent Logs — ve/760-market-order-expiry</strong><br/><br/><pre>[10:05] Starting session...\n[10:06] Reading x/market/keeper/order.go\n[10:10] Implementing auto-expiry TTL\n[10:15] Writing order_test.go...</pre>`,
+      agentlogs_docs: () => `<strong>:folder: Agent Logs — bs/12-error-correlation</strong><br/><br/><pre>[Queued — not yet started]</pre>`,
 
-      kill_thread_44: () => `<strong>🗑 Thread Invalidated</strong><br/><br/>Thread <code>ve/44-escrow-batch</code> has been invalidated. Session will restart on next dispatch.`,
-      kill_thread_45: () => `<strong>🗑 Thread Invalidated</strong><br/><br/>Thread <code>ve/45-hpc-gpu</code> has been invalidated.`,
+      kill_thread_44: () => `<strong>:trash: Thread Invalidated</strong><br/><br/>Thread <code>ve/44-escrow-batch</code> has been invalidated. Session will restart on next dispatch.`,
+      kill_thread_45: () => `<strong>:trash: Thread Invalidated</strong><br/><br/>Thread <code>ve/45-hpc-gpu</code> has been invalidated.`,
 
-      background_active: () => `<strong>🛰 Backgrounded</strong><br/><br/>Active agent moved to background mode. It will continue working silently.`,
-      background_new: () => `<strong>🛰 New Background Task</strong><br/><br/>Describe the task to run in background mode.`,
+      background_active: () => `<strong>:server: Backgrounded</strong><br/><br/>Active agent moved to background mode. It will continue working silently.`,
+      background_new: () => `<strong>:server: New Background Task</strong><br/><br/>Describe the task to run in background mode.`,
 
       mp_0: () => mpSet(0), mp_1: () => mpSet(1), mp_2: () => mpSet(2),
       mp_3: () => mpSet(3), mp_4: () => mpSet(4), mp_6: () => mpSet(6),
       mp_8: () => mpSet(8), mp_12: () => mpSet(12), mp_16: () => mpSet(16),
 
-      model_opus: () => `<strong>🤖 Model set:</strong> <code>claude-opus-4-6</code><br/>Next tasks will use this model.`,
-      model_o4: () => `<strong>🤖 Model set:</strong> <code>o4-mini</code>`,
-      model_gpt5: () => `<strong>🤖 Model set:</strong> <code>gpt-5.2-codex</code>`,
-      model_default: () => `<strong>🤖 Model reset to default</strong> routing policy.`,
+      model_opus: () => `<strong>:bot: Model set:</strong> <code>claude-opus-4-6</code><br/>Next tasks will use this model.`,
+      model_o4: () => `<strong>:bot: Model set:</strong> <code>o4-mini</code>`,
+      model_gpt5: () => `<strong>:bot: Model set:</strong> <code>gpt-5.2-codex</code>`,
+      model_default: () => `<strong>:bot: Model reset to default</strong> routing policy.`,
 
-      sdk_copilot: () => `<strong>📦 SDK:</strong> <code>COPILOT</code> selected.`,
-      sdk_codex: () => `<strong>📦 SDK:</strong> <code>CODEX</code> selected.`,
-      sdk_auto: () => `<strong>📦 SDK:</strong> <code>AUTO</code> — round-robin.`,
-      sdk_status: () => `<strong>🔧 SDK Status</strong><br/><br/>✅ Copilot SDK: loaded<br/>✅ Codex SDK: loaded<br/>✅ GitHub CLI: authenticated<br/>✅ Telegram API: connected`,
+      sdk_copilot: () => `<strong>:box: SDK:</strong> <code>COPILOT</code> selected.`,
+      sdk_codex: () => `<strong>:box: SDK:</strong> <code>CODEX</code> selected.`,
+      sdk_auto: () => `<strong>:box: SDK:</strong> <code>AUTO</code> — round-robin.`,
+      sdk_status: () => `<strong>:settings: SDK Status</strong><br/><br/>:check: Copilot SDK: loaded<br/>:check: Codex SDK: loaded<br/>:check: GitHub CLI: authenticated<br/>:check: Telegram API: connected`,
 
-      region_us: () => `<strong>🌍 Region:</strong> <code>US East</code> selected.`,
-      region_eu: () => `<strong>🌍 Region:</strong> <code>EU North (Sweden)</code> selected.`,
-      region_auto: () => `<strong>🌍 Region:</strong> <code>Auto</code> — lowest latency.`,
+      region_us: () => `<strong>:globe: Region:</strong> <code>US East</code> selected.`,
+      region_eu: () => `<strong>:globe: Region:</strong> <code>EU North (Sweden)</code> selected.`,
+      region_auto: () => `<strong>:globe: Region:</strong> <code>Auto</code> — lowest latency.`,
 
-      autobacklog: () => `<strong>♻️ Auto Backlog:</strong> Enabled<br/><br/>New GitHub issues matching label filters will be auto-added to the kanban backlog.`,
-      requirements: () => `<strong>📐 Requirements:</strong><br/><br/>Task requirements are parsed from issue descriptions. Acceptance criteria extracted via LLM.`,
-      route_task: () => `<strong>🎯 Route Task</strong><br/><br/>Next queued task will be routed using weighted random policy across online executors.`,
-      container: () => `<strong>📦 Container Status</strong><br/><br/>Container Mode: <code>disabled</code><br/>Available: Docker, Podman<br/><br/>Enable with <code>CONTAINER_MODE=docker</code>`,
+      autobacklog: () => `<strong>:repeat: Auto Backlog:</strong> Enabled<br/><br/>New GitHub issues matching label filters will be auto-added to the kanban backlog.`,
+      requirements: () => `<strong>:ruler: Requirements:</strong><br/><br/>Task requirements are parsed from issue descriptions. Acceptance criteria extracted via LLM.`,
+      route_task: () => `<strong>:target: Route Task</strong><br/><br/>Next queued task will be routed using weighted random policy across online executors.`,
+      container: () => `<strong>:box: Container Status</strong><br/><br/>Container Mode: <code>disabled</code><br/>Available: Docker, Podman<br/><br/>Enable with <code>CONTAINER_MODE=docker</code>`,
 
-      integration_github: () => `<strong>🐙 GitHub</strong> — ✅ Connected<br/><br/>Org: <code>virtengine</code><br/>Repos: <code>bosun</code>, <code>virtengine</code><br/>Kanban: bidirectional sync`,
-      integration_telegram: () => `<strong>📱 Telegram</strong> — ✅ Bot active<br/><br/>Bot: <code>@bosun_bot</code><br/>MiniApp: enabled<br/>Sticky menu: active`,
-      integration_vscode: () => `<strong>💻 VS Code</strong> — ✅ Copilot extension linked<br/><br/>Agent: copilot-claude<br/>MCP servers: connected`,
-      integration_whatsapp: () => `<strong>📱 WhatsApp</strong> — Not configured<br/><br/>Run <code>bosun --whatsapp-auth</code> to set up.`,
+      integration_github: () => `<strong>:git: GitHub</strong> — :check: Connected<br/><br/>Org: <code>virtengine</code><br/>Repos: <code>bosun</code>, <code>virtengine</code><br/>Kanban: bidirectional sync`,
+      integration_telegram: () => `<strong>:phone: Telegram</strong> — :check: Bot active<br/><br/>Bot: <code>@bosun_bot</code><br/>MiniApp: enabled<br/>Sticky menu: active`,
+      integration_vscode: () => `<strong>:monitor: VS Code</strong> — :check: Copilot extension linked<br/><br/>Agent: copilot-claude<br/>MCP servers: connected`,
+      integration_whatsapp: () => `<strong>:phone: WhatsApp</strong> — Not configured<br/><br/>Run <code>bosun --whatsapp-auth</code> to set up.`,
     };
 
     function tasksByStatus(label, statuses) {
-      const icons = { running: '🔵', queued: '⏳', done: '✅', failed: '❌', cancelled: '⚪' };
+      const icons = { running: ':dot:', queued: ':clock:', done: ':check:', failed: ':close:', cancelled: ':dot:' };
       const filtered = TASKS.filter(t => statuses.includes(t.status));
       if (!filtered.length) return `<strong>${label}</strong><br/><br/>No tasks with this status.`;
       return `<strong>${label} Tasks</strong> (${filtered.length})<br/><br/>` +
@@ -4032,7 +4032,7 @@
     }
 
     function mpSet(n) {
-      return `<strong>⚡ Max Parallel set to <code>${n}</code></strong><br/><br/>${n === 0 ? 'Task processing effectively paused.' : `Up to ${n} tasks will run concurrently.`}`;
+      return `<strong>:zap: Max Parallel set to <code>${n}</code></strong><br/><br/>${n === 0 ? 'Task processing effectively paused.' : `Up to ${n} tasks will run concurrently.`}`;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -4171,7 +4171,7 @@
     // Fallback: if ES modules fail to load within 12s, show an error
     setTimeout(function() {
       var el = document.getElementById('boot-loader');
-      if (el) el.innerHTML = '<div style="text-align:center;padding:40px;font-family:Inter,sans-serif;color:#94a3b8"><div style="font-size:18px;margin-bottom:8px">⚠️ Failed to load</div><div style="font-size:12px;color:#64748b">Try refreshing. If this persists, run npm install in the bosun directory.</div></div>';
+      if (el) el.innerHTML = '<div style="text-align:center;padding:40px;font-family:Inter,sans-serif;color:#94a3b8"><div style="font-size:18px;margin-bottom:8px">:alert: Failed to load</div><div style="font-size:12px;color:#64748b">Try refreshing. If this persists, run npm install in the bosun directory.</div></div>';
     }, 12000);
 
   })();

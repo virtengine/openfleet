@@ -2903,7 +2903,7 @@ export async function launchOrResumeThread(
     ) {
       const remaining = MAX_THREAD_TURNS - existing.turnCount;
       console.warn(
-        `${TAG} ⚠ thread for task "${taskKey}" approaching exhaustion: ${existing.turnCount}/${MAX_THREAD_TURNS} turns (${remaining} remaining)`,
+        `${TAG} :alert: thread for task "${taskKey}" approaching exhaustion: ${existing.turnCount}/${MAX_THREAD_TURNS} turns (${remaining} remaining)`,
       );
     }
 

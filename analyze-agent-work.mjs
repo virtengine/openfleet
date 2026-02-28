@@ -706,7 +706,7 @@ async function analyzePlanning(options) {
     }
 
     if (planningIssues.length > 0) {
-      console.log("\n💡 Planning Improvements:");
+      console.log("\n:lightbulb: Planning Improvements:");
       for (const issue of planningIssues) {
         console.log(`  - ${issue}`);
       }
@@ -767,7 +767,7 @@ async function generateWeeklyReport() {
   console.log("Period: Last 7 days");
   console.log(`Generated: ${new Date().toISOString()}\n`);
 
-  console.log("📊 Overall Metrics:");
+  console.log(":chart: Overall Metrics:");
   console.log(`  Total Sessions: ${totalSessions}`);
   console.log(`  Completed: ${completedSessions} (${successRate.toFixed(1)}%)`);
   console.log(`  Total Duration: ${Math.round(totalDuration / 60)} minutes`);
@@ -776,7 +776,7 @@ async function generateWeeklyReport() {
 
   // Executor comparison
   const byExecutor = groupBy(metrics, "executor");
-  console.log("\n🤖 By Executor:");
+  console.log("\n:bot: By Executor:");
   for (const [executor, sessions] of Object.entries(byExecutor)) {
     const execSuccessRate = percentage(
       sessions,
@@ -800,13 +800,13 @@ async function generateWeeklyReport() {
     5,
   );
 
-  console.log("\n❌ Top Errors:");
+  console.log("\n:close: Top Errors:");
   for (const [fingerprint, count] of topErrors) {
     console.log(`  ${fingerprint}: ${count} occurrences`);
   }
 
   // Recommendations
-  console.log("\n💡 Recommendations:");
+  console.log("\n:lightbulb: Recommendations:");
 
   if (successRate < 70) {
     console.log("  - Success rate is below 70% - review task planning");

@@ -2863,7 +2863,7 @@ registerNodeType("action.ask_user", {
     // Send via Telegram if configured
     if ((channel === "telegram" || channel === "both") && engine.services?.telegram?.sendMessage) {
       const optionsText = options.length ? `\n\nOptions: ${options.join(" | ")}` : "";
-      await engine.services.telegram.sendMessage(undefined, `❓ **Workflow Question**\n\n${question}${optionsText}`);
+      await engine.services.telegram.sendMessage(undefined, `:help: **Workflow Question**\n\n${question}${optionsText}`);
     }
 
     // Store question for UI polling

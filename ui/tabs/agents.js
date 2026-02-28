@@ -445,7 +445,7 @@ function WorkspaceViewer({ agent, onClose }) {
               ${sessionInfo.preview &&
                 html`<div class="meta-text mt-xs">${truncate(sessionInfo.preview, 120)}</div>`}
               <button class="btn btn-ghost btn-sm mt-sm" onClick=${() => setActiveTab("stream")}>
-                ${iconText("💬 View Stream")}
+                ${iconText(":chat: View Stream")}
               </button>
             </div>
           `}
@@ -565,7 +565,7 @@ function WorkspaceViewer({ agent, onClose }) {
                   setStreamSnapshot({ events: [], fileAccess: null, capturedAt: null });
                 }
               }}>
-                ${streamPaused ? "▶ Resume" : "⏸ Pause"}
+                ${streamPaused ? ":play: Resume" : ":pause: Pause"}
               </button>
               <button
                 class="btn btn-ghost btn-sm"
@@ -618,7 +618,7 @@ function WorkspaceViewer({ agent, onClose }) {
             `}
           ${filteredEvents.length === 0 &&
             html`<div class="stream-empty">
-              <div class="stream-empty-icon">${resolveIcon("🛰")}</div>
+              <div class="stream-empty-icon">${resolveIcon(":server:")}</div>
               <div class="stream-empty-text">
                 ${toolEvents.length === 0 ? "No tool events yet" : "No events match filters"}
               </div>
@@ -751,7 +751,7 @@ function WorkspaceViewer({ agent, onClose }) {
             html`<div class="meta-text mt-xs">Paused at ${snapshotMeta}</div>`}
           ${filteredFiles.length === 0 &&
             html`<div class="stream-empty">
-              <div class="stream-empty-icon">${resolveIcon("📂")}</div>
+              <div class="stream-empty-icon">${resolveIcon(":folder:")}</div>
               <div class="stream-empty-text">
                 ${summaryFiles.length === 0 ? "No file access recorded" : "No files match filters"}
               </div>
@@ -819,7 +819,7 @@ function WorkspaceViewer({ agent, onClose }) {
             ${sessionInfo.preview &&
               html`<div class="meta-text mt-xs">${truncate(sessionInfo.preview, 140)}</div>`}
             <button class="btn btn-ghost btn-sm mt-sm" onClick=${() => setActiveTab("stream")}>
-              ${iconText("💬 View Stream")}
+              ${iconText(":chat: View Stream")}
             </button>
           </div>
         `}
@@ -902,15 +902,15 @@ function WorkspaceViewer({ agent, onClose }) {
             <button
               class="session-detail-tab ${activeTab === "stream" ? "active" : ""}"
               onClick=${() => setActiveTab("stream")}
-            >${iconText("💬 Stream")}</button>
+            >${iconText(":chat: Stream")}</button>
             <button
               class="session-detail-tab ${activeTab === "changes" ? "active" : ""}"
               onClick=${() => setActiveTab("changes")}
-            >${iconText("📝 Changes")}</button>
+            >${iconText(":edit: Changes")}</button>
             <button
               class="session-detail-tab ${activeTab === "logs" ? "active" : ""}"
               onClick=${() => setActiveTab("logs")}
-            >${iconText("📄 Logs")}</button>
+            >${iconText(":file: Logs")}</button>
           </div>
 
           <div class="workspace-body">
@@ -920,7 +920,7 @@ function WorkspaceViewer({ agent, onClose }) {
                 ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
                 : html`
                     <div class="chat-view chat-empty-state">
-                      <div class="session-empty-icon">${resolveIcon("💬")}</div>
+                      <div class="session-empty-icon">${resolveIcon(":chat:")}</div>
                       <div class="session-empty-text">No session stream available</div>
                     </div>
                   `}
@@ -938,12 +938,12 @@ function WorkspaceViewer({ agent, onClose }) {
               onInput=${(e) => setSteerInput(e.target.value)}
               onKeyDown=${(e) => { if (e.key === "Enter") { e.preventDefault(); handleSteer(); } }}
             />
-            <button class="btn btn-primary btn-sm" onClick=${handleSteer}>${resolveIcon("🎯")}</button>
+            <button class="btn btn-primary btn-sm" onClick=${handleSteer}>${resolveIcon(":target:")}</button>
             <button
               class="btn btn-danger btn-sm"
               disabled=${agent.index == null}
               onClick=${handleStop}
-            >${iconText("⛔ Stop")}</button>
+            >${iconText(":ban: Stop")}</button>
           </div>
         </div>
       </div>
@@ -1065,7 +1065,7 @@ function DispatchSection({ freeSlots, inputRef, className = "" }) {
           disabled=${!canDispatch || dispatching}
           onClick=${handleDispatch}
         >
-          ${dispatching ? "Dispatching…" : iconText("🚀 Dispatch")}
+          ${dispatching ? "Dispatching…" : iconText(":rocket: Dispatch")}
         </button>
       </div>
     <//>
@@ -1322,7 +1322,7 @@ export function AgentsTab() {
 
           <div class="fleet-quick-actions">
             <button class="btn btn-primary btn-sm" onClick=${handleFocusDispatch}>
-              ${iconText("🚀 Dispatch")}
+              ${iconText(":rocket: Dispatch")}
             </button>
             <button class="btn btn-secondary btn-sm" onClick=${handleFleetRefresh}>
               ↻ Refresh
@@ -1331,7 +1331,7 @@ export function AgentsTab() {
               class="btn btn-ghost btn-sm"
               onClick=${() => navigateTo("logs")}
             >
-              ${iconText("📄 Logs")}
+              ${iconText(":file: Logs")}
             </button>
           </div>
         <//>
@@ -1468,7 +1468,7 @@ export function AgentsTab() {
                             (slot.taskId || slot.branch || "").slice(0, 12),
                           )}
                       >
-                        ${iconText("📄 Logs")}
+                        ${iconText(":file: Logs")}
                       </button>
                       <button
                         class="btn btn-ghost btn-sm"
@@ -1477,19 +1477,19 @@ export function AgentsTab() {
                             `/steer focus on ${slot.taskTitle || slot.taskId}`,
                           )}
                       >
-                        ${iconText("🎯 Steer")}
+                        ${iconText(":target: Steer")}
                       </button>
                       <button
                         class="btn btn-ghost btn-sm"
                         onClick=${() => openWorkspace(slot, i)}
                       >
-                        ${iconText("🔍 View")}
+                        ${iconText(":search: View")}
                       </button>
                       <button
                         class="btn btn-danger btn-sm"
                         onClick=${() => handleForceStop({ ...slot, index: i })}
                       >
-                        ${iconText("⛔ Stop")}
+                        ${iconText(":ban: Stop")}
                       </button>
                     </div>
                   </div>
@@ -1639,15 +1639,15 @@ function ContextViewer({ sessionId }) {
 
   if (error) {
     return html`<div class="chat-view chat-empty-state">
-      <div class="session-empty-icon" style="color:var(--color-error)">${resolveIcon("⚠️")}</div>
+      <div class="session-empty-icon" style="color:var(--color-error)">${resolveIcon(":alert:")}</div>
       <div class="session-empty-text">${error}</div>
-      <button class="btn btn-primary btn-sm mt-sm" onClick=${() => { setLoading(true); setError(null); fetchContext(); }}>${iconText("🔄 Retry")}</button>
+      <button class="btn btn-primary btn-sm mt-sm" onClick=${() => { setLoading(true); setError(null); fetchContext(); }}>${iconText(":refresh: Retry")}</button>
     </div>`;
   }
 
   if (!ctx?.context) {
     return html`<div class="chat-view chat-empty-state">
-      <div class="session-empty-icon">${resolveIcon("📋")}</div>
+      <div class="session-empty-icon">${resolveIcon(":clipboard:")}</div>
       <div class="session-empty-text">No context available for this session</div>
     </div>`;
   }
@@ -1895,10 +1895,10 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                   </div>
                   <div class="btn-row">
                     <button class="btn btn-ghost btn-sm" onClick=${() => onOpenWorkspace(selectedEntry.slot, selectedEntry.index)}>
-                      ${iconText("🔍 Workspace")}
+                      ${iconText(":search: Workspace")}
                     </button>
                     <button class="btn btn-danger btn-sm" onClick=${() => onForceStop({ ...selectedEntry.slot, index: selectedEntry.index })}>
-                      ${iconText("⛔ Stop")}
+                      ${iconText(":ban: Stop")}
                     </button>
                   </div>
                 </div>
@@ -1906,19 +1906,19 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                   <button
                     class="session-detail-tab ${detailTab === "stream" ? "active" : ""}"
                     onClick=${() => setDetailTab("stream")}
-                  >${iconText("💬 Stream")}</button>
+                  >${iconText(":chat: Stream")}</button>
                   <button
                     class="session-detail-tab ${detailTab === "context" ? "active" : ""}"
                     onClick=${() => setDetailTab("context")}
-                  >${iconText("📋 Context")}</button>
+                  >${iconText(":clipboard: Context")}</button>
                   <button
                     class="session-detail-tab ${detailTab === "diff" ? "active" : ""}"
                     onClick=${() => setDetailTab("diff")}
-                  >${iconText("📝 Diff")}</button>
+                  >${iconText(":edit: Diff")}</button>
                   <button
                     class="session-detail-tab ${detailTab === "logs" ? "active" : ""}"
                     onClick=${() => setDetailTab("logs")}
-                  >${iconText("📄 Logs")}</button>
+                  >${iconText(":file: Logs")}</button>
                 </div>
                 <div class="fleet-session-body">
                   ${detailTab === "stream"
@@ -1926,7 +1926,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                       ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
                       : html`
                           <div class="chat-view chat-empty-state">
-                            <div class="session-empty-icon">${resolveIcon("💬")}</div>
+                            <div class="session-empty-icon">${resolveIcon(":chat:")}</div>
                             <div class="session-empty-text">No linked chat session found for this slot</div>
                           </div>
                         `
@@ -1935,7 +1935,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                         ? html`<${ContextViewer} sessionId=${contextId} />`
                         : html`
                             <div class="chat-view chat-empty-state">
-                              <div class="session-empty-icon">${resolveIcon("📋")}</div>
+                              <div class="session-empty-icon">${resolveIcon(":clipboard:")}</div>
                               <div class="session-empty-text">No context source available</div>
                             </div>
                           `
@@ -1944,7 +1944,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                           ? html`<${DiffViewer} sessionId=${sessionId} />`
                           : html`
                               <div class="chat-view chat-empty-state">
-                                <div class="session-empty-icon">${resolveIcon("📝")}</div>
+                                <div class="session-empty-icon">${resolveIcon(":edit:")}</div>
                                 <div class="session-empty-text">Diff requires a linked session</div>
                               </div>
                             `
@@ -1955,7 +1955,7 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
               `
             : html`
                 <div class="chat-view chat-empty-state">
-                  <div class="session-empty-icon">${resolveIcon("💬")}</div>
+                  <div class="session-empty-icon">${resolveIcon(":chat:")}</div>
                   <div class="session-empty-text">Select a slot to open full session view</div>
                 </div>
               `}

@@ -132,7 +132,7 @@ const INTENTIONALLY_SKIPPED_ACTIONS = new Set([
   "retry",    // Workflow :id/retry action (not a session action)
 ]);
 
-describe("demo.html ↔ ui-server.mjs API sync", () => {
+describe("demo.html :workflow: ui-server.mjs API sync", () => {
   const serverSrc = readFile("ui-server.mjs");
   const demoSrc = readFile("ui/demo.html");
 

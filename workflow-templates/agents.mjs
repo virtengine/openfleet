@@ -146,11 +146,11 @@ After completing your implementation:
     }, { x: 200, y: 1080 }),
 
     node("notify-success", "notify.telegram", "Notify Success", {
-      message: "✅ Frontend task **{{taskTitle}}** passed visual verification and is complete.",
+      message: ":check: Frontend task **{{taskTitle}}** passed visual verification and is complete.",
     }, { x: 200, y: 1200 }),
 
     node("notify-failure", "notify.telegram", "Notify Review Failed", {
-      message: "❌ Frontend task **{{taskTitle}}** failed visual verification. Review evidence in .bosun/evidence/",
+      message: ":close: Frontend task **{{taskTitle}}** failed visual verification. Review evidence in .bosun/evidence/",
     }, { x: 600, y: 1080 }),
 
     node("log-failure", "notify.log", "Log Failure", {
@@ -241,7 +241,7 @@ Provide a structured review with specific file:line references.`,
     }, { x: 400, y: 500 }),
 
     node("notify", "notify.telegram", "Post Review", {
-      message: "📝 PR review complete for {{branch}}",
+      message: ":edit: PR review complete for {{branch}}",
     }, { x: 400, y: 640 }),
   ],
   edges: [
@@ -387,7 +387,7 @@ export const AGENT_SESSION_MONITOR_TEMPLATE = {
     }, { x: 100, y: 800 }),
 
     node("alert-hung", "notify.telegram", "Alert Hung Sessions", {
-      message: "🔴 Agent session appears hung — auto-continue attempted. Check status.",
+      message: ":dot: Agent session appears hung — auto-continue attempted. Check status.",
     }, { x: 100, y: 950 }),
 
     node("all-healthy", "notify.log", "Sessions Healthy", {
@@ -531,7 +531,7 @@ Commit with message "feat: implement [feature]"`,
     }, { x: 180, y: 1320 }),
 
     node("notify-pr-failed", "notify.telegram", "Escalate Lifecycle Handoff Failure", {
-      message: "⚠️ Backend agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required.",
+      message: ":alert: Backend agent passed validation for {{taskTitle}} but failed to record Bosun PR lifecycle handoff after retries. Manual follow-up required.",
     }, { x: 420, y: 1320 }),
 
     node("set-validation-summary", "action.set_variable", "Summarize Validation Output", {
@@ -600,11 +600,11 @@ Commit with message "fix: address backend workflow validation failures"`,
     }, { x: 360, y: 1980 }),
 
     node("notify-fail", "notify.telegram", "Checks Failed", {
-      message: "⚠️ Backend agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed.",
+      message: ":alert: Backend agent: validation failed for task {{taskTitle}} even after remediation pass. Manual review needed.",
     }, { x: 820, y: 1820 }),
 
     node("notify-pr-failed-retry", "notify.telegram", "Escalate Lifecycle Failure (Retry Path)", {
-      message: "⚠️ Backend agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required.",
+      message: ":alert: Backend agent remediation passed for {{taskTitle}} but Bosun PR lifecycle handoff failed after retries. Manual follow-up required.",
     }, { x: 620, y: 1980 }),
   ],
   edges: [

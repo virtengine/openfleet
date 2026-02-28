@@ -525,7 +525,7 @@ export function ChatTab() {
             method: "POST",
             body: JSON.stringify({ command: cmdBase, args: cmdArgs }),
           });
-          const resultText = resp?.result || resp?.data || `✅ SDK command executed: ${cmdBase}`;
+          const resultText = resp?.result || resp?.data || `:check: SDK command executed: ${cmdBase}`;
           if (sessionId) {
             const { sessionMessages } = await import("../components/session-list.js");
             const now = new Date().toISOString();
@@ -549,7 +549,7 @@ export function ChatTab() {
             const msgs = sessionMessages.value || [];
             const userMsg = { id: `cmd-${Date.now()}`, role: "user", content, timestamp: now };
             const resultText = data?.content || data?.error
-              || (data?.readOnly ? `✅ ${cmdBase} — see the relevant tab for details.` : `✅ Command executed: ${cmdBase}`);
+              || (data?.readOnly ? `:check: ${cmdBase} — see the relevant tab for details.` : `:check: Command executed: ${cmdBase}`);
             const sysMsg = { id: `cmd-r-${Date.now()}`, role: "system", content: resultText, timestamp: now };
             sessionMessages.value = [...msgs, userMsg, sysMsg];
           } else {
@@ -787,7 +787,7 @@ export function ChatTab() {
               <div class="chat-shell-inner">
                 <!-- Sessions toggle: shown on mobile always; on desktop only when rail is collapsed (CSS-controlled) -->
                 <button class="session-drawer-btn session-drawer-btn-rail" onClick=${handleShowSessions}>
-                  ${iconText("☰ Sessions")}
+                  ${iconText(":menu: Sessions")}
                 </button>
                 <div class="chat-shell-title">
                   <div class="chat-shell-name">${sessionTitle}</div>
@@ -886,14 +886,14 @@ export function ChatTab() {
                 onClick=${handleSend}
                 title="Send (Enter)"
               >
-                ${resolveIcon(sending ? "⏳" : "➤")}
+                ${resolveIcon(sending ? ":clock:" : "➤")}
               </button>
             </div>
             <div class="chat-input-hint">
               <span>Shift+Enter for new line</span>
               <span>Type / for commands</span>
               ${offlineQueueSize.peek() > 0 && html`
-                <span class="chat-offline-badge">${iconText(`📤 ${offlineQueueSize.peek()} queued`)}</span>
+                <span class="chat-offline-badge">${iconText(`:upload: ${offlineQueueSize.peek()} queued`)}</span>
               `}
             </div>
           </div>

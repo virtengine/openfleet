@@ -129,13 +129,13 @@ export {
 
 /** Category metadata for UI grouping. */
 export const TEMPLATE_CATEGORIES = Object.freeze({
-  github:      { label: "GitHub",       icon: "🐙", order: 1 },
-  agents:      { label: "Agents",       icon: "🤖", order: 2 },
-  planning:    { label: "Planning",     icon: "📋", order: 3 },
-  "ci-cd":     { label: "CI / CD",      icon: "🔄", order: 4 },
-  reliability: { label: "Reliability",  icon: "🛡️", order: 5 },
-  security:    { label: "Security",     icon: "🔒", order: 6 },
-  custom:      { label: "Custom",       icon: "⚙️", order: 7 },
+  github:      { label: "GitHub",       icon: ":git:", order: 1 },
+  agents:      { label: "Agents",       icon: ":bot:", order: 2 },
+  planning:    { label: "Planning",     icon: ":clipboard:", order: 3 },
+  "ci-cd":     { label: "CI / CD",      icon: ":refresh:", order: 4 },
+  reliability: { label: "Reliability",  icon: ":shield:", order: 5 },
+  security:    { label: "Security",     icon: ":lock:", order: 6 },
+  custom:      { label: "Custom",       icon: ":settings:", order: 7 },
 });
 
 export const WORKFLOW_TEMPLATES = Object.freeze([

@@ -506,15 +506,15 @@ const apiPost = (path, body) => api(path, { method: "POST", body: JSON.stringify
 // ── Steps definition ─────────────────────────────────────────────────────────
 
 const STEPS = [
-  { id: "prerequisites", label: "Prerequisites", icon: "✅" },
-  { id: "profile", label: "Profile", icon: "👤" },
-  { id: "executors", label: "AI Executors", icon: "🤖" },
-  { id: "repos", label: "Repositories", icon: "📁" },
-  { id: "kanban", label: "Task Mgmt", icon: "📋" },
-  { id: "workflows", label: "Workflows", icon: "🧭" },
-  { id: "notifications", label: "Notifications", icon: "🔔" },
-  { id: "advanced", label: "Advanced", icon: "⚙️" },
-  { id: "review", label: "Review", icon: "🚀" },
+  { id: "prerequisites", label: "Prerequisites", icon: ":check:" },
+  { id: "profile", label: "Profile", icon: ":user:" },
+  { id: "executors", label: "AI Executors", icon: ":bot:" },
+  { id: "repos", label: "Repositories", icon: ":folder:" },
+  { id: "kanban", label: "Task Mgmt", icon: ":clipboard:" },
+  { id: "workflows", label: "Workflows", icon: ":compass:" },
+  { id: "notifications", label: "Notifications", icon: ":bell:" },
+  { id: "advanced", label: "Advanced", icon: ":settings:" },
+  { id: "review", label: "Review", icon: ":rocket:" },
 ];
 
 // ── SelectWithCustom component ───────────────────────────────────────────────
@@ -1531,7 +1531,7 @@ function App() {
       <div class="setup-container">
         <div class="step-panel">
           <div class="success-banner">
-            <div class="icon">🎉</div>
+            <div class="icon">:star:</div>
             <h2>Setup Complete!</h2>
             <p>Bosun is configured and ready to go.</p>
             <p style="margin-top:12px;font-size:0.8rem;color:var(--text-dim)">
@@ -1593,7 +1593,7 @@ function App() {
       <ul class="prereq-list">
         ${items.map((item) => {
           const statusClass = item.installed ? "ok" : item.required ? "fail" : "warn";
-          const icon = item.installed ? "✅" : item.required ? "❌" : "⚠️";
+          const icon = item.installed ? ":check:" : item.required ? ":close:" : ":alert:";
           return html`
             <li class="prereq-item ${statusClass}">
               <span class="icon">${icon}</span>
@@ -1604,7 +1604,7 @@ function App() {
         })}
         ${prereqs.gh && !prereqs.gh.authenticated && prereqs.gh.installed ? html`
           <li class="prereq-item warn">
-            <span class="icon">⚠️</span>
+            <span class="icon">:alert:</span>
             <span class="name">GitHub CLI not authenticated</span>
             <span class="version">Run: gh auth login</span>
           </li>
@@ -1655,12 +1655,12 @@ function App() {
 
     <div class="profile-cards">
       <div class="profile-card ${profile === "standard" ? "selected" : ""}" onclick=${() => setProfile("standard")}>
-        <div class="icon">⚡</div>
+        <div class="icon">:zap:</div>
         <h4>Standard</h4>
         <p>Sensible defaults with primary & backup executors. Best for most users.</p>
       </div>
       <div class="profile-card ${profile === "advanced" ? "selected" : ""}" onclick=${() => setProfile("advanced")}>
-        <div class="icon">🔧</div>
+        <div class="icon">:settings:</div>
         <h4>Advanced</h4>
         <p>Full control over executors, failover, distribution weights, and all settings.</p>
       </div>
@@ -1690,7 +1690,7 @@ function App() {
     <p class="step-desc">Configure which AI coding agents bosun will use. You can add multiple executors with weighted distribution.</p>
 
     <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;font-size:0.8rem;line-height:1.6">
-      <strong>🔐 No API key required in most cases.</strong>
+      <strong>:lock: No API key required in most cases.</strong>
       GitHub Copilot, Codex CLI, and Claude Code all support OAuth — just run
       <code style="font-family:var(--font-mono);color:var(--accent-light)">gh auth login</code>,
       <code style="font-family:var(--font-mono);color:var(--accent-light)">codex auth login</code>, or
@@ -1713,7 +1713,7 @@ function App() {
       return html`
       <div class="executor-card">
         <div class="executor-card-header">
-          <h4>${ex.enabled === false ? "⚫" : ex.role === "primary" ? "🟢" : "🔵"} Executor ${i + 1}: ${ex.name}</h4>
+          <h4>${ex.enabled === false ? ":dot:" : ex.role === "primary" ? ":dot:" : ":dot:"} Executor ${i + 1}: ${ex.name}</h4>
           ${executors.length > 1 && html`
             <button class="btn btn-sm btn-danger" onclick=${() => removeExecutor(i)}>Remove</button>
           `}
@@ -1798,7 +1798,7 @@ function App() {
                     return html`
                       <div class="connection-card">
                         <div class="connection-card-header">
-                          <span class="connection-label">${isPrimary ? "⭐ Primary" : `☁ Profile ${ci + 1}`}: ${conn.name || (isPrimary ? "default" : "(unnamed)")}</span>
+                          <span class="connection-label">${isPrimary ? ":star: Primary" : `:globe: Profile ${ci + 1}`}: ${conn.name || (isPrimary ? "default" : "(unnamed)")}</span>
                           <button class="btn btn-sm btn-danger"
                             onclick=${() => removeConnection(i, ci)}>✕ Remove</button>
                         </div>
@@ -1945,7 +1945,7 @@ function App() {
 
       ${!multiWorkspaceEnabled && html`
         <div style="background:var(--bg-input);border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:16px;font-size:0.78rem;color:var(--text-secondary)">
-          📁 Repos will be cloned into:
+          :folder: Repos will be cloned into:
           <code style="font-family:var(--font-mono);color:var(--accent-light);margin-left:4px">${cloneRoot}/${"<repo-name>"}</code>
         </div>
       `}
@@ -2211,12 +2211,12 @@ function App() {
     ${/* ── GitHub App installation callout ── */ ""}
     <div style="background:rgba(56,139,253,.07);border:1px solid rgba(56,139,253,.25);border-radius:var(--radius-sm);padding:14px 16px;margin-bottom:20px">
       <div style="display:flex;align-items:flex-start;gap:10px">
-        <span style="font-size:1.3em;line-height:1.2;flex-shrink:0">📦</span>
+        <span style="font-size:1.3em;line-height:1.2;flex-shrink:0">:box:</span>
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:0.9rem;color:var(--accent-light);margin-bottom:4px">GitHub App — Bosun[VE]</div>
           ${oauthStatus === "received"
             ? html`<div style="color:#4ade80;font-size:0.82rem">
-                ✅ GitHub App authorized!
+                :check: GitHub App authorized!
                 ${oauthInstallationId ? html` (Installation <code style="font-family:var(--font-mono)">${oauthInstallationId}</code>)` : null}
               </div>`
             : html`<div style="font-size:0.82rem;color:var(--text-secondary);line-height:1.5">
@@ -2226,7 +2226,7 @@ function App() {
                 <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                   <a href="https://github.com/apps/bosun-ve" target="_blank" rel="noopener"
                      style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:var(--accent);color:#fff;border-radius:5px;font-size:0.8rem;font-weight:600;text-decoration:none">
-                    🔗 Install from GitHub Marketplace
+                    :link: Install from GitHub Marketplace
                   </a>
                   <span style="font-size:0.75rem;color:var(--text-dim)">
                     <span class="spinner" style="width:10px;height:10px;border-width:2px;vertical-align:middle;margin-right:4px"></span>
@@ -2290,7 +2290,7 @@ function App() {
       <h2>Advanced Settings</h2>
       <p class="step-desc">Fine-tune execution, model profiles, and infrastructure. Defaults are sensible — only change what you need.</p>
 
-      <${Section} title="⚡ Execution & Distribution" defaultOpen=${true}>
+      <${Section} title=":zap: Execution & Distribution" defaultOpen=${true}>
         <div class="form-group">
           <label>Executor Mode</label>
           <select value=${executorMode} onchange=${(e) => setExecutorMode(e.target.value)}>
@@ -2368,7 +2368,7 @@ function App() {
         `}
       <//>
 
-      <${Section} title="🔀 Failover">
+      <${Section} title=":git: Failover">
         <div class="form-group">
           <label>Failover Strategy</label>
           <select value=${failoverStrategy} onchange=${(e) => setFailoverStrategy(e.target.value)}>
@@ -2397,7 +2397,7 @@ function App() {
         </div>
       <//>
 
-      <${Section} title="🧭 Workflow Engine">
+      <${Section} title=":compass: Workflow Engine">
         <div class="executor-grid">
           <div class="form-group">
             <label>Default Workflow Profile</label>
@@ -2447,7 +2447,7 @@ function App() {
         </div>
       <//>
 
-      <${Section} title="🔵 Codex Settings">
+      <${Section} title=":dot: Codex Settings">
         <div class="executor-grid">
           <div class="form-group">
             <label>Active Model Profile</label>
@@ -2534,7 +2534,7 @@ function App() {
         </div>
       <//>
 
-      <${Section} title="🟣 Copilot Settings">
+      <${Section} title=":dot: Copilot Settings">
         <div class="executor-grid">
           <div class="form-group">
             <label>Max Requests per Session</label>
@@ -2594,7 +2594,7 @@ function App() {
         </div>
       <//>
 
-      <${Section} title="🏗️ Infrastructure">
+      <${Section} title=":hammer: Infrastructure">
         <div class="form-group">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
             <input type="checkbox" checked=${containerEnabled}
@@ -2765,7 +2765,7 @@ function App() {
       `}
       ${oauthStatus === "received" && html`
         <div style="background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.35);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;font-size:0.85rem;color:#4ade80;display:flex;align-items:flex-start;gap:10px">
-          <span style="font-size:1.2em;line-height:1">✅</span>
+          <span style="font-size:1.2em;line-height:1">:check:</span>
           <div>
             <strong>GitHub App authorized!</strong>
             ${oauthInstallationId && html` Installation ID: <code style="font-family:var(--font-mono);font-size:0.8em;color:#86efac">${oauthInstallationId}</code>.`}

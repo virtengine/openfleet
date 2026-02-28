@@ -65,7 +65,7 @@ export const ERROR_RECOVERY_TEMPLATE = {
     }, { x: 90, y: 760 }),
 
     node("escalate", "notify.telegram", "Escalate to Human", {
-      message: "🚨 Task **{{taskTitle}}** failed after {{maxRetries}} attempts. Manual intervention needed.\n\nLast error: {{lastError}}",
+      message: ":alert: Task **{{taskTitle}}** failed after {{maxRetries}} attempts. Manual intervention needed.\n\nLast error: {{lastError}}",
     }, { x: 600, y: 620 }),
   ],
   edges: [
@@ -167,7 +167,7 @@ export const ANOMALY_WATCHDOG_TEMPLATE = {
     }, { x: 400, y: 550 }),
 
     node("alert-telegram", "notify.telegram", "Alert Human", {
-      message: "⚠️ Agent anomaly detected: **{{anomalyType}}**\nSession: {{sessionId}}\nTask: {{taskTitle}}\nIntervention: auto-applied\nThresholds: stall={{stallThresholdMs}}ms token={{maxTokenUsage}} maxErrors={{maxConsecutiveErrors}}",
+      message: ":alert: Agent anomaly detected: **{{anomalyType}}**\nSession: {{sessionId}}\nTask: {{taskTitle}}\nIntervention: auto-applied\nThresholds: stall={{stallThresholdMs}}ms token={{maxTokenUsage}} maxErrors={{maxConsecutiveErrors}}",
     }, { x: 400, y: 700 }),
   ],
   edges: [
@@ -334,7 +334,7 @@ export const HEALTH_CHECK_TEMPLATE = {
     }, { x: 400, y: 380 }),
 
     node("alert", "notify.telegram", "Alert Issues Found", {
-      message: "🏥 Health check found issues — run `bosun doctor` for details",
+      message: ":heart: Health check found issues — run `bosun doctor` for details",
     }, { x: 200, y: 540 }),
 
     node("all-ok", "notify.telegram", "All Healthy", {
@@ -480,7 +480,7 @@ export const TASK_FINALIZATION_GUARD_TEMPLATE = {
     }, { x: 240, y: 1040 }),
 
     node("notify-fail", "notify.telegram", "Notify Finalization Failure", {
-      message: "⚠️ Task finalization failed for **{{taskTitle}}** ({{taskId}}). Repair workflow handoff triggered.",
+      message: ":alert: Task finalization failed for **{{taskTitle}}** ({{taskId}}). Repair workflow handoff triggered.",
     }, { x: 540, y: 900 }),
   ],
   edges: [
@@ -621,12 +621,12 @@ export const TASK_REPAIR_WORKTREE_TEMPLATE = {
     }, { x: 560, y: 880 }),
 
     node("notify-success", "notify.telegram", "Notify Repair Success", {
-      message: "✅ Repair workflow recovered **{{taskTitle}}** ({{taskId}}) and moved it to inreview.",
+      message: ":check: Repair workflow recovered **{{taskTitle}}** ({{taskId}}) and moved it to inreview.",
       silent: true,
     }, { x: 250, y: 1160 }),
 
     node("notify-escalate", "notify.telegram", "Escalate Repair Failure", {
-      message: "🚨 Repair workflow could not recover **{{taskTitle}}** ({{taskId}}). Manual intervention required.",
+      message: ":alert: Repair workflow could not recover **{{taskTitle}}** ({{taskId}}). Manual intervention required.",
     }, { x: 560, y: 1020 }),
 
     node("no-worktree", "notify.log", "Missing Worktree Context", {
@@ -827,7 +827,7 @@ Output as JSON: { "severity": "...", "category": "...", "rootCause": "...", "imp
     }, { x: 400, y: 540, outputs: ["yes", "no"] }),
 
     node("create-incident-task", "action.create_task", "Create Incident Task", {
-      title: "🚨 Incident: {{incidentCategory}}",
+      title: ":alert: Incident: {{incidentCategory}}",
       description: "Auto-detected incident.\n\nEvidence: {{evidence}}\n\nClassification: {{classification}}",
       tags: ["incident", "auto-detected"],
       priority: "high",
@@ -854,7 +854,7 @@ Be conservative — prefer safe mitigations over aggressive fixes.`,
     }, { x: 250, y: 840 }),
 
     node("alert-critical", "notify.telegram", "Critical Incident Alert", {
-      message: "🚨 **CRITICAL INCIDENT**\n\nCategory: {{incidentCategory}}\nRoot cause: {{rootCause}}\n\nAgent investigating. Immediate attention may be required.",
+      message: ":alert: **CRITICAL INCIDENT**\n\nCategory: {{incidentCategory}}\nRoot cause: {{rootCause}}\n\nAgent investigating. Immediate attention may be required.",
     }, { x: 150, y: 540 }),
 
     node("alert-standard", "notify.log", "Log Incident", {

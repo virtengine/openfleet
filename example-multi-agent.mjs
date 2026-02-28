@@ -108,7 +108,7 @@ async function sendHeartbeat(issueNumber) {
   const currentState = await readSharedStateFromIssue(issueNumber);
 
   if (!currentState || currentState.ownerId !== OWNER_ID) {
-    console.log(`[${issueNumber}] ⚠ Claim lost or taken by another agent`);
+    console.log(`[${issueNumber}] :alert: Claim lost or taken by another agent`);
     return false;
   }
 
@@ -120,10 +120,10 @@ async function sendHeartbeat(issueNumber) {
   const success = await persistSharedStateToIssue(issueNumber, updatedState);
 
   if (success) {
-    console.log(`[${issueNumber}] 💓 Heartbeat sent`);
+    console.log(`[${issueNumber}] :heart: Heartbeat sent`);
     return true;
   } else {
-    console.log(`[${issueNumber}] ⚠ Heartbeat failed`);
+    console.log(`[${issueNumber}] :alert: Heartbeat failed`);
     return false;
   }
 }

@@ -1606,7 +1606,7 @@ function handleApply(body) {
 
     // ── Trust the BOSUN_HOME in every agent CLI ─────────────────────────────
     // Without this, running a codex agent from bosunHome is rejected with:
-    //   "⚠ Project config.toml files are disabled…"
+    //   ":alert: Project config.toml files are disabled…"
     // We also register bosunHome with Claude Code so it won't prompt for
     // permission when accessing the workspace directories.
 
@@ -1614,7 +1614,7 @@ function handleApply(body) {
     try {
       const trustedResult = ensureTrustedProjects([bosunHome, workspacesDir]);
       if (trustedResult.added.length > 0) {
-        console.log("  ✅ Codex: trusted bosun home directory:", trustedResult.added.join(", "));
+        console.log("  :check: Codex: trusted bosun home directory:", trustedResult.added.join(", "));
       }
     } catch (err) {
       console.warn("[setup] could not update codex trusted_projects:", err.message);
@@ -1625,7 +1625,7 @@ function handleApply(body) {
       const claudeResult = ensureClaudeAdditionalDirectory(bosunHome);
       const claudeWs = ensureClaudeAdditionalDirectory(workspacesDir);
       if (claudeResult.added || claudeWs.added) {
-        console.log("  ✅ Claude: added bosun directories to additionalDirectories");
+        console.log("  :check: Claude: added bosun directories to additionalDirectories");
       }
     } catch (err) {
       console.warn("[setup] could not update claude settings:", err.message);
@@ -1773,7 +1773,7 @@ async function handleRequest(req, res) {
           jsonResponse(res, 200, { ok: true, message: "Setup complete" });
           // Shut down server after response is sent
           setTimeout(() => {
-            console.log("\n  ✅ Setup complete — shutting down wizard server.\n");
+            console.log("\n  :check: Setup complete — shutting down wizard server.\n");
             if (callbackServer) callbackServer.close();
             server.close();
             process.exit(0);
@@ -1898,7 +1898,7 @@ async function startCallbackCatcher(setupPort) {
 </head>
 <body>
   <div class="card">
-    <div class="logo">🚀</div>
+    <div class="logo">:rocket:</div>
     <h1>Bosun GitHub App Setup</h1>
     <p>Bosun needs to be running on your machine before you complete the GitHub Marketplace installation.</p>
     <div class="step"><strong>Step 1:</strong> Open a terminal and run:<br><br><code>bosun --setup</code></div>
@@ -1929,7 +1929,7 @@ async function startCallbackCatcher(setupPort) {
 </head>
 <body>
   <div class="card">
-    <div class="icon">✅</div>
+    <div class="icon">:check:</div>
     <h1>GitHub App Authorized!</h1>
     <p>Redirecting you to the Bosun setup wizard…</p>
   </div>
@@ -1994,14 +1994,14 @@ async function startCallbackCatcher(setupPort) {
 
   try {
     await tryListen(callbackServer, CALLBACK_PORT);
-    console.log(`  📡 GitHub OAuth callback listener: http://127.0.0.1:${CALLBACK_PORT}/github/callback`);
+    console.log(`  :server: GitHub OAuth callback listener: http://127.0.0.1:${CALLBACK_PORT}/github/callback`);
     console.log(`     ↳ Keep this terminal open while installing from GitHub Marketplace.\n`);
   } catch (err) {
     if (err.code === "EADDRINUSE") {
       // Another Bosun instance (or the main UI server) is already on this port — that's fine.
-      console.log(`  ℹ️  Port ${CALLBACK_PORT} is already in use (main Bosun server may be running).\n`);
+      console.log(`  :help:  Port ${CALLBACK_PORT} is already in use (main Bosun server may be running).\n`);
     } else {
-      console.warn(`  ⚠️  Could not start OAuth callback listener on port ${CALLBACK_PORT}: ${err.message}`);
+      console.warn(`  :alert:  Could not start OAuth callback listener on port ${CALLBACK_PORT}: ${err.message}`);
     }
     callbackServer = null;
   }
@@ -2059,7 +2059,7 @@ export async function startSetupServer(options = {}) {
           actualPort = await tryListen(server, 0);
           break;
         } catch (e) {
-          console.error(`  ❌ Could not start setup server: ${e.message}`);
+          console.error(`  :close: Could not start setup server: ${e.message}`);
           process.exit(1);
         }
       }
@@ -2076,7 +2076,7 @@ export async function startSetupServer(options = {}) {
   console.log(`
   ┌──────────────────────────────────────────────────┐
   │                                                  │
-  │   🚀  Bosun Setup Wizard v${version.padEnd(25)}│
+  │   :rocket:  Bosun Setup Wizard v${version.padEnd(25)}│
   │                                                  │
   │   Open in your browser:                          │
   │   ${url.padEnd(45)}│

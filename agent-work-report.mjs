@@ -200,7 +200,7 @@ export function formatWeeklyAgentWorkReport(summary) {
       : buildWeeklyAgentWorkSummary({ metrics: [], errors: [] });
   const totals = safeSummary.totals || {};
   const lines = [
-    "📊 Weekly Agent Work Report",
+    ":chart: Weekly Agent Work Report",
     `Period: ${safeSummary.period?.startIso || "n/a"} → ${safeSummary.period?.endIso || "n/a"}`,
     `Generated: ${safeSummary.period?.generatedAtIso || new Date().toISOString()}`,
     "",

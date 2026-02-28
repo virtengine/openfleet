@@ -87,11 +87,11 @@ Limit auto-generated fix PRs to {{maxAutoFixPRs}} in this run.`,
     }, { x: 50, y: 900 }),
 
     node("alert-critical", "notify.telegram", "Alert: Critical Vuln", {
-      message: "🚨 **CRITICAL vulnerability** found in dependencies!\n\nRun `npm audit` for details. Manual review required.",
+      message: ":alert: **CRITICAL vulnerability** found in dependencies!\n\nRun `npm audit` for details. Manual review required.",
     }, { x: 350, y: 750 }),
 
     node("alert-high", "notify.telegram", "Alert: High Severity", {
-      message: "⚠️ **High severity** dependency vulnerability detected.\n\nAuto-fix changes prepared and handed off to Bosun PR lifecycle management. Please review and merge when ready.",
+      message: ":alert: **High severity** dependency vulnerability detected.\n\nAuto-fix changes prepared and handed off to Bosun PR lifecycle management. Please review and merge when ready.",
       silent: true,
     }, { x: 550, y: 750 }),
 
@@ -201,7 +201,7 @@ Respond as JSON: { "findings": [{ "type": "...", "severity": "critical|high|low"
     }, { x: 200, y: 650, outputs: ["yes", "no"] }),
 
     node("alert-secret", "notify.telegram", "Alert: Secret Exposed!", {
-      message: "🔑 **SECRET EXPOSED** in recent commits!\n\nThe secret scanner found credentials in the repository. Immediate rotation required.\n\nCheck agent output for classification details.",
+      message: ":lock: **SECRET EXPOSED** in recent commits!\n\nThe secret scanner found credentials in the repository. Immediate rotation required.\n\nCheck agent output for classification details.",
     }, { x: 100, y: 810 }),
 
     node("create-issue", "action.run_command", "Create Remediation Issue", {

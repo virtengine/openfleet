@@ -710,12 +710,12 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
     // If failing over to a different adapter, switch and init
     if (attempt > 0) {
       console.warn(
-        `[primary-agent] ⚠️ Failing over from ${adaptersToTry[attempt - 1]} to ${adapterName} (reason: ${lastError?.message || "unknown"})`,
+        `[primary-agent] :alert: Failing over from ${adaptersToTry[attempt - 1]} to ${adapterName} (reason: ${lastError?.message || "unknown"})`,
       );
       tracker.recordEvent(sessionId, {
         role: "system",
         type: "failover",
-        content: `⚠️ Agent "${adaptersToTry[attempt - 1]}" failed — switching to "${adapterName}": ${lastError?.message || "timeout/error"}`,
+        content: `:alert: Agent "${adaptersToTry[attempt - 1]}" failed — switching to "${adapterName}": ${lastError?.message || "timeout/error"}`,
         timestamp: new Date().toISOString(),
       });
       setPrimaryAgent(adapterName);
@@ -769,7 +769,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
       lastError = err;
       const isTimeout = err.message?.startsWith("AGENT_TIMEOUT");
       console.error(
-        `[primary-agent] ${isTimeout ? "⏱️ Timeout" : "❌ Error"} with ${adapterName}: ${err.message}`,
+        `[primary-agent] ${isTimeout ? ":clock: Timeout" : ":close: Error"} with ${adapterName}: ${err.message}`,
       );
 
       // If this is the last adapter, report to user
@@ -778,8 +778,8 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
           role: "system",
           type: "error",
           content: isTimeout
-            ? `⏱️ All agents timed out. The AI service may be experiencing issues. Your message was saved — please try again shortly.`
-            : `❌ Agent error: ${err.message}. Your message was saved — please try again.`,
+            ? `:clock: All agents timed out. The AI service may be experiencing issues. Your message was saved — please try again shortly.`
+            : `:close: Agent error: ${err.message}. Your message was saved — please try again.`,
           timestamp: new Date().toISOString(),
         });
       }
@@ -788,7 +788,7 @@ export async function execPrimaryPrompt(userMessage, options = {}) {
 
   // All adapters failed
   return {
-    finalResponse: `❌ All agent adapters failed. Last error: ${lastError?.message || "unknown"}`,
+    finalResponse: `:close: All agent adapters failed. Last error: ${lastError?.message || "unknown"}`,
     items: [],
     usage: null,
   };

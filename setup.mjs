@@ -217,22 +217,22 @@ function headingStep(step, label, markProgress) {
 }
 
 function check(label, ok, hint) {
-  const icon = ok ? "✅" : "❌";
+  const icon = ok ? ":check:" : ":close:";
   console.log(`  ${icon} ${label}`);
   if (!ok && hint) console.log(`     → ${hint}`);
   return ok;
 }
 
 function info(msg) {
-  console.log(`  ℹ️  ${msg}`);
+  console.log(`  :help:  ${msg}`);
 }
 
 function success(msg) {
-  console.log(`  ✅ ${msg}`);
+  console.log(`  :check: ${msg}`);
 }
 
 function warn(msg) {
-  console.log(`  ⚠️  ${msg}`);
+  console.log(`  :alert:  ${msg}`);
 }
 
 function escapeTelegramHtml(value) {
@@ -1906,6 +1906,8 @@ function normalizeSetupConfiguration({
   );
   env.VOICE_MODEL =
     env.VOICE_MODEL || "gpt-4o-realtime-preview-2024-12-17";
+  env.VOICE_VISION_MODEL =
+    env.VOICE_VISION_MODEL || "gpt-4.1-mini";
   env.VOICE_ID = normalizeEnum(
     env.VOICE_ID,
     [
@@ -1944,6 +1946,8 @@ function normalizeSetupConfiguration({
     ],
     env.PRIMARY_AGENT || "codex-sdk",
   );
+  env.AZURE_OPENAI_REALTIME_DEPLOYMENT =
+    env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-4o-realtime-preview";
 
   env.CODEX_MODEL_PROFILE = normalizeEnum(
     env.CODEX_MODEL_PROFILE,
@@ -2016,7 +2020,7 @@ function normalizeSetupConfiguration({
   env.GEMINI_TRANSPORT = normalizeEnum(
     env.GEMINI_TRANSPORT || process.env.GEMINI_TRANSPORT,
     ["sdk", "auto", "cli"],
-    "sdk",
+    "auto",
   );
 
   env.WHATSAPP_ENABLED = toBooleanEnvString(env.WHATSAPP_ENABLED, false);
@@ -3183,6 +3187,30 @@ async function main() {
         env.GEMINI_MODEL ||
         process.env.GEMINI_MODEL ||
         "gemini-2.5-pro";
+      const geminiTransportIdx = await prompt.choose(
+        "Gemini transport mode:",
+        [
+          "auto (recommended: SDK first, CLI fallback)",
+          "sdk only",
+          "cli only",
+        ],
+        0,
+      );
+      env.GEMINI_TRANSPORT =
+        geminiTransportIdx === 1
+          ? "sdk"
+          : geminiTransportIdx === 2
+            ? "cli"
+            : "auto";
+      if (env.GEMINI_TRANSPORT !== "sdk") {
+        const cliPath = await prompt.ask(
+          "Gemini CLI binary path (GEMINI_CLI_PATH, leave blank for default 'gemini')",
+          process.env.GEMINI_CLI_PATH || "",
+        );
+        if (cliPath) {
+          env.GEMINI_CLI_PATH = cliPath;
+        }
+      }
     } else {
       info("Gemini SDK not in executor preset — skipping Gemini configuration.");
     }
@@ -3200,8 +3228,14 @@ async function main() {
         env.OPENCODE_MODEL ||
         process.env.OPENCODE_MODEL ||
         "gpt-5.2-codex";
+      env.OPENCODE_TIMEOUT_MS = String(
+        toPositiveInt(
+          env.OPENCODE_TIMEOUT_MS || process.env.OPENCODE_TIMEOUT_MS || "3600000",
+          3600000,
+        ),
+      );
       info(
-        `OpenCode defaults: OPENCODE_PORT=${env.OPENCODE_PORT}, OPENCODE_MODEL=${env.OPENCODE_MODEL}`,
+        `OpenCode defaults: OPENCODE_PORT=${env.OPENCODE_PORT}, OPENCODE_MODEL=${env.OPENCODE_MODEL}, OPENCODE_TIMEOUT_MS=${env.OPENCODE_TIMEOUT_MS}`,
       );
     } else {
       info("OpenCode SDK not in executor preset — skipping OpenCode configuration.");
@@ -3234,6 +3268,14 @@ async function main() {
         "Voice ID",
         process.env.VOICE_ID || "alloy",
       );
+      env.VOICE_MODEL = await prompt.ask(
+        "Realtime voice model",
+        process.env.VOICE_MODEL || "gpt-4o-realtime-preview-2024-12-17",
+      );
+      env.VOICE_VISION_MODEL = await prompt.ask(
+        "Vision model for camera/screen analysis",
+        process.env.VOICE_VISION_MODEL || "gpt-4.1-mini",
+      );
       env.VOICE_TURN_DETECTION = await prompt.ask(
         "Turn detection (server_vad|semantic_vad|none)",
         process.env.VOICE_TURN_DETECTION || "server_vad",
@@ -3246,8 +3288,44 @@ async function main() {
         "Delegate executor (codex-sdk|copilot-sdk|claude-sdk|gemini-sdk|opencode-sdk)",
         process.env.VOICE_DELEGATE_EXECUTOR || env.PRIMARY_AGENT || "codex-sdk",
       );
-      if ((env.VOICE_PROVIDER === "openai" || env.VOICE_PROVIDER === "auto") && !env.OPENAI_REALTIME_API_KEY) {
-        env.OPENAI_REALTIME_API_KEY = process.env.OPENAI_REALTIME_API_KEY || "";
+      if (env.VOICE_PROVIDER === "openai" || env.VOICE_PROVIDER === "auto") {
+        env.OPENAI_REALTIME_API_KEY = await prompt.ask(
+          "OpenAI Realtime key (OPENAI_REALTIME_API_KEY, blank uses OPENAI_API_KEY)",
+          process.env.OPENAI_REALTIME_API_KEY || env.OPENAI_API_KEY || "",
+        );
+      }
+      if (env.VOICE_PROVIDER === "azure" || env.VOICE_PROVIDER === "auto") {
+        env.AZURE_OPENAI_REALTIME_ENDPOINT = await prompt.ask(
+          "Azure Realtime endpoint (AZURE_OPENAI_REALTIME_ENDPOINT)",
+          process.env.AZURE_OPENAI_REALTIME_ENDPOINT || process.env.AZURE_OPENAI_ENDPOINT || "",
+        );
+        env.AZURE_OPENAI_REALTIME_API_KEY = await prompt.ask(
+          "Azure Realtime key (AZURE_OPENAI_REALTIME_API_KEY, blank uses AZURE_OPENAI_API_KEY)",
+          process.env.AZURE_OPENAI_REALTIME_API_KEY || process.env.AZURE_OPENAI_API_KEY || "",
+        );
+        env.AZURE_OPENAI_REALTIME_DEPLOYMENT = await prompt.ask(
+          "Azure Realtime deployment (AZURE_OPENAI_REALTIME_DEPLOYMENT)",
+          process.env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-4o-realtime-preview",
+        );
+      }
+      if (env.VOICE_PROVIDER === "claude" && !env.ANTHROPIC_API_KEY) {
+        env.ANTHROPIC_API_KEY = await prompt.ask(
+          "Anthropic API key for Claude voice/vision fallback (ANTHROPIC_API_KEY)",
+          process.env.ANTHROPIC_API_KEY || "",
+        );
+      }
+      if (
+        env.VOICE_PROVIDER === "gemini" &&
+        !env.GEMINI_API_KEY &&
+        !env.GOOGLE_API_KEY
+      ) {
+        const geminiVoiceKey = await prompt.ask(
+          "Gemini API key for Gemini voice/vision fallback (GEMINI_API_KEY or GOOGLE_API_KEY)",
+          process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "",
+        );
+        if (geminiVoiceKey) {
+          env.GEMINI_API_KEY = geminiVoiceKey;
+        }
       }
     }
     saveSetupSnapshot(5, "AI Provider Keys", env, configJson);
@@ -3445,7 +3523,7 @@ async function main() {
                   env.PROJECT_NAME || configJson.projectName || "Unknown",
                 );
                 const testMsg =
-                  "🤖 <b>Telegram Bot Test</b>\n\n" +
+                  ":bot: <b>Telegram Bot Test</b>\n\n" +
                   "Your bosun Telegram bot is configured correctly!\n\n" +
                   `Project: ${projectLabel}\n` +
                   "Try: /status, /tasks, /help";
@@ -5329,6 +5407,7 @@ async function runNonInteractive({
   env.VOICE_PROVIDER = process.env.VOICE_PROVIDER || "auto";
   env.VOICE_MODEL =
     process.env.VOICE_MODEL || "gpt-4o-realtime-preview-2024-12-17";
+  env.VOICE_VISION_MODEL = process.env.VOICE_VISION_MODEL || "gpt-4.1-mini";
   env.OPENAI_REALTIME_API_KEY = process.env.OPENAI_REALTIME_API_KEY || "";
   env.AZURE_OPENAI_REALTIME_ENDPOINT =
     process.env.AZURE_OPENAI_REALTIME_ENDPOINT || "";
@@ -5570,7 +5649,7 @@ async function runNonInteractive({
           if (r.success) {
             info(`  ✓ Workspace repo ready: ${r.name}`);
           } else {
-            warn(`  ⚠ Workspace repo ${r.name}: ${r.error}`);
+            warn(`  :alert: Workspace repo ${r.name}: ${r.error}`);
           }
         }
         // Set BOSUN_AGENT_REPO_ROOT to workspace primary repo
@@ -5829,7 +5908,7 @@ async function writeConfigFiles({ env, configJson, repoRoot, configDir }) {
     "  ╔═══════════════════════════════════════════════════════════════╗",
   );
   console.log(
-    "  ║                    ✅ Setup Complete!                        ║",
+    "  ║                    :check: Setup Complete!                        ║",
   );
   console.log(
     "  ╚═══════════════════════════════════════════════════════════════╝",

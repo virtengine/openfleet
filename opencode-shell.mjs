@@ -328,7 +328,7 @@ function formatOpencodeEvent(event) {
       return null; // internal bookkeeping
 
     case "session.error":
-      return `❌ OpenCode error: ${p.error || p.message || "unknown"}`;
+      return `:close: OpenCode error: ${p.error || p.message || "unknown"}`;
 
     // ── Message streaming ──────────────────────────────────────────────────
     case "message.part": {
@@ -338,7 +338,7 @@ function formatOpencodeEvent(event) {
       }
       // Reasoning / thinking blocks
       if (p.type === "thinking" && p.thinking) {
-        return `💭 ${p.thinking.slice(0, 300)}`;
+        return `:u1f4ad: ${p.thinking.slice(0, 300)}`;
       }
       return null;
     }
@@ -360,31 +360,31 @@ function formatOpencodeEvent(event) {
       const tool = p.tool || "";
       if (tool.startsWith("mcp_")) {
         const [, server, ...nameParts] = tool.split("_");
-        return `🔌 MCP [${server}]: ${nameParts.join("_")}`;
+        return `:plug: MCP [${server}]: ${nameParts.join("_")}`;
       }
       if (tool === "bash" || tool === "shell" || tool === "run") {
-        return `⚡ Running: \`${p.input?.command || p.input?.cmd || tool}\``;
+        return `:zap: Running: \`${p.input?.command || p.input?.cmd || tool}\``;
       }
       if (tool === "write" || tool === "edit" || tool === "file_write") {
-        return `✏️ Writing: ${p.input?.path || p.input?.file_path || "file"}`;
+        return `:edit: Writing: ${p.input?.path || p.input?.file_path || "file"}`;
       }
       if (tool === "read" || tool === "file_read") {
-        return `📖 Reading: ${p.input?.path || p.input?.file_path || "file"}`;
+        return `:file: Reading: ${p.input?.path || p.input?.file_path || "file"}`;
       }
       if (tool === "web_search" || tool === "webSearch") {
-        return `🔍 Searching: ${p.input?.query || ""}`;
+        return `:search: Searching: ${p.input?.query || ""}`;
       }
       if (tool === "glob" || tool === "find") {
-        return `🔎 Finding: ${p.input?.pattern || p.input?.query || ""}`;
+        return `:search: Finding: ${p.input?.pattern || p.input?.query || ""}`;
       }
       // Generic tool
-      return `🔧 Tool: ${tool}`;
+      return `:settings: Tool: ${tool}`;
     }
 
     case "tool.complete": {
       const tool = p.tool || "";
       const isError = !!p.error || p.exitCode !== undefined && p.exitCode !== 0;
-      const status = isError ? "❌" : "✅";
+      const status = isError ? ":close:" : ":check:";
 
       if (tool.startsWith("mcp_")) {
         const [, server, ...nameParts] = tool.split("_");
@@ -407,12 +407,12 @@ function formatOpencodeEvent(event) {
     // ── File changes ───────────────────────────────────────────────────────
     case "file.updated":
     case "file.created": {
-      const action = type === "file.created" ? "➕" : "✏️";
+      const action = type === "file.created" ? ":plus:" : ":edit:";
       return `${action} ${p.path || p.file || "file"}`;
     }
 
     case "file.deleted":
-      return `🗑️ Deleted: ${p.path || p.file || "file"}`;
+      return `:trash: Deleted: ${p.path || p.file || "file"}`;
 
     // ── Error / completion ─────────────────────────────────────────────────
     case "prompt.completed":
@@ -421,7 +421,7 @@ function formatOpencodeEvent(event) {
 
     case "error":
     case "prompt.error":
-      return `❌ Error: ${p.message || p.error || "unknown"}`;
+      return `:close: Error: ${p.message || p.error || "unknown"}`;
 
     default:
       return null;
@@ -485,7 +485,7 @@ export async function execOpencodePrompt(userMessage, options = {}) {
   agentSdk = resolveAgentSdkConfig({ reload: true });
   if (agentSdk.primary !== "opencode") {
     return {
-      finalResponse: `❌ Agent SDK set to "${agentSdk.primary}" — OpenCode disabled.`,
+      finalResponse: `:close: Agent SDK set to "${agentSdk.primary}" — OpenCode disabled.`,
       items: [],
       usage: null,
     };
@@ -493,7 +493,7 @@ export async function execOpencodePrompt(userMessage, options = {}) {
 
   if (envFlagEnabled(process.env.OPENCODE_SDK_DISABLED)) {
     return {
-      finalResponse: "❌ OpenCode disabled via OPENCODE_SDK_DISABLED.",
+      finalResponse: ":close: OpenCode disabled via OPENCODE_SDK_DISABLED.",
       items: [],
       usage: null,
     };
@@ -501,7 +501,7 @@ export async function execOpencodePrompt(userMessage, options = {}) {
 
   if (activeTurn) {
     return {
-      finalResponse: "⏳ OpenCode agent is still executing a previous task. Please wait.",
+      finalResponse: ":clock: OpenCode agent is still executing a previous task. Please wait.",
       items: [],
       usage: null,
     };
@@ -513,7 +513,7 @@ export async function execOpencodePrompt(userMessage, options = {}) {
     const started = await ensureServerStarted();
     if (!started) {
       return {
-        finalResponse: "❌ OpenCode server could not be started. Check that the opencode binary is on PATH.",
+        finalResponse: ":close: OpenCode server could not be started. Check that the opencode binary is on PATH.",
         items: [],
         usage: null,
       };
@@ -534,7 +534,7 @@ export async function execOpencodePrompt(userMessage, options = {}) {
       serverSessionId = await getOrCreateServerSession(namedId);
     } catch (err) {
       return {
-        finalResponse: `❌ Could not establish OpenCode session: ${err.message}`,
+        finalResponse: `:close: Could not establish OpenCode session: ${err.message}`,
         items: [],
         usage: null,
       };
@@ -700,8 +700,8 @@ export async function execOpencodePrompt(userMessage, options = {}) {
           const reason = controller.signal.reason;
           const msg =
             reason === "user_stop"
-              ? "🛑 Agent stopped by user."
-              : `⏱️ Agent timed out after ${timeoutMs / 1000}s`;
+              ? ":close: Agent stopped by user."
+              : `:clock: Agent timed out after ${timeoutMs / 1000}s`;
 
           // Try to abort the server-side turn
           try {
@@ -725,7 +725,7 @@ export async function execOpencodePrompt(userMessage, options = {}) {
             continue;
           }
           return {
-            finalResponse: `❌ OpenCode: connection failed after ${MAX_STREAM_RETRIES} retries: ${err.message}`,
+            finalResponse: `:close: OpenCode: connection failed after ${MAX_STREAM_RETRIES} retries: ${err.message}`,
             items: [],
             usage: null,
           };
@@ -736,7 +736,7 @@ export async function execOpencodePrompt(userMessage, options = {}) {
     }
 
     return {
-      finalResponse: "❌ OpenCode agent failed after all retry attempts.",
+      finalResponse: ":close: OpenCode agent failed after all retry attempts.",
       items: [],
       usage: null,
     };

@@ -213,13 +213,13 @@ describe("formatRegistryDiagnostics", () => {
   it("formats errors only", () => {
     const result = formatRegistryDiagnostics(["bad registry"], []);
 
-    expect(result).toBe("❌ Registry errors:\n  • bad registry");
+    expect(result).toBe(":close: Registry errors:\n  • bad registry");
   });
 
   it("formats warnings only", () => {
     const result = formatRegistryDiagnostics([], ["missing file"]);
 
-    expect(result).toBe("⚠️ missing file");
+    expect(result).toBe(":alert: missing file");
   });
 
   it("formats errors and warnings together", () => {
@@ -229,7 +229,7 @@ describe("formatRegistryDiagnostics", () => {
     );
 
     expect(result).toBe(
-      "❌ Registry errors:\n  • bad registry\n⚠️ missing file\n⚠️ defaults applied",
+      ":close: Registry errors:\n  • bad registry\n:alert: missing file\n:alert: defaults applied",
     );
   });
 

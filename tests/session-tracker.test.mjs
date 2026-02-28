@@ -150,7 +150,7 @@ describe("session-tracker", () => {
 
     it("records plain formatted stream lines as system messages", () => {
       tracker.startSession("task-1", "Test");
-      tracker.recordEvent("task-1", "💭 Thinking about approach");
+      tracker.recordEvent("task-1", ":u1f4ad: Thinking about approach");
 
       const messages = tracker.getLastMessages("task-1");
       expect(messages).toHaveLength(1);

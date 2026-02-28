@@ -967,7 +967,7 @@ export function formatWorkspaceHealthReport(result) {
   if (result.issues.warnings.length > 0) {
     lines.push("Warnings:");
     for (const w of result.issues.warnings) {
-      lines.push(`  ⚠ ${w.message}`);
+      lines.push(`  :alert: ${w.message}`);
       if (w.fix) lines.push(`    fix: ${w.fix}`);
     }
     lines.push("");
@@ -975,7 +975,7 @@ export function formatWorkspaceHealthReport(result) {
   if (result.issues.infos.length > 0) {
     lines.push("Info:");
     for (const i of result.issues.infos) {
-      lines.push(`  ℹ ${i.message}`);
+      lines.push(`  :help: ${i.message}`);
     }
     lines.push("");
   }

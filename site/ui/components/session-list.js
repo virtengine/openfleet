@@ -522,7 +522,7 @@ function SwipeableSessionItem({
                 onClick=${handleResume}
                 title="Unarchive"
               >
-                <span class="session-action-icon">↩</span>
+                <span class="session-action-icon">:workflow:</span>
                 <span class="session-action-label">Restore</span>
               </button>
             `
@@ -532,7 +532,7 @@ function SwipeableSessionItem({
                 onClick=${handleArchive}
                 title="Archive session"
               >
-                <span class="session-action-icon">${resolveIcon("📦")}</span>
+                <span class="session-action-icon">${resolveIcon(":box:")}</span>
                 <span class="session-action-label">Archive</span>
               </button>
             `}
@@ -541,7 +541,7 @@ function SwipeableSessionItem({
           onClick=${handleDelete}
           title=${confirmDelete ? "Confirm delete" : "Delete session"}
         >
-          <span class="session-action-icon">${resolveIcon(confirmDelete ? "⚠️" : "🗑")}</span>
+          <span class="session-action-icon">${resolveIcon(confirmDelete ? ":alert:" : ":trash:")}</span>
           <span class="session-action-label">${confirmDelete ? "Sure?" : "Delete"}</span>
         </button>
       </div>
@@ -753,7 +753,7 @@ export function SessionList({
           <span class="session-list-title">Sessions</span>
         </div>
         <div class="session-empty">
-          <div class="session-empty-icon">${resolveIcon("📡")}</div>
+          <div class="session-empty-icon">${resolveIcon(":server:")}</div>
           <div class="session-empty-text">Sessions not available</div>
           <button class="btn btn-primary btn-sm" onClick=${handleRetry}>
             Retry
@@ -818,7 +818,7 @@ export function SessionList({
         ${filtered.length === 0 &&
         html`
           <div class="session-empty">
-            <div class="session-empty-icon">${resolveIcon("💬")}</div>
+            <div class="session-empty-icon">${resolveIcon(":chat:")}</div>
             <div class="session-empty-text">
               ${hasSearch ? "No matching sessions" : "No sessions yet"}
               <div class="session-empty-subtext">

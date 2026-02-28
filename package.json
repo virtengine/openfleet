@@ -97,6 +97,8 @@
     "syntax:check": "node -e \"const fs=require('fs'),path=require('path');const files=fs.readdirSync('.').filter(f=>f.endsWith('.mjs'));let fail=0;for(const f of files){try{require('child_process').execSync('node --check '+f,{stdio:'pipe'});}catch(e){console.error('Syntax error: '+f);console.error(e.stderr.toString());fail=1;}}if(fail)process.exit(1);console.log('Syntax OK: '+files.length+' files checked');\"",
     "pretest": "npm run syntax:check",
     "test": "vitest run --config vitest.config.mjs",
+    "test:voice-provider-smoke": "vitest run --config vitest.config.mjs tests/voice-provider-smoke.test.mjs",
+    "check:native-call-parity": "vitest run --config vitest.config.mjs tests/voice-provider-smoke.test.mjs tests/native-call-parity-checklist.test.mjs",
     "test:watch": "vitest",
     "preinstall": "node -e \"try{var r=require('child_process').execSync('npm ls -g codex-monitor --json --depth=0',{encoding:'utf8',stdio:['pipe','pipe','pipe']});var d=JSON.parse(r).dependencies;if(d&&d['codex-monitor']){console.log('\\n  Removing old codex-monitor package...');require('child_process').execSync('npm uninstall -g codex-monitor',{stdio:'inherit',timeout:30000});console.log('  \\u2705 Migrated to bosun. codex-monitor aliases still work.\\n')}}catch(e){}\"",
     "postinstall": "node postinstall.mjs",

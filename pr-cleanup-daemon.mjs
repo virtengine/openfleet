@@ -326,7 +326,7 @@ class PRCleanupDaemon {
     if (verified.mergeable === "MERGEABLE") {
       this.stats.conflictsResolved++;
       console.log(
-        `[pr-cleanup-daemon] ✅ Verified conflict resolution on PR #${pr.number} (mergeable=${verified.mergeable})`,
+        `[pr-cleanup-daemon] :check: Verified conflict resolution on PR #${pr.number} (mergeable=${verified.mergeable})`,
       );
       return true;
     }
@@ -347,7 +347,7 @@ class PRCleanupDaemon {
         if (verifiedLocal.mergeable === "MERGEABLE") {
           this.stats.conflictsResolved++;
           console.log(
-            `[pr-cleanup-daemon] ✅ Verified conflict resolution on PR #${pr.number} after local fallback`,
+            `[pr-cleanup-daemon] :check: Verified conflict resolution on PR #${pr.number} after local fallback`,
           );
           return true;
         }
@@ -781,7 +781,7 @@ class PRCleanupDaemon {
                 { cwd: this.repoRoot },
               );
               console.log(
-                `[pr-cleanup-daemon] ⏳ Auto-merge queued for PR #${pr.number} (CI pending)`,
+                `[pr-cleanup-daemon] :clock: Auto-merge queued for PR #${pr.number} (CI pending)`,
               );
             } catch {
               /* auto-merge may not be available */
@@ -802,7 +802,7 @@ class PRCleanupDaemon {
           await exec(`gh pr merge ${pr.number} --squash --delete-branch`, { cwd: this.repoRoot });
           this.stats.autoMerges++;
           console.log(
-            `[pr-cleanup-daemon] ✅ Auto-merged green PR #${pr.number}: ${pr.title}`,
+            `[pr-cleanup-daemon] :check: Auto-merged green PR #${pr.number}: ${pr.title}`,
           );
         } catch (err) {
           // Fallback: enable auto-merge
@@ -812,7 +812,7 @@ class PRCleanupDaemon {
               { cwd: this.repoRoot },
             );
             console.log(
-              `[pr-cleanup-daemon] ⏳ Auto-merge enabled for PR #${pr.number}`,
+              `[pr-cleanup-daemon] :clock: Auto-merge enabled for PR #${pr.number}`,
             );
           } catch {
             console.warn(
@@ -836,7 +836,7 @@ class PRCleanupDaemon {
    */
   async escalate(pr, reason, context = {}) {
     const message =
-      `⚠️ PR #${pr.number} escalated: ${reason}\n\n` +
+      `:alert: PR #${pr.number} escalated: ${reason}\n\n` +
       `Title: ${pr.title}\n` +
       `Context: ${JSON.stringify(context, null, 2)}\n\n` +
       `Manual intervention required.`;

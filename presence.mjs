@@ -286,7 +286,7 @@ export function formatPresenceSummary({ nowMs, ttlMs } = {}) {
     return "No active instances reported.";
   }
   const coordinator = selectCoordinator({ nowMs, ttlMs });
-  const lines = ["🛰️ Bosun Presence"];
+  const lines = [":server: Bosun Presence"];
   for (const entry of active) {
     const name = entry.instance_label || entry.instance_id;
     const role = entry.workspace_role || "workspace";
@@ -311,7 +311,7 @@ export function formatCoordinatorSummary({ nowMs, ttlMs } = {}) {
   const host = coordinator.host || "unknown";
   const lastSeen = coordinator.last_seen_at || coordinator.updated_at || "unknown";
   return [
-    "⭐ Coordinator",
+    ":star: Coordinator",
     `Instance: ${name}`,
     `Role: ${role}`,
     `Host: ${host}`,

@@ -55,13 +55,13 @@
   if (toggle && links) {
     toggle.addEventListener('click', () => {
       links.classList.toggle('nav__links--open');
-      toggle.textContent = links.classList.contains('nav__links--open') ? '✕' : '☰';
+      toggle.textContent = links.classList.contains('nav__links--open') ? '✕' : ':menu:';
     });
     // Close on link click
     links.querySelectorAll('a').forEach((a) => {
       a.addEventListener('click', () => {
         links.classList.remove('nav__links--open');
-        toggle.textContent = '☰';
+        toggle.textContent = ':menu:';
       });
     });
   }
@@ -586,7 +586,7 @@
     function prStateIcon(pr) {
       if (pr.merged_at) return { cls: 'merged', icon: '⇄' };
       if (pr.state === 'closed') return { cls: 'closed', icon: '✕' };
-      return { cls: 'open', icon: '⬆' };
+      return { cls: 'open', icon: ':upload:' };
     }
 
     async function fetchPRs() {
@@ -653,7 +653,7 @@
       if (/^docs/i.test(msg))    return { icon: '⬡', cls: 'commit-type--docs',    label: 'docs' };
       if (/^refactor/i.test(msg))return { icon: '⟳', cls: 'commit-type--refactor',label: 'refactor' };
       if (/^test/i.test(msg))    return { icon: '✓', cls: 'commit-type--test',    label: 'test' };
-      if (/^ci/i.test(msg))      return { icon: '⚙', cls: 'commit-type--ci',      label: 'ci' };
+      if (/^ci/i.test(msg))      return { icon: ':settings:', cls: 'commit-type--ci',      label: 'ci' };
       if (/^perf/i.test(msg))    return { icon: '▲', cls: 'commit-type--perf',    label: 'perf' };
       return { icon: '•', cls: 'commit-type--other', label: '' };
     }

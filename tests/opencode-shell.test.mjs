@@ -487,7 +487,7 @@ describe("Event formatting — formatOpencodeEvent (via onEvent)", () => {
         type: "tool.complete",
         properties: { sessionId: "X", tool: "bash", input: { command: "npm test" }, exitCode: 0, output: "passed" },
       },
-      expectContains: ["✅", "npm test"],
+      expectContains: [":check:", "npm test"],
     },
     {
       label: "tool.complete bash failure",
@@ -495,7 +495,7 @@ describe("Event formatting — formatOpencodeEvent (via onEvent)", () => {
         type: "tool.complete",
         properties: { sessionId: "X", tool: "bash", input: { command: "npm test" }, exitCode: 1 },
       },
-      expectContains: ["❌", "npm test"],
+      expectContains: [":close:", "npm test"],
     },
     {
       label: "tool.start write",
@@ -521,12 +521,12 @@ describe("Event formatting — formatOpencodeEvent (via onEvent)", () => {
     {
       label: "session.error",
       event: { type: "session.error", properties: { sessionId: "X", error: "boom" } },
-      expectContains: ["❌", "boom"],
+      expectContains: [":close:", "boom"],
     },
     {
       label: "file.created",
       event: { type: "file.created", properties: { sessionId: "X", path: "lib/new.ts" } },
-      expectContains: ["➕", "lib/new.ts"],
+      expectContains: [":plus:", "lib/new.ts"],
     },
   ];
 

@@ -77,7 +77,7 @@ export const TASK_PLANNER_TEMPLATE = {
     }, { x: 200, y: 830 }),
 
     node("notify-done", "notify.telegram", "Notify Tasks Created", {
-      message: "🗂️ Task planner created {{materialize-tasks.createdCount}} backlog tasks (skipped {{materialize-tasks.skippedCount}} duplicates).",
+      message: ":folder: Task planner created {{materialize-tasks.createdCount}} backlog tasks (skipped {{materialize-tasks.skippedCount}} duplicates).",
       silent: true,
     }, { x: 200, y: 960 }),
 
@@ -171,7 +171,7 @@ export const TASK_REPLENISH_TEMPLATE = {
     }, { x: 400, y: 570 }),
 
     node("notify", "notify.telegram", "Notify", {
-      message: "🔄 Scheduled replenishment created {{materialize-tasks.createdCount}} tasks (skipped {{materialize-tasks.skippedCount}}).",
+      message: ":refresh: Scheduled replenishment created {{materialize-tasks.createdCount}} tasks (skipped {{materialize-tasks.skippedCount}}).",
       silent: true,
     }, { x: 400, y: 700 }),
 
@@ -265,7 +265,7 @@ Format as a Telegram-friendly message with emoji headers. Include:
     }, { x: 400, y: 380 }),
 
     node("send-report", "notify.telegram", "Send Report", {
-      message: "📊 **Daily Bosun Report** ({{reportTimezone}})\n\n{{reportOutput}}",
+      message: ":chart: **Daily Bosun Report** ({{reportTimezone}})\n\n{{reportOutput}}",
     }, { x: 400, y: 540 }),
   ],
   edges: [
@@ -360,19 +360,19 @@ Analyze the following data from the past {{lookbackDays}} days:
 
 Generate a retrospective report with these sections:
 
-### 📊 Key Metrics
+### :chart: Key Metrics
 - Tasks completed vs created
 - Average task cycle time
 - PR merge rate and average review time
 - Agent success rate
 
-### ✅ What Went Well
+### :check: What Went Well
 - Highlight successful patterns and wins
 
-### ❌ What Didn't Go Well
+### :close: What Didn't Go Well
 - Identify bottlenecks and recurring issues
 
-### 🎯 Action Items
+### :target: Action Items
 For each improvement suggestion, output a line:
 ACTION: [title] | [description]
 
@@ -399,7 +399,7 @@ Only create tasks if {{createImprovementTasks}} is true.`,
     }, { x: 250, y: 830 }),
 
     node("send-report", "notify.telegram", "Send Retro Report", {
-      message: "📋 **Weekly Retrospective** (past {{lookbackDays}} days)\n\n{{retroOutput}}",
+      message: ":clipboard: **Weekly Retrospective** (past {{lookbackDays}} days)\n\n{{retroOutput}}",
     }, { x: 400, y: 980 }),
 
     node("log-no-actions", "notify.log", "No Actions Needed", {

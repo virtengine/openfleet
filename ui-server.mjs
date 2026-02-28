@@ -2629,7 +2629,7 @@ async function startTunnel(localPort) {
   // ── SECURITY: Block tunnel when auth is disabled ─────────────────────
   if (isAllowUnsafe()) {
     console.error(
-      "[telegram-ui] ⛔ REFUSING to start Cloudflare tunnel — TELEGRAM_UI_ALLOW_UNSAFE=true\n" +
+      "[telegram-ui] :ban: REFUSING to start Cloudflare tunnel — TELEGRAM_UI_ALLOW_UNSAFE=true\n" +
       "  A public tunnel with no authentication lets ANYONE on the internet\n" +
       "  control your agents, read secrets, and execute commands.\n" +
       "\n" +
@@ -7653,7 +7653,7 @@ async function handleApi(req, res, url) {
           tracker.recordEvent(sessionId, {
             role: "system",
             type: "error",
-            content: "⚠️ No agent is available to process this message. The primary agent may not be initialized — try restarting bosun or check the Logs tab for details.",
+            content: ":alert: No agent is available to process this message. The primary agent may not be initialized — try restarting bosun or check the Logs tab for details.",
             timestamp: new Date().toISOString(),
           });
           jsonResponse(res, 200, { ok: true, messageId, warning: "no_agent_available" });
@@ -8538,13 +8538,13 @@ export async function startTelegramUiServer(options = {}) {
     const tunnelActive = tunnelMode !== "disabled" && tunnelMode !== "off" && tunnelMode !== "0";
     const border = "═".repeat(68);
     console.warn(`\n╔${border}╗`);
-    console.warn(`║ ⛔  DANGER: TELEGRAM_UI_ALLOW_UNSAFE=true — ALL AUTH IS DISABLED   ║`);
+    console.warn(`║ :ban:  DANGER: TELEGRAM_UI_ALLOW_UNSAFE=true — ALL AUTH IS DISABLED   ║`);
     console.warn(`║                                                                    ║`);
     console.warn(`║  Anyone with your URL can control agents, read secrets, and        ║`);
     console.warn(`║  execute arbitrary commands on this machine.                        ║`);
     if (tunnelActive) {
       console.warn(`║                                                                    ║`);
-      console.warn(`║  🔴  TUNNEL IS ACTIVE — your UI is exposed to the PUBLIC INTERNET  ║`);
+      console.warn(`║  :dot:  TUNNEL IS ACTIVE — your UI is exposed to the PUBLIC INTERNET  ║`);
       console.warn(`║  This means ANYONE can discover your URL and take control.         ║`);
       console.warn(`║  Set TELEGRAM_UI_TUNNEL=disabled or TELEGRAM_UI_ALLOW_UNSAFE=false ║`);
     }
@@ -8608,7 +8608,7 @@ export async function startTelegramUiServer(options = {}) {
   if (firewallState) {
     if (firewallState.blocked) {
       console.warn(
-        `[telegram-ui] ⚠️  Port ${actualPort}/tcp appears BLOCKED by ${firewallState.firewall} for LAN access.`,
+        `[telegram-ui] :alert:  Port ${actualPort}/tcp appears BLOCKED by ${firewallState.firewall} for LAN access.`,
       );
       console.warn(
         `[telegram-ui] To fix, run: ${firewallState.allowCmd}`,
@@ -8624,7 +8624,7 @@ export async function startTelegramUiServer(options = {}) {
       console.log(`[telegram-ui] Telegram Mini App URL: ${tUrl}`);
       if (firewallState?.blocked) {
         console.log(
-          `[telegram-ui] ℹ️  Tunnel active — Telegram Mini App works regardless of firewall. ` +
+          `[telegram-ui] :help:  Tunnel active — Telegram Mini App works regardless of firewall. ` +
           `LAN browser access still requires port ${actualPort}/tcp to be open.`,
         );
       }

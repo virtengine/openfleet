@@ -35,7 +35,7 @@ describe("MigrationMode", () => {
   });
 });
 
-// ── Template ↔ Module Mapping ───────────────────────────────────────────────
+// ── Template :workflow: Module Mapping ───────────────────────────────────────────────
 
 describe("TEMPLATE_MODULE_MAP", () => {
   it("maps template IDs to module filenames", () => {

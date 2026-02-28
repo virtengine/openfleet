@@ -132,7 +132,7 @@ Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optio
     }, { x: 700, y: 680 }),
 
     node("do-escalate", "notify.telegram", "Escalate to Human", {
-      message: "👀 PR #{{prNumber}} needs manual review: {{decision.reason}}",
+      message: ":eye: PR #{{prNumber}} needs manual review: {{decision.reason}}",
     }, { x: 900, y: 680 }),
 
     node("action-succeeded", "condition.expression", "Action Succeeded?", {
@@ -142,7 +142,7 @@ Respond with JSON: { "action": "<choice>", "reason": "<why>", "message": "<optio
 
     node("notify-action-failed", "notify.telegram", "Escalate Action Failure", {
       message:
-        "⚠️ PR #{{prNumber}} workflow action failed after retries ({{decision.action}}). " +
+        ":alert: PR #{{prNumber}} workflow action failed after retries ({{decision.action}}). " +
         "Reason: {{decision.reason}}. Manual follow-up required.",
     }, { x: 760, y: 850 }),
 
@@ -300,7 +300,7 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
   id: "template-pr-conflict-resolver",
   name: "PR Conflict Resolver",
   description:
-    "⚠️ SUPERSEDED for bosun-managed repos — use the Bosun PR Watchdog " +
+    ":alert: SUPERSEDED for bosun-managed repos — use the Bosun PR Watchdog " +
     "(template-bosun-pr-watchdog) instead. The Watchdog consolidates conflict " +
     "resolution, CI-failure repair, diff-safety review, and merge into one " +
     "cycle with a single gh API call and a mandatory review gate before any merge. " +
@@ -413,7 +413,7 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
     }, { x: 200, y: 800 }),
 
     node("notify-fixed", "notify.telegram", "Notify Resolved", {
-      message: "🔧 PR #{{targetPrNumber}} conflict resolved — awaiting CI and Watchdog review before merge",
+      message: ":settings: PR #{{targetPrNumber}} conflict resolved — awaiting CI and Watchdog review before merge",
       silent: true,
     }, { x: 200, y: 960 }),
 
@@ -507,7 +507,7 @@ export const STALE_PR_REAPER_TEMPLATE = {
     }, { x: 200, y: 800 }),
 
     node("summary", "notify.telegram", "Summary", {
-      message: "🧹 Stale PR cleanup complete",
+      message: ":trash: Stale PR cleanup complete",
       silent: true,
     }, { x: 200, y: 950 }),
 
@@ -596,19 +596,19 @@ Generate professional release notes in the following format:
 
 # What's Changed
 
-## 🚀 Features
+## :rocket: Features
 - [list feat: commits with PR references]
 
-## 🐛 Bug Fixes
+## :bug: Bug Fixes
 - [list fix: commits with PR references]
 
-## 🔧 Improvements
+## :settings: Improvements
 - [list refactor/perf/style commits]
 
-## 📚 Documentation
+## :u1f4da: Documentation
 - [list docs: commits]
 
-## 🏗️ Internal
+## :hammer: Internal
 - [list chore/ci/build commits]
 
 Omit empty sections. Include contributor attribution. Be concise.`,
@@ -930,7 +930,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "   If (deletions > additions × {{suspiciousDeletionRatio}}) AND (deletions > {{minDestructiveDeletions}}):\n" +
         "   → This PR deletes far more than it adds — HOLD IT.\n" +
         "   → Run: gh pr edit <number> --repo <owner/repo> --add-label {{labelNeedsReview}}\n" +
-        "   → Run: gh pr comment <number> --repo <owner/repo> --body '⚠️ **Bosun Review Agent: merge held** — " +
+        "   → Run: gh pr comment <number> --repo <owner/repo> --body ':alert: **Bosun Review Agent: merge held** — " +
         "This PR deletes significantly more lines than it adds (deletions: <X>, additions: <Y>). " +
         "A human should verify this is intentional before merging.'\n" +
         "   → Do NOT merge this PR. Move to next candidate.\n\n" +
@@ -945,7 +945,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
         "   If any are pending or failing → do NOT merge (CI may still be running).\n\n" +
         "MERGE (only if ALL checks pass):\n" +
         "   gh pr merge <number> --repo <owner/repo> --{{mergeMethod}} --delete-branch\n" +
-        "   Log: ✅ Merged PR #<number> — <title>\n\n" +
+        "   Log: :check: Merged PR #<number> — <title>\n\n" +
         "STRICT RULES:\n" +
         "- NEVER merge if ANY safety check fails. When in doubt, HOLD.\n" +
         "- NEVER merge PRs without the bosun-attached label.\n" +
@@ -961,7 +961,7 @@ export const BOSUN_PR_WATCHDOG_TEMPLATE = {
 
     node("notify", "notify.telegram", "Watchdog Report", {
       message:
-        "🐕 Bosun PR Watchdog cycle complete — " +
+        ":bug: Bosun PR Watchdog cycle complete — " +
         "fix-dispatched: {{fixNeeded}} | candidates-reviewed: {{readyCandidates}}",
       silent: true,
     }, { x: 400, y: 900 }),

@@ -97,7 +97,7 @@ await executeWorkflow("my-workflow-id", { prNumber: 42 });
   "description": "...", // Multi-line description shown in the UI
   "category": "github", // github | agents | planning | ci-cd | reliability | security
   "enabled": true, // false = loaded but never triggered
-  "recommended": false, // Shown with ⭐ in the template picker
+  "recommended": false, // Shown with :star: in the template picker
   "trigger": "trigger.pr_event", // Node type string of the trigger node
 
   "variables": {
@@ -429,7 +429,7 @@ Install any template from the **Workflows → Templates** tab in the web UI. Tem
 
 ### GitHub Templates
 
-#### PR Merge Strategy ⭐ (recommended)
+#### PR Merge Strategy :star: (recommended)
 
 > `template-pr-merge-strategy`
 
@@ -461,7 +461,7 @@ Classifies each new PR by change size (S/M/L based on additions+deletions), dete
 
 ---
 
-#### PR Conflict Resolver ⭐ (recommended)
+#### PR Conflict Resolver :star: (recommended)
 
 > `template-pr-conflict-resolver`
 
@@ -908,7 +908,7 @@ Access the visual builder at **http://localhost:3456/workflows** (or your config
 6. **Install a template:** click **Templates**, browse categories, click **Install**.  
    Installed templates are editable copies — changes do not affect the original.
 7. **Enable/disable:** toggle the switch on any workflow card to pause execution without deleting.
-8. **Run now:** click the **▶ Run** button on a workflow to trigger it immediately (useful for `trigger.manual` workflows).
+8. **Run now:** click the **:play: Run** button on a workflow to trigger it immediately (useful for `trigger.manual` workflows).
 9. **Execution history:** click the clock icon to see recent runs, node timings, and per-node output.
 
 ---

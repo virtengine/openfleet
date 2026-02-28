@@ -191,7 +191,7 @@ Directory: ${ctx.worktreeDir}`);
 Based on the above context, choose ONE action:
 
 1. **merge_after_ci_pass** — Agent completed the task successfully, PR looks good, merge when CI passes.
-   Use when: Agent reports success ("✅ Task Complete"), changes match the task description, no obvious issues.
+   Use when: Agent reports success (":check: Task Complete"), changes match the task description, no obvious issues.
 
 2. **prompt** — Agent needs to do more work. Provide a specific message telling the agent what to fix.
    Use when: Task partially done, lint/test failures mentioned, missing files, incomplete implementation.
@@ -444,7 +444,7 @@ export async function analyzeMergeStrategy(ctx, opts = {}) {
 
   if (onTelegram) {
     onTelegram(
-      `🔍 Merge strategy analysis started for ${ctx.shortId}` +
+      `:search: Merge strategy analysis started for ${ctx.shortId}` +
         (ctx.taskTitle ? ` — "${ctx.taskTitle}"` : "") +
         (ctx.prNumber ? ` (PR #${ctx.prNumber})` : ""),
     );
@@ -539,16 +539,16 @@ export async function analyzeMergeStrategy(ctx, opts = {}) {
 
   // ── Notify ─────────────────────────────────────────────────
   const actionEmoji = {
-    merge_after_ci_pass: "✅",
-    prompt: "💬",
-    close_pr: "🚫",
-    re_attempt: "🔄",
-    manual_review: "👀",
-    wait: "⏳",
-    noop: "➖",
+    merge_after_ci_pass: ":check:",
+    prompt: ":chat:",
+    close_pr: ":ban:",
+    re_attempt: ":refresh:",
+    manual_review: ":eye:",
+    wait: ":clock:",
+    noop: ":close:",
   };
 
-  const emoji = actionEmoji[decision.action] || "❓";
+  const emoji = actionEmoji[decision.action] || ":help:";
   console.log(
     `[${tag}] decision: ${emoji} ${decision.action}` +
       (decision.reason ? ` — ${decision.reason.slice(0, 120)}` : "") +
@@ -671,7 +671,7 @@ export async function executeDecision(decision, ctx, opts = {}) {
       case "manual_review":
         if (onTelegram) {
           onTelegram(
-            `👀 Manual review needed for ${ctx.taskTitle || ctx.shortId}: ${decision.reason || "no reason"}`,
+            `:eye: Manual review needed for ${ctx.taskTitle || ctx.shortId}: ${decision.reason || "no reason"}`,
           );
         }
         return { executed: true, action: "manual_review", success: true };
@@ -740,7 +740,7 @@ async function executePromptAction(decision, ctx, execOpts) {
 
   if (onTelegram) {
     onTelegram(
-      `💬 ${hasLiveThread ? "Resuming" : "Starting"} agent for ${ctx.taskTitle || ctx.shortId}: ${fixMessage.slice(0, 200)}`,
+      `:chat: ${hasLiveThread ? "Resuming" : "Starting"} agent for ${ctx.taskTitle || ctx.shortId}: ${fixMessage.slice(0, 200)}`,
     );
   }
 
@@ -762,18 +762,18 @@ async function executePromptAction(decision, ctx, execOpts) {
 
     if (result.success) {
       console.log(
-        `[${tag}] ✅ agent ${result.resumed ? "resumed" : "launched"} successfully for fix`,
+        `[${tag}] :check: agent ${result.resumed ? "resumed" : "launched"} successfully for fix`,
       );
       if (onTelegram) {
         onTelegram(
-          `✅ Agent ${result.resumed ? "resumed" : "completed"} fix for ${ctx.taskTitle || ctx.shortId}`,
+          `:check: Agent ${result.resumed ? "resumed" : "completed"} fix for ${ctx.taskTitle || ctx.shortId}`,
         );
       }
     } else {
-      console.warn(`[${tag}] ❌ agent fix failed: ${result.error}`);
+      console.warn(`[${tag}] :close: agent fix failed: ${result.error}`);
       if (onTelegram) {
         onTelegram(
-          `❌ Agent fix failed for ${ctx.taskTitle || ctx.shortId}: ${result.error?.slice(0, 200)}`,
+          `:close: Agent fix failed for ${ctx.taskTitle || ctx.shortId}: ${result.error?.slice(0, 200)}`,
         );
       }
     }
@@ -890,7 +890,7 @@ async function executeReAttemptAction(decision, ctx, execOpts) {
 
   if (onTelegram) {
     onTelegram(
-      `🔄 Re-attempting task "${ctx.taskTitle || ctx.shortId}": ${reason.slice(0, 200)}`,
+      `:refresh: Re-attempting task "${ctx.taskTitle || ctx.shortId}": ${reason.slice(0, 200)}`,
     );
   }
 
@@ -912,20 +912,20 @@ async function executeReAttemptAction(decision, ctx, execOpts) {
 
     if (result.success) {
       console.log(
-        `[${tag}] ✅ re-attempt succeeded after ${result.attempts} attempt(s)`,
+        `[${tag}] :check: re-attempt succeeded after ${result.attempts} attempt(s)`,
       );
       if (onTelegram) {
         onTelegram(
-          `✅ Re-attempt succeeded for "${ctx.taskTitle || ctx.shortId}" (${result.attempts} attempt(s))`,
+          `:check: Re-attempt succeeded for "${ctx.taskTitle || ctx.shortId}" (${result.attempts} attempt(s))`,
         );
       }
     } else {
       console.warn(
-        `[${tag}] ❌ re-attempt failed after ${result.attempts} attempt(s): ${result.error}`,
+        `[${tag}] :close: re-attempt failed after ${result.attempts} attempt(s): ${result.error}`,
       );
       if (onTelegram) {
         onTelegram(
-          `❌ Re-attempt failed for "${ctx.taskTitle || ctx.shortId}" after ${result.attempts} attempt(s): ${result.error?.slice(0, 200)}`,
+          `:close: Re-attempt failed for "${ctx.taskTitle || ctx.shortId}" after ${result.attempts} attempt(s): ${result.error?.slice(0, 200)}`,
         );
       }
     }
@@ -1007,7 +1007,7 @@ async function executeMergeAction(decision, ctx, execOpts) {
         );
         if (onTelegram) {
           onTelegram(
-            `⛔ Merge blocked for ${ctx.taskTitle || `PR #${ctx.prNumber || "unknown"}`}: ${reason}`,
+            `:ban: Merge blocked for ${ctx.taskTitle || `PR #${ctx.prNumber || "unknown"}`}: ${reason}`,
           );
         }
         return {
@@ -1050,7 +1050,7 @@ async function executeMergeAction(decision, ctx, execOpts) {
 
     if (onTelegram) {
       onTelegram(
-        `✅ Auto-merge enabled for PR #${ctx.prNumber} "${ctx.prTitle || ctx.taskTitle || ""}"`,
+        `:check: Auto-merge enabled for PR #${ctx.prNumber} "${ctx.prTitle || ctx.taskTitle || ""}"`,
       );
     }
 
@@ -1066,7 +1066,7 @@ async function executeMergeAction(decision, ctx, execOpts) {
 
     if (onTelegram) {
       onTelegram(
-        `⚠️ Auto-merge failed for PR #${ctx.prNumber}: ${err.message?.slice(0, 200)}. Will retry on next cycle.`,
+        `:alert: Auto-merge failed for PR #${ctx.prNumber}: ${err.message?.slice(0, 200)}. Will retry on next cycle.`,
       );
     }
 
@@ -1116,7 +1116,7 @@ async function executeCloseAction(decision, ctx, execOpts) {
 
     if (onTelegram) {
       onTelegram(
-        `🚫 Closed PR #${ctx.prNumber}: ${decision.reason || "strategy decision"}`,
+        `:ban: Closed PR #${ctx.prNumber}: ${decision.reason || "strategy decision"}`,
       );
     }
 

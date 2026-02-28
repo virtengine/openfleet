@@ -173,7 +173,7 @@ _GitHub Automation_
 | --- | --- | --- |
 | PR Merge Strategy | `template-pr-merge-strategy` | Validates and merges PRs using configurable strategy (squash/merge/rebase). |
 | PR Triage & Labels | `template-pr-triage` | Auto-labels new PRs by type, size, and touched paths. |
-| PR Conflict Resolver | `template-pr-conflict-resolver` | Resolves merge conflicts on open PRs. ⚠️ **Superseded for bosun-managed repos** — use the Bosun PR Watchdog instead. |
+| PR Conflict Resolver | `template-pr-conflict-resolver` | Resolves merge conflicts on open PRs. :alert: **Superseded for bosun-managed repos** — use the Bosun PR Watchdog instead. |
 | Stale PR Reaper | `template-stale-pr-reaper` | Closes or warns PRs that have been open beyond a stale threshold. |
 | **Bosun PR Watchdog** | `template-bosun-pr-watchdog` | **(New)** Scheduled CI poller for bosun-attached PRs. Makes a single `gh` API call per cycle to classify all open bosun PRs, labels CI failures / conflicts with `bosun-needs-fix`, sends merge candidates through a mandatory review gate (checks diff stats to prevent destructive merges), then merges. Never touches external-contributor PRs. Default interval: 5 min. Set `enabled: false` to disable. |
 
