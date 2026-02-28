@@ -152,6 +152,7 @@
     "diff-stats.mjs",
     "desktop/main.mjs",
     "desktop/launch.mjs",
+    "desktop/desktop-shortcuts.mjs",
     "desktop/preload.mjs",
     "desktop/package.json",
     "desktop-shortcut.mjs",
