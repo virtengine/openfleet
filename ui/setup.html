@@ -720,6 +720,11 @@ function App() {
   const [whatsappEnabled, setWhatsappEnabled] = useState(false);
   const [telegramIntervalMin, setTelegramIntervalMin] = useState(10);
   const [orchestratorScript, setOrchestratorScript] = useState("");
+  // Launch / startup
+  const [autoStartEnabled, setAutoStartEnabled] = useState(false);
+  const [desktopShortcutEnabled, setDesktopShortcutEnabled] = useState(false);
+  const [startupInstalling, setStartupInstalling] = useState(false);
+  const [shortcutInstalling, setShortcutInstalling] = useState(false);
   // Voice assistant
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [voiceProvider, setVoiceProvider] = useState("auto");
@@ -1019,6 +1024,27 @@ function App() {
       if (existingWorkflowEngine.maxConcurrentBranches != null) {
         setWorkflowMaxConcurrentBranches(Number(existingWorkflowEngine.maxConcurrentBranches) || 8);
       }
+
+      // ── Pre-fill orchestration/failover/kanban from existing JSON config ──
+      const cfg = statusData.existingConfig || {};
+      if (cfg.distribution) { setExecutorDistribution(cfg.distribution); }
+      if (cfg.executorMode) { setExecutorMode(cfg.executorMode); }
+      if (cfg.primaryAgent) { setPrimaryAgent(cfg.primaryAgent); }
+      if (cfg.projectRequirementsProfile) { setProjectRequirementsProfile(cfg.projectRequirementsProfile); }
+      if (cfg.internalReplenish) {
+        if (cfg.internalReplenish.enabled != null) { setInternalReplenishEnabled(Boolean(cfg.internalReplenish.enabled)); }
+        if (cfg.internalReplenish.minNewTasks != null) { setInternalReplenishMin(Number(cfg.internalReplenish.minNewTasks) || 1); }
+        if (cfg.internalReplenish.maxNewTasks != null) { setInternalReplenishMax(Number(cfg.internalReplenish.maxNewTasks) || 2); }
+      }
+      const cfgKanban = cfg.kanban || {};
+      if (cfgKanban.backend) { setKanbanBackend(cfgKanban.backend); }
+      if (cfgKanban.syncPolicy) { setKanbanSyncPolicy(cfgKanban.syncPolicy); }
+      const cfgFailover = cfg.failover || {};
+      if (cfgFailover.strategy) { setFailoverStrategy(cfgFailover.strategy); }
+      if (cfgFailover.maxRetries != null) { setMaxRetries(Number(cfgFailover.maxRetries) || 3); }
+      if (cfgFailover.cooldownMinutes != null) { setFailoverCooldownMinutes(Number(cfgFailover.cooldownMinutes) || 5); }
+      if (cfgFailover.disableOnConsecutiveFailures != null) { setFailoverDisableOnConsecutive(Number(cfgFailover.disableOnConsecutiveFailures) || 3); }
+
       if (d.bosunHome)       setBosunHome(d.bosunHome);
       if (d.workspacesDir)   setWorkspacesDir(d.workspacesDir);
       if (d.voiceEnabled !== undefined) { setVoiceEnabled(d.voiceEnabled !== false); }
@@ -1261,6 +1287,18 @@ function App() {
         } catch { /* ignore parse errors */ }
       }
       if (envLoaded) setLoadedFromEnv(true);
+
+      // ── Detect existing GitHub OAuth from saved auth state ────────────────
+      if (statusData.githubOAuth?.connected) {
+        setOauthStatus("received");
+        if (statusData.githubOAuth.installationIds?.length > 0) {
+          setOauthInstallationId(String(statusData.githubOAuth.installationIds[0]));
+        }
+      }
+
+      // ── Pre-fill startup/shortcut status ──────────────────────────────────
+      if (statusData.startupStatus?.installed) { setAutoStartEnabled(true); }
+      if (statusData.desktopShortcutStatus?.installed) { setDesktopShortcutEnabled(true); }
 
       setLoading(false);
     }).catch((err) => {
@@ -2487,6 +2525,7 @@ function App() {
           ${oauthStatus === "received"
             ? html`<div style="color:#4ade80;font-size:0.82rem">
                 ${iconText(":check: GitHub App authorized!")}
+                ${status?.githubOAuth?.user ? html` as <strong>${status.githubOAuth.user}</strong>` : ""}
                 ${oauthInstallationId ? html` (Installation <code style="font-family:var(--font-mono)">${oauthInstallationId}</code>)` : null}
               </div>`
             : html`<div style="font-size:0.82rem;color:var(--text-secondary);line-height:1.5">
@@ -3111,6 +3150,62 @@ function App() {
         </div>
       <//>
 
+      <${Section} title="🚀 Launch & Startup">
+        <p class="hint" style="margin-top:0;margin-bottom:16px">
+          Configure whether bosun starts automatically and whether a desktop shortcut is created.
+          ${status?.startupStatus?.methodName ? html` Platform method: <strong>${status.startupStatus.methodName}</strong>.` : ""}
+        </p>
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${autoStartEnabled}
+              onchange=${async (e) => {
+                const checked = e.target.checked;
+                setAutoStartEnabled(checked);
+                setStartupInstalling(true);
+                try {
+                  const r = await apiPost(checked ? "install-startup" : "remove-startup", {});
+                  if (!r.ok) { setAutoStartEnabled(!checked); setError(r.error || "Failed to toggle startup service"); }
+                } catch (err) { setAutoStartEnabled(!checked); setError(err.message); }
+                setStartupInstalling(false);
+              }}
+              disabled=${startupInstalling}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Start bosun automatically on login
+          </label>
+          <div class="hint">
+            ${autoStartEnabled
+              ? "Bosun will launch automatically when you log in."
+              : "Bosun will not start on login — you'll need to launch it manually."}
+            ${startupInstalling ? " (applying…)" : ""}
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${desktopShortcutEnabled}
+              onchange=${async (e) => {
+                const checked = e.target.checked;
+                setDesktopShortcutEnabled(checked);
+                setShortcutInstalling(true);
+                try {
+                  const r = await apiPost(checked ? "install-desktop-shortcut" : "remove-desktop-shortcut", {});
+                  if (!r.ok) { setDesktopShortcutEnabled(!checked); setError(r.error || "Failed to toggle desktop shortcut"); }
+                } catch (err) { setDesktopShortcutEnabled(!checked); setError(err.message); }
+                setShortcutInstalling(false);
+              }}
+              disabled=${shortcutInstalling}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Create desktop / Start Menu shortcut
+          </label>
+          <div class="hint">
+            ${desktopShortcutEnabled
+              ? "A shortcut to the bosun desktop portal will be created."
+              : "No desktop shortcut will be created."}
+            ${shortcutInstalling ? " (applying…)" : ""}
+            ${status?.desktopShortcutStatus?.methodName ? html` Method: <strong>${status.desktopShortcutStatus.methodName}</strong>.` : ""}
+          </div>
+        </div>
+      <//>
+
       <div class="nav-buttons">
         <button class="btn" onclick=${goPrev}>← Back</button>
         <button class="btn btn-primary" onclick=${goNext}>Continue →</button>
@@ -3189,9 +3284,13 @@ function App() {
             <tr><th>Workflow Stuck Threshold (ms)</th><td>${workflowRunStuckThresholdMs}</td></tr>
             <tr><th>Workflow Run History</th><td>${workflowMaxPersistedRuns}</td></tr>
             <tr><th>Workflow Parallel Branches</th><td>${workflowMaxConcurrentBranches}</td></tr>
+            <tr><th>Auto-Start on Login</th><td>${autoStartEnabled ? "Enabled" : "Disabled"}</td></tr>
+            <tr><th>Desktop Shortcut</th><td>${desktopShortcutEnabled ? "Installed" : "Not installed"}</td></tr>
           ` : html`
             <tr><th>Max Parallel</th><td>${maxParallel}</td></tr>
             <tr><th>Failover Strategy</th><td>${failoverStrategy}</td></tr>
+            <tr><th>Auto-Start on Login</th><td>${autoStartEnabled ? "Enabled" : "Disabled"}</td></tr>
+            <tr><th>Desktop Shortcut</th><td>${desktopShortcutEnabled ? "Installed" : "Not installed"}</td></tr>
           `}
         </tbody>
       </table>
@@ -3247,6 +3346,7 @@ function App() {
           <span style="font-size:1.2em;line-height:1">${iconText(":check:")}</span>
           <div>
             <strong>GitHub App authorized!</strong>
+            ${status?.githubOAuth?.user ? html` as <strong>${status.githubOAuth.user}</strong>.` : ""}
             ${oauthInstallationId && html` Installation ID: <code style="font-family:var(--font-mono);font-size:0.8em;color:#86efac">${oauthInstallationId}</code>.`}
             ${" "}Complete the remaining steps to finish configuration.
           </div>
