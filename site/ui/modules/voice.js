@@ -38,8 +38,8 @@ function injectVoiceStyles() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   border: 1px solid rgba(255,255,255,0.10);
   background: var(--tg-theme-secondary-bg-color, #1e1e2e);
@@ -49,9 +49,15 @@ function injectVoiceStyles() {
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
   -webkit-tap-highlight-color: transparent;
   padding: 0;
-  font-size: 15px;
+  box-sizing: border-box;
+  font-size: 0;
   line-height: 1;
   user-select: none;
+}
+.mic-btn svg {
+  width: 16px;
+  height: 16px;
+  display: block;
 }
 .mic-btn:hover:not(:disabled) {
   background: rgba(255,255,255,0.06);
@@ -74,9 +80,12 @@ function injectVoiceStyles() {
   50%       { box-shadow: 0 0 0 6px rgba(239,68,68,0.06); }
 }
 .mic-btn-sm {
-  width: 26px;
-  height: 26px;
-  font-size: 13px;
+  width: 24px;
+  height: 24px;
+}
+.mic-btn-sm svg {
+  width: 12px;
+  height: 12px;
 }
 .mic-btn-inline {
   position: absolute;
