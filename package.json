@@ -223,6 +223,7 @@
     "vk-error-resolver.mjs",
     "vk-log-stream.mjs",
     "voice-auth-manager.mjs",
+    "voice-action-dispatcher.mjs",
     "voice-agents-sdk.mjs",
     "voice-relay.mjs",
     "voice-tools.mjs",

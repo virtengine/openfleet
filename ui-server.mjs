@@ -9564,6 +9564,94 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // POST /api/voice/dispatch — Execute a voice action intent (direct JavaScript, no MCP)
+  if (path === "/api/voice/dispatch" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const action = String(body?.action || "").trim();
+      if (!action) {
+        jsonResponse(res, 400, { ok: false, error: "action is required" });
+        return;
+      }
+      const context = {
+        sessionId: String(body?.sessionId || "").trim() || undefined,
+        executor: String(body?.executor || "").trim() || undefined,
+        mode: String(body?.mode || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
+      const { dispatchVoiceActionIntent } = await import("./voice-relay.mjs");
+      const result = await dispatchVoiceActionIntent(
+        { action, params: body?.params || {}, id: body?.id || undefined },
+        context,
+      );
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/dispatch-batch — Execute multiple voice action intents
+  if (path === "/api/voice/dispatch-batch" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const intents = Array.isArray(body?.actions) ? body.actions : [];
+      if (!intents.length) {
+        jsonResponse(res, 400, { ok: false, error: "actions array is required" });
+        return;
+      }
+      const context = {
+        sessionId: String(body?.sessionId || "").trim() || undefined,
+        executor: String(body?.executor || "").trim() || undefined,
+        mode: String(body?.mode || "").trim() || undefined,
+        model: String(body?.model || "").trim() || undefined,
+      };
+      const { dispatchVoiceActionIntents } = await import("./voice-relay.mjs");
+      const results = await dispatchVoiceActionIntents(intents, context);
+      jsonResponse(res, 200, { ok: true, results });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // GET /api/voice/actions — List all available voice actions
+  if (path === "/api/voice/actions" && req.method === "GET") {
+    try {
+      const { listVoiceActions } = await import("./voice-relay.mjs");
+      const actions = await listVoiceActions();
+      jsonResponse(res, 200, { ok: true, actions });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // GET /api/voice/prompt — Get the full voice agent prompt with action manifest
+  if (path === "/api/voice/prompt" && req.method === "GET") {
+    try {
+      const compact = url.searchParams?.get("compact") === "true";
+      const { buildVoiceAgentPrompt } = await import("./voice-relay.mjs");
+      const prompt = await buildVoiceAgentPrompt({ compact });
+      jsonResponse(res, 200, { ok: true, prompt });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // GET /api/voice/action-manifest — Get the action manifest for prompt injection
+  if (path === "/api/voice/action-manifest" && req.method === "GET") {
+    try {
+      const { getVoiceActionManifest } = await import("./voice-relay.mjs");
+      const manifest = await getVoiceActionManifest();
+      jsonResponse(res, 200, { ok: true, manifest });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   jsonResponse(res, 404, { ok: false, error: "Unknown API endpoint" });
 }
 

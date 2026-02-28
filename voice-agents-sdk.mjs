@@ -198,9 +198,26 @@ You help developers manage tasks, steer coding agents, monitor builds, and navig
 Be concise and conversational. When users ask about code or tasks, use the available tools.
 For complex operations like writing code or creating PRs, delegate to the appropriate agent.`;
 
+  // If caller provided enrichInstructions, attempt to inject the action manifest
+  let enrichedInstructions = instructions;
+  if (options.enrichInstructions !== false) {
+    try {
+      const { buildVoiceAgentPrompt } = await import("./voice-relay.mjs");
+      enrichedInstructions = await buildVoiceAgentPrompt({
+        compact: options.compact || false,
+        customInstructions: options.instructions || undefined,
+      });
+    } catch {
+      // Fall back to base instructions
+    }
+  }
+  if (!enrichedInstructions || !enrichedInstructions.trim()) {
+    enrichedInstructions = instructions;
+  }
+
   const agent = new RealtimeAgent({
     name: options.name || "Bosun Voice Agent",
-    instructions,
+    instructions: enrichedInstructions,
     tools: options.tools || [],
     handoffs: options.handoffs || [],
   });
@@ -345,6 +362,23 @@ export async function createGeminiLiveSession(options = {}) {
 You help developers manage tasks, steer coding agents, monitor builds, and navigate the workspace.
 Be concise and conversational.`;
 
+  // Enrich with action manifest for Gemini too
+  let enrichedInstructions = instructions;
+  if (options.enrichInstructions !== false) {
+    try {
+      const { buildVoiceAgentPrompt } = await import("./voice-relay.mjs");
+      enrichedInstructions = await buildVoiceAgentPrompt({
+        compact: options.compact || false,
+        customInstructions: options.instructions || undefined,
+      });
+    } catch {
+      // Fall back to base instructions
+    }
+  }
+  if (!enrichedInstructions || !enrichedInstructions.trim()) {
+    enrichedInstructions = instructions;
+  }
+
   const GenAIClient = genai.GoogleGenAI || genai.GoogleGenerativeAI || genai.default;
   if (!GenAIClient) {
     throw new Error("Could not resolve GoogleGenAI client constructor from @google/genai");
@@ -361,7 +395,7 @@ Be concise and conversational.`;
 
   const liveConfig = {
     responseModalities: ["AUDIO"],
-    systemInstruction: instructions,
+    systemInstruction: enrichedInstructions,
     ...(toolDeclarations.length > 0
       ? { tools: [{ functionDeclarations: toolDeclarations }] }
       : {}),

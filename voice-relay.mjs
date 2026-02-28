@@ -6,6 +6,7 @@
  *   - Azure OpenAI Realtime API (WebRTC) — API key + endpoint
  *   - Claude/Gemini provider mode (Tier 2 speech fallback + provider vision)
  *   - Tier 2 fallback (browser STT → executor → browser TTS)
+ *   - Direct JavaScript action dispatch (voice model returns JSON, Bosun executes)
  *
  * @module voice-relay
  */
@@ -1077,3 +1078,117 @@ export function getRealtimeConnectionInfo() {
     model,
   };
 }
+
+// ── Voice action dispatch (direct JavaScript, no MCP bridge) ────────────────
+
+/**
+ * Dispatch a voice action intent through the action dispatcher.
+ * The voice model returns JSON action objects; Bosun processes them
+ * directly via JavaScript and returns structured results.
+ *
+ * @param {Object} intent — { action, params, id? }
+ * @param {Object} context — { sessionId, executor, mode, model }
+ * @returns {Promise<Object>} Structured result
+ */
+export async function dispatchVoiceActionIntent(intent, context = {}) {
+  try {
+    const { dispatchVoiceAction } = await import("./voice-action-dispatcher.mjs");
+    return await dispatchVoiceAction(intent, context);
+  } catch (err) {
+    console.error("[voice-relay] action dispatch error:", err.message);
+    return {
+      ok: false,
+      action: intent?.action || "",
+      data: null,
+      error: err.message,
+      durationMs: 0,
+    };
+  }
+}
+
+/**
+ * Dispatch multiple voice action intents.
+ * @param {Array} intents
+ * @param {Object} context
+ * @returns {Promise<Array>}
+ */
+export async function dispatchVoiceActionIntents(intents, context = {}) {
+  try {
+    const { dispatchVoiceActions } = await import("./voice-action-dispatcher.mjs");
+    return await dispatchVoiceActions(intents, context);
+  } catch (err) {
+    console.error("[voice-relay] batch action dispatch error:", err.message);
+    return [];
+  }
+}
+
+/**
+ * Get the action manifest for voice prompt injection.
+ * @returns {string}
+ */
+export async function getVoiceActionManifest() {
+  try {
+    const { getVoiceActionPromptSection } = await import("./voice-action-dispatcher.mjs");
+    return getVoiceActionPromptSection();
+  } catch (err) {
+    console.error("[voice-relay] action manifest error:", err.message);
+    return "";
+  }
+}
+
+/**
+ * List all available voice actions.
+ * @returns {Promise<string[]>}
+ */
+export async function listVoiceActions() {
+  try {
+    const { listAvailableActions } = await import("./voice-action-dispatcher.mjs");
+    return listAvailableActions();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Build the full voice agent prompt by resolving the voice prompt template
+ * and injecting the action manifest.
+ *
+ * @param {Object} options — { compact?, customInstructions? }
+ * @returns {Promise<string>}
+ */
+export async function buildVoiceAgentPrompt(options = {}) {
+  const cfg = getVoiceConfig();
+  let baseInstructions = cfg.instructions || "";
+
+  // Try to load the customizable voice prompt from the prompt library
+  try {
+    const { resolveAgentPrompts, renderPromptTemplate, getDefaultPromptTemplate } = await import("./agent-prompts.mjs");
+    const promptKey = options.compact ? "voiceAgentCompact" : "voiceAgent";
+
+    // Try workspace prompt first, fall back to default
+    let template = "";
+    try {
+      const resolved = resolveAgentPrompts(null, process.cwd(), {});
+      template = resolved.prompts?.[promptKey] || "";
+    } catch {
+      template = getDefaultPromptTemplate(promptKey) || "";
+    }
+
+    if (template) {
+      const manifest = await getVoiceActionManifest();
+      baseInstructions = renderPromptTemplate(template, {
+        VOICE_ACTION_MANIFEST: manifest,
+      });
+    }
+  } catch {
+    // Fall back to config instructions
+  }
+
+  // Allow custom instructions override
+  if (options.customInstructions) {
+    baseInstructions = String(options.customInstructions);
+  }
+
+  return baseInstructions;
+}
+
