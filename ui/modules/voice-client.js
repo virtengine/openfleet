@@ -17,6 +17,7 @@ export const voiceResponse = signal(""); // current assistant response text
 export const voiceError = signal(null);
 export const voiceToolCalls = signal([]); // active tool calls
 export const voiceSessionId = signal(null);
+export const voiceBoundSessionId = signal(null);
 export const voiceDuration = signal(0); // seconds connected
 
 export const isVoiceActive = computed(() =>
@@ -33,10 +34,47 @@ let _reconnectTimer = null;    // 28-min reconnect timer
 let _durationTimer = null;     // Duration counter
 let _sessionStartTime = 0;
 let _eventHandlers = new Map();
+let _callContext = {
+  sessionId: null,
+  executor: null,
+  mode: null,
+  model: null,
+};
 
 const RECONNECT_AT_MS = 28 * 60 * 1000; // 28 minutes
 const MAX_RECONNECT_ATTEMPTS = 3;
 let _reconnectAttempts = 0;
+
+function _normalizeCallContext(options = {}) {
+  const sessionId = String(options?.sessionId || "").trim() || null;
+  const executor = String(options?.executor || "").trim() || null;
+  const mode = String(options?.mode || "").trim() || null;
+  const model = String(options?.model || "").trim() || null;
+  return { sessionId, executor, mode, model };
+}
+
+async function _recordVoiceTranscript(role, content, eventType = "") {
+  const sessionId = String(_callContext?.sessionId || voiceSessionId.value || "").trim();
+  const text = String(content || "").trim();
+  if (!sessionId || !text) return;
+  try {
+    await fetch("/api/voice/transcript", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId,
+        role,
+        content: text,
+        eventType,
+        executor: _callContext?.executor || undefined,
+        mode: _callContext?.mode || undefined,
+        model: _callContext?.model || undefined,
+      }),
+    });
+  } catch (err) {
+    console.warn("[voice-client] transcript persistence failed:", err?.message || err);
+  }
+}
 
 // ── Event System ────────────────────────────────────────────────────────────
 
@@ -67,12 +105,14 @@ function emit(event, data) {
  * 4. Set up data channel for events
  * 5. Create offer, set remote answer
  */
-export async function startVoiceSession() {
+export async function startVoiceSession(options = {}) {
   if (_pc) {
     console.warn("[voice-client] Session already active");
     return;
   }
 
+  _callContext = _normalizeCallContext(options);
+  voiceBoundSessionId.value = _callContext.sessionId;
   voiceState.value = "connecting";
   voiceError.value = null;
   voiceTranscript.value = "";
@@ -82,7 +122,17 @@ export async function startVoiceSession() {
 
   try {
     // 1. Fetch ephemeral token
-    const tokenRes = await fetch("/api/voice/token", { method: "POST" });
+    const tokenRes = await fetch("/api/voice/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: _callContext.sessionId || undefined,
+        executor: _callContext.executor || undefined,
+        mode: _callContext.mode || undefined,
+        model: _callContext.model || undefined,
+        delegateOnly: Boolean(_callContext.sessionId),
+      }),
+    });
     if (!tokenRes.ok) {
       const err = await tokenRes.json().catch(() => ({ error: "Token fetch failed" }));
       throw new Error(err.error || `Token fetch failed (${tokenRes.status})`);
@@ -119,10 +169,14 @@ export async function startVoiceSession() {
     _dc.onopen = () => {
       voiceState.value = "connected";
       _sessionStartTime = Date.now();
-      voiceSessionId.value = `voice-${Date.now()}`;
+      voiceSessionId.value = _callContext.sessionId || `voice-${Date.now()}`;
       startDurationTimer();
       startReconnectTimer();
-      emit("connected", { provider: tokenData.provider });
+      emit("connected", {
+        provider: tokenData.provider,
+        sessionId: voiceSessionId.value,
+        callContext: { ..._callContext },
+      });
     };
     _dc.onclose = () => {
       if (voiceState.value !== "reconnecting") {
@@ -162,7 +216,10 @@ export async function startVoiceSession() {
     const answerSdp = await sdpResponse.text();
     await _pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
 
-    emit("session-started", { sessionId: voiceSessionId.value });
+    emit("session-started", {
+      sessionId: voiceSessionId.value,
+      callContext: { ..._callContext },
+    });
   } catch (err) {
     console.error("[voice-client] Failed to start voice session:", err);
     voiceState.value = "error";
@@ -183,7 +240,9 @@ export function stopVoiceSession() {
   voiceResponse.value = "";
   voiceToolCalls.value = [];
   voiceSessionId.value = null;
+  voiceBoundSessionId.value = null;
   voiceDuration.value = 0;
+  _callContext = { sessionId: null, executor: null, mode: null, model: null };
   emit("session-ended", {});
 }
 
@@ -211,6 +270,11 @@ function handleServerEvent(event) {
     case "conversation.item.input_audio_transcription.completed":
       voiceTranscript.value = event.transcript || "";
       emit("transcript", { text: event.transcript, final: true });
+      _recordVoiceTranscript(
+        "user",
+        event.transcript || "",
+        "conversation.item.input_audio_transcription.completed",
+      );
       break;
 
     case "response.audio_transcript.delta":
@@ -220,6 +284,11 @@ function handleServerEvent(event) {
 
     case "response.audio_transcript.done":
       emit("response-complete", { text: voiceResponse.value });
+      _recordVoiceTranscript(
+        "assistant",
+        voiceResponse.value,
+        "response.audio_transcript.done",
+      );
       voiceResponse.value = "";
       break;
 
@@ -238,7 +307,9 @@ function handleServerEvent(event) {
       break;
 
     case "response.function_call_arguments.done":
-      handleToolCall(event);
+      handleToolCall(event).catch((err) => {
+        console.error("[voice-client] Tool call handling failed:", err);
+      });
       break;
 
     case "response.done":
@@ -284,7 +355,14 @@ async function handleToolCall(event) {
     const res = await fetch("/api/voice/tool", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ toolName: name, args, sessionId: voiceSessionId.value }),
+      body: JSON.stringify({
+        toolName: name,
+        args,
+        sessionId: voiceSessionId.value,
+        executor: _callContext.executor || undefined,
+        mode: _callContext.mode || undefined,
+        model: _callContext.model || undefined,
+      }),
     });
     const result = await res.json();
 
@@ -364,7 +442,9 @@ export function sendTextMessage(text) {
 function startReconnectTimer() {
   clearTimeout(_reconnectTimer);
   _reconnectTimer = setTimeout(() => {
-    reconnect();
+    reconnect().catch((err) => {
+      console.error("[voice-client] Reconnect timer error:", err);
+    });
   }, RECONNECT_AT_MS);
 }
 
@@ -385,7 +465,7 @@ async function reconnect() {
   _mediaStream = stream;
 
   try {
-    await startVoiceSession();
+    await startVoiceSession(_callContext);
   } catch (err) {
     console.error("[voice-client] Reconnect failed:", err);
     if (_reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {

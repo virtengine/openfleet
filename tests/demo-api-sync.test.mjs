@@ -119,6 +119,8 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/voice/config",         // Voice config — server-only (reads real API keys + config)
   "/api/voice/token",          // Ephemeral token creation — server-only (calls OpenAI/Azure API)
   "/api/voice/tool",           // Voice tool execution — server-only (runs real tools)
+  "/api/voice/transcript",     // Voice transcript persistence into session history
+  "/api/vision/frame",         // Live vision frame ingestion + analysis
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────

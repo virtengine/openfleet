@@ -1,7 +1,7 @@
 /**
  * voice-fallback.js — Tier 2 voice using browser Web Speech API + bosun chat.
  *
- * Flow: SpeechRecognition → text → POST /api/sessions/{id}/message → response → SpeechSynthesis
+ * Flow: SpeechRecognition → text → POST /api/voice/tool(delegate_to_agent) → SpeechSynthesis
  *
  * @module voice-fallback
  */
@@ -17,6 +17,11 @@ let _recognition = null;
 let _synthesis = null;
 let _sessionId = null;
 let _isSpeaking = false;
+let _callContext = {
+  executor: null,
+  mode: null,
+  model: null,
+};
 
 const SpeechRecognition = typeof globalThis !== "undefined"
   ? (globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition)
@@ -24,18 +29,48 @@ const SpeechRecognition = typeof globalThis !== "undefined"
 
 export const fallbackSupported = Boolean(SpeechRecognition) && typeof globalThis.speechSynthesis !== "undefined";
 
+async function recordFallbackTranscript(role, content, eventType = "") {
+  const sessionId = String(_sessionId || "").trim();
+  const text = String(content || "").trim();
+  if (!sessionId || !text) return;
+  try {
+    await fetch("/api/voice/transcript", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId,
+        role,
+        content: text,
+        eventType,
+        executor: _callContext.executor || undefined,
+        mode: _callContext.mode || undefined,
+        model: _callContext.model || undefined,
+        provider: "fallback",
+      }),
+    });
+  } catch {
+    // best effort persistence
+  }
+}
+
 /**
  * Start a fallback voice session.
  * @param {string} sessionId — existing chat session ID to use
+ * @param {{ executor?: string, mode?: string, model?: string }} [options]
  */
-export function startFallbackSession(sessionId) {
+export function startFallbackSession(sessionId, options = {}) {
   if (!fallbackSupported) {
     fallbackError.value = "Speech APIs not supported in this browser";
     fallbackState.value = "error";
     return;
   }
 
-  _sessionId = sessionId;
+  _sessionId = sessionId || null;
+  _callContext = {
+    executor: String(options?.executor || "").trim() || null,
+    mode: String(options?.mode || "").trim() || null,
+    model: String(options?.model || "").trim() || null,
+  };
   _synthesis = globalThis.speechSynthesis;
   fallbackState.value = "idle";
   fallbackError.value = null;
@@ -52,6 +87,7 @@ export function stopFallbackSession() {
   fallbackTranscript.value = "";
   fallbackResponse.value = "";
   _sessionId = null;
+  _callContext = { executor: null, mode: null, model: null };
 }
 
 function startListening() {
@@ -119,12 +155,26 @@ function stopListening() {
 async function processUserInput(text) {
   fallbackState.value = "processing";
   stopListening();
+  await recordFallbackTranscript("user", text, "fallback.user_input");
 
   try {
-    const res = await fetch(`/api/sessions/${_sessionId}/message`, {
+    // Use the same server-side voice tool pipeline as Tier 1 for consistency.
+    const res = await fetch("/api/voice/tool", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({
+        toolName: "delegate_to_agent",
+        args: {
+          message: text,
+          mode: _callContext.mode || "ask",
+          executor: _callContext.executor || undefined,
+          model: _callContext.model || undefined,
+        },
+        sessionId: _sessionId || undefined,
+        executor: _callContext.executor || undefined,
+        mode: _callContext.mode || undefined,
+        model: _callContext.model || undefined,
+      }),
     });
 
     if (!res.ok) {
@@ -132,9 +182,15 @@ async function processUserInput(text) {
     }
 
     const data = await res.json();
-    const responseText = data.response || data.text || data.message || data.content || JSON.stringify(data);
+    const responseText =
+      data?.result ||
+      data?.text ||
+      data?.message ||
+      data?.content ||
+      (data?.error ? `Error: ${data.error}` : JSON.stringify(data));
 
     fallbackResponse.value = responseText;
+    await recordFallbackTranscript("assistant", responseText, "fallback.assistant_output");
     await speak(responseText);
   } catch (err) {
     fallbackError.value = `Processing error: ${err.message}`;

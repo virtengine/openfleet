@@ -399,6 +399,8 @@ export function runConfigDoctor(options = {}) {
   const needsClaude =
     executorsList.includes("claude") || executorsList.includes("anthropic");
   const needsCopilot = executorsList.includes("copilot");
+  const needsGemini = executorsList.includes("gemini");
+  const needsOpencode = executorsList.includes("opencode");
 
   if (needsOpenAI) {
     const openaiKey =
@@ -461,10 +463,33 @@ export function runConfigDoctor(options = {}) {
     }
   }
 
+  if (needsGemini) {
+    const geminiKey =
+      effective.GEMINI_API_KEY || effective.GOOGLE_API_KEY || "";
+    if (!geminiKey) {
+      issues.errors.push({
+        code: "GEMINI_API_KEY_MISSING",
+        message:
+          "EXECUTORS uses gemini but GEMINI_API_KEY/GOOGLE_API_KEY is not set.",
+        fix: "Set GEMINI_API_KEY or GOOGLE_API_KEY in your .env",
+      });
+    }
+  }
+
+  if (needsOpencode && !commandExists("opencode")) {
+    issues.warnings.push({
+      code: "OPENCODE_BINARY_MISSING",
+      message:
+        "EXECUTORS uses opencode but the 'opencode' binary is not on PATH.",
+      fix: "Install OpenCode CLI/server or remove OPENCODE from EXECUTORS.",
+    });
+  }
+
   // ── Model Name Validation ─────────────────────────────────────────
   const modelVars = [
     "COPILOT_MODEL",
     "CLAUDE_MODEL",
+    "GEMINI_MODEL",
     "OPENAI_MODEL",
     "CODEX_MODEL",
   ];

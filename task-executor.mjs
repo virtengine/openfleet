@@ -447,7 +447,11 @@ function normalizeSdkOverride(value) {
   if (raw === "codex-sdk") return "codex";
   if (raw === "copilot-sdk") return "copilot";
   if (raw === "claude-sdk") return "claude";
-  if (["codex", "copilot", "claude"].includes(raw)) return raw;
+  if (raw === "gemini-sdk") return "gemini";
+  if (raw === "opencode-sdk") return "opencode";
+  if (["codex", "copilot", "claude", "gemini", "opencode"].includes(raw)) {
+    return raw;
+  }
   return null;
 }
 

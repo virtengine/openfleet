@@ -17,7 +17,10 @@ vi.mock("../primary-agent.mjs", () => ({
 
 vi.mock("../voice-tools.mjs", () => ({
   executeToolCall: vi.fn(async (name) => ({ result: `mock result for ${name}` })),
-  getToolDefinitions: vi.fn(() => [{ type: "function", name: "list_tasks" }]),
+  getToolDefinitions: vi.fn(() => [
+    { type: "function", name: "list_tasks" },
+    { type: "function", name: "delegate_to_agent" },
+  ]),
 }));
 
 // ── Global fetch mock ────────────────────────────────────────────────────────
@@ -49,6 +52,7 @@ const {
   getVoiceToolDefinitions,
   executeVoiceTool,
   getRealtimeConnectionInfo,
+  analyzeVisionFrame,
 } = await import("../voice-relay.mjs");
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -239,6 +243,8 @@ describe("voice-relay", () => {
       const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
       expect(fetchCall[0]).toContain("api.openai.com/v1/realtime/sessions");
       expect(fetchCall[1].headers.Authorization).toBe("Bearer sk-test");
+      const payload = JSON.parse(fetchCall[1].body);
+      expect(payload.tool_choice).toBe("auto");
     });
 
     it("calls Azure API correctly for azure provider", async () => {
@@ -261,6 +267,35 @@ describe("voice-relay", () => {
       expect(fetchCall[0]).toContain("myresource.openai.azure.com");
       expect(fetchCall[0]).toContain("realtime/sessions");
       expect(fetchCall[1].headers["api-key"]).toBe("az-key");
+    });
+
+    it("injects call context into realtime session instructions", async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: { provider: "openai", openaiApiKey: "sk-test" },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+
+      const result = await createEphemeralToken([], {
+        sessionId: "primary-123",
+        executor: "claude-sdk",
+        mode: "plan",
+        model: "claude-opus-4.6",
+      });
+      expect(result.callContext).toMatchObject({
+        sessionId: "primary-123",
+        executor: "claude-sdk",
+        mode: "plan",
+        model: "claude-opus-4.6",
+      });
+
+      const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
+      const payload = JSON.parse(fetchCall[1].body);
+      expect(payload.instructions).toContain("Active chat session id: primary-123.");
+      expect(payload.instructions).toContain("Preferred executor for delegated work: claude-sdk.");
+      expect(payload.instructions).toContain("Preferred delegation mode: plan.");
+      expect(payload.instructions).toContain("Preferred model override: claude-opus-4.6.");
+      expect(payload.tool_choice).toEqual({ type: "function", name: "delegate_to_agent" });
     });
 
     it("throws when no API key configured for openai", async () => {
@@ -327,6 +362,37 @@ describe("voice-relay", () => {
       expect(Array.isArray(defs)).toBe(true);
       expect(defs.length).toBeGreaterThan(0);
       expect(defs[0]).toHaveProperty("name");
+    });
+
+    it("can filter to delegate tool only", async () => {
+      const defs = await getVoiceToolDefinitions({ delegateOnly: true });
+      expect(Array.isArray(defs)).toBe(true);
+      expect(defs.length).toBe(1);
+      expect(defs[0]?.name).toBe("delegate_to_agent");
+    });
+  });
+
+  describe("analyzeVisionFrame", () => {
+    it("calls OpenAI responses API for valid frame input", async () => {
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: { provider: "openai", openaiApiKey: "sk-test" },
+        primaryAgent: "codex-sdk",
+      });
+      vi.mocked(globalThis.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          output_text: "Code editor with failing tests is visible.",
+        }),
+      });
+
+      const result = await analyzeVisionFrame(
+        "data:image/jpeg;base64,dGVzdA==",
+        { source: "screen", context: { sessionId: "primary-1" } },
+      );
+      expect(result.summary).toContain("failing tests");
+      expect(result.provider).toBe("openai");
+      const fetchCall = vi.mocked(globalThis.fetch).mock.calls.at(-1);
+      expect(fetchCall?.[0]).toContain("/v1/responses");
     });
   });
 });

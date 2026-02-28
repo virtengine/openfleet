@@ -61,6 +61,11 @@
           "default": "gpt-4o-realtime-preview-2024-12-17",
           "description": "Realtime API model name"
         },
+        "visionModel": {
+          "type": "string",
+          "default": "gpt-4.1-mini",
+          "description": "Vision model used for live screen/camera frame analysis"
+        },
         "openaiApiKey": {
           "type": "string",
           "description": "OpenAI API key for Realtime API (overrides OPENAI_API_KEY env)"

@@ -51,6 +51,18 @@ import {
   switchSession as switchOpencodeSession,
   createSession as createOpencodeSession,
 } from "./opencode-shell.mjs";
+import {
+  execGeminiPrompt,
+  steerGeminiPrompt,
+  isGeminiBusy,
+  getSessionInfo as getGeminiSessionInfo,
+  resetSession as resetGeminiSession,
+  initGeminiShell,
+  getActiveSessionId as getGeminiSessionId,
+  listSessions as listGeminiSessions,
+  switchSession as switchGeminiSession,
+  createSession as createGeminiSession,
+} from "./gemini-shell.mjs";
 import { getModelsForExecutor, normalizeExecutorKey } from "./task-complexity.mjs";
 
 /** Valid agent interaction modes */
@@ -189,6 +201,31 @@ const ADAPTERS = {
       }
       const fullCmd = args ? `${cmd} ${args}` : cmd;
       return execClaudePrompt(fullCmd, {});
+    },
+  },
+  "gemini-sdk": {
+    name: "gemini-sdk",
+    provider: "GEMINI",
+    displayName: "Gemini",
+    exec: (msg, opts) => execGeminiPrompt(msg, { persistent: true, ...opts }),
+    steer: steerGeminiPrompt,
+    isBusy: isGeminiBusy,
+    getInfo: () => getGeminiSessionInfo(),
+    reset: resetGeminiSession,
+    init: async () => initGeminiShell(),
+    getSessionId: getGeminiSessionId,
+    listSessions: listGeminiSessions,
+    switchSession: switchGeminiSession,
+    createSession: createGeminiSession,
+    sdkCommands: ["/status", "/model", "/clear"],
+    execSdkCommand: async (command, args) => {
+      const cmd = command.startsWith("/") ? command : `/${command}`;
+      if (cmd === "/clear") {
+        await resetGeminiSession();
+        return "Session cleared.";
+      }
+      const fullCmd = args ? `${cmd} ${args}` : cmd;
+      return execGeminiPrompt(fullCmd, { persistent: true });
     },
   },
   "opencode-sdk": {
@@ -336,6 +373,8 @@ function normalizePrimaryAgent(value) {
     return "copilot-sdk";
   if (["claude", "claude-sdk", "claude_code", "claude-code"].includes(raw))
     return "claude-sdk";
+  if (["gemini", "gemini-sdk", "google-gemini"].includes(raw))
+    return "gemini-sdk";
   if (["opencode", "opencode-sdk", "open-code"].includes(raw))
     return "opencode-sdk";
   return raw;
@@ -354,6 +393,7 @@ function executorToAdapter(executor) {
   const key = normalizeExecutorKey(executor);
   if (key === "copilot") return "copilot-sdk";
   if (key === "claude") return "claude-sdk";
+  if (key === "gemini") return "gemini-sdk";
   if (key === "opencode") return "opencode-sdk";
   return "codex-sdk";
 }
@@ -474,6 +514,10 @@ export async function initPrimaryAgent(nameOrConfig = null) {
       setPrimaryAgent("copilot-sdk");
     } else if (!envFlagEnabled(process.env.CLAUDE_SDK_DISABLED)) {
       setPrimaryAgent("claude-sdk");
+    } else if (!envFlagEnabled(process.env.GEMINI_SDK_DISABLED)) {
+      setPrimaryAgent("gemini-sdk");
+    } else if (!envFlagEnabled(process.env.OPENCODE_SDK_DISABLED)) {
+      setPrimaryAgent("opencode-sdk");
     }
   }
 
@@ -485,11 +529,39 @@ export async function initPrimaryAgent(nameOrConfig = null) {
     setPrimaryAgent("codex-sdk");
   }
 
+  if (
+    activeAdapter.name === "gemini-sdk" &&
+    envFlagEnabled(process.env.GEMINI_SDK_DISABLED)
+  ) {
+    primaryFallbackReason = "Gemini SDK disabled — falling back to Codex";
+    setPrimaryAgent("codex-sdk");
+  }
+
+  if (
+    activeAdapter.name === "opencode-sdk" &&
+    envFlagEnabled(process.env.OPENCODE_SDK_DISABLED)
+  ) {
+    primaryFallbackReason = "OpenCode SDK disabled — falling back to Codex";
+    setPrimaryAgent("codex-sdk");
+  }
+
   ensurePrimaryAgentConfigs(activeAdapter.name);
 
   const ok = await activeAdapter.init();
   if (activeAdapter.name === "copilot-sdk" && ok === false) {
     primaryFallbackReason = "Copilot SDK unavailable — falling back to Codex";
+    setPrimaryAgent("codex-sdk");
+    ensurePrimaryAgentConfigs(activeAdapter.name);
+    await activeAdapter.init();
+  }
+  if (activeAdapter.name === "gemini-sdk" && ok === false) {
+    primaryFallbackReason = "Gemini SDK unavailable — falling back to Codex";
+    setPrimaryAgent("codex-sdk");
+    ensurePrimaryAgentConfigs(activeAdapter.name);
+    await activeAdapter.init();
+  }
+  if (activeAdapter.name === "opencode-sdk" && ok === false) {
+    primaryFallbackReason = "OpenCode SDK unavailable — falling back to Codex";
     setPrimaryAgent("codex-sdk");
     ensurePrimaryAgentConfigs(activeAdapter.name);
     await activeAdapter.init();
@@ -506,7 +578,13 @@ const PRIMARY_EXEC_TIMEOUT_MS = Number(process.env.PRIMARY_AGENT_TIMEOUT_MS) || 
 const MAX_FAILOVER_ATTEMPTS = 2;
 
 /** Ordered fallback chain — if the current adapter times out, try the next */
-const FALLBACK_ORDER = ["codex-sdk", "copilot-sdk", "claude-sdk"];
+const FALLBACK_ORDER = [
+  "codex-sdk",
+  "copilot-sdk",
+  "claude-sdk",
+  "gemini-sdk",
+  "opencode-sdk",
+];
 
 function mapAdapterToPoolSdk(adapterName) {
   const normalized = String(adapterName || "").trim().toLowerCase();

@@ -4,13 +4,19 @@
  * Reads ~/.codex/config.toml to determine the primary agent SDK and
  * capability flags for bosun integrations.
  *
- * Supported primary agents: "codex", "copilot", "claude"
+ * Supported primary agents: "codex", "copilot", "claude", "opencode", "gemini"
  * Capability flags: steering, subagents, vscode_tools
  */
 
 import { readCodexConfig } from "./codex-config.mjs";
 
-const SUPPORTED_PRIMARY = new Set(["codex", "copilot", "claude", "opencode"]);
+const SUPPORTED_PRIMARY = new Set([
+  "codex",
+  "copilot",
+  "claude",
+  "opencode",
+  "gemini",
+]);
 const DEFAULT_PRIMARY = "codex";
 
 const DEFAULT_CAPABILITIES_BY_PRIMARY = {
@@ -31,6 +37,11 @@ const DEFAULT_CAPABILITIES_BY_PRIMARY = {
   },
   opencode: {
     steering: true,
+    subagents: true,
+    vscodeTools: false,
+  },
+  gemini: {
+    steering: false,
     subagents: true,
     vscodeTools: false,
   },

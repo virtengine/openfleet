@@ -39,6 +39,7 @@
     "./codex-shell": "./codex-shell.mjs",
     "./copilot-shell": "./copilot-shell.mjs",
     "./claude-shell": "./claude-shell.mjs",
+    "./gemini-shell": "./gemini-shell.mjs",
     "./primary-agent": "./primary-agent.mjs",
     "./maintenance": "./maintenance.mjs",
     "./telegram-bot": "./telegram-bot.mjs",
@@ -139,6 +140,7 @@
     "config-doctor.mjs",
     "conflict-resolver.mjs",
     "copilot-shell.mjs",
+    "gemini-shell.mjs",
     "diff-stats.mjs",
     "desktop/main.mjs",
     "desktop/launch.mjs",
@@ -241,6 +243,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
     "@github/copilot-sdk": "latest",
+    "@google/genai": "latest",
     "@openai/codex-sdk": "latest",
     "@opencode-ai/sdk": "latest",
     "@preact/signals": "1.3.1",

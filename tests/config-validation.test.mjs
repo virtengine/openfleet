@@ -30,6 +30,10 @@ const ENV_KEYS = [
   "KANBAN_BACKEND",
   "WATCH_PATH",
   "ORCHESTRATOR_SCRIPT",
+  "PRIMARY_AGENT",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GEMINI_SDK_DISABLED",
 ];
 
 describe("loadConfig validation and edge cases", () => {
@@ -223,6 +227,41 @@ describe("loadConfig validation and edge cases", () => {
 
     expect(config.executorConfig.executors[0].models).toContain("claude-opus-4.6");
     expect(config.executorConfig.executors[0].models).not.toContain("gpt-5.2-codex");
+  });
+
+  it("parses Gemini executor models from EXECUTORS env", () => {
+    process.env.EXECUTORS =
+      "GEMINI:DEFAULT:100:gemini-2.5-pro|gemini-2.5-flash";
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.executorConfig.executors[0].executor).toBe("GEMINI");
+    expect(config.executorConfig.executors[0].models).toEqual([
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+    ]);
+  });
+
+  it("normalizes PRIMARY_AGENT=gemini to gemini-sdk", () => {
+    process.env.PRIMARY_AGENT = "gemini";
+
+    const config = loadConfig([
+      "node",
+      "bosun",
+      "--config-dir",
+      tempConfigDir,
+      "--repo-root",
+      tempConfigDir,
+    ]);
+
+    expect(config.primaryAgent).toBe("gemini-sdk");
   });
 
   it("keeps trigger system disabled by default", () => {

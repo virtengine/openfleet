@@ -186,6 +186,29 @@ describe("config-doctor", () => {
       expect(hasWarning).toBe(true);
     });
 
+    it("detects missing GEMINI API key when gemini executor is configured", () => {
+      const result = runWith({
+        EXECUTORS: "gemini:default",
+        GEMINI_API_KEY: "",
+        GOOGLE_API_KEY: "",
+      });
+      const hasError = result.errors.some(
+        (e) => e.code === "GEMINI_API_KEY_MISSING",
+      );
+      expect(hasError).toBe(true);
+    });
+
+    it("does NOT report GEMINI_API_KEY_MISSING when Gemini key is set", () => {
+      const result = runWith({
+        EXECUTORS: "gemini:default",
+        GEMINI_API_KEY: "test-gemini-key",
+      });
+      const hasError = result.errors.some(
+        (e) => e.code === "GEMINI_API_KEY_MISSING",
+      );
+      expect(hasError).toBe(false);
+    });
+
     it("does NOT skip validation when no matching executor", () => {
       const result = runWith({
         EXECUTORS: "claude:default",

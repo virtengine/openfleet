@@ -111,12 +111,18 @@ import {
   sessionsData,
   initSessionWsListener,
 } from "./components/session-list.js";
+import {
+  activeAgent,
+  agentMode,
+  selectedModel,
+} from "./components/agent-selector.js";
 import { WorkspaceSwitcher } from "./components/workspace-switcher.js";
 import { DiffViewer } from "./components/diff-viewer.js";
 import {
   CommandPalette,
   useCommandPalette,
 } from "./components/command-palette.js";
+import { VoiceOverlay } from "./modules/voice-overlay.js";
 
 /* ── Tab imports ── */
 import { DashboardTab } from "./tabs/dashboard.js";
@@ -1261,6 +1267,12 @@ function App() {
     };
   }, [isLoading]);
   const [isMoreOpen, setIsMoreOpen] = useState(false);
+  const [voiceOverlayOpen, setVoiceOverlayOpen] = useState(false);
+  const [voiceTier, setVoiceTier] = useState(2);
+  const [voiceSessionId, setVoiceSessionId] = useState(null);
+  const [voiceExecutor, setVoiceExecutor] = useState(null);
+  const [voiceAgentMode, setVoiceAgentMode] = useState(null);
+  const [voiceModel, setVoiceModel] = useState(null);
   const resizeRef = useRef(null);
   const [isCompactNav, setIsCompactNav] = useState(() => {
     const win = globalThis.window;
@@ -1567,6 +1579,70 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const handleOpenVoiceMode = async (event) => {
+      try {
+        const currentExecutor =
+          String(event?.detail?.executor || activeAgent.value || "").trim() ||
+          null;
+        const currentMode =
+          String(event?.detail?.mode || agentMode.value || "").trim() || null;
+        const currentModel =
+          String(event?.detail?.model || selectedModel.value || "").trim() ||
+          null;
+        const explicitSessionId =
+          String(event?.detail?.sessionId || "").trim() || null;
+        let currentSessionId =
+          explicitSessionId ||
+          (selectedSessionId.value ? String(selectedSessionId.value) : null);
+
+        // Ensure voice calls always bind to a real chat session so transcript +
+        // delegated agent output are persisted in shared history.
+        if (!currentSessionId) {
+          const created = await createSession({
+            type: "primary",
+            agent: currentExecutor || undefined,
+            mode: currentMode || undefined,
+            model: currentModel || undefined,
+          });
+          const createdId = String(created?.session?.id || "").trim();
+          currentSessionId = createdId || null;
+          if (currentSessionId) {
+            selectedSessionId.value = currentSessionId;
+          }
+        }
+
+        if (!currentSessionId) {
+          showToast("Could not create a chat session for voice mode.", "error");
+          return;
+        }
+
+        setVoiceSessionId(currentSessionId);
+        setVoiceExecutor(currentExecutor);
+        setVoiceAgentMode(currentMode);
+        setVoiceModel(currentModel);
+
+        const response = await fetch("/api/voice/config", { method: "GET" });
+        const cfg = response.ok ? await response.json() : null;
+        if (!cfg?.available) {
+          showToast(cfg?.reason || "Voice mode is not available.", "error");
+          return;
+        }
+        setVoiceTier(Number(cfg?.tier) === 1 ? 1 : 2);
+        setVoiceOverlayOpen(true);
+      } catch (err) {
+        showToast(
+          `Could not open voice mode: ${err?.message || "unknown error"}`,
+          "error",
+        );
+      }
+    };
+
+    globalThis.addEventListener?.("ve:open-voice-mode", handleOpenVoiceMode);
+    return () =>
+      globalThis.removeEventListener?.("ve:open-voice-mode", handleOpenVoiceMode);
+  }, []);
+
+  useEffect(() => {
     const el = mainRef.current;
     if (!el) return;
     const handleScroll = () => {
@@ -1830,6 +1906,15 @@ function App() {
     <${BotControlsSheet}
       open=${isBotOpen}
       onClose=${closeBot}
+    />
+    <${VoiceOverlay}
+      visible=${voiceOverlayOpen}
+      onClose=${() => setVoiceOverlayOpen(false)}
+      tier=${voiceTier}
+      sessionId=${voiceSessionId}
+      executor=${voiceExecutor}
+      mode=${voiceAgentMode}
+      model=${voiceModel}
     />
   `;
 }

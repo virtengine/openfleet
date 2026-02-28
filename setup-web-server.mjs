@@ -134,12 +134,27 @@ const MODELS = {
     { value: "claude-sonnet-4", label: "claude-sonnet-4" },
     { value: "claude-haiku-4.5", label: "claude-haiku-4.5" },
   ],
+  gemini: [
+    { value: "gemini-2.5-pro", label: "gemini-2.5-pro", recommended: true },
+    { value: "gemini-2.5-flash", label: "gemini-2.5-flash" },
+    { value: "gemini-2.0-flash", label: "gemini-2.0-flash" },
+    { value: "gemini-1.5-pro", label: "gemini-1.5-pro" },
+    { value: "gemini-1.5-flash", label: "gemini-1.5-flash" },
+  ],
+  opencode: [
+    { value: "gpt-5.3-codex", label: "gpt-5.3-codex", recommended: true },
+    { value: "gpt-5.2-codex", label: "gpt-5.2-codex" },
+    { value: "claude-opus-4.6", label: "claude-opus-4.6" },
+    { value: "gemini-2.5-pro", label: "gemini-2.5-pro" },
+  ],
 };
 
 const EXECUTOR_TYPES = [
   { value: "COPILOT", label: "GitHub Copilot (recommended)", recommended: true },
   { value: "CODEX", label: "OpenAI Codex CLI" },
   { value: "CLAUDE_CODE", label: "Claude Code" },
+  { value: "GEMINI", label: "Google Gemini" },
+  { value: "OPENCODE", label: "OpenCode (local server)" },
 ];
 
 const KANBAN_BACKENDS = [
@@ -1151,8 +1166,20 @@ async function handleModelsProbe(body) {
 
   // Copilot and Claude Code use OAuth — we can't probe their model lists from
   // the server side. Return the static list with a note.
-  if (executor === "COPILOT" || executor === "CLAUDE_CODE") {
-    const key = executor === "COPILOT" ? "copilot" : "claude";
+  if (
+    executor === "COPILOT" ||
+    executor === "CLAUDE_CODE" ||
+    executor === "GEMINI" ||
+    executor === "OPENCODE"
+  ) {
+    const key =
+      executor === "COPILOT"
+        ? "copilot"
+        : executor === "CLAUDE_CODE"
+          ? "claude"
+          : executor === "GEMINI"
+            ? "gemini"
+            : "opencode";
     return {
       ok: true,
       models: MODELS[key] || [],
@@ -1454,6 +1481,13 @@ function handleApply(body) {
           if (ex.baseUrl) envMap.ANTHROPIC_BASE_URL = ex.baseUrl;
           // Note: Anthropic does not have a native multi-profile env-var system;
           // only a single key/endpoint is supported for this executor type.
+        } else if (type === "GEMINI" || type === "GOOGLE_GEMINI") {
+          if (ex.apiKey) {
+            envMap.GEMINI_API_KEY = ex.apiKey;
+          }
+          if (ex.baseUrl) {
+            envMap.GEMINI_BASE_URL = ex.baseUrl;
+          }
         }
         // COPILOT uses gh auth — no API key env vars needed.
       }

@@ -90,36 +90,68 @@ function normalizePreview(content) {
   return text.slice(0, 100);
 }
 
+function canonicalMessageKind(msg) {
+  const role = String(msg?.role || "").trim().toLowerCase();
+  const type = String(msg?.type || "").trim().toLowerCase();
+  if (
+    role === "assistant" ||
+    type === "agent_message" ||
+    type === "assistant" ||
+    type === "assistant_message"
+  ) {
+    return "assistant";
+  }
+  if (role === "user" || type === "user") return "user";
+  if (type === "tool_call") return "tool_call";
+  if (type === "tool_result" || type === "tool_output") return "tool_result";
+  if (type === "error" || type === "stream_error") return "error";
+  if (role === "system" || type === "system") return "system";
+  return `${role || "unknown"}:${type || "message"}`;
+}
+
 function dedupeMessages(messages) {
   const list = Array.isArray(messages) ? messages : [];
   const out = [];
   const seenExact = new Set();
+  const recentAssistantContentTs = new Map();
   for (const msg of list) {
     if (!msg) continue;
-    const role = String(msg.role || "");
-    const type = String(msg.type || "");
+    const kind = canonicalMessageKind(msg);
     const content = String(msg.content || msg.text || "").trim();
     const ts = Date.parse(msg.timestamp || 0) || 0;
-    const exactKey = `${role}|${type}|${content}|${ts}`;
+    const exactKey = `${kind}|${content}|${ts}`;
     if (seenExact.has(exactKey)) continue;
+    if (kind === "assistant" && content) {
+      const prevAssistantTs = recentAssistantContentTs.get(content);
+      if (prevAssistantTs !== undefined) {
+        const withinAssistantWindow =
+          ts > 0 && prevAssistantTs > 0
+            ? Math.abs(ts - prevAssistantTs) <= 5000
+            : true;
+        if (withinAssistantWindow) continue;
+      }
+    }
     const last = out[out.length - 1];
     if (last) {
-      const lastRole = String(last.role || "");
-      const lastType = String(last.type || "");
+      const lastKind = canonicalMessageKind(last);
       const lastContent = String(last.content || last.text || "").trim();
       const lastTs = Date.parse(last.timestamp || 0) || 0;
+      const withinDuplicateWindow =
+        ts > 0 && lastTs > 0 ? Math.abs(ts - lastTs) <= 5000 : true;
       if (
         content &&
-        lastRole === role &&
-        lastType === type &&
+        lastKind === kind &&
         lastContent === content &&
-        Math.abs(ts - lastTs) <= 5000
+        withinDuplicateWindow
       ) {
         continue;
       }
     }
     seenExact.add(exactKey);
     out.push(msg);
+    if (kind === "assistant" && content) {
+      recentAssistantContentTs.set(content, ts);
+    }
   }
   return out;
 }

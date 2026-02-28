@@ -1005,6 +1005,15 @@ ${items.join("\n")}` : "todo updated";
       };
     }
 
+    if (event.type === "session.idle" || event.type === "session.completed") {
+      return {
+        type: "system",
+        content: "Session completed",
+        timestamp: ts,
+        meta: { lifecycle: "session_completed" },
+      };
+    }
+
     if (event.type === "turn.failed") {
       const detail = toText(event.error?.message || "unknown error");
       return {
@@ -1067,10 +1076,12 @@ ${items.join("\n")}` : "todo updated";
     }
 
     if (event.type === "message_stop" || event.type === "message_delta") {
+      const lifecycle = event.type === "message_stop" ? "turn_completed" : undefined;
       return {
         type: "system",
         content: `${event.type}${event.delta?.stop_reason ? ` (${event.delta.stop_reason})` : ""}`,
         timestamp: ts,
+        ...(lifecycle ? { meta: { lifecycle } } : {}),
       };
     }
 

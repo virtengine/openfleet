@@ -857,6 +857,10 @@ function normalizePrimaryAgent(value) {
     return "copilot-sdk";
   if (["claude", "claude-sdk", "claude_code", "claude-code"].includes(raw))
     return "claude-sdk";
+  if (["gemini", "gemini-sdk", "google-gemini"].includes(raw))
+    return "gemini-sdk";
+  if (["opencode", "opencode-sdk", "open-code"].includes(raw))
+    return "opencode-sdk";
   return raw;
 }
 
@@ -1617,14 +1621,22 @@ export function loadConfig(argv = process.argv, options = {}) {
       ? codexEnabled
       : primaryAgent === "copilot-sdk"
         ? !isEnvEnabled(process.env.COPILOT_SDK_DISABLED, false)
-        : !isEnvEnabled(process.env.CLAUDE_SDK_DISABLED, false);
+        : primaryAgent === "claude-sdk"
+          ? !isEnvEnabled(process.env.CLAUDE_SDK_DISABLED, false)
+          : primaryAgent === "gemini-sdk"
+            ? !isEnvEnabled(process.env.GEMINI_SDK_DISABLED, false)
+            : primaryAgent === "opencode-sdk"
+              ? !isEnvEnabled(process.env.OPENCODE_SDK_DISABLED, false)
+              : false;
 
   // agentPoolEnabled: true when ANY agent SDK is available for pooled operations
   // This decouples pooled prompt execution from specific SDK selection
   const agentPoolEnabled =
     !isEnvEnabled(process.env.CODEX_SDK_DISABLED, false) ||
     !isEnvEnabled(process.env.COPILOT_SDK_DISABLED, false) ||
-    !isEnvEnabled(process.env.CLAUDE_SDK_DISABLED, false);
+    !isEnvEnabled(process.env.CLAUDE_SDK_DISABLED, false) ||
+    !isEnvEnabled(process.env.GEMINI_SDK_DISABLED, false) ||
+    !isEnvEnabled(process.env.OPENCODE_SDK_DISABLED, false);
 
   // ── Internal Executor ────────────────────────────────────
   // Allows the monitor to run tasks via agent-pool directly instead of

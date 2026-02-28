@@ -22,6 +22,14 @@ import {
   fallbackError,
   startFallbackSession, stopFallbackSession, interruptFallback,
 } from "./voice-fallback.js";
+import {
+  visionShareState,
+  visionShareSource,
+  visionShareError,
+  visionLastSummary,
+  toggleVisionShare,
+  stopVisionShare,
+} from "./vision-stream.js";
 import { AudioVisualizer } from "./audio-visualizer.js";
 import { resolveIcon } from "./icon-utils.js";
 
@@ -88,6 +96,15 @@ function injectOverlayStyles() {
   font-size: 13px;
   color: rgba(255,255,255,0.6);
   text-transform: capitalize;
+}
+.voice-overlay-bound {
+  font-size: 11px;
+  color: rgba(255,255,255,0.45);
+  margin-top: 2px;
+  max-width: 56vw;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .voice-overlay-duration {
   font-size: 12px;
@@ -181,6 +198,38 @@ function injectOverlayStyles() {
   transform: scale(1.05);
   box-shadow: 0 6px 28px rgba(239, 68, 68, 0.5);
 }
+.voice-overlay-vision-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.voice-vision-btn {
+  min-width: 84px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.25);
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.9);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 12px;
+}
+.voice-vision-btn.active {
+  border-color: rgba(74, 222, 128, 0.8);
+  background: rgba(34, 197, 94, 0.2);
+  color: #bbf7d0;
+}
+.voice-vision-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.voice-vision-status {
+  margin-top: 8px;
+  max-width: 560px;
+  text-align: center;
+  font-size: 12px;
+  color: rgba(255,255,255,0.58);
+}
 .voice-error-msg {
   color: #f87171;
   font-size: 14px;
@@ -219,9 +268,17 @@ function formatDuration(seconds) {
 // ── Voice Overlay Component ─────────────────────────────────────────────────
 
 /**
- * @param {{ visible: boolean, onClose: () => void, tier: number, sessionId?: string }} props
+ * @param {{ visible: boolean, onClose: () => void, tier: number, sessionId?: string, executor?: string, mode?: string, model?: string }} props
  */
-export function VoiceOverlay({ visible, onClose, tier = 1, sessionId }) {
+export function VoiceOverlay({
+  visible,
+  onClose,
+  tier = 1,
+  sessionId,
+  executor,
+  mode,
+  model,
+}) {
   const [started, setStarted] = useState(false);
 
   useEffect(() => { injectOverlayStyles(); }, []);
@@ -233,20 +290,31 @@ export function VoiceOverlay({ visible, onClose, tier = 1, sessionId }) {
   const error = tier === 1 ? voiceError.value : fallbackError.value;
   const toolCalls = tier === 1 ? voiceToolCalls.value : [];
   const duration = tier === 1 ? voiceDuration.value : 0;
+  const visionState = visionShareState.value;
+  const visionSource = visionShareSource.value;
+  const visionErr = visionShareError.value;
+  const latestVisionSummary = visionLastSummary.value;
+  const canShareVision = Boolean(sessionId);
 
   // Start session on mount
   useEffect(() => {
     if (!visible || started) return;
     setStarted(true);
     if (tier === 1) {
-      startVoiceSession();
+      startVoiceSession({ sessionId, executor, mode, model });
     } else if (sessionId) {
-      startFallbackSession(sessionId);
+      startFallbackSession(sessionId, { executor, mode, model });
     }
-  }, [visible, started, tier, sessionId]);
+  }, [visible, started, tier, sessionId, executor, mode, model]);
+
+  useEffect(() => {
+    if (visible) return;
+    stopVisionShare().catch(() => {});
+  }, [visible]);
 
   const handleClose = useCallback(() => {
     haptic("medium");
+    stopVisionShare().catch(() => {});
     if (tier === 1) {
       stopVoiceSession();
     } else {
@@ -265,9 +333,43 @@ export function VoiceOverlay({ visible, onClose, tier = 1, sessionId }) {
     }
   }, [tier]);
 
+  const handleToggleScreenShare = useCallback(() => {
+    haptic("light");
+    toggleVisionShare("screen", {
+      sessionId,
+      executor,
+      mode,
+      model,
+      intervalMs: 1000,
+      maxWidth: 1280,
+      jpegQuality: 0.65,
+    }).catch(() => {});
+  }, [sessionId, executor, mode, model]);
+
+  const handleToggleCameraShare = useCallback(() => {
+    haptic("light");
+    toggleVisionShare("camera", {
+      sessionId,
+      executor,
+      mode,
+      model,
+      intervalMs: 1000,
+      maxWidth: 960,
+      jpegQuality: 0.62,
+    }).catch(() => {});
+  }, [sessionId, executor, mode, model]);
+
   if (!visible) return null;
 
   const statusLabel = state === "connected" ? "ready" : state;
+  const boundLabel = [
+    sessionId ? `session ${sessionId}` : null,
+    executor ? `agent ${executor}` : null,
+    mode ? `mode ${mode}` : null,
+    model ? `model ${model}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return html`
     <div class="voice-overlay" onClick=${state === "speaking" ? handleInterrupt : undefined}>
@@ -278,6 +380,7 @@ export function VoiceOverlay({ visible, onClose, tier = 1, sessionId }) {
         </button>
         <div>
           <div class="voice-overlay-status">${statusLabel}</div>
+          ${boundLabel && html`<div class="voice-overlay-bound">${boundLabel}</div>`}
           ${duration > 0 && html`
             <div class="voice-overlay-duration">${formatDuration(duration)}</div>
           `}
@@ -316,6 +419,31 @@ export function VoiceOverlay({ visible, onClose, tier = 1, sessionId }) {
             <div class="voice-transcript-assistant">${response}</div>
           `}
         </div>
+
+        <div class="voice-overlay-vision-controls">
+          <button
+            class="voice-vision-btn ${visionState === "streaming" && visionSource === "screen" ? "active" : ""}"
+            onClick=${handleToggleScreenShare}
+            disabled=${!canShareVision}
+            title=${canShareVision ? "Share your screen with the active agent call" : "Open a session-bound call first"}
+          >
+            ${visionState === "streaming" && visionSource === "screen" ? "Stop Screen" : "Share Screen"}
+          </button>
+          <button
+            class="voice-vision-btn ${visionState === "streaming" && visionSource === "camera" ? "active" : ""}"
+            onClick=${handleToggleCameraShare}
+            disabled=${!canShareVision}
+            title=${canShareVision ? "Share your camera with the active agent call" : "Open a session-bound call first"}
+          >
+            ${visionState === "streaming" && visionSource === "camera" ? "Stop Camera" : "Share Camera"}
+          </button>
+        </div>
+
+        ${(visionErr || latestVisionSummary) && html`
+          <div class="voice-vision-status">
+            ${visionErr || latestVisionSummary}
+          </div>
+        `}
 
         <!-- Tool call cards -->
         ${toolCalls.length > 0 && html`

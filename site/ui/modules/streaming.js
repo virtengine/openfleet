@@ -609,8 +609,10 @@ export function startAgentStatusTracking() {
     if (!payload) return;
 
     const message = payload.message || payload;
-    const role = message.role;
-    const type = message.type;
+    const role = String(message.role || "").toLowerCase();
+    const type = String(message.type || "").toLowerCase();
+    const content = String(message.content || "").toLowerCase();
+    const lifecycle = String(message?.meta?.lifecycle || "").toLowerCase();
     const adapter = payload.session?.type || "";
     const sessionId = payload.sessionId || payload.taskId || payload.session?.id || "";
     const sessionStatus = payload.session?.status || "active";
@@ -622,6 +624,22 @@ export function startAgentStatusTracking() {
       return;
     }
 
+    const isCompletionEvent =
+      type === "turn.completed" ||
+      type === "session.completed" ||
+      lifecycle === "turn_completed" ||
+      lifecycle === "session_completed" ||
+      content.includes("turn completed") ||
+      content.includes("session completed") ||
+      content.includes("evt[turn.completed]") ||
+      content.includes("evt[session.completed]") ||
+      content.includes("session.idle");
+
+    if (isCompletionEvent) {
+      _setAgentState("idle", "", "");
+      return;
+    }
+
     if (role === "assistant" || type === "agent_message") {
       _setAgentState("streaming", adapter, sessionId);
     } else if (type === "tool_call") {
@@ -629,7 +647,6 @@ export function startAgentStatusTracking() {
     } else if (type === "tool_result") {
       _setAgentState("streaming", adapter, sessionId);
     } else if (type === "system") {
-      const content = String(message.content || "").toLowerCase();
       if (
         content.includes("running:") ||
         content.includes("command done:") ||
