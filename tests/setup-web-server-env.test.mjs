@@ -64,6 +64,35 @@ describe("setup web server telegram defaults", () => {
     expect(applied).toBe(false);
     expect(envMap).toEqual({});
   });
+
+  it("defaults to named tunnel when CLOUDFLARE_TUNNEL_NAME + CREDENTIALS are present in sourceEnv", () => {
+    const envMap = {};
+    applyTelegramMiniAppSetupEnv(
+      envMap,
+      { telegramToken: "123456:abc-token" },
+      {
+        CLOUDFLARE_TUNNEL_NAME: "my-tunnel",
+        CLOUDFLARE_TUNNEL_CREDENTIALS: "/home/user/.cloudflared/abc.json",
+      },
+    );
+
+    expect(envMap.TELEGRAM_UI_TUNNEL).toBe("named");
+  });
+
+  it("defaults to named tunnel when CLOUDFLARE credentials are in the env input", () => {
+    const envMap = {};
+    applyTelegramMiniAppSetupEnv(
+      envMap,
+      {
+        telegramToken: "123456:abc-token",
+        CLOUDFLARE_TUNNEL_NAME: "prod-tunnel",
+        CLOUDFLARE_TUNNEL_CREDENTIALS: "~/.cloudflared/prod.json",
+      },
+      {},
+    );
+
+    expect(envMap.TELEGRAM_UI_TUNNEL).toBe("named");
+  });
 });
 
 describe("setup web server non-blocking env defaults", () => {
