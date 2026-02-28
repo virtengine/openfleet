@@ -9,41 +9,40 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="../css/main.css" />
   <link rel="stylesheet" href="../css/docs.css" />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='80'>:zap:</text></svg>" />
+  <link rel="icon" type="image/png" href="../favicon.png" />
 </head>
 <body>
 
   <div class="docs-sidebar-backdrop"></div>
-  <button class="docs-sidebar-toggle" aria-label="Toggle sidebar">:menu:</button>
+  <button class="docs-sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
 
   <div class="docs-layout">
     <aside class="docs-sidebar">
       <a href="../" class="sidebar-brand">
-        <div class="sidebar-brand__icon">:zap:</div>
+        <img src="../logo.svg" alt="Bosun" class="sidebar-brand__logo" width="28" height="28" />
         Bosun
       </a>
       <div class="sidebar-version-info">
-        <span class="sidebar-version" id="current-version">Current Version: v0.33.2</span>
-        <span class="sidebar-version">Docs Last Updated: v0.33.2</span>
+        <span class="sidebar-version" id="current-version">Current Version: v0.36.1</span>
+        <span class="sidebar-version">Docs Last Updated: v0.36.1</span>
       </div>
       <div class="docs-search">
-        <span class="docs-search__icon">:search:</span>
         <input class="docs-search__input" type="text" placeholder="Search docs..." />
       </div>
       <div class="sidebar-section">
         <div class="sidebar-section__title">Getting Started</div>
         <ul class="sidebar-nav">
-          <li><a href="./"><span class="nav-icon">:file:</span> Overview</a></li>
-          <li><a href="getting-started.html"><span class="nav-icon">:rocket:</span> Quick Start</a></li>
-          <li><a href="configuration.html" class="active"><span class="nav-icon">:settings:</span> Configuration</a></li>
+          <li><a href="./">Overview</a></li>
+          <li><a href="getting-started.html">Quick Start</a></li>
+          <li><a href="configuration.html" class="active">Configuration</a></li>
         </ul>
       </div>
       <div class="sidebar-section">
         <div class="sidebar-section__title">Reference</div>
         <ul class="sidebar-nav">
-          <li><a href="cli-reference.html"><span class="nav-icon">:monitor:</span> CLI Reference</a></li>
-          <li><a href="architecture.html"><span class="nav-icon">:hammer:</span> Architecture</a></li>
-          <li><a href="integrations.html"><span class="nav-icon">:link:</span> Integrations</a></li>
+          <li><a href="cli-reference.html">CLI Reference</a></li>
+          <li><a href="architecture.html">Architecture</a></li>
+          <li><a href="integrations.html">Integrations</a></li>
         </ul>
       </div>
       <div class="sidebar-section">
@@ -78,9 +77,9 @@
       <div class="sidebar-section">
         <div class="sidebar-section__title">Links</div>
         <ul class="sidebar-nav">
-          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/bosun?tab=readme-ov-file#bosun" target="_blank" rel="noopener"><span class="nav-icon">:git:</span> GitHub</a></li>
-          <li><a href="https://www.npmjs.com/package/bosun" target="_blank"><span class="nav-icon">:box:</span> npm</a></li>
-          <li><a href="../"><span class="nav-icon">:home:</span> Home</a></li>
+          <li><a href="https://github.com/virtengine/virtengine/tree/main/scripts/bosun?tab=readme-ov-file#bosun" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/bosun" target="_blank">npm</a></li>
+          <li><a href="../">Home</a></li>
         </ul>
       </div>
     </aside>
@@ -113,7 +112,6 @@
       </p>
 
       <div class="callout callout--tip">
-        <span class="callout__icon">:lightbulb:</span>
         <p>Boolean flags accept <code>true</code>/<code>false</code> (preferred). Legacy <code>1</code>/<code>0</code> is still supported.</p>
       </div>
 
@@ -368,7 +366,7 @@ JIRA_STATUS_CANCELLED=Cancelled</code></pre>
           <tr><td><code>TELEGRAM_UI_HOST</code></td><td><code>0.0.0.0</code></td><td>Bind address</td></tr>
           <tr><td><code>TELEGRAM_UI_PUBLIC_HOST</code></td><td>auto-detect</td><td>Public hostname override (for tunnels)</td></tr>
           <tr><td><code>TELEGRAM_UI_BASE_URL</code></td><td>—</td><td>Full public URL override (HTTPS)</td></tr>
-          <tr><td><code>TELEGRAM_UI_ALLOW_UNSAFE</code></td><td><code>false</code></td><td>:ban: <strong>DANGER:</strong> Disables ALL authentication. Anyone with the URL can control agents, read secrets, and execute code on your machine. <strong>Never combine with an active tunnel</strong> — the tunnel will be blocked if this is enabled. Only use for localhost-only debugging.</td></tr>
+          <tr><td><code>TELEGRAM_UI_ALLOW_UNSAFE</code></td><td><code>false</code></td><td><strong>DANGER:</strong> Disables ALL authentication. Anyone with the URL can control agents, read secrets, and execute code on your machine. <strong>Never combine with an active tunnel</strong> — the tunnel will be blocked if this is enabled. Only use for localhost-only debugging.</td></tr>
           <tr><td><code>TELEGRAM_UI_AUTH_MAX_AGE_SEC</code></td><td><code>86400</code></td><td>Auth token max age (24h)</td></tr>
         </tbody>
       </table>
@@ -827,7 +825,6 @@ KANBAN_BACKEND=github
 KANBAN_SYNC_POLICY=bidirectional</code></pre>
 
       <div class="callout callout--info">
-        <span class="callout__icon">:help:</span>
         <p>See <a href="https://github.com/virtengine/virtengine/tree/main/scripts/bosun?tab=readme-ov-file#bosun" target="_blank" rel="noopener"><code>.env.example</code></a> in the repository for the complete list of all documented variables with inline comments.</p>
       </div>
 

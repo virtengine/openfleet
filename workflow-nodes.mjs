@@ -1480,6 +1480,286 @@ registerNodeType("action.execute_workflow", {
   },
 });
 
+registerNodeType("meeting.start", {
+  describe: () => "Create or reuse a meeting session for workflow-driven voice/video orchestration",
+  schema: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", description: "Optional session ID (auto-generated when empty)" },
+      title: { type: "string", description: "Optional human-readable session title" },
+      executor: { type: "string", description: "Preferred executor for this meeting session" },
+      mode: { type: "string", description: "Preferred agent mode for this meeting session" },
+      model: { type: "string", description: "Preferred model override for this meeting session" },
+      wakePhrase: { type: "string", description: "Optional wake phrase metadata for downstream workflow logic" },
+      metadata: { type: "object", description: "Additional metadata stored with the meeting session" },
+      activate: { type: "boolean", default: true, description: "Mark meeting session active after creation/reuse" },
+      maxMessages: { type: "number", description: "Optional session max message retention override" },
+      failOnError: { type: "boolean", default: true, description: "Throw when meeting setup fails" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const meeting = engine.services?.meeting;
+    if (!meeting || typeof meeting.startMeeting !== "function") {
+      throw new Error("Meeting service is not available");
+    }
+
+    const failOnError = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.failOnError ?? true, ctx), true);
+    try {
+      const sessionId = String(
+        ctx.resolve(node.config?.sessionId || ctx.data?.meetingSessionId || ctx.data?.sessionId || ""),
+      ).trim() || undefined;
+      const title = String(ctx.resolve(node.config?.title || "") || "").trim() || undefined;
+      const executor = String(ctx.resolve(node.config?.executor || "") || "").trim() || undefined;
+      const mode = String(ctx.resolve(node.config?.mode || "") || "").trim() || undefined;
+      const model = String(ctx.resolve(node.config?.model || "") || "").trim() || undefined;
+      const wakePhrase = String(ctx.resolve(node.config?.wakePhrase || "") || "").trim() || undefined;
+      const metadataInput = resolveWorkflowNodeValue(node.config?.metadata || {}, ctx);
+      const metadata =
+        metadataInput && typeof metadataInput === "object" && !Array.isArray(metadataInput)
+          ? { ...metadataInput }
+          : {};
+      if (title) metadata.title = title;
+      if (wakePhrase) metadata.wakePhrase = wakePhrase;
+
+      const activate = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.activate ?? true, ctx), true);
+      const maxMessagesRaw = Number(resolveWorkflowNodeValue(node.config?.maxMessages, ctx));
+      const maxMessages = Number.isFinite(maxMessagesRaw) && maxMessagesRaw > 0
+        ? Math.trunc(maxMessagesRaw)
+        : undefined;
+
+      const result = await meeting.startMeeting({
+        sessionId,
+        metadata,
+        agent: executor,
+        mode,
+        model,
+        activate,
+        maxMessages,
+      });
+
+      const activeSessionId = String(result?.sessionId || sessionId || "").trim() || null;
+      if (activeSessionId) {
+        ctx.data.meetingSessionId = activeSessionId;
+        ctx.data.sessionId = ctx.data.sessionId || activeSessionId;
+      }
+
+      return {
+        success: true,
+        sessionId: activeSessionId,
+        created: result?.created === true,
+        session: result?.session || null,
+        voice: result?.voice || null,
+      };
+    } catch (err) {
+      if (failOnError) throw err;
+      return {
+        success: false,
+        error: String(err?.message || err),
+      };
+    }
+  },
+});
+
+registerNodeType("meeting.send", {
+  describe: () => "Send a meeting message through the meeting session dispatcher",
+  schema: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", description: "Meeting session ID (defaults to context session)" },
+      message: { type: "string", description: "Message to send into the meeting session" },
+      mode: { type: "string", description: "Optional per-message mode override" },
+      model: { type: "string", description: "Optional per-message model override" },
+      timeoutMs: { type: "number", description: "Optional per-message timeout in ms" },
+      createIfMissing: { type: "boolean", default: true, description: "Create session automatically when missing" },
+      allowInactive: { type: "boolean", default: false, description: "Allow sending when session is inactive" },
+      failOnError: { type: "boolean", default: true, description: "Throw when sending fails" },
+    },
+    required: ["message"],
+  },
+  async execute(node, ctx, engine) {
+    const meeting = engine.services?.meeting;
+    if (!meeting || typeof meeting.sendMeetingMessage !== "function") {
+      throw new Error("Meeting service is not available");
+    }
+
+    const failOnError = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.failOnError ?? true, ctx), true);
+    try {
+      const sessionId = String(
+        ctx.resolve(node.config?.sessionId || ctx.data?.meetingSessionId || ctx.data?.sessionId || ""),
+      ).trim();
+      if (!sessionId) {
+        throw new Error("meeting.send requires sessionId (configure node.sessionId or run meeting.start first)");
+      }
+      const message = String(ctx.resolve(node.config?.message || "") || "").trim();
+      if (!message) {
+        throw new Error("meeting.send requires message");
+      }
+
+      const mode = String(ctx.resolve(node.config?.mode || "") || "").trim() || undefined;
+      const model = String(ctx.resolve(node.config?.model || "") || "").trim() || undefined;
+      const timeoutMsRaw = Number(resolveWorkflowNodeValue(node.config?.timeoutMs, ctx));
+      const timeoutMs = Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0
+        ? Math.trunc(timeoutMsRaw)
+        : undefined;
+      const createIfMissing = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.createIfMissing ?? true, ctx), true);
+      const allowInactive = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.allowInactive ?? false, ctx), false);
+
+      const result = await meeting.sendMeetingMessage(sessionId, message, {
+        mode,
+        model,
+        timeoutMs,
+        createIfMissing,
+        allowInactive,
+      });
+
+      const nextSessionId = String(result?.sessionId || sessionId).trim();
+      if (nextSessionId) {
+        ctx.data.meetingSessionId = nextSessionId;
+        ctx.data.sessionId = ctx.data.sessionId || nextSessionId;
+      }
+
+      return {
+        success: result?.ok !== false,
+        sessionId: nextSessionId || null,
+        messageId: result?.messageId || null,
+        status: result?.status || null,
+        responseText: result?.responseText || "",
+        adapter: result?.adapter || null,
+        observedEventCount: Number(result?.observedEventCount || 0),
+      };
+    } catch (err) {
+      if (failOnError) throw err;
+      return {
+        success: false,
+        error: String(err?.message || err),
+      };
+    }
+  },
+});
+
+registerNodeType("meeting.transcript", {
+  describe: () => "Fetch meeting transcript pages and optionally project as plain text",
+  schema: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", description: "Meeting session ID (defaults to context session)" },
+      page: { type: "number", default: 1 },
+      pageSize: { type: "number", default: 200 },
+      includeMessages: { type: "boolean", default: true, description: "Include structured message array in output" },
+      failOnError: { type: "boolean", default: true, description: "Throw when transcript retrieval fails" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const meeting = engine.services?.meeting;
+    if (!meeting || typeof meeting.fetchMeetingTranscript !== "function") {
+      throw new Error("Meeting service is not available");
+    }
+
+    const failOnError = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.failOnError ?? true, ctx), true);
+    try {
+      const sessionId = String(
+        ctx.resolve(node.config?.sessionId || ctx.data?.meetingSessionId || ctx.data?.sessionId || ""),
+      ).trim();
+      if (!sessionId) {
+        throw new Error("meeting.transcript requires sessionId (configure node.sessionId or run meeting.start first)");
+      }
+
+      const pageRaw = Number(resolveWorkflowNodeValue(node.config?.page ?? 1, ctx));
+      const page = Number.isFinite(pageRaw) && pageRaw > 0 ? Math.trunc(pageRaw) : 1;
+      const pageSizeRaw = Number(resolveWorkflowNodeValue(node.config?.pageSize ?? 200, ctx));
+      const pageSize = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0 ? Math.trunc(pageSizeRaw) : 200;
+      const includeMessages = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.includeMessages ?? true, ctx), true);
+
+      const transcript = await meeting.fetchMeetingTranscript(sessionId, {
+        page,
+        pageSize,
+      });
+      const messages = Array.isArray(transcript?.messages) ? transcript.messages : [];
+      const transcriptText = messages
+        .map((msg) => {
+          const role = String(msg?.role || msg?.type || "system").trim().toLowerCase();
+          const content = String(msg?.content || "").trim();
+          if (!content) return "";
+          return `${role}: ${content}`;
+        })
+        .filter(Boolean)
+        .join("\n");
+
+      return {
+        success: true,
+        sessionId,
+        status: transcript?.status || null,
+        page: Number(transcript?.page || page),
+        pageSize: Number(transcript?.pageSize || pageSize),
+        totalMessages: Number(transcript?.totalMessages || messages.length),
+        totalPages: Number(transcript?.totalPages || 0),
+        hasNextPage: transcript?.hasNextPage === true,
+        hasPreviousPage: transcript?.hasPreviousPage === true,
+        transcript: transcriptText,
+        messages: includeMessages ? messages : undefined,
+      };
+    } catch (err) {
+      if (failOnError) throw err;
+      return {
+        success: false,
+        error: String(err?.message || err),
+      };
+    }
+  },
+});
+
+registerNodeType("meeting.finalize", {
+  describe: () => "Finalize a meeting session with status and optional note",
+  schema: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", description: "Meeting session ID (defaults to context session)" },
+      status: {
+        type: "string",
+        enum: ["active", "paused", "completed", "archived", "failed", "cancelled"],
+        default: "completed",
+      },
+      note: { type: "string", description: "Optional note recorded in session history" },
+      failOnError: { type: "boolean", default: true, description: "Throw when finalization fails" },
+    },
+  },
+  async execute(node, ctx, engine) {
+    const meeting = engine.services?.meeting;
+    if (!meeting || typeof meeting.stopMeeting !== "function") {
+      throw new Error("Meeting service is not available");
+    }
+
+    const failOnError = parseBooleanSetting(resolveWorkflowNodeValue(node.config?.failOnError ?? true, ctx), true);
+    try {
+      const sessionId = String(
+        ctx.resolve(node.config?.sessionId || ctx.data?.meetingSessionId || ctx.data?.sessionId || ""),
+      ).trim();
+      if (!sessionId) {
+        throw new Error("meeting.finalize requires sessionId (configure node.sessionId or run meeting.start first)");
+      }
+
+      const status = String(
+        ctx.resolve(node.config?.status || "completed") || "completed",
+      ).trim().toLowerCase() || "completed";
+      const note = String(ctx.resolve(node.config?.note || "") || "").trim() || undefined;
+
+      const result = await meeting.stopMeeting(sessionId, { status, note });
+      return {
+        success: result?.ok !== false,
+        sessionId: String(result?.sessionId || sessionId).trim(),
+        status: result?.status || status,
+        session: result?.session || null,
+      };
+    } catch (err) {
+      if (failOnError) throw err;
+      return {
+        success: false,
+        error: String(err?.message || err),
+      };
+    }
+  },
+});
+
 registerNodeType("action.create_task", {
   describe: () => "Create a new task in the kanban board",
   schema: {

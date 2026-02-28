@@ -1292,6 +1292,10 @@ export class WorkflowEngine extends EventEmitter {
     if (nodeType === "action.execute_workflow") {
       return ["workflowEngine"];
     }
+    // Meeting workflow nodes require the meeting service bridge.
+    if (nodeType.startsWith("meeting.")) {
+      return ["meeting"];
+    }
     // Task-management nodes need kanban
     if (
       nodeType === "action.create_task" ||

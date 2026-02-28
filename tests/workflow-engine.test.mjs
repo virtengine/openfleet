@@ -888,6 +888,184 @@ describe("action.execute_workflow", () => {
 
 // ── Session Chaining Tests ──────────────────────────────────────────────────
 
+describe("meeting workflow nodes", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("executes meeting.start -> meeting.send -> meeting.transcript -> meeting.finalize with service wiring", async () => {
+    const meetingService = {
+      startMeeting: vi.fn(async (opts = {}) => ({
+        sessionId: opts.sessionId || "meeting-auto",
+        created: true,
+        session: { id: opts.sessionId || "meeting-auto", status: "active" },
+        voice: { available: true, provider: "openai" },
+      })),
+      sendMeetingMessage: vi.fn(async (sessionId, content) => ({
+        ok: true,
+        sessionId,
+        messageId: "msg-1",
+        status: "sent",
+        responseText: `ACK:${content}`,
+        adapter: "mock-agent",
+        observedEventCount: 1,
+      })),
+      fetchMeetingTranscript: vi.fn(async (sessionId, opts = {}) => ({
+        sessionId,
+        status: "active",
+        page: opts.page || 1,
+        pageSize: opts.pageSize || 200,
+        totalMessages: 2,
+        totalPages: 1,
+        hasNextPage: false,
+        hasPreviousPage: false,
+        messages: [
+          { role: "user", content: "hi bosun" },
+          { role: "assistant", content: "hello there" },
+        ],
+      })),
+      stopMeeting: vi.fn(async (sessionId, opts = {}) => ({
+        ok: true,
+        sessionId,
+        status: opts.status || "completed",
+        session: { id: sessionId, status: opts.status || "completed" },
+      })),
+    };
+    engine.services.meeting = meetingService;
+
+    const wf = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start", config: {} },
+        {
+          id: "start",
+          type: "meeting.start",
+          label: "Meeting Start",
+          config: {
+            sessionId: "{{meetingId}}",
+            wakePhrase: "{{wakePhrase}}",
+          },
+        },
+        {
+          id: "send",
+          type: "meeting.send",
+          label: "Meeting Send",
+          config: {
+            message: "{{openingMessage}}",
+          },
+        },
+        {
+          id: "transcript",
+          type: "meeting.transcript",
+          label: "Meeting Transcript",
+          config: {
+            includeMessages: false,
+          },
+        },
+        {
+          id: "finalize",
+          type: "meeting.finalize",
+          label: "Meeting Finalize",
+          config: {
+            status: "archived",
+            note: "{{finalNote}}",
+          },
+        },
+      ],
+      [
+        { id: "e1", source: "trigger", target: "start" },
+        { id: "e2", source: "start", target: "send" },
+        { id: "e3", source: "send", target: "transcript" },
+        { id: "e4", source: "transcript", target: "finalize" },
+      ],
+      { id: "meeting-nodes-wf", name: "Meeting Node Flow" },
+    );
+
+    engine.save(wf);
+    const ctx = await engine.execute(wf.id, {
+      meetingId: "meeting-123",
+      wakePhrase: "hi bosun",
+      openingMessage: "Please summarize this meeting.",
+      finalNote: "Workflow archived meeting session.",
+    });
+
+    expect(ctx.errors).toEqual([]);
+    expect(ctx.getNodeOutput("start")).toMatchObject({
+      success: true,
+      sessionId: "meeting-123",
+    });
+    expect(ctx.getNodeOutput("send")).toMatchObject({
+      success: true,
+      sessionId: "meeting-123",
+      messageId: "msg-1",
+    });
+    expect(ctx.getNodeOutput("transcript")).toMatchObject({
+      success: true,
+      sessionId: "meeting-123",
+      totalMessages: 2,
+      transcript: "user: hi bosun\nassistant: hello there",
+    });
+    expect(ctx.getNodeOutput("finalize")).toMatchObject({
+      success: true,
+      sessionId: "meeting-123",
+      status: "archived",
+    });
+
+    expect(meetingService.startMeeting).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "meeting-123",
+        metadata: expect.objectContaining({ wakePhrase: "hi bosun" }),
+      }),
+    );
+    expect(meetingService.sendMeetingMessage).toHaveBeenCalledWith(
+      "meeting-123",
+      "Please summarize this meeting.",
+      expect.any(Object),
+    );
+    expect(meetingService.fetchMeetingTranscript).toHaveBeenCalledWith(
+      "meeting-123",
+      expect.objectContaining({ page: 1, pageSize: 200 }),
+    );
+    expect(meetingService.stopMeeting).toHaveBeenCalledWith(
+      "meeting-123",
+      expect.objectContaining({
+        status: "archived",
+        note: "Workflow archived meeting session.",
+      }),
+    );
+  });
+
+  it("meeting.send returns soft failure when failOnError=false", async () => {
+    const handler = getNodeType("meeting.send");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ meetingSessionId: "meeting-soft-fail" });
+    const engineWithFailure = {
+      services: {
+        meeting: {
+          sendMeetingMessage: vi.fn(async () => {
+            throw new Error("dispatch failed");
+          }),
+        },
+      },
+    };
+    const node = {
+      id: "meeting-send-soft",
+      type: "meeting.send",
+      config: {
+        message: "hello",
+        failOnError: false,
+      },
+    };
+
+    const result = await handler.execute(node, ctx, engineWithFailure);
+    expect(result).toMatchObject({
+      success: false,
+      error: "dispatch failed",
+    });
+  });
+});
+
 describe("Session chaining - action.run_agent", () => {
   it("propagates threadId to context and streams agent events into run logs", async () => {
     const handler = getNodeType("action.run_agent");
