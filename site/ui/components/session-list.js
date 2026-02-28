@@ -412,6 +412,32 @@ const STATUS_COLOR_MAP = {
   archived: "var(--text-hint)",
 };
 
+const SESSION_VIEW_FILTER = Object.freeze({
+  all: "all",
+  active: "active",
+  historic: "historic",
+});
+
+function normalizeSessionViewFilter(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === SESSION_VIEW_FILTER.active) return SESSION_VIEW_FILTER.active;
+  if (normalized === SESSION_VIEW_FILTER.historic) return SESSION_VIEW_FILTER.historic;
+  return SESSION_VIEW_FILTER.all;
+}
+
+function getSessionStatusKey(session) {
+  return String(session?.status || "idle").trim().toLowerCase();
+}
+
+function isActiveSession(session) {
+  const status = getSessionStatusKey(session);
+  return status === "active" || status === "running";
+}
+
+function isHistoricSession(session) {
+  return !isActiveSession(session);
+}
+
 /* ─── Swipeable Session Item ─── */
 function SwipeableSessionItem({
   session: s,
@@ -638,6 +664,8 @@ export function SessionList({
   onSelect,
   showArchived = true,
   onToggleArchived,
+  sessionView = SESSION_VIEW_FILTER.all,
+  onSessionViewChange,
   defaultType = null,
   renamingSessionId = null,
   onStartRename,
@@ -646,9 +674,36 @@ export function SessionList({
 }) {
   const [search, setSearch] = useState("");
   const [revealedActions, setRevealedActions] = useState(null);
+  const [uncontrolledSessionView, setUncontrolledSessionView] = useState(
+    normalizeSessionViewFilter(sessionView),
+  );
   const allSessions = sessionsData.value || [];
   const error = sessionsError.value;
   const hasSearch = search.trim().length > 0;
+  const resolvedSessionView =
+    typeof onSessionViewChange === "function"
+      ? normalizeSessionViewFilter(sessionView)
+      : uncontrolledSessionView;
+
+  useEffect(() => {
+    if (typeof onSessionViewChange === "function") return;
+    const normalized = normalizeSessionViewFilter(sessionView);
+    if (normalized !== uncontrolledSessionView) {
+      setUncontrolledSessionView(normalized);
+    }
+  }, [onSessionViewChange, sessionView, uncontrolledSessionView]);
+
+  const setSessionView = useCallback(
+    (nextFilter) => {
+      const normalized = normalizeSessionViewFilter(nextFilter);
+      if (typeof onSessionViewChange === "function") {
+        onSessionViewChange(normalized);
+      } else {
+        setUncontrolledSessionView(normalized);
+      }
+    },
+    [onSessionViewChange],
+  );
 
   // Filter by defaultType to exclude ghost sessions (e.g. task sessions in Chat tab)
   const typeFiltered = defaultType
@@ -665,30 +720,39 @@ export function SessionList({
       })
     : allSessions;
 
-  const base = showArchived
+  const archivedFiltered = showArchived
     ? typeFiltered
-    : typeFiltered.filter((s) => s.status !== "archived");
+    : typeFiltered.filter((s) => getSessionStatusKey(s) !== "archived");
+
+  const viewFiltered = archivedFiltered.filter((s) => {
+    if (resolvedSessionView === SESSION_VIEW_FILTER.active) {
+      return isActiveSession(s);
+    }
+    if (resolvedSessionView === SESSION_VIEW_FILTER.historic) {
+      return isHistoricSession(s);
+    }
+    return true;
+  });
 
   const filtered = search
-    ? base.filter(
+    ? viewFiltered.filter(
         (s) =>
           (s.title || "").toLowerCase().includes(search.toLowerCase()) ||
           (s.taskId || "").toLowerCase().includes(search.toLowerCase()),
       )
-    : base;
+    : viewFiltered;
 
-  const active = filtered.filter(
-    (s) => s.status === "active" || s.status === "running",
-  );
-  const archived = filtered.filter((s) => s.status === "archived");
+  const active = filtered.filter((s) => isActiveSession(s));
+  const archived = filtered.filter((s) => getSessionStatusKey(s) === "archived");
   const recent = filtered.filter(
     (s) =>
-      s.status !== "active" &&
-      s.status !== "running" &&
-      s.status !== "archived",
+      !isActiveSession(s) && getSessionStatusKey(s) !== "archived",
   );
 
-  const archivedCount = typeFiltered.filter((s) => s.status === "archived").length;
+  const archivedCount = typeFiltered.filter((s) => getSessionStatusKey(s) === "archived").length;
+  const allCount = archivedFiltered.length;
+  const activeCount = archivedFiltered.filter((s) => isActiveSession(s)).length;
+  const historicCount = archivedFiltered.filter((s) => isHistoricSession(s)).length;
 
   const handleSelect = useCallback(
     (id) => {
@@ -703,6 +767,13 @@ export function SessionList({
     sessionsError.value = null;
     loadSessions(_lastLoadFilter);
   }, []);
+
+  const handleCreateSession = useCallback(() => {
+    if (resolvedSessionView === SESSION_VIEW_FILTER.historic) {
+      setSessionView(SESSION_VIEW_FILTER.all);
+    }
+    createSession(defaultType ? { type: defaultType } : {});
+  }, [defaultType, resolvedSessionView, setSessionView]);
 
   const handleArchive = useCallback(async (id) => {
     setRevealedActions(null);
@@ -724,6 +795,21 @@ export function SessionList({
     if (e.target.closest(".session-item-wrapper")) return;
     setRevealedActions(null);
   }, []);
+
+  const emptyTitle = hasSearch
+    ? "No matching sessions"
+    : resolvedSessionView === SESSION_VIEW_FILTER.active
+      ? "No active sessions"
+      : resolvedSessionView === SESSION_VIEW_FILTER.historic
+        ? "No historic sessions"
+        : "No sessions yet";
+  const emptyHint = hasSearch
+    ? "Try a different keyword or clear the search."
+    : resolvedSessionView === SESSION_VIEW_FILTER.active
+      ? "Start a new session or switch to All."
+      : resolvedSessionView === SESSION_VIEW_FILTER.historic
+        ? "Historic sessions appear after they finish."
+        : "Create a session to get started.";
 
   /* ── Render session items ── */
   function renderSessionItem(s) {
@@ -782,8 +868,7 @@ export function SessionList({
           `}
           <button
             class="btn btn-primary btn-sm"
-            onClick=${() =>
-              createSession(defaultType ? { type: defaultType } : {})}
+            onClick=${handleCreateSession}
           >
             + New
           </button>
@@ -797,6 +882,27 @@ export function SessionList({
           value=${search}
           onInput=${(e) => setSearch(e.target.value)}
         />
+      </div>
+
+      <div style="display:flex;gap:6px;flex-wrap:wrap;padding:0 10px 8px;">
+        <button
+          class="btn btn-sm ${resolvedSessionView === SESSION_VIEW_FILTER.all ? "btn-primary" : "btn-ghost"}"
+          onClick=${() => setSessionView(SESSION_VIEW_FILTER.all)}
+        >
+          All (${allCount})
+        </button>
+        <button
+          class="btn btn-sm ${resolvedSessionView === SESSION_VIEW_FILTER.active ? "btn-primary" : "btn-ghost"}"
+          onClick=${() => setSessionView(SESSION_VIEW_FILTER.active)}
+        >
+          Active (${activeCount})
+        </button>
+        <button
+          class="btn btn-sm ${resolvedSessionView === SESSION_VIEW_FILTER.historic ? "btn-primary" : "btn-ghost"}"
+          onClick=${() => setSessionView(SESSION_VIEW_FILTER.historic)}
+        >
+          Historic (${historicCount})
+        </button>
       </div>
 
       <div class="session-list-scroll">
@@ -820,18 +926,15 @@ export function SessionList({
           <div class="session-empty">
             <div class="session-empty-icon">${resolveIcon(":chat:")}</div>
             <div class="session-empty-text">
-              ${hasSearch ? "No matching sessions" : "No sessions yet"}
+              ${emptyTitle}
               <div class="session-empty-subtext">
-                ${hasSearch
-                  ? "Try a different keyword or clear the search."
-                  : "Create a session to get started."}
+                ${emptyHint}
               </div>
             </div>
             <div class="session-empty-actions">
               <button
                 class="btn btn-primary btn-sm"
-                onClick=${() =>
-                  createSession(defaultType ? { type: defaultType } : {})}
+                onClick=${handleCreateSession}
               >
                 + New Session
               </button>
