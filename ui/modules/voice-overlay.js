@@ -423,6 +423,53 @@ function injectOverlayStyles() {
     height: 162px;
   }
 }
+.voice-overlay.compact {
+  background: rgba(0, 0, 0, 0.93);
+}
+.voice-overlay.compact .voice-overlay-header {
+  padding: 12px 14px;
+}
+.voice-overlay.compact .voice-overlay-main {
+  padding: 62px 10px 10px;
+  flex-direction: column;
+  gap: 10px;
+}
+.voice-overlay.compact .voice-overlay-stage {
+  gap: 12px;
+}
+.voice-overlay.compact .voice-overlay-center {
+  gap: 12px;
+}
+.voice-overlay.compact .voice-orb-container {
+  width: 138px;
+  height: 138px;
+}
+.voice-overlay.compact .voice-transcript-area {
+  max-width: none;
+  width: 100%;
+  min-height: 46px;
+}
+.voice-overlay.compact .voice-transcript-user {
+  font-size: 14px;
+}
+.voice-overlay.compact .voice-transcript-assistant {
+  font-size: 15px;
+  line-height: 1.4;
+}
+.voice-overlay.compact .voice-tool-cards {
+  max-width: none;
+}
+.voice-overlay.compact .voice-overlay-chat {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  max-height: 44vh;
+}
+.voice-overlay.compact .voice-end-btn {
+  width: 56px;
+  height: 56px;
+  font-size: 20px;
+}
   `;
   document.head.appendChild(style);
 }
@@ -442,6 +489,7 @@ function formatDuration(seconds) {
  * visible: boolean,
  * onClose: () => void,
  * onDismiss?: () => void,
+ * compact?: boolean,
  * tier: number,
  * sessionId?: string,
  * executor?: string,
@@ -455,6 +503,7 @@ export function VoiceOverlay({
   visible,
   onClose,
   onDismiss,
+  compact = false,
   tier = 1,
   sessionId,
   executor,
@@ -697,7 +746,7 @@ export function VoiceOverlay({
         : "live";
 
   return html`
-    <div class="voice-overlay">
+    <div class=${`voice-overlay${compact ? " compact" : ""}`}>
       <!-- Header -->
       <div class="voice-overlay-header">
         <button class="voice-overlay-close" onClick=${handleDismiss} title="Hide voice window">

@@ -1765,8 +1765,14 @@ function applyTelegramMiniAppDefaults(env, sourceEnv = process.env) {
     env.TELEGRAM_UI_PORT || sourceEnv.TELEGRAM_UI_PORT,
   );
 
+  // Default tunnel mode: if named tunnel credentials are present, use "named";
+  // otherwise fall back to "quick" so the UI works out-of-the-box without setup.
   if (!env.TELEGRAM_UI_TUNNEL && !sourceEnv.TELEGRAM_UI_TUNNEL) {
-    env.TELEGRAM_UI_TUNNEL = "named";
+    const hasNamedCreds = !!(
+      (env.CLOUDFLARE_TUNNEL_NAME || sourceEnv.CLOUDFLARE_TUNNEL_NAME) &&
+      (env.CLOUDFLARE_TUNNEL_CREDENTIALS || sourceEnv.CLOUDFLARE_TUNNEL_CREDENTIALS)
+    );
+    env.TELEGRAM_UI_TUNNEL = hasNamedCreds ? "named" : "quick";
   }
   if (!env.TELEGRAM_UI_ALLOW_UNSAFE && !sourceEnv.TELEGRAM_UI_ALLOW_UNSAFE) {
     env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
@@ -1775,7 +1781,10 @@ function applyTelegramMiniAppDefaults(env, sourceEnv = process.env) {
     !env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK
     && !sourceEnv.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK
   ) {
-    env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK = "false";
+    // Allow quick tunnel as fallback by default so named-tunnel failures don't
+    // silently kill the UI. Users who explicitly set "named" during --setup will
+    // have this set to "false" by the wizard if credentials were provided.
+    env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK = "true";
   }
   if (
     !env.TELEGRAM_UI_FALLBACK_AUTH_ENABLED
@@ -3579,6 +3588,154 @@ async function main() {
         }
       }
     }
+
+    // ── Sub-step 6b: Web UI / Telegram Mini App / Cloudflare Tunnel ──────────
+    const hasTelegramToken = !!(env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN);
+    if (hasTelegramToken) {
+      console.log();
+      console.log(chalk.bold("  Web UI & Telegram Mini App"));
+      console.log(
+        chalk.dim("  Bosun includes a browser-based dashboard that can open inside Telegram\n") +
+        chalk.dim("  as a Mini App. External HTTPS access is provided via a Cloudflare tunnel\n") +
+        chalk.dim("  (cloudflared). Without the tunnel, the UI is LAN-only.\n"),
+      );
+
+      const wantWebUi = await prompt.confirm(
+        "Enable browser Web UI / Telegram Mini App?",
+        true,
+      );
+
+      if (!wantWebUi) {
+        env.TELEGRAM_MINIAPP_ENABLED = "false";
+        env.TELEGRAM_UI_TUNNEL = "disabled";
+        info("Web UI disabled. Re-run setup or add TELEGRAM_MINIAPP_ENABLED=true to .env to enable later.");
+      } else {
+        env.TELEGRAM_MINIAPP_ENABLED = "true";
+        env.TELEGRAM_UI_PORT = normalizeTelegramUiPort(
+          env.TELEGRAM_UI_PORT || process.env.TELEGRAM_UI_PORT,
+        );
+        env.TELEGRAM_UI_ALLOW_UNSAFE = "false";
+
+        console.log();
+        const tunnelModeIdx = await prompt.choose(
+          "How should the Web UI be exposed externally?",
+          [
+            "Quick tunnel  — ephemeral trycloudflare.com URL (simplest, no account needed)",
+            "Named tunnel  — permanent custom URL (requires Cloudflare account + credentials)",
+            "LAN only      — local network access only, no public tunnel",
+          ],
+          0,
+        );
+
+        if (tunnelModeIdx === 0) {
+          // ── Quick tunnel ──────────────────────────────────────────────────
+          env.TELEGRAM_UI_TUNNEL = "quick";
+          env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK = "true";
+          info("✓ Quick tunnel selected — a trycloudflare.com URL will appear on startup.");
+          console.log(chalk.dim("  The URL changes on restart. Install cloudflared if not already present:"));
+          console.log(chalk.dim("    https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"));
+
+        } else if (tunnelModeIdx === 1) {
+          // ── Named tunnel ──────────────────────────────────────────────────
+          env.TELEGRAM_UI_TUNNEL = "named";
+
+          console.log();
+          console.log(chalk.bold("  Named Tunnel Setup"));
+          console.log(
+            chalk.dim("  Prerequisites:\n") +
+            chalk.dim("    1. Cloudflare account with a registered domain\n") +
+            chalk.dim("    2. cloudflared CLI installed:\n") +
+            chalk.dim("         https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/\n") +
+            chalk.dim("    3. Run:  cloudflared tunnel login\n") +
+            chalk.dim("    4. Run:  cloudflared tunnel create <your-tunnel-name>\n") +
+            chalk.dim("    5. Copy the credentials JSON path shown (e.g. ~/.cloudflared/<uuid>.json)\n"),
+          );
+
+          const hasCredsReady = await prompt.confirm(
+            "Do you have your tunnel credentials file ready?",
+            false,
+          );
+
+          if (hasCredsReady) {
+            env.CLOUDFLARE_TUNNEL_NAME = await prompt.ask(
+              "Tunnel name  (from: cloudflared tunnel create <name>)",
+              process.env.CLOUDFLARE_TUNNEL_NAME || "",
+            );
+            env.CLOUDFLARE_TUNNEL_CREDENTIALS = await prompt.ask(
+              "Credentials file path  (e.g. ~/.cloudflared/<uuid>.json)",
+              process.env.CLOUDFLARE_TUNNEL_CREDENTIALS || "",
+            );
+            env.CLOUDFLARE_BASE_DOMAIN = await prompt.ask(
+              "Your Cloudflare domain  (e.g. example.com — used for auto hostname)",
+              process.env.CLOUDFLARE_BASE_DOMAIN || "",
+            );
+
+            if (isAdvancedSetup) {
+              const explicitHostname = await prompt.ask(
+                "Custom hostname (leave blank for auto: bosun-<username>.<domain>)",
+                process.env.CLOUDFLARE_TUNNEL_HOSTNAME || "",
+              );
+              if (explicitHostname) {
+                env.CLOUDFLARE_TUNNEL_HOSTNAME = explicitHostname;
+              }
+
+              const cfApiToken = await prompt.ask(
+                "Cloudflare API token for DNS auto-sync (optional — leave blank to skip)",
+                process.env.CLOUDFLARE_API_TOKEN || "",
+              );
+              if (cfApiToken) {
+                env.CLOUDFLARE_API_TOKEN = cfApiToken;
+                env.CLOUDFLARE_DNS_SYNC_ENABLED = "true";
+                const cfZoneId = await prompt.ask(
+                  "Cloudflare Zone ID  (from your domain's Overview page)",
+                  process.env.CLOUDFLARE_ZONE_ID || "",
+                );
+                if (cfZoneId) env.CLOUDFLARE_ZONE_ID = cfZoneId;
+              }
+            }
+
+            const hasNameAndCreds = env.CLOUDFLARE_TUNNEL_NAME && env.CLOUDFLARE_TUNNEL_CREDENTIALS;
+            if (hasNameAndCreds) {
+              env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK = "false";
+              info("✓ Named tunnel configured.");
+              if (!env.CLOUDFLARE_BASE_DOMAIN && !process.env.CLOUDFLARE_BASE_DOMAIN) {
+                warn("No base domain set — hostname auto-resolution will fail. Set CLOUDFLARE_BASE_DOMAIN in .env.");
+              }
+            } else {
+              warn("Tunnel name or credentials path missing — enabling quick tunnel as fallback.");
+              warn("Add CLOUDFLARE_TUNNEL_NAME + CLOUDFLARE_TUNNEL_CREDENTIALS to .env to activate named tunnel.");
+              env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK = "true";
+            }
+          } else {
+            warn("No problem! Add these to .env when ready:");
+            console.log(chalk.cyan("  CLOUDFLARE_TUNNEL_NAME=<tunnel-name>"));
+            console.log(chalk.cyan("  CLOUDFLARE_TUNNEL_CREDENTIALS=~/.cloudflared/<uuid>.json"));
+            console.log(chalk.cyan("  CLOUDFLARE_BASE_DOMAIN=example.com"));
+            console.log();
+            warn("Enabling quick tunnel as fallback until named tunnel credentials are in .env.");
+            env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK = "true";
+          }
+
+        } else {
+          // ── LAN only ──────────────────────────────────────────────────────
+          env.TELEGRAM_UI_TUNNEL = "disabled";
+          const lanPort = env.TELEGRAM_UI_PORT || "3080";
+          info(`LAN-only mode — Web UI will be accessible at https://localhost:${lanPort}`);
+          info("Note: Telegram Mini App requires an external HTTPS URL and will not work in LAN-only mode.");
+          env.TELEGRAM_MINIAPP_ENABLED = "false";
+        }
+
+        if (isAdvancedSetup && tunnelModeIdx < 2) {
+          console.log();
+          const customPort = await prompt.ask(
+            "Web UI port",
+            String(env.TELEGRAM_UI_PORT || process.env.TELEGRAM_UI_PORT || "3080"),
+          );
+          env.TELEGRAM_UI_PORT = customPort || env.TELEGRAM_UI_PORT || "3080";
+        }
+      }
+    } // end sub-step 6b
+
     saveSetupSnapshot(6, "Telegram Notifications", env, configJson);
     } // end step 6
 

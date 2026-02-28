@@ -3694,7 +3694,9 @@ async function startNamedTunnel(cfBin, { tunnelName, credentialsPath }, localPor
       mode: TUNNEL_MODE_NAMED,
     });
     console.warn(
-      "[telegram-ui] named tunnel requires CLOUDFLARE_TUNNEL_NAME + CLOUDFLARE_TUNNEL_CREDENTIALS",
+      "[telegram-ui] named tunnel requires CLOUDFLARE_TUNNEL_NAME + CLOUDFLARE_TUNNEL_CREDENTIALS.\n" +
+      "[telegram-ui] Run \"bosun --setup\" and choose \"Named tunnel\" to configure Cloudflare credentials,\n" +
+      "[telegram-ui] or set TELEGRAM_UI_TUNNEL=quick for an ephemeral trycloudflare.com URL.",
     );
     return null;
   }
@@ -3706,7 +3708,11 @@ async function startNamedTunnel(cfBin, { tunnelName, credentialsPath }, localPor
       mode: TUNNEL_MODE_NAMED,
       tunnelName: normalizedTunnelName,
     });
-    console.warn(`[telegram-ui] named tunnel credentials not found or invalid: ${normalizedCredsPath}`);
+    console.warn(
+      `[telegram-ui] named tunnel credentials not found or invalid: ${normalizedCredsPath}\n` +
+      `[telegram-ui] Ensure the path is correct and the file exists.\n` +
+      `[telegram-ui] Re-run "bosun --setup" to reconfigure Cloudflare tunnel credentials.`,
+    );
     return null;
   }
 

@@ -59,8 +59,9 @@ describe("setup env output", () => {
     expect(configured).toBe(true);
     expect(env.TELEGRAM_MINIAPP_ENABLED).toBe("true");
     expect(env.TELEGRAM_UI_PORT).toBe("3080");
-    expect(env.TELEGRAM_UI_TUNNEL).toBe("named");
-    expect(env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK).toBe("false");
+    // No named-tunnel credentials → default is "quick" (safe out-of-the-box)
+    expect(env.TELEGRAM_UI_TUNNEL).toBe("quick");
+    expect(env.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK).toBe("true");
     expect(env.TELEGRAM_UI_FALLBACK_AUTH_ENABLED).toBe("true");
     expect(env.CLOUDFLARE_USERNAME_HOSTNAME_POLICY).toBe("per-user-fixed");
     expect(env.TELEGRAM_UI_ALLOW_UNSAFE).toBe("false");

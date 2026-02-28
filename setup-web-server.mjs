@@ -545,17 +545,26 @@ function applyTelegramMiniAppSetupEnv(envMap, env, sourceEnv = process.env) {
   const tunnelRaw =
     env?.telegramUiTunnel ||
     env?.TELEGRAM_UI_TUNNEL ||
-    sourceEnv.TELEGRAM_UI_TUNNEL ||
-    "named";
-  envMap.TELEGRAM_UI_TUNNEL = String(tunnelRaw).trim() || "named";
+    sourceEnv.TELEGRAM_UI_TUNNEL;
+  // Default to "quick" when no named-tunnel credentials are configured so the
+  // UI starts successfully out-of-the-box without --setup.
+  const hasNamedCreds = !!(
+    (env?.CLOUDFLARE_TUNNEL_NAME || sourceEnv.CLOUDFLARE_TUNNEL_NAME) &&
+    (env?.CLOUDFLARE_TUNNEL_CREDENTIALS || sourceEnv.CLOUDFLARE_TUNNEL_CREDENTIALS)
+  );
+  const tunnelDefault = hasNamedCreds ? "named" : "quick";
+  envMap.TELEGRAM_UI_TUNNEL = String(tunnelRaw || tunnelDefault).trim() || tunnelDefault;
 
   const quickFallbackRaw =
     env?.telegramUiAllowQuickTunnelFallback ??
     env?.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK ??
     sourceEnv.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK;
+  // Default true so named-tunnel failures fall back gracefully rather than
+  // silently killing the Web UI. --setup sets this to false when credentials
+  // are provided and the tunnel is known-good.
   envMap.TELEGRAM_UI_ALLOW_QUICK_TUNNEL_FALLBACK = toBooleanEnvString(
     quickFallbackRaw,
-    false,
+    true,
   );
 
   const fallbackAuthRaw =
