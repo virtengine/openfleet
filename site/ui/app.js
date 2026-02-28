@@ -61,6 +61,7 @@ const TABLET_MIN_WIDTH = 768;
 const COMPACT_NAV_MAX_WIDTH = 520;
 const RAIL_ICON_WIDTH = 54;
 const SIDEBAR_ICON_WIDTH = 54;
+const APP_LOGO_SOURCES = ["/logo.png", "/logo.svg", "/favicon.png"];
 const VOICE_LAUNCH_QUERY_KEYS = [
   "launch",
   "call",
@@ -73,6 +74,30 @@ const VOICE_LAUNCH_QUERY_KEYS = [
   "source",
   "chat_id",
 ];
+
+function getAppLogoSource(index = 0) {
+  const safeIndex = Number.isFinite(index) ? Math.trunc(index) : 0;
+  if (safeIndex <= 0) return APP_LOGO_SOURCES[0];
+  if (safeIndex >= APP_LOGO_SOURCES.length) {
+    return APP_LOGO_SOURCES[APP_LOGO_SOURCES.length - 1];
+  }
+  return APP_LOGO_SOURCES[safeIndex];
+}
+
+function handleAppLogoLoadError(event) {
+  const target = event?.currentTarget;
+  if (!target) return;
+
+  const currentIndex = Number.parseInt(
+    String(target.dataset?.logoFallbackIndex || "0"),
+    10,
+  );
+  const nextIndex = Number.isFinite(currentIndex) ? currentIndex + 1 : 1;
+  if (nextIndex >= APP_LOGO_SOURCES.length) return;
+
+  target.dataset.logoFallbackIndex = String(nextIndex);
+  target.src = getAppLogoSource(nextIndex);
+}
 
 function parseVoiceLaunchFromUrl() {
   if (typeof window === "undefined") return null;
@@ -586,7 +611,13 @@ function SidebarNav({ collapsed = false, onToggle }) {
       <div class="sidebar-brand-row">
         <div class="sidebar-brand">
           <div class="sidebar-logo">
-            <img src="logo.png" alt="Bosun" class="app-logo-img" />
+            <img
+              src=${getAppLogoSource(0)}
+              alt="Bosun"
+              class="app-logo-img"
+              data-logo-fallback-index="0"
+              onError=${handleAppLogoLoadError}
+            />
           </div>
           ${!collapsed && html`<div class="sidebar-title">Bosun</div>`}
         </div>

@@ -9022,6 +9022,7 @@ async function handleApi(req, res, url) {
         available: availability.available,
         tier: availability.tier,
         provider: availability.provider,
+        reason: availability.reason || "",
         voiceId: config.voiceId,
         turnDetection: config.turnDetection,
         model: config.model,
