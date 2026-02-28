@@ -683,6 +683,209 @@ describe("New node types", () => {
   });
 });
 
+describe("action.execute_workflow", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("sync mode executes child workflow with resolved input and stores summary output", async () => {
+    const childWorkflow = makeSimpleWorkflow(
+      [
+        { id: "child-trigger", type: "trigger.manual", label: "Start Child", config: {} },
+      ],
+      [],
+      { id: "child-sync-wf", name: "Child Sync Workflow" },
+    );
+    const parentWorkflow = makeSimpleWorkflow(
+      [
+        { id: "trigger", type: "trigger.manual", label: "Start Parent", config: {} },
+        {
+          id: "invoke-child",
+          type: "action.execute_workflow",
+          label: "Invoke Child",
+          config: {
+            workflowId: "{{targetWorkflowId}}",
+            input: {
+              payload: "{{payload}}",
+              nested: { value: "{{nestedValue}}" },
+            },
+            inheritContext: true,
+            includeKeys: ["sharedValue"],
+            outputVariable: "childSummary",
+          },
+        },
+      ],
+      [{ id: "e1", source: "trigger", target: "invoke-child" }],
+      { id: "parent-sync-wf", name: "Parent Sync Workflow" },
+    );
+
+    engine.save(childWorkflow);
+    engine.save(parentWorkflow);
+
+    const parentCtx = await engine.execute(parentWorkflow.id, {
+      targetWorkflowId: childWorkflow.id,
+      payload: "payload-value",
+      nestedValue: "nested-value",
+      sharedValue: "inherit-me",
+      ignoredValue: "do-not-inherit",
+    });
+
+    expect(parentCtx.errors).toEqual([]);
+    const output = parentCtx.getNodeOutput("invoke-child");
+    expect(output).toMatchObject({
+      success: true,
+      queued: false,
+      mode: "sync",
+      workflowId: childWorkflow.id,
+      status: "completed",
+      errorCount: 0,
+    });
+    expect(typeof output.runId).toBe("string");
+    expect(parentCtx.data.childSummary).toEqual(output);
+
+    const childDetail = engine.getRunDetail(output.runId);
+    expect(childDetail).toBeTruthy();
+    expect(childDetail.workflowId).toBe(childWorkflow.id);
+    expect(childDetail.detail?.data?.payload).toBe("payload-value");
+    expect(childDetail.detail?.data?.nested?.value).toBe("nested-value");
+    expect(childDetail.detail?.data?.sharedValue).toBe("inherit-me");
+    expect(childDetail.detail?.data?.ignoredValue).toBeUndefined();
+    expect(childDetail.detail?.data?._workflowStack).toEqual([parentWorkflow.id, childWorkflow.id]);
+  });
+
+  it("dispatch mode queues child workflow without waiting for completion", async () => {
+    const handler = getNodeType("action.execute_workflow");
+    expect(handler).toBeDefined();
+
+    const ctx = new WorkflowContext({ _workflowId: "parent-dispatch-wf" });
+    let releaseChild;
+    const childRunPromise = new Promise((resolve) => {
+      releaseChild = resolve;
+    });
+    const mockEngine = {
+      execute: vi.fn().mockReturnValue(childRunPromise),
+      get: vi.fn().mockReturnValue({ id: "child-dispatch-wf" }),
+    };
+    const node = {
+      id: "dispatch-child",
+      type: "action.execute_workflow",
+      config: {
+        workflowId: "child-dispatch-wf",
+        mode: "dispatch",
+        outputVariable: "dispatchSummary",
+      },
+    };
+
+    try {
+      const result = await handler.execute(node, ctx, mockEngine);
+      expect(result).toMatchObject({
+        success: true,
+        queued: true,
+        mode: "dispatch",
+        workflowId: "child-dispatch-wf",
+      });
+      expect(ctx.data.dispatchSummary).toEqual(result);
+      expect(mockEngine.execute).toHaveBeenCalledTimes(1);
+      expect(mockEngine.execute).toHaveBeenCalledWith(
+        "child-dispatch-wf",
+        expect.objectContaining({
+          _workflowStack: ["parent-dispatch-wf", "child-dispatch-wf"],
+        }),
+      );
+    } finally {
+      releaseChild?.(new WorkflowContext({}));
+      await childRunPromise;
+    }
+  });
+
+  it("blocks recursive workflow loops unless allowRecursive is true", async () => {
+    const handler = getNodeType("action.execute_workflow");
+    expect(handler).toBeDefined();
+
+    const recursiveCtx = new WorkflowContext({
+      _workflowId: "wf-current",
+      _workflowStack: ["wf-root", "wf-current"],
+    });
+    const blockingEngine = {
+      execute: vi.fn(),
+      get: vi.fn().mockReturnValue({ id: "wf-root" }),
+    };
+    const recursiveNode = {
+      id: "recursive-call",
+      type: "action.execute_workflow",
+      config: { workflowId: "wf-root" },
+    };
+
+    await expect(handler.execute(recursiveNode, recursiveCtx, blockingEngine))
+      .rejects
+      .toThrow(/recursive workflow call blocked/i);
+    expect(blockingEngine.execute).not.toHaveBeenCalled();
+
+    const allowEngine = {
+      execute: vi.fn().mockResolvedValue(new WorkflowContext({})),
+      get: vi.fn().mockReturnValue({ id: "wf-root" }),
+    };
+    const allowedNode = {
+      id: "recursive-allowed",
+      type: "action.execute_workflow",
+      config: { workflowId: "wf-root", allowRecursive: true, failOnChildError: false },
+    };
+
+    const allowedResult = await handler.execute(allowedNode, recursiveCtx, allowEngine);
+    expect(allowEngine.execute).toHaveBeenCalledTimes(1);
+    expect(allowedResult.success).toBe(true);
+  });
+
+  it("sync mode honors failOnChildError", async () => {
+    const handler = getNodeType("action.execute_workflow");
+    expect(handler).toBeDefined();
+
+    const failedChildCtx = new WorkflowContext({});
+    failedChildCtx.error("child-node", new Error("child exploded"));
+
+    const mockEngine = {
+      execute: vi.fn().mockResolvedValue(failedChildCtx),
+      get: vi.fn().mockReturnValue({ id: "child-failing-wf" }),
+    };
+
+    const throwingNode = {
+      id: "throw-on-child-fail",
+      type: "action.execute_workflow",
+      config: { workflowId: "child-failing-wf", mode: "sync" },
+    };
+    await expect(
+      handler.execute(throwingNode, new WorkflowContext({ _workflowId: "parent-wf" }), mockEngine),
+    ).rejects.toThrow(/child workflow "child-failing-wf" failed/i);
+
+    const softFailNode = {
+      id: "soft-child-fail",
+      type: "action.execute_workflow",
+      config: {
+        workflowId: "child-failing-wf",
+        mode: "sync",
+        failOnChildError: false,
+        outputVariable: "childResult",
+      },
+    };
+    const softCtx = new WorkflowContext({ _workflowId: "parent-wf" });
+    const softResult = await handler.execute(softFailNode, softCtx, mockEngine);
+    expect(softResult).toMatchObject({
+      success: false,
+      queued: false,
+      mode: "sync",
+      workflowId: "child-failing-wf",
+      status: WorkflowStatus.FAILED,
+      errorCount: 1,
+    });
+    expect(softResult.errors[0]).toMatchObject({
+      nodeId: "child-node",
+      error: "child exploded",
+    });
+    expect(softCtx.data.childResult).toEqual(softResult);
+  });
+});
+
 // ── Session Chaining Tests ──────────────────────────────────────────────────
 
 describe("Session chaining - action.run_agent", () => {

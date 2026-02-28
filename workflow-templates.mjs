@@ -7,7 +7,7 @@
  *
  * Templates are split into category modules for easy extension:
  *   workflow-templates/github.mjs     — PR Merge Strategy, Triage, Conflict Resolver, Stale Reaper, Release Drafter
- *   workflow-templates/agents.mjs     — Frontend Agent, Review Agent, Custom Agent, Session Monitor, Backend Agent
+ *   workflow-templates/agents.mjs     — Frontend Agent, Review Agent, Custom Agent, Session Monitor, Backend Agent, Meeting Orchestrator + Subworkflow Chain
  *   workflow-templates/planning.mjs   — Task Planner, Task Replenish, Nightly Report, Sprint Retrospective
  *   workflow-templates/ci-cd.mjs      — Build & Deploy, Release Pipeline, Canary Deploy
  *   workflow-templates/reliability.mjs — Error Recovery, Anomaly Watchdog, Workspace Hygiene, Health Check, Task Finalization Guard, Task Repair Worktree, Incident Response
@@ -54,6 +54,7 @@ import {
   AGENT_SESSION_MONITOR_TEMPLATE,
   BACKEND_AGENT_TEMPLATE,
   VOICE_VIDEO_PARALLEL_ROLLOUT_TEMPLATE,
+  MEETING_SUBWORKFLOW_CHAIN_TEMPLATE,
 } from "./workflow-templates/agents.mjs";
 
 // Planning
@@ -104,6 +105,7 @@ export {
   AGENT_SESSION_MONITOR_TEMPLATE,
   BACKEND_AGENT_TEMPLATE,
   VOICE_VIDEO_PARALLEL_ROLLOUT_TEMPLATE,
+  MEETING_SUBWORKFLOW_CHAIN_TEMPLATE,
   TASK_PLANNER_TEMPLATE,
   TASK_REPLENISH_TEMPLATE,
   NIGHTLY_REPORT_TEMPLATE,
@@ -153,6 +155,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   AGENT_SESSION_MONITOR_TEMPLATE,
   BACKEND_AGENT_TEMPLATE,
   VOICE_VIDEO_PARALLEL_ROLLOUT_TEMPLATE,
+  MEETING_SUBWORKFLOW_CHAIN_TEMPLATE,
   // ── Planning ──
   TASK_PLANNER_TEMPLATE,
   TASK_REPLENISH_TEMPLATE,

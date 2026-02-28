@@ -243,6 +243,96 @@ Pauses execution for a configurable duration.
 | `delayMs`    | number / string | Milliseconds to wait. Supports `{{variable}}`. |
 | `reason`     | string          | (optional) Human-readable reason shown in logs |
 
+#### `action.execute_workflow`
+
+Executes another workflow from inside the current workflow (subworkflow chaining).
+
+| Config field        | Type           | Description |
+| ------------------- | -------------- | ----------- |
+| `workflowId`        | string         | Target workflow id to execute. Supports `{{variable}}`. |
+| `input`             | object         | Input payload passed to the child workflow. |
+| `waitForCompletion` | boolean        | If `true`, parent waits for child result; if `false`, dispatches and continues. |
+| `timeoutMs`         | number / string | Timeout for synchronous execution path. |
+| `continueOnError`   | boolean        | When `true`, return failure output instead of throwing. |
+
+**Returns:** `{ success, status, workflowId, runId?, error? }`
+
+**Example:**
+
+```json
+{
+  "type": "action.execute_workflow",
+  "config": {
+    "workflowId": "{{childWorkflowId}}",
+    "input": {
+      "parentRunId": "{{_workflowRunId}}",
+      "sessionTitle": "{{sessionTitle}}",
+      "transcript": "{{meeting-transcript.transcript}}"
+    },
+    "waitForCompletion": true,
+    "timeoutMs": "{{childWorkflowTimeoutMs}}",
+    "continueOnError": true
+  }
+}
+```
+
+---
+
+### Meeting Nodes
+
+Meeting nodes structure session-style flows and are typically paired with `action.execute_workflow` to hand off transcript-derived work.
+
+#### `meeting.start`
+
+Starts a meeting/session context.
+
+| Config field | Type   | Description |
+| ------------ | ------ | ----------- |
+| `title`      | string | Session title. Supports `{{variable}}`. |
+| `executor`   | string | Meeting executor profile or SDK selector. |
+| `wakePhrase` | string | Wake phrase expected in transcript guard checks. |
+
+#### `meeting.send`
+
+Sends a prompt/message into the active meeting session.
+
+| Config field | Type   | Description |
+| ------------ | ------ | ----------- |
+| `message`    | string | Prompt content to send. Supports `{{variable}}`. |
+| `role`       | string | Message role, typically `system` or `user`. |
+
+#### `meeting.transcript`
+
+Captures transcript output for downstream conditions and chaining.
+
+| Config field          | Type   | Description |
+| --------------------- | ------ | ----------- |
+| `format`              | string | Transcript output format (for example `markdown`, `json`). |
+| `includeSpeakerTags`  | boolean | Include speaker labels in transcript output. |
+| `includeTimestamps`   | boolean | Include timestamps in transcript output. |
+
+#### `meeting.finalize`
+
+Closes the session and persists final artifacts.
+
+| Config field               | Type   | Description |
+| -------------------------- | ------ | ----------- |
+| `disposition`              | string | Final state label (for example `completed`, `cancelled`). |
+| `includeTranscriptSummary` | boolean | Include summarized transcript in final output. |
+| `persistTranscript`        | boolean | Persist transcript for audit/tracing. |
+
+**Example chain (meeting + subworkflow):**
+
+```json
+[
+  { "id": "meeting-start", "type": "meeting.start" },
+  { "id": "meeting-send", "type": "meeting.send" },
+  { "id": "meeting-transcript", "type": "meeting.transcript" },
+  { "id": "chain", "type": "action.execute_workflow" },
+  { "id": "meeting-finalize", "type": "meeting.finalize" }
+]
+```
+
 ---
 
 ### Condition Nodes
@@ -545,6 +635,24 @@ Watches running agent sessions, detects stalls (no output in `stallThresholdMs`)
 Like Frontend Agent but for backend tasks — runs `npm test` and database migration checks as validation gates.
 
 **Trigger:** `trigger.manual`
+
+---
+
+#### Meeting Orchestrator + Subworkflow Chain
+
+> `template-meeting-subworkflow-chain`
+
+Advanced meeting/session template that demonstrates:
+
+- `meeting.start` → `meeting.send` → `meeting.transcript` → `meeting.finalize`
+- Wake-phrase + transcript-length guard before chaining
+- Child workflow invocation via `action.execute_workflow`
+- Telegram notifications on guard failure, child success, and child failure
+
+**Trigger:** `trigger.manual`  
+**Key variables:** `sessionTitle`, `meetingExecutor`, `wakePhrase`, `childWorkflowId`, `childWorkflowTimeoutMs`
+
+**Subworkflow chaining pattern:** use this template when a meeting transcript should fan into a dedicated downstream workflow (for example planner, report generation, or incident follow-up) without embedding all logic in one DAG.
 
 ---
 

@@ -93,12 +93,35 @@ fi
 declare -a CHANGED_FILES=()
 declare -a CHANGED_RUNTIME=()
 declare -a CHANGED_TESTS=()
+declare -A LINKED_STATIC_TEST_MAP=()
+
+collect_linked_static_tests() {
+  local changed_path="$1"
+  local normalized="${changed_path//\\//}"
+  [ -z "$normalized" ] && return 0
+
+  local -a candidates=("$normalized")
+  if [[ "$normalized" == site/* ]]; then
+    candidates+=("${normalized#site/}")
+  elif [[ "$normalized" == ui/* ]]; then
+    candidates+=("site/$normalized")
+  fi
+
+  local candidate test_file
+  for candidate in "${candidates[@]}"; do
+    while IFS= read -r test_file; do
+      [ -z "$test_file" ] && continue
+      LINKED_STATIC_TEST_MAP["$test_file"]=1
+    done < <(rg -l -F --glob "*.test.mjs" -- "$candidate" tests 2>/dev/null || true)
+  done
+}
 
 for file in "${!CHANGED_MAP[@]}"; do
   CHANGED_FILES+=("$file")
   case "$file" in
     *.mjs|*.js|*.cjs|*.ts|*.tsx)
       CHANGED_RUNTIME+=("$file")
+      collect_linked_static_tests "$file"
       ;;
   esac
   case "$file" in
@@ -127,6 +150,16 @@ fi
 if [ "${#CHANGED_TESTS[@]}" -gt 0 ]; then
   echo "[hooks] running changed test files explicitly…"
   npx vitest run --config vitest.config.mjs "${CHANGED_TESTS[@]}"
+fi
+
+declare -a LINKED_STATIC_TESTS=()
+for test_file in "${!LINKED_STATIC_TEST_MAP[@]}"; do
+  LINKED_STATIC_TESTS+=("$test_file")
+done
+
+if [ "${#LINKED_STATIC_TESTS[@]}" -gt 0 ]; then
+  echo "[hooks] running static source-linked tests for changed files…"
+  npx vitest run --config vitest.config.mjs "${LINKED_STATIC_TESTS[@]}"
 fi
 
 echo "[hooks] pre-push checks passed ✓"

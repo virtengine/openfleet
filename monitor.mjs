@@ -525,10 +525,19 @@ async function ensureWorkflowAutomationEngine() {
             }
           : null;
 
+      let meetingService = null;
+      try {
+        const { createMeetingWorkflowService } = await import("./meeting-workflow-service.mjs");
+        meetingService = createMeetingWorkflowService();
+      } catch (err) {
+        console.warn(`[workflows] meeting service unavailable: ${err?.message || err}`);
+      }
+
       const services = {
         telegram: telegramService,
         kanban: kanbanService,
         agentPool: agentPoolService,
+        meeting: meetingService,
         prompts: agentPrompts || null,
         anomalyDetector: anomalyDetector || null,
       };

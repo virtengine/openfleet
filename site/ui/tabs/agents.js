@@ -1772,34 +1772,36 @@ function FleetSessionsPanel({ slots, onOpenWorkspace, onForceStop }) {
                   >${iconText(":file: Logs")}</button>
                 </div>
                 <div class="fleet-session-body">
-                  ${detailTab === "stream" &&
-                  (sessionId
-                    ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
-                    : html`
-                        <div class="chat-view chat-empty-state">
-                          <div class="session-empty-icon">${resolveIcon(":chat:")}</div>
-                          <div class="session-empty-text">No linked chat session found for this slot</div>
-                        </div>
-                      `)}
-                  ${detailTab === "context" &&
-                  (contextId
-                    ? html`<${ContextViewer} sessionId=${contextId} />`
-                    : html`
-                        <div class="chat-view chat-empty-state">
-                          <div class="session-empty-icon">${resolveIcon(":clipboard:")}</div>
-                          <div class="session-empty-text">No context source available</div>
-                        </div>
-                      `)}
-                  ${detailTab === "diff" &&
-                  (sessionId
-                    ? html`<${DiffViewer} sessionId=${sessionId} />`
-                    : html`
-                        <div class="chat-view chat-empty-state">
-                          <div class="session-empty-icon">${resolveIcon(":edit:")}</div>
-                          <div class="session-empty-text">Diff requires a linked session</div>
-                        </div>
-                      `)}
-                  ${detailTab === "logs" && html`<div class="workspace-log fleet-session-log" ref=${logRef}>${logText}</div>`}
+                  ${detailTab === "stream"
+                    ? sessionId
+                      ? html`<${ChatView} sessionId=${sessionId} readOnly=${true} />`
+                      : html`
+                          <div class="chat-view chat-empty-state">
+                            <div class="session-empty-icon">${resolveIcon(":chat:")}</div>
+                            <div class="session-empty-text">No linked chat session found for this slot</div>
+                          </div>
+                        `
+                    : detailTab === "context"
+                      ? contextId
+                        ? html`<${ContextViewer} sessionId=${contextId} />`
+                        : html`
+                            <div class="chat-view chat-empty-state">
+                              <div class="session-empty-icon">${resolveIcon(":clipboard:")}</div>
+                              <div class="session-empty-text">No context source available</div>
+                            </div>
+                          `
+                      : detailTab === "diff"
+                        ? sessionId
+                          ? html`<${DiffViewer} sessionId=${sessionId} />`
+                          : html`
+                              <div class="chat-view chat-empty-state">
+                                <div class="session-empty-icon">${resolveIcon(":edit:")}</div>
+                                <div class="session-empty-text">Diff requires a linked session</div>
+                              </div>
+                            `
+                        : detailTab === "logs"
+                          ? html`<div class="workspace-log fleet-session-log" ref=${logRef}>${logText}</div>`
+                          : null}
                 </div>
               `
             : html`

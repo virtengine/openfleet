@@ -1288,6 +1288,10 @@ export class WorkflowEngine extends EventEmitter {
     if (nodeType === "action.continue_session" || nodeType === "action.restart_agent") {
       return ["agentPool"];
     }
+    // Child workflow execution needs a live engine instance.
+    if (nodeType === "action.execute_workflow") {
+      return ["workflowEngine"];
+    }
     // Task-management nodes need kanban
     if (
       nodeType === "action.create_task" ||
@@ -1310,6 +1314,9 @@ export class WorkflowEngine extends EventEmitter {
 
   /** Check whether a named capability (service key) is available */
   _hasCapability(cap) {
+    if (cap === "workflowEngine") {
+      return typeof this.execute === "function" && typeof this.get === "function";
+    }
     const svc = this.services?.[cap];
     // A capability is "present" when its value is a non-null object or function.
     return svc != null && (typeof svc === "object" || typeof svc === "function");

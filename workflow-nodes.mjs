@@ -555,6 +555,41 @@ function normalizeLegacyWorkflowCommand(command) {
   return normalized;
 }
 
+function resolveWorkflowNodeValue(value, ctx) {
+  if (typeof value === "string") return ctx.resolve(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => resolveWorkflowNodeValue(item, ctx));
+  }
+  if (value && typeof value === "object") {
+    const resolved = {};
+    for (const [key, entry] of Object.entries(value)) {
+      resolved[key] = resolveWorkflowNodeValue(entry, ctx);
+    }
+    return resolved;
+  }
+  return value;
+}
+
+function parseBooleanSetting(value, defaultValue = false) {
+  if (value == null || value === "") return defaultValue;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) return defaultValue;
+    if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
+  }
+  return defaultValue;
+}
+
+function normalizeWorkflowStack(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+}
+
 function isBosunStateComment(text) {
   const raw = String(text || "").toLowerCase();
   return raw.includes("bosun-state") || raw.includes("codex:ignore");
@@ -1256,6 +1291,192 @@ registerNodeType("action.run_command", {
       }
       return result;
     }
+  },
+});
+
+registerNodeType("action.execute_workflow", {
+  describe: () => "Execute another workflow by ID (synchronously or dispatch mode)",
+  schema: {
+    type: "object",
+    properties: {
+      workflowId: { type: "string", description: "Workflow ID to execute" },
+      mode: { type: "string", enum: ["sync", "dispatch"], default: "sync" },
+      input: {
+        type: "object",
+        description: "Input payload passed to the child workflow",
+        additionalProperties: true,
+      },
+      inheritContext: {
+        type: "boolean",
+        default: false,
+        description: "Copy parent workflow context data into child input before applying input overrides",
+      },
+      includeKeys: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional allow-list of context keys to inherit when inheritContext=true",
+      },
+      outputVariable: {
+        type: "string",
+        description: "Optional context key to store execution summary output",
+      },
+      failOnChildError: {
+        type: "boolean",
+        default: true,
+        description: "In sync mode, throw when child workflow completes with errors",
+      },
+      allowRecursive: {
+        type: "boolean",
+        default: false,
+        description: "Allow recursive workflow execution when true",
+      },
+    },
+    required: ["workflowId"],
+  },
+  async execute(node, ctx, engine) {
+    const workflowId = String(ctx.resolve(node.config?.workflowId || "") || "").trim();
+    const modeRaw = String(ctx.resolve(node.config?.mode || "sync") || "sync")
+      .trim()
+      .toLowerCase();
+    const mode = modeRaw || "sync";
+    const outputVariable = String(ctx.resolve(node.config?.outputVariable || "") || "").trim();
+    const inheritContext = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.inheritContext ?? false, ctx),
+      false,
+    );
+    const failOnChildError = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.failOnChildError ?? true, ctx),
+      true,
+    );
+    const allowRecursive = parseBooleanSetting(
+      resolveWorkflowNodeValue(node.config?.allowRecursive ?? false, ctx),
+      false,
+    );
+    const includeKeys = Array.isArray(node.config?.includeKeys)
+      ? node.config.includeKeys
+          .map((value) => String(resolveWorkflowNodeValue(value, ctx) || "").trim())
+          .filter(Boolean)
+      : [];
+
+    if (!workflowId) {
+      throw new Error("action.execute_workflow: 'workflowId' is required");
+    }
+    if (mode !== "sync" && mode !== "dispatch") {
+      throw new Error(`action.execute_workflow: invalid mode "${mode}". Expected "sync" or "dispatch".`);
+    }
+    if (!engine || typeof engine.execute !== "function") {
+      throw new Error("action.execute_workflow: workflow engine is not available");
+    }
+    if (typeof engine.get === "function" && !engine.get(workflowId)) {
+      throw new Error(`action.execute_workflow: workflow "${workflowId}" not found`);
+    }
+
+    const resolvedInputConfig = resolveWorkflowNodeValue(node.config?.input ?? {}, ctx);
+    if (
+      resolvedInputConfig != null &&
+      (typeof resolvedInputConfig !== "object" || Array.isArray(resolvedInputConfig))
+    ) {
+      throw new Error("action.execute_workflow: 'input' must resolve to an object");
+    }
+    const configuredInput =
+      resolvedInputConfig && typeof resolvedInputConfig === "object"
+        ? resolvedInputConfig
+        : {};
+
+    const sourceData =
+      ctx.data && typeof ctx.data === "object"
+        ? ctx.data
+        : {};
+    const inheritedInput = {};
+    if (inheritContext) {
+      if (includeKeys.length > 0) {
+        for (const key of includeKeys) {
+          if (Object.prototype.hasOwnProperty.call(sourceData, key)) {
+            inheritedInput[key] = sourceData[key];
+          }
+        }
+      } else {
+        Object.assign(inheritedInput, sourceData);
+      }
+    }
+
+    const parentWorkflowId = String(ctx.data?._workflowId || "").trim();
+    const workflowStack = normalizeWorkflowStack(ctx.data?._workflowStack);
+    if (parentWorkflowId && workflowStack[workflowStack.length - 1] !== parentWorkflowId) {
+      workflowStack.push(parentWorkflowId);
+    }
+    if (!allowRecursive && workflowStack.includes(workflowId)) {
+      const cyclePath = [...workflowStack, workflowId].join(" -> ");
+      throw new Error(
+        `action.execute_workflow: recursive workflow call blocked (${cyclePath}). ` +
+          "Set allowRecursive=true to override.",
+      );
+    }
+
+    const childInput = {
+      ...inheritedInput,
+      ...configuredInput,
+      _workflowStack: [...workflowStack, workflowId],
+    };
+
+    if (mode === "dispatch") {
+      ctx.log(node.id, `Dispatching workflow "${workflowId}"`);
+      const dispatched = engine.execute(workflowId, childInput);
+      dispatched
+        .then((childCtx) => {
+          const status = childCtx?.errors?.length ? "failed" : "completed";
+          ctx.log(node.id, `Dispatched workflow "${workflowId}" finished with status=${status}`);
+        })
+        .catch((err) => {
+          ctx.log(node.id, `Dispatched workflow "${workflowId}" failed: ${err.message}`, "error");
+        });
+
+      const output = {
+        success: true,
+        queued: true,
+        mode: "dispatch",
+        workflowId,
+        parentRunId: ctx.id,
+        stackDepth: childInput._workflowStack.length,
+      };
+      if (outputVariable) {
+        ctx.data[outputVariable] = output;
+      }
+      return output;
+    }
+
+    ctx.log(node.id, `Executing workflow "${workflowId}" (sync)`);
+    const childCtx = await engine.execute(workflowId, childInput);
+    const childErrors = Array.isArray(childCtx?.errors)
+      ? childCtx.errors.map((entry) => ({
+          nodeId: entry?.nodeId || null,
+          error: String(entry?.error || "unknown child workflow error"),
+        }))
+      : [];
+    const status = childErrors.length > 0 ? "failed" : "completed";
+    const output = {
+      success: status === "completed",
+      queued: false,
+      mode: "sync",
+      workflowId,
+      runId: childCtx?.id || null,
+      status,
+      errorCount: childErrors.length,
+      errors: childErrors,
+    };
+
+    if (outputVariable) {
+      ctx.data[outputVariable] = output;
+    }
+
+    if (status === "failed" && failOnChildError) {
+      const reason = childErrors[0]?.error || "child workflow failed";
+      const err = new Error(`action.execute_workflow: child workflow "${workflowId}" failed: ${reason}`);
+      err.childWorkflow = output;
+      throw err;
+    }
+
+    return output;
   },
 });
 
