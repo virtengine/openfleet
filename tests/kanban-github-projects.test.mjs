@@ -1108,6 +1108,39 @@ describe("GitHub Projects v2 integration", () => {
       expect(execFileMock).toHaveBeenCalledTimes(1);
     });
 
+    it("resolves shared-state comment fetches using task issue URL repo", async () => {
+      mockGh([
+        {
+          id: "PVTI_cross_repo",
+          status: "Todo",
+          content: {
+            number: 759,
+            title: "Cross-repo item",
+            body: "",
+            url: "https://github.com/virtengine/virtengine/issues/759",
+            state: "open",
+            labels: [{ name: "bosun" }],
+            assignees: [],
+          },
+        },
+      ]);
+      mockGh([]);
+
+      const adapter = getKanbanAdapter();
+      const tasks = await adapter.listTasks("ignored");
+
+      expect(tasks).toHaveLength(1);
+      const apiCall = execFileMock.mock.calls.find(
+        (call) =>
+          Array.isArray(call[1]) &&
+          call[1][0] === "api" &&
+          String(call[1][1] || "").includes(
+            "/repos/virtengine/virtengine/issues/759/comments",
+          ),
+      );
+      expect(apiCall).toBeTruthy();
+    });
+
     it("returns empty array for null projectNumber", async () => {
       const adapter = getKanbanAdapter();
       const tasks = await adapter.listTasksFromProject(null);
@@ -1384,4 +1417,3 @@ describe("GitHub Projects v2 integration", () => {
     });
   });
 });
-
