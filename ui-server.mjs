@@ -6324,11 +6324,68 @@ async function handleApi(req, res, url) {
       const wfMod = await getWorkflowEngine();
       if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
       const engine = wfMod.getWorkflowEngine();
-      const runId = decodeURIComponent(path.replace("/api/workflows/runs/", "")).trim();
+      const subPath = path.replace("/api/workflows/runs/", "");
+      const segments = subPath.split("/").map(decodeURIComponent);
+      const runId = (segments[0] || "").trim();
+      const action = (segments[1] || "").trim();
+
       if (!runId) {
         jsonResponse(res, 400, { ok: false, error: "runId is required" });
         return;
       }
+
+      // ── POST /api/workflows/runs/:id/retry ──────────────────────────
+      // Manual retry endpoint. Accepts { mode: "from_failed" | "from_scratch" }.
+      // If mode is omitted, returns available retry options so the UI can
+      // present a choice to the user.
+      if (action === "retry" && req.method === "POST") {
+        const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
+        if (!run) {
+          jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
+          return;
+        }
+        if (run.status !== "failed") {
+          jsonResponse(res, 400, { ok: false, error: `Run status is "${run.status}" — only failed runs can be retried` });
+          return;
+        }
+        const body = await readJsonBody(req);
+        const mode = body?.mode;
+        if (!mode) {
+          // No mode specified — return available retry options so the UI can
+          // present a picker (from scratch vs from failed step).
+          const failedNodes = [];
+          const nodeStatuses = run.detail?.nodeStatuses || {};
+          for (const [nodeId, status] of Object.entries(nodeStatuses)) {
+            if (status === "failed") failedNodes.push(nodeId);
+          }
+          jsonResponse(res, 200, {
+            ok: true,
+            runId,
+            status: run.status,
+            options: [
+              { mode: "from_failed", label: "Retry from last failed step", failedNodes },
+              { mode: "from_scratch", label: "Retry from scratch" },
+            ],
+          });
+          return;
+        }
+        if (mode !== "from_failed" && mode !== "from_scratch") {
+          jsonResponse(res, 400, { ok: false, error: `Invalid mode "${mode}". Use "from_failed" or "from_scratch".` });
+          return;
+        }
+        const result = await engine.retryRun(runId, { mode });
+        const retryStatus = result.ctx?.errors?.length > 0 ? "failed" : "completed";
+        jsonResponse(res, 200, {
+          ok: true,
+          retryRunId: result.retryRunId,
+          originalRunId: result.originalRunId,
+          mode: result.mode,
+          status: retryStatus,
+        });
+        return;
+      }
+
+      // ── GET /api/workflows/runs/:id ─────────────────────────────────
       const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
       if (!run) {
         jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });

@@ -67,6 +67,18 @@ const DEFAULT_RUN_STUCK_THRESHOLD_MS = readBoundedEnvInt(
   { min: 10000, max: 7_200_000 },
 );
 
+// ── Auto-Retry Defaults ─────────────────────────────────────────────────────
+const DEFAULT_AUTO_RETRY_MAX_ATTEMPTS = readBoundedEnvInt(
+  "WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS",
+  3,
+  { min: 0, max: 10 },
+);
+const DEFAULT_AUTO_RETRY_COOLDOWN_MS = readBoundedEnvInt(
+  "WORKFLOW_AUTO_RETRY_COOLDOWN_MS",
+  20 * 60 * 1000, // 20 minutes
+  { min: 0, max: 3_600_000 },
+);
+
 function resolveNodeTimeoutMs(node, resolvedConfig) {
   const candidates = [
     resolvedConfig?.timeout,
@@ -493,7 +505,253 @@ export class WorkflowEngine extends EventEmitter {
     // Persist run log
     this._persistRun(runId, workflowId, ctx);
     this._activeRuns.delete(runId);
+
+    // ── Auto-retry on failure ───────────────────────────────────────────
+    // If the workflow failed and auto-retry is enabled, kick off the
+    // escalating retry strategy asynchronously. The caller still receives the
+    // original (failed) context immediately so we never block the event loop.
+    const finalStatus = ctx.errors.length > 0 ? WorkflowStatus.FAILED : WorkflowStatus.COMPLETED;
+    if (finalStatus === WorkflowStatus.FAILED && !opts._isRetry) {
+      const retryConfig = this._resolveAutoRetryConfig(def);
+      if (retryConfig.enabled) {
+        // Fire-and-forget — errors are logged, never thrown.
+        this._autoRetryLoop(runId, workflowId, inputData, retryConfig, opts).catch((err) => {
+          console.error(`${TAG} Auto-retry loop error for run ${runId}:`, err.message);
+        });
+      }
+    }
+
     return ctx;
+  }
+
+  // ── Run Retry ───────────────────────────────────────────────────────────
+
+  /**
+   * Retry a previously completed (failed) run.
+   *
+   * @param {string} runId - The original run ID to retry.
+   * @param {object} [retryOpts]
+   * @param {"from_failed"|"from_scratch"} [retryOpts.mode="from_failed"]
+   *   - `"from_failed"` — re-execute starting from the first failed node,
+   *     pre-populating the context with already-completed node outputs.
+   *   - `"from_scratch"` — re-execute the entire workflow from the beginning
+   *     with the same input data that was used originally.
+   * @returns {Promise<{retryRunId: string, mode: string, ctx: WorkflowContext}>}
+   */
+  async retryRun(runId, retryOpts = {}) {
+    const mode = retryOpts.mode === "from_scratch" ? "from_scratch" : "from_failed";
+    const originalRun = this.getRunDetail(runId);
+    if (!originalRun) {
+      throw new Error(`${TAG} Run "${runId}" not found — cannot retry`);
+    }
+
+    const workflowId = originalRun.workflowId || originalRun.detail?.data?._workflowId;
+    if (!workflowId) {
+      throw new Error(`${TAG} Cannot determine workflowId from run "${runId}"`);
+    }
+
+    const def = this.get(workflowId);
+    if (!def) {
+      throw new Error(`${TAG} Workflow "${workflowId}" no longer exists — cannot retry`);
+    }
+
+    // Recover original input data (strip internal enrichment keys).
+    const originalData = { ...(originalRun.detail?.data || {}) };
+    delete originalData._workflowId;
+    delete originalData._workflowName;
+
+    this.emit("run:retry", {
+      originalRunId: runId,
+      workflowId,
+      mode,
+      attempt: retryOpts._attempt || 1,
+    });
+
+    if (mode === "from_scratch") {
+      const ctx = await this.execute(workflowId, originalData, {
+        ...retryOpts,
+        _isRetry: true,
+        _originalRunId: runId,
+        force: true,
+      });
+      return { retryRunId: ctx.id, mode, originalRunId: runId, ctx };
+    }
+
+    // ── "from_failed" — resume from the first failed node ────────────
+    const detail = originalRun.detail || {};
+    const nodeStatuses = detail.nodeStatuses || {};
+    const nodeOutputs = detail.nodeOutputs || {};
+
+    // Build a fresh context but pre-seed completed node outputs.
+    const ctx = new WorkflowContext({
+      ...def.variables,
+      ...originalData,
+      _workflowId: workflowId,
+      _workflowName: def.name,
+      _retryOf: runId,
+    });
+    ctx.variables = { ...def.variables };
+
+    // Pre-populate nodes that already succeeded.
+    for (const [nodeId, status] of Object.entries(nodeStatuses)) {
+      if (status === NodeStatus.COMPLETED) {
+        ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
+        if (nodeOutputs[nodeId] !== undefined) {
+          ctx.setNodeOutput(nodeId, nodeOutputs[nodeId]);
+        }
+      }
+      // Reset failed / skipped nodes so the DAG will re-run them.
+    }
+
+    const retryRunId = ctx.id;
+    this._activeRuns.set(retryRunId, {
+      workflowId,
+      workflowName: def.name,
+      ctx,
+      startedAt: ctx.startedAt,
+      status: WorkflowStatus.RUNNING,
+    });
+    this.emit("run:start", { runId: retryRunId, workflowId, name: def.name, retryOf: runId, mode });
+
+    try {
+      const adjacency = this._buildAdjacency(def);
+      const entryNodes = this._findEntryNodes(def);
+      if (entryNodes.length === 0) {
+        throw new Error("Workflow has no entry nodes (no triggers or unconnected nodes)");
+      }
+
+      // _executeDag naturally skips nodes that are already COMPLETED because
+      // they were pre-seeded above, so it resumes from the failed point.
+      await this._executeDag(def, entryNodes, adjacency, ctx, { ...retryOpts, _isRetry: true });
+
+      const status = ctx.errors.length > 0 ? WorkflowStatus.FAILED : WorkflowStatus.COMPLETED;
+      this._activeRuns.get(retryRunId).status = status;
+      this.emit("run:end", {
+        runId: retryRunId,
+        workflowId,
+        status,
+        duration: Date.now() - ctx.startedAt,
+        retryOf: runId,
+        mode,
+      });
+    } catch (err) {
+      ctx.error("_engine", err);
+      this._activeRuns.get(retryRunId).status = WorkflowStatus.FAILED;
+      this.emit("run:error", { runId: retryRunId, workflowId, error: err.message, retryOf: runId });
+    }
+
+    this._persistRun(retryRunId, workflowId, ctx);
+    this._activeRuns.delete(retryRunId);
+
+    return { retryRunId, mode, originalRunId: runId, ctx };
+  }
+
+  // ── Auto-retry escalating strategy ───────────────────────────────────
+
+  /**
+   * Resolve the auto-retry configuration for a workflow definition.
+   * Supports per-workflow overrides via `def.autoRetry`.
+   */
+  _resolveAutoRetryConfig(def) {
+    const raw = def?.autoRetry || {};
+    // Auto-retry is opt-in: workflows must explicitly set autoRetry.enabled = true.
+    // This prevents unexpected background retries for workflows that don't want them.
+    const enabled = Boolean(raw.enabled);
+    const maxAttempts = Number.isFinite(Number(raw.maxAttempts))
+      ? Math.max(0, Math.trunc(Number(raw.maxAttempts)))
+      : DEFAULT_AUTO_RETRY_MAX_ATTEMPTS;
+    const cooldownMs = Number.isFinite(Number(raw.cooldownMs))
+      ? Math.max(0, Math.trunc(Number(raw.cooldownMs)))
+      : DEFAULT_AUTO_RETRY_COOLDOWN_MS;
+    return { enabled: enabled && maxAttempts > 0, maxAttempts, cooldownMs };
+  }
+
+  /**
+   * Escalating auto-retry loop.
+   *
+   * Strategy (configurable, defaults to 3 attempts):
+   *   Attempt 1 → from_failed (immediate)
+   *   Attempt 2 → from_scratch (immediate)
+   *   Attempt 3 → from_scratch (after cooldown period, default 20 min)
+   *
+   * If the workflow succeeds at any point the loop stops.
+   * Results are persisted as separate runs linked via `_retryOf`.
+   */
+  async _autoRetryLoop(originalRunId, workflowId, inputData, retryConfig, baseOpts) {
+    const { maxAttempts, cooldownMs } = retryConfig;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const mode = attempt === 1 ? "from_failed" : "from_scratch";
+      const needsCooldown = attempt >= 3 && cooldownMs > 0;
+
+      if (needsCooldown) {
+        console.log(
+          `${TAG} Auto-retry attempt ${attempt}/${maxAttempts} for run ${originalRunId} ` +
+          `— cooling down for ${Math.round(cooldownMs / 1000)}s before retry`,
+        );
+        this.emit("run:retry:cooldown", {
+          originalRunId,
+          workflowId,
+          attempt,
+          cooldownMs,
+        });
+        await new Promise((r) => setTimeout(r, cooldownMs));
+      }
+
+      console.log(
+        `${TAG} Auto-retry attempt ${attempt}/${maxAttempts} for run ${originalRunId} (mode=${mode})`,
+      );
+
+      try {
+        const { ctx, retryRunId } = await this.retryRun(originalRunId, {
+          mode,
+          _isRetry: true,
+          _attempt: attempt,
+        });
+
+        if (!ctx.errors || ctx.errors.length === 0) {
+          console.log(
+            `${TAG} Auto-retry succeeded on attempt ${attempt}/${maxAttempts} ` +
+            `for run ${originalRunId} → new run ${retryRunId}`,
+          );
+          this.emit("run:retry:success", {
+            originalRunId,
+            retryRunId,
+            workflowId,
+            attempt,
+          });
+          return; // Success — stop retrying
+        }
+
+        console.warn(
+          `${TAG} Auto-retry attempt ${attempt}/${maxAttempts} failed ` +
+          `for run ${originalRunId} → new run ${retryRunId}`,
+        );
+        this.emit("run:retry:failed", {
+          originalRunId,
+          retryRunId,
+          workflowId,
+          attempt,
+          errors: ctx.errors,
+        });
+      } catch (err) {
+        console.error(
+          `${TAG} Auto-retry attempt ${attempt}/${maxAttempts} threw for run ${originalRunId}:`,
+          err.message,
+        );
+        this.emit("run:retry:failed", {
+          originalRunId,
+          workflowId,
+          attempt,
+          errors: [{ error: err.message }],
+        });
+      }
+    }
+
+    console.error(
+      `${TAG} All ${maxAttempts} auto-retry attempts exhausted for run ${originalRunId}`,
+    );
+    this.emit("run:retry:exhausted", { originalRunId, workflowId, maxAttempts });
   }
 
   /**
@@ -665,6 +923,16 @@ export class WorkflowEngine extends EventEmitter {
     const queue = [...entryNodes.map((n) => n.id)];
     const nodeMap = new Map((def.nodes || []).map((n) => [n.id, n]));
 
+    // ── Resume support (retry from_failed) ──────────────────────────────
+    // If nodes are already marked COMPLETED in the context (pre-seeded by
+    // retryRun), treat them as already executed so the DAG skips them and
+    // begins from the first un-completed node.
+    for (const [nodeId, status] of ctx.nodeStatuses) {
+      if (status === NodeStatus.COMPLETED) {
+        executed.add(nodeId);
+      }
+    }
+
     // Track in-degree for proper scheduling
     const inDegree = new Map();
     for (const node of def.nodes || []) {
@@ -674,8 +942,32 @@ export class WorkflowEngine extends EventEmitter {
       inDegree.set(edge.target, (inDegree.get(edge.target) || 0) + 1);
     }
 
-    // Ready set = nodes with all dependencies met
-    const ready = new Set(queue);
+    // ── Adjust in-degree for pre-completed nodes (retry resume) ─────────
+    // When resuming from a failed step, pre-completed source nodes have
+    // already satisfied their downstream edges. Decrement the in-degree for
+    // each target so successors become ready once all live deps are met.
+    for (const nodeId of executed) {
+      const edges = adjacency.get(nodeId) || [];
+      for (const edge of edges) {
+        const deg = (inDegree.get(edge.target) || 1) - 1;
+        inDegree.set(edge.target, Math.max(0, deg));
+      }
+    }
+
+    // Ready set = entry nodes (or nodes with no remaining unsatisfied deps)
+    const ready = new Set();
+    for (const nid of queue) {
+      if (!executed.has(nid)) {
+        ready.add(nid);
+      }
+    }
+    // Also add any non-entry nodes whose in-degree is now 0 due to pre-
+    // completed predecessors (this makes "from_failed" resume work).
+    for (const [nid, deg] of inDegree) {
+      if (deg <= 0 && !executed.has(nid) && !ready.has(nid)) {
+        ready.add(nid);
+      }
+    }
 
     while (ready.size > 0) {
       // Execute ready nodes in bounded parallel batches.
@@ -1206,3 +1498,4 @@ export function deleteWorkflow(id, opts) { return getWorkflowEngine(opts).delete
 export function listWorkflows(opts) { return getWorkflowEngine(opts).list(); }
 export function getWorkflow(id, opts) { return getWorkflowEngine(opts).get(id); }
 export async function executeWorkflow(id, data, opts) { return getWorkflowEngine(opts).execute(id, data, opts); }
+export async function retryWorkflowRun(runId, retryOpts, engineOpts) { return getWorkflowEngine(engineOpts).retryRun(runId, retryOpts); }
