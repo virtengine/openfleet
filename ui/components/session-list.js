@@ -20,6 +20,9 @@ export const sessionsError = signal(null);
 /** Pagination metadata from the last loadSessionMessages call */
 export const sessionPagination = signal(null);
 
+const DEFAULT_SESSION_PAGE_SIZE = 20;
+const MAX_SESSION_PAGE_SIZE = 200;
+
 let _wsListenerReady = false;
 
 /** Track the last filter used so createSession can reload with the same filter */
@@ -48,8 +51,13 @@ export async function loadSessionMessages(id, opts = {}) {
   try {
     let url = sessionPath(id);
     if (!url) return { ok: false, error: "invalid" };
+    const requestedLimit = opts.limit != null ? Number(opts.limit) : DEFAULT_SESSION_PAGE_SIZE;
+    const limit =
+      Number.isFinite(requestedLimit) && requestedLimit > 0
+        ? Math.min(Math.floor(requestedLimit), MAX_SESSION_PAGE_SIZE)
+        : DEFAULT_SESSION_PAGE_SIZE;
     const params = new URLSearchParams();
-    if (opts.limit) params.set("limit", String(opts.limit));
+    params.set("limit", String(limit));
     if (opts.offset != null) params.set("offset", String(opts.offset));
     const qs = params.toString();
     if (qs) url += `?${qs}`;

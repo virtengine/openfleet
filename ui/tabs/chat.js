@@ -577,7 +577,7 @@ export function ChatTab() {
           throw err;
         }
 
-        loadSessionMessages(sessionId);
+        loadSessionMessages(sessionId, { limit: 20 });
       } else {
         // No session — create one with current agent/mode, then send first message
         const res = await createSession({
@@ -603,7 +603,7 @@ export function ChatTab() {
             rejectMessage(tempId, err.message || "Send failed");
           }
 
-          loadSessionMessages(newId);
+          loadSessionMessages(newId, { limit: 20 });
         }
       }
     } catch (err) {
