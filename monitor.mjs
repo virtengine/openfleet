@@ -15491,11 +15491,18 @@ if (isExecutorDisabled()) {
 } else if (executorMode === "internal" || executorMode === "hybrid") {
   // Start internal executor
   try {
+    const workflowOwnsTaskExecutorLifecycle = isWorkflowReplacingModule("task-executor.mjs");
+    if (workflowOwnsTaskExecutorLifecycle) {
+      console.log(
+        "[monitor] task-executor lifecycle delegation enabled — finalization/recovery handled by workflow replacement",
+      );
+    }
     const execOpts = {
       ...internalExecutorConfig,
       repoRoot,
       repoSlug,
       agentPrompts,
+      workflowOwnsTaskLifecycle: workflowOwnsTaskExecutorLifecycle,
       sendTelegram:
         telegramToken && telegramChatId
           ? (msg) => void sendTelegramMessage(msg)
