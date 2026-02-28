@@ -355,6 +355,15 @@ async function getWorkflowEngineModule() {
         };
         _wfEngine.getWorkflowEngine({ services });
         _wfServicesReady = true;
+
+        // Resume any runs that were interrupted by a previous shutdown.
+        // This must happen AFTER services are wired so node executors work.
+        const engine = _wfEngine.getWorkflowEngine();
+        if (typeof engine.resumeInterruptedRuns === "function") {
+          engine.resumeInterruptedRuns().catch((err) => {
+            console.warn("[workflows] Failed to resume interrupted runs:", err.message);
+          });
+        }
       } catch (err) {
         console.warn("[workflows] services setup failed (engine still usable):", err.message);
       }

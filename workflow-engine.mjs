@@ -78,6 +78,12 @@ const DEFAULT_AUTO_RETRY_COOLDOWN_MS = readBoundedEnvInt(
   20 * 60 * 1000, // 20 minutes
   { min: 0, max: 3_600_000 },
 );
+const CHECKPOINT_DEBOUNCE_MS = readBoundedEnvInt(
+  "WORKFLOW_CHECKPOINT_DEBOUNCE_MS",
+  500,
+  { min: 50, max: 10000 },
+);
+const ACTIVE_RUNS_INDEX = "_active-runs.json";
 
 function resolveNodeTimeoutMs(node, resolvedConfig) {
   const candidates = [
@@ -345,6 +351,8 @@ export class WorkflowEngine extends EventEmitter {
     this._activeRuns = new Map();
     this._triggerSubscriptions = new Map();
     this._loaded = false;
+    this._checkpointTimers = new Map(); // runId → debounce timer
+    this._resumingRuns = false;
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────────
@@ -371,6 +379,11 @@ export class WorkflowEngine extends EventEmitter {
     }
     this._loaded = true;
     this.emit("loaded", { count: this._workflows.size });
+
+    // Detect runs that were interrupted by a previous shutdown.
+    // These are runs persisted to disk with status=RUNNING that are
+    // NOT in our in-memory _activeRuns (because we just booted).
+    this._detectInterruptedRuns();
   }
 
   /** Ensure storage directories exist */
@@ -478,6 +491,10 @@ export class WorkflowEngine extends EventEmitter {
       startedAt: ctx.startedAt,
       status: WorkflowStatus.RUNNING,
     });
+
+    // ── Persist run immediately so it survives process restarts ──────
+    this._persistActiveRunState(runId, workflowId, def.name, ctx);
+
     this.emit("run:start", { runId, workflowId, name: def.name });
 
     try {
@@ -502,8 +519,9 @@ export class WorkflowEngine extends EventEmitter {
       this.emit("run:error", { runId, workflowId, error: err.message });
     }
 
-    // Persist run log
+    // Persist final run log and remove from active-runs index
     this._persistRun(runId, workflowId, ctx);
+    this._clearActiveRunState(runId);
     this._activeRuns.delete(runId);
 
     // ── Auto-retry on failure ───────────────────────────────────────────
@@ -611,6 +629,7 @@ export class WorkflowEngine extends EventEmitter {
       startedAt: ctx.startedAt,
       status: WorkflowStatus.RUNNING,
     });
+    this._persistActiveRunState(retryRunId, workflowId, def.name, ctx);
     this.emit("run:start", { runId: retryRunId, workflowId, name: def.name, retryOf: runId, mode });
 
     try {
@@ -641,6 +660,7 @@ export class WorkflowEngine extends EventEmitter {
     }
 
     this._persistRun(retryRunId, workflowId, ctx);
+    this._clearActiveRunState(retryRunId);
     this._activeRuns.delete(retryRunId);
 
     return { retryRunId, mode, originalRunId: runId, ctx };
@@ -1021,6 +1041,11 @@ export class WorkflowEngine extends EventEmitter {
               ctx.setNodeStatus(nodeId, NodeStatus.COMPLETED);
               executed.add(nodeId);
               this.emit("node:complete", { nodeId, type: node.type });
+
+              // Checkpoint progress to disk (debounced) so the run can
+              // be resumed from here if the process is interrupted.
+              this._checkpointRun(ctx);
+
               lastErr = null;
               return { nodeId, result };
             } catch (err) {
@@ -1439,6 +1464,280 @@ export class WorkflowEngine extends EventEmitter {
     return normalized;
   }
 
+  // ── Active-runs persistence (crash recovery) ─────────────────────────
+
+  /**
+   * Read the active-runs index (_active-runs.json).
+   * Returns an array of { runId, workflowId, workflowName, startedAt }.
+   */
+  _readActiveRunsIndex() {
+    try {
+      const p = resolve(this.runsDir, ACTIVE_RUNS_INDEX);
+      if (!existsSync(p)) return [];
+      const raw = JSON.parse(readFileSync(p, "utf8"));
+      return Array.isArray(raw) ? raw : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Write the active-runs index atomically. */
+  _writeActiveRunsIndex(entries) {
+    try {
+      this._ensureDirs();
+      const p = resolve(this.runsDir, ACTIVE_RUNS_INDEX);
+      writeFileSync(p, JSON.stringify(entries, null, 2), "utf8");
+    } catch (err) {
+      console.error(`${TAG} Failed to write active-runs index:`, err.message);
+    }
+  }
+
+  /**
+   * Persist a run to the active-runs index AND write an initial detail file.
+   * Called at the very start of execute() / retryRun() so the run is on disk
+   * before any node executes.
+   */
+  _persistActiveRunState(runId, workflowId, workflowName, ctx) {
+    try {
+      this._ensureDirs();
+
+      // Add to active-runs index
+      const entries = this._readActiveRunsIndex().filter((e) => e.runId !== runId);
+      entries.push({ runId, workflowId, workflowName, startedAt: ctx.startedAt });
+      this._writeActiveRunsIndex(entries);
+
+      // Write initial detail file so we can resume from it
+      const detail = this._serializeRunContext(ctx, true);
+      const detailPath = resolve(this.runsDir, `${runId}.json`);
+      writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+
+      // Also ensure the run appears in the main index (with RUNNING status)
+      // so that getRunDetail() can find it even before completion.
+      this._ensureRunInIndex(runId, workflowId, workflowName, detail);
+    } catch (err) {
+      console.error(`${TAG} Failed to persist active run state:`, err.message);
+    }
+  }
+
+  /**
+   * Debounced checkpoint — writes the current run context to disk after each
+   * node completes.  Debounced at CHECKPOINT_DEBOUNCE_MS to avoid disk
+   * thrashing when many nodes finish in quick succession.
+   */
+  _checkpointRun(ctx) {
+    const runId = ctx.id;
+    // Clear any pending timer for this run
+    const existing = this._checkpointTimers.get(runId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this._checkpointTimers.delete(runId);
+      try {
+        this._ensureDirs();
+        const detail = this._serializeRunContext(ctx, true);
+        const detailPath = resolve(this.runsDir, `${runId}.json`);
+        writeFileSync(detailPath, JSON.stringify(detail, null, 2), "utf8");
+      } catch (err) {
+        console.error(`${TAG} Checkpoint failed for run ${runId}:`, err.message);
+      }
+    }, CHECKPOINT_DEBOUNCE_MS);
+
+    // Don't let the timer prevent clean process exit
+    if (timer.unref) timer.unref();
+    this._checkpointTimers.set(runId, timer);
+  }
+
+  /**
+   * Remove a run from the active-runs index and clear its checkpoint timer.
+   * Called after a run completes (success or failure) so it won't be
+   * mistakenly resumed on next boot.
+   */
+  _clearActiveRunState(runId) {
+    try {
+      // Clear debounce timer
+      const timer = this._checkpointTimers.get(runId);
+      if (timer) {
+        clearTimeout(timer);
+        this._checkpointTimers.delete(runId);
+      }
+      // Remove from active-runs index
+      const entries = this._readActiveRunsIndex().filter((e) => e.runId !== runId);
+      this._writeActiveRunsIndex(entries);
+    } catch (err) {
+      console.error(`${TAG} Failed to clear active run state:`, err.message);
+    }
+  }
+
+  /**
+   * Ensure a run entry exists in the main runs index (index.json).
+   * Deduplicates by runId — if the run already exists, updates it in place.
+   */
+  _ensureRunInIndex(runId, workflowId, workflowName, detail) {
+    try {
+      const indexPath = resolve(this.runsDir, "index.json");
+      const runs = this._readRunIndex();
+      const existingIdx = runs.findIndex((r) => r.runId === runId);
+
+      const summary = this._buildSummaryFromDetail({
+        runId,
+        workflowId,
+        workflowName,
+        status: WorkflowStatus.RUNNING,
+        detail,
+      });
+
+      if (existingIdx >= 0) {
+        runs[existingIdx] = summary;
+      } else {
+        runs.push(summary);
+      }
+      if (runs.length > MAX_PERSISTED_RUNS) runs.splice(0, runs.length - MAX_PERSISTED_RUNS);
+      writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+    } catch (err) {
+      console.error(`${TAG} Failed to ensure run in index:`, err.message);
+    }
+  }
+
+  /**
+   * Detect runs that were interrupted by a previous shutdown.
+   * Scans the _active-runs.json index for entries that are NOT in our
+   * in-memory _activeRuns map (which is empty on fresh boot). Marks them
+   * as PAUSED in the main index and clears the active-runs index.
+   */
+  _detectInterruptedRuns() {
+    try {
+      const activeEntries = this._readActiveRunsIndex();
+      if (!activeEntries.length) return;
+
+      const interrupted = [];
+      for (const entry of activeEntries) {
+        // If it's somehow still in _activeRuns, skip it (not interrupted)
+        if (this._activeRuns.has(entry.runId)) continue;
+
+        // Mark this run as PAUSED in the main index
+        const indexPath = resolve(this.runsDir, "index.json");
+        const runs = this._readRunIndex();
+        const idx = runs.findIndex((r) => r.runId === entry.runId);
+        if (idx >= 0) {
+          runs[idx].status = WorkflowStatus.PAUSED;
+          runs[idx].resumable = true;
+          runs[idx].interruptedAt = Date.now();
+          writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+        }
+        interrupted.push(entry);
+      }
+
+      // Clear the active-runs index — we've handled them
+      this._writeActiveRunsIndex([]);
+
+      if (interrupted.length > 0) {
+        console.log(
+          `${TAG} Detected ${interrupted.length} interrupted run(s): ${interrupted.map((e) => e.runId).join(", ")}`,
+        );
+        this.emit("runs:interrupted", { runs: interrupted });
+      }
+    } catch (err) {
+      console.error(`${TAG} Failed to detect interrupted runs:`, err.message);
+    }
+  }
+
+  /**
+   * Resume all interrupted (PAUSED + resumable) runs.
+   * Should be called AFTER services are wired up (e.g. after workflow
+   * engine is fully initialized with node executors).
+   */
+  async resumeInterruptedRuns() {
+    if (this._resumingRuns) return;
+    this._resumingRuns = true;
+
+    try {
+      const runs = this._readRunIndex().filter(
+        (r) => r.status === WorkflowStatus.PAUSED && r.resumable,
+      );
+
+      if (!runs.length) {
+        this._resumingRuns = false;
+        return;
+      }
+
+      console.log(`${TAG} Resuming ${runs.length} interrupted run(s)...`);
+
+      for (const run of runs) {
+        try {
+          // Check if the workflow definition still exists
+          const def = this.get(run.workflowId);
+          if (!def) {
+            console.warn(`${TAG} Cannot resume run ${run.runId}: workflow "${run.workflowId}" no longer exists`);
+            this._markRunUnresumable(run.runId, "workflow_deleted");
+            continue;
+          }
+
+          // Load the persisted detail file to get the context state
+          const detailPath = resolve(this.runsDir, `${run.runId}.json`);
+          if (!existsSync(detailPath)) {
+            console.warn(`${TAG} Cannot resume run ${run.runId}: no detail file found`);
+            this._markRunUnresumable(run.runId, "no_detail_file");
+            continue;
+          }
+
+          const detail = JSON.parse(readFileSync(detailPath, "utf8"));
+          const nodeStatuses = detail.nodeStatuses || {};
+          const hasCompletedNodes = Object.values(nodeStatuses).some(
+            (s) => s === NodeStatus.COMPLETED,
+          );
+
+          if (hasCompletedNodes) {
+            // Resume from where it left off using retryRun("from_failed")
+            console.log(`${TAG} Resuming run ${run.runId} from failed/interrupted node...`);
+            await this.retryRun(run.runId, { mode: "from_failed" }).catch((err) => {
+              console.error(`${TAG} Failed to resume run ${run.runId}:`, err.message);
+              this._markRunUnresumable(run.runId, `retry_error: ${err.message}`);
+            });
+          } else {
+            // No nodes completed — re-run from scratch
+            console.log(`${TAG} Re-executing run ${run.runId} from scratch...`);
+            const originalData = detail.inputData || detail.data || {};
+            // Clean up internal metadata from data before re-executing
+            const { _workflowId, _workflowName, _retryOf, ...cleanData } = originalData;
+            await this.execute(run.workflowId, cleanData, { force: true }).catch((err) => {
+              console.error(`${TAG} Failed to re-execute run ${run.runId}:`, err.message);
+              this._markRunUnresumable(run.runId, `execute_error: ${err.message}`);
+            });
+          }
+
+          // Mark the original interrupted run as no longer resumable
+          // (the retry/re-execute created a new run)
+          this._markRunUnresumable(run.runId, "resumed");
+        } catch (err) {
+          console.error(`${TAG} Error resuming run ${run.runId}:`, err.message);
+          this._markRunUnresumable(run.runId, `error: ${err.message}`);
+        }
+      }
+    } finally {
+      this._resumingRuns = false;
+    }
+  }
+
+  /**
+   * Mark a run as no longer resumable in the main index.
+   */
+  _markRunUnresumable(runId, reason) {
+    try {
+      const indexPath = resolve(this.runsDir, "index.json");
+      const runs = this._readRunIndex();
+      const idx = runs.findIndex((r) => r.runId === runId);
+      if (idx >= 0) {
+        runs[idx].resumable = false;
+        runs[idx].resumeResult = reason;
+        writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
+      }
+    } catch (err) {
+      console.error(`${TAG} Failed to mark run unresumable:`, err.message);
+    }
+  }
+
+  // ── Persist completed run ─────────────────────────────────────────────
+
   _persistRun(runId, workflowId, ctx) {
     try {
       this._ensureDirs();
@@ -1452,14 +1751,13 @@ export class WorkflowEngine extends EventEmitter {
         detail,
       });
 
-      // Append to index
+      // Deduplicate: remove any existing entry for this runId before appending
       const indexPath = resolve(this.runsDir, "index.json");
-      let index = { runs: this._readRunIndex() };
-
-      index.runs.push(summary);
+      let runs = this._readRunIndex().filter((r) => r.runId !== runId);
+      runs.push(summary);
       // Keep last N runs
-      if (index.runs.length > MAX_PERSISTED_RUNS) index.runs = index.runs.slice(-MAX_PERSISTED_RUNS);
-      writeFileSync(indexPath, JSON.stringify(index, null, 2), "utf8");
+      if (runs.length > MAX_PERSISTED_RUNS) runs = runs.slice(-MAX_PERSISTED_RUNS);
+      writeFileSync(indexPath, JSON.stringify({ runs }, null, 2), "utf8");
 
       // Save full run detail
       const detailPath = resolve(this.runsDir, `${runId}.json`);
