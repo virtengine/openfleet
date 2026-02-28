@@ -122,6 +122,11 @@ const INTENTIONALLY_SKIPPED = new Set([
   "/api/voice/tool",           // Voice tool execution — server-only (runs real tools)
   "/api/voice/transcript",     // Voice transcript persistence into session history
   "/api/vision/frame",         // Live vision frame ingestion + analysis
+  "/api/voice/dispatch",       // Voice action dispatch — server-only (executes real tools/workflows)
+  "/api/voice/dispatch-batch", // Batched voice action dispatch — server-only
+  "/api/voice/actions",        // Voice action catalog — server-only (reads server config)
+  "/api/voice/prompt",         // Voice system prompt assembly — server-only (reads config + context)
+  "/api/voice/action-manifest",// Voice action manifest — server-only (dynamic capability listing)
 ]);
 
 // ── Session actions intentionally skipped in demo ─────────────────────
