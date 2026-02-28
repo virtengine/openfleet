@@ -62,13 +62,17 @@ describe("voice-relay", () => {
   const envKeys = [
     "OPENAI_API_KEY",
     "OPENAI_REALTIME_API_KEY",
+    "OPENAI_OAUTH_ACCESS_TOKEN",
     "ANTHROPIC_API_KEY",
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
+    "AZURE_OPENAI_ACCESS_TOKEN",
     "VOICE_PROVIDER",
+    "VOICE_PROVIDERS",
     "VOICE_MODEL",
     "VOICE_VISION_MODEL",
     "VOICE_ID",
+    "VOICE_FAILOVER_MAX_ATTEMPTS",
     "AZURE_OPENAI_REALTIME_ENDPOINT",
     "AZURE_OPENAI_API_KEY",
     "AZURE_OPENAI_REALTIME_API_KEY",
@@ -361,7 +365,58 @@ describe("voice-relay", () => {
       });
       getVoiceConfig(true);
 
-      await expect(createEphemeralToken()).rejects.toThrow(/not configured/i);
+      await expect(createEphemeralToken()).rejects.toThrow(/unavailable|not configured/i);
+    });
+
+    it("prefers OpenAI OAuth token over API key when both are present", async () => {
+      process.env.OPENAI_OAUTH_ACCESS_TOKEN = "oauth-openai-token";
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: { provider: "openai", openaiApiKey: "sk-test" },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+
+      await createEphemeralToken([]);
+      const fetchCall = vi.mocked(globalThis.fetch).mock.calls[0];
+      expect(fetchCall[1].headers.Authorization).toBe("Bearer oauth-openai-token");
+    });
+
+    it("fails over from OpenAI to Azure when realtime auth fails", async () => {
+      process.env.OPENAI_REALTIME_API_KEY = "sk-openai-bad";
+      process.env.AZURE_OPENAI_REALTIME_API_KEY = "az-key";
+      process.env.AZURE_OPENAI_REALTIME_ENDPOINT = "https://myresource.openai.azure.com";
+      process.env.VOICE_PROVIDERS = "openai,azure";
+      process.env.VOICE_FAILOVER_MAX_ATTEMPTS = "2";
+
+      vi.mocked(loadConfig).mockReturnValue({
+        voice: {
+          provider: "openai",
+          azureDeployment: "gpt-4o-realtime-preview",
+        },
+        primaryAgent: "codex-sdk",
+      });
+      getVoiceConfig(true);
+
+      vi.mocked(globalThis.fetch)
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 401,
+          text: async () => '{"error":"invalid_api_key"}',
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            client_secret: { value: "azure-fallback-token", expires_at: Date.now() / 1000 + 60 },
+          }),
+          text: async () => "ok",
+        });
+
+      const result = await createEphemeralToken([]);
+      expect(result.provider).toBe("azure");
+      expect(result.token).toBe("azure-fallback-token");
+      expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(2);
+      const secondCall = vi.mocked(globalThis.fetch).mock.calls[1];
+      expect(secondCall[0]).toContain("myresource.openai.azure.com");
     });
 
     it("throws for non-realtime providers", async () => {

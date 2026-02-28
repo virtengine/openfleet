@@ -1,4 +1,12 @@
-import { app, BrowserWindow, session } from "electron";
+import {
+  app,
+  BrowserWindow,
+  Menu,
+  Tray,
+  globalShortcut,
+  ipcMain,
+  session,
+} from "electron";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
@@ -12,12 +20,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 process.title = "bosun-desktop";
 
 let mainWindow = null;
+let followWindow = null;
+let tray = null;
+let followWindowLaunchSignature = "";
 let shuttingDown = false;
 let uiServerStarted = false;
 let uiOrigin = null;
 let uiApi = null;
 let runtimeConfigLoaded = false;
 const DEFAULT_TELEGRAM_UI_PORT = 3080;
+const FOLLOW_RESTORE_SHORTCUT = "CommandOrControl+Shift+V";
 
 const DAEMON_PID_FILE = resolve(homedir(), ".cache", "bosun", "daemon.pid");
 
@@ -130,6 +142,41 @@ function resolveBosunRoot() {
 
 function resolveBosunRuntimePath(file) {
   return resolve(resolveBosunRoot(), file);
+}
+
+function encodeFollowParam(value) {
+  const normalized = String(value || "").trim();
+  return normalized;
+}
+
+function buildFollowWindowUrl(baseUrl, detail = {}) {
+  const target = new URL(baseUrl);
+  target.searchParams.set("follow", "1");
+  target.searchParams.set("launch", "voice");
+  target.searchParams.set(
+    "call",
+    String(detail.call || "").trim().toLowerCase() === "video"
+      ? "video"
+      : "voice",
+  );
+  const sessionId = encodeFollowParam(detail.sessionId);
+  const executor = encodeFollowParam(detail.executor);
+  const mode = encodeFollowParam(detail.mode);
+  const model = encodeFollowParam(detail.model);
+  const vision = encodeFollowParam(detail.initialVisionSource);
+  if (sessionId) target.searchParams.set("sessionId", sessionId);
+  if (executor) target.searchParams.set("executor", executor);
+  if (mode) target.searchParams.set("mode", mode);
+  if (model) target.searchParams.set("model", model);
+  if (vision) target.searchParams.set("vision", vision);
+  return target;
+}
+
+function setWindowVisible(win) {
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  if (!win.isVisible()) win.show();
+  win.focus();
 }
 
 async function loadBosunModule(file) {
@@ -326,6 +373,129 @@ async function createMainWindow() {
   await mainWindow.loadURL(uiUrl);
 }
 
+async function createFollowWindow() {
+  if (followWindow && !followWindow.isDestroyed()) return followWindow;
+  const iconPath = resolveBosunRuntimePath("logo.png");
+  followWindow = new BrowserWindow({
+    width: 460,
+    height: 720,
+    minWidth: 380,
+    minHeight: 520,
+    backgroundColor: "#0b0b0c",
+    ...(existsSync(iconPath) ? { icon: iconPath } : {}),
+    show: false,
+    alwaysOnTop: true,
+    autoHideMenuBar: true,
+    skipTaskbar: false,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false,
+      preload: join(__dirname, "preload.mjs"),
+    },
+  });
+
+  followWindow.setAlwaysOnTop(true, "floating", 1);
+
+  followWindow.on("close", (event) => {
+    if (shuttingDown) return;
+    event.preventDefault();
+    followWindow?.hide();
+  });
+
+  followWindow.on("closed", () => {
+    followWindow = null;
+    followWindowLaunchSignature = "";
+  });
+
+  followWindow.once("ready-to-show", () => {
+    setWindowVisible(followWindow);
+  });
+
+  return followWindow;
+}
+
+async function openFollowWindow(detail = {}) {
+  const win = await createFollowWindow();
+  const baseUiUrl = await buildUiUrl();
+  const target = buildFollowWindowUrl(baseUiUrl, detail);
+  const signature = target.toString();
+  if (!win.webContents.getURL() || followWindowLaunchSignature !== signature) {
+    followWindowLaunchSignature = signature;
+    await win.loadURL(signature);
+    return;
+  }
+  setWindowVisible(win);
+}
+
+function hideFollowWindow() {
+  if (!followWindow || followWindow.isDestroyed()) return false;
+  followWindow.hide();
+  return true;
+}
+
+function restoreFollowWindow() {
+  if (!followWindow || followWindow.isDestroyed()) return false;
+  setWindowVisible(followWindow);
+  return true;
+}
+
+function ensureTray() {
+  if (tray || process.platform === "darwin") return;
+  const iconPath = resolveBosunRuntimePath("logo.png");
+  if (!existsSync(iconPath)) return;
+  tray = new Tray(iconPath);
+  tray.setToolTip("Bosun Desktop");
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      {
+        label: "Show Bosun",
+        click: () => setWindowVisible(mainWindow),
+      },
+      {
+        label: "Restore Voice Companion",
+        click: () => {
+          if (!restoreFollowWindow()) setWindowVisible(mainWindow);
+        },
+      },
+      { type: "separator" },
+      {
+        label: "Quit",
+        click: () => {
+          void shutdown("tray_quit");
+        },
+      },
+    ]),
+  );
+  tray.on("click", () => {
+    if (!restoreFollowWindow()) setWindowVisible(mainWindow);
+  });
+}
+
+function registerShortcuts() {
+  try {
+    globalShortcut.register(FOLLOW_RESTORE_SHORTCUT, () => {
+      if (!restoreFollowWindow()) setWindowVisible(mainWindow);
+    });
+  } catch (error) {
+    console.warn("[desktop] failed to register shortcut", error?.message || error);
+  }
+}
+
+function registerDesktopIpc() {
+  ipcMain.handle("bosun:desktop:follow:open", async (_event, detail) => {
+    await openFollowWindow(detail || {});
+    return { ok: true };
+  });
+  ipcMain.handle("bosun:desktop:follow:hide", async () => {
+    return { ok: hideFollowWindow() };
+  });
+  ipcMain.handle("bosun:desktop:follow:restore", async () => {
+    return { ok: restoreFollowWindow() };
+  });
+}
+
 async function bootstrap() {
   try {
     if (process.env.ELECTRON_DISABLE_SANDBOX === "1") {
@@ -357,6 +527,9 @@ async function bootstrap() {
     });
 
     await ensureDaemonRunning();
+    ensureTray();
+    registerShortcuts();
+    registerDesktopIpc();
     await createMainWindow();
     await maybeAutoUpdate();
   } catch (error) {
@@ -403,6 +576,11 @@ async function shutdown(reason) {
 
 app.on("before-quit", () => {
   shuttingDown = true;
+  globalShortcut.unregisterAll();
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
   try {
     if (uiServerStarted && uiApi?.stopTelegramUiServer) {
       uiApi.stopTelegramUiServer();

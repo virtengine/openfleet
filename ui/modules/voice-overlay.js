@@ -441,6 +441,7 @@ function formatDuration(seconds) {
  * @param {{
  * visible: boolean,
  * onClose: () => void,
+ * onDismiss?: () => void,
  * tier: number,
  * sessionId?: string,
  * executor?: string,
@@ -453,6 +454,7 @@ function formatDuration(seconds) {
 export function VoiceOverlay({
   visible,
   onClose,
+  onDismiss,
   tier = 1,
   sessionId,
   executor,
@@ -609,6 +611,12 @@ export function VoiceOverlay({
     onClose();
   }, [tier, onClose]);
 
+  const handleDismiss = useCallback(() => {
+    haptic("light");
+    const fn = typeof onDismiss === "function" ? onDismiss : onClose;
+    fn();
+  }, [onDismiss, onClose]);
+
   const handleInterrupt = useCallback(() => {
     haptic("light");
     if (tier === 1) {
@@ -692,7 +700,7 @@ export function VoiceOverlay({
     <div class="voice-overlay">
       <!-- Header -->
       <div class="voice-overlay-header">
-        <button class="voice-overlay-close" onClick=${handleClose} title="End voice session">
+        <button class="voice-overlay-close" onClick=${handleDismiss} title="Hide voice window">
           ${resolveIcon("close")}
         </button>
         <div>

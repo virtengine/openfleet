@@ -12,6 +12,7 @@
 
 import { loadConfig } from "./config.mjs";
 import { execPrimaryPrompt, getPrimaryAgentName } from "./primary-agent.mjs";
+import { resolveVoiceOAuthToken } from "./voice-auth-manager.mjs";
 
 // ── Module-scope state ──────────────────────────────────────────────────────
 let _voiceConfig = null;   // cached resolved config
@@ -48,6 +49,126 @@ const VALID_AGENT_MODES = new Set([
   "code",
   "architect",
 ]);
+
+const VALID_VOICE_PROVIDERS = new Set([
+  "openai",
+  "azure",
+  "claude",
+  "gemini",
+  "fallback",
+]);
+
+const DEFAULT_VOICE_FAILOVER = Object.freeze({
+  enabled: true,
+  maxAttempts: 2,
+});
+
+function parseFailoverInt(rawValue, fallback) {
+  const parsed = Number.parseInt(String(rawValue ?? ""), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+function normalizeVoiceProviderEntry(entry) {
+  if (typeof entry === "string") {
+    const provider = String(entry || "").trim().toLowerCase();
+    if (!VALID_VOICE_PROVIDERS.has(provider)) return null;
+    return {
+      provider,
+      model: null,
+      visionModel: null,
+      voiceId: null,
+      azureDeployment: null,
+    };
+  }
+
+  if (!entry || typeof entry !== "object") return null;
+  const provider = String(entry.provider || "").trim().toLowerCase();
+  if (!VALID_VOICE_PROVIDERS.has(provider)) return null;
+
+  const model = String(entry.model || "").trim() || null;
+  const visionModel = String(entry.visionModel || "").trim() || null;
+  const voiceId = String(entry.voiceId || "").trim() || null;
+  const azureDeployment = String(entry.azureDeployment || "").trim() || null;
+
+  return {
+    provider,
+    model,
+    visionModel,
+    voiceId,
+    azureDeployment,
+  };
+}
+
+function normalizeVoiceProviderChain(rawProviders, primaryProvider) {
+  const dedup = new Set();
+  const chain = [];
+  const pushEntry = (entry) => {
+    const normalized = normalizeVoiceProviderEntry(entry);
+    if (!normalized) return;
+    if (dedup.has(normalized.provider)) return;
+    dedup.add(normalized.provider);
+    chain.push(normalized);
+  };
+
+  if (Array.isArray(rawProviders)) {
+    rawProviders.forEach(pushEntry);
+  } else if (typeof rawProviders === "string" && rawProviders.trim()) {
+    rawProviders
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .forEach((provider) => pushEntry({ provider }));
+  }
+
+  if (primaryProvider && VALID_VOICE_PROVIDERS.has(primaryProvider)) {
+    if (!dedup.has(primaryProvider)) {
+      chain.unshift({
+        provider: primaryProvider,
+        model: null,
+        visionModel: null,
+        voiceId: null,
+        azureDeployment: null,
+      });
+    }
+  }
+
+  return chain;
+}
+
+function getProviderChainWithCredentialFallbacks(chain, credentialState = {}) {
+  const dedup = new Set();
+  const providers = [];
+  const pushProvider = (provider) => {
+    if (!provider || dedup.has(provider)) return;
+    if (!VALID_VOICE_PROVIDERS.has(provider)) return;
+    dedup.add(provider);
+    providers.push(provider);
+  };
+
+  chain.forEach((entry) => pushProvider(entry.provider));
+
+  if (credentialState.azureAvailable) pushProvider("azure");
+  if (credentialState.openaiAvailable) pushProvider("openai");
+  if (credentialState.claudeAvailable) pushProvider("claude");
+  if (credentialState.geminiAvailable) pushProvider("gemini");
+  pushProvider("fallback");
+
+  return providers;
+}
+
+function shouldFailoverRealtimeError(err) {
+  const message = String(err?.message || "");
+  const statusMatch = message.match(/\((\d{3})\)/);
+  const status = statusMatch ? Number.parseInt(statusMatch[1], 10) : null;
+  if (status && (status === 401 || status === 403 || status === 408 || status === 409 || status === 429 || status >= 500)) {
+    return true;
+  }
+  if (/ECONNRESET|ETIMEDOUT|network|fetch failed|connection|connect/i.test(message)) {
+    return true;
+  }
+  return false;
+}
 
 function redactSecretLikeText(value) {
   let sanitized = String(value || "");
@@ -401,11 +522,19 @@ export function getVoiceConfig(forceReload = false) {
     .toLowerCase();
 
   // API keys
+  const openaiOAuthToken =
+    String(voice.openaiAccessToken || "").trim()
+    || resolveVoiceOAuthToken("openai", forceReload)?.token
+    || "";
   const openaiKey = voice.openaiApiKey
     || process.env.OPENAI_REALTIME_API_KEY
     || process.env.OPENAI_API_KEY
     || "";
 
+  const azureOAuthToken =
+    String(voice.azureAccessToken || "").trim()
+    || resolveVoiceOAuthToken("azure", forceReload)?.token
+    || "";
   const azureKey = voice.azureApiKey
     || process.env.AZURE_OPENAI_REALTIME_API_KEY
     || process.env.AZURE_OPENAI_API_KEY
@@ -420,25 +549,91 @@ export function getVoiceConfig(forceReload = false) {
     || process.env.AZURE_OPENAI_REALTIME_DEPLOYMENT
     || "gpt-4o-realtime-preview";
 
+  const claudeOAuthToken =
+    String(voice.claudeAccessToken || "").trim()
+    || resolveVoiceOAuthToken("claude", forceReload)?.token
+    || "";
   const claudeKey = voice.claudeApiKey
     || process.env.ANTHROPIC_API_KEY
     || "";
 
+  const geminiOAuthToken =
+    String(voice.geminiAccessToken || "").trim()
+    || resolveVoiceOAuthToken("gemini", forceReload)?.token
+    || "";
   const geminiKey = voice.geminiApiKey
     || process.env.GEMINI_API_KEY
     || process.env.GOOGLE_API_KEY
     || "";
 
-  const provider =
-    rawProvider === "auto"
-      ? (azureKey && azureEndpoint
-          ? "azure"
-          : (openaiKey
-              ? "openai"
-              : (claudeKey
-                  ? "claude"
-                  : (geminiKey ? "gemini" : "fallback"))))
-      : rawProvider;
+  const openaiAvailable = Boolean(openaiOAuthToken || openaiKey);
+  const azureAvailable = Boolean((azureOAuthToken || azureKey) && azureEndpoint);
+  const claudeAvailable = Boolean(claudeKey || claudeOAuthToken);
+  const geminiAvailable = Boolean(geminiKey || geminiOAuthToken);
+
+  const autoProvider =
+    azureAvailable
+      ? "azure"
+      : (openaiAvailable
+          ? "openai"
+          : (claudeAvailable
+              ? "claude"
+              : (geminiAvailable ? "gemini" : "fallback")));
+
+  const provider = rawProvider === "auto" ? autoProvider : rawProvider;
+
+  const providerChain = normalizeVoiceProviderChain(
+    voice.providers || process.env.VOICE_PROVIDERS || [],
+    provider,
+  );
+  const providerChainWithFallbacks = getProviderChainWithCredentialFallbacks(providerChain, {
+    openaiAvailable,
+    azureAvailable,
+    claudeAvailable,
+    geminiAvailable,
+  });
+
+  const realtimeCandidates = providerChain
+    .filter((entry) => entry.provider === "openai" || entry.provider === "azure")
+    .map((entry) => ({ ...entry }));
+  if (!realtimeCandidates.length && (provider === "openai" || provider === "azure")) {
+    realtimeCandidates.push({
+      provider,
+      model: null,
+      visionModel: null,
+      voiceId: null,
+      azureDeployment: null,
+    });
+  }
+
+  const failoverEnabledRaw =
+    voice?.failover?.enabled ?? process.env.VOICE_FAILOVER_ENABLED;
+  const failoverEnabled =
+    failoverEnabledRaw == null
+      ? DEFAULT_VOICE_FAILOVER.enabled
+      : !["0", "false", "no", "off"].includes(
+          String(failoverEnabledRaw).trim().toLowerCase(),
+        );
+  const failoverMaxAttempts = parseFailoverInt(
+    voice?.failover?.maxAttempts ?? process.env.VOICE_FAILOVER_MAX_ATTEMPTS,
+    DEFAULT_VOICE_FAILOVER.maxAttempts,
+  );
+
+  const diagnostics = [];
+  if (
+    process.env.OPENAI_REALTIME_API_KEY
+    && process.env.OPENAI_API_KEY
+    && process.env.OPENAI_REALTIME_API_KEY !== process.env.OPENAI_API_KEY
+  ) {
+    diagnostics.push(
+      "Both OPENAI_REALTIME_API_KEY and OPENAI_API_KEY are set; realtime key takes precedence.",
+    );
+  }
+  if (/^sk-test-/i.test(String(openaiKey || ""))) {
+    diagnostics.push(
+      "OpenAI realtime key appears to be a test/placeholder value (sk-test-*).",
+    );
+  }
   const defaultModel =
     provider === "claude"
       ? CLAUDE_DEFAULT_MODEL
@@ -480,13 +675,24 @@ For complex operations like writing code or creating PRs, delegate to the approp
 
   _voiceConfig = Object.freeze({
     provider,
+    providerChain,
+    providerChainWithFallbacks,
+    realtimeCandidates,
+    failover: {
+      enabled: failoverEnabled,
+      maxAttempts: failoverMaxAttempts,
+    },
     model,
     openaiKey,
+    openaiOAuthToken,
     azureKey,
+    azureOAuthToken,
     azureEndpoint,
     azureDeployment,
     claudeKey,
+    claudeOAuthToken,
     geminiKey,
+    geminiOAuthToken,
     voiceId,
     turnDetection,
     visionModel,
@@ -494,6 +700,7 @@ For complex operations like writing code or creating PRs, delegate to the approp
     fallbackMode,
     delegateExecutor,
     enabled,
+    diagnostics,
   });
   _configLoadedAt = Date.now();
   return _voiceConfig;
@@ -506,16 +713,23 @@ export function isVoiceAvailable() {
   const cfg = getVoiceConfig();
   if (!cfg.enabled) return { available: false, tier: null, reason: "Voice disabled in config" };
 
-  if (cfg.provider === "openai" && cfg.openaiKey) {
-    return { available: true, tier: 1, provider: "openai" };
+  const realtimeProvider = cfg.realtimeCandidates.find((candidate) => {
+    if (candidate.provider === "openai") {
+      return Boolean(cfg.openaiOAuthToken || cfg.openaiKey);
+    }
+    if (candidate.provider === "azure") {
+      return Boolean((cfg.azureOAuthToken || cfg.azureKey) && cfg.azureEndpoint);
+    }
+    return false;
+  });
+  if (realtimeProvider) {
+    return { available: true, tier: 1, provider: realtimeProvider.provider };
   }
-  if (cfg.provider === "azure" && cfg.azureKey && cfg.azureEndpoint) {
-    return { available: true, tier: 1, provider: "azure" };
-  }
-  if (cfg.provider === "claude" && cfg.claudeKey) {
+
+  if (cfg.provider === "claude" && (cfg.claudeKey || cfg.claudeOAuthToken)) {
     return { available: true, tier: 2, provider: "claude" };
   }
-  if (cfg.provider === "gemini" && cfg.geminiKey) {
+  if (cfg.provider === "gemini" && (cfg.geminiKey || cfg.geminiOAuthToken)) {
     return { available: true, tier: 2, provider: "gemini" };
   }
   if (cfg.fallbackMode === "disabled") {
@@ -535,25 +749,55 @@ export function isVoiceAvailable() {
  */
 export async function createEphemeralToken(toolDefinitions = [], callContext = {}) {
   const cfg = getVoiceConfig();
-  if (cfg.provider === "azure") {
-    return createAzureEphemeralToken(toolDefinitions, callContext);
-  }
-  if (cfg.provider !== "openai") {
+  const candidates = cfg.realtimeCandidates.filter((entry) => {
+    if (entry.provider === "openai") return Boolean(cfg.openaiOAuthToken || cfg.openaiKey);
+    if (entry.provider === "azure") return Boolean((cfg.azureOAuthToken || cfg.azureKey) && cfg.azureEndpoint);
+    return false;
+  });
+
+  if (!candidates.length) {
     throw new Error(
       `Realtime WebRTC token is unavailable for provider "${cfg.provider}". ` +
-      "Use VOICE_PROVIDER=openai|azure for Tier 1 realtime voice.",
+      "Use VOICE_PROVIDER=openai|azure and configure OAuth/API credentials for Tier 1 realtime voice.",
     );
   }
-  if (!cfg.openaiKey) {
-    throw new Error("OPENAI_API_KEY not configured for voice");
+
+  const maxAttempts = cfg.failover.enabled
+    ? Math.min(Math.max(cfg.failover.maxAttempts, 1), candidates.length)
+    : 1;
+
+  let lastError = null;
+  for (let index = 0; index < maxAttempts; index++) {
+    const candidate = candidates[index];
+    try {
+      if (candidate.provider === "azure") {
+        return await createAzureEphemeralToken(cfg, toolDefinitions, callContext, candidate);
+      }
+      return await createOpenAIEphemeralToken(cfg, toolDefinitions, callContext, candidate);
+    } catch (err) {
+      lastError = err;
+      const canRetry = cfg.failover.enabled && index + 1 < maxAttempts && shouldFailoverRealtimeError(err);
+      if (!canRetry) break;
+    }
+  }
+
+  throw lastError || new Error("Failed to create realtime token");
+}
+
+async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext = {}, candidate = {}) {
+  const credential = String(cfg.openaiOAuthToken || cfg.openaiKey || "").trim();
+  if (!credential) {
+    throw new Error("OpenAI voice credential not configured (OAuth token or API key required)");
   }
 
   const context = sanitizeVoiceCallContext(callContext);
   const instructions = buildSessionScopedInstructions(cfg.instructions, context);
+  const model = String(candidate?.model || cfg.model || OPENAI_REALTIME_MODEL).trim() || OPENAI_REALTIME_MODEL;
+  const voiceId = String(candidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
 
   const sessionConfig = {
-    model: cfg.model,
-    voice: cfg.voiceId,
+    model,
+    voice: voiceId,
     instructions,
     tool_choice: resolveToolChoice(toolDefinitions, context),
     turn_detection: {
@@ -574,7 +818,7 @@ export async function createEphemeralToken(toolDefinitions = [], callContext = {
   const response = await fetch(`${OPENAI_REALTIME_URL}/sessions`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${cfg.openaiKey}`,
+      Authorization: `Bearer ${credential}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(sessionConfig),
@@ -589,8 +833,8 @@ export async function createEphemeralToken(toolDefinitions = [], callContext = {
   return {
     token: data.client_secret?.value || data.token,
     expiresAt: data.client_secret?.expires_at || (Date.now() / 1000 + 60),
-    model: cfg.model,
-    voiceId: cfg.voiceId,
+    model,
+    voiceId,
     provider: "openai",
     sessionConfig,
     callContext: context,
@@ -600,20 +844,32 @@ export async function createEphemeralToken(toolDefinitions = [], callContext = {
 /**
  * Create an ephemeral token for Azure OpenAI Realtime API.
  */
-async function createAzureEphemeralToken(toolDefinitions = [], callContext = {}) {
-  const cfg = getVoiceConfig();
-  if (!cfg.azureKey || !cfg.azureEndpoint) {
+async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext = {}, candidate = {}) {
+  if ((!cfg.azureKey && !cfg.azureOAuthToken) || !cfg.azureEndpoint) {
     throw new Error("Azure OpenAI Realtime not configured (need endpoint + key)");
   }
 
   const context = sanitizeVoiceCallContext(callContext);
   const instructions = buildSessionScopedInstructions(cfg.instructions, context);
   const endpoint = cfg.azureEndpoint.replace(/\/+$/, "");
-  const url = `${endpoint}/openai/realtime/sessions?api-version=${AZURE_API_VERSION}&deployment=${cfg.azureDeployment}`;
+  const deployment =
+    String(candidate?.azureDeployment || cfg.azureDeployment || "").trim()
+    || "gpt-4o-realtime-preview";
+  const voiceId = String(candidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
+  const url = `${endpoint}/openai/realtime/sessions?api-version=${AZURE_API_VERSION}&deployment=${deployment}`;
+
+  const headers = {
+    "Content-Type": "application/json",
+  };
+  if (cfg.azureOAuthToken) {
+    headers.Authorization = `Bearer ${cfg.azureOAuthToken}`;
+  } else {
+    headers["api-key"] = cfg.azureKey;
+  }
 
   const sessionConfig = {
-    model: cfg.azureDeployment,
-    voice: cfg.voiceId,
+    model: deployment,
+    voice: voiceId,
     instructions,
     tool_choice: resolveToolChoice(toolDefinitions, context),
     turn_detection: {
@@ -630,10 +886,7 @@ async function createAzureEphemeralToken(toolDefinitions = [], callContext = {})
 
   const response = await fetch(url, {
     method: "POST",
-    headers: {
-      "api-key": cfg.azureKey,
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify(sessionConfig),
   });
 
@@ -646,12 +899,12 @@ async function createAzureEphemeralToken(toolDefinitions = [], callContext = {})
   return {
     token: data.client_secret?.value || data.token,
     expiresAt: data.client_secret?.expires_at || (Date.now() / 1000 + 60),
-    model: cfg.azureDeployment,
-    voiceId: cfg.voiceId,
+    model: deployment,
+    voiceId,
     provider: "azure",
     sessionConfig,
     azureEndpoint: endpoint,
-    azureDeployment: cfg.azureDeployment,
+    azureDeployment: deployment,
     callContext: context,
   };
 }
@@ -792,15 +1045,12 @@ export async function getVoiceToolDefinitions(options = {}) {
  */
 export function getRealtimeConnectionInfo() {
   const cfg = getVoiceConfig();
-  if (cfg.provider === "azure") {
-    const endpoint = cfg.azureEndpoint.replace(/\/+$/, "");
-    return {
-      provider: "azure",
-      url: `${endpoint}/openai/realtime?api-version=${AZURE_API_VERSION}&deployment=${cfg.azureDeployment}`,
-      model: cfg.azureDeployment,
-    };
-  }
-  if (cfg.provider !== "openai") {
+  const candidate = cfg.realtimeCandidates.find((entry) => {
+    if (entry.provider === "openai") return Boolean(cfg.openaiOAuthToken || cfg.openaiKey);
+    if (entry.provider === "azure") return Boolean((cfg.azureOAuthToken || cfg.azureKey) && cfg.azureEndpoint);
+    return false;
+  });
+  if (!candidate) {
     return {
       provider: cfg.provider,
       url: null,
@@ -808,9 +1058,22 @@ export function getRealtimeConnectionInfo() {
       tier: 2,
     };
   }
+
+  if (candidate.provider === "azure") {
+    const endpoint = cfg.azureEndpoint.replace(/\/+$/, "");
+    const deployment =
+      String(candidate?.azureDeployment || cfg.azureDeployment || "").trim()
+      || "gpt-4o-realtime-preview";
+    return {
+      provider: "azure",
+      url: `${endpoint}/openai/realtime?api-version=${AZURE_API_VERSION}&deployment=${deployment}`,
+      model: deployment,
+    };
+  }
+  const model = String(candidate?.model || cfg.model || OPENAI_REALTIME_MODEL).trim() || OPENAI_REALTIME_MODEL;
   return {
     provider: "openai",
-    url: `${OPENAI_REALTIME_URL}?model=${cfg.model}`,
-    model: cfg.model,
+    url: `${OPENAI_REALTIME_URL}?model=${model}`,
+    model,
   };
 }

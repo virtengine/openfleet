@@ -9173,6 +9173,7 @@ async function handleApi(req, res, url) {
         available: availability.available,
         tier: availability.tier,
         provider: availability.provider,
+        providerChain: config.providerChainWithFallbacks || [config.provider],
         reason: availability.reason || "",
         voiceId: config.voiceId,
         turnDetection: config.turnDetection,
@@ -9184,6 +9185,8 @@ async function handleApi(req, res, url) {
           defaultIntervalMs: DEFAULT_VISION_ANALYSIS_INTERVAL_MS,
         },
         fallbackMode: config.fallbackMode,
+        failover: config.failover || null,
+        diagnostics: Array.isArray(config.diagnostics) ? config.diagnostics : [],
         connectionInfo,
       });
     } catch (err) {

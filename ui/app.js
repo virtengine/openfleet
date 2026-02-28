@@ -143,6 +143,12 @@ function scrubVoiceLaunchQuery() {
   window.history.replaceState(window.history.state, "", nextPath || "/");
 }
 
+function isFollowWindowFromUrl() {
+  if (typeof window === "undefined") return false;
+  const params = new URLSearchParams(window.location.search || "");
+  return params.get("follow") === "1";
+}
+
 /* ── Module imports ── */
 import { ICONS } from "./modules/icons.js";
 import { iconText, resolveIcon } from "./modules/icon-utils.js";
@@ -1364,6 +1370,8 @@ function App() {
   const [voiceInitialVisionSource, setVoiceInitialVisionSource] = useState(
     null,
   );
+  const followWindowMode = isFollowWindowFromUrl();
+  const followOverlayOpenedRef = useRef(false);
   const resizeRef = useRef(null);
   const [isCompactNav, setIsCompactNav] = useState(() => {
     const win = globalThis.window;
@@ -1723,6 +1731,23 @@ function App() {
           return;
         }
 
+        const desktopFollowApi = globalThis?.veDesktop?.follow;
+        if (!followWindowMode && desktopFollowApi?.open) {
+          try {
+            await desktopFollowApi.open({
+              call: requestedCallType,
+              initialVisionSource: requestedVisionSource,
+              sessionId: currentSessionId,
+              executor: currentExecutor,
+              mode: currentMode,
+              model: currentModel,
+            });
+            return;
+          } catch {
+            // Fall through to in-window overlay if desktop companion fails.
+          }
+        }
+
         setVoiceSessionId(currentSessionId);
         setVoiceExecutor(currentExecutor);
         setVoiceAgentMode(currentMode);
@@ -1749,7 +1774,17 @@ function App() {
     globalThis.addEventListener?.("ve:open-voice-mode", handleOpenVoiceMode);
     return () =>
       globalThis.removeEventListener?.("ve:open-voice-mode", handleOpenVoiceMode);
-  }, []);
+  }, [followWindowMode]);
+
+  useEffect(() => {
+    if (!followWindowMode) return;
+    if (voiceOverlayOpen) {
+      followOverlayOpenedRef.current = true;
+      return;
+    }
+    if (!followOverlayOpenedRef.current) return;
+    globalThis?.veDesktop?.follow?.hide?.().catch?.(() => {});
+  }, [followWindowMode, voiceOverlayOpen]);
 
   useEffect(() => {
     const launch = parseVoiceLaunchFromUrl();
@@ -2056,6 +2091,13 @@ function App() {
     <${VoiceOverlay}
       visible=${voiceOverlayOpen}
       onClose=${() => setVoiceOverlayOpen(false)}
+      onDismiss=${() => {
+        if (followWindowMode && globalThis?.veDesktop?.follow?.hide) {
+          globalThis.veDesktop.follow.hide().catch(() => {});
+          return;
+        }
+        setVoiceOverlayOpen(false);
+      }}
       tier=${voiceTier}
       sessionId=${voiceSessionId}
       executor=${voiceExecutor}

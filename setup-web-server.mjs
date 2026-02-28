@@ -1734,6 +1734,7 @@ function handleApply(body) {
     if (configJson.projectRequirementsProfile) config.projectRequirementsProfile = configJson.projectRequirementsProfile;
     if (configJson.internalReplenish)          config.internalReplenish          = configJson.internalReplenish;
     if (configJson.kanban)                     config.kanban                     = configJson.kanban;
+    if (configJson.voice && typeof configJson.voice === "object") config.voice = configJson.voice;
 
     const workspaceConfig = resolveSetupWorkspaceAndRepoConfig(
       existingConfig,
