@@ -140,6 +140,19 @@ export async function startVoiceSession(options = {}) {
     const tokenData = await tokenRes.json();
 
     // 2. Get microphone
+    const mediaDevices = navigator?.mediaDevices;
+    if (!mediaDevices?.getUserMedia) {
+      const host = String(globalThis.location?.hostname || "").toLowerCase();
+      const localhostLike =
+        host === "localhost" || host === "127.0.0.1" || host === "::1";
+      if (!globalThis.isSecureContext && !localhostLike) {
+        throw new Error(
+          "Microphone access requires HTTPS (or localhost). Open the UI via the Cloudflare HTTPS URL or localhost.",
+        );
+      }
+      throw new Error("Microphone API unavailable in this browser/runtime.");
+    }
+
     _mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,

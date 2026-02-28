@@ -434,6 +434,18 @@ function buildStableSetupDefaults({
     workflowRunStuckThresholdMs: 300000,
     workflowMaxPersistedRuns: 200,
     workflowMaxConcurrentBranches: 8,
+    voiceEnabled: true,
+    voiceProvider: "auto",
+    voiceModel: "gpt-4o-realtime-preview-2024-12-17",
+    voiceVisionModel: "gpt-4.1-mini",
+    voiceId: "alloy",
+    voiceTurnDetection: "server_vad",
+    voiceFallbackMode: "browser",
+    voiceDelegateExecutor: "codex-sdk",
+    openaiRealtimeApiKey: "",
+    azureOpenaiRealtimeEndpoint: "",
+    azureOpenaiRealtimeApiKey: "",
+    azureOpenaiRealtimeDeployment: "gpt-4o-realtime-preview",
     copilotEnableAllMcpTools: false,
     // Backward-compatible fields consumed by older setup UI revisions.
     distribution: "primary-only",
@@ -818,6 +830,122 @@ function applyNonBlockingSetupEnvDefaults(envMap, env = {}, sourceEnv = process.
     ["workspace-write", "danger-full-access", "read-only"],
     "workspace-write",
   );
+  envMap.VOICE_ENABLED = toBooleanEnvString(
+    pickNonEmptyValue(
+      env.voiceEnabled,
+      env.VOICE_ENABLED,
+      envMap.VOICE_ENABLED,
+      sourceEnv.VOICE_ENABLED,
+    ),
+    true,
+  );
+  envMap.VOICE_PROVIDER = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.voiceProvider,
+      env.VOICE_PROVIDER,
+      envMap.VOICE_PROVIDER,
+      sourceEnv.VOICE_PROVIDER,
+    ),
+    ["auto", "openai", "azure", "claude", "gemini", "fallback"],
+    "auto",
+  );
+  envMap.VOICE_MODEL = String(
+    pickNonEmptyValue(
+      env.voiceModel,
+      env.VOICE_MODEL,
+      envMap.VOICE_MODEL,
+      sourceEnv.VOICE_MODEL,
+    ) || "gpt-4o-realtime-preview-2024-12-17",
+  ).trim() || "gpt-4o-realtime-preview-2024-12-17";
+  envMap.VOICE_VISION_MODEL = String(
+    pickNonEmptyValue(
+      env.voiceVisionModel,
+      env.VOICE_VISION_MODEL,
+      envMap.VOICE_VISION_MODEL,
+      sourceEnv.VOICE_VISION_MODEL,
+    ) || "gpt-4.1-mini",
+  ).trim() || "gpt-4.1-mini";
+  envMap.VOICE_ID = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.voiceId,
+      env.VOICE_ID,
+      envMap.VOICE_ID,
+      sourceEnv.VOICE_ID,
+    ),
+    ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse"],
+    "alloy",
+  );
+  envMap.VOICE_TURN_DETECTION = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.voiceTurnDetection,
+      env.VOICE_TURN_DETECTION,
+      envMap.VOICE_TURN_DETECTION,
+      sourceEnv.VOICE_TURN_DETECTION,
+    ),
+    ["server_vad", "semantic_vad", "none"],
+    "server_vad",
+  );
+  envMap.VOICE_FALLBACK_MODE = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.voiceFallbackMode,
+      env.VOICE_FALLBACK_MODE,
+      envMap.VOICE_FALLBACK_MODE,
+      sourceEnv.VOICE_FALLBACK_MODE,
+    ),
+    ["browser", "disabled"],
+    "browser",
+  );
+  envMap.VOICE_DELEGATE_EXECUTOR = normalizeEnumValue(
+    pickNonEmptyValue(
+      env.voiceDelegateExecutor,
+      env.VOICE_DELEGATE_EXECUTOR,
+      envMap.VOICE_DELEGATE_EXECUTOR,
+      sourceEnv.VOICE_DELEGATE_EXECUTOR,
+    ),
+    ["codex-sdk", "copilot-sdk", "claude-sdk", "gemini-sdk", "opencode-sdk"],
+    "codex-sdk",
+  );
+
+  const openaiRealtimeApiKey = pickNonEmptyValue(
+    env.openaiRealtimeApiKey,
+    env.OPENAI_REALTIME_API_KEY,
+    envMap.OPENAI_REALTIME_API_KEY,
+    sourceEnv.OPENAI_REALTIME_API_KEY,
+  );
+  if (openaiRealtimeApiKey !== undefined) {
+    envMap.OPENAI_REALTIME_API_KEY = String(openaiRealtimeApiKey).trim();
+  }
+
+  const azureRealtimeEndpoint = pickNonEmptyValue(
+    env.azureOpenaiRealtimeEndpoint,
+    env.AZURE_OPENAI_REALTIME_ENDPOINT,
+    envMap.AZURE_OPENAI_REALTIME_ENDPOINT,
+    sourceEnv.AZURE_OPENAI_REALTIME_ENDPOINT,
+    sourceEnv.AZURE_OPENAI_ENDPOINT,
+  );
+  if (azureRealtimeEndpoint !== undefined) {
+    envMap.AZURE_OPENAI_REALTIME_ENDPOINT = String(azureRealtimeEndpoint).trim();
+  }
+
+  const azureRealtimeApiKey = pickNonEmptyValue(
+    env.azureOpenaiRealtimeApiKey,
+    env.AZURE_OPENAI_REALTIME_API_KEY,
+    envMap.AZURE_OPENAI_REALTIME_API_KEY,
+    sourceEnv.AZURE_OPENAI_REALTIME_API_KEY,
+    sourceEnv.AZURE_OPENAI_API_KEY,
+  );
+  if (azureRealtimeApiKey !== undefined) {
+    envMap.AZURE_OPENAI_REALTIME_API_KEY = String(azureRealtimeApiKey).trim();
+  }
+
+  envMap.AZURE_OPENAI_REALTIME_DEPLOYMENT = String(
+    pickNonEmptyValue(
+      env.azureOpenaiRealtimeDeployment,
+      env.AZURE_OPENAI_REALTIME_DEPLOYMENT,
+      envMap.AZURE_OPENAI_REALTIME_DEPLOYMENT,
+      sourceEnv.AZURE_OPENAI_REALTIME_DEPLOYMENT,
+    ) || "gpt-4o-realtime-preview",
+  ).trim() || "gpt-4o-realtime-preview";
 
   envMap.CONTAINER_ENABLED = toBooleanEnvString(
     pickNonEmptyValue(env.containerEnabled, envMap.CONTAINER_ENABLED, sourceEnv.CONTAINER_ENABLED),

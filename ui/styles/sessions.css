@@ -1218,6 +1218,81 @@
   background: rgba(255, 255, 255, 0.2);
 }
 
+/* ─── Thinking Group — collapsed view of consecutive trace events ─── */
+.thinking-group {
+  align-self: stretch;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  margin: 2px 0 4px;
+  overflow: hidden;
+}
+
+.thinking-group.has-errors {
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.thinking-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.thinking-group-head:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.thinking-group-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.12);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #fde68a;
+  flex-shrink: 0;
+}
+
+.thinking-group-badge svg {
+  width: 10px;
+  height: 10px;
+  opacity: 0.85;
+}
+
+.thinking-group-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+
+.thinking-group-chevron {
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--text-hint);
+}
+
+.thinking-group-body {
+  border-top: 1px solid var(--border);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 /* Subtle entrance for bubbles — only the last few get the animation
    (content-visibility: auto on older bubbles skips them for free) */
 .chat-bubble:last-child,

@@ -438,6 +438,42 @@ const TraceEvent = memo(function TraceEvent({ msg }) {
   `;
 }, (prev, next) => prev.msg === next.msg);
 
+/* ─── ThinkingGroup — collapses consecutive trace events into one row ─── */
+const ThinkingGroup = memo(function ThinkingGroup({ msgs }) {
+  const hasErrors = msgs.some((m) => m.type === "error" || m.type === "stream_error");
+  const [expanded, setExpanded] = useState(hasErrors);
+
+  useEffect(() => {
+    if (hasErrors) setExpanded(true);
+  }, [msgs.length, hasErrors]);
+
+  const toolCount = msgs.filter((m) => m.type === "tool_call").length;
+  const stepCount = msgs.filter((m) => {
+    const t = (m.type || "").toLowerCase();
+    return !["tool_call", "tool_result", "tool_output", "error", "stream_error"].includes(t);
+  }).length;
+
+  const parts = [];
+  if (toolCount) parts.push(`${toolCount} tool call${toolCount !== 1 ? "s" : ""}`);
+  if (stepCount) parts.push(`${stepCount} step${stepCount !== 1 ? "s" : ""}`);
+  const label = parts.join(", ") || `${msgs.length} step${msgs.length !== 1 ? "s" : ""}`;
+
+  return html`
+    <div class="thinking-group ${expanded ? "expanded" : ""} ${hasErrors ? "has-errors" : ""}">
+      <button class="thinking-group-head" type="button" onClick=${() => setExpanded((p) => !p)}>
+        <span class="thinking-group-badge">${iconText(":cpu: Thinking")}</span>
+        <span class="thinking-group-label">${label}</span>
+        <span class="thinking-group-chevron">${expanded ? "▾" : "▸"}</span>
+      </button>
+      ${expanded && html`
+        <div class="thinking-group-body">
+          ${msgs.map((m, idx) => html`<${TraceEvent} key=${m.id || m.timestamp || idx} msg=${m} />`)}
+        </div>
+      `}
+    </div>
+  `;
+}, (prev, next) => prev.msgs === next.msgs);
+
 /* ─── Chat View component ─── */
 
 export function ChatView({ sessionId, readOnly = false, embedded = false }) {
@@ -541,12 +577,28 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
     return messageIdentity(latest);
   }, [filteredMessages]);
 
-  const visibleMessages = useMemo(() => {
-    if (filteredMessages.length <= visibleCount) return filteredMessages;
-    return filteredMessages.slice(-visibleCount);
-  }, [filteredMessages, visibleCount]);
+  // Count only real (non-trace) messages toward the visible limit so trace
+  // events don't consume the page budget.
+  const realMessageCount = useMemo(
+    () => filteredMessages.filter((msg) => !isTraceEventMessage(msg)).length,
+    [filteredMessages],
+  );
 
-  const hasMoreMessages = filteredMessages.length > visibleCount;
+  const visibleMessages = useMemo(() => {
+    if (realMessageCount <= visibleCount) return filteredMessages;
+    // Walk backwards counting only real messages; include all trace events
+    // that fall between them so groups stay intact.
+    let realCount = 0;
+    for (let i = filteredMessages.length - 1; i >= 0; i--) {
+      if (!isTraceEventMessage(filteredMessages[i])) {
+        realCount++;
+        if (realCount >= visibleCount) return filteredMessages.slice(i);
+      }
+    }
+    return filteredMessages;
+  }, [filteredMessages, visibleCount, realMessageCount]);
+
+  const hasMoreMessages = realMessageCount > visibleCount;
 
   const streamActivityKey = useMemo(() => {
     if (filteredMessages.length === 0) return "empty";
@@ -602,16 +654,37 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
   }
 
   const renderItems = useMemo(() => {
-    return visibleMessages.map((msg, index) => {
-      const baseKey = msg.id || msg.timestamp || `msg-${index}`;
-      const trace = isTraceEventMessage(msg);
-      return {
-        kind: trace ? "trace" : "message",
-        key: `${trace ? "trace" : "message"}-${baseKey}-${index}`,
-        messageKey: messageIdentity(msg),
-        msg,
-      };
-    });
+    const items = [];
+    let i = 0;
+    while (i < visibleMessages.length) {
+      const msg = visibleMessages[i];
+      if (isTraceEventMessage(msg)) {
+        // Collect consecutive trace events; discard completely empty ones.
+        const group = [];
+        let groupKey = null;
+        while (i < visibleMessages.length && isTraceEventMessage(visibleMessages[i])) {
+          const m = visibleMessages[i];
+          if (messageText(m).trim()) {
+            group.push(m);
+            if (!groupKey) groupKey = m.id || m.timestamp || `trace-${i}`;
+          }
+          i++;
+        }
+        if (group.length > 0) {
+          items.push({ kind: "thinking-group", key: `thinking-group-${groupKey}`, msgs: group });
+        }
+      } else {
+        const baseKey = msg.id || msg.timestamp || `msg-${i}`;
+        items.push({
+          kind: "message",
+          key: `message-${baseKey}-${i}`,
+          messageKey: messageIdentity(msg),
+          msg,
+        });
+        i++;
+      }
+    }
+    return items;
   }, [visibleMessages]);
 
   const refreshMessages = useCallback(async () => {
@@ -1173,8 +1246,8 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             </button>
           </div>
         `}
-        ${renderItems.map((item) => item.kind === "trace"
-          ? html`<${TraceEvent} key=${item.key} msg=${item.msg} />`
+        ${renderItems.map((item) => item.kind === "thinking-group"
+          ? html`<${ThinkingGroup} key=${item.key} msgs=${item.msgs} />`
           : html`<${ChatBubble}
               key=${item.key}
               msg=${item.msg}
