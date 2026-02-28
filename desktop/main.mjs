@@ -29,6 +29,10 @@ let uiServerStarted = false;
 let uiOrigin = null;
 let uiApi = null;
 let runtimeConfigLoaded = false;
+/** True when the app is running as a persistent background / tray resident. */
+let trayMode = false;
+/** True when the main window should start hidden (background mode). */
+let startHidden = false;
 const DEFAULT_TELEGRAM_UI_PORT = 3080;
 const FOLLOW_RESTORE_SHORTCUT = "CommandOrControl+Shift+V";
 
@@ -45,6 +49,36 @@ const LOCAL_HOSTNAME_RE = [
 ];
 function isLocalHost(hostname) {
   return LOCAL_HOSTNAME_RE.some((re) => re.test(hostname));
+}
+
+/**
+ * Detect whether a graphical display environment is available.
+ * On Windows and macOS this is always true.
+ * On Linux we probe for an X11 / Wayland display server.
+ */
+function isGuiEnvironment() {
+  if (process.platform === "win32" || process.platform === "darwin") return true;
+  // Linux / BSD: check for a display server
+  if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY) return true;
+  // Running inside a desktop session without a forwarded $DISPLAY is possible
+  // (e.g. XDG_SESSION_TYPE=wayland without WAYLAND_DISPLAY being exported).
+  if (process.env.XDG_SESSION_TYPE && process.env.XDG_SESSION_TYPE !== "tty") return true;
+  return false;
+}
+
+/**
+ * Returns true when the app should run as a persistent tray resident.
+ * Opt-out: set BOSUN_DESKTOP_TRAY=0 / BOSUN_DESKTOP_NO_TRAY=1
+ * Explicit opt-in: BOSUN_DESKTOP_TRAY=1
+ * Default: enabled on any GUI environment.
+ */
+function isTrayModeEnabled() {
+  if (parseBoolEnv(process.env.BOSUN_DESKTOP_NO_TRAY, false)) return false;
+  const explicit = process.env.BOSUN_DESKTOP_TRAY;
+  if (explicit !== undefined && explicit !== "") {
+    return parseBoolEnv(explicit, true);
+  }
+  return isGuiEnvironment();
 }
 
 function parseBoolEnv(value, fallback) {
@@ -534,6 +568,9 @@ async function createMainWindow() {
     backgroundColor: "#0b0b0c",
     ...(existsSync(iconPath) ? { icon: iconPath } : {}),
     show: false,
+    // In tray mode Windows/Linux should not show a taskbar button for the
+    // hidden state — the tray icon IS the taskbar presence.
+    skipTaskbar: Boolean(trayMode && startHidden),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -542,12 +579,36 @@ async function createMainWindow() {
     },
   });
 
+  mainWindow.on("close", (event) => {
+    // In tray mode, closing the window hides it to the tray instead of quitting.
+    if (trayMode && !shuttingDown) {
+      event.preventDefault();
+      mainWindow?.hide();
+      // On macOS, hide the dock icon when the window is hidden.
+      if (process.platform === "darwin") {
+        app.dock?.hide();
+      }
+      return;
+    }
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
 
   mainWindow.once("ready-to-show", () => {
-    mainWindow?.show();
+    if (!startHidden) {
+      mainWindow?.show();
+    }
+  });
+
+  // When the window is shown again, make it appear in the taskbar on
+  // Windows / Linux and restore the macOS dock icon.
+  mainWindow.on("show", () => {
+    mainWindow?.setSkipTaskbar(false);
+    if (process.platform === "darwin") {
+      app.dock?.show();
+    }
   });
 
   const uiUrl = await buildUiUrl();
@@ -622,35 +683,168 @@ function restoreFollowWindow() {
   return true;
 }
 
+/** Rebuild and apply the tray context menu (called after state changes). */
+function refreshTrayMenu() {
+  if (!tray) return;
+
+  const openUrl = (url) => shell.openExternal(url).catch(() => {});
+  const isDev = !app.isPackaged;
+
+  const menu = Menu.buildFromTemplate([
+    // ── Identity header ──────────────────────────────────────────────────
+    {
+      label: "VirtEngine",
+      enabled: false,
+    },
+    {
+      label: "Open",
+      click: () => setWindowVisible(mainWindow),
+    },
+    { type: /** @type {const} */ ("separator") },
+
+    // ── Launch Control ───────────────────────────────────────────────────
+    {
+      label: "Launch Control",
+      submenu: [
+        {
+          label: "Dashboard",
+          click: () => navigateMainWindow("/"),
+        },
+        {
+          label: "Agents",
+          click: () => navigateMainWindow("/agents"),
+        },
+        {
+          label: "Tasks",
+          click: () => navigateMainWindow("/tasks"),
+        },
+        {
+          label: "Logs",
+          click: () => navigateMainWindow("/logs"),
+        },
+        { type: /** @type {const} */ ("separator") },
+        {
+          label: "Voice Companion",
+          accelerator: FOLLOW_RESTORE_SHORTCUT,
+          click: () => {
+            if (!restoreFollowWindow()) setWindowVisible(mainWindow);
+          },
+        },
+      ],
+    },
+    {
+      label: "Restart to Apply Update",
+      enabled: app.isPackaged,
+      click: () => {
+        app.relaunch();
+        void shutdown("tray_restart_update");
+      },
+    },
+    {
+      label: "Preferences",
+      accelerator: "CmdOrCtrl+,",
+      click: () => navigateMainWindow("/settings"),
+    },
+    { type: /** @type {const} */ ("separator") },
+
+    // ── Troubleshooting ──────────────────────────────────────────────────
+    {
+      label: "Troubleshooting",
+      submenu: [
+        {
+          label: "Reload UI",
+          click: () => mainWindow?.webContents?.reload(),
+        },
+        {
+          label: "Force Reload UI",
+          click: () => mainWindow?.webContents?.reloadIgnoringCache(),
+        },
+        {
+          label: "Clear Cache & Reload",
+          click: async () => {
+            try {
+              await session.defaultSession.clearCache();
+            } catch {
+              // best effort
+            }
+            mainWindow?.webContents?.reloadIgnoringCache();
+          },
+        },
+        { type: /** @type {const} */ ("separator") },
+        {
+          label: "Toggle Developer Tools",
+          enabled: isDev || !app.isPackaged,
+          click: () => mainWindow?.webContents?.toggleDevTools(),
+        },
+        { type: /** @type {const} */ ("separator") },
+        {
+          label: "View Logs",
+          click: () => navigateMainWindow("/logs"),
+        },
+        {
+          label: "Report an Issue",
+          click: () =>
+            openUrl("https://github.com/virtengine/bosun/issues/new"),
+        },
+      ],
+    },
+    { type: /** @type {const} */ ("separator") },
+
+    // ── Startup / login ──────────────────────────────────────────────
+    ...( app.isPackaged
+      ? [
+          {
+            label: "Start at Login",
+            type: /** @type {const} */ ("checkbox"),
+            checked: app.getLoginItemSettings().openAtLogin,
+            click: (item) => {
+              app.setLoginItemSettings({ openAtLogin: item.checked });
+            },
+          },
+        ]
+      : []),
+    { type: /** @type {const} */ ("separator") },
+
+    // ── Quit ───────────────────────────────────────────────────────────
+    {
+      label: "Quit",
+      accelerator: process.platform === "darwin" ? "Cmd+Q" : "Ctrl+Q",
+      click: () => {
+        void shutdown("tray_quit");
+      },
+    },
+  ]);
+
+  tray.setContextMenu(menu);
+}
+
 function ensureTray() {
-  if (tray || process.platform === "darwin") return;
+  if (tray) return;
   const iconPath = resolveBosunRuntimePath("logo.png");
   if (!existsSync(iconPath)) return;
+
   tray = new Tray(iconPath);
-  tray.setToolTip("Bosun Desktop");
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      {
-        label: "Show Bosun",
-        click: () => setWindowVisible(mainWindow),
-      },
-      {
-        label: "Restore Voice Companion",
-        click: () => {
-          if (!restoreFollowWindow()) setWindowVisible(mainWindow);
-        },
-      },
-      { type: "separator" },
-      {
-        label: "Quit",
-        click: () => {
-          void shutdown("tray_quit");
-        },
-      },
-    ]),
-  );
+  tray.setToolTip("Bosun — AI Control Center");
+
+  refreshTrayMenu();
+
+  // Single click: show/restore the main window (or follow window).
   tray.on("click", () => {
-    if (!restoreFollowWindow()) setWindowVisible(mainWindow);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isVisible() && mainWindow.isFocused()) {
+        mainWindow.hide();
+        if (process.platform === "darwin") app.dock?.hide();
+      } else {
+        setWindowVisible(mainWindow);
+      }
+    } else {
+      void createMainWindow();
+    }
+  });
+
+  // Double-click on Windows brings up the window unambiguously.
+  tray.on("double-click", () => {
+    setWindowVisible(mainWindow);
   });
 }
 
@@ -709,10 +903,39 @@ async function bootstrap() {
 
     await ensureDaemonRunning();
     Menu.setApplicationMenu(buildAppMenu());
-    ensureTray();
+
+    // Determine tray / background mode before creating any windows.
+    trayMode = isTrayModeEnabled();
+    // In tray mode the window starts hidden by default (background resident).
+    // Set BOSUN_DESKTOP_START_HIDDEN=0 to open the window on every launch.
+    startHidden = trayMode
+      ? parseBoolEnv(process.env.BOSUN_DESKTOP_START_HIDDEN, true)
+      : false;
+
+    if (trayMode) {
+      // Always create the tray icon first so the app has a presence even
+      // before the window is ready.
+      ensureTray();
+      // On macOS, hide the dock icon in background mode unless the user has
+      // explicitly disabled it.
+      if (
+        process.platform === "darwin"
+        && !parseBoolEnv(process.env.BOSUN_DESKTOP_SHOW_DOCK, false)
+      ) {
+        app.dock?.hide();
+      }
+    }
+
     registerShortcuts();
     registerDesktopIpc();
     await createMainWindow();
+
+    // In normal (non-background) mode the tray is still useful as an
+    // indicator and quick-access — create it after the window is up.
+    if (!trayMode) {
+      ensureTray();
+    }
+
     await maybeAutoUpdate();
   } catch (error) {
     console.error("[desktop] startup failed", error);
@@ -790,12 +1013,18 @@ app.on(
 );
 
 app.on("window-all-closed", () => {
+  // In tray mode the app intentionally keeps running with no open windows.
+  // Only shut down when quitting explicitly (e.g. tray menu Quit or Cmd+Q).
+  if (trayMode) return;
   void shutdown("window_all_closed");
 });
 
 app.on("activate", () => {
-  if (!mainWindow) {
+  // macOS: clicking the dock icon (re-)shows the app.
+  if (!mainWindow || mainWindow.isDestroyed()) {
     void createMainWindow();
+  } else {
+    setWindowVisible(mainWindow);
   }
 });
 
