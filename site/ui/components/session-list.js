@@ -157,10 +157,15 @@ function dedupeMessages(messages) {
     const exactKey = `${kind}|${content}|${ts}`;
     if (seenExact.has(exactKey)) continue;
     const reconnectKey = kind === "error" ? reconnectFingerprint(content) : "";
+    const normalizedMsg =
+      reconnectKey && !msg.id ? { ...msg, id: `reconnect:${reconnectKey}` } : msg;
     if (reconnectKey) {
       const existingIndex = reconnectIndexByFingerprint.get(reconnectKey);
       if (Number.isInteger(existingIndex) && existingIndex >= 0 && existingIndex < out.length) {
-        out[existingIndex] = msg;
+        const existing = out[existingIndex];
+        out[existingIndex] = existing?.id
+          ? { ...normalizedMsg, id: existing.id }
+          : normalizedMsg;
         seenExact.add(exactKey);
         continue;
       }
@@ -175,7 +180,9 @@ function dedupeMessages(messages) {
         const withinStreamingWindow =
           ts > 0 && lastTs > 0 ? Math.abs(ts - lastTs) <= 120000 : true;
         if (withinStreamingWindow) {
-          out[out.length - 1] = msg;
+          out[out.length - 1] = lastAssistant?.id
+            ? { ...normalizedMsg, id: lastAssistant.id }
+            : normalizedMsg;
           recentAssistantContentTs.set(content, ts);
           seenExact.add(exactKey);
           continue;
@@ -207,7 +214,7 @@ function dedupeMessages(messages) {
       }
     }
     seenExact.add(exactKey);
-    out.push(msg);
+    out.push(normalizedMsg);
     if (reconnectKey) {
       reconnectIndexByFingerprint.set(reconnectKey, out.length - 1);
     }

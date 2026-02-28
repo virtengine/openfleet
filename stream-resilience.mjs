@@ -77,7 +77,13 @@ const STREAM_RETRY_MAX_MS = parseNumericSetting({
  * @returns {boolean}
  */
 export function isTransientStreamError(err) {
-  const msg = (err?.message || String(err || "")).toLowerCase();
+  const rawMessage =
+    typeof err?.message === "string"
+      ? err.message
+      : typeof err === "string"
+        ? err
+        : "";
+  const msg = rawMessage.toLowerCase();
   return (
     // ── Codex / Realtime API ────────────────────────────────────────────────
     msg.includes("stream disconnected") ||

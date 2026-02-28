@@ -43,8 +43,9 @@ const MAX_PROMPT_BYTES = 180_000;
 const DEFAULT_FIRST_EVENT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_ITEMS_PER_TURN = 600;
 const DEFAULT_MAX_ITEM_CHARS = 12_000;
-const TOOL_OUTPUT_GUARDRAIL =
-  "\\n\\n[Tool Output Guardrail] Keep tool outputs compact: prefer narrow searches, bounded command output (for example head/tail), and summaries for large results instead of dumping full payloads.";
+const TOOL_OUTPUT_GUARDRAIL = String.raw`
+
+[Tool Output Guardrail] Keep tool outputs compact: prefer narrow searches, bounded command output (for example head/tail), and summaries for large results instead of dumping full payloads.`;
 
 function parseBoundedNumber(value, fallback, min, max) {
   const num = Number(value);
@@ -69,7 +70,9 @@ function truncateText(text, maxChars) {
   }
   const trimmed = text.slice(0, maxChars);
   const removed = text.length - maxChars;
-  return `${trimmed}\\n\\n[…truncated ${removed} chars…]`;
+  return `${trimmed}
+
+[…truncated ${removed} chars…]`;
 }
 
 function truncateItemForStorage(item, maxChars) {
@@ -140,8 +143,8 @@ function resolveCodexStreamSafety(totalTimeoutMs) {
 
   return {
     firstEventTimeoutMs,
-    maxItemsPerTurn: parseBoundedNumber(maxItemsRaw, DEFAULT_MAX_ITEMS_PER_TURN, 25, 5000),
-    maxItemChars: parseBoundedNumber(maxItemCharsRaw, DEFAULT_MAX_ITEM_CHARS, 500, 250000),
+    maxItemsPerTurn: parseBoundedNumber(maxItemsRaw, DEFAULT_MAX_ITEMS_PER_TURN, 1, 5000),
+    maxItemChars: parseBoundedNumber(maxItemCharsRaw, DEFAULT_MAX_ITEM_CHARS, 1, 250000),
   };
 }
 
