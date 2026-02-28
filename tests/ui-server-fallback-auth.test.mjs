@@ -2,12 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-
-// Windows firewall intercepts localhost TCP and responds with TLS rejection bytes,
-// causing "HTTPParserError: Response does not match HTTP/1.1 protocol". Skip on Windows.
-const describeNotWin = process.platform === "win32" ? describe.skip : describe;
-
-describeNotWin("ui-server fallback auth", () => {
+describe("ui-server fallback auth", () => {
   const ENV_KEYS = [
     "TELEGRAM_UI_ALLOW_UNSAFE",
     "TELEGRAM_UI_TLS_DISABLE",
