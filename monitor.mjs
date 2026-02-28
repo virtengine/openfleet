@@ -991,7 +991,6 @@ let {
   fleet: fleetConfig,
   internalExecutor: internalExecutorConfig,
   executorMode: configExecutorMode,
-  githubReconcile: githubReconcileConfig,
 } = config;
 
 const telegramWeeklyReportEnabled = parseEnvBoolean(
@@ -1023,12 +1022,6 @@ let triggerSystemConfig =
     : { enabled: false, templates: [], defaults: { executor: "auto", model: "auto" } };
 let kanbanBackend = String(kanbanConfig?.backend || "internal").toLowerCase();
 let executorMode = configExecutorMode || getExecutorMode();
-let githubReconcile = githubReconcileConfig || {
-  enabled: false,
-  intervalMs: 5 * 60 * 1000,
-  mergedLookbackHours: 72,
-  trackingLabels: ["tracking"],
-};
 let chdirUnsupportedInRuntime = false;
 
 function isChdirUnsupportedError(err) {
@@ -13460,9 +13453,6 @@ async function runMonitorMonitorCycle({
   }
 }
 
-function restartGitHubReconciler() {}
-function stopGitHubReconciler() {}
-
 function startMonitorMonitorSupervisor() {
   refreshMonitorMonitorRuntime();
   if (!monitorMonitor.enabled) return;
@@ -14581,7 +14571,6 @@ function applyConfig(nextConfig, options = {}) {
   if (workflowAutomationEnabled) {
     ensureWorkflowAutomationEngine().catch(() => {});
   }
-  githubReconcile = nextConfig.githubReconcile || githubReconcile;
   agentPrompts = nextConfig.agentPrompts;
   configExecutorConfig = nextConfig.executorConfig;
   executorScheduler = nextConfig.scheduler;
@@ -14701,7 +14690,6 @@ function applyConfig(nextConfig, options = {}) {
   } else {
     stopMonitorMonitorSupervisor();
   }
-  restartGitHubReconciler();
 
   const nextArgs = scriptArgs?.join(" ") || "";
   const scriptChanged = prevScriptPath !== scriptPath || prevArgs !== nextArgs;
@@ -14735,7 +14723,6 @@ process.on("SIGINT", async () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
   stopTaskPlannerStatusLoop();
-  stopGitHubReconciler();
   // Stop monitor-monitor immediately (it's safely restartable)
   stopMonitorMonitorSupervisor();
   if (vkLogStream) {
@@ -14789,7 +14776,6 @@ process.on("exit", () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
   stopTaskPlannerStatusLoop();
-  stopGitHubReconciler();
   stopMonitorMonitorSupervisor();
   stopAgentAlertTailer();
   stopAgentWorkAnalyzer();
@@ -14805,7 +14791,6 @@ process.on("SIGTERM", async () => {
   shuttingDown = true;
   stopWorkspaceSyncTimers();
   stopTaskPlannerStatusLoop();
-  stopGitHubReconciler();
   // Stop monitor-monitor immediately (it's safely restartable)
   stopMonitorMonitorSupervisor();
   if (vkLogStream) {
