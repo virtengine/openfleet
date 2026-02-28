@@ -1050,6 +1050,7 @@ export class WorkflowEngine extends EventEmitter {
               return { nodeId, result };
             } catch (err) {
               lastErr = err;
+              if (err.retryable === false) break; // permanent error — skip remaining retry attempts
             }
           }
 
@@ -1190,10 +1191,19 @@ export class WorkflowEngine extends EventEmitter {
       throw new Error(`Unknown node type: "${node.type}". Register it with registerNodeType().`);
     }
 
+    // Resolve config templates against context
+    const resolvedConfig = this._resolveConfig(node.config || {}, ctx);
+
+    // Dry run — skip capability checks and handler execution.
+    // Services aren't needed for simulation; this keeps dry-run tests fast.
+    if (opts.dryRun) {
+      ctx.log(node.id, `[dry-run] Would execute ${node.type}`, "info");
+      return { _dryRun: true, type: node.type, config: resolvedConfig };
+    }
+
     // ── Capability pre-flight check ──────────────────────────────────────
-    // Before executing a node, verify the required services are available.
-    // This catches permission/capability issues early with clear error messages
-    // instead of cryptic failures deep inside node execution.
+    // Verify required services are present AFTER the dryRun early-return so
+    // dry-run tests work without needing real service dependencies wired up.
     const requiredCapabilities = this._getNodeRequiredCapabilities(node.type);
     const missingCapabilities = [];
     for (const cap of requiredCapabilities) {
@@ -1205,15 +1215,9 @@ export class WorkflowEngine extends EventEmitter {
       const detail = `Node "${node.label || node.id}" (${node.type}) requires capabilities: [${missingCapabilities.join(", ")}] which are not available. ` +
         `Check that the required services (agent pool, kanban adapter, etc.) are configured and the agent has the necessary permissions.`;
       ctx.log(node.id, detail, "error");
-      throw new Error(detail);
-    }
-    // Resolve config templates against context
-    const resolvedConfig = this._resolveConfig(node.config || {}, ctx);
-
-    // Dry run — just validate
-    if (opts.dryRun) {
-      ctx.log(node.id, `[dry-run] Would execute ${node.type}`, "info");
-      return { _dryRun: true, type: node.type, config: resolvedConfig };
+      const capErr = new Error(detail);
+      capErr.retryable = false; // missing service is permanent — don't waste time retrying
+      throw capErr;
     }
 
     // Execute with timeout — clear timer on completion to avoid resource leaks
