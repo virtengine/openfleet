@@ -184,6 +184,29 @@ async function installTemplate(templateId) {
   }
 }
 
+async function applyTemplateUpdate(workflowId, mode = "replace", force = false) {
+  try {
+    const data = await apiFetch(`/api/workflows/${encodeURIComponent(workflowId)}/template-update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, force }),
+    });
+    if (data?.workflow) {
+      showToast(
+        mode === "copy"
+          ? "Updated template copy created"
+          : "Workflow updated to latest template",
+        "success",
+      );
+      loadWorkflows();
+      return data.workflow;
+    }
+  } catch (err) {
+    showToast(`Template update failed: ${err.message}`, "error");
+  }
+  return null;
+}
+
 async function loadRuns(workflowId) {
   try {
     const url = workflowId
@@ -1570,6 +1593,11 @@ function WorkflowListView() {
           </h3>
           <div style="display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
             ${wfs.map(wf => html`
+              ${(() => {
+                const templateState = wf.metadata?.templateState || null;
+                const hasTemplateUpdate = templateState?.updateAvailable === true;
+                const isCustomizedTemplate = templateState?.isCustomized === true;
+                return html`
               <div key=${wf.id} class="wf-card" style="background: var(--color-bg-secondary, #1a1f2e); border-radius: 12px; padding: 14px; border: 1px solid var(--color-border, #2a3040); cursor: pointer; transition: border-color 0.15s;"
                    onClick=${() => {
                      apiFetch("/api/workflows/" + wf.id).then(d => {
@@ -1583,10 +1611,33 @@ function WorkflowListView() {
                   <span class="wf-badge" style="background: ${wf.enabled ? '#10b98130' : '#6b728030'}; color: ${wf.enabled ? '#10b981' : '#6b7280'}; font-size: 10px;">
                     ${wf.enabled ? "Active" : "Paused"}
                   </span>
+                  ${templateState?.templateId && html`
+                    <span class="wf-badge" style="background: #3b82f620; color: #60a5fa; font-size: 10px;">
+                      Template
+                    </span>
+                  `}
+                  ${isCustomizedTemplate && html`
+                    <span class="wf-badge" style="background: #f59e0b20; color: #f59e0b; font-size: 10px;">
+                      Customized
+                    </span>
+                  `}
+                  ${hasTemplateUpdate && html`
+                    <span class="wf-badge" style="background: #ef444420; color: #f87171; font-size: 10px;">
+                      Update Available
+                    </span>
+                  `}
                 </div>
                 ${wf.description && html`
                   <div style="font-size: 12px; color: var(--color-text-secondary, #8b95a5); margin-bottom: 8px; line-height: 1.4;">
                     ${wf.description.slice(0, 120)}${wf.description.length > 120 ? "…" : ""}
+                  </div>
+                `}
+                ${templateState?.templateId && html`
+                  <div style="font-size: 11px; color: var(--color-text-secondary, #7f8aa0); margin-bottom: 8px;">
+                    ${templateState.templateName || templateState.templateId}
+                    ${templateState.installedTemplateVersion && templateState.templateVersion && templateState.installedTemplateVersion !== templateState.templateVersion && html`
+                      <span> · v${templateState.installedTemplateVersion} → v${templateState.templateVersion}</span>
+                    `}
                   </div>
                 `}
                 <div style="display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--color-text-secondary, #6b7280);">
@@ -1594,6 +1645,36 @@ function WorkflowListView() {
                   <span>·</span>
                   <span>${wf.category || "custom"}</span>
                   <div style="flex: 1;"></div>
+                  ${hasTemplateUpdate && html`
+                    <button
+                      class="wf-btn wf-btn-sm"
+                      style="font-size: 11px; border-color: #f59e0b80; color: #f59e0b;"
+                      onClick=${async (e) => {
+                        e.stopPropagation();
+                        if (!isCustomizedTemplate) {
+                          await applyTemplateUpdate(wf.id, "replace", true);
+                          return;
+                        }
+                        const choice = window.prompt(
+                          "Template update available for customized workflow.\nType 'copy' to create an updated copy, or 'replace' to overwrite this workflow.",
+                          "copy",
+                        );
+                        const normalized = String(choice || "").trim().toLowerCase();
+                        if (normalized === "copy") {
+                          await applyTemplateUpdate(wf.id, "copy", false);
+                          return;
+                        }
+                        if (normalized === "replace") {
+                          const ok = window.confirm("Replace this customized workflow with latest template? This cannot be undone.");
+                          if (!ok) return;
+                          await applyTemplateUpdate(wf.id, "replace", true);
+                        }
+                      }}
+                    >
+                      <span class="icon-inline">${resolveIcon("refresh")}</span>
+                      Update
+                    </button>
+                  `}
                   <button
                     class="wf-btn wf-btn-sm"
                     style="font-size: 11px;"
@@ -1624,6 +1705,8 @@ function WorkflowListView() {
                   </button>
                 </div>
               </div>
+            `;
+              })()}
             `)}
           </div>
         </div>

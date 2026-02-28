@@ -628,6 +628,17 @@ export function startAgentStatusTracking() {
       _setAgentState("executing", adapter, sessionId);
     } else if (type === "tool_result") {
       _setAgentState("streaming", adapter, sessionId);
+    } else if (type === "system") {
+      const content = String(message.content || "").toLowerCase();
+      if (
+        content.includes("running:") ||
+        content.includes("command done:") ||
+        content.includes("command_execution")
+      ) {
+        _setAgentState("executing", adapter, sessionId);
+      } else {
+        _setAgentState("thinking", adapter, sessionId);
+      }
     } else if (type === "error" || type === "stream_error") {
       _setAgentState("idle", "", "");
     }

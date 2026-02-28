@@ -10,6 +10,9 @@ import {
   listWorkflowSetupProfiles,
   getWorkflowSetupProfile,
   resolveWorkflowTemplateIds,
+  applyWorkflowTemplateState,
+  updateWorkflowFromTemplate,
+  reconcileInstalledTemplates,
   installTemplate,
   installTemplateSet,
 } from "../workflow-templates.mjs";
@@ -210,6 +213,9 @@ describe("template API functions", () => {
     const result = installTemplate("template-error-recovery", engine);
     expect(result.id).not.toBe("template-error-recovery");
     expect(result.metadata.installedFrom).toBe("template-error-recovery");
+    expect(result.metadata.templateState).toBeDefined();
+    expect(result.metadata.templateState.isCustomized).toBe(false);
+    expect(result.metadata.templateState.updateAvailable).toBe(false);
     expect(result.nodes.length).toBeGreaterThan(0);
 
     // Verify it was saved to the engine
@@ -229,6 +235,69 @@ describe("template API functions", () => {
 
   it("installTemplate throws for unknown template", () => {
     expect(() => installTemplate("template-nope", engine)).toThrow(/not found/);
+  });
+});
+
+describe("template drift + update behavior", () => {
+  beforeEach(() => { makeTmpEngine(); });
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+  });
+
+  it("marks workflow as customized when fingerprint drifts", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.variables.customNote = "edited";
+    applyWorkflowTemplateState(wf);
+
+    expect(wf.metadata.templateState.isCustomized).toBe(true);
+    expect(wf.metadata.templateState.updateAvailable).toBe(false);
+  });
+
+  it("auto-updates unmodified workflows when template version drift is detected", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.metadata.templateState.installedTemplateFingerprint = "0000-outdated";
+    wf.metadata.templateState.installedTemplateVersion = "0000-outdated";
+    wf.metadata.templateState.updateAvailable = true;
+    engine.save(wf);
+
+    const result = reconcileInstalledTemplates(engine, { autoUpdateUnmodified: true });
+    expect(result.autoUpdated).toBe(1);
+
+    const refreshed = engine.get(installed.id);
+    expect(refreshed.metadata.templateState.updateAvailable).toBe(false);
+    expect(refreshed.metadata.templateState.isCustomized).toBe(false);
+  });
+
+  it("does not auto-update customized workflows with updates available", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.variables.customNote = "edited";
+    applyWorkflowTemplateState(wf);
+    wf.metadata.templateState.installedTemplateFingerprint = "0000-outdated";
+    wf.metadata.templateState.installedTemplateVersion = "0000-outdated";
+    wf.metadata.templateState.updateAvailable = true;
+    engine.save(wf);
+
+    const result = reconcileInstalledTemplates(engine, { autoUpdateUnmodified: true });
+    expect(result.autoUpdated).toBe(0);
+    expect(result.customized.some((entry) => entry.workflowId === wf.id)).toBe(true);
+    expect(result.updateAvailable.some((entry) => entry.workflowId === wf.id)).toBe(true);
+  });
+
+  it("supports copy update mode for customized workflows", () => {
+    const installed = installTemplate("template-error-recovery", engine);
+    const wf = engine.get(installed.id);
+    wf.variables.customNote = "edited";
+    applyWorkflowTemplateState(wf);
+    engine.save(wf);
+
+    const copied = updateWorkflowFromTemplate(engine, wf.id, { mode: "copy" });
+    expect(copied.id).not.toBe(wf.id);
+    expect(copied.name).toContain("(Updated)");
+    expect(copied.metadata.templateState.updateAvailable).toBe(false);
+    expect(copied.metadata.templateState.isCustomized).toBe(false);
   });
 });
 
@@ -389,6 +458,18 @@ describe("github template CLI compatibility", () => {
       "check-ci": { passed: true, output: JSON.stringify([{ name: "ci", state: "SUCCESS" }]) },
     }), {});
     expect(allPassing).toBe(true);
+  });
+
+  it("PR watchdog fetch-and-classify inline script has no // line comments (would break single-line eval)", () => {
+    const watchdogTemplate = getTemplate("template-bosun-pr-watchdog");
+    expect(watchdogTemplate).toBeDefined();
+    const fetchNode = watchdogTemplate.nodes.find((n) => n.id === "fetch-and-classify");
+    expect(fetchNode).toBeDefined();
+    const cmd = fetchNode.config?.command || "";
+    // The script is joined into a single line for `node -e "..."`.
+    // Any `//` line comment would comment out all subsequent code on that line,
+    // causing SyntaxError: Unexpected end of input.
+    expect(cmd).not.toMatch(/\/\/(?!\*)/); // no `//` comments
   });
 });
 

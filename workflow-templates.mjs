@@ -29,7 +29,7 @@
  *   listTemplates()        — List all available templates
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 // ── Re-export helpers for external consumers ────────────────────────────────
 export { node, edge, resetLayout } from "./workflow-templates/_helpers.mjs";
@@ -176,6 +176,216 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
 const _TEMPLATE_BY_ID = new Map(
   WORKFLOW_TEMPLATES.map((template) => [template.id, template]),
 );
+const TEMPLATE_STATE_VERSION = 1;
+
+function stableNormalize(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => stableNormalize(entry));
+  }
+  if (value && typeof value === "object") {
+    const normalized = {};
+    for (const key of Object.keys(value).sort()) {
+      normalized[key] = stableNormalize(value[key]);
+    }
+    return normalized;
+  }
+  return value;
+}
+
+function stableStringify(value) {
+  return JSON.stringify(stableNormalize(value));
+}
+
+function hashContent(value) {
+  return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function toWorkflowFingerprintPayload(def = {}) {
+  return {
+    name: def.name || "",
+    description: def.description || "",
+    category: def.category || "custom",
+    trigger: def.trigger || "",
+    variables: def.variables || {},
+    nodes: def.nodes || [],
+    edges: def.edges || [],
+  };
+}
+
+export function computeWorkflowFingerprint(def = {}) {
+  return hashContent(toWorkflowFingerprintPayload(def));
+}
+
+function cloneTemplateDefinition(template) {
+  return JSON.parse(JSON.stringify(template));
+}
+
+function getTemplateVersion(templateId) {
+  const template = getTemplate(templateId);
+  if (!template) return null;
+  return computeWorkflowFingerprint(template).slice(0, 12);
+}
+
+function deriveTemplateState(def, template) {
+  const nowIso = new Date().toISOString();
+  const currentFingerprint = computeWorkflowFingerprint(def);
+  const templateFingerprint = computeWorkflowFingerprint(template);
+  const previousState = def?.metadata?.templateState || {};
+
+  const installedTemplateFingerprint = typeof previousState.installedTemplateFingerprint === "string"
+    ? previousState.installedTemplateFingerprint
+    : (currentFingerprint === templateFingerprint ? templateFingerprint : null);
+
+  const installedFingerprint = typeof previousState.installedFingerprint === "string"
+    ? previousState.installedFingerprint
+    : currentFingerprint;
+
+  const isCustomized = currentFingerprint !== installedFingerprint;
+  const updateAvailable = installedTemplateFingerprint
+    ? installedTemplateFingerprint !== templateFingerprint
+    : false;
+
+  return {
+    stateVersion: TEMPLATE_STATE_VERSION,
+    templateId: template.id,
+    templateName: template.name,
+    templateVersion: templateFingerprint.slice(0, 12),
+    templateFingerprint,
+    installedTemplateFingerprint,
+    installedTemplateVersion: installedTemplateFingerprint
+      ? installedTemplateFingerprint.slice(0, 12)
+      : null,
+    installedFingerprint,
+    currentFingerprint,
+    isCustomized,
+    updateAvailable,
+    refreshedAt: nowIso,
+  };
+}
+
+export function applyWorkflowTemplateState(def = {}) {
+  if (!def || typeof def !== "object") return def;
+  const templateId = String(def?.metadata?.installedFrom || "").trim();
+  if (!templateId) return def;
+  const template = getTemplate(templateId);
+  if (!template) return def;
+  if (!def.metadata || typeof def.metadata !== "object") def.metadata = {};
+  def.metadata.templateState = deriveTemplateState(def, template);
+  return def;
+}
+
+function makeUpdatedWorkflowFromTemplate(existing, template, mode = "replace") {
+  const templateClone = cloneTemplateDefinition(template);
+  const nowIso = new Date().toISOString();
+  const mergedVariables = {
+    ...(templateClone.variables || {}),
+    ...(existing.variables || {}),
+  };
+  const next = {
+    ...templateClone,
+    id: mode === "copy" ? randomUUID() : existing.id,
+    name: mode === "copy" ? `${existing.name} (Updated)` : existing.name,
+    enabled: existing.enabled !== false,
+    variables: mergedVariables,
+    metadata: {
+      ...(existing.metadata || {}),
+      ...(templateClone.metadata || {}),
+      installedFrom: template.id,
+      templateUpdatedAt: nowIso,
+    },
+  };
+  delete next.metadata.templateState;
+  if (mode === "copy") {
+    next.metadata.createdAt = nowIso;
+    next.metadata.updatedAt = nowIso;
+  }
+  return applyWorkflowTemplateState(next);
+}
+
+export function updateWorkflowFromTemplate(engine, workflowId, opts = {}) {
+  const mode = String(opts.mode || "replace").toLowerCase();
+  if (!["replace", "copy"].includes(mode)) {
+    throw new Error(`Unsupported template update mode "${mode}"`);
+  }
+  const existing = engine.get(workflowId);
+  if (!existing) throw new Error(`Workflow "${workflowId}" not found`);
+  const templateId = String(existing?.metadata?.installedFrom || "").trim();
+  if (!templateId) throw new Error(`Workflow "${workflowId}" is not template-backed`);
+  const template = getTemplate(templateId);
+  if (!template) throw new Error(`Template "${templateId}" not found`);
+
+  const hydrated = applyWorkflowTemplateState(existing);
+  if (mode === "replace" && hydrated?.metadata?.templateState?.isCustomized && opts.force !== true) {
+    throw new Error("Workflow has custom changes; pass force=true to replace it");
+  }
+
+  const next = makeUpdatedWorkflowFromTemplate(hydrated, template, mode);
+  return engine.save(next);
+}
+
+export function reconcileInstalledTemplates(engine, opts = {}) {
+  const autoUpdateUnmodified = opts.autoUpdateUnmodified !== false;
+  const workflows = engine.list();
+  const result = {
+    scanned: 0,
+    metadataUpdated: 0,
+    autoUpdated: 0,
+    updateAvailable: [],
+    customized: [],
+    updatedWorkflowIds: [],
+    errors: [],
+  };
+
+  for (const summary of workflows) {
+    const wfId = summary?.id;
+    if (!wfId) continue;
+    const def = engine.get(wfId);
+    if (!def?.metadata?.installedFrom) continue;
+    result.scanned += 1;
+
+    try {
+      const before = stableStringify(def.metadata?.templateState || null);
+      applyWorkflowTemplateState(def);
+      const state = def.metadata?.templateState || null;
+      const after = stableStringify(state);
+      if (before !== after) {
+        engine.save(def);
+        result.metadataUpdated += 1;
+      }
+
+      if (!state) continue;
+      if (state.isCustomized) {
+        result.customized.push({
+          workflowId: def.id,
+          name: def.name,
+          templateId: state.templateId,
+          updateAvailable: state.updateAvailable === true,
+        });
+      }
+      if (state.updateAvailable === true) {
+        result.updateAvailable.push({
+          workflowId: def.id,
+          name: def.name,
+          templateId: state.templateId,
+          isCustomized: state.isCustomized === true,
+        });
+      }
+
+      if (autoUpdateUnmodified && state.updateAvailable === true && state.isCustomized !== true) {
+        const saved = updateWorkflowFromTemplate(engine, def.id, { mode: "replace", force: true });
+        result.autoUpdated += 1;
+        result.updatedWorkflowIds.push(saved.id);
+      }
+    } catch (err) {
+      result.errors.push({
+        workflowId: wfId,
+        error: err.message,
+      });
+    }
+  }
+
+  return result;
+}
 
 /**
  * Setup workflow profiles used by `bosun --setup`.
@@ -287,6 +497,7 @@ export function getTemplate(id) {
 export function listTemplates() {
   return WORKFLOW_TEMPLATES.map((t) => {
     const cat = TEMPLATE_CATEGORIES[t.category] || TEMPLATE_CATEGORIES.custom;
+    const fingerprint = computeWorkflowFingerprint(t);
     return {
       id: t.id,
       name: t.name,
@@ -298,6 +509,8 @@ export function listTemplates() {
       tags: t.metadata?.tags || [],
       nodeCount: t.nodes?.length || 0,
       edgeCount: t.edges?.length || 0,
+      version: fingerprint.slice(0, 12),
+      fingerprint,
       replaces: t.metadata?.replaces || null,
       recommended: t.recommended === true,
       enabled: t.enabled !== false,
@@ -384,7 +597,7 @@ export function installTemplate(templateId, engine, overrides = {}) {
   }
 
   // Deep clone
-  const def = JSON.parse(JSON.stringify(template));
+  const def = cloneTemplateDefinition(template);
   def.id = randomUUID(); // New unique ID
   def.metadata = {
     ...def.metadata,
@@ -398,6 +611,7 @@ export function installTemplate(templateId, engine, overrides = {}) {
     def.variables = { ...def.variables, ...overrides };
   }
 
+  applyWorkflowTemplateState(def);
   return engine.save(def);
 }
 
