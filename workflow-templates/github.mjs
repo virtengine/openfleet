@@ -611,3 +611,196 @@ Omit empty sections. Include contributor attribution. Be concise.`,
     tags: ["github", "release", "notes", "changelog", "draft"],
   },
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Bosun PR Watchdog
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+/**
+ * Bosun PR Watchdog — opt-in, scheduled CI poller for bosun-owned PRs.
+ *
+ * Only acts on PRs labelled `bosun-attached` (applied by the
+ * .github/workflows/bosun-pr-attach.yml GitHub Action when Bosun opens a PR).
+ * External-contributor and human PRs that lack that label are never touched.
+ *
+ * Per cycle:
+ *   1. List all open bosun-attached PRs.
+ *   2. Merge any PR whose CI checks are all passing (not draft, not pending).
+ *   3. Label any PR whose CI checks have failures with `bosun-needs-fix` and
+ *      dispatch a repair agent to fix the branch.
+ *
+ * Disable:  set `enabled: false` in your bosun config, or delete the workflow.
+ * Interval: default 5 min — change `intervalMs` / `cron` variables.
+ */
+export const BOSUN_PR_WATCHDOG_TEMPLATE = {
+  id: "template-bosun-pr-watchdog",
+  name: "Bosun PR Watchdog",
+  description:
+    "Scans open bosun-attached PRs every 5 minutes. " +
+    "PRs with all-green CI are squash-merged and their branches deleted. " +
+    "PRs with failing CI are labelled bosun-needs-fix and a repair agent is " +
+    "dispatched to fix the branch. PRs not labelled bosun-attached are never " +
+    "touched — safe for public/open-source repos. Set enabled:true to activate.",
+  category: "github",
+  enabled: false,
+  trigger: "trigger.schedule",
+  variables: {
+    mergeMethod:   "squash",           // squash | merge | rebase
+    labelNeedsFix: "bosun-needs-fix",  // label applied to PRs with failing CI
+    maxPrs:        25,
+    intervalMs:    300_000,            // 5 minutes
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Poll Every 5 min", {
+      intervalMs: "{{intervalMs}}",
+      cron: "*/5 * * * *",
+    }, { x: 400, y: 50 }),
+
+    // ── 1. Discover open bosun-attached PRs ────────────────────────────────
+    node("list-prs", "action.run_command", "List Bosun-Attached Open PRs", {
+      command:
+        "gh pr list --label bosun-attached --state open " +
+        "--json number,title,headRefName,isDraft,statusCheckRollup " +
+        "--limit {{maxPrs}}",
+    }, { x: 400, y: 200 }),
+
+    node("has-prs", "condition.expression", "Has Bosun PRs?", {
+      expression:
+        "(()=>{ try{ " +
+        "  const o=$ctx.getNodeOutput('list-prs')?.output; " +
+        "  return JSON.parse(o||'[]').length>0; " +
+        "}catch(e){ return false; } })()",
+    }, { x: 400, y: 360 }),
+
+    // ── 2. Merge PRs where CI is fully passing ─────────────────────────────
+    node("merge-passing", "action.run_command", "Merge PRs with Passing CI", {
+      // Re-queries gh so the statusCheckRollup is fresh at merge time.
+      // Skips draft PRs. Skips PRs with 0 checks (no CI configured).
+      // Uses --delete-branch to clean up after merge.
+      command: [
+        "gh pr list --label bosun-attached --state open",
+        "--json number,isDraft,statusCheckRollup --limit {{maxPrs}}",
+        "| node -e \"",
+        "let d='';",
+        "process.stdin.on('data',c=>d+=c);",
+        "process.stdin.on('end',()=>{",
+        "  const{execSync}=require('child_process');",
+        "  const prs=JSON.parse(d);",
+        "  let merged=0;",
+        "  for(const pr of prs){",
+        "    if(pr.isDraft) continue;",
+        "    const c=pr.statusCheckRollup||[];",
+        "    if(!c.length) continue;",
+        "    const bad=c.filter(x=>['FAILURE','ERROR','TIMED_OUT'].includes(x.conclusion||x.state||''));",
+        "    const pend=c.filter(x=>['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED'].includes(x.conclusion||x.state||''));",
+        "    if(!bad.length&&!pend.length){",
+        "      try{execSync('gh pr merge '+pr.number+' --{{mergeMethod}} --delete-branch',{stdio:'pipe'});merged++;}",
+        "      catch(e){console.error('merge failed #'+pr.number+':',e.message);}",
+        "    }",
+        "  }",
+        "  console.log(JSON.stringify({merged}));",
+        "});",
+        "\"",
+      ].join(" "),
+      continueOnError: true,
+    }, { x: 200, y: 530 }),
+
+    // ── 3. Label & dispatch fix for PRs with failing CI ────────────────────
+    node("tag-failing", "action.run_command", "Label Failing-CI PRs", {
+      // Adds the bosun-needs-fix label only if not already present.
+      command: [
+        "gh pr list --label bosun-attached --state open",
+        "--json number,labels,statusCheckRollup --limit {{maxPrs}}",
+        "| node -e \"",
+        "let d='';",
+        "process.stdin.on('data',c=>d+=c);",
+        "process.stdin.on('end',()=>{",
+        "  const{execSync}=require('child_process');",
+        "  const prs=JSON.parse(d);",
+        "  let labeled=0;",
+        "  for(const pr of prs){",
+        "    const c=pr.statusCheckRollup||[];",
+        "    const bad=c.filter(x=>['FAILURE','ERROR','TIMED_OUT'].includes(x.conclusion||x.state||''));",
+        "    const already=(pr.labels||[]).some(l=>l.name==='{{labelNeedsFix}}');",
+        "    if(bad.length&&!already){",
+        "      try{execSync('gh pr edit '+pr.number+' --add-label {{labelNeedsFix}}',{stdio:'pipe'});labeled++;}",
+        "      catch(e){console.error('label failed #'+pr.number+':',e.message);}",
+        "    }",
+        "  }",
+        "  console.log(JSON.stringify({labeled}));",
+        "});",
+        "\"",
+      ].join(" "),
+      continueOnError: true,
+    }, { x: 200, y: 700 }),
+
+    node("has-failing", "condition.expression", "Any Failing PRs Labelled?", {
+      expression:
+        "(()=>{ try{ " +
+        "  const o=$ctx.getNodeOutput('tag-failing')?.output; " +
+        "  return (JSON.parse(o||'{\"labeled\":0}').labeled||0)>0; " +
+        "}catch(e){ return false; } })()",
+    }, { x: 200, y: 850 }),
+
+    // Dispatch a repair agent for each bosun-needs-fix PR.
+    node("dispatch-fix", "action.run_agent", "Dispatch Fix Agent", {
+      prompt:
+        "You are a CI repair agent. Your task:\n" +
+        "1. Run: gh pr list --label bosun-needs-fix --label bosun-attached " +
+        "--state open --json number,title,headRefName --limit 5\n" +
+        "2. For each PR returned, check out its branch and inspect the CI failure logs " +
+        "with `gh run list --branch <headRefName>` and `gh run view <run-id> --log-failed`.\n" +
+        "3. Fix the root cause of the CI failure (lint, test, build, or type error).\n" +
+        "4. Commit the fix with conventional commit format: `fix(<scope>): <description>`.\n" +
+        "5. Push the branch — CI will re-trigger automatically.\n" +
+        "6. Remove the bosun-needs-fix label once pushed: " +
+        "`gh pr edit <number> --remove-label bosun-needs-fix`.\n" +
+        "Rules: Only touch code that breaks CI. Do NOT merge or close the PR yourself.",
+      sdk: "auto",
+      timeoutMs: 1_800_000,
+      maxRetries: 2,
+      retryDelayMs: 30_000,
+      continueOnError: true,
+    }, { x: 200, y: 1000 }),
+
+    node("notify", "notify.telegram", "Watchdog Report", {
+      message:
+        "🐕 Bosun PR Watchdog: merged={{merged}} fix-dispatched={{labeled}}",
+      silent: true,
+    }, { x: 200, y: 1150 }),
+
+    node("no-prs", "notify.log", "No Bosun PRs Open", {
+      message: "Bosun PR Watchdog: no open bosun-attached PRs found — idle",
+      level: "info",
+    }, { x: 650, y: 360 }),
+  ],
+  edges: [
+    edge("trigger",      "list-prs"),
+    edge("list-prs",     "has-prs"),
+    edge("has-prs",      "merge-passing", { condition: "$output?.result === true" }),
+    edge("has-prs",      "no-prs",        { condition: "$output?.result !== true" }),
+    edge("merge-passing","tag-failing"),
+    edge("tag-failing",  "has-failing"),
+    edge("has-failing",  "dispatch-fix",  { condition: "$output?.result === true" }),
+    edge("has-failing",  "notify",        { condition: "$output?.result !== true" }),
+    edge("dispatch-fix", "notify"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-07-01T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "pr", "ci", "merge", "watchdog", "bosun-attached"],
+    replaces: {
+      module: "agent-hooks.mjs",
+      functions: ["registerBuiltinHooks (PostPR block)"],
+      calledFrom: [],
+      description:
+        "Replaces the removed built-in PostPR auto-merge hook with an explicit, " +
+        "opt-in workflow that only merges Bosun-owned PRs after CI passes and " +
+        "dispatches a repair agent when CI fails. Users must set enabled:true.",
+    },
+  },
+};

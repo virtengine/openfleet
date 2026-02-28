@@ -715,26 +715,11 @@ export function registerBuiltinHooks(options = {}) {
     });
   }
 
-  // ── PostPR: enable GitHub auto-merge (squash) ──────────────────────────
-  // Fires non-blocking after an agent creates a PR. Enables auto-merge so
-  // the PR merges automatically once CI passes.
-  // Opt out with BOSUN_HOOKS_DISABLE_POSTPR=true in your env.
-  const skipPostPR = envFlag("BOSUN_HOOKS_DISABLE_POSTPR", false);
-  if (!skipPostPR) {
-    const autoMergeCmd = IS_WINDOWS
-      ? `powershell -NoProfile -Command "try { $null = gh pr merge --auto --squash 2>&1; Write-Host 'OK: auto-merge enabled' } catch { Write-Host ('WARN: auto-merge skipped: ' + $_.Exception.Message.Substring(0, [System.Math]::Min(100, $_.Exception.Message.Length))) }"`
-      : `bash -c 'gh pr merge --auto --squash 2>/dev/null && echo "OK: auto-merge enabled" || echo "WARN: auto-merge skipped (branch protection or gh auth required)"'`;
-
-    registerHook("PostPR", {
-      id: "builtin-postpr-auto-merge",
-      command: autoMergeCmd,
-      description: "Enable GitHub auto-merge (squash) on newly created PR",
-      timeout: 30_000,
-      blocking: false,
-      sdks: [SDK_WILDCARD],
-      builtin: true,
-    });
-  }
+  // NOTE: Blind PostPR auto-merge has been intentionally removed.
+  // Use the "Bosun PR Watchdog" workflow template (template-bosun-pr-watchdog)
+  // to opt-in to automatic merging of bosun-attached PRs after CI passes.
+  // This prevents accidental merges in public repos and repos without the
+  // required GitHub branch-protection settings for auto-merge.
 
   console.log(`${TAG} built-in hooks registered`);
 }
