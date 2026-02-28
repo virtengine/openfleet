@@ -16,7 +16,55 @@ import { execFileSync, spawn } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
-import {
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+function createUnavailableShortcutsApi() {
+  const unavailable = () => ({
+    ok: false,
+    error: "Keyboard shortcuts module is unavailable in this installation. Reinstall Bosun.",
+  });
+  return {
+    initShortcuts: () => {},
+    onShortcut: () => {},
+    getAllShortcuts: () => [],
+    getEffectiveAccelerator: () => null,
+    registerGlobalShortcuts: () => {},
+    unregisterGlobalShortcuts: () => {
+      try {
+        globalShortcut.unregisterAll();
+      } catch {
+        /* ignore */
+      }
+    },
+    setShortcut: unavailable,
+    resetShortcut: unavailable,
+    resetAllShortcuts: unavailable,
+  };
+}
+
+function isMissingModuleError(error) {
+  return Boolean(error && error.code === "ERR_MODULE_NOT_FOUND");
+}
+
+async function loadShortcutsApi() {
+  const candidates = ["./desktop-shortcuts.mjs", "../desktop-shortcuts.mjs"];
+  for (const specifier of candidates) {
+    try {
+      return await import(specifier);
+    } catch (error) {
+      if (isMissingModuleError(error)) continue;
+      throw error;
+    }
+  }
+
+  console.warn(
+    "[desktop] keyboard shortcuts module not found; continuing with limited shortcut support",
+  );
+  return createUnavailableShortcutsApi();
+}
+
+const {
   initShortcuts,
   onShortcut,
   getAllShortcuts,
@@ -26,9 +74,7 @@ import {
   setShortcut,
   resetShortcut,
   resetAllShortcuts,
-} from "./desktop-shortcuts.mjs";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
+} = await loadShortcutsApi();
 
 process.title = "bosun-desktop";
 
@@ -613,7 +659,7 @@ async function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      preload: join(__dirname, "preload.mjs"),
+      preload: join(__dirname, "preload.cjs"),
     },
   });
 
@@ -708,7 +754,7 @@ async function createFollowWindow() {
       nodeIntegration: false,
       sandbox: true,
       backgroundThrottling: false,
-      preload: join(__dirname, "preload.mjs"),
+      preload: join(__dirname, "preload.cjs"),
     },
   });
 
@@ -1139,10 +1185,10 @@ async function bootstrap() {
 
     // Determine tray / background mode before creating any windows.
     trayMode = isTrayModeEnabled();
-    // In tray mode the window starts hidden by default (background resident).
-    // Set BOSUN_DESKTOP_START_HIDDEN=0 to open the window on every launch.
+    // In tray mode we still open the main window by default on startup.
+    // Set BOSUN_DESKTOP_START_HIDDEN=1 to force background-only launch.
     startHidden = trayMode
-      ? parseBoolEnv(process.env.BOSUN_DESKTOP_START_HIDDEN, true)
+      ? parseBoolEnv(process.env.BOSUN_DESKTOP_START_HIDDEN, false)
       : false;
 
     if (trayMode) {

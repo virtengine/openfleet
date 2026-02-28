@@ -1253,13 +1253,13 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
             class="btn btn-ghost btn-sm"
             onClick=${() => setPaused((prev) => !prev)}
           >
-            ${paused ? ":play: Resume" : ":pause: Pause"}
+            ${iconText(paused ? ":play: Resume" : ":pause: Pause")}
           </button>
           <button class="btn btn-ghost btn-sm" onClick=${handleCopyStream}>
             ${iconText(":clipboard: Copy")}
           </button>
           <button class="btn btn-ghost btn-sm" onClick=${handleExportStream}>
-            :download: Export
+            ${iconText(":download: Export")}
           </button>
         </div>
       </div>
@@ -1462,7 +1462,7 @@ export function ChatView({ sessionId, readOnly = false, embedded = false }) {
         ${!isActive && session?.status &&
         html`
           <button class="btn btn-primary btn-sm chat-resume-btn" onClick=${handleResume}>
-            :play: ${resumeLabel}
+            ${iconText(`:play: ${resumeLabel}`)}
           </button>
         `}
         ${pendingAttachments.length > 0 && html`

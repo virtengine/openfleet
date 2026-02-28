@@ -754,7 +754,7 @@ export function LibraryTab() {
   return html`
     <div class="library-root">
       <div class="library-header">
-        <h2>${iconText(":u1f4da: Library")}</h2>
+        <h2>${iconText(":book: Library")}</h2>
         <button class="library-type-pill" onClick=${handleRebuild}
           title="Rescan directories and rebuild manifest">
           ${iconText(":refresh: Rebuild")}

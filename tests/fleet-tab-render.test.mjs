@@ -72,8 +72,8 @@ for (const { relPath, source } of sourceFiles) {
       // Look at ~300 chars before the class name to find the key= attribute
       const searchStart = Math.max(0, idx - 300);
       const surroundingChunk = source.slice(searchStart, idx + 50);
-      // Should use a content-derived key (slot?.taskId or similar)
-      expect(surroundingChunk).toMatch(/key=\$\{slot\?\.taskId/);
+      // Should use a content-derived key (helper or inline expression)
+      expect(surroundingChunk).toMatch(/key=\$\{(?:fleetSlotKey\(|slot\?\.taskId)/);
       // Should NOT use key=${i} as the only key
       expect(surroundingChunk).not.toMatch(/key=\$\{i\}\s*\n/);
     });
@@ -86,8 +86,8 @@ for (const { relPath, source } of sourceFiles) {
       const statCardChunk = threadsSection.slice(0, 600);
       // Should NOT use key=${i}
       expect(statCardChunk).not.toMatch(/key=\$\{i\}/);
-      // Should use a content-derived key
-      expect(statCardChunk).toMatch(/key=\$\{t\.taskKey/);
+      // Should use a content-derived key (helper or inline expression)
+      expect(statCardChunk).toMatch(/key=\$\{(?:fleetThreadKey\(|t\.taskKey)/);
     });
   });
 }
