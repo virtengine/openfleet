@@ -3,6 +3,7 @@
  * ────────────────────────────────────────────────────────────── */
 import { h } from "preact";
 import { useState, useCallback, useEffect, useRef, useMemo } from "preact/hooks";
+import { useState, useCallback, useEffect, useRef, useMemo } from "preact/hooks";
 import htm from "htm";
 
 const html = htm.bind(h);
@@ -1355,7 +1356,7 @@ export function AgentsTab() {
                   const st = slot ? slot.status || "busy" : "idle";
                   return html`
                     <div
-                      key=${i}
+                      key=${slot?.taskId || slot?.sessionId || `slot-${i}`}
                       class="slot-cell slot-${st}"
                       title=${slot
                         ? `${slot.taskTitle || slot.taskId} (${st})`
@@ -1387,8 +1388,8 @@ export function AgentsTab() {
                 : "No active slots"}
             </div>
             ${slots.length
-              ? slots.map(
-                  (slot, i) => html`
+                ? slots.map(
+                    (slot, i) => html`
                     <div
                       key=${slot?.taskId || slot?.sessionId || `slot-${i}`}
                       class="task-card fleet-agent-card ${expandedSlot === i

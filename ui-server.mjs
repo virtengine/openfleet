@@ -130,8 +130,8 @@ import {
 
 const __dirname = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const repoRoot = resolveRepoRoot();
-const uiRootPreferred = resolve(__dirname, "site", "ui");
-const uiRootFallback = resolve(__dirname, "ui");
+const uiRootPreferred = resolve(__dirname, "ui");
+const uiRootFallback = resolve(__dirname, "site", "ui");
 const uiRoot = existsSync(uiRootPreferred) ? uiRootPreferred : uiRootFallback;
 let libraryInitAttempted = false;
 const MAX_VISION_FRAME_BYTES = Math.max(
@@ -3674,6 +3674,7 @@ ingress:
       tunnelProcess = null;
       tunnelUrl = null;
       tunnelPublicHostname = "";
+      _notifyTunnelChange(null);
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
@@ -3833,6 +3834,7 @@ async function startQuickTunnel(cfBin, localPort) {
       tunnelProcess = null;
       tunnelUrl = null;
       tunnelPublicHostname = "";
+      _notifyTunnelChange(null);
       if (!resolved) {
         resolved = true;
         clearTimeout(timeout);
@@ -3867,6 +3869,7 @@ export function stopTunnel() {
     tunnelProcess = null;
     tunnelUrl = null;
     tunnelPublicHostname = "";
+    _notifyTunnelChange(null);
   }
   setTunnelRuntimeState({
     mode: TUNNEL_MODE_DISABLED,
