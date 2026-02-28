@@ -1869,6 +1869,7 @@ async function commentOnIssue(task, commentBody) {
  * @property {Function} onTaskFailed    - callback(task, error)
  * @property {Function} sendTelegram    - optional telegram notifier function
  * @property {Object}   agentPrompts    - optional prompt templates loaded from config
+ * @property {boolean}  workflowOwnsTaskLifecycle - Delegate finalization/recovery to workflow automation
  */
 
 /**
@@ -1919,6 +1920,7 @@ class TaskExecutor {
       onTaskFailed: null,
       sendTelegram: null,
       agentPrompts: {},
+      workflowOwnsTaskLifecycle: false,
     };
 
     const merged = { ...defaults, ...options };
@@ -1954,6 +1956,7 @@ class TaskExecutor {
     this.onTaskCompleted = merged.onTaskCompleted;
     this.onTaskFailed = merged.onTaskFailed;
     this.sendTelegram = merged.sendTelegram;
+    this.workflowOwnsTaskLifecycle = merged.workflowOwnsTaskLifecycle === true;
     this._agentPrompts =
       merged.agentPrompts && typeof merged.agentPrompts === "object"
         ? merged.agentPrompts
@@ -5288,6 +5291,26 @@ class TaskExecutor {
       output: (result.output || "").slice(0, 500),
     }).catch(() => {});
 
+    if (result.success && this.workflowOwnsTaskLifecycle) {
+      result.finalized = true;
+      result.finalizationReason = null;
+      if (!result.worktreePath) result.worktreePath = worktreePath || null;
+      if (!result.branch) {
+        result.branch =
+          task.branchName ||
+          task.meta?.branch_name ||
+          null;
+      }
+      if (!result.baseBranch) {
+        result.baseBranch = baseBranch || null;
+      }
+      console.log(
+        `${tag} workflow-owned lifecycle active — delegating finalization/review handoff to workflows`,
+      );
+      this.onTaskCompleted?.(task, result);
+      return;
+    }
+
     if (result.success) {
       console.log(
         `${tag} completed successfully (${result.attempts} attempt(s))`,
@@ -5729,21 +5752,27 @@ class TaskExecutor {
         this.pauseFor(5 * 60 * 1000, "rate-limit");
       }
 
-      try {
-        await transitionTaskStatus(task.id, "todo", {
-          source: "task-executor-failed",
-          taskTitle,
-          branch: result?.branch || task?.branchName || null,
-          baseBranch: result?.baseBranch || baseBranch || null,
-          worktreePath,
-          error: result?.error || null,
-        });
-      } catch {
-        /* best-effort */
+      if (!this.workflowOwnsTaskLifecycle) {
+        try {
+          await transitionTaskStatus(task.id, "todo", {
+            source: "task-executor-failed",
+            taskTitle,
+            branch: result?.branch || task?.branchName || null,
+            baseBranch: result?.baseBranch || baseBranch || null,
+            worktreePath,
+            error: result?.error || null,
+          });
+        } catch {
+          /* best-effort */
+        }
+        this.sendTelegram?.(
+          `❌ Task failed: "${task.title}" — ${(result.error || "").slice(0, 200)}`,
+        );
+      } else {
+        console.log(
+          `${tag} workflow-owned lifecycle active — delegating failure recovery to workflows`,
+        );
       }
-      this.sendTelegram?.(
-        `❌ Task failed: "${task.title}" — ${(result.error || "").slice(0, 200)}`,
-      );
       this.onTaskFailed?.(task, result);
     }
   }

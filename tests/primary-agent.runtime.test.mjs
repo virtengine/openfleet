@@ -88,6 +88,19 @@ vi.mock("../claude-shell.mjs", () => ({
   initClaudeShell: mockInitClaudeShell,
 }));
 
+vi.mock("../opencode-shell.mjs", () => ({
+  execOpencodePrompt: vi.fn(async () => ({ finalResponse: "opencode stub", items: [], usage: null })),
+  steerOpencodePrompt: vi.fn(async () => ({ ok: true, mode: "abort" })),
+  isOpencodeBusy: vi.fn(() => false),
+  getSessionInfo: vi.fn(() => ({ turnCount: 0, isActive: false, isBusy: false, sessionCount: 0, namedSessionId: null })),
+  resetSession: vi.fn(async () => {}),
+  initOpencodeShell: vi.fn(async () => {}),
+  getActiveSessionId: vi.fn(() => null),
+  listSessions: vi.fn(async () => []),
+  switchSession: vi.fn(async () => {}),
+  createSession: vi.fn(async (id) => ({ id, serverSessionId: null })),
+}));
+
 vi.mock("../agent-pool.mjs", () => ({
   execPooledPrompt: mockExecPooledPrompt,
 }));

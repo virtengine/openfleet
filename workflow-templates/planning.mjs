@@ -53,20 +53,29 @@ export const TASK_PLANNER_TEMPLATE = {
       dedup: true,
     }, { x: 400, y: 440 }),
 
-    node("check-result", "condition.expression", "Planner Succeeded?", {
-      expression: "$output?.run_planner?.success === true || $ctx.getNodeOutput('run-planner')?.success === true",
+    node("materialize-tasks", "action.materialize_planner_tasks", "Create Tasks", {
+      plannerNodeId: "run-planner",
+      maxTasks: 5,
+      status: "todo",
+      dedup: true,
+      failOnZero: true,
+      minCreated: 1,
     }, { x: 400, y: 570 }),
+
+    node("check-result", "condition.expression", "Planner Succeeded?", {
+      expression: "$ctx.getNodeOutput('materialize-tasks')?.success === true && ($ctx.getNodeOutput('materialize-tasks')?.createdCount || 0) > 0",
+    }, { x: 400, y: 700 }),
 
     node("set-timestamp", "action.set_variable", "Update Last Run", {
       key: "_lastPlannerRun",
       value: "Date.now()",
       isExpression: true,
-    }, { x: 200, y: 700 }),
+    }, { x: 200, y: 830 }),
 
     node("notify-done", "notify.telegram", "Notify Tasks Created", {
-      message: "🗂️ Task planner generated new backlog tasks. Todo count was {{todoCount}}.",
+      message: "🗂️ Task planner created {{materialize-tasks.createdCount}} backlog tasks (skipped {{materialize-tasks.skippedCount}} duplicates).",
       silent: true,
-    }, { x: 200, y: 830 }),
+    }, { x: 200, y: 960 }),
 
     node("notify-skip", "notify.log", "Log Dedup Skip", {
       message: "Task planner skipped: within dedup window",
@@ -74,16 +83,17 @@ export const TASK_PLANNER_TEMPLATE = {
     }, { x: 650, y: 180 }),
 
     node("notify-fail", "notify.log", "Log Planner Failure", {
-      message: "Task planner failed to generate tasks",
+      message: "Task planner failed to materialize tasks from planner output",
       level: "warn",
-    }, { x: 600, y: 700 }),
+    }, { x: 600, y: 830 }),
   ],
   edges: [
     edge("trigger", "check-dedup"),
     edge("check-dedup", "log-start", { condition: "$output?.result === true" }),
     edge("check-dedup", "notify-skip", { condition: "$output?.result !== true" }),
     edge("log-start", "run-planner"),
-    edge("run-planner", "check-result"),
+    edge("run-planner", "materialize-tasks"),
+    edge("materialize-tasks", "check-result"),
     edge("check-result", "set-timestamp", { condition: "$output?.result === true" }),
     edge("check-result", "notify-fail", { condition: "$output?.result !== true" }),
     edge("set-timestamp", "notify-done"),
@@ -143,10 +153,19 @@ export const TASK_REPLENISH_TEMPLATE = {
       context: "Scheduled replenishment run. Prioritize implementation tasks that build on recent PRs.",
     }, { x: 400, y: 440 }),
 
-    node("notify", "notify.telegram", "Notify", {
-      message: "🔄 Scheduled task replenishment complete.",
-      silent: true,
+    node("materialize-tasks", "action.materialize_planner_tasks", "Create Tasks", {
+      plannerNodeId: "run-planner",
+      maxTasks: 8,
+      status: "todo",
+      dedup: true,
+      failOnZero: true,
+      minCreated: 1,
     }, { x: 400, y: 570 }),
+
+    node("notify", "notify.telegram", "Notify", {
+      message: "🔄 Scheduled replenishment created {{materialize-tasks.createdCount}} tasks (skipped {{materialize-tasks.skippedCount}}).",
+      silent: true,
+    }, { x: 400, y: 700 }),
 
     node("skip-log", "notify.log", "No Replenish Needed", {
       message: "Scheduled replenishment check: backlog sufficient, skipping",
@@ -157,7 +176,8 @@ export const TASK_REPLENISH_TEMPLATE = {
     edge("check-backlog", "needs-tasks"),
     edge("needs-tasks", "run-planner", { condition: "$output?.result === true" }),
     edge("needs-tasks", "skip-log", { condition: "$output?.result !== true" }),
-    edge("run-planner", "notify"),
+    edge("run-planner", "materialize-tasks"),
+    edge("materialize-tasks", "notify"),
   ],
   metadata: {
     author: "bosun",

@@ -293,8 +293,41 @@ function _issueListCacheKey(state, limit) {
 }
 
 /** Build a cache key for the shared-state cache (per adapter instance). */
-function _sharedStateCacheKey(num) {
-  return String(num);
+function _sharedStateCacheKey(num, repoKey = "") {
+  const normalizedNum = String(num || "").trim();
+  const normalizedRepo = String(repoKey || "").trim().toLowerCase();
+  return normalizedRepo ? `${normalizedRepo}#${normalizedNum}` : normalizedNum;
+}
+
+function parseIssueLocator(issueNumber, defaultOwner, defaultRepo, issueUrl = "") {
+  const urlText = String(issueUrl || issueNumber || "").trim();
+  const urlMatch = urlText.match(
+    /github\.com\/([^/\s]+)\/([^/\s]+)\/issues\/(\d+)(?:\b|$)/i,
+  );
+  if (urlMatch) {
+    const owner = String(urlMatch[1] || "").trim();
+    const repo = String(urlMatch[2] || "")
+      .trim()
+      .replace(/\.git$/i, "");
+    const number = String(urlMatch[3] || "").trim();
+    return {
+      owner,
+      repo,
+      number,
+      repoKey: `${owner}/${repo}`.toLowerCase(),
+    };
+  }
+  const number = String(issueNumber || "")
+    .trim()
+    .replace(/^#/, "");
+  const owner = String(defaultOwner || "").trim();
+  const repo = String(defaultRepo || "").trim();
+  return {
+    owner,
+    repo,
+    number,
+    repoKey: `${owner}/${repo}`.toLowerCase(),
+  };
 }
 
 function isGhRateLimitError(text) {
@@ -2361,7 +2394,9 @@ class GitHubIssuesAdapter {
           for (const task of filtered) {
             try {
               const sharedState = normalizeSharedStatePayload(
-                await this.readSharedStateFromIssue(task.id),
+                await this.readSharedStateFromIssue(task.id, null, {
+                  issueUrl: task?.meta?.url || task?.taskUrl || null,
+                }),
               );
               if (sharedState) {
                 task.meta.sharedState = sharedState;
@@ -3234,8 +3269,15 @@ ${stateJson}
    *   console.log(`Task claimed by ${state.ownerId}`);
    * }
    */
-  async readSharedStateFromIssue(issueNumber, cachedComments = null) {
-    const num = String(issueNumber).replace(/^#/, "");
+  async readSharedStateFromIssue(issueNumber, cachedComments = null, options = {}) {
+    const issueUrl = String(options?.issueUrl || "").trim();
+    const locator = parseIssueLocator(
+      issueNumber,
+      this._owner,
+      this._repo,
+      issueUrl,
+    );
+    const num = locator.number;
     if (!/^\d+$/.test(num)) {
       throw new Error(`Invalid issue number: ${issueNumber}`);
     }
@@ -3243,7 +3285,7 @@ ${stateJson}
     // If no pre-fetched comments, check the instance-level shared-state cache
     // to avoid a separate API call per issue during bulk listTasks cycles.
     if (!cachedComments) {
-      const cacheKey = _sharedStateCacheKey(num);
+      const cacheKey = _sharedStateCacheKey(num, locator.repoKey);
       const cached = this._sharedStateCache.get(cacheKey);
       if (cached && Date.now() - cached.ts < GH_SHARED_STATE_CACHE_TTL_MS) {
         return cached.data;
@@ -3251,7 +3293,8 @@ ${stateJson}
     }
 
     try {
-      const comments = cachedComments ?? await this._getIssueComments(num);
+      const comments =
+        cachedComments ?? await this._getIssueComments(num, { issueUrl });
       const stateComment = Array.isArray(comments)
         ? comments
             .slice()
@@ -3263,7 +3306,7 @@ ${stateJson}
         // Cache the null result too so repeated calls within the TTL skip the API
         if (!cachedComments) {
           this._sharedStateCache.set(
-            _sharedStateCacheKey(num),
+            _sharedStateCacheKey(num, locator.repoKey),
             { data: null, ts: Date.now() },
           );
         }
@@ -3298,7 +3341,7 @@ ${stateJson}
       // Cache the result for the TTL window
       if (!cachedComments) {
         this._sharedStateCache.set(
-          _sharedStateCacheKey(num),
+          _sharedStateCacheKey(num, locator.repoKey),
           { data: state, ts: Date.now() },
         );
       }
@@ -3424,18 +3467,25 @@ To re-enable bosun for this task, remove the \`${this._codexLabels.ignore}\` lab
    * Get all comments for an issue.
    * @private
    */
-  async _getIssueComments(issueNumber) {
+  async _getIssueComments(issueNumber, options = {}) {
+    const issueUrl = String(options?.issueUrl || "").trim();
+    const locator = parseIssueLocator(
+      issueNumber,
+      this._owner,
+      this._repo,
+      issueUrl,
+    );
     try {
       const result = await this._gh([
         "api",
-        `/repos/${this._owner}/${this._repo}/issues/${issueNumber}/comments`,
+        `/repos/${locator.owner}/${locator.repo}/issues/${locator.number}/comments`,
         "--jq",
         ".",
       ]);
       return Array.isArray(result) ? result : [];
     } catch (err) {
       console.warn(
-        `[kanban] failed to fetch comments for #${issueNumber}: ${err.message}`,
+        `[kanban] failed to fetch comments for ${locator.owner}/${locator.repo}#${locator.number}: ${err.message}`,
       );
       return [];
     }

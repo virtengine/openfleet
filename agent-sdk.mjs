@@ -10,7 +10,7 @@
 
 import { readCodexConfig } from "./codex-config.mjs";
 
-const SUPPORTED_PRIMARY = new Set(["codex", "copilot", "claude"]);
+const SUPPORTED_PRIMARY = new Set(["codex", "copilot", "claude", "opencode"]);
 const DEFAULT_PRIMARY = "codex";
 
 const DEFAULT_CAPABILITIES_BY_PRIMARY = {
@@ -26,6 +26,11 @@ const DEFAULT_CAPABILITIES_BY_PRIMARY = {
   },
   claude: {
     steering: false,
+    subagents: true,
+    vscodeTools: false,
+  },
+  opencode: {
+    steering: true,
     subagents: true,
     vscodeTools: false,
   },

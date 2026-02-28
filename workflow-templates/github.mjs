@@ -299,12 +299,17 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
   id: "template-pr-conflict-resolver",
   name: "PR Conflict Resolver",
   description:
-    "Detects PRs with merge conflicts or failing CI and automatically " +
-    "resolves them — rebases, fixes conflicts, re-runs CI, and auto-merges " +
-    "when green.",
+    "⚠️ SUPERSEDED for bosun-managed repos — use the Bosun PR Watchdog " +
+    "(template-bosun-pr-watchdog) instead. The Watchdog consolidates conflict " +
+    "resolution, CI-failure repair, diff-safety review, and merge into one " +
+    "cycle with a single gh API call and a mandatory review gate before any merge. " +
+    "This template is kept for repos that do not use the bosun-attached label " +
+    "convention. It ONLY touches PRs labelled bosun-attached and never " +
+    "auto-merges directly — it resolves conflicts and then defers to the " +
+    "Watchdog's review gate for the actual merge decision.",
   category: "github",
-  enabled: true,
-  recommended: true,
+  enabled: false,
+  recommended: false,
   trigger: "trigger.schedule",
   variables: {
     checkIntervalMs: 1800000,
@@ -317,113 +322,138 @@ export const PR_CONFLICT_RESOLVER_TEMPLATE = {
       cron: "*/30 * * * *",
     }, { x: 400, y: 50 }),
 
-    node("list-prs", "action.run_command", "List Open PRs", {
-      command: "gh pr list --json number,title,headRefName,mergeable,statusCheckRollup --limit 20",
+    // Only fetch bosun-attached PRs — never touch external-contributor PRs.
+    // Includes labels so we can skip PRs already tagged bosun-needs-fix (watchdog owns those).
+    node("list-prs", "action.run_command", "List Bosun-Attached Conflicting PRs", {
+      command:
+        "gh pr list --label bosun-attached --state open " +
+        "--json number,title,headRefName,baseRefName,mergeable,labels --limit 20",
     }, { x: 400, y: 180 }),
 
     node("target-pr", "action.set_variable", "Pick Conflict PR", {
       key: "targetPrNumber",
       value:
-        "(() => { const raw = $ctx.getNodeOutput('list-prs')?.output || '[]'; let prs = []; try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; } if (!Array.isArray(prs)) return ''; const conflict = prs.find((pr) => ['CONFLICTING', 'BEHIND'].includes(String(pr?.mergeable || '').toUpperCase())); return conflict?.number ? String(conflict.number) : ''; })()",
+        "(() => {" +
+        "  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';" +
+        "  let prs = [];" +
+        "  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }" +
+        "  if (!Array.isArray(prs)) return '';" +
+        "  const CONFLICT = new Set(['CONFLICTING', 'BEHIND', 'DIRTY']);" +
+        "  // Skip PRs already owned by the watchdog fix agent" +
+        "  const pr = prs.find((p) =>" +
+        "    CONFLICT.has(String(p?.mergeable || '').toUpperCase()) &&" +
+        "    !(p.labels || []).some((l) => l.name === 'bosun-needs-fix')" +
+        "  );" +
+        "  return pr?.number ? String(pr.number) : '';" +
+        "})()",
       isExpression: true,
     }, { x: 400, y: 260 }),
 
     node("target-branch", "action.set_variable", "Capture Conflict Branch", {
       key: "targetPrBranch",
       value:
-        "(() => { const raw = $ctx.getNodeOutput('list-prs')?.output || '[]'; let prs = []; try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; } if (!Array.isArray(prs)) return ''; const conflict = prs.find((pr) => String(pr?.number || '') === String($data?.targetPrNumber || '')); return conflict?.headRefName || ''; })()",
+        "(() => {" +
+        "  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';" +
+        "  let prs = [];" +
+        "  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return ''; }" +
+        "  if (!Array.isArray(prs)) return '';" +
+        "  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));" +
+        "  return pr?.headRefName || '';" +
+        "})()",
       isExpression: true,
     }, { x: 400, y: 340 }),
 
+    node("target-base", "action.set_variable", "Capture Base Branch", {
+      key: "targetPrBase",
+      value:
+        "(() => {" +
+        "  const raw = $ctx.getNodeOutput('list-prs')?.output || '[]';" +
+        "  let prs = [];" +
+        "  try { prs = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return 'main'; }" +
+        "  if (!Array.isArray(prs)) return 'main';" +
+        "  const pr = prs.find((p) => String(p?.number || '') === String($data?.targetPrNumber || ''));" +
+        "  return pr?.baseRefName || 'main';" +
+        "})()",
+      isExpression: true,
+    }, { x: 400, y: 420 }),
+
     node("has-conflicts", "condition.expression", "Any Conflicts?", {
       expression: "Boolean($data?.targetPrNumber)",
-    }, { x: 400, y: 430 }),
+    }, { x: 400, y: 510 }),
+
+    // Label the PR so the watchdog knows it is being worked on
+    node("label-fixing", "action.run_command", "Label bosun-needs-fix", {
+      command: "gh pr edit {{targetPrNumber}} --add-label bosun-needs-fix",
+      continueOnError: true,
+    }, { x: 200, y: 650 }),
 
     node("resolve-conflicts", "action.run_agent", "Resolve Conflicts", {
-      prompt: `You are a merge conflict resolution agent for PR #{{targetPrNumber}} on branch {{targetPrBranch}}.
-1. Check out the PR branch
-2. Rebase onto main (or the configured base branch)
-3. Resolve merge conflicts while preserving intended behavior
-4. Run the repo's build/tests to validate the resolution
-5. Push the resolved branch and leave CI re-running
-
-Only perform minimal conflict-resolution changes. Do NOT add unrelated refactors.`,
+      prompt:
+        "You are a merge conflict resolution agent for PR #{{targetPrNumber}} " +
+        "on branch {{targetPrBranch}} (base: {{targetPrBase}}).\n\n" +
+        "Steps:\n" +
+        "1. git fetch origin\n" +
+        "2. git checkout {{targetPrBranch}}\n" +
+        "3. git rebase origin/{{targetPrBase}}   (fall back to merge if rebase is too complex)\n" +
+        "4. Resolve all merge conflicts, preserving the intent of both sides.\n" +
+        "5. Run the repo's build and test suite to confirm nothing is broken.\n" +
+        "6. git push --force-with-lease origin {{targetPrBranch}}\n" +
+        "7. Remove the bosun-needs-fix label: gh pr edit {{targetPrNumber}} --remove-label bosun-needs-fix\n\n" +
+        "Rules:\n" +
+        "- Only make minimal conflict-resolution changes. No unrelated refactors.\n" +
+        "- Do NOT merge, close, or approve the PR — the Bosun PR Watchdog handles merging.\n" +
+        "- Do NOT touch PRs that do not have the bosun-attached label.",
       sdk: "auto",
       timeoutMs: 1800000,
       failOnError: true,
       maxRetries: "{{maxRetries}}",
       retryDelayMs: 30000,
       continueOnError: true,
-    }, { x: 200, y: 590 }),
+    }, { x: 200, y: 800 }),
 
-    node("verify-ci", "action.run_command", "Verify CI Green", {
-      command: "gh pr checks {{targetPrNumber}} --json name,state",
-      failOnError: true,
-      maxRetries: "{{maxRetries}}",
-      retryDelayMs: 30000,
-      continueOnError: true,
-    }, { x: 200, y: 750 }),
-
-    node("ci-passed", "condition.expression", "CI Passed?", {
-      expression:
-        "(() => { const out = $ctx.getNodeOutput('verify-ci'); if (!out || out.success !== true) return false; let checks = []; try { checks = JSON.parse(out.output || '[]'); } catch { return false; } if (!Array.isArray(checks) || checks.length === 0) return false; const ok = new Set(['SUCCESS', 'PASSED', 'PASS', 'COMPLETED', 'NEUTRAL', 'SKIPPED']); return checks.every((c) => ok.has(String(c?.state || '').toUpperCase())); })()",
-    }, { x: 200, y: 910 }),
-
-    node("do-merge", "action.run_command", "Auto-Merge", {
-      command: "gh pr merge {{targetPrNumber}} --auto --squash",
-      failOnError: true,
-      maxRetries: "{{maxRetries}}",
-      retryDelayMs: 20000,
-      continueOnError: true,
-    }, { x: 100, y: 1040 }),
-
-    node("merge-succeeded", "condition.expression", "Merge Succeeded?", {
-      expression: "$ctx.getNodeOutput('do-merge')?.success === true",
-    }, { x: 100, y: 1140 }),
-
-    node("notify-fixed", "notify.telegram", "Notify Fixed", {
-      message: "🔧 PR #{{targetPrNumber}} conflicts auto-resolved and merged",
+    node("notify-fixed", "notify.telegram", "Notify Resolved", {
+      message: "🔧 PR #{{targetPrNumber}} conflict resolved — awaiting CI and Watchdog review before merge",
       silent: true,
-    }, { x: 100, y: 1260 }),
+    }, { x: 200, y: 960 }),
 
-    node("notify-failed", "notify.log", "Log CI Failed", {
-      message: "PR #{{targetPrNumber}} conflict auto-resolution could not complete cleanly — manual review required",
+    node("notify-failed", "notify.log", "Log Resolution Failed", {
+      message: "PR #{{targetPrNumber}} conflict could not be resolved cleanly — manual review required",
       level: "warn",
-    }, { x: 420, y: 1040 }),
+    }, { x: 450, y: 800 }),
 
     node("skip", "notify.log", "No Conflicts", {
-      message: "All PRs are clean — no conflicts found",
+      message: "PR Conflict Resolver: no unhandled bosun-attached conflicts found",
       level: "info",
-    }, { x: 620, y: 430 }),
+    }, { x: 620, y: 510 }),
   ],
   edges: [
-    edge("trigger", "list-prs"),
-    edge("list-prs", "target-pr"),
-    edge("target-pr", "target-branch"),
-    edge("target-branch", "has-conflicts"),
-    edge("has-conflicts", "resolve-conflicts", { condition: "$output?.result === true" }),
-    edge("has-conflicts", "skip", { condition: "$output?.result !== true" }),
-    edge("resolve-conflicts", "verify-ci"),
-    edge("verify-ci", "ci-passed"),
-    edge("ci-passed", "do-merge", { condition: "$output?.result === true" }),
-    edge("ci-passed", "notify-failed", { condition: "$output?.result !== true" }),
-    edge("do-merge", "merge-succeeded"),
-    edge("merge-succeeded", "notify-fixed", { condition: "$output?.result === true" }),
-    edge("merge-succeeded", "notify-failed", { condition: "$output?.result !== true" }),
+    edge("trigger",           "list-prs"),
+    edge("list-prs",          "target-pr"),
+    edge("target-pr",         "target-branch"),
+    edge("target-branch",     "target-base"),
+    edge("target-base",       "has-conflicts"),
+    edge("has-conflicts",     "label-fixing",       { condition: "$output?.result === true" }),
+    edge("has-conflicts",     "skip",               { condition: "$output?.result !== true" }),
+    edge("label-fixing",      "resolve-conflicts"),
+    edge("resolve-conflicts", "notify-fixed",       { condition: "$ctx.getNodeOutput('resolve-conflicts')?.success === true" }),
+    edge("resolve-conflicts", "notify-failed",      { condition: "$ctx.getNodeOutput('resolve-conflicts')?.success !== true" }),
   ],
   metadata: {
     author: "bosun",
-    version: 1,
+    version: 2,
     createdAt: "2025-02-25T00:00:00Z",
-    templateVersion: "1.0.0",
-    tags: ["github", "pr", "conflict", "rebase", "automation"],
+    templateVersion: "2.0.0",
+    tags: ["github", "pr", "conflict", "rebase", "automation", "bosun-attached"],
     replaces: {
       module: "pr-cleanup-daemon.mjs",
       functions: ["PRCleanupDaemon.run", "processCleanup", "resolveConflicts"],
       calledFrom: ["monitor.mjs:startProcess"],
-      description: "Replaces the pr-cleanup-daemon class with a visual workflow. " +
-        "Conflict detection, rebase, CI verification, and auto-merge become " +
-        "explicit workflow steps with configurable intervals.",
+      description:
+        "v2: Restricted to bosun-attached PRs only — never touches external-contributor PRs. " +
+        "Removed direct auto-merge: this template now only resolves the conflict and pushes; " +
+        "the Bosun PR Watchdog (template-bosun-pr-watchdog) owns the merge decision with its " +
+        "diff-safety review gate. Skips PRs already tagged bosun-needs-fix (watchdog owns those). " +
+        "Labels PR with bosun-needs-fix during resolution so watchdog knows it is in-flight.",
     },
   },
 };
@@ -609,5 +639,293 @@ Omit empty sections. Include contributor attribution. Be concise.`,
     createdAt: "2025-02-25T00:00:00Z",
     templateVersion: "1.0.0",
     tags: ["github", "release", "notes", "changelog", "draft"],
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Bosun PR Watchdog
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+/**
+ * Bosun PR Watchdog — opt-in, scheduled CI poller for bosun-owned PRs.
+ *
+ * Only acts on PRs labelled `bosun-attached` (applied by the
+ * .github/workflows/bosun-pr-attach.yml GitHub Action when Bosun opens a PR).
+ * External-contributor and human PRs that lack that label are never touched.
+ *
+ * Per cycle:
+ *   1. List all open bosun-attached PRs.
+ *   2. Merge any PR whose CI checks are all passing (not draft, not pending).
+ *   3. Label any PR whose CI checks have failures with `bosun-needs-fix` and
+ *      dispatch a repair agent to fix the branch.
+ *
+ * Disable:  set `enabled: false` in your bosun config, or delete the workflow.
+ * Interval: default 5 min — change `intervalMs` / `cron` variables.
+ */
+export const BOSUN_PR_WATCHDOG_TEMPLATE = {
+  id: "template-bosun-pr-watchdog",
+  name: "Bosun PR Watchdog",
+  description:
+    "Scans open bosun-attached PRs on a schedule. Makes ONE gh API call to " +
+    "fetch and classify all PRs, then: labels conflicting or failing-CI PRs " +
+    "with bosun-needs-fix and dispatches a repair agent; sends merge candidates " +
+    "through a MANDATORY agent review gate that checks diff stats before any " +
+    "merge — preventing destructive PRs (e.g. -183k lines) from being silently " +
+    "auto-merged. External-contributor PRs without bosun-attached are never touched.",
+  category: "github",
+  enabled: false,
+  trigger: "trigger.schedule",
+  variables: {
+    mergeMethod:        "squash",                   // squash | merge | rebase
+    labelNeedsFix:      "bosun-needs-fix",           // applied to CI failures and conflicts
+    labelNeedsReview:   "bosun-needs-human-review",  // applied when review agent flags a suspicious diff
+    maxPrs:             25,
+    intervalMs:         300_000,                    // 5 minutes
+    // Merge-safety thresholds checked by the review agent:
+    // If net deletions > additions × ratio AND deletions > minDestructiveDeletions → HOLD
+    suspiciousDeletionRatio: 3,    // e.g. deletes 3× more lines than it adds
+    minDestructiveDeletions: 500,  // absolute floor — small PRs are fine even if net negative
+  },
+  nodes: [
+    node("trigger", "trigger.schedule", "Poll Every 5 min", {
+      intervalMs: "{{intervalMs}}",
+      cron: "*/5 * * * *",
+    }, { x: 400, y: 50 }),
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // STEP 1: ONE gh API call — fetch all fields we need in a single request.
+    // classify-and-label does all subsequent classification + labeling inline
+    // from this one response, so no repeated gh pr list calls later.
+    // ─────────────────────────────────────────────────────────────────────────
+    node("fetch-and-classify", "action.run_command", "Fetch, Classify & Label PRs", {
+      // Fetches all open bosun-attached PRs with every field needed for
+      // classification. Pipes into an inline Node script that:
+      //   • Classifies each PR into: ready | conflict | ci_failure | pending | draft
+      //   • Labels conflict/ci_failure PRs with bosun-needs-fix (skips if already present)
+      //   • Outputs a JSON summary used by all downstream nodes/agents
+      // Total gh API calls this node makes: 1 list + N edits (only for newly-broken PRs)
+      command: [
+        "gh pr list --label bosun-attached --state open",
+        "--json number,title,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,url",
+        "--limit {{maxPrs}}",
+        "| node -e \"",
+        "const LABEL_FIX='{{labelNeedsFix}}';",
+        "const {execSync}=require('child_process');",
+        "let raw='';",
+        "process.stdin.on('data',c=>raw+=c);",
+        "process.stdin.on('end',()=>{",
+        "  let prs=[];",
+        "  try{prs=JSON.parse(raw);}catch(e){console.log(JSON.stringify({error:e.message,total:0}));return;}",
+        "  const FAIL_STATES=new Set(['FAILURE','ERROR','TIMED_OUT','CANCELLED','STARTUP_FAILURE']);",
+        "  const PEND_STATES=new Set(['PENDING','IN_PROGRESS','QUEUED','WAITING','REQUESTED','EXPECTED']);",
+        "  const CONFLICT_MERGEABLES=new Set(['CONFLICTING','BEHIND','DIRTY']);",
+        "  const readyCandidates=[],conflicts=[],ciFailures=[],pending=[],drafted=[];",
+        "  let newlyLabeled=0;",
+        "  for(const pr of prs){",
+        "    const labels=(pr.labels||[]).map(l=>l.name);",
+        "    const hasFixLabel=labels.includes(LABEL_FIX);",
+        "    const checks=pr.statusCheckRollup||[];",
+        "    const hasFail=checks.some(c=>FAIL_STATES.has(c.conclusion||c.state||''));",
+        "    const hasPend=checks.some(c=>PEND_STATES.has(c.conclusion||c.state||''));",
+        "    const isConflict=CONFLICT_MERGEABLES.has(String(pr.mergeable||'').toUpperCase());",
+        "    const isDraft=pr.isDraft===true;",
+        "    if(isDraft){drafted.push(pr.number);continue;}",
+        "    if(isConflict){",
+        "      conflicts.push({n:pr.number,branch:pr.headRefName,base:pr.baseRefName,url:pr.url});",
+        "      if(!hasFixLabel){",
+        "        try{execSync('gh pr edit '+pr.number+' --add-label '+LABEL_FIX,{stdio:'pipe'});newlyLabeled++;}",
+        "        catch(e){process.stderr.write('label err #'+pr.number+': '+e.message+'\\n');}",
+        "      }",
+        "    } else if(hasFail){",
+        "      ciFailures.push({n:pr.number,branch:pr.headRefName,url:pr.url});",
+        "      if(!hasFixLabel){",
+        "        try{execSync('gh pr edit '+pr.number+' --add-label '+LABEL_FIX,{stdio:'pipe'});newlyLabeled++;}",
+        "        catch(e){process.stderr.write('label err #'+pr.number+': '+e.message+'\\n');}",
+        "      }",
+        "    } else if(hasPend){",
+        "      pending.push(pr.number);",
+        "    } else if(checks.length>0&&!hasFixLabel){",
+        "      // CI all-passing, no conflicts, not draft — a review candidate",
+        "      readyCandidates.push({n:pr.number,branch:pr.headRefName,base:pr.baseRefName,url:pr.url,title:pr.title});",
+        "    }",
+        "  }",
+        "  console.log(JSON.stringify({",
+        "    total:prs.length,",
+        "    readyCandidates,",
+        "    conflicts,",
+        "    ciFailures,",
+        "    pending:pending.length,",
+        "    drafted:drafted.length,",
+        "    newlyLabeled,",
+        "    fixNeeded:conflicts.length+ciFailures.length",
+        "  }));",
+        "});",
+        "\"",
+      ].join(" "),
+      continueOnError: false,
+    }, { x: 400, y: 200 }),
+
+    node("has-prs", "condition.expression", "Any Bosun PRs?", {
+      expression:
+        "(()=>{try{" +
+        "const o=$ctx.getNodeOutput('fetch-and-classify')?.output;" +
+        "return (JSON.parse(o||'{}').total||0)>0;" +
+        "}catch(e){return false;}})()",
+    }, { x: 400, y: 370 }),
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // STEP 2a: Fix path — dispatch ONE agent for all conflicts + CI failures.
+    // The agent handles rebase/conflict-resolution AND CI lint/test fixes.
+    // ─────────────────────────────────────────────────────────────────────────
+    node("fix-needed", "condition.expression", "Fix Needed?", {
+      expression:
+        "(()=>{try{" +
+        "const o=$ctx.getNodeOutput('fetch-and-classify')?.output;" +
+        "return (JSON.parse(o||'{}').fixNeeded||0)>0;" +
+        "}catch(e){return false;}})()",
+    }, { x: 200, y: 530 }),
+
+    node("dispatch-fix", "action.run_agent", "Dispatch Fix Agent", {
+      prompt:
+        "You are a Bosun PR repair agent. A watchdog workflow has identified " +
+        "bosun-attached PRs that need fixing.\n\n" +
+        "Run this single command to get the current list of PRs needing work:\n" +
+        "  gh pr list --label bosun-needs-fix --label bosun-attached --state open \\\n" +
+        "    --json number,title,headRefName,baseRefName,mergeable,statusCheckRollup,labels,url \\\n" +
+        "    --limit 10\n\n" +
+        "For each PR returned, follow the appropriate path:\n\n" +
+        "CONFLICT (mergeable is CONFLICTING, BEHIND, or DIRTY):\n" +
+        "1. git fetch origin\n" +
+        "2. git checkout <headRefName>\n" +
+        "3. git rebase origin/<baseRefName>  (or git merge origin/<baseRefName> if rebase is too complex)\n" +
+        "4. Resolve merge conflicts, preserving the intent of both sides.\n" +
+        "5. Run the repo's build + test suite to confirm nothing is broken.\n" +
+        "6. git push --force-with-lease origin <headRefName>\n\n" +
+        "CI FAILURE (statusCheckRollup has FAILURE/ERROR/TIMED_OUT entries):\n" +
+        "1. git checkout <headRefName>\n" +
+        "2. Inspect CI logs: gh run list --branch <headRefName> --limit 3\n" +
+        "   Then: gh run view <run-id> --log-failed\n" +
+        "3. Fix the root cause (lint, type error, failing test, build error).\n" +
+        "4. Commit: fix(<scope>): <description>  (conventional commit format)\n" +
+        "5. Push the branch — CI will re-trigger automatically.\n\n" +
+        "AFTER fixing either type:\n" +
+        "- Remove the bosun-needs-fix label: gh pr edit <number> --remove-label bosun-needs-fix\n\n" +
+        "STRICT RULES:\n" +
+        "- Fix only what breaks CI or causes the conflict. No scope creep.\n" +
+        "- Do NOT merge, close, or approve any PR.\n" +
+        "- Do NOT touch PRs that do not have the bosun-attached label.\n" +
+        "- If a conflict cannot be resolved cleanly, leave it labeled and add a comment explaining why.",
+      sdk: "auto",
+      timeoutMs: 1_800_000,
+      maxRetries: 2,
+      retryDelayMs: 30_000,
+      continueOnError: true,
+    }, { x: 200, y: 700 }),
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // STEP 2b: Review gate — MANDATORY before any merge.
+    // The review agent checks diff stats per candidate and is the ONLY thing
+    // that can call `gh pr merge`. It blocks suspicious/destructive diffs.
+    // ─────────────────────────────────────────────────────────────────────────
+    node("review-needed", "condition.expression", "Review Candidates?", {
+      expression:
+        "(()=>{try{" +
+        "const o=$ctx.getNodeOutput('fetch-and-classify')?.output;" +
+        "return (JSON.parse(o||'{}').readyCandidates||[]).length>0;" +
+        "}catch(e){return false;}})()",
+    }, { x: 600, y: 530 }),
+
+    node("dispatch-review", "action.run_agent", "Review Gate: Inspect & Merge", {
+      prompt:
+        "You are the Bosun PR merge review agent — the LAST LINE OF DEFENCE before " +
+        "any PR is merged. Your job is to inspect each merge candidate and decide " +
+        "whether it is safe to merge.\n\n" +
+        "MERGE CANDIDATES (CI passing, no conflicts, bosun-attached):\n" +
+        "  Run: gh pr list --label bosun-attached --state open \\\n" +
+        "    --json number,title,headRefName,isDraft,statusCheckRollup,labels,url \\\n" +
+        "    --limit {{maxPrs}}\n" +
+        "  Filter to PRs where: not isDraft, CI all-passing, no bosun-needs-fix label.\n\n" +
+        "FOR EACH CANDIDATE — before merging, run:\n" +
+        "  gh pr view <number> --json number,title,additions,deletions,changedFiles,body,baseRefName\n\n" +
+        "SAFETY CHECKS (ALL must pass before merging):\n\n" +
+        "1. DESTRUCTIVE DIFF CHECK:\n" +
+        "   If (deletions > additions × {{suspiciousDeletionRatio}}) AND (deletions > {{minDestructiveDeletions}}):\n" +
+        "   → This PR deletes far more than it adds — HOLD IT.\n" +
+        "   → Run: gh pr edit <number> --add-label {{labelNeedsReview}}\n" +
+        "   → Run: gh pr comment <number> --body '⚠️ **Bosun Review Agent: merge held** — " +
+        "This PR deletes significantly more lines than it adds (deletions: <X>, additions: <Y>). " +
+        "A human should verify this is intentional before merging.'\n" +
+        "   → Do NOT merge this PR. Move to next candidate.\n\n" +
+        "2. DIFF SANITY CHECK (for PRs that pass the ratio check):\n" +
+        "   Run: gh pr diff <number> | head -200\n" +
+        "   Look for: mass file deletions, removal of entire modules/directories, " +
+        "   files changed that are unrelated to the PR description.\n" +
+        "   If something looks wrong → HOLD with bosun-needs-human-review label + comment.\n\n" +
+        "3. CI STATUS RECONFIRM:\n" +
+        "   Run: gh pr checks <number> --json name,state,conclusion\n" +
+        "   Ensure ALL checks have conclusion SUCCESS/SKIPPED/NEUTRAL. " +
+        "   If any are pending or failing → do NOT merge (CI may still be running).\n\n" +
+        "MERGE (only if ALL checks pass):\n" +
+        "   gh pr merge <number> --{{mergeMethod}} --delete-branch\n" +
+        "   Log: ✅ Merged PR #<number> — <title>\n\n" +
+        "STRICT RULES:\n" +
+        "- NEVER merge if ANY safety check fails. When in doubt, HOLD.\n" +
+        "- NEVER merge PRs without the bosun-attached label.\n" +
+        "- NEVER merge draft PRs.\n" +
+        "- The bosun-needs-human-review label means a human must look at it before bosun touches it again.\n" +
+        "- After processing all candidates, output a summary: { merged: N, held: N, skipped: N }",
+      sdk: "auto",
+      timeoutMs: 1_200_000,
+      maxRetries: 1,
+      retryDelayMs: 30_000,
+      continueOnError: true,
+    }, { x: 600, y: 700 }),
+
+    node("notify", "notify.telegram", "Watchdog Report", {
+      message:
+        "🐕 Bosun PR Watchdog cycle complete — " +
+        "fix-dispatched: {{fixNeeded}} | candidates-reviewed: {{readyCandidates}}",
+      silent: true,
+    }, { x: 400, y: 900 }),
+
+    node("no-prs", "notify.log", "No Bosun PRs Open", {
+      message: "Bosun PR Watchdog: no open bosun-attached PRs found — idle",
+      level: "info",
+    }, { x: 700, y: 370 }),
+  ],
+  edges: [
+    edge("trigger",          "fetch-and-classify"),
+    edge("fetch-and-classify","has-prs"),
+    edge("has-prs",          "fix-needed",      { condition: "$output?.result === true" }),
+    edge("has-prs",          "no-prs",          { condition: "$output?.result !== true" }),
+    // Fix path (conflicts + CI failures)
+    edge("fix-needed",       "dispatch-fix",    { condition: "$output?.result === true" }),
+    edge("fix-needed",       "review-needed",   { condition: "$output?.result !== true" }),
+    edge("dispatch-fix",     "review-needed"),
+    // Review gate (merge candidates)
+    edge("review-needed",    "dispatch-review", { condition: "$output?.result === true" }),
+    edge("review-needed",    "notify",          { condition: "$output?.result !== true" }),
+    edge("dispatch-review",  "notify"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 2,
+    createdAt: "2025-07-01T00:00:00Z",
+    templateVersion: "2.0.0",
+    tags: ["github", "pr", "ci", "merge", "watchdog", "bosun-attached", "safety"],
+    replaces: {
+      module: "agent-hooks.mjs",
+      functions: ["registerBuiltinHooks (PostPR block)"],
+      calledFrom: [],
+      description:
+        "v2: Consolidates all gh API calls into ONE gh pr list fetch per cycle. " +
+        "Adds mandatory review gate agent that checks diff stats (additions/deletions " +
+        "ratio) and diff content before any merge — preventing destructive PRs from " +
+        "being auto-merged. Adds conflict detection via the 'mergeable' field. " +
+        "Single fix agent handles both conflict resolution and CI failures. " +
+        "All external PRs (no bosun-attached label) are never touched.",
+    },
   },
 };

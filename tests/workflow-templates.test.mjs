@@ -121,6 +121,25 @@ describe("workflow-templates", () => {
       }
     }
   });
+
+  it("task planner template materializes planner output before success notification", () => {
+    const planner = getTemplate("template-task-planner");
+    expect(planner).toBeDefined();
+
+    const materialize = planner.nodes.find((n) => n.id === "materialize-tasks");
+    expect(materialize).toBeDefined();
+    expect(materialize.type).toBe("action.materialize_planner_tasks");
+    expect(materialize.config?.failOnZero).toBe(true);
+
+    const edgeToMaterialize = planner.edges.find(
+      (e) => e.source === "run-planner" && e.target === "materialize-tasks",
+    );
+    const edgeToCheck = planner.edges.find(
+      (e) => e.source === "materialize-tasks" && e.target === "check-result",
+    );
+    expect(edgeToMaterialize).toBeDefined();
+    expect(edgeToCheck).toBeDefined();
+  });
 });
 
 // ── Template API ────────────────────────────────────────────────────────────
@@ -172,7 +191,9 @@ describe("template API functions", () => {
       "template-task-finalization-guard",
       "template-task-repair-worktree",
       "template-task-status-transition-manager",
-      "template-pr-conflict-resolver",
+      // template-pr-conflict-resolver deliberately excluded — superseded by
+      // template-bosun-pr-watchdog which owns conflict detection, CI checks,
+      // diff-safety review, and merge in one consolidated workflow.
       "template-agent-session-monitor",
       "template-release-pipeline",
       "template-backend-agent",
@@ -317,23 +338,30 @@ describe("health check template reliability behavior", () => {
 });
 
 describe("github template CLI compatibility", () => {
-  it("uses supported gh pr checks fields for merge strategy and conflict resolver", () => {
+  it("uses supported gh pr checks fields for merge strategy", () => {
     const mergeTemplate = getTemplate("template-pr-merge-strategy");
-    const resolverTemplate = getTemplate("template-pr-conflict-resolver");
     expect(mergeTemplate).toBeDefined();
-    expect(resolverTemplate).toBeDefined();
 
     const checkCi = mergeTemplate.nodes.find((n) => n.id === "check-ci");
-    const verifyCi = resolverTemplate.nodes.find((n) => n.id === "verify-ci");
-
     expect(checkCi?.config?.command).toContain("gh pr checks");
     expect(checkCi?.config?.command).toContain("--json name,state");
     expect(checkCi?.config?.command).not.toContain("conclusion");
+  });
 
-    expect(verifyCi?.config?.command).toContain("gh pr checks");
-    expect(verifyCi?.config?.command).toContain("--json name,state");
-    expect(verifyCi?.config?.command).not.toContain("conclusion");
-    expect(verifyCi?.config?.command).not.toMatch(/\|\s*head\b/);
+  it("conflict resolver is superseded by watchdog and defers merge to it", () => {
+    const resolverTemplate = getTemplate("template-pr-conflict-resolver");
+    expect(resolverTemplate).toBeDefined();
+    // Conflict resolver is no longer recommended — Bosun PR Watchdog supersedes it.
+    expect(resolverTemplate.recommended).toBeFalsy();
+    expect(resolverTemplate.enabled).toBe(false);
+    // Must filter to bosun-attached PRs only — never touch external PRs.
+    const listNode = resolverTemplate.nodes.find((n) => n.id === "list-prs");
+    expect(listNode?.config?.command).toContain("--label bosun-attached");
+    // Must NOT contain a direct merge call — merge is deferred to watchdog.
+    const hasMergeCall = resolverTemplate.nodes.some(
+      (n) => typeof n.config?.command === "string" && n.config.command.includes("gh pr merge")
+    );
+    expect(hasMergeCall).toBe(false);
   });
 
   it("merge strategy CI gate treats unsupported/malformed output as not passed", () => {

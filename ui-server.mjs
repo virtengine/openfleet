@@ -355,6 +355,15 @@ async function getWorkflowEngineModule() {
         };
         _wfEngine.getWorkflowEngine({ services });
         _wfServicesReady = true;
+
+        // Resume any runs that were interrupted by a previous shutdown.
+        // This must happen AFTER services are wired so node executors work.
+        const engine = _wfEngine.getWorkflowEngine();
+        if (typeof engine.resumeInterruptedRuns === "function") {
+          engine.resumeInterruptedRuns().catch((err) => {
+            console.warn("[workflows] Failed to resume interrupted runs:", err.message);
+          });
+        }
       } catch (err) {
         console.warn("[workflows] services setup failed (engine still usable):", err.message);
       }
@@ -6324,11 +6333,68 @@ async function handleApi(req, res, url) {
       const wfMod = await getWorkflowEngine();
       if (!wfMod) { jsonResponse(res, 503, { ok: false, error: "Workflow engine not available" }); return; }
       const engine = wfMod.getWorkflowEngine();
-      const runId = decodeURIComponent(path.replace("/api/workflows/runs/", "")).trim();
+      const subPath = path.replace("/api/workflows/runs/", "");
+      const segments = subPath.split("/").map(decodeURIComponent);
+      const runId = (segments[0] || "").trim();
+      const action = (segments[1] || "").trim();
+
       if (!runId) {
         jsonResponse(res, 400, { ok: false, error: "runId is required" });
         return;
       }
+
+      // ── POST /api/workflows/runs/:id/retry ──────────────────────────
+      // Manual retry endpoint. Accepts { mode: "from_failed" | "from_scratch" }.
+      // If mode is omitted, returns available retry options so the UI can
+      // present a choice to the user.
+      if (action === "retry" && req.method === "POST") {
+        const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
+        if (!run) {
+          jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
+          return;
+        }
+        if (run.status !== "failed") {
+          jsonResponse(res, 400, { ok: false, error: `Run status is "${run.status}" — only failed runs can be retried` });
+          return;
+        }
+        const body = await readJsonBody(req);
+        const mode = body?.mode;
+        if (!mode) {
+          // No mode specified — return available retry options so the UI can
+          // present a picker (from scratch vs from failed step).
+          const failedNodes = [];
+          const nodeStatuses = run.detail?.nodeStatuses || {};
+          for (const [nodeId, status] of Object.entries(nodeStatuses)) {
+            if (status === "failed") failedNodes.push(nodeId);
+          }
+          jsonResponse(res, 200, {
+            ok: true,
+            runId,
+            status: run.status,
+            options: [
+              { mode: "from_failed", label: "Retry from last failed step", failedNodes },
+              { mode: "from_scratch", label: "Retry from scratch" },
+            ],
+          });
+          return;
+        }
+        if (mode !== "from_failed" && mode !== "from_scratch") {
+          jsonResponse(res, 400, { ok: false, error: `Invalid mode "${mode}". Use "from_failed" or "from_scratch".` });
+          return;
+        }
+        const result = await engine.retryRun(runId, { mode });
+        const retryStatus = result.ctx?.errors?.length > 0 ? "failed" : "completed";
+        jsonResponse(res, 200, {
+          ok: true,
+          retryRunId: result.retryRunId,
+          originalRunId: result.originalRunId,
+          mode: result.mode,
+          status: retryStatus,
+        });
+        return;
+      }
+
+      // ── GET /api/workflows/runs/:id ─────────────────────────────────
       const run = engine.getRunDetail ? engine.getRunDetail(runId) : null;
       if (!run) {
         jsonResponse(res, 404, { ok: false, error: "Workflow run not found" });
@@ -7357,6 +7423,25 @@ async function handleApi(req, res, url) {
           // Respond immediately so the UI doesn't block on agent execution
           jsonResponse(res, 200, { ok: true, messageId });
           broadcastUiEvent(["sessions"], "invalidate", { reason: "session-message", sessionId });
+
+          // Build an onEvent callback so intermediate SDK events (thinking,
+          // tool calls, code edits, etc.) are streamed to the UI in real-time
+          // via the existing session-tracker → WebSocket listener pipeline.
+          // Without this, chat/telegram dispatches only show the final
+          // user+assistant pair instead of the full thought stream that Flows
+          // clients see.
+          const streamOnEvent = (err, event) => {
+            // The adapters call onEvent(err, event) or onEvent(event).
+            // Normalise both calling conventions.
+            const ev = event || err;
+            if (!ev) return;
+            try {
+              tracker.recordEvent(sessionId, ev);
+            } catch {
+              /* best-effort — never crash the agent loop */
+            }
+          };
+
           // Fire-and-forget: run agent asynchronously so the request handler
           // doesn't block and the agent doesn't appear "busy" to subsequent
           // messages from chat, telegram, portal, or any other source.
@@ -7367,6 +7452,7 @@ async function handleApi(req, res, url) {
             model: messageModel,
             attachments,
             attachmentsAppended,
+            onEvent: streamOnEvent,
           }).then(() => {
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
           }).catch((execErr) => {

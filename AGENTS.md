@@ -282,7 +282,9 @@ import {
 const msg = buildCommitMessage("feat: add thing", "Extended description");
 // → Includes trailer automatically when running in Bosun task context
 
-const forced = buildCommitMessage("feat: add thing", "Extended description", { addBosunCredit: true });
+const forced = buildCommitMessage("feat: add thing", "Extended description", {
+  addBosunCredit: true,
+});
 // → Always includes trailer (independent of task context)
 
 const prBody = appendBosunPrCredit("My PR description");
@@ -361,6 +363,40 @@ Any function called from a hot path (HTTP handler, event loop, timer, setInterva
 - Dynamic `import()` results must be cached at module scope.
 - Respect feature flags — never force-enable or inline-override config values.
 - Guard optional subsystem calls with null/undefined checks.
+
+### Git Hook Safety — HARD BLOCK
+
+**`git push --no-verify` and `git commit --no-verify` are permanently prohibited.**
+
+The pre-push hook is **diff-based**: it only runs the test files for source modules
+you actually changed, so it completes in seconds. There is never a legitimate
+reason to bypass it.
+
+Violations will be reverted automatically by CI and counted as a trust signal
+against the issuing agent.
+
+**Enforcement layers:**
+
+1. **`bin/git` wrapper** — intercepts `--no-verify` before Git sees it.
+   Activate by putting `./bin` first in PATH (add to shell profile):
+
+   ```bash
+   export PATH="$PWD/bin:$PATH"   # run from bosun/ directory
+   ```
+
+   Windows CMD/PowerShell: `bin\git.cmd` is auto-discovered when `bin\` is in PATH.
+
+2. **CI gate** — GitHub Actions runs the full test suite on every push regardless of
+   hooks. A bypassed push will fail CI and receive the `bosun-needs-fix` label.
+
+3. **This rule** — treat any agent that emits `--no-verify` as misbehaving. Raise a
+   new task to revert its commit if it lands.
+
+**If a hook check is genuinely slow or broken, the correct fix is:**
+
+- `npm run syntax:check` fast-fails on parse errors in ~2 s
+- The diff-based hook only runs tests for changed modules
+- Fix the failing test or improve the test setup — do NOT skip the hook
 
 ## Testing
 

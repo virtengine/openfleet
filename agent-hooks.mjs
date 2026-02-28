@@ -144,7 +144,7 @@ export const HOOK_EVENTS = Object.freeze([
  * Canonical SDK names.
  * @type {readonly string[]}
  */
-const VALID_SDKS = Object.freeze(["codex", "copilot", "claude"]);
+const VALID_SDKS = Object.freeze(["codex", "copilot", "claude", "opencode"]);
 
 /**
  * Wildcard indicating a hook applies to all SDKs.
@@ -714,6 +714,12 @@ export function registerBuiltinHooks(options = {}) {
       maxRetries: 2,
     });
   }
+
+  // NOTE: Blind PostPR auto-merge has been intentionally removed.
+  // Use the "Bosun PR Watchdog" workflow template (template-bosun-pr-watchdog)
+  // to opt-in to automatic merging of bosun-attached PRs after CI passes.
+  // This prevents accidental merges in public repos and repos without the
+  // required GitHub branch-protection settings for auto-merge.
 
   console.log(`${TAG} built-in hooks registered`);
 }

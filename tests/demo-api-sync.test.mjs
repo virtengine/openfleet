@@ -124,6 +124,7 @@ const INTENTIONALLY_SKIPPED_ACTIONS = new Set([
   "rename",   // Demo doesn't need session renaming
   "execute",  // Workflow :id/execute action (not a session action)
   "runs",     // Workflow :id/runs action (not a session action)
+  "retry",    // Workflow :id/retry action (not a session action)
 ]);
 
 describe("demo.html ↔ ui-server.mjs API sync", () => {

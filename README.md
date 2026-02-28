@@ -46,12 +46,25 @@ Requires:
 
 ## What Bosun does
 
-- Routes work across Codex, Copilot, and Claude executors
+- Routes work across Codex, Copilot, Claude, and OpenCode executors
 - Automates retries, failover, and PR lifecycle management
 - Auto-labels attached PRs with `bosun-needs-fix` when CI fails (`Build + Tests`)
+- Merges passing PRs automatically through the **Bosun PR Watchdog** with a mandatory review gate (prevents destructive merges)
+- Persists workflow runs to disk and auto-resumes on restart
 - Monitors runs and recovers from stalled or broken states
 - Provides Telegram control and a Mini App dashboard
 - Integrates with GitHub, Jira, and Vibe-Kanban boards
+
+### Executor quick-start
+
+| Executor          | `primaryAgent` value | Key env vars                                                                          |
+| ----------------- | -------------------- | ------------------------------------------------------------------------------------- |
+| Codex (OpenAI)    | `codex-sdk`          | `OPENAI_API_KEY`                                                                      |
+| Copilot (VS Code) | `copilot-sdk`        | VS Code session                                                                       |
+| Claude            | `claude-sdk`         | `ANTHROPIC_API_KEY`                                                                   |
+| OpenCode          | `opencode-sdk`       | `OPENCODE_MODEL` (e.g. `anthropic/claude-opus-4-5`), `OPENCODE_PORT` (default `4096`) |
+
+Set `primaryAgent` in `.bosun/bosun.config.json` or choose an executor preset during `bosun --setup`.
 
 ---
 

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# ──────────────────────────────────────────────────────────────────────────────
+# bosun git wrapper — blocks --no-verify to enforce pre-push hook compliance.
+#
+# How it works:
+#   • Scans every argument for --no-verify before forwarding to the real git.
+#   • If detected, prints a hard stop with an actionable message and exits 1.
+#   • Finds the REAL git binary by stripping this script's directory from PATH,
+#     so there is no infinite loop.
+#
+# Activation (add to your shell profile):
+#   export PATH="$PWD/bin:$PATH"   # from bosun/ directory
+# ──────────────────────────────────────────────────────────────────────────────
+
+for arg in "$@"; do
+  if [ "$arg" = "--no-verify" ]; then
+    printf '\n\033[31m[bosun-guard] BLOCKED: git --no-verify is prohibited by project policy.\033[0m\n' >&2
+    printf '[bosun-guard] The pre-push hook runs only tests for changed files — it is fast.\n' >&2
+    printf '[bosun-guard] Fix the underlying issue rather than bypassing the hook.\n' >&2
+    printf '[bosun-guard] See AGENTS.md § Code Quality — Hard Rules.\n\n' >&2
+    exit 1
+  fi
+done
+
+# Resolve the real git by temporarily removing this script's directory from PATH.
+_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_REAL_GIT="$(PATH="${PATH//${_SELF_DIR}:/}" command -v git 2>/dev/null || true)"
+
+if [ -z "$_REAL_GIT" ]; then
+  # Fallback: common install locations
+  for _loc in /usr/bin/git /usr/local/bin/git /opt/homebrew/bin/git; do
+    [ -x "$_loc" ] && { _REAL_GIT="$_loc"; break; }
+  done
+fi
+
+if [ -z "$_REAL_GIT" ]; then
+  printf '[bosun-guard] ERROR: could not locate real git binary.\n' >&2
+  exit 1
+fi
+
+exec "$_REAL_GIT" "$@"
