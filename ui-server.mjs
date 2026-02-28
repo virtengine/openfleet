@@ -4299,6 +4299,34 @@ function checkSessionToken(req) {
   return false;
 }
 
+/**
+ * Check whether the request carries a valid desktop API key.
+ *
+ * The Electron main process sets BOSUN_DESKTOP_API_KEY in process.env before
+ * starting (or connecting to) the UI server. When that env var is present any
+ * request bearing the matching Bearer token is treated as fully authenticated —
+ * no session cookie or Telegram initData required.
+ *
+ * This allows the desktop app to connect to a separately-running daemon server
+ * without needing to share the TTL-based session token.
+ */
+function checkDesktopApiKey(req) {
+  const expected = (process.env.BOSUN_DESKTOP_API_KEY || "").trim();
+  if (!expected) return false;
+  const authHeader = req.headers.authorization || "";
+  if (!authHeader.startsWith("Bearer ")) return false;
+  const provided = authHeader.slice(7).trim();
+  if (!provided) return false;
+  try {
+    const a = Buffer.from(provided);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
 function getTelegramInitData(req, url = null) {
   return String(
     req.headers["x-telegram-initdata"] ||
