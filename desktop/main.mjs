@@ -613,7 +613,7 @@ async function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      preload: join(__dirname, "preload.mjs"),
+      preload: join(__dirname, "preload.cjs"),
     },
   });
 
@@ -708,7 +708,7 @@ async function createFollowWindow() {
       nodeIntegration: false,
       sandbox: true,
       backgroundThrottling: false,
-      preload: join(__dirname, "preload.mjs"),
+      preload: join(__dirname, "preload.cjs"),
     },
   });
 
