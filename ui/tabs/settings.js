@@ -1067,6 +1067,12 @@ function ServerConfigMode() {
                     setCustomSelectMode((prev) => ({ ...prev, [def.key]: false }));
                     handleChange(def.key, nextValue);
                   }}
+                  onInput=${(e) => {
+                    const nextValue = String(e.target.value || "");
+                    if (nextValue === "__custom__") return;
+                    setCustomSelectMode((prev) => ({ ...prev, [def.key]: false }));
+                    handleChange(def.key, nextValue);
+                  }}
                 >
                   ${presetOpts.map(
                     (o) => html`<option key=${o} value=${o}>${o}</option>`,
@@ -3075,3 +3081,14 @@ export function SettingsTab() {
     </div>
   `;
 }
+  useEffect(() => {
+    const key = "settings-voice-endpoints";
+    setPendingChange(key, dirty);
+    return () => clearPendingChange(key);
+  }, [dirty]);
+
+  useEffect(() => {
+    const key = "settings-voice-providers";
+    setPendingChange(key, dirty);
+    return () => clearPendingChange(key);
+  }, [dirty]);

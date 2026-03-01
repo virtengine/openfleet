@@ -17,6 +17,7 @@ let _sessionTracker = null;
 let _fleetCoordinator = null;
 let _agentSupervisor = null;
 let _sharedStateManager = null;
+let _agentPool = null;
 
 const VALID_EXECUTORS = new Set([
   "codex-sdk",
@@ -60,6 +61,13 @@ async function getSharedState() {
     _sharedStateManager = await import("./shared-state-manager.mjs");
   }
   return _sharedStateManager;
+}
+
+async function getAgentPool() {
+  if (!_agentPool) {
+    _agentPool = await import("./agent-pool.mjs");
+  }
+  return _agentPool;
 }
 
 async function getLatestVisionSummary(sessionId) {
@@ -562,33 +570,88 @@ const TOOL_HANDLERS = {
     const visionSummary = await getLatestVisionSummary(sessionId);
     const delegateMessage = appendVisionSummary(args.message, visionSummary);
 
-    // Switch agent if different from current
-    const currentAgent = getPrimaryAgentName();
-    if (executor !== currentAgent) {
-      setPrimaryAgent(executor);
+    // ── Fire-and-forget: launch via execPooledPrompt (isolated, no global state mutation) ──
+    const pool = await getAgentPool();
+    const delegationId = `voice-deleg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    // Record delegation start in session tracker
+    try {
+      const tracker = await getSessionTracker();
+      const session = tracker.getSessionById?.(sessionId) || tracker.getSession?.(sessionId);
+      if (session && tracker.recordEvent) {
+        tracker.recordEvent(sessionId, {
+          role: "system",
+          content: `[Voice Delegation] Agent ${executor} (${mode}) started: ${args.message}`,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    } catch {
+      // best effort — don't block on session recording
     }
 
-    try {
-      const result = await execPrimaryPrompt(delegateMessage, {
-        mode,
-        model,
-        sessionId,
-        sessionType,
-        timeoutMs: 5 * 60 * 1000, // 5 min timeout for voice delegations
-        onEvent: () => {
-          // Could broadcast progress via WebSocket here
-        },
+    // Launch pooled prompt — non-blocking (fire-and-forget with .catch)
+    pool.execPooledPrompt(delegateMessage, {
+      sdk: executor,
+      mode,
+      model,
+      timeoutMs: 5 * 60 * 1000,
+      onEvent: (event) => {
+        // Broadcast progress to WebSocket clients via session tracker event system
+        try {
+          if (_sessionTracker?.recordEvent) {
+            const content = typeof event === "string"
+              ? event
+              : event?.text || event?.content || event?.message || "";
+            if (content) {
+              _sessionTracker.recordEvent(sessionId, {
+                role: "assistant",
+                content: String(content).slice(0, 500),
+                timestamp: new Date().toISOString(),
+              });
+            }
+          }
+        } catch {
+          // best effort progress broadcast
+        }
+      },
+    })
+      .then(async (result) => {
+        const text = typeof result === "string"
+          ? result
+          : result?.finalResponse || result?.text || result?.message || JSON.stringify(result);
+        const truncated = text.length > 4000 ? text.slice(0, 4000) + "... (truncated)" : text;
+
+        // Record completion in session tracker — this automatically broadcasts
+        // to WebSocket clients via the session event listener system
+        try {
+          const tracker = await getSessionTracker();
+          if (tracker.recordEvent) {
+            tracker.recordEvent(sessionId, {
+              role: "assistant",
+              content: truncated,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        } catch {
+          // best effort
+        }
+      })
+      .catch((err) => {
+        console.error(`[voice-tools] delegate_to_agent async error (${delegationId}):`, err?.message || err);
+        // Record failure in session tracker
+        getSessionTracker().then((tracker) => {
+          if (tracker.recordEvent) {
+            tracker.recordEvent(sessionId, {
+              role: "system",
+              content: `[Voice Delegation Error] ${err?.message || "Unknown error"}`,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }).catch(() => {});
       });
-      const text = typeof result === "string"
-        ? result
-        : result?.finalResponse || result?.text || result?.message || JSON.stringify(result);
-      return text.length > 2000 ? text.slice(0, 2000) + "... (truncated)" : text;
-    } finally {
-      // Restore original agent if we switched
-      if (executor !== currentAgent) {
-        try { setPrimaryAgent(currentAgent); } catch { /* best effort */ }
-      }
-    }
+
+    // Return immediately — don't block the voice session
+    return `Delegation started (ID: ${delegationId}). Agent "${executor}" is working on your request in ${mode} mode. Results will appear in the chat session. You can continue talking.`;
   },
 
   async get_agent_status() {

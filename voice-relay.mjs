@@ -301,10 +301,43 @@ function sanitizeVoiceCallContext(context = {}) {
   };
 }
 
-function buildSessionScopedInstructions(baseInstructions, callContext = {}) {
+async function buildSessionScopedInstructions(baseInstructions, callContext = {}) {
   const context = sanitizeVoiceCallContext(callContext);
   if (!context.sessionId && !context.executor && !context.mode && !context.model) {
     return baseInstructions;
+  }
+
+  // ── Chat history injection ────────────────────────────────────────────
+  let chatHistorySection = "";
+  if (context.sessionId) {
+    try {
+      const tracker = await import("./session-tracker.mjs");
+      const session = tracker.getSessionById
+        ? tracker.getSessionById(context.sessionId)
+        : null;
+      if (session && Array.isArray(session.messages) && session.messages.length > 0) {
+        const recent = session.messages.slice(-20);
+        const lines = recent.map((msg) => {
+          const role = String(msg.role || msg.type || "unknown").toUpperCase();
+          const content = String(msg.content || "").trim();
+          return `[${role}]: ${content}`;
+        });
+        const historyText = lines.join("\n");
+        // Cap at ~3000 chars to avoid bloating the Realtime context
+        const capped = historyText.length > 3000
+          ? historyText.slice(0, 3000) + "\n... (earlier messages truncated)"
+          : historyText;
+        chatHistorySection = [
+          "",
+          "## Recent Chat History",
+          "The following are the most recent messages from the active chat session.",
+          "Use this context to understand what the user has been working on.",
+          capped,
+        ].join("\n");
+      }
+    } catch {
+      // best effort — continue without chat history
+    }
   }
 
   const suffix = [
@@ -320,27 +353,24 @@ function buildSessionScopedInstructions(baseInstructions, callContext = {}) {
     context.model
       ? `Preferred model override: ${context.model}.`
       : "Preferred model override: none.",
+    chatHistorySection,
     "",
-    "## Required Behavior",
-    "- For every user turn in this call, invoke delegate_to_agent exactly once before any final spoken answer.",
-    "- For coding, repo, task, debugging, automation, or workspace requests, call delegate_to_agent before finalizing your response.",
+    "## Guidance for Session-Bound Calls",
+    "- You have access to multiple tools. Use them directly when the user asks about tasks, sessions, system status, etc.",
+    "- For coding, debugging, file changes, or complex workspace operations, use delegate_to_agent.",
+    "  Delegation is non-blocking — you will get a confirmation immediately and results will appear in the chat session.",
     "- Preserve user intent when delegating. Do not paraphrase away technical detail.",
-    "- Keep responses concise after receiving delegate_to_agent output.",
+    "- Keep spoken responses concise. The user can see detailed results in the chat sidebar.",
+    "- You can read chat history context to avoid asking the user to repeat themselves.",
   ].join("\n");
 
   return `${baseInstructions}${suffix}`;
 }
 
 function resolveToolChoice(toolDefinitions, callContext = {}) {
-  const context = sanitizeVoiceCallContext(callContext);
-  const hasDelegateTool = Array.isArray(toolDefinitions)
-    && toolDefinitions.some((tool) => tool?.name === "delegate_to_agent");
-  if (context.sessionId && hasDelegateTool) {
-    return {
-      type: "function",
-      name: "delegate_to_agent",
-    };
-  }
+  // Always let the model choose which tool to use — even in session-bound calls.
+  // The old behavior forced delegate_to_agent for every turn, which blocked the
+  // voice agent from answering quick questions directly or using read-only tools.
   return "auto";
 }
 
@@ -919,7 +949,7 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
   }
 
   const context = sanitizeVoiceCallContext(callContext);
-  const instructions = buildSessionScopedInstructions(cfg.instructions, context);
+  const instructions = await buildSessionScopedInstructions(cfg.instructions, context);
   const model = normalizeOpenAIRealtimeModel(candidate?.model || cfg.model || OPENAI_REALTIME_MODEL);
   const voiceId = String(candidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
 
@@ -987,7 +1017,7 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
   }
 
   const context = sanitizeVoiceCallContext(callContext);
-  const instructions = buildSessionScopedInstructions(cfg.instructions, context);
+  const instructions = await buildSessionScopedInstructions(cfg.instructions, context);
   const deployment = normalizeAzureRealtimeDeployment(
     candidate?.azureDeployment || candidate?.model || cfg.azureDeployment || OPENAI_REALTIME_MODEL,
   );
@@ -1173,6 +1203,35 @@ export async function executeVoiceTool(toolName, toolArgs, context = {}) {
 }
 
 /**
+ * Tools allowed during session-bound voice calls (beyond delegate_to_agent).
+ * These are read-only or lightweight operations that shouldn't require full agent delegation.
+ */
+const VOICE_SESSION_ALLOWED_TOOLS = new Set([
+  "delegate_to_agent",
+  "list_tasks",
+  "get_task",
+  "get_agent_status",
+  "list_sessions",
+  "get_session_history",
+  "get_system_status",
+  "get_fleet_status",
+  "get_pr_status",
+  "get_config",
+  "search_tasks",
+  "get_task_stats",
+  "get_recent_logs",
+  "dispatch_action",
+]);
+
+/**
+ * Get the set of tools allowed for session-bound voice calls.
+ * Used by ui-server to validate tool calls.
+ */
+export function getSessionAllowedTools() {
+  return VOICE_SESSION_ALLOWED_TOOLS;
+}
+
+/**
  * Get the full tool definitions array for voice sessions.
  */
 export async function getVoiceToolDefinitions(options = {}) {
@@ -1181,7 +1240,8 @@ export async function getVoiceToolDefinitions(options = {}) {
     const allTools = getToolDefinitions();
     const delegateOnly = options?.delegateOnly === true;
     if (!delegateOnly) return allTools;
-    return allTools.filter((tool) => tool?.name === "delegate_to_agent");
+    // Session-bound calls get a curated subset instead of just delegate_to_agent
+    return allTools.filter((tool) => VOICE_SESSION_ALLOWED_TOOLS.has(tool?.name));
   } catch (err) {
     console.error("[voice-relay] failed to load voice tool definitions:", err.message);
     return [];

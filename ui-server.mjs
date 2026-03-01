@@ -9750,11 +9750,16 @@ async function handleApi(req, res, url) {
         mode: String(mode || "").trim() || undefined,
         model: String(model || "").trim() || undefined,
       };
-      if (context.sessionId && normalizedToolName !== "delegate_to_agent") {
-        jsonResponse(res, 400, {
-          error: "Session-bound calls only allow delegate_to_agent",
-        });
-        return;
+      if (context.sessionId) {
+        // Session-bound calls are validated against the allowed tool set
+        const { getSessionAllowedTools } = await import("./voice-relay.mjs");
+        const allowed = getSessionAllowedTools();
+        if (!allowed.has(normalizedToolName)) {
+          jsonResponse(res, 400, {
+            error: `Tool "${normalizedToolName}" is not allowed for session-bound calls`,
+          });
+          return;
+        }
       }
       const result = await executeVoiceTool(normalizedToolName, args || {}, context);
 
@@ -10445,12 +10450,47 @@ export async function startTelegramUiServer(options = {}) {
               return;
             }
             const normalizedSessionId = String(voiceSessionId || "").trim() || undefined;
-            if (normalizedSessionId && normalizedToolName !== "delegate_to_agent") {
-              sendWsMessage(socket, {
-                type: "voice-tool-result",
-                callId,
-                error: "Session-bound calls only allow delegate_to_agent",
-                ts: Date.now(),
+            if (normalizedSessionId) {
+              // Validate tool is in the allowed set for session-bound calls
+              import("./voice-relay.mjs").then((relay) => {
+                const allowed = relay.getSessionAllowedTools();
+                if (!allowed.has(normalizedToolName)) {
+                  sendWsMessage(socket, {
+                    type: "voice-tool-result",
+                    callId,
+                    error: `Tool "${normalizedToolName}" is not allowed for session-bound calls`,
+                    ts: Date.now(),
+                  });
+                  return;
+                }
+                // Tool is allowed — execute it
+                relay.executeVoiceTool(normalizedToolName, args || {}, {
+                  sessionId: normalizedSessionId,
+                  executor: String(executor || "").trim() || undefined,
+                  mode: String(mode || "").trim() || undefined,
+                  model: String(model || "").trim() || undefined,
+                }).then((result) => {
+                  sendWsMessage(socket, {
+                    type: "voice-tool-result",
+                    callId,
+                    ...result,
+                    ts: Date.now(),
+                  });
+                }).catch((err) => {
+                  sendWsMessage(socket, {
+                    type: "voice-tool-result",
+                    callId,
+                    error: err.message,
+                    ts: Date.now(),
+                  });
+                });
+              }).catch((err) => {
+                sendWsMessage(socket, {
+                  type: "voice-tool-result",
+                  callId,
+                  error: "Session-bound tool validation failed",
+                  ts: Date.now(),
+                });
               });
               return;
             }

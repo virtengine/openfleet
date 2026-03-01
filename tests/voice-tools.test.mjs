@@ -28,6 +28,7 @@ vi.mock("../session-tracker.mjs", () => ({
   listSessions: vi.fn(() => []),
   getSession: vi.fn(() => null),
   getSessionById: vi.fn(() => null),
+  recordEvent: vi.fn(),
 }));
 
 vi.mock("../fleet-coordinator.mjs", () => ({
@@ -36,6 +37,14 @@ vi.mock("../fleet-coordinator.mjs", () => ({
 
 vi.mock("../agent-supervisor.mjs", () => ({}));
 vi.mock("../shared-state-manager.mjs", () => ({}));
+
+vi.mock("../agent-pool.mjs", () => ({
+  execPooledPrompt: vi.fn(async () => ({
+    finalResponse: "pooled agent response",
+    items: [],
+    usage: null,
+  })),
+}));
 
 // ── Lazy import (after mocks are set up) ─────────────────────────────────────
 
@@ -46,6 +55,7 @@ const {
 } = await import("../voice-tools.mjs");
 
 const { execPrimaryPrompt, setPrimaryAgent } = await import("../primary-agent.mjs");
+const { execPooledPrompt } = await import("../agent-pool.mjs");
 const sessionTracker = await import("../session-tracker.mjs");
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -143,13 +153,17 @@ describe("voice-tools", () => {
       expect(parsed).toHaveProperty("status");
     });
 
-    it("delegate_to_agent calls execPrimaryPrompt", async () => {
+    it("delegate_to_agent returns immediately with delegation confirmation", async () => {
       const result = await executeToolCall("delegate_to_agent", {
         message: "test instruction",
       });
       expect(result.error).toBeUndefined();
-      expect(vi.mocked(execPrimaryPrompt)).toHaveBeenCalled();
-      const callArgs = vi.mocked(execPrimaryPrompt).mock.calls[0];
+      expect(result.result).toMatch(/delegation started/i);
+      // execPooledPrompt is called asynchronously (fire-and-forget)
+      // Give it a tick to fire
+      await new Promise((r) => setTimeout(r, 10));
+      expect(vi.mocked(execPooledPrompt)).toHaveBeenCalled();
+      const callArgs = vi.mocked(execPooledPrompt).mock.calls[0];
       expect(callArgs[0]).toBe("test instruction");
     });
 
@@ -165,12 +179,14 @@ describe("voice-tools", () => {
         },
       );
       expect(result.error).toBeUndefined();
-      expect(vi.mocked(setPrimaryAgent)).toHaveBeenCalledWith("claude-sdk");
-      const callArgs = vi.mocked(execPrimaryPrompt).mock.calls.at(-1);
+      expect(result.result).toMatch(/delegation started/i);
+      expect(result.result).toContain("claude-sdk");
+      // Non-blocking: no setPrimaryAgent call (we use execPooledPrompt now)
+      await new Promise((r) => setTimeout(r, 10));
+      const callArgs = vi.mocked(execPooledPrompt).mock.calls.at(-1);
       expect(callArgs?.[0]).toBe("ship it");
       expect(callArgs?.[1]).toMatchObject({
-        sessionId: "primary-abc123",
-        sessionType: "primary",
+        sdk: "claude-sdk",
         mode: "plan",
         model: "claude-opus-4.6",
       });
@@ -188,11 +204,12 @@ describe("voice-tools", () => {
         },
       );
       expect(result.error).toBeUndefined();
-      expect(vi.mocked(setPrimaryAgent)).toHaveBeenCalledWith("gemini-sdk");
-      const callArgs = vi.mocked(execPrimaryPrompt).mock.calls.at(-1);
+      expect(result.result).toMatch(/delegation started/i);
+      expect(result.result).toContain("gemini-sdk");
+      await new Promise((r) => setTimeout(r, 10));
+      const callArgs = vi.mocked(execPooledPrompt).mock.calls.at(-1);
       expect(callArgs?.[1]).toMatchObject({
-        sessionId: "primary-gemini-1",
-        sessionType: "primary",
+        sdk: "gemini-sdk",
         mode: "ask",
         model: "gemini-2.5-pro",
       });
@@ -214,7 +231,9 @@ describe("voice-tools", () => {
         { sessionId: "primary-vision-1" },
       );
       expect(result.error).toBeUndefined();
-      const callArgs = vi.mocked(execPrimaryPrompt).mock.calls.at(-1);
+      expect(result.result).toMatch(/delegation started/i);
+      await new Promise((r) => setTimeout(r, 10));
+      const callArgs = vi.mocked(execPooledPrompt).mock.calls.at(-1);
       expect(callArgs?.[0]).toContain("Please fix the failing test");
       expect(callArgs?.[0]).toContain("Live visual context from this call");
       expect(callArgs?.[0]).toContain("[Vision screen]");

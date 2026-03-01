@@ -32,6 +32,13 @@ vi.mock("../voice-auth-manager.mjs", () => ({
   getGeminiLoginStatus: vi.fn(() => ({ status: "idle", hasToken: false })),
 }));
 
+vi.mock("../session-tracker.mjs", () => ({
+  getSessionById: vi.fn(() => null),
+  getSession: vi.fn(() => null),
+  recordEvent: vi.fn(),
+  addSessionEventListener: vi.fn(() => () => {}),
+}));
+
 // ── Global fetch mock ────────────────────────────────────────────────────────
 
 const _origFetch = globalThis.fetch;
@@ -60,6 +67,7 @@ const {
   isVoiceAvailable,
   createEphemeralToken,
   getVoiceToolDefinitions,
+  getSessionAllowedTools,
   executeVoiceTool,
   getRealtimeConnectionInfo,
   analyzeVisionFrame,
@@ -426,7 +434,8 @@ describe("voice-relay", () => {
       expect(payload.instructions).toContain("Preferred executor for delegated work: claude-sdk.");
       expect(payload.instructions).toContain("Preferred delegation mode: plan.");
       expect(payload.instructions).toContain("Preferred model override: claude-opus-4.6.");
-      expect(payload.tool_choice).toEqual({ type: "function", name: "delegate_to_agent" });
+      // tool_choice is now always "auto" — the model picks the right tool
+      expect(payload.tool_choice).toBe("auto");
     });
 
     it("throws when no API key configured for openai", async () => {
@@ -599,6 +608,26 @@ describe("voice-relay", () => {
     });
   });
 
+  // ── getSessionAllowedTools ───────────────────────────────────
+
+  describe("getSessionAllowedTools", () => {
+    it("returns a Set of allowed tool names", () => {
+      const allowed = getSessionAllowedTools();
+      expect(allowed).toBeInstanceOf(Set);
+      expect(allowed.has("delegate_to_agent")).toBe(true);
+      expect(allowed.has("list_tasks")).toBe(true);
+      expect(allowed.has("get_agent_status")).toBe(true);
+      expect(allowed.has("get_session_history")).toBe(true);
+    });
+
+    it("does not include write-heavy tools", () => {
+      const allowed = getSessionAllowedTools();
+      expect(allowed.has("create_task")).toBe(false);
+      expect(allowed.has("update_config")).toBe(false);
+      expect(allowed.has("delete_task")).toBe(false);
+    });
+  });
+
   // ── getVoiceToolDefinitions ─────────────────────────────────
 
   describe("getVoiceToolDefinitions", () => {
@@ -609,11 +638,13 @@ describe("voice-relay", () => {
       expect(defs[0]).toHaveProperty("name");
     });
 
-    it("can filter to delegate tool only", async () => {
+    it("filters to session-allowed tools when delegateOnly is true", async () => {
       const defs = await getVoiceToolDefinitions({ delegateOnly: true });
       expect(Array.isArray(defs)).toBe(true);
-      expect(defs.length).toBe(1);
-      expect(defs[0]?.name).toBe("delegate_to_agent");
+      // The mock only has list_tasks and delegate_to_agent, both are in the allowed set
+      expect(defs.length).toBeGreaterThanOrEqual(1);
+      const names = defs.map((d) => d.name);
+      expect(names).toContain("delegate_to_agent");
     });
   });
 
