@@ -769,6 +769,7 @@ function handleServerEvent(event) {
       break;
 
     case "response.audio_transcript.done":
+      if (voiceResponse.value) _markAssistantToolResponseObserved();
       emit("response-complete", { text: voiceResponse.value });
       _recordVoiceTranscriptIfNew(
         "assistant",
@@ -779,6 +780,7 @@ function handleServerEvent(event) {
       break;
 
     case "response.text.done":
+      if (voiceResponse.value) _markAssistantToolResponseObserved();
       emit("response-complete", { text: voiceResponse.value });
       _recordVoiceTranscriptIfNew(
         "assistant",
@@ -789,6 +791,7 @@ function handleServerEvent(event) {
       break;
 
     case "response.output_text.done":
+      if (voiceResponse.value) _markAssistantToolResponseObserved();
       emit("response-complete", { text: voiceResponse.value });
       _recordVoiceTranscriptIfNew(
         "assistant",

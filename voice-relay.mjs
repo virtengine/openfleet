@@ -400,6 +400,7 @@ async function buildSessionScopedInstructions(baseInstructions, callContext = {}
     "  Delegation is non-blocking — you will get a confirmation immediately and results will appear in the chat session.",
     "- Do not wait on slow agents for normal Q&A. Prefer direct tools and ask_agent_context (instant mode).",
     "- If the user asks you to perform an action, you MUST execute at least one relevant tool call before claiming that action was done or started.",
+    "- After a tool call finishes, always send a short completion confirmation (for example: 'Done.'), unless you are already giving a fuller immediate answer.",
     "- Never say you will do something later without either calling a tool now or clearly stating why execution is blocked.",
     "- Preserve user intent when delegating. Do not paraphrase away technical detail.",
     "- Keep spoken responses concise. The user can see detailed results in the chat sidebar.",

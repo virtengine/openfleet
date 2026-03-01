@@ -98,6 +98,30 @@ function injectOverlayStyles() {
   max-width: 44vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .vm-topbar-right { display: flex; align-items: center; gap: 8px; }
+.vm-topbar-icon-btn {
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(60,64,67,0.82);
+  color: #e8eaed;
+  border-radius: 999px;
+  height: 34px;
+  min-width: 34px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.vm-topbar-icon-btn:hover {
+  background: rgba(95,99,104,0.92);
+  border-color: rgba(255,255,255,0.28);
+}
+.vm-topbar-back-text {
+  font-size: 12px;
+  color: rgba(255,255,255,0.92);
+}
 
 /* ── Main stage area ─────────────────────────────────────────────── */
 .voice-overlay-main {
@@ -1253,6 +1277,11 @@ export function VoiceOverlay({
     toggleMicMute();
   }, []);
 
+  const handleBackToApp = useCallback(() => {
+    haptic("light");
+    setMinimized(true);
+  }, []);
+
   const handleMinimize = useCallback(() => {
     haptic("light");
     // In the main/full window, minimize should externalize to a dedicated follow
@@ -1526,6 +1555,14 @@ export function VoiceOverlay({
         <!-- Top bar -->
         <div class="vm-topbar">
           <div class="vm-topbar-left">
+            <button
+              class="vm-topbar-icon-btn"
+              onClick=${handleBackToApp}
+              title="Back to Bosun UI (keep call running)"
+            >
+              <span>${resolveIcon("chevronLeft") || "←"}</span>
+              <span class="vm-topbar-back-text">Back</span>
+            </button>
             <span class="vm-topbar-title">
               ${normalizedCallType === "video" ? "Video Call" : "AI Agent Call"}
             </span>
@@ -1537,7 +1574,11 @@ export function VoiceOverlay({
             `}
           </div>
           <div class="vm-topbar-right">
-            <button class="vm-minimize-btn" onClick=${handleMinimize} title="Minimise to floating widget">
+            <button
+              class="vm-topbar-icon-btn vm-minimize-btn"
+              onClick=${handleMinimize}
+              title="Minimise to floating widget"
+            >
               ${resolveIcon("chevronDown") || "⌵"}
             </button>
           </div>
