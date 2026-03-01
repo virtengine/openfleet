@@ -748,16 +748,9 @@ Always use deterministic TF ops.
       resetAutoGenCooldown();
     });
 
-    it("returns shouldGenerate=false when planner disabled", () => {
-      const result = shouldAutoGenerateTasks({ plannerMode: "disabled" });
-      expect(result.shouldGenerate).toBe(false);
-      expect(result.mode).toBe("skip");
-    });
-
     it("returns shouldGenerate=true when backlog is empty", () => {
       const result = shouldAutoGenerateTasks({
         currentBacklog: 0,
-        plannerMode: "kanban",
       });
       expect(result.shouldGenerate).toBe(true);
       expect(result.deficit).toBeGreaterThan(0);
@@ -766,7 +759,6 @@ Always use deterministic TF ops.
     it("returns needsApproval=true by default", () => {
       const result = shouldAutoGenerateTasks({
         currentBacklog: 0,
-        plannerMode: "kanban",
         requireApproval: true,
       });
       expect(result.needsApproval).toBe(true);
@@ -776,7 +768,6 @@ Always use deterministic TF ops.
     it("returns needsApproval=false when requireApproval=false", () => {
       const result = shouldAutoGenerateTasks({
         currentBacklog: 0,
-        plannerMode: "kanban",
         requireApproval: false,
       });
       expect(result.needsApproval).toBe(false);
@@ -787,7 +778,6 @@ Always use deterministic TF ops.
       markAutoGenTriggered();
       const result = shouldAutoGenerateTasks({
         currentBacklog: 0,
-        plannerMode: "kanban",
         cooldownMs: 60000,
       });
       expect(result.shouldGenerate).toBe(false);
@@ -797,7 +787,6 @@ Always use deterministic TF ops.
     it("returns shouldGenerate=false when backlog is sufficient", () => {
       const result = shouldAutoGenerateTasks({
         currentBacklog: 100,
-        plannerMode: "kanban",
       });
       expect(result.shouldGenerate).toBe(false);
       expect(result.reason).toContain("sufficient");

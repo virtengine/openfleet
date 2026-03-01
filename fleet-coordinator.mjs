@@ -653,34 +653,22 @@ let lastAutoGenTimestamp = null;
  *
  * Conditions for generation:
  *   1. Backlog is below threshold (based on fleet capacity)
- *   2. Planner is not disabled
- *   3. Cooldown has elapsed since last generation
- *   4. This instance is the coordinator (in fleet mode)
+ *   2. Cooldown has elapsed since last generation
+ *   3. This instance is the coordinator (in fleet mode)
  *
  * @param {object} opts
  * @param {number} opts.currentBacklog    - Current todo task count
- * @param {string} opts.plannerMode       - "codex-sdk" | "kanban" | "disabled"
+ * @param {string} [opts.plannerMode]     - Deprecated, ignored. Kept for backward compat.
  * @param {number} [opts.cooldownMs=3600000] - Min time between generations (default: 1 hour)
  * @param {boolean} [opts.requireApproval=true] - Whether to require user confirmation
  * @returns {AutoGenDecision}
  */
 export function shouldAutoGenerateTasks({
   currentBacklog = 0,
-  plannerMode = "kanban",
+  plannerMode: _plannerMode,
   cooldownMs = 60 * 60 * 1000,
   requireApproval = true,
 } = {}) {
-  // Disabled planner → skip
-  if (plannerMode === "disabled") {
-    return {
-      shouldGenerate: false,
-      reason: "planner disabled",
-      deficit: 0,
-      needsApproval: false,
-      mode: "skip",
-    };
-  }
-
   // Not coordinator in fleet mode → skip (only coordinator generates)
   if (fleetState.mode === "fleet" && !fleetState.isCoordinator) {
     return {
