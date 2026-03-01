@@ -131,6 +131,14 @@ function getSlashCommands() {
   return [...BOSUN_COMMANDS, ...sdkEntries];
 }
 
+function formatAttachmentSize(size) {
+  const raw = Number(size);
+  if (!Number.isFinite(raw) || raw <= 0) return "";
+  if (raw >= 1024 * 1024) return `${(raw / (1024 * 1024)).toFixed(1)} MB`;
+  if (raw >= 1024) return `${Math.round(raw / 1024)} KB`;
+  return `${raw} B`;
+}
+
 /* ─── Welcome screen (no session selected) ─── */
 function ChatWelcome({ onNewSession, onQuickCommand }) {
   const quickActions = [
@@ -252,6 +260,9 @@ export function ChatTab() {
 
   const [showArchived, setShowArchived] = useState(false);
   const [inputValue, setInputValue] = useState("");
+  const [pendingAttachments, setPendingAttachments] = useState([]);
+  const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [slashFilter, setSlashFilter] = useState("");
   const [slashActiveIdx, setSlashActiveIdx] = useState(0);
@@ -282,6 +293,7 @@ export function ChatTab() {
     }
   });
   const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
   const sendMenuRef = useRef(null);
   const messageQueueRef = useRef([]);
   const [showSendMenu, setShowSendMenu] = useState(false);
@@ -526,7 +538,10 @@ export function ChatTab() {
   /* ── Send message or command ── */
   async function handleSend(explicitContent) {
     const content = (typeof explicitContent === "string" ? explicitContent : inputValue).trim();
-    if (!content || sending) return;
+    const attachments = Array.isArray(pendingAttachments)
+      ? pendingAttachments.filter(Boolean)
+      : [];
+    if ((!content && attachments.length === 0) || sending || uploadingAttachments) return;
 
     setShowSlashMenu(false);
     setSending(true);
@@ -583,14 +598,20 @@ export function ChatTab() {
         }
       } else if (sessionId) {
         // Send as message to current session with optimistic rendering
-        const tempId = addPendingMessage(sessionId, outboundContent);
+        const tempId = addPendingMessage(sessionId, outboundContent, attachments);
         markUserMessageSent(activeAgent.value, sessionId);
 
         // Use sendOrQueue for offline resilience
           const sendFn = async (sid, msg) => {
             await apiFetch(`/api/sessions/${encodeURIComponent(sid)}/message`, {
               method: "POST",
-              body: JSON.stringify({ content: msg, mode: outboundMode, yolo: yoloMode.peek(), model: selectedModel.value || undefined }),
+              body: JSON.stringify({
+                content: msg,
+                mode: outboundMode,
+                yolo: yoloMode.peek(),
+                model: selectedModel.value || undefined,
+                attachments,
+              }),
             });
           };
 
@@ -607,7 +628,7 @@ export function ChatTab() {
         // No session — create one with current agent/mode, then send first message
         const res = await createSession({
           type: "primary",
-          prompt: outboundContent,
+          ...(outboundContent ? { prompt: outboundContent } : {}),
           agent: activeAgent.value,
           mode: outboundMode,
           yolo: yoloMode.peek(),
@@ -615,13 +636,19 @@ export function ChatTab() {
         });
         const newId = res?.session?.id;
         if (newId) {
-          const tempId = addPendingMessage(newId, outboundContent);
+          const tempId = addPendingMessage(newId, outboundContent, attachments);
           markUserMessageSent(activeAgent.value, newId);
 
           try {
             await apiFetch(`/api/sessions/${encodeURIComponent(newId)}/message`, {
               method: "POST",
-              body: JSON.stringify({ content: outboundContent, mode: outboundMode, yolo: yoloMode.peek(), model: selectedModel.value || undefined }),
+              body: JSON.stringify({
+                content: outboundContent,
+                mode: outboundMode,
+                yolo: yoloMode.peek(),
+                model: selectedModel.value || undefined,
+                attachments,
+              }),
             });
             confirmMessage(tempId);
           } catch (err) {
@@ -635,6 +662,8 @@ export function ChatTab() {
       showToast("Failed to send: " + (err.message || "Unknown error"), "error");
     } finally {
       if (typeof explicitContent !== "string") setInputValue("");
+      setPendingAttachments([]);
+      setDragActive(false);
       setSending(false);
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
@@ -874,6 +903,91 @@ export function ChatTab() {
     .filter(Boolean)
     .join(" · ");
 
+  useEffect(() => {
+    setPendingAttachments([]);
+    setUploadingAttachments(false);
+    setDragActive(false);
+  }, [sessionId]);
+
+  const uploadAttachments = useCallback(async (files) => {
+    if (uploadingAttachments) return;
+    const list = Array.from(files || []).filter(Boolean);
+    if (!list.length) return;
+    setUploadingAttachments(true);
+    try {
+      let targetSessionId = String(sessionId || "").trim();
+      if (!targetSessionId) {
+        const created = await createSession({
+          type: "primary",
+          agent: activeAgent.value || undefined,
+          mode: agentMode.value || undefined,
+          model: selectedModel.value || undefined,
+        });
+        targetSessionId = String(created?.session?.id || "").trim();
+      }
+      if (!targetSessionId) {
+        showToast("Could not create a session for attachments", "error");
+        return;
+      }
+      const form = new FormData();
+      for (const file of list) {
+        form.append("file", file, file.name || "attachment");
+      }
+      const targetSafeSessionId = encodeURIComponent(targetSessionId);
+      const res = await apiFetch(`/api/sessions/${targetSafeSessionId}/attachments`, {
+        method: "POST",
+        body: form,
+      });
+      if (Array.isArray(res?.attachments) && res.attachments.length > 0) {
+        setPendingAttachments((prev) => [...prev, ...res.attachments]);
+      } else {
+        showToast("Attachment upload failed", "error");
+      }
+    } catch {
+      showToast("Attachment upload failed", "error");
+    } finally {
+      setUploadingAttachments(false);
+    }
+  }, [sessionId, uploadingAttachments]);
+
+  const removeAttachment = useCallback((index) => {
+    setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const handleAttachmentInput = useCallback((e) => {
+    const files = e.target?.files;
+    if (files && files.length) {
+      uploadAttachments(files);
+    }
+    if (e.target) e.target.value = "";
+  }, [uploadAttachments]);
+
+  const handleInputPaste = useCallback((e) => {
+    const files = e.clipboardData?.files;
+    if (files && files.length) {
+      e.preventDefault();
+      uploadAttachments(files);
+    }
+  }, [uploadAttachments]);
+
+  const handleInputDragOver = useCallback((e) => {
+    e.preventDefault();
+    if (!dragActive) setDragActive(true);
+  }, [dragActive]);
+
+  const handleInputDragLeave = useCallback(() => {
+    if (dragActive) setDragActive(false);
+  }, [dragActive]);
+
+  const handleInputDrop = useCallback((e) => {
+    e.preventDefault();
+    setDragActive(false);
+    const files = e.dataTransfer?.files;
+    if (files && files.length) {
+      uploadAttachments(files);
+    }
+  }, [uploadAttachments]);
+
   /* ── Render ── */
 
   // If we hit a critical error during signal reads, show recovery UI
@@ -997,10 +1111,43 @@ export function ChatTab() {
             <${ChatSafeBoundary} label="Agent Toolbar">
               <${ChatInputToolbar} />
             <//>
+            ${pendingAttachments.length > 0 && html`
+              <div class="chat-attachments-pending">
+                ${pendingAttachments.map((att, index) => html`
+                  <div class="chat-attachment-chip" key=${att.id || `${att.name}-${index}`}>
+                    <span class="chat-attachment-chip-name">${att.name || "attachment"}</span>
+                    ${att.size ? html`<span class="chat-attachment-chip-size">${formatAttachmentSize(att.size)}</span>` : ""}
+                    <button
+                      class="btn btn-ghost btn-xs chat-attachment-remove"
+                      onClick=${() => removeAttachment(index)}
+                      title="Remove attachment"
+                    >✕</button>
+                  </div>
+                `)}
+                ${uploadingAttachments && html`
+                  <div class="chat-attachment-uploading">Uploading...</div>
+                `}
+              </div>
+            `}
             <div class="chat-input-wrapper">
+              <input
+                ref=${fileInputRef}
+                type="file"
+                multiple
+                style="display:none"
+                onChange=${handleAttachmentInput}
+              />
+              <button
+                class="btn btn-ghost chat-attach-btn"
+                disabled=${uploadingAttachments}
+                onClick=${() => fileInputRef.current?.click?.()}
+                title="Attach file"
+              >
+                ${resolveIcon(":link:")}
+              </button>
               <textarea
                 ref=${textareaRef}
-                class="chat-textarea"
+                class=${`chat-textarea${dragActive ? " chat-input-drag" : ""}`}
                 placeholder=${sessionId
                   ? 'Send a message… (type "/" for commands)'
                   : 'Start a new chat or type "/" for commands'}
@@ -1008,6 +1155,10 @@ export function ChatTab() {
                 value=${inputValue}
                 onInput=${handleInputChange}
                 onKeyDown=${handleKeyDown}
+                onPaste=${handleInputPaste}
+                onDragOver=${handleInputDragOver}
+                onDragLeave=${handleInputDragLeave}
+                onDrop=${handleInputDrop}
               />
               <${VoiceMicButton}
                 disabled=${sending}
@@ -1024,13 +1175,13 @@ export function ChatTab() {
               <div class="chat-send-group" ref=${sendMenuRef}>
                 <button
                   class="chat-send-main"
-                  disabled=${!inputValue.trim()}
+                  disabled=${(!inputValue.trim() && pendingAttachments.length === 0) || uploadingAttachments}
                   onClick=${activeAgentInfo.value?.busy ? handleSteerWithMessage : handleSend}
                   title=${activeAgentInfo.value?.busy ? "Steer with Message (Enter)" : "Send (Enter)"}
                 >➤</button>
                 <button
                   class="chat-send-chevron"
-                  disabled=${!inputValue.trim()}
+                  disabled=${(!inputValue.trim() && pendingAttachments.length === 0) || uploadingAttachments}
                   onClick=${(e) => { e.stopPropagation(); setShowSendMenu(v => !v); }}
                   aria-label="Send options"
                   title="Send options"

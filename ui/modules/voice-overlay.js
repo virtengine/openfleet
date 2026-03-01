@@ -13,6 +13,7 @@ import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import htm from "htm";
 import { haptic } from "./telegram.js";
 import { apiFetch, onWsMessage } from "./api.js";
+import { showToast } from "./state.js";
 import {
   voiceState, voiceTranscript, voiceResponse, voiceError,
   voiceToolCalls, voiceDuration, isVoiceMicMuted,
@@ -502,9 +503,51 @@ function stringifyMeetingMessageContent(msg) {
   }
 }
 
-function shouldSuppressCompactMeetingMessage(role, text) {
+function normalizeMeetingMessageAttachments(msg) {
+  const raw = Array.isArray(msg?.attachments) ? msg.attachments : [];
+  return raw
+    .filter(Boolean)
+    .map((att, index) => {
+      const name = String(
+        att?.name || att?.filename || att?.title || `attachment-${index + 1}`,
+      )
+        .trim() || `attachment-${index + 1}`;
+      const url = String(att?.url || "").trim();
+      const contentType = String(att?.contentType || "").trim();
+      const kind = String(att?.kind || "").trim().toLowerCase();
+      const sizeRaw = Number(att?.size);
+      const size = Number.isFinite(sizeRaw) ? sizeRaw : null;
+      return {
+        id: String(att?.id || `${name}-${index}`),
+        name,
+        url,
+        contentType,
+        kind,
+        size,
+      };
+    });
+}
+
+function formatAttachmentSize(size) {
+  const raw = Number(size);
+  if (!Number.isFinite(raw) || raw <= 0) return "";
+  if (raw >= 1024 * 1024) return `${(raw / (1024 * 1024)).toFixed(1)} MB`;
+  if (raw >= 1024) return `${Math.round(raw / 1024)} KB`;
+  return `${raw} B`;
+}
+
+function isVoiceAttachmentAllowed(file) {
+  const name = String(file?.name || "").trim().toLowerCase();
+  const mime = String(file?.type || "").trim().toLowerCase();
+  if (mime.startsWith("image/")) return true;
+  if (mime === "application/pdf") return true;
+  if (/\.(png|jpe?g|gif|webp|bmp|svg|pdf)$/i.test(name)) return true;
+  return false;
+}
+
+function shouldSuppressCompactMeetingMessage(role, text, hasAttachments = false) {
   const value = String(text || "").trim();
-  if (!value) return true;
+  if (!value && !hasAttachments) return true;
   if (role === "system") return true;
   if (/^reconnecting\.\.\./i.test(value)) return true;
   if (/stream disconnected before completion/i.test(value)) return true;
@@ -513,7 +556,7 @@ function shouldSuppressCompactMeetingMessage(role, text) {
   return false;
 }
 
-function shouldSuppressMeetingMessage(msg, role, text) {
+function shouldSuppressMeetingMessage(msg, role, text, hasAttachments = false) {
   const msgType = String(msg?.type || "").trim().toLowerCase();
   if (msgType === "tool_call" || msgType === "tool_result") return true;
   const eventType = String(msg?.meta?.eventType || "").trim().toLowerCase();
@@ -523,7 +566,7 @@ function shouldSuppressMeetingMessage(msg, role, text) {
   const source = String(msg?.meta?.source || "").trim().toLowerCase();
   if (source === "vision") return true;
   const value = String(text || "").trim();
-  if (!value) return true;
+  if (!value && !hasAttachments) return true;
   if (String(role || "").toLowerCase() === "system" && /^\[Vision\s/i.test(value)) {
     return true;
   }
@@ -569,9 +612,14 @@ export function VoiceOverlay({
   const [chatOpen, setChatOpen] = useState(true);
   const [meetingMessages, setMeetingMessages] = useState([]);
   const [meetingChatInput, setMeetingChatInput] = useState("");
+  const [floatingChatInput, setFloatingChatInput] = useState("");
   const [meetingChatSending, setMeetingChatSending] = useState(false);
   const [meetingChatLoading, setMeetingChatLoading] = useState(false);
+  const [meetingUploadingAttachments, setMeetingUploadingAttachments] =
+    useState(false);
+  const [meetingPendingAttachments, setMeetingPendingAttachments] = useState([]);
   const [meetingChatError, setMeetingChatError] = useState(null);
+  const meetingFileInputRef = useRef(null);
   const autoVisionAppliedRef = useRef(false);
   const meetingScrollRef = useRef(null);
   const [usingSdk, setUsingSdk] = useState(false);
@@ -917,26 +965,175 @@ export function VoiceOverlay({
 
   const handleMinimize = useCallback(() => {
     haptic("light");
+    if (
+      typeof globalThis?.veDesktop?.follow?.open === "function"
+      && !(globalThis.location?.search || "").includes("follow=1")
+    ) {
+      globalThis.veDesktop.follow
+        .open({
+          call: normalizedCallType,
+          sessionId: sessionId || undefined,
+          initialVisionSource: normalizedInitialVisionSource || undefined,
+          executor: executor || undefined,
+          mode: mode || undefined,
+          model: model || undefined,
+        })
+        .then((result) => {
+          if (result?.ok) {
+            handleDismiss();
+          } else {
+            setMinimized(true);
+          }
+        })
+        .catch(() => {
+          setMinimized(true);
+        });
+      return;
+    }
     setMinimized(true);
-  }, []);
+  }, [
+    handleDismiss,
+    normalizedCallType,
+    normalizedInitialVisionSource,
+    sessionId,
+    executor,
+    mode,
+    model,
+  ]);
 
   const handleExpand = useCallback(() => {
     haptic("light");
     setMinimized(false);
   }, []);
 
-  const handleSendMeetingChat = useCallback(async () => {
+  const uploadMeetingAttachments = useCallback(async (files) => {
     const activeSessionId = String(sessionId || "").trim();
-    const content = String(meetingChatInput || "").trim();
-    if (!activeSessionId || !content || meetingChatSending) return;
+    if (!activeSessionId || meetingUploadingAttachments) return;
+    const inputList = Array.from(files || []).filter(Boolean);
+    if (!inputList.length) return;
+    const accepted = inputList.filter(isVoiceAttachmentAllowed);
+    const rejectedCount = inputList.length - accepted.length;
+    if (rejectedCount > 0) {
+      showToast(
+        `Voice chat only supports images/PDF (${rejectedCount} rejected).`,
+        "info",
+      );
+    }
+    if (!accepted.length) return;
+    setMeetingUploadingAttachments(true);
+    const safeSessionId = encodeURIComponent(activeSessionId);
+    try {
+      const form = new FormData();
+      for (const file of accepted) {
+        form.append("file", file, file.name || "attachment");
+      }
+      const result = await apiFetch(`/api/sessions/${safeSessionId}/attachments`, {
+        method: "POST",
+        body: form,
+      });
+      if (Array.isArray(result?.attachments) && result.attachments.length > 0) {
+        setMeetingPendingAttachments((prev) => [...prev, ...result.attachments]);
+        return;
+      }
+      showToast("Attachment upload failed", "error");
+    } catch {
+      showToast("Attachment upload failed", "error");
+    } finally {
+      setMeetingUploadingAttachments(false);
+    }
+  }, [sessionId, meetingUploadingAttachments]);
+
+  const captureScreenAttachment = useCallback(async () => {
+    if (
+      !globalThis.navigator?.mediaDevices
+      || typeof globalThis.navigator.mediaDevices.getDisplayMedia !== "function"
+    ) {
+      showToast("Screen capture is not supported in this runtime.", "error");
+      return;
+    }
+    let stream = null;
+    try {
+      stream = await globalThis.navigator.mediaDevices.getDisplayMedia({
+        video: {
+          cursor: "always",
+          frameRate: { ideal: 1, max: 5 },
+        },
+        audio: false,
+      });
+      const track = stream.getVideoTracks()[0];
+      if (!track) throw new Error("No video track available");
+      const video = document.createElement("video");
+      video.srcObject = stream;
+      video.muted = true;
+      video.playsInline = true;
+      await video.play();
+      await new Promise((resolve) => {
+        if (video.readyState >= 2) {
+          resolve();
+          return;
+        }
+        video.addEventListener("loadeddata", resolve, { once: true });
+      });
+      const width = Math.max(1, Number(video.videoWidth) || 1280);
+      const height = Math.max(1, Number(video.videoHeight) || 720);
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d", { alpha: false });
+      if (!ctx) throw new Error("Canvas is not available");
+      ctx.drawImage(video, 0, 0, width, height);
+      const blob = await new Promise((resolve, reject) => {
+        canvas.toBlob(
+          (nextBlob) => {
+            if (nextBlob) resolve(nextBlob);
+            else reject(new Error("Could not encode screenshot"));
+          },
+          "image/png",
+          0.92,
+        );
+      });
+      const file = new File(
+        [blob],
+        `meeting-screenshot-${Date.now()}.png`,
+        { type: "image/png" },
+      );
+      await uploadMeetingAttachments([file]);
+    } catch (err) {
+      const message = String(err?.message || "Screenshot capture failed");
+      if (!/denied|cancel/i.test(message)) {
+        showToast(message, "error");
+      }
+    } finally {
+      try {
+        stream?.getTracks?.().forEach((track) => track.stop());
+      } catch {
+        // best effort
+      }
+    }
+  }, [uploadMeetingAttachments]);
+
+  const removeMeetingAttachment = useCallback((index) => {
+    setMeetingPendingAttachments((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const handleSendMeetingChat = useCallback(async (rawContent = null) => {
+    const activeSessionId = String(sessionId || "").trim();
+    const content = String(rawContent != null ? rawContent : meetingChatInput || "").trim();
+    const attachments = Array.isArray(meetingPendingAttachments)
+      ? meetingPendingAttachments.filter(Boolean)
+      : [];
+    if (!activeSessionId || meetingChatSending) return;
+    if (!content && attachments.length === 0) return;
     setMeetingChatSending(true);
     const safeSessionId = encodeURIComponent(activeSessionId);
     try {
       await apiFetch(`/api/sessions/${safeSessionId}/message`, {
         method: "POST",
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, attachments }),
       });
       setMeetingChatInput("");
+      setFloatingChatInput("");
+      setMeetingPendingAttachments([]);
       await loadMeetingMessages();
     } catch (err) {
       setMeetingChatError(String(err?.message || "Could not send chat message"));
@@ -946,6 +1143,7 @@ export function VoiceOverlay({
   }, [
     meetingChatInput,
     meetingChatSending,
+    meetingPendingAttachments,
     sessionId,
     loadMeetingMessages,
   ]);
@@ -973,10 +1171,14 @@ export function VoiceOverlay({
     for (const msg of meetingMessages) {
       const role = normalizeMeetingMessageRole(msg);
       const text = stringifyMeetingMessageContent(msg);
-      if (shouldSuppressMeetingMessage(msg, role, text)) {
+      const attachments = normalizeMeetingMessageAttachments(msg);
+      if (shouldSuppressMeetingMessage(msg, role, text, attachments.length > 0)) {
         continue;
       }
-      if (isCompactFollowMode && shouldSuppressCompactMeetingMessage(role, text)) {
+      if (
+        isCompactFollowMode
+        && shouldSuppressCompactMeetingMessage(role, text, attachments.length > 0)
+      ) {
         continue;
       }
       const timeRaw = String(msg?.timestamp || "").trim();
@@ -994,6 +1196,7 @@ export function VoiceOverlay({
         prev
         && prev.role === role
         && prev.content === normalizedText
+        && (!prev.attachments?.length && attachments.length === 0)
       ) {
         continue;
       }
@@ -1001,6 +1204,7 @@ export function VoiceOverlay({
         id: msg?.id || `${role}-${items.length}`,
         role,
         content: normalizedText,
+        attachments,
         timeLabel,
       });
     }
@@ -1125,17 +1329,76 @@ export function VoiceOverlay({
                       <span>${msg.role}</span>
                       <span>${msg.timeLabel}</span>
                     </div>
-                    <div class="voice-overlay-chat-content">${msg.content}</div>
+                    ${msg.content && html`
+                      <div class="voice-overlay-chat-content">${msg.content}</div>
+                    `}
+                    ${Array.isArray(msg.attachments) && msg.attachments.length > 0 && html`
+                      <div style="margin-top:${msg.content ? "6px" : "0"};display:flex;flex-direction:column;gap:5px">
+                        ${msg.attachments.map((att) => {
+                          const attLabel = [
+                            att.name || "attachment",
+                            formatAttachmentSize(att.size),
+                          ].filter(Boolean).join(" · ");
+                          const icon = att.kind === "image" || String(att.contentType || "").startsWith("image/")
+                            ? "🖼"
+                            : String(att.contentType || "").toLowerCase() === "application/pdf"
+                              ? "📄"
+                              : "📎";
+                          return html`
+                            <a
+                              key=${att.id || att.name}
+                              href=${att.url || "#"}
+                              target="_blank"
+                              rel="noopener"
+                              style="text-decoration:none;color:#8ab4f8;font-size:12px;border:1px solid rgba(138,180,248,0.35);background:rgba(138,180,248,0.08);padding:5px 8px;border-radius:8px"
+                            >
+                              ${icon} ${attLabel}
+                            </a>
+                          `;
+                        })}
+                      </div>
+                    `}
                   </div>
                 `)}
               </div>
               ${!isCompactFollowMode && html`
                 <div class="voice-overlay-chat-input-wrap">
                   <input
+                    ref=${meetingFileInputRef}
+                    type="file"
+                    accept="image/*,application/pdf,.pdf"
+                    multiple
+                    style="display:none"
+                    onChange=${(e) => {
+                      const files = e?.target?.files;
+                      if (files?.length) uploadMeetingAttachments(files);
+                      if (e?.target) e.target.value = "";
+                    }}
+                  />
+                  <button
+                    class="voice-overlay-chat-send"
+                    onClick=${() => meetingFileInputRef.current?.click?.()}
+                    disabled=${meetingUploadingAttachments || meetingChatSending}
+                    title="Attach image/PDF"
+                  >📎</button>
+                  <button
+                    class="voice-overlay-chat-send"
+                    onClick=${() => captureScreenAttachment().catch(() => {})}
+                    disabled=${meetingUploadingAttachments || meetingChatSending}
+                    title="Capture screenshot"
+                  >📸</button>
+                  <input
                     class="voice-overlay-chat-input"
                     placeholder="Message the agent…"
                     value=${meetingChatInput}
                     onInput=${(e) => setMeetingChatInput(e.target.value)}
+                    onPaste=${(e) => {
+                      const files = e.clipboardData?.files;
+                      if (files && files.length > 0) {
+                        e.preventDefault();
+                        uploadMeetingAttachments(files);
+                      }
+                    }}
                     onKeyDown=${(e) => {
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
@@ -1149,6 +1412,20 @@ export function VoiceOverlay({
                     disabled=${!meetingChatInput.trim() || meetingChatSending}
                     title="Send"
                   >↑</button>
+                </div>
+              `}
+              ${!isCompactFollowMode && meetingPendingAttachments.length > 0 && html`
+                <div style="padding:0 10px 10px;display:flex;gap:6px;flex-wrap:wrap">
+                  ${meetingPendingAttachments.map((att, index) => html`
+                    <button
+                      class="vm-floating-expand"
+                      style="flex:0 1 auto;padding:0 10px"
+                      onClick=${() => removeMeetingAttachment(index)}
+                      title="Remove attachment"
+                    >
+                      ${(att?.name || "attachment")} ✕
+                    </button>
+                  `)}
                 </div>
               `}
             </aside>
@@ -1244,6 +1521,18 @@ export function VoiceOverlay({
     <!-- Floating minimized PiP widget -->
     ${minimized && html`
       <div class="vm-floating">
+        <input
+          ref=${meetingFileInputRef}
+          type="file"
+          accept="image/*,application/pdf,.pdf"
+          multiple
+          style="display:none"
+          onChange=${(e) => {
+            const files = e?.target?.files;
+            if (files?.length) uploadMeetingAttachments(files);
+            if (e?.target) e.target.value = "";
+          }}
+        />
         <div class="vm-floating-header" onClick=${handleExpand} title="Expand call">
           <div class=${`vm-floating-orb ${state}`}>
             ${state === "speaking" ? "🔊" : state === "listening" ? "👂" : state === "thinking" ? "💭" : state === "connecting" ? "⟳" : "📵"}
@@ -1268,9 +1557,61 @@ export function VoiceOverlay({
             onClick=${handleToggleMic}
             title=${micMuted ? "Unmute" : "Mute"}
           >${micMuted ? "🔇" : "🎙"}</button>
+          <button
+            class="vm-floating-expand"
+            onClick=${() => meetingFileInputRef.current?.click?.()}
+            title="Attach image/PDF"
+          >📎</button>
+          <button
+            class="vm-floating-expand"
+            onClick=${() => captureScreenAttachment().catch(() => {})}
+            title="Capture screenshot"
+          >📸</button>
           <button class="vm-floating-expand" onClick=${handleExpand}>Expand</button>
           <button class="vm-floating-end" onClick=${handleClose} title="End call">📵</button>
         </div>
+        <div style="padding:0 12px 10px;display:flex;gap:6px;align-items:center">
+          <input
+            class="voice-overlay-chat-input"
+            style="padding:6px 12px;font-size:12px"
+            placeholder="Quick message…"
+            value=${floatingChatInput}
+            onInput=${(e) => setFloatingChatInput(e.target.value)}
+            onPaste=${(e) => {
+              const files = e.clipboardData?.files;
+              if (files && files.length > 0) {
+                e.preventDefault();
+                uploadMeetingAttachments(files);
+              }
+            }}
+            onKeyDown=${(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                handleSendMeetingChat(floatingChatInput).catch(() => {});
+              }
+            }}
+          />
+          <button
+            class="vm-floating-mic"
+            onClick=${() => handleSendMeetingChat(floatingChatInput).catch(() => {})}
+            disabled=${meetingChatSending || (!floatingChatInput.trim() && meetingPendingAttachments.length === 0)}
+            title="Send"
+          >↑</button>
+        </div>
+        ${meetingPendingAttachments.length > 0 && html`
+          <div style="padding:0 12px 12px;display:flex;gap:6px;flex-wrap:wrap">
+            ${meetingPendingAttachments.map((att, index) => html`
+              <button
+                class="vm-floating-expand"
+                style="flex:0 1 auto;padding:0 8px;height:30px"
+                onClick=${() => removeMeetingAttachment(index)}
+                title="Remove attachment"
+              >
+                ${(att?.name || "attachment")} ✕
+              </button>
+            `)}
+          </div>
+        `}
       </div>
     `}
   `;
