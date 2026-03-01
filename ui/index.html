@@ -115,6 +115,10 @@
     const bootErr = (html) => {
       if (bootEl) bootEl.innerHTML = html;
     };
+    const formatLoadError = (err) => {
+      const msg = String(err?.message || err || "Unknown module error").slice(0, 240);
+      return msg.replace(/[<>&]/g, (ch) => (ch === "<" ? "&lt;" : ch === ">" ? "&gt;" : "&amp;"));
+    };
     const applyFallbackImportMap = () => {
       const fallback = document.getElementById("importmap-fallback");
       if (!fallback) return;
@@ -142,13 +146,18 @@
       }
       return import(url);
     };
+    const loadAppNative = async () => {
+      const base = new URL("/app.js", window.location.origin).toString();
+      return import(`${base}?native=${Date.now()}`);
+    };
     (async () => {
       const shimReady = await waitForShim();
       try {
         await loadApp(false);
       } catch (err) {
         if (!shimReady || !window.importShim) {
-          bootErr(':alert: Failed to load app modules.<br><small style="color:#888">Try refreshing. If this persists, run <code>npm install</code> in the bosun directory.</small>');
+          const detail = formatLoadError(err);
+          bootErr(`:alert: Failed to load app modules.<br><small style="color:#888">${detail}<br>Try refreshing. If this persists, run <code>npm install</code> in the bosun directory.</small>`);
           return;
         }
         console.warn("[ui] Primary CDN failed, switching to fallback.", err);
@@ -156,8 +165,13 @@
         try {
           await loadApp(true);
         } catch (fallbackErr) {
-          console.error("[ui] Fallback CDN failed.", fallbackErr);
-          bootErr(':alert: Failed to load app modules.<br><small style="color:#888">Local vendor and CDN fallback both failed. Run <code>npm install</code> in the bosun directory or check your connection.</small>');
+          console.error("[ui] Fallback CDN failed. Retrying with native import.", fallbackErr);
+          try {
+            await loadAppNative();
+          } catch (nativeErr) {
+            const detail = formatLoadError(nativeErr);
+            bootErr(`:alert: Failed to load app modules.<br><small style="color:#888">${detail}<br>Local vendor and CDN fallback both failed. Run <code>npm install</code> in the bosun directory or check your connection.</small>`);
+          }
         }
       }
     })();
