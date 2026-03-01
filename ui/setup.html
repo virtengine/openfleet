@@ -699,6 +699,135 @@ function SelectWithCustom({ options, value, onChange, placeholder }) {
   `;
 }
 
+function MultiModelSelector({
+  options,
+  selectedModels,
+  primaryModel,
+  onChange,
+  customPlaceholder = "Enter custom model slug...",
+}) {
+  const [customModelInput, setCustomModelInput] = useState("");
+  const normalizedOptions = Array.isArray(options)
+    ? options
+      .map((entry) => {
+        if (typeof entry === "string") {
+          return { value: entry, label: entry, recommended: false };
+        }
+        if (!entry || typeof entry !== "object") return null;
+        const value = String(entry.value || "").trim();
+        if (!value) return null;
+        return {
+          value,
+          label: String(entry.label || value),
+          recommended: Boolean(entry.recommended),
+        };
+      })
+      .filter(Boolean)
+    : [];
+  const knownSet = new Set(normalizedOptions.map((entry) => entry.value));
+  const selected = [...new Set((Array.isArray(selectedModels) ? selectedModels : [])
+    .map((model) => String(model || "").trim())
+    .filter(Boolean))];
+  const customSelected = selected.filter((model) => !knownSet.has(model));
+  const effectivePrimary = selected.includes(primaryModel) ? primaryModel : (selected[0] || "");
+
+  const updateSelection = (nextSelected, nextPrimary) => {
+    const normalizedSelected = [...new Set((Array.isArray(nextSelected) ? nextSelected : [])
+      .map((model) => String(model || "").trim())
+      .filter(Boolean))];
+    const resolvedPrimary = normalizedSelected.includes(nextPrimary)
+      ? nextPrimary
+      : (normalizedSelected[0] || "");
+    onChange({ models: normalizedSelected, primaryModel: resolvedPrimary });
+  };
+
+  const toggleModel = (model, enabled) => {
+    if (!model) return;
+    if (enabled) {
+      updateSelection([...selected, model], effectivePrimary || model);
+      return;
+    }
+    const nextSelected = selected.filter((entry) => entry !== model);
+    const nextPrimary = effectivePrimary === model ? (nextSelected[0] || "") : effectivePrimary;
+    updateSelection(nextSelected, nextPrimary);
+  };
+
+  const addCustomModel = () => {
+    const candidate = String(customModelInput || "").trim();
+    if (!candidate) return;
+    if (selected.includes(candidate)) {
+      setCustomModelInput("");
+      return;
+    }
+    updateSelection([...selected, candidate], effectivePrimary || candidate);
+    setCustomModelInput("");
+  };
+
+  return html`
+    <div class="setting-input-wrap" style="display:block">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">Primary model</div>
+      <select
+        value=${effectivePrimary}
+        onchange=${(e) => {
+          const nextPrimary = String(e.target.value || "");
+          updateSelection(selected, nextPrimary);
+        }}
+        disabled=${selected.length === 0}
+      >
+        <option value="">${selected.length === 0 ? "Select models first" : "Select primary model"}</option>
+        ${selected.map((model) => html`<option value=${model}>${model}</option>`)}
+      </select>
+      <div style="font-size:12px;color:var(--text-dim);margin:8px 0 6px">Enabled models</div>
+      <div style="display:grid;grid-template-columns:1fr;gap:6px;max-height:180px;overflow:auto;padding:8px;border:1px solid var(--border-primary);border-radius:8px;background:var(--bg-input)">
+        ${normalizedOptions.map((entry) => html`
+          <label style="display:flex;align-items:center;gap:8px;font-size:0.82rem;cursor:pointer">
+            <input
+              type="checkbox"
+              checked=${selected.includes(entry.value)}
+              onchange=${(e) => toggleModel(entry.value, e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent)"
+            />
+            <span>${entry.label}${entry.recommended ? " (recommended)" : ""}</span>
+          </label>
+        `)}
+        ${normalizedOptions.length === 0 && html`
+          <div class="hint">No known models for this executor type.</div>
+        `}
+      </div>
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+        <input
+          type="text"
+          value=${customModelInput}
+          placeholder=${customPlaceholder}
+          oninput=${(e) => setCustomModelInput(e.target.value)}
+          onkeydown=${(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addCustomModel();
+            }
+          }}
+          style="flex:1 1 220px"
+        />
+        <button class="btn btn-sm" onclick=${addCustomModel}>Add custom</button>
+      </div>
+      ${customSelected.length > 0 && html`
+        <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+          ${customSelected.map((model) => html`
+            <button
+              class="btn btn-sm btn-danger"
+              style="padding:3px 8px"
+              onclick=${() => toggleModel(model, false)}
+              title="Remove custom model"
+            >
+              ${model} ✕
+            </button>
+          `)}
+        </div>
+      `}
+    </div>
+  `;
+}
+
 // ── Collapsible Section (module scope — stable identity across re-renders) ──
 // Defining this inside App() would create a new function reference on every
 // state update, causing Preact to unmount/remount the component and lose
@@ -1653,7 +1782,14 @@ function App() {
             const execType = segments[0] || "COPILOT";
             const variant = segments[1] || "DEFAULT";
             const weight = Number(segments[2]) || 50;
-            const model = variant === "DEFAULT" ? "" : variant.toLowerCase().replaceAll("_", "-");
+            const modelsFromEnv = segments
+              .slice(3)
+              .join(":")
+              .split("|")
+              .map((m) => String(m || "").trim())
+              .filter(Boolean);
+            const derivedModel = variant === "DEFAULT" ? "" : variant.toLowerCase().replaceAll("_", "-");
+            const model = modelsFromEnv[0] || derivedModel;
             const existingExecutor = statusData.existingConfig?.executors?.[idx] || {};
             // Detect if an API key was previously configured for this executor type
             const hasApiKey =
@@ -1680,7 +1816,9 @@ function App() {
               weight,
               role: existingExecutor.role || (idx === 0 ? "primary" : "backup"),
               enabled: existingExecutor.enabled !== false,
-              models: Array.isArray(existingExecutor.models) ? existingExecutor.models : [],
+              models: Array.isArray(existingExecutor.models) && existingExecutor.models.length > 0
+                ? existingExecutor.models
+                : modelsFromEnv,
               authMode: hasApiKey ? "api-key" : "oauth",
               apiKey: (execType === "CODEX" || execType === "OPENAI") ? (env.OPENAI_API_KEY || "") :
                        (execType === "CLAUDE_CODE" || execType === "ANTHROPIC") ? (env.ANTHROPIC_API_KEY || "") : "",
@@ -1806,7 +1944,8 @@ function App() {
     executors
       .filter((ex) => ex.enabled !== false)
       .map((ex) => {
-        const variant = (ex.model || "DEFAULT").toUpperCase().replaceAll("-", "_");
+        const primaryModel = String(ex.model || ex.models?.[0] || "").trim();
+        const variant = (primaryModel || "DEFAULT").toUpperCase().replaceAll("-", "_");
         return `${ex.executor}:${variant}:${ex.weight}`;
       })
       .join(",");
@@ -1819,11 +1958,13 @@ function App() {
         : ex.model
           ? [ex.model]
           : [];
-      const models = [...new Set(configuredModels.filter(Boolean))];
+      const models = [...new Set(configuredModels.map((m) => String(m || "").trim()).filter(Boolean))];
+      const primaryModel = String(ex.model || "").trim() || models[0] || "";
+      if (primaryModel && !models.includes(primaryModel)) models.unshift(primaryModel);
       return {
         name: ex.name,
         executor: ex.executor,
-        variant: (ex.model || "DEFAULT").toUpperCase().replaceAll("-", "_"),
+        variant: (primaryModel || "DEFAULT").toUpperCase().replaceAll("-", "_"),
         weight: Number(ex.weight) || 50,
         role: ex.role,
         enabled: ex.enabled !== false,
@@ -2130,6 +2271,15 @@ function App() {
           : [];
         if (value && !models.includes(value)) models.push(value);
         updated[idx].models = models;
+      }
+      if (field === "models") {
+        const models = [...new Set((Array.isArray(value) ? value : [])
+          .map((m) => String(m || "").trim())
+          .filter(Boolean))];
+        updated[idx].models = models;
+        if (!models.includes(updated[idx].model || "")) {
+          updated[idx].model = models[0] || "";
+        }
       }
       // Auto-initialise connections when switching to api-key mode on a multi-profile executor
       if (field === "authMode" && value === "api-key") {
@@ -2458,14 +2608,38 @@ function App() {
 
     ${executors.map((ex, i) => {
       const probed = probedModels[i] || {};
-      const configuredModelOptions = Array.isArray(ex.models) && ex.models.length > 0
-        ? ex.models.map((m) => ({ value: m, label: m }))
-        : [];
-      const modelOptions = probed.models?.length
-        ? probed.models
-        : configuredModelOptions.length > 0
-          ? configuredModelOptions
-          : getModelsForExecutor(ex.executor);
+      const knownModelOptions = getModelsForExecutor(ex.executor);
+      const normalizedKnown = (knownModelOptions || [])
+        .map((entry) => {
+          if (typeof entry === "string") return { value: entry, label: entry };
+          if (!entry || typeof entry !== "object") return null;
+          const value = String(entry.value || "").trim();
+          if (!value) return null;
+          return { value, label: String(entry.label || value), recommended: Boolean(entry.recommended) };
+        })
+        .filter(Boolean);
+      const normalizedProbed = (probed.models || [])
+        .map((entry) => {
+          if (typeof entry === "string") return { value: entry, label: entry };
+          if (!entry || typeof entry !== "object") return null;
+          const value = String(entry.value || "").trim();
+          if (!value) return null;
+          return { value, label: String(entry.label || value), recommended: Boolean(entry.recommended) };
+        })
+        .filter(Boolean);
+      const configuredModelOptions = (Array.isArray(ex.models) ? ex.models : [])
+        .map((model) => {
+          const value = String(model || "").trim();
+          return value ? { value, label: value } : null;
+        })
+        .filter(Boolean);
+      const modelOptions = [];
+      const modelSeen = new Set();
+      [...normalizedProbed, ...normalizedKnown, ...configuredModelOptions].forEach((entry) => {
+        if (!entry || !entry.value || modelSeen.has(entry.value)) return;
+        modelSeen.add(entry.value);
+        modelOptions.push(entry);
+      });
       const authMode = ex.authMode || "oauth";
       const executorHeading = `${ex.enabled === false ? ":dot:" : ex.role === "primary" ? ":dot:" : ":dot:"} Executor ${i + 1}: ${ex.name}`;
       return html`
@@ -2615,7 +2789,7 @@ function App() {
           })()}
           <div class="form-group">
             <label class="label-with-help" style="display:flex;align-items:center;justify-content:space-between">
-              <span>Model</span>
+              <span>Models</span>
               <${HelpTip} text=${HELP_TEXT.executorModel} />
               ${ex.executor !== "COPILOT" && html`
                 <button class="btn btn-sm" style="padding:3px 8px;font-size:0.72rem"
@@ -2625,10 +2799,16 @@ function App() {
                 </button>
               `}
             </label>
-            <${SelectWithCustom}
+            <${MultiModelSelector}
               options=${modelOptions}
-              value=${ex.model}
-              onChange=${(v) => updateExecutor(i, "model", v)}
+              selectedModels=${Array.isArray(ex.models) && ex.models.length > 0
+                ? ex.models
+                : (ex.model ? [ex.model] : [])}
+              primaryModel=${ex.model}
+              onChange=${({ models: nextModels, primaryModel }) => {
+                updateExecutor(i, "models", nextModels);
+                updateExecutor(i, "model", primaryModel);
+              }}
             />
             ${probed.source === "live" && html`
               <div class="hint" style="color:var(--success)">✓ Live model list from API (${modelOptions.length} models)</div>

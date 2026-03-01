@@ -35,6 +35,7 @@ import {
   visionShareSource,
   visionShareError,
   visionLastSummary,
+  supportsVisionSource,
   toggleVisionShare,
   stopVisionShare,
 } from "./vision-stream.js";
@@ -511,6 +512,26 @@ function shouldSuppressCompactMeetingMessage(role, text) {
   return false;
 }
 
+function shouldSuppressMeetingMessage(msg, role, text) {
+  const msgType = String(msg?.type || "").trim().toLowerCase();
+  if (msgType === "tool_call" || msgType === "tool_result") return true;
+  const eventType = String(msg?.meta?.eventType || "").trim().toLowerCase();
+  if (eventType.includes("tool")) return true;
+  if (eventType.includes("transcript")) return true;
+  if (eventType.startsWith("voice_background_")) return true;
+  const source = String(msg?.meta?.source || "").trim().toLowerCase();
+  if (source === "vision") return true;
+  const value = String(text || "").trim();
+  if (!value) return true;
+  if (String(role || "").toLowerCase() === "system" && /^\[Vision\s/i.test(value)) {
+    return true;
+  }
+  if (/^\[Voice Action (Started|Complete|Error)\]/i.test(value)) return true;
+  if (/^\[Voice Delegation/i.test(value)) return true;
+  if (/^\[Background Task Started\]/i.test(value)) return true;
+  return false;
+}
+
 // ── Voice Overlay Component ─────────────────────────────────────────────────
 
 /**
@@ -587,6 +608,8 @@ export function VoiceOverlay({
   const visionErr = visionShareError.value;
   const latestVisionSummary = visionLastSummary.value;
   const canShareVision = Boolean(sessionId);
+  const canShareCamera = canShareVision && supportsVisionSource("camera");
+  const canShareScreen = canShareVision && supportsVisionSource("screen");
   const normalizedCallType =
     String(callType || "").trim().toLowerCase() === "video"
       ? "video"
@@ -716,9 +739,8 @@ export function VoiceOverlay({
   }, [chatOpen, meetingMessages.length]);
 
   // ── Live chat → voice injection ───────────────────────────────────────
-  // When new messages appear in the bound session (delegation results, user
-  // chat messages, progress events), inject them into the active Realtime
-  // voice session so the voice agent has real-time awareness.
+  // Reliability mode: do NOT inject every incoming chat message (it creates
+  // noisy feedback loops). Only inject explicit voice background summaries.
   const lastInjectedTsRef = useRef(0);
   useEffect(() => {
     if (!visible || !started || !sessionId) return;
@@ -735,18 +757,20 @@ export function VoiceOverlay({
       if (!content) return;
       // Prevent recursive injection loops from synthetic chat updates.
       if (CHAT_UPDATE_PREFIX_RE.test(content)) return;
-      // Skip transcripts captured from the active voice pipeline.
       const msgSource = String(msg?.meta?.source || "").trim().toLowerCase();
       const msgEventType = String(msg?.meta?.eventType || "").trim().toLowerCase();
-      if (msgSource === "voice" || msgEventType.includes("transcript")) return;
+      if (msgEventType.includes("transcript")) return;
+      const shouldInject =
+        msgSource === "voice" && msgEventType === "voice_background_summary";
+      if (!shouldInject) return;
       // Avoid re-injecting old messages
       const msgTs = msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now();
       if (msgTs <= lastInjectedTsRef.current) return;
       lastInjectedTsRef.current = msgTs;
 
-      // Build a short context injection for the voice model
-      const role = String(msg.role || msg.type || "system").toUpperCase();
-      const text = `[Chat Update — ${role}]: ${content.slice(0, 800)}`;
+      // Build a short context injection for background completion summary only
+      const bgSessionId = String(msg?.meta?.backgroundSessionId || "").trim();
+      const text = `[Background Delegation Summary${bgSessionId ? ` ${bgSessionId}` : ""}]: ${content.slice(0, 800)}`;
 
       // Inject into the active voice session (no response.create — just context)
       if (effectiveSdk) {
@@ -915,6 +939,9 @@ export function VoiceOverlay({
     for (const msg of meetingMessages) {
       const role = normalizeMeetingMessageRole(msg);
       const text = stringifyMeetingMessageContent(msg);
+      if (shouldSuppressMeetingMessage(msg, role, text)) {
+        continue;
+      }
       if (isCompactFollowMode && shouldSuppressCompactMeetingMessage(role, text)) {
         continue;
       }
@@ -1115,8 +1142,8 @@ export function VoiceOverlay({
               <button
                 class=${`vm-btn${visionState === "streaming" && visionSource === "camera" ? " screen-on" : ""}`}
                 onClick=${handleToggleCameraShare}
-                disabled=${!canShareVision}
-                title=${canShareVision ? (visionState === "streaming" && visionSource === "camera" ? "Stop camera" : "Share camera") : "Session required"}
+                disabled=${!canShareCamera}
+                title=${canShareCamera ? (visionState === "streaming" && visionSource === "camera" ? "Stop camera" : "Share camera") : (!canShareVision ? "Session required" : "Camera not supported in this browser")}
               >
                 ${visionState === "streaming" && visionSource === "camera" ? "📷" : "📷"}
               </button>
@@ -1128,8 +1155,8 @@ export function VoiceOverlay({
               <button
                 class=${`vm-btn${visionState === "streaming" && visionSource === "screen" ? " screen-on" : ""}`}
                 onClick=${handleToggleScreenShare}
-                disabled=${!canShareVision}
-                title=${canShareVision ? (visionState === "streaming" && visionSource === "screen" ? "Stop screen share" : "Share screen") : "Session required"}
+                disabled=${!canShareScreen}
+                title=${canShareScreen ? (visionState === "streaming" && visionSource === "screen" ? "Stop screen share" : "Share screen") : (!canShareVision ? "Session required" : "Screen share not supported in this browser/runtime")}
               >
                 🖥
               </button>

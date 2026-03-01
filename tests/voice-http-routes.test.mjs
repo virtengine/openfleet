@@ -161,6 +161,7 @@ describe("ui-server voice + vision routes", () => {
         frameDataUrl,
         width: 1280,
         height: 720,
+        persistToChat: true,
       }),
     });
     const firstJson = await first.json();

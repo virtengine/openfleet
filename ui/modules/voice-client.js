@@ -369,9 +369,9 @@ function sendSessionUpdate(tokenData = {}) {
     type: turnDetection,
     ...(turnDetection === "server_vad"
       ? {
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 500,
+          threshold: 0.35,
+          prefix_padding_ms: 400,
+          silence_duration_ms: 700,
           create_response: true,
           interrupt_response: true,
         }
@@ -392,7 +392,7 @@ function sendSessionUpdate(tokenData = {}) {
       voice: voiceId,
       input_audio_format: "pcm16",
       output_audio_format: "pcm16",
-      input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
+      input_audio_transcription: { model: "gpt-4o-transcribe" },
       turn_detection: turnDetectionConfig,
     },
   });
