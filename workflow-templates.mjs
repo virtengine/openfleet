@@ -6,11 +6,11 @@
  * previously required custom code or env-var configuration.
  *
  * Templates are split into category modules for easy extension:
- *   workflow-templates/github.mjs     — PR Merge Strategy, Triage, Conflict Resolver, Stale Reaper, Release Drafter
+ *   workflow-templates/github.mjs     — PR Merge Strategy, Triage, Conflict Resolver, Stale Reaper, Release Drafter, SDK Conflict Resolver
  *   workflow-templates/agents.mjs     — Frontend Agent, Review Agent, Custom Agent, Session Monitor, Backend Agent, Meeting Orchestrator + Subworkflow Chain
  *   workflow-templates/planning.mjs   — Task Planner, Task Replenish, Nightly Report, Sprint Retrospective
  *   workflow-templates/ci-cd.mjs      — Build & Deploy, Release Pipeline, Canary Deploy
- *   workflow-templates/reliability.mjs — Error Recovery, Anomaly Watchdog, Workspace Hygiene, Health Check, Task Finalization Guard, Task Repair Worktree, Incident Response
+ *   workflow-templates/reliability.mjs — Error Recovery, Anomaly Watchdog, Workspace Hygiene, Health Check, Task Finalization Guard, Task Repair Worktree, Incident Response, Task Archiver, Sync Engine
  *   workflow-templates/security.mjs   — Dependency Audit, Secret Scanner
  *
  * To add a new template:
@@ -45,6 +45,7 @@ import {
   RELEASE_DRAFTER_TEMPLATE,
   BOSUN_PR_WATCHDOG_TEMPLATE,
   GITHUB_KANBAN_SYNC_TEMPLATE,
+  SDK_CONFLICT_RESOLVER_TEMPLATE,
 } from "./workflow-templates/github.mjs";
 
 // Agents
@@ -83,6 +84,8 @@ import {
   TASK_REPAIR_WORKTREE_TEMPLATE,
   TASK_STATUS_TRANSITION_MANAGER_TEMPLATE,
   INCIDENT_RESPONSE_TEMPLATE,
+  TASK_ARCHIVER_TEMPLATE,
+  SYNC_ENGINE_TEMPLATE,
 } from "./workflow-templates/reliability.mjs";
 
 // Security
@@ -101,6 +104,7 @@ export {
   RELEASE_DRAFTER_TEMPLATE,
   BOSUN_PR_WATCHDOG_TEMPLATE,
   GITHUB_KANBAN_SYNC_TEMPLATE,
+  SDK_CONFLICT_RESOLVER_TEMPLATE,
   FRONTEND_AGENT_TEMPLATE,
   REVIEW_AGENT_TEMPLATE,
   CUSTOM_AGENT_TEMPLATE,
@@ -123,6 +127,8 @@ export {
   TASK_REPAIR_WORKTREE_TEMPLATE,
   TASK_STATUS_TRANSITION_MANAGER_TEMPLATE,
   INCIDENT_RESPONSE_TEMPLATE,
+  TASK_ARCHIVER_TEMPLATE,
+  SYNC_ENGINE_TEMPLATE,
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
 };
@@ -151,6 +157,7 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   RELEASE_DRAFTER_TEMPLATE,
   BOSUN_PR_WATCHDOG_TEMPLATE,
   GITHUB_KANBAN_SYNC_TEMPLATE,
+  SDK_CONFLICT_RESOLVER_TEMPLATE,
   // ── Agents ──
   REVIEW_AGENT_TEMPLATE,
   FRONTEND_AGENT_TEMPLATE,
@@ -177,6 +184,8 @@ export const WORKFLOW_TEMPLATES = Object.freeze([
   TASK_REPAIR_WORKTREE_TEMPLATE,
   TASK_STATUS_TRANSITION_MANAGER_TEMPLATE,
   INCIDENT_RESPONSE_TEMPLATE,
+  TASK_ARCHIVER_TEMPLATE,
+  SYNC_ENGINE_TEMPLATE,
   // ── Security ──
   DEPENDENCY_AUDIT_TEMPLATE,
   SECRET_SCANNER_TEMPLATE,
@@ -466,6 +475,9 @@ export const WORKFLOW_SETUP_PROFILES = Object.freeze({
       "template-incident-response",
       "template-release-pipeline",
       "template-dependency-audit",
+      "template-task-archiver",
+      "template-sync-engine",
+      "template-sdk-conflict-resolver",
     ]),
   }),
 });
