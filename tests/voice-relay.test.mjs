@@ -614,17 +614,19 @@ describe("voice-relay", () => {
     it("returns a Set of allowed tool names", () => {
       const allowed = getSessionAllowedTools();
       expect(allowed).toBeInstanceOf(Set);
+      expect(allowed.has("get_admin_help")).toBe(true);
       expect(allowed.has("delegate_to_agent")).toBe(true);
       expect(allowed.has("list_tasks")).toBe(true);
       expect(allowed.has("get_agent_status")).toBe(true);
       expect(allowed.has("get_session_history")).toBe(true);
+      expect(allowed.has("list_workflow_runs")).toBe(true);
+      expect(allowed.has("get_workflow_run")).toBe(true);
     });
 
     it("does not include write-heavy tools", () => {
       const allowed = getSessionAllowedTools();
-      expect(allowed.has("create_task")).toBe(false);
-      expect(allowed.has("update_config")).toBe(false);
-      expect(allowed.has("delete_task")).toBe(false);
+      // Base set excludes run_workspace_command (owner-only)
+      expect(allowed.has("run_workspace_command")).toBe(false);
     });
   });
 

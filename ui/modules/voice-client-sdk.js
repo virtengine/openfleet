@@ -32,6 +32,10 @@ export const isSdkVoiceActive = computed(() =>
   sdkVoiceState.value !== "idle" && sdkVoiceState.value !== "error"
 );
 
+// Noise-control default: disable user-side live ASR transcript output/persistence.
+// Assistant response text remains enabled.
+const ENABLE_USER_TRANSCRIPT = false;
+
 // ── Module-scope state ──────────────────────────────────────────────────────
 
 let _session = null;
@@ -57,6 +61,9 @@ let _pendingUserTranscriptTimer = null;
 let _pendingAssistantTranscriptTimer = null;
 let _pendingUserTranscriptText = "";
 let _pendingAssistantTranscriptText = "";
+let _awaitingToolCompletionAck = false;
+let _toolCompletionAckTimer = null;
+let _assistantBaselineBeforeToolAck = "";
 
 // ── Event System ────────────────────────────────────────────────────────────
 
@@ -96,8 +103,20 @@ function getSdkErrorMessage(err) {
   return "Session error";
 }
 
+function isGenericSdkErrorMessage(message) {
+  const normalized = String(message || "").trim().toLowerCase();
+  if (!normalized) return true;
+  return normalized === "session error" || normalized === "unknown error";
+}
+
 function isNonFatalSdkSessionError(err) {
   const message = getSdkErrorMessage(err);
+  const lower = String(message || "").toLowerCase();
+  // Tool policy errors are surfaced in tool-call UI; they should not trip a
+  // persistent top-level "Session error" banner while audio remains healthy.
+  if (lower.includes("not allowed for session-bound calls")) {
+    return true;
+  }
   if (!message) return false;
   // Seen during transient renegotiation on some browsers even when stream remains active.
   if (/setRemoteDescription/i.test(message) && /SessionDescription/i.test(message)) {
@@ -208,6 +227,36 @@ function _resetTranscriptPersistenceState() {
     clearTimeout(_pendingAssistantTranscriptTimer);
     _pendingAssistantTranscriptTimer = null;
   }
+  if (_toolCompletionAckTimer) {
+    clearTimeout(_toolCompletionAckTimer);
+    _toolCompletionAckTimer = null;
+  }
+  _awaitingToolCompletionAck = false;
+  _assistantBaselineBeforeToolAck = "";
+}
+
+function _flushPendingTranscriptBuffers() {
+  if (_pendingUserTranscriptTimer) {
+    clearTimeout(_pendingUserTranscriptTimer);
+    _pendingUserTranscriptTimer = null;
+  }
+  if (_pendingAssistantTranscriptTimer) {
+    clearTimeout(_pendingAssistantTranscriptTimer);
+    _pendingAssistantTranscriptTimer = null;
+  }
+
+  const finalUser = String(_pendingUserTranscriptText || "").trim();
+  if (finalUser) {
+    _persistTranscriptIfNew("user", finalUser, "sdk.history_updated.user.flush");
+  }
+
+  const finalAssistant = String(_pendingAssistantTranscriptText || "").trim();
+  if (finalAssistant) {
+    _persistTranscriptIfNew("assistant", finalAssistant, "sdk.history_updated.assistant.flush");
+  }
+
+  _pendingUserTranscriptText = "";
+  _pendingAssistantTranscriptText = "";
 }
 
 function _persistTranscriptIfNew(role, text, eventType) {
@@ -224,6 +273,35 @@ function _persistTranscriptIfNew(role, text, eventType) {
   _recordTranscript(normalizedRole, value, eventType);
 }
 
+function _markToolCompletionPending() {
+  _awaitingToolCompletionAck = true;
+  _assistantBaselineBeforeToolAck = String(_lastPersistedAssistantTranscript || "").trim();
+  if (_toolCompletionAckTimer) clearTimeout(_toolCompletionAckTimer);
+  _toolCompletionAckTimer = setTimeout(() => {
+    _toolCompletionAckTimer = null;
+    if (!_awaitingToolCompletionAck) return;
+    const ack = "Done.";
+    sdkVoiceResponse.value = ack;
+    emit("response-complete", { text: ack });
+    _persistTranscriptIfNew("assistant", ack, "tool_call.done.auto_ack.timeout");
+    _awaitingToolCompletionAck = false;
+    _assistantBaselineBeforeToolAck = "";
+  }, 6000);
+}
+
+function _markAssistantToolResponseObserved(latestAssistantText = "") {
+  if (!_awaitingToolCompletionAck) return;
+  const latest = String(latestAssistantText || _lastPersistedAssistantTranscript || "").trim();
+  if (!latest) return;
+  if (latest === _assistantBaselineBeforeToolAck) return;
+  _awaitingToolCompletionAck = false;
+  _assistantBaselineBeforeToolAck = "";
+  if (_toolCompletionAckTimer) {
+    clearTimeout(_toolCompletionAckTimer);
+    _toolCompletionAckTimer = null;
+  }
+}
+
 function _scheduleUserTranscriptFinalize(text) {
   const value = String(text || "").trim();
   if (!value) return;
@@ -233,8 +311,12 @@ function _scheduleUserTranscriptFinalize(text) {
     _pendingUserTranscriptTimer = null;
     const finalText = String(_pendingUserTranscriptText || "").trim();
     if (!finalText) return;
-    sdkVoiceTranscript.value = finalText;
-    emit("transcript", { text: finalText, final: true });
+    if (ENABLE_USER_TRANSCRIPT) {
+      sdkVoiceTranscript.value = finalText;
+      emit("transcript", { text: finalText, final: true });
+    } else {
+      sdkVoiceTranscript.value = "";
+    }
     _persistTranscriptIfNew("user", finalText, "sdk.history_updated.user.final");
   }, 350);
 }
@@ -252,6 +334,7 @@ function _scheduleAssistantTranscriptFinalize(text) {
     sdkVoiceResponse.value = finalText;
     emit("response-complete", { text: finalText });
     _persistTranscriptIfNew("assistant", finalText, "sdk.history_updated.assistant.final");
+    _markAssistantToolResponseObserved(finalText);
     sdkVoiceState.value = "listening";
   }, 700);
 }
@@ -281,7 +364,7 @@ async function startAgentsSdkSession(config, options = {}) {
       executor: _callContext.executor || undefined,
       mode: _callContext.mode || undefined,
       model: _callContext.model || undefined,
-      delegateOnly: Boolean(_callContext.sessionId),
+      delegateOnly: false,
       sdkMode: true,
     }),
   });
@@ -296,20 +379,35 @@ async function startAgentsSdkSession(config, options = {}) {
     name: "Bosun Voice Agent",
     instructions: tokenData.instructions || "You are Bosun, a helpful voice assistant.",
     tools: (tokenData.tools || []).map((t) => {
-      const executeTool = async (args) => {
-        // Execute tool via server
-        const res = await fetch("/api/voice/tool", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            toolName: t.name,
-            args,
-            sessionId: sdkVoiceSessionId.value,
-            executor: _callContext.executor || undefined,
-            mode: _callContext.mode || undefined,
-            model: _callContext.model || undefined,
-          }),
-        });
+      // Core fetch logic for executing a tool via the server.
+      const fetchToolResult = async (args) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30_000);
+        let res;
+        try {
+          res = await fetch("/api/voice/tool", {
+            method: "POST",
+            signal: controller.signal,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              toolName: t.name,
+              args,
+              sessionId: sdkVoiceSessionId.value,
+              executor: _callContext.executor || undefined,
+              mode: _callContext.mode || undefined,
+              model: _callContext.model || undefined,
+            }),
+          });
+        } catch (fetchErr) {
+          const isTimeout = fetchErr?.name === "AbortError";
+          throw new Error(
+            isTimeout
+              ? `Tool "${t.name}" timed out after 30 s — the server may still be processing`
+              : (fetchErr?.message || `Tool "${t.name}" fetch failed`),
+          );
+        } finally {
+          clearTimeout(timeoutId);
+        }
         const result = await res.json().catch(() => ({}));
         if (!res.ok || result?.error) {
           const message = String(result?.error || `Tool ${t.name} failed (${res.status})`).trim();
@@ -317,6 +415,26 @@ async function startAgentsSdkSession(config, options = {}) {
         }
         return result.result || "No output";
       };
+
+      // The @openai/agents SDK calls tool.invoke(runContext, inputString, details)
+      // where runContext is a RunContext object (contains context.history) and
+      // inputString is the raw JSON string of tool arguments from the model.
+      const invokeTool = async (_runContext, inputStr) => {
+        let args = {};
+        if (typeof inputStr === "string") {
+          try { args = JSON.parse(inputStr || "{}"); } catch { args = {}; }
+        } else if (inputStr && typeof inputStr === "object") {
+          args = inputStr;
+        }
+        return fetchToolResult(args);
+      };
+
+      // execute(parsedInput, runContext) — used if the SDK wraps via tool() helper.
+      const executeTool = async (parsedInput) => {
+        const args = (parsedInput && typeof parsedInput === "object") ? parsedInput : {};
+        return fetchToolResult(args);
+      };
+
       return {
         type: "function",
         name: t.name,
@@ -329,7 +447,7 @@ async function startAgentsSdkSession(config, options = {}) {
           return false;
         },
         execute: executeTool,
-        invoke: executeTool,
+        invoke: invokeTool,
       };
     }),
   });
@@ -384,6 +502,9 @@ async function startAgentsSdkSession(config, options = {}) {
   // ── Wire up SDK events to our signals ──
 
   session.on("history_updated", (history) => {
+    if (sdkVoiceError.value && sdkVoiceState.value !== "error") {
+      sdkVoiceError.value = null;
+    }
     const items = history || [];
     const lastUserMsg = [...items].reverse().find(
       (item) => item.role === "user" && item.type === "message"
@@ -402,6 +523,7 @@ async function startAgentsSdkSession(config, options = {}) {
     if (lastAssistantMsg) {
       const response = lastAssistantMsg.content?.map((c) => c.transcript || c.text || "").join("") || "";
       if (response) {
+        _markAssistantToolResponseObserved(response);
         _scheduleAssistantTranscriptFinalize(response);
       }
     }
@@ -430,13 +552,40 @@ async function startAgentsSdkSession(config, options = {}) {
     sdkVoiceToolCalls.value = sdkVoiceToolCalls.value.map((tc) =>
       tc.callId === callId ? { ...tc, status: "complete" } : tc
     );
+    // Return to listening once all tool calls have resolved.
+    const stillRunning = sdkVoiceToolCalls.value.some((tc) => tc.status === "running");
+    if (!stillRunning && sdkVoiceState.value === "thinking") {
+      sdkVoiceState.value = "listening";
+    }
+    if (!stillRunning) {
+      _markToolCompletionPending();
+    }
     emit("tool-call-complete", { callId });
+  });
+
+  session.on("tool_call_error", (event) => {
+    const callId = event?.callId || event?.call_id;
+    const errMsg = String(event?.error?.message || event?.message || "Tool failed");
+    sdkVoiceToolCalls.value = sdkVoiceToolCalls.value.map((tc) =>
+      tc.callId === callId ? { ...tc, status: "error", error: errMsg } : tc
+    );
+    const stillRunning = sdkVoiceToolCalls.value.some((tc) => tc.status === "running");
+    if (!stillRunning && sdkVoiceState.value === "thinking") {
+      sdkVoiceState.value = "listening";
+    }
+    emit("tool-call-error", { callId, error: errMsg });
   });
 
   session.on("error", (err) => {
     const message = getSdkErrorMessage(err);
     if (isNonFatalSdkSessionError(err)) {
       console.warn("[voice-client-sdk] transient session warning:", message);
+      return;
+    }
+    const currentState = String(sdkVoiceState.value || "").toLowerCase();
+    const sessionStillActive = ["connected", "listening", "thinking", "speaking"].includes(currentState);
+    if (sessionStillActive && isGenericSdkErrorMessage(message)) {
+      console.warn("[voice-client-sdk] ignoring generic session warning while active:", message);
       return;
     }
     console.error("[voice-client-sdk] session error:", err);
@@ -669,15 +818,20 @@ function handleGeminiServerEvent(msg) {
 
   switch (type) {
     case "transcript.user":
-      sdkVoiceTranscript.value = msg.text || "";
-      emit("transcript", { text: msg.text, final: true });
-      _recordTranscript("user", msg.text, "gemini.user_transcript");
+      if (ENABLE_USER_TRANSCRIPT) {
+        sdkVoiceTranscript.value = msg.text || "";
+        emit("transcript", { text: msg.text, final: true });
+      } else {
+        sdkVoiceTranscript.value = "";
+      }
+      _persistTranscriptIfNew("user", msg.text, "gemini.user_transcript");
       break;
 
     case "transcript.assistant":
       sdkVoiceResponse.value = msg.text || "";
       emit("response-complete", { text: msg.text });
-      _recordTranscript("assistant", msg.text, "gemini.assistant_transcript");
+      _persistTranscriptIfNew("assistant", msg.text, "gemini.assistant_transcript");
+      _markAssistantToolResponseObserved(msg.text || "");
       break;
 
     case "audio.delta":
@@ -737,6 +891,10 @@ async function handleGeminiToolCall(msg) {
     sdkVoiceToolCalls.value = sdkVoiceToolCalls.value.map((tc) =>
       tc.callId === callId ? { ...tc, status: "complete", result: result.result } : tc
     );
+    const stillRunning = sdkVoiceToolCalls.value.some((tc) => tc.status === "running");
+    if (!stillRunning) {
+      _markToolCompletionPending();
+    }
 
     // Send tool result back to Gemini via WebSocket
     if (_session && _session.readyState === WebSocket.OPEN) {
@@ -874,6 +1032,7 @@ export async function startSdkVoiceSession(options = {}) {
  */
 export function stopSdkVoiceSession() {
   emit("session-ending", { sessionId: sdkVoiceSessionId.value });
+  _flushPendingTranscriptBuffers();
   if (_geminiRecorder) {
     try { _geminiRecorder.stop(); } catch { /* ignore */ }
     _geminiRecorder = null;
@@ -938,23 +1097,77 @@ export function interruptSdkResponse() {
 
 /**
  * Send a text message to the voice agent.
+ * @param {string} text
+ * @param {{ persistText?: string, eventType?: string }} [options]
  */
-export function sendSdkTextMessage(text) {
+export function sendSdkTextMessage(text, options = {}) {
+  const inputText = String(text || "").trim();
+  if (!inputText) return;
   if (!_session) {
     console.warn("[voice-client-sdk] Cannot send text — no active session");
     return;
   }
 
+  const persistText = String(options?.persistText ?? inputText).trim();
+  if (persistText) {
+    _persistTranscriptIfNew(
+      "user",
+      persistText,
+      String(options?.eventType || "sdk.send_text_message"),
+    );
+  }
+
   if (typeof _session.sendMessage === "function") {
     // @openai/agents SDK
-    _session.sendMessage(text);
+    _session.sendMessage(inputText);
   } else if (_session.readyState === WebSocket.OPEN) {
     // Gemini WebSocket
     _session.send(JSON.stringify({
       type: "text.input",
-      text,
+      text: inputText,
     }));
   }
+}
+
+/**
+ * Stream an image frame into the active Realtime session without forcing
+ * an immediate spoken response. Returns true when sent via realtime transport.
+ */
+export function sendSdkImageFrame(imageDataUrl, options = {}) {
+  const image = String(imageDataUrl || "").trim();
+  if (!image || !_session) return false;
+  const source = String(options?.source || "screen").trim() || "screen";
+  const width = Number(options?.width) || undefined;
+  const height = Number(options?.height) || undefined;
+
+  try {
+    if (typeof _session.addImage === "function") {
+      _session.addImage(image, { triggerResponse: false });
+      return true;
+    }
+    // Prefer low-level event fallback over custom sendMessage payload shapes
+    // to avoid SDK version mismatches (observed in some browser builds).
+    if (typeof _session.sendEvent === "function") {
+      _session.sendEvent({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_image",
+              image_url: image,
+              detail: "low",
+            },
+          ],
+        },
+      });
+      return true;
+    }
+  } catch (err) {
+    console.warn("[voice-client-sdk] failed to send realtime image frame:", err?.message || err);
+  }
+  return false;
 }
 
 /**
@@ -977,6 +1190,44 @@ export function getSdkSessionInfo() {
     usingLegacy: _usingLegacyFallback,
     sdkConfig: _sdkConfig,
   };
+}
+
+/**
+ * Send a Bosun slash command or plain text to the active voice session.
+ *
+ * Slash command routing:
+ *   /instant <prompt>    → prompts the agent for a fast inline answer
+ *   /ask <prompt>        → prompts the agent in read-only ask mode
+ *   /background <prompt> → requests a background agent delegation
+ *   /bg <prompt>         → alias for /background
+ *   /mcp <tool> [server] → invokes an MCP tool via the agent
+ *   /workspace <cmd>     → runs a workspace shell command
+ *   <plain text>         → sent directly to the Realtime session
+ *
+ * @param {string} commandOrText  Slash command or plain message text.
+ */
+export function sendVoiceCommand(commandOrText) {
+  const text = String(commandOrText || "").trim();
+  if (!text) return;
+
+  if (!text.startsWith("/")) {
+    sendSdkTextMessage(text, {
+      persistText: text,
+      eventType: "sdk.voice_command.text",
+    });
+    return;
+  }
+
+  // For slash commands, send a structured natural-language instruction that
+  // will cause the Realtime agent to call bosun_slash_command tool.
+  // Wrapping in a clear directive avoids the agent interpreting the slash as
+  // part of the conversation rather than a tool invocation trigger.
+  const instruction =
+    `[SYSTEM COMMAND] Call the bosun_slash_command tool with command: ${text}`;
+  sendSdkTextMessage(instruction, {
+    persistText: text,
+    eventType: "sdk.voice_command.slash",
+  });
 }
 
 // ── Duration Timer ──────────────────────────────────────────────────────────

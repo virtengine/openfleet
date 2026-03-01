@@ -64,7 +64,7 @@ describe("ui-server voice + vision routes", () => {
     return { port };
   }
 
-  it("persists transcript turns into the bound session history", async () => {
+  it("persists user and assistant transcript turns into the bound session history", async () => {
     const { port } = await startServer();
     const sessionId = `primary-voice-http-${Date.now()}`;
 
@@ -83,12 +83,29 @@ describe("ui-server voice + vision routes", () => {
     expect(res.status).toBe(200);
     expect(data.ok).toBe(true);
 
+    const assistantRes = await fetch(`http://127.0.0.1:${port}/api/voice/transcript`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId,
+        role: "assistant",
+        content: "I checked the logs. The build failed due to lint errors.",
+        executor: "codex-sdk",
+        mode: "agent",
+      }),
+    });
+    const assistantData = await assistantRes.json();
+    expect(assistantRes.status).toBe(200);
+    expect(assistantData.ok).toBe(true);
+
     const { getSessionById } = await import("../session-tracker.mjs");
     const session = getSessionById(sessionId);
     expect(session).toBeTruthy();
-    const latest = (session?.messages || []).at(-1);
-    expect(latest?.role).toBe("user");
-    expect(latest?.content).toContain("check my build logs");
+    const messages = session?.messages || [];
+    const userTurn = messages.find((msg) => msg?.role === "user");
+    const assistantTurn = messages.find((msg) => msg?.role === "assistant");
+    expect(userTurn?.content).toContain("check my build logs");
+    expect(assistantTurn?.content).toContain("build failed due to lint errors");
   }, 20_000);
 
   it("queues workflow trigger evaluation for transcript and wake phrase events", async () => {

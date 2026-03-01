@@ -528,22 +528,39 @@ const TAB_COMPONENTS = {
   settings: SettingsTab,
 };
 
+function getMaxFreshnessMs(rawFreshness) {
+  if (typeof rawFreshness === "number") {
+    return Number.isFinite(rawFreshness) ? rawFreshness : null;
+  }
+  if (rawFreshness && typeof rawFreshness === "object") {
+    const vals = Object.values(rawFreshness).filter((v) => Number.isFinite(v));
+    return vals.length ? Math.max(...vals) : null;
+  }
+  return null;
+}
+
+function inferUiConnected() {
+  const freshness = getMaxFreshnessMs(dataFreshness.value);
+  // If data is refreshing successfully, prefer "connected" even when ws
+  // lags behind to avoid "Offline" + "Updated 0s ago" contradiction.
+  return (
+    connected.value ||
+    (!backendDown.value &&
+      freshness != null &&
+      Number.isFinite(freshness) &&
+      freshness <= 30_000)
+  );
+}
+
 /* ═══════════════════════════════════════════════
  *  Header
  * ═══════════════════════════════════════════════ */
 function Header() {
-  const isConn = connected.value;
+  const isConn = inferUiConnected();
   const user = getTelegramUser();
   const latency = wsLatency.value;
   const reconnect = wsReconnectIn.value;
-  const freshnessRaw = dataFreshness.value;
-  let freshness = null;
-  if (typeof freshnessRaw === "number") {
-    freshness = Number.isFinite(freshnessRaw) ? freshnessRaw : null;
-  } else if (freshnessRaw && typeof freshnessRaw === "object") {
-    const vals = Object.values(freshnessRaw).filter((v) => Number.isFinite(v));
-    freshness = vals.length ? Math.max(...vals) : null;
-  }
+  const freshness = getMaxFreshnessMs(dataFreshness.value);
 
   // Connection quality label
   let connLabel = "Offline";
@@ -600,7 +617,7 @@ function Header() {
  * ═══════════════════════════════════════════════ */
 function SidebarNav({ collapsed = false, onToggle }) {
   const user = getTelegramUser();
-  const isConn = connected.value;
+  const isConn = inferUiConnected();
 
   const collapseIcon = collapsed
     ? html`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 3l5 5-5 5"/></svg>`
@@ -818,7 +835,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
   const [smartLogs, setSmartLogs] = useState([]);
   const [logState, setLogState] = useState("idle");
   const lastActiveLabel = lastActive ? formatRelative(lastActive) : "—";
-  const apiStatusLabel = connected.value ? "Connected" : "Offline";
+  const apiStatusLabel = inferUiConnected() ? "Connected" : "Offline";
   const wsStatusLabel = wsConnected.value ? "Live" : "Closed";
   const backendLastSeenLabel = backendLastSeen.value
     ? formatRelative(backendLastSeen.value)

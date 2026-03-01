@@ -21,24 +21,23 @@ describe("loadAgentPrompts generic prompt loading", () => {
     }
   });
 
-  it("supports config override path for planner prompt", async () => {
+  it("supports config override path for taskExecutor prompt", async () => {
     await mkdir(resolve(rootDir, "custom-prompts"), { recursive: true });
     await writeFile(
-      resolve(rootDir, "custom-prompts", "planner.md"),
-      "PLANNER_OVERRIDE_PROMPT",
+      resolve(rootDir, "custom-prompts", "task-executor.md"),
+      "EXECUTOR_OVERRIDE_PROMPT",
       "utf8",
     );
 
     const prompts = loadAgentPrompts(rootDir, rootDir, {
-      agentPrompts: { planner: "custom-prompts/planner.md" },
+      agentPrompts: { taskExecutor: "custom-prompts/task-executor.md" },
     });
 
-    expect(prompts.planner).toContain("PLANNER_OVERRIDE_PROMPT");
+    expect(prompts.taskExecutor).toContain("EXECUTOR_OVERRIDE_PROMPT");
   });
 
   it("falls back to built-in prompt when no files exist", () => {
     const prompts = loadAgentPrompts(rootDir, rootDir, {});
     expect(prompts.orchestrator).toContain("Task Orchestrator Agent");
-    expect(prompts.planner).toContain("Codex-Task-Planner Agent");
   });
 });

@@ -1213,7 +1213,6 @@ let _startFreshSession = null;
 let _attemptFreshSessionRetry = null;
 let _buildRetryPrompt = null;
 let _getActiveAttemptInfo = null;
-let _triggerTaskPlanner = null;
 let _reconcileTaskStatuses = null;
 let _onDigestSealed = null;
 let _getAnomalyReport = null;
@@ -1248,7 +1247,6 @@ export function injectMonitorFunctions({
   attemptFreshSessionRetry,
   buildRetryPrompt,
   getActiveAttemptInfo,
-  triggerTaskPlanner,
   reconcileTaskStatuses,
   onDigestSealed,
   getAnomalyReport,
@@ -1279,7 +1277,6 @@ export function injectMonitorFunctions({
   _attemptFreshSessionRetry = attemptFreshSessionRetry;
   _buildRetryPrompt = buildRetryPrompt;
   _getActiveAttemptInfo = getActiveAttemptInfo;
-  _triggerTaskPlanner = triggerTaskPlanner;
   _reconcileTaskStatuses = reconcileTaskStatuses;
   _onDigestSealed = onDigestSealed || null;
   _getAnomalyReport = getAnomalyReport || null;
@@ -3301,6 +3298,7 @@ const COMMANDS = {
   "/menu": { handler: cmdMenu, desc: "Open the control center UI" },
   "/help": { handler: cmdHelp, desc: "Show available commands" },
   "/helpfull": { handler: cmdHelpFull, desc: "Show all commands (text list)" },
+  "/commands": { handler: cmdHelpFull, desc: "Alias for /helpfull" },
   "/app": { handler: cmdApp, desc: "Open the Control Center Mini App" },
   "/miniapp": { handler: cmdApp, desc: "Open the Control Center Mini App" },
   "/webapp": { handler: cmdApp, desc: "Open the Control Center Mini App" },
@@ -3354,7 +3352,7 @@ const COMMANDS = {
   },
   "/plan": {
     handler: cmdPlan,
-    desc: "Trigger task planner: /plan [count] [prompt] (e.g. /plan 5 fix auth bugs)",
+    desc: "Task planner (now managed via workflow templates)",
   },
   "/cleanup": {
     handler: cmdCleanupMerged,
@@ -3891,23 +3889,12 @@ const UI_INPUT_HANDLERS = {
     buildCommand: (input) => `/shell ${input}`,
   },
   plan_count: {
-    prompt: "How many tasks should the planner generate? (e.g. 5)",
-    buildCommand: (input) => `/plan ${input}`,
+    prompt: "Task planner is now managed via Workflow Templates. Use /workflows to manage.",
+    buildCommand: () => `/plan`,
   },
   plan_prompt: {
-    prompt:
-      "Describe what you want the planner to focus on.\n" +
-      "You can prefix with a count: e.g. '10 fix auth bugs and add tests'\n" +
-      "Or just a topic: 'improve error handling across API layer'",
-    buildCommand: (input) => {
-      const trimmed = input.trim();
-      const firstWord = trimmed.split(/\s+/)[0];
-      const maybeCount = parseInt(firstWord, 10);
-      if (Number.isFinite(maybeCount) && maybeCount > 0) {
-        return `/plan ${trimmed}`;
-      }
-      return `/plan 5 ${trimmed}`;
-    },
+    prompt: "Task planner is now managed via Workflow Templates. Use /workflows to manage.",
+    buildCommand: () => `/plan`,
   },
   starttask: {
     prompt:
@@ -4920,7 +4907,7 @@ Object.assign(UI_SCREENS, {
         ],
         // Management
         [
-          uiButton(":grid: Planner", uiGoAction("plan")),
+          uiButton(":grid: Workflows", uiGoAction("plan")),
           uiButton(":repeat: Retry", uiGoAction("retry")),
           uiButton(":trash: Cleanup", uiCmdAction("/cleanup")),
         ],
@@ -5123,20 +5110,11 @@ Object.assign(UI_SCREENS, {
     },
   },
   plan: {
-    title: "Task Planner",
+    title: "Task Planner (Legacy)",
     parent: "tasks",
-    body: () => "Trigger the planner to seed new tasks.",
+    body: () => "Task planner is now managed via Workflow Templates.\nUse /workflows to manage planning workflows.",
     keyboard: () =>
       buildKeyboard([
-        [
-          uiButton("Plan 3", uiCmdAction("/plan 3")),
-          uiButton("Plan 5", uiCmdAction("/plan 5")),
-          uiButton("Plan 10", uiCmdAction("/plan 10")),
-        ],
-        [
-          uiButton("Custom Count", uiInputAction("plan_count")),
-          uiButton("With Prompt", uiInputAction("plan_prompt")),
-        ],
         uiNavRow("tasks"),
       ]),
   },
@@ -7947,110 +7925,11 @@ async function cmdRetry(chatId, args) {
   }
 }
 
-async function cmdPlan(chatId, args) {
-  if (!_triggerTaskPlanner) {
-    await sendReply(
-      chatId,
-      ":close: Task planner not available (not injected from monitor).",
-    );
-    return;
-  }
-
-  // Parse optional task count and/or free-form prompt:
-  //   /plan           → 5 tasks, no prompt
-  //   /plan 10        → 10 tasks, no prompt
-  //   /plan fix auth  → 5 tasks, userPrompt="fix auth"
-  //   /plan 10 fix auth → 10 tasks, userPrompt="fix auth"
-  const rawArgs = (args || "").trim();
-  const firstToken = rawArgs.split(/\s+/)[0];
-  const parsedCount = parseInt(firstToken, 10);
-  let taskCount = 5;
-  let userPrompt;
-  if (Number.isFinite(parsedCount) && parsedCount > 0) {
-    taskCount = parsedCount;
-    const remainder = rawArgs.slice(firstToken.length).trim();
-    if (remainder) userPrompt = remainder;
-  } else if (rawArgs) {
-    userPrompt = rawArgs;
-  }
-
-  const promptSuffix = userPrompt ? ` — "${userPrompt.slice(0, 60)}${userPrompt.length > 60 ? "…" : ""}"` : "";
-  await sendReply(chatId, `:clipboard: Triggering task planner (${taskCount} tasks${promptSuffix})...`);
-
-  try {
-    const result = await _triggerTaskPlanner(
-      "manual-telegram",
-      { source: "telegram /plan command" },
-      {
-        taskCount,
-        userPrompt,
-        notify: false,
-        preferredMode: "codex-sdk",
-        allowCodexWhenDisabled: true,
-      },
-    );
-    if (result?.status === "skipped") {
-      if (result.reason === "planner_disabled") {
-        await sendReply(
-          chatId,
-          ":alert: Task planner disabled. Set TASK_PLANNER_MODE=kanban or codex-sdk.",
-        );
-        return;
-      }
-      if (result.reason === "planner_busy") {
-        await sendReply(
-          chatId,
-          ":alert: Task planner already running. Try again in a moment.",
-        );
-        return;
-      }
-      const lines = [
-        ":alert: Task planner skipped — a planning task already exists.",
-      ];
-      if (result.taskTitle) {
-        lines.push(`Title: ${result.taskTitle}`);
-      }
-      if (result.taskId) {
-        lines.push(`Task ID: ${result.taskId}`);
-      }
-      if (result.taskUrl) {
-        lines.push(result.taskUrl);
-      }
-      await sendReply(chatId, lines.join("\n"));
-      return;
-    }
-    if (result?.status === "created") {
-      const lines = [
-        ":check: Task planner task created.",
-        result.taskTitle ? `Title: ${result.taskTitle}` : null,
-        result.taskId ? `Task ID: ${result.taskId}` : null,
-        result.taskUrl || null,
-      ].filter(Boolean);
-      await sendReply(chatId, lines.join("\n"));
-      return;
-    }
-    if (result?.status === "completed") {
-      const createdInfo =
-        Number.isFinite(result.createdTaskCount) &&
-        Number.isFinite(result.parsedTaskCount)
-          ? `Created ${result.createdTaskCount}/${result.parsedTaskCount} tasks.\n`
-          : "";
-      const artifactInfo = result.artifactPath
-        ? `\nArtifact: ${result.artifactPath}`
-        : "";
-      await sendReply(
-        chatId,
-        `:check: Task planner completed.\n${createdInfo}Output: ${result.outputPath}${artifactInfo}`,
-      );
-      return;
-    }
-    await sendReply(
-      chatId,
-      `:check: Task planner triggered for ${taskCount} tasks. Check backlog shortly.`,
-    );
-  } catch (err) {
-    await sendReply(chatId, `:close: Task planner error: ${err.message || err}`);
-  }
+async function cmdPlan(chatId, _args) {
+  await sendReply(
+    chatId,
+    "Task planner is now managed via Workflow Templates. Use /workflows to manage.",
+  );
 }
 
 async function cmdCleanupMerged(chatId, args) {

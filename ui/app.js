@@ -152,6 +152,29 @@ function isFollowWindowFromUrl() {
   return params.get("follow") === "1";
 }
 
+function sanitizeFollowCall(value) {
+  return String(value || "").trim().toLowerCase() === "video" ? "video" : "voice";
+}
+
+function buildBrowserFollowUrl(detail = {}) {
+  if (typeof window === "undefined") return null;
+  const target = new URL(window.location.href);
+  target.searchParams.set("follow", "1");
+  target.searchParams.set("launch", "voice");
+  target.searchParams.set("call", sanitizeFollowCall(detail?.call));
+  const sessionId = String(detail?.sessionId || "").trim();
+  const executor = String(detail?.executor || "").trim();
+  const mode = String(detail?.mode || "").trim();
+  const model = String(detail?.model || "").trim();
+  const vision = String(detail?.initialVisionSource || "").trim();
+  if (sessionId) target.searchParams.set("sessionId", sessionId);
+  if (executor) target.searchParams.set("executor", executor);
+  if (mode) target.searchParams.set("mode", mode);
+  if (model) target.searchParams.set("model", model);
+  if (vision) target.searchParams.set("vision", vision);
+  return target.toString();
+}
+
 function readFloatingCallState() {
   if (typeof window === "undefined") return { active: false };
   try {
@@ -160,9 +183,15 @@ function readFloatingCallState() {
     const parsed = JSON.parse(raw);
     return {
       active: parsed?.active === true,
-      call: String(parsed?.call || "").trim().toLowerCase() === "video"
-        ? "video"
-        : "voice",
+      call: sanitizeFollowCall(parsed?.call),
+      sessionId: String(parsed?.sessionId || "").trim() || null,
+      executor: String(parsed?.executor || "").trim() || null,
+      mode: String(parsed?.mode || "").trim() || null,
+      model: String(parsed?.model || "").trim() || null,
+      initialVisionSource: (() => {
+        const source = String(parsed?.initialVisionSource || "").trim().toLowerCase();
+        return source === "camera" || source === "screen" ? source : null;
+      })(),
       updatedAt: Number(parsed?.updatedAt || 0) || 0,
     };
   } catch {
@@ -184,10 +213,15 @@ function writeFloatingCallState(nextState) {
       FLOATING_CALL_STATE_KEY,
       JSON.stringify({
         active: nextState?.active === true,
-        call:
-          String(nextState?.call || "").trim().toLowerCase() === "video"
-            ? "video"
-            : "voice",
+        call: sanitizeFollowCall(nextState?.call),
+        sessionId: String(nextState?.sessionId || "").trim() || null,
+        executor: String(nextState?.executor || "").trim() || null,
+        mode: String(nextState?.mode || "").trim() || null,
+        model: String(nextState?.model || "").trim() || null,
+        initialVisionSource: (() => {
+          const source = String(nextState?.initialVisionSource || "").trim().toLowerCase();
+          return source === "camera" || source === "screen" ? source : null;
+        })(),
         updatedAt: Date.now(),
       }),
     );
@@ -581,22 +615,39 @@ const TAB_COMPONENTS = {
   settings: SettingsTab,
 };
 
+function getMaxFreshnessMs(rawFreshness) {
+  if (typeof rawFreshness === "number") {
+    return Number.isFinite(rawFreshness) ? rawFreshness : null;
+  }
+  if (rawFreshness && typeof rawFreshness === "object") {
+    const vals = Object.values(rawFreshness).filter((v) => Number.isFinite(v));
+    return vals.length ? Math.max(...vals) : null;
+  }
+  return null;
+}
+
+function inferUiConnected() {
+  const freshness = getMaxFreshnessMs(dataFreshness.value);
+  // If data is refreshing successfully, prefer "connected" even when ws
+  // lags behind to avoid "Offline" + "Updated 0s ago" contradiction.
+  return (
+    connected.value ||
+    (!backendDown.value &&
+      freshness != null &&
+      Number.isFinite(freshness) &&
+      freshness <= 30_000)
+  );
+}
+
 /* ═══════════════════════════════════════════════
  *  Header
  * ═══════════════════════════════════════════════ */
 function Header() {
-  const isConn = connected.value;
+  const isConn = inferUiConnected();
   const user = getTelegramUser();
   const latency = wsLatency.value;
   const reconnect = wsReconnectIn.value;
-  const freshnessRaw = dataFreshness.value;
-  let freshness = null;
-  if (typeof freshnessRaw === "number") {
-    freshness = Number.isFinite(freshnessRaw) ? freshnessRaw : null;
-  } else if (freshnessRaw && typeof freshnessRaw === "object") {
-    const vals = Object.values(freshnessRaw).filter((v) => Number.isFinite(v));
-    freshness = vals.length ? Math.max(...vals) : null;
-  }
+  const freshness = getMaxFreshnessMs(dataFreshness.value);
 
   // Connection quality label
   let connLabel = "Offline";
@@ -653,7 +704,7 @@ function Header() {
  * ═══════════════════════════════════════════════ */
 function SidebarNav({ collapsed = false, onToggle }) {
   const user = getTelegramUser();
-  const isConn = connected.value;
+  const isConn = inferUiConnected();
 
   const collapseIcon = collapsed
     ? html`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 3l5 5-5 5"/></svg>`
@@ -871,7 +922,7 @@ function InspectorPanel({ onResizeStart, onResizeReset, showResizer }) {
   const [smartLogs, setSmartLogs] = useState([]);
   const [logState, setLogState] = useState("idle");
   const lastActiveLabel = lastActive ? formatRelative(lastActive) : "—";
-  const apiStatusLabel = connected.value ? "Connected" : "Offline";
+  const apiStatusLabel = inferUiConnected() ? "Connected" : "Offline";
   const wsStatusLabel = wsConnected.value ? "Live" : "Closed";
   const backendLastSeenLabel = backendLastSeen.value
     ? formatRelative(backendLastSeen.value)
@@ -1794,7 +1845,39 @@ function App() {
           showToast(cfg?.reason || "Voice mode is not available.", "error");
           return;
         }
-        setVoiceTier(Number(cfg?.tier) === 1 ? 1 : 2);
+        const nextTier = Number(cfg?.tier) === 1 ? 1 : 2;
+        const desktopFollowApi = globalThis?.veDesktop?.follow;
+        const canOpenDesktopFollow =
+          !followWindowMode &&
+          typeof desktopFollowApi?.open === "function";
+
+        if (canOpenDesktopFollow) {
+          const followResult = await desktopFollowApi.open({
+            call: requestedCallType,
+            sessionId: currentSessionId,
+            initialVisionSource: requestedVisionSource || undefined,
+            executor: currentExecutor || undefined,
+            mode: currentMode || undefined,
+            model: currentModel || undefined,
+          });
+          if (followResult?.ok) {
+            const nextFloatingState = {
+              active: true,
+              call: requestedCallType,
+              sessionId: currentSessionId,
+              executor: currentExecutor,
+              mode: currentMode,
+              model: currentModel,
+              initialVisionSource: requestedVisionSource,
+            };
+            setFloatingCallState(nextFloatingState);
+            writeFloatingCallState(nextFloatingState);
+            setVoiceOverlayOpen(false);
+            return;
+          }
+        }
+
+        setVoiceTier(nextTier);
         setVoiceOverlayOpen(true);
       } catch (err) {
         showToast(
@@ -1825,10 +1908,24 @@ function App() {
     const nextFloatingState = {
       active: Boolean(voiceOverlayOpen),
       call: voiceCallType,
+      sessionId: voiceSessionId,
+      executor: voiceExecutor,
+      mode: voiceAgentMode,
+      model: voiceModel,
+      initialVisionSource: voiceInitialVisionSource,
     };
     setFloatingCallState(nextFloatingState);
     writeFloatingCallState(nextFloatingState);
-  }, [followWindowMode, voiceOverlayOpen, voiceCallType]);
+  }, [
+    followWindowMode,
+    voiceOverlayOpen,
+    voiceCallType,
+    voiceSessionId,
+    voiceExecutor,
+    voiceAgentMode,
+    voiceModel,
+    voiceInitialVisionSource,
+  ]);
 
   useEffect(() => {
     if (!followWindowMode || !voiceOverlayOpen) return;
@@ -1836,12 +1933,26 @@ function App() {
       const nextFloatingState = {
         active: true,
         call: voiceCallType,
+        sessionId: voiceSessionId,
+        executor: voiceExecutor,
+        mode: voiceAgentMode,
+        model: voiceModel,
+        initialVisionSource: voiceInitialVisionSource,
       };
       setFloatingCallState(nextFloatingState);
       writeFloatingCallState(nextFloatingState);
     }, FLOATING_CALL_HEARTBEAT_INTERVAL_MS);
     return () => globalThis.clearInterval(heartbeat);
-  }, [followWindowMode, voiceOverlayOpen, voiceCallType]);
+  }, [
+    followWindowMode,
+    voiceOverlayOpen,
+    voiceCallType,
+    voiceSessionId,
+    voiceExecutor,
+    voiceAgentMode,
+    voiceModel,
+    voiceInitialVisionSource,
+  ]);
 
   useEffect(() => {
     if (followWindowMode || floatingCallState?.active !== true) return;
@@ -1907,6 +2018,26 @@ function App() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  const openBrowserFollowWindow = useCallback((detail = {}) => {
+    if (typeof globalThis?.open !== "function") {
+      return { ok: false, reason: "Browser popup API is unavailable." };
+    }
+    const followUrl = buildBrowserFollowUrl(detail);
+    if (!followUrl) {
+      return { ok: false, reason: "Could not build follow window URL." };
+    }
+    const popup = globalThis.open(
+      followUrl,
+      "bosun-voice-follow",
+      "popup=yes,width=420,height=680,resizable=yes,scrollbars=yes",
+    );
+    if (!popup) {
+      return { ok: false, reason: "Popup blocked by browser." };
+    }
+    try { popup.focus(); } catch { /* best effort */ }
+    return { ok: true };
   }, []);
 
   useEffect(() => {
@@ -2000,7 +2131,10 @@ function App() {
     isChat &&
     !followWindowMode &&
     isFloatingCallStateFresh(floatingCallState) &&
-    typeof globalThis?.veDesktop?.follow?.restore === "function";
+    (
+      typeof globalThis?.veDesktop?.follow?.restore === "function"
+      || typeof globalThis?.open === "function"
+    );
   const floatingCallLabel =
     String(floatingCallState?.call || "").trim().toLowerCase() === "video"
       ? "Restore floating video call"
@@ -2190,12 +2324,29 @@ function App() {
             title=${floatingCallLabel}
             onClick=${async () => {
               try {
-                const result = await globalThis.veDesktop.follow.restore();
-                if (!result?.ok) {
-                  const nextFloatingState = { active: false, call: floatingCallState?.call };
-                  setFloatingCallState(nextFloatingState);
-                  writeFloatingCallState(nextFloatingState);
-                  showToast("No floating call window is active.", "info");
+                if (typeof globalThis?.veDesktop?.follow?.restore === "function") {
+                  const result = await globalThis.veDesktop.follow.restore();
+                  if (!result?.ok) {
+                    const nextFloatingState = { active: false, call: floatingCallState?.call };
+                    setFloatingCallState(nextFloatingState);
+                    writeFloatingCallState(nextFloatingState);
+                    showToast("No floating call window is active.", "info");
+                  }
+                  return;
+                }
+                const popupResult = openBrowserFollowWindow({
+                  call: floatingCallState?.call,
+                  sessionId: floatingCallState?.sessionId,
+                  initialVisionSource: floatingCallState?.initialVisionSource,
+                  executor: floatingCallState?.executor,
+                  mode: floatingCallState?.mode,
+                  model: floatingCallState?.model,
+                });
+                if (!popupResult.ok) {
+                  showToast(
+                    popupResult.reason || "Could not restore floating browser call window.",
+                    "error",
+                  );
                 }
               } catch {
                 showToast("Could not restore floating call window.", "error");
@@ -2212,7 +2363,64 @@ function App() {
     <${VoiceOverlay}
       visible=${voiceOverlayOpen}
       onClose=${() => setVoiceOverlayOpen(false)}
-      onDismiss=${() => {
+      onDismiss=${(detail = {}) => {
+        const reason = String(detail?.reason || "").trim().toLowerCase();
+        if (!followWindowMode && reason === "externalize") {
+          const followDetail = {
+            call: voiceCallType,
+            sessionId: voiceSessionId,
+            initialVisionSource: voiceInitialVisionSource,
+            executor: voiceExecutor,
+            mode: voiceAgentMode,
+            model: voiceModel,
+          };
+          const desktopFollowApi = globalThis?.veDesktop?.follow;
+          if (typeof desktopFollowApi?.open === "function") {
+            desktopFollowApi
+              .open(followDetail)
+              .then((result) => {
+                if (!result?.ok) {
+                  showToast("Could not open floating call window.", "error");
+                  return;
+                }
+                const nextFloatingState = {
+                  active: true,
+                  call: followDetail.call,
+                  sessionId: followDetail.sessionId,
+                  executor: followDetail.executor,
+                  mode: followDetail.mode,
+                  model: followDetail.model,
+                  initialVisionSource: followDetail.initialVisionSource,
+                };
+                setFloatingCallState(nextFloatingState);
+                writeFloatingCallState(nextFloatingState);
+                setVoiceOverlayOpen(false);
+              })
+              .catch(() => showToast("Could not open floating call window.", "error"));
+            return;
+          }
+          const popupResult = openBrowserFollowWindow(followDetail);
+          if (!popupResult.ok) {
+            showToast(
+              popupResult.reason || "Could not open floating browser call window.",
+              "error",
+            );
+            return;
+          }
+          const nextFloatingState = {
+            active: true,
+            call: followDetail.call,
+            sessionId: followDetail.sessionId,
+            executor: followDetail.executor,
+            mode: followDetail.mode,
+            model: followDetail.model,
+            initialVisionSource: followDetail.initialVisionSource,
+          };
+          setFloatingCallState(nextFloatingState);
+          writeFloatingCallState(nextFloatingState);
+          setVoiceOverlayOpen(false);
+          return;
+        }
         if (followWindowMode && globalThis?.veDesktop?.follow?.hide) {
           globalThis.veDesktop.follow.hide().catch(() => {});
           return;

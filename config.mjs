@@ -542,49 +542,8 @@ function normalizeExecutorEntry(entry, index = 0, total = 1) {
   };
 }
 
-function buildDefaultTriggerTemplates({
-  plannerMode,
-  plannerPerCapitaThreshold,
-  plannerIdleSlotThreshold,
-  plannerDedupHours,
-} = {}) {
+function buildDefaultTriggerTemplates() {
   return [
-    {
-      id: "task-planner",
-      name: "Task Planner",
-      description: "Create planning tasks when backlog/slot metrics indicate replenishment.",
-      enabled: false,
-      action: "task-planner",
-      trigger: {
-        anyOf: [
-          {
-            kind: "metric",
-            metric: "backlogPerCapita",
-            operator: "lt",
-            value: plannerPerCapitaThreshold,
-          },
-          {
-            kind: "metric",
-            metric: "idleSlots",
-            operator: "gte",
-            value: plannerIdleSlotThreshold,
-          },
-          {
-            kind: "metric",
-            metric: "backlogRemaining",
-            operator: "eq",
-            value: 0,
-          },
-        ],
-      },
-      minIntervalMinutes: Math.max(1, Number(plannerDedupHours || 6) * 60),
-      config: {
-        plannerMode,
-        defaultTaskCount: Number(process.env.TASK_PLANNER_DEFAULT_COUNT || "30"),
-        executor: "auto",
-        model: "auto",
-      },
-    },
     {
       id: "daily-review-digest",
       name: "Daily Review Digest",
@@ -1992,32 +1951,8 @@ export function loadConfig(argv = process.argv, options = {}) {
     "summary"
   ).toLowerCase();
 
-  // ── Task Planner ─────────────────────────────────────────
-  // Mode: "codex-sdk" (default) runs Codex directly, "kanban" creates a VK
-  // task for a real agent to plan, "disabled" turns off the planner entirely.
-  const plannerMode = (
-    process.env.TASK_PLANNER_MODE ||
-    configData.plannerMode ||
-    (mode === "generic" ? "disabled" : "codex-sdk")
-  ).toLowerCase();
-  const plannerPerCapitaThreshold = Number(
-    process.env.TASK_PLANNER_PER_CAPITA_THRESHOLD || "1",
-  );
-  const plannerIdleSlotThreshold = Number(
-    process.env.TASK_PLANNER_IDLE_SLOT_THRESHOLD || "1",
-  );
-  const plannerDedupHours = Number(process.env.TASK_PLANNER_DEDUP_HOURS || "6");
-  const plannerDedupMs = Number.isFinite(plannerDedupHours)
-    ? plannerDedupHours * 60 * 60 * 1000
-    : 24 * 60 * 60 * 1000;
-
   const triggerSystemDefaults = Object.freeze({
-    templates: buildDefaultTriggerTemplates({
-      plannerMode,
-      plannerPerCapitaThreshold,
-      plannerIdleSlotThreshold,
-      plannerDedupHours,
-    }),
+    templates: buildDefaultTriggerTemplates(),
     defaults: Object.freeze({
       executor: "auto",
       model: "auto",
@@ -2292,12 +2227,6 @@ export function loadConfig(argv = process.argv, options = {}) {
     telegramCommandEnabled,
     telegramVerbosity,
 
-    // Task Planner
-    plannerMode,
-    plannerPerCapitaThreshold,
-    plannerIdleSlotThreshold,
-    plannerDedupHours,
-    plannerDedupMs,
     triggerSystem,
 
     // GitHub Reconciler
@@ -2351,7 +2280,7 @@ export function loadConfig(argv = process.argv, options = {}) {
         configData.trustedCreators ||
         process.env.BOSUN_TRUSTED_CREATORS?.split(",") ||
         [],
-      // Enforce all new tasks go to backlog unless planner config allows auto-push
+      // Enforce all new tasks go to backlog
       enforceBacklog:
         typeof configData.enforceBacklog === "boolean"
           ? configData.enforceBacklog

@@ -51,6 +51,92 @@ vi.mock("../agent-pool.mjs", () => ({
   })),
 }));
 
+vi.mock("../workflow-engine.mjs", () => ({
+  getWorkflowEngine: vi.fn(() => ({
+    list: vi.fn(() => [{
+      id: "wf-1",
+      name: "Workflow One",
+      enabled: true,
+      nodes: [{ id: "n1" }, { id: "n2" }],
+      edges: [{ from: "n1", to: "n2" }],
+      triggers: [{ type: "manual" }],
+    }]),
+    get: vi.fn((id) => (id === "wf-1"
+      ? {
+          id: "wf-1",
+          name: "Workflow One",
+          enabled: true,
+          nodes: [{ id: "n1" }, { id: "n2" }],
+          edges: [{ from: "n1", to: "n2" }],
+          triggers: [{ type: "manual" }],
+        }
+      : null)),
+    getRunHistory: vi.fn(() => [{
+      runId: "run-1",
+      workflowId: "wf-1",
+      workflowName: "Workflow One",
+      status: "failed",
+      startedAt: 1000,
+      endedAt: 2000,
+      duration: 1000,
+      errorCount: 1,
+      logCount: 2,
+      activeNodeCount: 0,
+      isStuck: false,
+      triggerEvent: "manual",
+      triggerSource: "manual",
+    }]),
+    getRunDetail: vi.fn((runId) => (runId === "run-1"
+      ? {
+          runId: "run-1",
+          workflowId: "wf-1",
+          workflowName: "Workflow One",
+          status: "failed",
+          startedAt: 1000,
+          endedAt: 2000,
+          duration: 1000,
+          errorCount: 1,
+          logCount: 2,
+          nodeCount: 2,
+          completedCount: 1,
+          failedCount: 1,
+          skippedCount: 0,
+          activeNodeCount: 0,
+          isStuck: false,
+          triggerEvent: "manual",
+          triggerSource: "manual",
+          detail: {
+            data: { _workflowId: "wf-1", _workflowName: "Workflow One" },
+            errors: ["node failed"],
+            logs: [{ level: "info", msg: "started" }, { level: "error", msg: "failed" }],
+            nodeStatuses: { n1: "completed", n2: "failed" },
+            nodeStatusEvents: [{ nodeId: "n2", status: "failed" }],
+          },
+        }
+      : null)),
+    retryRun: vi.fn(async (runId, opts = {}) => ({
+      originalRunId: runId,
+      retryRunId: "run-2",
+      ctx: { errors: [], mode: opts.mode || "from_failed" },
+    })),
+  })),
+}));
+
+vi.mock("../vision-session-state.mjs", () => ({
+  getVisionSessionState: vi.fn(() => ({
+    lastFrameDataUrl: "data:image/jpeg;base64,ZmFrZQ==",
+    lastFrameSource: "screen",
+  })),
+}));
+
+vi.mock("../voice-relay.mjs", () => ({
+  analyzeVisionFrame: vi.fn(async () => ({
+    summary: "The terminal shows a syntax error in voice-tools.mjs.",
+    provider: "openai",
+    model: "gpt-4o",
+  })),
+}));
+
 // ── Lazy import (after mocks are set up) ─────────────────────────────────────
 
 const {
@@ -62,6 +148,7 @@ const {
 const { execPrimaryPrompt, setPrimaryAgent } = await import("../primary-agent.mjs");
 const { execPooledPrompt } = await import("../agent-pool.mjs");
 const sessionTracker = await import("../session-tracker.mjs");
+const { analyzeVisionFrame } = await import("../voice-relay.mjs");
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -98,6 +185,15 @@ describe("voice-tools", () => {
       const switchAgent = defs.find((def) => def.name === "switch_agent");
       expect(delegate?.parameters?.properties?.executor?.enum || []).toContain("gemini-sdk");
       expect(switchAgent?.parameters?.properties?.executor?.enum || []).toContain("gemini-sdk");
+    });
+
+    it("includes direct workflow run-inspection tools", () => {
+      const defs = getToolDefinitions();
+      const names = defs.map((def) => def.name);
+      expect(names).toContain("get_workflow_definition");
+      expect(names).toContain("list_workflow_runs");
+      expect(names).toContain("get_workflow_run");
+      expect(names).toContain("retry_workflow_run");
     });
   });
 
@@ -163,10 +259,7 @@ describe("voice-tools", () => {
         message: "test instruction",
       });
       expect(result.error).toBeUndefined();
-      expect(result.result).toMatch(/delegation started/i);
-      // execPooledPrompt is called asynchronously (fire-and-forget)
-      // Give it a tick to fire
-      await new Promise((r) => setTimeout(r, 10));
+      expect(result.result).toMatch(/\{RESPONSE\}/i);
       expect(vi.mocked(execPooledPrompt)).toHaveBeenCalled();
       const callArgs = vi.mocked(execPooledPrompt).mock.calls[0];
       expect(callArgs[0]).toBe("test instruction");
@@ -184,10 +277,7 @@ describe("voice-tools", () => {
         },
       );
       expect(result.error).toBeUndefined();
-      expect(result.result).toMatch(/delegation started/i);
-      expect(result.result).toContain("claude-sdk");
-      // Non-blocking: no setPrimaryAgent call (we use execPooledPrompt now)
-      await new Promise((r) => setTimeout(r, 10));
+      expect(result.result).toMatch(/\{RESPONSE\}/i);
       const callArgs = vi.mocked(execPooledPrompt).mock.calls.at(-1);
       expect(callArgs?.[0]).toBe("ship it");
       expect(callArgs?.[1]).toMatchObject({
@@ -209,9 +299,7 @@ describe("voice-tools", () => {
         },
       );
       expect(result.error).toBeUndefined();
-      expect(result.result).toMatch(/delegation started/i);
-      expect(result.result).toContain("gemini-sdk");
-      await new Promise((r) => setTimeout(r, 10));
+      expect(result.result).toMatch(/\{RESPONSE\}/i);
       const callArgs = vi.mocked(execPooledPrompt).mock.calls.at(-1);
       expect(callArgs?.[1]).toMatchObject({
         sdk: "gemini-sdk",
@@ -236,8 +324,7 @@ describe("voice-tools", () => {
         { sessionId: "primary-vision-1" },
       );
       expect(result.error).toBeUndefined();
-      expect(result.result).toMatch(/delegation started/i);
-      await new Promise((r) => setTimeout(r, 10));
+      expect(result.result).toMatch(/\{RESPONSE\}/i);
       const callArgs = vi.mocked(execPooledPrompt).mock.calls.at(-1);
       expect(callArgs?.[0]).toContain("Please fix the failing test");
       expect(callArgs?.[0]).toContain("Live visual context from this call");
@@ -253,18 +340,110 @@ describe("voice-tools", () => {
       expect(callArgs?.[1]).toMatchObject({ mode: "instant" });
     });
 
-    it("run_command returns acknowledgment for safe command", async () => {
-      const result = await executeToolCall("run_command", { command: "status" });
+    it("ask_agent_context derives prompt from nested context history when message is missing", async () => {
+      const result = await executeToolCall("ask_agent_context", {
+        context: {
+          history: [
+            {
+              role: "user",
+              content: [{ type: "input_audio", transcript: "Can you check our current backlog tasks?" }],
+            },
+          ],
+        },
+      });
       expect(result.error).toBeUndefined();
-      expect(result.result).toMatch(/acknowledged/i);
+      expect(result.result).toMatch(/\{RESPONSE\}:/i);
+      const callArgs = vi.mocked(execPooledPrompt).mock.calls.at(-1);
+      expect(String(callArgs?.[0] || "")).toContain("check our current backlog tasks");
     });
 
-    it("run_command rejects unsafe command", async () => {
+    it("run_command returns system status for 'status'", async () => {
+      const result = await executeToolCall("run_command", { command: "status" });
+      expect(result.error).toBeUndefined();
+      // Now actually dispatches to get_system_status — expect a structured result
+      const parsed = JSON.parse(result.result);
+      expect(parsed).toMatchObject({ primaryAgent: expect.any(String) });
+    });
+
+    it("run_command returns informative error for unknown command", async () => {
       const result = await executeToolCall("run_command", {
         command: "rm -rf /",
       });
       expect(result.error).toBeUndefined();
-      expect(result.result).toMatch(/not allowed/i);
+      // The new handler returns a help message pointing to run_workspace_command
+      expect(result.result).toMatch(/unknown command|not recognized|supported|run_workspace_command/i);
+    });
+
+    it("list_workflow_runs returns structured run history", async () => {
+      const result = await executeToolCall("list_workflow_runs", { workflowId: "wf-1", limit: 10 });
+      expect(result.error).toBeUndefined();
+      const parsed = JSON.parse(result.result);
+      expect(parsed.ok).toBe(true);
+      expect(parsed.count).toBeGreaterThan(0);
+      expect(parsed.runs[0]).toMatchObject({
+        runId: "run-1",
+        workflowId: "wf-1",
+        status: "failed",
+      });
+    });
+
+    it("get_workflow_run returns run detail with errors and logs", async () => {
+      const result = await executeToolCall("get_workflow_run", { runId: "run-1", logLimit: 5 });
+      expect(result.error).toBeUndefined();
+      const parsed = JSON.parse(result.result);
+      expect(parsed.ok).toBe(true);
+      expect(parsed.run).toMatchObject({
+        runId: "run-1",
+        workflowId: "wf-1",
+        status: "failed",
+      });
+      expect(Array.isArray(parsed.run.logs)).toBe(true);
+      expect(Array.isArray(parsed.run.errors)).toBe(true);
+    });
+
+    it("retry_workflow_run retries failed run by id", async () => {
+      const result = await executeToolCall("retry_workflow_run", { runId: "run-1", mode: "from_failed" });
+      expect(result.error).toBeUndefined();
+      const parsed = JSON.parse(result.result);
+      expect(parsed.ok).toBe(true);
+      expect(parsed.originalRunId).toBe("run-1");
+      expect(parsed.retryRunId).toBe("run-2");
+    });
+
+    it("query_live_view infers query from nested context history when query is missing", async () => {
+      const result = await executeToolCall(
+        "query_live_view",
+        {
+          context: {
+            history: [
+              {
+                role: "user",
+                content: [
+                  { type: "input_audio", transcript: "what exact error is visible on screen right now?" },
+                ],
+              },
+            ],
+          },
+        },
+        { sessionId: "voice-session-1", executor: "codex-sdk", mode: "instant", model: "gpt-realtime-1.5" },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.result).toMatch(/\{RESPONSE\}:/i);
+      expect(result.result).toMatch(/syntax error/i);
+      const callArgs = vi.mocked(analyzeVisionFrame).mock.calls.at(-1);
+      expect(String(callArgs?.[1]?.prompt || "")).toMatch(/error is visible on screen/i);
+    });
+
+    it("query_live_view uses default query when no user query context is present", async () => {
+      const result = await executeToolCall(
+        "query_live_view",
+        {},
+        { sessionId: "voice-session-2", executor: "codex-sdk", mode: "instant", model: "gpt-realtime-1.5" },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.result).toMatch(/\{RESPONSE\}:/i);
+      const callArgs = vi.mocked(analyzeVisionFrame).mock.calls.at(-1);
+      expect(String(callArgs?.[1]?.prompt || "")).toMatch(/Describe what is visible right now/i);
     });
   });
 });

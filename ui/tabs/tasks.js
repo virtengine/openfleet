@@ -467,7 +467,7 @@ function TriggerTemplateCard({
   const [error, setError] = useState("");
   const [name, setName] = useState(template?.name || "");
   const [description, setDescription] = useState(template?.description || "");
-  const [action, setAction] = useState(template?.action || "task-planner");
+  const [action, setAction] = useState(template?.action || "create-task");
   const [minIntervalMinutes, setMinIntervalMinutes] = useState(
     template?.minIntervalMinutes || "",
   );
@@ -481,7 +481,7 @@ function TriggerTemplateCard({
   useEffect(() => {
     setName(template?.name || "");
     setDescription(template?.description || "");
-    setAction(template?.action || "task-planner");
+    setAction(template?.action || "create-task");
     setMinIntervalMinutes(template?.minIntervalMinutes || "");
     setTriggerJson(JSON.stringify(template?.trigger || { anyOf: [] }, null, 2));
     setConfigJson(JSON.stringify(template?.config || {}, null, 2));
@@ -545,7 +545,7 @@ function TriggerTemplateCard({
         <span class="pill">spawned: ${stats.spawnedTotal || 0}</span>
         <span class="pill">active: ${stats.activeCount || 0}</span>
         <span class="pill">running: ${runningAgents.length}</span>
-        <span class="pill">action: ${template?.action || "task-planner"}</span>
+        <span class="pill">action: ${template?.action || "create-task"}</span>
       </div>
 
       <div class="meta-text" style="margin-top:8px;">
@@ -581,7 +581,6 @@ function TriggerTemplateCard({
           <input class="input" value=${description} onInput=${(e) => setDescription(e.target.value)} placeholder="Description" />
           <div class="input-row">
             <select class="input" value=${action} onChange=${(e) => setAction(e.target.value)}>
-              <option value="task-planner">task-planner</option>
               <option value="create-task">create-task</option>
             </select>
             <input
@@ -620,7 +619,7 @@ function TriggerTemplatesModal({ onClose }) {
   const [enabled, setEnabled] = useState(false);
   const [defaults, setDefaults] = useState({ executor: "auto", model: "auto" });
   const [templates, setTemplates] = useState([]);
-  const [planner, setPlanner] = useState({});
+
   const defaultsBaselineRef = useRef({ executor: "auto", model: "auto" });
   const pendingKey = "modal:trigger-templates";
 
@@ -654,7 +653,6 @@ function TriggerTemplatesModal({ onClose }) {
       };
       setDefaults(normalizedDefaults);
       setTemplates(Array.isArray(data.templates) ? data.templates : []);
-      setPlanner(data.planner || {});
     } catch (err) {
       setError(err?.message || "Failed to load templates");
     }
@@ -690,7 +688,6 @@ function TriggerTemplatesModal({ onClose }) {
       };
       setDefaults(normalizedDefaults);
       setTemplates(Array.isArray(data.templates) ? data.templates : []);
-      setPlanner(data.planner || {});
       showToast("Template settings updated", "success");
       scheduleRefresh(200);
     } catch (err) {
@@ -799,10 +796,7 @@ function TriggerTemplatesModal({ onClose }) {
             </button>
           </div>
 
-          <div class="meta-text" style="margin-top:8px;">
-            Planner last success: ${planner?.lastSuccessAt ? formatRelative(planner.lastSuccessAt) : "never"}
-            ${planner?.lastError ? ` · Last error: ${truncate(planner.lastError, 120)}` : ""}
-          </div>
+
         </div>
 
         ${error && html`<div class="meta-text" style="color:var(--color-error);">${error}</div>`}

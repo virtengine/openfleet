@@ -730,12 +730,6 @@ const agentLogsDirCandidates = [
   resolve(repoRoot, ".cache", "agent-logs"),
 ];
 const CONFIG_SCHEMA_PATH = resolve(__dirname, "bosun.schema.json");
-const PLANNER_STATE_PATH = resolve(
-  repoRoot,
-  ".bosun",
-  ".cache",
-  "task-planner-state.json",
-);
 let _configSchema = null;
 let _configValidator = null;
 
@@ -753,10 +747,7 @@ function normalizeTriggerTemplate(template = {}) {
     id,
     name: String(template?.name || id).trim() || id,
     enabled: template?.enabled === true,
-    action:
-      String(template?.action || "task-planner").trim() === "create-task"
-        ? "create-task"
-        : "task-planner",
+    action: String(template?.action || "create-task").trim(),
     minIntervalMinutes:
       Number.isFinite(Number(template?.minIntervalMinutes)) &&
       Number(template?.minIntervalMinutes) > 0
@@ -827,16 +818,6 @@ function resolveUiTriggerSystem() {
       defaults: { executor: "auto", model: "auto" },
       templates: [],
     };
-  }
-}
-
-async function readPlannerTemplateState() {
-  try {
-    const raw = await readFile(PLANNER_STATE_PATH, "utf8");
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
   }
 }
 
@@ -981,12 +962,6 @@ async function collectTriggerTemplateTaskStats(templates = []) {
 
 async function getTriggerTemplatePayload() {
   const triggerSystem = resolveUiTriggerSystem();
-  const plannerState = await readPlannerTemplateState();
-  const plannerTemplateMap =
-    plannerState?.trigger_templates &&
-    typeof plannerState.trigger_templates === "object"
-      ? plannerState.trigger_templates
-      : {};
   const statsByTemplateId = await collectTriggerTemplateTaskStats(
     triggerSystem.templates,
   );
@@ -995,11 +970,7 @@ async function getTriggerTemplatePayload() {
     const templateId = normalizeTriggerTemplateId(template);
     return {
       ...template,
-      state:
-        plannerTemplateMap[templateId] &&
-        typeof plannerTemplateMap[templateId] === "object"
-          ? plannerTemplateMap[templateId]
-          : {},
+      state: {},
       stats: statsByTemplateId[templateId] || {
         spawnedTotal: 0,
         activeCount: 0,
@@ -1014,12 +985,6 @@ async function getTriggerTemplatePayload() {
     enabled: triggerSystem.enabled === true,
     defaults: triggerSystem.defaults || { executor: "auto", model: "auto" },
     templates,
-    planner: {
-      lastTriggeredAt: plannerState?.last_triggered_at || null,
-      lastSuccessAt: plannerState?.last_success_at || null,
-      lastFailureAt: plannerState?.last_failure_at || null,
-      lastError: plannerState?.last_error || null,
-    },
   };
 }
 
@@ -1404,7 +1369,6 @@ function getSchemaProperty(schema, pathParts) {
 const ROOT_SKIP_ENV_KEYS = new Set([]);
 const ROOT_OVERRIDE_MAP = {
   BOSUN_MODE: "mode",
-  TASK_PLANNER_MODE: "plannerMode",
   EXECUTOR_DISTRIBUTION: "distribution",
 };
 const INTERNAL_EXECUTOR_MAP = {
@@ -1429,7 +1393,7 @@ const INTERNAL_EXECUTOR_MAP = {
 const CONFIG_PATH_OVERRIDES = {
   EXECUTOR_MODE: ["internalExecutor", "mode"],
   PROJECT_REQUIREMENTS_PROFILE: ["projectRequirements", "profile"],
-  TASK_PLANNER_DEDUP_HOURS: ["plannerDedupHours"],
+
 };
 const ROOT_PREFIX_ALLOWLIST = [
   "TELEGRAM_",
@@ -2383,10 +2347,10 @@ const SETTINGS_KNOWN_KEYS = [
   "COPILOT_MODEL", "COPILOT_CLI_TOKEN",
   "KANBAN_BACKEND", "KANBAN_SYNC_POLICY", "BOSUN_TASK_LABEL",
   "BOSUN_ENFORCE_TASK_LABEL", "STALE_TASK_AGE_HOURS",
-  "TASK_PLANNER_MODE", "TASK_TRIGGER_SYSTEM_ENABLED", "TASK_PLANNER_DEDUP_HOURS",
+  "TASK_TRIGGER_SYSTEM_ENABLED",
   "TASK_BRANCH_MODE", "TASK_BRANCH_AUTO_MODULE", "TASK_UPSTREAM_SYNC_MAIN",
   "MODULE_BRANCH_PREFIX", "DEFAULT_TARGET_BRANCH",
-  "BOSUN_PROMPT_PLANNER",
+
   "GITHUB_TOKEN", "GITHUB_REPOSITORY", "GITHUB_PROJECT_MODE",
   "GITHUB_PROJECT_NUMBER", "GITHUB_DEFAULT_ASSIGNEE", "GITHUB_AUTO_ASSIGN_CREATOR",
   "BOSUN_GITHUB_APP_ID", "BOSUN_GITHUB_PRIVATE_KEY_PATH", "BOSUN_GITHUB_CLIENT_ID", "BOSUN_GITHUB_CLIENT_SECRET",
@@ -2700,6 +2664,11 @@ function validateConfigSchemaChanges(changes) {
 
 // ── Simple rate limiter for mutation endpoints ──
 const _rateLimitMap = new Map();
+function isPrivilegedAuthSource(source) {
+  const normalized = String(source || "").trim().toLowerCase();
+  return normalized === "desktop-api-key" || normalized === "fallback" || normalized === "unsafe";
+}
+
 function getMutationRateLimitPerMin(authResult = null) {
   const standardRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_PER_MIN || "30");
   const standard = Number.isFinite(standardRaw) && standardRaw > 0 ? standardRaw : 30;
@@ -2708,11 +2677,7 @@ function getMutationRateLimitPerMin(authResult = null) {
   // - desktop-api-key: local Electron owner session
   // - fallback: explicit local secret auth
   // - unsafe: auth disabled for trusted local environment
-  if (
-    authResult.source === "desktop-api-key"
-    || authResult.source === "fallback"
-    || authResult.source === "unsafe"
-  ) {
+  if (isPrivilegedAuthSource(authResult.source)) {
     const privilegedRaw = Number(process.env.BOSUN_UI_RATE_LIMIT_PRIVILEGED_PER_MIN || "300");
     return Number.isFinite(privilegedRaw) && privilegedRaw > 0 ? privilegedRaw : 300;
   }
@@ -4441,8 +4406,8 @@ async function requireAuth(req) {
   return { ok: false, source: "unauthorized", issueSessionCookie: false };
 }
 
-function requireWsAuth(req, url) {
-  if (isAllowUnsafe()) return true;
+function resolveWsAuthSource(req, url) {
+  if (isAllowUnsafe()) return "unsafe";
   // Desktop Electron API key (query param: desktopKey=...)
   const desktopKey = getExpectedDesktopApiKey();
   if (desktopKey) {
@@ -4451,29 +4416,33 @@ function requireWsAuth(req, url) {
       try {
         const a = Buffer.from(qDesktopKey);
         const b = Buffer.from(desktopKey);
-        if (a.length === b.length && timingSafeEqual(a, b)) return true;
+        if (a.length === b.length && timingSafeEqual(a, b)) return "desktop-api-key";
       } catch {
         /* ignore */
       }
     }
     // Also accept via Authorization header (for WS upgrade requests that support it)
-    if (checkDesktopApiKey(req)) return true;
+    if (checkDesktopApiKey(req)) return "desktop-api-key";
   }
   // Session token (query param or cookie)
-  if (checkSessionToken(req)) return true;
+  if (checkSessionToken(req)) return "session";
   if (sessionToken) {
     const qTokenVal = url.searchParams.get("token") || "";
     if (qTokenVal) {
       const provided = Buffer.from(qTokenVal);
       const expected = Buffer.from(sessionToken);
-      if (provided.length === expected.length && timingSafeEqual(provided, expected)) return true;
+      if (provided.length === expected.length && timingSafeEqual(provided, expected)) return "session";
     }
   }
   // Telegram initData HMAC
   const initData = getTelegramInitData(req, url);
   const token = process.env.TELEGRAM_BOT_TOKEN || "";
-  if (!initData) return false;
-  return validateInitData(String(initData), token);
+  if (!initData) return "";
+  return validateInitData(String(initData), token) ? "telegram" : "";
+}
+
+function requireWsAuth(req, url) {
+  return Boolean(resolveWsAuthSource(req, url));
 }
 
 function sendWsMessage(socket, payload) {
@@ -8377,6 +8346,7 @@ async function handleApi(req, res, url) {
         "/health",
         "/plan",
         "/logs",
+        "/agentlogs",
         "/menu",
         "/tasks",
         "/start",
@@ -8390,6 +8360,7 @@ async function handleApi(req, res, url) {
         "/agents",
         "/executor",
         "/help",
+        "/commands",
         "/starttask",
         "/stoptask",
         "/retrytask",
@@ -8402,9 +8373,25 @@ async function handleApi(req, res, url) {
         "/context",
         "/mcp",
         "/helpfull",
+        "/background",
+        "/bg",
+        "/shell",
+        "/git",
+        "/diff",
+        "/branches",
+        "/threads",
+        "/worktrees",
+        "/model",
+        "/retry",
+        "/history",
+        "/clear",
+        "/anomalies",
+        "/workspace",
+        "/ws",
       ];
       const cmdBase = command.split(/\s/)[0].toLowerCase();
-      if (!ALLOWED_CMD_PREFIXES.some(p => cmdBase === p || cmdBase.startsWith(p + " "))) {
+      const privilegedCommandAccess = isPrivilegedAuthSource(authResult?.source);
+      if (!privilegedCommandAccess && !ALLOWED_CMD_PREFIXES.some(p => cmdBase === p || cmdBase.startsWith(p + " "))) {
         jsonResponse(res, 400, { ok: false, error: `Command not allowed: ${cmdBase}` });
         return;
       }
@@ -9821,12 +9808,13 @@ async function handleApi(req, res, url) {
         executor: String(body?.executor || "").trim() || undefined,
         mode: String(body?.mode || "").trim() || undefined,
         model: String(body?.model || "").trim() || undefined,
+        authSource: String(authResult?.source || "").trim() || undefined,
       };
-      const { createEphemeralToken, getVoiceToolDefinitions, getVoiceConfig } = await import("./voice-relay.mjs");
+      const { createEphemeralToken, getVoiceToolDefinitions, getVoiceConfig, isPrivilegedVoiceContext } = await import("./voice-relay.mjs");
+      const privileged = isPrivilegedVoiceContext(callContext);
       const delegateOnly =
-        body?.delegateOnly === true ||
-        (body?.delegateOnly !== false && Boolean(callContext.sessionId));
-      const tools = await getVoiceToolDefinitions({ delegateOnly });
+        body?.delegateOnly === true && !privileged;
+      const tools = await getVoiceToolDefinitions({ delegateOnly, context: callContext });
       const tokenData = await createEphemeralToken(tools, callContext);
 
       // When client requests sdkMode, include extra fields for @openai/agents SDK
@@ -9913,13 +9901,15 @@ async function handleApi(req, res, url) {
           return "(result unavailable)";
         }
       };
-      const { executeVoiceTool } = await import("./voice-relay.mjs");
+      const { executeVoiceTool, normalizeVoiceToolArgs, getAllowedVoiceTools } = await import("./voice-relay.mjs");
       const context = {
         sessionId: String(voiceSessionId || "").trim() || undefined,
         executor: String(executor || "").trim() || undefined,
         mode: String(mode || "").trim() || undefined,
         model: String(model || "").trim() || undefined,
+        authSource: String(authResult?.source || "").trim() || undefined,
       };
+      const normalizedArgs = normalizeVoiceToolArgs(normalizedToolName, args || {});
       let tracker = null;
       let session = null;
       if (context.sessionId) {
@@ -9938,7 +9928,7 @@ async function handleApi(req, res, url) {
         }
         tracker.recordEvent(session?.id || context.sessionId, {
           role: "system",
-          content: `[Voice Action Started] ${normalizedToolName}\nArgs: ${summarizeToolArgs(args)}`,
+          content: `[Voice Action Started] ${normalizedToolName}\nArgs: ${summarizeToolArgs(normalizedArgs)}`,
           timestamp: new Date().toISOString(),
           meta: {
             source: "voice",
@@ -9949,8 +9939,7 @@ async function handleApi(req, res, url) {
       }
       if (context.sessionId) {
         // Session-bound calls are validated against the allowed tool set
-        const { getSessionAllowedTools } = await import("./voice-relay.mjs");
-        const allowed = getSessionAllowedTools();
+        const allowed = await getAllowedVoiceTools(context);
         if (!allowed.has(normalizedToolName)) {
           jsonResponse(res, 400, {
             error: `Tool "${normalizedToolName}" is not allowed for session-bound calls`,
@@ -9958,7 +9947,7 @@ async function handleApi(req, res, url) {
           return;
         }
       }
-      const result = await executeVoiceTool(normalizedToolName, args || {}, context);
+      const result = await executeVoiceTool(normalizedToolName, normalizedArgs, context);
       if (tracker && context.sessionId) {
         if (result?.error) {
           tracker.recordEvent(session?.id || context.sessionId, {
@@ -10247,6 +10236,7 @@ async function handleApi(req, res, url) {
         executor: String(body?.executor || "").trim() || undefined,
         mode: String(body?.mode || "").trim() || undefined,
         model: String(body?.model || "").trim() || undefined,
+        authSource: String(authResult?.source || "").trim() || undefined,
       };
       const { dispatchVoiceActionIntent } = await import("./voice-relay.mjs");
       const result = await dispatchVoiceActionIntent(
@@ -10274,6 +10264,7 @@ async function handleApi(req, res, url) {
         executor: String(body?.executor || "").trim() || undefined,
         mode: String(body?.mode || "").trim() || undefined,
         model: String(body?.model || "").trim() || undefined,
+        authSource: String(authResult?.source || "").trim() || undefined,
       };
       const { dispatchVoiceActionIntents } = await import("./voice-relay.mjs");
       const results = await dispatchVoiceActionIntents(intents, context);
@@ -10627,11 +10618,12 @@ export async function startTelegramUiServer(options = {}) {
         broadcastSessionMessage(payload);
       });
     }
-    wsServer.on("connection", (socket) => {
+    wsServer.on("connection", (socket, req) => {
       socket.__channels = new Set(["*"]);
       socket.__lastPong = Date.now();
       socket.__lastPing = null;
       socket.__missedPongs = 0;
+      socket.__authSource = String(req?.__authSource || "").trim() || undefined;
       wsClients.add(socket);
       sendWsMessage(socket, {
         type: "hello",
@@ -10692,34 +10684,45 @@ export async function startTelegramUiServer(options = {}) {
             if (normalizedSessionId) {
               // Validate tool is in the allowed set for session-bound calls
               import("./voice-relay.mjs").then((relay) => {
-                const allowed = relay.getSessionAllowedTools();
-                if (!allowed.has(normalizedToolName)) {
-                  sendWsMessage(socket, {
-                    type: "voice-tool-result",
-                    callId,
-                    error: `Tool "${normalizedToolName}" is not allowed for session-bound calls`,
-                    ts: Date.now(),
-                  });
-                  return;
-                }
-                // Tool is allowed — execute it
-                relay.executeVoiceTool(normalizedToolName, args || {}, {
+                const context = {
                   sessionId: normalizedSessionId,
                   executor: String(executor || "").trim() || undefined,
                   mode: String(mode || "").trim() || undefined,
                   model: String(model || "").trim() || undefined,
-                }).then((result) => {
-                  sendWsMessage(socket, {
-                    type: "voice-tool-result",
-                    callId,
-                    ...result,
-                    ts: Date.now(),
+                  authSource: String(socket.__authSource || "").trim() || undefined,
+                };
+                const normalizedArgs = relay.normalizeVoiceToolArgs(normalizedToolName, args || {});
+                relay.getAllowedVoiceTools(context).then((allowed) => {
+                  if (!allowed.has(normalizedToolName)) {
+                    sendWsMessage(socket, {
+                      type: "voice-tool-result",
+                      callId,
+                      error: `Tool "${normalizedToolName}" is not allowed for session-bound calls`,
+                      ts: Date.now(),
+                    });
+                    return;
+                  }
+                  // Tool is allowed — execute it
+                  relay.executeVoiceTool(normalizedToolName, normalizedArgs, context).then((result) => {
+                    sendWsMessage(socket, {
+                      type: "voice-tool-result",
+                      callId,
+                      ...result,
+                      ts: Date.now(),
+                    });
+                  }).catch((err) => {
+                    sendWsMessage(socket, {
+                      type: "voice-tool-result",
+                      callId,
+                      error: err.message,
+                      ts: Date.now(),
+                    });
                   });
                 }).catch((err) => {
                   sendWsMessage(socket, {
                     type: "voice-tool-result",
                     callId,
-                    error: err.message,
+                    error: `Tool policy check failed: ${err?.message || "unknown error"}`,
                     ts: Date.now(),
                   });
                 });
@@ -10735,12 +10738,15 @@ export async function startTelegramUiServer(options = {}) {
             }
             import("./voice-relay.mjs").then(async (relay) => {
               try {
-                const result = await relay.executeVoiceTool(normalizedToolName, args || {}, {
+                const context = {
                   sessionId: normalizedSessionId,
                   executor: String(executor || "").trim() || undefined,
                   mode: String(mode || "").trim() || undefined,
                   model: String(model || "").trim() || undefined,
-                });
+                  authSource: String(socket.__authSource || "").trim() || undefined,
+                };
+                const normalizedArgs = relay.normalizeVoiceToolArgs(normalizedToolName, args || {});
+                const result = await relay.executeVoiceTool(normalizedToolName, normalizedArgs, context);
                 sendWsMessage(socket, {
                   type: "voice-tool-result",
                   callId,
@@ -10791,7 +10797,8 @@ export async function startTelegramUiServer(options = {}) {
         socket.destroy();
         return;
       }
-      if (!requireWsAuth(req, url)) {
+      const wsAuthSource = resolveWsAuthSource(req, url);
+      if (!wsAuthSource) {
         try {
           socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         } catch {
@@ -10800,6 +10807,7 @@ export async function startTelegramUiServer(options = {}) {
         socket.destroy();
         return;
       }
+      req.__authSource = wsAuthSource;
       wsServer.handleUpgrade(req, socket, head, (ws) => {
         wsServer.emit("connection", ws, req);
       });

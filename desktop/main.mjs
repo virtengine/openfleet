@@ -1,8 +1,10 @@
 import {
   app,
   BrowserWindow,
+  desktopCapturer,
   dialog,
   Menu,
+  screen,
   shell,
   Tray,
   globalShortcut,
@@ -129,6 +131,72 @@ const LOCAL_HOSTNAME_RE = [
 ];
 function isLocalHost(hostname) {
   return LOCAL_HOSTNAME_RE.some((re) => re.test(hostname));
+}
+
+function isTrustedCaptureOrigin(originLike) {
+  const raw = String(originLike || "").trim();
+  if (!raw) return false;
+  try {
+    const parsed = new URL(raw);
+    const host = String(parsed.hostname || "").trim();
+    if (!host) return false;
+    if (isLocalHost(host)) return true;
+    if (uiOrigin) {
+      const active = new URL(uiOrigin);
+      return (
+        String(active.protocol || "").toLowerCase() === String(parsed.protocol || "").toLowerCase()
+        && String(active.host || "").toLowerCase() === String(parsed.host || "").toLowerCase()
+      );
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function installDesktopMediaHandlers() {
+  const ses = session.defaultSession;
+  if (!ses) return;
+
+  ses.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+    const p = String(permission || "").trim().toLowerCase();
+    const sensitive = new Set(["media", "display-capture", "audio-capture", "video-capture"]);
+    if (!sensitive.has(p)) return true;
+    return isTrustedCaptureOrigin(requestingOrigin);
+  });
+
+  ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const p = String(permission || "").trim().toLowerCase();
+    const sensitive = new Set(["media", "display-capture", "audio-capture", "video-capture"]);
+    if (!sensitive.has(p)) {
+      callback(true);
+      return;
+    }
+    const allowed = isTrustedCaptureOrigin(details?.requestingOrigin || webContents?.getURL?.());
+    callback(allowed);
+  });
+
+  ses.setDisplayMediaRequestHandler(
+    async (_request, callback) => {
+      try {
+        // Prefer OS picker when available; this callback is used as fallback.
+        const sources = await desktopCapturer.getSources({
+          types: ["screen", "window"],
+          thumbnailSize: { width: 0, height: 0 },
+          fetchWindowIcons: false,
+        });
+        if (!Array.isArray(sources) || !sources.length) {
+          callback({});
+          return;
+        }
+        callback({ video: sources[0], audio: "loopback" });
+      } catch (err) {
+        console.warn("[desktop] display media request failed:", err?.message || err);
+        callback({});
+      }
+    },
+    { useSystemPicker: true },
+  );
 }
 
 /**
@@ -431,6 +499,22 @@ function setWindowVisible(win) {
   if (win.isMinimized()) win.restore();
   if (!win.isVisible()) win.show();
   win.focus();
+}
+
+function anchorFollowWindow(win) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    const bounds = win.getBounds();
+    const targetDisplay = screen.getDisplayMatching(bounds);
+    const area = targetDisplay?.workArea;
+    if (!area) return;
+    const margin = 16;
+    const x = Math.max(area.x, area.x + area.width - bounds.width - margin);
+    const y = Math.max(area.y, area.y + area.height - bounds.height - margin);
+    win.setPosition(x, y, false);
+  } catch {
+    // best effort only
+  }
 }
 
 // ── Workspace helpers ─────────────────────────────────────────────────────────
@@ -1161,7 +1245,17 @@ async function createFollowWindow() {
   });
 
   followWindow.once("ready-to-show", () => {
+    anchorFollowWindow(followWindow);
     setWindowVisible(followWindow);
+  });
+
+  followWindow.on("show", () => {
+    followWindow?.setAlwaysOnTop(true, "floating", 1);
+    anchorFollowWindow(followWindow);
+  });
+
+  followWindow.on("resized", () => {
+    anchorFollowWindow(followWindow);
   });
 
   return followWindow;
@@ -1175,8 +1269,11 @@ async function openFollowWindow(detail = {}) {
   if (!win.webContents.getURL() || followWindowLaunchSignature !== signature) {
     followWindowLaunchSignature = signature;
     await win.loadURL(signature);
+    anchorFollowWindow(win);
+    setWindowVisible(win);
     return;
   }
+  anchorFollowWindow(win);
   setWindowVisible(win);
 }
 
@@ -1648,6 +1745,7 @@ async function bootstrap() {
       }
       callback(-3); // -3 = use Chromium default chain verification
     });
+    installDesktopMediaHandlers();
 
     if (process.env.ELECTRON_DISABLE_SANDBOX === "1") {
       app.commandLine.appendSwitch("no-sandbox");

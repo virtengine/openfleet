@@ -12,12 +12,17 @@ export const visionShareSource = signal(null); // screen | camera | null
 export const visionShareError = signal(null);
 export const visionLastSummary = signal("");
 export const visionLastAnalyzedAt = signal(0);
+export const visionTransportMode = signal("idle"); // idle | realtime | fallback | negotiating
 
 let _stream = null;
 let _video = null;
 let _canvas = null;
 let _captureTimer = null;
 let _sendInFlight = false;
+let _lastFrameFingerprint = "";
+let _lastFrameSentAt = 0;
+let _hybridAnalyzeInFlight = false;
+let _lastHybridAnalyzeAt = 0;
 let _context = {
   sessionId: null,
   executor: null,
@@ -27,6 +32,9 @@ let _context = {
   intervalMs: 1000,
   maxWidth: 1280,
   jpegQuality: 0.65,
+  onFrame: null,
+  preferRealtimeVision: false,
+  hybridSummaryIntervalMs: 4500,
 };
 
 function isLocalhostLikeHost() {
@@ -34,7 +42,14 @@ function isLocalhostLikeHost() {
   return host === "localhost" || host === "127.0.0.1" || host === "::1";
 }
 
+function isElectronDesktopRuntime() {
+  return Boolean(globalThis?.veDesktop);
+}
+
 function isSecureOrLocalhost() {
+  // Electron desktop shells commonly run on local HTTP origins but still
+  // allow trusted desktop capture; do not gate those by browser HTTPS rules.
+  if (isElectronDesktopRuntime()) return true;
   return Boolean(globalThis?.isSecureContext) || isLocalhostLikeHost();
 }
 
@@ -46,9 +61,17 @@ function isLikelyEmbeddedWebView() {
 export function supportsVisionSource(source = "screen") {
   const normalized = normalizeSource(source);
   const mediaDevices = globalThis?.navigator?.mediaDevices;
+  if (normalized === "screen") {
+    // Electron desktop can provide screen capture even when feature-detect
+    // timing or runtime flags hide getDisplayMedia initially.
+    if (isElectronDesktopRuntime()) return true;
+    if (!mediaDevices) return false;
+    if (!isSecureOrLocalhost()) return false;
+    if (typeof mediaDevices.getDisplayMedia === "function") return true;
+    return false;
+  }
   if (!mediaDevices) return false;
   if (!isSecureOrLocalhost()) return false;
-  if (normalized === "screen") return typeof mediaDevices.getDisplayMedia === "function";
   return typeof mediaDevices.getUserMedia === "function";
 }
 
@@ -63,6 +86,9 @@ function explainVisionStartError(err, source) {
     return "Screen sharing is not supported in this in-app WebView. Open Bosun in desktop Chrome/Edge.";
   }
   if (normalized === "screen" && typeof globalThis?.navigator?.mediaDevices?.getDisplayMedia !== "function") {
+    if (isElectronDesktopRuntime()) {
+      return "Screen sharing could not start in Electron. Update desktop app and retry.";
+    }
     return "Screen sharing is not supported by this browser/runtime.";
   }
   if (name === "NotAllowedError") {
@@ -110,7 +136,21 @@ function resetContext() {
     intervalMs: 1000,
     maxWidth: 1280,
     jpegQuality: 0.65,
+    onFrame: null,
+    preferRealtimeVision: false,
+    hybridSummaryIntervalMs: 4500,
   };
+  _lastFrameFingerprint = "";
+  _lastFrameSentAt = 0;
+  _hybridAnalyzeInFlight = false;
+  _lastHybridAnalyzeAt = 0;
+}
+
+function fingerprintFrame(dataUrl) {
+  const raw = String(dataUrl || "");
+  if (!raw) return "";
+  // Cheap stable fingerprint to skip near-identical consecutive frames.
+  return `${raw.length}:${raw.slice(0, 80)}:${raw.slice(-80)}`;
 }
 
 function stopTracks(stream) {
@@ -166,30 +206,97 @@ async function captureAndSendFrame() {
   if (!ctx) return;
   ctx.drawImage(_video, 0, 0, targetWidth, targetHeight);
   const frameDataUrl = _canvas.toDataURL("image/jpeg", _context.jpegQuality);
+  const now = Date.now();
+  const fingerprint = fingerprintFrame(frameDataUrl);
+  if (fingerprint && fingerprint === _lastFrameFingerprint && now - _lastFrameSentAt < 900) {
+    return;
+  }
+  _lastFrameFingerprint = fingerprint;
+  _lastFrameSentAt = now;
 
   _sendInFlight = true;
   try {
-    const res = await fetch("/api/vision/frame", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId: _context.sessionId,
-        executor: _context.executor || undefined,
-        mode: _context.mode || undefined,
-        model: _context.model || undefined,
-        source: _context.source || "screen",
-        frameDataUrl,
-        width: targetWidth,
-        height: targetHeight,
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data?.error || `Vision upload failed (${res.status})`);
+  const framePayload = {
+      sessionId: _context.sessionId,
+      executor: _context.executor || undefined,
+      mode: _context.mode || undefined,
+      model: _context.model || undefined,
+      source: _context.source || "screen",
+      frameDataUrl,
+      width: targetWidth,
+      height: targetHeight,
+    };
+
+    const sendServerAnalysis = async ({ minIntervalMs } = {}) => {
+      const res = await fetch("/api/vision/frame", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...framePayload,
+          minIntervalMs: Number.isFinite(Number(minIntervalMs)) ? Number(minIntervalMs) : undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || `Vision upload failed (${res.status})`);
+      }
+      if (data?.analyzed && typeof data?.summary === "string" && data.summary.trim()) {
+        visionLastSummary.value = data.summary.trim();
+        visionLastAnalyzedAt.value = Date.now();
+        return true;
+      }
+      return false;
+    };
+
+    if (typeof _context.onFrame === "function") {
+      try {
+        const handled = await _context.onFrame(frameDataUrl, {
+          source: framePayload.source,
+          width: targetWidth,
+          height: targetHeight,
+          sessionId: _context.sessionId,
+        });
+        const wasHandled = handled === true || handled?.handled === true;
+        if (wasHandled) {
+          visionTransportMode.value = "realtime";
+          const summary = String(handled?.summary || "").trim();
+          if (summary) {
+            visionLastSummary.value = summary;
+            visionLastAnalyzedAt.value = Date.now();
+          } else if (_context.preferRealtimeVision) {
+            visionLastSummary.value = "Live vision streaming is active in the realtime session.";
+            visionLastAnalyzedAt.value = Date.now();
+          }
+          // Hybrid assist: keep fresh analyzed summaries in session metadata for
+          // tool calls while realtime transport remains the primary live path.
+          const hybridInterval = Math.max(
+            1200,
+            Number(_context.hybridSummaryIntervalMs) || 4500,
+          );
+          const nowMs = Date.now();
+          if (!_hybridAnalyzeInFlight && nowMs - _lastHybridAnalyzeAt >= hybridInterval) {
+            _hybridAnalyzeInFlight = true;
+            _lastHybridAnalyzeAt = nowMs;
+            sendServerAnalysis({ minIntervalMs: hybridInterval })
+              .catch(() => {})
+              .finally(() => {
+                _hybridAnalyzeInFlight = false;
+              });
+          }
+          return;
+        }
+      } catch (err) {
+        if (_context.preferRealtimeVision) {
+          console.warn("[vision-stream] realtime frame path failed; using server analysis fallback:", err?.message || err);
+        }
+      }
     }
-    if (data?.analyzed && typeof data?.summary === "string" && data.summary.trim()) {
-      visionLastSummary.value = data.summary.trim();
-      visionLastAnalyzedAt.value = Date.now();
+
+    const analyzed = await sendServerAnalysis();
+    if (analyzed) {
+      visionTransportMode.value = "fallback";
+    } else if (visionTransportMode.value === "negotiating") {
+      visionTransportMode.value = "fallback";
     }
   } catch (err) {
     visionShareState.value = "error";
@@ -225,6 +332,7 @@ export async function startVisionShare(options = {}) {
 
   await stopVisionShare();
   visionShareState.value = "starting";
+  visionTransportMode.value = "negotiating";
   visionShareError.value = null;
   visionShareSource.value = source;
 
@@ -237,7 +345,7 @@ export async function startVisionShare(options = {}) {
     }
 
     if (source === "screen") {
-      if (typeof navigator.mediaDevices.getDisplayMedia !== "function") {
+      if (typeof navigator.mediaDevices.getDisplayMedia !== "function" && !isElectronDesktopRuntime()) {
         throw new Error("Screen sharing is not supported in this browser");
       }
       _stream = await navigator.mediaDevices.getDisplayMedia({
@@ -288,6 +396,9 @@ export async function startVisionShare(options = {}) {
       intervalMs,
       maxWidth,
       jpegQuality,
+      onFrame: typeof options?.onFrame === "function" ? options.onFrame : null,
+      preferRealtimeVision: options?.preferRealtimeVision === true,
+      hybridSummaryIntervalMs: normalizeNumber(options?.hybridSummaryIntervalMs, 4500, 1200, 20_000),
     };
 
     visionShareState.value = "streaming";
@@ -320,6 +431,7 @@ export async function stopVisionShare() {
   resetContext();
   _sendInFlight = false;
   visionShareState.value = "off";
+  visionTransportMode.value = "idle";
   visionShareSource.value = null;
   visionShareError.value = null;
   visionLastSummary.value = "";

@@ -900,10 +900,30 @@ async function switchAgent(agentId) {
   const previous = activeAgent.value;
   activeAgent.value = agentId; // optimistic
   try {
-    await apiFetch("/api/agents/switch", {
+    const result = await apiFetch("/api/agents/switch", {
       method: "POST",
       body: JSON.stringify({ agent: agentId }),
     });
+    // Sync to the agent the server *actually* selected — it may have silently
+    // fallen back (e.g. copilot-sdk → codex-sdk when Copilot CLI is unavailable).
+    const actual = result?.agent;
+    if (actual) {
+      activeAgent.value = actual;
+      if (actual !== agentId) {
+        const from = agentId.replace(/-sdk$/, "");
+        const to = actual.replace(/-sdk$/, "");
+        console.warn(`[agent-selector] Server fell back from ${agentId} → ${actual}`);
+        try {
+          globalThis.dispatchEvent(
+            new CustomEvent("ve:api-error", {
+              detail: { message: `${from} unavailable — using ${to} instead` },
+            }),
+          );
+        } catch {
+          /* non-browser env */
+        }
+      }
+    }
   } catch (err) {
     console.warn("[agent-selector] Failed to switch agent:", err);
     activeAgent.value = previous; // rollback

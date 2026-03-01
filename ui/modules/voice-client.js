@@ -50,9 +50,19 @@ let _callContext = {
   mode: null,
   model: null,
 };
+let _lastPersistedUserTranscript = "";
+let _lastPersistedAssistantTranscript = "";
+let _lastPersistedUserAt = 0;
+let _lastPersistedAssistantAt = 0;
+let _awaitingToolCompletionAck = false;
+let _assistantRespondedAfterTool = false;
+let _toolCompletionAckTimer = null;
 
 const RECONNECT_AT_MS = 28 * 60 * 1000; // 28 minutes
 const MAX_RECONNECT_ATTEMPTS = 3;
+// Noise-control default: disable user-side live ASR transcript output/persistence.
+// Assistant response text remains enabled.
+const ENABLE_USER_TRANSCRIPT = false;
 let _reconnectAttempts = 0;
 let _pendingResponseCreateTimer = null;
 let _awaitingAutoResponse = false;
@@ -144,9 +154,13 @@ async function _processResponsesAudioTurn(text) {
   }
 
   voiceState.value = "thinking";
-  voiceTranscript.value = inputText;
-  emit("transcript", { text: inputText, final: true });
-  await _recordVoiceTranscript("user", inputText, "responses-audio.user_input");
+  if (ENABLE_USER_TRANSCRIPT) {
+    voiceTranscript.value = inputText;
+    emit("transcript", { text: inputText, final: true });
+  } else {
+    voiceTranscript.value = "";
+  }
+  _recordVoiceTranscriptIfNew("user", inputText, "responses-audio.user_input");
 
   if (_responsesAbortController) {
     try { _responsesAbortController.abort(); } catch { /* ignore */ }
@@ -177,7 +191,7 @@ async function _processResponsesAudioTurn(text) {
   if (responseText) {
     voiceResponse.value = responseText;
     emit("response-complete", { text: responseText });
-    await _recordVoiceTranscript("assistant", responseText, "responses-audio.assistant_output");
+    _recordVoiceTranscriptIfNew("assistant", responseText, "responses-audio.assistant_output");
   }
 
   const audioBase64 = String(data?.audioBase64 || "").trim();
@@ -277,7 +291,7 @@ async function _recordVoiceTranscript(role, content, eventType = "") {
   const text = String(content || "").trim();
   if (!sessionId || !text) return;
   try {
-    await fetch("/api/voice/transcript", {
+    const res = await fetch("/api/voice/transcript", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -290,9 +304,65 @@ async function _recordVoiceTranscript(role, content, eventType = "") {
         model: _callContext?.model || undefined,
       }),
     });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      const detail = String(payload?.error || res.statusText || "request failed").trim();
+      throw new Error(`HTTP ${res.status}: ${detail}`);
+    }
   } catch (err) {
     console.warn("[voice-client] transcript persistence failed:", err?.message || err);
   }
+}
+
+function _recordVoiceTranscriptIfNew(role, content, eventType = "") {
+  const normalizedRole = String(role || "").trim().toLowerCase();
+  const text = String(content || "").trim();
+  if (!text) return;
+  const now = Date.now();
+
+  if (normalizedRole === "user") {
+    if (text === _lastPersistedUserTranscript && now - _lastPersistedUserAt <= 2500) return;
+    _lastPersistedUserTranscript = text;
+    _lastPersistedUserAt = now;
+  } else if (normalizedRole === "assistant") {
+    if (text === _lastPersistedAssistantTranscript && now - _lastPersistedAssistantAt <= 2500) return;
+    _lastPersistedAssistantTranscript = text;
+    _lastPersistedAssistantAt = now;
+  }
+
+  _recordVoiceTranscript(normalizedRole, text, eventType);
+}
+
+function _clearToolCompletionAckTimer() {
+  if (_toolCompletionAckTimer) {
+    clearTimeout(_toolCompletionAckTimer);
+    _toolCompletionAckTimer = null;
+  }
+}
+
+function _markToolCompletionPending() {
+  _awaitingToolCompletionAck = true;
+  _assistantRespondedAfterTool = false;
+  _clearToolCompletionAckTimer();
+  _toolCompletionAckTimer = setTimeout(() => {
+    _toolCompletionAckTimer = null;
+    if (!_awaitingToolCompletionAck || _assistantRespondedAfterTool) return;
+    emit("response-complete", { text: "Done." });
+    _recordVoiceTranscriptIfNew(
+      "assistant",
+      "Done.",
+      "tool_call.done.auto_ack.timeout",
+    );
+    _awaitingToolCompletionAck = false;
+    _assistantRespondedAfterTool = false;
+  }, 6000);
+}
+
+function _markAssistantToolResponseObserved() {
+  if (!_awaitingToolCompletionAck) return;
+  _assistantRespondedAfterTool = true;
+  _awaitingToolCompletionAck = false;
+  _clearToolCompletionAckTimer();
 }
 
 // ── Event System ────────────────────────────────────────────────────────────
@@ -422,6 +492,13 @@ export async function startVoiceSession(options = {}) {
   voiceTranscript.value = "";
   voiceResponse.value = "";
   voiceToolCalls.value = [];
+  _lastPersistedUserTranscript = "";
+  _lastPersistedAssistantTranscript = "";
+  _lastPersistedUserAt = 0;
+  _lastPersistedAssistantAt = 0;
+  _awaitingToolCompletionAck = false;
+  _assistantRespondedAfterTool = false;
+  _clearToolCompletionAckTimer();
   _reconnectAttempts = 0;
 
   try {
@@ -434,7 +511,7 @@ export async function startVoiceSession(options = {}) {
         executor: _callContext.executor || undefined,
         mode: _callContext.mode || undefined,
         model: _callContext.model || undefined,
-        delegateOnly: Boolean(_callContext.sessionId),
+        delegateOnly: false,
       }),
     });
     if (!tokenRes.ok) {
@@ -630,9 +707,13 @@ function handleServerEvent(event) {
       break;
 
     case "conversation.item.input_audio_transcription.completed":
-      voiceTranscript.value = event.transcript || "";
-      emit("transcript", { text: event.transcript, final: true });
-      _recordVoiceTranscript(
+      if (ENABLE_USER_TRANSCRIPT) {
+        voiceTranscript.value = event.transcript || "";
+        emit("transcript", { text: event.transcript, final: true });
+      } else {
+        voiceTranscript.value = "";
+      }
+      _recordVoiceTranscriptIfNew(
         "user",
         event.transcript || "",
         "conversation.item.input_audio_transcription.completed",
@@ -648,32 +729,54 @@ function handleServerEvent(event) {
           .map((part) => String(part?.transcript || part?.text || ""))
           .join("")
           .trim();
-        if (transcript) {
+        if (transcript && ENABLE_USER_TRANSCRIPT) {
           voiceTranscript.value = transcript;
           emit("transcript", { text: transcript, final: true });
+        } else if (!ENABLE_USER_TRANSCRIPT) {
+          voiceTranscript.value = "";
         }
+        _recordVoiceTranscriptIfNew(
+          "user",
+          transcript,
+          "conversation.item.created.user",
+        );
+      } else if (role === "assistant") {
+        const response = content
+          .map((part) => String(part?.transcript || part?.text || ""))
+          .join("")
+          .trim();
+        if (response) _markAssistantToolResponseObserved();
+        _recordVoiceTranscriptIfNew(
+          "assistant",
+          response,
+          "conversation.item.created.assistant",
+        );
       }
       break;
     }
 
     case "response.audio_transcript.delta":
+      _markAssistantToolResponseObserved();
       voiceResponse.value += event.delta || "";
       emit("response-delta", { delta: event.delta });
       break;
 
     case "response.text.delta":
+      _markAssistantToolResponseObserved();
       voiceResponse.value += event.delta || "";
       emit("response-delta", { delta: event.delta });
       break;
 
     case "response.output_text.delta":
+      _markAssistantToolResponseObserved();
       voiceResponse.value += event.delta || "";
       emit("response-delta", { delta: event.delta });
       break;
 
     case "response.audio_transcript.done":
+      if (voiceResponse.value) _markAssistantToolResponseObserved();
       emit("response-complete", { text: voiceResponse.value });
-      _recordVoiceTranscript(
+      _recordVoiceTranscriptIfNew(
         "assistant",
         voiceResponse.value,
         "response.audio_transcript.done",
@@ -682,8 +785,9 @@ function handleServerEvent(event) {
       break;
 
     case "response.text.done":
+      if (voiceResponse.value) _markAssistantToolResponseObserved();
       emit("response-complete", { text: voiceResponse.value });
-      _recordVoiceTranscript(
+      _recordVoiceTranscriptIfNew(
         "assistant",
         voiceResponse.value,
         "response.text.done",
@@ -692,8 +796,9 @@ function handleServerEvent(event) {
       break;
 
     case "response.output_text.done":
+      if (voiceResponse.value) _markAssistantToolResponseObserved();
       emit("response-complete", { text: voiceResponse.value });
-      _recordVoiceTranscript(
+      _recordVoiceTranscriptIfNew(
         "assistant",
         voiceResponse.value,
         "response.output_text.done",
@@ -730,6 +835,25 @@ function handleServerEvent(event) {
 
     case "response.done":
       clearPendingResponseCreate();
+      if (_awaitingToolCompletionAck && !_assistantRespondedAfterTool && !voiceResponse.value) {
+        emit("response-complete", { text: "Done." });
+        _recordVoiceTranscriptIfNew(
+          "assistant",
+          "Done.",
+          "tool_call.done.auto_ack.response_done",
+        );
+        _awaitingToolCompletionAck = false;
+        _assistantRespondedAfterTool = false;
+        _clearToolCompletionAckTimer();
+      }
+      if (voiceResponse.value) {
+        _recordVoiceTranscriptIfNew(
+          "assistant",
+          voiceResponse.value,
+          "response.done.fallback",
+        );
+        voiceResponse.value = "";
+      }
       if (voiceState.value !== "listening") {
         voiceState.value = "connected";
       }
@@ -759,7 +883,13 @@ async function handleToolCall(event) {
   const name = event.name;
   let args = {};
   try {
-    args = JSON.parse(event.arguments || "{}");
+    if (typeof event.arguments === "string") {
+      args = JSON.parse(event.arguments || "{}");
+    } else if (event.arguments && typeof event.arguments === "object") {
+      args = event.arguments;
+    } else {
+      args = {};
+    }
   } catch {
     args = {};
   }
@@ -803,6 +933,10 @@ async function handleToolCall(event) {
       _dc.send(JSON.stringify({ type: "response.create" }));
     }
 
+    const stillRunning = voiceToolCalls.value.some((tc) => tc.status === "running");
+    if (!stillRunning) {
+      _markToolCompletionPending();
+    }
     emit("tool-call-complete", { callId, name, result: result.result });
   } catch (err) {
     voiceToolCalls.value = voiceToolCalls.value.map(tc =>
@@ -855,8 +989,11 @@ export function interruptResponse() {
 // ── Send text message via data channel ──────────────────────────────────────
 
 export function sendTextMessage(text) {
+  const inputText = String(text || "").trim();
+  if (!inputText) return;
   if (_transport === "responses-audio") {
-    _processResponsesAudioTurn(text).catch((err) => {
+    _recordVoiceTranscriptIfNew("user", inputText, "send_text_message.responses_audio");
+    _processResponsesAudioTurn(inputText).catch((err) => {
       voiceState.value = "error";
       voiceError.value = err.message;
       emit("error", { message: err.message });
@@ -872,10 +1009,53 @@ export function sendTextMessage(text) {
     item: {
       type: "message",
       role: "user",
-      content: [{ type: "input_text", text }],
+      content: [{ type: "input_text", text: inputText }],
     },
   }));
+  _recordVoiceTranscriptIfNew("user", inputText, "send_text_message");
   _dc.send(JSON.stringify({ type: "response.create" }));
+}
+
+/**
+ * Stream an image frame into the legacy realtime data channel without forcing
+ * an immediate response turn. Returns true when sent to realtime transport.
+ */
+export function sendImageFrame(imageDataUrl, options = {}) {
+  if (_transport === "responses-audio") return false;
+  const imageUrl = String(imageDataUrl || "").trim();
+  if (!imageUrl) return false;
+  if (!_dc || _dc.readyState !== "open") {
+    return false;
+  }
+  const source = String(options?.source || "screen").trim() || "screen";
+  const width = Number(options?.width) || undefined;
+  const height = Number(options?.height) || undefined;
+  try {
+    _dc.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_image",
+            image_url: imageUrl,
+            detail: "low",
+          },
+        ],
+      },
+      metadata: {
+        source: "vision_stream",
+        sourceType: source,
+        width,
+        height,
+      },
+    }));
+    return true;
+  } catch (err) {
+    console.warn("[voice-client] failed to send realtime image frame:", err?.message || err);
+    return false;
+  }
 }
 
 // ── Reconnect Logic ─────────────────────────────────────────────────────────
@@ -1079,4 +1259,11 @@ function cleanup() {
   }
   _responsesTokenData = null;
   _transport = "webrtc";
+  _lastPersistedUserTranscript = "";
+  _lastPersistedAssistantTranscript = "";
+  _lastPersistedUserAt = 0;
+  _lastPersistedAssistantAt = 0;
+  _awaitingToolCompletionAck = false;
+  _assistantRespondedAfterTool = false;
+  _clearToolCompletionAckTimer();
 }

@@ -29,16 +29,12 @@ describe("async safety guards", () => {
       'runDetached("agent-alerts:poll-interval", pollAgentAlerts);',
     );
     expect(monitorSource).toContain(
-      'runDetached("task-planner-status:interval", () =>',
-    );
-    expect(monitorSource).toContain(
       'runDetached("telegram-notifier:interval-update", sendUpdate)',
     );
     expect(monitorSource).toContain(
       'runDetached("fetchVk:network-recovery", () =>',
     );
     expect(monitorSource).not.toContain("void pollAgentAlerts();");
-    expect(monitorSource).not.toContain('void publishTaskPlannerStatus("interval");');
     expect(monitorSource).not.toContain("setInterval(sendUpdate, intervalMs);");
   });
 

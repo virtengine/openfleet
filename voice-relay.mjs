@@ -400,6 +400,7 @@ async function buildSessionScopedInstructions(baseInstructions, callContext = {}
     "  Delegation is non-blocking — you will get a confirmation immediately and results will appear in the chat session.",
     "- Do not wait on slow agents for normal Q&A. Prefer direct tools and ask_agent_context (instant mode).",
     "- If the user asks you to perform an action, you MUST execute at least one relevant tool call before claiming that action was done or started.",
+    "- After a tool call finishes, always send a short completion confirmation (for example: 'Done.'), unless you are already giving a fuller immediate answer.",
     "- Never say you will do something later without either calling a tool now or clearly stating why execution is blocked.",
     "- Preserve user intent when delegating. Do not paraphrase away technical detail.",
     "- Keep spoken responses concise. The user can see detailed results in the chat sidebar.",
@@ -1387,43 +1388,206 @@ export async function executeVoiceTool(toolName, toolArgs, context = {}) {
 }
 
 /**
- * Tools allowed during session-bound voice calls (beyond delegate_to_agent).
- * These are read-only or lightweight operations that shouldn't require full agent delegation.
+ * Base tools allowed during session-bound voice calls.
+ * Owner/admin sessions get additional tools via VOICE_OWNER_EXTRA_TOOLS.
  */
 const VOICE_SESSION_ALLOWED_TOOLS = new Set([
+  "get_admin_help",
   "ask_agent_context",
   "query_live_view",
   "delegate_to_agent",
   "get_workspace_context",
   "list_tasks",
   "get_task",
+  "create_task",
+  "update_task_status",
+  "delete_task",
+  "comment_on_task",
+  "search_tasks",
+  "get_task_stats",
   "get_agent_status",
   "switch_agent",
+  "set_agent_mode",
   "list_sessions",
   "get_session_history",
   "get_system_status",
   "get_fleet_status",
   "get_pr_status",
   "get_config",
-  "set_agent_mode",
+  "update_config",
   "search_code",
   "read_file_content",
   "list_directory",
   "get_recent_logs",
   "list_workflows",
+  "get_workflow_definition",
+  "list_workflow_runs",
+  "get_workflow_run",
+  "retry_workflow_run",
   "list_skills",
   "list_prompts",
   "run_command",
-  "search_tasks",
-  "get_task_stats",
   "dispatch_action",
+  "bosun_slash_command",
+  "invoke_mcp_tool",
+  "warm_codebase_context",
+  "poll_background_session",
 ]);
 
 /**
- * Get the set of tools allowed for session-bound voice calls.
- * Used by ui-server to validate tool calls.
+ * Additional tools unlocked for owner/admin-authenticated sessions.
+ * These allow direct shell access and mutating system operations.
  */
-export function getSessionAllowedTools() {
+const VOICE_OWNER_EXTRA_TOOLS = new Set([
+  "run_workspace_command",
+]);
+
+const PRIVILEGED_VOICE_AUTH_SOURCES = new Set([
+  "desktop-api-key",
+  "fallback",
+  "unsafe",
+]);
+
+export function isPrivilegedVoiceContext(context = {}) {
+  const source = String(context?.authSource || "").trim().toLowerCase();
+  return PRIVILEGED_VOICE_AUTH_SOURCES.has(source);
+}
+
+export function normalizeVoiceToolArgs(toolName, toolArgs) {
+  const extractLatestTextFromHistory = (history) => {
+    const items = Array.isArray(history) ? history : [];
+    for (let i = items.length - 1; i >= 0; i--) {
+      const item = items[i];
+      const role = String(item?.role || "").trim().toLowerCase();
+      if (role && role !== "user") continue;
+      const content = Array.isArray(item?.content) ? item.content : [];
+      for (let j = content.length - 1; j >= 0; j--) {
+        const part = content[j];
+        const transcript = String(part?.transcript || "").trim();
+        if (transcript) return transcript;
+        const text = String(part?.text || part?.input_text || "").trim();
+        if (text) return text;
+      }
+      const direct = String(item?.text || item?.message || "").trim();
+      if (direct) return direct;
+    }
+    return "";
+  };
+
+  const resolvePromptFromArgs = (value) => {
+    const direct = String(
+      value?.message ||
+      value?.prompt ||
+      value?.query ||
+      value?.question ||
+      value?.request ||
+      value?.text ||
+      "",
+    ).trim();
+    if (direct) return direct;
+
+    const nested = value?.context && typeof value.context === "object"
+      ? value.context
+      : null;
+    const nestedDirect = String(
+      nested?.message ||
+      nested?.prompt ||
+      nested?.query ||
+      nested?.question ||
+      nested?.request ||
+      nested?.text ||
+      "",
+    ).trim();
+    if (nestedDirect) return nestedDirect;
+
+    const fromNestedHistory = extractLatestTextFromHistory(nested?.history);
+    if (fromNestedHistory) return fromNestedHistory;
+    const fromTopHistory = extractLatestTextFromHistory(value?.history);
+    if (fromTopHistory) return fromTopHistory;
+    return "";
+  };
+
+  const normalized =
+    toolArgs && typeof toolArgs === "object" && !Array.isArray(toolArgs)
+      ? { ...toolArgs }
+      : {};
+
+  if (String(toolName || "").trim() === "read_file_content") {
+    const directPath = typeof normalized.filePath === "string" ? normalized.filePath.trim() : "";
+    const aliasPath = typeof normalized.path === "string" ? normalized.path.trim() : "";
+    if (!directPath && aliasPath) {
+      normalized.filePath = aliasPath;
+    }
+    if (!normalized.filePath && normalized.context && typeof normalized.context === "object") {
+      const nestedFilePath = typeof normalized.context.filePath === "string"
+        ? normalized.context.filePath.trim()
+        : "";
+      const nestedPath = typeof normalized.context.path === "string"
+        ? normalized.context.path.trim()
+        : "";
+      if (nestedFilePath) normalized.filePath = nestedFilePath;
+      else if (nestedPath) normalized.filePath = nestedPath;
+    }
+  }
+
+  const normalizedToolName = String(toolName || "").trim().toLowerCase();
+  if (
+    normalizedToolName === "ask_agent_context"
+    || normalizedToolName === "query_live_view"
+  ) {
+    const inferredPrompt = resolvePromptFromArgs(normalized);
+    if (normalizedToolName === "ask_agent_context") {
+      if (!String(normalized.message || "").trim() && inferredPrompt) {
+        normalized.message = inferredPrompt;
+      }
+    }
+    if (normalizedToolName === "query_live_view") {
+      if (!String(normalized.query || "").trim() && inferredPrompt) {
+        normalized.query = inferredPrompt;
+      }
+    }
+
+    // Tool logs can receive giant SDK history payloads; keep minimal fields.
+    if (normalized.context && typeof normalized.context === "object") {
+      const slimContext = { ...normalized.context };
+      delete slimContext.history;
+      normalized.context = slimContext;
+    }
+    delete normalized.history;
+  }
+
+  return normalized;
+}
+
+export async function getAllowedVoiceTools(context = {}) {
+  if (!context?.sessionId) return null;
+  if (isPrivilegedVoiceContext(context)) {
+    try {
+      const { getToolDefinitions } = await import("./voice-tools.mjs");
+      const all = getToolDefinitions();
+      return new Set(
+        (Array.isArray(all) ? all : [])
+          .map((tool) => String(tool?.name || "").trim())
+          .filter(Boolean),
+      );
+    } catch {
+      return new Set(VOICE_SESSION_ALLOWED_TOOLS);
+    }
+  }
+  return new Set(VOICE_SESSION_ALLOWED_TOOLS);
+}
+
+/**
+ * Get the set of tools allowed for session-bound voice calls.
+ * @param {{ isOwner?: boolean }} options
+ * @returns {Set<string>}
+ */
+export function getSessionAllowedTools(options = {}) {
+  if (options.isOwner) {
+    const merged = new Set(VOICE_SESSION_ALLOWED_TOOLS);
+    for (const t of VOICE_OWNER_EXTRA_TOOLS) merged.add(t);
+    return merged;
+  }
   return VOICE_SESSION_ALLOWED_TOOLS;
 }
 
@@ -1435,7 +1599,7 @@ export async function getVoiceToolDefinitions(options = {}) {
     const { getToolDefinitions } = await import("./voice-tools.mjs");
     const allTools = getToolDefinitions();
     const delegateOnly = options?.delegateOnly === true;
-    if (!delegateOnly) return allTools;
+    if (!delegateOnly || isPrivilegedVoiceContext(options?.context || {})) return allTools;
     // Session-bound calls get a curated subset instead of just delegate_to_agent
     return allTools.filter((tool) => VOICE_SESSION_ALLOWED_TOOLS.has(tool?.name));
   } catch (err) {

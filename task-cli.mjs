@@ -14,7 +14,6 @@
  *   bosun task update <task-id> <json-patch>
  *   bosun task update <task-id> --status todo --priority high
  *   bosun task delete <task-id>
- *   bosun task plan [--count 5] [--reason "..."]
  *   bosun task stats [--json]
  *   bosun task import <json-file>
  *
@@ -377,7 +376,9 @@ export async function runTaskCli(args) {
     case "remove":
       return await cliDelete(subArgs);
     case "plan":
-      return await cliPlan(subArgs);
+      console.log("\n  Task planner has been removed. Use workflow templates instead.");
+      console.log("  See: bosun workflow list\n");
+      return;
     case "stats":
       return await cliStats(subArgs);
     case "import":
@@ -638,36 +639,6 @@ async function cliDelete(args) {
   }
 }
 
-async function cliPlan(args) {
-  const count = parseInt(getArgValue(args, "--count") || "5", 10);
-  const reason = getArgValue(args, "--reason") || "CLI-triggered task planning";
-
-  console.log(`\n  Triggering task planner (requesting ${count} tasks)...`);
-  console.log(`  Reason: ${reason}\n`);
-
-  try {
-    // Dynamically import the planner trigger from monitor
-    const { triggerTaskPlanner } = await import("./monitor.mjs");
-    const result = await triggerTaskPlanner(reason, "", {
-      taskCount: count,
-      notify: false,
-    });
-    if (result?.created?.length) {
-      console.log(`  ✓ Created ${result.created.length} task(s):`);
-      for (const t of result.created) {
-        console.log(`    ${t.id?.slice(0, 8)} ${t.title}`);
-      }
-    } else {
-      console.log("  :alert: Planner ran but no new tasks were created.");
-    }
-    console.log("");
-  } catch (err) {
-    console.error(`  Error: ${err.message}`);
-    console.error("  Note: task planner requires a running bosun instance with Codex SDK configured.");
-    process.exit(1);
-  }
-}
-
 async function cliStats(args) {
   const stats = await taskStats();
 
@@ -727,7 +698,7 @@ function showTaskHelp() {
     get, show         Show task details by ID (supports prefix match)
     update, edit      Update task fields by ID
     delete, rm        Delete a task by ID
-    plan              Trigger the AI task planner to generate new tasks
+    plan              (removed — use workflow templates instead)
     stats             Show aggregate task statistics
     import            Bulk import tasks from a JSON file
 
@@ -765,10 +736,6 @@ function showTaskHelp() {
     --undraft         Remove draft flag
     --json            Output updated task as JSON
 
-  PLAN OPTIONS
-    --count <n>       Number of tasks to generate (default: 5)
-    --reason <text>   Reason/context for planning run
-
   IMPORT FORMAT
     JSON file must contain an array at top level or under "tasks" key:
     { "tasks": [{ "title": "...", "description": "..." }, ...] }
@@ -782,7 +749,6 @@ function showTaskHelp() {
     bosun task delete abc123
     bosun task stats
     bosun task import ./backlog.json
-    bosun task plan --count 3 --reason "Sprint planning"
 `);
 }
 
