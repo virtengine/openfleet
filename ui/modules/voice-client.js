@@ -209,9 +209,11 @@ export async function startVoiceSession(options = {}) {
     await _pc.setLocalDescription(offer);
 
     // 6. Send offer to OpenAI/Azure and get answer
-    const baseUrl = tokenData.provider === "azure"
-      ? `${tokenData.azureEndpoint}/openai/realtime?api-version=2025-04-01-preview&deployment=${tokenData.azureDeployment}`
-      : `https://api.openai.com/v1/realtime?model=${tokenData.model}`;
+    // Prefer the server-provided WebRTC URL (handles custom endpoints, Azure deployments, api-versions).
+    const baseUrl = tokenData.url
+      || (tokenData.provider === "azure"
+        ? `${tokenData.azureEndpoint}/openai/realtime?api-version=2025-04-01-preview&deployment=${tokenData.azureDeployment}`
+        : `https://api.openai.com/v1/realtime?model=${tokenData.model}`);
 
     const sdpResponse = await fetch(baseUrl, {
       method: "POST",
@@ -223,7 +225,9 @@ export async function startVoiceSession(options = {}) {
     });
 
     if (!sdpResponse.ok) {
-      throw new Error(`WebRTC SDP exchange failed (${sdpResponse.status})`);
+      const errBody = await sdpResponse.text().catch(() => "");
+      const detail = errBody ? ` — ${errBody.slice(0, 300)}` : "";
+      throw new Error(`WebRTC SDP exchange failed (${sdpResponse.status})${detail}`);
     }
 
     const answerSdp = await sdpResponse.text();

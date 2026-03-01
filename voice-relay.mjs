@@ -946,6 +946,7 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
     model,
     voiceId,
     provider: "openai",
+    url: buildOpenAIRealtimeWebRtcUrl(model, candidate?.endpoint || ""),
     sessionConfig,
     callContext: context,
   };
@@ -1020,12 +1021,17 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
   }
 
   const data = await response.json();
+  // WebRTC URL diverges from /sessions URL: GA uses /openai/v1/realtime, preview uses /openai/realtime.
+  const webrtcUrl = isAzureGaProtocol(deployment)
+    ? `${resolvedEndpoint}/openai/v1/realtime?api-version=${AZURE_API_VERSION}`
+    : `${resolvedEndpoint}/openai/realtime?api-version=${AZURE_API_VERSION}&deployment=${encodeURIComponent(deployment)}`;
   return {
     token: data.client_secret?.value || data.token,
     expiresAt: data.client_secret?.expires_at || (Date.now() / 1000 + 60),
     model: deployment,
     voiceId,
     provider: "azure",
+    url: webrtcUrl,
     sessionConfig,
     azureEndpoint: resolvedEndpoint,
     azureDeployment: deployment,
