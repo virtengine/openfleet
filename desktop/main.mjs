@@ -24,6 +24,7 @@ import {
   registerGlobalShortcuts,
   unregisterGlobalShortcuts,
   setShortcut,
+  setShortcutScope,
   resetShortcut,
   resetAllShortcuts,
 } from "./desktop-shortcuts.mjs";
@@ -1543,6 +1544,15 @@ function registerDesktopIpc() {
   ipcMain.handle("bosun:shortcuts:showDialog", () => {
     showShortcutsDialog();
     return { ok: true };
+  });
+
+  /**
+   * Enable or disable global (system-wide) firing for a globalEligible shortcut.
+   * Payload: { id: string, isGlobal: boolean }
+   * Returns: { ok: boolean, error?: string }
+   */
+  ipcMain.handle("bosun:shortcuts:setScope", (_event, { id, isGlobal }) => {
+    return setShortcutScope(id, Boolean(isGlobal));
   });
 
   // ── Navigation IPC ───────────────────────────────────────────────────────
