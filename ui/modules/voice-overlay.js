@@ -17,7 +17,7 @@ import {
   voiceState, voiceTranscript, voiceResponse, voiceError,
   voiceToolCalls, voiceDuration,
   startVoiceSession, stopVoiceSession, interruptResponse,
-  sendTextMessage, onVoiceEvent,
+  sendTextMessage, onVoiceEvent, resumeVoiceAudio,
 } from "./voice-client.js";
 import {
   sdkVoiceState, sdkVoiceTranscript, sdkVoiceResponse, sdkVoiceError,
@@ -1043,7 +1043,7 @@ export function VoiceOverlay({
             <!-- Orb visualization -->
             <div
               class="voice-orb-container"
-              onClick=${state === "speaking" ? handleInterrupt : undefined}
+              onClick=${state === "speaking" ? handleInterrupt : () => resumeVoiceAudio().catch(() => {})}
             >
               <${AudioVisualizer} state=${state} />
             </div>
