@@ -3389,6 +3389,12 @@
         if (ses) ses.status = 'archived';
         return { ok: true, session: ses || null };
       }
+      if (route.match(/^\/api\/sessions\/[^/]+\/stop$/)) {
+        const sid = route.split('/')[3];
+        const ses = STATE.sessions.find(s => s.id === sid);
+        const wasRunning = ses?.status === 'active';
+        return { ok: true, stopped: wasRunning };
+      }
       if (route.match(/^\/api\/sessions\/[^/]+\/missing_credentials$/)) {
         return { ok: false, changed: false, action: 'missing_credentials' };
       }
