@@ -2018,12 +2018,44 @@ function VoiceEndpointsEditor() {
   const [loadError, setLoadError] = useState(null);
   const [testResults, setTestResults] = useState({});
   const [oauthStatus, setOauthStatus] = useState({ openai: {}, claude: {}, gemini: {} });
+  const [customModelMode, setCustomModelMode] = useState({});
+
+  const getDefaultEndpointUrl = useCallback((provider, authSource = "apiKey") => {
+    const p = String(provider || "").toLowerCase();
+    if (p === "openai") return "https://api.openai.com";
+    if (p === "claude") return "https://api.anthropic.com";
+    if (p === "gemini") return "https://generativelanguage.googleapis.com";
+    return "";
+  }, []);
+
+  const isEndpointEditable = useCallback((provider) => {
+    const p = String(provider || "").toLowerCase();
+    return p === "azure" || p === "custom";
+  }, []);
+
+  const endpointModelOptions = useMemo(() => {
+    return [
+      "gpt-audio-1.5",
+      "gpt-realtime-1.5",
+      "gpt-4o-realtime-preview-2024-12-17",
+      "claude-3-7-sonnet-latest",
+      "claude-sonnet-4-20250514",
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+      "gemini-3.0-flash",
+      "gemini-3.1-pro",
+    ];
+  }, []);
 
   const normalizeEp = useCallback((ep = {}, idx = 0) => ({
     _id: ep._id ?? `ep-${idx}-${Date.now()}`,
     name: String(ep.name || `endpoint-${idx + 1}`),
-    provider: ["azure", "openai", "claude", "gemini"].includes(ep.provider) ? ep.provider : "azure",
-    endpoint: String(ep.endpoint || ""),
+    provider: ["azure", "openai", "claude", "gemini", "custom"].includes(ep.provider) ? ep.provider : "azure",
+    endpoint: (() => {
+      const p = ["azure", "openai", "claude", "gemini", "custom"].includes(ep.provider) ? ep.provider : "azure";
+      const raw = String(ep.endpoint || "");
+      return (p === "azure" || p === "custom") ? raw : (raw || getDefaultEndpointUrl(p, ep.authSource));
+    })(),
     deployment: String(ep.deployment || ""),
     model: String(ep.model || ""),
     visionModel: String(ep.visionModel || ""),
@@ -2033,7 +2065,7 @@ function VoiceEndpointsEditor() {
     weight: Number(ep.weight) > 0 ? Number(ep.weight) : 1,
     enabled: ep.enabled !== false,
     authSource: ["apiKey", "oauth"].includes(ep.authSource) ? ep.authSource : "apiKey",
-  }), []);
+  }), [getDefaultEndpointUrl]);
 
   // Fetch OAuth status for all providers
   const fetchOAuthStatuses = useCallback(async () => {
@@ -2110,11 +2142,26 @@ function VoiceEndpointsEditor() {
       setDirty(true);
       return prev.map((ep) =>
         ep._id === id
-          ? { ...ep, [field]: field === "weight" ? (Number(value) || 1) : value }
+          ? (() => {
+              const next = { ...ep, [field]: field === "weight" ? (Number(value) || 1) : value };
+              if (field === "provider") {
+                if (!isEndpointEditable(next.provider)) {
+                  next.endpoint = getDefaultEndpointUrl(next.provider, next.authSource);
+                }
+                if (next.provider !== "azure") next.deployment = "";
+                if (next.provider === "custom" && !next.model) {
+                  next.model = endpointModelOptions[0] || "gpt-audio-1.5";
+                }
+              }
+              if (field === "authSource" && !isEndpointEditable(next.provider)) {
+                next.endpoint = getDefaultEndpointUrl(next.provider, next.authSource);
+              }
+              return next;
+            })()
           : ep,
       );
     });
-  }, []);
+  }, [endpointModelOptions, getDefaultEndpointUrl, isEndpointEditable]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -2183,6 +2230,7 @@ function VoiceEndpointsEditor() {
                 <option value="openai">OpenAI</option>
                 <option value="claude">Claude (Anthropic)</option>
                 <option value="gemini">Google Gemini</option>
+                <option value="custom">Custom Endpoint</option>
               </select>
             </div>
             <div>
@@ -2234,6 +2282,61 @@ function VoiceEndpointsEditor() {
                 <div class="meta-text" style="margin-top:3px">
                   GA models (gpt-realtime-1.5, gpt-realtime) use /openai/v1/ paths automatically.
                   Preview models (gpt-4o-realtime-preview) use legacy paths.
+                </div>
+              </div>
+            `}
+            ${ep.provider === "custom" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Endpoint URL</div>
+                <input type="text" value=${ep.endpoint} placeholder="https://your-custom-endpoint.example.com"
+                  onInput=${(e) => updateEndpoint(ep._id, "endpoint", e.target.value)} />
+              </div>
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Model</div>
+                ${(() => {
+                  const known = endpointModelOptions;
+                  const isCustom = Boolean(customModelMode[ep._id]) || (ep.model && !known.includes(ep.model));
+                  return html`
+                    <select
+                      value=${isCustom ? "__custom__" : (ep.model || (known[0] || ""))}
+                      onChange=${(e) => {
+                        const next = String(e.target.value || "");
+                        if (next === "__custom__") {
+                          setCustomModelMode((prev) => ({ ...prev, [ep._id]: true }));
+                          updateEndpoint(ep._id, "model", known.includes(ep.model) ? "" : ep.model);
+                          return;
+                        }
+                        setCustomModelMode((prev) => ({ ...prev, [ep._id]: false }));
+                        updateEndpoint(ep._id, "model", next);
+                      }}
+                    >
+                      ${known.map((m) => html`<option value=${m}>${m}</option>`)}
+                      <option value="__custom__">custom...</option>
+                    </select>
+                    ${isCustom && html`
+                      <input
+                        type="text"
+                        value=${ep.model || ""}
+                        placeholder="Enter custom model slug..."
+                        onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)}
+                        style="margin-top:6px"
+                      />
+                    `}
+                  `;
+                })()}
+              </div>
+            `}
+            ${!isEndpointEditable(ep.provider) && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Endpoint URL</div>
+                <input
+                  type="text"
+                  value=${getDefaultEndpointUrl(ep.provider, ep.authSource)}
+                  readonly
+                  disabled
+                />
+                <div class="meta-text" style="margin-top:3px">
+                  Auto-derived from provider and auth method. Use Azure or Custom to override.
                 </div>
               </div>
             `}

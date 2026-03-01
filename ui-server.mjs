@@ -9396,6 +9396,19 @@ async function handleApi(req, res, url) {
             return;
           }
           testUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(k)}`;
+        } else if (provider === "custom") {
+          const base = String(azureEndpoint || "").trim().replace(/\/+$/, "");
+          if (!base) {
+            jsonResponse(res, 400, { ok: false, error: "Custom endpoint URL is required" });
+            return;
+          }
+          const bearer = String(apiKey || "").trim();
+          if (!bearer) {
+            jsonResponse(res, 400, { ok: false, error: "API key is required for custom endpoints" });
+            return;
+          }
+          testUrl = `${base}/v1/models`;
+          headers.Authorization = `Bearer ${bearer}`;
         } else {
           jsonResponse(res, 400, { ok: false, error: `Unknown provider: ${provider}` });
           return;

@@ -959,12 +959,24 @@ function App() {
 
   // Endpoint test connection state — {[endpointId]: { testing, result, error, latencyMs }}
   const [endpointTestResults, setEndpointTestResults] = useState({});
+  const [endpointCustomModelRows, setEndpointCustomModelRows] = useState({});
+
+  const getDefaultVoiceEndpointUrl = (provider, authSource = "apiKey") => {
+    const p = String(provider || "").toLowerCase();
+    if (p === "openai") return "https://api.openai.com";
+    if (p === "claude") return "https://api.anthropic.com";
+    if (p === "gemini") return "https://generativelanguage.googleapis.com";
+    return "";
+  };
+
+  const isEndpointUrlEditable = (provider) =>
+    ["azure", "custom"].includes(String(provider || "").toLowerCase());
 
   const testEndpointConnection = async (ep) => {
     const key = ep.id;
     setEndpointTestResults((prev) => ({ ...prev, [key]: { testing: true, result: null, error: null } }));
     try {
-      const r = await fetch(apiBase + "/voice/endpoints/test", {
+      const r = await fetch("/api/voice/endpoints/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model, authSource: ep.authSource }),
@@ -990,6 +1002,13 @@ function App() {
 
   const getVoiceProviderModelDefaults = (provider) =>
     VOICE_PROVIDER_MODEL_DEFAULTS[String(provider || "fallback").toLowerCase()] || VOICE_PROVIDER_MODEL_DEFAULTS.fallback;
+  const ALL_ENDPOINT_MODEL_OPTIONS = Array.from(
+    new Set(
+      Object.values(VOICE_PROVIDER_MODEL_DEFAULTS)
+        .flatMap((entry) => Array.isArray(entry?.models) ? entry.models : [])
+        .filter(Boolean),
+    ),
+  );
 
   const normalizeVoiceProviderEntry = (entry = {}, fallback = {}) => {
     const allowedProviders = ["openai", "azure", "claude", "gemini", "fallback"];
@@ -1073,20 +1092,33 @@ function App() {
     });
   };
 
-  const normalizeVoiceEndpoint = (ep = {}) => ({
-    id: ep.id || `ep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    name: String(ep.name || "").trim(),
-    provider: ["azure", "openai", "claude", "gemini"].includes(String(ep.provider || "").toLowerCase()) ? String(ep.provider).toLowerCase() : "azure",
-    endpoint: String(ep.endpoint || "").trim(),
-    deployment: String(ep.deployment || ep.azureDeployment || "").trim(),
-    apiKey: String(ep.apiKey || "").trim(),
-    model: String(ep.model || "gpt-audio-1.5").trim(),
-    role: ["primary", "backup"].includes(String(ep.role || "")) ? String(ep.role) : "primary",
-    weight: typeof ep.weight === "number" ? ep.weight : 100,
-    enabled: ep.enabled !== false,
-    visionModel: String(ep.visionModel || "").trim(),
-    authSource: ["apiKey", "oauth"].includes(String(ep.authSource || "")) ? String(ep.authSource) : "apiKey",
-  });
+  const normalizeVoiceEndpoint = (ep = {}) => {
+    const provider = ["azure", "openai", "claude", "gemini", "custom"].includes(String(ep.provider || "").toLowerCase())
+      ? String(ep.provider).toLowerCase()
+      : "azure";
+    const authSource = ["apiKey", "oauth"].includes(String(ep.authSource || "")) ? String(ep.authSource) : "apiKey";
+    const userEndpoint = String(ep.endpoint || "").trim();
+    const endpoint = isEndpointUrlEditable(provider)
+      ? userEndpoint
+      : (userEndpoint || getDefaultVoiceEndpointUrl(provider, authSource));
+    const defaultModel = provider === "custom"
+      ? (ALL_ENDPOINT_MODEL_OPTIONS[0] || "gpt-audio-1.5")
+      : (getVoiceProviderModelDefaults(provider).model || "gpt-audio-1.5");
+    return {
+      id: ep.id || `ep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: String(ep.name || "").trim(),
+      provider,
+      endpoint,
+      deployment: String(ep.deployment || ep.azureDeployment || "").trim(),
+      apiKey: String(ep.apiKey || "").trim(),
+      model: String(ep.model || defaultModel).trim(),
+      role: ["primary", "backup"].includes(String(ep.role || "")) ? String(ep.role) : "primary",
+      weight: typeof ep.weight === "number" ? ep.weight : 100,
+      enabled: ep.enabled !== false,
+      visionModel: String(ep.visionModel || "").trim(),
+      authSource,
+    };
+  };
 
   const addVoiceEndpoint = () => setVoiceEndpoints((prev) => [
     ...prev,
@@ -1096,7 +1128,24 @@ function App() {
   const removeVoiceEndpoint = (idx) => setVoiceEndpoints((prev) => prev.filter((_, i) => i !== idx));
 
   const updateVoiceEndpoint = (idx, field, value) => setVoiceEndpoints((prev) =>
-    prev.map((ep, i) => i === idx ? normalizeVoiceEndpoint({ ...ep, [field]: value }) : ep),
+    prev.map((ep, i) => {
+      if (i !== idx) return ep;
+      const next = { ...ep, [field]: value };
+      if (field === "provider") {
+        const nextProvider = String(value || "").toLowerCase();
+        next.model = nextProvider === "custom"
+          ? (ALL_ENDPOINT_MODEL_OPTIONS[0] || "gpt-audio-1.5")
+          : (getVoiceProviderModelDefaults(nextProvider).model || next.model || "gpt-audio-1.5");
+        next.endpoint = isEndpointUrlEditable(nextProvider)
+          ? String(next.endpoint || "")
+          : getDefaultVoiceEndpointUrl(nextProvider, next.authSource || "apiKey");
+        if (nextProvider !== "azure") next.deployment = "";
+      }
+      if (field === "authSource" && !isEndpointUrlEditable(next.provider)) {
+        next.endpoint = getDefaultVoiceEndpointUrl(next.provider, String(value || "apiKey"));
+      }
+      return normalizeVoiceEndpoint(next);
+    }),
   );
 
   const getWorkflowProfileById = (profileId, profileList = workflowProfiles) =>
@@ -3496,6 +3545,7 @@ function App() {
                       <option value="openai">OpenAI</option>
                       <option value="claude">Claude (Anthropic)</option>
                       <option value="gemini">Gemini (Google)</option>
+                      <option value="custom">Custom Endpoint</option>
                     </select>
                   </div>
                   <div class="form-group">
@@ -3545,6 +3595,61 @@ function App() {
                       <label>Deployment</label>
                       <input type="text" value=${ep.deployment} oninput=${(e) => updateVoiceEndpoint(i, "deployment", e.target.value)} placeholder="gpt-realtime-1.5" />
                       <div class="hint">GA models (gpt-realtime-1.5, gpt-realtime) use /openai/v1/ endpoints automatically.</div>
+                    </div>
+                  `}
+                  ${ep.provider === "custom" && html`
+                    <div class="form-group">
+                      <label>Endpoint URL</label>
+                      <input
+                        type="text"
+                        value=${ep.endpoint}
+                        oninput=${(e) => updateVoiceEndpoint(i, "endpoint", e.target.value)}
+                        placeholder="https://your-custom-endpoint.example.com"
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label>Model</label>
+                      ${(() => {
+                        const customModels = ALL_ENDPOINT_MODEL_OPTIONS;
+                        const isCustomModel = Boolean(endpointCustomModelRows[ep.id]) || (ep.model && !customModels.includes(ep.model));
+                        return html`
+                          <select value=${isCustomModel ? "__custom__" : ep.model}
+                            onchange=${(e) => {
+                              const nextValue = String(e.target.value || "");
+                              if (nextValue === "__custom__") {
+                                setEndpointCustomModelRows((prev) => ({ ...prev, [ep.id]: true }));
+                                updateVoiceEndpoint(i, "model", customModels.includes(ep.model) ? "" : ep.model);
+                                return;
+                              }
+                              setEndpointCustomModelRows((prev) => ({ ...prev, [ep.id]: false }));
+                              updateVoiceEndpoint(i, "model", nextValue);
+                            }}>
+                            ${customModels.map((m) => html`<option value=${m}>${m}</option>`)}
+                            <option value="__custom__">custom...</option>
+                          </select>
+                          ${isCustomModel && html`
+                            <input
+                              type="text"
+                              value=${ep.model || ""}
+                              oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)}
+                              placeholder="Enter custom model slug..."
+                              style="margin-top:4px"
+                            />
+                          `}
+                        `;
+                      })()}
+                    </div>
+                  `}
+                  ${!isEndpointUrlEditable(ep.provider) && html`
+                    <div class="form-group">
+                      <label>Endpoint URL</label>
+                      <input
+                        type="text"
+                        value=${getDefaultVoiceEndpointUrl(ep.provider, ep.authSource)}
+                        readonly
+                        disabled
+                      />
+                      <div class="hint">Auto-derived from provider + auth method. Use Azure or Custom to override.</div>
                     </div>
                   `}
                   ${ep.provider === "openai" && html`
