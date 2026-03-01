@@ -23,6 +23,7 @@ export const voiceDuration = signal(0); // seconds connected
 export const isVoiceActive = computed(() =>
   voiceState.value !== "idle" && voiceState.value !== "error"
 );
+export const isVoiceMicMuted = signal(false);
 
 // ── Module-scope state ──────────────────────────────────────────────────────
 
@@ -393,17 +394,6 @@ function sendSessionUpdate(tokenData = {}) {
       output_audio_format: "pcm16",
       input_audio_transcription: { model: "gpt-4o-mini-transcribe" },
       turn_detection: turnDetectionConfig,
-      audio: {
-        input: {
-          format: "pcm16",
-          transcription: { model: "gpt-4o-mini-transcribe" },
-          turn_detection: turnDetectionConfig,
-        },
-        output: {
-          format: "pcm16",
-          voice: voiceId,
-        },
-      },
     },
   });
 }
@@ -975,6 +965,37 @@ export async function resumeVoiceAudio() {
   return ok;
 }
 
+/**
+ * Toggle microphone mute state for the active WebRTC session.
+ * Immediately silences/restores the mic track without dropping the connection.
+ * Returns the new muted state.
+ */
+export function toggleMicMute() {
+  if (_mediaStream) {
+    const tracks = _mediaStream.getAudioTracks();
+    if (tracks.length > 0) {
+      const willBeMuted = tracks[0].enabled; // enabled=true means currently unmuted
+      for (const track of tracks) {
+        track.enabled = !willBeMuted;
+      }
+      isVoiceMicMuted.value = willBeMuted;
+      return willBeMuted;
+    }
+  }
+  // responses-audio transport: can only mute the SpeechRecognition
+  if (_transport === "responses-audio") {
+    const willBeMuted = !isVoiceMicMuted.value;
+    isVoiceMicMuted.value = willBeMuted;
+    if (willBeMuted) {
+      _stopResponsesRecognition();
+    } else {
+      _startResponsesRecognition();
+    }
+    return willBeMuted;
+  }
+  return isVoiceMicMuted.value;
+}
+
 async function safeReconnect(reason = "connection lost") {
   if (_explicitStop) return;
   try {
@@ -1032,6 +1053,7 @@ function cleanupConnection() {
 function cleanup() {
   _reconnectInFlight = false;
   _audioAutoplayWarned = false;
+  isVoiceMicMuted.value = false;
   cleanupConnection();
 
   clearInterval(_durationTimer);

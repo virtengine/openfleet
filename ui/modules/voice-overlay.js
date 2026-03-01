@@ -15,9 +15,9 @@ import { haptic } from "./telegram.js";
 import { apiFetch, onWsMessage } from "./api.js";
 import {
   voiceState, voiceTranscript, voiceResponse, voiceError,
-  voiceToolCalls, voiceDuration,
+  voiceToolCalls, voiceDuration, isVoiceMicMuted,
   startVoiceSession, stopVoiceSession, interruptResponse,
-  sendTextMessage, onVoiceEvent, resumeVoiceAudio,
+  sendTextMessage, onVoiceEvent, resumeVoiceAudio, toggleMicMute,
 } from "./voice-client.js";
 import {
   sdkVoiceState, sdkVoiceTranscript, sdkVoiceResponse, sdkVoiceError,
@@ -53,355 +53,106 @@ function injectOverlayStyles() {
   _stylesInjected = true;
   const style = document.createElement("style");
   style.textContent = `
+/* ── Base overlay ─────────────────────────────────────────────────── */
 .voice-overlay {
   position: fixed;
   inset: 0;
   z-index: 10000;
-  background: rgba(0, 0, 0, 0.95);
+  background: #202124;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  justify-content: flex-start;
   color: #fff;
-  font-family: var(--tg-theme-font, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
-  animation: voiceOverlayFadeIn 0.3s ease;
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  font-family: var(--tg-theme-font, 'Google Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  animation: voiceOverlayFadeIn 0.25s ease;
   overflow: hidden;
 }
 @keyframes voiceOverlayFadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
 }
-.voice-overlay-header {
+
+/* ── Top bar (Meet-style: title + duration left, close right) ────── */
+.vm-topbar {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  top: 0; left: 0; right: 0;
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: center;
-  padding: 16px 20px;
-  z-index: 2;
+  padding: 14px 20px;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.55) 0%, transparent 100%);
+  z-index: 3;
+  pointer-events: none;
 }
-.voice-overlay-header-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-.voice-overlay-chat-toggle {
-  height: 32px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.24);
-  background: rgba(255,255,255,0.08);
-  color: rgba(255,255,255,0.95);
-  font-size: 12px;
-  cursor: pointer;
-  padding: 0 12px;
-}
-.voice-overlay-chat-toggle:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-.voice-overlay-call-pill {
-  font-size: 11px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.2);
-  padding: 3px 9px;
-  color: rgba(255,255,255,0.86);
-}
-.voice-overlay-close {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  border: 1px solid rgba(255,255,255,0.2);
-  background: rgba(255,255,255,0.08);
-  color: #fff;
-  font-size: 18px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.15s;
-}
-.voice-overlay-close:hover {
-  background: rgba(255,255,255,0.15);
-  border-color: rgba(255,255,255,0.3);
-}
-.voice-overlay-status {
-  font-size: 13px;
-  color: rgba(255,255,255,0.6);
-  text-transform: capitalize;
-}
-.voice-overlay-bound {
-  font-size: 11px;
-  color: rgba(255,255,255,0.45);
-  margin-top: 2px;
-  max-width: 56vw;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.voice-overlay-duration {
-  font-size: 12px;
-  color: rgba(255,255,255,0.4);
+.vm-topbar > * { pointer-events: auto; }
+.vm-topbar-left { display: flex; align-items: center; gap: 10px; }
+.vm-topbar-title { font-size: 14px; font-weight: 500; color: #fff; }
+.vm-topbar-duration {
+  font-size: 13px; color: rgba(255,255,255,0.7);
   font-variant-numeric: tabular-nums;
 }
-.voice-overlay-center {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 32px;
-  z-index: 1;
+.vm-topbar-bound {
+  font-size: 11px; color: rgba(255,255,255,0.45);
+  max-width: 44vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.vm-topbar-right { display: flex; align-items: center; gap: 8px; }
+
+/* ── Main stage area ─────────────────────────────────────────────── */
 .voice-overlay-main {
   flex: 1;
   min-height: 0;
   display: flex;
   align-items: stretch;
-  gap: 14px;
-  padding: 76px 16px 18px;
+  gap: 16px;
+  padding: 72px 20px 100px;
 }
 .voice-overlay-stage {
   flex: 1;
   min-width: 0;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 18px;
 }
-.voice-overlay-chat {
-  width: min(420px, 42vw);
-  min-width: 300px;
-  max-width: 460px;
-  border-radius: 16px;
-  border: 1px solid rgba(255,255,255,0.14);
-  background: rgba(10, 10, 12, 0.78);
+.voice-overlay-center {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-}
-.voice-overlay-chat-head {
-  display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid rgba(255,255,255,0.1);
+  gap: 24px;
+  z-index: 1;
 }
-.voice-overlay-chat-title {
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-.voice-overlay-chat-status {
-  font-size: 11px;
-  color: rgba(255,255,255,0.6);
-}
-.voice-overlay-chat-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.voice-overlay-chat-empty {
-  color: rgba(255,255,255,0.6);
-  text-align: center;
-  font-size: 12px;
-  padding: 16px 8px;
-}
-.voice-overlay-chat-msg {
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.08);
-}
-.voice-overlay-chat-msg.user {
-  align-self: flex-end;
-  background: rgba(59,130,246,0.24);
-  border-color: rgba(59,130,246,0.38);
-}
-.voice-overlay-chat-msg.assistant {
-  align-self: flex-start;
-  background: rgba(34,197,94,0.2);
-  border-color: rgba(34,197,94,0.34);
-}
-.voice-overlay-chat-msg.system {
-  align-self: stretch;
-}
-.voice-overlay-chat-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  font-size: 10px;
-  color: rgba(255,255,255,0.56);
-  margin-bottom: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-.voice-overlay-chat-content {
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 13px;
-  line-height: 1.35;
-}
-.voice-overlay-chat-input-wrap {
-  border-top: 1px solid rgba(255,255,255,0.1);
-  padding: 10px;
-  display: flex;
-  gap: 8px;
-}
-.voice-overlay-chat-input {
-  flex: 1;
-  min-width: 0;
-  border: 1px solid rgba(255,255,255,0.18);
-  border-radius: 8px;
-  background: rgba(255,255,255,0.06);
-  color: #fff;
-  padding: 8px 10px;
-  font-size: 13px;
-}
-.voice-overlay-chat-send {
-  border: none;
-  border-radius: 8px;
-  background: #2563eb;
-  color: #fff;
-  font-size: 12px;
-  padding: 0 12px;
+
+/* ── Orb ─────────────────────────────────────────────────────────── */
+.voice-orb-container {
+  width: 210px;
+  height: 210px;
+  position: relative;
   cursor: pointer;
 }
-.voice-overlay-chat-send:disabled {
-  opacity: 0.48;
-  cursor: not-allowed;
-}
-.voice-orb-container {
-  width: 200px;
-  height: 200px;
-  position: relative;
-}
+
+/* ── Transcripts ─────────────────────────────────────────────────── */
 .voice-transcript-area {
-  max-width: 500px;
+  max-width: 520px;
   text-align: center;
   min-height: 60px;
 }
 .voice-transcript-user {
-  font-size: 16px;
-  color: rgba(255,255,255,0.8);
-  margin-bottom: 8px;
-  font-style: italic;
+  font-size: 16px; color: rgba(255,255,255,0.75);
+  margin-bottom: 6px; font-style: italic;
 }
 .voice-transcript-assistant {
-  font-size: 18px;
-  color: #fff;
-  line-height: 1.5;
+  font-size: 18px; color: #fff; line-height: 1.5;
 }
-.voice-tool-cards {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: center;
-  max-width: 600px;
-}
-.voice-tool-card {
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: rgba(255,255,255,0.08);
-  border: 1px solid rgba(255,255,255,0.12);
-  font-size: 12px;
-  color: rgba(255,255,255,0.7);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.voice-tool-card.running {
-  border-color: rgba(59, 130, 246, 0.5);
-  color: #60a5fa;
-}
-.voice-tool-card.complete {
-  border-color: rgba(34, 197, 94, 0.5);
-  color: #4ade80;
-}
-.voice-tool-card.error {
-  border-color: rgba(239, 68, 68, 0.5);
-  color: #f87171;
-}
-.voice-overlay-footer {
-  display: flex;
-  justify-content: center;
-  padding: 0;
-  z-index: 1;
-}
-.voice-end-btn {
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  border: none;
-  background: #ef4444;
-  color: #fff;
-  font-size: 24px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.15s;
-  box-shadow: 0 4px 20px rgba(239, 68, 68, 0.4);
-}
-.voice-end-btn:hover {
-  transform: scale(1.05);
-  box-shadow: 0 6px 28px rgba(239, 68, 68, 0.5);
-}
-.voice-overlay-vision-controls {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-.voice-vision-btn {
-  min-width: 84px;
-  height: 32px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.25);
-  background: rgba(255,255,255,0.08);
-  color: rgba(255,255,255,0.9);
-  font-size: 12px;
-  cursor: pointer;
-  padding: 0 12px;
-}
-.voice-vision-btn.active {
-  border-color: rgba(74, 222, 128, 0.8);
-  background: rgba(34, 197, 94, 0.2);
-  color: #bbf7d0;
-}
-.voice-vision-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-.voice-vision-status {
-  margin-top: 8px;
-  max-width: 560px;
-  text-align: center;
-  font-size: 12px;
-  color: rgba(255,255,255,0.58);
-}
+
+/* ── Error / connecting dots ─────────────────────────────────────── */
 .voice-error-msg {
-  color: #f87171;
-  font-size: 14px;
-  text-align: center;
-  max-width: 400px;
+  color: #f28b82; font-size: 14px; text-align: center; max-width: 420px;
+  background: rgba(234,67,53,0.12); border: 1px solid rgba(234,67,53,0.28);
+  border-radius: 10px; padding: 8px 14px;
 }
-.voice-connecting-dots {
-  display: flex;
-  gap: 8px;
-}
+.voice-connecting-dots { display: flex; gap: 8px; }
 .voice-connecting-dots span {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
+  width: 10px; height: 10px; border-radius: 50%;
   background: rgba(255,255,255,0.4);
   animation: voiceDotPulse 1.4s ease infinite;
 }
@@ -411,132 +162,309 @@ function injectOverlayStyles() {
   0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
   40% { opacity: 1; transform: scale(1.2); }
 }
-@media (max-width: 980px) {
+.voice-overlay-status {
+  font-size: 14px; color: rgba(255,255,255,0.65); text-transform: capitalize;
+}
+
+/* ── Tool call cards ─────────────────────────────────────────────── */
+.voice-tool-cards { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; max-width: 600px; }
+.voice-tool-card {
+  padding: 5px 11px; border-radius: 8px;
+  background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12);
+  font-size: 12px; color: rgba(255,255,255,0.7);
+  display: flex; align-items: center; gap: 6px;
+}
+.voice-tool-card.running { border-color: rgba(138,180,248,0.5); color: #8ab4f8; }
+.voice-tool-card.complete { border-color: rgba(129,201,149,0.5); color: #81c995; }
+.voice-tool-card.error { border-color: rgba(242,139,130,0.5); color: #f28b82; }
+
+/* ── Vision status ───────────────────────────────────────────────── */
+.voice-vision-status {
+  margin-top: 4px; max-width: 560px; text-align: center;
+  font-size: 12px; color: rgba(255,255,255,0.55);
+}
+
+/* ── Bottom Meet-style controls bar ─────────────────────────────── */
+.vm-bar {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 20px 20px;
+  min-height: 88px;
+  background: linear-gradient(to top, rgba(0,0,0,0.65) 0%, transparent 100%);
+  z-index: 3;
+}
+.vm-bar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+}
+.vm-bar-group.center { justify-content: center; gap: 8px; }
+.vm-bar-group.right { justify-content: flex-end; }
+
+/* Round control button — like Meet */
+.vm-btn-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+.vm-btn {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: none;
+  background: #3c4043;
+  color: #e8eaed;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 19px;
+  transition: background 0.15s, transform 0.1s;
+  position: relative;
+  flex-shrink: 0;
+}
+.vm-btn:hover:not(:disabled) { background: #5f6368; }
+.vm-btn:disabled { opacity: 0.38; cursor: not-allowed; }
+.vm-btn.active { background: #e8eaed; color: #202124; }
+.vm-btn.muted { background: #ea4335; color: #fff; }
+.vm-btn.screen-on { background: #188038; color: #fff; }
+.vm-btn-label {
+  font-size: 10px; color: rgba(255,255,255,0.65);
+  user-select: none; white-space: nowrap;
+}
+
+/* End-call pill — the red rounded rect like Meet */
+.vm-end-pill {
+  height: 48px;
+  padding: 0 24px;
+  border-radius: 999px;
+  border: none;
+  background: #ea4335;
+  color: #fff;
+  font-size: 22px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.15s, transform 0.1s;
+  box-shadow: 0 2px 12px rgba(234,67,53,0.45);
+  flex-shrink: 0;
+}
+.vm-end-pill:hover { background: #c5281c; transform: scale(1.04); }
+.vm-end-pill-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+.vm-end-pill-label {
+  font-size: 10px; color: rgba(255,255,255,0.65); user-select: none;
+}
+
+/* ── Chat panel (side panel) ─────────────────────────────────────── */
+.voice-overlay-chat {
+  width: min(380px, 40vw);
+  min-width: 280px;
+  max-width: 440px;
+  border-radius: 12px;
+  background: #2d2e30;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.voice-overlay-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.voice-overlay-chat-title { font-size: 13px; font-weight: 600; color: #e8eaed; }
+.voice-overlay-chat-status { font-size: 11px; color: rgba(255,255,255,0.55); }
+.voice-overlay-chat-body {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 10px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.voice-overlay-chat-empty {
+  color: rgba(255,255,255,0.5); text-align: center; font-size: 12px; padding: 20px 8px;
+}
+.voice-overlay-chat-msg {
+  padding: 8px 10px; border-radius: 10px;
+  background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
+}
+.voice-overlay-chat-msg.user {
+  align-self: flex-end;
+  background: rgba(138,180,248,0.16); border-color: rgba(138,180,248,0.3);
+}
+.voice-overlay-chat-msg.assistant {
+  align-self: flex-start;
+  background: rgba(129,201,149,0.14); border-color: rgba(129,201,149,0.28);
+}
+.voice-overlay-chat-meta {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 8px; font-size: 10px; color: rgba(255,255,255,0.5);
+  margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.03em;
+}
+.voice-overlay-chat-content {
+  white-space: pre-wrap; word-break: break-word;
+  font-size: 13px; line-height: 1.4; color: #e8eaed;
+}
+.voice-overlay-chat-input-wrap {
+  border-top: 1px solid rgba(255,255,255,0.1);
+  padding: 10px; display: flex; gap: 8px;
+}
+.voice-overlay-chat-input {
+  flex: 1; min-width: 0;
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 24px;
+  background: #3c4043;
+  color: #e8eaed;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+.voice-overlay-chat-input:focus { outline: none; border-color: #8ab4f8; }
+.voice-overlay-chat-send {
+  border: none; border-radius: 50%; width: 36px; height: 36px;
+  background: #8ab4f8; color: #202124;
+  font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.voice-overlay-chat-send:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Floating minimized widget (PiP-style) ───────────────────────── */
+.vm-floating {
+  position: fixed;
+  bottom: 24px; right: 24px;
+  width: 288px;
+  background: #2d2e30;
+  border-radius: 16px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.75), 0 0 0 1px rgba(255,255,255,0.1);
+  z-index: 10001;
+  overflow: hidden;
+  animation: vmFloatIn 0.22s cubic-bezier(0.34,1.56,0.64,1);
+  /* dragging will be applied via inline styles */
+}
+@keyframes vmFloatIn {
+  from { opacity: 0; transform: scale(0.88) translateY(12px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+.vm-floating-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px 8px;
+  cursor: grab;
+  user-select: none;
+}
+.vm-floating-header:active { cursor: grabbing; }
+.vm-floating-header-info { flex: 1; min-width: 0; }
+.vm-floating-title { font-size: 13px; font-weight: 600; color: #e8eaed; }
+.vm-floating-sub {
+  font-size: 11px; color: rgba(255,255,255,0.5);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-top: 1px;
+}
+.vm-floating-orb {
+  width: 38px; height: 38px;
+  border-radius: 50%;
+  background: #3c4043;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+.vm-floating-orb.speaking { background: #188038; animation: vmOrbPulse 1.2s ease infinite; }
+.vm-floating-orb.listening { background: #1a73e8; }
+.vm-floating-orb.thinking { background: #f29900; }
+.vm-floating-orb.connecting { background: #5f6368; }
+.vm-floating-orb.error { background: #ea4335; }
+@keyframes vmOrbPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(24,128,56,0.6); }
+  50% { box-shadow: 0 0 0 8px rgba(24,128,56,0); }
+}
+.vm-floating-transcript {
+  font-size: 12px; color: rgba(255,255,255,0.75);
+  padding: 0 14px 8px;
+  max-height: 48px; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.vm-floating-actions {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px 12px;
+}
+.vm-floating-mic {
+  width: 36px; height: 36px; border-radius: 50%; border: none;
+  background: #3c4043; color: #e8eaed;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  font-size: 16px; flex-shrink: 0;
+}
+.vm-floating-mic.muted { background: #ea4335; }
+.vm-floating-expand {
+  flex: 1; height: 34px; border-radius: 999px; border: none;
+  background: #3c4043; color: #e8eaed;
+  font-size: 12px; font-weight: 500; cursor: pointer;
+  transition: background 0.15s;
+}
+.vm-floating-expand:hover { background: #5f6368; }
+.vm-floating-end {
+  width: 36px; height: 36px; border-radius: 50%; border: none;
+  background: #ea4335; color: #fff;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  font-size: 16px; flex-shrink: 0;
+}
+.vm-floating-end:hover { background: #c5281c; }
+
+/* ── Responsive ───────────────────────────────────────────────────── */
+@media (max-width: 900px) {
   .voice-overlay-main {
-    padding: 74px 12px 14px;
     flex-direction: column;
-    gap: 12px;
+    padding: 72px 14px 96px;
+    gap: 10px;
   }
   .voice-overlay-chat {
-    width: 100%;
-    min-width: 0;
-    max-width: none;
-    max-height: 44vh;
+    width: 100%; min-width: 0; max-width: none;
+    max-height: 40vh;
   }
-  .voice-overlay-center {
-    gap: 18px;
-  }
-  .voice-orb-container {
-    width: 162px;
-    height: 162px;
-  }
+  .voice-orb-container { width: 170px; height: 170px; }
+  .vm-btn { width: 44px; height: 44px; font-size: 17px; }
+  .vm-end-pill { height: 44px; padding: 0 18px; font-size: 20px; }
+  .vm-bar { padding: 0 12px 16px; }
 }
-.voice-overlay.compact {
-  background: rgba(0, 0, 0, 0.93);
+@media (max-width: 580px) {
+  .vm-btn-label { display: none; }
+  .vm-end-pill-label { display: none; }
+  .vm-bar { padding: 0 8px 14px; }
+  .vm-btn { width: 40px; height: 40px; font-size: 16px; }
+  .vm-end-pill { height: 40px; padding: 0 14px; font-size: 18px; }
 }
-.voice-overlay.compact .voice-overlay-header {
-  padding: 12px 14px;
-}
-.voice-overlay.compact .voice-overlay-main {
-  padding: 62px 10px 10px;
-  flex-direction: column;
-  gap: 10px;
-}
-.voice-overlay.compact .voice-overlay-stage {
-  gap: 12px;
-}
-.voice-overlay.compact .voice-overlay-center {
-  gap: 12px;
-}
-.voice-overlay.compact .voice-orb-container {
-  width: 138px;
-  height: 138px;
-}
-.voice-overlay.compact .voice-transcript-area {
-  max-width: none;
-  width: 100%;
-  min-height: 46px;
-}
-.voice-overlay.compact .voice-transcript-user {
-  font-size: 14px;
-}
-.voice-overlay.compact .voice-transcript-assistant {
-  font-size: 15px;
-  line-height: 1.4;
-}
-.voice-overlay.compact .voice-tool-cards {
-  max-width: none;
-}
-.voice-overlay.compact .voice-overlay-chat {
-  width: 100%;
-  min-width: 0;
-  max-width: none;
-  max-height: 44vh;
-}
-.voice-overlay.compact .voice-end-btn {
-  width: 56px;
-  height: 56px;
-  font-size: 20px;
-}
-.voice-overlay.compact .voice-overlay-chat-toggle {
-  display: none;
-}
-.voice-overlay.compact .voice-overlay-stage {
-  display: none;
-}
+
+/* ── Compact / follow-feed mode ───────────────────────────────────── */
+.voice-overlay.compact { background: rgba(0,0,0,0.96); }
+.voice-overlay.compact .vm-topbar { padding: 10px 12px; }
+.voice-overlay.compact .voice-overlay-main { padding: 58px 10px 88px; gap: 8px; flex-direction: column; }
+.voice-overlay.compact .voice-overlay-stage { gap: 10px; }
+.voice-overlay.compact .voice-overlay-center { gap: 10px; }
+.voice-overlay.compact .voice-orb-container { width: 140px; height: 140px; }
+.voice-overlay.compact .voice-overlay-chat { width: 100%; min-width: 0; max-width: none; max-height: none; }
+.voice-overlay.compact .voice-overlay-stage { display: none; }
 .voice-overlay.compact .voice-overlay-chat.follow-feed {
-  width: 100%;
-  max-width: none;
-  min-width: 0;
-  max-height: none;
-  height: calc(100vh - 150px);
+  height: calc(100vh - 140px); max-height: none;
 }
-.voice-overlay.compact .voice-overlay-chat.follow-feed .voice-overlay-chat-head {
-  padding: 10px 12px;
-}
-.voice-overlay.compact .voice-overlay-chat.follow-feed .voice-overlay-chat-title {
-  font-size: 12px;
-  letter-spacing: 0.01em;
-  text-transform: uppercase;
-  color: rgba(255,255,255,0.72);
-}
-.voice-overlay.compact .voice-overlay-chat.follow-feed .voice-overlay-chat-status {
-  font-size: 11px;
-}
-.voice-overlay.compact .voice-overlay-chat.follow-feed .voice-overlay-chat-body {
-  padding: 8px 10px 10px;
-  gap: 6px;
-}
-.voice-overlay.compact .voice-overlay-chat.follow-feed .voice-overlay-chat-msg {
-  padding: 8px;
-  border-radius: 10px;
-}
-.voice-overlay.compact .voice-overlay-chat.follow-feed .voice-overlay-chat-content {
-  font-size: 12px;
-  line-height: 1.35;
-}
-.voice-overlay.compact .voice-overlay-chat-live {
-  margin: 6px 10px 0;
-  border: 1px solid rgba(255,255,255,0.16);
+.voice-overlay.compact .voice-overlay-chat-input-wrap { display: none; }
+.voice-overlay.compact .vm-bar { padding: 0 10px 12px; }
+
+/* ── Live in-line transcript bubbles (compact) ────────────────────── */
+.voice-overlay-chat-live {
+  margin: 4px 10px 0;
+  border: 1px solid rgba(255,255,255,0.15);
   background: rgba(255,255,255,0.06);
   border-radius: 10px;
-  padding: 8px;
-  font-size: 12px;
-  line-height: 1.35;
-  color: rgba(255,255,255,0.9);
+  padding: 7px 10px;
+  font-size: 12px; line-height: 1.35; color: rgba(255,255,255,0.9);
 }
-.voice-overlay.compact .voice-overlay-chat-live.user {
-  border-color: rgba(96,165,250,0.45);
-}
-.voice-overlay.compact .voice-overlay-chat-live.assistant {
-  border-color: rgba(74,222,128,0.45);
-}
-.voice-overlay.compact .voice-overlay-chat-input-wrap {
-  display: none;
-}
-.voice-overlay.compact .voice-overlay-footer {
-  padding: 8px 0 10px;
-}
+.voice-overlay-chat-live.user { border-color: rgba(138,180,248,0.4); }
+.voice-overlay-chat-live.assistant { border-color: rgba(129,201,149,0.4); }
   `;
   document.head.appendChild(style);
 }
@@ -615,6 +543,7 @@ export function VoiceOverlay({
 }) {
   const isCompactFollowMode = compact === true;
   const [started, setStarted] = useState(false);
+  const [minimized, setMinimized] = useState(false);
   const [chatOpen, setChatOpen] = useState(true);
   const [meetingMessages, setMeetingMessages] = useState([]);
   const [meetingChatInput, setMeetingChatInput] = useState("");
@@ -652,6 +581,7 @@ export function VoiceOverlay({
   const duration = effectiveSdk
     ? sdkVoiceDuration.value
     : tier === 1 ? voiceDuration.value : 0;
+  const micMuted = isVoiceMicMuted.value;
   const visionState = visionShareState.value;
   const visionSource = visionShareSource.value;
   const visionErr = visionShareError.value;
@@ -922,6 +852,21 @@ export function VoiceOverlay({
     }).catch(() => {});
   }, [sessionId, executor, mode, model]);
 
+  const handleToggleMic = useCallback(() => {
+    haptic("light");
+    toggleMicMute();
+  }, []);
+
+  const handleMinimize = useCallback(() => {
+    haptic("light");
+    setMinimized(true);
+  }, []);
+
+  const handleExpand = useCallback(() => {
+    haptic("light");
+    setMinimized(false);
+  }, []);
+
   const handleSendMeetingChat = useCallback(async () => {
     const activeSessionId = String(sessionId || "").trim();
     const content = String(meetingChatInput || "").trim();
@@ -1006,139 +951,105 @@ export function VoiceOverlay({
   const liveResponseText = String(response || "").trim();
 
   return html`
-    <div class=${`voice-overlay${compact ? " compact" : ""}`}>
-      <!-- Header -->
-      <div class="voice-overlay-header">
-        <button class="voice-overlay-close" onClick=${handleDismiss} title="Hide voice window">
-          ${resolveIcon("close")}
-        </button>
-        <div>
-          <div class="voice-overlay-status">${statusLabel}</div>
-          ${boundLabel && html`<div class="voice-overlay-bound">${boundLabel}</div>`}
-          ${duration > 0 && html`
-            <div class="voice-overlay-duration">${formatDuration(duration)}</div>
-          `}
-        </div>
-        <div class="voice-overlay-header-actions">
-          <span class="voice-overlay-call-pill">
-            ${normalizedCallType === "video" ? "video call" : "voice call"}
-          </span>
-          ${!isCompactFollowMode && html`
-            <button
-              class="voice-overlay-chat-toggle"
-              onClick=${() => setChatOpen((prev) => !prev)}
-              disabled=${!sessionId}
-              title=${sessionId ? "Toggle meeting chat" : "Open a session-bound call first"}
-            >
-              ${chatOpen ? "Hide Chat" : "Show Chat"}
-            </button>
-          `}
-        </div>
-      </div>
-
-      <div class="voice-overlay-main">
-        <div class="voice-overlay-stage">
-          <!-- Center content -->
-          <div class="voice-overlay-center">
-            <!-- Orb visualization -->
-            <div
-              class="voice-orb-container"
-              onClick=${state === "speaking" ? handleInterrupt : () => resumeVoiceAudio().catch(() => {})}
-            >
-              <${AudioVisualizer} state=${state} />
-            </div>
-
-            ${state === "connecting" || state === "reconnecting"
-              ? html`
-                  <div class="voice-connecting-dots">
-                    <span /><span /><span />
-                  </div>
-                  <div class="voice-overlay-status" style="font-size: 16px">
-                    ${state === "reconnecting" ? "Reconnecting..." : "Connecting..."}
-                  </div>
-                `
-              : null}
-
-            ${error && html`
-              <div class="voice-error-msg">${error}</div>
+    ${!minimized && html`
+      <div class=${`voice-overlay${compact ? " compact" : ""}`}>
+        <!-- Top bar -->
+        <div class="vm-topbar">
+          <div class="vm-topbar-left">
+            <span class="vm-topbar-title">
+              ${normalizedCallType === "video" ? "Video Call" : "AI Agent Call"}
+            </span>
+            ${duration > 0 && html`
+              <span class="vm-topbar-duration">${formatDuration(duration)}</span>
             `}
-
-            <!-- Transcript area -->
-            <div class="voice-transcript-area">
-              ${transcript && html`
-                <div class="voice-transcript-user">"${transcript}"</div>
-              `}
-              ${response && html`
-                <div class="voice-transcript-assistant">${response}</div>
-              `}
-            </div>
-
-            <div class="voice-overlay-vision-controls">
-              <button
-                class="voice-vision-btn ${visionState === "streaming" && visionSource === "screen" ? "active" : ""}"
-                onClick=${handleToggleScreenShare}
-                disabled=${!canShareVision}
-                title=${canShareVision ? "Share your screen with the active agent call" : "Open a session-bound call first"}
-              >
-                ${visionState === "streaming" && visionSource === "screen" ? "Stop Screen" : "Share Screen"}
-              </button>
-              <button
-                class="voice-vision-btn ${visionState === "streaming" && visionSource === "camera" ? "active" : ""}"
-                onClick=${handleToggleCameraShare}
-                disabled=${!canShareVision}
-                title=${canShareVision ? "Share your camera with the active agent call" : "Open a session-bound call first"}
-              >
-                ${visionState === "streaming" && visionSource === "camera" ? "Stop Camera" : "Share Camera"}
-              </button>
-            </div>
-
-            ${(visionErr || latestVisionSummary) && html`
-              <div class="voice-vision-status">
-                ${visionErr || latestVisionSummary}
-              </div>
-            `}
-
-            <!-- Tool call cards -->
-            ${toolCalls.length > 0 && html`
-              <div class="voice-tool-cards">
-                ${toolCalls.slice(-5).map(tc => html`
-                  <div class="voice-tool-card ${tc.status}" key=${tc.callId}>
-                    <span>${tc.status === "running" ? resolveIcon("loading") : tc.status === "complete" ? resolveIcon("check") : resolveIcon("alert")}</span>
-                    <span>${tc.name}</span>
-                  </div>
-                `)}
-              </div>
+            ${boundLabel && html`
+              <span class="vm-topbar-bound">${boundLabel}</span>
             `}
           </div>
-
-          <!-- Footer -->
-          <div class="voice-overlay-footer">
-            <button class="voice-end-btn" onClick=${handleClose} title="End call">
-              ${resolveIcon("close")}
+          <div class="vm-topbar-right">
+            <button class="vm-minimize-btn" onClick=${handleMinimize} title="Minimise to floating widget">
+              ${resolveIcon("chevronDown") || "⌵"}
             </button>
           </div>
         </div>
 
-        ${showMeetingChat && html`
-          <aside class=${`voice-overlay-chat${isCompactFollowMode ? " follow-feed" : ""}`}>
-            <div class="voice-overlay-chat-head">
-              <div class="voice-overlay-chat-title">
-                ${isCompactFollowMode ? "Live Meeting Transcript" : "Meeting Chat + Transcript"}
+        <!-- Main area: stage + optional chat panel -->
+        <div class="voice-overlay-main">
+          <div class="voice-overlay-stage">
+            <div class="voice-overlay-center">
+              <!-- Orb -->
+              <div
+                class="voice-orb-container"
+                onClick=${state === "speaking" ? handleInterrupt : () => resumeVoiceAudio().catch(() => {})}
+                title=${state === "speaking" ? "Interrupt" : "Tap to resume audio"}
+              >
+                <${AudioVisualizer} state=${state} />
               </div>
-              <div class="voice-overlay-chat-status">${chatStatusLabel}</div>
+
+              ${(state === "connecting" || state === "reconnecting") && html`
+                <div class="voice-connecting-dots">
+                  <span /><span /><span />
+                </div>
+                <div class="voice-overlay-status" style="font-size: 16px">
+                  ${state === "reconnecting" ? "Reconnecting..." : "Connecting..."}
+                </div>
+              `}
+
+              ${error && html`<div class="voice-error-msg">${error}</div>`}
+
+              <!-- Live transcripts -->
+              <div class="voice-transcript-area">
+                ${transcript && html`
+                  <div class="voice-transcript-user">"${transcript}"</div>
+                `}
+                ${response && html`
+                  <div class="voice-transcript-assistant">${response}</div>
+                `}
+                ${!transcript && !response && state === "connected" && html`
+                  <div class="voice-overlay-status">${statusLabel}</div>
+                `}
+              </div>
+
+              ${(visionErr || latestVisionSummary) && html`
+                <div class="voice-vision-status">
+                  ${visionErr || latestVisionSummary}
+                </div>
+              `}
+
+              <!-- Tool call cards -->
+              ${toolCalls.length > 0 && html`
+                <div class="voice-tool-cards">
+                  ${toolCalls.slice(-5).map(tc => html`
+                    <div class="voice-tool-card ${tc.status}" key=${tc.callId}>
+                      <span>${tc.status === "running" ? resolveIcon("loading") : tc.status === "complete" ? resolveIcon("check") : resolveIcon("alert")}</span>
+                      <span>${tc.name}</span>
+                    </div>
+                  `)}
+                </div>
+              `}
             </div>
-            ${isCompactFollowMode && liveTranscriptText && html`
-              <div class="voice-overlay-chat-live user">You: ${liveTranscriptText}</div>
-            `}
-            ${isCompactFollowMode && liveResponseText && html`
-              <div class="voice-overlay-chat-live assistant">Assistant: ${liveResponseText}</div>
-            `}
-            <div class="voice-overlay-chat-body" ref=${meetingScrollRef}>
-              ${meetingFeedMessages.length === 0 && !meetingChatLoading
-                ? html`<div class="voice-overlay-chat-empty">Conversation will appear here once the call starts.</div>`
-                : null}
-              ${meetingFeedMessages.map((msg) => {
-                return html`
+          </div>
+
+          <!-- Chat side panel -->
+          ${showMeetingChat && html`
+            <aside class=${`voice-overlay-chat${isCompactFollowMode ? " follow-feed" : ""}`}>
+              <div class="voice-overlay-chat-head">
+                <div class="voice-overlay-chat-title">
+                  ${isCompactFollowMode ? "Live Transcript" : "Meeting Chat"}
+                </div>
+                <div class="voice-overlay-chat-status">${chatStatusLabel}</div>
+              </div>
+              ${isCompactFollowMode && liveTranscriptText && html`
+                <div class="voice-overlay-chat-live user">You: ${liveTranscriptText}</div>
+              `}
+              ${isCompactFollowMode && liveResponseText && html`
+                <div class="voice-overlay-chat-live assistant">Assistant: ${liveResponseText}</div>
+              `}
+              <div class="voice-overlay-chat-body" ref=${meetingScrollRef}>
+                ${meetingFeedMessages.length === 0 && !meetingChatLoading
+                  ? html`<div class="voice-overlay-chat-empty">Conversation will appear here once the call starts.</div>`
+                  : null}
+                ${meetingFeedMessages.map((msg) => html`
                   <div class="voice-overlay-chat-msg ${msg.role}" key=${msg.id}>
                     <div class="voice-overlay-chat-meta">
                       <span>${msg.role}</span>
@@ -1146,35 +1057,151 @@ export function VoiceOverlay({
                     </div>
                     <div class="voice-overlay-chat-content">${msg.content}</div>
                   </div>
-                `;
-              })}
+                `)}
+              </div>
+              ${!isCompactFollowMode && html`
+                <div class="voice-overlay-chat-input-wrap">
+                  <input
+                    class="voice-overlay-chat-input"
+                    placeholder="Message the agent…"
+                    value=${meetingChatInput}
+                    onInput=${(e) => setMeetingChatInput(e.target.value)}
+                    onKeyDown=${(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSendMeetingChat().catch(() => {});
+                      }
+                    }}
+                  />
+                  <button
+                    class="voice-overlay-chat-send"
+                    onClick=${() => handleSendMeetingChat().catch(() => {})}
+                    disabled=${!meetingChatInput.trim() || meetingChatSending}
+                    title="Send"
+                  >↑</button>
+                </div>
+              `}
+            </aside>
+          `}
+        </div>
+
+        <!-- Google Meet-style bottom controls bar -->
+        <div class="vm-bar">
+          <!-- Left: duration -->
+          <div class="vm-bar-group left">
+            ${duration > 0 && html`
+              <span style="font-size:13px;color:rgba(255,255,255,0.7);font-variant-numeric:tabular-nums">
+                ${formatDuration(duration)}
+              </span>
+            `}
+          </div>
+
+          <!-- Center: mic, camera, screen, end-call pill -->
+          <div class="vm-bar-group center">
+            <!-- Mic toggle -->
+            <div class="vm-btn-wrap">
+              <button
+                class=${`vm-btn${micMuted ? " muted" : ""}`}
+                onClick=${handleToggleMic}
+                title=${micMuted ? "Unmute mic" : "Mute mic"}
+              >
+                ${micMuted ? "🔇" : "🎙"}
+              </button>
+              <span class="vm-btn-label">${micMuted ? "Unmute" : "Mute"}</span>
             </div>
+
+            <!-- Camera toggle -->
+            <div class="vm-btn-wrap">
+              <button
+                class=${`vm-btn${visionState === "streaming" && visionSource === "camera" ? " screen-on" : ""}`}
+                onClick=${handleToggleCameraShare}
+                disabled=${!canShareVision}
+                title=${canShareVision ? (visionState === "streaming" && visionSource === "camera" ? "Stop camera" : "Share camera") : "Session required"}
+              >
+                ${visionState === "streaming" && visionSource === "camera" ? "📷" : "📷"}
+              </button>
+              <span class="vm-btn-label">${visionState === "streaming" && visionSource === "camera" ? "Stop cam" : "Camera"}</span>
+            </div>
+
+            <!-- Screen share toggle -->
+            <div class="vm-btn-wrap">
+              <button
+                class=${`vm-btn${visionState === "streaming" && visionSource === "screen" ? " screen-on" : ""}`}
+                onClick=${handleToggleScreenShare}
+                disabled=${!canShareVision}
+                title=${canShareVision ? (visionState === "streaming" && visionSource === "screen" ? "Stop screen share" : "Share screen") : "Session required"}
+              >
+                🖥
+              </button>
+              <span class="vm-btn-label">${visionState === "streaming" && visionSource === "screen" ? "Stop share" : "Share screen"}</span>
+            </div>
+
+            <!-- End call pill -->
+            <div class="vm-end-pill-wrap">
+              <button class="vm-end-pill" onClick=${handleClose} title="End call">
+                📵
+              </button>
+              <span class="vm-end-pill-label">End call</span>
+            </div>
+          </div>
+
+          <!-- Right: chat toggle, people -->
+          <div class="vm-bar-group right">
             ${!isCompactFollowMode && html`
-              <div class="voice-overlay-chat-input-wrap">
-                <input
-                  class="voice-overlay-chat-input"
-                  placeholder="Message the agent during the call…"
-                  value=${meetingChatInput}
-                  onInput=${(e) => setMeetingChatInput(e.target.value)}
-                  onKeyDown=${(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSendMeetingChat().catch(() => {});
-                    }
-                  }}
-                />
+              <div class="vm-btn-wrap">
                 <button
-                  class="voice-overlay-chat-send"
-                  onClick=${() => handleSendMeetingChat().catch(() => {})}
-                  disabled=${!meetingChatInput.trim() || meetingChatSending}
+                  class=${`vm-btn${chatOpen && sessionId ? " active" : ""}`}
+                  onClick=${() => setChatOpen((p) => !p)}
+                  disabled=${!sessionId}
+                  title=${sessionId ? "Toggle chat panel" : "Session required"}
                 >
-                  Send
+                  💬
                 </button>
+                <span class="vm-btn-label">Chat</span>
               </div>
             `}
-          </aside>
-        `}
+            <div class="vm-btn-wrap">
+              <button class="vm-btn" title="Participants (coming soon)" disabled>
+                👥
+              </button>
+              <span class="vm-btn-label">People</span>
+            </div>
+          </div>
+        </div>
       </div>
-    </div>
+    `}
+
+    <!-- Floating minimized PiP widget -->
+    ${minimized && html`
+      <div class="vm-floating">
+        <div class="vm-floating-header" onClick=${handleExpand} title="Expand call">
+          <div class=${`vm-floating-orb ${state}`}>
+            ${state === "speaking" ? "🔊" : state === "listening" ? "👂" : state === "thinking" ? "💭" : state === "connecting" ? "⟳" : "📵"}
+          </div>
+          <div class="vm-floating-header-info">
+            <div class="vm-floating-title">
+              ${normalizedCallType === "video" ? "Video Call" : "AI Agent Call"}
+            </div>
+            <div class="vm-floating-sub">
+              ${statusLabel}${duration > 0 ? ` · ${formatDuration(duration)}` : ""}
+            </div>
+          </div>
+        </div>
+        ${(liveTranscriptText || liveResponseText) && html`
+          <div class="vm-floating-transcript">
+            ${liveResponseText || liveTranscriptText}
+          </div>
+        `}
+        <div class="vm-floating-actions">
+          <button
+            class=${`vm-floating-mic${micMuted ? " muted" : ""}`}
+            onClick=${handleToggleMic}
+            title=${micMuted ? "Unmute" : "Mute"}
+          >${micMuted ? "🔇" : "🎙"}</button>
+          <button class="vm-floating-expand" onClick=${handleExpand}>Expand</button>
+          <button class="vm-floating-end" onClick=${handleClose} title="End call">📵</button>
+        </div>
+      </div>
+    `}
   `;
 }

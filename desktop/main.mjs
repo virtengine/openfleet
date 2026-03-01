@@ -65,6 +65,11 @@ const WORKSPACE_CACHE_TTL_MS = 30_000;
 const acc = (id) => getEffectiveAccelerator(id) ?? undefined;
 
 const DAEMON_PID_FILE = resolve(homedir(), ".cache", "bosun", "daemon.pid");
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
 
 // Local/private-network patterns — TLS cert bypass for the embedded UI server
 const LOCAL_HOSTNAME_RE = [
@@ -375,6 +380,7 @@ function buildFollowWindowUrl(baseUrl, detail = {}) {
 
 function setWindowVisible(win) {
   if (!win || win.isDestroyed()) return;
+  win.setSkipTaskbar(false);
   if (win.isMinimized()) win.restore();
   if (!win.isVisible()) win.show();
   win.focus();
@@ -999,16 +1005,12 @@ async function createMainWindow() {
   });
 
   mainWindow.on("close", (event) => {
-    // In tray mode, closing the window hides it to the tray instead of quitting.
-    if (trayMode && !shuttingDown) {
-      event.preventDefault();
-      mainWindow?.hide();
-      // On macOS, hide the dock icon when the window is hidden.
-      if (process.platform === "darwin") {
-        app.dock?.hide();
-      }
-      return;
-    }
+    // User close should not quit the app; minimize to taskbar/dock.
+    if (shuttingDown) return;
+    event.preventDefault();
+    if (mainWindow?.isMinimized()) return;
+    mainWindow?.setSkipTaskbar(false);
+    mainWindow?.minimize();
   });
 
   mainWindow.on("closed", () => {
@@ -1627,10 +1629,10 @@ async function bootstrap() {
 
     // Determine tray / background mode before creating any windows.
     trayMode = isTrayModeEnabled();
-    // In tray mode the window starts hidden by default (background resident).
-    // Set BOSUN_DESKTOP_START_HIDDEN=0 to open the window on every launch.
+    // Launch visible by default; allow opt-in hidden start only.
+    // Set BOSUN_DESKTOP_START_HIDDEN=1 to keep legacy background startup.
     startHidden = trayMode
-      ? parseBoolEnv(process.env.BOSUN_DESKTOP_START_HIDDEN, true)
+      ? parseBoolEnv(process.env.BOSUN_DESKTOP_START_HIDDEN, false)
       : false;
 
     if (trayMode) {
@@ -1759,6 +1761,18 @@ app.on("activate", () => {
   } else {
     setWindowVisible(mainWindow);
   }
+});
+
+app.on("second-instance", () => {
+  if (followWindow && !followWindow.isDestroyed() && followWindow.isVisible()) {
+    setWindowVisible(followWindow);
+    return;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    void createMainWindow();
+    return;
+  }
+  setWindowVisible(mainWindow);
 });
 
 process.on("SIGINT", () => {
