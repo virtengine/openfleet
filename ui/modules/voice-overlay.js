@@ -12,8 +12,7 @@ import { h } from "preact";
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import htm from "htm";
 import { haptic } from "./telegram.js";
-import { apiFetch } from "./api.js";
-import { onWsMessage } from "./api.js";
+import { apiFetch, onWsMessage } from "./api.js";
 import {
   voiceState, voiceTranscript, voiceResponse, voiceError,
   voiceToolCalls, voiceDuration,
