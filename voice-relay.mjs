@@ -52,6 +52,23 @@ const GEMINI_GENERATE_CONTENT_URL = "https://generativelanguage.googleapis.com/v
 const GEMINI_DEFAULT_MODEL = "gemini-2.5-pro";
 const GEMINI_DEFAULT_VISION_MODEL = "gemini-2.5-flash";
 
+function buildOpenAIRealtimeSessionUrl(overrideBase = "") {
+  const trimmed = String(overrideBase || "").trim().replace(/\/+$/, "");
+  if (!trimmed) return `${OPENAI_REALTIME_URL}/sessions`;
+  if (/\/v1\/realtime$/i.test(trimmed)) return `${trimmed}/sessions`;
+  if (/\/v1$/i.test(trimmed)) return `${trimmed}/realtime/sessions`;
+  return `${trimmed}/v1/realtime/sessions`;
+}
+
+function buildOpenAIRealtimeWebRtcUrl(model, overrideBase = "") {
+  const trimmed = String(overrideBase || "").trim().replace(/\/+$/, "");
+  const encodedModel = encodeURIComponent(String(model || OPENAI_REALTIME_MODEL));
+  if (!trimmed) return `${OPENAI_REALTIME_URL}?model=${encodedModel}`;
+  if (/\/v1\/realtime$/i.test(trimmed)) return `${trimmed}?model=${encodedModel}`;
+  if (/\/v1$/i.test(trimmed)) return `${trimmed}/realtime?model=${encodedModel}`;
+  return `${trimmed}/v1/realtime?model=${encodedModel}`;
+}
+
 // GA models (gpt-realtime, gpt-realtime-1.5, gpt-realtime-mini, etc.) use /openai/v1/ paths.
 // Preview models (gpt-4o-realtime-preview, gpt-audio-1.5, etc.) use legacy /openai/realtimeapi/ paths.
 function isAzureGaProtocol(deployment) {
@@ -639,9 +656,9 @@ export function getVoiceConfig(forceReload = false) {
   // voiceEndpoints: named per-endpoint configs each with their own credentials.
   const rawVoiceEndpoints = Array.isArray(voice.voiceEndpoints) ? voice.voiceEndpoints : [];
   const voiceEndpointCandidates = rawVoiceEndpoints
-    .filter((ep) => ep && ep.enabled !== false && (ep.provider === "openai" || ep.provider === "azure"))
+    .filter((ep) => ep && ep.enabled !== false && (ep.provider === "openai" || ep.provider === "azure" || ep.provider === "custom"))
     .map((ep) => ({
-      provider: String(ep.provider || "").toLowerCase(),
+      provider: String(ep.provider || "").toLowerCase() === "custom" ? "openai" : String(ep.provider || "").toLowerCase(),
       endpoint: String(ep.endpoint || "").trim() || null,
       apiKey: String(ep.apiKey || "").trim() || null,
       model: String(ep.model || "").trim() || null,
@@ -895,7 +912,7 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
     tools: toolDefinitions,
   };
 
-  const response = await fetch(`${OPENAI_REALTIME_URL}/sessions`, {
+  const response = await fetch(buildOpenAIRealtimeSessionUrl(candidate?.endpoint || ""), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${credential}`,
@@ -1176,7 +1193,7 @@ export function getRealtimeConnectionInfo() {
   const model = String(candidate?.model || cfg.model || OPENAI_REALTIME_MODEL).trim() || OPENAI_REALTIME_MODEL;
   return {
     provider: "openai",
-    url: `${OPENAI_REALTIME_URL}?model=${model}`,
+    url: buildOpenAIRealtimeWebRtcUrl(model, candidate?.endpoint || ""),
     model,
   };
 }

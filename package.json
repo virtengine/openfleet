@@ -87,7 +87,8 @@
   },
   "scripts": {
     "start": "node cli.mjs",
-    "setup": "node setup.mjs",
+    "setup": "node cli.mjs --setup",
+    "setup:terminal": "node setup.mjs",
     "monitor": "node monitor.mjs",
     "desktop": "node cli.mjs --desktop",
     "desktop:install": "npm -C desktop install",
