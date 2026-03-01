@@ -188,21 +188,6 @@ const OPENAI_DEFAULT_SCOPES = [
   "profile",
   "email",
   "offline_access",
-  // Needed for /v1/models capability checks + endpoint test.
-  "api.model.read",
-  // Needed for realtime voice runtime session creation and media flow.
-  "api.realtime.write",
-  // Needed for primary response generation and result retrieval/debug.
-  "api.responses.read",
-  "api.responses.write",
-  // Needed for transcription / speech input-output flows.
-  "api.audio.write",
-].join(" ");
-
-const OPENAI_OPTIONAL_FILE_SCOPES = [
-  // Optional: enable only if you plan retrieval/context-file pipelines soon.
-  "api.files.read",
-  "api.files.write",
 ].join(" ");
 
 function normalizeScopeList(scopes) {
@@ -229,16 +214,10 @@ const OAUTH_PROVIDERS = {
     tokenUrl: "https://auth.openai.com/oauth/token",
     redirectUri: "http://localhost:1455/auth/callback",
     port: 1455,
-    // Keep stable defaults, while allowing future scope expansion without code edits:
-    // - BOSUN_OPENAI_OAUTH_SCOPES: full replacement list
-    // - BOSUN_OPENAI_OAUTH_EXTRA_SCOPES: appended scopes
+    // OpenAI's current public OAuth client allows OIDC-style scopes.
+    // Keep an override for custom/private clients that support additional scopes.
     scopes: normalizeScopeList(
-      process.env.BOSUN_OPENAI_OAUTH_SCOPES?.trim()
-      || `${OPENAI_DEFAULT_SCOPES} ${
-        process.env.BOSUN_OPENAI_OAUTH_ENABLE_FILE_SCOPES === "true"
-          ? OPENAI_OPTIONAL_FILE_SCOPES
-          : ""
-      } ${process.env.BOSUN_OPENAI_OAUTH_EXTRA_SCOPES || ""}`,
+      process.env.BOSUN_OPENAI_OAUTH_SCOPES?.trim() || OPENAI_DEFAULT_SCOPES,
     ),
     extraParams: {
       id_token_add_organizations: "true",
@@ -267,7 +246,8 @@ const OAUTH_PROVIDERS = {
     clientSecret: process.env.BOSUN_GEMINI_OAUTH_CLIENT_SECRET?.trim(),
     authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
     tokenUrl: "https://oauth2.googleapis.com/token",
-    redirectUri: "http://localhost:10002/auth/callback",
+    // Google recommends loopback IP literals for local OAuth callbacks.
+    redirectUri: "http://127.0.0.1:10002/auth/callback",
     port: 10002,
     scopes: process.env.BOSUN_GEMINI_OAUTH_SCOPES?.trim() || GEMINI_DEFAULT_SCOPES,
     extraParams: {
@@ -344,9 +324,12 @@ function _createCallbackServer(provider, cfg, expectedState, codeVerifier) {
     const pending = _providerPendingLogin.get(provider);
 
     if (error) {
+      const providerHint = provider === "openai" && /invalid_scope/i.test(String(error))
+        ? "<p><strong>Hint:</strong> OpenAI rejected one or more requested OAuth scopes. Reset to default OIDC scopes (openid profile email offline_access) and reconnect.</p>"
+        : "";
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(`<!DOCTYPE html><html><body style="font-family:system-ui;padding:40px">
-        <h2>Sign-in failed</h2><p>${errorDescription}</p><p>You can close this window.</p>
+        <h2>Sign-in failed</h2><p>${errorDescription}</p>${providerHint}<p>You can close this window.</p>
       </body></html>`);
       if (pending) { pending.status = "error"; pending.result = { error: errorDescription }; }
       setTimeout(() => server.close(), 500);
@@ -395,7 +378,10 @@ function _createCallbackServer(provider, cfg, expectedState, codeVerifier) {
     if (p?.status === "pending") { p.status = "error"; p.result = { error: err.message }; }
   });
 
-  server.listen(port, "localhost");
+  // Bind explicitly to 127.0.0.1 (IPv4) rather than "localhost", which Node.js
+  // resolves to ::1 (IPv6) on Windows — causing connection refused when the
+  // browser follows the OAuth redirect to http://localhost:<port>/auth/callback.
+  server.listen(port, "127.0.0.1");
   return server;
 }
 
@@ -416,6 +402,12 @@ function _openBrowser(url) {
 function _startProviderLogin(provider, options = {}) {
   const cfg = OAUTH_PROVIDERS[provider];
   if (!cfg) throw new Error(`Unknown OAuth provider: ${provider}`);
+  if (!cfg.clientId || String(cfg.clientId).trim().length < 8) {
+    throw new Error(
+      `OAuth client_id is missing for provider "${provider}". ` +
+      `Set the relevant BOSUN_*_OAUTH_CLIENT_ID env var or restore defaults in voice-auth-manager.mjs.`,
+    );
+  }
 
   // Cancel any existing login for this provider
   _cancelProviderLogin(provider);

@@ -2356,8 +2356,8 @@ function VoiceEndpointsEditor() {
                 <input type="text" value=${ep.deployment} placeholder="gpt-realtime-1.5"
                   onInput=${(e) => updateEndpoint(ep._id, "deployment", e.target.value)} />
                 <div class="meta-text" style="margin-top:3px">
-                  GA models (gpt-realtime-1.5, gpt-realtime) use /openai/v1/ paths automatically.
-                  Preview models (gpt-4o-realtime-preview) use legacy paths.
+                  Connectivity tests use the endpoint URL exactly as entered.
+                  If you enter only a host, Bosun appends the default Azure OpenAI probe route.
                 </div>
               </div>
             `}

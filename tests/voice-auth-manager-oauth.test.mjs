@@ -126,50 +126,26 @@ describe("voice-auth-manager OAuth", () => {
     expect(params.get("redirect_uri")).toBe("http://localhost:1455/auth/callback");
     expect(params.get("scope")).toContain("openid");
     expect(params.get("scope")).toContain("offline_access");
-    expect(params.get("scope")).toContain("api.model.read");
-    expect(params.get("scope")).toContain("api.realtime.write");
-    expect(params.get("scope")).toContain("api.responses.read");
-    expect(params.get("scope")).toContain("api.responses.write");
-    expect(params.get("scope")).toContain("api.audio.write");
-    expect(params.get("scope") || "").not.toContain("api.files.read");
-    expect(params.get("scope") || "").not.toContain("api.files.write");
+    expect(params.get("scope")).toContain("profile");
+    expect(params.get("scope")).toContain("email");
   });
 
-  it("allows OpenAI OAuth scope expansion via BOSUN_OPENAI_OAUTH_EXTRA_SCOPES", async () => {
-    const prevExtra = process.env.BOSUN_OPENAI_OAUTH_EXTRA_SCOPES;
+  it("allows OpenAI OAuth full scope override via BOSUN_OPENAI_OAUTH_SCOPES", async () => {
+    const prevOverride = process.env.BOSUN_OPENAI_OAUTH_SCOPES;
     try {
-      process.env.BOSUN_OPENAI_OAUTH_EXTRA_SCOPES = "api.responses.read api.responses.write";
+      process.env.BOSUN_OPENAI_OAUTH_SCOPES = "openid offline_access";
       vi.resetModules();
       const localMod = await import("../voice-auth-manager.mjs");
       const { authUrl } = localMod.startOpenAICodexLogin();
       const params = new URLSearchParams(new URL(authUrl).search);
       const scope = params.get("scope") || "";
-      expect(scope).toContain("api.model.read");
-      expect(scope).toContain("api.responses.read");
-      expect(scope).toContain("api.responses.write");
+      expect(scope).toContain("openid");
+      expect(scope).toContain("offline_access");
+      expect(scope).not.toContain("profile");
       localMod.cancelOpenAILogin();
     } finally {
-      if (prevExtra == null) delete process.env.BOSUN_OPENAI_OAUTH_EXTRA_SCOPES;
-      else process.env.BOSUN_OPENAI_OAUTH_EXTRA_SCOPES = prevExtra;
-      vi.resetModules();
-      mod = await import("../voice-auth-manager.mjs");
-    }
-  });
-
-  it("includes OpenAI file scopes when BOSUN_OPENAI_OAUTH_ENABLE_FILE_SCOPES=true", async () => {
-    const prev = process.env.BOSUN_OPENAI_OAUTH_ENABLE_FILE_SCOPES;
-    try {
-      process.env.BOSUN_OPENAI_OAUTH_ENABLE_FILE_SCOPES = "true";
-      vi.resetModules();
-      const localMod = await import("../voice-auth-manager.mjs");
-      const { authUrl } = localMod.startOpenAICodexLogin();
-      const scope = new URLSearchParams(new URL(authUrl).search).get("scope") || "";
-      expect(scope).toContain("api.files.read");
-      expect(scope).toContain("api.files.write");
-      localMod.cancelOpenAILogin();
-    } finally {
-      if (prev == null) delete process.env.BOSUN_OPENAI_OAUTH_ENABLE_FILE_SCOPES;
-      else process.env.BOSUN_OPENAI_OAUTH_ENABLE_FILE_SCOPES = prev;
+      if (prevOverride == null) delete process.env.BOSUN_OPENAI_OAUTH_SCOPES;
+      else process.env.BOSUN_OPENAI_OAUTH_SCOPES = prevOverride;
       vi.resetModules();
       mod = await import("../voice-auth-manager.mjs");
     }
@@ -196,7 +172,7 @@ describe("voice-auth-manager OAuth", () => {
 
   it("starts the callback HTTP server on port 1455", () => {
     mod.startOpenAICodexLogin();
-    expect(_mockServer.listen).toHaveBeenCalledWith(1455, "localhost");
+    expect(_mockServer.listen).toHaveBeenCalledWith(1455, "127.0.0.1");
   });
 
   it("cancelling a second call stops the first server and starts a fresh one", () => {
@@ -466,7 +442,7 @@ describe("voice-auth-manager Claude OAuth", () => {
 
   it("starts the callback HTTP server on port 10001", () => {
     mod.startClaudeLogin();
-    expect(_mockServer.listen).toHaveBeenCalledWith(10001, "localhost");
+    expect(_mockServer.listen).toHaveBeenCalledWith(10001, "127.0.0.1");
   });
 
   it("getClaudeLoginStatus returns idle initially", () => {
@@ -566,12 +542,12 @@ describe("voice-auth-manager Gemini OAuth", () => {
   it("authUrl contains correct redirect_uri for Gemini (port 10002)", () => {
     const { authUrl } = mod.startGeminiLogin();
     const params = new URLSearchParams(new URL(authUrl).search);
-    expect(params.get("redirect_uri")).toBe("http://localhost:10002/auth/callback");
+    expect(params.get("redirect_uri")).toBe("http://127.0.0.1:10002/auth/callback");
   });
 
   it("starts the callback HTTP server on port 10002", () => {
     mod.startGeminiLogin();
-    expect(_mockServer.listen).toHaveBeenCalledWith(10002, "localhost");
+    expect(_mockServer.listen).toHaveBeenCalledWith(10002, "127.0.0.1");
   });
 
   it("getGeminiLoginStatus returns idle initially", () => {

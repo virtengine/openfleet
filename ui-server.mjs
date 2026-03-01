@@ -9390,16 +9390,31 @@ async function handleApi(req, res, url) {
             jsonResponse(res, 400, { ok: false, error: "Azure endpoint URL is required" });
             return;
           }
-          // Strip path suffix so users can paste full URLs without double-path 404s.
-          let base = azureEndpoint.replace(/\/+$/, "");
-          try { const u = new URL(base); base = `${u.protocol}//${u.host}`; } catch { /* keep as-is */ }
+          // Endpoint URL is authoritative: preserve user-provided path/host exactly.
+          // Only append default OpenAI probe routes when endpoint is just a bare host.
+          const rawEndpoint = String(azureEndpoint || "").trim();
+          const base = rawEndpoint.replace(/\/+$/, "");
           // Single-deployment GET only requires Cognitive Services User role.
           // Use the GA api-version (2024-10-21) for broad compatibility across
           // classic Azure OpenAI and Azure AI Foundry resources.
           const dep = String(deployment || "").trim();
-          testUrl = dep
-            ? `${base}/openai/deployments/${encodeURIComponent(dep)}?api-version=2024-10-21`
-            : `${base}/openai/models?api-version=2024-10-21`;
+          let endpointHasCustomPath = false;
+          try {
+            const parsed = new URL(base);
+            const p = String(parsed.pathname || "").trim();
+            endpointHasCustomPath = Boolean(p && p !== "/");
+          } catch {
+            endpointHasCustomPath = false;
+          }
+          if (endpointHasCustomPath) {
+            // User supplied a concrete URL (possibly including /openai/... and query).
+            // Respect it as final and issue the probe directly.
+            testUrl = base;
+          } else {
+            testUrl = dep
+              ? `${base}/openai/deployments/${encodeURIComponent(dep)}?api-version=2024-10-21`
+              : `${base}/openai/models?api-version=2024-10-21`;
+          }
           if (apiKey) headers["api-key"] = apiKey;
           else {
             jsonResponse(res, 400, { ok: false, error: "Azure API key is required" });

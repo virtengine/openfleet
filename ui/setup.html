@@ -3644,7 +3644,7 @@ function App() {
                     <div class="form-group">
                       <label>Deployment</label>
                       <input type="text" value=${ep.deployment} oninput=${(e) => updateVoiceEndpoint(i, "deployment", e.target.value)} placeholder="gpt-realtime-1.5" />
-                      <div class="hint">GA models (gpt-realtime-1.5, gpt-realtime) use /openai/v1/ endpoints automatically.</div>
+                      <div class="hint">Connectivity tests use the endpoint URL exactly as entered. If you provide only a host, Bosun appends the default Azure OpenAI probe route.</div>
                     </div>
                   `}
                   ${ep.provider === "custom" && html`
