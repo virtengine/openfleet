@@ -652,7 +652,9 @@ function App() {
   const [internalReplenishMax, setInternalReplenishMax] = useState(2);
   const [workflowAutomationEnabled, setWorkflowAutomationEnabled] = useState(true);
   const [workflowProfile, setWorkflowProfile] = useState("balanced");
+  const [workflowProfileSelection, setWorkflowProfileSelection] = useState("balanced");
   const [workflowDefaultTemplates, setWorkflowDefaultTemplates] = useState([]);
+  const [workflowCurrentTemplateIds, setWorkflowCurrentTemplateIds] = useState([]);
   const [workflowAutoInstall, setWorkflowAutoInstall] = useState(true);
   const [workflowNodeMaxRetries, setWorkflowNodeMaxRetries] = useState(3);
   const [workflowNodeTimeoutMs, setWorkflowNodeTimeoutMs] = useState(600000);
@@ -715,7 +717,7 @@ function App() {
     return Array.isArray(profile_?.templateIds) ? [...profile_.templateIds] : [];
   };
 
-  const applyWorkflowProfileSelection = (profileId, profileList = workflowProfiles) => {
+  const applyWorkflowProfileSelection = (profileId, profileList = workflowProfiles, options = {}) => {
     const normalized = String(profileId || "").trim().toLowerCase() || "balanced";
     const profile_ =
       getWorkflowProfileById(normalized, profileList) ||
@@ -727,7 +729,17 @@ function App() {
     if (profile_ && typeof profile_.workflowAutomationEnabled === "boolean") {
       setWorkflowAutomationEnabled(profile_.workflowAutomationEnabled);
     }
+    setWorkflowProfileSelection(String(options.selectionId || resolvedProfileId));
     setWorkflowAutoInstall(true);
+  };
+
+  const applyCurrentWorkflowSelection = () => {
+    const templateIds = (workflowCurrentTemplateIds || [])
+      .map((templateId) => String(templateId || "").trim())
+      .filter(Boolean);
+    if (templateIds.length === 0) return;
+    setWorkflowProfileSelection("current-installed");
+    setWorkflowDefaultTemplates(templateIds);
   };
 
   const toggleWorkflowTemplate = (templateId, checked) => {
@@ -870,7 +882,10 @@ function App() {
         applyWorkflowProfileSelection(String(existingWorkflowDefaults.profile), workflowData.profiles || []);
       }
       if (Array.isArray(existingWorkflowDefaults.templates) && existingWorkflowDefaults.templates.length > 0) {
-        setWorkflowDefaultTemplates(existingWorkflowDefaults.templates.map((templateId) => String(templateId).trim()).filter(Boolean));
+        const existingTemplateIds = existingWorkflowDefaults.templates.map((templateId) => String(templateId).trim()).filter(Boolean);
+        setWorkflowCurrentTemplateIds(existingTemplateIds);
+        setWorkflowDefaultTemplates(existingTemplateIds);
+        setWorkflowProfileSelection("current-installed");
       }
       if (existingWorkflowDefaults.autoInstall != null) {
         setWorkflowAutoInstall(Boolean(existingWorkflowDefaults.autoInstall));
@@ -1147,21 +1162,44 @@ function App() {
     // Poll the setup server for a pending OAuth callback that may have been
     // received on the callback-catcher (port 54317) while setup was open.
     let pollTimer;
+    let pollStopTimer;
+    let consecutivePollFailures = 0;
+    const OAUTH_STATE_POLL_MAX_MS = 300000; // 5 minutes
+    const OAUTH_STATE_POLL_MAX_FAILURES = 5;
+    const stopPolling = () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      if (pollStopTimer) {
+        clearTimeout(pollStopTimer);
+        pollStopTimer = null;
+      }
+    };
     const poll = async () => {
       try {
         const r = await fetch("/api/setup/oauth-state");
         if (!r.ok) return;
+        consecutivePollFailures = 0;
         const data = await r.json();
         if (data?.pending) {
           setOauthStatus("received");
           if (data.installation_id) setOauthInstallationId(data.installation_id);
-          clearInterval(pollTimer);
+          stopPolling();
         }
-      } catch { /* server may not have this endpoint yet — ignore */ }
+      } catch {
+        // If the setup server is offline (e.g. wizard process stopped), avoid
+        // logging a failed network request forever.
+        consecutivePollFailures += 1;
+        if (consecutivePollFailures >= OAUTH_STATE_POLL_MAX_FAILURES) {
+          stopPolling();
+        }
+      }
     };
     pollTimer = setInterval(poll, 2000);
+    pollStopTimer = setTimeout(stopPolling, OAUTH_STATE_POLL_MAX_MS);
     poll(); // immediate first check
-    return () => clearInterval(pollTimer);
+    return stopPolling;
   }, []);
 
 
@@ -2166,7 +2204,23 @@ function App() {
   // ── Step 5: Workflows ──────────────────────────────────────────────────────
 
   const StepWorkflows = () => {
-    const profileCards = workflowProfiles || [];
+    const baseProfileCards = workflowProfiles || [];
+    const currentTemplateIds = (workflowCurrentTemplateIds || [])
+      .map((templateId) => String(templateId || "").trim())
+      .filter(Boolean);
+    const profileCards = currentTemplateIds.length > 0
+      ? [
+          {
+            id: "current-installed",
+            name: `Your current installed workflows (${currentTemplateIds.length} templates)`,
+            description: "Keep your existing workflow selection exactly as configured.",
+            recommendedFor: "Returning users updating setup without resetting workflow defaults.",
+            templateCount: currentTemplateIds.length,
+            workflowAutomationEnabled: workflowAutomationEnabled,
+          },
+          ...baseProfileCards,
+        ]
+      : baseProfileCards;
     const templates = [...(workflowTemplates || [])].sort((a, b) => {
       const categoryOrderA = Number(a?.categoryOrder || 99);
       const categoryOrderB = Number(b?.categoryOrder || 99);
@@ -2177,6 +2231,10 @@ function App() {
     const selectedCount = selectedSet.size;
 
     const applyProfileTemplates = (profileId) => {
+      if (String(profileId) === "current-installed") {
+        applyCurrentWorkflowSelection();
+        return;
+      }
       applyWorkflowProfileSelection(profileId, profileCards);
     };
 
@@ -2186,12 +2244,13 @@ function App() {
         .map((template) => template.id);
       setWorkflowDefaultTemplates(recommended);
       setWorkflowProfile("balanced");
+      setWorkflowProfileSelection("balanced");
       setWorkflowAutoInstall(true);
     };
 
     const clearTemplateSelection = () => {
       setWorkflowDefaultTemplates([]);
-      setWorkflowProfile("manual");
+      setWorkflowProfileSelection("custom");
     };
 
     return html`
@@ -2207,7 +2266,7 @@ function App() {
       <div class="workflow-profile-grid">
         ${profileCards.map((profile_) => html`
           <div
-            class="workflow-profile-card ${workflowProfile === profile_.id ? "selected" : ""}"
+            class="workflow-profile-card ${workflowProfileSelection === profile_.id ? "selected" : ""}"
             onclick=${() => applyProfileTemplates(profile_.id)}
           >
             <div class="workflow-profile-title">
@@ -2235,7 +2294,7 @@ function App() {
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap">
         <div class="hint">Selected templates: <strong>${selectedCount}</strong> / ${templates.length}</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button class="btn btn-sm" onclick=${() => applyProfileTemplates(workflowProfile || "balanced")}>Apply Profile Defaults</button>
+          <button class="btn btn-sm" onclick=${() => applyProfileTemplates(workflowProfileSelection || workflowProfile || "balanced")}>Apply Profile Defaults</button>
           <button class="btn btn-sm" onclick=${selectRecommendedOnly}>Use Recommended Only</button>
           <button class="btn btn-sm btn-danger" onclick=${clearTemplateSelection}>Clear Selection</button>
         </div>
@@ -2250,7 +2309,10 @@ function App() {
                 class="workflow-template-checkbox"
                 type="checkbox"
                 checked=${checked}
-                onchange=${(e) => toggleWorkflowTemplate(template.id, e.target.checked)}
+                onchange=${(e) => {
+                  setWorkflowProfileSelection("custom");
+                  toggleWorkflowTemplate(template.id, e.target.checked);
+                }}
               />
               <div>
                 <div class="workflow-template-title">

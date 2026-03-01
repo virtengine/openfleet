@@ -1350,6 +1350,9 @@ function ServerConfigMode() {
         <!-- Voice Endpoints card-based editor (synced with /setup) -->
         ${activeCategory === "voice" && html`<${VoiceEndpointsEditor} />`}
 
+        <!-- Voice Providers editor (routing order with endpoint linking) -->
+        ${activeCategory === "voice" && html`<${VoiceProvidersEditor} />`}
+
         <!-- OpenAI Codex OAuth login card (voice category) -->
         ${activeCategory === "voice" && html`<${OpenAICodexLoginCard} />`}
 
@@ -2013,6 +2016,8 @@ function VoiceEndpointsEditor() {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [loadError, setLoadError] = useState(null);
+  const [testResults, setTestResults] = useState({});
+  const [oauthStatus, setOauthStatus] = useState({ openai: {}, claude: {}, gemini: {} });
 
   const normalizeEp = useCallback((ep = {}, idx = 0) => ({
     _id: ep._id ?? `ep-${idx}-${Date.now()}`,
@@ -2029,6 +2034,40 @@ function VoiceEndpointsEditor() {
     enabled: ep.enabled !== false,
   }), []);
 
+  // Fetch OAuth status for all providers
+  const fetchOAuthStatuses = useCallback(async () => {
+    for (const provider of ["openai", "claude", "gemini"]) {
+      try {
+        const res = await apiFetch(`/api/voice/auth/${provider}/status`);
+        if (res.ok) {
+          setOauthStatus((prev) => ({ ...prev, [provider]: { status: res.status || "idle", hasToken: !!res.hasToken } }));
+        }
+      } catch { /* best-effort */ }
+    }
+  }, []);
+
+  // Test endpoint connection
+  const testEndpointConnection = useCallback(async (ep) => {
+    const key = ep._id;
+    setTestResults((prev) => ({ ...prev, [key]: { testing: true } }));
+    try {
+      const res = await apiFetch("/api/voice/endpoints/test", {
+        method: "POST",
+        body: JSON.stringify({ provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model }),
+      });
+      if (res.ok) {
+        setTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "success", latencyMs: res.latencyMs } }));
+        haptic("success");
+      } else {
+        setTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "error", error: res.error || "Connection failed" } }));
+        haptic("heavy");
+      }
+    } catch (err) {
+      setTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "error", error: err.message || "Network error" } }));
+      haptic("heavy");
+    }
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
@@ -2041,7 +2080,8 @@ function VoiceEndpointsEditor() {
         setLoading(false);
       }
     })();
-  }, [normalizeEp]);
+    fetchOAuthStatuses();
+  }, [normalizeEp, fetchOAuthStatuses]);
 
   const addEndpoint = useCallback(() => {
     setEndpoints((prev) => {
@@ -2161,8 +2201,15 @@ function VoiceEndpointsEditor() {
             </div>
             <div style="grid-column:1/-1">
               <div class="setting-row-label">API Key</div>
-              <input type="password" value=${ep.apiKey} placeholder="API key for this endpoint"
+              <input type="password" value=${ep.apiKey}
+                placeholder=${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthStatus[ep.provider]?.status === "connected" ? "Using OAuth token (connected above)" : "API key for this endpoint"}
                 onInput=${(e) => updateEndpoint(ep._id, "apiKey", e.target.value)} />
+              ${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthStatus[ep.provider]?.status === "connected" && html`
+                <div class="meta-text" style="margin-top:3px;color:var(--color-success,#22c55e)">✓ Will use your connected ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account automatically.</div>
+              `}
+              ${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthStatus[ep.provider]?.status !== "connected" && html`
+                <div class="meta-text" style="margin-top:3px">No API key set. Connect your account via OAuth above, or enter a key.</div>
+              `}
             </div>
             ${ep.provider === "azure" && html`
               <div style="grid-column:1/-1">
@@ -2187,6 +2234,20 @@ function VoiceEndpointsEditor() {
                   onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)} />
               </div>
             `}
+            ${ep.provider === "claude" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Model</div>
+                <input type="text" value=${ep.model} placeholder="claude-opus-4-5"
+                  onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)} />
+              </div>
+            `}
+            ${ep.provider === "gemini" && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Model</div>
+                <input type="text" value=${ep.model} placeholder="gemini-2.0-flash"
+                  onInput=${(e) => updateEndpoint(ep._id, "model", e.target.value)} />
+              </div>
+            `}
             <div style="grid-column:1/-1">
               <div class="setting-row-label">Vision Model</div>
               <input type="text" value=${ep.visionModel}
@@ -2195,12 +2256,285 @@ function VoiceEndpointsEditor() {
               <div class="meta-text" style="margin-top:3px">Model used for screenshot / image analysis tasks.</div>
             </div>
           </div>
+          <!-- Test Connection -->
+          <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+            <button class="btn btn-sm"
+              disabled=${!!(testResults[ep._id]?.testing)}
+              onClick=${() => testEndpointConnection(ep)}
+              style="min-width:130px">
+              ${testResults[ep._id]?.testing ? html`<${Spinner} size=${12} /> Testing…` : "Test Connection"}
+            </button>
+            ${testResults[ep._id]?.result === "success" && html`
+              <span style="color:var(--color-success,#22c55e);font-size:12px;font-weight:600">
+                ✓ Connected${testResults[ep._id].latencyMs != null ? ` (${testResults[ep._id].latencyMs}ms)` : ""}
+              </span>
+            `}
+            ${testResults[ep._id]?.result === "error" && html`
+              <span style="color:var(--color-error,#ef4444);font-size:12px;font-weight:600">
+                ✗ ${testResults[ep._id].error}
+              </span>
+            `}
+          </div>
         </div>
       `)}
       <button class="btn btn-sm" onClick=${addEndpoint} style="margin-top:2px">+ Add Endpoint</button>
       ${endpoints.length === 0 && !loadError && html`
         <div class="meta-text" style="margin-top:8px">
           No endpoints configured. Add one above, or use the legacy env vars below as fallback.
+        </div>
+      `}
+    <//>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ *  VoiceProvidersEditor — provider routing (priority order) with
+ *  endpoint linking, model/vision dropdowns, voice persona.
+ *  Mirrors setup.html's provider card UI.
+ * ═══════════════════════════════════════════════════════════════ */
+const VOICE_PROVIDER_MODEL_DEFAULTS = {
+  openai: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+  azure: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+  claude: { model: "claude-3-7-sonnet-latest", visionModel: "claude-3-7-sonnet-latest", models: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"], visionModels: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"] },
+  gemini: { model: "gemini-2.5-pro", visionModel: "gemini-2.5-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"] },
+  fallback: { model: "", visionModel: "", models: [], visionModels: [] },
+};
+const _getProviderDefaults = (provider) =>
+  VOICE_PROVIDER_MODEL_DEFAULTS[String(provider || "fallback").toLowerCase()] || VOICE_PROVIDER_MODEL_DEFAULTS.fallback;
+
+function VoiceProvidersEditor() {
+  const [providers, setProviders] = useState([]);
+  const [endpoints, setEndpoints] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+
+  const normalizeProvider = useCallback((entry = {}) => {
+    const allowedProviders = ["openai", "azure", "claude", "gemini", "fallback"];
+    const provider = String(entry.provider || "fallback").trim().toLowerCase();
+    const normalizedProvider = allowedProviders.includes(provider) ? provider : "fallback";
+    const defaults_ = _getProviderDefaults(normalizedProvider);
+    return {
+      _id: entry._id || `prov_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: entry.id || Date.now() + Math.random(),
+      provider: normalizedProvider,
+      model: String(entry.model ?? defaults_.model ?? "").trim(),
+      visionModel: String(entry.visionModel ?? defaults_.visionModel ?? "").trim(),
+      voiceId: String(entry.voiceId ?? "alloy").trim() || "alloy",
+      azureDeployment: String(entry.azureDeployment ?? (normalizedProvider === "azure" ? "gpt-audio-1.5" : "")).trim(),
+      endpointId: String(entry.endpointId ?? "").trim(),
+    };
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [provRes, epRes] = await Promise.all([
+          apiFetch("/api/voice/providers"),
+          apiFetch("/api/voice/endpoints"),
+        ]);
+        const provs = Array.isArray(provRes?.providers) ? provRes.providers : [];
+        setProviders(provs.map((p) => normalizeProvider(p)));
+        const eps = Array.isArray(epRes?.voiceEndpoints) ? epRes.voiceEndpoints : [];
+        setEndpoints(eps);
+      } catch (err) {
+        setLoadError(err.message || "Failed to load voice providers");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [normalizeProvider]);
+
+  const addProvider = useCallback(() => {
+    if (providers.length >= 5) return;
+    setProviders((prev) => [...prev, normalizeProvider({})]);
+    setDirty(true);
+    haptic("light");
+  }, [providers.length, normalizeProvider]);
+
+  const removeProvider = useCallback((_id) => {
+    setProviders((prev) => prev.filter((p) => p._id !== _id));
+    setDirty(true);
+    haptic("light");
+  }, []);
+
+  const updateProvider = useCallback((_id, field, value) => {
+    setProviders((prev) => prev.map((p) => {
+      if (p._id !== _id) return p;
+      const updated = { ...p, [field]: value };
+      // When provider type changes, reset model/vision to defaults
+      if (field === "provider") {
+        const defaults_ = _getProviderDefaults(value);
+        updated.model = defaults_.model;
+        updated.visionModel = defaults_.visionModel;
+        updated.endpointId = ""; // clear linked endpoint
+        if (value === "azure") updated.azureDeployment = "gpt-audio-1.5";
+        else updated.azureDeployment = "";
+      }
+      return updated;
+    }));
+    setDirty(true);
+  }, []);
+
+  const saveProviders = useCallback(async () => {
+    setSaving(true);
+    try {
+      const payload = providers.map(({ _id, ...rest }) => rest);
+      const res = await apiFetch("/api/voice/providers", {
+        method: "POST",
+        body: JSON.stringify({ providers: payload }),
+      });
+      if (!res.ok) throw new Error(res.error || "Save failed");
+      haptic("success");
+      setDirty(false);
+    } catch (err) {
+      haptic("heavy");
+      setLoadError(err.message || "Save failed");
+      setTimeout(() => setLoadError(null), 4000);
+    } finally {
+      setSaving(false);
+    }
+  }, [providers]);
+
+  if (loading) return html`<${Card} title="Voice Providers"><${Spinner} /> Loading…<//>`;
+  if (loadError && providers.length === 0) return html`<${Card} title="Voice Providers"><div class="meta-text" style="color:var(--color-error)">${loadError}</div><//>`;
+
+  return html`
+    <${Card} title="Voice Providers (Priority Order)"
+      badge=${dirty ? html`<${Badge} variant="warning">Unsaved<//>` : null}
+      actions=${dirty ? html`
+        <button class="btn btn-sm btn-primary" onClick=${saveProviders} disabled=${saving}>
+          ${saving ? html`<${Spinner} size=${12} /> Saving…` : "Save Providers"}
+        </button>
+      ` : null}>
+      <div class="meta-text" style="margin-bottom:10px">
+        Configure up to 5 providers in priority order. Bosun tries them in sequence during voice sessions.
+      </div>
+      ${loadError && html`<div class="meta-text" style="color:var(--color-error);margin-bottom:8px">${loadError}</div>`}
+      ${providers.map((prov, idx) => {
+        const defaults_ = _getProviderDefaults(prov.provider);
+        const knownModels = defaults_.models || [];
+        const knownVisionModels = defaults_.visionModels || [];
+        const isCustomModel = knownModels.length > 0 && !knownModels.includes(prov.model);
+        const isCustomVision = knownVisionModels.length > 0 && !knownVisionModels.includes(prov.visionModel);
+        const matchingEps = endpoints.filter((ep) => ep.provider === prov.provider && ep.enabled !== false);
+        return html`
+        <div style="border:1px solid var(--border-primary);border-radius:var(--radius-sm);padding:12px;margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <strong>Provider ${idx + 1}</strong>
+            <button class="btn btn-sm" style="color:var(--color-error);font-size:11px"
+              onClick=${() => removeProvider(prov._id)}
+              disabled=${providers.length <= 1}>Remove</button>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div>
+              <div class="setting-row-label">Provider Type</div>
+              <select value=${prov.provider}
+                onChange=${(e) => updateProvider(prov._id, "provider", e.target.value)}>
+                <option value="openai">OpenAI Realtime</option>
+                <option value="azure">Azure OpenAI Realtime</option>
+                <option value="claude">Claude</option>
+                <option value="gemini">Gemini</option>
+                <option value="fallback">Browser Fallback</option>
+              </select>
+            </div>
+            ${prov.provider !== "fallback" && html`
+              <div>
+                <div class="setting-row-label">Endpoint</div>
+                ${matchingEps.length === 0 ? html`
+                  <select disabled>
+                    <option>— No ${prov.provider} endpoints —</option>
+                  </select>
+                  <div class="meta-text" style="color:var(--color-warning,#eab308);font-size:11px;margin-top:2px">
+                    Configure a matching endpoint above first.
+                  </div>
+                ` : html`
+                  <select value=${prov.endpointId || ""}
+                    onChange=${(e) => updateProvider(prov._id, "endpointId", e.target.value)}>
+                    <option value="">— Select endpoint —</option>
+                    ${matchingEps.map((ep) => html`<option value=${ep.id}>${ep.name || ep.id}</option>`)}
+                  </select>
+                `}
+              </div>
+            `}
+            <div>
+              <div class="setting-row-label">Model</div>
+              <select value=${isCustomModel ? "custom" : prov.model}
+                onChange=${(e) => {
+                  if (e.target.value === "custom") {
+                    updateProvider(prov._id, "model", prov.model && !knownModels.includes(prov.model) ? prov.model : "");
+                  } else {
+                    updateProvider(prov._id, "model", e.target.value);
+                  }
+                }}>
+                ${knownModels.map((m) => html`<option value=${m}>${m}</option>`)}
+                <option value="custom">custom…</option>
+              </select>
+              ${isCustomModel && html`
+                <input type="text" value=${prov.model}
+                  onInput=${(e) => updateProvider(prov._id, "model", e.target.value)}
+                  placeholder="Custom model slug…"
+                  style="margin-top:4px" />
+              `}
+              ${knownModels.length === 0 && html`
+                <input type="text" value=${prov.model}
+                  onInput=${(e) => updateProvider(prov._id, "model", e.target.value)}
+                  placeholder="Provider model"
+                  style="margin-top:4px" />
+              `}
+            </div>
+            <div>
+              <div class="setting-row-label">Vision Model</div>
+              <select value=${isCustomVision ? "custom" : prov.visionModel}
+                onChange=${(e) => {
+                  if (e.target.value === "custom") {
+                    updateProvider(prov._id, "visionModel", prov.visionModel && !knownVisionModels.includes(prov.visionModel) ? prov.visionModel : "");
+                  } else {
+                    updateProvider(prov._id, "visionModel", e.target.value);
+                  }
+                }}>
+                ${knownVisionModels.map((m) => html`<option value=${m}>${m}</option>`)}
+                <option value="custom">custom…</option>
+              </select>
+              ${isCustomVision && html`
+                <input type="text" value=${prov.visionModel}
+                  onInput=${(e) => updateProvider(prov._id, "visionModel", e.target.value)}
+                  placeholder="Custom vision model slug…"
+                  style="margin-top:4px" />
+              `}
+              ${knownVisionModels.length === 0 && html`
+                <input type="text" value=${prov.visionModel}
+                  onInput=${(e) => updateProvider(prov._id, "visionModel", e.target.value)}
+                  placeholder="Provider vision model"
+                  style="margin-top:4px" />
+              `}
+            </div>
+            <div>
+              <div class="setting-row-label">Voice Persona</div>
+              <select value=${prov.voiceId}
+                onChange=${(e) => updateProvider(prov._id, "voiceId", e.target.value)}>
+                ${["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"].map(
+                  (v) => html`<option value=${v}>${v}</option>`
+                )}
+              </select>
+            </div>
+            ${prov.provider === "azure" && html`
+              <div>
+                <div class="setting-row-label">Azure Deployment</div>
+                <input type="text" value=${prov.azureDeployment || ""}
+                  onInput=${(e) => updateProvider(prov._id, "azureDeployment", e.target.value)}
+                  placeholder="gpt-audio-1.5" />
+              </div>
+            `}
+          </div>
+        </div>
+      `})}
+      <button class="btn btn-sm" onClick=${addProvider} disabled=${providers.length >= 5}
+        style="margin-top:2px">+ Add Provider</button>
+      ${providers.length === 0 && html`
+        <div class="meta-text" style="margin-top:8px">
+          No providers configured. Add one above to set up voice routing.
         </div>
       `}
     <//>

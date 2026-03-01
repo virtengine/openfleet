@@ -6610,6 +6610,18 @@ async function checkMergedPRsAndUpdateTasks() {
                 }
 
                 if (worktreePath) {
+                  if (isWorkflowReplacingModule("sdk-conflict-resolver.mjs")) {
+                    console.log(`[monitor] SDK conflict resolution delegated to workflow for PR #${cc.prNumber}`);
+                    void queueWorkflowEvent("pr.conflict_detected", {
+                      worktreePath,
+                      branch: cc.branch,
+                      baseBranch: resolveAttemptTargetBranch(attemptInfo, task),
+                      prNumber: cc.prNumber,
+                      taskId: task.id,
+                      taskTitle: task.title,
+                      taskDescription: task.description || "",
+                    });
+                  } else {
                   void (async () => {
                     try {
                       const result = await resolveConflictsWithSDK({
@@ -6655,6 +6667,7 @@ async function checkMergedPRsAndUpdateTasks() {
                       );
                     }
                   })();
+                  } // end else (workflow not replacing sdk-conflict-resolver)
                 } else {
                   console.warn(
                     `[monitor] No worktree found for ${cc.branch} — deferring to orchestrator`,
@@ -15169,11 +15182,13 @@ try {
 runGuarded("startup-maintenance-sweep", () =>
   runMaintenanceSweep({
     repoRoot,
-    archiveCompletedTasks: async () => {
-      const projectId = await findVkProjectId();
-      if (!projectId) return { archived: 0 };
-      return await archiveCompletedTasks(fetchVk, projectId, { maxArchive: 50 });
-    },
+    archiveCompletedTasks: isWorkflowReplacingModule("task-archiver.mjs")
+      ? async () => { console.log("[monitor] task archiver delegated to workflow"); return { archived: 0 }; }
+      : async () => {
+          const projectId = await findVkProjectId();
+          if (!projectId) return { archived: 0 };
+          return await archiveCompletedTasks(fetchVk, projectId, { maxArchive: 50 });
+        },
   }),
 );
 
@@ -15186,14 +15201,16 @@ safeSetInterval("maintenance-sweep", () => {
   return runMaintenanceSweep({
     repoRoot,
     childPid,
-    archiveCompletedTasks: async () => {
-      const projectId = await findVkProjectId();
-      if (!projectId) return { archived: 0 };
-      return await archiveCompletedTasks(fetchVk, projectId, {
-        maxArchive: 25,
-        dryRun: false,
-      });
-    },
+    archiveCompletedTasks: isWorkflowReplacingModule("task-archiver.mjs")
+      ? async () => { console.log("[monitor] task archiver delegated to workflow"); return { archived: 0 }; }
+      : async () => {
+          const projectId = await findVkProjectId();
+          if (!projectId) return { archived: 0 };
+          return await archiveCompletedTasks(fetchVk, projectId, {
+            maxArchive: 25,
+            dryRun: false,
+          });
+        },
   });
 }, maintenanceIntervalMs);
 
@@ -16054,6 +16071,9 @@ if (isExecutorDisabled()) {
 
     // ── Sync Engine ──
     try {
+      if (isWorkflowReplacingModule("sync-engine.mjs")) {
+        console.log("[monitor] sync engine delegated to workflow — skipping legacy init");
+      } else {
       const activeKanbanBackend = getActiveKanbanBackend();
 
       // Sync engine only makes sense when there is an external backend to sync
@@ -16097,6 +16117,7 @@ if (isExecutorDisabled()) {
         );
       }
       } // end else (non-internal backend)
+      } // end else (workflow not replacing sync-engine)
     } catch (err) {
       console.warn(`[monitor] sync engine failed to start: ${err.message}`);
     }

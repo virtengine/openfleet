@@ -766,6 +766,93 @@ function App() {
       azureDeployment: azureOpenaiRealtimeDeployment,
     },
   ]);
+  // OAuth connected accounts state — { openai, claude, gemini } each with { status, hasToken, loading }
+  const [oauthAccounts, setOauthAccounts] = useState({
+    openai: { status: "idle", hasToken: false, loading: false },
+    claude: { status: "idle", hasToken: false, loading: false },
+    gemini: { status: "idle", hasToken: false, loading: false },
+  });
+
+  const fetchOAuthStatus = async (provider) => {
+    try {
+      const r = await fetch(apiBase + "/voice/auth/" + provider + "/status");
+      const d = await r.json();
+      if (d.ok) {
+        setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], status: d.status || "idle", hasToken: !!d.hasToken, loading: false } }));
+      }
+    } catch { /* best-effort */ }
+  };
+
+  const fetchAllOAuthStatus = () => {
+    fetchOAuthStatus("openai");
+    fetchOAuthStatus("claude");
+    fetchOAuthStatus("gemini");
+  };
+
+  const startOAuthLogin = async (provider) => {
+    setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }));
+    try {
+      const r = await fetch(apiBase + "/voice/auth/" + provider + "/login", { method: "POST" });
+      const d = await r.json();
+      if (d.ok && d.authUrl) {
+        window.open(d.authUrl, "_blank", "noopener");
+        setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], status: "pending", loading: false } }));
+        // Poll for completion
+        const poll = setInterval(async () => {
+          try {
+            const pr = await fetch(apiBase + "/voice/auth/" + provider + "/status");
+            const pd = await pr.json();
+            if (pd.ok && (pd.status === "connected" || pd.status === "complete" || pd.hasToken)) {
+              setOauthAccounts((prev) => ({ ...prev, [provider]: { status: "connected", hasToken: true, loading: false } }));
+              clearInterval(poll);
+            } else if (pd.status === "error" || pd.status === "idle") {
+              setOauthAccounts((prev) => ({ ...prev, [provider]: { status: pd.status, hasToken: false, loading: false } }));
+              clearInterval(poll);
+            }
+          } catch { /* keep polling */ }
+        }, 2000);
+        // Stop after 5 minutes
+        setTimeout(() => clearInterval(poll), 300000);
+      } else {
+        setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: false } }));
+      }
+    } catch {
+      setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: false } }));
+    }
+  };
+
+  const doOAuthLogout = async (provider) => {
+    setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }));
+    try {
+      await fetch(apiBase + "/voice/auth/" + provider + "/logout", { method: "POST" });
+      setOauthAccounts((prev) => ({ ...prev, [provider]: { status: "idle", hasToken: false, loading: false } }));
+    } catch {
+      setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: false } }));
+    }
+  };
+
+  // Endpoint test connection state — {[endpointId]: { testing, result, error, latencyMs }}
+  const [endpointTestResults, setEndpointTestResults] = useState({});
+
+  const testEndpointConnection = async (ep) => {
+    const key = ep.id;
+    setEndpointTestResults((prev) => ({ ...prev, [key]: { testing: true, result: null, error: null } }));
+    try {
+      const r = await fetch(apiBase + "/voice/endpoints/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setEndpointTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "success", error: null, latencyMs: d.latencyMs } }));
+      } else {
+        setEndpointTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "error", error: d.error || "Connection failed" } }));
+      }
+    } catch (err) {
+      setEndpointTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "error", error: err.message || "Network error" } }));
+    }
+  };
 
   const VOICE_PROVIDER_MODEL_DEFAULTS = {
     openai: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
@@ -798,6 +885,7 @@ function App() {
       visionModel,
       voiceId: normalizedVoiceId,
       azureDeployment: normalizedAzureDeployment,
+      endpointId: String(entry.endpointId ?? fallback.endpointId ?? "").trim(),
     };
   };
 
@@ -826,6 +914,7 @@ function App() {
             nextProvider === "azure"
               ? String(target.azureDeployment || "gpt-audio-1.5")
               : "",
+          endpointId: "",
         });
         return list;
       }
@@ -859,9 +948,9 @@ function App() {
   };
 
   const normalizeVoiceEndpoint = (ep = {}) => ({
-    id: ep.id || Date.now() + Math.random(),
+    id: ep.id || `ep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     name: String(ep.name || "").trim(),
-    provider: ["azure", "openai"].includes(String(ep.provider || "").toLowerCase()) ? String(ep.provider).toLowerCase() : "azure",
+    provider: ["azure", "openai", "claude", "gemini"].includes(String(ep.provider || "").toLowerCase()) ? String(ep.provider).toLowerCase() : "azure",
     endpoint: String(ep.endpoint || "").trim(),
     deployment: String(ep.deployment || ep.azureDeployment || "").trim(),
     apiKey: String(ep.apiKey || "").trim(),
@@ -869,6 +958,7 @@ function App() {
     role: ["primary", "backup"].includes(String(ep.role || "")) ? String(ep.role) : "primary",
     weight: typeof ep.weight === "number" ? ep.weight : 100,
     enabled: ep.enabled !== false,
+    visionModel: String(ep.visionModel || "").trim(),
   });
 
   const addVoiceEndpoint = () => setVoiceEndpoints((prev) => [
@@ -1379,6 +1469,9 @@ function App() {
       if (statusData.startupStatus?.installed) { setAutoStartEnabled(true); }
       if (statusData.desktopShortcutStatus?.installed) { setDesktopShortcutEnabled(true); }
 
+      // ── Fetch OAuth connected accounts status ─────────────────────────────
+      fetchAllOAuthStatus();
+
       setLoading(false);
     }).catch((err) => {
       setError(`Failed to connect to setup server: ${err.message}`);
@@ -1418,21 +1511,44 @@ function App() {
     // Poll the setup server for a pending OAuth callback that may have been
     // received on the callback-catcher (port 54317) while setup was open.
     let pollTimer;
+    let pollStopTimer;
+    let consecutivePollFailures = 0;
+    const OAUTH_STATE_POLL_MAX_MS = 300000; // 5 minutes
+    const OAUTH_STATE_POLL_MAX_FAILURES = 5;
+    const stopPolling = () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      if (pollStopTimer) {
+        clearTimeout(pollStopTimer);
+        pollStopTimer = null;
+      }
+    };
     const poll = async () => {
       try {
         const r = await fetch("/api/setup/oauth-state");
         if (!r.ok) return;
+        consecutivePollFailures = 0;
         const data = await r.json();
         if (data?.pending) {
           setOauthStatus("received");
           if (data.installation_id) setOauthInstallationId(data.installation_id);
-          clearInterval(pollTimer);
+          stopPolling();
         }
-      } catch { /* server may not have this endpoint yet — ignore */ }
+      } catch {
+        // If the setup server is offline (e.g. wizard process stopped), avoid
+        // logging a failed network request forever.
+        consecutivePollFailures += 1;
+        if (consecutivePollFailures >= OAUTH_STATE_POLL_MAX_FAILURES) {
+          stopPolling();
+        }
+      }
     };
     pollTimer = setInterval(poll, 2000);
+    pollStopTimer = setTimeout(stopPolling, OAUTH_STATE_POLL_MAX_MS);
     poll(); // immediate first check
-    return () => clearInterval(pollTimer);
+    return stopPolling;
   }, []);
 
 
@@ -1677,7 +1793,7 @@ function App() {
             azureEndpoint: primaryAzureEp?.endpoint || azureOpenaiRealtimeEndpoint,
             azureApiKey: primaryAzureEp?.apiKey || azureOpenaiRealtimeApiKey,
             providers: normalizedVoiceProviders.slice(0, 5),
-            voiceEndpoints: voiceEndpoints.filter((ep) => ep.endpoint || ep.apiKey || ep.deployment || ep.model).map(({ id, ...ep }) => ep),
+            voiceEndpoints: voiceEndpoints.filter((ep) => ep.endpoint || ep.apiKey || ep.deployment || ep.model).map((ep) => ({ id: ep.id, name: ep.name, provider: ep.provider, endpoint: ep.endpoint, deployment: ep.deployment, apiKey: ep.apiKey, model: ep.model, visionModel: ep.visionModel, role: ep.role, weight: ep.weight, enabled: ep.enabled })),
             failover: {
               enabled: true,
               maxAttempts: voiceFailoverMaxAttempts,
@@ -2994,6 +3110,40 @@ function App() {
           <div class="hint">Allows live voice/video calls from chat. Tier 2 browser fallback works without cloud keys.</div>
         </div>
         ${voiceEnabled && html`
+          <div class="form-group" style="margin-bottom:16px">
+            <label style="font-weight:600;display:block;margin-bottom:4px">Connected Accounts</label>
+            <div class="hint" style="margin-bottom:8px">Sign in with your OpenAI, Claude, or Gemini account to use OAuth tokens. Endpoints without an explicit API key will automatically use the connected account.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap">
+              ${["openai", "claude", "gemini"].map((prov) => {
+                const acct = oauthAccounts[prov] || {};
+                const connected = acct.hasToken || acct.status === "connected" || acct.status === "complete";
+                const pending = acct.status === "pending";
+                const provLabel = prov === "openai" ? "OpenAI" : prov === "claude" ? "Claude" : "Gemini";
+                const statusColor = connected ? "#22c55e" : pending ? "#f59e0b" : "var(--text-secondary)";
+                const statusText = connected ? "Connected" : pending ? "Logging in…" : "Not connected";
+                return html`
+                  <div style="border:1px solid var(--border);border-radius:6px;padding:10px 14px;min-width:160px;flex:1;max-width:240px">
+                    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+                      <span style="font-weight:600;font-size:0.92em">${provLabel}</span>
+                      <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusColor}"></span>
+                    </div>
+                    <div style="font-size:0.82em;color:${statusColor};margin-bottom:8px">${statusText}</div>
+                    ${connected && html`
+                      <button class="btn btn-sm btn-danger" onclick=${() => doOAuthLogout(prov)} disabled=${acct.loading}>
+                        ${acct.loading ? "…" : "Logout"}
+                      </button>
+                    `}
+                    ${!connected && html`
+                      <button class="btn btn-sm" onclick=${() => startOAuthLogin(prov)} disabled=${acct.loading || pending}>
+                        ${acct.loading ? "…" : pending ? "Waiting…" : "Sign in"}
+                      </button>
+                    `}
+                  </div>
+                `;
+              })}
+            </div>
+          </div>
+
           <div class="form-group">
             <label>Voice Providers (priority order)</label>
             <div class="hint">Configure up to 5 providers. Bosun will try them in order.</div>
@@ -3011,6 +3161,29 @@ function App() {
                     <option value="fallback">Browser Fallback</option>
                   </select>
                 </div>
+                ${providerRow.provider !== "fallback" && html`
+                  <div class="form-group">
+                    <label>Endpoint</label>
+                    ${(() => {
+                      const matchingEps = (voiceEndpoints || []).filter((ep) => ep.provider === providerRow.provider && ep.enabled !== false);
+                      if (matchingEps.length === 0) return html`
+                        <select disabled>
+                          <option>— No ${providerRow.provider} endpoints configured —</option>
+                        </select>
+                        <div class="hint" style="color:var(--warning)">Configure a matching endpoint below first.</div>
+                      `;
+                      return html`
+                        <select value=${providerRow.endpointId || ""}
+                          onchange=${(e) => updateVoiceProviderRow(idx, "endpointId", e.target.value)}>
+                          <option value="">— Select endpoint —</option>
+                          ${matchingEps.map((ep) => html`
+                            <option value=${ep.id}>${ep.name || ep.id}</option>
+                          `)}
+                        </select>
+                      `;
+                    })()}
+                  </div>
+                `}
                 <div class="form-group">
                   <label>Model</label>
                   ${(() => {
@@ -3201,7 +3374,13 @@ function App() {
                   </div>
                   <div class="form-group">
                     <label>API Key</label>
-                    <input type="password" value=${ep.apiKey} oninput=${(e) => updateVoiceEndpoint(i, "apiKey", e.target.value)} placeholder="API key for this endpoint" />
+                    <input type="password" value=${ep.apiKey} oninput=${(e) => updateVoiceEndpoint(i, "apiKey", e.target.value)} placeholder=${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthAccounts[ep.provider]?.status === "connected" ? "Using OAuth token (connected above)" : "API key for this endpoint"} />
+                    ${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthAccounts[ep.provider]?.status === "connected" && html`
+                      <div class="hint" style="color:var(--success,#22c55e)">✓ Will use your connected ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account automatically.</div>
+                    `}
+                    ${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthAccounts[ep.provider]?.status !== "connected" && html`
+                      <div class="hint">No API key set. Connect your ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account above, or enter a key here.</div>
+                    `}
                   </div>
                   <div class="form-group">
                     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
@@ -3243,6 +3422,25 @@ function App() {
                     <input type="text" value=${ep.visionModel || ""} oninput=${(e) => updateVoiceEndpoint(i, "visionModel", e.target.value)} placeholder="e.g. gpt-4.1-nano" />
                     <div class="hint">Optional model for vision/image tasks on this endpoint.</div>
                   </div>
+                </div>
+                <!-- Test Connection -->
+                <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+                  <button class="btn btn-sm"
+                    disabled=${!!(endpointTestResults[ep.id]?.testing)}
+                    onclick=${() => testEndpointConnection(ep)}
+                    style="min-width:130px">
+                    ${endpointTestResults[ep.id]?.testing ? "Testing…" : "Test Connection"}
+                  </button>
+                  ${endpointTestResults[ep.id]?.result === "success" && html`
+                    <span style="color:var(--success,#22c55e);font-size:0.85em;font-weight:600">
+                      ✓ Connected${endpointTestResults[ep.id].latencyMs != null ? ` (${endpointTestResults[ep.id].latencyMs}ms)` : ""}
+                    </span>
+                  `}
+                  ${endpointTestResults[ep.id]?.result === "error" && html`
+                    <span style="color:var(--danger,#ef4444);font-size:0.85em;font-weight:600">
+                      ✗ ${endpointTestResults[ep.id].error}
+                    </span>
+                  `}
                 </div>
               </div>
             `)}

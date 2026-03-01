@@ -435,6 +435,9 @@ describe("template API functions", () => {
       "template-backend-agent",
       "template-incident-response",
       "template-dependency-audit",
+      "template-task-archiver",
+      "template-sdk-conflict-resolver",
+      "template-sync-engine",
     ];
     for (const id of expectedRecommended) {
       const item = list.find((t) => t.id === id);
@@ -743,7 +746,7 @@ describe("template replaces metadata", () => {
     const withReplaces = WORKFLOW_TEMPLATES.filter(
       (t) => t.metadata?.replaces?.module
     );
-    expect(withReplaces.length).toBeGreaterThanOrEqual(11);
+    expect(withReplaces.length).toBeGreaterThanOrEqual(14);
 
     for (const t of withReplaces) {
       const r = t.metadata.replaces;

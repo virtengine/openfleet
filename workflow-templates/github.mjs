@@ -9,6 +9,7 @@
  *   - Release Drafter
  *   - Bosun PR Watchdog (recommended — replaces pr-cleanup-daemon.mjs)
  *   - GitHub ↔ Kanban Sync (recommended — replaces github-reconciler.mjs)
+ *   - SDK Conflict Resolver (recommended — replaces sdk-conflict-resolver.mjs)
  */
 
 import { node, edge, resetLayout } from "./_helpers.mjs";
@@ -1144,6 +1145,233 @@ export const GITHUB_KANBAN_SYNC_TEMPLATE = {
         "and updated kanban task statuses (inreview/done) every N minutes. " +
         "This template runs the same reconciliation as an auditable, configurable " +
         "workflow with an agent-driven sync step.",
+    },
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SDK Conflict Resolver
+// ═══════════════════════════════════════════════════════════════════════════
+
+resetLayout();
+
+export const SDK_CONFLICT_RESOLVER_TEMPLATE = {
+  id: "template-sdk-conflict-resolver",
+  name: "SDK Conflict Resolver",
+  description:
+    "Intelligent merge-conflict resolution using SDK agents. " +
+    "Auto-resolves lockfiles and generated files mechanically, then " +
+    "launches an agent with full context to resolve semantic conflicts " +
+    "in code, configs, and imports. Verifies resolution and pushes.",
+  category: "github",
+  enabled: true,
+  recommended: true,
+  trigger: "trigger.event",
+  variables: {
+    timeoutMs: 600000,
+    cooldownMs: 1800000,
+    maxAttempts: 4,
+    baseBranch: "main",
+  },
+  nodes: [
+    node("trigger", "trigger.event", "Merge Conflict Detected", {
+      eventType: "pr.conflict_detected",
+      description: "Fires when a PR has merge conflicts that need resolution",
+    }, { x: 400, y: 50 }),
+
+    node("check-cooldown", "condition.expression", "On Cooldown?", {
+      expression:
+        "(() => { " +
+        "const last = Number($data?.lastAttemptAt || 0); " +
+        "if (!last) return false; " +
+        "return (Date.now() - last) < ($data?.cooldownMs || 1800000); " +
+        "})()",
+    }, { x: 400, y: 200, outputs: ["yes", "no"] }),
+
+    node("check-attempts", "condition.expression", "Attempts Exhausted?", {
+      expression:
+        "Number($data?.attemptCount || 0) >= Number($data?.maxAttempts || 4)",
+    }, { x: 400, y: 350, outputs: ["yes", "no"] }),
+
+    node("get-conflicts", "action.run_command", "List Conflicted Files", {
+      command: "git diff --name-only --diff-filter=U",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+    }, { x: 400, y: 500 }),
+
+    node("classify-files", "action.set_variable", "Classify Files", {
+      key: "fileClassification",
+      value:
+        "(() => { " +
+        "const output = $ctx.getNodeOutput('get-conflicts')?.output || ''; " +
+        "const files = output.split('\\n').map(f => f.trim()).filter(Boolean); " +
+        "const auto = []; const manual = []; " +
+        "const AUTO_THEIRS = ['pnpm-lock.yaml','package-lock.json','yarn.lock','go.sum']; " +
+        "const AUTO_OURS = ['CHANGELOG.md','coverage.txt','results.txt']; " +
+        "for (const f of files) { " +
+        "  const name = f.split('/').pop(); " +
+        "  if (AUTO_THEIRS.includes(name) || name.endsWith('.lock')) auto.push({file:f,strategy:'theirs'}); " +
+        "  else if (AUTO_OURS.includes(name)) auto.push({file:f,strategy:'ours'}); " +
+        "  else manual.push(f); " +
+        "} " +
+        "return {auto, manual, total: files.length}; " +
+        "})()",
+      isExpression: true,
+    }, { x: 400, y: 650 }),
+
+    node("auto-resolve", "action.run_command", "Auto-Resolve Trivial Files", {
+      command:
+        "node -e \"" +
+        "const files = JSON.parse(process.env.AUTO_FILES || '[]'); " +
+        "const {execSync} = require('child_process'); " +
+        "let resolved = 0; " +
+        "for (const {file, strategy} of files) { " +
+        "  try { execSync('git checkout --' + strategy + ' -- ' + file, {cwd: process.env.CWD}); " +
+        "  execSync('git add ' + file, {cwd: process.env.CWD}); resolved++; } catch {} " +
+        "} " +
+        "console.log(JSON.stringify({resolved}));\" ",
+      env: {
+        AUTO_FILES: "{{fileClassification.auto}}",
+        CWD: "{{worktreePath}}",
+      },
+      continueOnError: true,
+    }, { x: 200, y: 800 }),
+
+    node("has-manual", "condition.expression", "Manual Conflicts Remain?", {
+      expression:
+        "(() => { const c = $data?.fileClassification; return c?.manual?.length > 0; })()",
+    }, { x: 400, y: 800, outputs: ["yes", "no"] }),
+
+    node("launch-agent", "action.run_agent", "SDK Agent: Resolve Conflicts", {
+      prompt:
+        "# Merge Conflict Resolution\n\n" +
+        "You are resolving merge conflicts in a git worktree.\n\n" +
+        "## Context\n" +
+        "- **Working directory**: `{{worktreePath}}`\n" +
+        "- **PR branch** (HEAD): `{{branch}}`\n" +
+        "- **Base branch** (incoming): `origin/{{baseBranch}}`\n" +
+        "- **PR**: #{{prNumber}}\n" +
+        "- **Task**: {{taskTitle}}\n\n" +
+        "## Conflicted files needing manual resolution:\n" +
+        "{{manualFiles}}\n\n" +
+        "## Instructions\n" +
+        "1. Read both sides of each conflict carefully\n" +
+        "2. Understand the INTENT of each change (feature vs upstream)\n" +
+        "3. Write a correct resolution that preserves both intents\n" +
+        "4. `git add` each resolved file\n" +
+        "5. Run `git commit --no-edit` to finalize the merge\n" +
+        "6. Do NOT use `--theirs` or `--ours` for code files\n" +
+        "7. Ensure no conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`) remain",
+      sdk: "auto",
+      timeoutMs: "{{timeoutMs}}",
+      failOnError: true,
+      continueOnError: true,
+    }, { x: 200, y: 950 }),
+
+    node("verify-clean", "action.run_command", "Verify No Markers", {
+      command: "git grep -rl '^<<<<<<<\\|^=======\\|^>>>>>>>' -- . || echo CLEAN",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+    }, { x: 200, y: 1100 }),
+
+    node("markers-clean", "condition.expression", "Markers Clean?", {
+      expression:
+        "(() => { const out = $ctx.getNodeOutput('verify-clean')?.output || ''; " +
+        "return out.trim() === 'CLEAN' || out.trim() === ''; })()",
+    }, { x: 200, y: 1250, outputs: ["yes", "no"] }),
+
+    node("push-result", "action.run_command", "Push Resolution", {
+      command: "git push origin HEAD:{{branch}}",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+      maxRetries: 2,
+      retryDelayMs: 10000,
+    }, { x: 200, y: 1400 }),
+
+    node("commit-auto-only", "action.run_command", "Commit Auto-Only Resolution", {
+      command: "git commit --no-edit",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+    }, { x: 600, y: 950 }),
+
+    node("push-auto", "action.run_command", "Push Auto Resolution", {
+      command: "git push origin HEAD:{{branch}}",
+      cwd: "{{worktreePath}}",
+      continueOnError: true,
+    }, { x: 600, y: 1100 }),
+
+    node("notify-resolved", "notify.log", "Conflict Resolved", {
+      message: "SDK conflict resolution succeeded for PR #{{prNumber}} on {{branch}}",
+      level: "info",
+    }, { x: 400, y: 1550 }),
+
+    node("escalate-cooldown", "notify.log", "On Cooldown", {
+      message: "SDK conflict resolution skipped — cooldown active for {{branch}}",
+      level: "warn",
+    }, { x: 700, y: 200 }),
+
+    node("escalate-exhausted", "notify.telegram", "Max Attempts Reached", {
+      message:
+        ":warning: Merge conflicts on **{{branch}}** (PR #{{prNumber}}) " +
+        "could not be resolved after {{maxAttempts}} SDK attempts. " +
+        "Manual intervention required.",
+    }, { x: 700, y: 350 }),
+
+    node("escalate-markers", "notify.telegram", "Markers Still Present", {
+      message:
+        ":alert: SDK agent resolved conflicts on **{{branch}}** but conflict " +
+        "markers remain. Manual review needed for PR #{{prNumber}}.",
+    }, { x: 500, y: 1400 }),
+
+    node("chain-merge-strategy", "action.execute_workflow", "Re-evaluate Merge", {
+      workflowId: "template-pr-merge-strategy",
+      mode: "dispatch",
+      input: "({prNumber: $data?.prNumber, branch: $data?.branch, baseBranch: $data?.baseBranch})",
+    }, { x: 200, y: 1550 }),
+  ],
+  edges: [
+    edge("trigger", "check-cooldown"),
+    edge("check-cooldown", "escalate-cooldown", { condition: "$output?.result === true", port: "yes" }),
+    edge("check-cooldown", "check-attempts", { condition: "$output?.result !== true", port: "no" }),
+    edge("check-attempts", "escalate-exhausted", { condition: "$output?.result === true", port: "yes" }),
+    edge("check-attempts", "get-conflicts", { condition: "$output?.result !== true", port: "no" }),
+    edge("get-conflicts", "classify-files"),
+    edge("classify-files", "auto-resolve"),
+    edge("auto-resolve", "has-manual"),
+    edge("has-manual", "launch-agent", { condition: "$output?.result === true", port: "yes" }),
+    edge("has-manual", "commit-auto-only", { condition: "$output?.result !== true", port: "no" }),
+    edge("launch-agent", "verify-clean"),
+    edge("verify-clean", "markers-clean"),
+    edge("markers-clean", "push-result", { condition: "$output?.result === true", port: "yes" }),
+    edge("markers-clean", "escalate-markers", { condition: "$output?.result !== true", port: "no" }),
+    edge("push-result", "chain-merge-strategy"),
+    edge("chain-merge-strategy", "notify-resolved"),
+    edge("commit-auto-only", "push-auto"),
+    edge("push-auto", "notify-resolved"),
+  ],
+  metadata: {
+    author: "bosun",
+    version: 1,
+    createdAt: "2025-06-01T00:00:00Z",
+    templateVersion: "1.0.0",
+    tags: ["github", "merge", "conflict", "sdk", "agent", "resolution"],
+    replaces: {
+      module: "sdk-conflict-resolver.mjs",
+      functions: [
+        "resolveConflictsWithSDK",
+        "buildSDKConflictPrompt",
+        "isSDKResolutionOnCooldown",
+        "isSDKResolutionExhausted",
+      ],
+      calledFrom: [
+        "conflict-resolver.mjs:resolveConflicts",
+        "monitor.mjs:handleMergeConflict",
+      ],
+      description:
+        "Replaces the imperative sdk-conflict-resolver.mjs with a visual " +
+        "workflow. File classification, auto-resolve, SDK agent launch, " +
+        "marker verification, and push become auditable nodes. Chains " +
+        "into PR Merge Strategy after successful resolution.",
     },
   },
 };

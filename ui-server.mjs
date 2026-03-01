@@ -8963,6 +8963,10 @@ async function handleApi(req, res, url) {
           jsonResponse(res, 400, { ok: false, error: `Session is ${session.status}` });
           return;
         }
+        // Re-activate completed/failed sessions when user sends a new message
+        if (session.status === "completed" || session.status === "failed") {
+          tracker.updateSessionStatus(sessionId, "active");
+        }
         const body = await readJsonBody(req);
         const content = body?.content;
         const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
@@ -9034,6 +9038,9 @@ async function handleApi(req, res, url) {
             attachmentsAppended,
             onEvent: streamOnEvent,
           }).then(() => {
+            // Mark session as completed once the agent finishes — prevents
+            // sessions from staying "active" forever and causing session bloat.
+            tracker.updateSessionStatus(sessionId, "completed");
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-response", sessionId });
           }).catch((execErr) => {
             // Record error as system message so user sees feedback
@@ -9043,6 +9050,7 @@ async function handleApi(req, res, url) {
               content: `Agent error: ${execErr.message || "Unknown error"}`,
               timestamp: new Date().toISOString(),
             });
+            tracker.updateSessionStatus(sessionId, "failed");
             broadcastUiEvent(["sessions"], "invalidate", { reason: "agent-error", sessionId });
           });
         } else {
@@ -9223,6 +9231,53 @@ async function handleApi(req, res, url) {
 
   // ── Voice API Routes ──────────────────────────────────────────────────────
 
+  // GET /api/voice/providers — read voice.providers from bosun.config.json
+  if (path === "/api/voice/providers" && req.method === "GET") {
+    try {
+      const { configData } = readConfigDocument();
+      const providers = Array.isArray(configData?.voice?.providers)
+        ? configData.voice.providers
+        : [];
+      jsonResponse(res, 200, { ok: true, providers });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/providers — save voice.providers to bosun.config.json
+  if (path === "/api/voice/providers" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const { providers } = body || {};
+      if (!Array.isArray(providers)) {
+        jsonResponse(res, 400, { ok: false, error: "providers array required" });
+        return;
+      }
+      const allowedProviders = ["openai", "azure", "claude", "gemini", "fallback"];
+      const cleaned = providers.slice(0, 5).map((p) => {
+        const out = {};
+        if (p.provider && allowedProviders.includes(String(p.provider))) out.provider = String(p.provider);
+        if (p.model) out.model = String(p.model);
+        if (p.visionModel) out.visionModel = String(p.visionModel);
+        if (p.voiceId) out.voiceId = String(p.voiceId);
+        if (p.azureDeployment) out.azureDeployment = String(p.azureDeployment);
+        if (p.endpointId) out.endpointId = String(p.endpointId);
+        return out;
+      });
+      const { configPath, configData } = readConfigDocument();
+      configData.voice = { ...(configData.voice || {}), providers: cleaned };
+      writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
+      broadcastUiEvent(["settings", "overview"], "invalidate", {
+        reason: "voice-providers-updated",
+      });
+      jsonResponse(res, 200, { ok: true, configPath, count: cleaned.length });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   // GET /api/voice/endpoints — read voice.voiceEndpoints from bosun.config.json
   if (path === "/api/voice/endpoints" && req.method === "GET") {
     try {
@@ -9249,6 +9304,7 @@ async function handleApi(req, res, url) {
       // Strip client-only _id fields and sanitize
       const cleaned = voiceEndpoints.map(({ _id, ...ep }) => {
         const out = {};
+        if (ep.id) out.id = String(ep.id);
         if (ep.name) out.name = String(ep.name);
         if (ep.provider) out.provider = String(ep.provider);
         if (ep.endpoint) out.endpoint = String(ep.endpoint);
@@ -9269,6 +9325,107 @@ async function handleApi(req, res, url) {
         reason: "voice-endpoints-updated",
       });
       jsonResponse(res, 200, { ok: true, configPath, count: cleaned.length });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/endpoints/test — quick connectivity check for a single endpoint
+  if (path === "/api/voice/endpoints/test" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const { provider, apiKey, endpoint: azureEndpoint, deployment, model } = body || {};
+      if (!provider) {
+        jsonResponse(res, 400, { ok: false, error: "provider is required" });
+        return;
+      }
+      const start = Date.now();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+
+      try {
+        let testUrl;
+        const headers = {};
+        if (provider === "openai") {
+          testUrl = "https://api.openai.com/v1/models";
+          if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+          else {
+            // Try OAuth token if no API key
+            try {
+              const { getOpenAILoginStatus } = await import("./voice-auth-manager.mjs");
+              const st = getOpenAILoginStatus();
+              if (st.hasToken && st.accessToken) headers["Authorization"] = `Bearer ${st.accessToken}`;
+            } catch (_) { /* no oauth available */ }
+          }
+          if (!headers["Authorization"]) {
+            jsonResponse(res, 400, { ok: false, error: "No API key or OAuth token available" });
+            return;
+          }
+        } else if (provider === "azure") {
+          if (!azureEndpoint) {
+            jsonResponse(res, 400, { ok: false, error: "Azure endpoint URL is required" });
+            return;
+          }
+          const base = azureEndpoint.replace(/\/+$/, "");
+          const dep = deployment || "gpt-4o-realtime-preview";
+          testUrl = `${base}/openai/deployments/${dep}?api-version=2024-10-01-preview`;
+          if (apiKey) headers["api-key"] = apiKey;
+          else {
+            jsonResponse(res, 400, { ok: false, error: "Azure API key is required" });
+            return;
+          }
+        } else if (provider === "claude") {
+          testUrl = "https://api.anthropic.com/v1/models";
+          headers["anthropic-version"] = "2023-06-01";
+          if (apiKey) headers["x-api-key"] = apiKey;
+          else {
+            try {
+              const { getClaudeLoginStatus } = await import("./voice-auth-manager.mjs");
+              const st = getClaudeLoginStatus();
+              if (st.hasToken && st.accessToken) headers["x-api-key"] = st.accessToken;
+            } catch (_) { /* no oauth available */ }
+          }
+          if (!headers["x-api-key"]) {
+            jsonResponse(res, 400, { ok: false, error: "No API key or OAuth token available" });
+            return;
+          }
+        } else if (provider === "gemini") {
+          let k = apiKey || null;
+          if (!k) {
+            try {
+              const { getGeminiLoginStatus } = await import("./voice-auth-manager.mjs");
+              const st = getGeminiLoginStatus();
+              if (st.hasToken && st.accessToken) k = st.accessToken;
+            } catch (_) { /* no oauth available */ }
+          }
+          if (!k) {
+            jsonResponse(res, 400, { ok: false, error: "No API key or OAuth token available" });
+            return;
+          }
+          testUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(k)}`;
+        } else {
+          jsonResponse(res, 400, { ok: false, error: `Unknown provider: ${provider}` });
+          return;
+        }
+
+        const resp = await fetch(testUrl, { headers, signal: controller.signal });
+        clearTimeout(timer);
+        const latencyMs = Date.now() - start;
+        if (resp.ok || resp.status === 200) {
+          jsonResponse(res, 200, { ok: true, latencyMs });
+        } else {
+          const text = await resp.text().catch(() => "");
+          let errMsg = `HTTP ${resp.status}`;
+          try { const j = JSON.parse(text); errMsg = j.error?.message || j.error || errMsg; } catch (_) { /* ignore */ }
+          jsonResponse(res, 200, { ok: false, error: errMsg, latencyMs });
+        }
+      } catch (fetchErr) {
+        clearTimeout(timer);
+        const latencyMs = Date.now() - start;
+        const msg = fetchErr.name === "AbortError" ? "Timeout (10s)" : (fetchErr.message || "Connection failed");
+        jsonResponse(res, 200, { ok: false, error: msg, latencyMs });
+      }
     } catch (err) {
       jsonResponse(res, 500, { ok: false, error: err.message });
     }

@@ -27,6 +27,23 @@ const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const OPENAI_DEFAULT_VISION_MODEL = "gpt-4.1-nano";
 
 const AZURE_API_VERSION = "2025-04-01-preview";
+
+/**
+ * Strip any path suffix from an Azure endpoint URL so code can safely append
+ * its own path segments (e.g. /openai/realtime/sessions).
+ * Users sometimes paste a full URL like https://foo.openai.azure.com/openai/realtime
+ * into the endpoint field; extracting only scheme+host prevents double-path 404s.
+ */
+function normalizeAzureEndpoint(raw) {
+  const s = String(raw || "").trim().replace(/\/+$/, "");
+  try {
+    const u = new URL(s);
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return s;
+  }
+}
+
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_API_VERSION = "2023-06-01";
 const CLAUDE_DEFAULT_MODEL = "claude-3-7-sonnet-latest";
@@ -389,7 +406,7 @@ async function analyzeVisionWithOpenAI(dataUrl, model, prompt, contextText, cfg)
 }
 
 async function analyzeVisionWithAzure(dataUrl, model, prompt, contextText, cfg) {
-  const endpoint = cfg.azureEndpoint.replace(/\/+$/, "");
+  const endpoint = normalizeAzureEndpoint(cfg.azureEndpoint);
   const url = `${endpoint}/openai/responses?api-version=${AZURE_API_VERSION}`;
   const response = await fetch(url, {
     method: "POST",
@@ -916,7 +933,7 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
  */
 async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext = {}, candidate = {}) {
   // Per-endpoint credentials (from voiceEndpoints) take priority over global config.
-  const resolvedEndpoint = String(candidate?.endpoint || cfg.azureEndpoint || "").trim().replace(/\/+$/, "");
+  const resolvedEndpoint = normalizeAzureEndpoint(candidate?.endpoint || cfg.azureEndpoint || "");
   const resolvedApiKey = String(candidate?.apiKey || cfg.azureKey || "").trim();
   const resolvedOAuthToken = String(cfg.azureOAuthToken || "").trim();
 
@@ -1148,7 +1165,7 @@ export function getRealtimeConnectionInfo() {
   }
 
   if (candidate.provider === "azure") {
-    const endpoint = String(candidate?.endpoint || cfg.azureEndpoint || "").trim().replace(/\/+$/, "");
+    const endpoint = normalizeAzureEndpoint(candidate?.endpoint || cfg.azureEndpoint || "");
     const deployment =
       String(candidate?.azureDeployment || candidate?.model || cfg.azureDeployment || "").trim()
       || "gpt-audio-1.5";

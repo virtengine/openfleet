@@ -1135,6 +1135,18 @@ function registerDesktopIpc() {
 
 async function bootstrap() {
   try {
+    // Register cert bypass for the local UI server as the very first operation
+    // — before any network request is made (config loading, API key probe, etc.).
+    // allow-insecure-localhost (set pre-ready above) handles 127.0.0.1; this
+    // setCertificateVerifyProc covers LAN IPs (192.168.x.x / 10.x etc.).
+    session.defaultSession.setCertificateVerifyProc((request, callback) => {
+      if (isLocalHost(request.hostname)) {
+        callback(0); // 0 = verified OK
+        return;
+      }
+      callback(-3); // -3 = use Chromium default chain verification
+    });
+
     if (process.env.ELECTRON_DISABLE_SANDBOX === "1") {
       app.commandLine.appendSwitch("no-sandbox");
       app.commandLine.appendSwitch("disable-gpu-sandbox");
@@ -1162,18 +1174,6 @@ async function bootstrap() {
     } catch (err) {
       console.warn("[desktop] could not load desktop-api-key module:", err?.message || err);
     }
-
-    // Bypass TLS verification for the local embedded UI server.
-    // setCertificateVerifyProc works at the OpenSSL level — it fires before
-    // the higher-level `certificate-error` event and stops the repeated
-    // "handshake failed" logs from Chromium's ssl_client_socket_impl.
-    session.defaultSession.setCertificateVerifyProc((request, callback) => {
-      if (isLocalHost(request.hostname)) {
-        callback(0); // 0 = verified OK
-        return;
-      }
-      callback(-3); // -3 = use Chromium default chain verification
-    });
 
     await ensureDaemonRunning();
 
@@ -1315,5 +1315,15 @@ process.on("SIGINT", () => {
 process.on("SIGTERM", () => {
   void shutdown("sigterm");
 });
+
+// ── Pre-ready Chromium flags ──────────────────────────────────────────────────
+// These MUST be set before app.isReady() — Chromium reads the command line at
+// process startup and ignores changes made after the browser process launches.
+
+// Allow HTTPS connections to localhost (127.0.0.1, ::1, "localhost") using
+// self-signed certificates without triggering CertVerifyProcBuiltin errors or
+// ssl_client_socket_impl handshake-failed spam.  This only suppresses cert
+// errors for the loopback address; external HTTPS connections are unaffected.
+app.commandLine.appendSwitch("allow-insecure-localhost");
 
 app.whenReady().then(bootstrap);

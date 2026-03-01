@@ -385,6 +385,9 @@ export const TEMPLATE_MODULE_MAP = Object.freeze({
   "template-agent-session-monitor":  "session-tracker.mjs",
   "template-nightly-report":         "telegram-sentinel.mjs",
   "template-task-status-transition-manager": "task-executor.mjs",
+  "template-task-archiver":          "task-archiver.mjs",
+  "template-sdk-conflict-resolver":  "sdk-conflict-resolver.mjs",
+  "template-sync-engine":            "sync-engine.mjs",
 });
 
 /**
