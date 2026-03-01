@@ -215,6 +215,74 @@
       display: flex; gap: 8px; margin-top: 8px;
     }
     .custom-input-row input { flex: 1; }
+    .label-with-help {
+      display: inline-flex !important;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .help-tip {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      vertical-align: middle;
+    }
+    .help-tip-btn {
+      width: 17px;
+      height: 17px;
+      border-radius: 999px;
+      border: 1px solid var(--border-primary);
+      background: rgba(99, 102, 241, 0.12);
+      color: var(--accent-light);
+      font-size: 0.68rem;
+      font-weight: 700;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      cursor: help;
+      user-select: none;
+    }
+    .help-tip-btn:hover { border-color: var(--accent); }
+    .help-tip-btn:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px var(--accent-glow);
+      border-color: var(--accent);
+    }
+    .help-popover {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      width: min(320px, 84vw);
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-primary);
+      background: rgba(9, 13, 22, 0.98);
+      color: var(--text-secondary);
+      font-size: 0.74rem;
+      line-height: 1.5;
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.42);
+      opacity: 0;
+      transform: translateY(4px);
+      pointer-events: none;
+      transition: opacity var(--transition), transform var(--transition);
+      z-index: 20;
+      white-space: normal;
+    }
+    .help-tip.open .help-popover,
+    .help-tip:hover .help-popover,
+    .help-tip:focus-within .help-popover {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+    .help-popover strong {
+      color: var(--text-primary);
+      font-weight: 600;
+      display: block;
+      margin-top: 6px;
+    }
 
     /* ── Checkmark / Status Badges ───────────────────────────────────── */
     .prereq-list { list-style: none; }
@@ -494,6 +562,10 @@
       .executor-grid { grid-template-columns: 1fr; }
       .profile-cards { grid-template-columns: 1fr; }
       .progress-step .step-label { display: none; }
+      .help-popover {
+        right: auto;
+        left: -8px;
+      }
     }
   </style>
 </head>
@@ -519,9 +591,10 @@ import { iconText } from "./modules/icon-utils.js";
 const html = htm.bind(h);
 
 // ── API helpers ──────────────────────────────────────────────────────────────
+const apiBase = "/api/setup";
 
 const api = (path, opts) =>
-  fetch(`/api/setup/${path}`, {
+  fetch(`${apiBase}/${path}`, {
     headers: { "Content-Type": "application/json" },
     ...opts,
   }).then((r) => r.json());
@@ -542,6 +615,28 @@ const STEPS = [
   { id: "advanced", label: "Advanced", icon: ":settings:" },
   { id: "review", label: "Review", icon: ":rocket:" },
 ];
+
+const HELP_TEXT = {
+  bosunHome: "Main Bosun data root. Keep it outside git repos. Best practice: use a stable path like ~/bosun.",
+  workspacesDir: "Where Bosun creates per-project worktrees and shared dev config. Best practice: keep this on fast local disk with enough free space.",
+  projectName: "Human-readable project label used in UI, notifications, and workspace naming. Best practice: keep it short and stable.",
+  repoSlug: "Default GitHub repository (owner/repo) used for PR automation and project sync. Best practice: set this even if you add multiple repos later.",
+  executorType: "Defines which SDK/runtime handles tasks (Codex, Copilot, Claude, etc.). Best practice: keep one primary and add backups only for failover or cost control.",
+  authMode: "OAuth reuses your local login session; API key stores credentials in BOSUN_HOME .env. Best practice: prefer OAuth unless you need custom endpoints or account separation.",
+  executorModel: "Default model for this executor. Best practice: use a strong model for primary and a cheaper/faster model for backups.",
+  executorWeight: "Relative routing share when task distribution is weighted. Example: weights 100 and 50 route about 67% / 33%. Weight is ignored in primary-only mode.",
+  maxParallel: "Maximum concurrent task attempts across enabled executors. Best practice: start with 2-4 and increase only after stable runs.",
+  maxRetries: "Retry count before giving up on a failed task attempt. Best practice: 2-3 catches transient failures without creating loops.",
+  failoverStrategy: "How Bosun chooses the next executor after failures or when rotating. Weighted-random uses weights; round-robin ignores weights.",
+  executorMode: "Internal runs agents locally; VK uses remote VirtKanban; Hybrid combines both. Best practice: use Internal unless you already operate VK.",
+  taskDistribution: "How new tasks are assigned: weighted, round-robin, or primary-only. Best practice: choose weighted when using different executor capacities.",
+  voiceProviders: "Ordered provider chain for live voice. Bosun tries top to bottom. Best practice: place most reliable/lowest latency provider first.",
+  turnDetection: "How speech turn boundaries are detected. Best practice: use server_vad for most calls; semantic_vad for longer conversational pauses.",
+  fallbackMode: "Fallback path when provider setup fails. browser keeps local fallback available; disabled requires cloud voice endpoints only.",
+  delegateExecutor: "Executor used for deeper reasoning/tool work during voice sessions. Best practice: point to your most reliable task executor.",
+  voiceEndpointRole: "Primary endpoints are preferred first; backup endpoints are used when primaries fail.",
+  voiceEndpointWeight: "Weighted share among endpoints of the same role/provider. Example: 300 and 100 routes about 75% / 25% before failover.",
+};
 
 // ── SelectWithCustom component ───────────────────────────────────────────────
 
@@ -619,6 +714,37 @@ function Section({ id, title, defaultOpen, children }) {
       </div>
       ${open && html`<div style="padding:16px">${children}</div>`}
     </div>
+  `;
+}
+
+function HelpTip({ text }) {
+  const [open, setOpen] = useState(false);
+  const closeSoon = () => setTimeout(() => setOpen(false), 120);
+  return html`
+    <span class=${`help-tip ${open ? "open" : ""}`}>
+      <button
+        type="button"
+        class="help-tip-btn"
+        aria-label="Field help"
+        title="Field help"
+        onclick=${(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        onblur=${closeSoon}
+      >?</button>
+      <span class="help-popover" role="tooltip">${text}</span>
+    </span>
+  `;
+}
+
+function labelWithHelp(labelNode, helpText, extraClass = "") {
+  return html`
+    <label class=${`label-with-help ${extraClass}`.trim()}>
+      <span>${labelNode}</span>
+      <${HelpTip} text=${helpText} />
+    </label>
   `;
 }
 
@@ -775,7 +901,7 @@ function App() {
 
   const fetchOAuthStatus = async (provider) => {
     try {
-      const r = await fetch(apiBase + "/voice/auth/" + provider + "/status");
+      const r = await fetch("/api/voice/auth/" + provider + "/status");
       const d = await r.json();
       if (d.ok) {
         setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], status: d.status || "idle", hasToken: !!d.hasToken, loading: false } }));
@@ -792,7 +918,7 @@ function App() {
   const startOAuthLogin = async (provider) => {
     setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }));
     try {
-      const r = await fetch(apiBase + "/voice/auth/" + provider + "/login", { method: "POST" });
+      const r = await fetch("/api/voice/auth/" + provider + "/login", { method: "POST" });
       const d = await r.json();
       if (d.ok && d.authUrl) {
         window.open(d.authUrl, "_blank", "noopener");
@@ -800,7 +926,7 @@ function App() {
         // Poll for completion
         const poll = setInterval(async () => {
           try {
-            const pr = await fetch(apiBase + "/voice/auth/" + provider + "/status");
+            const pr = await fetch("/api/voice/auth/" + provider + "/status");
             const pd = await pr.json();
             if (pd.ok && (pd.status === "connected" || pd.status === "complete" || pd.hasToken)) {
               setOauthAccounts((prev) => ({ ...prev, [provider]: { status: "connected", hasToken: true, loading: false } }));
@@ -824,7 +950,7 @@ function App() {
   const doOAuthLogout = async (provider) => {
     setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: true } }));
     try {
-      await fetch(apiBase + "/voice/auth/" + provider + "/logout", { method: "POST" });
+      await fetch("/api/voice/auth/" + provider + "/logout", { method: "POST" });
       setOauthAccounts((prev) => ({ ...prev, [provider]: { status: "idle", hasToken: false, loading: false } }));
     } catch {
       setOauthAccounts((prev) => ({ ...prev, [provider]: { ...prev[provider], loading: false } }));
@@ -841,7 +967,7 @@ function App() {
       const r = await fetch(apiBase + "/voice/endpoints/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model }),
+        body: JSON.stringify({ provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model, authSource: ep.authSource }),
       });
       const d = await r.json();
       if (d.ok) {
@@ -959,6 +1085,7 @@ function App() {
     weight: typeof ep.weight === "number" ? ep.weight : 100,
     enabled: ep.enabled !== false,
     visionModel: String(ep.visionModel || "").trim(),
+    authSource: ["apiKey", "oauth"].includes(String(ep.authSource || "")) ? String(ep.authSource) : "apiKey",
   });
 
   const addVoiceEndpoint = () => setVoiceEndpoints((prev) => [
@@ -2145,7 +2272,7 @@ function App() {
     <p class="step-desc">Choose how you'd like to configure bosun, then set your home directory.</p>
 
     <div class="form-group">
-      <label>Bosun Home Directory <span class="required">*</span></label>
+      ${labelWithHelp(html`Bosun Home Directory <span class="required">*</span>`, HELP_TEXT.bosunHome)}
       <input type="text" value=${bosunHome}
         oninput=${(e) => setBosunHome(e.target.value)}
         placeholder="~/bosun" />
@@ -2156,7 +2283,7 @@ function App() {
       </div>
     </div>
     <div class="form-group">
-      <label>Workspaces Directory</label>
+      ${labelWithHelp("Workspaces Directory", HELP_TEXT.workspacesDir)}
       <input type="text" value=${workspacesDir}
         oninput=${(e) => { setWorkspacesDir(e.target.value); setWorkspacesDirCustomized(true); }}
         placeholder="${bosunHome}/workspaces" />
@@ -2185,12 +2312,12 @@ function App() {
       </div>
     </div>
     <div class="form-group" style="margin-top:20px">
-      <label>Project Name <span class="required">*</span></label>
+      ${labelWithHelp(html`Project Name <span class="required">*</span>`, HELP_TEXT.projectName)}
       <input type="text" value=${projectName} oninput=${(e) => setProjectName(e.target.value)} placeholder="my-project" />
       <div class="hint">Display name for your project in bosun's UI and notifications.</div>
     </div>
     <div class="form-group">
-      <label>GitHub Repository</label>
+      ${labelWithHelp("GitHub Repository", HELP_TEXT.repoSlug)}
       <input type="text" value=${repoSlug} oninput=${(e) => setRepoSlug(e.target.value)} placeholder="owner/repo" />
       <div class="hint">Optional. Used for PR automation, status checks, and GitHub project sync.</div>
     </div>
@@ -2262,7 +2389,7 @@ function App() {
             <div class="hint">Disabled executors stay in config but are excluded from routing and chat picker lists.</div>
           </div>
           <div class="form-group">
-            <label>Executor Type</label>
+            ${labelWithHelp("Executor Type", HELP_TEXT.executorType)}
             <${SelectWithCustom}
               options=${executorTypes}
               value=${ex.executor}
@@ -2270,7 +2397,7 @@ function App() {
             />
           </div>
           <div class="form-group">
-            <label>Authentication</label>
+            ${labelWithHelp("Authentication", HELP_TEXT.authMode)}
             <select value=${authMode} onchange=${(e) => updateExecutor(i, "authMode", e.target.value)}>
               <option value="oauth">Use existing auth (OAuth / login session)</option>
               <option value="api-key">API Key</option>
@@ -2376,8 +2503,9 @@ function App() {
             }
           })()}
           <div class="form-group">
-            <label style="display:flex;align-items:center;justify-content:space-between">
+            <label class="label-with-help" style="display:flex;align-items:center;justify-content:space-between">
               <span>Model</span>
+              <${HelpTip} text=${HELP_TEXT.executorModel} />
               ${ex.executor !== "COPILOT" && html`
                 <button class="btn btn-sm" style="padding:3px 8px;font-size:0.72rem"
                   onclick=${() => probeExecutorModels(i)}
@@ -2402,7 +2530,7 @@ function App() {
             `}
           </div>
           <div class="form-group">
-            <label>Weight</label>
+            ${labelWithHelp("Weight", HELP_TEXT.executorWeight)}
             <input type="number" value=${ex.weight} min="1" max="100"
               oninput=${(e) => updateExecutor(i, "weight", Number(e.target.value) || 50)} />
             <div class="hint">Distribution weight (higher = more tasks)</div>
@@ -2422,18 +2550,18 @@ function App() {
     ${profile === "advanced" && html`
       <div class="executor-grid" style="margin-top:12px">
         <div class="form-group">
-          <label>Max Parallel</label>
+          ${labelWithHelp("Max Parallel", HELP_TEXT.maxParallel)}
           <input type="number" value=${maxParallel} min="1" max="20"
             oninput=${(e) => setMaxParallel(Number(e.target.value) || 4)} />
           <div class="hint">Simultaneous execution slots</div>
         </div>
         <div class="form-group">
-          <label>Max Retries</label>
+          ${labelWithHelp("Max Retries", HELP_TEXT.maxRetries)}
           <input type="number" value=${maxRetries} min="0" max="10"
             oninput=${(e) => setMaxRetries(Number(e.target.value) || 3)} />
         </div>
         <div class="form-group">
-          <label>Failover Strategy</label>
+          ${labelWithHelp("Failover Strategy", HELP_TEXT.failoverStrategy)}
           <select value=${failoverStrategy} onchange=${(e) => setFailoverStrategy(e.target.value)}>
             <option value="next-in-line">Next in Line</option>
             <option value="round-robin">Round Robin</option>
@@ -2797,24 +2925,26 @@ function App() {
 
       <${Section} title=":zap: Execution & Distribution" defaultOpen=${true}>
         <div class="form-group">
-          <label>Executor Mode</label>
+          ${labelWithHelp("Executor Mode", HELP_TEXT.executorMode)}
           <select value=${executorMode} onchange=${(e) => setExecutorMode(e.target.value)}>
             <option value="internal">Internal — bosun manages agents directly</option>
             <option value="vk">VirtKanban (VK) — remote agent server</option>
             <option value="hybrid">Hybrid — internal + remote fallback</option>
           </select>
+          <div class="hint">Use <strong>Internal</strong> for local-first reliability. Choose VK/Hybrid only if you already run a remote VK service.</div>
         </div>
         <div class="form-group">
-          <label>Task Distribution</label>
+          ${labelWithHelp("Task Distribution", HELP_TEXT.taskDistribution)}
           <select value=${executorDistribution} onchange=${(e) => setExecutorDistribution(e.target.value)}>
             <option value="weighted">Weighted — tasks assigned by executor weight</option>
             <option value="round-robin">Round Robin — rotate evenly</option>
             <option value="primary-only">Primary Only — always use the first executor</option>
           </select>
+          <div class="hint"><strong>Weighted</strong> uses each executor Weight value. <strong>Round Robin</strong> ignores weights. <strong>Primary Only</strong> sends all tasks to executor 1.</div>
         </div>
         <div class="executor-grid">
           <div class="form-group">
-            <label>Max Parallel Tasks</label>
+            ${labelWithHelp("Max Parallel Tasks", HELP_TEXT.maxParallel)}
             <input type="number" value=${maxParallel} min="1" max="32"
               oninput=${(e) => setMaxParallel(Number(e.target.value) || 4)} />
             <div class="hint">Simultaneous agent slots</div>
@@ -2875,29 +3005,33 @@ function App() {
 
       <${Section} title=":git: Failover">
         <div class="form-group">
-          <label>Failover Strategy</label>
+          ${labelWithHelp("Failover Strategy", HELP_TEXT.failoverStrategy)}
           <select value=${failoverStrategy} onchange=${(e) => setFailoverStrategy(e.target.value)}>
             <option value="next-in-line">Next in Line</option>
             <option value="round-robin">Round Robin</option>
             <option value="weighted-random">Weighted Random</option>
             <option value="random">Random</option>
           </select>
+          <div class="hint"><strong>Next in Line</strong> is deterministic and easiest to debug. <strong>Weighted Random</strong> respects weights for load spread.</div>
         </div>
         <div class="executor-grid">
           <div class="form-group" style="margin-bottom:0">
-            <label>Max Retries</label>
+            ${labelWithHelp("Max Retries", HELP_TEXT.maxRetries)}
             <input type="number" value=${maxRetries} min="0" max="10"
               oninput=${(e) => setMaxRetries(Number(e.target.value) || 3)} />
+            <div class="hint">Recommended: <strong>2-3</strong>. Higher values can hide persistent config errors.</div>
           </div>
           <div class="form-group" style="margin-bottom:0">
             <label>Cooldown (minutes)</label>
             <input type="number" value=${failoverCooldownMinutes} min="1" max="60"
               oninput=${(e) => setFailoverCooldownMinutes(Number(e.target.value) || 5)} />
+            <div class="hint">How long an executor stays out of rotation after failing. Recommended: <strong>5-10 minutes</strong>.</div>
           </div>
           <div class="form-group" style="margin-bottom:0">
             <label>Disable after N consecutive failures</label>
             <input type="number" value=${failoverDisableOnConsecutive} min="1" max="20"
               oninput=${(e) => setFailoverDisableOnConsecutive(Number(e.target.value) || 3)} />
+            <div class="hint">Protects the fleet from hot-looping a broken executor. Recommended: <strong>3</strong>.</div>
           </div>
         </div>
       <//>
@@ -3145,7 +3279,7 @@ function App() {
           </div>
 
           <div class="form-group">
-            <label>Voice Providers (priority order)</label>
+            ${labelWithHelp("Voice Providers (priority order)", HELP_TEXT.voiceProviders)}
             <div class="hint">Configure up to 5 providers. Bosun will try them in order.</div>
           </div>
           ${(voiceProviders || []).slice(0, 5).map((providerRow, idx) => html`
@@ -3313,22 +3447,24 @@ function App() {
           </div>
           <div class="executor-grid">
             <div class="form-group">
-              <label>Turn Detection</label>
+              ${labelWithHelp("Turn Detection", HELP_TEXT.turnDetection)}
               <select value=${voiceTurnDetection} onchange=${(e) => setVoiceTurnDetection(e.target.value)}>
                 <option value="server_vad">server_vad</option>
                 <option value="semantic_vad">semantic_vad</option>
                 <option value="none">none</option>
               </select>
+              <div class="hint"><strong>server_vad</strong> is the default for most calls. Use semantic only if users pause mid-thought frequently.</div>
             </div>
             <div class="form-group">
-              <label>Fallback Mode</label>
+              ${labelWithHelp("Fallback Mode", HELP_TEXT.voiceFallbackMode)}
               <select value=${voiceFallbackMode} onchange=${(e) => setVoiceFallbackMode(e.target.value)}>
                 <option value="browser">browser</option>
                 <option value="disabled">disabled</option>
               </select>
+              <div class="hint"><strong>browser</strong> keeps voice available when provider auth/endpoints are missing.</div>
             </div>
             <div class="form-group">
-              <label>Delegate Executor</label>
+              ${labelWithHelp("Delegate Executor", HELP_TEXT.delegateExecutor)}
               <select value=${voiceDelegateExecutor} onchange=${(e) => setVoiceDelegateExecutor(e.target.value)}>
                 <option value="codex-sdk">codex-sdk</option>
                 <option value="copilot-sdk">copilot-sdk</option>
@@ -3336,6 +3472,7 @@ function App() {
                 <option value="gemini-sdk">gemini-sdk</option>
                 <option value="opencode-sdk">opencode-sdk</option>
               </select>
+              <div class="hint">Pick the same executor family you trust for task execution to keep behavior consistent.</div>
             </div>
           </div>
           <div class="form-group">
@@ -3362,25 +3499,36 @@ function App() {
                     </select>
                   </div>
                   <div class="form-group">
-                    <label>Role</label>
+                    ${labelWithHelp("Role", HELP_TEXT.voiceEndpointRole)}
                     <select value=${ep.role} onchange=${(e) => updateVoiceEndpoint(i, "role", e.target.value)}>
                       <option value="primary">Primary</option>
                       <option value="backup">Backup</option>
                     </select>
+                    <div class="hint">Primary handles normal traffic; backup is used on failure.</div>
                   </div>
                   <div class="form-group">
-                    <label>Weight</label>
+                    ${labelWithHelp("Weight", HELP_TEXT.voiceEndpointWeight)}
                     <input type="number" value=${ep.weight} min="1" max="1000" oninput=${(e) => updateVoiceEndpoint(i, "weight", Number(e.target.value) || 100)} />
+                    <div class="hint">Relative share within same role/provider. Example: 300 vs 100 gives roughly 75% vs 25%.</div>
                   </div>
-                  <div class="form-group">
-                    <label>API Key</label>
-                    <input type="password" value=${ep.apiKey} oninput=${(e) => updateVoiceEndpoint(i, "apiKey", e.target.value)} placeholder=${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthAccounts[ep.provider]?.status === "connected" ? "Using OAuth token (connected above)" : "API key for this endpoint"} />
-                    ${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthAccounts[ep.provider]?.status === "connected" && html`
-                      <div class="hint" style="color:var(--success,#22c55e)">✓ Will use your connected ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account automatically.</div>
-                    `}
-                    ${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthAccounts[ep.provider]?.status !== "connected" && html`
-                      <div class="hint">No API key set. Connect your ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account above, or enter a key here.</div>
-                    `}
+                  ${["openai","claude","gemini"].includes(ep.provider) && html`
+                    <div class="form-group">
+                      <label>Auth Method</label>
+                      <select value=${ep.authSource || "apiKey"} onchange=${(e) => updateVoiceEndpoint(i, "authSource", e.target.value)}>
+                        <option value="apiKey">API Key</option>
+                        <option value="oauth">OAuth (Connected Account)</option>
+                      </select>
+                      ${ep.authSource === "oauth" && oauthAccounts[ep.provider]?.status === "connected" && html`
+                        <div class="hint" style="color:var(--success,#22c55e)">✓ Connected — will use your ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account.</div>
+                      `}
+                      ${ep.authSource === "oauth" && oauthAccounts[ep.provider]?.status !== "connected" && html`
+                        <div class="hint" style="color:var(--warning,#f59e0b)">⚠ Not connected. Sign in via "Connected Accounts" above to use OAuth.</div>
+                      `}
+                    </div>
+                  `}
+                  <div class="form-group" style=${ep.authSource === "oauth" && ["openai","claude","gemini"].includes(ep.provider) ? "display:none" : ""}>
+                    <label>${ep.provider === "azure" ? "API Key" : "API Key (manual)"}</label>
+                    <input type="password" value=${ep.apiKey} oninput=${(e) => updateVoiceEndpoint(i, "apiKey", e.target.value)} placeholder="API key for this endpoint" />
                   </div>
                   <div class="form-group">
                     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">

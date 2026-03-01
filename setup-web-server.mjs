@@ -1441,6 +1441,78 @@ async function handleModelsProbe(body) {
   }
 }
 
+async function handleVoiceEndpointTest(body) {
+  const { provider, apiKey, endpoint: azureEndpoint, deployment } = body || {};
+  if (!provider) {
+    return { ok: false, error: "provider is required" };
+  }
+
+  const normalizedProvider = String(provider).trim().toLowerCase();
+  const start = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+
+  try {
+    let testUrl = "";
+    const headers = {};
+
+    if (normalizedProvider === "openai") {
+      testUrl = "https://api.openai.com/v1/models";
+      if (apiKey) {
+        headers.Authorization = `Bearer ${apiKey}`;
+      } else {
+        return { ok: false, error: "OpenAI API key is required for setup connectivity test" };
+      }
+    } else if (normalizedProvider === "azure") {
+      if (!azureEndpoint) {
+        return { ok: false, error: "Azure endpoint URL is required" };
+      }
+      if (!apiKey) {
+        return { ok: false, error: "Azure API key is required" };
+      }
+      const base = String(azureEndpoint).replace(/\/+$/, "");
+      const dep = String(deployment || "gpt-4o-realtime-preview").trim();
+      testUrl = `${base}/openai/deployments/${dep}?api-version=2024-10-01-preview`;
+      headers["api-key"] = apiKey;
+    } else if (normalizedProvider === "claude") {
+      if (!apiKey) {
+        return { ok: false, error: "Anthropic API key is required for setup connectivity test" };
+      }
+      testUrl = "https://api.anthropic.com/v1/models";
+      headers["anthropic-version"] = "2023-06-01";
+      headers["x-api-key"] = apiKey;
+    } else if (normalizedProvider === "gemini") {
+      if (!apiKey) {
+        return { ok: false, error: "Gemini API key is required for setup connectivity test" };
+      }
+      testUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+    } else {
+      return { ok: false, error: `Unknown provider: ${provider}` };
+    }
+
+    const resp = await fetch(testUrl, { headers, signal: controller.signal });
+    clearTimeout(timer);
+    const latencyMs = Date.now() - start;
+    if (resp.ok || resp.status === 200) {
+      return { ok: true, latencyMs };
+    }
+    const text = await resp.text().catch(() => "");
+    let error = `HTTP ${resp.status}`;
+    try {
+      const parsed = JSON.parse(text);
+      error = parsed?.error?.message || parsed?.error || error;
+    } catch {
+      // Keep generic HTTP status message.
+    }
+    return { ok: false, error, latencyMs };
+  } catch (err) {
+    clearTimeout(timer);
+    const latencyMs = Date.now() - start;
+    const error = err?.name === "AbortError" ? "Timeout (10s)" : (err?.message || "Connection failed");
+    return { ok: false, error, latencyMs };
+  }
+}
+
 function handleValidate(body) {
   const errors = {};
   const { field, value } = body || {};
@@ -1961,6 +2033,13 @@ async function handleRequest(req, res) {
           return;
         case "workflows":
           jsonResponse(res, 200, handleWorkflowTemplates());
+          return;
+        case "voice/endpoints/test":
+          if (req.method !== "POST") {
+            jsonResponse(res, 405, { ok: false, error: "POST required" });
+            return;
+          }
+          jsonResponse(res, 200, await handleVoiceEndpointTest(await readBody(req)));
           return;
         case "validate":
           if (req.method !== "POST") {

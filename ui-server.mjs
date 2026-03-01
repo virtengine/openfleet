@@ -9302,6 +9302,7 @@ async function handleApi(req, res, url) {
         if (ep.model) out.model = String(ep.model);
         if (ep.visionModel) out.visionModel = String(ep.visionModel);
         if (ep.apiKey) out.apiKey = String(ep.apiKey);
+        if (ep.authSource) out.authSource = ["apiKey", "oauth"].includes(ep.authSource) ? ep.authSource : "apiKey";
         if (ep.voiceId) out.voiceId = String(ep.voiceId);
         if (ep.role) out.role = String(ep.role);
         if (ep.weight != null) out.weight = Number(ep.weight) || 1;
@@ -9325,11 +9326,12 @@ async function handleApi(req, res, url) {
   if (path === "/api/voice/endpoints/test" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const { provider, apiKey, endpoint: azureEndpoint, deployment, model } = body || {};
+      const { provider, apiKey, endpoint: azureEndpoint, deployment, model, authSource } = body || {};
       if (!provider) {
         jsonResponse(res, 400, { ok: false, error: "provider is required" });
         return;
       }
+      const useOAuth = authSource === "oauth";
       const start = Date.now();
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
@@ -9339,7 +9341,7 @@ async function handleApi(req, res, url) {
         const headers = {};
         if (provider === "openai") {
           testUrl = "https://api.openai.com/v1/models";
-          if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+          if (apiKey && !useOAuth) headers["Authorization"] = `Bearer ${apiKey}`;
           else {
             // Try OAuth token if no API key
             try {
@@ -9368,7 +9370,7 @@ async function handleApi(req, res, url) {
         } else if (provider === "claude") {
           testUrl = "https://api.anthropic.com/v1/models";
           headers["anthropic-version"] = "2023-06-01";
-          if (apiKey) headers["x-api-key"] = apiKey;
+          if (apiKey && !useOAuth) headers["x-api-key"] = apiKey;
           else {
             try {
               const { getClaudeLoginStatus } = await import("./voice-auth-manager.mjs");
@@ -9381,7 +9383,7 @@ async function handleApi(req, res, url) {
             return;
           }
         } else if (provider === "gemini") {
-          let k = apiKey || null;
+          let k = (apiKey && !useOAuth) ? apiKey : null;
           if (!k) {
             try {
               const { getGeminiLoginStatus } = await import("./voice-auth-manager.mjs");

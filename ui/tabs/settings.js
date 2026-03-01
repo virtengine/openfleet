@@ -2032,6 +2032,7 @@ function VoiceEndpointsEditor() {
     role: ["primary", "backup"].includes(ep.role) ? ep.role : "primary",
     weight: Number(ep.weight) > 0 ? Number(ep.weight) : 1,
     enabled: ep.enabled !== false,
+    authSource: ["apiKey", "oauth"].includes(ep.authSource) ? ep.authSource : "apiKey",
   }), []);
 
   // Fetch OAuth status for all providers
@@ -2053,7 +2054,7 @@ function VoiceEndpointsEditor() {
     try {
       const res = await apiFetch("/api/voice/endpoints/test", {
         method: "POST",
-        body: JSON.stringify({ provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model }),
+        body: JSON.stringify({ provider: ep.provider, apiKey: ep.apiKey, endpoint: ep.endpoint, deployment: ep.deployment, model: ep.model, authSource: ep.authSource }),
       });
       if (res.ok) {
         setTestResults((prev) => ({ ...prev, [key]: { testing: false, result: "success", latencyMs: res.latencyMs } }));
@@ -2199,17 +2200,26 @@ function VoiceEndpointsEditor() {
             <div style="display:flex;align-items:center;padding-top:16px">
               <${Toggle} checked=${ep.enabled} onChange=${(v) => updateEndpoint(ep._id, "enabled", v)} label="Enabled" />
             </div>
-            <div style="grid-column:1/-1">
-              <div class="setting-row-label">API Key</div>
+            ${["openai","claude","gemini"].includes(ep.provider) && html`
+              <div style="grid-column:1/-1">
+                <div class="setting-row-label">Auth Method</div>
+                <select value=${ep.authSource || "apiKey"} onChange=${(e) => updateEndpoint(ep._id, "authSource", e.target.value)}>
+                  <option value="apiKey">API Key</option>
+                  <option value="oauth">OAuth (Connected Account)</option>
+                </select>
+                ${ep.authSource === "oauth" && oauthStatus[ep.provider]?.status === "connected" && html`
+                  <div class="meta-text" style="margin-top:3px;color:var(--color-success,#22c55e)">✓ Connected — will use your ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account.</div>
+                `}
+                ${ep.authSource === "oauth" && oauthStatus[ep.provider]?.status !== "connected" && html`
+                  <div class="meta-text" style="margin-top:3px;color:var(--color-warning,#f59e0b)">⚠ Not connected. Sign in via Connected Accounts above to use OAuth.</div>
+                `}
+              </div>
+            `}
+            <div style=${`grid-column:1/-1${ep.authSource === "oauth" && ["openai","claude","gemini"].includes(ep.provider) ? ";display:none" : ""}`}>
+              <div class="setting-row-label">${ep.provider === "azure" ? "API Key" : "API Key (manual)"}</div>
               <input type="password" value=${ep.apiKey}
-                placeholder=${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthStatus[ep.provider]?.status === "connected" ? "Using OAuth token (connected above)" : "API key for this endpoint"}
+                placeholder="API key for this endpoint"
                 onInput=${(e) => updateEndpoint(ep._id, "apiKey", e.target.value)} />
-              ${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthStatus[ep.provider]?.status === "connected" && html`
-                <div class="meta-text" style="margin-top:3px;color:var(--color-success,#22c55e)">✓ Will use your connected ${ep.provider === "openai" ? "OpenAI" : ep.provider === "claude" ? "Claude" : "Gemini"} account automatically.</div>
-              `}
-              ${!ep.apiKey && ["openai","claude","gemini"].includes(ep.provider) && oauthStatus[ep.provider]?.status !== "connected" && html`
-                <div class="meta-text" style="margin-top:3px">No API key set. Connect your account via OAuth above, or enter a key.</div>
-              `}
             </div>
             ${ep.provider === "azure" && html`
               <div style="grid-column:1/-1">
