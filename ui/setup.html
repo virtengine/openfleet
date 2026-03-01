@@ -723,6 +723,19 @@ function App() {
   const [whatsappEnabled, setWhatsappEnabled] = useState(false);
   const [telegramIntervalMin, setTelegramIntervalMin] = useState(10);
   const [orchestratorScript, setOrchestratorScript] = useState("");
+  // Sentinel / watchdog
+  const [sentinelAutoStart, setSentinelAutoStart] = useState(false);
+  const [sentinelStrict, setSentinelStrict] = useState(false);
+  const [sentinelAutoRestartMonitor, setSentinelAutoRestartMonitor] = useState(true);
+  const [sentinelCrashLoopThreshold, setSentinelCrashLoopThreshold] = useState(3);
+  const [sentinelCrashLoopWindowMin, setSentinelCrashLoopWindowMin] = useState(5);
+  const [sentinelRepairAgentEnabled, setSentinelRepairAgentEnabled] = useState(false);
+  const [sentinelRepairTimeoutMin, setSentinelRepairTimeoutMin] = useState(15);
+  // Daemon restart policy
+  const [daemonRestartDelayMs, setDaemonRestartDelayMs] = useState(10000);
+  const [daemonMaxRestarts, setDaemonMaxRestarts] = useState(0);
+  const [daemonMaxInstantRestarts, setDaemonMaxInstantRestarts] = useState(3);
+  const [daemonInstantCrashWindowMs, setDaemonInstantCrashWindowMs] = useState(15000);
   // Launch / startup
   const [autoStartEnabled, setAutoStartEnabled] = useState(false);
   const [desktopShortcutEnabled, setDesktopShortcutEnabled] = useState(false);
@@ -1231,6 +1244,19 @@ function App() {
       if (env.WHATSAPP_ENABLED) { setWhatsappEnabled(env.WHATSAPP_ENABLED === "true"); envLoaded = true; }
       if (env.TELEGRAM_INTERVAL_MIN) { setTelegramIntervalMin(Number(env.TELEGRAM_INTERVAL_MIN) || 10); envLoaded = true; }
       if (env.ORCHESTRATOR_SCRIPT) { setOrchestratorScript(env.ORCHESTRATOR_SCRIPT); envLoaded = true; }
+      // Sentinel / watchdog
+      if (env.BOSUN_SENTINEL_AUTO_START) { setSentinelAutoStart(env.BOSUN_SENTINEL_AUTO_START === "true"); envLoaded = true; }
+      if (env.BOSUN_SENTINEL_STRICT) { setSentinelStrict(env.BOSUN_SENTINEL_STRICT === "true"); envLoaded = true; }
+      if (env.SENTINEL_AUTO_RESTART_MONITOR !== undefined) { setSentinelAutoRestartMonitor(env.SENTINEL_AUTO_RESTART_MONITOR !== "false"); envLoaded = true; }
+      if (env.SENTINEL_CRASH_LOOP_THRESHOLD) { setSentinelCrashLoopThreshold(Number(env.SENTINEL_CRASH_LOOP_THRESHOLD) || 3); envLoaded = true; }
+      if (env.SENTINEL_CRASH_LOOP_WINDOW_MIN) { setSentinelCrashLoopWindowMin(Number(env.SENTINEL_CRASH_LOOP_WINDOW_MIN) || 5); envLoaded = true; }
+      if (env.SENTINEL_REPAIR_AGENT_ENABLED) { setSentinelRepairAgentEnabled(env.SENTINEL_REPAIR_AGENT_ENABLED === "true"); envLoaded = true; }
+      if (env.SENTINEL_REPAIR_TIMEOUT_MIN) { setSentinelRepairTimeoutMin(Number(env.SENTINEL_REPAIR_TIMEOUT_MIN) || 15); envLoaded = true; }
+      // Daemon restart policy
+      if (env.RESTART_DELAY_MS) { setDaemonRestartDelayMs(Number(env.RESTART_DELAY_MS) || 10000); envLoaded = true; }
+      if (env.MAX_RESTARTS) { setDaemonMaxRestarts(Number(env.MAX_RESTARTS) || 0); envLoaded = true; }
+      if (env.BOSUN_DAEMON_MAX_INSTANT_RESTARTS) { setDaemonMaxInstantRestarts(Number(env.BOSUN_DAEMON_MAX_INSTANT_RESTARTS) || 3); envLoaded = true; }
+      if (env.BOSUN_DAEMON_INSTANT_CRASH_WINDOW_MS) { setDaemonInstantCrashWindowMs(Number(env.BOSUN_DAEMON_INSTANT_CRASH_WINDOW_MS) || 15000); envLoaded = true; }
       // Voice settings
       if (env.VOICE_ENABLED !== undefined) { setVoiceEnabled(env.VOICE_ENABLED !== "false"); envLoaded = true; }
       if (env.VOICE_PROVIDER) { setVoiceProvider(env.VOICE_PROVIDER); envLoaded = true; }
@@ -1587,6 +1613,19 @@ function App() {
           whatsappEnabled,
           telegramIntervalMin,
           orchestratorScript,
+          // Sentinel / watchdog
+          sentinelAutoStart,
+          sentinelStrict,
+          sentinelAutoRestartMonitor,
+          sentinelCrashLoopThreshold,
+          sentinelCrashLoopWindowMin,
+          sentinelRepairAgentEnabled,
+          sentinelRepairTimeoutMin,
+          // Daemon restart policy
+          daemonRestartDelayMs,
+          daemonMaxRestarts,
+          daemonMaxInstantRestarts,
+          daemonInstantCrashWindowMs,
         },
         configJson: {
           projectName,
@@ -3145,6 +3184,8 @@ function App() {
                     <select value=${ep.provider} onchange=${(e) => updateVoiceEndpoint(i, "provider", e.target.value)}>
                       <option value="azure">Azure OpenAI</option>
                       <option value="openai">OpenAI</option>
+                      <option value="claude">Claude (Anthropic)</option>
+                      <option value="gemini">Gemini (Google)</option>
                     </select>
                   </div>
                   <div class="form-group">
@@ -3185,6 +3226,23 @@ function App() {
                       <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="gpt-audio-1.5" />
                     </div>
                   `}
+                  ${ep.provider === "claude" && html`
+                    <div class="form-group">
+                      <label>Model</label>
+                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="claude-opus-4-5" />
+                    </div>
+                  `}
+                  ${ep.provider === "gemini" && html`
+                    <div class="form-group">
+                      <label>Model</label>
+                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="gemini-2.0-flash" />
+                    </div>
+                  `}
+                  <div class="form-group">
+                    <label>Vision Model</label>
+                    <input type="text" value=${ep.visionModel || ""} oninput=${(e) => updateVoiceEndpoint(i, "visionModel", e.target.value)} placeholder="e.g. gpt-4.1-nano" />
+                    <div class="hint">Optional model for vision/image tasks on this endpoint.</div>
+                  </div>
                 </div>
               </div>
             `)}
@@ -3250,7 +3308,102 @@ function App() {
         </div>
       <//>
 
-      <${Section} title="🚀 Launch & Startup">
+      <${Section} title="�️ Sentinel / Watchdog">
+        <p class="hint" style="margin-top:0;margin-bottom:16px">
+          The Sentinel continuously monitors bosun and auto-restarts it if it crashes or enters a crash loop.
+        </p>
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${sentinelAutoStart}
+              onchange=${(e) => setSentinelAutoStart(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enable Sentinel / Watchdog
+          </label>
+          <div class="hint">Bosun will be watched by an external monitor process that restarts it on failure.</div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${sentinelStrict}
+              onchange=${(e) => setSentinelStrict(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Strict Mode
+          </label>
+          <div class="hint">In strict mode the sentinel will refuse to start bosun if it detects unsafe conditions.</div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${sentinelAutoRestartMonitor}
+              onchange=${(e) => setSentinelAutoRestartMonitor(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Auto-restart monitor on crash
+          </label>
+          <div class="hint">The monitor process itself will be restarted if it exits unexpectedly.</div>
+        </div>
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>Crash Loop Threshold</label>
+            <input type="number" value=${sentinelCrashLoopThreshold} min="1" max="20"
+              oninput=${(e) => setSentinelCrashLoopThreshold(Number(e.target.value) || 3)} />
+            <div class="hint">Number of restarts within the window before a crash loop is declared.</div>
+          </div>
+          <div class="form-group">
+            <label>Crash Loop Window (minutes)</label>
+            <input type="number" value=${sentinelCrashLoopWindowMin} min="1" max="60"
+              oninput=${(e) => setSentinelCrashLoopWindowMin(Number(e.target.value) || 5)} />
+            <div class="hint">Time window in which the threshold is measured.</div>
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+            <input type="checkbox" checked=${sentinelRepairAgentEnabled}
+              onchange=${(e) => setSentinelRepairAgentEnabled(e.target.checked)}
+              style="width:auto;padding:0;margin:0;accent-color:var(--accent);cursor:pointer" />
+            Enable Repair Agent
+          </label>
+          <div class="hint">On crash loop, run an AI repair agent to attempt automatic diagnosis and fix.</div>
+        </div>
+        ${sentinelRepairAgentEnabled && html`
+          <div class="form-group">
+            <label>Repair Agent Timeout (minutes)</label>
+            <input type="number" value=${sentinelRepairTimeoutMin} min="1" max="120"
+              oninput=${(e) => setSentinelRepairTimeoutMin(Number(e.target.value) || 15)} />
+          </div>
+        `}
+      <//>
+
+      <${Section} title="🔁 Daemon Restart Policy">
+        <p class="hint" style="margin-top:0;margin-bottom:16px">
+          Controls how the bosun daemon process handles crashes and restarts.
+        </p>
+        <div class="executor-grid">
+          <div class="form-group">
+            <label>Restart Delay (ms)</label>
+            <input type="number" value=${daemonRestartDelayMs} min="0"
+              oninput=${(e) => setDaemonRestartDelayMs(Number(e.target.value) || 10000)} />
+            <div class="hint">Delay before restarting after a crash. Default: 10 000 ms.</div>
+          </div>
+          <div class="form-group">
+            <label>Max Restarts (0 = unlimited)</label>
+            <input type="number" value=${daemonMaxRestarts} min="0"
+              oninput=${(e) => setDaemonMaxRestarts(Number(e.target.value))} />
+            <div class="hint">Maximum total restarts before giving up. 0 means no limit.</div>
+          </div>
+          <div class="form-group">
+            <label>Max Instant-Crash Restarts</label>
+            <input type="number" value=${daemonMaxInstantRestarts} min="1" max="20"
+              oninput=${(e) => setDaemonMaxInstantRestarts(Number(e.target.value) || 3)} />
+            <div class="hint">Max restarts allowed within the instant-crash window before stopping.</div>
+          </div>
+          <div class="form-group">
+            <label>Instant-Crash Window (ms)</label>
+            <input type="number" value=${daemonInstantCrashWindowMs} min="1000"
+              oninput=${(e) => setDaemonInstantCrashWindowMs(Number(e.target.value) || 15000)} />
+            <div class="hint">If bosun crashes faster than this window repeatedly, it's considered an instant-crash loop. Default: 15 000 ms.</div>
+          </div>
+        </div>
+      <//>
+
+      <${Section} title="�🚀 Launch & Startup">
         <p class="hint" style="margin-top:0;margin-bottom:16px">
           Configure whether bosun starts automatically and whether a desktop shortcut is created.
           ${status?.startupStatus?.methodName ? html` Platform method: <strong>${status.startupStatus.methodName}</strong>.` : ""}
@@ -3386,11 +3539,17 @@ function App() {
             <tr><th>Workflow Parallel Branches</th><td>${workflowMaxConcurrentBranches}</td></tr>
             <tr><th>Auto-Start on Login</th><td>${autoStartEnabled ? "Enabled" : "Disabled"}</td></tr>
             <tr><th>Desktop Shortcut</th><td>${desktopShortcutEnabled ? "Installed" : "Not installed"}</td></tr>
+            <tr><th>Sentinel / Watchdog</th><td>${sentinelAutoStart ? `Enabled${sentinelStrict ? " (strict)" : ""}` : "Disabled"}</td></tr>
+            <tr><th>Crash Loop Threshold</th><td>${sentinelCrashLoopThreshold} restarts in ${sentinelCrashLoopWindowMin} min</td></tr>
+            <tr><th>Repair Agent</th><td>${sentinelRepairAgentEnabled ? `Enabled (timeout ${sentinelRepairTimeoutMin} min)` : "Disabled"}</td></tr>
+            <tr><th>Daemon Restart Delay</th><td>${daemonRestartDelayMs} ms</td></tr>
+            <tr><th>Max Restarts</th><td>${daemonMaxRestarts === 0 ? "Unlimited" : daemonMaxRestarts}</td></tr>
           ` : html`
             <tr><th>Max Parallel</th><td>${maxParallel}</td></tr>
             <tr><th>Failover Strategy</th><td>${failoverStrategy}</td></tr>
             <tr><th>Auto-Start on Login</th><td>${autoStartEnabled ? "Enabled" : "Disabled"}</td></tr>
             <tr><th>Desktop Shortcut</th><td>${desktopShortcutEnabled ? "Installed" : "Not installed"}</td></tr>
+            <tr><th>Sentinel / Watchdog</th><td>${sentinelAutoStart ? "Enabled" : "Disabled"}</td></tr>
           `}
         </tbody>
       </table>

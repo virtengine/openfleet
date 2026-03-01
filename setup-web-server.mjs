@@ -1604,6 +1604,21 @@ function handleApply(body) {
     if (env.copilotEnableAskUser)       envMap.COPILOT_ENABLE_ASK_USER          = "true";
     if (env.copilotMcpConfig)           envMap.COPILOT_MCP_CONFIG               = env.copilotMcpConfig;
 
+    // ── Sentinel / watchdog ────────────────────────────────────────────────
+    if (env.sentinelAutoStart != null)          envMap.BOSUN_SENTINEL_AUTO_START        = env.sentinelAutoStart ? "true" : "false";
+    if (env.sentinelStrict != null)             envMap.BOSUN_SENTINEL_STRICT            = env.sentinelStrict ? "true" : "false";
+    if (env.sentinelAutoRestartMonitor != null) envMap.SENTINEL_AUTO_RESTART_MONITOR    = env.sentinelAutoRestartMonitor ? "true" : "false";
+    if (env.sentinelCrashLoopThreshold)         envMap.SENTINEL_CRASH_LOOP_THRESHOLD    = String(env.sentinelCrashLoopThreshold);
+    if (env.sentinelCrashLoopWindowMin)         envMap.SENTINEL_CRASH_LOOP_WINDOW_MIN   = String(env.sentinelCrashLoopWindowMin);
+    if (env.sentinelRepairAgentEnabled != null) envMap.SENTINEL_REPAIR_AGENT_ENABLED    = env.sentinelRepairAgentEnabled ? "true" : "false";
+    if (env.sentinelRepairTimeoutMin)           envMap.SENTINEL_REPAIR_TIMEOUT_MIN      = String(env.sentinelRepairTimeoutMin);
+
+    // ── Daemon restart policy ──────────────────────────────────────────────
+    if (env.daemonRestartDelayMs != null)       envMap.RESTART_DELAY_MS                      = String(env.daemonRestartDelayMs);
+    if (env.daemonMaxRestarts != null)          envMap.MAX_RESTARTS                           = String(env.daemonMaxRestarts);
+    if (env.daemonMaxInstantRestarts)           envMap.BOSUN_DAEMON_MAX_INSTANT_RESTARTS      = String(env.daemonMaxInstantRestarts);
+    if (env.daemonInstantCrashWindowMs)         envMap.BOSUN_DAEMON_INSTANT_CRASH_WINDOW_MS   = String(env.daemonInstantCrashWindowMs);
+
     // Ensure every setup field has safe defaults and invalid values are normalized.
     applyNonBlockingSetupEnvDefaults(envMap, env, process.env);
 
