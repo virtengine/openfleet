@@ -45,10 +45,8 @@ describe("ui-server mini app", () => {
     "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED",
     "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
     "PROJECT_REQUIREMENTS_PROFILE",
-    "TASK_PLANNER_DEDUP_HOURS",
     "TASK_TRIGGER_SYSTEM_ENABLED",
     "EXECUTORS",
-    "BOSUN_PROMPT_PLANNER",
     "FLEET_ENABLED",
     "FLEET_SYNC_INTERVAL_MS",
     "OPENAI_API_KEY",
@@ -467,13 +465,11 @@ describe("ui-server mini app", () => {
           INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED: "false",
           INTERNAL_EXECUTOR_REPLENISH_ENABLED: "true",
           PROJECT_REQUIREMENTS_PROFILE: "system",
-          TASK_PLANNER_DEDUP_HOURS: "12",
           TELEGRAM_UI_PORT: "4400",
           TELEGRAM_INTERVAL_MIN: "15",
           FLEET_ENABLED: "false",
           FLEET_SYNC_INTERVAL_MS: "90000",
           EXECUTORS: "CODEX:DEFAULT:70,COPILOT:DEFAULT:30",
-          BOSUN_PROMPT_PLANNER: ".bosun/agents/task-planner.md",
         },
       }),
     });
@@ -491,13 +487,11 @@ describe("ui-server mini app", () => {
         "INTERNAL_EXECUTOR_REVIEW_AGENT_ENABLED",
         "INTERNAL_EXECUTOR_REPLENISH_ENABLED",
         "PROJECT_REQUIREMENTS_PROFILE",
-        "TASK_PLANNER_DEDUP_HOURS",
         "TELEGRAM_UI_PORT",
         "TELEGRAM_INTERVAL_MIN",
         "FLEET_ENABLED",
         "FLEET_SYNC_INTERVAL_MS",
         "EXECUTORS",
-        "BOSUN_PROMPT_PLANNER",
       ]),
     );
     expect(json.configPath).toBe(configPath);
@@ -514,7 +508,6 @@ describe("ui-server mini app", () => {
     expect(config.internalExecutor?.reviewAgentEnabled).toBe(false);
     expect(config.internalExecutor?.backlogReplenishment?.enabled).toBe(true);
     expect(config.projectRequirements?.profile).toBe("system");
-    expect(config.plannerDedupHours).toBe(12);
     expect(config.telegramUiPort).toBe(4400);
     expect(config.telegramIntervalMin).toBe(15);
     expect(config.fleetEnabled).toBe(false);
@@ -525,7 +518,6 @@ describe("ui-server mini app", () => {
         expect.objectContaining({ executor: "COPILOT", variant: "DEFAULT", weight: 30 }),
       ]),
     );
-    expect(config.agentPrompts?.planner).toBe(".bosun/agents/task-planner.md");
 
     rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -583,12 +575,12 @@ describe("ui-server mini app", () => {
             defaults: { executor: "auto", model: "auto" },
             templates: [
               {
-                id: "task-planner",
-                name: "Task Planner",
+                id: "daily-review-digest",
+                name: "Daily Review Digest",
                 enabled: false,
-                action: "task-planner",
-                trigger: { anyOf: [{ kind: "metric", metric: "backlogRemaining", operator: "eq", value: 0 }] },
-                config: { plannerMode: "kanban", defaultTaskCount: 10 },
+                action: "create-task",
+                trigger: { anyOf: [{ kind: "interval", minutes: 1440 }] },
+                config: { executor: "auto", model: "auto" },
               },
             ],
           },
@@ -634,12 +626,12 @@ describe("ui-server mini app", () => {
             defaults: { executor: "auto", model: "auto" },
             templates: [
               {
-                id: "task-planner",
-                name: "Task Planner",
+                id: "daily-review-digest",
+                name: "Daily Review Digest",
                 enabled: false,
-                action: "task-planner",
-                trigger: { anyOf: [{ kind: "metric", metric: "backlogRemaining", operator: "eq", value: 0 }] },
-                config: { plannerMode: "kanban", defaultTaskCount: 10 },
+                action: "create-task",
+                trigger: { anyOf: [{ kind: "interval", minutes: 1440 }] },
+                config: { executor: "auto", model: "auto" },
               },
             ],
           },
@@ -662,7 +654,7 @@ describe("ui-server mini app", () => {
       body: JSON.stringify({
         enabled: true,
         template: {
-          id: "task-planner",
+          id: "daily-review-digest",
           enabled: true,
           description: "updated from test",
           minIntervalMinutes: 45,
@@ -677,7 +669,7 @@ describe("ui-server mini app", () => {
     const saved = JSON.parse(readFileSync(configPath, "utf8"));
     expect(saved.triggerSystem.enabled).toBe(true);
     const updatedTemplate = (saved.triggerSystem.templates || []).find(
-      (template) => template.id === "task-planner",
+      (template) => template.id === "daily-review-digest",
     );
     expect(updatedTemplate?.enabled).toBe(true);
     expect(updatedTemplate?.description).toBe("updated from test");
