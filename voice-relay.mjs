@@ -22,7 +22,7 @@ let _configLoadedAt = 0;   // timestamp of last config load
 const CONFIG_TTL_MS = 30_000; // re-read config every 30s
 
 const OPENAI_REALTIME_URL = "https://api.openai.com/v1/realtime";
-const OPENAI_REALTIME_MODEL = "gpt-audio-1.5";
+const OPENAI_REALTIME_MODEL = "gpt-realtime-1.5";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const OPENAI_DEFAULT_VISION_MODEL = "gpt-4.1-nano";
 
@@ -70,10 +70,25 @@ function buildOpenAIRealtimeWebRtcUrl(model, overrideBase = "") {
 }
 
 // GA models (gpt-realtime, gpt-realtime-1.5, gpt-realtime-mini, etc.) use /openai/v1/ paths.
-// Preview models (gpt-4o-realtime-preview, gpt-audio-1.5, etc.) use legacy /openai/realtimeapi/ paths.
+// Preview models (for example gpt-4o-realtime-preview-*) use legacy /openai/realtimeapi/ paths.
 function isAzureGaProtocol(deployment) {
   const d = String(deployment || "").toLowerCase().trim();
   return d.startsWith("gpt-realtime") && !d.startsWith("gpt-4o-realtime");
+}
+
+function normalizeOpenAIRealtimeModel(rawModel) {
+  const model = String(rawModel || "").trim();
+  if (!model) return OPENAI_REALTIME_MODEL;
+  // Audio-only model slugs are not accepted by realtime SDP/session endpoints.
+  if (/^gpt-audio/i.test(model)) return OPENAI_REALTIME_MODEL;
+  return model;
+}
+
+function normalizeAzureRealtimeDeployment(rawDeployment) {
+  const deployment = String(rawDeployment || "").trim();
+  if (!deployment) return OPENAI_REALTIME_MODEL;
+  if (/^gpt-audio/i.test(deployment)) return OPENAI_REALTIME_MODEL;
+  return deployment;
 }
 
 const VALID_EXECUTORS = new Set([
@@ -245,6 +260,9 @@ function shouldFailoverRealtimeError(err) {
   const statusMatch = message.match(/\((\d{3})\)/);
   const status = statusMatch ? Number.parseInt(statusMatch[1], 10) : null;
   if (status && (status === 401 || status === 403 || status === 408 || status === 409 || status === 429 || status >= 500)) {
+    return true;
+  }
+  if (/invalid_model|not supported in realtime mode|model .* not supported/i.test(message)) {
     return true;
   }
   if (/ECONNRESET|ETIMEDOUT|network|fetch failed|connection|connect/i.test(message)) {
@@ -755,7 +773,7 @@ export function getVoiceConfig(forceReload = false) {
       : provider === "gemini"
         ? GEMINI_DEFAULT_MODEL
         : OPENAI_REALTIME_MODEL;
-  const model = voice.model || process.env.VOICE_MODEL || defaultModel;
+  const model = normalizeOpenAIRealtimeModel(voice.model || process.env.VOICE_MODEL || defaultModel);
   const voiceId = voice.voiceId || process.env.VOICE_ID || "alloy";
   const turnDetection =
     voice.turnDetection || process.env.VOICE_TURN_DETECTION || "server_vad";
@@ -902,7 +920,7 @@ async function createOpenAIEphemeralToken(cfg, toolDefinitions = [], callContext
 
   const context = sanitizeVoiceCallContext(callContext);
   const instructions = buildSessionScopedInstructions(cfg.instructions, context);
-  const model = String(candidate?.model || cfg.model || OPENAI_REALTIME_MODEL).trim() || OPENAI_REALTIME_MODEL;
+  const model = normalizeOpenAIRealtimeModel(candidate?.model || cfg.model || OPENAI_REALTIME_MODEL);
   const voiceId = String(candidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
 
   const sessionConfig = {
@@ -970,9 +988,9 @@ async function createAzureEphemeralToken(cfg, toolDefinitions = [], callContext 
 
   const context = sanitizeVoiceCallContext(callContext);
   const instructions = buildSessionScopedInstructions(cfg.instructions, context);
-  const deployment =
-    String(candidate?.azureDeployment || candidate?.model || cfg.azureDeployment || "").trim()
-    || "gpt-audio-1.5";
+  const deployment = normalizeAzureRealtimeDeployment(
+    candidate?.azureDeployment || candidate?.model || cfg.azureDeployment || OPENAI_REALTIME_MODEL,
+  );
   const voiceId = String(candidate?.voiceId || cfg.voiceId || "alloy").trim() || "alloy";
   // GA protocol (gpt-realtime-1.5, gpt-realtime, etc.) uses /openai/v1/realtime/sessions?api-version=...
   // Preview protocol uses /openai/realtimeapi/sessions?api-version=...
@@ -1187,9 +1205,9 @@ export function getRealtimeConnectionInfo() {
 
   if (candidate.provider === "azure") {
     const endpoint = normalizeAzureEndpoint(candidate?.endpoint || cfg.azureEndpoint || "");
-    const deployment =
-      String(candidate?.azureDeployment || candidate?.model || cfg.azureDeployment || "").trim()
-      || "gpt-audio-1.5";
+    const deployment = normalizeAzureRealtimeDeployment(
+      candidate?.azureDeployment || candidate?.model || cfg.azureDeployment || OPENAI_REALTIME_MODEL,
+    );
     // GA protocol: /openai/v1/realtime with api-version; model set during /sessions exchange.
     // Preview protocol: /openai/realtime with api-version and deployment.
     const url = isAzureGaProtocol(deployment)
@@ -1201,7 +1219,7 @@ export function getRealtimeConnectionInfo() {
       model: deployment,
     };
   }
-  const model = String(candidate?.model || cfg.model || OPENAI_REALTIME_MODEL).trim() || OPENAI_REALTIME_MODEL;
+  const model = normalizeOpenAIRealtimeModel(candidate?.model || cfg.model || OPENAI_REALTIME_MODEL);
   return {
     provider: "openai",
     url: buildOpenAIRealtimeWebRtcUrl(model, candidate?.endpoint || ""),

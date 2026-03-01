@@ -219,7 +219,7 @@ describe("voice-agents-sdk", () => {
         "azure",
         {},
       );
-      expect(sessionHandle.model).toBe("gpt-audio-1.5");
+      expect(sessionHandle.model).toBe("gpt-realtime-1.5");
       expect(sessionHandle.voiceId).toBe("alloy");
       expect(sessionHandle.provider).toBe("azure");
     });

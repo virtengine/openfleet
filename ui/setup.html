@@ -815,6 +815,7 @@ function App() {
   const [workflowRunStuckThresholdMs, setWorkflowRunStuckThresholdMs] = useState(300000);
   const [workflowMaxPersistedRuns, setWorkflowMaxPersistedRuns] = useState(200);
   const [workflowMaxConcurrentBranches, setWorkflowMaxConcurrentBranches] = useState(8);
+  const CURRENT_WORKFLOW_PROFILE_ID = "current-installed";
   // Kanban
   const [kanbanSyncPolicy, setKanbanSyncPolicy] = useState("internal-primary");
   // Multi-workspace
@@ -870,7 +871,7 @@ function App() {
   // Voice assistant
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [voiceProvider, setVoiceProvider] = useState("auto");
-  const [voiceModel, setVoiceModel] = useState("gpt-audio-1.5");
+  const [voiceModel, setVoiceModel] = useState("gpt-realtime-1.5");
   const [voiceVisionModel, setVoiceVisionModel] = useState("gpt-4.1-nano");
   const [voiceId, setVoiceId] = useState("alloy");
   const [voiceTurnDetection, setVoiceTurnDetection] = useState("server_vad");
@@ -879,7 +880,7 @@ function App() {
   const [openaiRealtimeApiKey, setOpenaiRealtimeApiKey] = useState("");
   const [azureOpenaiRealtimeEndpoint, setAzureOpenaiRealtimeEndpoint] = useState("");
   const [azureOpenaiRealtimeApiKey, setAzureOpenaiRealtimeApiKey] = useState("");
-  const [azureOpenaiRealtimeDeployment, setAzureOpenaiRealtimeDeployment] = useState("gpt-audio-1.5");
+  const [azureOpenaiRealtimeDeployment, setAzureOpenaiRealtimeDeployment] = useState("gpt-realtime-1.5");
   // Multi-endpoint voice config — each entry has its own credentials for failover
   const [voiceEndpoints, setVoiceEndpoints] = useState([]);
   const [voiceProviders, setVoiceProviders] = useState([
@@ -993,8 +994,8 @@ function App() {
   };
 
   const VOICE_PROVIDER_MODEL_DEFAULTS = {
-    openai: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
-    azure: { model: "gpt-audio-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-audio-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+    openai: { model: "gpt-realtime-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-realtime-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview-2024-12-17"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
+    azure: { model: "gpt-realtime-1.5", visionModel: "gpt-4.1-nano", models: ["gpt-realtime-1.5", "gpt-realtime-1.5", "gpt-4o-realtime-preview"], visionModels: ["gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1"] },
     claude: { model: "claude-3-7-sonnet-latest", visionModel: "claude-3-7-sonnet-latest", models: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"], visionModels: ["claude-3-7-sonnet-latest", "claude-sonnet-4-20250514"] },
     gemini: { model: "gemini-2.5-pro", visionModel: "gemini-2.5-flash", models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"], visionModels: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-3.0-flash", "gemini-3.1-pro"] },
     fallback: { model: "", visionModel: "", models: [], visionModels: [] },
@@ -1021,7 +1022,7 @@ function App() {
     const normalizedAzureDeployment = String(
       entry.azureDeployment ??
       fallback.azureDeployment ??
-      (normalizedProvider === "azure" ? "gpt-audio-1.5" : ""),
+      (normalizedProvider === "azure" ? "gpt-realtime-1.5" : ""),
     ).trim();
     return {
       id: entry.id || Date.now() + Math.random(),
@@ -1057,7 +1058,7 @@ function App() {
           visionModel: defaults_.visionModel,
           azureDeployment:
             nextProvider === "azure"
-              ? String(target.azureDeployment || "gpt-audio-1.5")
+              ? String(target.azureDeployment || "gpt-realtime-1.5")
               : "",
           endpointId: "",
         });
@@ -1102,8 +1103,8 @@ function App() {
       ? userEndpoint
       : (userEndpoint || getDefaultVoiceEndpointUrl(provider, authSource));
     const defaultModel = provider === "custom"
-      ? (ALL_ENDPOINT_MODEL_OPTIONS[0] || "gpt-audio-1.5")
-      : (getVoiceProviderModelDefaults(provider).model || "gpt-audio-1.5");
+      ? (ALL_ENDPOINT_MODEL_OPTIONS[0] || "gpt-realtime-1.5")
+      : (getVoiceProviderModelDefaults(provider).model || "gpt-realtime-1.5");
     return {
       id: ep.id || `ep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: String(ep.name || "").trim(),
@@ -1134,8 +1135,8 @@ function App() {
       if (field === "provider") {
         const nextProvider = String(value || "").toLowerCase();
         next.model = nextProvider === "custom"
-          ? (ALL_ENDPOINT_MODEL_OPTIONS[0] || "gpt-audio-1.5")
-          : (getVoiceProviderModelDefaults(nextProvider).model || next.model || "gpt-audio-1.5");
+          ? (ALL_ENDPOINT_MODEL_OPTIONS[0] || "gpt-realtime-1.5")
+          : (getVoiceProviderModelDefaults(nextProvider).model || next.model || "gpt-realtime-1.5");
         next.endpoint = isEndpointUrlEditable(nextProvider)
           ? String(next.endpoint || "")
           : getDefaultVoiceEndpointUrl(nextProvider, next.authSource || "apiKey");
@@ -1156,6 +1157,28 @@ function App() {
     return Array.isArray(profile_?.templateIds) ? [...profile_.templateIds] : [];
   };
 
+  const upsertCurrentWorkflowProfile = (templateIds, profileList = workflowProfiles) => {
+    const normalizedTemplateIds = Array.from(
+      new Set((templateIds || []).map((value) => String(value || "").trim()).filter(Boolean)),
+    );
+    const baseProfiles = Array.isArray(profileList) ? profileList : [];
+    const currentProfile = {
+      id: CURRENT_WORKFLOW_PROFILE_ID,
+      name: `Your current installed workflows (${normalizedTemplateIds.length} templates)`,
+      description: "Keeps your existing installed templates unchanged.",
+      recommendedFor: "Returning setups where you want to preserve current defaults.",
+      templateIds: normalizedTemplateIds,
+      templateCount: normalizedTemplateIds.length,
+      workflowAutomationEnabled: workflowAutomationEnabled,
+    };
+    const nextProfiles = [
+      currentProfile,
+      ...baseProfiles.filter((profile_) => profile_.id !== CURRENT_WORKFLOW_PROFILE_ID),
+    ];
+    setWorkflowProfiles(nextProfiles);
+    return nextProfiles;
+  };
+
   const applyWorkflowProfileSelection = (profileId, profileList = workflowProfiles) => {
     const normalized = String(profileId || "").trim().toLowerCase() || "balanced";
     const profile_ =
@@ -1168,7 +1191,9 @@ function App() {
     if (profile_ && typeof profile_.workflowAutomationEnabled === "boolean") {
       setWorkflowAutomationEnabled(profile_.workflowAutomationEnabled);
     }
-    setWorkflowAutoInstall(true);
+    if (resolvedProfileId !== CURRENT_WORKFLOW_PROFILE_ID) {
+      setWorkflowAutoInstall(true);
+    }
   };
 
   const toggleWorkflowTemplate = (templateId, checked) => {
@@ -1310,8 +1335,13 @@ function App() {
       if (existingWorkflowDefaults.profile) {
         applyWorkflowProfileSelection(String(existingWorkflowDefaults.profile), workflowData.profiles || []);
       }
-      if (Array.isArray(existingWorkflowDefaults.templates) && existingWorkflowDefaults.templates.length > 0) {
-        setWorkflowDefaultTemplates(existingWorkflowDefaults.templates.map((templateId) => String(templateId).trim()).filter(Boolean));
+      if (Array.isArray(existingWorkflowDefaults.templates)) {
+        const existingTemplateIds = existingWorkflowDefaults.templates.map((templateId) => String(templateId).trim()).filter(Boolean);
+        setWorkflowDefaultTemplates(existingTemplateIds);
+        if (statusData.configured) {
+          upsertCurrentWorkflowProfile(existingTemplateIds, workflowData.profiles || []);
+          setWorkflowProfile(CURRENT_WORKFLOW_PROFILE_ID);
+        }
       }
       if (existingWorkflowDefaults.autoInstall != null) {
         setWorkflowAutoInstall(Boolean(existingWorkflowDefaults.autoInstall));
@@ -1402,7 +1432,7 @@ function App() {
           legacyEndpoints.push(normalizeVoiceEndpoint({ name: "azure-primary", provider: "azure", endpoint: existingVoice.azureEndpoint || "", deployment: existingVoice.azureDeployment || "gpt-realtime-1.5", apiKey: existingVoice.azureApiKey || "", role: "primary", weight: 100 }));
         }
         if (existingVoice.openaiApiKey) {
-          legacyEndpoints.push(normalizeVoiceEndpoint({ name: "openai-primary", provider: "openai", apiKey: existingVoice.openaiApiKey || "", model: existingVoice.model || "gpt-audio-1.5", role: legacyEndpoints.length === 0 ? "primary" : "backup", weight: legacyEndpoints.length === 0 ? 100 : 50 }));
+          legacyEndpoints.push(normalizeVoiceEndpoint({ name: "openai-primary", provider: "openai", apiKey: existingVoice.openaiApiKey || "", model: existingVoice.model || "gpt-realtime-1.5", role: legacyEndpoints.length === 0 ? "primary" : "backup", weight: legacyEndpoints.length === 0 ? 100 : 50 }));
         }
         if (legacyEndpoints.length > 0) setVoiceEndpoints(legacyEndpoints);
       }
@@ -1455,6 +1485,10 @@ function App() {
           ? rawTemplates.split(",").map((value) => value.trim()).filter(Boolean)
           : [];
         setWorkflowDefaultTemplates(parsedTemplates);
+        if (statusData.configured) {
+          upsertCurrentWorkflowProfile(parsedTemplates, workflowData.profiles || []);
+          setWorkflowProfile(CURRENT_WORKFLOW_PROFILE_ID);
+        }
         envLoaded = true;
       }
       if (env.WORKFLOW_DEFAULT_AUTOINSTALL !== undefined) {
@@ -1542,14 +1576,14 @@ function App() {
         envEps.push(normalizeVoiceEndpoint({ name: "azure-primary", provider: "azure", endpoint: env.AZURE_OPENAI_REALTIME_ENDPOINT || "", deployment: env.AZURE_OPENAI_REALTIME_DEPLOYMENT || "gpt-realtime-1.5", apiKey: env.AZURE_OPENAI_REALTIME_API_KEY || "", role: "primary", weight: 100 }));
       }
       if (env.OPENAI_REALTIME_API_KEY) {
-        envEps.push(normalizeVoiceEndpoint({ name: "openai-primary", provider: "openai", apiKey: env.OPENAI_REALTIME_API_KEY, model: env.VOICE_MODEL || "gpt-audio-1.5", role: envEps.length === 0 ? "primary" : "backup", weight: envEps.length === 0 ? 100 : 50 }));
+        envEps.push(normalizeVoiceEndpoint({ name: "openai-primary", provider: "openai", apiKey: env.OPENAI_REALTIME_API_KEY, model: env.VOICE_MODEL || "gpt-realtime-1.5", role: envEps.length === 0 ? "primary" : "backup", weight: envEps.length === 0 ? 100 : 50 }));
       }
       if (envEps.length > 0) { setVoiceEndpoints((prev) => (prev.length > 0 ? prev : envEps)); envLoaded = true; }
       const resolvedVoiceProvider = String(env.VOICE_PROVIDER || existingVoice.provider || d.voiceProvider || voiceProvider || "openai").trim().toLowerCase();
-      const resolvedVoiceModel = String(env.VOICE_MODEL || existingVoice.model || d.voiceModel || voiceModel || "gpt-audio-1.5").trim();
+      const resolvedVoiceModel = String(env.VOICE_MODEL || existingVoice.model || d.voiceModel || voiceModel || "gpt-realtime-1.5").trim();
       const resolvedVoiceVisionModel = String(env.VOICE_VISION_MODEL || existingVoice.visionModel || d.voiceVisionModel || voiceVisionModel || "gpt-4.1-nano").trim();
       const resolvedVoiceId = String(env.VOICE_ID || existingVoice.voiceId || d.voiceId || voiceId || "alloy").trim();
-      const resolvedAzureDeployment = String(env.AZURE_OPENAI_REALTIME_DEPLOYMENT || existingVoice.azureDeployment || d.azureOpenaiRealtimeDeployment || azureOpenaiRealtimeDeployment || "gpt-audio-1.5").trim();
+      const resolvedAzureDeployment = String(env.AZURE_OPENAI_REALTIME_DEPLOYMENT || existingVoice.azureDeployment || d.azureOpenaiRealtimeDeployment || azureOpenaiRealtimeDeployment || "gpt-realtime-1.5").trim();
       if (Array.isArray(existingVoice.providers) && existingVoice.providers.length > 0) {
         setVoiceProviders(
           normalizeVoiceProviders(existingVoice.providers, {
@@ -3485,7 +3519,7 @@ function App() {
                       type="text"
                       value=${providerRow.azureDeployment || ""}
                       oninput=${(e) => updateVoiceProviderRow(idx, "azureDeployment", e.target.value)}
-                      placeholder="gpt-audio-1.5"
+                      placeholder="gpt-realtime-1.5"
                     />
                   </div>
                 `}
@@ -3671,7 +3705,7 @@ function App() {
                   ${ep.provider === "openai" && html`
                     <div class="form-group">
                       <label>Model</label>
-                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="gpt-audio-1.5" />
+                      <input type="text" value=${ep.model} oninput=${(e) => updateVoiceEndpoint(i, "model", e.target.value)} placeholder="gpt-realtime-1.5" />
                     </div>
                   `}
                   ${ep.provider === "claude" && html`
@@ -4091,3 +4125,4 @@ render(html`<${App} />`, document.getElementById("app"));
 </body>
 <script defer src="https://cloud.umami.is/script.js" data-website-id="24c5d605-7f25-4be5-875e-25c8f3cb4059"></script>
 </html>
+
