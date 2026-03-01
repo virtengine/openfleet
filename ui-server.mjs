@@ -9221,6 +9221,53 @@ async function handleApi(req, res, url) {
 
   // ── Voice API Routes ──────────────────────────────────────────────────────
 
+  // GET /api/voice/providers — read voice.providers from bosun.config.json
+  if (path === "/api/voice/providers" && req.method === "GET") {
+    try {
+      const { configData } = readConfigDocument();
+      const providers = Array.isArray(configData?.voice?.providers)
+        ? configData.voice.providers
+        : [];
+      jsonResponse(res, 200, { ok: true, providers });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
+  // POST /api/voice/providers — save voice.providers to bosun.config.json
+  if (path === "/api/voice/providers" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const { providers } = body || {};
+      if (!Array.isArray(providers)) {
+        jsonResponse(res, 400, { ok: false, error: "providers array required" });
+        return;
+      }
+      const allowedProviders = ["openai", "azure", "claude", "gemini", "fallback"];
+      const cleaned = providers.slice(0, 5).map((p) => {
+        const out = {};
+        if (p.provider && allowedProviders.includes(String(p.provider))) out.provider = String(p.provider);
+        if (p.model) out.model = String(p.model);
+        if (p.visionModel) out.visionModel = String(p.visionModel);
+        if (p.voiceId) out.voiceId = String(p.voiceId);
+        if (p.azureDeployment) out.azureDeployment = String(p.azureDeployment);
+        if (p.endpointId) out.endpointId = String(p.endpointId);
+        return out;
+      });
+      const { configPath, configData } = readConfigDocument();
+      configData.voice = { ...(configData.voice || {}), providers: cleaned };
+      writeFileSync(configPath, JSON.stringify(configData, null, 2) + "\n", "utf8");
+      broadcastUiEvent(["settings", "overview"], "invalidate", {
+        reason: "voice-providers-updated",
+      });
+      jsonResponse(res, 200, { ok: true, configPath, count: cleaned.length });
+    } catch (err) {
+      jsonResponse(res, 500, { ok: false, error: err.message });
+    }
+    return;
+  }
+
   // GET /api/voice/endpoints — read voice.voiceEndpoints from bosun.config.json
   if (path === "/api/voice/endpoints" && req.method === "GET") {
     try {
