@@ -3301,6 +3301,7 @@ const COMMANDS = {
   "/menu": { handler: cmdMenu, desc: "Open the control center UI" },
   "/help": { handler: cmdHelp, desc: "Show available commands" },
   "/helpfull": { handler: cmdHelpFull, desc: "Show all commands (text list)" },
+  "/commands": { handler: cmdHelpFull, desc: "Alias for /helpfull" },
   "/app": { handler: cmdApp, desc: "Open the Control Center Mini App" },
   "/miniapp": { handler: cmdApp, desc: "Open the Control Center Mini App" },
   "/webapp": { handler: cmdApp, desc: "Open the Control Center Mini App" },

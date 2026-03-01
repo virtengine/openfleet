@@ -152,6 +152,29 @@ function isFollowWindowFromUrl() {
   return params.get("follow") === "1";
 }
 
+function sanitizeFollowCall(value) {
+  return String(value || "").trim().toLowerCase() === "video" ? "video" : "voice";
+}
+
+function buildBrowserFollowUrl(detail = {}) {
+  if (typeof window === "undefined") return null;
+  const target = new URL(window.location.href);
+  target.searchParams.set("follow", "1");
+  target.searchParams.set("launch", "voice");
+  target.searchParams.set("call", sanitizeFollowCall(detail?.call));
+  const sessionId = String(detail?.sessionId || "").trim();
+  const executor = String(detail?.executor || "").trim();
+  const mode = String(detail?.mode || "").trim();
+  const model = String(detail?.model || "").trim();
+  const vision = String(detail?.initialVisionSource || "").trim();
+  if (sessionId) target.searchParams.set("sessionId", sessionId);
+  if (executor) target.searchParams.set("executor", executor);
+  if (mode) target.searchParams.set("mode", mode);
+  if (model) target.searchParams.set("model", model);
+  if (vision) target.searchParams.set("vision", vision);
+  return target.toString();
+}
+
 function readFloatingCallState() {
   if (typeof window === "undefined") return { active: false };
   try {
@@ -160,9 +183,15 @@ function readFloatingCallState() {
     const parsed = JSON.parse(raw);
     return {
       active: parsed?.active === true,
-      call: String(parsed?.call || "").trim().toLowerCase() === "video"
-        ? "video"
-        : "voice",
+      call: sanitizeFollowCall(parsed?.call),
+      sessionId: String(parsed?.sessionId || "").trim() || null,
+      executor: String(parsed?.executor || "").trim() || null,
+      mode: String(parsed?.mode || "").trim() || null,
+      model: String(parsed?.model || "").trim() || null,
+      initialVisionSource: (() => {
+        const source = String(parsed?.initialVisionSource || "").trim().toLowerCase();
+        return source === "camera" || source === "screen" ? source : null;
+      })(),
       updatedAt: Number(parsed?.updatedAt || 0) || 0,
     };
   } catch {
@@ -184,10 +213,15 @@ function writeFloatingCallState(nextState) {
       FLOATING_CALL_STATE_KEY,
       JSON.stringify({
         active: nextState?.active === true,
-        call:
-          String(nextState?.call || "").trim().toLowerCase() === "video"
-            ? "video"
-            : "voice",
+        call: sanitizeFollowCall(nextState?.call),
+        sessionId: String(nextState?.sessionId || "").trim() || null,
+        executor: String(nextState?.executor || "").trim() || null,
+        mode: String(nextState?.mode || "").trim() || null,
+        model: String(nextState?.model || "").trim() || null,
+        initialVisionSource: (() => {
+          const source = String(nextState?.initialVisionSource || "").trim().toLowerCase();
+          return source === "camera" || source === "screen" ? source : null;
+        })(),
         updatedAt: Date.now(),
       }),
     );
@@ -1830,6 +1864,11 @@ function App() {
             const nextFloatingState = {
               active: true,
               call: requestedCallType,
+              sessionId: currentSessionId,
+              executor: currentExecutor,
+              mode: currentMode,
+              model: currentModel,
+              initialVisionSource: requestedVisionSource,
             };
             setFloatingCallState(nextFloatingState);
             writeFloatingCallState(nextFloatingState);
@@ -1869,10 +1908,24 @@ function App() {
     const nextFloatingState = {
       active: Boolean(voiceOverlayOpen),
       call: voiceCallType,
+      sessionId: voiceSessionId,
+      executor: voiceExecutor,
+      mode: voiceAgentMode,
+      model: voiceModel,
+      initialVisionSource: voiceInitialVisionSource,
     };
     setFloatingCallState(nextFloatingState);
     writeFloatingCallState(nextFloatingState);
-  }, [followWindowMode, voiceOverlayOpen, voiceCallType]);
+  }, [
+    followWindowMode,
+    voiceOverlayOpen,
+    voiceCallType,
+    voiceSessionId,
+    voiceExecutor,
+    voiceAgentMode,
+    voiceModel,
+    voiceInitialVisionSource,
+  ]);
 
   useEffect(() => {
     if (!followWindowMode || !voiceOverlayOpen) return;
@@ -1880,12 +1933,26 @@ function App() {
       const nextFloatingState = {
         active: true,
         call: voiceCallType,
+        sessionId: voiceSessionId,
+        executor: voiceExecutor,
+        mode: voiceAgentMode,
+        model: voiceModel,
+        initialVisionSource: voiceInitialVisionSource,
       };
       setFloatingCallState(nextFloatingState);
       writeFloatingCallState(nextFloatingState);
     }, FLOATING_CALL_HEARTBEAT_INTERVAL_MS);
     return () => globalThis.clearInterval(heartbeat);
-  }, [followWindowMode, voiceOverlayOpen, voiceCallType]);
+  }, [
+    followWindowMode,
+    voiceOverlayOpen,
+    voiceCallType,
+    voiceSessionId,
+    voiceExecutor,
+    voiceAgentMode,
+    voiceModel,
+    voiceInitialVisionSource,
+  ]);
 
   useEffect(() => {
     if (followWindowMode || floatingCallState?.active !== true) return;
@@ -1951,6 +2018,26 @@ function App() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  const openBrowserFollowWindow = useCallback((detail = {}) => {
+    if (typeof globalThis?.open !== "function") {
+      return { ok: false, reason: "Browser popup API is unavailable." };
+    }
+    const followUrl = buildBrowserFollowUrl(detail);
+    if (!followUrl) {
+      return { ok: false, reason: "Could not build follow window URL." };
+    }
+    const popup = globalThis.open(
+      followUrl,
+      "bosun-voice-follow",
+      "popup=yes,width=420,height=680,resizable=yes,scrollbars=yes",
+    );
+    if (!popup) {
+      return { ok: false, reason: "Popup blocked by browser." };
+    }
+    try { popup.focus(); } catch { /* best effort */ }
+    return { ok: true };
   }, []);
 
   useEffect(() => {
@@ -2044,7 +2131,10 @@ function App() {
     isChat &&
     !followWindowMode &&
     isFloatingCallStateFresh(floatingCallState) &&
-    typeof globalThis?.veDesktop?.follow?.restore === "function";
+    (
+      typeof globalThis?.veDesktop?.follow?.restore === "function"
+      || typeof globalThis?.open === "function"
+    );
   const floatingCallLabel =
     String(floatingCallState?.call || "").trim().toLowerCase() === "video"
       ? "Restore floating video call"

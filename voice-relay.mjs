@@ -1387,8 +1387,8 @@ export async function executeVoiceTool(toolName, toolArgs, context = {}) {
 }
 
 /**
- * Tools allowed during session-bound voice calls (beyond delegate_to_agent).
- * These are read-only or lightweight operations that shouldn't require full agent delegation.
+ * Base tools allowed during session-bound voice calls.
+ * Owner/admin sessions get additional tools via VOICE_OWNER_EXTRA_TOOLS.
  */
 const VOICE_SESSION_ALLOWED_TOOLS = new Set([
   "ask_agent_context",
@@ -1397,15 +1397,22 @@ const VOICE_SESSION_ALLOWED_TOOLS = new Set([
   "get_workspace_context",
   "list_tasks",
   "get_task",
+  "create_task",
+  "update_task_status",
+  "delete_task",
+  "comment_on_task",
+  "search_tasks",
+  "get_task_stats",
   "get_agent_status",
   "switch_agent",
+  "set_agent_mode",
   "list_sessions",
   "get_session_history",
   "get_system_status",
   "get_fleet_status",
   "get_pr_status",
   "get_config",
-  "set_agent_mode",
+  "update_config",
   "search_code",
   "read_file_content",
   "list_directory",
@@ -1414,16 +1421,88 @@ const VOICE_SESSION_ALLOWED_TOOLS = new Set([
   "list_skills",
   "list_prompts",
   "run_command",
-  "search_tasks",
-  "get_task_stats",
   "dispatch_action",
+  "bosun_slash_command",
+  "invoke_mcp_tool",
+  "warm_codebase_context",
+  "poll_background_session",
 ]);
 
 /**
- * Get the set of tools allowed for session-bound voice calls.
- * Used by ui-server to validate tool calls.
+ * Additional tools unlocked for owner/admin-authenticated sessions.
+ * These allow direct shell access and mutating system operations.
  */
-export function getSessionAllowedTools() {
+const VOICE_OWNER_EXTRA_TOOLS = new Set([
+  "run_workspace_command",
+]);
+
+const PRIVILEGED_VOICE_AUTH_SOURCES = new Set([
+  "desktop-api-key",
+  "fallback",
+  "unsafe",
+]);
+
+export function isPrivilegedVoiceContext(context = {}) {
+  const source = String(context?.authSource || "").trim().toLowerCase();
+  return PRIVILEGED_VOICE_AUTH_SOURCES.has(source);
+}
+
+export function normalizeVoiceToolArgs(toolName, toolArgs) {
+  const normalized =
+    toolArgs && typeof toolArgs === "object" && !Array.isArray(toolArgs)
+      ? { ...toolArgs }
+      : {};
+
+  if (String(toolName || "").trim() === "read_file_content") {
+    const directPath = typeof normalized.filePath === "string" ? normalized.filePath.trim() : "";
+    const aliasPath = typeof normalized.path === "string" ? normalized.path.trim() : "";
+    if (!directPath && aliasPath) {
+      normalized.filePath = aliasPath;
+    }
+    if (!normalized.filePath && normalized.context && typeof normalized.context === "object") {
+      const nestedFilePath = typeof normalized.context.filePath === "string"
+        ? normalized.context.filePath.trim()
+        : "";
+      const nestedPath = typeof normalized.context.path === "string"
+        ? normalized.context.path.trim()
+        : "";
+      if (nestedFilePath) normalized.filePath = nestedFilePath;
+      else if (nestedPath) normalized.filePath = nestedPath;
+    }
+  }
+
+  return normalized;
+}
+
+export async function getAllowedVoiceTools(context = {}) {
+  if (!context?.sessionId) return null;
+  if (isPrivilegedVoiceContext(context)) {
+    try {
+      const { getToolDefinitions } = await import("./voice-tools.mjs");
+      const all = getToolDefinitions();
+      return new Set(
+        (Array.isArray(all) ? all : [])
+          .map((tool) => String(tool?.name || "").trim())
+          .filter(Boolean),
+      );
+    } catch {
+      return new Set(VOICE_SESSION_ALLOWED_TOOLS);
+    }
+  }
+  return new Set(VOICE_SESSION_ALLOWED_TOOLS);
+}
+
+/**
+ * Get the set of tools allowed for session-bound voice calls.
+ * @param {{ isOwner?: boolean }} options
+ * @returns {Set<string>}
+ */
+export function getSessionAllowedTools(options = {}) {
+  if (options.isOwner) {
+    const merged = new Set(VOICE_SESSION_ALLOWED_TOOLS);
+    for (const t of VOICE_OWNER_EXTRA_TOOLS) merged.add(t);
+    return merged;
+  }
   return VOICE_SESSION_ALLOWED_TOOLS;
 }
 
@@ -1435,7 +1514,7 @@ export async function getVoiceToolDefinitions(options = {}) {
     const { getToolDefinitions } = await import("./voice-tools.mjs");
     const allTools = getToolDefinitions();
     const delegateOnly = options?.delegateOnly === true;
-    if (!delegateOnly) return allTools;
+    if (!delegateOnly || isPrivilegedVoiceContext(options?.context || {})) return allTools;
     // Session-bound calls get a curated subset instead of just delegate_to_agent
     return allTools.filter((tool) => VOICE_SESSION_ALLOWED_TOOLS.has(tool?.name));
   } catch (err) {

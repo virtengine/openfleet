@@ -433,15 +433,31 @@ registerAction("agent.setMode", async (params) => {
 
 registerAction("session.list", async (params) => {
   const tracker = await getSessionTracker();
-  const sessions = tracker.listSessions ? tracker.listSessions() : [];
+  const includeHistory = params.includeHistory !== false;
+  const sessions = tracker.listAllSessions
+    ? tracker.listAllSessions()
+    : (tracker.listSessions ? tracker.listSessions() : []);
+  const filtered = includeHistory
+    ? sessions
+    : sessions.filter((session) => String(session?.status || "").toLowerCase() === "active");
   const limit = Math.min(Math.max(Number(params.limit) || 10, 1), 100);
+  const page = Math.max(Number(params.page) || 1, 1);
+  const offset = (page - 1) * limit;
+  const paged = filtered.slice(offset, offset + limit);
   return {
-    count: Math.min(sessions.length, limit),
-    sessions: sessions.slice(0, limit).map((s) => ({
+    page,
+    limit,
+    total: filtered.length,
+    count: paged.length,
+    sessions: paged.map((s) => ({
       id: s.id || s.taskId,
       type: s.type || "task",
       status: s.status,
+      title: s.title || s.taskTitle || null,
+      turnCount: s.turnCount || 0,
+      createdAt: s.createdAt || null,
       lastActive: s.lastActiveAt || s.lastActivityAt,
+      preview: s.preview || s.lastMessage || null,
     })),
   };
 });
@@ -450,16 +466,20 @@ registerAction("session.history", async (params) => {
   const tracker = await getSessionTracker();
   const sessionId = String(params.sessionId || params.id || "").trim();
   if (!sessionId) throw new Error("sessionId is required");
-  const session = tracker.getSession ? tracker.getSession(sessionId) : null;
+  const session = tracker.getSessionById?.(sessionId) || tracker.getSession?.(sessionId) || null;
   if (!session) throw new Error(`Session ${sessionId} not found`);
   const limit = Math.min(Math.max(Number(params.limit) || 20, 1), 200);
+  const fullTranscript = params.fullTranscript === true;
   const messages = (session.messages || []).slice(-limit);
   return {
     sessionId,
     count: messages.length,
+    totalMessages: (session.messages || []).length,
     messages: messages.map((m) => ({
       role: m.role || m.type,
-      content: typeof m.content === "string" ? m.content.slice(0, 500) : String(m.content || ""),
+      content: fullTranscript
+        ? m.content
+        : (typeof m.content === "string" ? m.content.slice(0, 500) : String(m.content || "")),
       timestamp: m.timestamp,
     })),
   };
@@ -467,13 +487,17 @@ registerAction("session.history", async (params) => {
 
 registerAction("session.create", async (params, context) => {
   const tracker = await getSessionTracker();
+  const sessionId = params.id || `voice-live-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const session = tracker.createSession
     ? tracker.createSession({
+        id: sessionId,
         type: params.type || "voice",
         metadata: {
+          title: params.title || `Voice session ${sessionId.slice(-6)}`,
           agent: params.executor || context.executor || getPrimaryAgentName(),
           mode: params.mode || context.mode || getAgentMode(),
           source: "voice-dispatch",
+          parentSessionId: context.sessionId || null,
         },
       })
     : null;
@@ -481,7 +505,8 @@ registerAction("session.create", async (params, context) => {
   return {
     sessionId: session.id,
     type: session.type,
-    message: `Session ${session.id} created.`,
+    status: session.status,
+    message: `Live session ${session.id} created (direct handoff — no background queue).`,
   };
 });
 
@@ -692,12 +717,9 @@ registerAction("batch", async (params, context) => {
   const actions = Array.isArray(params.actions) ? params.actions : [];
   if (!actions.length) throw new Error("actions array is required");
   if (actions.length > 10) throw new Error("Maximum 10 actions per batch");
-
-  const results = [];
-  for (const actionIntent of actions) {
-    const result = await dispatchVoiceAction(actionIntent, context);
-    results.push(result);
-  }
+  const results = await Promise.all(
+    actions.map((actionIntent) => dispatchVoiceAction(actionIntent, context)),
+  );
   return { count: results.length, results };
 });
 
@@ -837,12 +859,8 @@ export async function dispatchVoiceAction(intent, context = {}) {
  */
 export async function dispatchVoiceActions(intents, context = {}) {
   if (!Array.isArray(intents)) return [];
-  const results = [];
-  for (const intent of intents.slice(0, 20)) {
-    const result = await dispatchVoiceAction(intent, context);
-    results.push(result);
-  }
-  return results;
+  const limited = intents.slice(0, 20);
+  return Promise.all(limited.map((intent) => dispatchVoiceAction(intent, context)));
 }
 
 /**

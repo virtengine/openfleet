@@ -221,6 +221,80 @@ function appendVisionSummary(message, visionSummary) {
   return `${base}\n\nLive visual context from this call:\n${summary}`;
 }
 
+function extractLatestTextFromHistoryItems(history = []) {
+  const items = Array.isArray(history) ? history : [];
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    const role = String(item?.role || "").trim().toLowerCase();
+    if (role && role !== "user") continue;
+    const content = Array.isArray(item?.content) ? item.content : [];
+    for (let j = content.length - 1; j >= 0; j--) {
+      const part = content[j];
+      const transcript = String(part?.transcript || "").trim();
+      if (transcript) return transcript;
+      const text = String(part?.text || part?.input_text || "").trim();
+      if (text) return text;
+    }
+    const direct = String(item?.text || item?.message || "").trim();
+    if (direct) return direct;
+  }
+  return "";
+}
+
+function resolveAskAgentMessage(args = {}) {
+  const direct = String(
+    args?.message
+      || args?.prompt
+      || args?.query
+      || args?.request
+      || args?.text
+      || args?.instruction
+      || "",
+  ).trim();
+  if (direct) return direct;
+  const nested = args?.context && typeof args.context === "object" ? args.context : null;
+  const nestedDirect = String(
+    nested?.message
+      || nested?.prompt
+      || nested?.query
+      || nested?.request
+      || nested?.text
+      || "",
+  ).trim();
+  if (nestedDirect) return nestedDirect;
+  const historyDerived = extractLatestTextFromHistoryItems(nested?.history);
+  if (historyDerived) return historyDerived;
+  return "";
+}
+
+async function getRecentSessionContextSnippet(sessionId, limit = 8) {
+  const id = String(sessionId || "").trim();
+  if (!id) return "";
+  try {
+    const tracker = await getSessionTracker();
+    const session = tracker.getSessionById?.(id) || tracker.getSession?.(id) || null;
+    const messages = Array.isArray(session?.messages) ? session.messages : [];
+    const filtered = messages
+      .filter((m) => {
+        const role = String(m?.role || "").trim().toLowerCase();
+        if (role !== "user" && role !== "assistant") return false;
+        const text = String(m?.content || "").trim();
+        return Boolean(text);
+      })
+      .slice(-Math.max(1, Math.min(Number(limit) || 8, 20)));
+    if (!filtered.length) return "";
+    const lines = filtered.map((m) => {
+      const role = String(m.role || "").trim().toUpperCase();
+      const text = String(m.content || "").replace(/\s+/g, " ").trim();
+      const capped = text.length > 320 ? `${text.slice(0, 320)}...` : text;
+      return `[${role}] ${capped}`;
+    });
+    return lines.join("\n");
+  } catch {
+    return "";
+  }
+}
+
 function normalizeCandidatePath(input) {
   if (!input) return "";
   try {
@@ -278,8 +352,13 @@ async function getWorkspaceContextSummary(context = {}) {
   };
 }
 
-function makeBackgroundSessionId() {
-  return `voice-bg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+function makeVoiceHandoffSessionId() {
+  return `voice-handoff-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isPrivilegedVoiceContext(context = {}) {
+  const source = String(context?.authSource || "").trim().toLowerCase();
+  return source === "desktop-api-key" || source === "fallback" || source === "unsafe";
 }
 
 // ── Tool Definitions (OpenAI function-calling format) ────────────────────────
@@ -356,7 +435,7 @@ const TOOL_DEFS = [
   {
     type: "function",
     name: "delegate_to_agent",
-    description: "Delegate a complex task to a coding agent (codex, copilot, claude, gemini, or opencode). Use this for code changes, file creation, debugging, or any operation requiring workspace access. The agent will execute the task and return its response.",
+    description: "Execute a task directly via a coding agent (codex, copilot, claude, gemini, or opencode). Creates a new live session and returns the result directly — no background handoff. Use for code changes, file creation, debugging, or any operation requiring workspace access.",
     parameters: {
       type: "object",
       properties: {
@@ -432,23 +511,26 @@ const TOOL_DEFS = [
   {
     type: "function",
     name: "list_sessions",
-    description: "List active chat/agent sessions.",
+    description: "List active and historical chat/agent sessions with metadata. Returns session summaries (not full transcripts) for fast browsing. Use get_session_history with fullTranscript=true for complete message text.",
     parameters: {
       type: "object",
       properties: {
-        limit: { type: "number", description: "Max sessions to return. Default: 10" },
+        limit: { type: "number", description: "Max sessions per page. Default: 10" },
+        page: { type: "number", description: "Page number for pagination. Default: 1" },
+        includeHistory: { type: "boolean", description: "Include completed/archived sessions. Default: true" },
       },
     },
   },
   {
     type: "function",
     name: "get_session_history",
-    description: "Get the recent message history from a session.",
+    description: "Get the recent message history from a session. Returns metadata-first (truncated content) by default. Set fullTranscript=true for complete message text.",
     parameters: {
       type: "object",
       properties: {
         sessionId: { type: "string", description: "Session ID to retrieve" },
         limit: { type: "number", description: "Max messages. Default: 20" },
+        fullTranscript: { type: "boolean", description: "Return full message text instead of truncated preview. Default: false" },
       },
       required: ["sessionId"],
     },
@@ -523,6 +605,23 @@ const TOOL_DEFS = [
       required: ["key", "value"],
     },
   },
+  {
+    type: "function",
+    name: "get_effective_config",
+    description: "Get the full effective bosun configuration with sensitive values redacted. Owner/admin only. Returns all config sections for debugging and inspection.",
+    parameters: {
+      type: "object",
+      properties: {
+        key: { type: "string", description: "Specific config key. Omit for all." },
+      },
+    },
+  },
+  {
+    type: "function",
+    name: "get_admin_help",
+    description: "Get a complete listing of all available Voice tools, slash commands, and dispatch actions for admin reference.",
+    parameters: { type: "object", properties: {} },
+  },
   // ── Workspace Navigation ──
   {
     type: "function",
@@ -588,12 +687,23 @@ const TOOL_DEFS = [
   {
     type: "function",
     name: "get_recent_logs",
-    description: "Get recent agent or system log entries.",
+    description: "Get recent agent, system, or all log types. Supports paging through log files.",
     parameters: {
       type: "object",
       properties: {
-        type: { type: "string", enum: ["agent", "system"], description: "Log type. Default: agent" },
-        lines: { type: "number", description: "Number of recent lines. Default: 50" },
+        type: {
+          type: "string",
+          enum: ["agent", "system", "monitor", "orchestrator", "voice", "all"],
+          description: "Log type (or 'all' for every source). Default: agent",
+        },
+        lines: {
+          type: "number",
+          description: "Number of lines to return per source. Default: 50",
+        },
+        page: {
+          type: "number",
+          description: "Page through log files (1 = most recent). Default: 1",
+        },
       },
     },
   },
@@ -735,11 +845,11 @@ const TOOL_DEFS = [
       "Invoke a Bosun slash command by exact name. Supports: " +
       "/instant <prompt> (fast inline answer), " +
       "/ask <prompt> (read-only agent answer), " +
-      "/background <prompt> or /bg <prompt> (fire-and-forget agent delegation), " +
-      "/status, /tasks, /agents, /health, /version, " +
+      "/agent <prompt> or /handoff <prompt> (create a dedicated live handoff session), " +
+      "/status, /tasks, /agents, /health, /version, /commands, " +
       "/mcp <tool_name> [server] (invoke an MCP tool). " +
       "Use this when the user explicitly says a slash command or when you need a fast inline " +
-      "answer vs a background task.",
+      "answer vs a direct handoff session.",
     parameters: {
       type: "object",
       properties: {
@@ -748,7 +858,7 @@ const TOOL_DEFS = [
           description:
             "Full slash command string including leading /. Examples: " +
             "'/instant what does the auth module do?', " +
-            "'/background write unit tests for config.mjs', " +
+            "'/agent write unit tests for config.mjs', " +
             "'/ask summarize the git log', " +
             "'/mcp create_issue server=github', " +
             "'/status'",
@@ -763,10 +873,9 @@ const TOOL_DEFS = [
     type: "function",
     name: "run_workspace_command",
     description:
-      "Execute a safe read-only shell or git command in the workspace and return the live output. " +
-      "Use this to check git status, recent commits, run tests, read file content, or list directories. " +
-      "Only non-destructive, read-only commands are permitted — writes and destructive operations are " +
-      "automatically routed to the agent instead.",
+      "Execute a workspace shell command and return live output. " +
+      "Standard sessions run read-only commands directly; privileged owner/admin sessions can run broader commands. " +
+      "Use this for diagnostics, git operations, tests/builds, and direct shell workflows.",
     parameters: {
       type: "object",
       properties: {
@@ -907,151 +1016,109 @@ const TOOL_HANDLERS = {
     const mode = MODE_ALIASES[rawMode] || (VALID_AGENT_MODES.has(rawMode) ? rawMode : "agent");
     const model = String(args.model || context.model || "").trim() || undefined;
     const parentSessionId = String(context.sessionId || "").trim() || null;
-    const backgroundSessionId = makeBackgroundSessionId();
     const sessionType = "voice-delegate";
     const cwd = await resolveToolCwd(context);
     const workspaceContext = await getWorkspaceContextSummary(context);
     const visionSummary = await getLatestVisionSummary(parentSessionId || "");
     const delegateMessage = appendVisionSummary(args.message, visionSummary);
-    const shortTitle = String(args.message || "").trim().slice(0, 90) || "Voice background task";
+    const shortTitle = String(args.message || "").trim().slice(0, 90) || "Voice task";
 
-    // ── Fire-and-forget: launch via execPooledPrompt (isolated, no global state mutation) ──
-    const pool = await getAgentPool();
-    const delegationId = `voice-deleg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    // ── Create a live session for direct execution (no background queue) ──
+    const liveSessionId = `voice-live-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
-    // Record delegation start in session tracker (dedicated background session + parent linkage)
     try {
       const tracker = await getSessionTracker();
       if (tracker.createSession) {
         tracker.createSession({
-          id: backgroundSessionId,
+          id: liveSessionId,
           type: sessionType,
-          taskId: backgroundSessionId,
           metadata: {
-            title: `Voice Background: ${shortTitle}`,
-            source: "voice",
-            parentSessionId,
-            workspaceId: workspaceContext.workspaceId || undefined,
-            workspaceDir: workspaceContext.workspaceDir || workspaceContext.cwd || undefined,
-            repository: workspaceContext.repository || undefined,
-            executor,
+            title: shortTitle,
+            agent: executor,
             mode,
-            model: model || undefined,
+            model,
+            parentSessionId,
+            workspaceDir: cwd,
+            workspaceContext,
+            source: "voice",
           },
         });
       }
+      // Link to parent session
       if (parentSessionId && tracker.recordEvent) {
         tracker.recordEvent(parentSessionId, {
           role: "system",
-          content: `[Voice Delegation] Started background session ${backgroundSessionId} with ${executor} (${mode}): ${args.message}`,
+          content: `[Voice Delegation] Started live session ${liveSessionId} → ${executor} (${mode})`,
           timestamp: new Date().toISOString(),
           meta: {
             source: "voice",
-            eventType: "voice_background_started",
-            backgroundSessionId,
+            eventType: "voice_live_delegation",
+            liveSessionId,
             executor,
             mode,
           },
         });
       }
-      if (tracker.recordEvent) {
-        tracker.recordEvent(backgroundSessionId, {
-          role: "system",
-          content: `[Background Task Started] Delegation ${delegationId} using ${executor} (${mode}).`,
-          timestamp: new Date().toISOString(),
-        });
-      }
-    } catch {
-      // best effort — don't block on session recording
-    }
+    } catch { /* best effort session tracking */ }
 
-    // Launch pooled prompt — non-blocking (fire-and-forget with .catch)
+    // ── Execute directly in new live session (fire-and-forget) ──
+    const pool = await getAgentPool();
     pool.execPooledPrompt(delegateMessage, {
       sdk: executor,
       mode,
       model,
       cwd,
-      timeoutMs: 5 * 60 * 1000,
-      onEvent: (event) => {
-        // Intentionally ignore per-token/per-step stream events here.
-        // We only publish one final summary event to avoid chat/message spam.
-      },
+      timeoutMs: 5 * 60_000,
     })
       .then(async (result) => {
         const text = typeof result === "string"
           ? result
           : result?.finalResponse || result?.text || result?.message || JSON.stringify(result);
-        const truncated = text.length > 4000 ? text.slice(0, 4000) + "... (truncated)" : text;
-
-        // Record completion in session tracker — this automatically broadcasts
-        // to WebSocket clients via the session event listener system
+        const trimmed = String(text || "").trim();
         try {
           const tracker = await getSessionTracker();
+          if (tracker.updateSessionStatus) {
+            tracker.updateSessionStatus(liveSessionId, "completed");
+          }
           if (tracker.recordEvent) {
-            tracker.recordEvent(backgroundSessionId, {
+            tracker.recordEvent(liveSessionId, {
               role: "assistant",
-              content: truncated,
+              content: trimmed.slice(0, 4000),
               timestamp: new Date().toISOString(),
+              meta: { source: "voice", eventType: "voice_delegation_complete", executor, mode },
             });
             if (parentSessionId) {
-              const summaryText = truncated.replace(/\s+/g, " ").trim();
-              const shortSummary = summaryText.length > 600
-                ? `${summaryText.slice(0, 600)}...`
-                : summaryText;
               tracker.recordEvent(parentSessionId, {
                 role: "system",
-                content: `{RESPONSE}: ${shortSummary}`,
+                content: `[Voice Delegation Complete] Session ${liveSessionId} finished.`,
                 timestamp: new Date().toISOString(),
-                meta: {
-                  source: "voice",
-                  eventType: "voice_background_summary",
-                  backgroundSessionId,
-                  executor,
-                  mode,
-                },
+                meta: { source: "voice", eventType: "voice_live_delegation_complete", liveSessionId },
               });
             }
-          }
-          if (tracker.updateSessionStatus) {
-            tracker.updateSessionStatus(backgroundSessionId, "done");
           }
         } catch {
           // best effort
         }
       })
-      .catch((err) => {
-        console.error(`[voice-tools] delegate_to_agent async error (${delegationId}):`, err?.message || err);
-        // Record failure in session tracker
-        getSessionTracker().then((tracker) => {
+      .catch(async (err) => {
+        try {
+          const tracker = await getSessionTracker();
           if (tracker.updateSessionStatus) {
-            tracker.updateSessionStatus(backgroundSessionId, "error");
+            tracker.updateSessionStatus(liveSessionId, "error");
           }
           if (tracker.recordEvent) {
-            tracker.recordEvent(backgroundSessionId, {
+            tracker.recordEvent(liveSessionId, {
               role: "system",
               content: `[Voice Delegation Error] ${err?.message || "Unknown error"}`,
               timestamp: new Date().toISOString(),
             });
-            if (parentSessionId) {
-              tracker.recordEvent(parentSessionId, {
-                role: "system",
-                content: `[Voice Delegation Error] Background session ${backgroundSessionId} failed: ${err?.message || "Unknown error"}`,
-                timestamp: new Date().toISOString(),
-                meta: {
-                  source: "voice",
-                  eventType: "voice_background_error",
-                  backgroundSessionId,
-                  executor,
-                  mode,
-                },
-              });
-            }
           }
-        }).catch(() => {});
+        } catch {
+          // best effort
+        }
       });
 
-    // Return immediately — don't block the voice session
-    return `{RESPONSE}: Delegation started in background session ${backgroundSessionId} (delegation ${delegationId}). Agent "${executor}" is working in ${mode} mode. You can continue talking; query this session later with get_session_history.`;
+    return `{RESPONSE}: Delegation started in live session ${liveSessionId}. Agent "${executor}" is running in ${mode} mode. Use list_sessions and get_session_history to track progress.`;
   },
 
   async ask_agent_context(args, context) {
@@ -1070,8 +1137,16 @@ const TOOL_HANDLERS = {
     const sessionId = String(context?.sessionId || "").trim() || `voice-ask-${Date.now()}`;
     const cwd = await resolveToolCwd(context);
     const visionSummary = await getLatestVisionSummary(sessionId);
+    const userAsk = resolveAskAgentMessage(args);
+    if (!userAsk) {
+      return "{RESPONSE}: I need a specific question to ask the project agent.";
+    }
+    const sessionSnippet = await getRecentSessionContextSnippet(sessionId, 8);
+    const contextBlock = sessionSnippet
+      ? `\n\nRecent session context:\n${sessionSnippet}\n`
+      : "";
     // Inject voice preamble so the agent returns TTS-shaped responses
-    const message = VOICE_CONTEXT_PREAMBLE + appendVisionSummary(args.message, visionSummary);
+    const message = VOICE_CONTEXT_PREAMBLE + appendVisionSummary(`${userAsk}${contextBlock}`, visionSummary);
 
     try {
       const pool = await getAgentPool();
@@ -1096,13 +1171,13 @@ const TOOL_HANDLERS = {
       if (isTimeout) {
         // Only auto-background on timeout — surface genuine errors directly.
         const backgroundMsg = await TOOL_HANDLERS.delegate_to_agent(
-          { message: args.message, executor, mode: "agent", model },
+          { message: `${userAsk}${contextBlock}`, executor, mode: "agent", model },
           context,
         );
         const cleanedBackgroundMsg = String(backgroundMsg || "")
           .replace(/^\{RESPONSE\}:\s*/i, "")
           .trim();
-        return `{RESPONSE}: Query is taking longer than expected; handing off to background agent. ${cleanedBackgroundMsg}`;
+        return `{RESPONSE}: Query is taking longer than expected; handing off to a live agent session. ${cleanedBackgroundMsg}`;
       }
       return `{RESPONSE}: Agent query failed: ${reason}`;
     }
@@ -1164,27 +1239,62 @@ const TOOL_HANDLERS = {
 
   async list_sessions(args) {
     const tracker = await getSessionTracker();
-    const sessions = tracker.listSessions ? tracker.listSessions() : [];
+    const includeHistory = args.includeHistory !== false;
+    // Use listAllSessions for complete active + history view
+    const sessions = tracker.listAllSessions ? tracker.listAllSessions() : [];
+    const filtered = includeHistory
+      ? sessions
+      : sessions.filter(s => s.status === "active");
     const limit = args.limit || 10;
-    return sessions.slice(0, limit).map(s => ({
-      id: s.id || s.taskId,
-      type: s.type || "task",
-      status: s.status,
-      lastActive: s.lastActiveAt || s.lastActivityAt,
-    }));
+    const page = Math.max(Number(args.page) || 1, 1);
+    const offset = (page - 1) * limit;
+    const paged = filtered.slice(offset, offset + limit);
+    return {
+      page,
+      limit,
+      total: filtered.length,
+      sessions: paged.map(s => ({
+        id: s.id || s.taskId,
+        title: s.title || s.taskTitle || null,
+        type: s.type || "task",
+        status: s.status,
+        turnCount: s.turnCount || 0,
+        createdAt: s.createdAt || null,
+        lastActive: s.lastActiveAt || s.lastActivityAt,
+        preview: s.preview || s.lastMessage || null,
+      })),
+    };
   },
 
   async get_session_history(args) {
     const tracker = await getSessionTracker();
-    const session = tracker.getSessionById?.(args.sessionId) || tracker.getSession?.(args.sessionId) || null;
-    if (!session) return `Session ${args.sessionId} not found.`;
+    const sessionId = String(args.sessionId || "").trim();
+    if (!sessionId) return "sessionId is required.";
+    // Use getSessionById (canonical) then fall back to getSession
+    const session = tracker.getSessionById?.(sessionId) || tracker.getSession?.(sessionId) || null;
+    if (!session) return `Session ${sessionId} not found.`;
+    const fullTranscript = args.fullTranscript === true;
     const limit = args.limit || 20;
     const messages = (session.messages || []).slice(-limit);
-    return messages.map(m => ({
-      role: m.role || m.type,
-      content: m.content,
-      timestamp: m.timestamp,
-    }));
+    return {
+      sessionId,
+      title: session.taskTitle || session.title || sessionId,
+      type: session.type || "task",
+      status: session.status || "unknown",
+      turnCount: session.turnCount || 0,
+      createdAt: session.createdAt || null,
+      messageCount: messages.length,
+      totalMessages: (session.messages || []).length,
+      messages: messages.map(m => ({
+        role: m.role || m.type,
+        content: fullTranscript
+          ? m.content
+          : (typeof m.content === "string" && m.content.length > 500
+            ? m.content.slice(0, 500) + "..."
+            : m.content),
+        timestamp: m.timestamp,
+      })),
+    };
   },
 
   async get_system_status(args, context) {
@@ -1215,11 +1325,18 @@ const TOOL_HANDLERS = {
     const rawCmd = String(args.command || "").trim();
     const cmd = rawCmd.toLowerCase();
 
+    if (rawCmd.startsWith("/")) {
+      return TOOL_HANDLERS.bosun_slash_command({ command: rawCmd }, context);
+    }
+
     // Map to existing tool handlers where possible
     if (cmd === "status" || cmd === "health") {
       return TOOL_HANDLERS.get_system_status({}, context);
     }
     if (cmd === "config" || cmd === "config show") {
+      if (isPrivilegedVoiceContext(context)) {
+        return TOOL_HANDLERS.get_effective_config({}, context);
+      }
       return TOOL_HANDLERS.get_config({}, context);
     }
     if (cmd === "fleet" || cmd === "fleet status") {
@@ -1256,7 +1373,11 @@ const TOOL_HANDLERS = {
       );
     }
 
-    const supported = ["status", "health", "config", "fleet", "tasks", "agents", "version", "sync", "maintenance"];
+    if (cmd === "commands" || cmd === "helpfull") {
+      return TOOL_HANDLERS.bosun_slash_command({ command: "/helpfull" }, context);
+    }
+
+    const supported = ["status", "health", "config", "fleet", "tasks", "agents", "version", "sync", "maintenance", "commands", "helpfull", "/<slash>"];
     return `Unknown command "${rawCmd}". Supported: ${supported.join(", ")}. For shell commands use run_workspace_command.`;
   },
 
@@ -1274,11 +1395,19 @@ const TOOL_HANDLERS = {
     }
   },
 
-  async get_config(args) {
+  async get_config(args, context) {
     const cfg = loadConfig();
+    const mergedContext = {
+      ...(context && typeof context === "object" ? context : {}),
+      ...(args?.context && typeof args.context === "object" ? args.context : {}),
+      ...(args?.authSource ? { authSource: args.authSource } : {}),
+    };
     if (args.key) {
       const value = cfg[args.key];
       return value !== undefined ? { [args.key]: value } : `Config key "${args.key}" not found.`;
+    }
+    if (args.full === true || isPrivilegedVoiceContext(mergedContext)) {
+      return cfg;
     }
     // Return safe summary
     return {
@@ -1294,6 +1423,65 @@ const TOOL_HANDLERS = {
 
   async update_config(args) {
     return `Config update for "${args.key}" = "${args.value}" noted. Please apply via Settings UI for persistence.`;
+  },
+
+  async get_effective_config(args, context) {
+    if (!isPrivilegedVoiceContext(context)) {
+      return "Full config dump requires owner/admin session context.";
+    }
+    const cfg = loadConfig();
+    // Full effective settings dump for owner/admin sessions
+    const safe = { ...cfg };
+    // Redact sensitive fields
+    const REDACT = ["telegramToken", "openaiKey", "claudeKey", "geminiKey", "azureKey",
+      "githubToken", "slackToken", "discordToken", "webhookSecret", "privateKey"];
+    for (const key of REDACT) {
+      if (safe[key]) safe[key] = "***";
+    }
+    // Deep-redact nested objects
+    for (const section of ["voice", "telegram", "github", "jira", "slack"]) {
+      if (safe[section] && typeof safe[section] === "object") {
+        for (const subKey of Object.keys(safe[section])) {
+          if (/key|token|secret|password|credential/i.test(subKey)) {
+            safe[section][subKey] = "***";
+          }
+        }
+      }
+    }
+    if (args.key) {
+      const val = safe[args.key];
+      return val !== undefined ? { [args.key]: val } : `Config key "${args.key}" not found.`;
+    }
+    return safe;
+  },
+
+  async get_admin_help() {
+    const toolNames = TOOL_DEFS.map(t => t.name).sort();
+    const slashCommands = [
+      "/instant <prompt>", "/ask <prompt>", "/agent <task>", "/handoff <task>",
+      "/status", "/health", "/tasks [status]", "/agents", "/fleet", "/version",
+      "/config", "/commands", "/mcp <tool> [server=<name>]", "/workspace <shell cmd>",
+      "/shell <cmd>", "/run <cmd>",
+    ];
+    try {
+      const { listAvailableActions } = await import("./voice-action-dispatcher.mjs");
+      const actions = listAvailableActions();
+      return {
+        voiceTools: toolNames,
+        voiceToolCount: toolNames.length,
+        slashCommands,
+        dispatchActions: actions,
+        dispatchActionCount: actions.length,
+        helpTip: "Use list_sessions, get_session_history(fullTranscript=true), or any slash command via bosun_slash_command.",
+      };
+    } catch {
+      return {
+        voiceTools: toolNames,
+        voiceToolCount: toolNames.length,
+        slashCommands,
+        helpTip: "Dispatch actions unavailable.",
+      };
+    }
   },
 
   async search_code(args, context) {
@@ -1316,8 +1504,18 @@ const TOOL_HANDLERS = {
     const { readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
     try {
+      const filePath = String(
+        args.filePath
+          || args.path
+          || args?.context?.filePath
+          || args?.context?.path
+          || "",
+      ).trim();
+      if (!filePath) {
+        return "filePath is required. Provide filePath (or path) relative to the workspace root.";
+      }
       const cwd = await resolveToolCwd(context);
-      const fullPath = resolve(cwd, args.filePath);
+      const fullPath = resolve(cwd, filePath);
       const content = readFileSync(fullPath, "utf8");
       const lines = content.split("\n");
       const start = (args.startLine || 1) - 1;
@@ -1325,7 +1523,7 @@ const TOOL_HANDLERS = {
       const slice = lines.slice(start, end).join("\n");
       return slice.length > 3000 ? slice.slice(0, 3000) + "\n... (truncated)" : slice;
     } catch (err) {
-      return `Could not read ${args.filePath}: ${err.message}`;
+      return `Could not read ${String(args.filePath || args.path || "(unknown path)")}: ${err.message}`;
     }
   },
 
@@ -1393,17 +1591,46 @@ const TOOL_HANDLERS = {
     try {
       const cwd = await resolveToolCwd(context);
       const logsDir = resolve(cwd, "logs");
-      const type = args.type || "agent";
-      const lines = args.lines || 50;
+      const type = String(args.type || "agent").trim().toLowerCase();
+      const lines = Math.min(Math.max(Number(args.lines) || 50, 1), 5000);
       const files = readdirSync(logsDir)
-        .filter(f => f.includes(type) && f.endsWith(".log"))
+        .filter((f) => {
+          if (!f.endsWith(".log")) return false;
+          if (type === "all") return true;
+          return f.toLowerCase().includes(type);
+        })
         .sort((a, b) => {
           try {
             return statSync(join(logsDir, b)).mtimeMs - statSync(join(logsDir, a)).mtimeMs;
           } catch { return 0; }
         });
       if (!files.length) return `No ${type} logs found.`;
-      const content = readFileSync(join(logsDir, files[0]), "utf8");
+      if (args.listOnly === true) {
+        return {
+          type,
+          count: files.length,
+          files: files.map((name) => {
+            try {
+              const stat = statSync(join(logsDir, name));
+              return {
+                name,
+                size: stat.size,
+                mtime: new Date(stat.mtimeMs).toISOString(),
+              };
+            } catch {
+              return { name, size: null, mtime: null };
+            }
+          }),
+        };
+      }
+      const requestedFile = String(args.file || args.filename || "").trim();
+      const targetFile = requestedFile
+        ? files.find((candidate) => candidate === requestedFile) || files[0]
+        : files[0];
+      const content = readFileSync(join(logsDir, targetFile), "utf8");
+      if (args.full === true) {
+        return content.length > 150_000 ? `${content.slice(-150_000)}\n... (trimmed to last 150000 chars)` : content;
+      }
       const logLines = content.trim().split("\n");
       return logLines.slice(-lines).join("\n");
     } catch {
@@ -1663,8 +1890,8 @@ const TOOL_HANDLERS = {
       );
     }
 
-    const BACKGROUND_BASES = new Set(["background", "bg", "agent"]);
-    if (BACKGROUND_BASES.has(base)) {
+    const HANDOFF_BASES = new Set(["background", "bg", "agent", "handoff"]);
+    if (HANDOFF_BASES.has(base)) {
       if (!rest) return `{RESPONSE}: Usage: /${base} <task description>`;
       return TOOL_HANDLERS.delegate_to_agent(
         { message: rest, mode: "agent" },
@@ -1694,6 +1921,40 @@ const TOOL_HANDLERS = {
         if (!tok.includes("=")) { server = tok; break; }
       }
       return TOOL_HANDLERS.invoke_mcp_tool({ tool: toolName, server }, context);
+    }
+
+    // ── /help — full listing of voice capabilities ──────────────────────
+    if (base === "help" || base === "helpfull") {
+      return TOOL_HANDLERS.get_admin_help({}, context);
+    }
+
+    // ── /logs [type] [lines] ─────────────────────────────────────────────
+    if (base === "logs" || base === "log" || base === "agentlogs") {
+      const logParts = rest.split(/\s+/);
+      const type = logParts[0] || (base === "agentlogs" ? "agent" : "agent");
+      const lines = Number(logParts[1]) || 50;
+      return TOOL_HANDLERS.get_recent_logs({ type, lines }, context);
+    }
+
+    // ── /sessions [limit] ────────────────────────────────────────────────
+    if (base === "sessions" || base === "history") {
+      const limit = Number(rest) || 10;
+      return TOOL_HANDLERS.list_sessions({ limit, includeHistory: base === "history" }, context);
+    }
+
+    // ── /effectiveconfig ─────────────────────────────────────────────────
+    if (base === "effectiveconfig" || base === "fullconfig" || base === "configdump") {
+      return TOOL_HANDLERS.get_effective_config({ key: rest || undefined }, context);
+    }
+
+    // ── /pr [limit] ─────────────────────────────────────────────────────
+    if (base === "pr" || base === "prs" || base === "pullrequests") {
+      const limit = Number(rest) || 10;
+      return TOOL_HANDLERS.get_pr_status({ limit }, context);
+    }
+
+    if (base === "commands") {
+      return TOOL_HANDLERS.bosun_slash_command({ command: "/helpfull" }, context);
     }
 
     // ── /workspace <shell command> ────────────────────────────────────────
@@ -1745,8 +2006,9 @@ const TOOL_HANDLERS = {
     ];
 
     const isSafe = SAFE_PATTERNS.some((p) => p.test(rawCmd));
-    if (!isSafe) {
-      // Delegate potentially-mutating commands to the agent instead.
+    const isOwnerSession = context?.isOwner === true || context?.role === "owner" || context?.role === "admin";
+    if (!isSafe && !isOwnerSession) {
+      // Non-owner sessions: delegate potentially-mutating commands to the agent.
       return TOOL_HANDLERS.ask_agent_context(
         {
           message:
@@ -1757,13 +2019,17 @@ const TOOL_HANDLERS = {
         context,
       );
     }
+    if (!isSafe && isOwnerSession) {
+      // Owner/admin: allow direct execution with explicit confirmation in response.
+      console.log(`[voice-tools] Owner direct shell: ${rawCmd.slice(0, 100)}`);
+    }
 
     try {
       const { execSync } = await import("node:child_process");
       const cwd = await resolveToolCwd(context);
       const output = execSync(rawCmd, {
         encoding: "utf8",
-        timeout: 20_000,
+        timeout: isOwnerSession ? 120_000 : 20_000,
         cwd,
         shell: true,
       });

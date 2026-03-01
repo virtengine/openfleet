@@ -253,6 +253,23 @@ describe("voice-tools", () => {
       expect(callArgs?.[1]).toMatchObject({ mode: "instant" });
     });
 
+    it("ask_agent_context derives prompt from nested context history when message is missing", async () => {
+      const result = await executeToolCall("ask_agent_context", {
+        context: {
+          history: [
+            {
+              role: "user",
+              content: [{ type: "input_audio", transcript: "Can you check our current backlog tasks?" }],
+            },
+          ],
+        },
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.result).toMatch(/\{RESPONSE\}:/i);
+      const callArgs = vi.mocked(execPooledPrompt).mock.calls.at(-1);
+      expect(String(callArgs?.[0] || "")).toContain("check our current backlog tasks");
+    });
+
     it("run_command returns system status for 'status'", async () => {
       const result = await executeToolCall("run_command", { command: "status" });
       expect(result.error).toBeUndefined();

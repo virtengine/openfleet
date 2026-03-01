@@ -32,6 +32,10 @@ export const isSdkVoiceActive = computed(() =>
   sdkVoiceState.value !== "idle" && sdkVoiceState.value !== "error"
 );
 
+// Noise-control default: disable user-side live ASR transcript output/persistence.
+// Assistant response text remains enabled.
+const ENABLE_USER_TRANSCRIPT = false;
+
 // ── Module-scope state ──────────────────────────────────────────────────────
 
 let _session = null;
@@ -215,6 +219,7 @@ function _persistTranscriptIfNew(role, text, eventType) {
   const value = String(text || "").trim();
   if (!value) return;
   if (normalizedRole === "user") {
+    if (!ENABLE_USER_TRANSCRIPT) return;
     if (value === _lastPersistedUserTranscript) return;
     _lastPersistedUserTranscript = value;
   } else if (normalizedRole === "assistant") {
@@ -225,6 +230,10 @@ function _persistTranscriptIfNew(role, text, eventType) {
 }
 
 function _scheduleUserTranscriptFinalize(text) {
+  if (!ENABLE_USER_TRANSCRIPT) {
+    sdkVoiceTranscript.value = "";
+    return;
+  }
   const value = String(text || "").trim();
   if (!value) return;
   _pendingUserTranscriptText = value;
@@ -281,7 +290,7 @@ async function startAgentsSdkSession(config, options = {}) {
       executor: _callContext.executor || undefined,
       mode: _callContext.mode || undefined,
       model: _callContext.model || undefined,
-      delegateOnly: Boolean(_callContext.sessionId),
+      delegateOnly: false,
       sdkMode: true,
     }),
   });
@@ -703,9 +712,13 @@ function handleGeminiServerEvent(msg) {
 
   switch (type) {
     case "transcript.user":
-      sdkVoiceTranscript.value = msg.text || "";
-      emit("transcript", { text: msg.text, final: true });
-      _recordTranscript("user", msg.text, "gemini.user_transcript");
+      if (ENABLE_USER_TRANSCRIPT) {
+        sdkVoiceTranscript.value = msg.text || "";
+        emit("transcript", { text: msg.text, final: true });
+        _recordTranscript("user", msg.text, "gemini.user_transcript");
+      } else {
+        sdkVoiceTranscript.value = "";
+      }
       break;
 
     case "transcript.assistant":

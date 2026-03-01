@@ -53,6 +53,9 @@ let _callContext = {
 
 const RECONNECT_AT_MS = 28 * 60 * 1000; // 28 minutes
 const MAX_RECONNECT_ATTEMPTS = 3;
+// Noise-control default: disable user-side live ASR transcript output/persistence.
+// Assistant response text remains enabled.
+const ENABLE_USER_TRANSCRIPT = false;
 let _reconnectAttempts = 0;
 let _pendingResponseCreateTimer = null;
 let _awaitingAutoResponse = false;
@@ -144,9 +147,13 @@ async function _processResponsesAudioTurn(text) {
   }
 
   voiceState.value = "thinking";
-  voiceTranscript.value = inputText;
-  emit("transcript", { text: inputText, final: true });
-  await _recordVoiceTranscript("user", inputText, "responses-audio.user_input");
+  if (ENABLE_USER_TRANSCRIPT) {
+    voiceTranscript.value = inputText;
+    emit("transcript", { text: inputText, final: true });
+    await _recordVoiceTranscript("user", inputText, "responses-audio.user_input");
+  } else {
+    voiceTranscript.value = "";
+  }
 
   if (_responsesAbortController) {
     try { _responsesAbortController.abort(); } catch { /* ignore */ }
@@ -434,7 +441,7 @@ export async function startVoiceSession(options = {}) {
         executor: _callContext.executor || undefined,
         mode: _callContext.mode || undefined,
         model: _callContext.model || undefined,
-        delegateOnly: Boolean(_callContext.sessionId),
+        delegateOnly: false,
       }),
     });
     if (!tokenRes.ok) {
@@ -630,14 +637,18 @@ function handleServerEvent(event) {
       break;
 
     case "conversation.item.input_audio_transcription.completed":
-      voiceTranscript.value = event.transcript || "";
-      emit("transcript", { text: event.transcript, final: true });
-      _recordVoiceTranscript(
-        "user",
-        event.transcript || "",
-        "conversation.item.input_audio_transcription.completed",
-      );
-      scheduleManualResponseCreate("transcription-completed");
+      if (ENABLE_USER_TRANSCRIPT) {
+        voiceTranscript.value = event.transcript || "";
+        emit("transcript", { text: event.transcript, final: true });
+        _recordVoiceTranscript(
+          "user",
+          event.transcript || "",
+          "conversation.item.input_audio_transcription.completed",
+        );
+        scheduleManualResponseCreate("transcription-completed");
+      } else {
+        voiceTranscript.value = "";
+      }
       break;
 
     case "conversation.item.created": {
@@ -648,9 +659,11 @@ function handleServerEvent(event) {
           .map((part) => String(part?.transcript || part?.text || ""))
           .join("")
           .trim();
-        if (transcript) {
+        if (transcript && ENABLE_USER_TRANSCRIPT) {
           voiceTranscript.value = transcript;
           emit("transcript", { text: transcript, final: true });
+        } else if (!ENABLE_USER_TRANSCRIPT) {
+          voiceTranscript.value = "";
         }
       }
       break;
@@ -759,7 +772,13 @@ async function handleToolCall(event) {
   const name = event.name;
   let args = {};
   try {
-    args = JSON.parse(event.arguments || "{}");
+    if (typeof event.arguments === "string") {
+      args = JSON.parse(event.arguments || "{}");
+    } else if (event.arguments && typeof event.arguments === "object") {
+      args = event.arguments;
+    } else {
+      args = {};
+    }
   } catch {
     args = {};
   }

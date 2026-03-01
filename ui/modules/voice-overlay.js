@@ -735,7 +735,7 @@ function mergeFragmentedMeetingFeedMessages(items) {
  * @param {{
  * visible: boolean,
  * onClose: () => void,
- * onDismiss?: () => void,
+ * onDismiss?: (detail?: { reason?: string }) => void,
  * compact?: boolean,
  * tier: number,
  * sessionId?: string,
@@ -1048,10 +1048,10 @@ export function VoiceOverlay({
     onClose();
   }, [tier, onClose, usingSdk]);
 
-  const handleDismiss = useCallback(() => {
+  const handleDismiss = useCallback((detail = {}) => {
     haptic("light");
     const fn = typeof onDismiss === "function" ? onDismiss : onClose;
-    fn();
+    fn(detail);
   }, [onDismiss, onClose]);
 
   const handleInterrupt = useCallback(() => {
@@ -1143,6 +1143,13 @@ export function VoiceOverlay({
         });
       return;
     }
+    const canBrowserExternalize =
+      typeof globalThis?.open === "function"
+      && !(globalThis.location?.search || "").includes("follow=1");
+    if (canBrowserExternalize) {
+      handleDismiss({ reason: "externalize" });
+      return;
+    }
     setMinimized(true);
   }, [
     handleDismiss,
@@ -1153,6 +1160,21 @@ export function VoiceOverlay({
     mode,
     model,
   ]);
+
+  useEffect(() => () => {
+    try {
+      stopVisionShare().catch(() => {});
+      if (usingSdk) {
+        stopSdkVoiceSession();
+      } else if (tier === 1) {
+        stopVoiceSession();
+      } else {
+        stopFallbackSession();
+      }
+    } catch {
+      // best effort cleanup
+    }
+  }, [tier, usingSdk]);
 
   const handleExpand = useCallback(() => {
     haptic("light");

@@ -78,6 +78,7 @@ import {
 /* ─── Bosun commands (always available) ─── */
 const BOSUN_COMMANDS = [
   { cmd: "/help", desc: "Show available commands", icon: "help", source: "bosun" },
+  { cmd: "/commands", desc: "Show full command list", icon: "menu", source: "bosun" },
   { cmd: "/status", desc: "Check orchestrator status", icon: "chart", source: "bosun" },
   { cmd: "/health", desc: "Health check", icon: "heart", source: "bosun" },
   { cmd: "/logs", desc: "View recent logs", icon: "file", source: "bosun" },
